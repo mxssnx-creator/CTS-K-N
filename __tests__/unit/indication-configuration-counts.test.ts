@@ -6,20 +6,28 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 4 (then evaluate every integer through 30).
-    expect(result.totalPossibleSets).toBe(41_142)
-    expect(result.totalEvaluationConfigurations).toBe(8_936)
+    expect(result.totalPossibleSets).toBe(50_550)
+    expect(result.totalEvaluationConfigurations).toBe(13_624)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(17)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
       direction: 978,
       move: 978,
-      active: 366,
+      active: 9_774,
       active_advanced: 36,
       optimal: 162,
       auto: 0,
       signal: 23_328,
       trend: 102,
       common: 15_192,
+    })
+    expect(result.types.find((type) => type.type === "active")).toMatchObject({
+      params: {
+        outbreakRanges: 3,
+        stopLossProfiles: 3,
+        marketExitSituations: 3,
+        protectionProfiles: 9,
+      },
     })
   })
 

@@ -924,6 +924,22 @@ export class BingXConnector extends BaseExchangeConnector {
     options: PlaceOrderOptions = {},
   ): Promise<{ success: boolean; orderId?: string; error?: string; filledPrice?: number; avgPrice?: number; price?: number; filledQty?: number; executedQty?: number; status?: string }> {
     try {
+      // Validate and canonicalise before either transport sees the order. The
+      // SDK used to run before this guard, allowing invalid/sub-step amounts
+      // to reach BingX while only the REST path rejected them.
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        const msg = `Invalid quantity: ${quantity}`
+        this.logError(`✗ ${msg}`)
+        return { success: false, error: msg }
+      }
+      const roundedQty = Math.round(quantity * 1e6) / 1e6
+      if (roundedQty < 0.000001) {
+        const msg = `Quantity too small after rounding: ${quantity} → ${roundedQty}`
+        this.logError(`✗ ${msg}`)
+        return { success: false, error: msg }
+      }
+      const qtyStr = roundedQty.toFixed(6).replace(/\.?0+$/, "")
+
       // Use the bingx-api package as the default fast path for mainnet swap
       // orders, including reduce/close calls when the caller supplies one-way
       // reduceOnly semantics. Testnet/spot still use REST because the SDK
@@ -936,7 +952,7 @@ export class BingXConnector extends BaseExchangeConnector {
             symbol: bingxSymbol,
             side: side.toUpperCase(),
             type: orderType === "market" ? "MARKET" : "LIMIT",
-            quantity: String(quantity),
+            quantity: qtyStr,
             recvWindow: String(this.recvWindowMs),
             timestamp: String(this.getTimestamp()),
           }
@@ -974,10 +990,13 @@ export class BingXConnector extends BaseExchangeConnector {
           this.recordSdkFallback("placeOrder", sdkErr)
           const sdkMessage = sdkErr instanceof Error ? sdkErr.message : String(sdkErr)
           const ambiguousDelivery = /SDK_ACK_WITHOUT_ORDER_ID|timeout|timed out|aborted|socket|network|fetch failed|ECONNRESET/i.test(sdkMessage)
-          if (options.clientOrderId && ambiguousDelivery) {
+          if (ambiguousDelivery) {
             return {
               success: false,
-              error: `Ambiguous bingx-api acknowledgement for clientOrderId=${options.clientOrderId}; REST retry suppressed to prevent a duplicate order (${sdkMessage})`,
+              error:
+                `Ambiguous bingx-api acknowledgement` +
+                `${options.clientOrderId ? ` for clientOrderId=${options.clientOrderId}` : ""}; ` +
+                `REST retry suppressed to prevent a duplicate order (${sdkMessage})`,
             }
           }
           // Fall through to manual REST
@@ -997,22 +1016,6 @@ export class BingXConnector extends BaseExchangeConnector {
       // many cases responds with its generic "this api is not exist" error
       // instead of a precise reason. Normalise the quantity to a reasonable
       // precision and refuse obviously-doomed amounts before signing.
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        const msg = `Invalid quantity: ${quantity}`
-        this.logError(`✗ ${msg}`)
-        return { success: false, error: msg }
-      }
-      // Round to 6 decimal places (enough for both high- and low-priced assets)
-      // then strip trailing zeros when serialising.
-      const roundedQty = Math.round(quantity * 1e6) / 1e6
-      if (roundedQty < 0.000001) {
-        const msg = `Quantity too small after rounding: ${quantity} → ${roundedQty}`
-        this.logError(`✗ ${msg}`)
-        return { success: false, error: msg }
-      }
-      // Serialise without scientific notation or trailing zeros.
-      const qtyStr = roundedQty.toFixed(6).replace(/\.?0+$/, "")
-
       // ── Symbol formatting ────��───────────────────────────────────────────
       // BingX perpetual futures require the hyphenated form "BTC-USDT". Spot
       // accepts either. Passing "BTCUSDT" to a perp trade endpoint is the
@@ -1478,6 +1481,7 @@ export class BingXConnector extends BaseExchangeConnector {
           const sdkData = await tradeService.cancelOrder(orderId, bingxSymbol, this.sdkAccount)
           if (this.isBingXSuccess(sdkData?.code) || this.isOrderAlreadyGone(sdkData)) {
             this.sdkLastError = ""
+            this.markOperationTransport("cancelOrder", "bingx-api")
             this.log(`✓ Order cancelled via bingx-api`)
             return { success: true }
           }
@@ -1546,6 +1550,7 @@ export class BingXConnector extends BaseExchangeConnector {
         // timestamp variant handled above which contains "timestamp").
         const code = String(data.code)
         if (this.isOrderAlreadyGone(data)) {
+          this.markOperationTransport("cancelOrder", "signed-rest-fallback", "order already absent")
           this.log(`Order ${orderId} already gone (code=${code}) — treating as cancelled`)
           return { success: true }
         }
@@ -1553,6 +1558,11 @@ export class BingXConnector extends BaseExchangeConnector {
       }
 
       this.log(`✓ Order cancelled successfully`)
+      this.markOperationTransport(
+        "cancelOrder",
+        "signed-rest-fallback",
+        this.sdkLastError || "bingx-api operation unavailable",
+      )
       return { success: true }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)

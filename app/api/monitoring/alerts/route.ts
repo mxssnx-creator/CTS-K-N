@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server"
-import { getAllConnections, getSettings } from "@/lib/redis-db"
+import { getAllConnections, getSettings, setSettings } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
 
 export const runtime = "nodejs"
@@ -14,6 +14,23 @@ interface Alert {
   acknowledged: boolean
 }
 
+const ACKNOWLEDGEMENT_KEY = "monitoring_alert_acknowledgements"
+const ACKNOWLEDGEMENT_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+function normalizeAcknowledgements(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  const cutoff = Date.now() - ACKNOWLEDGEMENT_TTL_MS
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([id, timestamp]) => {
+        if (!id || typeof timestamp !== "string") return false
+        const parsed = Date.parse(timestamp)
+        return Number.isFinite(parsed) && parsed >= cutoff
+      })
+      .map(([id, timestamp]) => [id, String(timestamp)]),
+  )
+}
+
 /**
  * GET /api/monitoring/alerts
  * Fetch active alerts based on system monitoring
@@ -21,6 +38,7 @@ interface Alert {
 export async function GET() {
   try {
     const alerts: Alert[] = []
+    const acknowledgements = normalizeAcknowledgements(await getSettings(ACKNOWLEDGEMENT_KEY))
 
     // Check for failed orders from Redis
     const orders = (await getSettings("orders")) || []
@@ -94,13 +112,20 @@ export async function GET() {
       })
     }
 
+    const annotatedAlerts = alerts.map((alert) => ({
+      ...alert,
+      acknowledged: Boolean(acknowledgements[alert.id]),
+      acknowledgedAt: acknowledgements[alert.id] || null,
+    }))
+
     return NextResponse.json({
       success: true,
-      alerts,
-      count: alerts.length,
-      criticalCount: alerts.filter(a => a.level === "critical").length,
-      warningCount: alerts.filter(a => a.level === "warning").length,
-      infoCount: alerts.filter(a => a.level === "info").length,
+      alerts: annotatedAlerts,
+      count: annotatedAlerts.length,
+      unacknowledgedCount: annotatedAlerts.filter((alert) => !alert.acknowledged).length,
+      criticalCount: annotatedAlerts.filter(a => a.level === "critical").length,
+      warningCount: annotatedAlerts.filter(a => a.level === "warning").length,
+      infoCount: annotatedAlerts.filter(a => a.level === "info").length,
     })
 
   } catch (error) {
@@ -132,11 +157,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const acknowledgements = normalizeAcknowledgements(await getSettings(ACKNOWLEDGEMENT_KEY))
+    const acknowledgedAt = new Date().toISOString()
+    acknowledgements[String(alertId)] = acknowledgedAt
+    await setSettings(ACKNOWLEDGEMENT_KEY, acknowledgements)
     await SystemLogger.logAPI(`Alert acknowledged: ${alertId}`, "info", "POST /api/monitoring/alerts")
 
     return NextResponse.json({
       success: true,
-      message: `Alert ${alertId} acknowledged`
+      message: `Alert ${alertId} acknowledged`,
+      acknowledgedAt,
     })
   } catch (error) {
     return NextResponse.json(

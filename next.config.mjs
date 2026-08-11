@@ -189,15 +189,11 @@ const nextConfig = {
       },
     ] : []
   },
-  // Production-specific redirects for health checks and monitoring
+  // `/health` is a real dashboard page. Machine probes use the explicit
+  // `/api/health` and `/api/health/{liveness,readiness}` contracts so the UI
+  // route renders identically in development and production.
   async redirects() {
-    return process.env.NODE_ENV === "production" ? [
-      {
-        source: "/health",
-        destination: "/api/system/status",
-        permanent: false,
-      },
-    ] : []
+    return []
   },
   webpack: (config, { isServer, nextRuntime, webpack, dev }) => {
     config.resolve = config.resolve || {}

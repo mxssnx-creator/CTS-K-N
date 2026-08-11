@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { SignalIndicationSettings } from "@/components/settings/signal-indication-settings"
 
@@ -28,6 +29,19 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
 
   const numericListValue = (value: unknown, fallback: number[]) =>
     Array.isArray(value) ? value.join(", ") : typeof value === "string" ? value : fallback.join(", ")
+  const activeMarketExitValues = new Set(
+    (Array.isArray(settings.activeMarketExitSituations)
+      ? settings.activeMarketExitSituations
+      : String(settings.activeMarketExitSituations || "momentum,range_extension,activity_fade").split(","))
+      .map((value: unknown) => String(value).trim())
+      .filter(Boolean),
+  )
+  const toggleActiveMarketExit = (situation: string) => {
+    const next = new Set(activeMarketExitValues)
+    if (next.has(situation) && next.size > 1) next.delete(situation)
+    else next.add(situation)
+    handleSettingChange("activeMarketExitSituations", Array.from(next))
+  }
   const trendTimeframeValues: unknown[] = Array.isArray(settings.trendTimeframesMinutes)
     ? settings.trendTimeframesMinutes
     : String(settings.trendTimeframesMinutes || "1,5,15,30").split(",")
@@ -231,13 +245,62 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-xs">Active time ratios</Label>
+                      <Label className="text-xs">Active current / previous activity ratios</Label>
                       <Input
                         value={numericListValue(settings.activeTimeRatios, [0.5, 1])}
                         onChange={(event) => handleSettingChange("activeTimeRatios", event.target.value)}
                         placeholder="0.5, 1"
                       />
                     </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Active outbreak position ranges</Label>
+                      <Input
+                        value={numericListValue(settings.activeOutbreakRanges, [3, 5, 10])}
+                        onChange={(event) => handleSettingChange("activeOutbreakRanges", event.target.value)}
+                        placeholder="3, 5, 10"
+                      />
+                      <p className="text-[11px] text-muted-foreground">Each range compares two causal, non-overlapping market windows.</p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Active SL · × PositionCost</Label>
+                      <Input
+                        value={numericListValue(settings.activeStopLossPositionCostRatios, [2, 3, 5])}
+                        onChange={(event) => handleSettingChange("activeStopLossPositionCostRatios", event.target.value)}
+                        placeholder="2, 3, 5"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Active TP exit multipliers</Label>
+                      <Input
+                        value={numericListValue(settings.activeTakeProfitMultipliers, [1.25, 1.5, 1])}
+                        onChange={(event) => handleSettingChange("activeTakeProfitMultipliers", event.target.value)}
+                        placeholder="1.25, 1.5, 1"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2 rounded-md border bg-background/70 p-3">
+                    <Label className="text-xs">Active TP market-exit situations</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        ["momentum", "Momentum"],
+                        ["range_extension", "Range extension"],
+                        ["activity_fade", "Activity fade"],
+                      ].map(([value, label]) => (
+                        <Button
+                          key={value}
+                          type="button"
+                          size="sm"
+                          variant={activeMarketExitValues.has(value) ? "default" : "outline"}
+                          className="h-7 text-xs"
+                          onClick={() => toggleActiveMarketExit(value)}
+                        >
+                          {label}
+                        </Button>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Every selected exit situation is crossed with every SL profile and remains an independent Set.
+                    </p>
                   </div>
                   <div className="grid gap-3 border-t pt-3 md:grid-cols-[minmax(0,1fr)_9rem_9rem]">
                     <div className="space-y-1">
@@ -462,10 +525,16 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                   </div>
                 </div>
 
-                {/* Active Indication */}
+                {/* Active/Outbreak runtime and shared filters */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold">Active Indication</h3>
+                    <div>
+                      <h3 className="text-lg font-semibold">Active / Outbreak runtime</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Runs after the primary indication families and immediately before Trend. Position ranges,
+                        thresholds and the complete SL × market-exit matrix are configured in the Set grid above.
+                      </p>
+                    </div>
                     <Switch
                       checked={settings.activeEnabled !== false}
                       onCheckedChange={(checked) => handleSettingChange("activeEnabled", checked)}
@@ -501,44 +570,16 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                     </div>
 
                     <div className="space-y-2">
-                      <Label>Active Threshold (0-5%, step 0.1%)</Label>
-                      <Slider
-                        min={0}
-                        max={5}
-                        step={0.1}
-                        value={[settings.activeThreshold || 0.1]}
-                        onValueChange={([value]) => handleSettingChange("activeThreshold", value)}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Current: {(settings.activeThreshold || 0.1).toFixed(2)}%
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
                       <Label>Noise Filter (0-1%, step 0.01%)</Label>
                       <Slider
                         min={0}
                         max={1}
                         step={0.01}
-                        value={[settings.activeNoiseFilter || 0.05]}
+                        value={[settings.activeNoiseFilter ?? 0.05]}
                         onValueChange={([value]) => handleSettingChange("activeNoiseFilter", value)}
                       />
                       <p className="text-xs text-muted-foreground">
-                        Current: {(settings.activeNoiseFilter || 0.05).toFixed(2)}%
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label>Momentum Window (sec) (1-60)</Label>
-                      <Slider
-                        min={1}
-                        max={60}
-                        step={1}
-                        value={[settings.activeMomentumWindow || 10]}
-                        onValueChange={([value]) => handleSettingChange("activeMomentumWindow", value)}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Current: {settings.activeMomentumWindow || 10}s
+                        Current: {(settings.activeNoiseFilter ?? 0.05).toFixed(2)}%
                       </p>
                     </div>
 
@@ -548,11 +589,11 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                         min={0}
                         max={1}
                         step={0.1}
-                        value={[settings.activeVolatilityWeight || 0.3]}
+                        value={[settings.activeVolatilityWeight ?? 0.3]}
                         onValueChange={([value]) => handleSettingChange("activeVolatilityWeight", value)}
                       />
                       <p className="text-xs text-muted-foreground">
-                        Current: {(settings.activeVolatilityWeight || 0.3).toFixed(1)}
+                        Current: {(settings.activeVolatilityWeight ?? 0.3).toFixed(1)}
                       </p>
                     </div>
                   </div>

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { AlertCircle, Waves } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { useExchange } from "@/lib/exchange-context"
+import { PageLoading, PageState } from "@/components/page-scaffold"
 
 export const dynamic = 'force-dynamic'
 
@@ -66,55 +67,35 @@ export default function ActiveExchangePage() {
 
   if (loading) {
     return (
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold">Active Exchange Statistics</h1>
-        </div>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-muted-foreground">Loading active connections...</p>
-          </CardContent>
-        </Card>
+      <div className="page-section">
+        <PageLoading label="Loading active exchange connections…" />
       </div>
     )
   }
 
   if (activeConnections.length === 0) {
     return (
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold">Active Exchange Statistics</h1>
-        </div>
-        <Alert>
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>
-            No active dashboard connection is enabled and running. Use Quick Start or enable a connection on the dashboard first.
-          </AlertDescription>
-        </Alert>
+      <div className="page-section">
+        <PageState
+          icon={AlertCircle}
+          title="No active exchange connection"
+          description="Enable a dashboard connection or start Quick Start before opening exchange-specific prehistoric data and statistics."
+        />
       </div>
     )
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold">Active Exchange Statistics</h1>
-          <p className="text-muted-foreground mt-1">
-          View detailed prehistoric analysis, market data, and trading metrics for the selected active running connection
-          </p>
-        </div>
+    <div className="page-section space-y-5">
+      {!runningConnections.length && (
+        <Alert>
+          <Waves className="h-4 w-4" />
+          <AlertDescription>
+            No selected exchange is currently enabled and running. Start Quick Start or enable a dashboard connection to activate progression and statistics.
+          </AlertDescription>
+        </Alert>
+      )}
 
-        {!runningConnections.length && (
-          <Alert>
-            <Waves className="h-4 w-4" />
-            <AlertDescription>
-              No selected exchange is currently enabled and running. Start Quick Start or enable a dashboard connection to activate progression and statistics.
-            </AlertDescription>
-          </Alert>
-        )}
-
-      {/* Connection Selector */}
       <Card>
         <CardHeader>
           <CardTitle>Select Active Connection</CardTitle>
@@ -146,7 +127,6 @@ export default function ActiveExchangePage() {
         </CardContent>
       </Card>
 
-      {/* Statistics Component */}
       {effectiveConnection ? (
         <ExchangeStatistics
           key={effectiveConnection.id}

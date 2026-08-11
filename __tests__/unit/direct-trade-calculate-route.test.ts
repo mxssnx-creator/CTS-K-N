@@ -83,6 +83,31 @@ describe("Direct-Trade historical calculation route", () => {
       inverse: { evaluated: 40 },
       high_protection: { evaluated: 8 },
     })
+    expect(payload.summary.byDirection).toMatchObject({
+      long: { evaluated: 48 },
+      short: { evaluated: 48 },
+    })
+    expect(payload.summary.byStopLossRatio).toMatchObject({
+      "0.25": { evaluated: 24 },
+      "0.5": { evaluated: 24 },
+      "0.75": { evaluated: 32 },
+      "1": { evaluated: 8 },
+      "1.25": { evaluated: 8 },
+    })
+    expect(payload.summary.byTakeProfitPositionCostRatio).toMatchObject({
+      "4": { evaluated: 24 },
+      "8": { evaluated: 24 },
+      "12": { evaluated: 24 },
+      "14": { evaluated: 24 },
+    })
+    expect(payload.summary.byExitTactic.bracket).toMatchObject({
+      evaluated: 96,
+      disabled: payload.summary.byExitTactic.bracket.evaluated - payload.summary.byExitTactic.bracket.valid,
+      totalPnl: expect.any(Number),
+      netProfit: expect.any(Number),
+      netLoss: expect.any(Number),
+      profitFactorInfinite: expect.any(Boolean),
+    })
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("interval=1m")
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("startTime=")
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
@@ -90,6 +115,11 @@ describe("Direct-Trade historical calculation route", () => {
     expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(96)
     expect(persisted.every((config: any) => config.blockEvaluations === undefined)).toBe(true)
     expect(persisted.every((config: any) => config.timeframe === "1m" && config.bestMarketExitAnalysisOnly === true)).toBe(true)
+    expect(persisted.every((config: any) =>
+      Number.isFinite(config.takeprofit) &&
+      Number.isFinite(config.takeProfitPositionCostRatio) &&
+      Number.isFinite(config.stoploss),
+    )).toBe(true)
     expect(persisted.filter((config: any) => config.strategyType === "inverse").every((config: any) =>
       config.stoploss <= config.takeprofit * 1.25,
     )).toBe(true)

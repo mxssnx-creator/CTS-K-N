@@ -131,7 +131,7 @@ export default function ConnectionTestingPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader 
         title="Connection Testing" 
         description="Test exchange API connectivity and functionality"

@@ -18,22 +18,21 @@ function SimpleContent() {
   const { user } = useAuth()
 
   return (
-    <div style={{ padding: "24px", maxWidth: "1200px", margin: "0 auto" }}>
-      <div style={{ marginBottom: "24px" }}>
-        <h1 style={{ margin: 0, fontSize: "28px", fontWeight: "bold" }}>CTS v3.2 Dashboard</h1>
-        <p style={{ margin: "8px 0 0 0", fontSize: "14px", color: "var(--muted-foreground)" }}>
+    <div className="page-section space-y-5">
+      <div className="rounded-xl border bg-card/70 p-4">
+        <p className="text-sm text-muted-foreground">
           Welcome back, {user?.username || "Administrator"}
         </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+      <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>System Status</CardTitle>
           </CardHeader>
           <CardContent>
-            <p>Application running with Redis migrations complete.</p>
-            <p>All 10 schemas initialized successfully.</p>
+            <p className="text-sm">The authenticated React application shell rendered successfully.</p>
+            <p className="mt-2 text-xs text-muted-foreground">Use Monitoring and Database Migrations for authoritative dependency health.</p>
           </CardContent>
         </Card>
 

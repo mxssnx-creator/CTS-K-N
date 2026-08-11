@@ -151,6 +151,40 @@ export async function GET() {
       k.includes("strategy") || k.includes("strategies:") || k.includes("entry:") || k.includes("signal:")
     ).length
 
+    // Indication Set identities are a bounded, lazily materialized inventory:
+    // the opposite Long/Short side may first appear well after cold bootstrap.
+    // Expose its exact indexed cardinality separately so long-run monitoring
+    // can distinguish that finite topology growth from unrelated key leakage.
+    let indexedConnectionIds: string[] = []
+    let indicationSetInventoryKeys = 0
+    let indicationOutcomeAuxiliaryKeys = 0
+    try {
+      indexedConnectionIds = client ? await collectConnectionIds(client, allKeys) : []
+      if (client && indexedConnectionIds.length > 0) {
+        const counts = await Promise.all(
+          indexedConnectionIds.map(async (connectionId) => {
+            const [sets, outcomeAuxiliaries] = await Promise.all([
+              client!.scard(`indication_sets:index:${connectionId}`).catch(() => 0),
+              client!.scard(`indication_sets:outcome_keys:index:${connectionId}`).catch(() => 0),
+            ])
+            return { sets, outcomeAuxiliaries }
+          }),
+        )
+        indicationSetInventoryKeys = counts.reduce(
+          (sum, value) => sum + Math.max(0, Number(value.sets) || 0),
+          0,
+        )
+        indicationOutcomeAuxiliaryKeys = counts.reduce(
+          (sum, value) => sum + Math.max(0, Number(value.outcomeAuxiliaries) || 0),
+          0,
+        )
+      }
+    } catch {
+      indexedConnectionIds = []
+      indicationSetInventoryKeys = 0
+      indicationOutcomeAuxiliaryKeys = 0
+    }
+
     let estimatedDbBytes = 0
     try {
       const sampleKeys = allKeys.slice(0, 12)
@@ -195,8 +229,7 @@ export async function GET() {
     // observability must not depend on a bounded key-inventory sample happening
     // to contain every progression key.
     try {
-      const connectionIds = client ? await collectConnectionIds(client, allKeys) : []
-      for (const connectionId of connectionIds) {
+      for (const connectionId of indexedConnectionIds) {
         try {
           if (!client) continue
           const connectionHash = await client.hgetall(`connection:${connectionId}`).catch(() => ({}))
@@ -311,6 +344,8 @@ export async function GET() {
       database: {
         size: estimatedDbBytes,
         keys,
+        indicationSetInventoryKeys,
+        indicationOutcomeAuxiliaryKeys,
         sets,
         positions1h: positionKeys,
         entries1h: indicationKeys + strategyKeys,
@@ -359,7 +394,16 @@ export async function GET() {
         heapUsed: Math.round(resourceMetrics.heapUsedBytes / 1024),
         heapTotal: Math.round(resourceMetrics.heapTotalBytes / 1024),
         rss: Math.round(resourceMetrics.rssBytes / 1024),
-        database: { size: 0, keys: 0, sets: 0, positions1h: 0, entries1h: 0, requestsPerSecond: 0 },
+        database: {
+          size: 0,
+          keys: 0,
+          indicationSetInventoryKeys: 0,
+          indicationOutcomeAuxiliaryKeys: 0,
+          sets: 0,
+          positions1h: 0,
+          entries1h: 0,
+          requestsPerSecond: 0,
+        },
         services: { tradeEngine: false, indicationsEngine: false, strategiesEngine: false, websocket: false },
         modules: { redis: false, persistence: false, coordinator: false, logger: true },
         engines: {

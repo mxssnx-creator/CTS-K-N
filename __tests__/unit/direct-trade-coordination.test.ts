@@ -328,5 +328,13 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(withoutBlock.blockEvaluations).toEqual([])
     expect(withoutBlock.blockCount).toBe(0)
     expect(withoutBlock.blockCalculatedVolumeMultiplier).toBe(1)
+    // Enabling the independently weighted Block ledger must not rewrite the
+    // immutable Base simulation. Both now come from one candle traversal.
+    expect(withBlock.totalTrades).toBe(withoutBlock.totalTrades)
+    expect(withBlock.totalPnl).toBe(withoutBlock.totalPnl)
+    expect(withBlock.netProfit).toBe(withoutBlock.netProfit)
+    expect(withBlock.netLoss).toBe(withoutBlock.netLoss)
+    expect(withBlock.profitFactor).toBe(withoutBlock.profitFactor)
+    expect(withBlock.recentTotalPnl).toBe(withoutBlock.recentTotalPnl)
   })
 })

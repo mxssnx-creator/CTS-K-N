@@ -109,6 +109,63 @@ function stopLossRatios(
 
 type EvaluatedDirectTradeConfig = Awaited<ReturnType<typeof evaluateDirectTradeSets>>[number]
 
+type CalculationAxisBucket = {
+  evaluated: number
+  valid: number
+  disabled: number
+  totalPnl: number
+  netProfit: number
+  netLoss: number
+}
+
+type FinishedCalculationAxisBucket = CalculationAxisBucket & {
+  averagePnlPerSet: number
+  profitFactor: number | null
+  profitFactorInfinite: boolean
+}
+
+function createCalculationAxisBucket(): CalculationAxisBucket {
+  return {
+    evaluated: 0,
+    valid: 0,
+    disabled: 0,
+    totalPnl: 0,
+    netProfit: 0,
+    netLoss: 0,
+  }
+}
+
+function appendCalculationAxisBucket(
+  bucket: CalculationAxisBucket,
+  config: EvaluatedDirectTradeConfig,
+): void {
+  bucket.evaluated++
+  bucket.valid += config.valid ? 1 : 0
+  bucket.disabled += config.valid ? 0 : 1
+  bucket.totalPnl += Number(config.totalPnl) || 0
+  bucket.netProfit += Number(config.netProfit ?? config.grossProfit) || 0
+  bucket.netLoss += Number(config.netLoss ?? config.grossLoss) || 0
+}
+
+function finishCalculationAxis(
+  axis: Record<string, CalculationAxisBucket>,
+): Record<string, FinishedCalculationAxisBucket> {
+  return Object.fromEntries(Object.entries(axis).map(([key, bucket]) => {
+    const pf = calculateDirectTradeProfitFactor(bucket.netProfit, bucket.netLoss)
+    return [key, {
+      ...bucket,
+      averagePnlPerSet: bucket.evaluated > 0 ? bucket.totalPnl / bucket.evaluated : 0,
+      profitFactor: pf.profitFactor,
+      profitFactorInfinite: pf.profitFactorInfinite,
+    }]
+  }))
+}
+
+function exactNumericAxisKey(value: unknown): string {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? String(Number(parsed.toFixed(6))) : "unknown"
+}
+
 function createCalculationSummaryAccumulator(details: {
   symbols: string[]
   historyHours: number
@@ -130,15 +187,20 @@ function createCalculationSummaryAccumulator(details: {
   blockVolumeRatio: number
   blockProfitFactorRatio: number
 }) {
-  const countBy = <T extends string>(entries: T[]): Record<T, { evaluated: number; valid: number }> => {
-    const output = {} as Record<T, { evaluated: number; valid: number }>
-    for (const entry of entries) output[entry] = { evaluated: 0, valid: 0 }
+  const countBy = <T extends string>(entries: T[]): Record<T, CalculationAxisBucket> => {
+    const output = {} as Record<T, CalculationAxisBucket>
+    for (const entry of entries) output[entry] = createCalculationAxisBucket()
     return output
   }
-  const byTimeframe: Record<string, { evaluated: number; valid: number }> = {}
+  const byTimeframe: Record<string, CalculationAxisBucket> = {}
   const byEntryTactic = countBy(details.entryTactics)
   const byExitTactic = countBy(details.exitTactics)
   const byStrategyType = countBy(details.strategyTypes)
+  const byDirection = countBy(["long", "short"])
+  const byStopLossRatio: Record<string, CalculationAxisBucket> = {}
+  const byStopLossPercent: Record<string, CalculationAxisBucket> = {}
+  const byTakeProfitPositionCostRatio: Record<string, CalculationAxisBucket> = {}
+  const byTakeProfitPercent: Record<string, CalculationAxisBucket> = {}
   let evaluatedSets = 0
   let validSets = 0
   let totalScore = 0
@@ -177,24 +239,34 @@ function createCalculationSummaryAccumulator(details: {
     realizedVolumeSum: number
   }> = {}
   const append = (config: EvaluatedDirectTradeConfig) => {
-    const timeframe = byTimeframe[config.timeframe] || (byTimeframe[config.timeframe] = { evaluated: 0, valid: 0 })
+    const timeframe = byTimeframe[config.timeframe] || (byTimeframe[config.timeframe] = createCalculationAxisBucket())
     evaluatedSets++
     totalScore += config.score
     baseGrossProfit += Number(config.grossProfit) || 0
     baseGrossLoss += Number(config.grossLoss) || 0
     baseNetProfit += Number(config.netProfit ?? config.grossProfit) || 0
     baseNetLoss += Number(config.netLoss ?? config.grossLoss) || 0
-    timeframe.evaluated++
+    appendCalculationAxisBucket(timeframe, config)
     if (config.valid) {
       validSets++
-      timeframe.valid++
     }
-    byEntryTactic[config.entryTactic].evaluated++
-    if (config.valid) byEntryTactic[config.entryTactic].valid++
-    byExitTactic[config.exitTactic].evaluated++
-    if (config.valid) byExitTactic[config.exitTactic].valid++
-    byStrategyType[config.strategyType].evaluated++
-    if (config.valid) byStrategyType[config.strategyType].valid++
+    appendCalculationAxisBucket(byEntryTactic[config.entryTactic], config)
+    appendCalculationAxisBucket(byExitTactic[config.exitTactic], config)
+    appendCalculationAxisBucket(byStrategyType[config.strategyType], config)
+    appendCalculationAxisBucket(byDirection[config.direction], config)
+
+    const stopLossRatio = Number(config.takeprofit) > 0
+      ? Number(config.stoploss) / Number(config.takeprofit)
+      : Number.NaN
+    const axes: Array<[Record<string, CalculationAxisBucket>, string]> = [
+      [byStopLossRatio, exactNumericAxisKey(stopLossRatio)],
+      [byStopLossPercent, exactNumericAxisKey(config.stoploss)],
+      [byTakeProfitPositionCostRatio, exactNumericAxisKey(config.takeProfitPositionCostRatio)],
+      [byTakeProfitPercent, exactNumericAxisKey(config.takeprofit)],
+    ]
+    for (const [axis, key] of axes) {
+      appendCalculationAxisBucket(axis[key] || (axis[key] = createCalculationAxisBucket()), config)
+    }
     for (const block of config.blockEvaluations || []) {
       blockEvaluatedSets++
       if (block.valid) blockValidSets++
@@ -310,10 +382,15 @@ function createCalculationSummaryAccumulator(details: {
         meanProfitFactorToMinimumDifference: value.evaluated > 0 ? value.marginSum / value.evaluated : 0,
       }])),
       avgScore: evaluatedSets > 0 ? totalScore / evaluatedSets : 0,
-      byTimeframe,
-      byEntryTactic,
-      byExitTactic,
-      byStrategyType,
+      byTimeframe: finishCalculationAxis(byTimeframe),
+      byEntryTactic: finishCalculationAxis(byEntryTactic),
+      byExitTactic: finishCalculationAxis(byExitTactic),
+      byStrategyType: finishCalculationAxis(byStrategyType),
+      byDirection: finishCalculationAxis(byDirection),
+      byStopLossRatio: finishCalculationAxis(byStopLossRatio),
+      byStopLossPercent: finishCalculationAxis(byStopLossPercent),
+      byTakeProfitPositionCostRatio: finishCalculationAxis(byTakeProfitPositionCostRatio),
+      byTakeProfitPercent: finishCalculationAxis(byTakeProfitPercent),
     }),
   }
 }
@@ -322,6 +399,7 @@ type StatisticsRow = Pick<EvaluatedDirectTradeConfig,
   "setKey" | "symbol" | "direction" | "signalDirection" | "strategyType" | "timeframe" | "entryTactic" | "exitTactic" |
   "valid" | "deactivationReason" | "profitFactor" | "profitFactorInfinite" | "winRate" |
   "totalTrades" | "maxDrawdownTimeMin" | "score" | "totalPnl" | "bestMarketExitPnl" | "positionCostPercent" |
+  "takeprofit" | "takeProfitPositionCostRatio" | "stoploss" |
   "lastPositionPnl" | "lastPositionBestMarketExitPnl" | "lastPositionDrawdownTimeMin" | "lastPositionExitReason" |
   "recentPositionCount" | "recentProfitFactor" | "recentProfitFactorInfinite" | "recentWinRate" |
   "recentTotalPnl" | "recentAvgDrawdownTimeMin" | "blockCount" | "blockProfitFactorRatio" |

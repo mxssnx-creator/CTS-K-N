@@ -347,7 +347,7 @@ export default function LiveTradingPage() {
         </Button>
       </PageHeader>
 
-      <main className="space-y-2.5 p-3 sm:p-4">
+      <div className="space-y-2.5 p-3 sm:p-4">
         {!selectedConnectionId ? (
           <Card className="border-dashed">
             <CardContent className="flex min-h-48 flex-col items-center justify-center gap-2 text-center">
@@ -395,7 +395,7 @@ export default function LiveTradingPage() {
             )}
           </>
         )}
-      </main>
+      </div>
     </div>
   )
 }

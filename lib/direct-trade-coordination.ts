@@ -962,7 +962,19 @@ function simulateTrades(
     const drawdownTimeMin = maxDrawdownMs / 60_000
     // One complete position cost is realised only at closure. Open positions
     // never enter PF/DDT or a configuration's historical eligibility.
-    record(metrics, entryLegs, exitPrice, bestMarketExitPrice, drawdownTimeMin, exitReason)
+    // When Block ladders are requested, the primary metrics must remain the
+    // immutable Base position (weight 1). The add-on legs belong exclusively
+    // to `blockLadders`. Keeping both ledgers in this one candle pass removes
+    // a duplicate simulation without allowing Block volume to contaminate the
+    // Base PF/PnL result.
+    record(
+      metrics,
+      blockCount > 0 ? entryLegs.slice(0, 1) : entryLegs,
+      exitPrice,
+      bestMarketExitPrice,
+      drawdownTimeMin,
+      exitReason,
+    )
     if (metrics.blockLadders) {
       for (let ladderIndex = 0; ladderIndex < metrics.blockLadders.length; ladderIndex++) {
         // Count n owns the base leg plus the first n causal add-on legs.
@@ -1076,6 +1088,20 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
         for (const slRatio of input.slRatios) {
           const stoploss = takeprofit * slRatio
           for (const trail of input.trailOptions) {
+            const blockProfitFactorRatio = Math.max(
+              0.2,
+              Math.min(5, finite(input.blockProfitFactorRatio, 0.8)),
+            )
+            const blockEnabled = input.blockRange[1] > 0
+            const blockMinimum = blockEnabled
+              ? Math.max(1, Math.min(12, Math.floor(finite(input.blockRange[0], 1))))
+              : 0
+            const blockMaximum = blockEnabled
+              ? Math.max(blockMinimum, Math.min(12, Math.floor(finite(input.blockRange[1], 12))))
+              : 0
+            // Base and every requested Block count share one causal candle
+            // traversal. `simulateTrades` records Base from the immutable
+            // first leg and Count 1..N from progressively longer leg slices.
             const simulation = simulateTrades(
               composed.candles,
               composed.signals,
@@ -1092,6 +1118,8 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               input.maxHoldMinutes,
               recentPositionWindow,
               positionCostPercent,
+              blockMaximum,
+              blockVolumeRatio,
             )
             const simulationPf = calculateDirectTradeProfitFactor(simulation.totalProfit, simulation.totalLoss)
             const profitFactorInfinite = simulationPf.profitFactorInfinite
@@ -1128,44 +1156,10 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
                     : null
             const scoreBase = profitFactorInfinite ? simulation.totalProfit : (profitFactor ?? 0)
             const score = scoreBase * winRate * (1 + Math.max(0, totalPnl) / 100) / (1 + avgDdt / Math.max(1, input.maxDrawdownTimeMin))
-            const blockProfitFactorRatio = Math.max(
-              0.2,
-              Math.min(5, finite(input.blockProfitFactorRatio, 0.8)),
-            )
-            const blockEnabled = input.blockRange[1] > 0
-            const blockMinimum = blockEnabled
-              ? Math.max(1, Math.min(12, Math.floor(finite(input.blockRange[0], 1))))
-              : 0
-            const blockMaximum = blockEnabled
-              ? Math.max(blockMinimum, Math.min(12, Math.floor(finite(input.blockRange[1], 12))))
-              : 0
             const blockNormalProfitFactor = Number.isFinite(Number(profitFactor))
               ? Number(profitFactor)
               : input.minProfitFactor
-            // One shared max-count candle pass produces Count 1..N ladder
-            // metrics. Re-running the same market path once per count made a
-            // 12-count matrix roughly 12× slower without adding information.
-            const blockLadderSimulation = blockEnabled
-              ? simulateTrades(
-                  composed.candles,
-                  composed.signals,
-                  input.direction,
-                  takeprofit,
-                  stoploss,
-                  trail.trailing,
-                  trail.mode || (trail.trailing ? "fixed" : "none"),
-                  trail.trailStart,
-                  trail.trailStop,
-                  trail.autoTrailSensitivity ?? null,
-                  exitTactic,
-                  composed.minutes,
-                  input.maxHoldMinutes,
-                  recentPositionWindow,
-                  positionCostPercent,
-                  blockMaximum,
-                  blockVolumeRatio,
-                )
-              : null
+            const blockLadderSimulation = blockEnabled ? simulation : null
             const blockEvaluations: DirectTradeBlockEvaluation[] = blockEnabled
               ? Array.from({ length: blockMaximum - blockMinimum + 1 }, (_, offset) => {
                   const blockCount = blockMinimum + offset

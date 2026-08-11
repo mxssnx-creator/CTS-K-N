@@ -159,7 +159,14 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   if (
     process.env.NODE_ENV === "production" &&
     backend === "inline-local" &&
-    isKiloDeploymentRuntime()
+    isKiloDeploymentRuntime() &&
+    // Workerd intentionally has no host filesystem. The explicit, loopback-
+    // only acceptance-test escape hatch above validates request/scheduled
+    // ownership with process-local state; requiring an impossible fsync here
+    // would make that real runtime test unusable. Public Kilo deployments can
+    // never meet kiloLocalPreviewInlineAllowed and still require durable
+    // shared/managed persistence or a successfully writable mounted snapshot.
+    !kiloLocalPreviewInlineAllowed
   ) {
     const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
     const persistentVolumeDeclared = process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1"

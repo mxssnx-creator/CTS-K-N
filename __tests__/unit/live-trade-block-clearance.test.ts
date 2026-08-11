@@ -116,6 +116,7 @@ describe("live-trade block clearance", () => {
   const originalDisableInProcess = process.env.DISABLE_TRADE_ENGINE_IN_PROCESS
   const originalNextRuntime = process.env.NEXT_RUNTIME
   const originalVercel = process.env.VERCEL
+  const originalForceSimulated = process.env.FORCE_SIMULATED
 
   beforeEach(() => {
     jest.clearAllMocks()
@@ -125,6 +126,10 @@ describe("live-trade block clearance", () => {
     delete process.env.DISABLE_TRADE_ENGINE_IN_PROCESS
     delete process.env.NEXT_RUNTIME
     delete process.env.VERCEL
+    // These tests use mocked exchange/reconciliation modules and verify the
+    // normal readiness branches. Do not let an outer safe-soak environment
+    // replace those branches with the forced-simulation response.
+    delete process.env.FORCE_SIMULATED
     coordinatorIsEngineRunning.mockReturnValue(true)
     coordinatorStartEngine.mockResolvedValue(true)
   })
@@ -141,6 +146,8 @@ describe("live-trade block clearance", () => {
     else process.env.NEXT_RUNTIME = originalNextRuntime
     if (originalVercel === undefined) delete process.env.VERCEL
     else process.env.VERCEL = originalVercel
+    if (originalForceSimulated === undefined) delete process.env.FORCE_SIMULATED
+    else process.env.FORCE_SIMULATED = originalForceSimulated
   })
 
   test("clears stale live_trade_blocked_reason when enabling live trade after credential confirmation", async () => {

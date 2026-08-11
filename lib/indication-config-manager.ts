@@ -48,6 +48,27 @@ export class IndicationConfigManager {
     return `indication:${this.connectionId}:config:${configId}:results`
   }
 
+  private getResultsReferenceKey(configId: string): string {
+    return `${this.getResultsKey(configId)}:ref`
+  }
+
+  private async resolveResultsConfigId(configId: string): Promise<string> {
+    await initRedis()
+    const client = getRedisClient()
+    let current = configId
+    const visited = new Set<string>([current])
+    // References are written as a one-hop star around a deterministic leader.
+    // Follow a few hops as a recovery guard for an interrupted leader change,
+    // but never allow malformed data to create an unbounded loop.
+    for (let depth = 0; depth < 4; depth++) {
+      const next = String(await client.get(this.getResultsReferenceKey(current)).catch(() => "") || "").trim()
+      if (!next || next === current || visited.has(next)) break
+      visited.add(next)
+      current = next
+    }
+    return current
+  }
+
   private getConfigIndexKey(): string {
     return `indication:${this.connectionId}:configs:index`
   }
@@ -64,7 +85,7 @@ export class IndicationConfigManager {
       const result = await client.scan(cursor, "MATCH", pattern, "COUNT", 100).catch(() => null)
       if (!result) break
       cursor = String(result[0] ?? "0")
-      const batch = (result[1] || []).filter((k: string) => !k.endsWith(":results"))
+      const batch = (result[1] || []).filter((k: string) => !k.includes(":results"))
       keys.push(...batch)
     } while (cursor !== "0")
     return keys
@@ -159,6 +180,7 @@ export class IndicationConfigManager {
     const pipeline = client.multi()
     pipeline.del(configKey)
     pipeline.del(resultsKey)
+    pipeline.del(this.getResultsReferenceKey(configId))
     pipeline.srem(this.getConfigIndexKey(), configKey)
     await pipeline.exec()
 
@@ -169,7 +191,7 @@ export class IndicationConfigManager {
     await initRedis()
     const client = getRedisClient()
 
-    const key = this.getResultsKey(configId)
+    const key = this.getResultsKey(await this.resolveResultsConfigId(configId))
     const entry = `${result.timestamp}|${result.symbol}|${result.value}|${result.signal}`
 
     await client.lpush(key, entry)
@@ -190,7 +212,7 @@ export class IndicationConfigManager {
     await initRedis()
     const client = getRedisClient()
 
-    const key = this.getResultsKey(configId)
+    const key = this.getResultsKey(await this.resolveResultsConfigId(configId))
     const entries = results.map(
       (r) => `${r.timestamp}|${r.symbol}|${r.value}|${r.signal}`,
     )
@@ -221,7 +243,7 @@ export class IndicationConfigManager {
     await initRedis()
     const client = getRedisClient()
 
-    const key = this.getResultsKey(configId)
+    const key = this.getResultsKey(await this.resolveResultsConfigId(configId))
     const rawResults = await client.lrange(key, 0, limit - 1)
 
     return rawResults.map((entry: string) => {
@@ -239,8 +261,43 @@ export class IndicationConfigManager {
     await initRedis()
     const client = getRedisClient()
 
-    const key = this.getResultsKey(configId)
+    const key = this.getResultsKey(await this.resolveResultsConfigId(configId))
     return await client.llen(key)
+  }
+
+  /**
+   * Share immutable historic result rows between configurations whose current
+   * calculator inputs are exactly identical. Config objects, enablement,
+   * aggregate counters and progression identities remain independent; only
+   * the bounded detail LIST is referenced. This prevents the legacy generic
+   * calculator from persisting the same rows once per display/type label.
+   */
+  async setResultReferences(
+    references: ReadonlyArray<{ configId: string; referenceConfigId: string }>,
+  ): Promise<void> {
+    if (references.length === 0) return
+    await initRedis()
+    const client = getRedisClient()
+    for (let offset = 0; offset < references.length; offset += 500) {
+      const pipeline = client.multi()
+      for (const reference of references.slice(offset, offset + 500)) {
+        const configId = String(reference.configId || "").trim()
+        const referenceConfigId = String(reference.referenceConfigId || "").trim()
+        if (!configId || !referenceConfigId) continue
+        const referenceKey = this.getResultsReferenceKey(configId)
+        if (configId === referenceConfigId) {
+          pipeline.del(referenceKey)
+          continue
+        }
+        pipeline.set(referenceKey, referenceConfigId)
+        // A previous release may already have materialised an identical list
+        // under this alias. The deterministic leader now owns that immutable
+        // detail history, so removing the duplicate does not remove any unique
+        // calculation, aggregate, Set identity or configuration state.
+        pipeline.del(this.getResultsKey(configId))
+      }
+      await pipeline.exec()
+    }
   }
 
   async enableConfig(configId: string): Promise<void> {
@@ -326,6 +383,7 @@ export class IndicationConfigManager {
       const pipeline = client.multi()
       for (const config of configs.slice(offset, offset + 500)) {
         pipeline.del(this.getResultsKey(config.id))
+        pipeline.del(this.getResultsReferenceKey(config.id))
       }
       await pipeline.exec()
     }

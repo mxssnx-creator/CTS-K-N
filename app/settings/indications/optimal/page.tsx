@@ -118,21 +118,21 @@ export default function OptimalIndicationSettingsPage() {
 
   if (isLoading) {
     return (
-      <div className="p-6">
+      <div className="page-section">
         <div className="text-center py-12">Loading settings...</div>
       </div>
     )
   }
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="page-section space-y-5">
+      <div className="flex flex-col gap-3 rounded-xl border bg-card/70 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold flex items-center gap-2">
-            <Sparkles className="h-8 w-8 text-purple-500" />
-            Optimal Indication Settings
-          </h1>
-          <p className="text-muted-foreground mt-2">
+          <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            <Sparkles className="h-4 w-4 text-purple-500" />
+            Configuration actions
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
             Advanced indication type with independent Sets (per-Set DB capacity up to 250 positions, tunable),
             performance tracking, and consecutive step detection
           </p>

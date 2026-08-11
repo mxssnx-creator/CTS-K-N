@@ -20,6 +20,13 @@ import {
 } from "@/lib/signal-source-registry"
 import { buildSignalTradeConfigurations } from "@/lib/signal-config-matrix"
 import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
+import {
+  ACTIVE_MARKET_EXIT_SITUATIONS,
+  DEFAULT_ACTIVE_OUTBREAK_RANGES,
+  DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
+  normalizeActiveMarketExitSituations,
+  type ActiveMarketExitSituation,
+} from "@/lib/active-outbreak-indication"
 
 export type IndicationConfigurationType =
   | "direction"
@@ -203,6 +210,25 @@ export function calculateIndicationConfigurationCounts(
   const factors = numericList(settings.indicationFactorMultipliers, fallbackFactors)
   const activeThresholds = numericList(settings.activeThresholds, fallbackThresholds)
   const activeTimes = numericList(settings.activeTimeRatios, [0.5, 1])
+  const activeOutbreakRanges = numericList(
+    settings.activeOutbreakRanges,
+    DEFAULT_ACTIVE_OUTBREAK_RANGES,
+  ).filter((value) => value >= 2)
+  const activeStopLossProfiles = numericList(
+    settings.activeStopLossPositionCostRatios,
+    DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
+  ).filter((value) => value > 0)
+  const rawActiveExitSituations = Array.isArray(settings.activeMarketExitSituations)
+    ? settings.activeMarketExitSituations
+    : String(settings.activeMarketExitSituations || "")
+        .split(/[\s,|]+/)
+        .filter(Boolean)
+  const activeExitSituations = normalizeActiveMarketExitSituations(
+    (rawActiveExitSituations.length > 0
+      ? rawActiveExitSituations
+      : ACTIVE_MARKET_EXIT_SITUATIONS) as ActiveMarketExitSituation[],
+  )
+  const activeProtectionProfiles = activeStopLossProfiles.length * activeExitSituations.length
   const advancedRatios = activeAdvancedRatios(settings, fallbackAdvanced)
   const defaultCoordinationSteps = numericList(
     settings.defaultCoordinationRangeSteps,
@@ -213,8 +239,9 @@ export function calculateIndicationConfigurationCounts(
     : 0
 
   const directionGrid = ranges.length * drawdowns.length * lastParts.length * factors.length
-  const activeGrid =
-    activeThresholds.length * drawdowns.length * activeTimes.length * lastParts.length * factors.length
+  const activeEvaluationGrid =
+    activeOutbreakRanges.length * activeThresholds.length * drawdowns.length * activeTimes.length * lastParts.length * factors.length
+  const activeGrid = activeEvaluationGrid * activeProtectionProfiles
   const advancedGrid = advancedRatios.length * factors.length
   const optimalGrid = optimalRanges.length * factors.length
 
@@ -332,19 +359,23 @@ export function calculateIndicationConfigurationCounts(
       group: "default",
       storage: "independent_set",
       possibleSets: bool(settings.activeEnabled, true)
-        ? setCount(activeGrid, defaultCoordinationVariants)
+        ? setCount(activeGrid, defaultCoordinationVariants * activeProtectionProfiles)
         : 0,
-      evaluationConfigurations: bool(settings.activeEnabled, true) ? activeGrid + 1 : 0,
-      formula: `${activeThresholds.length} thresholds × ${drawdowns.length} drawdowns × ${activeTimes.length} time ratios × ${lastParts.length} last × ${factors.length} factors`,
+      evaluationConfigurations: bool(settings.activeEnabled, true) ? activeGrid + activeProtectionProfiles : 0,
+      formula: `${activeOutbreakRanges.length} outbreak ranges × ${activeThresholds.length} thresholds × ${drawdowns.length} drawdowns × ${activeTimes.length} previous-activity ratios × ${lastParts.length} last × ${factors.length} factors × ${activeStopLossProfiles.length} SL × ${activeExitSituations.length} TP exits`,
       params: {
+        outbreakRanges: activeOutbreakRanges.length,
         thresholds: activeThresholds.length,
         drawdowns: drawdowns.length,
         activeTimes: activeTimes.length,
         lastParts: lastParts.length,
         factors: factors.length,
+        stopLossProfiles: activeStopLossProfiles.length,
+        marketExitSituations: activeExitSituations.length,
+        protectionProfiles: activeProtectionProfiles,
         relativeStepVariants: defaultCoordinationVariants,
       },
-      description: "Activity grid with independent direction and volume/activity conditions.",
+      description: "Causal outbreak grid versus previous market activity; every SL × TP market-exit profile owns an independent Long/Short Set.",
     },
     {
       type: "active_advanced",

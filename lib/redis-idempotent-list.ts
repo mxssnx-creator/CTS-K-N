@@ -1,3 +1,5 @@
+import { scanRedisKeys } from "@/lib/redis-scan"
+
 const APPEND_UNIQUE_LIST_ENTRIES_LUA = `
 -- A historic call submits one complete config+symbol+generation batch.
 -- A scalar completion marker is sufficient; a per-row SET grows with the
@@ -31,23 +33,109 @@ return acceptedIndexes
 `
 
 const INCREMENT_HISTORIC_AGGREGATE_LUA = `
-if redis.call('GET', KEYS[1]) then return 0 end
-for i = 2, #ARGV, 2 do
+-- One Set per generation replaces one Redis key per config/symbol marker.
+-- Honour a legacy scalar marker during rolling upgrades so an interrupted
+-- pre-compaction generation can never be counted twice.
+if redis.call('GET', KEYS[3]) then
+  redis.call('SADD', KEYS[1], ARGV[2])
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+  return 0
+end
+if redis.call('SADD', KEYS[1], ARGV[2]) == 0 then return 0 end
+for i = 3, #ARGV, 2 do
   redis.call('HINCRBYFLOAT', KEYS[2], ARGV[i], ARGV[i + 1])
 end
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
 redis.call('EXPIRE', KEYS[2], tonumber(ARGV[1]))
-redis.call('SET', KEYS[1], '1', 'EX', tonumber(ARGV[1]))
 return 1
 `
 
 type RedisListClient = {
   eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>
   get?: (key: string) => Promise<string | null>
+  sadd?: (key: string, ...members: string[]) => Promise<number>
+  srem?: (key: string, ...members: string[]) => Promise<number>
   lrange: (key: string, start: number, stop: number) => Promise<string[]>
   multi: () => {
     [key: string]: any
     exec: () => Promise<any[]>
   }
+}
+
+export function historicAggregateMarkerCollectionKey(aggregateKey: string): string {
+  return `${aggregateKey}:markers`
+}
+
+/**
+ * Delete both compact generation marker Sets and scalar markers left by a
+ * previous release. This is called after a complete historic generation and
+ * when a verified complete cache is resumed, so stop/restart cannot strand a
+ * multi-day temporary marker inventory.
+ */
+export async function clearHistoricAggregateMarkers(
+  client: {
+    scan?: (cursor: string | number, ...args: any[]) => Promise<any>
+    keys?: (pattern: string) => Promise<string[]>
+    del: (...keys: string[]) => Promise<number>
+  },
+  connectionId: string,
+): Promise<number> {
+  const [legacyKeys, collectionKeys] = await Promise.all([
+    scanRedisKeys(client, `historic:aggregate-marker:${connectionId}:*`, { count: 500 }),
+    scanRedisKeys(client, `historic:aggregate:${connectionId}:*:markers`, { count: 500 }),
+  ])
+  const keys = [...new Set([...legacyKeys, ...collectionKeys])]
+  let deleted = 0
+  for (let offset = 0; offset < keys.length; offset += 500) {
+    deleted += Number(await client.del(...keys.slice(offset, offset + 500))) || 0
+    if (typeof setImmediate === "function") {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    } else {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+  }
+  return deleted
+}
+
+/**
+ * Remove per-list completion guards after a historic generation is complete.
+ *
+ * These scalar keys deliberately use a long TTL while work is in flight so a
+ * slow/restarted symbol batch cannot append trimmed rows twice. Once every
+ * durable LIST and aggregate is committed, however, the generation gate is
+ * authoritative and retaining one marker per config/symbol only bloats Redis.
+ */
+export async function clearHistoricListCompletionMarkers(
+  client: {
+    scan?: (cursor: string | number, ...args: any[]) => Promise<any>
+    keys?: (pattern: string) => Promise<string[]>
+    del: (...keys: string[]) => Promise<number>
+  },
+  connectionId: string,
+): Promise<number> {
+  const [indicationKeys, strategyKeys] = await Promise.all([
+    scanRedisKeys(
+      client,
+      `indication:${connectionId}:config:*:results:historic_complete:*`,
+      { count: 500 },
+    ),
+    scanRedisKeys(
+      client,
+      `strategy:${connectionId}:config:*:positions:historic_complete:*`,
+      { count: 500 },
+    ),
+  ])
+  const keys = [...new Set([...indicationKeys, ...strategyKeys])]
+  let deleted = 0
+  for (let offset = 0; offset < keys.length; offset += 500) {
+    deleted += Number(await client.del(...keys.slice(offset, offset + 500))) || 0
+    if (typeof setImmediate === "function") {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    } else {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+  }
+  return deleted
 }
 
 const lockGlobals = globalThis as typeof globalThis & {
@@ -172,35 +260,54 @@ export async function incrementHistoricAggregateOnce(
   ttlSeconds: number,
 ): Promise<boolean> {
   const boundedTtl = Math.max(60, Math.floor(ttlSeconds))
+  const markerCollectionKey = historicAggregateMarkerCollectionKey(aggregateKey)
   const normalized = increments.filter((item) =>
     item && typeof item.field === "string" && item.field.length > 0 && Number.isFinite(item.value),
   )
 
   if (typeof client.eval === "function") {
-    const args = [String(boundedTtl)]
+    const args = [String(boundedTtl), markerKey]
     for (const item of normalized) args.push(item.field, String(item.value))
     const result = await client.eval(INCREMENT_HISTORIC_AGGREGATE_LUA, {
-      keys: [markerKey, aggregateKey],
+      keys: [markerCollectionKey, aggregateKey, markerKey],
       arguments: args,
     })
     return Number(result) === 1
   }
 
   return withLocalKeyLock(markerKey, async () => {
-    const marker = typeof client.get === "function"
+    const legacyMarker = typeof client.get === "function"
       ? await client.get(markerKey).catch(() => null)
       : null
-    if (marker) return false
+    if (legacyMarker) {
+      await client.sadd?.(markerCollectionKey, markerKey)
+      const legacyPipeline = client.multi()
+      legacyPipeline.expire(markerCollectionKey, boundedTtl)
+      await legacyPipeline.exec()
+      return false
+    }
+    if (typeof client.sadd !== "function") {
+      throw new Error("Historic aggregate marker compaction requires Redis SADD")
+    }
+    const markerAdded = Number(await client.sadd(markerCollectionKey, markerKey)) === 1
+    if (!markerAdded) return false
     const pipeline = client.multi()
     for (const item of normalized) pipeline.hincrbyfloat(aggregateKey, item.field, item.value)
+    pipeline.expire(markerCollectionKey, boundedTtl)
     pipeline.expire(aggregateKey, boundedTtl)
-    pipeline.set(markerKey, "1", { EX: boundedTtl })
     const results = await pipeline.exec()
-    for (const result of results || []) {
-      if (result instanceof Error) throw result
-      if (Array.isArray(result) && result[0]) {
-        throw result[0] instanceof Error ? result[0] : new Error(String(result[0]))
+    try {
+      for (const result of results || []) {
+        if (result instanceof Error) throw result
+        if (Array.isArray(result) && result[0]) {
+          throw result[0] instanceof Error ? result[0] : new Error(String(result[0]))
+        }
       }
+    } catch (error) {
+      // Keep a failed local transaction retryable. Real Redis executes the Lua
+      // path above as one server-side operation.
+      await client.srem?.(markerCollectionKey, markerKey).catch(() => 0)
+      throw error
     }
     return true
   })

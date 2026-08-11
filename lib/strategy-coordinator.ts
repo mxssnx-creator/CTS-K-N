@@ -128,23 +128,53 @@ function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnap
   // rejected candidate made the bounded snapshot itself proportional to the
   // full matrix and could starve health probes under a large coordination
   // pass.  We now materialize/hash only the retained rows.
-  const top: Array<{ score: number; set: StrategySet }> = []
+  // Maintain a fixed-size min-heap. The former implementation rescanned all
+  // 256 retained rows for every candidate (O(N * 256)); exhaustive Real
+  // graphs routinely contain tens of thousands of rows, so the diagnostic
+  // projection alone consumed millions of comparisons on every symbol. A
+  // heap preserves the exact best-256 contract in O(N log 256) without
+  // changing any strategy calculation, ordering preference, or persistence.
+  type RankedSet = { score: number; sequence: number; set: StrategySet }
+  const top: RankedSet[] = []
   const scoreFor = (set: StrategySet) =>
     Number(set.avgProfitFactor || 0) * 10_000 + Number(set.avgConfidence || 0) * 100 - Number(set.avgDrawdownTime || 0)
+  const lowerRank = (left: RankedSet, right: RankedSet) =>
+    left.score < right.score || (left.score === right.score && left.sequence > right.sequence)
+  const siftUp = (index: number) => {
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2)
+      if (!lowerRank(top[index], top[parent])) break
+      ;[top[index], top[parent]] = [top[parent], top[index]]
+      index = parent
+    }
+  }
+  const siftDown = (index: number) => {
+    while (true) {
+      const left = index * 2 + 1
+      const right = left + 1
+      let lowest = index
+      if (left < top.length && lowerRank(top[left], top[lowest])) lowest = left
+      if (right < top.length && lowerRank(top[right], top[lowest])) lowest = right
+      if (lowest === index) return
+      ;[top[index], top[lowest]] = [top[lowest], top[index]]
+      index = lowest
+    }
+  }
+  let sequence = 0
   for (const set of sets) {
     const score = scoreFor(set)
+    const ranked = { score, sequence: sequence++, set }
     if (top.length < RUNTIME_STAGE_SNAPSHOT_MAX_ROWS) {
-      top.push({ score, set })
+      top.push(ranked)
+      siftUp(top.length - 1)
       continue
     }
-    let lowest = 0
-    for (let index = 1; index < top.length; index++) {
-      if (top[index].score < top[lowest].score) lowest = index
-    }
-    if (score > top[lowest].score) top[lowest] = { score, set }
+    if (score <= top[0].score) continue
+    top[0] = ranked
+    siftDown(0)
   }
   return top
-    .sort((left, right) => right.score - left.score)
+    .sort((left, right) => right.score - left.score || left.sequence - right.sequence)
     .map(({ set }): RuntimeStageSnapshotRow => ({
       ref: strategySetStorageRef(set.setKey),
       ...(set.parentSetKey ? { parentRef: strategySetStorageRef(set.parentSetKey) } : {}),
@@ -666,6 +696,12 @@ export interface StrategySetEntry {
   confidence: number
   /** Adaptive Trend TP-factor ladder carried from indication evaluation. */
   adaptiveTpFactors?: number[]
+  /** Exact Active/Outbreak protection profile; every profile owns a Set key. */
+  activeStopLossPct?: number
+  activeTakeProfitPct?: number
+  activeProtectionProfileId?: string
+  activeMarketExitSituation?: "momentum" | "range_extension" | "activity_fade"
+  activeOrderExitType?: "TAKE_PROFIT_MARKET"
 }
 
 /**
@@ -1169,6 +1205,10 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
     mix(indication?.metadata?.signal?.stopLossPct)
     mix(indication?.metadata?.signal?.takeProfitPct)
     mix(indication?.metadata?.signal?.sourceIds?.join?.(","))
+    mix(indication?.metadata?.activeProtection?.id)
+    mix(indication?.metadata?.activeProtection?.stopLossPct)
+    mix(indication?.metadata?.activeProtection?.takeProfitPct)
+    mix(indication?.metadata?.activeProtection?.marketExitSituation)
   }
 
   return `${indications.length}|${latestTimestamp}|${(hash >>> 0).toString(36)}`
@@ -1840,6 +1880,54 @@ export function deriveProtectionFromSignalRisk(
   )
   const adjustedTakeProfitPct =
     grossTakeProfitPct + Math.max(costBufferPct, LIVE_PROTECTION_FEE_BUFFER_PCT)
+  const takeProfitPct = clampNumber(
+    adjustedTakeProfitPct,
+    MIN_LIVE_TAKE_PROFIT_PCT,
+    MAX_LIVE_TAKE_PROFIT_PCT,
+  )
+  const effectiveTpPct = Math.max(0, takeProfitPct - costBufferPct)
+  return {
+    takeProfitPct,
+    stopLossPct,
+    effectiveProfitFactor: takeProfitPct / stopLossPct,
+    grossPF: takeProfitPct / stopLossPct,
+    netPF: effectiveTpPct / stopLossPct,
+    costBufferPct,
+    netEffectivePF: effectiveTpPct / stopLossPct,
+    adjustedTakeProfitPct,
+    effectiveTpPct,
+    effectiveSlPct: stopLossPct,
+  }
+}
+
+/**
+ * Convert an exact Active/Outbreak SL + TP-market target into the same
+ * exchange-cost-aware contract as Signal and PF-derived protection.
+ */
+export function deriveProtectionFromActiveOutbreak(
+  value: unknown,
+  costModel: ProtectionCostModel = conservativeCostFallbackForExchange("generic"),
+): (DerivedProtection & ProfitFactorProtection) | null {
+  const source = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {}
+  const requestedStopLossPct = Number(source.stopLossPct)
+  const requestedTakeProfitPct = Number(source.takeProfitPct)
+  if (
+    !Number.isFinite(requestedStopLossPct) || requestedStopLossPct <= 0 ||
+    !Number.isFinite(requestedTakeProfitPct) || requestedTakeProfitPct <= 0
+  ) return null
+  const stopLossPct = clampNumber(requestedStopLossPct, MIN_LIVE_STOP_LOSS_PCT, 5)
+  const costBufferPct = (
+    (costModel.takerFeeBpsPerSide * 2) +
+    costModel.estimatedSpreadBps +
+    (costModel.estimatedMarketSlippageBps * 2) +
+    (costModel.fundingHoldCostBufferBps ?? 0)
+  ) / 100
+  const adjustedTakeProfitPct = Math.max(
+    requestedTakeProfitPct,
+    stopLossPct * 1.1,
+  ) + Math.max(costBufferPct, LIVE_PROTECTION_FEE_BUFFER_PCT)
   const takeProfitPct = clampNumber(
     adjustedTakeProfitPct,
     MIN_LIVE_TAKE_PROFIT_PCT,
@@ -3623,6 +3711,17 @@ export class StrategyCoordinator {
                   .filter((factor: number) => Number.isFinite(factor) && factor > 0),
               )).sort((left, right) => left - right)
             : []
+          const rawActiveProtection = ind.metadata?.activeProtection
+          const activeProtection =
+            group.indicationType === "active" &&
+            rawActiveProtection &&
+            typeof rawActiveProtection === "object"
+              ? rawActiveProtection as Record<string, unknown>
+              : null
+          const activeStopLossPct = Number(activeProtection?.stopLossPct)
+          const activeTakeProfitPct = Number(activeProtection?.takeProfitPct)
+          const activeMarketExitSituation = String(activeProtection?.marketExitSituation || "")
+          const activeOrderExitType = String(activeProtection?.orderExitType || "")
 
           entries.push({
             id: `${setKey}-${entryIdx}`,
@@ -3635,6 +3734,19 @@ export class StrategyCoordinator {
             ...(group.indicationType === "trend" && adaptiveTpFactors.length > 0 && {
               adaptiveTpFactors,
             }),
+            ...(activeProtection &&
+              Number.isFinite(activeStopLossPct) && activeStopLossPct > 0 &&
+              Number.isFinite(activeTakeProfitPct) && activeTakeProfitPct > 0 && {
+                activeStopLossPct,
+                activeTakeProfitPct,
+                activeProtectionProfileId: String(activeProtection.id || "active-dynamic"),
+                ...(["momentum", "range_extension", "activity_fade"].includes(activeMarketExitSituation) && {
+                  activeMarketExitSituation: activeMarketExitSituation as StrategySetEntry["activeMarketExitSituation"],
+                }),
+                ...(activeOrderExitType === "TAKE_PROFIT_MARKET" && {
+                  activeOrderExitType: "TAKE_PROFIT_MARKET" as const,
+                }),
+              }),
           })
           entryIdx++
         }
@@ -4240,15 +4352,17 @@ export class StrategyCoordinator {
       Number.isFinite(configuredVariantConcurrency) && configuredVariantConcurrency > 0
         ? Math.max(1, Math.min(16, Math.floor(configuredVariantConcurrency)))
         : 1
-    const results: VariantBuildResult[] = []
-    for (let offset = 0; offset < buildTasks.length; offset += variantBuildConcurrency) {
-      results.push(...await Promise.all(
-        buildTasks
-          .slice(offset, offset + variantBuildConcurrency)
-          .map((task) => task()),
-      ))
-      await yieldStrategyScheduler()
-    }
+    // The old serial default wrapped every individual task in Promise.all and
+    // then yielded, creating one full event-loop turn per Set (18k+ turns on a
+    // normal exhaustive symbol). The shared cursor pool preserves input/result
+    // order and the configured concurrency while yielding once per scheduling
+    // quantum. No Set is sampled or truncated.
+    const results = await mapWithConcurrency(
+      buildTasks,
+      variantBuildConcurrency,
+      (task) => task(),
+      { yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL },
+    )
     
     // ── Process results and populate mainSets ──���────────�����────────────────
     let processedBuildResults = 0
@@ -4732,8 +4846,8 @@ export class StrategyCoordinator {
         // all Base Set parents appear via axis fan-out but some were still rejected
         // at PF/DDT gate). Counting status=invalid directly is authoritative.
         failedEvaluation: Math.max(0, mainInputCount - mainPassedParentCount - skippedLowPos),
-        avgProfitFactor: mainSets.length > 0 ? mainSets.reduce((s, set) => s + set.avgProfitFactor, 0) / mainSets.length : 0,
-        avgDrawdownTime: mainSets.length > 0 ? mainSets.reduce((s, set) => s + set.avgDrawdownTime, 0) / mainSets.length : 0,
+        avgProfitFactor: mainAvgPF,
+        avgDrawdownTime: mainAvgDDT,
       },
       sets: mainSets,
     }
@@ -8032,10 +8146,16 @@ export class StrategyCoordinator {
                   set.signalRisk ??
                   (coordIndex ? coordIndex.base.byKey.get(parentKey)?.signalRisk : undefined)
                 )
+                const activeOutbreakProtection = set.indicationType === "active"
+                  ? deriveProtectionFromActiveOutbreak({
+                      stopLossPct: bestEntry.activeStopLossPct,
+                      takeProfitPct: bestEntry.activeTakeProfitPct,
+                    })
+                  : null
                 const protection = (
-                  set.indicationType === "signal"
+                  activeOutbreakProtection ?? (set.indicationType === "signal"
                     ? deriveProtectionFromSignalRisk(resolvedSignalRisk)
-                    : null
+                    : null)
                 ) ?? deriveProtectionFromProfitFactor(
                   effectivePF,
                   livePositionCostPct,
@@ -8060,6 +8180,7 @@ export class StrategyCoordinator {
                 // for fill slippage so SL doesn't immediately cross on entry.
                 if (
                   set.indicationType !== "signal" &&
+                  set.indicationType !== "active" &&
                   set.variant === "block" &&
                   effectiveSizeMult > 1.0
                 ) {
@@ -8457,14 +8578,22 @@ export class StrategyCoordinator {
                       (coordIndex ? coordIndex.base.byKey.get(_pseudoParentKey)?.signalRisk : undefined),
                     )
                   : null
-                const tp = signalProtection?.takeProfitPct ??
+                const activeProtection = set.indicationType === "active"
+                  ? deriveProtectionFromActiveOutbreak({
+                      stopLossPct: bestEntry.activeStopLossPct,
+                      takeProfitPct: bestEntry.activeTakeProfitPct,
+                    })
+                  : null
+                const tp = activeProtection?.takeProfitPct ??
+                  signalProtection?.takeProfitPct ??
                   adaptiveTrendTp ??
                   Math.max(0.5, (bestEntry.profitFactor - 1) * 100)
                 const profile = set.trailingProfile
                 const signalDynamicTrailing = isSignalDynamicTrailingProfile(profile)
                 const sl = signalDynamicTrailing
                   ? Math.max(0.8, (profile.minStopRatio ?? profile.stopRatio) * 100)
-                  : signalProtection?.stopLossPct ??
+                  : activeProtection?.stopLossPct ??
+                    signalProtection?.stopLossPct ??
                     Math.min(5, 100 / Math.max(1, bestEntry.profitFactor) * 0.5)
 
                 // Multi-step trailing — Set carries its own profile from

@@ -34,6 +34,9 @@ type DirectConfig = {
   totalPnl: number
   bestMarketExitPnl: number
   positionCostPercent?: number
+  takeprofit?: number
+  takeProfitPositionCostRatio?: number
+  stoploss?: number
   lastPositionPnl: number | null
   lastPositionBestMarketExitPnl: number | null
   lastPositionDrawdownTimeMin: number | null
@@ -66,6 +69,18 @@ type DirectConfig = {
   blockRealizedVolumeMultiplier?: number
 }
 
+type CalculationAxisBucket = {
+  evaluated: number
+  valid: number
+  disabled?: number
+  totalPnl?: number
+  netProfit?: number
+  netLoss?: number
+  averagePnlPerSet?: number
+  profitFactor?: number | null
+  profitFactorInfinite?: boolean
+}
+
 type Status = {
   stats?: {
     totalPnl?: number
@@ -86,10 +101,15 @@ type Status = {
     evaluatedSets?: number
     validSets?: number
     deactivatedSets?: number
-    byTimeframe?: Record<string, { evaluated: number; valid: number }>
-    byEntryTactic?: Record<string, { evaluated: number; valid: number }>
-    byExitTactic?: Record<string, { evaluated: number; valid: number }>
-    byStrategyType?: Record<string, { evaluated: number; valid: number }>
+    byTimeframe?: Record<string, CalculationAxisBucket>
+    byEntryTactic?: Record<string, CalculationAxisBucket>
+    byExitTactic?: Record<string, CalculationAxisBucket>
+    byStrategyType?: Record<string, CalculationAxisBucket>
+    byDirection?: Record<string, CalculationAxisBucket>
+    byStopLossRatio?: Record<string, CalculationAxisBucket>
+    byStopLossPercent?: Record<string, CalculationAxisBucket>
+    byTakeProfitPositionCostRatio?: Record<string, CalculationAxisBucket>
+    byTakeProfitPercent?: Record<string, CalculationAxisBucket>
     blockEnabled?: boolean
     blockEvaluatedSets?: number
     blockValidSets?: number
@@ -264,6 +284,33 @@ export function DirectTradeStatistics() {
         </div>
       </Card>
 
+      <div className="grid gap-4 xl:grid-cols-2">
+        <AxisBreakdown
+          title="SL ranges · ratio to TP"
+          description="Each stop-loss range is an independent strategy Set lane."
+          rows={calculation.byStopLossRatio}
+          formatKey={(value) => `${Number(value).toFixed(2)}× TP`}
+        />
+        <AxisBreakdown
+          title="TP ranges · ratio to PositionCost"
+          description="Targets are derived from the configured PositionCost, never from an averaged PF."
+          rows={calculation.byTakeProfitPositionCostRatio}
+          formatKey={(value) => `${Number(value).toFixed(2)}× cost`}
+        />
+        <AxisBreakdown
+          title="Market exit situations"
+          description="Bracket, momentum reversal, relative and timed exits retain independent results."
+          rows={calculation.byExitTactic}
+          formatKey={(value) => value.replaceAll("_", " ")}
+        />
+        <AxisBreakdown
+          title="Independent directions"
+          description="Long and Short are calculated and counted separately for every exact Set."
+          rows={calculation.byDirection}
+          formatKey={(value) => value.toUpperCase()}
+        />
+      </div>
+
       <Card className="p-4">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2"><Filter className="h-4 w-4 text-muted-foreground" /><span className="text-sm font-medium">Set selection</span><span className="text-xs text-muted-foreground">{matched} matched; the table displays the top {visibleRows.length || 100} by score.</span></div>
@@ -293,9 +340,9 @@ export function DirectTradeStatistics() {
         <Card className="overflow-hidden p-4">
           <div className="mb-3 flex items-center justify-between"><span className="text-sm font-medium">Independent sets</span><Badge variant="outline">stable lineage key</Badge></div>
           <div className="max-h-[520px] overflow-auto rounded-md border">
-            <table className="w-full min-w-[960px] text-xs">
-              <thead className="sticky top-0 bg-muted/95 text-muted-foreground"><tr><th className="p-2 text-left">Symbol / frame</th><th className="p-2 text-left">Type / tactics</th><th className="p-2 text-right">History PF</th><th className="p-2 text-right">Last 12 PF</th><th className="p-2 text-right">DDT</th><th className="p-2 text-right">Net PnL</th><th className="p-2 text-right">Cost</th><th className="p-2 text-right">Best exit*</th><th className="p-2 text-right">State</th></tr></thead>
-              <tbody>{visibleRows.map((config) => <tr key={config.setKey} className="border-t"><td className="p-2 font-mono"><div>{config.symbol} <span className="text-muted-foreground">{config.direction}</span></div><div className="text-muted-foreground">{config.timeframe}</div></td><td className="p-2"><div>{config.strategyType.replaceAll("_", " ")}{config.strategyType === "inverse" && <span className="text-muted-foreground"> ← {config.signalDirection}</span>}</div><div className="text-muted-foreground">{config.entryTactic.replace("_", " ")} · {config.exitTactic.replace("_", " ")}</div></td><td className="p-2 text-right font-mono">{displayPf(config)}</td><td className="p-2 text-right font-mono"><div>{displayRecentPf(config)}</div><div className="text-[10px] text-muted-foreground">{config.recentPositionCount || 0}/12 · {Number(config.recentAvgDrawdownTimeMin || 0).toFixed(1)}m</div></td><td className="p-2 text-right font-mono">{config.maxDrawdownTimeMin.toFixed(1)}m</td><td className={`p-2 text-right font-mono ${config.totalPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{formatPnl(config.totalPnl)}</td><td className="p-2 text-right font-mono text-muted-foreground">{Number(config.positionCostPercent || 0.1).toFixed(2)}%</td><td className="p-2 text-right font-mono text-muted-foreground">{formatPnl(config.bestMarketExitPnl)}</td><td className="p-2 text-right"><Badge variant={config.valid ? "default" : "secondary"} className="text-[10px]">{config.valid ? "valid" : config.deactivationReason || "inactive"}</Badge></td></tr>)}</tbody>
+            <table className="w-full min-w-[1120px] text-xs">
+              <thead className="sticky top-0 bg-muted/95 text-muted-foreground"><tr><th className="p-2 text-left">Symbol / frame</th><th className="p-2 text-left">Type / tactics</th><th className="p-2 text-right">TP / SL protection</th><th className="p-2 text-right">History PF</th><th className="p-2 text-right">Last 12 PF</th><th className="p-2 text-right">DDT</th><th className="p-2 text-right">Net PnL</th><th className="p-2 text-right">Cost</th><th className="p-2 text-right">Best exit*</th><th className="p-2 text-right">State</th></tr></thead>
+              <tbody>{visibleRows.map((config) => <tr key={config.setKey} className="border-t"><td className="p-2 font-mono"><div>{config.symbol} <span className="text-muted-foreground">{config.direction}</span></div><div className="text-muted-foreground">{config.timeframe}</div></td><td className="p-2"><div>{config.strategyType.replaceAll("_", " ")}{config.strategyType === "inverse" && <span className="text-muted-foreground"> ← {config.signalDirection}</span>}</div><div className="text-muted-foreground">{config.entryTactic.replace("_", " ")} · {config.exitTactic.replace("_", " ")}</div></td><td className="p-2 text-right font-mono"><div>TP {Number(config.takeprofit || 0).toFixed(3)}% · {Number(config.takeProfitPositionCostRatio || 0).toFixed(1)}×</div><div className="text-[10px] text-muted-foreground">SL {Number(config.stoploss || 0).toFixed(3)}% · {Number(config.takeprofit) > 0 ? (Number(config.stoploss) / Number(config.takeprofit)).toFixed(2) : "—"}× TP</div></td><td className="p-2 text-right font-mono">{displayPf(config)}</td><td className="p-2 text-right font-mono"><div>{displayRecentPf(config)}</div><div className="text-[10px] text-muted-foreground">{config.recentPositionCount || 0}/12 · {Number(config.recentAvgDrawdownTimeMin || 0).toFixed(1)}m</div></td><td className="p-2 text-right font-mono">{config.maxDrawdownTimeMin.toFixed(1)}m</td><td className={`p-2 text-right font-mono ${config.totalPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{formatPnl(config.totalPnl)}</td><td className="p-2 text-right font-mono text-muted-foreground">{Number(config.positionCostPercent || 0.1).toFixed(2)}%</td><td className="p-2 text-right font-mono text-muted-foreground">{formatPnl(config.bestMarketExitPnl)}</td><td className="p-2 text-right"><Badge variant={config.valid ? "default" : "secondary"} className="text-[10px]">{config.valid ? "valid" : config.deactivationReason || "inactive"}</Badge></td></tr>)}</tbody>
             </table>
           </div>
           <p className="mt-2 text-[11px] text-muted-foreground">PF basis: summed positive/negative ratio-weighted net PnL ({calculation.pfBasis || "aggregate_ratio_weighted_net_pnl"}); it is not an average of row PFs or TP ratios. The TP means (*) are diagnostics only. Target volume: {visibleRows[0]?.blockCount || 0} · {Number(visibleRows[0]?.blockCalculatedVolumeMultiplier || 1).toFixed(2)}×; realized average: {Number(visibleRows[0]?.blockRealizedVolumeMultiplier || 1).toFixed(2)}×. Best market exit is hindsight-only.</p>
@@ -316,6 +363,51 @@ export function DirectTradeStatistics() {
         </Card>
       </div>
     </div>
+  )
+}
+
+function AxisBreakdown({
+  title,
+  description,
+  rows,
+  formatKey,
+}: {
+  title: string
+  description: string
+  rows?: Record<string, CalculationAxisBucket>
+  formatKey: (value: string) => string
+}) {
+  const entries = Object.entries(rows || {}).sort(([left], [right]) => {
+    const numericDifference = Number(left) - Number(right)
+    return Number.isFinite(numericDifference) && numericDifference !== 0
+      ? numericDifference
+      : left.localeCompare(right)
+  })
+  return (
+    <Card className="overflow-hidden p-4">
+      <h2 className="text-sm font-medium">{title}</h2>
+      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      <div className="mt-3 max-h-72 overflow-auto rounded-md border">
+        <table className="w-full min-w-[620px] text-xs">
+          <thead className="sticky top-0 bg-muted/95 text-muted-foreground">
+            <tr><th className="p-2 text-left">Range / situation</th><th className="p-2 text-right">Evaluated</th><th className="p-2 text-right">Valid</th><th className="p-2 text-right">Disabled</th><th className="p-2 text-right">Aggregate PF</th><th className="p-2 text-right">Net PnL</th></tr>
+          </thead>
+          <tbody>
+            {entries.map(([key, row]) => (
+              <tr key={key} className="border-t">
+                <td className="p-2 font-medium capitalize">{formatKey(key)}</td>
+                <td className="p-2 text-right font-mono">{row.evaluated}</td>
+                <td className="p-2 text-right font-mono text-emerald-600">{row.valid}</td>
+                <td className="p-2 text-right font-mono text-muted-foreground">{row.disabled ?? Math.max(0, row.evaluated - row.valid)}</td>
+                <td className="p-2 text-right font-mono">{displayAggregatePf(row.profitFactor, row.profitFactorInfinite)}</td>
+                <td className={`p-2 text-right font-mono ${Number(row.totalPnl) >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{formatPnl(row.totalPnl)}</td>
+              </tr>
+            ))}
+            {entries.length === 0 && <tr><td colSpan={6} className="p-5 text-center text-muted-foreground">Run the 48h calculation to populate this exact breakdown.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   )
 }
 

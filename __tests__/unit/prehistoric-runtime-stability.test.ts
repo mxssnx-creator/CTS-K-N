@@ -4,16 +4,45 @@ import { getRedisClient, setSettings } from "@/lib/redis-db"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { IndicationConfigManager } from "@/lib/indication-config-manager"
+import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
 import { StrategyConfigManager } from "@/lib/strategy-config-manager"
 import { getCanonicalSymbolSelection } from "@/lib/trade-engine/symbol-selection-ownership"
 import { runIndStratCycle } from "@/lib/trade-engine/shared-ind-strat-pipeline"
-import { incrementHistoricAggregateOnce } from "@/lib/redis-idempotent-list"
+import {
+  clearHistoricListCompletionMarkers,
+  historicAggregateMarkerCollectionKey,
+  incrementHistoricAggregateOnce,
+} from "@/lib/redis-idempotent-list"
+import { groupHistoricIndicationCalculationConfigs } from "@/lib/trade-engine/config-set-processor"
 
 function source(path: string): string {
   return readFileSync(join(process.cwd(), path), "utf8")
 }
 
 describe("historic runtime generation stability", () => {
+  test("groups mathematically identical indication calculations across type labels", () => {
+    const base = {
+      connectionId: "grouping-test",
+      steps: 10,
+      drawdown_ratio: 0.1,
+      active_ratio: 0.7,
+      last_part_ratio: 0.3,
+      enabled: true,
+      createdAt: "2026-08-10T00:00:00.000Z",
+    }
+    const groups = groupHistoricIndicationCalculationConfigs([
+      { ...base, id: "z-rsi", type: "RSI" },
+      { ...base, id: "a-ema", type: "EMA" },
+      { ...base, id: "different-step", type: "EMA", steps: 11 },
+    ])
+
+    expect(groups).toHaveLength(2)
+    expect(groups.find((group) => group.length === 2)?.map((config) => config.id)).toEqual([
+      "a-ema",
+      "z-rsi",
+    ])
+  })
+
   test("canonical symbols fall back across every persisted runtime alias", async () => {
     const connectionId = `selection-fallback-${Date.now()}`
     const client = getRedisClient()
@@ -125,6 +154,108 @@ describe("historic runtime generation stability", () => {
     }
   })
 
+  test("completed historic generations remove bounded list completion guards", async () => {
+    const connectionId = `historic-marker-cleanup-${Date.now()}`
+    const client = getRedisClient()
+    const indicationMarker =
+      `indication:${connectionId}:config:cfg-a:results:historic_complete:epoch-1:BTCUSDT`
+    const strategyMarker =
+      `strategy:${connectionId}:config:cfg-b:positions:historic_complete:epoch-1:BTCUSDT`
+    const unrelated = `indication:${connectionId}:config:cfg-a:results`
+    try {
+      await client.set(indicationMarker, "1")
+      await client.set(strategyMarker, "1")
+      await client.set(unrelated, "durable")
+
+      await expect(
+        clearHistoricListCompletionMarkers(client, connectionId),
+      ).resolves.toBe(2)
+      await expect(client.get(indicationMarker)).resolves.toBeNull()
+      await expect(client.get(strategyMarker)).resolves.toBeNull()
+      await expect(client.get(unrelated)).resolves.toBe("durable")
+    } finally {
+      await client.del(indicationMarker, strategyMarker, unrelated)
+    }
+  })
+
+  test("forward outcome lists and PF aggregates are atomically indexed", async () => {
+    const connectionId = `outcome-index-${Date.now()}`
+    const client = getRedisClient()
+    const setKey = `indication_set:${connectionId}:BTCUSDT:active:long:test`
+    const outcomesKey = `${setKey}:outcomes`
+    const statsKey = `${setKey}:outcome_stats`
+    const indexKey = `indication_sets:outcome_keys:index:${connectionId}`
+    try {
+      const processor = new IndicationSetsProcessor(connectionId)
+      await (processor as any).recordOutcomeSample(setKey, { profit: 0.01, loss: 0 })
+
+      await expect(client.smembers(indexKey)).resolves.toEqual(
+        expect.arrayContaining([outcomesKey, statsKey]),
+      )
+      await expect(client.llen(outcomesKey)).resolves.toBe(1)
+      await expect(client.hgetall(statsKey)).resolves.toMatchObject({
+        grossProfit: "0.01",
+        grossLoss: "0",
+        count: "1",
+      })
+    } finally {
+      await client.del(outcomesKey, statsKey, indexKey)
+    }
+  })
+
+  test("shares identical bounded detail rows while keeping config identities addressable", async () => {
+    const connectionId = `historic-result-reference-${Date.now()}`
+    const leaderId = "leader"
+    const aliasId = "alias"
+    const client = getRedisClient()
+    const manager = new IndicationConfigManager(connectionId)
+    const leaderKey = `indication:${connectionId}:config:${leaderId}:results`
+    const aliasKey = `indication:${connectionId}:config:${aliasId}:results`
+    const aliasReferenceKey = `${aliasKey}:ref`
+    const indication = {
+      timestamp: "2026-08-10T10:00:00.000Z",
+      symbol: "BTCUSDT",
+      value: 1.25,
+      signal: "buy" as const,
+    }
+    const second = {
+      ...indication,
+      timestamp: "2026-08-10T10:00:01.000Z",
+      value: -0.75,
+      signal: "sell" as const,
+    }
+    try {
+      await client.del(leaderKey, aliasKey, aliasReferenceKey)
+      await manager.addResults(leaderId, [indication], "generation-a:BTCUSDT")
+      await manager.addResults(aliasId, [indication], "generation-a:BTCUSDT")
+
+      await manager.setResultReferences([
+        { configId: leaderId, referenceConfigId: leaderId },
+        { configId: aliasId, referenceConfigId: leaderId },
+      ])
+
+      await expect(client.llen(aliasKey)).resolves.toBe(0)
+      await expect(client.get(aliasReferenceKey)).resolves.toBe(leaderId)
+      await expect(manager.getResults(aliasId)).resolves.toEqual([indication])
+      await expect(manager.getResultCount(aliasId)).resolves.toBe(1)
+
+      await expect(
+        manager.addResults(aliasId, [second], "generation-b:BTCUSDT"),
+      ).resolves.toBe(1)
+      await expect(manager.getResultCount(leaderId)).resolves.toBe(2)
+      await expect(manager.getResultCount(aliasId)).resolves.toBe(2)
+    } finally {
+      await client.del(
+        leaderKey,
+        aliasKey,
+        aliasReferenceKey,
+        `${leaderKey}:historic_complete:generation-a:BTCUSDT`,
+        `${aliasKey}:historic_complete:generation-a:BTCUSDT`,
+        `${leaderKey}:historic_complete:generation-b:BTCUSDT`,
+      )
+    }
+  })
+
   test("overlapping historic writers atomically accept each entry once", async () => {
     const connectionId = `historic-overlap-${Date.now()}`
     const configId = "cfg-overlap"
@@ -203,9 +334,10 @@ describe("historic runtime generation stability", () => {
     const connectionId = `historic-aggregate-${Date.now()}`
     const markerKey = `historic:aggregate-marker:${connectionId}:strategy:cfg-1:epoch-1:BTCUSDT`
     const aggregateKey = `historic:aggregate:${connectionId}:strategies:epoch-1`
+    const markerCollectionKey = historicAggregateMarkerCollectionKey(aggregateKey)
     const client = getRedisClient()
     try {
-      await client.del(markerKey, aggregateKey)
+      await client.del(markerKey, markerCollectionKey, aggregateKey)
       const results = await Promise.all(
         Array.from({ length: 8 }, () => incrementHistoricAggregateOnce(
           client as any,
@@ -228,9 +360,33 @@ describe("historic runtime generation stability", () => {
         gross_profit: "1.25",
         gross_loss: "0.5",
       })
-      await expect(client.get(markerKey)).resolves.toBe("1")
+      await expect(client.get(markerKey)).resolves.toBeNull()
+      await expect(client.smembers(markerCollectionKey)).resolves.toEqual([markerKey])
     } finally {
-      await client.del(markerKey, aggregateKey)
+      await client.del(markerKey, markerCollectionKey, aggregateKey)
+    }
+  })
+
+  test("legacy scalar aggregate markers remain idempotent during marker compaction", async () => {
+    const connectionId = `historic-legacy-marker-${Date.now()}`
+    const markerKey = `historic:aggregate-marker:${connectionId}:strategy:cfg-1:epoch-1:BTCUSDT`
+    const aggregateKey = `historic:aggregate:${connectionId}:strategies:epoch-1`
+    const markerCollectionKey = historicAggregateMarkerCollectionKey(aggregateKey)
+    const client = getRedisClient()
+    try {
+      await client.del(markerKey, markerCollectionKey, aggregateKey)
+      await client.set(markerKey, "1", { EX: 3600 })
+      await expect(incrementHistoricAggregateOnce(
+        client as any,
+        markerKey,
+        aggregateKey,
+        [{ field: "position_count", value: 3 }],
+        3600,
+      )).resolves.toBe(false)
+      await expect(client.hgetall(aggregateKey)).resolves.toEqual({})
+      await expect(client.smembers(markerCollectionKey)).resolves.toEqual([markerKey])
+    } finally {
+      await client.del(markerKey, markerCollectionKey, aggregateKey)
     }
   })
 

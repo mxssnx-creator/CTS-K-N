@@ -32,6 +32,7 @@ import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth
 import { ConfigSetProcessor, type ProcessingResult } from "@/lib/trade-engine/config-set-processor"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
+import { isForcedSimulation } from "@/lib/real-trade-gates"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -90,6 +91,9 @@ function normalizeSymbolList(value: unknown): string[] {
 // and hangs on Vercel when the request context is unavailable. Call the shared lib fn
 // directly so resolution happens in-process with zero network overhead.
 async function getMostVolatileSymbol(exchange: string): Promise<string> {
+  // Acceptance/dev paper runs must be deterministic and offline. The normal
+  // production path still ranks current public-exchange volatility.
+  if (isForcedSimulation()) return FALLBACK_SYMBOLS[0]
   const cached = volatileSymbolCache.get(exchange)
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.symbol
 
@@ -153,6 +157,7 @@ async function getMarketDataForSymbol(symbol: string, client: any): Promise<{
 async function fetchLivePriceFromExchange(symbol: string): Promise<{
   close: number; open: number; high: number; low: number; volume: number
 } | null> {
+  if (isForcedSimulation()) return null
   try {
     // BingX public ticker endpoint — no auth required
     const bingxSymbol = symbol.replace("USDT", "-USDT")

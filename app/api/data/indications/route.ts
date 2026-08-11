@@ -234,18 +234,25 @@ async function getRealIndications(connectionId: string): Promise<Indication[]> {
     // Redis concurrency so a large exhaustive grid cannot create an
     // unbounded Promise.all fan-out.
     const configKeys = allKeys
-      .filter((k) => !k.endsWith(":results"))
+      .filter((k) => !k.includes(":results"))
       .sort((left, right) => left.localeCompare(right))
     if (configKeys.length === 0) return []
 
     const rows = await mapWithConcurrency(configKeys, 32, async (key) => {
-      const [config, result] = await Promise.all([
+      const [config, resultReference] = await Promise.all([
         client.get(key).catch(() => null),
-        // lrange(0,0) is emulator-safe; lindex returns null on InlineLocalRedis
-        (client.lrange(`${key}:results`, 0, 0) as Promise<string[]>)
-          .then((arr) => (Array.isArray(arr) ? arr[0] ?? null : null))
-          .catch(() => null),
+        client.get(`${key}:results:ref`).catch(() => null),
       ])
+      const referencedConfigId = String(resultReference || "").trim()
+      const resultKey = referencedConfigId
+        ? `indication:${connectionId}:config:${referencedConfigId}:results`
+        : `${key}:results`
+      const result = await (
+        // lrange(0,0) is emulator-safe; lindex returns null on InlineLocalRedis
+        (client.lrange(resultKey, 0, 0) as Promise<string[]>)
+          .then((arr) => (Array.isArray(arr) ? arr[0] ?? null : null))
+          .catch(() => null)
+      )
       return { config, result }
     })
 

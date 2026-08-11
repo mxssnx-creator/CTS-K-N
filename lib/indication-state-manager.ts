@@ -290,25 +290,38 @@ export class IndicationStateManager {
     // Get indication ranges from settings (cached)
     const { minRange, maxRange } = await this.getIndicationRanges()
 
-    // Process all indication types in parallel with proper error handling
-    const results = await Promise.allSettled([
-      this.processDirectionIndications(symbol, currentPrice, minRange, maxRange),
-      this.processMoveIndications(symbol, currentPrice, minRange, maxRange),
+    // CPU-heavy primary families may overlap their Redis waits, but Active is
+    // an explicit barrier immediately before the final Trend calculation. The
+    // previous array also contained six tasks but seven labels, which reported
+    // Trend as Active Advanced and left a phantom Signal row.
+    const primaryTasks = [
+      { type: "direction", run: () => this.processDirectionIndications(symbol, currentPrice, minRange, maxRange) },
+      { type: "move", run: () => this.processMoveIndications(symbol, currentPrice, minRange, maxRange) },
+      { type: "optimal", run: () => this.processOptimalIndications(symbol, currentPrice, minRange, maxRange) },
+      { type: "active_advanced", run: () => this.processActiveAdvancedIndications(symbol, currentPrice) },
+    ]
+    const primaryResults = await Promise.allSettled(primaryTasks.map((task) => task.run()))
+    const activeResult = await Promise.allSettled([
       this.processActiveIndications(symbol, currentPrice),
-      this.processOptimalIndications(symbol, currentPrice, minRange, maxRange),
-      this.processActiveAdvancedIndications(symbol, currentPrice),
+    ])
+    const trendResult = await Promise.allSettled([
       this.processTrendIndications(symbol, currentPrice),
     ])
+    const tasks = [
+      ...primaryTasks,
+      { type: "active" },
+      { type: "trend" },
+    ]
+    const results = [...primaryResults, ...activeResult, ...trendResult]
 
-    // Log results for each type
-    const types = ["direction", "move", "active", "optimal", "active_advanced", "signal", "trend"]
+    // Log results for each actual task; no synthetic/misaligned labels.
     let totalIndications = 0
     let totalPositions = 0
     
     const typeResults: Record<string, { indications: number; positions: number }> = {}
     
     results.forEach((result, index) => {
-      const type = types[index]
+      const type = tasks[index].type
       if (result.status === "fulfilled" && result.value) {
         const value = result.value as { indications?: number; positions?: number }
         const indications = value.indications || 0

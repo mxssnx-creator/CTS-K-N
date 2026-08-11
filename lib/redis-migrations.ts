@@ -6419,6 +6419,244 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "93")
     },
   },
+  {
+    version: 95,
+    name: "095-active-outbreak-ranges-and-market-protection-profiles",
+    up: async (client: any) => {
+      const defaults: Record<string, string> = {
+        activeOutbreakRanges: JSON.stringify([3, 5, 10]),
+        activeNoiseFilter: "0.05",
+        activeVolatilityWeight: "0.3",
+        activeStopLossPositionCostRatios: JSON.stringify([2, 3, 5]),
+        activeTakeProfitMultipliers: JSON.stringify([1.25, 1.5, 1]),
+        activeMarketExitSituations: JSON.stringify([
+          "momentum",
+          "range_extension",
+          "activity_fade",
+        ]),
+      }
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const connectionIds = new Set(
+        connections.map((connection) => String(connection.id || "")).filter(Boolean),
+      )
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+
+      const hashKeys = new Set<string>([
+        "app_settings",
+        "settings:app_settings",
+        "settings:all_settings",
+      ])
+      for (const id of connectionIds) {
+        hashKeys.add(`connection_settings:${id}`)
+        hashKeys.add(`settings:connection_settings:${id}`)
+      }
+      let hashesUpdated = 0
+      let fieldsSeeded = 0
+      for (const key of hashKeys) {
+        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        // App settings are canonical and may be created on a fresh install.
+        // Connection overlays are only touched when that overlay already
+        // exists; missing values naturally inherit the canonical defaults.
+        if (!key.includes("app_settings") && Object.keys(existing).length === 0) continue
+        const patch: Record<string, string> = {}
+        for (const [field, value] of Object.entries(defaults)) {
+          if (existing[field] === undefined || existing[field] === "") {
+            patch[field] = value
+            fieldsSeeded++
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          hashesUpdated++
+        }
+      }
+
+      const rawMain = await client.get("indications:main").catch(() => null)
+      if (typeof rawMain === "string" && rawMain.trim().startsWith("{")) {
+        try {
+          const document = JSON.parse(rawMain) as Record<string, any>
+          const active = document.active && typeof document.active === "object"
+            ? document.active as Record<string, unknown>
+            : {}
+          const activeDefaults: Record<string, unknown> = {
+            outbreak_ranges: [3, 5, 10],
+            noise_filter: 0.05,
+            volatility_weight: 0.3,
+            stop_loss_position_cost_ratios: [2, 3, 5],
+            take_profit_multipliers: [1.25, 1.5, 1],
+            market_exit_situations: ["momentum", "range_extension", "activity_fade"],
+          }
+          let changed = false
+          for (const [field, value] of Object.entries(activeDefaults)) {
+            if (active[field] === undefined) {
+              active[field] = value
+              changed = true
+            }
+          }
+          if (changed || !document.active) {
+            document.active = active
+            await client.set("indications:main", JSON.stringify(document))
+          }
+        } catch {
+          // Preserve malformed recovery data; the settings API can repair it
+          // only after an operator confirms/re-saves the document.
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        active_outbreak_model: "causal-previous-window-v1",
+        active_outbreak_ranges: "3,5,10",
+        active_protection_profiles: "3-sl-x-3-tp-market-exits",
+        active_processing_order: "primary-active-trend",
+        active_settings_hashes_updated: String(hashesUpdated),
+        active_settings_fields_seeded: String(fieldsSeeded),
+        schema_version: "95",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // New settings are safe to retain if code is rolled back; only the
+      // migration cursor changes so an upgraded release can verify them again.
+      await client.set("_schema_version", "94")
+    },
+  },
+  {
+    version: 96,
+    name: "096-compact-identical-historic-indication-detail-lists",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let calculationGroups = 0
+      let resultReferences = 0
+      let duplicateListsRemoved = 0
+
+      for (const connection of connections) {
+        const connectionId = String(connection?.id || "").trim()
+        if (!connectionId) continue
+        const indexKey = `indication:${connectionId}:configs:index`
+        let configKeys = ((await client.smembers(indexKey).catch(() => [])) || []) as string[]
+        if (configKeys.length === 0) {
+          configKeys = (await scanRedisKeys(client, `indication:${connectionId}:config:*`))
+            .filter((key) => !String(key).includes(":results"))
+        }
+        configKeys = [...new Set(configKeys.map(String))].sort()
+        if (configKeys.length === 0) continue
+
+        const configs: Array<{ id: string; key: string; fingerprint: string }> = []
+        for (let offset = 0; offset < configKeys.length; offset += 500) {
+          const batch = configKeys.slice(offset, offset + 500)
+          const pipeline = client.multi()
+          for (const key of batch) pipeline.get(key)
+          const values = await pipeline.exec()
+          for (let index = 0; index < batch.length; index++) {
+            const rawValue = Array.isArray(values?.[index]) ? values[index][1] : values?.[index]
+            if (!rawValue) continue
+            try {
+              const config = JSON.parse(String(rawValue)) as Record<string, unknown>
+              const id = String(config.id || "").trim()
+              if (!id) continue
+              configs.push({
+                id,
+                key: batch[index],
+                fingerprint: [
+                  Number(config.steps),
+                  Number(config.drawdown_ratio),
+                  Number(config.active_ratio),
+                  Number(config.last_part_ratio),
+                ].join("|"),
+              })
+            } catch {
+              // Preserve malformed recovery rows; normal config repair can
+              // handle them without risking unrelated historic detail data.
+            }
+          }
+        }
+
+        const groups = new Map<string, typeof configs>()
+        for (const config of configs) {
+          const group = groups.get(config.fingerprint)
+          if (group) group.push(config)
+          else groups.set(config.fingerprint, [config])
+        }
+        calculationGroups += groups.size
+
+        const operations: Array<{
+          key: string
+          referenceKey: string
+          referenceId?: string
+          duplicateResultsKey?: string
+        }> = []
+        for (const group of groups.values()) {
+          group.sort((left, right) => left.id.localeCompare(right.id))
+          const leader = group[0]
+          operations.push({
+            key: leader.key,
+            referenceKey: `${leader.key}:results:ref`,
+          })
+          for (const alias of group.slice(1)) {
+            operations.push({
+              key: alias.key,
+              referenceKey: `${alias.key}:results:ref`,
+              referenceId: leader.id,
+              duplicateResultsKey: `${alias.key}:results`,
+            })
+          }
+        }
+
+        for (let offset = 0; offset < operations.length; offset += 500) {
+          const pipeline = client.multi()
+          for (const operation of operations.slice(offset, offset + 500)) {
+            if (!operation.referenceId) {
+              pipeline.del(operation.referenceKey)
+              continue
+            }
+            pipeline.set(operation.referenceKey, operation.referenceId)
+            pipeline.del(operation.duplicateResultsKey)
+            resultReferences++
+            duplicateListsRemoved++
+          }
+          await pipeline.exec()
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        historic_indication_detail_storage: "shared-identical-calculation-v1",
+        historic_indication_calculation_groups: String(calculationGroups),
+        historic_indication_result_references: String(resultReferences),
+        historic_indication_duplicate_lists_removed: String(duplicateListsRemoved),
+        prehistoric_persist_concurrency: "cpu-aware-io-budget",
+        schema_version: "96",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // Re-materialise each bounded alias LIST so a v95 binary, which does not
+      // understand `:results:ref`, can read the same detail rows after rollback.
+      const referenceKeys = await scanRedisKeys(client, "indication:*:config:*:results:ref")
+      for (let offset = 0; offset < referenceKeys.length; offset += 25) {
+        await Promise.all(referenceKeys.slice(offset, offset + 25).map(async (referenceKey) => {
+          const referenceId = String(await client.get(referenceKey).catch(() => "") || "").trim()
+          const aliasResultsKey = String(referenceKey).slice(0, -":ref".length)
+          const configMarker = ":config:"
+          const markerIndex = aliasResultsKey.indexOf(configMarker)
+          if (!referenceId || markerIndex < 0) {
+            await client.del(referenceKey)
+            return
+          }
+          const prefix = aliasResultsKey.slice(0, markerIndex + configMarker.length)
+          const leaderResultsKey = `${prefix}${referenceId}:results`
+          const rows = await client.lrange(leaderResultsKey, 0, -1).catch(() => [])
+          const pipeline = client.multi()
+          pipeline.del(aliasResultsKey)
+          if (Array.isArray(rows) && rows.length > 0) pipeline.rpush(aliasResultsKey, ...rows)
+          pipeline.del(referenceKey)
+          await pipeline.exec()
+        }))
+      }
+      await client.set("_schema_version", "95")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

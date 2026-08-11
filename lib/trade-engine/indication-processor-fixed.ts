@@ -114,6 +114,14 @@ import {
 } from "@/lib/active-indication-profile"
 import { logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { getHistoricCandleTail } from "./market-data-cache"
+import {
+  calculateActiveOutbreak,
+  DEFAULT_ACTIVE_OUTBREAK_RANGES,
+  DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
+  DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS,
+  normalizeActiveMarketExitSituations,
+  type ActiveMarketExitSituation,
+} from "@/lib/active-outbreak-indication"
 
 // Pre-import modules at module load time (not per-call)
 import { initRedis, getRedisClient, getMarketData, saveIndication, getSettings, getAppSettings, storeIndications } from "@/lib/redis-db"
@@ -1179,6 +1187,10 @@ export class IndicationProcessor {
       // don't incur any extra fetches.
 
       let indications: any[] = []
+      // Active is appended as one deterministic barrier immediately before
+      // Trend. Producers add to this buffer so an earlier Move/Optimal/Signal
+      // branch cannot accidentally change the public workflow order.
+      const deferredActiveIndications: any[] = []
       // Realtime mode anchors indications at wall-clock now. Replay mode
       // anchors them at the simulated candle timestamp so downstream
       // throttle keys, Set entries, and dashboard ordering line up with
@@ -1202,6 +1214,59 @@ export class IndicationProcessor {
         }
         recentVolAvg = n > 0 ? sum / n : currentVolume
       }
+
+      const activeOutbreakRepresentative = (() => {
+        const ranges = parseNumericSettingList(
+          indicationSettings.activeOutbreakRanges,
+          DEFAULT_ACTIVE_OUTBREAK_RANGES,
+        ).map((value) => Math.max(2, Math.round(value)))
+        const thresholds = parseNumericSettingList(
+          indicationSettings.activeThresholds,
+          [0.5, 1, 1.5, 2, 2.5],
+        )
+        const previousActivityRatios = parseNumericSettingList(
+          indicationSettings.activeTimeRatios,
+          [0.5, 1],
+        )
+        const rawExitSituations = Array.isArray(indicationSettings.activeMarketExitSituations)
+          ? indicationSettings.activeMarketExitSituations
+          : String(indicationSettings.activeMarketExitSituations || "")
+              .split(/[\s,|]+/)
+              .filter(Boolean)
+        const marketExitSituations = normalizeActiveMarketExitSituations(
+          rawExitSituations as ActiveMarketExitSituation[],
+        )
+        let best: ReturnType<typeof calculateActiveOutbreak> = null
+        for (const activeRange of ranges) {
+          for (const thresholdPct of thresholds) {
+            for (const previousActivityRatio of previousActivityRatios) {
+              const candidate = calculateActiveOutbreak({
+                pricesOldestFirst,
+                range: activeRange,
+                thresholdPct,
+                previousActivityRatio,
+                noiseFilterPct: Number(indicationSettings.activeNoiseFilter) || 0.05,
+                drawdownRatio: 1,
+                lastPartRatio: 0.5,
+                factorMultiplier: 1,
+                volatilityWeight: Number(indicationSettings.activeVolatilityWeight) || 0.3,
+                positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+                stopLossPositionCostRatios: parseNumericSettingList(
+                  indicationSettings.activeStopLossPositionCostRatios,
+                  DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
+                ),
+                takeProfitMultipliers: parseNumericSettingList(
+                  indicationSettings.activeTakeProfitMultipliers,
+                  DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS,
+                ),
+                marketExitSituations,
+              })
+              if (candidate && (!best || candidate.signalScore > best.signalScore)) best = candidate
+            }
+          }
+        }
+        return best
+      })()
 
       // Auto uses the full enabled Common catalogue (including OBV and
       // Stochastic) on every configured range. A higher range only counts
@@ -1393,28 +1458,7 @@ export class IndicationProcessor {
           })
         }
 
-        // 3. Active — only when volume is elevated above the recent baseline
-        if (
-          indicationSettings.activeEnabled !== false &&
-          recentVolAvg > 0 &&
-          currentVolume >= recentVolAvg * 1.05
-        ) {
-          indications.push({
-            type: "active",
-            symbol,
-            value: currentClose,
-            profitFactor: pf * 0.92,
-            confidence: conf * 0.9,
-            timestamp: now,
-            metadata: {
-              direction: dir,
-              volumeRatio: currentVolume / recentVolAvg,
-              primary: isPrimary,
-            },
-          })
-        }
-
-        // 4. Optimal — gated on high confidence AND strong body. Only the
+        // 3. Optimal — gated on high confidence AND strong body. Only the
         //    primary direction is ever optimal (hedge is never the "best" play).
         if (
           indicationSettings.optimalEnabled !== false &&
@@ -1520,17 +1564,26 @@ export class IndicationProcessor {
         }
         if (
           indicationSettings.activeEnabled !== false &&
+          activeOutbreakRepresentative &&
+          coordinatedDirection === activeOutbreakRepresentative.direction &&
           coordinatedDirection === primaryDir &&
           defaultMultiRangeCoordination.activityAgreement >= 0.5
         ) {
-          indications.push({
+          deferredActiveIndications.push({
             type: "active",
             symbol,
             value: currentClose,
             profitFactor: 1 + defaultMultiRangeCoordination.score * 0.8,
             confidence: Math.min(0.97, defaultMultiRangeCoordination.activityAgreement),
             timestamp: now,
-            metadata: coordinatedMetadata,
+            metadata: {
+              ...coordinatedMetadata,
+              mode: "active_outbreak_multi_range",
+              activeOutbreak: {
+                ...activeOutbreakRepresentative.metrics,
+                protectionProfiles: activeOutbreakRepresentative.protectionProfiles,
+              },
+            },
           })
         }
       }
@@ -1556,7 +1609,35 @@ export class IndicationProcessor {
         indications.push(...signalIndications)
       }
 
-      // 7. Trend — deliberately appended last. Emit the strongest independent
+      // Active — fast causal price outbreak relative to the immediately
+      // preceding market-activity window. It is deliberately appended after
+      // every other family and immediately before Trend.
+      if (
+        indicationSettings.activeEnabled !== false &&
+        activeOutbreakRepresentative
+      ) {
+        deferredActiveIndications.push({
+          type: "active",
+          symbol,
+          value: currentClose,
+          profitFactor: activeOutbreakRepresentative.signalScore,
+          confidence: activeOutbreakRepresentative.confidence,
+          timestamp: now,
+          metadata: {
+            direction: activeOutbreakRepresentative.direction,
+            primary: activeOutbreakRepresentative.direction === primaryDir,
+            mode: "active_outbreak",
+            volumeRatio: recentVolAvg > 0 ? currentVolume / recentVolAvg : 0,
+            activeOutbreak: {
+              ...activeOutbreakRepresentative.metrics,
+              protectionProfiles: activeOutbreakRepresentative.protectionProfiles,
+            },
+          },
+        })
+      }
+      indications.push(...deferredActiveIndications)
+
+      // Trend — deliberately appended last. Emit the strongest independent
       // configuration for every enabled Trend timeframe (1/5/15/30m by default),
       // while IndicationSetsProcessor retains every passing parameter tuple.
       for (const trendEvaluation of trendEvaluations) {

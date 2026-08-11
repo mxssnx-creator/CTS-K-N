@@ -6,10 +6,15 @@ import { StatisticsSectionNav } from "@/components/statistics/statistics-section
 
 export default function DirectTradeStatisticsPage() {
   return (
-    <main className="container mx-auto space-y-5 px-4 py-6">
-      <PageHeader title="Statistics" description="Detailed evaluation and execution analytics" />
-      <StatisticsSectionNav />
-      <DirectTradeStatistics />
-    </main>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <PageHeader
+        title="Direct-Trade Analytics"
+        description="Block comparisons, DDT, position cost, ratios, volumes, and execution outcomes"
+      />
+      <div className="page-section space-y-5">
+        <StatisticsSectionNav />
+        <DirectTradeStatistics />
+      </div>
+    </div>
   )
 }

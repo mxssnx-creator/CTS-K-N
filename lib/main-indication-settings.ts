@@ -1,4 +1,10 @@
 import { DEFAULT_MAIN_COORDINATION_SETTINGS } from "@/lib/multi-range-coordination"
+import {
+  ACTIVE_MARKET_EXIT_SITUATIONS,
+  DEFAULT_ACTIVE_OUTBREAK_RANGES,
+  DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
+  DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS,
+} from "@/lib/active-outbreak-indication"
 
 export const DEFAULT_MAIN_INDICATION_SETTINGS = {
   marketActivity: {
@@ -57,11 +63,19 @@ export const DEFAULT_MAIN_INDICATION_SETTINGS = {
   },
   active: {
     enabled: true,
+    // Independent causal windows. Every window compares its current movement
+    // and activity with the immediately preceding equal-length window.
+    outbreak_ranges: [...DEFAULT_ACTIVE_OUTBREAK_RANGES],
     range: { from: 1, to: 10, step: 1 },
     activity_calculated: { from: 10, to: 90, step: 10 },
     activity_lastpart: { from: 10, to: 90, step: 10 },
     thresholds: [0.5, 1, 1.5, 2, 2.5],
     time_ratios: [0.5, 1],
+    noise_filter: 0.05,
+    volatility_weight: 0.3,
+    stop_loss_position_cost_ratios: [...DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS],
+    take_profit_multipliers: [...DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS],
+    market_exit_situations: [...ACTIVE_MARKET_EXIT_SITUATIONS],
     market_change_range: { from: 1, to: 10, step: 1 },
     market_change_lastpart_base: 20,
     market_change_lastpart_ratios: { from: 0.25, to: 0.5, step: 0.25 },
@@ -129,6 +143,16 @@ function numericList(value: unknown, fallback: readonly number[]): number[] {
       ? value.split(/[\s,|]+/)
       : []
   const result = [...new Set(source.map(Number).filter(Number.isFinite))]
+  return result.length > 0 ? result : [...fallback]
+}
+
+function stringList(value: unknown, fallback: readonly string[]): string[] {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[\s,|]+/)
+      : []
+  const result = [...new Set(source.map(String).map((item) => item.trim()).filter(Boolean))]
   return result.length > 0 ? result : [...fallback]
 }
 
@@ -272,6 +296,21 @@ export function applyCanonicalSettingsToMainDocument(
       enabled: bool(app.activeEnabled, document.active.enabled),
       thresholds: numericList(app.activeThresholds, document.active.thresholds),
       time_ratios: numericList(app.activeTimeRatios, document.active.time_ratios),
+      outbreak_ranges: numericList(app.activeOutbreakRanges, document.active.outbreak_ranges),
+      noise_filter: finite(app.activeNoiseFilter, document.active.noise_filter),
+      volatility_weight: finite(app.activeVolatilityWeight, document.active.volatility_weight),
+      stop_loss_position_cost_ratios: numericList(
+        app.activeStopLossPositionCostRatios,
+        document.active.stop_loss_position_cost_ratios,
+      ),
+      take_profit_multipliers: numericList(
+        app.activeTakeProfitMultipliers,
+        document.active.take_profit_multipliers,
+      ),
+      market_exit_situations: stringList(
+        app.activeMarketExitSituations,
+        document.active.market_exit_situations,
+      ),
     },
     active_advanced: {
       ...document.active_advanced,
@@ -353,6 +392,30 @@ export function mainDocumentToCanonicalSettings(raw: unknown): Document {
     activeTimeRatios: numericList(
       configuration.active_time_ratios ?? active.time_ratios,
       DEFAULT_MAIN_INDICATION_SETTINGS.configuration.active_time_ratios,
+    ),
+    activeOutbreakRanges: numericList(
+      active.outbreak_ranges,
+      DEFAULT_MAIN_INDICATION_SETTINGS.active.outbreak_ranges,
+    ),
+    activeNoiseFilter: Math.max(0, finite(
+      active.noise_filter,
+      DEFAULT_MAIN_INDICATION_SETTINGS.active.noise_filter,
+    )),
+    activeVolatilityWeight: Math.max(0, Math.min(1, finite(
+      active.volatility_weight,
+      DEFAULT_MAIN_INDICATION_SETTINGS.active.volatility_weight,
+    ))),
+    activeStopLossPositionCostRatios: numericList(
+      active.stop_loss_position_cost_ratios,
+      DEFAULT_MAIN_INDICATION_SETTINGS.active.stop_loss_position_cost_ratios,
+    ),
+    activeTakeProfitMultipliers: numericList(
+      active.take_profit_multipliers,
+      DEFAULT_MAIN_INDICATION_SETTINGS.active.take_profit_multipliers,
+    ),
+    activeMarketExitSituations: stringList(
+      active.market_exit_situations,
+      DEFAULT_MAIN_INDICATION_SETTINGS.active.market_exit_situations,
     ),
     activeAdvancedActivityRatios: advancedValues,
     activeAdvancedMinPositions: Math.max(2, Math.round(finite(advanced.min_positions, 3))),

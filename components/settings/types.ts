@@ -217,6 +217,12 @@ export interface Settings {
   indicationFactorMultipliers: number[] | string
   activeThresholds: number[] | string
   activeTimeRatios: number[] | string
+  activeOutbreakRanges: number[] | string
+  activeNoiseFilter: number
+  activeVolatilityWeight: number
+  activeStopLossPositionCostRatios: number[] | string
+  activeTakeProfitMultipliers: number[] | string
+  activeMarketExitSituations: string[] | string
   activeAdvancedEnabled: boolean
   activeAdvancedActivityRatios: number[] | string
   activeAdvancedMinPositions: number

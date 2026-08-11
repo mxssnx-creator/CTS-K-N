@@ -6,6 +6,8 @@ import { useState, useEffect } from "react"
 import { PortfolioOverview } from "@/components/dashboard/portfolio-overview"
 import { PositionsTable } from "@/components/dashboard/positions-table"
 import { OrdersHistory } from "@/components/dashboard/orders-history"
+import { PageLoading, PageState } from "@/components/page-scaffold"
+import { WalletCards } from "lucide-react"
 
 export default function PortfoliosPage() {
   const [portfolios, setPortfolios] = useState([])
@@ -66,39 +68,32 @@ export default function PortfoliosPage() {
     }
   }
 
-  const handleClosePosition = async (positionId: number) => {
-    // Implement position closing logic
-    console.log("[v0] Closing position:", positionId)
-  }
-
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-muted-foreground">Loading portfolios...</p>
+      <div className="page-section">
+        <PageLoading label="Loading portfolio data…" />
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col flex-1 overflow-auto">
-      <div className="p-6 space-y-6">
-        <div>
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-            Portfolio Management
-          </h1>
-          <p className="text-muted-foreground mt-1">Monitor and manage your trading portfolios</p>
-        </div>
-
+    <div className="page-section space-y-5">
         <PortfolioOverview portfolios={portfolios} onSelectPortfolio={setSelectedPortfolio} />
 
         {selectedPortfolio && (
           <>
-            <PositionsTable positions={positions} onClosePosition={handleClosePosition} />
+            <PositionsTable positions={positions} />
 
             <OrdersHistory orders={orders} />
           </>
         )}
-      </div>
+        {!selectedPortfolio && (
+          <PageState
+            icon={WalletCards}
+            title="No portfolio selected"
+            description="Create or select a persisted portfolio to display its positions and order history."
+          />
+        )}
     </div>
   )
 }

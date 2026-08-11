@@ -18,9 +18,12 @@ import { buildProgressionScope } from "@/lib/progression-scope"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
-import { incrementHistoricAggregateOnce } from "@/lib/redis-idempotent-list"
+import {
+  clearHistoricAggregateMarkers,
+  clearHistoricListCompletionMarkers,
+  incrementHistoricAggregateOnce,
+} from "@/lib/redis-idempotent-list"
 import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
-import { scanRedisKeys } from "@/lib/redis-scan"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -47,6 +50,33 @@ function groupConfigsByType<T extends { type?: string }>(configs: T[]): Array<[s
   return Array.from(grouped.entries())
 }
 
+/**
+ * The legacy historic indication calculator currently consumes only these
+ * four numeric inputs; `type` is a display/configuration identity and does not
+ * alter the pure calculation. Grouping across type labels is therefore exact,
+ * not sampling: every config keeps its own aggregate and enabled state while
+ * one result vector is reused for mathematically identical inputs.
+ */
+export function groupHistoricIndicationCalculationConfigs(
+  configs: readonly IndicationConfig[],
+): IndicationConfig[][] {
+  const groups = new Map<string, IndicationConfig[]>()
+  for (const config of configs) {
+    const fingerprint = [
+      Number(config.steps),
+      Number(config.drawdown_ratio),
+      Number(config.active_ratio),
+      Number(config.last_part_ratio),
+    ].join("|")
+    const bucket = groups.get(fingerprint)
+    if (bucket) bucket.push(config)
+    else groups.set(fingerprint, [config])
+  }
+  return [...groups.values()].map((group) =>
+    [...group].sort((left, right) => String(left.id).localeCompare(String(right.id))),
+  )
+}
+
 interface HistoricPricePoint {
   price: number
   timestamp: string
@@ -55,6 +85,8 @@ interface HistoricPricePoint {
 interface HistoricPriceSeries {
   points: HistoricPricePoint[]
   prices: number[]
+  /** prefixSums[n] is the exact accumulated price sum before index n. */
+  prefixSums: number[]
   averageBarVolatility: number
 }
 
@@ -86,19 +118,22 @@ function buildHistoricPriceSeries(candles: readonly any[]): HistoricPriceSeries 
   }
 
   const prices = points.map((point) => point.price)
+  const prefixSums = new Array<number>(prices.length + 1)
+  prefixSums[0] = 0
   let volatilitySum = 0
   let volatilityCount = 0
-  for (let index = 1; index < prices.length; index++) {
+  for (let index = 0; index < prices.length; index++) {
+    prefixSums[index + 1] = prefixSums[index] + prices[index]
+    if (index === 0) continue
     const previous = prices[index - 1]
-    if (previous > 0) {
-      volatilitySum += Math.abs(prices[index] - previous) / previous
-      volatilityCount++
-    }
+    volatilitySum += Math.abs(prices[index] - previous) / previous
+    volatilityCount++
   }
 
   return {
     points,
     prices,
+    prefixSums,
     averageBarVolatility: volatilityCount > 0 ? volatilitySum / volatilityCount : 0,
   }
 }
@@ -249,6 +284,21 @@ export class ConfigSetProcessor {
       runtimeConcurrency.indicationTypeConcurrency,
       4,
     )
+    // Keep one host-wide I/O budget even though symbol and calculation pools
+    // are nested. On the measured 9-CPU profile this resolves to four writes
+    // per active calculation group: up to 16 concurrent Redis operations,
+    // leaving control-plane headroom while avoiding one-by-one persistence.
+    const PERSIST_CONCURRENCY = concurrencyFromEnv(
+      ["PREHISTORIC_PERSIST_CONCURRENCY"],
+      Math.max(
+        1,
+        Math.floor(
+          runtimeConcurrency.ioConcurrency /
+          Math.max(1, SYMBOL_CONCURRENCY * CONFIG_CONCURRENCY),
+        ),
+      ),
+      32,
+    )
 
     const assertRunActive = () => {
       if (options.shouldContinue && !options.shouldContinue()) {
@@ -273,7 +323,8 @@ export class ConfigSetProcessor {
     console.log(
       `[v0] [ConfigSetProcessor] ▶ prehistoric start | symbols=${symbols.length} canonicalTotal=${canonicalSymbolsTotal} | ` +
       `range=${effectiveStart.toISOString()} → ${effectiveEnd.toISOString()} | ` +
-      `timeframe=${timeframeSec}s | symbolConcurrency=${SYMBOL_CONCURRENCY} | configTypeConcurrency=${CONFIG_TYPE_CONCURRENCY} | configConcurrency=${CONFIG_CONCURRENCY}`
+      `timeframe=${timeframeSec}s | symbolConcurrency=${SYMBOL_CONCURRENCY} | configTypeConcurrency=${CONFIG_TYPE_CONCURRENCY} | ` +
+      `configConcurrency=${CONFIG_CONCURRENCY} | persistConcurrency=${PERSIST_CONCURRENCY}`
     )
 
     await initRedis()
@@ -346,12 +397,21 @@ export class ConfigSetProcessor {
     // bounded below, but selection is never truncated by a top-K core.
     const indicationConfigs = allIndicationConfigs
     const strategyConfigs = allStrategyConfigs
+    const indicationCalculationGroups = groupHistoricIndicationCalculationConfigs(indicationConfigs)
+    await this.indicationManager.setResultReferences(
+      indicationCalculationGroups.flatMap((group) => {
+        const referenceConfigId = group[0]?.id || ""
+        return group.map((config) => ({ configId: config.id, referenceConfigId }))
+      }),
+    )
+    await assertCurrentSelection()
     const tConfigsMs = Date.now() - tConfigsStart
 
     console.log(
       `[v0] [ConfigSetProcessor] loaded exhaustive bootstrap grids: ` +
       `${indicationConfigs.length} indication configs, ` +
-      `${strategyConfigs.length} strategy configs (in ${tConfigsMs}ms)`
+      `${strategyConfigs.length} strategy configs; ` +
+      `${indicationCalculationGroups.length} unique indication calculations (in ${tConfigsMs}ms)`
     )
 
     // Store range/concurrency metadata for dashboard. One write is enough;
@@ -368,8 +428,10 @@ export class ConfigSetProcessor {
         } : {}),
         symbol_concurrency: String(SYMBOL_CONCURRENCY),
         config_type_concurrency: String(CONFIG_TYPE_CONCURRENCY),
+        persist_concurrency: String(PERSIST_CONCURRENCY),
         indication_configs: String(indicationConfigs.length),
         indication_configs_available: String(allIndicationConfigs.length),
+        indication_calculation_groups: String(indicationCalculationGroups.length),
         strategy_configs: String(strategyConfigs.length),
         strategy_configs_available: String(allStrategyConfigs.length),
         config_concurrency: String(CONFIG_CONCURRENCY),
@@ -594,9 +656,9 @@ export class ConfigSetProcessor {
             ? this.processIndicationConfigs(
                 symbol,
                 combinedCandles,
-                indicationConfigs,
+                indicationCalculationGroups,
                 CONFIG_CONCURRENCY,
-                CONFIG_TYPE_CONCURRENCY,
+                PERSIST_CONCURRENCY,
                 assertRunActive,
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
                 historicSeries,
@@ -610,6 +672,7 @@ export class ConfigSetProcessor {
                 strategyConfigs,
                 CONFIG_CONCURRENCY,
                 CONFIG_TYPE_CONCURRENCY,
+                PERSIST_CONCURRENCY,
                 assertRunActive,
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
                 historicSeries,
@@ -1078,18 +1141,11 @@ export class ConfigSetProcessor {
       // been written, so remove the guards after a complete generation to
       // prevent one marker key per config/symbol from becoming permanent DB
       // growth during repeated realtime/recoordination cycles.
-      const markerClient = getRedisClient()
-      const markerKeys = await scanRedisKeys(
-        markerClient,
-        `historic:aggregate-marker:${this.connectionId}:*`,
-        { count: 500 },
-      ).catch(() => [])
-      for (let offset = 0; offset < markerKeys.length; offset += 500) {
-        await Promise.allSettled(
-          markerKeys.slice(offset, offset + 500).map((key) => markerClient.del(key)),
-        )
-        await yieldToEventLoop()
-      }
+      const completionClient = getRedisClient()
+      await Promise.all([
+        clearHistoricAggregateMarkers(completionClient, this.connectionId).catch(() => 0),
+        clearHistoricListCompletionMarkers(completionClient, this.connectionId).catch(() => 0),
+      ])
     }
 
     return result
@@ -1097,120 +1153,111 @@ export class ConfigSetProcessor {
 
   /**
    * Process candles through all indication configs.
-   * Each config calculates independently and runs in parallel. Results for a
-   * single config are written as a single batched lpush to minimise Redis ops.
+   * Every config remains independently counted. Configs with mathematically
+   * identical inputs reuse one pure calculation and one bounded detail list;
+   * their aggregate markers and configuration identities remain separate.
    */
   private async processIndicationConfigs(
     symbol: string,
     candles: any[],
-    configs: IndicationConfig[],
+    calculationGroups: IndicationConfig[][],
     concurrency: number,
-    typeConcurrency: number,
+    persistenceConcurrency: number,
     assertRunActive: () => void = () => {},
     dedupeScope = "",
     historicSeries?: HistoricPriceSeries,
     historicGeneration = "",
   ): Promise<number> {
-    if (configs.length === 0) return 0
+    if (calculationGroups.length === 0) return 0
 
-    const configTypeGroups = groupConfigsByType(configs)
-    const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
-    // Floor the nested budget so type fan-out can never multiply beyond the
-    // configured calculation budget. Every type/config still runs exactly
-    // once; only the scheduler's in-flight ceiling changes.
-    const perTypeConcurrency = Math.max(1, Math.floor(concurrency / activeTypeConcurrency))
     const client = getRedisClient()
     const aggregateKey = historicGeneration
       ? historicAggregateKey(this.connectionId, "indications", historicGeneration)
       : ""
-    const perTypeResults = await mapWithConcurrency(
-      configTypeGroups,
-      activeTypeConcurrency,
-      async ([type, typeConfigs]) => {
-        // Configs with identical calculation parameters share one pure
-        // calculation, but every config still receives its own persisted rows
-        // and remains independently counted.
-        const calculationGroups = new Map<string, IndicationConfig[]>()
-        for (const config of typeConfigs) {
-          const key = [
-            config.type,
-            Number(config.steps),
-            Number(config.drawdown_ratio),
-            Number(config.active_ratio),
-            Number(config.last_part_ratio),
-          ].join("|")
-          const bucket = calculationGroups.get(key)
-          if (bucket) bucket.push(config)
-          else calculationGroups.set(key, [config])
-        }
-        const perCalculationResults = await mapWithConcurrency(
-          [...calculationGroups.values()],
-          perTypeConcurrency,
-          async (calculationConfigs) => {
-            try {
+    const perCalculationResults = await mapWithConcurrency(
+      calculationGroups,
+      concurrency,
+      async (calculationConfigs) => {
+        try {
+          assertRunActive()
+          await yieldToEventLoop()
+          assertRunActive()
+          const referenceConfig = calculationConfigs[0]
+          const results = await this.calculateIndicationResults(
+            symbol,
+            candles,
+            referenceConfig,
+            historicSeries,
+          )
+          if (results.length === 0) return 0
+          let buyCount = 0
+          let sellCount = 0
+          for (const result of results) {
+            if (result.signal === "buy") buyCount++
+            else if (result.signal === "sell") sellCount++
+          }
+          const neutralCount = results.length - buyCount - sellCount
+          const persistedCounts = await mapWithConcurrency(
+            calculationConfigs,
+            persistenceConcurrency,
+            async (config) => {
               assertRunActive()
-              await yieldToEventLoop()
-              assertRunActive()
-              const results = await this.calculateIndicationResults(
-                symbol,
-                candles,
-                calculationConfigs[0],
-                historicSeries,
-              )
-              if (results.length === 0) return 0
-              const persistedCounts = await mapWithConcurrency(
-                calculationConfigs,
-                perTypeConcurrency,
-                async (config) => {
-                  assertRunActive()
-                  if (typeof (this.indicationManager as any).addResults === "function") {
-                    const added = await (this.indicationManager as any).addResults(
-                      config.id,
-                      results,
-                      dedupeScope,
-                    )
-                    if (historicGeneration) {
-                      await incrementHistoricAggregateOnce(
-                        client as any,
-                        historicAggregateMarkerKey(this.connectionId, "indication", config.id, dedupeScope),
-                        aggregateKey,
-                        [
-                          { field: "result_count", value: results.length },
-                          { field: "buy_count", value: results.filter((result) => result.signal === "buy").length },
-                          { field: "sell_count", value: results.filter((result) => result.signal === "sell").length },
-                          { field: "neutral_count", value: results.filter((result) => result.signal === "neutral").length },
-                        ],
-                        7 * 24 * 60 * 60,
-                      )
-                    }
-                    return Number.isFinite(Number(added)) ? Number(added) : results.length
-                  }
+              let detailRowsAccepted = results.length
+              // Every alias resolves to the deterministic group's reference
+              // LIST. Persist the immutable rows once; per-config aggregate
+              // markers below still make all identities independently exact.
+              if (config.id === referenceConfig.id) {
+                if (typeof (this.indicationManager as any).addResults === "function") {
+                  const added = await (this.indicationManager as any).addResults(
+                    config.id,
+                    results,
+                    dedupeScope,
+                  )
+                  detailRowsAccepted = Number.isFinite(Number(added))
+                    ? Number(added)
+                    : results.length
+                } else {
                   await mapWithConcurrency(
                     results,
-                    Math.max(1, Math.min(16, perTypeConcurrency)),
+                    Math.max(1, Math.min(16, persistenceConcurrency)),
                     (result) => this.indicationManager.addResult(config.id, result),
                     { yieldEvery: 16 },
                   )
-                  return results.length
-                },
-                { yieldEvery: 1 },
+                }
+              }
+
+              if (!historicGeneration) return detailRowsAccepted
+              const aggregateAccepted = await incrementHistoricAggregateOnce(
+                client as any,
+                historicAggregateMarkerKey(this.connectionId, "indication", config.id, dedupeScope),
+                aggregateKey,
+                [
+                  { field: "result_count", value: results.length },
+                  { field: "buy_count", value: buyCount },
+                  { field: "sell_count", value: sellCount },
+                  { field: "neutral_count", value: neutralCount },
+                ],
+                7 * 24 * 60 * 60,
               )
-              return persistedCounts.reduce((sum, count) => sum + count, 0)
-            } catch (error) {
-              if (error instanceof PrehistoricProcessingCancelledError) throw error
-              console.error(
-                `[v0] [ConfigSetProcessor] ✗ indication group ${calculationConfigs[0]?.id || "unknown"} (${type}):`,
-                error instanceof Error ? error.message : String(error),
-              )
-              return 0
-            }
-          },
-        )
-        return perCalculationResults.reduce((sum, n) => sum + n, 0)
+              // The complete aggregate, not bounded detail retention, is the
+              // authoritative processed-result count for every config.
+              return aggregateAccepted ? results.length : 0
+            },
+            { yieldEvery: 1 },
+          )
+          return persistedCounts.reduce((sum, count) => sum + count, 0)
+        } catch (error) {
+          if (error instanceof PrehistoricProcessingCancelledError) throw error
+          console.error(
+            `[v0] [ConfigSetProcessor] ✗ indication group ${calculationConfigs[0]?.id || "unknown"}:`,
+            error instanceof Error ? error.message : String(error),
+          )
+          return 0
+        }
       },
     )
 
-    return perTypeResults.reduce((sum, n) => sum + n, 0)
+    return perCalculationResults.reduce((sum, n) => sum + n, 0)
   }
 
   /**
@@ -1234,9 +1281,20 @@ export class ConfigSetProcessor {
     const pricePoints = series.points
     const prices = series.prices
 
-    if (prices.length < steps) {
+    if (prices.length < steps || steps < 4) {
       return results
     }
+
+    const requestedLastPart = Number(last_part_ratio)
+    const lastPartRatio = Number.isFinite(requestedLastPart)
+      ? Math.max(0.1, Math.min(0.9, requestedLastPart))
+      : 0.5
+    const lastPartLength = Math.max(2, Math.min(steps - 2, Math.round(steps * lastPartRatio)))
+    const splitIndex = Math.max(1, steps - lastPartLength)
+    const firstLength = splitIndex
+    const secondLength = steps - splitIndex
+    if (firstLength < 2 || secondLength < 2) return results
+    const magnitudeFactor = (1 - Number(drawdown_ratio) * 0.5) * Number(active_ratio)
 
     // ── Adaptive signal threshold ───────────────────────────────────────
     // Previously the gate was a hard-coded `adjustedMagnitude > 0.005`
@@ -1263,27 +1321,19 @@ export class ConfigSetProcessor {
       if ((i + 1) % HISTORIC_CALC_YIELD_EVERY === 0) {
         await yieldToEventLoop()
       }
-      const windowPrices = prices.slice(i, i + steps)
-      const requestedLastPart = Number(last_part_ratio)
-      const lastPartRatio = Number.isFinite(requestedLastPart)
-        ? Math.max(0.1, Math.min(0.9, requestedLastPart))
-        : 0.5
-      const lastPartLength = steps >= 4
-        ? Math.max(2, Math.min(steps - 2, Math.round(steps * lastPartRatio)))
-        : Math.floor(steps / 2)
-      const splitIndex = Math.max(1, steps - lastPartLength)
-      const firstHalf = windowPrices.slice(0, splitIndex)
-      const secondHalf = windowPrices.slice(splitIndex)
-
-      if (firstHalf.length < 2 || secondHalf.length < 2) continue
-
-      const firstAvg = firstHalf.reduce((a: number, b: number) => a + b, 0) / firstHalf.length
-      const secondAvg = secondHalf.reduce((a: number, b: number) => a + b, 0) / secondHalf.length
+      // Prefix sums preserve the complete sliding-window calculation while
+      // removing two slices and two reductions per config/window. This changes
+      // the historic matrix from O(configs × candles × steps) to
+      // O(configs × candles), which materially reduces event-loop pressure.
+      const firstEnd = i + splitIndex
+      const windowEnd = i + steps
+      const firstAvg = (series.prefixSums[firstEnd] - series.prefixSums[i]) / firstLength
+      const secondAvg = (series.prefixSums[windowEnd] - series.prefixSums[firstEnd]) / secondLength
 
       const direction = secondAvg > firstAvg ? 1 : -1
       const magnitude = Math.abs(secondAvg - firstAvg) / firstAvg
 
-      const adjustedMagnitude = magnitude * (1 - drawdown_ratio * 0.5) * active_ratio
+      const adjustedMagnitude = magnitude * magnitudeFactor
 
       let signal: "buy" | "sell" | "neutral" = "neutral"
       let value = 0
@@ -1326,6 +1376,7 @@ export class ConfigSetProcessor {
     configs: StrategyConfig[],
     concurrency: number,
     typeConcurrency: number,
+    persistenceConcurrency: number,
     assertRunActive: () => void = () => {},
     dedupeScope = "",
     historicSeries?: HistoricPriceSeries,
@@ -1369,6 +1420,10 @@ export class ConfigSetProcessor {
     const configTypeGroups = groupConfigsByType(configs)
     const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
     const perTypeConcurrency = Math.max(1, Math.floor(concurrency / activeTypeConcurrency))
+    const perTypePersistenceConcurrency = Math.max(
+      1,
+      Math.floor(persistenceConcurrency / activeTypeConcurrency),
+    )
     const perTypeCounts = await mapWithConcurrency(
       configTypeGroups,
       activeTypeConcurrency,
@@ -1406,7 +1461,7 @@ export class ConfigSetProcessor {
               if (positions.length === 0) return 0
               const persistedCounts = await mapWithConcurrency(
                 calculationConfigs,
-                perTypeConcurrency,
+                perTypePersistenceConcurrency,
                 async (config) => {
                   assertRunActive()
                   let acceptedPositions = positions
@@ -1422,7 +1477,7 @@ export class ConfigSetProcessor {
                   } else {
                     await mapWithConcurrency(
                       positions,
-                      Math.max(1, Math.min(16, perTypeConcurrency)),
+                      Math.max(1, Math.min(16, perTypePersistenceConcurrency)),
                       (position) => this.strategyManager.addPosition(config.id, position),
                       { yieldEvery: 16 },
                     )
