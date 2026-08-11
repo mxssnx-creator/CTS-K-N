@@ -1,8 +1,40 @@
-# Active Context: CTS-V-yd Trading System (main project)
+# Active Context: CTS-K-N Trading System (main project)
 
 ## Current State
 
 **Project Status**: ✅ Active production trading system with validated release branches
+
+## Current Release Checkpoint (2026-08-11)
+
+- Active publication branch: `agent/persistent-workflow-20260811` in
+  `mxssnx-creator/CTS-K-N`. Continue from the newest commit on that branch;
+  do not assume `main` already contains these release blocks.
+- CPU/capability-adaptive processing lanes, async configuration types, forced
+  `BTCUSDT/SOLUSDT/BCHUSDT/XRPUSDT`, complete Direct/Main DCA coordination,
+  and Direct-Trade Overview strategy/exchange rolling statistics are complete.
+- The selected seven-day DCA default is the exact 15-minute relative profile:
+  TP `0.6%`, SL `1.95%`, step distances `0.3/0.6/1.0/1.6%`, four `1×` adds,
+  maximum position-volume ratio `5`. Backtest result: `+26.47794%`, PF
+  `17.64218`, maximum drawdown `1.20067%`, average DDT `136.67m`.
+- Direct live orders now use a durable 30-day economic-intent record, stable
+  cross-exchange client IDs, ACK/timeout recovery without blind replay,
+  terminal-only cumulative partial-fill accounting, crash-persistent
+  open/Block/DCA/close generations, reduce-only/hedge-mode connector controls,
+  and fail-closed unsupported spot/legacy adapters. Binance code-less success
+  and OKX per-order `sCode` are handled correctly.
+- The production installer fails closed without at least one non-placeholder
+  supported exchange credential pair, requires live readiness, shared durable
+  coordination where configured, and a fresh Direct-Trade processor heartbeat.
+  This is code/preflight verified only: an actual remote host and authenticated
+  exchange were not supplied, so no real order was submitted and no external
+  production deployment may be claimed yet.
+- Validation at this checkpoint: final 151 Jest suites / 1,037 tests,
+  TypeScript, ESLint, fresh Next production build
+  (42 static pages, 347 trace files), schema-v97/Kilo/installer/deployment
+  contracts, 1,374-file secret scan with zero findings, 48-hour paper-only live
+  lifecycle, and physical SIGKILL/same-port recovery. The live/recovery soaks
+  use isolated Next dist directories and preserve the production `BUILD_ID`,
+  `next-env.d.ts`, and `tsconfig.json` byte-for-byte.
 
 ## Mandatory Continuity Workflow
 

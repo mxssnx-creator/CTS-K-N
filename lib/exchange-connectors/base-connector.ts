@@ -62,6 +62,8 @@ export interface ExchangePosition {
 
 export interface ExchangeOrder {
   orderId: string
+  /** Venue-side idempotency key supplied by the caller, when the exchange returns it. */
+  clientOrderId?: string
   symbol: string
   side: "buy" | "sell"
   type: "limit" | "market"

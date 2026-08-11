@@ -1610,12 +1610,11 @@ export class BingXConnector extends BaseExchangeConnector {
       const raw = data.data
       if (!raw) return null
       const rawStatus = String(raw.status ?? raw.orderStatus ?? "").toUpperCase()
+      const compactStatus = rawStatus.replace(/[^A-Z]/g, "")
       const normalizedStatus =
-        rawStatus === "FILLED"          ? "filled" :
-        rawStatus === "PARTIALLY_FILLED" ? "partially_filled" :
-        rawStatus === "CANCELED"         ? "cancelled" :
-        rawStatus === "CANCELLED"        ? "cancelled" :
-        rawStatus === "REJECTED"         ? "cancelled" :
+        compactStatus.includes("CANCEL") || compactStatus === "REJECTED" ? "cancelled" :
+        compactStatus === "FILLED"       ? "filled" :
+        compactStatus.includes("PART") && compactStatus.includes("FILLED") ? "partially_filled" :
         rawStatus === "NEW"              ? "pending" :
         rawStatus === "PENDING"          ? "pending" : "pending"
 
@@ -1631,6 +1630,7 @@ export class BingXConnector extends BaseExchangeConnector {
 
       return {
         orderId:     String(raw.orderId   ?? raw.clientOrderId ?? ""),
+        clientOrderId: String(raw.clientOrderId ?? raw.clientOrderID ?? "") || undefined,
         symbol:      String(raw.symbol    ?? ""),
         side:        String(raw.side      ?? "").toLowerCase() as "buy" | "sell",
         type:        normalizedType as ExchangeOrder["type"],

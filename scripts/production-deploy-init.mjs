@@ -108,6 +108,23 @@ async function verifyLiveTradeReadiness() {
   return { required, connectionIds: states }
 }
 
+async function verifyDirectTradeProcessor(maxAttempts = 20) {
+  let last = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    last = await request("/api/trade-engine/direct-trade/status", { timeoutMs: 10_000 })
+    if (last?.success === true && last?.processor?.isHealthy === true) {
+      console.log(`[Prod Init] Direct-Trade processor lease is healthy (tick ${Number(last.processor.tickCount) || 0})`)
+      return {
+        healthy: true,
+        lastTick: last.processor.lastTick,
+        tickCount: Number(last.processor.tickCount) || 0,
+      }
+    }
+    if (attempt < maxAttempts) await sleep(1_000)
+  }
+  throw new Error(`Direct-Trade processor did not publish a fresh leased heartbeat: ${JSON.stringify(last?.processor || null)}`)
+}
+
 async function waitForReadiness(maxAttempts = 45) {
   let last = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -154,6 +171,7 @@ async function main() {
   await injectCredentials()
   const core = await verifyCoreApis()
   const liveTrade = await verifyLiveTradeReadiness()
+  const directTradeProcessor = await verifyDirectTradeProcessor()
   if (Number(core.database?.schemaVersion) !== Number(readiness.migrations.current_version)) {
     throw new Error(`Database schema version mismatch: ${core.database?.schemaVersion} != ${readiness.migrations.current_version}`)
   }
@@ -167,6 +185,7 @@ async function main() {
     sharedRedis: core.database.isSharedConfigured,
     liveOrderCoordinationReady: core.database.liveOrderCoordinationReady === true,
     liveTradeReady: liveTrade.connectionIds,
+    directTradeProcessor,
     connectionCount: core.connectionCount,
     durationMs: Date.now() - startedAt,
   }, null, 2))

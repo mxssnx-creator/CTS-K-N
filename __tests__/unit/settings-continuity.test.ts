@@ -94,10 +94,16 @@ describe("settings continuity", () => {
     }))
 
     expect(response.status).toBe(200)
-    expect(setAppSettings).toHaveBeenCalledWith({ keepMe: 17, changed: 2 })
+    const expected = {
+      keepMe: 17,
+      changed: 2,
+      forcedSymbols: ["BTC", "SOL", "BCH", "XRP"],
+      forced_symbols: ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"],
+    }
+    expect(setAppSettings).toHaveBeenCalledWith(expected)
     await expect(response.json()).resolves.toEqual(expect.objectContaining({
       success: true,
-      settings: { keepMe: 17, changed: 2 },
+      settings: expected,
     }))
   })
 

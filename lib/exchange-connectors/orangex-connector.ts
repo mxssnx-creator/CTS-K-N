@@ -175,6 +175,9 @@ export class OrangeXConnector extends BaseExchangeConnector {
     )
     return {
       orderId: String(raw?.order_id ?? raw?.orderId ?? raw?.id ?? ""),
+      clientOrderId: String(
+        raw?.custom_order_id ?? raw?.customOrderId ?? raw?.client_order_id ?? raw?.clientOrderId ?? raw?.label ?? "",
+      ) || undefined,
       symbol: String(raw?.instrument_name ?? raw?.symbol ?? ""),
       side,
       type,
@@ -370,6 +373,13 @@ export class OrangeXConnector extends BaseExchangeConnector {
         const errorMsg = error instanceof Error ? error.message : String(error)
         this.logError(`✗ Failed to place order: ${errorMsg}`)
         return { success: false, error: errorMsg }
+      }
+    }
+
+    if (options.reduceOnly === true || options.clientOrderId) {
+      return {
+        success: false,
+        error: "OrangeX legacy adapter cannot guarantee reduce-only/idempotent control orders",
       }
     }
 

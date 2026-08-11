@@ -273,9 +273,13 @@ export function buildDirectTradeOverview48h(
   const environments = (["simulated", "exchange"] as DirectTradeOverviewMode[])
     .map((mode) => {
       const modePositions = positions.filter((position) => overviewMode(position) === mode)
-      const openPositions = modePositions.filter(
-        (position) => String(position.status || "").toLowerCase() === "open",
-      )
+      const openPositions = modePositions.filter((position) => {
+        const status = String(position.status || "").toLowerCase()
+        // `opening` is a durable, actively reconciled exchange strategy. Keep
+        // it visible in Open instead of briefly hiding real exposure from the
+        // overview while its venue acknowledgement becomes authoritative.
+        return status === "open" || status === "opening"
+      })
       const closedPositions = modePositions.filter((position) => {
         if (String(position.status || "").toLowerCase() !== "closed") return false
         const at = closedAt(position)

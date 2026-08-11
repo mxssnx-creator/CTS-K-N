@@ -1,5 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getSettings, setSettings, getRedisClient, initRedis } from "@/lib/redis-db"
+import {
+  getSettings,
+  setSettings,
+  getRedisBackend,
+  getRedisClient,
+  initRedis,
+  persistNow,
+} from "@/lib/redis-db"
 import {
   clampDirectTradeSymbolCount,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
@@ -204,6 +211,16 @@ async function getClient() {
   return getRedisClient()
 }
 
+async function persistDirectTradeSnapshot(context: string): Promise<void> {
+  // Network Redis commits SET/MULTI before returning. Inline snapshot mode is
+  // different: force its current mutation version to disk before confirming a
+  // control-plane or position-lifecycle write that must survive SIGKILL.
+  if (typeof getRedisBackend !== "function" || getRedisBackend() !== "inline-local") return
+  if (typeof persistNow !== "function" || !(await persistNow())) {
+    throw new Error(`Direct-Trade ${context} could not be persisted before acknowledgement`)
+  }
+}
+
 async function getState(): Promise<DirectTradeState> {
   try {
     const client = await getClient()
@@ -289,6 +306,7 @@ async function getState(): Promise<DirectTradeState> {
 async function setState(state: DirectTradeState): Promise<void> {
   const client = await getClient()
   await client.set(DIRECT_TRADE_STATE_KEY, JSON.stringify(state))
+  await persistDirectTradeSnapshot("state")
 }
 
 function clampStopLossRatio(value: unknown, fallback = 0.75): number {
@@ -691,6 +709,7 @@ export async function POST(request: NextRequest) {
     if (body.action === "reset-stats") {
       const client = await getClient()
       await client.set(DIRECT_TRADE_STATS_KEY, JSON.stringify(DEFAULT_STATS))
+      await persistDirectTradeSnapshot("statistics reset")
       return NextResponse.json({ success: true, message: "Stats reset" })
     }
 
@@ -729,6 +748,7 @@ export async function POST(request: NextRequest) {
       write.set(DIRECT_TRADE_CONFIG_PERFORMANCE_KEY, JSON.stringify(configPerformance))
       write.set(DIRECT_TRADE_PROCESSOR_KEY, JSON.stringify(processor))
       await write.exec()
+      await persistDirectTradeSnapshot("processor position sync")
       // The owner receives the compact, normalized settings acknowledgement
       // with the write it already performs. This lets a running worker react
       // to an operator save on its next sync instead of waiting for a loop

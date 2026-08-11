@@ -35,6 +35,18 @@ describe("Direct-Trade 48-hour overview", () => {
     expect(directTradeOverviewCategory(positions[3])).toBe("dca")
   })
 
+  test("counts a durable exchange opening as active without treating it as closed", () => {
+    const overview = buildDirectTradeOverview48h([{
+      id: "opening-live-dca",
+      mode: "live",
+      status: "opening",
+      strategyType: "dca",
+      openedAt: new Date(NOW - 5_000).toISOString(),
+    }], NOW)
+
+    expect(row(overview, "exchange", "dca")).toMatchObject({ open: 1, closed: 0 })
+  })
+
   test("uses canonical summed profit factor and overall equity-curve drawdown duration", () => {
     const positions = [
       { status: "closed", mode: "simulated", closedAt: atHoursAgo(6), pnl: 10, realizedPnlUsdt: 10 },

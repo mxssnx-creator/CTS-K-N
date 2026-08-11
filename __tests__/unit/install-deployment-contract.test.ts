@@ -94,8 +94,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("upsert_env FORCE_SIMULATED 0")
     expect(installer).toContain("upsert_env ALLOW_LIVE_ORDER_PLACEMENT 1")
     expect(installer).toContain("upsert_env CTS_REQUIRE_LIVE_TRADE_READY 1")
-    expect(installer).toContain("No exchange credentials were supplied during installation; the server will install in simulation mode until credentials are configured")
-    expect(installer).not.toContain('fatal "Production server installation requires valid credentials')
+    expect(installer).toContain('fatal "Production server installation requires valid credentials for at least one supported exchange')
+    expect(installer).not.toContain("the server will install in simulation mode until credentials are configured")
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
     expect(installer).toContain("handoff_existing_install_to_bootstrap")
     expect(installer).toContain("clean stop → delete → reinstall flow")
@@ -145,6 +145,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(credentialRoute).toContain('await injectForConnection("bybit-x03")')
     expect(credentialRoute).toContain('"bybit-x03": BASE_CONNECTION_CREDENTIALS["bybit-x03"]')
     expect(productionInit).toContain("async function verifyLiveTradeReadiness()")
+    expect(productionInit).toContain("async function verifyDirectTradeProcessor")
+    expect(productionInit).toContain("Direct-Trade processor did not publish a fresh leased heartbeat")
     expect(productionInit).toContain("CTS_REQUIRE_LIVE_TRADE_READY === \"1\"")
     expect(productionInit).toContain("/api/connections/${encodeURIComponent(connectionId)}/engine-states")
     const vercel = JSON.parse(vercelConfig)
@@ -503,7 +505,7 @@ describe("production installation and Kilo deployment contract", () => {
       encoding: "utf8",
     })
     expect(output).toContain('"success":true')
-    expect(output).toContain('"schemaVersion":96')
+    expect(output).toContain('"schemaVersion":97')
   })
 
   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {

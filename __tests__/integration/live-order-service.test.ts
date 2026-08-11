@@ -5,6 +5,7 @@
 const hashStore = new Map<string, Record<string, any>>()
 const kvStore = new Map<string, string>()
 const setStore = new Map<string, Set<string>>()
+const mockPersistNow = jest.fn(async () => true)
 
 jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
@@ -21,7 +22,18 @@ jest.mock("@/lib/redis-db", () => ({
   savePosition: jest.fn(async (position: any) => {
     kvStore.set(`live:position:${position.id}`, JSON.stringify(position))
   }),
+  getRedisBackend: jest.fn(() => "inline-local"),
+  persistNow: (...args: unknown[]) => mockPersistNow(...args),
   getRedisClient: jest.fn(() => ({
+    get: async (key: string) => kvStore.get(key) ?? null,
+    set: async (key: string, value: string, options?: { NX?: boolean; XX?: boolean }) => {
+      if (options?.NX && kvStore.has(key)) return null
+      if (options?.XX && !kvStore.has(key)) return null
+      kvStore.set(key, value)
+      return "OK"
+    },
+    del: async (key: string) => kvStore.delete(key) ? 1 : 0,
+    expire: async (key: string) => kvStore.has(key) || setStore.has(key) ? 1 : 0,
     hincrby: async (key: string, field: string, delta: number) => {
       const hash = hashStore.get(key) || {}
       hash[field] = String((Number(hash[field] || 0) || 0) + delta)
@@ -66,6 +78,7 @@ describe("live-order-service integration accounting", () => {
     hashStore.clear()
     kvStore.clear()
     setStore.clear()
+    mockPersistNow.mockClear()
     jest.resetModules()
   })
 
@@ -177,6 +190,413 @@ describe("live-order-service integration accounting", () => {
       live_orders_placed_count: "1",
     })
     expect(hashStore.get("progression:conn-direct-pending")?.live_orders_filled_count).toBeUndefined()
+  })
+
+  test("Direct-Trade replays a completed control id without placing a second exchange order", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({
+        success: true,
+        orderId: "control-exchange-1",
+        status: "filled",
+        filledQty: 1,
+        filledPrice: 100,
+      })),
+    }
+    const input = {
+      connectionId: "conn-direct-idempotent",
+      symbol: "BTCUSDT",
+      side: "long",
+      positionDirection: "long" as const,
+      quantity: 1,
+      price: 100,
+      connector,
+      connection: { id: "conn-direct-idempotent", position_mode: "one_way" },
+      clientOrderId: "dtopen_stable_1",
+      source: "direct-trade-open",
+      persistPosition: false,
+    }
+
+    const first = await placeLiveOrder(input)
+    const replay = await placeLiveOrder(input)
+
+    expect(first).toMatchObject({ success: true, controlState: "completed", idempotentReplay: false })
+    expect(replay).toMatchObject({ success: true, controlState: "completed", idempotentReplay: true })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(mockPersistNow).toHaveBeenCalled()
+    expect(mockPersistNow.mock.invocationCallOrder[0]).toBeLessThan(connector.placeOrder.mock.invocationCallOrder[0])
+    expect(hashStore.get("progression:conn-direct-idempotent")).toMatchObject({
+      live_orders_placed_count: "1",
+      live_orders_filled_count: "1",
+      live_positions_created_count: "1",
+      live_volume_usd_total: "100",
+    })
+  })
+
+  test("Direct-Trade reconciles a pending control id to its final fill without resubmission", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({ success: true, orderId: "control-pending-1", status: "new" })),
+      getOrder: jest.fn()
+        .mockResolvedValueOnce({ orderId: "control-pending-1", status: "pending", filledQty: 0, filledPrice: 0 })
+        .mockResolvedValueOnce({ orderId: "control-pending-1", status: "filled", filledQty: 0.75, filledPrice: 102 }),
+    }
+    const input = {
+      connectionId: "conn-direct-reconcile",
+      symbol: "SOLUSDT",
+      side: "long",
+      positionDirection: "long" as const,
+      quantity: 0.75,
+      price: 101,
+      connector,
+      connection: { id: "conn-direct-reconcile", position_mode: "one_way" },
+      clientOrderId: "dtdca_stable_1",
+      source: "direct-trade-open",
+      persistPosition: false,
+      countPositionCreated: false,
+      countAccumulated: true,
+    }
+
+    const pending = await placeLiveOrder(input)
+    const reconciled = await placeLiveOrder(input)
+
+    expect(pending).toMatchObject({ success: true, pendingReconciliation: true, controlState: "acknowledged" })
+    expect(reconciled).toMatchObject({
+      success: true,
+      pendingReconciliation: false,
+      controlState: "completed",
+      idempotentReplay: true,
+      fill: { filledQty: 0.75, filledPrice: 102 },
+    })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(hashStore.get("progression:conn-direct-reconcile")).toMatchObject({
+      live_orders_placed_count: "1",
+      live_orders_filled_count: "1",
+      live_orders_accumulated_count: "1",
+      live_volume_usd_total: "76.5",
+    })
+    expect(hashStore.get("progression:conn-direct-reconcile")?.live_positions_created_count).toBeUndefined()
+  })
+
+  test("Direct-Trade waits for an active partial and books its cumulative volume only when terminal", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({ success: true, orderId: "control-partial-1", status: "new" })),
+      getOrder: jest.fn()
+        .mockResolvedValueOnce({ orderId: "control-partial-1", status: "partially_filled", filledQty: 0.4, filledPrice: 100 })
+        .mockResolvedValueOnce({ orderId: "control-partial-1", status: "cancelled", filledQty: 0.4, filledPrice: 100 }),
+    }
+    const input = {
+      connectionId: "conn-direct-partial",
+      symbol: "BTCUSDT",
+      side: "long",
+      positionDirection: "long" as const,
+      quantity: 1,
+      price: 100,
+      connector,
+      connection: { id: "conn-direct-partial", position_mode: "one_way" },
+      clientOrderId: "dtblk_partial_1",
+      source: "direct-trade-open",
+      persistPosition: false,
+      countPositionCreated: false,
+      countAccumulated: true,
+    }
+
+    const partial = await placeLiveOrder(input)
+    expect(partial).toMatchObject({ pendingReconciliation: true, controlState: "acknowledged" })
+    expect(hashStore.get("progression:conn-direct-partial")?.live_orders_filled_count).toBeUndefined()
+    expect(hashStore.get("progression:conn-direct-partial")?.live_volume_usd_total).toBeUndefined()
+
+    const terminal = await placeLiveOrder(input)
+    expect(terminal).toMatchObject({
+      pendingReconciliation: false,
+      controlState: "completed",
+      idempotentReplay: true,
+      fill: { filledQty: 0.4, filledPrice: 100 },
+    })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(hashStore.get("progression:conn-direct-partial")).toMatchObject({
+      live_orders_placed_count: "1",
+      live_orders_filled_count: "1",
+      live_orders_accumulated_count: "1",
+      live_volume_usd_total: "40",
+    })
+  })
+
+  test("Direct-Trade refuses to reuse one control id for different economic order inputs", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({
+        success: true,
+        orderId: "control-conflict-1",
+        status: "filled",
+        filledQty: 1,
+        filledPrice: 100,
+      })),
+    }
+    const base = {
+      connectionId: "conn-direct-conflict",
+      symbol: "XRPUSDT",
+      side: "long",
+      positionDirection: "long" as const,
+      price: 100,
+      connector,
+      connection: { id: "conn-direct-conflict", position_mode: "one_way" },
+      clientOrderId: "dtopen_conflict_1",
+      source: "direct-trade-open",
+      persistPosition: false,
+    }
+
+    await placeLiveOrder({ ...base, quantity: 1 })
+    await expect(placeLiveOrder({ ...base, quantity: 2 })).rejects.toMatchObject({
+      mode: "direct_order_control_conflict",
+      statusCode: 409,
+    })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+  })
+
+  test("Direct-Trade treats a transport exception as ambiguous and reconciles by client id", async () => {
+    const { exchangeClientOrderIdForControl, placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => { throw new Error("ECONNRESET after request write") }),
+      // BingX's connector returns a success/order wrapper for this endpoint;
+      // the service must unwrap it before interpreting status and fills.
+      getOrderDetails: jest.fn(async (_symbol: string, _orderId: string | undefined, clientOrderId: string) => ({
+        success: true,
+        order: {
+          orderId: "recovered-after-reset",
+          clientOrderId,
+          status: "filled",
+          filledQty: 1,
+          filledPrice: 99.5,
+        },
+      })),
+    }
+    const input = {
+      connectionId: "conn-direct-ambiguous",
+      symbol: "BCHUSDT",
+      side: "short",
+      positionDirection: "short" as const,
+      quantity: 1,
+      price: 100,
+      connector,
+      connection: { id: "conn-direct-ambiguous", position_mode: "one_way" },
+      clientOrderId: "dtclose_ambiguous_1",
+      source: "direct-trade-close",
+      reduceOnly: true,
+      persistPosition: false,
+      updateCounters: false,
+    }
+
+    const ambiguous = await placeLiveOrder(input)
+    const recovered = await placeLiveOrder(input)
+
+    expect(ambiguous).toMatchObject({ success: true, pendingReconciliation: true })
+    expect(recovered).toMatchObject({
+      success: true,
+      controlState: "completed",
+      idempotentReplay: true,
+      orderId: "recovered-after-reset",
+      fill: { filledQty: 1, filledPrice: 99.5 },
+    })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(connector.getOrderDetails).toHaveBeenCalledWith(
+      "BCHUSDT",
+      undefined,
+      exchangeClientOrderIdForControl("dtclose_ambiguous_1"),
+    )
+  })
+
+  test("Direct-Trade recovers an OKX acknowledgement by its portable venue client id", async () => {
+    const { exchangeClientOrderIdForControl, placeLiveOrder } = await import("@/lib/live-order-service")
+    const controlId = "dtopen_okx_ack_without_order_id_1"
+    const venueClientOrderId = exchangeClientOrderIdForControl(controlId)
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => { throw new Error("network timeout after request write") }),
+      getOpenOrders: jest.fn(async () => [{
+        ordId: "okx-recovered-order",
+        clOrdId: venueClientOrderId,
+        state: "filled",
+        accFillSz: "0.5",
+        avgPx: "101.25",
+      }]),
+      getOrderHistory: jest.fn(async () => []),
+    }
+    const input = {
+      connectionId: "conn-direct-okx-recovery",
+      symbol: "BTC-USDT-SWAP",
+      side: "long" as const,
+      positionDirection: "long" as const,
+      quantity: 0.5,
+      price: 101,
+      connector,
+      connection: { id: "conn-direct-okx-recovery", exchange: "okx", position_mode: "one_way" },
+      clientOrderId: controlId,
+      source: "direct-trade-open",
+      persistPosition: false,
+    }
+
+    const pending = await placeLiveOrder(input)
+    const recovered = await placeLiveOrder(input)
+
+    expect(venueClientOrderId).toMatch(/^[A-Za-z0-9]{1,32}$/)
+    expect(venueClientOrderId).not.toBe(controlId)
+    expect(pending).toMatchObject({ success: true, pendingReconciliation: true })
+    expect(recovered).toMatchObject({
+      success: true,
+      orderId: "okx-recovered-order",
+      pendingReconciliation: false,
+      controlState: "completed",
+      fill: { filledQty: 0.5, filledPrice: 101.25 },
+    })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(connector.placeOrder.mock.calls[0][5]).toMatchObject({ clientOrderId: venueClientOrderId })
+  })
+
+  test("portable venue control ids are stable and do not alias separator variants", async () => {
+    const { exchangeClientOrderIdForControl } = await import("@/lib/live-order-service")
+
+    const first = exchangeClientOrderIdForControl("dt_open_ab_c")
+    const second = exchangeClientOrderIdForControl("dt_open_a_bc")
+    expect(first).toMatch(/^[A-Za-z0-9]{1,32}$/)
+    expect(first.length).toBeLessThanOrEqual(32)
+    expect(first).toBe(exchangeClientOrderIdForControl("dt_open_ab_c"))
+    expect(first).not.toBe(second)
+    expect(exchangeClientOrderIdForControl("PortableControl123")).toBe("PortableControl123")
+  })
+
+  test("Direct-Trade makes a pre-submit leverage rejection terminal without touching placeOrder", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: false, error: "leverage not allowed" })),
+      placeOrder: jest.fn(),
+    }
+    const input = {
+      connectionId: "conn-direct-leverage-failure",
+      symbol: "BTCUSDT",
+      side: "long" as const,
+      positionDirection: "long" as const,
+      quantity: 1,
+      price: 100,
+      leverage: 10,
+      connector,
+      connection: { id: "conn-direct-leverage-failure", position_mode: "one_way" },
+      clientOrderId: "dtopen_leverage_failure_1",
+      source: "direct-trade-open",
+      persistPosition: false,
+    }
+
+    const failed = await placeLiveOrder(input)
+    const replay = await placeLiveOrder(input)
+
+    expect(failed).toMatchObject({
+      success: false,
+      error: "leverage not allowed",
+      pendingReconciliation: false,
+      controlState: "failed",
+    })
+    expect(replay).toMatchObject({ success: false, controlState: "failed", idempotentReplay: true })
+    expect(connector.setLeverage).toHaveBeenCalledTimes(1)
+    expect(connector.placeOrder).not.toHaveBeenCalled()
+    expect(hashStore.get("progression:conn-direct-leverage-failure")).toMatchObject({
+      live_orders_failed_count: "1",
+    })
+  })
+
+  test("Direct-Trade releases a claim when inline durability fails before placement", async () => {
+    mockPersistNow.mockResolvedValueOnce(false).mockResolvedValueOnce(false)
+    const { directOrderControlKey, placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(),
+    }
+
+    await expect(placeLiveOrder({
+      connectionId: "conn-direct-persist-failure",
+      symbol: "SOLUSDT",
+      side: "long",
+      positionDirection: "long",
+      quantity: 1,
+      price: 100,
+      connector,
+      connection: { id: "conn-direct-persist-failure", position_mode: "one_way" },
+      clientOrderId: "dtopen_persist_failure_1",
+      source: "direct-trade-open",
+      persistPosition: false,
+    })).rejects.toMatchObject({ mode: "direct_order_control_not_durable", statusCode: 503 })
+
+    expect(connector.placeOrder).not.toHaveBeenCalled()
+    expect(kvStore.has(directOrderControlKey(
+      "conn-direct-persist-failure",
+      "dtopen_persist_failure_1",
+    ))).toBe(false)
+  })
+
+  test("normalizes OKX/Pionex fill aliases and terminal partial cancellations", async () => {
+    const { isTerminalLiveOrderResult, parseOrderFill } = await import("@/lib/live-order-service")
+
+    expect(parseOrderFill({ state: "filled", accFillSz: "0.75", avgPx: "101.5" })).toMatchObject({
+      filled: true,
+      filledQty: 0.75,
+      filledPrice: 101.5,
+      status: "filled",
+    })
+    expect(parseOrderFill({ status: "FILLED", filledSize: "2", avgFillPrice: "50" })).toMatchObject({
+      filled: true,
+      filledQty: 2,
+      filledPrice: 50,
+    })
+    expect(isTerminalLiveOrderResult({
+      state: "partially_filled_canceled",
+      accFillSz: "0.4",
+      avgPx: "100",
+    }, 1)).toBe(true)
+  })
+
+  test.each([
+    {
+      name: "spot",
+      connection: { id: "conn-direct-spot", exchange: "pionex", api_type: "spot" },
+    },
+    {
+      name: "OrangeX legacy",
+      connection: {
+        id: "conn-direct-orangex-legacy",
+        exchange: "orangex",
+        api_type: "perpetual_futures",
+        connection_library: "legacy",
+      },
+    },
+  ])("blocks $name Direct-Trade connections that cannot guarantee reduce-only idempotency", async ({ connection }) => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(),
+    }
+
+    await expect(placeLiveOrder({
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      side: "long",
+      positionDirection: "long",
+      quantity: 1,
+      price: 100,
+      connector,
+      connection,
+      clientOrderId: `dtopen_${connection.id}`,
+      source: "direct-trade-open",
+      persistPosition: false,
+    })).rejects.toMatchObject({
+      mode: "unsupported_direct_trade_connection",
+      statusCode: 409,
+    })
+    expect(connector.placeOrder).not.toHaveBeenCalled()
   })
 
 

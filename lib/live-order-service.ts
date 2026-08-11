@@ -1,8 +1,17 @@
+import { createHash } from "node:crypto"
 import { createExchangeConnector, exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { evaluateRealTradeReadiness, hasUsableLiveCredentials, isForcedSimulation } from "@/lib/real-trade-gates"
-import { getConnection, getMarketData, getRedisClient, initRedis, savePosition } from "@/lib/redis-db"
+import {
+  getConnection,
+  getMarketData,
+  getRedisBackend,
+  getRedisClient,
+  initRedis,
+  persistNow,
+  savePosition,
+} from "@/lib/redis-db"
 import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import type { ExchangeConnection } from "@/lib/types"
 import { resolveExecutableQuantity } from "@/lib/order-quantity"
@@ -34,6 +43,8 @@ export interface PlaceLiveOrderInput {
   existingPosition?: any
   persistPosition?: boolean
   updateCounters?: boolean
+  countPositionCreated?: boolean
+  countAccumulated?: boolean
   source?: string
   // Closing a long is a sell order and closing a short is a buy order. Keep
   // the *position* side explicit so hedge-mode connectors never infer the
@@ -41,6 +52,145 @@ export interface PlaceLiveOrderInput {
   positionDirection?: LiveOrderDirection
   reduceOnly?: boolean
   clientOrderId?: string
+}
+
+const DIRECT_ORDER_CONTROL_TTL_SECONDS = 60 * 60 * 24 * 30
+
+type DirectOrderControlState = "submitting" | "acknowledged" | "completed" | "failed"
+
+interface DirectOrderControlRecord {
+  version: 1
+  fingerprint: string
+  state: DirectOrderControlState
+  connectionId: string
+  clientOrderId: string
+  exchangeClientOrderId: string
+  symbol: string
+  direction: LiveOrderDirection
+  positionDirection: LiveOrderDirection
+  reduceOnly: boolean
+  quantity: number
+  orderType: "market" | "limit"
+  orderId?: string
+  response?: Record<string, any>
+  lastError?: string
+  createdAt: number
+  updatedAt: number
+}
+
+/**
+ * Durable idempotency record used by the leased Direct-Trade worker. The
+ * encoded segments prevent a connection/control id from changing Redis key
+ * boundaries while keeping the exact same lookup usable by the API route.
+ */
+export function directOrderControlKey(connectionId: string, clientOrderId: string): string {
+  return `live:direct_order_control:${encodeURIComponent(String(connectionId))}:${encodeURIComponent(String(clientOrderId))}`
+}
+
+/**
+ * One stable id that is valid on every supported derivatives venue. OKX is
+ * the narrowest contract (ASCII alphanumeric, max 32 chars), while the
+ * worker's durable control ids intentionally contain separators. Preserve an
+ * already-portable id verbatim; otherwise retain a readable prefix and append
+ * a 64-bit digest so removing separators can never create a practical alias.
+ */
+export function exchangeClientOrderIdForControl(clientOrderId: string): string {
+  const source = String(clientOrderId || "").trim()
+  const alphanumeric = source.replace(/[^A-Za-z0-9]/g, "")
+  if (source && source === alphanumeric && source.length <= 32) return source
+  const prefix = (alphanumeric || "dt").slice(0, 16)
+  const digest = createHash("sha256").update(source).digest("hex").slice(0, 16)
+  return `${prefix}${digest}`.slice(0, 32)
+}
+
+function directOrderFingerprint(input: {
+  symbol: string
+  direction: LiveOrderDirection
+  positionDirection: LiveOrderDirection
+  reduceOnly: boolean
+  quantity: number
+  orderType: "market" | "limit"
+}): string {
+  return JSON.stringify([
+    input.symbol,
+    input.direction,
+    input.positionDirection,
+    input.reduceOnly,
+    Number(input.quantity).toPrecision(15),
+    input.orderType,
+  ])
+}
+
+function parseDirectOrderControlRecord(raw: unknown): DirectOrderControlRecord | null {
+  if (typeof raw !== "string" || !raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed?.version !== 1 || typeof parsed?.fingerprint !== "string") return null
+    return parsed as DirectOrderControlRecord
+  } catch {
+    return null
+  }
+}
+
+async function persistDirectOrderControlSnapshot(): Promise<void> {
+  if (typeof getRedisBackend !== "function" || getRedisBackend() !== "inline-local") return
+  if (typeof persistNow !== "function" || !(await persistNow())) {
+    throw Object.assign(new Error("Direct-Trade control order could not be persisted before exchange execution"), {
+      statusCode: 503,
+      mode: "direct_order_control_not_durable",
+    })
+  }
+}
+
+async function writeDirectOrderControlRecord(record: DirectOrderControlRecord): Promise<void> {
+  const client = getRedisClient() as any
+  const key = directOrderControlKey(record.connectionId, record.clientOrderId)
+  // Do not downgrade a terminal outcome when an older in-flight reconciliation
+  // returns after it. Terminal records are immutable for the lifetime of the
+  // control id.
+  const current = parseDirectOrderControlRecord(await client.get?.(key))
+  if ((current?.state === "completed" || current?.state === "failed")
+    && record.state !== "completed" && record.state !== "failed") return
+  await client.set(key, JSON.stringify(record), { XX: true, EX: DIRECT_ORDER_CONTROL_TTL_SECONDS })
+  await persistDirectOrderControlSnapshot()
+}
+
+async function claimDirectOrderControl(record: DirectOrderControlRecord): Promise<{
+  owned: boolean
+  record: DirectOrderControlRecord
+}> {
+  const client = getRedisClient() as any
+  const key = directOrderControlKey(record.connectionId, record.clientOrderId)
+  const claimed = await client.set(key, JSON.stringify(record), { NX: true, EX: DIRECT_ORDER_CONTROL_TTL_SECONDS })
+  if (claimed === "OK" || claimed === true) {
+    // This is the no-duplicate boundary: an exchange call is permitted only
+    // after the exact economic intent survives a process/host crash.
+    try {
+      await persistDirectOrderControlSnapshot()
+    } catch (error) {
+      // The venue has not been touched yet. Release the in-memory claim so a
+      // repaired persistence backend can safely retry instead of inheriting a
+      // permanent `submitting` record for an order that was never sent.
+      if (typeof client.del === "function") await client.del(key).catch(() => 0)
+      await persistDirectOrderControlSnapshot().catch(() => false)
+      throw error
+    }
+    return { owned: true, record }
+  }
+  const existing = parseDirectOrderControlRecord(await client.get?.(key))
+  if (!existing) {
+    throw Object.assign(new Error("Direct-Trade control order could not acquire or read its durable idempotency record"), {
+      statusCode: 503,
+      mode: "direct_order_control_unavailable",
+    })
+  }
+  if (existing.fingerprint !== record.fingerprint) {
+    throw Object.assign(new Error(`Direct-Trade control id ${record.clientOrderId} was already used for a different order`), {
+      statusCode: 409,
+      mode: "direct_order_control_conflict",
+    })
+  }
+  return { owned: false, record: existing }
 }
 
 async function resolveSubmittedQuantity(input: PlaceLiveOrderInput, symbol: string): Promise<{
@@ -110,9 +260,33 @@ export function parseOrderFill(result: any, fallbackQuantity = 0, fallbackPrice 
   // they are not execution facts.  Only explicit execution fields may enter
   // live accounting.  The fallback arguments remain simulation-only and are
   // supplied by the caller when the deterministic paper adapter is used.
-  const filledQty = Number(result?.filledQty ?? result?.executedQty ?? result?.cumQty ?? 0) || 0
-  const filledPrice = Number(result?.filledPrice ?? result?.avgPrice ?? result?.averagePrice ?? 0) || fallbackPrice || 0
-  const status = String(result?.status ?? (filledQty > 0 ? "filled" : "placed")).toLowerCase()
+  const filledQty = Number(
+    result?.filledQty
+    ?? result?.executedQty
+    ?? result?.cumQty
+    ?? result?.cumExecQty
+    ?? result?.accFillSz
+    ?? result?.filledSize
+    ?? result?.filledQuantity
+    ?? result?.filled_amount
+    ?? 0,
+  ) || 0
+  const filledPrice = Number(
+    result?.filledPrice
+    ?? result?.avgPrice
+    ?? result?.averagePrice
+    ?? result?.avgPx
+    ?? result?.avgFillPrice
+    ?? result?.average_price
+    ?? 0,
+  ) || fallbackPrice || 0
+  const status = String(
+    result?.status
+    ?? result?.orderStatus
+    ?? result?.state
+    ?? result?.order_state
+    ?? (filledQty > 0 ? "filled" : "placed"),
+  ).toLowerCase()
   const filled = filledQty > 0 && (status.includes("fill") || filledQty >= (Number(fallbackQuantity) || 0) * 0.99)
   return { filled, filledQty, filledPrice, status }
 }
@@ -173,6 +347,198 @@ async function hydrateExchangeOrderResult(
   return result
 }
 
+export function isTerminalLiveOrderResult(result: any, requestedQuantity = 0): boolean {
+  const status = String(
+    result?.status
+    ?? result?.orderStatus
+    ?? result?.state
+    ?? result?.order_state
+    ?? "",
+  ).trim().toLowerCase().replace(/[\s-]+/g, "_")
+  const compactStatus = status.replace(/_/g, "")
+  // A partially-filled cancellation is terminal and its cumulative fill must
+  // be applied exactly once. Check terminal cancellation/rejection markers
+  // before the generic partial branch.
+  if (["cancel", "reject", "expire", "fail", "deactivat"].some((marker) => compactStatus.includes(marker))) {
+    return true
+  }
+  if ([
+    "filled",
+    "fully_filled",
+    "closed",
+    "complete",
+    "completed",
+    "done",
+    "cancelled",
+    "canceled",
+    "rejected",
+    "expired",
+    "failed",
+  ].includes(status)) return true
+  if (status.includes("partial")) return false
+  const filledQty = Number(
+    result?.filledQty
+    ?? result?.executedQty
+    ?? result?.cumQty
+    ?? result?.cumExecQty
+    ?? result?.accFillSz
+    ?? result?.filledSize
+    ?? result?.filledQuantity
+    ?? result?.filled_amount
+    ?? 0,
+  ) || 0
+  return requestedQuantity > 0 && filledQty >= requestedQuantity * 0.999999
+}
+
+function liveOrderId(result: any): string {
+  return String(
+    result?.orderId
+    ?? result?.order_id
+    ?? result?.orderID
+    ?? result?.ordId
+    ?? result?.orderNo
+    ?? result?.id
+    ?? "",
+  ).trim()
+}
+
+function liveOrderClientId(result: any): string {
+  return String(
+    result?.clientOrderId
+    ?? result?.clientOrderID
+    ?? result?.orderLinkId
+    ?? result?.custom_order_id
+    ?? result?.customOrderId
+    ?? result?.client_order_id
+    ?? result?.clOrdId
+    ?? result?.newClientOrderId
+    ?? result?.label
+    ?? "",
+  ).trim()
+}
+
+function matchesDirectOrderControl(result: any, record: DirectOrderControlRecord): boolean {
+  const orderId = liveOrderId(result)
+  const clientOrderId = liveOrderClientId(result)
+  const exchangeClientOrderId = record.exchangeClientOrderId
+    || exchangeClientOrderIdForControl(record.clientOrderId)
+  return Boolean(
+    (record.orderId && orderId && record.orderId === orderId)
+    || (clientOrderId && (clientOrderId === exchangeClientOrderId || clientOrderId === record.clientOrderId))
+    || (!record.orderId && orderId && (orderId === exchangeClientOrderId || orderId === record.clientOrderId)),
+  )
+}
+
+async function boundedConnectorRead(read: () => unknown, timeoutMs = 2_500): Promise<any> {
+  return await new Promise<any>((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      resolve(null)
+    }, timeoutMs)
+    Promise.resolve()
+      .then(read)
+      .then((value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(value)
+      })
+      .catch(() => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(null)
+      })
+  })
+}
+
+function orderRows(value: any): any[] {
+  if (Array.isArray(value)) return value
+  if (Array.isArray(value?.orders)) return value.orders
+  if (Array.isArray(value?.data)) return value.data
+  if (Array.isArray(value?.data?.orders)) return value.data.orders
+  if (Array.isArray(value?.list)) return value.list
+  if (Array.isArray(value?.result?.orders)) return value.result.orders
+  if (Array.isArray(value?.result?.list)) return value.result.list
+  return []
+}
+
+function unwrapConnectorOrderDetail(value: any): any | null {
+  if (!value || typeof value !== "object" || value?.success === false) return null
+  const nested = value?.order ?? value?.data?.order ?? value?.data
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) return nested
+  const hasOrderShape = Boolean(
+    liveOrderId(value)
+    || liveOrderClientId(value)
+    || value?.status
+    || value?.orderStatus
+    || value?.state
+    || value?.order_state,
+  )
+  return hasOrderShape ? value : null
+}
+
+async function reconcileDirectOrderControl(
+  connector: any,
+  record: DirectOrderControlRecord,
+): Promise<any | null> {
+  const exchangeClientOrderId = record.exchangeClientOrderId
+    || exchangeClientOrderIdForControl(record.clientOrderId)
+  if (record.orderId && typeof connector?.getOrder === "function") {
+    const byOrderId = await boundedConnectorRead(() => connector.getOrder(record.symbol, record.orderId))
+    if (byOrderId && typeof byOrderId === "object") return byOrderId
+  }
+
+  // BingX exposes a client-order-id query that can recover the especially
+  // important ACK-without-order-id case. Calling it conditionally keeps other
+  // connectors fully duck-typed.
+  if (typeof connector?.getOrderDetails === "function") {
+    const detail = unwrapConnectorOrderDetail(await boundedConnectorRead(
+      () => connector.getOrderDetails(record.symbol, record.orderId || undefined, exchangeClientOrderId),
+    ))
+    if (detail) return detail
+  } else if (typeof connector?.getOpenOrder === "function") {
+    const detail = unwrapConnectorOrderDetail(await boundedConnectorRead(
+      () => connector.getOpenOrder(record.symbol, record.orderId || undefined, exchangeClientOrderId),
+    ))
+    if (detail) return detail
+  }
+
+  const [openOrders, history] = await Promise.all([
+    typeof connector?.getOpenOrders === "function"
+      ? boundedConnectorRead(() => connector.getOpenOrders(record.symbol))
+      : Promise.resolve(null),
+    typeof connector?.getOrderHistory === "function"
+      ? boundedConnectorRead(() => connector.getOrderHistory(record.symbol, 100))
+      : Promise.resolve(null),
+  ])
+  return [...orderRows(openOrders), ...orderRows(history)].find((row) => matchesDirectOrderControl(row, record)) || null
+}
+
+function isAmbiguousPlacementFailure(resultOrError: any): boolean {
+  const message = String(
+    resultOrError?.error
+    ?? resultOrError?.message
+    ?? resultOrError
+    ?? "",
+  ).toLowerCase()
+  return [
+    "ambiguous",
+    "ack_without_order_id",
+    "without order id",
+    "reconcile",
+    "timed out",
+    "timeout",
+    "network",
+    "socket",
+    "econnreset",
+    "duplicate",
+    "already exists",
+  ].some((needle) => message.includes(needle))
+}
+
 export async function loadLiveOrderConnection(connectionId: string): Promise<any> {
   await initRedis()
   let connection: any = null
@@ -227,6 +593,33 @@ function resolveLiveTradeIntent(payload: Record<string, any>): LiveTradeIntent {
 
 function isDirectTradePayload(payload: Record<string, any>): boolean {
   return payload.directTrade === true || payload.direct_trade === true || String(payload.source || "").toLowerCase().startsWith("direct-trade-")
+}
+
+function assertDirectTradeExecutionContract(
+  connection: any,
+  payload: Record<string, any>,
+  willUseRealExchange: boolean,
+): void {
+  if (!willUseRealExchange || !isDirectTradePayload(payload)) return
+  const apiType = String(connection?.api_type || connection?.apiType || "").trim().toLowerCase()
+  if (apiType.includes("spot")) {
+    throw Object.assign(new Error("Direct-Trade live execution requires a derivatives connection with reduce-only close support"), {
+      statusCode: 409,
+      mode: "unsupported_direct_trade_connection",
+    })
+  }
+  const exchange = String(connection?.exchange || "").trim().toLowerCase()
+  const connectionLibrary = String(
+    connection?.connection_library
+    || connection?.connectionLibrary
+    || "",
+  ).trim().toLowerCase()
+  if ((exchange === "orangex" || exchange === "orange-x") && connectionLibrary === "legacy") {
+    throw Object.assign(new Error("Direct-Trade live execution requires the OrangeX JSON-RPC adapter; the legacy adapter cannot guarantee reduce-only/idempotent controls"), {
+      statusCode: 409,
+      mode: "unsupported_direct_trade_connection",
+    })
+  }
 }
 
 function resolveEntryReadiness(connection: any, payload: Record<string, any>) {
@@ -294,7 +687,10 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
 
 export async function setupLiveOrderLeverage(connector: any, symbol: string, leverage = 1): Promise<void> {
   if (leverage > 1 && typeof connector?.setLeverage === "function") {
-    await connector.setLeverage(symbol, leverage).catch(() => undefined)
+    const result = await connector.setLeverage(symbol, leverage)
+    if (result?.success === false) {
+      throw new Error(result?.error || `Exchange rejected ${leverage}x leverage for ${symbol}`)
+    }
   }
 }
 
@@ -456,7 +852,193 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     const safetyFailure = getLiveOrderSafetyFailure(orderPayload)
     if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
   }
-  await setupLiveOrderLeverage(connector, symbol, Number(input.leverage || 1))
+  assertDirectTradeExecutionContract(connection, orderPayload, willUseRealExchange)
+  const clientOrderId = String(input.clientOrderId || "").trim()
+  const usesDirectControl = isDirectTradePayload(orderPayload) && clientOrderId.length > 0
+  const now = Date.now()
+  let directControl: DirectOrderControlRecord | null = usesDirectControl
+    ? {
+        version: 1,
+        fingerprint: directOrderFingerprint({
+          symbol,
+          direction,
+          positionDirection,
+          reduceOnly: input.reduceOnly === true,
+          // Fingerprint the worker's stable economic request. Precision/min-
+          // notional metadata may be refreshed between reconciliation calls;
+          // that must not turn the same control id into a false conflict.
+          quantity: Number(input.quantity),
+          orderType: input.orderType || "market",
+        }),
+        state: "submitting",
+        connectionId: input.connectionId,
+        clientOrderId,
+        exchangeClientOrderId: exchangeClientOrderIdForControl(clientOrderId),
+        symbol,
+        direction,
+        positionDirection,
+        reduceOnly: input.reduceOnly === true,
+        quantity: submitted.quantity,
+        orderType: input.orderType || "market",
+        createdAt: now,
+        updatedAt: now,
+      }
+    : null
+  let ownsDirectControl = false
+  if (directControl) {
+    const claim = await claimDirectOrderControl(directControl)
+    directControl = claim.record
+    ownsDirectControl = claim.owned
+  }
+
+  const progressionIdentity = (orderId?: string) => String(orderId || clientOrderId || "").trim()
+  const progressionOptions = {
+    countPositionCreated: input.countPositionCreated !== false,
+    countAccumulated: input.countAccumulated === true,
+  }
+  const recordReconciledProgression = async (fill: ParsedFill, orderId: string, terminal: boolean) => {
+    if (!willUseRealExchange || input.updateCounters === false) return
+    const identity = progressionIdentity(orderId)
+    await recordLiveOrderProgression(
+      input.connectionId,
+      symbol,
+      direction,
+      "placed",
+      0,
+      identity ? `${symbol}:${direction}:${identity}:placed` : undefined,
+      progressionOptions,
+    )
+    // An active partial is still one unresolved order. Count/volume it only
+    // after the venue makes the cumulative execution terminal so later reads
+    // cannot leave Direct-Trade statistics permanently understated.
+    if (terminal && fill.filledQty > 0) {
+      await recordLiveOrderProgression(
+        input.connectionId,
+        symbol,
+        direction,
+        "filled",
+        fill.filledQty * fill.filledPrice,
+        identity ? `${symbol}:${direction}:${identity}:filled` : undefined,
+        progressionOptions,
+      )
+    }
+  }
+  const completeDirectControlFailure = async (failure: unknown, raw?: any) => {
+    const failedOrderId = liveOrderId(raw)
+    const error = String(
+      (failure as any)?.error
+      ?? (failure as any)?.message
+      ?? failure
+      ?? "Failed to place order",
+    )
+    if (input.updateCounters !== false) {
+      const identity = progressionIdentity(failedOrderId)
+      await recordLiveOrderProgression(
+        input.connectionId,
+        symbol,
+        direction,
+        "failed",
+        0,
+        identity ? `${symbol}:${direction}:${identity}:failed` : undefined,
+        progressionOptions,
+      )
+    }
+    const response = {
+      success: false,
+      error,
+      mode,
+      requestedQuantity: submitted.requestedQuantity,
+      submittedQuantity: submitted.quantity,
+      quantityAdjusted: submitted.adjusted,
+      quantityAdjustmentReason: submitted.reason,
+      raw,
+      pendingReconciliation: false,
+      controlState: directControl ? "failed" : undefined,
+    }
+    if (directControl) {
+      directControl = {
+        ...directControl,
+        state: "failed",
+        orderId: failedOrderId || directControl.orderId,
+        response,
+        lastError: error,
+        updatedAt: Date.now(),
+      }
+      await writeDirectOrderControlRecord(directControl)
+    }
+    return response
+  }
+
+  if (directControl && !ownsDirectControl) {
+    if ((directControl.state === "completed" || directControl.state === "failed") && directControl.response) {
+      return { ...directControl.response, idempotentReplay: true }
+    }
+    const reconciled = await reconcileDirectOrderControl(connector, directControl)
+    if (!reconciled) {
+      return {
+        ...(directControl.response || {}),
+        success: directControl.state !== "failed",
+        mode: directControl.response?.mode || mode,
+        orderId: directControl.orderId || directControl.response?.orderId || "N/A",
+        symbol,
+        side: exchangeSide,
+        direction,
+        quantity: directControl.quantity,
+        requestedQuantity: submitted.requestedQuantity,
+        submittedQuantity: directControl.quantity,
+        fill: directControl.response?.fill || { filled: false, filledQty: 0, filledPrice: 0, status: "pending_reconciliation" },
+        details: directControl.response?.details || null,
+        pendingReconciliation: directControl.state !== "failed",
+        controlState: directControl.state,
+        idempotentReplay: true,
+      }
+    }
+    const reconciledOrderId = liveOrderId(reconciled) || directControl.orderId || "N/A"
+    const fill = willUseRealExchange
+      ? parseOrderFill(reconciled, 0, 0)
+      : parseOrderFill(reconciled, directControl.quantity, input.price || 0)
+    const terminal = isTerminalLiveOrderResult(reconciled, directControl.quantity)
+    const response = {
+      success: true,
+      mode,
+      orderId: reconciledOrderId,
+      symbol,
+      side: exchangeSide,
+      direction,
+      quantity: directControl.quantity,
+      requestedQuantity: submitted.requestedQuantity,
+      submittedQuantity: directControl.quantity,
+      quantityAdjusted: submitted.adjusted,
+      quantityAdjustmentReason: submitted.reason,
+      leverage: input.leverage || 1,
+      fill,
+      position: directControl.response?.position || null,
+      details: reconciled,
+      pendingReconciliation: !terminal,
+      controlState: terminal ? "completed" : "acknowledged",
+      idempotentReplay: true,
+    }
+    await recordReconciledProgression(fill, reconciledOrderId, terminal)
+    directControl = {
+      ...directControl,
+      state: terminal ? "completed" : "acknowledged",
+      orderId: reconciledOrderId !== "N/A" ? reconciledOrderId : directControl.orderId,
+      response,
+      updatedAt: Date.now(),
+    }
+    await writeDirectOrderControlRecord(directControl)
+    return response
+  }
+
+  try {
+    await setupLiveOrderLeverage(connector, symbol, Number(input.leverage || 1))
+  } catch (error) {
+    // Leverage configuration happens strictly before placeOrder. Therefore a
+    // failure here is definitive: mark the claimed generation terminal so the
+    // worker may advance instead of reconciling an order that was never sent.
+    if (!directControl) throw error
+    return completeDirectControlFailure(error)
+  }
   const hedgeMode = String(connection.position_mode || "").toLowerCase().includes("hedge") || String(connection.position_mode || "").toLowerCase().includes("dual")
   const options = hedgeMode
     ? {
@@ -466,41 +1048,95 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
         // opposing side plus explicit positionSide; the connector preserves
         // that safe venue-specific behaviour.
         reduceOnly: input.reduceOnly === true,
-        clientOrderId: input.clientOrderId,
+        clientOrderId: directControl?.exchangeClientOrderId || clientOrderId,
       }
     : {
         hedgeMode: false,
         reduceOnly: input.reduceOnly === true,
-        clientOrderId: input.clientOrderId,
+        clientOrderId: directControl?.exchangeClientOrderId || clientOrderId,
       }
-  let result = await connector.placeOrder(symbol, exchangeSide, submitted.quantity, input.price || 0, input.orderType || "market", options)
-  if (!result?.success) {
-    const failedOrderId = result?.orderId || result?.order_id || result?.id
-    if (input.updateCounters !== false) {
-      await recordLiveOrderProgression(
-        input.connectionId,
-        symbol,
-        direction,
-        "failed",
-        0,
-        failedOrderId ? `${symbol}:${direction}:${failedOrderId}:failed` : undefined,
-      )
-    }
-    return {
-      success: false,
-      error: result?.error || "Failed to place order",
+  let result: any
+  try {
+    result = await connector.placeOrder(symbol, exchangeSide, submitted.quantity, input.price || 0, input.orderType || "market", options)
+  } catch (error) {
+    if (!directControl) throw error
+    const message = error instanceof Error ? error.message : String(error)
+    const response = {
+      success: true,
       mode,
+      orderId: directControl.orderId || "N/A",
+      symbol,
+      side: exchangeSide,
+      direction,
+      quantity: submitted.quantity,
       requestedQuantity: submitted.requestedQuantity,
       submittedQuantity: submitted.quantity,
       quantityAdjusted: submitted.adjusted,
       quantityAdjustmentReason: submitted.reason,
-      raw: result,
+      leverage: input.leverage || 1,
+      fill: { filled: false, filledQty: 0, filledPrice: 0, status: "pending_reconciliation" },
+      position: null,
+      details: { error: message },
+      pendingReconciliation: true,
+      controlState: "acknowledged",
+      idempotentReplay: false,
     }
+    directControl = { ...directControl, state: "acknowledged", response, lastError: message, updatedAt: Date.now() }
+    await writeDirectOrderControlRecord(directControl)
+    return response
   }
-  const exchangeOrderId = result.orderId || result.order_id || result.id
+  if (!result?.success) {
+    const failedOrderId = result?.orderId || result?.order_id || result?.id
+    if (directControl && isAmbiguousPlacementFailure(result)) {
+      const response = {
+        success: true,
+        mode,
+        orderId: failedOrderId || "N/A",
+        symbol,
+        side: exchangeSide,
+        direction,
+        quantity: submitted.quantity,
+        requestedQuantity: submitted.requestedQuantity,
+        submittedQuantity: submitted.quantity,
+        quantityAdjusted: submitted.adjusted,
+        quantityAdjustmentReason: submitted.reason,
+        leverage: input.leverage || 1,
+        fill: { filled: false, filledQty: 0, filledPrice: 0, status: "pending_reconciliation" },
+        position: null,
+        details: result,
+        pendingReconciliation: true,
+        controlState: "acknowledged",
+        idempotentReplay: false,
+      }
+      directControl = {
+        ...directControl,
+        state: "acknowledged",
+        orderId: failedOrderId ? String(failedOrderId) : directControl.orderId,
+        response,
+        lastError: String(result?.error || "Ambiguous exchange acknowledgement"),
+        updatedAt: Date.now(),
+      }
+      await writeDirectOrderControlRecord(directControl)
+      return response
+    }
+    return completeDirectControlFailure(result?.error || "Failed to place order", result)
+  }
+  let exchangeOrderId = liveOrderId(result)
+  if (directControl) {
+    directControl = {
+      ...directControl,
+      state: "acknowledged",
+      orderId: exchangeOrderId || directControl.orderId,
+      updatedAt: Date.now(),
+    }
+    // Persist the venue id before the follow-up read. A crash during hydration
+    // can then reconcile by exchange id without ever placing again.
+    await writeDirectOrderControlRecord(directControl)
+  }
   if (willUseRealExchange && exchangeOrderId) {
     result = await hydrateExchangeOrderResult(connector, symbol, String(exchangeOrderId), result)
   }
+  exchangeOrderId = liveOrderId(result) || exchangeOrderId
   const orderId = exchangeOrderId || "N/A"
   // In live mode neither the requested quantity nor the requested limit/mark
   // price is an execution.  Keep those fallbacks for simulation only; live
@@ -509,18 +1145,30 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const fill = willUseRealExchange
     ? parseOrderFill(result, 0, 0)
     : parseOrderFill(result, submitted.quantity, input.price || 0)
+  const terminal = !willUseRealExchange || isTerminalLiveOrderResult(result, submitted.quantity)
   let position: any = null
   if (!willUseRealExchange) {
     if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
-    if (input.updateCounters !== false) await recordLiveOrderProgression(input.connectionId, symbol, direction, "simulated", position?.volumeUsd || (fill.filledQty * fill.filledPrice), exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:simulated` : undefined)
+    if (input.updateCounters !== false) await recordLiveOrderProgression(
+      input.connectionId,
+      symbol,
+      direction,
+      "simulated",
+      position?.volumeUsd || (fill.filledQty * fill.filledPrice),
+      progressionIdentity(exchangeOrderId) ? `${symbol}:${direction}:${progressionIdentity(exchangeOrderId)}:simulated` : undefined,
+      progressionOptions,
+    )
   } else {
     if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId })
     if (input.updateCounters !== false) {
-      await recordLiveOrderProgression(input.connectionId, symbol, direction, "placed", 0, exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:placed` : undefined)
-      if ((position?.executedQuantity || fill.filledQty) > 0) await recordLiveOrderProgression(input.connectionId, symbol, direction, "filled", position?.volumeUsd || (fill.filledQty * fill.filledPrice), exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:filled` : undefined)
+      const identity = progressionIdentity(exchangeOrderId)
+      await recordLiveOrderProgression(input.connectionId, symbol, direction, "placed", 0, identity ? `${symbol}:${direction}:${identity}:placed` : undefined, progressionOptions)
+      if ((position?.executedQuantity || fill.filledQty) > 0 && (!directControl || terminal)) {
+        await recordLiveOrderProgression(input.connectionId, symbol, direction, "filled", position?.volumeUsd || (fill.filledQty * fill.filledPrice), identity ? `${symbol}:${direction}:${identity}:filled` : undefined, progressionOptions)
+      }
     }
   }
-  return {
+  const response = {
     success: true,
     mode,
     orderId,
@@ -536,5 +1184,19 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     fill,
     position,
     details: result,
+    pendingReconciliation: directControl ? !terminal : undefined,
+    controlState: directControl ? terminal ? "completed" : "acknowledged" : undefined,
+    idempotentReplay: directControl ? false : undefined,
   }
+  if (directControl) {
+    directControl = {
+      ...directControl,
+      state: terminal ? "completed" : "acknowledged",
+      orderId: exchangeOrderId || directControl.orderId,
+      response,
+      updatedAt: Date.now(),
+    }
+    await writeDirectOrderControlRecord(directControl)
+  }
+  return response
 }

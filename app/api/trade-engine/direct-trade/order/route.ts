@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
-import { placeLiveOrder, type LiveOrderDirection } from "@/lib/live-order-service"
+import { directOrderControlKey, placeLiveOrder, type LiveOrderDirection } from "@/lib/live-order-service"
 
 export const dynamic = "force-dynamic"
 
@@ -55,6 +55,8 @@ export async function POST(request: NextRequest) {
     const leverage = Math.max(1, Math.min(125, Math.floor(Number(body?.leverage) || 1)))
     const price = Number(body?.price)
     const clientOrderId = controlId(body?.controlId, kind, positionId)
+    const reconcileOnly = body?.reconcileOnly === true
+    const stage = body?.stage === "block" || body?.stage === "dca" ? "accumulation" : "entry"
 
     if (!kind || !instanceId || !connectionId || !positionId || !positionDirection || !Number.isFinite(quantity) || quantity <= 0 || !clientOrderId) {
       return NextResponse.json({ success: false, error: "Invalid Direct-Trade control order" }, { status: 400 })
@@ -71,7 +73,16 @@ export async function POST(request: NextRequest) {
     }
     const state = stateRaw ? JSON.parse(stateRaw) : {}
     if (kind === "open" && (!state?.enabled || !state?.liveMode || state?.connectionId !== connectionId)) {
-      return NextResponse.json({ success: false, error: "Direct-Trade live entry is not currently authorised for this connection" }, { status: 409 })
+      // Stop blocks every new exposure immediately. It must not, however,
+      // prevent a durable ACK from being reconciled after the operator stops
+      // the worker. `reconcileOnly` is accepted only when the exact control id
+      // already exists, so this branch can never place a fresh order.
+      const durableControlExists = reconcileOnly
+        ? Boolean(await client.get(directOrderControlKey(connectionId, clientOrderId)))
+        : false
+      if (!durableControlExists) {
+        return NextResponse.json({ success: false, error: "Direct-Trade live entry is not currently authorised for this connection" }, { status: 409 })
+      }
     }
 
     const side = kind === "open"
@@ -92,6 +103,8 @@ export async function POST(request: NextRequest) {
       // service still owns connector safety, precision, audit and counters.
       persistPosition: false,
       updateCounters: kind === "open",
+      countPositionCreated: kind === "open" && stage === "entry",
+      countAccumulated: kind === "open" && stage === "accumulation",
       source: `direct-trade-${kind}`,
       safetyPayload: {
         confirmLiveOrderPlacement: true,
@@ -100,7 +113,13 @@ export async function POST(request: NextRequest) {
       },
     })
     if (!result.success) {
-      return NextResponse.json({ success: false, error: result.error, mode: result.mode }, { status: 409 })
+      return NextResponse.json({
+        success: false,
+        error: result.error,
+        mode: result.mode,
+        controlState: result.controlState,
+        pendingReconciliation: result.pendingReconciliation === true,
+      })
     }
     return NextResponse.json({
       success: true,
@@ -110,6 +129,9 @@ export async function POST(request: NextRequest) {
       fill: result.fill,
       details: result.details,
       controlId: clientOrderId,
+      controlState: result.controlState,
+      pendingReconciliation: result.pendingReconciliation === true,
+      idempotentReplay: result.idempotentReplay === true,
     })
   } catch (error: any) {
     return NextResponse.json(

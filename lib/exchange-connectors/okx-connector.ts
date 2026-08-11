@@ -1,6 +1,11 @@
 // Plain `crypto` — Edge build aliases this to `false` via `next.config.mjs`.
 import * as crypto from "crypto"
-import { BaseExchangeConnector, type ExchangeConnectorResult, type ExchangeCredentials } from "./base-connector"
+import {
+  BaseExchangeConnector,
+  type ExchangeConnectorResult,
+  type ExchangeCredentials,
+  type PlaceOrderOptions,
+} from "./base-connector"
 
 export class OKXConnector extends BaseExchangeConnector {
   constructor(credentials: ExchangeCredentials, exchange: string = "okx") {
@@ -124,7 +129,8 @@ export class OKXConnector extends BaseExchangeConnector {
     side: "buy" | "sell",
     quantity: number,
     price?: number,
-    orderType: "limit" | "market" = "limit"
+    orderType: "limit" | "market" = "limit",
+    options: PlaceOrderOptions = {},
   ): Promise<{ success: boolean; orderId?: string; error?: string }> {
     try {
       this.log(`Placing ${orderType} ${side} order: ${quantity} ${symbol}`)
@@ -136,11 +142,19 @@ export class OKXConnector extends BaseExchangeConnector {
       
       const body = {
         instId: symbol,
-        tdMode: "cross",
+        tdMode: String(this.credentials.marginType || "cross").toLowerCase().includes("isol") ? "isolated" : "cross",
         side: side.toLowerCase(),
         ordType: orderType === "market" ? "market" : "limit",
         sz: String(quantity),
       } as any
+
+      const clientOrderId = String(options.clientOrderId || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 32)
+      if (clientOrderId) body.clOrdId = clientOrderId
+      if (options.hedgeMode === true) {
+        body.posSide = String(options.positionSide || (side === "buy" ? "LONG" : "SHORT")).toLowerCase()
+      } else if (options.reduceOnly === true) {
+        body.reduceOnly = true
+      }
 
       if (price && orderType === "limit") {
         body.px = String(price)
@@ -164,11 +178,12 @@ export class OKXConnector extends BaseExchangeConnector {
 
       const data = await response.json()
 
-      if (data.code !== "0") {
-        throw new Error(`OKX API error: ${data.msg || "Unknown error"}`)
+      const orderResult = data.data?.[0]
+      if (data.code !== "0" || (orderResult?.sCode != null && String(orderResult.sCode) !== "0")) {
+        throw new Error(`OKX API error: ${orderResult?.sMsg || data.msg || "Unknown error"}`)
       }
 
-      const orderId = data.data?.[0]?.ordId
+      const orderId = orderResult?.ordId
       this.log(`✓ Order placed successfully: ${orderId}`)
       return { success: true, orderId }
     } catch (error) {

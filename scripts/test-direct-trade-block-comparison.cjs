@@ -23,7 +23,11 @@ const {
 
 const symbolCount = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_SYMBOLS) || 4))
 const startSymbolIndex = Math.max(0, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_START_SYMBOL) || 0))
-const historyMinutes = Math.max(30, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_HISTORY_MINUTES) || 90))
+// Ninety minutes does not contain enough independent 30m signal pulses to
+// exercise staged Count lanes and can make every Count PF trivially equal.
+// Use the same exact 48-hour horizon as Direct-Trade overview/warmup by
+// default; callers may still request a shorter diagnostic explicitly.
+const historyMinutes = Math.max(30, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_HISTORY_MINUTES) || 48 * 60))
 const historyHours = historyMinutes / 60
 const positionCostPercent = Math.max(0.02, Math.min(1, Number(process.env.DIRECT_TRADE_BLOCK_POSITION_COST_PERCENT) || 0.1))
 const blockMinimum = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_MIN_COUNT) || 1))

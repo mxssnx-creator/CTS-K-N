@@ -667,19 +667,18 @@ export class BybitConnector extends BaseExchangeConnector {
    */
   private normalizeOrder(raw: any): ExchangeOrder {
     const rawStatus = String(raw.orderStatus ?? raw.status ?? "").toUpperCase()
+    const compactStatus = rawStatus.replace(/[^A-Z]/g, "")
     const normalizedStatus =
-      rawStatus === "FILLED"           ? "filled" :
-      rawStatus === "PARTLYFILLED"     ? "partially_filled" :
-      rawStatus === "PARTIALLY_FILLED" ? "partially_filled" :
-      rawStatus === "CANCELLED"        ? "cancelled" :
-      rawStatus === "CANCELED"         ? "cancelled" :
-      rawStatus === "REJECTED"         ? "cancelled" :
+      compactStatus.includes("CANCEL") || compactStatus === "REJECTED" || compactStatus === "DEACTIVATED" ? "cancelled" :
+      compactStatus === "FILLED"       ? "filled" :
+      compactStatus.includes("PART") && compactStatus.includes("FILLED") ? "partially_filled" :
       rawStatus === "NEW"              ? "pending" :
       rawStatus === "UNTRIGGERED"      ? "pending" :
       rawStatus === "TRIGGERED"        ? "pending" : "pending"
 
     return {
       orderId:     String(raw.orderId    ?? raw.orderLinkId ?? ""),
+      clientOrderId: String(raw.orderLinkId ?? raw.clientOrderId ?? "") || undefined,
       symbol:      String(raw.symbol     ?? ""),
       side:        String(raw.side       ?? "").toLowerCase() === "buy" ? "buy" : "sell",
       type:        raw.orderType === "Limit" ? "limit" : "market",
