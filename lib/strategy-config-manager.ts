@@ -7,6 +7,7 @@
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { appendUniqueListEntries } from "@/lib/redis-idempotent-list"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 export interface StrategyConfig {
   id: string
@@ -34,11 +35,9 @@ export interface PseudoPosition {
    * Direction of the trade — only carried on the in-memory PseudoPosition
    * shape used by the prehistoric calculator (see
    * ConfigSetProcessor.calculateStrategyPositions). The serialized
-   * "|"-delimited Set entry does NOT include direction; this field exists
-   * so the prehistoric write path can call recordPosClosed() with the
-   * correct (long|short) bucket before persisting. See the systemwide
-   * fix in commit history for "no sets evaluated → prehistoric fills
-   * pos_history".
+   * "|"-delimited Set schema now persists direction as field 10. Legacy
+   * rows without it remain readable for non-directional statistics, but are
+   * never closed or booked by silently assuming Long.
    */
   direction?: "long" | "short"
   /**
@@ -223,6 +222,8 @@ export class StrategyConfigManager {
       p.result?.toString() || "0",
       p.exit_time || "",
       p.exit_price?.toString() || "0",
+      normalizeTradeDirection(p.direction) || "",
+      p.indication_type || "",
     ].join("|")
   }
 
@@ -352,6 +353,7 @@ export class StrategyConfigManager {
     if (!entry) return null
     const parts = entry.split("|")
     if (parts.length < 6) return null
+    const direction = normalizeTradeDirection(parts[9]) || undefined
     return {
       entry_time:  parts[0] || "",
       symbol:      parts[1] || "",
@@ -362,6 +364,8 @@ export class StrategyConfigManager {
       result:      parseFloat(parts[6] || "0") || 0,
       exit_time:   parts[7] || undefined,
       exit_price:  parts[8] ? (parseFloat(parts[8]) || undefined) : undefined,
+      direction,
+      indication_type: parts[10] || undefined,
     }
   }
 
@@ -395,8 +399,10 @@ export class StrategyConfigManager {
       "move",
       "active",
       "active_advanced",
+      "special",
       "optimal",
       "auto",
+      "signal",
       "trend",
     ])
     for (const seg of String(configSetKey).split(":")) {
@@ -494,11 +500,13 @@ export class StrategyConfigManager {
     const openPositions = positions.filter((p) => p.symbol === symbol && p.status === "open")
 
     for (const pos of openPositions) {
+      const direction = normalizeTradeDirection(pos.direction)
+      if (!direction) continue
       const pnl = calculatePseudoClosePnl({
         entryPrice: pos.entry_price,
         currentPrice: exitPrice,
         quantity: 1,
-        side: pos.direction || "long",
+        side: direction,
       }).netPnlPct
       const closedPos: PseudoPosition = {
         ...pos,

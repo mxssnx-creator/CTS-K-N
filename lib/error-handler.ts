@@ -146,6 +146,10 @@ if (typeof window === "undefined") {
     // Route a process-level error through the self-heal path WITHOUT exiting.
     const selfHeal = async (error: Error, action: string) => {
       try {
+        const { recordRuntimeRecoveryEvent } = await import("@/lib/runtime-startup-state")
+        await recordRuntimeRecoveryEvent("crash", `${action}: ${error.message}`)
+      } catch {}
+      try {
         await errorHandler.handleError(error, { component: "process", action })
       } catch {
         /* handler itself must never throw out of the global hook */

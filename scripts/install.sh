@@ -818,8 +818,10 @@ merge_seed_env() {
 }
 
 placeholder_secret() {
-  local value="$1"
-  [[ -z "$value" || ${#value} -lt 16 || "$value" =~ ^(replace|change|your)[_-]?me ]]
+  local value="$1" lower
+  lower="${value,,}"
+  [[ -z "$value" || ${#value} -lt 16 || "$lower" =~ ^(replace|change|your)[_-]?me \
+    || "$lower" =~ (placeholder|example|dummy|not[_-]?set|test[_-]?key|test[_-]?secret) ]]
 }
 
 configure_environment_and_redis() {
@@ -940,6 +942,28 @@ configure_environment_and_redis() {
 
   local bingx_key="${BINGX_API_KEY:-${BINGX_APIKEY:-$(env_value BINGX_API_KEY)}}"
   local bingx_secret="${BINGX_API_SECRET:-${BINGX_SECRET_KEY:-${BINGX_SECRET:-$(env_value BINGX_API_SECRET)}}}"
+  local bingx_vst_key="${BINGX_X02_API_KEY:-$(env_value BINGX_X02_API_KEY)}"
+  local bingx_vst_secret="${BINGX_X02_API_SECRET:-$(env_value BINGX_X02_API_SECRET)}"
+  local bingx_environment="${BINGX_ENVIRONMENT:-$(env_value BINGX_ENVIRONMENT)}"
+  [[ -n "$bingx_environment" ]] || bingx_environment="prod-live"
+  case "${bingx_environment,,}" in
+    prod-live|live|mainnet|production)
+      bingx_environment="prod-live"
+      upsert_env BINGX_PUBLIC_ORIGIN "https://open-api.bingx.com"
+      upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api.bingx.pro"
+      ;;
+    prod-vst|vst|demo|testnet)
+      bingx_environment="prod-vst"
+      upsert_env BINGX_PUBLIC_ORIGIN "https://open-api-vst.bingx.com"
+      upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api-vst.bingx.com"
+      ;;
+    *)
+      fatal "Unsupported BINGX_ENVIRONMENT '$bingx_environment'; expected prod-live or prod-vst"
+      ;;
+  esac
+  # This variable is authoritative for the Redis boot repair. Credentials are
+  # valid for both environments and must never be used to infer mainnet.
+  upsert_env BINGX_ENVIRONMENT "$bingx_environment"
   local bybit_key="${BYBIT_API_KEY:-${BYBIT_APIKEY:-$(env_value BYBIT_API_KEY)}}"
   local bybit_secret="${BYBIT_API_SECRET:-${BYBIT_SECRET_KEY:-${BYBIT_SECRET:-$(env_value BYBIT_API_SECRET)}}}"
   local pionex_key="${PIONEX_API_KEY:-$(env_value PIONEX_API_KEY)}"
@@ -947,30 +971,35 @@ configure_environment_and_redis() {
   local orangex_key="${ORANGEX_API_KEY:-$(env_value ORANGEX_API_KEY)}"
   local orangex_secret="${ORANGEX_API_SECRET:-$(env_value ORANGEX_API_SECRET)}"
   local live_venues=()
-  if [[ ${#bingx_key} -ge 10 && ${#bingx_secret} -ge 10 ]]; then
+  if ! placeholder_secret "$bingx_key" && ! placeholder_secret "$bingx_secret"; then
     upsert_env BINGX_API_KEY "$bingx_key"
     upsert_env BINGX_API_SECRET "$bingx_secret"
-    live_venues+=("BingX")
+    live_venues+=("BingX X01 Prod-Live")
   fi
-  if [[ ${#bybit_key} -ge 10 && ${#bybit_secret} -ge 10 ]]; then
+  if ! placeholder_secret "$bingx_vst_key" && ! placeholder_secret "$bingx_vst_secret"; then
+    upsert_env BINGX_X02_API_KEY "$bingx_vst_key"
+    upsert_env BINGX_X02_API_SECRET "$bingx_vst_secret"
+    live_venues+=("BingX X02 Prod-VST (virtual funds)")
+  fi
+  if ! placeholder_secret "$bybit_key" && ! placeholder_secret "$bybit_secret"; then
     upsert_env BYBIT_API_KEY "$bybit_key"
     upsert_env BYBIT_API_SECRET "$bybit_secret"
     live_venues+=("Bybit")
   fi
-  if [[ ${#pionex_key} -ge 10 && ${#pionex_secret} -ge 10 ]]; then
+  if ! placeholder_secret "$pionex_key" && ! placeholder_secret "$pionex_secret"; then
     upsert_env PIONEX_API_KEY "$pionex_key"
     upsert_env PIONEX_API_SECRET "$pionex_secret"
     live_venues+=("Pionex")
   fi
-  if [[ ${#orangex_key} -ge 10 && ${#orangex_secret} -ge 10 ]]; then
+  if ! placeholder_secret "$orangex_key" && ! placeholder_secret "$orangex_secret"; then
     upsert_env ORANGEX_API_KEY "$orangex_key"
     upsert_env ORANGEX_API_SECRET "$orangex_secret"
     live_venues+=("OrangeX")
   fi
   if (( ${#live_venues[@]} > 0 )); then
-    ok "Live exchange installation is configured for ${live_venues[*]}; readiness is verified without submitting an order"
+    ok "Authenticated exchange execution is configured for ${live_venues[*]}; readiness is verified without submitting an order"
   else
-    warn "No exchange credentials were supplied during installation; the server will install in simulation mode until credentials are configured"
+    fatal "Production server installation requires valid credentials for at least one supported exchange; supply them via --seed-env-file or the existing environment file"
   fi
 
   local admin_secret cron_secret encryption_key jwt_secret direct_trade_processor_token
@@ -1541,4 +1570,4 @@ info "App service: $APP_NAME"
 info "Scheduler service: $APP_NAME-scheduler"
 info "Direct-Trade processor service: $APP_NAME-direct-trade"
 info "Environment: $ENV_FILE (owner/group-only; secrets were not printed)"
-info "Live exchange support is installed; actual order placement requires valid server environment credentials and the explicit live-control state."
+info "Live exchange execution is credentialed and verified; order placement remains controlled by the explicit live-control state."

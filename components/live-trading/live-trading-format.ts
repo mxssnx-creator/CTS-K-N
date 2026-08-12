@@ -1,14 +1,13 @@
 import type { LivePositionView } from "@/components/live-trading/live-trading-types"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 export function finite(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-export function positionDirection(position: LivePositionView): "long" | "short" {
-  return String(position.direction ?? position.side ?? "long").toLowerCase().includes("short")
-    ? "short"
-    : "long"
+export function positionDirection(position: LivePositionView): "long" | "short" | null {
+  return resolveConsistentTradeDirection(position.direction, position.side)
 }
 
 export function positionEntry(position: LivePositionView): number {
@@ -56,7 +55,9 @@ export function absoluteStopLoss(position: LivePositionView): number {
   const entry = positionEntry(position)
   const distance = finite(position.stopLoss) / 100
   if (entry <= 0 || distance <= 0) return 0
-  return positionDirection(position) === "long"
+  const direction = positionDirection(position)
+  if (!direction) return 0
+  return direction === "long"
     ? entry * (1 - distance)
     : entry * (1 + distance)
 }
@@ -71,7 +72,9 @@ export function absoluteTakeProfit(position: LivePositionView): number {
   const entry = positionEntry(position)
   const distance = finite(position.takeProfit) / 100
   if (entry <= 0 || distance <= 0) return 0
-  return positionDirection(position) === "long"
+  const direction = positionDirection(position)
+  if (!direction) return 0
+  return direction === "long"
     ? entry * (1 + distance)
     : entry * (1 - distance)
 }

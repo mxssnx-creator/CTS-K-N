@@ -22,6 +22,8 @@ export interface IndicationSignal {
     bb?: { upper: number; middle: number; lower: number }
   }
   signal: "buy" | "sell" | "neutral"
+  /** Single effective direction selected after independent Long/Short evaluation. */
+  direction?: "long" | "short"
   strength: number // 0-1, confidence level
   price: number
   /** Stable strategy identity fields. Runtime values never belong in this key. */
@@ -81,6 +83,11 @@ export async function processIndications(
         timestamp: ts,
         indicators: { rsi, macd, ema, bb },
         signal: signal.type,
+        ...(signal.type === "buy"
+          ? { direction: "long" as const }
+          : signal.type === "sell"
+            ? { direction: "short" as const }
+            : {}),
         strength: signal.strength,
         price: lastPrice,
         indicationType: "technical",

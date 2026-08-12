@@ -21,7 +21,17 @@ export type ProductionReadinessResult = {
   checkedAt: string
 }
 
-const BASE_CONNECTION_IDS = ["bingx-x01", "bybit-x03", "pionex-x01", "orangex-x01"]
+export type ProductionReadinessOptions = {
+  /**
+   * Credential checks are connection-scoped, while Redis/schema readiness is
+   * global. Main/Preset/Signal pipelines pass false and rely on the Live-stage
+   * per-connection gate, so one dormant credentialless card cannot deadlock
+   * every other connection. Explicit credential diagnostics keep the default.
+   */
+  requireConnectionCredentials?: boolean
+}
+
+const BASE_CONNECTION_IDS = ["bingx-x01", "bingx-x02", "bybit-x03", "pionex-x01", "orangex-x01"]
 
 function isTruthyRedisFlag(value: unknown): boolean {
   return value === true || value === "1" || value === "true"
@@ -62,7 +72,9 @@ export function productionReadinessJson(result: ProductionReadinessResult) {
   }
 }
 
-export async function checkProductionReadiness(): Promise<ProductionReadinessResult> {
+export async function checkProductionReadiness(
+  options: ProductionReadinessOptions = {},
+): Promise<ProductionReadinessResult> {
   if ((process.env.NODE_ENV as string) === "test") {
     return { ready: true, missingFields: [], checkedAt: new Date().toISOString() }
   }
@@ -75,6 +87,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   // exchange factory is under this override. FORCE_LIVE always wins so a bad
   // deployment cannot accidentally downgrade a requested live boot to paper.
   const forceSimulated = process.env.FORCE_SIMULATED === "1" && process.env.FORCE_LIVE !== "1"
+  const requireConnectionCredentials = options.requireConnectionCredentials !== false
 
   // Unit tests often mock only the Redis methods exercised by the route under
   // test. Production readiness is a production/startup gate, so do not make
@@ -134,7 +147,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
     process.env.ALLOW_PROD_INLINE_REDIS === "1" &&
     process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1" &&
     absoluteNonTmpPath
-  const inlineRedisEnvAllowed = process.env.ALLOW_PROD_INLINE_REDIS !== "0"
+  const inlineRedisEnvAllowed = process.env.ALLOW_PROD_INLINE_REDIS === "1"
   const inlineRedisAllowed =
     kiloLocalPreviewInlineAllowed ||
     serverlessInlineOptIn ||
@@ -152,7 +165,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
         deploymentRuntime: getDeploymentRuntimeLabel(),
         reason: serverlessRuntime
           ? "serverless request workers require shared Redis for settings, migrations, counters, and engine-owner coordination; use CTS_INLINE_REDIS_PERSISTENT_VOLUME=1 with a valid V0_REDIS_SNAPSHOT_PATH on Kilo to opt into persistent inline Redis"
-          : "inline-local Redis was explicitly disabled with ALLOW_PROD_INLINE_REDIS=0",
+          : "inline-local Redis was not explicitly enabled with ALLOW_PROD_INLINE_REDIS=1",
       },
     })
   }
@@ -293,7 +306,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
       if (!hasCreds && !isDashboardEnabled) {
         continue
       }
-      if (!forceSimulated && !hasCreds) {
+      if (requireConnectionCredentials && !forceSimulated && !hasCreds) {
         missingFields.push({
           field: `connection:${id}.credentials`,
           expected: "valid API key/secret",
@@ -356,8 +369,10 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   }
 }
 
-export async function assertProductionReadiness(): Promise<ProductionReadinessResult> {
-  const result = await checkProductionReadiness()
+export async function assertProductionReadiness(
+  options: ProductionReadinessOptions = {},
+): Promise<ProductionReadinessResult> {
+  const result = await checkProductionReadiness(options)
   if (!result.ready) {
     const error = new Error(`Production readiness check failed: ${result.missingFields.map((item) => item.field).join(", ")}`)
     ;(error as Error & { readiness?: ProductionReadinessResult }).readiness = result

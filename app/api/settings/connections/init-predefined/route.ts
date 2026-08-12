@@ -9,7 +9,7 @@ export async function POST() {
     await initRedis()
     const ensured = await ensureDefaultExchangesExist()
     const allConnections = await getAllConnections()
-    const baseConnections = allConnections.filter((c: any) => ["bingx-x01", "pionex-x01", "orangex-x01"].includes(c.id))
+    const baseConnections = allConnections.filter((c: any) => ["bingx-x01", "bingx-x02", "pionex-x01", "orangex-x01"].includes(c.id))
 
     return NextResponse.json({
       success: true,
@@ -22,6 +22,8 @@ export async function POST() {
         exchange: c.exchange,
         is_enabled: c.is_enabled,
         is_enabled_dashboard: c.is_enabled_dashboard,
+        environment: c.id === "bingx-x02" ? "prod-vst" : "prod-live",
+        virtual_funds: c.id === "bingx-x02",
       })),
     })
   } catch (error) {

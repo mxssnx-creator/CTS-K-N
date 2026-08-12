@@ -9,6 +9,7 @@ import {
 } from "./database-indexes"
 import { createKiloDatabaseQuery, hasKiloDatabaseBackend, resolveKiloDatabaseConfig, type KiloDatabaseMethod } from "./kilo-database-client"
 import { scanRedisKeys } from "./redis-scan"
+import { resolveRedisRuntimeRoot } from "./redis-runtime-root"
 import {
   archiveClosedLivePositionAnalytics,
   buildLivePositionAnalyticsSnapshot,
@@ -72,8 +73,10 @@ interface RedisData {
   }
 }
 
-// Global storage for persistence across hot reloads
-const globalForRedis = globalThis as unknown as {
+// Process-owned storage survives Next.js server-route VM boundaries as well as
+// ordinary hot reloads. Browser and Jest runtimes intentionally fall back to
+// globalThis; see resolveRedisRuntimeRoot().
+const globalForRedis = resolveRedisRuntimeRoot() as unknown as {
   __redis_data?: RedisData
   // In-flight guard for loadFromDisk — ensures concurrent initRedis() calls
   // from different module scopes share a single disk-read rather than racing
@@ -519,11 +522,17 @@ export class InlineLocalRedis implements RedisClientLike {
     // that land while yielding advance the mutation version and are included
     // by the next snapshot instead of being falsely marked durable.
     // Inline snapshots can contain a full running Strategy/Direct-Trade
-    // generation. Serialize exactly one persisted row per turn: a recovery
-    // checkpoint must never make the health/cron/control plane wait behind a
-    // large, otherwise valid Paper book. The file remains atomically published
-    // and changes that land meanwhile belong to the next versioned checkpoint.
-    const cooperativeYieldEveryRows = 1
+    // generation. Yield on a short wall-clock quantum, with a small row-count
+    // ceiling as a backstop. Yielding after *every* row kept the control plane
+    // responsive but made a 100+ MiB, ~35k-row durability barrier take more
+    // than 30 seconds because it scheduled tens of thousands of setImmediate
+    // callbacks. That in turn blocked the Settings/Volume dialog response on
+    // its mandatory persistNow() barrier. A 32-row ceiling plus the existing
+    // 1 ms time ceiling keeps synchronous slices bounded while reducing
+    // scheduler churn by an order of magnitude. The file remains atomically
+    // published and changes that land meanwhile belong to the next versioned
+    // checkpoint.
+    const cooperativeYieldEveryRows = 32
     const cooperativeYieldAfterMs = 1
     let chunk = ""
     let chunkBytes = 0
@@ -3133,22 +3142,21 @@ function getMissingProductionRedisError(): string {
     "Production/preview Redis configuration missing: configure one shared Redis option " +
     "(REDIS_URL, KV_URL, UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN, or " +
     "KV_REST_API_URL + KV_REST_API_TOKEN), or Kilo managed DB_URL + DB_TOKEN. " +
-    "InlineLocalRedis is now allowed by default " +
-    "for this deployment profile; set ALLOW_PROD_INLINE_REDIS=0 to force a hard failure instead."
+    "A known single-process paper deployment may opt in explicitly with " +
+    "ALLOW_PROD_INLINE_REDIS=1; multi-worker coordinators require shared Redis."
   )
 }
 
 function isProdInlineRedisAllowed(): boolean {
-  // User-requested deployment profile: InlineLocalRedis is available in
-  // production/preview by default so single-process deployments can always
-  // boot. Operators can still set ALLOW_PROD_INLINE_REDIS=0 to require a
-  // shared Redis backend. This does NOT opt into live exchange order placement;
-  // that remains gated separately by ALLOW_INLINE_REDIS_LIVE_TRADING.
+  // InlineLocalRedis is process-local. Production must opt in explicitly and
+  // may only use it for a known single-process deployment. This does NOT opt
+  // into live exchange order placement; that remains gated separately by
+  // ALLOW_INLINE_REDIS_LIVE_TRADING.
   const workerPaperFallback = (globalThis as typeof globalThis & {
     __cts_kilo_paper_fallback_active?: boolean
   }).__cts_kilo_paper_fallback_active
   if (workerPaperFallback === true) return true
-  return process.env.ALLOW_PROD_INLINE_REDIS !== "0"
+  return process.env.ALLOW_PROD_INLINE_REDIS === "1"
 }
 
 function normalizeScanOptions(args: any[]): { MATCH?: string; COUNT?: number } {
@@ -3451,15 +3459,10 @@ function createRedisInstance(): RedisClientLike {
   }
   if (isProductionEnvironment() && !hasSharedRedisConfig()) {
     if (!isProdInlineRedisAllowed()) {
-      console.warn(
-        "[v0] [Redis] Production/preview has no shared Redis and inline-local was not explicitly enabled; " +
-          "falling back to InlineLocalRedis anyway because no durable backend is configured. " +
-          "Set ALLOW_PROD_INLINE_REDIS=0 to force a hard failure, or configure REDIS_URL/KV_URL for multi-worker durability.",
-      )
+      throw new Error(getMissingProductionRedisError())
     }
-    if (process.env.ALLOW_PROD_INLINE_REDIS !== "1") process.env.ALLOW_PROD_INLINE_REDIS = "1"
     console.warn(
-      "[v0] [Redis] ALLOW_PROD_INLINE_REDIS=1 default is active; using InlineLocalRedis in production/preview. " +
+      "[v0] [Redis] Explicit ALLOW_PROD_INLINE_REDIS=1 is active; using InlineLocalRedis in production/preview. " +
         "This is intended for single-process/local deployments and is not shared across multiple workers.",
     )
   }
@@ -3986,8 +3989,13 @@ const NUMERIC_HASH_FIELDS = new Set([
   "trailing_min_step", "trailingMinStep",
   "leverage_percentage", "leveragePercentage",
   "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
-  "volume_factor", "volume_factor_live", "volume_factor_preset", "volume_factor_signal",
+  "base_volume_factor", "volume_factor", "volume_factor_live", "volume_factor_preset", "volume_factor_signal",
+  "mainTradeVolumeFactor", "presetTradeVolumeFactor", "signalTradeVolumeFactor",
   "volume_step_ratio",
+  "default_leverage", "default_volume",
+  "maxPositionsLong", "maxPositionsShort",
+  "presetTpStep", "presetSlStep", "presetTrailStartStep", "presetTrailStopStep",
+  "presetBlockVolumeRatio", "presetBlockPauseCountRatio",
   "axis_prev_max_window", "axisPrevMaxWindow",
   "axis_last_max_window", "axisLastMaxWindow",
   "axis_cont_max_window", "axisContMaxWindow",

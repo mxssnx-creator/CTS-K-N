@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { PseudoPositionManager } from "@/lib/trade-engine/pseudo-position-manager"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
+import { normalizeTradeDirection, resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 /**
  * Live Positions API
@@ -89,8 +90,9 @@ function normalise(raw: Record<string, any>): Position | null {
   const notional = entryPrice * quantity
   const leverage = positionCost > 0 ? Math.max(1, Math.round(notional / positionCost)) : 1
 
-  const sideRaw = String(raw.side || "long").toLowerCase()
-  const side: "LONG" | "SHORT" = sideRaw === "short" ? "SHORT" : "LONG"
+  const direction = normalizeTradeDirection(raw.side)
+  if (!direction) return null
+  const side: "LONG" | "SHORT" = direction === "short" ? "SHORT" : "LONG"
 
   // Prefer authoritative `realized_pnl` for closed rows (written atomically
   // at close time); recompute mark-to-market for open rows. This matches
@@ -186,7 +188,8 @@ async function getLivePositions(connectionId: string): Promise<Position[]> {
           if (hash && Object.keys(hash).length > 0) parsed = hash
         }
         if (!parsed || !isLiveOpenStatus(parsed.status)) continue
-        positions.push(normaliseLivePosition({ ...parsed, id: parsed.id || batch[index] }))
+        const normalized = normaliseLivePosition({ ...parsed, id: parsed.id || batch[index] })
+        if (normalized) positions.push(normalized)
       }
     }
     return positions
@@ -196,13 +199,14 @@ async function getLivePositions(connectionId: string): Promise<Position[]> {
   }
 }
 
-function normaliseLivePosition(raw: Record<string, any>): Position {
+function normaliseLivePosition(raw: Record<string, any>): Position | null {
   const entryPrice = parseFloat(raw.entryPrice || raw.entry_price || "0")
   const currentPrice = parseFloat(raw.currentPrice || raw.current_price || raw.entryPrice || raw.entry_price || "0")
   const quantity = parseFloat(raw.executedQuantity || raw.executed_quantity || raw.quantity || "0")
   const notional = entryPrice * quantity
-  const sideRaw = String(raw.side || raw.direction || "long").toLowerCase()
-  const side: "LONG" | "SHORT" = sideRaw === "short" ? "SHORT" : "LONG"
+  const direction = resolveConsistentTradeDirection(raw.direction, raw.side)
+  if (!direction) return null
+  const side: "LONG" | "SHORT" = direction === "short" ? "SHORT" : "LONG"
   const status = String(raw.status || "open")
 
   let unrealizedPnl: number

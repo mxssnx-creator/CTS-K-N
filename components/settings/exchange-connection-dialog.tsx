@@ -399,7 +399,7 @@ export function ExchangeConnectionDialog({
         api_secret: connection.api_secret || "",
         margin_type: connection.margin_type || "cross",
         position_mode: connection.position_mode || "hedge",
-        is_testnet: connection.is_testnet || false,
+        is_testnet: connection.id === "bingx-x02" || connection.is_testnet === true || connection.is_testnet === "1" || connection.is_testnet === "true",
       })
     } else {
       setForm({
@@ -602,7 +602,7 @@ export function ExchangeConnectionDialog({
       api_secret: predefinition.apiSecret || "",
       margin_type: predefinition.marginType,
       position_mode: predefinition.positionMode,
-      is_testnet: false,
+      is_testnet: predefinition.id === "bingx-x02" || predefinition.defaultTestnet === true,
     })
   }
 

@@ -179,7 +179,7 @@ export class IntervalProgressionManager {
    * Get interval health status
    */
   async getIntervalHealth(connectionId: string): Promise<Record<string, any>> {
-    const types = ["direction", "move", "active", "optimal", "signal", "trend"] as const
+    const types = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
     const health: Record<string, any> = {}
 
     // Pipeline the config reads — they're independent keys and the

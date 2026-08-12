@@ -1,14 +1,21 @@
-const DEFAULT_PRIMARY_ORIGIN = "https://open-api.bingx.com"
+import {
+  BINGX_PROD_LIVE_FALLBACK_ORIGIN,
+  BINGX_PROD_LIVE_ORIGIN,
+  BINGX_PROD_VST_FALLBACK_ORIGIN,
+  BINGX_PROD_VST_ORIGIN,
+} from "@/lib/bingx-environment"
+
+const DEFAULT_PRIMARY_ORIGIN = BINGX_PROD_LIVE_ORIGIN
 const VERIFIED_PUBLIC_HOSTS = new Set([
-  "open-api.bingx.com",
-  "testnet-open-api.bingx.com",
+  new URL(BINGX_PROD_LIVE_ORIGIN).hostname,
+  new URL(BINGX_PROD_LIVE_FALLBACK_ORIGIN).hostname,
+  new URL(BINGX_PROD_VST_ORIGIN).hostname,
+  new URL(BINGX_PROD_VST_FALLBACK_ORIGIN).hostname,
 ])
 
 let preferredOrigin = DEFAULT_PRIMARY_ORIGIN
 
-function configuredOrigins(): string[] {
-  const configured = [process.env.BINGX_PUBLIC_ORIGIN || DEFAULT_PRIMARY_ORIGIN]
-  if (process.env.BINGX_PUBLIC_FALLBACK_ORIGIN) configured.push(process.env.BINGX_PUBLIC_FALLBACK_ORIGIN)
+function verifiedOrigins(configured: string[]): string[] {
   return [...new Set(configured.flatMap((value) => {
     try {
       const origin = new URL(value).origin
@@ -17,6 +24,12 @@ function configuredOrigins(): string[] {
       return []
     }
   }))]
+}
+
+function configuredOrigins(): string[] {
+  const configured = [process.env.BINGX_PUBLIC_ORIGIN || DEFAULT_PRIMARY_ORIGIN]
+  if (process.env.BINGX_PUBLIC_FALLBACK_ORIGIN) configured.push(process.env.BINGX_PUBLIC_FALLBACK_ORIGIN)
+  return verifiedOrigins(configured)
 }
 
 function publicUrl(pathname: string | URL, origin: string): URL {
@@ -41,14 +54,18 @@ function publicUrl(pathname: string | URL, origin: string): URL {
 export async function fetchBingXPublic(
   pathname: string | URL,
   init: RequestInit = {},
-  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch; origins?: string[] } = {},
 ): Promise<Response> {
   const method = String(init.method || "GET").toUpperCase()
   if (method !== "GET" && method !== "HEAD") {
     throw new Error(`Refusing non-read-only BingX public request: ${method}`)
   }
 
-  const origins = configuredOrigins()
+  // Account-scoped workflows (especially Prod-VST smoke/soak runs) may pin
+  // one exact official origin. This prevents a process-global public-market
+  // default from leaking a demo workflow onto the live quote host.
+  const origins = options.origins ? verifiedOrigins(options.origins) : configuredOrigins()
+  if (origins.length === 0) throw new Error("No verified BingX public origin is configured")
   const preferredIndex = origins.indexOf(preferredOrigin)
   const orderedOrigins = preferredIndex > 0
     ? [origins[preferredIndex], ...origins.filter((_, index) => index !== preferredIndex)]

@@ -1,6 +1,6 @@
 import { readEnvByAliases } from "@/lib/env-credentials"
 
-export type BaseConnectionId = "bingx-x01" | "bybit-x03" | "pionex-x01" | "orangex-x01"
+export type BaseConnectionId = "bingx-x01" | "bingx-x02" | "bybit-x03" | "pionex-x01" | "orangex-x01"
 
 export type BaseConnectionCredentials = {
   apiKey: string
@@ -11,6 +11,12 @@ const ENV_ALIASES: Record<BaseConnectionId, { key: string[]; secret: string[] }>
   "bingx-x01": {
     key: ["BINGX_API_KEY", "BINGX_APIKEY", "NEXT_BINGX_API_KEY"],
     secret: ["BINGX_API_SECRET", "BINGX_SECRET_KEY", "BINGX_SECRET", "NEXT_BINGX_API_SECRET"],
+  },
+  // X02 is the dedicated BingX Prod-VST connection. It intentionally uses
+  // distinct variables so demo credentials can never be injected into X01.
+  "bingx-x02": {
+    key: ["BINGX_X02_API_KEY"],
+    secret: ["BINGX_X02_API_SECRET"],
   },
   "bybit-x03": {
     key: ["BYBIT_API_KEY", "BYBIT_APIKEY", "NEXT_BYBIT_API_KEY"],
@@ -43,6 +49,7 @@ export function getBaseConnectionCredentials(id: BaseConnectionId): BaseConnecti
 
 export const BASE_CONNECTION_CREDENTIALS: Record<BaseConnectionId, BaseConnectionCredentials> = {
   "bingx-x01": getBaseConnectionCredentials("bingx-x01"),
+  "bingx-x02": getBaseConnectionCredentials("bingx-x02"),
   "bybit-x03": getBaseConnectionCredentials("bybit-x03"),
   "pionex-x01": getBaseConnectionCredentials("pionex-x01"),
   "orangex-x01": getBaseConnectionCredentials("orangex-x01"),

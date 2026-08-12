@@ -59,7 +59,7 @@ interface ConnectionInfoSnapshot {
   stats: JsonRecord
 }
 
-const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto", "signal", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
 const STRATEGY_STAGES = ["base", "main", "real", "live"] as const
 
 const isRecord = (value: unknown): value is JsonRecord =>
@@ -1218,6 +1218,7 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
                       <DetailRow label="DCA max steps" value={formatNumber(derived.settings.dcaMaxSteps, 0)} />
                       <DetailRow label="DCA breakeven profit" value={`${formatSignedNumber(derived.settings.dcaBreakevenProfitPct)}%`} />
                       <DetailRow label="DCA cooldown" value={`${formatNumber(derived.settings.dcaCooldownSeconds, 0)} s`} />
+                      <DetailRow label="DCA total volume cap" value={`${formatNumber(derived.settings.dcaMaxPositionVolumeRatio, 1)}×`} />
                       <DetailRow label="DCA take-profit mode" value={titleCase(asText(derived.settings.dcaTakeProfitMode, "Weighted"))} />
                       <DetailRow label="Trailing variants" value={Array.isArray(derived.settings.strategyBaseTrailingVariants) ? derived.settings.strategyBaseTrailingVariants.length : 0} />
                       <DetailRow label="System close only" value={<BooleanBadge value={asBoolean(derived.settings.useSystemCloseOnly, derived.settings.use_system_close_only)} />} />

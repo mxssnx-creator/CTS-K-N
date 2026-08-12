@@ -50,6 +50,35 @@ redis.call('EXPIRE', KEYS[2], tonumber(ARGV[1]))
 return 1
 `
 
+const INCREMENT_HISTORIC_AGGREGATES_LUA = `
+-- Commit all alias identities belonging to one pure calculation in one
+-- server-side operation. KEYS[3..] are rolling-upgrade scalar markers;
+-- ARGV contains TTL, marker count, marker members, then field/value pairs.
+local ttl = tonumber(ARGV[1])
+local markerCount = tonumber(ARGV[2])
+local accepted = 0
+for i = 1, markerCount do
+  local member = ARGV[2 + i]
+  local legacyKey = KEYS[2 + i]
+  if redis.call('GET', legacyKey) then
+    redis.call('SADD', KEYS[1], member)
+  elseif redis.call('SADD', KEYS[1], member) == 1 then
+    accepted = accepted + 1
+  end
+end
+if accepted == 0 then
+  redis.call('EXPIRE', KEYS[1], ttl)
+  return 0
+end
+local incrementStart = 3 + markerCount
+for i = incrementStart, #ARGV, 2 do
+  redis.call('HINCRBYFLOAT', KEYS[2], ARGV[i], tonumber(ARGV[i + 1]) * accepted)
+end
+redis.call('EXPIRE', KEYS[1], ttl)
+redis.call('EXPIRE', KEYS[2], ttl)
+return accepted
+`
+
 type RedisListClient = {
   eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>
   get?: (key: string) => Promise<string | null>
@@ -311,4 +340,46 @@ export async function incrementHistoricAggregateOnce(
     }
     return true
   })
+}
+
+/**
+ * Atomically account for every alias of one historic calculation with one
+ * Redis round-trip. The returned number is the count of newly accepted
+ * config identities; retries remain exactly-once per marker.
+ */
+export async function incrementHistoricAggregatesOnce(
+  client: RedisListClient,
+  markerKeys: readonly string[],
+  aggregateKey: string,
+  increments: readonly HistoricAggregateIncrement[],
+  ttlSeconds: number,
+): Promise<number> {
+  if (markerKeys.length === 0) return 0
+  const boundedTtl = Math.max(60, Math.floor(ttlSeconds))
+  const markerCollectionKey = historicAggregateMarkerCollectionKey(aggregateKey)
+  const normalized = increments.filter((item) =>
+    item && typeof item.field === "string" && item.field.length > 0 && Number.isFinite(item.value),
+  )
+
+  if (typeof client.eval === "function") {
+    const args = [String(boundedTtl), String(markerKeys.length), ...markerKeys]
+    for (const item of normalized) args.push(item.field, String(item.value))
+    const result = await client.eval(INCREMENT_HISTORIC_AGGREGATES_LUA, {
+      keys: [markerCollectionKey, aggregateKey, ...markerKeys],
+      arguments: args,
+    })
+    return Number(result) || 0
+  }
+
+  let accepted = 0
+  for (const markerKey of markerKeys) {
+    if (await incrementHistoricAggregateOnce(
+      client,
+      markerKey,
+      aggregateKey,
+      normalized,
+      boundedTtl,
+    )) accepted++
+  }
+  return accepted
 }

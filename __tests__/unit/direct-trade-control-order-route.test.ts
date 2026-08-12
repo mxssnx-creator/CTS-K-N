@@ -2,6 +2,9 @@ const placeLiveOrderMock = jest.fn()
 
 jest.mock("@/lib/live-order-service", () => ({
   placeLiveOrder: (...args: unknown[]) => placeLiveOrderMock(...args),
+  directOrderControlKey: (connectionId: string, clientOrderId: string) => (
+    `live:direct_order_control:${encodeURIComponent(connectionId)}:${encodeURIComponent(clientOrderId)}`
+  ),
 }))
 
 function resetInlineRedisGlobals() {
@@ -84,6 +87,8 @@ describe("Direct-Trade leased control-order route", () => {
       positionDirection: "long",
       reduceOnly: false,
       persistPosition: false,
+      countPositionCreated: true,
+      countAccumulated: false,
       safetyPayload: expect.objectContaining({ confirmLiveOrderPlacement: true }),
     }))
 
@@ -103,5 +108,94 @@ describe("Direct-Trade leased control-order route", () => {
       reduceOnly: true,
       clientOrderId: expect.stringMatching(/^dt-close-/),
     }))
+  })
+
+  test("classifies Block and DCA orders as accumulation and forwards reconciliation state", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/order/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.set("direct_trade:processor:lease", instanceId)
+    await redis.set("direct_trade:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
+    placeLiveOrderMock.mockResolvedValueOnce({
+      success: true,
+      mode: "live",
+      orderId: "pending-block-1",
+      quantity: 0.1,
+      fill: { filled: false, filledQty: 0, filledPrice: 0, status: "pending" },
+      details: { status: "pending" },
+      controlState: "acknowledged",
+      pendingReconciliation: true,
+      idempotentReplay: true,
+    })
+
+    const response = await POST(request({
+      kind: "open",
+      stage: "block",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_1",
+      controlId: "dtblk_stable_1",
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      positionDirection: "long",
+      quantity: 0.1,
+    }) as any)
+    const payload = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(payload).toMatchObject({
+      success: true,
+      controlState: "acknowledged",
+      pendingReconciliation: true,
+      idempotentReplay: true,
+    })
+    expect(placeLiveOrderMock).toHaveBeenCalledWith(expect.objectContaining({
+      countPositionCreated: false,
+      countAccumulated: true,
+    }))
+  })
+
+  test("after Stop allows only reconciliation of an already durable open control", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/order/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    const control = "dtopen_persisted_1"
+    await redis.set("direct_trade:processor:lease", instanceId)
+    await redis.set("direct_trade:state", JSON.stringify({ enabled: false, liveMode: false, connectionId: "bingx-x01" }))
+    await redis.set(
+      `live:direct_order_control:${encodeURIComponent("bingx-x01")}:${encodeURIComponent(control)}`,
+      JSON.stringify({ version: 1, state: "acknowledged" }),
+    )
+
+    const reconciled = await POST(request({
+      kind: "open",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_persisted",
+      controlId: control,
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      positionDirection: "long",
+      quantity: 0.25,
+      reconcileOnly: true,
+    }) as any)
+    expect(reconciled.status).toBe(200)
+    expect(placeLiveOrderMock).toHaveBeenCalledTimes(1)
+
+    const fresh = await POST(request({
+      kind: "open",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_fresh",
+      controlId: "dtopen_not_persisted",
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      positionDirection: "long",
+      quantity: 0.25,
+      reconcileOnly: true,
+    }) as any)
+    expect(fresh.status).toBe(409)
+    expect(placeLiveOrderMock).toHaveBeenCalledTimes(1)
   })
 })

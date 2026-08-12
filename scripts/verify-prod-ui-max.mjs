@@ -11,21 +11,41 @@ const BASE_URL = process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT ||
 const UI_MAX_SYMBOLS = 32
 const QUICKSTART_UI_TIMEOUT_MS = 35_000
 const PROGRESSION_TIMEOUT_MS = Math.max(30_000, Number(process.env.PROD_UI_PROGRESSION_TIMEOUT_MS || 90_000))
+const UI_PAGE_PATHS = [
+  "/", "/active-exchange", "/additional", "/additional/chat-history",
+  "/additional/volume-corrections", "/admin/check-tables", "/admin/migrate",
+  "/alerts", "/analysis", "/autotest", "/health", "/indications",
+  "/live-trading", "/login", "/logistics", "/main", "/main/realtime",
+  "/minimal", "/minimal-test", "/monitoring", "/monitoring-advanced",
+  "/portfolios", "/portfolios/1", "/presets", "/register", "/sets",
+  "/settings", "/settings/connections", "/settings/indications/auto",
+  "/settings/indications/common", "/settings/indications/main",
+  "/settings/indications/optimal", "/settings/indications/signal", "/simple",
+  "/statistics", "/statistics/direct-trade", "/statistics/indications/common",
+  "/statistics/indications/signal", "/strategies", "/structure", "/test",
+  "/test-layout", "/test-simple", "/testing/connection", "/testing/engine",
+  "/testing/orders", "/tracking",
+]
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function request(pathname, { method = "GET", body, timeoutMs = 20_000, parse = "json" } = {}) {
   const startedAt = Date.now()
-  const response = await fetch(new URL(pathname, BASE_URL), {
-    method,
-    headers: {
-      Accept: parse === "text" ? "text/html" : "application/json",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    cache: "no-store",
-    signal: AbortSignal.timeout(timeoutMs),
-  })
+  let response
+  try {
+    response = await fetch(new URL(pathname, BASE_URL), {
+      method,
+      headers: {
+        Accept: parse === "text" ? "text/html" : "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (error) {
+    throw new Error(`${method} ${pathname} failed within ${timeoutMs}ms: ${error instanceof Error ? error.message : String(error)}`)
+  }
   const text = await response.text()
   if (!response.ok) {
     throw new Error(`${method} ${pathname} HTTP ${response.status}: ${text.slice(0, 300)}`)
@@ -76,7 +96,7 @@ function finiteNonNegative(value, label) {
 }
 
 function assertStatsRelationships(stats) {
-  for (const type of ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"]) {
+  for (const type of ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"]) {
     finiteNonNegative(stats?.indicationsByType?.[type], `indicationsByType.${type}`)
   }
   for (const [stage, value] of Object.entries(stats?.stageEvalPercent || {})) {
@@ -95,12 +115,10 @@ function assertStatsRelationships(stats) {
   assertBoundedPercentage("liveExecution.winRate", stats?.liveExecution?.winRate)
   const real = Number(stats?.breakdown?.strategies?.real || 0)
   const live = Number(stats?.breakdown?.strategies?.live || 0)
-  // Live is the dispatch stage: it mirrors the Real sets AND additionally
-  // surfaces Block-derived executable dispatch candidates. As a result the
-  // active Live population can legitimately meet or exceed the Real mirror
-  // (the stats route already clamps the live/real eval percentage to 100% at
-  // app/api/connections/progression/[id]/stats/route.ts). Both must still be
-  // finite and non-negative — only a negative/NaN value is a real defect.
+  // Do not compare the legacy flat Real/Live totals directly: Real Active is
+  // collapsed per Base lineage, while Live dispatches independent
+  // Main/Preset/Signal rows plus Block-derived candidates. Validate both totals
+  // and use connectionStageOverview/stageEvalPercent for their relationship.
   finiteNonNegative(real, "breakdown.strategies.real")
   finiteNonNegative(live, "breakdown.strategies.live")
 
@@ -110,6 +128,72 @@ function assertStatsRelationships(stats) {
   }
   finiteNonNegative(blockPf.profitFactorWindow, "blockProfitFactor.window")
   finiteNonNegative(blockPf.profitFactorMinimumSampleCount, "blockProfitFactor.minimumSampleCount")
+
+  const overview = stats?.connectionStageOverview
+  if (
+    !overview ||
+    overview?.schemaVersion !== 1 ||
+    overview?.pfComparison?.window !== 50 ||
+    !Array.isArray(overview?.integrity?.errors)
+  ) {
+    throw new Error("Connection Stage Overview is missing its exact 50-position integrity contract")
+  }
+  for (const [label, value] of Object.entries({
+    baseTotal: overview?.base?.total,
+    baseValid: overview?.base?.valid,
+    mainValid: overview?.main?.valid,
+    mainOverall: overview?.main?.overall,
+    realValid: overview?.real?.valid,
+    realActive: overview?.real?.active,
+    liveTotal: overview?.live?.total,
+    liveOrdersPlaced: overview?.live?.orders?.placed,
+    liveOrdersRunning: overview?.live?.orders?.running,
+  })) finiteNonNegative(value, `connectionStageOverview.${label}`)
+  if (Number(overview.base.valid) > Number(overview.base.total)) {
+    throw new Error("Connection Stage Overview Base Valid exceeds Total")
+  }
+  if (Number(overview.main.overall) < Number(overview.main.valid)) {
+    throw new Error("Connection Stage Overview Main Overall is below Valid")
+  }
+  if (Number(overview.real.active) > Number(overview.real.valid)) {
+    throw new Error("Connection Stage Overview Real Active exceeds Valid")
+  }
+  if (Number(overview.live.long) + Number(overview.live.short) !== Number(overview.live.total)) {
+    throw new Error("Connection Stage Overview Live direction counts do not equal Total")
+  }
+  const ordersByDirection = stats?.liveExecution?.ordersByDirection || {}
+  const rows = Array.isArray(stats?.liveExecution?.ordersBySymbol) ? stats.liveExecution.ordersBySymbol : []
+  for (const direction of ["long", "short"]) {
+    for (const kind of ["placed", "filled", "failed"]) {
+      const rowTotal = rows.reduce((sum, row) => sum + Number(row?.[direction]?.[kind] || 0), 0)
+      if (rowTotal !== Number(ordersByDirection?.[direction]?.[kind] || 0)) {
+        throw new Error(`Live ${direction} ${kind} total is not the sum of its own per-symbol lane`)
+      }
+    }
+  }
+}
+
+async function verifyAllPageSurfaces() {
+  for (let offset = 0; offset < UI_PAGE_PATHS.length; offset += 4) {
+    const batch = UI_PAGE_PATHS.slice(offset, offset + 4)
+    await Promise.all(batch.map(async (pathname) => {
+      const page = await request(pathname, { parse: "text", timeoutMs: 30_000 })
+      if (!page.contentType.includes("text/html") || !page.data.includes("/_next/static/")) {
+        throw new Error(`UI page ${pathname} did not serve the application HTML/client assets`)
+      }
+      if (page.data.includes("NEXT_HTTP_ERROR_FALLBACK;404") || page.data.includes('id="__next_error__"')) {
+        throw new Error(`UI page ${pathname} rendered a Next error boundary`)
+      }
+    }))
+  }
+}
+
+async function fetchPageScripts(html) {
+  const scriptPaths = Array.from(
+    html.matchAll(/<script[^>]+src="([^"]+\.js[^"]*)"/g),
+    (match) => match[1],
+  )
+  return Promise.all(scriptPaths.map((pathname) => request(pathname, { parse: "text", timeoutMs: 30_000 })))
 }
 
 async function waitFor(label, read, accept, timeoutMs = 30_000) {
@@ -132,24 +216,138 @@ async function main() {
     if (!page.contentType.includes("text/html") || !page.data.includes("/_next/static/")) {
       throw new Error("Production dashboard HTML/client assets were not served")
     }
-    const dashboardScriptPaths = Array.from(
-      page.data.matchAll(/<script[^>]+src="([^"]+\.js[^"]*)"/g),
-      (match) => match[1],
-    )
-    const dashboardScripts = await Promise.all(
-      dashboardScriptPaths.map((pathname) => request(pathname, { parse: "text", timeoutMs: 30_000 })),
-    )
+    const dashboardScripts = await fetchPageScripts(page.data)
     if (!dashboardScripts.some((script) => script.data.includes("Connection information sections"))) {
       throw new Error("Production dashboard assets do not contain the modern Main Connection information dialog")
     }
+    if (!dashboardScripts.some((script) => script.data.includes("connection-stage-overview") && script.data.includes("Stage Overview"))) {
+      throw new Error("Production dashboard assets do not contain the exact Base/Main/Real/Live Stage Overview")
+    }
+
+    await verifyAllPageSurfaces()
+    const settingsPage = await request("/settings", { parse: "text", timeoutMs: 30_000 })
+    const settingsScripts = await fetchPageScripts(settingsPage.data)
+    if (!settingsScripts.some((script) => script.data.includes("Prod-VST Demo") && script.data.includes("bingx-x02"))) {
+      throw new Error("Production Settings assets do not contain the immutable BingX X02 Prod-VST dialog contract")
+    }
+    if (!settingsScripts.some((script) => script.data.includes("Configuration backup") && script.data.includes("Save Settings"))) {
+      throw new Error("Production Settings assets do not contain verified save/import/export controls")
+    }
+
+    const settingsBackup = (await request("/api/settings/export", { timeoutMs: 30_000 })).data
+    if (
+      settingsBackup?.schema !== "cts-settings-backup" ||
+      settingsBackup?.version !== 1 ||
+      settingsBackup?.security?.credentialsIncluded !== false ||
+      !settingsBackup?.settings ||
+      !Array.isArray(settingsBackup?.connections)
+    ) {
+      throw new Error("Settings export did not return the canonical credential-free backup schema")
+    }
+    const backupText = JSON.stringify(settingsBackup)
+    if (/"(?:api_key|api_secret|api_passphrase|apiKey|apiSecret|passphrase)"\s*:/.test(backupText)) {
+      throw new Error("Settings export exposed a credential field")
+    }
+    const importResult = (await request("/api/settings/import", {
+      method: "POST",
+      body: settingsBackup,
+      timeoutMs: 30_000,
+    })).data
+    if (importResult?.success !== true || importResult?.persistenceVerified !== true || importResult?.credentialsImported !== false) {
+      throw new Error("Settings backup import/readback verification failed")
+    }
+
+    const systemStatus = (await request("/api/system/status", { timeoutMs: 30_000 })).data
+    if (
+      !String(systemStatus?.startup?.boot_id || "").startsWith("boot_") ||
+      !Number.isFinite(Date.parse(systemStatus?.startup?.started_at || "")) ||
+      Number(systemStatus?.startup?.service_uptime_seconds) < 0 ||
+      String(systemStatus?.startup?.boot_id) === String(systemStatus?.siteInstanceId || "") ||
+      Number(systemStatus?.startup?.service_restart_count) < 0 ||
+      Number(systemStatus?.startup?.recovery_count) < 0
+    ) {
+      throw new Error("System status does not expose independent service-session uptime/lifecycle counters")
+    }
 
     const inventory = (await request(`/api/settings/connections?t=${Date.now()}`)).data
-    const connection = connectionList(inventory).find((entry) => {
+    const bingxConnections = connectionList(inventory).filter((entry) => {
       const exchange = String(entry?.exchange || entry?.exchange_type || "").toLowerCase()
       return exchange.includes("bingx") || String(entry?.id || "").toLowerCase().startsWith("bingx")
     })
+    const preferredConnectionId = String(process.env.PROD_UI_CONNECTION_ID || "bingx-x02")
+    const connection = bingxConnections.find((entry) => String(entry?.id || "") === preferredConnectionId) || bingxConnections[0]
     connectionId = String(connection?.id || "")
     if (!connectionId) throw new Error("The production UI has no selectable BingX connection")
+    if (connectionId !== preferredConnectionId) {
+      throw new Error(`Preferred production UI connection ${preferredConnectionId} is unavailable (selected ${connectionId})`)
+    }
+
+    const connectionDetail = (await request(`/api/settings/connections/${encodeURIComponent(connectionId)}`)).data
+    if (
+      connectionDetail?.id !== "bingx-x02" ||
+      String(connectionDetail?.environment || "") !== "prod-vst" ||
+      String(connectionDetail?.base_url || "") !== "https://open-api-vst.bingx.com" ||
+      ![true, "1", "true"].includes(connectionDetail?.is_testnet)
+    ) {
+      throw new Error(`BingX X02 immutable Prod-VST identity is incomplete: ${JSON.stringify({
+        id: connectionDetail?.id,
+        environment: connectionDetail?.environment,
+        base_url: connectionDetail?.base_url,
+        is_testnet: connectionDetail?.is_testnet,
+      })}`)
+    }
+    if (
+      connectionDetail?.credentials_configured !== true ||
+      connectionDetail?.api_key_configured !== true ||
+      connectionDetail?.api_secret_configured !== true ||
+      !String(connectionDetail?.api_key || "").includes("••••") ||
+      !String(connectionDetail?.api_secret || "").includes("••••")
+    ) {
+      throw new Error("Connection credential storage state is missing or unmasked")
+    }
+
+    // Keep the edit/readback phase independent from engine startup. QuickStart
+    // below is the sole owner of the 32-symbol processing transition.
+    await request(`/api/settings/connections/${encodeURIComponent(connectionId)}/toggle-dashboard`, {
+      method: "POST",
+      body: { is_enabled_dashboard: false },
+      timeoutMs: 30_000,
+    })
+
+    // Exercise the same PATCH/readback path as the Connection Edit dialog.
+    // An attempted host/testnet downgrade must be rejected by normalization.
+    const editMarker = `ui_edit_${Date.now()}`
+    const editedConnection = (await request(`/api/settings/connections/${encodeURIComponent(connectionId)}`, {
+      method: "PATCH",
+      body: {
+        ui_connection_edit_test_marker: editMarker,
+        api_key: connectionDetail.api_key,
+        api_secret: connectionDetail.api_secret,
+        base_url: "https://open-api.bingx.com",
+        environment: "prod-live",
+        is_testnet: false,
+      },
+      timeoutMs: 30_000,
+    })).data
+    if (
+      editedConnection?.success !== true ||
+      editedConnection?.connection?.ui_connection_edit_test_marker !== editMarker ||
+      editedConnection?.connection?.base_url !== "https://open-api-vst.bingx.com" ||
+      editedConnection?.connection?.environment !== "prod-vst" ||
+      ![true, "1", "true"].includes(editedConnection?.connection?.is_testnet)
+      || editedConnection?.connection?.credentials_configured !== true
+    ) {
+      throw new Error("Connection Edit dialog persistence did not retain the immutable Prod-VST identity")
+    }
+    const editedConnectionReadback = (await request(
+      `/api/settings/connections/${encodeURIComponent(connectionId)}?t=${Date.now()}`,
+    )).data
+    if (
+      editedConnectionReadback?.ui_connection_edit_test_marker !== editMarker ||
+      editedConnectionReadback?.credentials_configured !== true
+    ) {
+      throw new Error("Connection Edit read-after-write or masked credential preservation failed")
+    }
 
     const disabled = (await request(`/api/settings/connections/${encodeURIComponent(connectionId)}/live-trade`, {
       method: "POST",
@@ -235,6 +433,17 @@ async function main() {
     }
     if (!cycleAdvanced) {
       throw new Error(`Production engine cycles did not advance within the active epoch (${beforeCycles} → ${observedCycles})`)
+    }
+
+    const scopedStatus = (await request("/api/trade-engine/status-all", { timeoutMs: 30_000 })).data
+    const runningConnectionIds = Array.isArray(scopedStatus?.engines)
+      ? scopedStatus.engines
+        .filter((entry) => entry?.isEngineRunning === true)
+        .map((entry) => String(entry?.connectionId || ""))
+        .filter(Boolean)
+      : []
+    if (runningConnectionIds.some((id) => id !== connectionId)) {
+      throw new Error(`Targeted QuickStart launched sibling engines: ${runningConnectionIds.join(", ")}`)
     }
 
     // Main Connection status must agree across the exact endpoints consumed by
@@ -385,6 +594,20 @@ async function main() {
       { timeoutMs: 30_000 },
     )).data
     assertStatsRelationships(relationshipStats)
+    const liveDirections = relationshipStats?.connectionStageOverview?.live
+    if (
+      Number(liveDirections?.total || 0) > 0 &&
+      Number(liveDirections?.long || 0) === Number(liveDirections?.short || 0)
+    ) {
+      throw new Error(`Live long/short counts appear mirrored: ${liveDirections.long}/${liveDirections.short}`)
+    }
+    const directionOrders = relationshipStats?.liveExecution?.ordersByDirection
+    if (
+      Number(directionOrders?.long?.placed || 0) > 0 &&
+      Number(directionOrders?.long?.placed || 0) === Number(directionOrders?.short?.placed || 0)
+    ) {
+      throw new Error(`Live order counts appear mirrored: ${directionOrders.long.placed}/${directionOrders.short.placed}`)
+    }
 
     // Reproduce every Main Connection control transition through the same APIs
     // used by the switches/buttons. Each transition must converge before the
@@ -427,10 +650,24 @@ async function main() {
       async () => (await request("/api/trade-engine/status")).data,
       (status) => status?.paused === false && status?.actualRuntimeStatus === "running",
     )
+    let previousResumeCycles = beforeResumeCycles
+    let resumeCycleResetObserved = false
+    let resumeCycleAdvanced = false
     await waitFor(
       "cycles after resume",
       async () => (await request(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats`)).data,
-      (stats) => cycleTotal(stats) > beforeResumeCycles,
+      (stats) => {
+        const current = cycleTotal(stats)
+        if (current < previousResumeCycles) resumeCycleResetObserved = true
+        if (current > previousResumeCycles) resumeCycleAdvanced = true
+        previousResumeCycles = current
+        // pause()/resume() detaches the stopped manager and starts a fresh
+        // progression generation. Accept either monotonic continuation or a
+        // proven reset followed by forward movement inside that new epoch.
+        return current > beforeResumeCycles || (
+          resumeCycleResetObserved && resumeCycleAdvanced && current > 0
+        )
+      },
       30_000,
     )
 
@@ -468,16 +705,37 @@ async function main() {
       timeoutMs: 30_000,
     })
 
-    const positions = (await request(
-      `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}`,
-      { timeoutMs: 30_000 },
-    )).data
-    if (!Array.isArray(positions?.realPositions) || positions.realPositions.length !== 0) {
-      throw new Error("A real exchange position appeared during the UI paper test")
-    }
-    if (positions?.dataIntegrity?.liveExecutionMode !== "simulation" || positions?.dataIntegrity?.liveTradeRequested !== false) {
-      throw new Error("The UI workflow left explicit simulation mode")
-    }
+    const positionIntegrityResult = await waitFor(
+      "stable simulation position/order relation integrity",
+      async () => {
+        const payload = (await request(
+          `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}`,
+          { timeoutMs: 30_000 },
+        )).data
+        if (Array.isArray(payload?.realPositions) && payload.realPositions.length > 0) {
+          throw new Error("A real exchange position appeared during the UI paper test")
+        }
+        return {
+          state: {
+            hasRealPositionsArray: Array.isArray(payload?.realPositions),
+            realPositions: Array.isArray(payload?.realPositions) ? payload.realPositions.length : null,
+            simulatedPositions: Array.isArray(payload?.simulatedPositions) ? payload.simulatedPositions.length : null,
+            executionMode: payload?.dataIntegrity?.liveExecutionMode ?? null,
+            liveTradeRequested: payload?.dataIntegrity?.liveTradeRequested ?? null,
+            relationSuccess: payload?.dataIntegrity?.positionOrderRelationIntegrity?.success ?? null,
+            relationMismatches: payload?.dataIntegrity?.positionOrderRelationIntegrity?.mismatchCount ?? null,
+          },
+          payload,
+        }
+      },
+      (result) => result.state.hasRealPositionsArray
+        && result.state.realPositions === 0
+        && result.state.executionMode === "simulation"
+        && result.state.liveTradeRequested === false
+        && result.state.relationSuccess === true,
+      30_000,
+    )
+    const positions = positionIntegrityResult.payload
 
     await request("/api/trade-engine/stop", { method: "POST", timeoutMs: 30_000 })
 
@@ -493,15 +751,23 @@ async function main() {
       success: true,
       mode: "production-ui-paper",
       dashboardHtmlVerified: true,
+      pageSurfacesVerified: UI_PAGE_PATHS.length,
       informationDialogAssetVerified: true,
       informationDialogSnapshotVerified: true,
       connectionId,
+      runningConnectionIds,
       symbols: symbols.length,
       quickStartLatencyMs: enabled.latencyMs,
       engineCyclesBefore: beforeCycles,
       engineCyclesAfter: observedCycles,
       cycleResetObserved,
+      resumeCycleResetObserved,
       settingsHotReloadVerified: true,
+      settingsBackupRoundTripVerified: true,
+      credentialPersistenceVerified: true,
+      runtimeSessionLifecycleVerified: true,
+      independentLongShortVerified: true,
+      connectionEditDialogVerified: true,
       volumeHotReloadVerified: true,
       signalSourceRegistryVerified: 35,
       signalEnabledByDefaultVerified: true,
@@ -509,6 +775,7 @@ async function main() {
       mainConnectionToggleVerified: true,
       globalControlsVerified: ["pause", "resume", "stop", "start"],
       statusRelationshipsVerified: true,
+      positionOrderRelationIntegrityVerified: positions.dataIntegrity.positionOrderRelationIntegrity.checkedPositions,
       realPositions: 0,
       realExchangeOrdersSubmitted: 0,
       stopped: true,

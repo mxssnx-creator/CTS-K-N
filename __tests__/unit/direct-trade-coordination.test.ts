@@ -28,13 +28,13 @@ function upwardMinuteSeries(size = 80): DirectTradeCandle[] {
 }
 
 describe("Direct-Trade independent historical coordination", () => {
-  test("uses the 2–22 PositionCost TP contract with a 4–14 default and sparse Set stride", () => {
-    expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([4, 14])
+  test("uses the 2–22 PositionCost TP contract with the optimized 4–8 default and 2× stride", () => {
+    expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([4, 8])
     expect(normaliseDirectTradeTakeProfitRatioRange([0, 99])).toEqual([2, 22])
-    expect(normaliseDirectTradeTakeProfitRatioStep(undefined)).toBe(4)
+    expect(normaliseDirectTradeTakeProfitRatioStep(undefined)).toBe(2)
     expect(normaliseDirectTradeTakeProfitRatioStep(0)).toBe(1)
     expect(buildDirectTradeTakeProfitPositionCostRatios([2, 5], 1)).toEqual([2, 3, 4, 5])
-    expect(buildDirectTradeTakeProfitPositionCostRatios([4, 14])).toEqual([4, 8, 12, 14])
+    expect(buildDirectTradeTakeProfitPositionCostRatios([4, 8])).toEqual([4, 6, 8])
     expect(directTradeTakeProfitPercent(0.1, 4)).toBe(0.4)
     expect(directTradeTakeProfitPercent(0.1, 22)).toBe(2.2)
     expect(averageDirectTradeTakeProfitRatio([4, 8, 12, 14])).toBe(9.5)
@@ -57,8 +57,8 @@ describe("Direct-Trade independent historical coordination", () => {
   })
 
   test("migrates 5m without pretending it is a 15m candle and creates every selected combination", () => {
-    expect(normaliseDirectTradeTimeframes(["1m", "5m", "15m"]).sort()).toEqual(["10m", "15m", "1m"].sort())
-    expect(buildTimeframeCombinations(["1m", "10m", "15m"])).toHaveLength(7)
+    expect(normaliseDirectTradeTimeframes(["1m", "10m", "15m"])).toEqual(["5m", "15m", "30m"])
+    expect(buildTimeframeCombinations(["5m", "15m", "30m"])).toHaveLength(7)
 
     const candles = upwardMinuteSeries(20)
     const tenMinute = resampleCandles(candles, 10)
@@ -72,12 +72,12 @@ describe("Direct-Trade independent historical coordination", () => {
   })
 
   test("materialises independent TP/SL/trailing keys and keeps hindsight best exits analytical only", () => {
-    const candles = upwardMinuteSeries()
+    const candles = upwardMinuteSeries(180)
     const sets = evaluateDirectTradeSets({
       symbol: "BTCUSDT",
       direction: "long",
-      candlesByTimeframe: { "1m": candles, "10m": resampleCandles(candles, 10), "15m": resampleCandles(candles, 15) },
-      timeframeSet: ["1m"],
+      candlesByTimeframe: { "5m": resampleCandles(candles, 5), "15m": resampleCandles(candles, 15), "30m": resampleCandles(candles, 30) },
+      timeframeSet: ["5m"],
       historyHours: 60,
       volumeRatio: 0.1,
       tpRange: [0.3, 0.5],
@@ -98,7 +98,7 @@ describe("Direct-Trade independent historical coordination", () => {
 
     expect(sets).toHaveLength(4)
     expect(new Set(sets.map((set) => set.setKey)).size).toBe(4)
-    expect(sets.every((set) => set.timeframe === "1m" && set.historyHours === 60)).toBe(true)
+    expect(sets.every((set) => set.timeframe === "5m" && set.historyHours === 60)).toBe(true)
     expect(sets.every((set) => set.bestMarketExitAnalysisOnly)).toBe(true)
     expect(sets.every((set) => typeof set.activeEntry === "boolean")).toBe(true)
     expect(sets.some((set) => set.bestMarketExitPnl > set.totalPnl)).toBe(true)
@@ -110,13 +110,13 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(sets.every((set) => set.valid || set.deactivationReason !== null)).toBe(true)
   })
 
-  test("keeps Auto Trailing, Combination, inverse and high-protection as independent order lineages", () => {
+  test("keeps Auto Trailing, Combination, inverse, high-protection and DCA as independent order lineages", () => {
     const candles = upwardMinuteSeries(180)
     const common = {
       symbol: "BTCUSDT",
       direction: "long" as const,
-      candlesByTimeframe: { "1m": candles, "10m": resampleCandles(candles, 10), "15m": resampleCandles(candles, 15) },
-      timeframeSet: ["1m"] as const,
+      candlesByTimeframe: { "5m": resampleCandles(candles, 5), "15m": resampleCandles(candles, 15), "30m": resampleCandles(candles, 30) },
+      timeframeSet: ["5m"] as const,
       historyHours: 60,
       volumeRatio: 0.1,
       entryTactics: ["breakout"] as const,
@@ -161,6 +161,13 @@ describe("Direct-Trade independent historical coordination", () => {
       slRatios: [0.75],
       trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
     })
+    const dca = evaluateDirectTradeSets({
+      ...common,
+      strategyType: "dca",
+      tpRange: [0.6],
+      slRatios: [1],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
+    })
     const relativeCombination = evaluateDirectTradeSets({
       ...common,
       strategyType: "combination",
@@ -180,9 +187,23 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(inverse[0].stoploss).toBeLessThanOrEqual(inverse[0].takeprofit * 1.25)
     expect(highProtection).toHaveLength(1)
     expect(highProtection[0]).toMatchObject({ strategyType: "high_protection", takeprofit: 4, stoploss: 3 })
+    expect(dca).toHaveLength(1)
+    expect(dca[0]).toMatchObject({
+      strategyType: "dca",
+      takeprofit: 0.6,
+      stoploss: 1.95,
+      blockCount: 0,
+      dcaRealizedVolumeMultiplier: expect.any(Number),
+      dcaProfile: {
+        maxSteps: 4,
+        maxPositionVolumeRatio: 5,
+        stepVolumeMultipliers: [1, 1, 1, 1],
+        stepDistancesPct: [0.3, 0.6, 1, 1.6],
+      },
+    })
     expect(relativeCombination).toHaveLength(1)
     expect(relativeCombination[0]).toMatchObject({ strategyType: "combination", entryTactic: "relative", exitTactic: "relative" })
-    expect(new Set([...auto, ...combination, ...inverse, ...highProtection, ...relativeCombination].map((set) => set.setKey)).size).toBe(7)
+    expect(new Set([...auto, ...combination, ...inverse, ...highProtection, ...dca, ...relativeCombination].map((set) => set.setKey)).size).toBe(8)
   })
 
   test("requires a finite high-PF recent closed-position window for a new eligible config", () => {
@@ -190,8 +211,8 @@ describe("Direct-Trade independent historical coordination", () => {
     const sets = evaluateDirectTradeSets({
       symbol: "BTCUSDT",
       direction: "long",
-      candlesByTimeframe: { "1m": candles },
-      timeframeSet: ["1m"],
+      candlesByTimeframe: { "5m": candles },
+      timeframeSet: ["5m"],
       historyHours: 90,
       volumeRatio: 0.1,
       tpRange: [0.3],
@@ -224,8 +245,8 @@ describe("Direct-Trade independent historical coordination", () => {
     const common = {
       symbol: "BTCUSDT",
       direction: "long" as const,
-      candlesByTimeframe: { "1m": candles },
-      timeframeSet: ["1m"] as const,
+      candlesByTimeframe: { "5m": candles },
+      timeframeSet: ["5m"] as const,
       historyHours: 90,
       volumeRatio: 0.1,
       tpRange: [0.3],
@@ -256,8 +277,8 @@ describe("Direct-Trade independent historical coordination", () => {
     const sets = evaluateDirectTradeSets({
       symbol: "BTCUSDT",
       direction: "long",
-      candlesByTimeframe: { "1m": candles },
-      timeframeSet: ["1m"],
+      candlesByTimeframe: { "5m": candles },
+      timeframeSet: ["5m"],
       historyHours: 60,
       volumeRatio: 1.5,
       tpRange: [0.4, 0.5],
@@ -286,8 +307,8 @@ describe("Direct-Trade independent historical coordination", () => {
     const common = {
       symbol: "BTCUSDT",
       direction: "long" as const,
-      candlesByTimeframe: { "1m": candles },
-      timeframeSet: ["1m"] as const,
+      candlesByTimeframe: { "5m": candles },
+      timeframeSet: ["5m"] as const,
       historyHours: 48,
       volumeRatio: 0.5,
       tpRange: [0.3],

@@ -29,6 +29,11 @@ import {
   POS_COUNT_VOLUME_RATIO_STEP,
   posCountVolumeRatioToSetMultiplier,
 } from "@/lib/pos-count-volume-ratio"
+import {
+  STRATEGY_INDICATION_TYPES,
+  normalizeStrategyIndicationVariantPolicy,
+  strategyIndicationVariantSettingKey,
+} from "@/lib/strategy-indication-policy"
 
 interface StrategyTabProps {
   settings: any
@@ -99,6 +104,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   const presetBlockPauseCountRatio = Number(settings.presetBlockPauseCountRatio ?? settings.blockPauseCountRatio ?? 1)
   const presetBlockActiveRealEnabled = settings.presetBlockActiveRealEnabled ?? settings.blockActiveRealEnabled ?? true
   const presetBlockActiveLiveEnabled = settings.presetBlockActiveLiveEnabled ?? settings.blockActiveLiveEnabled ?? true
+  const indicationVariantPolicy = normalizeStrategyIndicationVariantPolicy(settings)
 
   return (
     <TabsContent value="strategy" className="space-y-4">
@@ -111,6 +117,38 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
           </TabsList>
 
         <TabsContent value="main" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Strategies per indication type</CardTitle>
+              <CardDescription>
+                Trailing and Block are independent downstream strategy lanes for each indication family. Both default to enabled.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-[minmax(9rem,1fr)_7rem_7rem] items-center gap-3 px-3 text-xs font-medium text-muted-foreground">
+                <span>Indication</span>
+                <span className="text-center">Trailing</span>
+                <span className="text-center">Block</span>
+              </div>
+              {STRATEGY_INDICATION_TYPES.map((indicationType) => (
+                <div key={indicationType} className="grid grid-cols-[minmax(9rem,1fr)_7rem_7rem] items-center gap-3 rounded-lg border px-3 py-2">
+                  <Label className="capitalize">{indicationType.replaceAll("_", " ")}</Label>
+                  {(["trailing", "block"] as const).map((variant) => (
+                    <div key={variant} className="flex justify-center">
+                      <Switch
+                        checked={indicationVariantPolicy[indicationType][variant]}
+                        onCheckedChange={(checked) => handleSettingChange(
+                          strategyIndicationVariantSettingKey(indicationType, variant),
+                          checked,
+                        )}
+                        aria-label={`${indicationType} ${variant}`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
           <Tabs value={strategyMainSubTab} onValueChange={setStrategyMainSubTab}>
             <TabsList>
               <TabsTrigger value="base">Base</TabsTrigger>
@@ -508,6 +546,18 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                           onValueChange={([value]) => handleSettingChange("dcaCooldownSeconds", value)}
                         />
                       </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between"><Label>Maximum total position</Label><span className="text-xs">{Number(settings.dcaMaxPositionVolumeRatio ?? DEFAULT_DCA_PROFILE.maxPositionVolumeRatio).toFixed(1)}×</span></div>
+                      <Slider
+                        min={1.4}
+                        max={5}
+                        step={0.1}
+                        value={[Number(settings.dcaMaxPositionVolumeRatio ?? DEFAULT_DCA_PROFILE.maxPositionVolumeRatio)]}
+                        onValueChange={([value]) => handleSettingChange("dcaMaxPositionVolumeRatio", Number(value.toFixed(1)))}
+                      />
+                      <p className="text-xs text-muted-foreground">Includes the initial fill; 5× is the hard 500% system ceiling.</p>
                     </div>
 
                     {(settings.dcaTakeProfitMode || DEFAULT_DCA_PROFILE.takeProfitMode) === "breakeven_plus" && (

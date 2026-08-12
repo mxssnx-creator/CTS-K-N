@@ -7,6 +7,7 @@ import {
   type PlaceOrderOptions,
 } from "./base-connector"
 import { safeParseResponse } from "@/lib/safe-response-parser"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 export class OrangeXConnector extends BaseExchangeConnector {
   private accessToken = ""
@@ -135,8 +136,10 @@ export class OrangeXConnector extends BaseExchangeConnector {
 
   private mapPosition(raw: any): any {
     const size = Number(raw?.size ?? raw?.contracts ?? raw?.quantity ?? 0)
-    const rawSide = String(raw?.position_side || raw?.positionSide || raw?.direction || "").toUpperCase()
-    const side: "long" | "short" = rawSide === "SHORT" || rawSide === "SELL" ? "short" : "long"
+    const side = normalizeTradeDirection(
+      raw?.position_side ?? raw?.positionSide ?? raw?.direction,
+    )
+    if (!side) return null
     const contracts = Math.abs(Number.isFinite(size) ? size : 0)
     return {
       symbol: String(raw?.instrument_name || raw?.symbol || ""),
@@ -175,6 +178,9 @@ export class OrangeXConnector extends BaseExchangeConnector {
     )
     return {
       orderId: String(raw?.order_id ?? raw?.orderId ?? raw?.id ?? ""),
+      clientOrderId: String(
+        raw?.custom_order_id ?? raw?.customOrderId ?? raw?.client_order_id ?? raw?.clientOrderId ?? raw?.label ?? "",
+      ) || undefined,
       symbol: String(raw?.instrument_name ?? raw?.symbol ?? ""),
       side,
       type,
@@ -370,6 +376,13 @@ export class OrangeXConnector extends BaseExchangeConnector {
         const errorMsg = error instanceof Error ? error.message : String(error)
         this.logError(`✗ Failed to place order: ${errorMsg}`)
         return { success: false, error: errorMsg }
+      }
+    }
+
+    if (options.reduceOnly === true || options.clientOrderId) {
+      return {
+        success: false,
+        error: "OrangeX legacy adapter cannot guarantee reduce-only/idempotent control orders",
       }
     }
 
@@ -631,7 +644,7 @@ export class OrangeXConnector extends BaseExchangeConnector {
         const wanted = symbol ? this.normalizeInstrument(symbol) : undefined
         return rows
           .map((row: any) => this.mapPosition(row))
-          .filter((row: any) => row.contracts > 0 && (!wanted || row.symbol === wanted))
+          .filter((row: any) => row && row.contracts > 0 && (!wanted || row.symbol === wanted))
       } catch (error) {
         this.logError(`✗ Failed to fetch OrangeX positions: ${error instanceof Error ? error.message : String(error)}`)
         return []

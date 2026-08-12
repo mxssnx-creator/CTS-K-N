@@ -5,7 +5,13 @@ describe("GlobalTradeEngineCoordinator.startAll result accounting", () => {
     exchange: "binance",
     is_inserted: true,
     is_enabled_dashboard: true,
-    demo_mode: true,
+    is_testnet: "true",
+    is_predefined: "true",
+    is_live_trade: "0",
+    live_trade_enabled: "0",
+    live_trade_requested: "0",
+    api_key: "demo-api-key-with-valid-shape",
+    api_secret: "demo-api-secret-with-valid-shape",
   }
 
   beforeEach(() => {
@@ -21,6 +27,7 @@ describe("GlobalTradeEngineCoordinator.startAll result accounting", () => {
 
   test("does not count queued-only or already-owned startEngine results as started", async () => {
     const logProgressionEvent = jest.fn().mockResolvedValue(undefined)
+    const updateConnectionState = jest.fn().mockResolvedValue({ applied: true })
 
     jest.doMock("@/lib/trade-engine/engine-manager", () => ({
       TradeEngineManager: jest.fn(),
@@ -44,6 +51,7 @@ describe("GlobalTradeEngineCoordinator.startAll result accounting", () => {
       initRedis: jest.fn().mockResolvedValue(undefined),
       getAllConnections: jest.fn().mockResolvedValue([connection]),
       getAssignedAndEnabledConnections: jest.fn().mockResolvedValue([connection]),
+      updateConnectionState,
       getRedisClient: jest.fn(() => ({
         hgetall: jest.fn().mockResolvedValue({ status: "running" }),
       })),
@@ -77,5 +85,11 @@ describe("GlobalTradeEngineCoordinator.startAll result accounting", () => {
       "Coordinator start skipped",
       { connectionId: "conn-start-all-skipped", reason: "queued-only or already owned" },
     )
+    expect(updateConnectionState).not.toHaveBeenCalled()
+    expect(connection).toMatchObject({
+      is_live_trade: "0",
+      live_trade_enabled: "0",
+      live_trade_requested: "0",
+    })
   })
 })

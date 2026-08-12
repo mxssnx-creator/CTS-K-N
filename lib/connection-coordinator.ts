@@ -10,6 +10,11 @@ import { createExchangeConnector } from "@/lib/exchange-connectors"
 import { BatchProcessor } from "@/lib/batch-processor"
 import { getRateLimiter } from "@/lib/rate-limiter"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { resolveRedisRuntimeRoot } from "@/lib/redis-runtime-root"
+
+type ConnectionCoordinatorRuntimeRoot = typeof globalThis & {
+  __connectionCoordinator?: ConnectionCoordinator
+}
 
 export type ConnectionApiType = "rest" | "websocket" | "unified" | "perpetual_futures" | "spot" | "margin"
 export type ConnectionStatus = "active" | "inactive" | "error" | "testing" | "paused"
@@ -77,10 +82,12 @@ export class ConnectionCoordinator {
   }
 
   static getInstance(): ConnectionCoordinator {
-    if (!ConnectionCoordinator.instance) {
-      ConnectionCoordinator.instance = new ConnectionCoordinator()
+    const runtimeRoot = resolveRedisRuntimeRoot() as ConnectionCoordinatorRuntimeRoot
+    if (!runtimeRoot.__connectionCoordinator) {
+      runtimeRoot.__connectionCoordinator = new ConnectionCoordinator()
     }
-    return ConnectionCoordinator.instance
+    ConnectionCoordinator.instance = runtimeRoot.__connectionCoordinator
+    return runtimeRoot.__connectionCoordinator
   }
 
   /**

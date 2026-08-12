@@ -10,6 +10,7 @@ import { getBaseConnectionCredentials } from "@/lib/base-connection-credentials"
 
 const bybitCredentials = getBaseConnectionCredentials("bybit-x03")
 const bingxCredentials = getBaseConnectionCredentials("bingx-x01")
+const bingxVstCredentials = getBaseConnectionCredentials("bingx-x02")
 const pionexCredentials = getBaseConnectionCredentials("pionex-x01")
 const orangexCredentials = getBaseConnectionCredentials("orangex-x01")
 
@@ -83,6 +84,27 @@ export const USER_CONNECTIONS: UserConnectionConfig[] = [
     installCommands: {
       npm: "npm install bingx-api",
       pip: "pip install bingx",
+    },
+  },
+  {
+    id: "bingx-x02-vst-futures",
+    name: "X02",
+    exchange: "bingx",
+    displayName: "BingX X02 (Prod-VST Demo)",
+    apiType: "futures",
+    connectionType: "Futures / Virtual Funds",
+    apiKey: bingxVstCredentials.apiKey,
+    apiSecret: bingxVstCredentials.apiSecret,
+    isTestnet: true,
+    marginType: "cross",
+    positionMode: "hedge",
+    maxLeverage: 150,
+    documentation: {
+      npm: "https://www.npmjs.com/package/bingx-api",
+      official: "https://github.com/BingX-API/api-ai-skills",
+    },
+    installCommands: {
+      npm: "npm install bingx-api",
     },
   },
   {

@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { DIRECT_TRADE_OPEN_POSITION_STAGE_KEY } from "@/lib/direct-trade-position-stage"
+import { buildDirectTradeOverview48h } from "@/lib/direct-trade-overview-stats"
 
 export const dynamic = "force-dynamic"
 
@@ -71,6 +72,7 @@ export async function GET() {
       last48h: calculateTimePF(closedPositions, now - 48 * 60 * 60 * 1000),
     }
     const allRolling = calculateRollingPF(closedPositions)
+    const overview48h = buildDirectTradeOverview48h(positions, now)
     const responseStats = stats
       ? {
           ...stats,
@@ -95,6 +97,7 @@ export async function GET() {
       openPositions: openPositions.length,
       openPositionStage,
       closedPositions: closedPositions.length,
+      overview48h,
       configStatus,
       calculation,
       calculationProgress,

@@ -27,12 +27,18 @@ import {
   normalizeActiveMarketExitSituations,
   type ActiveMarketExitSituation,
 } from "@/lib/active-outbreak-indication"
+import {
+  SPECIAL_TIMEFRAMES_SECONDS,
+  specialExitVariantSettings,
+  specialSettingsFromAppSettings,
+} from "@/lib/special-strategy"
 
 export type IndicationConfigurationType =
   | "direction"
   | "move"
   | "active"
   | "active_advanced"
+  | "special"
   | "optimal"
   | "auto"
   | "signal"
@@ -245,6 +251,40 @@ export function calculateIndicationConfigurationCounts(
   const advancedGrid = advancedRatios.length * factors.length
   const optimalGrid = optimalRanges.length * factors.length
 
+  // Special owns a finite range × timeframe/mode × exit × direction
+  // topology.  Count the same normalized settings and hard limits used by
+  // the runtime processor so Settings/Progression can never silently omit a
+  // lane or report a Cartesian Long/Short evaluation as an executed signal.
+  const specialSettings = specialSettingsFromAppSettings(settings)
+  const specialRanges = numericRange(
+    specialSettings.minStep,
+    specialSettings.maxStep,
+    specialSettings.stepSize,
+    [specialSettings.minStep],
+  )
+  const specialTimeframes = SPECIAL_TIMEFRAMES_SECONDS.filter((seconds) => {
+    if (seconds === 15) return specialSettings.timeframe15sEnabled
+    if (seconds === 60) return specialSettings.timeframe1mEnabled
+    if (seconds === 15 * 60) return specialSettings.timeframe15mEnabled
+    return specialSettings.timeframe30mEnabled
+  })
+  const specialIndividualModes = specialSettings.individualTimeframesEnabled
+    ? specialTimeframes.length
+    : 0
+  const specialCombinedModes = specialSettings.combinedTimeframesEnabled ? 1 : 0
+  // The native lane is a mutually exclusive fail-closed fallback for feeds
+  // without timestamps, so it replaces (rather than expands) an empty mode
+  // matrix.
+  const specialTimeframeModes = Math.max(
+    1,
+    specialIndividualModes + specialCombinedModes,
+  )
+  const specialExitVariants = specialExitVariantSettings(specialSettings).length
+  const specialEvaluationGrid = specialSettings.enabled
+    ? specialRanges.length * specialTimeframeModes
+    : 0
+  const specialSetGrid = specialEvaluationGrid * specialExitVariants * 2
+
   const trendEnabled = bool(settings.trendEnabled, true)
   const trendTimeframes = normalizeTrendTimeframesMinutes(settings.trendTimeframesMinutes)
   const trendDrawdowns = numericList(
@@ -390,6 +430,30 @@ export function calculateIndicationConfigurationCounts(
         factors: factors.length,
       },
       description: "Independent continuation/activity situations.",
+    },
+    {
+      type: "special",
+      label: "Special",
+      group: "additional",
+      storage: "independent_set",
+      possibleSets: specialSetGrid,
+      evaluationConfigurations: specialEvaluationGrid,
+      formula:
+        `${specialRanges.length} exact ranges × ${specialTimeframeModes} timeframe/mode lanes × ` +
+        `${specialExitVariants} independent exits × 2 direction lanes`,
+      params: {
+        ranges: specialRanges.length,
+        enabledTimeframes: specialTimeframes.length,
+        individualModes: specialIndividualModes,
+        combinedModes: specialCombinedModes,
+        timeframeModes: specialTimeframeModes,
+        exitVariants: specialExitVariants,
+        maxPositionsPerDirection: specialSettings.maxPositionsPerDirection,
+        maxVolumeRatio: specialSettings.maxVolumeRatio,
+        maximumHoldingSeconds: specialSettings.maximumHoldingSeconds,
+      },
+      description:
+        "Independent Long/Short active-market lanes across exact 15s/1m/15m/30m and combined calculations; fixed and adaptive-trailing exits retain separate Sets.",
     },
     {
       type: "optimal",

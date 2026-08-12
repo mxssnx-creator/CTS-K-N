@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress"
 import type { TradingPosition } from "@/lib/trading"
 import { TrendingUp, TrendingDown, Clock, DollarSign, X, Activity } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 interface PositionCardProps {
   position: TradingPosition
@@ -16,7 +17,11 @@ interface PositionCardProps {
 
 export function PositionCard({ position, onClose, showCloseButton = true }: PositionCardProps) {
   const isProfit = position.profit_loss > 0
-  const profitPercentage = ((position.current_price - position.entry_price) / position.entry_price) * 100
+  const direction = normalizeTradeDirection(position.position_side)
+  const profitPercentage = direction && position.entry_price > 0
+    ? ((position.current_price - position.entry_price) / position.entry_price) * 100 *
+      (direction === "long" ? 1 : -1)
+    : 0
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-US", {
@@ -54,7 +59,7 @@ export function PositionCard({ position, onClose, showCloseButton = true }: Posi
             {position.strategy_type}
           </Badge>
           <Badge variant="outline" className="text-xs">
-            {position.position_side?.toUpperCase() || "LONG"}
+            {direction?.toUpperCase() || "INVALID"}
           </Badge>
           {position.volume_factor && position.volume_factor !== 1 ? (
             <Badge variant="secondary" className="text-xs">

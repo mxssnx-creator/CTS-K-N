@@ -162,7 +162,7 @@ export async function initializeTradeEngineAutoStart(): Promise<void> {
 async function initializeTradeEngineAutoStartInternal(): Promise<void> {
   try {
     const { assertProductionReadiness } = await import("./production-readiness")
-    await assertProductionReadiness()
+    await assertProductionReadiness({ requireConnectionCredentials: false })
     console.log("[v0] [Auto-Start] Initializing trade-engine synchronization...")
 
     const { initRedis, ensureUniqueSiteInstance, getRedisClient } = await loadRedisDb()
@@ -235,7 +235,7 @@ export async function runTradeEngineHealingSweep(
 async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOptions): Promise<HealingSweepResult> {
   try {
     const { checkProductionReadiness } = await import("./production-readiness")
-    const readiness = await checkProductionReadiness()
+    const readiness = await checkProductionReadiness({ requireConnectionCredentials: false })
     if (!readiness.ready) {
       const fields = readiness.missingFields.map((item) => item.field).join(", ")
       console.warn(`[v0] [AutoStart] Healing sweep skipped: production readiness failed (${fields})`)
@@ -368,6 +368,14 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
 
     const queuedRefreshProcessedCount = (await processQueuedEngineRefreshRequests(coordinator)) ?? 0
     const startedCount = await coordinator.startMissingEngines(eligibleConnections)
+
+    if (startedCount > 0 && !isStartup) {
+      const { recordRuntimeRecoveryEvent } = await import("./runtime-startup-state")
+      await recordRuntimeRecoveryEvent(
+        "self_heal",
+        `Recovered ${startedCount} missing trade engine${startedCount === 1 ? "" : "s"}`,
+      ).catch(() => {})
+    }
 
     const activeEngineCount = typeof coordinator.getActiveEngineCount === "function" ? coordinator.getActiveEngineCount() : 0
     if (coordinator.isRunning() || activeEngineCount > 0) {

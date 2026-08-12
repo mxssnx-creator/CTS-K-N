@@ -120,7 +120,7 @@ function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; m
   const paperFallback =
     !hasSharedRedis &&
     !hasManagedSnapshot &&
-    process.env.ALLOW_PROD_INLINE_REDIS !== "0" &&
+    process.env.ALLOW_PROD_INLINE_REDIS === "1" &&
     process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
 
   if (!hasSharedRedis && !hasManagedSnapshot && !paperFallback) {

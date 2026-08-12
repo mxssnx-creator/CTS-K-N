@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 export const dynamic = "force-dynamic"
 
@@ -252,7 +253,17 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     const finalPrice = closePrice ? parseFloat(closePrice) : parseFloat(position.current_price || "0")
     const entry = parseFloat(position.entry_price || "0")
     const qty = parseFloat(position.quantity || "0")
-    const direction = String(position.direction || position.side || "long").toLowerCase()
+    const direction = resolveConsistentTradeDirection(
+      position.direction,
+      position.side,
+      position.position_type,
+    )
+    if (!direction) {
+      return NextResponse.json(
+        { success: false, error: "Position direction is missing or contradictory; close refused" },
+        { status: 409 },
+      )
+    }
     const finalPnL = (direction === "short" ? entry - finalPrice : finalPrice - entry) * qty
 
     // Mark as closed with comprehensive metadata

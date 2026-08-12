@@ -191,6 +191,68 @@ interface RealStagePositionDetailStats {
   }
 }
 
+interface ConnectionStageOverview {
+  schemaVersion: number
+  semantics: string
+  base: {
+    total: number
+    valid: number
+    pfMinimum: number
+    validPercent: number
+  }
+  main: {
+    valid: number
+    overall: number
+    additional: number
+    expansionPercent: number
+    breakdown: {
+      standard: number
+      trailing: number
+      positionCount: number
+      block: number
+      dca: number
+    }
+    breakdownComplete: boolean
+    blockOnly: boolean
+  }
+  real: {
+    valid: number
+    active: number
+    activeExactSets: number
+    activePercent: number
+    positionCountRelation: string
+  }
+  live: {
+    total: number
+    long: number
+    short: number
+    symbols: number
+    bySymbol: Array<{ symbol: string; long: number; short: number }>
+    orders: {
+      placed: number
+      running: number
+      pendingEntry: number
+      control: number
+    }
+  }
+  pfComparison: {
+    window: number
+    availableClosedPositions: number
+    matchedPositions: number
+    missingRealSnapshots: number
+    realProfitFactor: number | null
+    liveProfitFactor: number | null
+    liveInfinite: boolean
+    ratio: number | null
+    ratioPercent: number | null
+    difference: number | null
+    differencePercent: number | null
+    baseline: 1
+    status: "unavailable" | "below" | "parity" | "above"
+  }
+  integrity: { valid: boolean; errors: string[] }
+}
+
 export function ActiveConnectionCard({
   connection,
   expanded,
@@ -218,10 +280,25 @@ export function ActiveConnectionCard({
   } | null>(null)
   const [strategyRows, setStrategyRows] = useState<{
     base: { total: number; valid: number; totalOpen?: number; validOpen?: number; validRatio?: number }
-    main: { valid: number; overall: number; validOpen?: number; overallOpen?: number; overallToValidRatio?: number }
+    main: {
+      valid: number
+      overall: number
+      validOpen?: number
+      overallOpen?: number
+      overallToValidRatio?: number
+      breakdown?: {
+        standard: number
+        trailing: number
+        positionCount: number
+        block: number
+        dca: number
+      }
+    }
     real: { valid: number; evaluated?: number; rejected?: number; validRatio?: number; active: number; activeExactRows?: number; activeRatio?: number }
     live: { total: number; mirrored: number; active: number; blockCreated?: number; blockValid?: number; executable?: number; mirroredRatio?: number; executablePerRow?: number }
   } | null>(null)
+  const [connectionStageOverview, setConnectionStageOverview] =
+    useState<ConnectionStageOverview | null>(null)
   const [infoDialogOpen, setInfoDialogOpen] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [logsDialogOpen, setLogsDialogOpen] = useState(false)
@@ -828,6 +905,13 @@ export function ActiveConnectionCard({
               validOpen: nonNegativeMetric(tracking.rows.main?.validOpen),
               overallOpen: nonNegativeMetric(tracking.rows.main?.overallOpen),
               overallToValidRatio: nonNegativeMetric(tracking.rows.main?.overallToValidRatio),
+              breakdown: {
+                standard: nonNegativeMetric(tracking.rows.main?.breakdown?.standard),
+                trailing: nonNegativeMetric(tracking.rows.main?.breakdown?.trailing),
+                positionCount: nonNegativeMetric(tracking.rows.main?.breakdown?.positionCount),
+                block: nonNegativeMetric(tracking.rows.main?.breakdown?.block),
+                dca: nonNegativeMetric(tracking.rows.main?.breakdown?.dca),
+              },
             },
             real: {
               valid: nonNegativeMetric(tracking.rows.real?.valid),
@@ -1003,6 +1087,7 @@ export function ActiveConnectionCard({
   useEffect(() => {
     if (!connection.isActive && !globalEngineRunning) {
       setLiveStats(null)
+      setConnectionStageOverview(null)
       return
     }
 
@@ -1035,6 +1120,14 @@ export function ActiveConnectionCard({
           presetRes?.ok ? presetRes.json() : Promise.resolve(null),
         ])
         if (requestSeq !== liveStatsFetchSeqRef.current) return
+        setConnectionStageOverview(
+          data?.connectionStageOverview && typeof data.connectionStageOverview === "object"
+            ? data.connectionStageOverview as ConnectionStageOverview
+            : null,
+        )
+        if (data?.strategyRows && typeof data.strategyRows === "object") {
+          setStrategyRows(data.strategyRows)
+        }
         if (signalData?.success && signalData?.signal) {
           const positions12 = signalData.signal.windows?.positions12 || {}
           setSignalOverview({
@@ -3549,6 +3642,112 @@ export function ActiveConnectionCard({
                     {progression.error}
                   </p>
                 )}
+              </div>
+            </CardContent>
+          )}
+
+          {connection.isActive && connectionStageOverview && (
+            <CardContent
+              className="pt-0 pb-3 px-4"
+              data-testid="connection-stage-overview"
+              aria-label="Current Base Main Real and Live connection overview"
+            >
+              <div className="rounded-xl border border-border/60 bg-gradient-to-br from-muted/45 via-background to-muted/20 p-3 shadow-sm">
+                <div className="mb-2.5 flex flex-wrap items-center gap-2">
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                      Stage Overview
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      Current open lineage · counts never sum across stages
+                    </div>
+                  </div>
+                  <Badge
+                    variant={connectionStageOverview.integrity.valid ? "outline" : "destructive"}
+                    className="ml-auto h-5 text-[9px]"
+                    title={connectionStageOverview.integrity.errors.join("\n") || "All stage count relations reconcile"}
+                  >
+                    {connectionStageOverview.integrity.valid ? "coordinated" : "count mismatch"}
+                  </Badge>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                  <div className="rounded-lg border border-sky-200/70 bg-sky-50/70 p-2.5 dark:border-sky-900/70 dark:bg-sky-950/25">
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">Base</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div><div className="text-[9px] text-muted-foreground">Total</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.base.total.toLocaleString()}</div></div>
+                      <div><div className="text-[9px] text-muted-foreground">Valid</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.base.valid.toLocaleString()}</div></div>
+                    </div>
+                    <div className="mt-1 text-[9px] text-muted-foreground">
+                      PF ≥ {connectionStageOverview.base.pfMinimum.toFixed(2)} · {connectionStageOverview.base.validPercent.toFixed(1)}% valid
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-violet-200/70 bg-violet-50/70 p-2.5 dark:border-violet-900/70 dark:bg-violet-950/25">
+                    <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+                      Main
+                      {connectionStageOverview.main.blockOnly && <Badge variant="outline" className="h-4 px-1 text-[8px]">Block-only</Badge>}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div><div className="text-[9px] text-muted-foreground">Valid</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.main.valid.toLocaleString()}</div></div>
+                      <div><div className="text-[9px] text-muted-foreground">Overall</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.main.overall.toLocaleString()}</div></div>
+                    </div>
+                    <div
+                      className="mt-1 truncate text-[9px] text-muted-foreground"
+                      title={`Standard ${connectionStageOverview.main.breakdown.standard}, Trailing ${connectionStageOverview.main.breakdown.trailing}, Position-count ${connectionStageOverview.main.breakdown.positionCount}, Block ${connectionStageOverview.main.breakdown.block}, DCA ${connectionStageOverview.main.breakdown.dca}`}
+                    >
+                      +{connectionStageOverview.main.additional.toLocaleString()} related · S {connectionStageOverview.main.breakdown.standard} · T {connectionStageOverview.main.breakdown.trailing} · Pis {connectionStageOverview.main.breakdown.positionCount} · B {connectionStageOverview.main.breakdown.block} · D {connectionStageOverview.main.breakdown.dca}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-emerald-200/70 bg-emerald-50/70 p-2.5 dark:border-emerald-900/70 dark:bg-emerald-950/25">
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Real</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div><div className="text-[9px] text-muted-foreground">Valid</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.real.valid.toLocaleString()}</div></div>
+                      <div><div className="text-[9px] text-muted-foreground">Active</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.real.active.toLocaleString()}</div></div>
+                    </div>
+                    <div className="mt-1 text-[9px] text-muted-foreground">
+                      {connectionStageOverview.real.activeExactSets.toLocaleString()} exact Sets → {connectionStageOverview.real.active.toLocaleString()} Base lines
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-amber-200/70 bg-amber-50/70 p-2.5 dark:border-amber-900/70 dark:bg-amber-950/25">
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">Live</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div><div className="text-[9px] text-muted-foreground">Total</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.live.total.toLocaleString()}</div></div>
+                      <div><div className="text-[9px] text-muted-foreground">Orders</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.live.orders.placed.toLocaleString()}/{connectionStageOverview.live.orders.running.toLocaleString()}</div></div>
+                    </div>
+                    <div className="mt-1 text-[9px] text-muted-foreground" title="Positions Long / Short · independent orders placed / currently running">
+                      L {connectionStageOverview.live.long} · S {connectionStageOverview.live.short} · placed/running
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/50 bg-background/75 px-2.5 py-2 text-[10px]"
+                  title={`Newest ${connectionStageOverview.pfComparison.window} closed physical positions; Real and Live use the same ${connectionStageOverview.pfComparison.matchedPositions} matched snapshots. Ratio baseline 1.00 means parity.`}
+                >
+                  <span className="font-semibold text-muted-foreground">Real ↔ Live PF</span>
+                  {connectionStageOverview.pfComparison.ratio === null ? (
+                    <span className="text-muted-foreground">
+                      Waiting for matched closes ({connectionStageOverview.pfComparison.availableClosedPositions} available)
+                    </span>
+                  ) : (
+                    <>
+                      <span>Real <strong className="tabular-nums">{connectionStageOverview.pfComparison.realProfitFactor?.toFixed(2)}</strong></span>
+                      <span>Live <strong className="tabular-nums">{connectionStageOverview.pfComparison.liveInfinite ? "∞" : connectionStageOverview.pfComparison.liveProfitFactor?.toFixed(2)}</strong></span>
+                      <span className={connectionStageOverview.pfComparison.status === "above" ? "text-green-600 dark:text-green-400" : connectionStageOverview.pfComparison.status === "below" ? "text-red-600 dark:text-red-400" : "text-foreground"}>
+                        Ratio <strong className="tabular-nums">×{connectionStageOverview.pfComparison.ratio.toFixed(2)}</strong> ({connectionStageOverview.pfComparison.ratioPercent?.toFixed(1)}%)
+                      </span>
+                      <span className="text-muted-foreground tabular-nums">
+                        Δ {(connectionStageOverview.pfComparison.differencePercent ?? 0) >= 0 ? "+" : ""}{connectionStageOverview.pfComparison.differencePercent?.toFixed(1)}%
+                      </span>
+                    </>
+                  )}
+                  <span className="ml-auto text-muted-foreground tabular-nums">
+                    n={connectionStageOverview.pfComparison.matchedPositions}/{connectionStageOverview.pfComparison.availableClosedPositions || connectionStageOverview.pfComparison.window}
+                  </span>
+                </div>
               </div>
             </CardContent>
           )}

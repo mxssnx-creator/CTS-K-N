@@ -46,13 +46,70 @@ export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
   mapper: (item: T, index: number) => Promise<R>,
-  options: { yieldEvery?: number } = {},
+  options: {
+    yieldEvery?: number
+    /**
+     * Optional runtime lane sampler. The initially requested `concurrency`
+     * remains the hard ceiling; the sampler can reduce (or later restore)
+     * active lanes between completed tasks as CPU/RSS/event-loop pressure
+     * changes.
+     */
+    getConcurrency?: () => number
+  } = {},
 ): Promise<R[]> {
   if (items.length === 0) return []
 
   const limit = clampConcurrency(concurrency, 1, items.length, items.length)
   const results = new Array<R>(items.length)
   const yieldEvery = Math.max(0, Math.floor(options.yieldEvery ?? 1))
+
+  if (options.getConcurrency) {
+    let nextIndex = 0
+    let completed = 0
+    const active = new Set<Promise<void>>()
+
+    const currentLimit = () => {
+      try {
+        return clampConcurrency(options.getConcurrency?.(), 1, limit, items.length)
+      } catch {
+        return 1
+      }
+    }
+
+    const launch = (index: number) => {
+      let task!: Promise<void>
+      task = (async () => {
+        results[index] = await mapper(items[index], index)
+        completed++
+        if (yieldEvery > 0 && completed % yieldEvery === 0) {
+          await yieldToEventLoop()
+        }
+      })().finally(() => {
+        active.delete(task)
+      })
+      active.add(task)
+    }
+
+    while (nextIndex < items.length || active.size > 0) {
+      const desired = currentLimit()
+      while (nextIndex < items.length && active.size < desired) {
+        launch(nextIndex++)
+      }
+      if (active.size > 0) {
+        try {
+          await Promise.race(active)
+        } catch (error) {
+          // Do not leave sibling work as unhandled promises. Match the fixed
+          // worker-pool contract: stop scheduling, let already-started work
+          // settle, then surface the first mapper failure.
+          await Promise.allSettled([...active])
+          throw error
+        }
+      }
+    }
+    return results
+  }
+
   let nextIndex = 0
 
   const worker = async (): Promise<void> => {
@@ -72,11 +129,69 @@ export async function mapWithConcurrency<T, R>(
   return results
 }
 
+export interface AdaptiveConcurrencyLimiter {
+  readonly activeCount: number
+  readonly queuedCount: number
+  run<T>(task: () => Promise<T>): Promise<T>
+}
+
+/**
+ * One shared budget for independently composed async branches. This prevents
+ * nested pools (for example indications + strategies) from multiplying the
+ * host-wide CPU allowance while still permitting I/O overlap.
+ */
+export function createAdaptiveConcurrencyLimiter(
+  concurrency: number,
+  getConcurrency?: () => number,
+): AdaptiveConcurrencyLimiter {
+  const hardLimit = clampConcurrency(concurrency, 1, 1024)
+  let activeCount = 0
+  const queue: Array<() => void> = []
+
+  const desiredConcurrency = () => {
+    if (!getConcurrency) return hardLimit
+    try {
+      return clampConcurrency(getConcurrency(), 1, hardLimit)
+    } catch {
+      return 1
+    }
+  }
+
+  const drain = () => {
+    const desired = desiredConcurrency()
+    while (activeCount < desired && queue.length > 0) {
+      activeCount++
+      queue.shift()?.()
+    }
+  }
+
+  const acquire = async () => {
+    await new Promise<void>((resolve) => {
+      queue.push(resolve)
+      drain()
+    })
+  }
+
+  return {
+    get activeCount() { return activeCount },
+    get queuedCount() { return queue.length },
+    async run<T>(task: () => Promise<T>): Promise<T> {
+      await acquire()
+      try {
+        return await task()
+      } finally {
+        activeCount = Math.max(0, activeCount - 1)
+        drain()
+      }
+    },
+  }
+}
+
 export async function mapSettledWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
   mapper: (item: T, index: number) => Promise<R>,
-  options: { yieldEvery?: number } = {},
+  options: { yieldEvery?: number; getConcurrency?: () => number } = {},
 ): Promise<Array<PromiseSettledResult<R>>> {
   return mapWithConcurrency(
     items,
@@ -96,7 +211,7 @@ export async function forEachWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
   mapper: (item: T, index: number) => Promise<void>,
-  options: { yieldEvery?: number } = {},
+  options: { yieldEvery?: number; getConcurrency?: () => number } = {},
 ): Promise<void> {
   await mapWithConcurrency(items, concurrency, mapper, options)
 }

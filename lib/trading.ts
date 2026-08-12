@@ -1,5 +1,6 @@
 import type { RealPosition } from "./types"
 import { applySystemVolumeFactor, SYSTEM_VOLUME_FACTOR_MULTIPLIER } from "./constants"
+import { resolveConsistentTradeDirection } from "./trade-direction"
 
 function tradingPositionId(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -96,7 +97,10 @@ export class TradingEngine {
     indicationType?: "direction" | "move" | "active" | "signal",
   ): Promise<TradingPosition> {
     const finalLeverage = leverage || 150 // Default to BingX max (150x); call sites should pass explicit max via getMaxLeverageForExchange()
-    const finalPositionSide = positionSide || (side === "buy" ? "long" : "short")
+    const finalPositionSide = resolveConsistentTradeDirection(positionSide, side)
+    if (!finalPositionSide) {
+      throw new TypeError("Open position side is missing or conflicts with the order side")
+    }
 
     const volumeCalc = volumeFactor ? this.calculateVolume(volume, volumeFactor) : null
     const finalVolume = volumeCalc ? volumeCalc.adjusted : volume

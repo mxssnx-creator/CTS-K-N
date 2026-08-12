@@ -8,9 +8,17 @@
  * position instead of sharing it with a superficially similar configuration.
  */
 
-// Kept dependency-free so the deterministic CLI matrix can load this module
-// through ts-node without a Next path resolver. These values mirror the
-// canonical `position-cost.ts` contract (0.02–1%, default 0.1%).
+import {
+  DEFAULT_DCA_PROFILE,
+  calculateDcaAddQuantity,
+  calculateDcaTakeProfitPrice,
+  normalizeDcaProfile,
+  type DcaProfile,
+} from "./dca-strategy"
+
+// Kept free of Next/runtime aliases so the deterministic CLI matrix can load
+// this module through tsx. These values mirror the canonical
+// `position-cost.ts` contract (0.02–1%, default 0.1%).
 const DIRECT_TRADE_POSITION_COST_PERCENT_MIN = 0.02
 const DIRECT_TRADE_POSITION_COST_PERCENT_MAX = 1
 const DIRECT_TRADE_POSITION_COST_PERCENT_DEFAULT = 0.1
@@ -21,20 +29,21 @@ function normalizeDirectTradePositionCostPercent(value: unknown): number {
   return Math.max(DIRECT_TRADE_POSITION_COST_PERCENT_MIN, Math.min(DIRECT_TRADE_POSITION_COST_PERCENT_MAX, parsed))
 }
 
-export const DIRECT_TRADE_TIMEFRAMES = ["1m", "10m", "15m"] as const
+export const DIRECT_TRADE_TIMEFRAMES = ["5m", "15m", "30m"] as const
 export const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"] as const
 export const DIRECT_TRADE_EXIT_TACTICS = ["bracket", "momentum_reversal", "relative", "time"] as const
 // Direct-Trade protection is expressed in PositionCost multiples, not as an
 // unrelated fixed price percentage.  With the default PositionCost of 0.1%,
-// the default 4–14 grid therefore evaluates TP targets from 0.4% to 1.4%.
+// the optimized default 4–8 grid therefore evaluates TP targets from 0.4%
+// to 0.8%, including the 7-day winner at 0.6%.
 // Keeping the ratio integral makes the UI, persisted state and set identity
 // unambiguous across a PositionCost change.
 export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN = 2
 export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 22
-export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [4, 14]
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [4, 8]
 // The range control remains single-ratio precise, while a sparse default Set
 // stride keeps the full 32-symbol matrix below four million configurations.
-export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 4
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 2
 // Recent closed positions are a stronger gate than the long-history PF.
 // Keep this exported so calculation and runtime use the identical default.
 export const DIRECT_TRADE_RECENT_PF_DEFAULT = 25
@@ -50,10 +59,13 @@ export const DIRECT_TRADE_STRATEGY_TYPES = [
   "trailing_auto",
   // Combination is the former "complex" lineage: it evaluates each normal,
   // fixed-trailing and auto-trailing protection leg independently while the
-  // entry uses the selected 1m/10m/15m coordination set.
+  // entry uses the selected 5m/15m/30m coordination set.
   "combination",
   "inverse",
   "high_protection",
+  // DCA owns a separate historical, Paper and Live lifecycle. It never shares
+  // Block adds and is always bounded by its immutable initial-fill ratio cap.
+  "dca",
 ] as const
 
 export type DirectTradeTimeframe = typeof DIRECT_TRADE_TIMEFRAMES[number]
@@ -253,6 +265,10 @@ export interface DirectTradeSet {
   blockVolumeIncrementRatio: number
   blockCalculatedVolumeMultiplier: number
   blockRealizedVolumeMultiplier: number
+  /** Canonical DCA profile for this exact lineage; null outside DCA. */
+  dcaProfile: DcaProfile | null
+  /** Average confirmed total/base position multiplier in the backtest. */
+  dcaRealizedVolumeMultiplier: number
   // Hindsight-only analytic: it is never used as a live order target.
   bestMarketExitAnalysisOnly: true
   // Current, causal entry state. The processor may never turn a historic-only
@@ -293,6 +309,7 @@ export interface DirectTradeEvaluationInput {
   minTrades?: number
   strategyType?: DirectTradeStrategyType
   signalDirection?: DirectTradeDirection
+  dcaProfile?: unknown
 }
 
 function finite(value: unknown, fallback = 0): number {
@@ -399,7 +416,10 @@ export function averageDirectTradeTakeProfitRatio(ratios: readonly number[]): nu
 
 export function normaliseDirectTradeTimeframes(value: unknown): DirectTradeTimeframe[] {
   const raw = Array.isArray(value) ? value : []
-  const mapped = raw.map((item) => item === "5m" ? "10m" : item)
+  const exactFormerDefaults = raw.length === 3
+    && ["1m", "10m", "15m"].every((timeframe) => raw.includes(timeframe))
+  if (exactFormerDefaults) return [...DIRECT_TRADE_TIMEFRAMES]
+  const mapped = raw.map((item) => item === "1m" ? "5m" : item === "10m" ? "15m" : item)
     .filter((item): item is DirectTradeTimeframe => DIRECT_TRADE_TIMEFRAMES.includes(item as DirectTradeTimeframe))
   const unique = [...new Set(mapped)]
   return unique.length > 0 ? unique : [...DIRECT_TRADE_TIMEFRAMES]
@@ -447,10 +467,10 @@ export function buildTimeframeCombinations(timeframes: DirectTradeTimeframe[]): 
 }
 
 export function timeframeMinutes(timeframe: DirectTradeTimeframe): number {
-  return timeframe === "1m" ? 1 : timeframe === "10m" ? 10 : 15
+  return timeframe === "5m" ? 5 : timeframe === "15m" ? 15 : 30
 }
 
-/** Aggregate a closed 1m series locally so 10m is never misrepresented as 15m. */
+/** Aggregate a closed 1m source into exact 5m/15m/30m decision candles. */
 export function resampleCandles(candles: DirectTradeCandle[], minutes: number): DirectTradeCandle[] {
   if (minutes <= 1) return [...candles].sort((a, b) => a.time - b.time)
   const bucketMs = minutes * 60_000
@@ -468,7 +488,7 @@ export function resampleCandles(candles: DirectTradeCandle[], minutes: number): 
     existing.candle.volume += candle.volume
     existing.samples++
   }
-  // Never turn a partially formed current candle into a complete 10m/15m
+  // Never turn a partially formed current candle into a complete 5m/15m/30m
   // decision input. Missing minute samples are treated the same way.
   return [...buckets.values()]
     .filter((entry) => entry.samples === minutes)
@@ -554,14 +574,18 @@ function buildCompositeSignals(
   entryTiming: DirectTradeEntryTiming,
   activityVolumeRatio: number,
 ): { candles: DirectTradeCandle[]; signals: boolean[]; minutes: number } | null {
+  // Entry indicators need exactly fourteen prior candles plus the current
+  // causal candle. Requiring thirty silently disabled every 30m pulse despite
+  // the documented eight-hour context window.
+  const minimumSignalCandles = 15
   const ordered = [...frames].sort((left, right) => timeframeMinutes(left) - timeframeMinutes(right))
   const primaryFrame = ordered[0]
   const primary = candlesByTimeframe[primaryFrame] || []
-  if (primary.length < 30) return null
+  if (primary.length < minimumSignalCandles) return null
   const signalByFrame = new Map<DirectTradeTimeframe, Map<number, boolean>>()
   for (const frame of ordered) {
     const candles = candlesByTimeframe[frame] || []
-    if (candles.length < 30) return null
+    if (candles.length < minimumSignalCandles) return null
     const signalMap = new Map<number, boolean>()
     for (let index = 0; index < candles.length; index++) {
       signalMap.set(candles[index].time, entrySignal(
@@ -764,6 +788,7 @@ function simulateTrades(
   positionCostPercent: number,
   blockCount = 0,
   blockVolumeRatio = 1,
+  dcaProfile: DcaProfile | null = null,
 ): DirectTradeSimulationMetrics {
   const createMetrics = (): DirectTradeSimulationMetricsBase => ({
     totalTrades: 0,
@@ -824,13 +849,14 @@ function simulateTrades(
       continue
     }
     const entry = candles[index]
-    const entryPrice = entry.close
-    let exitPrice = entryPrice
+    const initialEntryPrice = entry.close
+    let averageEntryPrice = initialEntryPrice
+    let exitPrice = initialEntryPrice
     let exitTime = entry.time
     let exitReason: DirectTradeSimTrade["exitReason"] = "timeout"
-    let highWatermark = entryPrice
-    let lowWatermark = entryPrice
-    let bestMarketExitPrice = entryPrice
+    let highWatermark = initialEntryPrice
+    let lowWatermark = initialEntryPrice
+    let bestMarketExitPrice = initialEntryPrice
     let maxDrawdownMs = 0
     let drawdownStart: number | null = null
     let trailingArmed = false
@@ -841,14 +867,16 @@ function simulateTrades(
     // position is shared. This prevents Block PF from being a copied Base PF
     // while retaining the immutable non-compounding target metadata.
     const entryLegs: Array<{ price: number; weight: number }> = [
-      { price: entryPrice, weight: 1 },
+      { price: initialEntryPrice, weight: 1 },
     ]
-    const tpPrice = direction === "long"
-      ? entryPrice * (1 + takeprofit / 100)
-      : entryPrice * (1 - takeprofit / 100)
+    let tpPrice = direction === "long"
+      ? initialEntryPrice * (1 + takeprofit / 100)
+      : initialEntryPrice * (1 - takeprofit / 100)
     let slPrice = direction === "long"
-      ? entryPrice * (1 - stoploss / 100)
-      : entryPrice * (1 + stoploss / 100)
+      ? initialEntryPrice * (1 - stoploss / 100)
+      : initialEntryPrice * (1 + stoploss / 100)
+    let nextDcaStep = 1
+    let lastDcaAt = Number.NEGATIVE_INFINITY
 
     for (let cursor = index + 1; cursor < candles.length && cursor - index <= maxHoldCandles; cursor++) {
       const candle = candles[cursor]
@@ -874,7 +902,7 @@ function simulateTrades(
           const trailingParameters = trailingMode === "auto"
             ? autoTrailingParameters(candles, cursor, takeprofit, autoTrailSensitivity ?? 1)
             : { trailStart, trailStop }
-          if (highWatermark >= entryPrice * (1 + trailingParameters.trailStart / 100)) {
+          if (highWatermark >= averageEntryPrice * (1 + trailingParameters.trailStart / 100)) {
             slPrice = Math.max(slPrice, highWatermark * (1 - trailingParameters.trailStop / 100))
             trailingArmed = true
           }
@@ -897,15 +925,15 @@ function simulateTrades(
           const trailingParameters = trailingMode === "auto"
             ? autoTrailingParameters(candles, cursor, takeprofit, autoTrailSensitivity ?? 1)
             : { trailStart, trailStop }
-          if (lowWatermark <= entryPrice * (1 - trailingParameters.trailStart / 100)) {
+          if (lowWatermark <= averageEntryPrice * (1 - trailingParameters.trailStart / 100)) {
             slPrice = Math.min(slPrice, lowWatermark * (1 + trailingParameters.trailStop / 100))
             trailingArmed = true
           }
         }
       }
       const pnl = direction === "long"
-        ? (candle.close - entryPrice) / entryPrice
-        : (entryPrice - candle.close) / entryPrice
+        ? (candle.close - averageEntryPrice) / averageEntryPrice
+        : (averageEntryPrice - candle.close) / averageEntryPrice
       if (pnl < 0) {
         drawdownStart ??= candle.time
         maxDrawdownMs = Math.max(maxDrawdownMs, candle.time - drawdownStart)
@@ -920,7 +948,7 @@ function simulateTrades(
       }
       if (exitTactic === "relative" && relativeExitSignal({
         direction,
-        entryPrice,
+        entryPrice: averageEntryPrice,
         currentPrice: candle.close,
         highWatermark,
         lowWatermark,
@@ -936,6 +964,43 @@ function simulateTrades(
         exitTime = candle.time
         exitReason = "timeout"
         break
+      }
+      // DCA is an adverse-price ladder, not a second signal-based Block lane.
+      // Hard SL, current TP and causal exit checks above always win when one
+      // candle can touch more than one level. At most one step is added per
+      // candle, preserving a deterministic conservative intrabar ordering.
+      if (dcaProfile && nextDcaStep <= dcaProfile.maxSteps) {
+        const distance = dcaProfile.stepDistancesPct[nextDcaStep - 1]
+        const triggerPrice = direction === "long"
+          ? initialEntryPrice * (1 - distance / 100)
+          : initialEntryPrice * (1 + distance / 100)
+        const triggerTouched = direction === "long"
+          ? candle.low <= triggerPrice
+          : candle.high >= triggerPrice
+        const cooldownElapsed = candle.time - lastDcaAt >= dcaProfile.cooldownSeconds * 1000
+        if (triggerTouched && cooldownElapsed) {
+          const currentWeight = entryLegs.reduce((sum, leg) => sum + leg.weight, 0)
+          const addWeight = calculateDcaAddQuantity(
+            1,
+            dcaProfile.stepVolumeMultipliers[nextDcaStep - 1],
+            currentWeight,
+            dcaProfile.maxPositionVolumeRatio,
+          )
+          if (addWeight > 0) {
+            entryLegs.push({ price: triggerPrice, weight: addWeight })
+            const totalWeight = currentWeight + addWeight
+            averageEntryPrice = entryLegs.reduce((sum, leg) => sum + leg.price * leg.weight, 0) / totalWeight
+            tpPrice = calculateDcaTakeProfitPrice({
+              direction,
+              profile: dcaProfile,
+              initialEntryPrice,
+              averageEntryPrice,
+              takeProfitPct: takeprofit,
+            })
+            lastDcaAt = candle.time
+          }
+          nextDcaStep++
+        }
       }
       // Add only after every causal exit check for this candle has passed;
       // a close candle cannot also create a new Block leg.
@@ -969,7 +1034,7 @@ function simulateTrades(
     // Base PF/PnL result.
     record(
       metrics,
-      blockCount > 0 ? entryLegs.slice(0, 1) : entryLegs,
+      blockCount > 0 && !dcaProfile ? entryLegs.slice(0, 1) : entryLegs,
       exitPrice,
       bestMarketExitPrice,
       drawdownTimeMin,
@@ -1023,7 +1088,7 @@ function summarizeRecentPositions(simulation: DirectTradeSimulationMetricsBase) 
 function stableSetKey(input: Pick<DirectTradeSet,
   "symbol" | "direction" | "signalDirection" | "strategyType" | "timeframe" | "entryTactic" | "exitTactic" | "entryTiming" |
   "activityVolumeRatio" | "takeprofit" | "takeProfitPositionCostRatio" | "stoploss" | "trailing" | "trailingMode" | "trailStart" | "trailStop" | "autoTrailSensitivity" | "historyHours" | "positionCostPercent" | "blockCount" | "blockVolumeRatio"
-  | "blockProfitFactorRatio"
+  | "blockProfitFactorRatio" | "dcaProfile"
 >): string {
   const numeric = (value: number) => round(value, 4).toFixed(4)
   return [
@@ -1050,6 +1115,9 @@ function stableSetKey(input: Pick<DirectTradeSet,
     `block:${Math.max(0, Math.floor(input.blockCount))}`,
     `blockRatio:${numeric(input.blockVolumeRatio)}`,
     `blockPfRatio:${numeric(input.blockProfitFactorRatio)}`,
+    input.dcaProfile
+      ? `dca:${input.dcaProfile.maxSteps}:${input.dcaProfile.stepVolumeMultipliers.map(numeric).join(",")}:${input.dcaProfile.stepDistancesPct.map(numeric).join(",")}:${input.dcaProfile.takeProfitMode}:${numeric(input.dcaProfile.breakevenProfitPct)}:${input.dcaProfile.cooldownSeconds}:${numeric(input.dcaProfile.maxPositionVolumeRatio)}`
+      : "dca:none",
   ].join("|")
 }
 
@@ -1067,6 +1135,9 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
   const timeframe = input.timeframeSet.join("+")
   const strategyType = input.strategyType || "standard"
   const signalDirection = input.signalDirection || input.direction
+  const dcaProfile = strategyType === "dca"
+    ? normalizeDcaProfile(input.dcaProfile ?? DEFAULT_DCA_PROFILE)
+    : null
   for (const entryTactic of input.entryTactics) {
     const composed = buildCompositeSignals(
       input.candlesByTimeframe,
@@ -1086,13 +1157,18 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
           ? requestedRatio
           : takeprofit / positionCostPercent
         for (const slRatio of input.slRatios) {
-          const stoploss = takeprofit * slRatio
+          const stoploss = dcaProfile
+            ? Math.max(
+                takeprofit * slRatio,
+                dcaProfile.stepDistancesPct[Math.max(0, dcaProfile.maxSteps - 1)] + 0.35,
+              )
+            : takeprofit * slRatio
           for (const trail of input.trailOptions) {
             const blockProfitFactorRatio = Math.max(
               0.2,
               Math.min(5, finite(input.blockProfitFactorRatio, 0.8)),
             )
-            const blockEnabled = input.blockRange[1] > 0
+            const blockEnabled = !dcaProfile && input.blockRange[1] > 0
             const blockMinimum = blockEnabled
               ? Math.max(1, Math.min(12, Math.floor(finite(input.blockRange[0], 1))))
               : 0
@@ -1120,6 +1196,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               positionCostPercent,
               blockMaximum,
               blockVolumeRatio,
+              dcaProfile,
             )
             const simulationPf = calculateDirectTradeProfitFactor(simulation.totalProfit, simulation.totalLoss)
             const profitFactorInfinite = simulationPf.profitFactorInfinite
@@ -1345,6 +1422,10 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               blockVolumeIncrementRatio: selectedBlock?.blockVolumeIncrementRatio ?? 0,
               blockCalculatedVolumeMultiplier: selectedBlock?.blockCalculatedVolumeMultiplier ?? 1,
               blockRealizedVolumeMultiplier: selectedBlock?.blockRealizedVolumeMultiplier ?? 1,
+              dcaProfile,
+              dcaRealizedVolumeMultiplier: dcaProfile && simulation.totalTrades > 0
+                ? round(simulation.totalVolumeMultiplier / simulation.totalTrades, 4)
+                : 1,
               bestMarketExitAnalysisOnly: true,
               entrySignalKey: directTradeEntrySignalKey({
                 symbol: input.symbol,

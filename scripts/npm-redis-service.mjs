@@ -38,7 +38,13 @@ const server = new RedisMemoryServer({
       "--protected-mode", "yes",
     ],
   },
-  binary: { downloadDir },
+  binary: {
+    downloadDir,
+    // "stable" tracks Redis security fixes. prepare-npm-redis.mjs limits the
+    // source build to redis-server, so optional modules cannot make the local
+    // fallback fail after the core binary has already linked successfully.
+    version: process.env.CTS_REDIS_VERSION || "stable",
+  },
 })
 
 const shutdown = async (signal) => {

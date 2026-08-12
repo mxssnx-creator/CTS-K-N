@@ -13,6 +13,7 @@ import { positionTracker, LivePosition, OrderRecord } from "@/lib/positions/posi
 import { indicatorCalculator, PriceData } from "@/lib/indicators/calculator"
 import { getRedisClient, getConnection } from "@/lib/redis-db"
 import { placeLiveOrder } from "@/lib/live-order-service"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 // shim: existing code uses redisDb.set; map to InlineLocalRedis instance.
 const redisDb = {
   set: (key: string, val: string, opts?: { ex?: number }) =>
@@ -156,11 +157,13 @@ export class TradeEngineStateMachine {
       // Update local position tracking
       for (const exPos of exchangePositions) {
         const exPosAny = exPos as any
+        const direction = normalizeTradeDirection(exPosAny.positionSide, exPosAny.side)
+        if (!direction) continue
         const localPos: LivePosition = {
           id: `${exPos.symbol}-${Date.now()}`,
           connection_id: this.config!.connectionId,
           symbol: exPos.symbol,
-          side: exPosAny.side?.toUpperCase() === "LONG" ? "long" : "short",
+          side: direction,
           entry_price: typeof exPos.entryPrice === "number" ? exPos.entryPrice : parseFloat(String(exPos.entryPrice)),
           current_price: typeof exPos.markPrice === "number" ? exPos.markPrice : parseFloat(String(exPos.markPrice)),
           quantity: typeof exPos.contracts === "number" ? exPos.contracts : parseFloat(String(exPos.contracts)),

@@ -5,6 +5,8 @@ import { initRedis, getConnection, updateConnection, getSettings, getAllConnecti
 import { testConnectionLimiter } from "@/lib/connection-rate-limiter"
 import { RateLimiter } from "@/lib/rate-limiter"
 import { apiErrorHandler, ApiError } from "@/lib/api-error-handler"
+import { isMaskedOrEmptyConnectionSecret } from "@/lib/connection-secrets"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 const TEST_TIMEOUT_MS = 30000
 const MAX_RETRIES = 3
@@ -118,24 +120,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     testLog.push(`[${new Date().toISOString()}] Connection found: ${connection.name} (${connection.exchange})`)
 
     // Validate credentials - check for placeholder/test/demo values
-    const apiKey = body.api_key || connection.api_key || ""
-    const apiSecret = body.api_secret || connection.api_secret || ""
+    const requestedApiKey = isMaskedOrEmptyConnectionSecret(body.api_key) ? "" : String(body.api_key || "")
+    const requestedApiSecret = isMaskedOrEmptyConnectionSecret(body.api_secret) ? "" : String(body.api_secret || "")
+    const requestedPassphrase = isMaskedOrEmptyConnectionSecret(body.api_passphrase) ? "" : String(body.api_passphrase || "")
+    const apiKey = requestedApiKey || connection.api_key || ""
+    const apiSecret = requestedApiSecret || connection.api_secret || ""
     const isPredefined = connection.is_predefined === "1" || connection.is_predefined === true
     
     // Check for various placeholder patterns
-    const isPlaceholder = !apiKey || 
-      apiKey === "" || 
-      apiKey.includes("PLACEHOLDER") ||
-      apiKey.includes("00998877") ||
-      apiKey.includes("demo") ||
-      apiKey.includes("test") ||
-      apiKey.includes("sample") ||
-      apiKey.includes("example") ||
-      apiKey.startsWith("test") ||
-      apiKey.startsWith("demo") ||
+    const placeholderPattern = /PLACEHOLDER|00998877|^replace_me|^sample$|^example$|^[•*]+$/i
+    const isPlaceholder = !apiKey ||
+      apiKey === "" ||
+      placeholderPattern.test(apiKey) ||
       apiKey.length < 20 ||
       !apiSecret ||
       apiSecret === "" ||
+      placeholderPattern.test(apiSecret) ||
       apiSecret.length < 20
 
     if (isPlaceholder) {
@@ -181,6 +181,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const testedConnectionLibrary = isBingX
       ? "sdk"
       : body.connection_library || connection.connection_library || "native"
+    const isProdVst = id === "bingx-x02"
+    const requestedTestnet = body.is_testnet !== undefined
+      ? isTruthyFlag(body.is_testnet)
+      : isTruthyFlag(connection.is_testnet)
+    const isTestnet = isProdVst || requestedTestnet
+    testLog.push(`[${new Date().toISOString()}] Environment: ${isTestnet ? "Prod-VST authenticated demo (virtual funds)" : "Prod-Live (real funds)"}`)
 
     // Execute with retry system: 3 attempts with 1 second interval
     const testResult = await withRetry(
@@ -190,10 +196,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
           // Use request body values (which may be edited, unsaved values) OR fall back to stored connection
           const connector = await createExchangeConnector(connection.exchange, {
-            apiKey: body.api_key || connection.api_key,
-            apiSecret: body.api_secret || connection.api_secret,
-            apiPassphrase: body.api_passphrase || connection.api_passphrase || "",
-            isTestnet: body.is_testnet !== undefined ? body.is_testnet : (connection.is_testnet || false),
+            apiKey,
+            apiSecret,
+            apiPassphrase: requestedPassphrase || connection.api_passphrase || "",
+            isTestnet,
             apiType: body.api_type || connection.api_type,
             connectionMethod: testedConnectionMethod,
             connectionLibrary: testedConnectionLibrary,
@@ -207,6 +213,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           return {
             ...connectorResult,
             fastPathStatus: (connector as any).getFastPathStatus?.(),
+            environmentInfo: (connector as any).getEnvironmentInfo?.(),
           }
         })
       },
@@ -230,7 +237,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       `[${new Date().toISOString()}] Account Balance: ${Number.isFinite(normalizedBalance) ? normalizedBalance.toFixed(4) : "0.0000"} USDT`,
     )
     if (result.btcPrice) {
-      testLog.push(`[${new Date().toISOString()}] BTC Price: $${result.btcPrice.toFixed(2)}`)
+      testLog.push(`[${new Date().toISOString()}] BTC Price: $${Number(result.btcPrice).toFixed(2)}`)
+    }
+    const environmentInfo = result.environmentInfo || {
+      environment: isTestnet ? "prod-vst" : "prod-live",
+      isDemo: isTestnet,
+      usesVirtualFunds: isTestnet,
     }
 
     const testedApiType = body.api_type || connection.api_type || "perpetual_futures"
@@ -243,6 +255,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       api_type: testedApiType,
       connection_method: testedConnectionMethod,
       connection_library: testedConnectionLibrary,
+      ...(isProdVst ? { is_testnet: "1", is_predefined: "1" } : {}),
       api_capabilities: JSON.stringify(result.capabilities || []),
       updated_at: new Date().toISOString(),
     })
@@ -265,6 +278,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       connectionMethod: testedConnectionMethod,
       connectionLibrary: testedConnectionLibrary,
       fastPathStatus: result.fastPathStatus || null,
+      environment: environmentInfo.environment,
+      baseUrl: environmentInfo.baseUrl,
+      virtualFunds: environmentInfo.usesVirtualFunds === true,
+      settlementAsset: result.settlementAsset || "USDT",
+      equity: result.equity,
+      availableMargin: result.availableMargin,
+      unrealizedProfit: result.unrealizedProfit,
       log: testLog,
       duration,
     })

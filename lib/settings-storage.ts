@@ -3,6 +3,8 @@
  * Uses in-memory cache with lazy file I/O only in Node.js runtime
  */
 
+import { canonicalForcedBaseSymbols, canonicalForcedSymbols } from "@/lib/forced-symbols"
+
 let settingsCache: Record<string, any> | null = null
 
 function getDefaultSettings(): Record<string, any> {
@@ -14,7 +16,7 @@ function getDefaultSettings(): Record<string, any> {
     mainEngineEnabled: true,
     presetEngineEnabled: true,
     minimum_connect_interval: 200,
-    theme: "dark",
+    theme: "blackwhiteblue",
     language: "en",
     notifications_enabled: true,
     // default_leverage is a legacy display field — the engine resolves leverage
@@ -28,8 +30,9 @@ function getDefaultSettings(): Record<string, any> {
     max_open_positions: 10,
     max_drawdown_percent: 20,
     daily_loss_limit: 1000,
-    main_symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
-    forced_symbols: [],
+    main_symbols: canonicalForcedSymbols(),
+    forcedSymbols: canonicalForcedBaseSymbols(),
+    forced_symbols: canonicalForcedSymbols(),
     database_type: "redis",
     // API Rate Limiting
     restApiDelayMs: 50,
@@ -101,21 +104,36 @@ async function writeToDisk(settings: Record<string, any>): Promise<void> {
 
 export function loadSettings(): Record<string, any> {
   if (settingsCache) {
-    return { ...getDefaultSettings(), ...settingsCache }
+    return {
+      ...getDefaultSettings(),
+      ...settingsCache,
+      forcedSymbols: canonicalForcedBaseSymbols(),
+      forced_symbols: canonicalForcedSymbols(),
+    }
   }
   return getDefaultSettings()
 }
 
 export async function loadSettingsAsync(): Promise<Record<string, any>> {
   if (settingsCache) {
-    return { ...getDefaultSettings(), ...settingsCache }
+    return {
+      ...getDefaultSettings(),
+      ...settingsCache,
+      forcedSymbols: canonicalForcedBaseSymbols(),
+      forced_symbols: canonicalForcedSymbols(),
+    }
   }
 
   try {
     const diskSettings = await readFromDisk()
     if (diskSettings) {
       settingsCache = diskSettings
-      return { ...getDefaultSettings(), ...diskSettings }
+      return {
+        ...getDefaultSettings(),
+        ...diskSettings,
+        forcedSymbols: canonicalForcedBaseSymbols(),
+        forced_symbols: canonicalForcedSymbols(),
+      }
     }
   } catch {
     // Ignore - Edge runtime or other non-Node environment
@@ -125,10 +143,15 @@ export async function loadSettingsAsync(): Promise<Record<string, any>> {
 }
 
 export function saveSettings(settings: Record<string, any>): void {
-  settingsCache = { ...settings }
+  const normalized = {
+    ...settings,
+    forcedSymbols: canonicalForcedBaseSymbols(),
+    forced_symbols: canonicalForcedSymbols(),
+  }
+  settingsCache = normalized
 
   // Fire-and-forget disk write
-  writeToDisk(settings).catch(() => {
+  writeToDisk(normalized).catch(() => {
     // Ignore disk write errors
   })
 }

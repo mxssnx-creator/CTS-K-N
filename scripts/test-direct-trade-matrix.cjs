@@ -3,7 +3,7 @@
  * Deterministic max-symbol Direct-Trade evaluator load and reporting test.
  *
  * It uses a configurable synthetic 1m market path (48h by default), then evaluates the complete
- * 1m/10m/15m combination matrix and every default-enabled Direct-Trade
+ * 5m/15m/30m combination matrix and every default-enabled Direct-Trade
  * strategy lineage for every requested symbol. No network, Redis,
  * credentials, or order endpoint is touched.
  */
@@ -146,7 +146,7 @@ const autoTrailOptions = [0.75, 1, 1.25].map((autoTrailSensitivity) => ({
   autoTrailSensitivity,
 }))
 const noTrailingOption = { trailing: false, trailStart: 0, trailStop: 0, mode: "none" }
-const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios([4, 14], 4)
+const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios([4, 8], 2)
 const takeProfitRange = takeProfitPositionCostRatios.map((ratio) =>
   directTradeTakeProfitPercent(positionCostPercent, ratio),
 )
@@ -160,12 +160,12 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
   let symbolEvaluatedSets = 0
   const minuteCandles = minuteSeries(symbolIndex)
   const candlesByTimeframe = {
-    "1m": minuteCandles,
-    "10m": resampleCandles(minuteCandles, 10),
+    "5m": resampleCandles(minuteCandles, 5),
     "15m": resampleCandles(minuteCandles, 15),
+    "30m": resampleCandles(minuteCandles, 30),
   }
   const symbolMetrics = Object.create(null)
-  for (const timeframeSet of buildTimeframeCombinations(["1m", "10m", "15m"])) {
+  for (const timeframeSet of buildTimeframeCombinations(["5m", "15m", "30m"])) {
     for (const direction of ["long", "short"]) {
       const plans = [
         { strategyType: "standard", signalDirection: direction, tpRange: takeProfitRange, slRatios: [0.25, 0.5, 0.75], trailOptions: [noTrailingOption] },
@@ -174,6 +174,7 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
         { strategyType: "combination", signalDirection: direction, tpRange: takeProfitRange, slRatios: [0.25, 0.5, 0.75], trailOptions: [noTrailingOption, ...fixedTrailOptions, ...autoTrailOptions] },
         { strategyType: "inverse", signalDirection: direction === "long" ? "short" : "long", tpRange: takeProfitRange, slRatios: [0.25, 0.5, 0.75, 1, 1.25], trailOptions: [noTrailingOption, ...fixedTrailOptions] },
         { strategyType: "high_protection", signalDirection: direction, tpRange: takeProfitRange, slRatios: [0.75], trailOptions: [noTrailingOption, ...autoTrailOptions] },
+        { strategyType: "dca", signalDirection: direction, tpRange: takeProfitRange, slRatios: [1], trailOptions: [noTrailingOption] },
       ]
       for (const plan of plans) {
         const sets = evaluateDirectTradeSets({
@@ -394,8 +395,8 @@ const report = {
   recentPositionPFMinimum: minRecentProfitFactor,
   recentEvaluationPositions,
   positionCostPercent,
-  takeProfitRatioRange: [4, 14],
-  takeProfitRatioStep: 4,
+  takeProfitRatioRange: [4, 8],
+  takeProfitRatioStep: 2,
   takeProfitPositionCostRatios,
   evaluatedSets,
   validSets,

@@ -192,7 +192,10 @@ export async function verifyEngineSystem(): Promise<VerificationReport> {
       warnings.push("Prehistoric complete but realtime indications not yet generated")
     }
     
-    indicationCheck.indicationTypesGenerated = ["direction", "move", "active", "optimal", "signal", "trend"]
+    indicationCheck.indicationTypesGenerated = [
+      "direction", "move", "active", "active_advanced", "special",
+      "optimal", "auto", "common", "signal", "trend",
+    ]
     indicationCheck.details = `Prehistoric: ${indicationCheck.prehistoricIndications} complete | Realtime: ${indicationCheck.realtimeIndications} generated`
     
     console.log(`[v0] [Verification] Indications: prehistoric=${indicationCheck.prehistoricPhaseComplete}, realtime=${indicationCheck.realtimeIndications}`)

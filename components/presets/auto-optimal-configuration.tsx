@@ -12,6 +12,7 @@ import { Loader2, Play } from "lucide-react"
 import { getIndicatorDefaults } from "@/lib/indication-range-calculator"
 import { COMMON_INDICATOR_DEFINITIONS } from "@/lib/common-indicator-config"
 import type { AutoOptimalConfiguration } from "@/lib/types-auto-optimal"
+import { canonicalForcedSymbols } from "@/lib/forced-symbols"
 
 interface AutoOptimalConfigurationProps {
   onCalculate: (config: Partial<AutoOptimalConfiguration>) => Promise<void>
@@ -23,7 +24,7 @@ export function AutoOptimalConfigurationForm({ onCalculate }: AutoOptimalConfigu
     symbol_mode: "main",
     exchange_order_by: "price_change_24h",
     symbol_limit: 5,
-    forced_symbols: ["XAGUSD", "XAUUSD"], // Silver and Gold
+    forced_symbols: canonicalForcedSymbols(),
     indication_type: null,
     takeprofit_min: 0.5,
     takeprofit_max: 3.0,
@@ -142,7 +143,7 @@ export function AutoOptimalConfigurationForm({ onCalculate }: AutoOptimalConfigu
               <Slider
                 value={[config.symbol_limit || 5]}
                 onValueChange={([v]) => setConfig({ ...config, symbol_limit: v })}
-                min={1}
+                min={4}
                 max={25}
                 step={1}
               />
@@ -160,7 +161,7 @@ export function AutoOptimalConfigurationForm({ onCalculate }: AutoOptimalConfigu
               ))}
             </div>
             <p className="text-xs text-muted-foreground mt-2">
-              Silver (XAGUSD) and Gold (XAUUSD) are always included in calculations
+              BTC, SOL, BCH and XRP perpetual USDT markets are always included in calculations.
             </p>
           </div>
         </div>

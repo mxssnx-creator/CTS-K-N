@@ -15,6 +15,7 @@ import {
   MAIN_TRADE_PF_RATIO_MIN,
   MAIN_TRADE_PF_RATIO_STEP,
 } from "@/lib/main-trade-profit-factor"
+import { CANONICAL_FORCED_BASE_SYMBOLS } from "@/lib/forced-symbols"
 
 interface SystemTabProps {
   settings: any
@@ -506,12 +507,12 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                   <div className="space-y-2">
                     <Label>Forced Symbols</Label>
                     <div className="flex flex-wrap gap-2 rounded border p-2 min-h-10 bg-background">
-                      {(settings.forcedSymbols || ["XRP", "BCH"]).map((symbol: string) => (
+                      {CANONICAL_FORCED_BASE_SYMBOLS.map((symbol: string) => (
                         <span key={symbol} className="px-2 py-1 rounded-full bg-accent text-accent-foreground">{symbol}</span>
                       ))}
                     </div>
                     <p className="text-muted-foreground">
-                      Always included via canonical <code>forcedSymbols</code>; edit the list on Exchange.
+                      Locked canonical <code>forcedSymbols</code> basket; dynamic selections may add symbols.
                     </p>
                   </div>
                 </div>
@@ -604,6 +605,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                       { key: "indication.active",    label: "Indication · Active" },
                       { key: "indication.optimal",   label: "Indication · Optimal" },
                       { key: "indication.active_advanced", label: "Indication · Active Advanced" },
+                      { key: "indication.special", label: "Indication · Special" },
                       { key: "indication.signal", label: "Indication · Signal" },
                       { key: "indication.trend", label: "Indication · Trend" },
                       { key: "strategy.base",        label: "Strategy · Base" },

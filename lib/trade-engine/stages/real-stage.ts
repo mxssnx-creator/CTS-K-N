@@ -8,13 +8,17 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import type { MainPosition } from "./main-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
-import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
+import {
+  getRuntimeCapabilityConcurrency,
+  getRuntimeConcurrencyProfile,
+} from "@/lib/runtime-concurrency-profile"
 import type { SignalRisk } from "@/lib/signal-indication"
 import type { SignalExecutionLane, TrailingProfile } from "@/lib/signal-trailing"
 import {
   calculateBlockVolumeMultiplier,
   parseBlockCount,
 } from "@/lib/block-count-state"
+import type { SpecialPositionPlan } from "@/lib/special-strategy"
 
 const LOG_PREFIX = "[v0] [RealPositionStage]"
 
@@ -54,6 +58,8 @@ export interface RealPosition {
   parentSetKey?: string
   indicationType?: string
   signalRisk?: SignalRisk
+  /** Special-only independently calculated logical legs and time/protection limits. */
+  specialPositionPlan?: SpecialPositionPlan
   setVariant?: "default" | "trailing" | "block" | "dca"
   axisWindows?: { prev: number; last: number; cont: number; pause: number }
   // Variant size multiplier carried to the live executor for volume scaling.
@@ -154,14 +160,15 @@ export async function evaluateToRealPositions(
   )
 
   try {
+    const realConcurrency = concurrencyFromEnv(
+      ["REAL_POSITION_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"],
+      getRuntimeConcurrencyProfile(mainPositions.length).calculationConcurrency,
+      8,
+      mainPositions.length,
+    )
     const evaluated = await mapWithConcurrency(
       mainPositions,
-      concurrencyFromEnv(
-        ["REAL_POSITION_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"],
-        getRuntimeConcurrencyProfile(mainPositions.length).calculationConcurrency,
-        8,
-        mainPositions.length,
-      ),
+      realConcurrency,
       async (mainPos): Promise<RealPosition | null> => {
       // Check ratio criteria
       const profitRatio = calculateProfitabilityRatio(mainPos)
@@ -259,6 +266,13 @@ export async function evaluateToRealPositions(
         )
         return null
       }
+      },
+      {
+        yieldEvery: 1,
+        getConcurrency: () => Math.min(
+          realConcurrency,
+          getRuntimeCapabilityConcurrency("mixed", mainPositions.length),
+        ),
       },
     )
     for (const position of evaluated) if (position) realPositions.push(position)

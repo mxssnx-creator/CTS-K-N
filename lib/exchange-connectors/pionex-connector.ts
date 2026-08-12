@@ -7,6 +7,7 @@ import {
   type PlaceOrderOptions,
 } from "./base-connector"
 import { safeParseResponse } from "@/lib/safe-response-parser"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 export class PionexConnector extends BaseExchangeConnector {
   constructor(credentials: ExchangeCredentials, exchange: string = "pionex") {
@@ -530,10 +531,26 @@ export class PionexConnector extends BaseExchangeConnector {
           : {})
         return this.futuresRows(data, "positions")
           .map((position: any) => {
-            const rawSize = Number(position.netSize ?? position.positionAmt ?? position.size ?? 0)
+            const signedSizeValue = position.netSize ?? position.positionAmt
+            const signedSize = Number(signedSizeValue)
+            const rawSize = Number(signedSizeValue ?? position.size ?? 0)
             const explicitSide = String(position.positionSide || "").toUpperCase()
-            const side: "long" | "short" = explicitSide === "SHORT" || rawSize < 0 ? "short" : "long"
-            const contracts = Math.abs(rawSize || Number(position.sizeLong ?? position.sizeShort ?? 0))
+            const explicitDirection = normalizeTradeDirection(explicitSide)
+            const longSize = Number(position.sizeLong ?? 0)
+            const shortSize = Number(position.sizeShort ?? 0)
+            const side = explicitDirection || (
+              signedSizeValue !== undefined && Number.isFinite(signedSize) && signedSize !== 0
+                ? signedSize > 0 ? "long" : "short"
+                : longSize > 0 && !(shortSize > 0)
+                  ? "long"
+                  : shortSize > 0 && !(longSize > 0)
+                    ? "short"
+                    : null
+            )
+            if (!side) return null
+            const contracts = Math.abs(
+              rawSize || (side === "long" ? longSize : shortSize),
+            )
             if (!Number.isFinite(contracts) || contracts <= 0) return null
             const isolatedModeValue = position.isolatedMode ?? position.marginType ?? "CROSS"
             const isolatedMode = String(isolatedModeValue).toUpperCase()

@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import process from "node:process"
 
-const REQUIRED_SCHEMA_VERSION = 96
+const REQUIRED_SCHEMA_VERSION = 98
 const failures = []
 const checks = []
 
@@ -43,7 +43,7 @@ function validateRuntimeEnvironment() {
     (process.env.KILO_DB_URL && process.env.KILO_DB_TOKEN) ||
     (process.env.KILO_DATABASE_URL && process.env.KILO_DATABASE_TOKEN),
   )
-  const paperFallback = process.env.ALLOW_PROD_INLINE_REDIS !== "0" && process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
+  const paperFallback = process.env.ALLOW_PROD_INLINE_REDIS === "1" && process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
   const kiloManagedLiveFallback = process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1" && managedSnapshot
   assert(
     sharedRedis || managedSnapshot || paperFallback || kiloManagedLiveFallback,

@@ -1,5 +1,6 @@
 import { createConnection, deleteConnection, getAllConnections, getConnection, initRedis, updateConnection } from "@/lib/redis-db"
 import { getBaseConnectionCredentials, type BaseConnectionId } from "@/lib/base-connection-credentials"
+import { BINGX_PROD_VST_ORIGIN } from "@/lib/bingx-environment"
 
 type BaseSeedConfig = {
   id: BaseConnectionId
@@ -9,12 +10,14 @@ type BaseSeedConfig = {
   contractType: string
   connectionMethod: string
   connectionLibrary: string
+  environment?: "prod-live" | "prod-vst"
 }
 
 // Bybit is intentionally NOT a canonical base connection. Users can add Bybit
 // manually as a regular connection — it is no longer auto-seeded.
 const CANONICAL_BASE_CONNECTIONS: BaseSeedConfig[] = [
   { id: "bingx-x01", exchange: "bingx", name: "BingX X01", apiType: "perpetual_futures", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native" },
+  { id: "bingx-x02", exchange: "bingx", name: "BingX X02 (Prod-VST Demo)", apiType: "perpetual_futures", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native", environment: "prod-vst" },
   { id: "pionex-x01", exchange: "pionex", name: "Pionex X01", apiType: "perpetual_futures", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native" },
   { id: "orangex-x01", exchange: "orangex", name: "OrangeX X01", apiType: "perpetual_futures", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native" },
 ]
@@ -33,7 +36,7 @@ const LEGACY_CONNECTION_IDS = [
 
 // Module-level flag to prevent re-seeding
 let seedingCompleted = false
-const SEED_MARKER_KEY = "system:base_connections_seeded_v4"
+const SEED_MARKER_KEY = "system:base_connections_seeded_v5"
 
 /**
  * Backward-compatible entrypoint. Ensures canonical base connections only.
@@ -100,7 +103,11 @@ export async function ensureDefaultExchangesExist() {
         connection_library: cfg.connectionLibrary,
         margin_type: "cross",
         position_mode: "hedge",
-        is_testnet: false,
+        is_testnet: cfg.environment === "prod-vst",
+        ...(cfg.environment === "prod-vst" ? {
+          environment: "prod-vst",
+          base_url: BINGX_PROD_VST_ORIGIN,
+        } : {}),
         is_predefined: true,
         // ONLY bybit and bingx are inserted (shown on Main Connections by default)
         // All others (pionex, orangex) are disabled and hidden
@@ -132,6 +139,21 @@ export async function ensureDefaultExchangesExist() {
           if (existing[field] === undefined || existing[field] === null) repairPatch[field] = value
         }
         if (!existing.created_at) repairPatch.created_at = now
+        // X02 has one immutable safety property: it is always Prod-VST. An
+        // older UI used to overwrite is_testnet=false on every edit, which
+        // could silently redirect a demo connection to the real-funds host.
+        if (cfg.id === "bingx-x02" && existing.is_testnet !== true && existing.is_testnet !== "1" && existing.is_testnet !== "true") {
+          repairPatch.is_testnet = true
+        }
+        if (cfg.id === "bingx-x02" && existing.is_predefined !== true && existing.is_predefined !== "1" && existing.is_predefined !== "true") {
+          repairPatch.is_predefined = true
+        }
+        if (cfg.id === "bingx-x02" && existing.environment !== "prod-vst") {
+          repairPatch.environment = "prod-vst"
+        }
+        if (cfg.id === "bingx-x02" && existing.base_url !== BINGX_PROD_VST_ORIGIN) {
+          repairPatch.base_url = BINGX_PROD_VST_ORIGIN
+        }
         if (hasConfiguredCreds) {
           if (!String(existing.api_key || "").trim()) repairPatch.api_key = apiKey
           if (!String(existing.api_secret || "").trim()) repairPatch.api_secret = apiSecret

@@ -8,7 +8,11 @@
  */
 
 const PRIMARY_ORIGIN = process.env.BINGX_PUBLIC_ORIGIN || "https://open-api.bingx.com"
-const VERIFIED_PUBLIC_HOSTS = new Set(["open-api.bingx.com", "testnet-open-api.bingx.com"])
+const VERIFIED_PUBLIC_HOSTS = new Set([
+  "open-api.bingx.com",
+  "open-api.bingx.pro",
+  "open-api-vst.bingx.com",
+])
 const configuredFallback = process.env.BINGX_PUBLIC_FALLBACK_ORIGIN || ""
 const ORIGINS = [...new Set([PRIMARY_ORIGIN, configuredFallback].filter((origin) => {
   try { return VERIFIED_PUBLIC_HOSTS.has(new URL(origin).hostname) }

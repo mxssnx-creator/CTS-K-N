@@ -27,12 +27,16 @@ const round = (value: number) => Number(Math.max(0, value).toFixed(12))
  */
 export function hedgeStrategyVolumeParts(parts: readonly StrategyVolumePart[]): HedgedStrategyVolume {
   const normalized = parts
-    .map((part) => ({
-      setKey: String(part.setKey || "").trim(),
-      direction: part.direction === "short" ? "short" as const : "long" as const,
-      ratio: round(Number.isFinite(Number(part.ratio)) ? Number(part.ratio) : 0),
-      quality: Number.isFinite(Number(part.quality)) ? Number(part.quality) : 0,
-    }))
+    .flatMap((part) => {
+      const direction = normalizeTradeDirection(part.direction)
+      if (!direction) return []
+      return [{
+        setKey: String(part.setKey || "").trim(),
+        direction,
+        ratio: round(Number.isFinite(Number(part.ratio)) ? Number(part.ratio) : 0),
+        quality: Number.isFinite(Number(part.quality)) ? Number(part.quality) : 0,
+      }]
+    })
     .filter((part) => part.setKey && part.ratio > 0)
   const long = normalized.filter((part) => part.direction === "long")
   const short = normalized.filter((part) => part.direction === "short")
@@ -78,3 +82,4 @@ export function hedgeStrategyVolumeParts(parts: readonly StrategyVolumePart[]): 
     memberRatios,
   }
 }
+import { normalizeTradeDirection } from "@/lib/trade-direction"

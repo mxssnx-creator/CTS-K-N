@@ -21,10 +21,10 @@ function resetInlineRedisGlobals() {
 
 function upwardHistory() {
   const end = Date.now()
-  return Array.from({ length: 120 }, (_, index) => {
+  return Array.from({ length: 300 }, (_, index) => {
     const close = 100 + index * 0.3
     return {
-      time: end - (119 - index) * 60_000,
+      time: end - (299 - index) * 60_000,
       open: close - 0.1,
       high: close + 0.2,
       low: close - 0.2,
@@ -40,7 +40,8 @@ describe("Direct-Trade historical calculation route", () => {
     jest.clearAllMocks()
     resetInlineRedisGlobals()
     fetchTopSymbolsMock.mockResolvedValue({ symbols: [{ symbol: "BTCUSDT" }] })
-    fetchBingXPublicMock.mockResolvedValue({ ok: true, json: async () => ({ data: upwardHistory() }) })
+    const history = upwardHistory()
+    fetchBingXPublicMock.mockResolvedValue({ ok: true, json: async () => ({ data: history }) })
   })
 
   afterEach(() => resetInlineRedisGlobals())
@@ -56,7 +57,7 @@ describe("Direct-Trade historical calculation route", () => {
       body: JSON.stringify({
         symbolCount: 1,
         historyHours: 60,
-        timeframes: ["1m"],
+        timeframes: ["5m"],
         entryTactics: ["breakout"],
         exitTactics: ["bracket"],
         trailingEnabled: false,
@@ -66,42 +67,46 @@ describe("Direct-Trade historical calculation route", () => {
     const payload = await response.json()
 
     expect(payload.success).toBe(true)
-    // The 4–14× range uses its default Set-creation step of four, therefore
-    // materialising 4, 8, 12 and 14 while preserving both selected bounds.
-    // Fixed and Auto remain absent when trailing is disabled.
-    expect(payload.configTotal).toBe(96)
+    // The optimized 4–8× range uses a Set-creation step of two, materialising
+    // 4, 6 and 8. Fixed and Auto remain absent when trailing is disabled;
+    // DCA remains its own non-Block lineage.
+    expect(payload.configTotal).toBe(312)
     expect(payload.executionConfigTotal).toEqual(expect.any(Number))
-    expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 96 })
-    expect(payload.summary).toMatchObject({ blockEnabled: true, blockEvaluatedSets: 96 * 12 })
-    expect(payload.summary.byBlockCount["1"]).toMatchObject({ evaluated: 96 })
-    expect(payload.summary.byBlockCount["12"]).toMatchObject({ evaluated: 96 })
+    expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 312 })
+    expect(payload.summary).toMatchObject({
+      symbols: ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"],
+      blockEnabled: true,
+      blockEvaluatedSets: 72 * 12 * 4,
+    })
+    expect(payload.summary.byBlockCount["1"]).toMatchObject({ evaluated: 288 })
+    expect(payload.summary.byBlockCount["12"]).toMatchObject({ evaluated: 288 })
     expect(payload.summary.byStrategyType).toMatchObject({
-      standard: { evaluated: 24 },
+      standard: { evaluated: 72 },
       trailing_fixed: { evaluated: 0 },
       trailing_auto: { evaluated: 0 },
-      combination: { evaluated: 24 },
-      inverse: { evaluated: 40 },
-      high_protection: { evaluated: 8 },
+      combination: { evaluated: 72 },
+      inverse: { evaluated: 120 },
+      high_protection: { evaluated: 24 },
+      dca: { evaluated: 24 },
     })
     expect(payload.summary.byDirection).toMatchObject({
-      long: { evaluated: 48 },
-      short: { evaluated: 48 },
+      long: { evaluated: 156 },
+      short: { evaluated: 156 },
     })
     expect(payload.summary.byStopLossRatio).toMatchObject({
-      "0.25": { evaluated: 24 },
-      "0.5": { evaluated: 24 },
-      "0.75": { evaluated: 32 },
-      "1": { evaluated: 8 },
-      "1.25": { evaluated: 8 },
+      "0.25": { evaluated: 72 },
+      "0.5": { evaluated: 72 },
+      "0.75": { evaluated: 96 },
+      "1": { evaluated: 24 },
+      "1.25": { evaluated: 24 },
     })
     expect(payload.summary.byTakeProfitPositionCostRatio).toMatchObject({
-      "4": { evaluated: 24 },
-      "8": { evaluated: 24 },
-      "12": { evaluated: 24 },
-      "14": { evaluated: 24 },
+      "4": { evaluated: 104 },
+      "6": { evaluated: 104 },
+      "8": { evaluated: 104 },
     })
     expect(payload.summary.byExitTactic.bracket).toMatchObject({
-      evaluated: 96,
+      evaluated: 312,
       disabled: payload.summary.byExitTactic.bracket.evaluated - payload.summary.byExitTactic.bracket.valid,
       totalPnl: expect.any(Number),
       netProfit: expect.any(Number),
@@ -111,10 +116,10 @@ describe("Direct-Trade historical calculation route", () => {
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("interval=1m")
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("startTime=")
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
-    expect(persisted).toHaveLength(96)
-    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(96)
+    expect(persisted).toHaveLength(312)
+    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(312)
     expect(persisted.every((config: any) => config.blockEvaluations === undefined)).toBe(true)
-    expect(persisted.every((config: any) => config.timeframe === "1m" && config.bestMarketExitAnalysisOnly === true)).toBe(true)
+    expect(persisted.every((config: any) => config.timeframe === "5m" && config.bestMarketExitAnalysisOnly === true)).toBe(true)
     expect(persisted.every((config: any) =>
       Number.isFinite(config.takeprofit) &&
       Number.isFinite(config.takeProfitPositionCostRatio) &&
@@ -136,7 +141,7 @@ describe("Direct-Trade historical calculation route", () => {
       body: JSON.stringify({
         symbolCount: 1,
         historyHours: 60,
-        timeframes: ["1m"],
+        timeframes: ["5m"],
         entryTactics: ["breakout"],
         exitTactics: ["bracket"],
         trailingEnabled: true,
@@ -147,20 +152,21 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
 
     expect(payload.success).toBe(true)
-    expect(payload.configTotal).toBe(528)
+    expect(payload.configTotal).toBe(1608)
     expect(payload.summary.byStrategyType).toMatchObject({
-      standard: { evaluated: 24 },
-      trailing_fixed: { evaluated: 72 },
-      trailing_auto: { evaluated: 72 },
-      combination: { evaluated: 168 },
-      inverse: { evaluated: 160 },
-      high_protection: { evaluated: 32 },
+      standard: { evaluated: 72 },
+      trailing_fixed: { evaluated: 216 },
+      trailing_auto: { evaluated: 216 },
+      combination: { evaluated: 504 },
+      inverse: { evaluated: 480 },
+      high_protection: { evaluated: 96 },
+      dca: { evaluated: 24 },
     })
     const byType = (strategyType: string) => persisted.filter((config: any) => config.strategyType === strategyType)
     expect(byType("trailing_fixed").every((config: any) => config.trailingMode === "fixed")).toBe(true)
     expect(byType("trailing_auto").every((config: any) => config.trailingMode === "auto")).toBe(true)
     expect(new Set(byType("combination").map((config: any) => config.trailingMode))).toEqual(new Set(["none", "fixed", "auto"]))
-    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(528)
+    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(1608)
   })
 
   test("applies the configured SL ratio step without omitting the requested protection maximum", async () => {
@@ -174,7 +180,7 @@ describe("Direct-Trade historical calculation route", () => {
       body: JSON.stringify({
         symbolCount: 1,
         historyHours: 60,
-        timeframes: ["1m"],
+        timeframes: ["5m"],
         strategyTypes: ["standard"],
         entryTactics: ["breakout"],
         exitTactics: ["bracket"],
@@ -188,9 +194,9 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
 
     expect(payload.success).toBe(true)
-    // Four default TP Set ratios (4, 8, 12, 14× PositionCost) × two configured
+    // Three optimized TP Set ratios (4, 6, 8× PositionCost) × two configured
     // SL ratios × independently evaluated long/short.
-    expect(payload.configTotal).toBe(16)
+    expect(payload.configTotal).toBe(48)
     expect(new Set(persisted.map((config: any) => Number((config.stoploss / config.takeprofit).toFixed(2))))).toEqual(new Set([0.25, 0.75]))
   })
 
@@ -205,7 +211,7 @@ describe("Direct-Trade historical calculation route", () => {
       body: JSON.stringify({
         symbolCount: 1,
         historyHours: 60,
-        timeframes: ["1m"],
+        timeframes: ["5m"],
         strategyTypes: ["standard"],
         entryTactics: ["breakout"],
         exitTactics: ["bracket"],
@@ -222,7 +228,7 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
 
     expect(payload.success).toBe(true)
-    expect(payload.configTotal).toBe(18)
+    expect(payload.configTotal).toBe(72)
     expect(new Set(persisted.map((config: any) => config.takeProfitPositionCostRatio))).toEqual(new Set([4, 5, 6]))
     expect(new Set(persisted.map((config: any) => config.takeprofit))).toEqual(new Set([0.4, 0.5, 0.6]))
     expect(persisted.every((config: any) => config.blockCount === 3 && config.blockVolumeRatio === 1.5)).toBe(true)
@@ -237,7 +243,7 @@ describe("Direct-Trade historical calculation route", () => {
     const request = () => new Request("http://localhost/api/trade-engine/direct-trade/calculate", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ symbolCount: 1, historyHours: 1, timeframes: ["1m"] }),
+      body: JSON.stringify({ symbolCount: 1, historyHours: 1, timeframes: ["5m"] }),
     }) as any
 
     const owner = POST(request())

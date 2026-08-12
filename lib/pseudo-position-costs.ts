@@ -22,7 +22,10 @@ export function calculatePseudoClosePnl(input: PseudoClosePnlInput): PseudoClose
   const entryPrice = Number(input.entryPrice)
   const currentPrice = Number(input.currentPrice)
   const quantity = Number(input.quantity)
-  const side = input.side === "short" ? "short" : "long"
+  const side = normalizeTradeDirection(input.side)
+  if (!side) {
+    throw new TypeError(`Invalid pseudo-position side: ${String(input.side ?? "")}`)
+  }
   const notional = entryPrice > 0 && quantity > 0 ? entryPrice * quantity : 0
   const grossPnl = side === "long"
     ? (currentPrice - entryPrice) * quantity
@@ -38,3 +41,4 @@ export function calculatePseudoClosePnl(input: PseudoClosePnlInput): PseudoClose
     notional,
   }
 }
+import { normalizeTradeDirection } from "@/lib/trade-direction"

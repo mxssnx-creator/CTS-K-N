@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getAllConnections, initRedis, createConnection } from "@/lib/redis-db"
+import { getAllConnections, getConnection, initRedis, createConnection } from "@/lib/redis-db"
 import { generateConnectionIdFromApiKey, isApiKeyInUse } from "@/lib/connection-id-manager"
 import { CONNECTION_PREDEFINITIONS } from "@/lib/connection-predefinitions"
 import { API_VERSIONS } from "@/lib/system-version"
@@ -14,6 +14,10 @@ const API_VERSION = API_VERSIONS.connections
 function identityVolumeFactor(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? Math.max(1, Math.min(10, parsed)) : 1
+}
+
+function truthy(value: unknown): boolean {
+  return value === true || value === 1 || value === "1" || value === "true"
 }
 
 export async function GET(request: NextRequest) {
@@ -119,6 +123,7 @@ export async function POST(request: Request) {
     const connectionId = generateConnectionIdFromApiKey(body.exchange, body.api_key)
     const normalizedExchange = String(body.exchange).toLowerCase().replace(/[^a-z]/g, "")
     const isBingX = normalizedExchange.includes("bingx")
+    const isProdVstTemplate = body.predefinition_id === "bingx-x02"
     const connectionMethod = body.connection_method || (isBingX ? "library" : "rest")
     const connectionLibrary = body.connection_library || (isBingX && connectionMethod === "library" ? "sdk" : "native")
     const requestedSettings =
@@ -156,7 +161,7 @@ export async function POST(request: Request) {
       margin_type: body.margin_type || "cross",
       position_mode: body.position_mode || "hedge",
       contract_type: body.contract_type || "usdt-perpetual",
-      is_testnet: body.is_testnet || false,
+      is_testnet: isProdVstTemplate || truthy(body.is_testnet),
       is_enabled: body.is_enabled === true, // Settings: enabled by default for base connections
       is_inserted: true, // User-created connection is "inserted" (available for use)
       is_dashboard_inserted: false, // Not yet added to Active Connections dashboard
@@ -191,6 +196,11 @@ export async function POST(request: Request) {
 
     // Save to Redis database
     await createConnection(connection)
+    const persistedConnection = await getConnection(connectionId)
+    const safePersistedConnection = persistedConnection ? maskConnectionSecrets(persistedConnection) : null
+    if (!safePersistedConnection || safePersistedConnection.credentials_configured !== true) {
+      throw new Error("Connection was created but credential persistence verification failed")
+    }
 
     console.log("[v0] [API] Connection created successfully:", {
       id: connectionId,
@@ -226,6 +236,9 @@ export async function POST(request: Request) {
         message: "Connection created successfully",
         id: connectionId,
         connectionId: connectionId,
+        connection: safePersistedConnection,
+        persistenceVerified: true,
+        credentialsConfigured: true,
         autoTest: testResult ? { ran: true, success: testResult.success } : { ran: false, reason: "No API credentials provided" },
       },
       { status: 201 }

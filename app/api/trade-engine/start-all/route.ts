@@ -16,7 +16,7 @@ async function handleStartAll() {
     }
 
     await initRedis()
-    const readiness = await checkProductionReadiness()
+    const readiness = await checkProductionReadiness({ requireConnectionCredentials: false })
     if (!readiness.ready) {
       return NextResponse.json({ ...productionReadinessJson(readiness), results: [] }, { status: 503 })
     }

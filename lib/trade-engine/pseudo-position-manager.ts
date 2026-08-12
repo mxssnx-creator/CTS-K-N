@@ -17,6 +17,11 @@ import {
   type SignalExecutionLane,
   type TrailingProfile,
 } from "@/lib/signal-trailing"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import {
+  sanitizeSpecialPositionPlan,
+  type SpecialPositionPlan,
+} from "@/lib/special-strategy"
 
 const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
 const POSITION_CLOSE_LOCK_TTL_MS = 60_000
@@ -57,9 +62,8 @@ async function syncPseudoStrategyEntryLedger(
     position.parent_set_key || position.parentSetKey || setKey.split("#")[0] || setKey,
   ).trim()
   const symbol = String(position.symbol || "unknown")
-  const direction = String(position.side || position.direction || "long").toLowerCase() === "short"
-    ? "short"
-    : "long"
+  const direction = resolveConsistentTradeDirection(position.side, position.direction)
+  if (!direction) return
   const embeddedAxis = setKey.match(/#axis:([^#]+)/)?.[1] || ""
 
   try {
@@ -394,6 +398,7 @@ export class PseudoPositionManager {
     trailingStopRatio?: number
     trailingStepRatio?: number
     trailingProfile?: TrailingProfile
+    specialPositionPlan?: SpecialPositionPlan
   }): Promise<string | null> {
     let creationLock: DirectionCreationLock | null = null
     let stopCreationLockRefresh: (() => void) | null = null
@@ -426,6 +431,10 @@ export class PseudoPositionManager {
         indicationType: params.indicationType,
         trailingProfile,
       })
+      const specialPositionPlan = params.indicationType === "special"
+        ? sanitizeSpecialPositionPlan(params.specialPositionPlan, params.side)
+        : null
+      if (params.indicationType === "special" && !specialPositionPlan) return null
 
       // Build a canonical config set key if not provided. Including the
       // trailing tuple makes each multi-step variant occupy its own
@@ -505,7 +514,9 @@ export class PseudoPositionManager {
         }
       })()
 
-      if (!volumeCalc.finalVolume || volumeCalc.finalVolume <= 0) {
+      const finalVolume = Number(volumeCalc.finalVolume || 0) *
+        (specialPositionPlan?.totalVolumeRatio ?? 1)
+      if (!finalVolume || finalVolume <= 0) {
         console.warn(
           `[v0] Cannot create position for ${params.symbol}: ` +
           `volume too small (${volumeCalc.finalVolume}) - ${volumeCalc.adjustmentReason || 'below minimum'}`
@@ -514,19 +525,21 @@ export class PseudoPositionManager {
       }
 
       // Calculate take profit and stop loss prices
+      const takeProfitFactor = specialPositionPlan?.protection.takeProfitPct ?? params.takeprofitFactor
       const takeProfitPrice =
         params.side === "long"
-          ? params.entryPrice * (1 + params.takeprofitFactor / 100)
-          : params.entryPrice * (1 - params.takeprofitFactor / 100)
+          ? params.entryPrice * (1 + takeProfitFactor / 100)
+          : params.entryPrice * (1 - takeProfitFactor / 100)
 
-      const stopLossPercent = resolveStopLossPercent(params.takeprofitFactor, params.stoplossRatio)
+      const stopLossPercent = specialPositionPlan?.protection.stopLossPct ??
+        resolveStopLossPercent(takeProfitFactor, params.stoplossRatio)
       const stopLossPrice =
         params.side === "long"
           ? params.entryPrice * (1 - stopLossPercent / 100)
           : params.entryPrice * (1 + stopLossPercent / 100)
 
       // Calculate position cost
-      const positionCost = (volumeCalc.finalVolume * params.entryPrice) / volumeCalc.leverage
+      const positionCost = (finalVolume * params.entryPrice) / volumeCalc.leverage
 
       // Store position in Redis
       const id = nanoid()
@@ -558,10 +571,10 @@ export class PseudoPositionManager {
         system_tracking_id: systemTrackingId,
         entry_price: String(params.entryPrice),
         current_price: String(params.entryPrice),
-        quantity: String(volumeCalc.finalVolume),
+        quantity: String(finalVolume),
         position_cost: String(positionCost),
         position_cost_pct: String(volumeCalc.positionCostPercent),
-        takeprofit_factor: String(params.takeprofitFactor),
+        takeprofit_factor: String(takeProfitFactor),
         takeprofit_price: String(takeProfitPrice),
         stoploss_ratio: String(params.stoplossRatio),
         stoploss_price: String(stopLossPrice),
@@ -629,6 +642,15 @@ export class PseudoPositionManager {
         status: "open",
         opened_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+        ...(specialPositionPlan && {
+          special_position_plan: JSON.stringify(specialPositionPlan),
+          special_logical_position_count: String(specialPositionPlan.logicalPositionCount),
+          special_total_volume_ratio: String(specialPositionPlan.totalVolumeRatio),
+          special_max_holding_seconds: String(specialPositionPlan.maximumHoldingSeconds),
+          special_expires_at: new Date(
+            Date.now() + specialPositionPlan.maximumHoldingSeconds * 1_000,
+          ).toISOString(),
+        }),
       }
 
       // ── Atomic pipeline for all creation-side index writes ───────────
@@ -776,7 +798,8 @@ export class PseudoPositionManager {
         // WebSocket chatter on quiet symbols.
         const entryPrice = parseFloat(position.entry_price || "0")
         const quantity = parseFloat(position.quantity || "0")
-        const side = position.side || "long"
+        const side = resolveConsistentTradeDirection(position.side, position.direction)
+        if (!side) return
         const unrealizedPnl = side === "long"
           ? (currentPrice - entryPrice) * quantity
           : (entryPrice - currentPrice) * quantity
@@ -843,7 +866,11 @@ export class PseudoPositionManager {
       const entryPrice = parseFloat(position.entry_price || "0")
       const currentPrice = parseFloat(position.current_price || "0")
       const quantity = parseFloat(position.quantity || "0")
-      const side = position.side || "long"
+      const side = resolveConsistentTradeDirection(position.side, position.direction)
+      if (!side) {
+        console.warn(`[v0] [PseudoPosMgr] Refusing to close ${positionId}: invalid direction lineage`)
+        return
+      }
 
       const {
         grossPnl,
@@ -861,7 +888,7 @@ export class PseudoPositionManager {
         this.exactConfigIdentity(
           String(position.symbol || ""),
           String(configSetKey),
-          side === "short" ? "short" : "long",
+          side,
           resolveSignalExecutionLane({
             executionLane: position.execution_lane,
             indicationType: position.indication_type,
@@ -982,7 +1009,7 @@ export class PseudoPositionManager {
           StrategyConfigManager.extractIndicationType(configSetKey) ||
           "unknown",
         )
-        const directionRaw = side === "long" || side === "short" ? side : "long"
+        const directionRaw = side
         const drawdownPctOrPx = parseFloat(position.max_drawdown || "0")
         const openedMs = new Date(
           String(position.opened_at || position.entry_time || position.created_at || closedAtIso),
@@ -1225,7 +1252,8 @@ export class PseudoPositionManager {
         const pos = eligible[i]
         const entry = parseFloat(pos.entry_price || "0")
         if (!(entry > 0)) continue
-        const side = pos.side === "short" ? "short" : "long"
+        const side = resolveConsistentTradeDirection(pos.side, pos.direction)
+        if (!side) continue
         const pf = parseFloat(pos.profit_factor || "1") || 1
         // Win probability scales with the set's edge (PF). Clamp to a sane
         // band so even a PF=1 set produces a realistic mix, never all-or-none.
@@ -1333,7 +1361,8 @@ export class PseudoPositionManager {
       let closedShortCount = 0
 
       for (const p of closed) {
-        const side = p.side || "long"
+        const side = resolveConsistentTradeDirection(p.side, p.direction)
+        if (!side) continue
         let pnl: number
         const stored = p.realized_pnl != null ? parseFloat(p.realized_pnl) : NaN
         if (Number.isFinite(stored)) {
@@ -1354,18 +1383,20 @@ export class PseudoPositionManager {
         }
       }
 
-      const totalRealizedPct = closed.length > 0
+      const directionalClosedCount = closedLongCount + closedShortCount
+      const totalRealizedPct = directionalClosedCount > 0
         ? closed.reduce((acc, p) => {
             const entry = parseFloat(p.entry_price || "0")
             const qty = parseFloat(p.quantity || "0")
             const notional = entry * qty
             if (!(notional > 0)) return acc
             const stored = p.realized_pnl != null ? parseFloat(p.realized_pnl) : NaN
+            const side = resolveConsistentTradeDirection(p.side, p.direction)
+            if (!side) return acc
             const pnl = Number.isFinite(stored)
               ? stored
               : (() => {
                   const current = parseFloat(p.current_price || "0")
-                  const side = p.side || "long"
                   return calculatePseudoClosePnl({ entryPrice: entry, currentPrice: current, quantity: qty, side }).netPnl
                 })()
             return acc + (pnl / notional) * 100
@@ -1379,10 +1410,11 @@ export class PseudoPositionManager {
         active_short: activeShort,
         closed_positions: closed.length,
         total_pnl: totalPnl,
-        avg_pnl: closed.length > 0 ? totalPnl / closed.length : 0,
+        avg_pnl: directionalClosedCount > 0 ? totalPnl / directionalClosedCount : 0,
         avg_pnl_long: closedLongCount > 0 ? pnlLong / closedLongCount : 0,
         avg_pnl_short: closedShortCount > 0 ? pnlShort / closedShortCount : 0,
-        avg_pnl_pct: closed.length > 0 ? totalRealizedPct / closed.length : 0,
+        avg_pnl_pct: directionalClosedCount > 0 ? totalRealizedPct / directionalClosedCount : 0,
+        invalid_direction_positions: closed.length - directionalClosedCount,
       }
     } catch (error) {
       console.error("[v0] Failed to get position stats:", error)
@@ -1426,7 +1458,7 @@ export class PseudoPositionManager {
   private async canCreatePosition(
     symbol: string,
     configSetKey: string,
-    side?: "long" | "short",
+    side: "long" | "short",
     executionLane: SignalExecutionLane = "default",
   ): Promise<DirectionCreationLock | null> {
     let lock: DirectionCreationLock | null = null
@@ -1436,7 +1468,7 @@ export class PseudoPositionManager {
       const exactIdentity = this.exactConfigIdentity(
         symbol,
         configSetKey,
-        side || "long",
+        side,
         executionLane,
       )
       // One token-owned lease per exact lane serializes only true duplicates.
@@ -1518,17 +1550,20 @@ export class PseudoPositionManager {
           })
           pipeline.srem(this.positionsSetKey(), id)
           if (key) {
+            const direction = resolveConsistentTradeDirection(hash?.side, hash?.direction)
             const exactIdentity = String(hash?.active_config_identity || "") ||
-              this.exactConfigIdentity(
-                String(hash?.symbol || ""),
-                String(key),
-                hash?.side === "short" ? "short" : "long",
-                resolveSignalExecutionLane({
-                  executionLane: hash?.execution_lane,
-                  indicationType: hash?.indication_type,
-                }),
-              )
-            pipeline.srem(this.activeConfigKeysSetKey(), exactIdentity)
+              (direction
+                ? this.exactConfigIdentity(
+                    String(hash?.symbol || ""),
+                    String(key),
+                    direction,
+                    resolveSignalExecutionLane({
+                      executionLane: hash?.execution_lane,
+                      indicationType: hash?.indication_type,
+                    }),
+                  )
+                : "")
+            if (exactIdentity) pipeline.srem(this.activeConfigKeysSetKey(), exactIdentity)
             pipeline.srem(this.activeConfigKeysSetKey(), key)
           }
           const side = hash?.side

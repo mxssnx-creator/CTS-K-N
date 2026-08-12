@@ -45,7 +45,7 @@ const open = {
   direction: "short",
   configKey: "cfg-open",
   strategyType: "combination",
-  timeframe: "1m+10m",
+  timeframe: "5m+15m",
   entryPrice: 100,
   lastObservedPrice: 99,
   positionCostPercent: 0.1,

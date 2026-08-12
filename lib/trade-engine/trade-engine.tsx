@@ -21,6 +21,7 @@ import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 } from "@/lib/main-trade-profit-factor"
+import { withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 
 export const TRADE_SERVICE_NAME = "TradeEngine-PerConnection"
 
@@ -568,16 +569,17 @@ export class TradeEngine {
         baseSymbols = await this.getSymbolsByArrangement(arrangementType, arrangementCount)
       }
 
-      const allBaseSymbols = [...new Set([...forcedSymbols, ...baseSymbols])]
-
-      const fullSymbols = allBaseSymbols.map((base) => `${base}${quoteAsset}`)
+      const fullSymbols = withCanonicalForcedSymbols([
+        ...forcedSymbols.map((base: unknown) => `${String(base)}${quoteAsset}`),
+        ...baseSymbols.map((base) => `${base}${quoteAsset}`),
+      ])
 
       console.log(`[v0] Selected ${fullSymbols.length} symbols:`, fullSymbols.slice(0, 10), "...")
 
       return fullSymbols
     } catch (error) {
       console.error("[v0] Failed to get symbols:", error)
-      return ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
+      return withCanonicalForcedSymbols([])
     }
   }
 

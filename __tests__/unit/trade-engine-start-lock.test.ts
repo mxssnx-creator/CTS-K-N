@@ -81,6 +81,21 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
     )
   })
 
+  test("global resume restores only engines present in the authoritative pause snapshot", () => {
+    const source = read("lib/trade-engine.ts")
+    const resumeBlock = source.slice(
+      source.indexOf("async resume(options:"),
+      source.indexOf("getEngineManager", source.indexOf("async resume(options:")),
+    )
+
+    expect(resumeBlock).toContain("let hasAuthoritativeStateSnapshot = false")
+    expect(resumeBlock).toContain("hasAuthoritativeStateSnapshot = true")
+    expect(resumeBlock).toContain("hasAuthoritativeStateSnapshot && wasRunningBeforePause !== true")
+    expect(resumeBlock.indexOf("hasAuthoritativeStateSnapshot && wasRunningBeforePause !== true")).toBeLessThan(
+      resumeBlock.indexOf("await this.startEngine(connectionId, config)"),
+    )
+  })
+
   test("dev and explicit long-lived node start paths are not blocked by the queued-only production gate", () => {
     const source = read("lib/trade-engine.ts")
     const canOwn = source.slice(
@@ -106,10 +121,13 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
     const quickStart = read("app/api/trade-engine/quick-start/route.ts")
     const startAll = read("app/api/trade-engine/start-all/route.ts")
 
-    expect(quickStart).toContain("const engineStarted = await coord.startEngine")
+    expect(quickStart).toContain("const startPromise = coordinator.startEngine")
+    expect(quickStart).toContain("const engineStarted = process.env.NODE_ENV")
     expect(quickStart).toContain("if (!engineStarted)")
     expect(quickStart).toContain("engine_start_skipped")
     expect(quickStart.indexOf("if (!engineStarted)")).toBeLessThan(quickStart.indexOf("Main Engine started for"))
+    expect((quickStart.match(/\.startEngine\(connectionId,/g) || [])).toHaveLength(1)
+    expect(quickStart).not.toContain("refreshEngines().catch")
 
     expect(startAll).toContain("const engineStarted = await coordinator.startEngine")
     expect(startAll).toContain("success: engineStarted")

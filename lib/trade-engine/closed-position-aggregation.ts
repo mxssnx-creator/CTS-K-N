@@ -55,15 +55,17 @@ export function calculateClosedPositionSignedPricePct(position: ClosedPositionLi
   const entryPrice = finiteNumber(position.averageExecutionPrice, position.entryPrice, position.entry_price)
   const exitPrice = finiteNumber(position.closePrice, position.exitPrice, position.lastPrice, position.markPrice, position.current_price)
   if (entryPrice > 0 && exitPrice > 0) {
-    const direction = String(position.direction ?? position.side ?? "long").toLowerCase()
-    const rawPct = ((exitPrice - entryPrice) / entryPrice) * 100
-    return direction === "short" ? -rawPct : rawPct
+    const direction = normalizeTradeDirection(position.direction, position.side)
+    if (direction) {
+      const rawPct = ((exitPrice - entryPrice) / entryPrice) * 100
+      return direction === "short" ? -rawPct : rawPct
+    }
   }
 
   const pnl = finiteNumber(position.realizedPnL, position.realized_pnl, position.pnl)
   const quantity = Math.abs(finiteNumber(position.executedQuantity, position.quantity))
   const notional = finiteNumber(position.volumeUsd) || (entryPrice > 0 && quantity > 0 ? entryPrice * quantity : 0)
-  return notional > 0 ? (pnl / notional) * 100 : 0
+  return notional > 0 ? (pnl / notional) * 100 : Number.NaN
 }
 
 export function calculateClosedPositionSignedResultR(
@@ -125,3 +127,4 @@ export function aggregateLastXClosedPositions(
     winRate: count > 0 ? round((wins / count) * 100, 1) : 0,
   }
 }
+import { normalizeTradeDirection } from "@/lib/trade-direction"

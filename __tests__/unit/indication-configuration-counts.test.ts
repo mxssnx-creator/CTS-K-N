@@ -6,8 +6,8 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 4 (then evaluate every integer through 30).
-    expect(result.totalPossibleSets).toBe(50_550)
-    expect(result.totalEvaluationConfigurations).toBe(13_624)
+    expect(result.totalPossibleSets).toBe(51_110)
+    expect(result.totalEvaluationConfigurations).toBe(13_764)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(17)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
@@ -15,6 +15,7 @@ describe("indication configuration counts", () => {
       move: 978,
       active: 9_774,
       active_advanced: 36,
+      special: 560,
       optimal: 162,
       auto: 0,
       signal: 23_328,
@@ -27,6 +28,18 @@ describe("indication configuration counts", () => {
         stopLossProfiles: 3,
         marketExitSituations: 3,
         protectionProfiles: 9,
+      },
+    })
+    expect(result.types.find((type) => type.type === "special")).toMatchObject({
+      evaluationConfigurations: 140,
+      params: {
+        ranges: 28,
+        enabledTimeframes: 4,
+        individualModes: 4,
+        combinedModes: 1,
+        exitVariants: 2,
+        maxPositionsPerDirection: 5,
+        maxVolumeRatio: 3,
       },
     })
   })
@@ -59,6 +72,7 @@ describe("indication configuration counts", () => {
         directionEnabled: false,
         moveEnabled: false,
         activeEnabled: false,
+        specialEnabled: false,
         optimalEnabled: false,
         autoEnabled: true,
         trendEnabled: false,

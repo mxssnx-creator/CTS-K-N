@@ -177,9 +177,9 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 96 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 98 })
 
-      expect(await client.get("_schema_version")).toBe("96")
+      expect(await client.get("_schema_version")).toBe("98")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -307,7 +307,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")
       expect(await client.hget("system:database:coordination:performance", "schema_version"))
-        .toBe("96")
+        .toBe("97")
       expect(await client.hget("system:database:coordination:performance", "active_processing_order"))
         .toBe("primary-active-trend")
       expect(await client.get(`${aliasConfigKey}:results:ref`)).toBe("cfg-a")
@@ -378,7 +378,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 96 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 98 })
 
       expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
       expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
@@ -480,7 +480,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 96,
+        version: 98,
       })
 
       expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.8")
@@ -546,6 +546,8 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       ]) {
         await client.hset(key, {
           id: "bingx-x01",
+          name: "BingX Base",
+          exchange: "bingx",
           force_symbols: serialized,
           symbols: serialized,
           active_symbols: serialized,
@@ -560,7 +562,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 96,
+        version: 98,
       })
 
       for (const key of [
@@ -569,8 +571,18 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         "settings:connection_settings:bingx-x01",
         "settings:connection:bingx-x01",
       ]) {
-        expect(await client.hget(key, "force_symbols")).toBe(serialized)
-        expect(await client.hget(key, "symbol_count")).toBe("3")
+        const forcedSymbols = await client.hget(key, "force_symbols")
+        expect({ key, forcedSymbols }).toEqual({
+          key,
+          forcedSymbols: expect.stringContaining("["),
+        })
+        expect(JSON.parse(String(forcedSymbols))).toEqual([
+          "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT",
+        ])
+        expect(await client.hget(key, "symbol_count")).toBe("4")
+        expect(JSON.parse(String(await client.hget(key, "mandatory_symbols")))).toEqual([
+          "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT",
+        ])
         expect(await client.hget(key, "symbol_order")).toBe("")
       }
     } finally {
@@ -617,7 +629,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 96,
+        version: 98,
       })
 
       expect(await client.hget("connection_settings:conn-v91", "strategyRealSetsSafetyCeiling")).toBe("0")

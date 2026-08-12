@@ -3,6 +3,8 @@
  * here prevents the UI, configuration route, and calculation route from
  * silently evaluating different symbol universes.
  */
+import { CANONICAL_FORCED_SYMBOLS } from "@/lib/forced-symbols"
+
 export const DIRECT_TRADE_MAX_SYMBOLS = 32
 
 // Direct-Trade capacity is intentionally defined once.  The dashboard,
@@ -16,6 +18,6 @@ export function clampDirectTradeSymbolCount(value: unknown, fallback = 8): numbe
   const candidate = Number.isFinite(parsed) ? parsed : fallback
   return Math.min(
     DIRECT_TRADE_MAX_SYMBOLS,
-    Math.max(1, Math.floor(candidate)),
+    Math.max(CANONICAL_FORCED_SYMBOLS.length, Math.floor(candidate)),
   )
 }

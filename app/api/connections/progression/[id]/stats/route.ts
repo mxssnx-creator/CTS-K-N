@@ -19,6 +19,8 @@ import {
 } from "@/lib/strategy-real-stats"
 import { getRuntimeTelemetry } from "@/lib/runtime-telemetry"
 import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
+import { buildConnectionStageOverview } from "@/lib/connection-stage-overview"
+import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -312,7 +314,7 @@ function aggregateOrdersBySymbol(
     return Math.round(x * m) / m
   }
 
-  const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"] as const
+  const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
 
   function aggregateIndicationSnapshot(
     hash: Record<string, string> | null | undefined,
@@ -322,10 +324,10 @@ function aggregateOrdersBySymbol(
     activeSets: Record<string, number>
   } {
     const counts: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const activeSets: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const fields = hash && typeof hash === "object" ? hash : {}
 
@@ -336,7 +338,7 @@ function aggregateOrdersBySymbol(
     // data does not show false zeroes until the next cron tick rewrites scoped
     // fields.
     const hasScopedField: Record<string, boolean> = {
-      direction: false, move: false, active: false, active_advanced: false, optimal: false, auto: false, signal: false, trend: false,
+      direction: false, move: false, active: false, active_advanced: false, special: false, optimal: false, auto: false, common: false, signal: false, trend: false,
     }
     for (const field of Object.keys(fields)) {
       const idx = field.lastIndexOf(":")
@@ -1147,6 +1149,12 @@ export async function GET(
     // exposure), giving the UI everything it needs to render a
     // "which Set does this live position belong to?" tooltip without
     // extra API round-trips.
+    const liveOrderRelations: Array<{
+      status?: string
+      orderId?: string
+      stopLossOrderId?: string
+      takeProfitOrderId?: string
+    }> = []
     const livePositionSetRelations: Array<{
       id: string
       symbol: string
@@ -1208,6 +1216,12 @@ export async function GET(
             // placed, unconfirmed and rejected rows remain order information and
             // must not inflate the current symbol/direction position snapshot.
             const status = String(pos.status || "").toLowerCase()
+            liveOrderRelations.push({
+              status,
+              orderId: pos.orderId ? String(pos.orderId) : undefined,
+              stopLossOrderId: pos.stopLossOrderId ? String(pos.stopLossOrderId) : undefined,
+              takeProfitOrderId: pos.takeProfitOrderId ? String(pos.takeProfitOrderId) : undefined,
+            })
             if (!isOpenLiveExposureStatus(status)) continue
 
             const sym = String(pos.symbol || "").trim().toUpperCase()
@@ -1507,7 +1521,7 @@ export async function GET(
     //   - its own cumulative counter `indications_{type}_count` on progression:{id}
     //   - its own per-cycle increment via hincrby in EngineManager.startIndicationProcessor
     // `auto` is a synthetic legacy alias retained for back-compat with old runs.
-    const indTypes = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"] as const
+    const indTypes = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
     const indCounts: Record<string, number> = {}
     await Promise.all(
       indTypes.map(async (type) => {
@@ -1541,7 +1555,7 @@ export async function GET(
     // and all activeCounts come back zero — exactly the right "nothing
     // alive" semantic for the UI.
     const activeIndByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const activeStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
@@ -1559,7 +1573,7 @@ export async function GET(
     // nothing qualified that cycle) are excluded so the number tracks
     // currently-progressing pools, not all-ever-touched pools.
     const activeSetsIndByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const activeSetsStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
@@ -2755,6 +2769,13 @@ export async function GET(
         validOpen: aggregateFreshRowField(strategyDetailMainHash, "row_valid_open", "sets_running_now"),
         overallOpen: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open", "sets_running_now"),
         overallToValidRatio: ratio(mainRowOverall, mainRowValid, false),
+        breakdown: {
+          standard: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_standard", "row_overall_open_standard"),
+          trailing: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_trailing", "row_overall_open_trailing"),
+          positionCount: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_position_count", "row_overall_open_position_count"),
+          block: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_block", "row_overall_open_block"),
+          dca: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_dca", "row_overall_open_dca"),
+        },
       },
       real: {
         valid: realRowValid,
@@ -3282,6 +3303,7 @@ export async function GET(
       positionsAverage:   2,
       source:             "default",
     }
+    let stageOverviewSettings: Record<string, unknown> = {}
     try {
       const [vcConn, vcApp] = await Promise.all([
         getConnection(connectionId).catch(() => null),
@@ -3303,12 +3325,14 @@ export async function GET(
           "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
           "leveragePercentage", "useMaximalLeverage",
           "is_live_trade", "is_preset_trade",
+          "baseProfitFactor", "blockOnly", "variantBlockOnly", "block_only",
         ] as const
         for (const f of CONN_FIELDS) {
           const v = (vcConn as Record<string, unknown>)[f]
           if (v !== undefined && v !== null && v !== "") vcSettings[f] = v
         }
       }
+      stageOverviewSettings = vcSettings
       const resolved = VolumeCalculator.resolveLiveEngine(vcConn, vcSettings)
       const posCostRaw = Number(
         vcSettings.exchangePositionCost ?? vcSettings.positionCost ?? vcSettings.exchange_position_cost ?? "0.1"
@@ -3325,6 +3349,40 @@ export async function GET(
                             : (vcSettings.volume_factor_live ? "app_settings" : "default"),
       }
     } catch { /* non-critical — keep defaults */ }
+
+    const configuredBasePf = normalizeMainTradeStagePfRatio(
+      "base",
+      stageOverviewSettings.baseProfitFactor ?? (connection as any)?.baseProfitFactor,
+    )
+    const blockOnlyRaw = stageOverviewSettings.blockOnly ??
+      stageOverviewSettings.variantBlockOnly ??
+      stageOverviewSettings.block_only
+    const connectionStageOverview = buildConnectionStageOverview({
+      base: {
+        totalOpen: strategyRows.base.totalOpen,
+        validOpen: strategyRows.base.validOpen,
+        pfMinimum: configuredBasePf,
+      },
+      main: {
+        validOpen: strategyRows.main.validOpen,
+        overallOpen: strategyRows.main.overallOpen,
+        breakdown: strategyRows.main.breakdown,
+        blockOnly: [true, 1, "1", "true", "yes", "on"].includes(
+          typeof blockOnlyRaw === "string" ? blockOnlyRaw.toLowerCase() : blockOnlyRaw as any,
+        ),
+      },
+      real: {
+        valid: strategyRows.real.valid,
+        active: strategyRows.real.active,
+        activeExactSets: strategyRows.real.activeExactRows,
+      },
+      live: {
+        bySymbol: liveBySymbol,
+        positions: liveOrderRelations,
+        ordersPlaced: n(progHash.live_orders_placed_count),
+      },
+      closedPositions: sharedClosedParsed,
+    })
 
     // ── Build response ──────────────────────────────────────────────────────
     return NextResponse.json({
@@ -3483,8 +3541,10 @@ export async function GET(
           move:           indCounts.move           || 0,
           active:         indCounts.active         || 0,
           activeAdvanced: indCounts.active_advanced || 0,
+          special:        indCounts.special        || 0,
           optimal:        indCounts.optimal        || 0,
           auto:           indCounts.auto           || 0,
+          common:         indCounts.common         || 0,
           signal:         indCounts.signal         || 0,
           trend:          indCounts.trend          || 0,
           total:          indTotal,
@@ -3540,8 +3600,10 @@ export async function GET(
           move:           activeIndByType.move             || 0,
           active:         activeIndByType.active           || 0,
           activeAdvanced: activeIndByType.active_advanced  || 0,
+          special:        activeIndByType.special          || 0,
           optimal:        activeIndByType.optimal          || 0,
           auto:           activeIndByType.auto             || 0,
+          common:         activeIndByType.common           || 0,
           signal:         activeIndByType.signal           || 0,
           trend:          activeIndByType.trend            || 0,
           total:          activeIndTotal,
@@ -3594,8 +3656,10 @@ export async function GET(
           move:           { sets: activeSetsIndByType.move            || 0, trackings: indCounts.move            || 0, positions: activeIndByType.move             || 0 },
           active:         { sets: activeSetsIndByType.active          || 0, trackings: indCounts.active          || 0, positions: activeIndByType.active           || 0 },
           activeAdvanced: { sets: activeSetsIndByType.active_advanced || 0, trackings: indCounts.active_advanced || 0, positions: activeIndByType.active_advanced  || 0 },
+          special:        { sets: activeSetsIndByType.special         || 0, trackings: indCounts.special         || 0, positions: activeIndByType.special          || 0 },
           optimal:        { sets: activeSetsIndByType.optimal         || 0, trackings: indCounts.optimal         || 0, positions: activeIndByType.optimal          || 0 },
           auto:           { sets: activeSetsIndByType.auto            || 0, trackings: indCounts.auto            || 0, positions: activeIndByType.auto             || 0 },
+          common:         { sets: activeSetsIndByType.common          || 0, trackings: indCounts.common          || 0, positions: activeIndByType.common           || 0 },
           signal:         { sets: activeSetsIndByType.signal          || 0, trackings: indCounts.signal          || 0, positions: activeIndByType.signal           || 0 },
           trend:          { sets: activeSetsIndByType.trend           || 0, trackings: indCounts.trend           || 0, positions: activeIndByType.trend            || 0 },
           total:          { sets: activeSetsIndTotal,                       trackings: indTotal,                       positions: activeIndTotal },
@@ -3678,6 +3742,7 @@ export async function GET(
       // legitimately exceed Main Valid because Pos-Count, Block and DCA
       // descendants are materialised after the parent filter.
       strategyRows,
+      connectionStageOverview,
 
       // Per-variant strategy breakdown (Default / Trailing / Block / DCA).
       // Written by StrategyCoordinator.createMainSets based on each entry's

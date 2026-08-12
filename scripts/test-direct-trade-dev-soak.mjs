@@ -20,7 +20,7 @@ const symbolCount = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_DEV_S
 const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_DEV_HISTORY_HOURS) || 48))
 const rounds = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_DEV_SOAK_ROUNDS) || 5))
 const intervalMs = Math.max(250, Math.floor(Number(process.env.DIRECT_TRADE_DEV_SOAK_INTERVAL_MS) || 60_000))
-const strategyTypes = ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"]
+const strategyTypes = ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"]
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -45,7 +45,7 @@ const calculation = await request("/api/trade-engine/direct-trade/calculate", {
   body: JSON.stringify({
     symbolCount,
     historyHours,
-    timeframes: ["1m", "10m", "15m"],
+    timeframes: ["5m", "15m", "30m"],
     strategyTypes,
     entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
     exitTactics: ["bracket", "momentum_reversal", "relative", "time"],

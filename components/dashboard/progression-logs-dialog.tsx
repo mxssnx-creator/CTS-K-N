@@ -53,7 +53,7 @@ interface StatsShape {
     avgCycleTimeMs: number
   }
   breakdown: {
-    indications: { direction: number; move: number; active: number; activeAdvanced?: number; active_advanced?: number; optimal: number; auto: number; signal?: number; trend?: number; total: number }
+    indications: { direction: number; move: number; active: number; activeAdvanced?: number; active_advanced?: number; special?: number; optimal: number; auto: number; common?: number; signal?: number; trend?: number; total: number }
     strategies: { base: number; main: number; real: number; live: number; total: number; baseEvaluated: number; mainEvaluated: number; realEvaluated: number }
   }
   // ── Active-now snapshot ────────────────────────────────────────
@@ -66,7 +66,7 @@ interface StatsShape {
   //      rollup; used as a fallback so older API revs still surface
   //      a non-zero "alive now" number.
   activeCounts?: {
-    indications?: { direction?: number; move?: number; active?: number; optimal?: number; signal?: number; trend?: number; total?: number }
+    indications?: { direction?: number; move?: number; active?: number; special?: number; optimal?: number; common?: number; signal?: number; trend?: number; total?: number }
     strategies?:  { base?: number; main?: number; real?: number; total?: number }
   }
   activeProgressing?: {

@@ -62,6 +62,7 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "dcaTakeProfitMode",
   "dcaBreakevenProfitPct",
   "dcaCooldownSeconds",
+  "dcaMaxPositionVolumeRatio",
   "minimal_step_count",
   "minimalStepCount",
   "minStep",

@@ -1,4 +1,5 @@
 import { POSITION_COST_PERCENT_DEFAULT } from "./position-cost"
+import { normalizeTradeDirection } from "./trade-direction"
 
 export const POSITION_COST_PCT_DEFAULT = POSITION_COST_PERCENT_DEFAULT
 
@@ -29,9 +30,11 @@ export function calculatePriceMovePct(
   const entry = finiteNumber(entryPrice)
   const exit = finiteNumber(exitPrice)
   if (entry <= 0 || exit <= 0) return 0
+  const normalizedDirection = normalizeTradeDirection(direction)
+  if (!normalizedDirection) return Number.NaN
 
   const rawMovePct = ((exit - entry) / entry) * 100
-  return String(direction).toLowerCase() === "short" ? -rawMovePct : rawMovePct
+  return normalizedDirection === "short" ? -rawMovePct : rawMovePct
 }
 
 export function calculateSignedResultR(
@@ -48,24 +51,32 @@ export function calculateSignedResultR(
   return (calculatePriceMovePct(entryPrice, exitPrice, direction) - costPct) / costPct
 }
 
-function resultToSignedR(result: unknown): number {
-  if (typeof result === "number") return finiteNumber(result)
-  if (!result || typeof result !== "object") return 0
+function resultToSignedR(result: unknown): number | null {
+  if (typeof result === "number") return Number.isFinite(result) ? result : null
+  if (!result || typeof result !== "object") return null
 
   const record = result as Record<string, unknown>
   const direct = record.signedResultR ?? record.avgSignedR ?? record.costNormalizedReturn ?? record.netR
-  if (direct !== undefined) return finiteNumber(direct)
+  if (direct !== undefined) {
+    const numeric = Number(direct)
+    return Number.isFinite(numeric) ? numeric : null
+  }
+
+  const direction = normalizeTradeDirection(record.direction, record.side)
+  if (!direction) return null
 
   return calculateSignedResultR(
     finiteNumber(record.entryPrice ?? record.entry_price),
     finiteNumber(record.exitPrice ?? record.exit_price ?? record.currentPrice ?? record.current_price),
-    String(record.direction ?? record.side ?? "long"),
+    direction,
     finiteNumber(record.positionCostPct ?? record.position_cost_pct ?? record.positionCost ?? record.position_cost, POSITION_COST_PCT_DEFAULT),
   )
 }
 
 export function aggregateCostNormalizedResults(results: unknown[]): CostNormalizedAggregate {
-  const signedResults = results.map(resultToSignedR).filter(Number.isFinite)
+  const signedResults = results
+    .map(resultToSignedR)
+    .filter((value): value is number => value !== null && Number.isFinite(value))
   const count = signedResults.length
   const positives = signedResults.filter((value) => value > 0)
   const negatives = signedResults.filter((value) => value < 0)

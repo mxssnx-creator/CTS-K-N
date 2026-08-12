@@ -74,7 +74,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
         api_passphrase: connection.api_passphrase || "",
         margin_type: connection.margin_type || "cross",
         position_mode: connection.position_mode || "hedge",
-        is_testnet: connection.is_testnet || false,
+        is_testnet: connection.id === "bingx-x02" || connection.is_testnet === true || connection.is_testnet === "1" || connection.is_testnet === "true",
         volume_factor: MIN_VOLUME_FACTOR,
       })
       setActiveTab("basic")
@@ -395,7 +395,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                 <AlertCircle className="h-4 w-4 shrink-0 text-amber-900 mt-0.5" />
                 <div className="text-sm text-amber-900">
                   <p className="font-semibold mb-1">Secure Your Credentials</p>
-                  <p className="text-xs">Your API credentials are encrypted and never shared. Never paste credentials in untrusted environments.</p>
+                  <p className="text-xs">Stored credentials are masked and are never returned to this dialog. Never paste credentials in untrusted environments.</p>
                 </div>
               </div>
 

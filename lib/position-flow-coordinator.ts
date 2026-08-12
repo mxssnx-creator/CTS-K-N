@@ -19,12 +19,15 @@ import {
   getCanonicalConnectionSettingsOverlay,
   overlayNonEmpty,
 } from "@/lib/connection-settings-overlay"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 export function calculatePositionProtectionPrices(position: any): { takeprofit: number; stoploss: number } {
   const entryPrice = Number(position.entry_price) || 0
   const takeprofitRatio = Math.max(0, Number(position.takeprofit_factor) || 1) / 100
   const stoplossRatio = Math.max(0, Number(position.stoploss_ratio) || 1) / 100
-  const isShort = String(position.direction || position.side || "long").toLowerCase() === "short"
+  const direction = resolveConsistentTradeDirection(position.direction, position.side)
+  if (!direction) throw new TypeError("Position protection requires one valid, consistent direction")
+  const isShort = direction === "short"
   return {
     takeprofit: entryPrice * (isShort ? 1 - takeprofitRatio : 1 + takeprofitRatio),
     stoploss: entryPrice * (isShort ? 1 + stoplossRatio : 1 - stoplossRatio),
@@ -150,11 +153,17 @@ export class PositionFlowCoordinator {
         return
       }
 
-      const profitLoss = this.calculateProfitLoss(position)
-      const isWin = position.direction === "long"
+      const direction = resolveConsistentTradeDirection(position.direction, position.side)
+      if (!direction) {
+        console.error(`[v0] Refusing to close ${pseudoPositionId}: missing or conflicting direction`)
+        return
+      }
+
+      const profitLoss = this.calculateProfitLoss(position, direction)
+      const isWin = direction === "long"
         ? position.current_price >= position.entry_price * (1 + (position.takeprofit_factor || 1) / 100)
         : position.current_price <= position.entry_price * (1 - (position.takeprofit_factor || 1) / 100)
-      const drawdown = this.calculateDrawdown(position)
+      const drawdown = this.calculateDrawdown(position, direction)
 
       if (position.position_level === "base" && position.base_position_id) {
         await this.basePseudoManager.updatePerformance(position.base_position_id, profitLoss, isWin, drawdown)
@@ -239,6 +248,8 @@ export class PositionFlowCoordinator {
       const client = getRedisClient()
       await this.withRealPseudoAdmission(mainPosition.id, async () => {
         const realId = `rp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const direction = resolveConsistentTradeDirection(mainPosition.direction, mainPosition.side)
+        if (!direction) throw new TypeError("Main position has no valid, consistent direction")
         const protection = calculatePositionProtectionPrices(mainPosition)
         const realPseudo = {
           id: realId,
@@ -246,7 +257,7 @@ export class PositionFlowCoordinator {
           main_config_id: mainPosition.id,
           base_config_id: mainPosition.base_position_id,
           symbol: mainPosition.symbol,
-          side: mainPosition.direction,
+          side: direction,
           entry_price: mainPosition.entry_price,
           quantity: mainPosition.quantity || 1,
           takeprofit: protection.takeprofit,
@@ -316,14 +327,14 @@ export class PositionFlowCoordinator {
     }
   }
 
-  private calculateProfitLoss(position: any): number {
+  private calculateProfitLoss(position: any, direction: "long" | "short"): number {
     const priceChange = (position.current_price - position.entry_price) / position.entry_price
-    const multiplier = position.direction === "long" ? 1 : -1
+    const multiplier = direction === "long" ? 1 : -1
     return priceChange * multiplier * 100
   }
 
-  private calculateDrawdown(position: any): number {
-    const profitLoss = this.calculateProfitLoss(position)
+  private calculateDrawdown(position: any, direction: "long" | "short"): number {
+    const profitLoss = this.calculateProfitLoss(position, direction)
     return profitLoss < 0 ? Math.abs(profitLoss) : 0
   }
 
@@ -435,6 +446,8 @@ export class PositionFlowCoordinator {
 
       await this.withRealPseudoAdmission(mainPosition.id, async () => {
         const realId = `rp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const direction = resolveConsistentTradeDirection(mainPosition.direction, mainPosition.side)
+        if (!direction) throw new TypeError("Main position has no valid, consistent direction")
         const protection = calculatePositionProtectionPrices(mainPosition)
         const realPseudo = {
           id: realId,
@@ -442,7 +455,7 @@ export class PositionFlowCoordinator {
           main_config_id: mainPosition.id,
           base_config_id: mainPosition.base_position_id,
           symbol: mainPosition.symbol,
-          side: mainPosition.direction,
+          side: direction,
           entry_price: mainPosition.entry_price,
           quantity: mainPosition.quantity || 1,
           takeprofit: protection.takeprofit,

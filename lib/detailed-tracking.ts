@@ -8,8 +8,8 @@
  *
  *   ┌──────────┐
  *   │ INDICATIONS (per type, with pseudo-position limit per Set)       │
- *   │   • direction / move / active / active_advanced / optimal / auto       │
- *   │   • trend / common / signal                                             │
+ *   │   • direction / move / active / active_advanced / special / optimal    │
+ *   │   • auto / trend / common / signal                                      │
  *   │   • each indication Set has its own positions (capped by limit)  │
  *   │   • windowed counts: Last 5 / Last 60 min / Active                │
  *   └─────────────┬─────────────────────────────────────────────────────┘
@@ -52,7 +52,7 @@ import {
   normalizeMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
 
-const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "common", "signal", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
 
 function aggregateWindowByType(hash: Record<string, string>): Record<string, number> {
   const totals: Record<string, number> = {}
@@ -83,6 +83,28 @@ function aggregateWindowByType(hash: Record<string, string>): Record<string, num
   return totals
 }
 
+function aggregateWindowByDirection(hash: Record<string, string>): {
+  byDirection: Record<"long" | "short", number>
+  byTypeAndDirection: Record<string, Record<"long" | "short", number>>
+} {
+  const byDirection = { long: 0, short: 0 }
+  const byTypeAndDirection: Record<string, Record<"long" | "short", number>> = {}
+  for (const type of INDICATION_TYPES) {
+    byTypeAndDirection[type] = { long: 0, short: 0 }
+  }
+  for (const [field, raw] of Object.entries(hash)) {
+    const parts = field.split(":")
+    if (parts.length !== 3) continue
+    const type = parts[1]
+    const direction = parts[2]
+    if (!(type in byTypeAndDirection) || (direction !== "long" && direction !== "short")) continue
+    const count = Number(raw) || 0
+    byTypeAndDirection[type][direction] += count
+    byDirection[direction] += count
+  }
+  return { byDirection, byTypeAndDirection }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────
@@ -92,15 +114,21 @@ export interface IndicationTracking {
   active: {
     total: number
     byType: Record<string, number>
+    byDirection: Record<"long" | "short", number>
+    byTypeAndDirection: Record<string, Record<"long" | "short", number>>
   }
   // Evaluated counts over time windows
   evaluatedLast5: {
     total: number
     byType: Record<string, number>
+    byDirection: Record<"long" | "short", number>
+    byTypeAndDirection: Record<string, Record<"long" | "short", number>>
   }
   evaluatedLast60min: {
     total: number
     byType: Record<string, number>
+    byDirection: Record<"long" | "short", number>
+    byTypeAndDirection: Record<string, Record<"long" | "short", number>>
   }
   // Pseudo-position limit per indication Set (settings-driven)
   pseudoPositionLimit: number
@@ -112,7 +140,20 @@ export interface IndicationTracking {
 export interface StrategyStageTracking {
   rows: {
     base: { total: number; valid: number; totalOpen: number; validOpen: number; validRatio: number }
-    main: { valid: number; overall: number; validOpen: number; overallOpen: number; overallToValidRatio: number }
+    main: {
+      valid: number
+      overall: number
+      validOpen: number
+      overallOpen: number
+      overallToValidRatio: number
+      breakdown: {
+        standard: number
+        trailing: number
+        positionCount: number
+        block: number
+        dca: number
+      }
+    }
     real: { valid: number; active: number; activeExactRows: number; activeRatio: number }
     live: { total: number; mirrored: number; active: number; mirroredRatio: number }
   }
@@ -308,6 +349,7 @@ export async function getIndicationTracking(
 
   const types = INDICATION_TYPES
   const byType = aggregateWindowByType(active)
+  const activeDirectional = aggregateWindowByDirection(active)
   const totalActive = Object.values(byType).reduce((s, v) => s + v, 0)
 
   // ── Windowed evaluated counts (Last 5 cycles / Last 60 min) ─────────────
@@ -319,6 +361,8 @@ export async function getIndicationTracking(
   const w60 = (setW60Hash || {}) as Record<string, string>
   const w5ByType = aggregateWindowByType(w5)
   const w60ByType = aggregateWindowByType(w60)
+  const w5Directional = aggregateWindowByDirection(w5)
+  const w60Directional = aggregateWindowByDirection(w60)
 
   const last5ByType: Record<string, number> = {}
   const last60ByType: Record<string, number> = {}
@@ -352,9 +396,9 @@ export async function getIndicationTracking(
   const totalIndicationSets = totalActive || last5Total || 0
 
   return {
-    active: { total: totalActive, byType },
-    evaluatedLast5: { total: last5Total, byType: last5ByType },
-    evaluatedLast60min: { total: last60Total, byType: last60ByType },
+    active: { total: totalActive, byType, ...activeDirectional },
+    evaluatedLast5: { total: last5Total, byType: last5ByType, ...w5Directional },
+    evaluatedLast60min: { total: last60Total, byType: last60ByType, ...w60Directional },
     pseudoPositionLimit,
     setsAtLimit,
     totalIndicationSets,
@@ -539,6 +583,13 @@ export async function getStrategyTracking(
       validOpen: sumFreshRow(main, "row_valid_open", "sets_running_now"),
       overallOpen: sumFreshRow(main, "row_overall_open", "sets_running_now"),
       overallToValidRatio: rowPercent(mainRowOverall, mainRowValid, false),
+      breakdown: {
+        standard: sumFreshRow(main, "row_overall_open_standard", "row_overall_open_standard"),
+        trailing: sumFreshRow(main, "row_overall_open_trailing", "row_overall_open_trailing"),
+        positionCount: sumFreshRow(main, "row_overall_open_position_count", "row_overall_open_position_count"),
+        block: sumFreshRow(main, "row_overall_open_block", "row_overall_open_block"),
+        dca: sumFreshRow(main, "row_overall_open_dca", "row_overall_open_dca"),
+      },
     },
     real: {
       valid: realRowValid,

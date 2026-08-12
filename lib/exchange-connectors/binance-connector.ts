@@ -8,7 +8,12 @@
 // alias declared in `next.config.mjs`, so the build succeeds and the
 // runtime guard ensures the empty stub is never called.
 import * as crypto from "crypto"
-import { BaseExchangeConnector, type ExchangeConnectorResult, type ExchangeCredentials } from "./base-connector"
+import {
+  BaseExchangeConnector,
+  type ExchangeConnectorResult,
+  type ExchangeCredentials,
+  type PlaceOrderOptions,
+} from "./base-connector"
 
 export class BinanceConnector extends BaseExchangeConnector {
   constructor(credentials: ExchangeCredentials, exchange: string = "binance") {
@@ -161,7 +166,8 @@ export class BinanceConnector extends BaseExchangeConnector {
     side: "buy" | "sell",
     quantity: number,
     price?: number,
-    orderType: "limit" | "market" = "limit"
+    orderType: "limit" | "market" = "limit",
+    options: PlaceOrderOptions = {},
   ): Promise<{ success: boolean; orderId?: string; error?: string }> {
     try {
       this.log(`Placing ${orderType} ${side} order: ${quantity} ${symbol}`)
@@ -176,6 +182,19 @@ export class BinanceConnector extends BaseExchangeConnector {
         type: orderType === "market" ? "MARKET" : "LIMIT",
         quantity: String(quantity),
         timestamp,
+      }
+
+      const clientOrderId = String(options.clientOrderId || "").replace(/[^.A-Z_a-z0-9-]/g, "-").slice(0, 36)
+      if (clientOrderId) params.newClientOrderId = clientOrderId
+      if (apiType === "spot" && options.reduceOnly === true) {
+        throw new Error("Binance spot orders do not support reduce-only position closes")
+      }
+      if (apiType !== "spot") {
+        if (options.hedgeMode === true) {
+          params.positionSide = options.positionSide || (side === "buy" ? "LONG" : "SHORT")
+        } else if (options.reduceOnly === true) {
+          params.reduceOnly = "true"
+        }
       }
 
       if (price && orderType === "limit") {
@@ -200,7 +219,10 @@ export class BinanceConnector extends BaseExchangeConnector {
 
       const data = await response.json()
 
-      if (!response.ok || data.code !== 0) {
+      // Binance success payloads carry `orderId` and omit `code`; only error
+      // payloads include the negative code. Treating `undefined !== 0` as an
+      // error rejected every successfully accepted live order.
+      if (!response.ok || (data.code != null && Number(data.code) !== 0)) {
         throw new Error(`Binance API error: ${data.msg || "Unknown error"}`)
       }
 

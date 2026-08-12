@@ -13,17 +13,33 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
-import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import {
+  concurrencyFromEnv,
+  createAdaptiveConcurrencyLimiter,
+  mapWithConcurrency,
+} from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 import {
   clearHistoricAggregateMarkers,
   clearHistoricListCompletionMarkers,
   incrementHistoricAggregateOnce,
+  incrementHistoricAggregatesOnce,
 } from "@/lib/redis-idempotent-list"
-import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
+import {
+  getRuntimeCapabilityConcurrency,
+  getRuntimeConcurrencyProfile,
+} from "@/lib/runtime-concurrency-profile"
+
+type HistoricCalculationRunner = <T>(task: () => Promise<T>) => Promise<T>
+
+interface HistoricIndicationWindowSeries {
+  directions: Int8Array
+  magnitudes: Float64Array
+}
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -35,8 +51,8 @@ async function yieldToEventLoop(): Promise<void> {
 // This is deliberately an environment setting rather than a strategy value:
 // changing it affects scheduling only, never evaluation results.
 const HISTORIC_CALC_YIELD_EVERY = Math.max(
-  16,
-  Math.min(4096, Number.parseInt(process.env.PREHISTORIC_CALC_YIELD_EVERY || "128", 10) || 128),
+  64,
+  Math.min(8192, Number.parseInt(process.env.PREHISTORIC_CALC_YIELD_EVERY || "1024", 10) || 1024),
 )
 
 function groupConfigsByType<T extends { type?: string }>(configs: T[]): Array<[string, T[]]> {
@@ -299,6 +315,18 @@ export class ConfigSetProcessor {
       ),
       32,
     )
+    // Indication and strategy calculations are launched as independent async
+    // branches for each symbol. One shared limiter keeps their combined CPU
+    // use inside the current host capability instead of allowing each nested
+    // pool to consume the full budget independently.
+    const calculationLimiter = createAdaptiveConcurrencyLimiter(
+      CONFIG_CONCURRENCY,
+      () => Math.min(
+        CONFIG_CONCURRENCY,
+        getRuntimeCapabilityConcurrency("cpu", Number.POSITIVE_INFINITY),
+      ),
+    )
+    const runCalculation: HistoricCalculationRunner = (task) => calculationLimiter.run(task)
 
     const assertRunActive = () => {
       if (options.shouldContinue && !options.shouldContinue()) {
@@ -663,6 +691,7 @@ export class ConfigSetProcessor {
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
                 historicSeries,
                 historicGeneration,
+                runCalculation,
               )
             : Promise.resolve(0),
           combinedCandles.length > 0
@@ -677,6 +706,7 @@ export class ConfigSetProcessor {
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
                 historicSeries,
                 historicGeneration,
+                runCalculation,
               )
             : Promise.resolve(0),
         ])
@@ -824,7 +854,13 @@ export class ConfigSetProcessor {
 
     // Ordered cursor-based pool: no O(n) queue.shift() churn and no unbounded
     // Promise fan-out. Per-symbol errors remain isolated inside processOneSymbol.
-    await mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, processOneSymbol)
+    await mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, processOneSymbol, {
+      yieldEvery: 1,
+      getConcurrency: () => Math.min(
+        SYMBOL_CONCURRENCY,
+        getRuntimeCapabilityConcurrency("mixed", symbols.length),
+      ),
+    })
     await assertCurrentSelection()
 
     const duration = Date.now() - startTime
@@ -1167,6 +1203,7 @@ export class ConfigSetProcessor {
     dedupeScope = "",
     historicSeries?: HistoricPriceSeries,
     historicGeneration = "",
+    runCalculation: HistoricCalculationRunner = (task) => task(),
   ): Promise<number> {
     if (calculationGroups.length === 0) return 0
 
@@ -1174,6 +1211,11 @@ export class ConfigSetProcessor {
     const aggregateKey = historicGeneration
       ? historicAggregateKey(this.connectionId, "indications", historicGeneration)
       : ""
+    // 729 exact calculation variants currently share only 81 window
+    // geometries (steps × last-part split). Cache those immutable profiles
+    // for this symbol/run; factor-specific signal materialization remains
+    // independent and exact.
+    const windowSeriesCache = new Map<string, Promise<HistoricIndicationWindowSeries | null>>()
     const perCalculationResults = await mapWithConcurrency(
       calculationGroups,
       concurrency,
@@ -1183,12 +1225,13 @@ export class ConfigSetProcessor {
           await yieldToEventLoop()
           assertRunActive()
           const referenceConfig = calculationConfigs[0]
-          const results = await this.calculateIndicationResults(
+          const results = await runCalculation(() => this.calculateIndicationResults(
             symbol,
             candles,
             referenceConfig,
             historicSeries,
-          )
+            windowSeriesCache,
+          ))
           if (results.length === 0) return 0
           let buyCount = 0
           let sellCount = 0
@@ -1197,55 +1240,48 @@ export class ConfigSetProcessor {
             else if (result.signal === "sell") sellCount++
           }
           const neutralCount = results.length - buyCount - sellCount
-          const persistedCounts = await mapWithConcurrency(
-            calculationConfigs,
-            persistenceConcurrency,
-            async (config) => {
-              assertRunActive()
-              let detailRowsAccepted = results.length
-              // Every alias resolves to the deterministic group's reference
-              // LIST. Persist the immutable rows once; per-config aggregate
-              // markers below still make all identities independently exact.
-              if (config.id === referenceConfig.id) {
-                if (typeof (this.indicationManager as any).addResults === "function") {
-                  const added = await (this.indicationManager as any).addResults(
-                    config.id,
-                    results,
-                    dedupeScope,
-                  )
-                  detailRowsAccepted = Number.isFinite(Number(added))
-                    ? Number(added)
-                    : results.length
-                } else {
-                  await mapWithConcurrency(
-                    results,
-                    Math.max(1, Math.min(16, persistenceConcurrency)),
-                    (result) => this.indicationManager.addResult(config.id, result),
-                    { yieldEvery: 16 },
-                  )
-                }
-              }
+          assertRunActive()
+          let detailRowsAccepted = results.length
+          // Every alias resolves to the deterministic group's reference LIST,
+          // so immutable detail rows are persisted only once.
+          if (typeof (this.indicationManager as any).addResults === "function") {
+            const added = await (this.indicationManager as any).addResults(
+              referenceConfig.id,
+              results,
+              dedupeScope,
+            )
+            detailRowsAccepted = Number.isFinite(Number(added)) ? Number(added) : results.length
+          } else {
+            await mapWithConcurrency(
+              results,
+              Math.max(1, Math.min(16, persistenceConcurrency)),
+              (result) => this.indicationManager.addResult(referenceConfig.id, result),
+              { yieldEvery: 16 },
+            )
+          }
 
-              if (!historicGeneration) return detailRowsAccepted
-              const aggregateAccepted = await incrementHistoricAggregateOnce(
-                client as any,
-                historicAggregateMarkerKey(this.connectionId, "indication", config.id, dedupeScope),
-                aggregateKey,
-                [
-                  { field: "result_count", value: results.length },
-                  { field: "buy_count", value: buyCount },
-                  { field: "sell_count", value: sellCount },
-                  { field: "neutral_count", value: neutralCount },
-                ],
-                7 * 24 * 60 * 60,
-              )
-              // The complete aggregate, not bounded detail retention, is the
-              // authoritative processed-result count for every config.
-              return aggregateAccepted ? results.length : 0
-            },
-            { yieldEvery: 1 },
+          if (!historicGeneration) return detailRowsAccepted
+          // One atomic script replaces one awaited EVAL per alias. Config
+          // identities remain separate Set members and retry-safe, while the
+          // aggregate receives the exact accepted-alias multiplier.
+          const acceptedAliases = await incrementHistoricAggregatesOnce(
+            client as any,
+            calculationConfigs.map((config) => historicAggregateMarkerKey(
+              this.connectionId,
+              "indication",
+              config.id,
+              dedupeScope,
+            )),
+            aggregateKey,
+            [
+              { field: "result_count", value: results.length },
+              { field: "buy_count", value: buyCount },
+              { field: "sell_count", value: sellCount },
+              { field: "neutral_count", value: neutralCount },
+            ],
+            7 * 24 * 60 * 60,
           )
-          return persistedCounts.reduce((sum, count) => sum + count, 0)
+          return acceptedAliases * results.length
         } catch (error) {
           if (error instanceof PrehistoricProcessingCancelledError) throw error
           console.error(
@@ -1254,6 +1290,13 @@ export class ConfigSetProcessor {
           )
           return 0
         }
+      },
+      {
+        yieldEvery: 1,
+        getConcurrency: () => Math.min(
+          concurrency,
+          getRuntimeCapabilityConcurrency("cpu", calculationGroups.length),
+        ),
       },
     )
 
@@ -1269,6 +1312,7 @@ export class ConfigSetProcessor {
     candles: any[],
     config: IndicationConfig,
     historicSeries?: HistoricPriceSeries,
+    windowSeriesCache?: Map<string, Promise<HistoricIndicationWindowSeries | null>>,
   ): Promise<IndicationResult[]> {
     const results: IndicationResult[] = []
     const { steps, drawdown_ratio, active_ratio, last_part_ratio } = config
@@ -1317,29 +1361,27 @@ export class ConfigSetProcessor {
     // lower clamp keeps a noise floor so a dead-flat series still gates out.
     const signalThreshold = Math.min(0.005, Math.max(0.0002, avgBarVol * 1.5))
 
-    for (let i = 0; i <= prices.length - steps; i++) {
+    const windowCount = prices.length - steps + 1
+    const windowCacheKey = `${steps}|${splitIndex}`
+    let windowSeriesPromise = windowSeriesCache?.get(windowCacheKey)
+    if (!windowSeriesPromise) {
+      windowSeriesPromise = this.calculateIndicationWindowSeries(series, steps, splitIndex)
+      windowSeriesCache?.set(windowCacheKey, windowSeriesPromise)
+    }
+    const windowSeries = await windowSeriesPromise
+    if (!windowSeries) return results
+
+    for (let i = 0; i < windowCount; i++) {
       if ((i + 1) % HISTORIC_CALC_YIELD_EVERY === 0) {
         await yieldToEventLoop()
       }
-      // Prefix sums preserve the complete sliding-window calculation while
-      // removing two slices and two reductions per config/window. This changes
-      // the historic matrix from O(configs × candles × steps) to
-      // O(configs × candles), which materially reduces event-loop pressure.
-      const firstEnd = i + splitIndex
-      const windowEnd = i + steps
-      const firstAvg = (series.prefixSums[firstEnd] - series.prefixSums[i]) / firstLength
-      const secondAvg = (series.prefixSums[windowEnd] - series.prefixSums[firstEnd]) / secondLength
-
-      const direction = secondAvg > firstAvg ? 1 : -1
-      const magnitude = Math.abs(secondAvg - firstAvg) / firstAvg
-
-      const adjustedMagnitude = magnitude * magnitudeFactor
+      const adjustedMagnitude = windowSeries.magnitudes[i] * magnitudeFactor
 
       let signal: "buy" | "sell" | "neutral" = "neutral"
       let value = 0
 
       if (adjustedMagnitude > signalThreshold) {
-        if (direction > 0) {
+        if (windowSeries.directions[i] > 0) {
           signal = "buy"
           value = adjustedMagnitude * 100
         } else {
@@ -1366,6 +1408,29 @@ export class ConfigSetProcessor {
     return results
   }
 
+  private async calculateIndicationWindowSeries(
+    series: HistoricPriceSeries,
+    steps: number,
+    splitIndex: number,
+  ): Promise<HistoricIndicationWindowSeries | null> {
+    const firstLength = splitIndex
+    const secondLength = steps - splitIndex
+    if (firstLength < 2 || secondLength < 2 || series.prices.length < steps) return null
+    const windowCount = series.prices.length - steps + 1
+    const directions = new Int8Array(windowCount)
+    const magnitudes = new Float64Array(windowCount)
+    for (let i = 0; i < windowCount; i++) {
+      if ((i + 1) % HISTORIC_CALC_YIELD_EVERY === 0) await yieldToEventLoop()
+      const firstEnd = i + splitIndex
+      const windowEnd = i + steps
+      const firstAvg = (series.prefixSums[firstEnd] - series.prefixSums[i]) / firstLength
+      const secondAvg = (series.prefixSums[windowEnd] - series.prefixSums[firstEnd]) / secondLength
+      directions[i] = secondAvg > firstAvg ? 1 : -1
+      magnitudes[i] = Math.abs(secondAvg - firstAvg) / firstAvg
+    }
+    return { directions, magnitudes }
+  }
+
   /**
    * Process candles through all strategy configs in parallel.
    * Positions generated per config are written as a single batched lpush.
@@ -1381,6 +1446,7 @@ export class ConfigSetProcessor {
     dedupeScope = "",
     historicSeries?: HistoricPriceSeries,
     historicGeneration = "",
+    runCalculation: HistoricCalculationRunner = (task) => task(),
   ): Promise<number> {
     if (configs.length === 0) return 0
 
@@ -1452,12 +1518,12 @@ export class ConfigSetProcessor {
               assertRunActive()
               await yieldToEventLoop()
               assertRunActive()
-              const positions = await this.calculateStrategyPositions(
+              const positions = await runCalculation(() => this.calculateStrategyPositions(
                 symbol,
                 candles,
                 calculationConfigs[0],
                 historicSeries,
-              )
+              ))
               if (positions.length === 0) return 0
               const persistedCounts = await mapWithConcurrency(
                 calculationConfigs,
@@ -1515,7 +1581,8 @@ export class ConfigSetProcessor {
                     try {
                       const pipeline = piClient.multi()
                       for (const p of acceptedClosed) {
-                        const direction = p.direction === "short" ? "short" : "long"
+                        const direction = normalizeTradeDirection(p.direction)
+                        if (!direction) continue
                         const indicationType = p.indication_type || config.type || "unknown"
                         const resultPct = Number(p.result) || 0
                     // Per-position drawdown TIME = how long the trade was held
@@ -1578,8 +1645,22 @@ export class ConfigSetProcessor {
               return 0
             }
           },
+          {
+            yieldEvery: 1,
+            getConcurrency: () => Math.min(
+              perTypeConcurrency,
+              getRuntimeCapabilityConcurrency("cpu", calculationGroups.size),
+            ),
+          },
         )
         return perCalculationCounts.reduce((sum, n) => sum + n, 0)
+      },
+      {
+        yieldEvery: 1,
+        getConcurrency: () => Math.min(
+          activeTypeConcurrency,
+          getRuntimeCapabilityConcurrency("mixed", configTypeGroups.length),
+        ),
       },
     )
 

@@ -8,15 +8,14 @@ import {
   getLivePositions,
   recalculateAndApplySLTP,
 } from "@/lib/trade-engine/stages/live-stage"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 export const revalidate = 0
 
-function positionDirection(position: any): "long" | "short" {
-  return String(position?.direction ?? position?.side ?? "long").toLowerCase().includes("short")
-    ? "short"
-    : "long"
+function positionDirection(position: any): "long" | "short" | null {
+  return resolveConsistentTradeDirection(position?.direction, position?.side)
 }
 
 function currentMark(position: any): number {
@@ -180,6 +179,12 @@ export async function PATCH(
       return NextResponse.json({ success: false, error: "Position mark price unavailable" }, { status: 409 })
     }
     const direction = positionDirection(position)
+    if (!direction) {
+      return NextResponse.json(
+        { success: false, error: "Position direction is missing or contradictory" },
+        { status: 409 },
+      )
+    }
     if (stopLoss.value != null) {
       const valid = direction === "long" ? stopLoss.value < mark : stopLoss.value > mark
       if (!valid) {

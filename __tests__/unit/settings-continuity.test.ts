@@ -75,10 +75,13 @@ describe("settings continuity", () => {
 
   test("global partial POST preserves unrelated settings in Redis and cache", async () => {
     jest.resetModules()
-    const setAppSettings = jest.fn().mockResolvedValue(undefined)
+    let persistedSettings = { keepMe: 17, changed: 1 } as Record<string, unknown>
+    const setAppSettings = jest.fn(async (value: Record<string, unknown>) => {
+      persistedSettings = value
+    })
     jest.doMock("@/lib/redis-db", () => ({
       initRedis: jest.fn().mockResolvedValue(undefined),
-      getAppSettings: jest.fn().mockResolvedValue({ keepMe: 17, changed: 1 }),
+      getAppSettings: jest.fn(async () => persistedSettings),
       setAppSettings,
       getAllConnections: jest.fn().mockResolvedValue([]),
     }))
@@ -94,10 +97,16 @@ describe("settings continuity", () => {
     }))
 
     expect(response.status).toBe(200)
-    expect(setAppSettings).toHaveBeenCalledWith({ keepMe: 17, changed: 2 })
+    const expected = {
+      keepMe: 17,
+      changed: 2,
+      forcedSymbols: ["BTC", "SOL", "BCH", "XRP"],
+      forced_symbols: ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"],
+    }
+    expect(setAppSettings).toHaveBeenCalledWith(expected)
     await expect(response.json()).resolves.toEqual(expect.objectContaining({
       success: true,
-      settings: { keepMe: 17, changed: 2 },
+      settings: expected,
     }))
   })
 

@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server"
 import { getConnection, initRedis } from "@/lib/redis-db"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
+import {
+  CANONICAL_FORCED_SYMBOLS,
+  withCanonicalForcedSymbols,
+} from "@/lib/forced-symbols"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -38,7 +42,10 @@ export async function GET(
     const rawOrder = searchParams.get("order") || "volume"
     const rawCount = searchParams.get("count") || "50"
     const sort  = normaliseSort(rawOrder)
-    const count = Math.max(1, Math.min(50, Number.parseInt(rawCount, 10) || 50))
+    const count = Math.max(
+      CANONICAL_FORCED_SYMBOLS.length,
+      Math.min(50, Number.parseInt(rawCount, 10) || 50),
+    )
 
     // Resolve connection from Redis to learn the exchange name.
     const connection = await getConnection(id).catch(() => null)
@@ -56,14 +63,22 @@ export async function GET(
     try {
       const { symbols: tickers } = await fetchTopSymbols(exchange, count, sort)
       if (tickers && tickers.length > 0) {
+        const symbols = withCanonicalForcedSymbols(tickers.map((ticker) => ticker.symbol), count)
+        const tickerBySymbol = new Map(tickers.map((ticker) => [String(ticker.symbol).toUpperCase(), ticker]))
+        const completeTickers = symbols.map((symbol) => tickerBySymbol.get(symbol) || {
+          symbol,
+          priceChangePercent: 0,
+          volume: 0,
+          mandatory: true,
+        })
         return NextResponse.json({
-          symbols:  tickers.map((t) => t.symbol),
+          symbols,
           // Full ticker objects (includes atr1h for volatility_1h sort)
-          tickers,
+          tickers: completeTickers,
           source:   sort === "volatility_1h" ? "live_1h_atr" : "live",
           sort,
           exchange,
-          count:    tickers.length,
+          count:    symbols.length,
         })
       }
     } catch (fetchErr) {
@@ -71,14 +86,15 @@ export async function GET(
     }
 
     // Hardcoded safe-majors fallback — always available offline
+    const fallbackSymbols = withCanonicalForcedSymbols(FALLBACK_SYMBOLS, count)
     return NextResponse.json({
-      symbols:  FALLBACK_SYMBOLS.slice(0, count),
-      tickers:  FALLBACK_SYMBOLS.slice(0, count).map((s, i) => ({ symbol: s, priceChangePercent: 0.5, volume: 1000 - i * 10 })),
+      symbols: fallbackSymbols,
+      tickers: fallbackSymbols.map((s, i) => ({ symbol: s, priceChangePercent: 0.5, volume: 1000 - i * 10 })),
       source:   "fallback",
       sort,
       exchange,
       warning: "Live symbol ranking failed; returned offline fallback symbols for manual review.",
-      count:    Math.min(count, FALLBACK_SYMBOLS.length),
+      count: fallbackSymbols.length,
     })
   } catch (error) {
     console.error("[v0] [symbols] Unexpected error:", error)

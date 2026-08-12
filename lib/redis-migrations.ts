@@ -37,6 +37,13 @@ import {
 } from "./active-indication-profile"
 import { DEFAULT_BASE_MIN_STEP } from "./constants"
 import { BLOCK_COUNT_MAX } from "./block-count-state"
+import {
+  canonicalForcedBaseSymbols,
+  canonicalForcedSymbols,
+  withCanonicalForcedSymbols,
+} from "./forced-symbols"
+import { BINGX_PROD_VST_ORIGIN, configuredBingXEnvironment } from "./bingx-environment"
+import { resolveRedisRuntimeRoot } from "./redis-runtime-root"
 
 /**
  * Reset the in-process migration guards.
@@ -62,7 +69,7 @@ import { BLOCK_COUNT_MAX } from "./block-count-state"
  * coalesce onto a single execution — the true single-flight the comment in
  * runMigrations() always intended.
  */
-const globalMigrationGuard = globalThis as unknown as {
+const globalMigrationGuard = resolveRedisRuntimeRoot() as unknown as {
   __migration_run_promise?: Promise<MigrationRunResult> | null
   __coverage_repair_done?: boolean
   __coverage_repair_fingerprint?: string | null
@@ -390,7 +397,7 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "10")
       await client.hset("settings:system", {
         trade_engine_enabled: "true", auto_migration: "true",
-        fallback_mode: "memory", theme: "dark", timezone: "UTC", language: "en",
+        fallback_mode: "memory", theme: "blackwhiteblue", timezone: "UTC", language: "en",
       })
       await client.hset("settings:trading", {
         default_leverage: "1", max_leverage: "20",
@@ -6657,6 +6664,164 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "95")
     },
   },
+  {
+    version: 97,
+    name: "097-enforce-canonical-mandatory-symbol-basket",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const mandatoryPairs = canonicalForcedSymbols()
+      const mandatoryBases = canonicalForcedBaseSymbols()
+      const mandatoryJson = JSON.stringify(mandatoryPairs)
+
+      // Global settings expose an immutable, exact forced-symbol setting.
+      // Connection active baskets remain independently ranked and may contain
+      // extras; those existing baskets are upgraded in place below.
+      for (const key of [
+        "app_settings",
+        "all_settings",
+        "settings:app_settings",
+        "settings:all_settings",
+        "settings:system",
+      ]) {
+        await client.hset(key, {
+          forcedSymbols: JSON.stringify(mandatoryBases),
+          forced_symbols: mandatoryJson,
+          mandatory_symbols: mandatoryJson,
+          updated_at: now,
+        }).catch(() => 0)
+      }
+
+      const parseSymbols = (value: unknown): string[] => {
+        if (Array.isArray(value)) return value.map(String)
+        const raw = String(value ?? "").trim()
+        if (!raw) return []
+        try {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) return parsed.map(String)
+        } catch { /* legacy delimiter form */ }
+        return raw.split(/[|,\s]+/).map((symbol) => symbol.trim()).filter(Boolean)
+      }
+
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let upgradedBaskets = 0
+      let dynamicBasketsPreserved = 0
+      for (const connection of connections) {
+        const connectionId = String(connection?.id || "").trim()
+        if (!connectionId) continue
+        const keys = [
+          `connection:${connectionId}`,
+          `settings:connection:${connectionId}`,
+          `connection_settings:${connectionId}`,
+          `settings:connection_settings:${connectionId}`,
+          `trade_engine_state:${connectionId}`,
+          `settings:trade_engine_state:${connectionId}`,
+        ]
+        for (const key of keys) {
+          const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+          if (Object.keys(existing).length === 0) continue
+          const existingSymbols = [
+            existing.selected_symbols,
+            existing.force_symbols,
+            existing.active_symbols,
+            existing.symbols,
+          ].map(parseSymbols).find((symbols) => symbols.length > 0) || []
+          const requestedCount = Number(existing.symbol_count)
+          const patch: Record<string, string> = {
+            mandatory_symbols: mandatoryJson,
+            symbol_count: String(Math.max(
+              mandatoryPairs.length,
+              Number.isFinite(requestedCount) ? Math.floor(requestedCount) : existingSymbols.length,
+            )),
+            updated_at: now,
+          }
+          if (existingSymbols.length > 0) {
+            const upgraded = withCanonicalForcedSymbols(existingSymbols)
+            const upgradedJson = JSON.stringify(upgraded)
+            Object.assign(patch, {
+              symbols: upgradedJson,
+              active_symbols: upgradedJson,
+              force_symbols: upgradedJson,
+              selected_symbols: upgradedJson,
+              symbol_count: String(upgraded.length),
+              config_set_symbols_total: String(upgraded.length),
+            })
+            upgradedBaskets++
+          } else {
+            // No active/forced list means exchange ranking owns the dynamic
+            // selection. Preserve that mode; runtime overlays the quartet.
+            dynamicBasketsPreserved++
+          }
+          await client.hset(key, patch)
+
+          // Some connection rows also carry a JSON settings envelope.
+          if (existing.connection_settings) {
+            try {
+              const envelope = JSON.parse(existing.connection_settings) as Record<string, unknown>
+              const envelopeSymbols = [
+                envelope.selected_symbols,
+                envelope.force_symbols,
+                envelope.active_symbols,
+                envelope.symbols,
+              ].map(parseSymbols).find((symbols) => symbols.length > 0) || []
+              envelope.mandatory_symbols = mandatoryPairs
+              if (envelopeSymbols.length > 0) {
+                const upgraded = withCanonicalForcedSymbols(envelopeSymbols)
+                envelope.symbols = upgraded
+                envelope.active_symbols = upgraded
+                envelope.force_symbols = upgraded
+                envelope.selected_symbols = upgraded
+                envelope.symbol_count = upgraded.length
+              } else {
+                envelope.symbol_count = Math.max(
+                  mandatoryPairs.length,
+                  Number(envelope.symbol_count) || mandatoryPairs.length,
+                )
+              }
+              await client.hset(key, "connection_settings", JSON.stringify(envelope))
+            } catch { /* malformed legacy envelope remains recoverable */ }
+          }
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        mandatory_symbols: mandatoryJson,
+        mandatory_symbol_policy: "overlay-preserve-dynamic-v1",
+        mandatory_symbol_baskets_upgraded: String(upgradedBaskets),
+        dynamic_symbol_baskets_preserved: String(dynamicBasketsPreserved),
+        schema_version: "97",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // Mandatory symbols are intentionally retained when rolling back code;
+      // removing a currently traded market would be a destructive migration.
+      await client.set("_schema_version", "96")
+    },
+  },
+  {
+    version: 98,
+    name: "098-predefine-bingx-x02-prod-vst",
+    up: async (client: any) => {
+      // X02 is the canonical authenticated BingX demo connection. Reusing the
+      // idempotent base-connection repair keeps credentials server-side while
+      // enforcing the virtual-funds environment independently from X01.
+      await ensureBaseConnections(client)
+      await client.hset("system:database:coordination:bingx-vst", {
+        schema_version: "98",
+        connection_id: "bingx-x02",
+        environment: "prod-vst",
+        base_url: "https://open-api-vst.bingx.com",
+        funds: "virtual",
+        credential_scope: "BINGX_X02_API_KEY+BINGX_X02_API_SECRET",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // Retain X02 and its environment on rollback. Removing an authenticated
+      // trading connection (or changing it to real funds) would be destructive.
+      await client.set("_schema_version", "97")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {
@@ -6704,6 +6869,8 @@ const BASE_CONNECTION_CONFIG: Array<{
   exchange: string
   credentialId: BaseConnectionId
   autoActive: boolean
+  environment: "runtime" | "prod-vst"
+  predefined?: boolean
 }> = [
   // Spec ask: "assign Main Connections bybit and bingx ON Startup."
   // Bybit-X03 and BingX-X01 are the canonical primary live-trading
@@ -6713,16 +6880,17 @@ const BASE_CONNECTION_CONFIG: Array<{
   // dashboard toggle) is preserved by the existing `(existing?.is_*) || …`
   // fallback chain in `ensureBaseConnections` below — autoActive only
   // affects the initial-create defaults, never overwrites prior state.
-  { id: "bingx-x01", name: "BingX Base", exchange: "bingx", credentialId: "bingx-x01", autoActive: true },
+  { id: "bingx-x01", name: "BingX X01", exchange: "bingx", credentialId: "bingx-x01", autoActive: true, environment: "runtime" },
+  { id: "bingx-x02", name: "BingX X02 (Prod-VST Demo)", exchange: "bingx", credentialId: "bingx-x02", autoActive: true, environment: "prod-vst", predefined: true },
   // Bybit is once again a canonical primary: always inited + inserted into the
   // Active panel so it is visible from first boot. Its ENGINE does not run by
   // default in dev (see the dev one-engine guard in
   // TradeEngineCoordinator.startMissingEngines) — it stays engine-idle until the
   // operator explicitly enables it, which prevents two concurrent prehistoric
   // passes from OOM-killing the low-RAM dev VM. In production both engines run.
-  { id: "bybit-x03", name: "Bybit Base", exchange: "bybit", credentialId: "bybit-x03", autoActive: true },
-  { id: "pionex-x01", name: "Pionex Base", exchange: "pionex", credentialId: "pionex-x01", autoActive: false },
-  { id: "orangex-x01", name: "OrangeX Base", exchange: "orangex", credentialId: "orangex-x01", autoActive: false },
+  { id: "bybit-x03", name: "Bybit Base", exchange: "bybit", credentialId: "bybit-x03", autoActive: true, environment: "runtime" },
+  { id: "pionex-x01", name: "Pionex Base", exchange: "pionex", credentialId: "pionex-x01", autoActive: false, environment: "runtime" },
+  { id: "orangex-x01", name: "OrangeX Base", exchange: "orangex", credentialId: "orangex-x01", autoActive: false, environment: "runtime" },
 ]
 
 // Canonical 20-symbol test list used by migration 031, migration 035, and
@@ -6738,9 +6906,20 @@ const BASE_TEST_SYMBOLS = [
 async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: number; credentialsInjected: number }> {
   let createdOrUpdated = 0
   let credentialsInjected = 0
+  // Environment selection is explicit and fail-closed. When absent, new
+  // installs keep the historical mainnet default and existing operator state
+  // is preserved. When present, it is authoritative for BingX only.
+  const bingxEnvironment = configuredBingXEnvironment()
+  const bingxTestnetOverride = bingxEnvironment == null
+    ? null
+    : bingxEnvironment === "prod-vst" ? "1" : "0"
 
-  // Default symbol count is one; explicit environment/settings choices can scale it.
-  const DEFAULT_SYMBOL_COUNT = String(Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1))
+  // The CPU-aware cap may scale extras, but it can never exclude the four
+  // mandatory markets.
+  const DEFAULT_SYMBOL_COUNT = String(Math.max(
+    canonicalForcedSymbols().length,
+    parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? String(CANONICAL_DEFAULT_SYMBOL_COUNT), 10) || CANONICAL_DEFAULT_SYMBOL_COUNT,
+  ))
   const ensureBlockProfitFactorDefault = async (connectionId: string): Promise<void> => {
     for (const key of [
       `connection_settings:${connectionId}`,
@@ -6803,6 +6982,9 @@ async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: n
 
     const { apiKey, apiSecret } = getBaseConnectionCredentials(cfg.credentialId)
     const hasRealCredentials = apiKey.length > 10 && apiSecret.length > 10
+    const desiredBingxTestnet = cfg.environment === "prod-vst"
+      ? "1"
+      : cfg.exchange === "bingx" ? bingxTestnetOverride : null
 
     // ── OPERATOR-STATE PRESERVATION CONTRACT ──────────────────────────
     // Bug being fixed (operator report): "after removing main connections,
@@ -6855,10 +7037,17 @@ if (!hasExisting) {
          id: cfg.id,
          name: cfg.name,
          exchange: cfg.exchange,
-         is_predefined: "0",
+         is_predefined: cfg.predefined ? "1" : "0",
          is_inserted: "1",
-         // is_testnet=false = PRODUCTION MAINNET (real exchange orders)
-         is_testnet: "0",
+         // Prod-VST is an authenticated exchange execution environment backed
+         // by virtual funds; it must be selected explicitly at install/runtime.
+         is_testnet: cfg.exchange === "bingx" && desiredBingxTestnet !== null
+           ? desiredBingxTestnet
+           : "0",
+         ...(cfg.environment === "prod-vst" ? {
+           environment: "prod-vst",
+           base_url: BINGX_PROD_VST_ORIGIN,
+         } : {}),
          // AUTO-START DISABLED: never seed connections as dashboard-enabled.
         // `autoActive` now only controls insertion + symbol/live-trade seeding;
         // the operator must explicitly enable the connection via the dashboard.
@@ -7013,7 +7202,7 @@ if (!hasExisting) {
     //   1. Credentials (rotate from env when available).
     //   2. The connection-set membership (in case a manual SREM ever
     //      desyncs the index from the hash — defensive only).
-    //   3. is_testnet: forced to "0" (mainnet) when real credentials are present.
+    //   3. BingX environment: changed only when BINGX_ENVIRONMENT is explicit.
     const updates: Record<string, string> = {}
     let didChange = false
 
@@ -7027,11 +7216,36 @@ if (!hasExisting) {
         didChange = true
         credentialsInjected++
       }
-      // FORCE MAINNET when real credentials are available
-      if (existing.is_testnet === "1" || existing.is_testnet === "true" || existing.is_testnet === true) {
-        updates.is_testnet = "0"
+    }
+
+    // Credentials authenticate both BingX environments. Never infer mainnet
+    // from their presence: doing so previously turned a persisted demo/VST
+    // connection into a real-funds connection during the next migration run.
+    if (cfg.exchange === "bingx" && desiredBingxTestnet !== null) {
+      const currentlyTestnet = existing.is_testnet === "1"
+        || existing.is_testnet === "true"
+        || existing.is_testnet === true
+      const shouldBeTestnet = desiredBingxTestnet === "1"
+      if (currentlyTestnet !== shouldBeTestnet) {
+        updates.is_testnet = desiredBingxTestnet
+        updates.updated_at = now
         didChange = true
       }
+    }
+    if (cfg.predefined && existing.is_predefined !== "1") {
+      updates.is_predefined = "1"
+      updates.updated_at = now
+      didChange = true
+    }
+    if (cfg.environment === "prod-vst" && existing.environment !== "prod-vst") {
+      updates.environment = "prod-vst"
+      updates.updated_at = now
+      didChange = true
+    }
+    if (cfg.environment === "prod-vst" && existing.base_url !== BINGX_PROD_VST_ORIGIN) {
+      updates.base_url = BINGX_PROD_VST_ORIGIN
+      updates.updated_at = now
+      didChange = true
     }
 
     if (Object.keys(updates).length > 0) {
@@ -7073,15 +7287,13 @@ if (!hasExisting) {
   // but the BASE_CONNECTION_CONFIG loop above iterates 6 connections and
   // calls continue early so the code AFTER the loop runs once. Guard with
   // a process-level flag to be safe.
-  const _g = globalThis as Record<string, unknown>
+  const _g = resolveRedisRuntimeRoot() as unknown as Record<string, unknown>
   if (_g.__v0_devBootGuardDone) return { createdOrUpdated, credentialsInjected }
   _g.__v0_devBootGuardDone = true
   //
   // 1. ENFORCE SYMBOL COUNT on bingx-x01.
-  //    V0_DEV_SYMBOL_COUNT controls how many symbols to use (default 1).
-  //    When set to 1 we pin force_symbols=["BTCUSDT"] as the cheapest safe
-  //    fixture. When set to N>1 we write symbol_count=N and symbol_order=
-  //    volatility_1h so getSymbols() resolves the top-N dynamically.
+  //    V0_DEV_SYMBOL_COUNT controls total symbols, with a hard minimum of the
+  //    mandatory BTC/SOL/BCH/XRP basket. Higher values add dynamic extras.
   //
   //    Migration 057 / 055 may run before this guard and write their own
   //    symbol_count — this runs AFTER all migrations so it always wins.
@@ -7092,7 +7304,11 @@ if (!hasExisting) {
   //    dangling index members and expired dedup locks are safe to remove here.
   {
     const DEV_CONN  = "bingx-x01"
-    const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
+    const mandatorySymbols = canonicalForcedSymbols()
+    const devSymCount = Math.max(
+      mandatorySymbols.length,
+      parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? String(CANONICAL_DEFAULT_SYMBOL_COUNT), 10) || CANONICAL_DEFAULT_SYMBOL_COUNT,
+    )
     // All key namespaces that getSymbols() reads.
     const devHashes = [
       `connection:${DEV_CONN}`,
@@ -7123,18 +7339,17 @@ if (!hasExisting) {
       .find((values) => parseBootSymbols(values?.force_symbols).length > 0) || {}
     const existingForcedSymbols = parseBootSymbols(existingBootConfig.force_symbols)
     const existingSymbolOrder = String(existingBootConfig.symbol_order || "").trim().toLowerCase()
-    const pinnedSymbols = existingForcedSymbols.slice(0, devSymCount)
+    const pinnedSymbols = withCanonicalForcedSymbols(existingForcedSymbols, devSymCount)
     // A force_symbols basket is only operator-explicit when symbol_order is
     // empty. Older boot/migration code persisted default fixtures as a forced
     // basket while also declaring volatility_1h; preserving those stale values
     // bypasses dynamic ranking and can restart with the wrong symbols.
     const hasExplicitOperatorBasket =
       existingSymbolOrder === "" &&
-      existingForcedSymbols.length > 0 &&
-      existingForcedSymbols.length <= devSymCount
+      existingForcedSymbols.length > 0
 
     let devSymPayload: Record<string, string>
-    if (hasExplicitOperatorBasket && (pinnedSymbols.length >= devSymCount || devSymCount === 1)) {
+    if (hasExplicitOperatorBasket) {
       // Preserve an explicit operator/QuickStart basket across subsequent
       // initRedis calls and dev HMR module reloads, ONLY when the stored basket
       // already meets the requested symbol count. If the operator set
@@ -7148,6 +7363,7 @@ if (!hasExisting) {
         symbol_order:             "",   // disable dynamic fetch
         symbols:                  JSON.stringify(resolvedPinned),
         active_symbols:           JSON.stringify(resolvedPinned),
+        mandatory_symbols:        JSON.stringify(mandatorySymbols),
         config_set_symbols_total: String(resolvedPinned.length),
       }
     } else {
@@ -7159,6 +7375,7 @@ if (!hasExisting) {
         symbol_order:             "volatility_1h",
         symbols:                  "",                       // cleared — engine will repopulate
         active_symbols:           "",
+        mandatory_symbols:        JSON.stringify(mandatorySymbols),
         config_set_symbols_total: String(devSymCount),
       }
     }

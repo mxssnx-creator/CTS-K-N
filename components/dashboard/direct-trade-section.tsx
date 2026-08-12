@@ -22,6 +22,11 @@ import {
   DIRECT_TRADE_MAX_SYMBOLS,
 } from "@/lib/direct-trade-limits"
 import { mergePendingDirectTradeConfig } from "@/lib/direct-trade-settings-sync"
+import type {
+  DirectTradeOverview48h,
+  DirectTradeOverviewCategory,
+} from "@/lib/direct-trade-overview-stats"
+import type { ExchangeAccountPerformance15h } from "@/lib/exchange-account-performance"
 import {
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
@@ -69,8 +74,8 @@ interface DirectTradeState {
   maxSlRatio: number
   slRatioStep: number
   inverseMaxSlRatio: number
-  timeframes: ("1m" | "10m" | "15m")[]
-  strategyTypes: ("standard" | "trailing_fixed" | "trailing_auto" | "combination" | "inverse" | "high_protection")[]
+  timeframes: ("5m" | "15m" | "30m")[]
+  strategyTypes: ("standard" | "trailing_fixed" | "trailing_auto" | "combination" | "inverse" | "high_protection" | "dca")[]
   historyHours: number
   entryTactics: ("momentum" | "mean_reversion" | "breakout" | "relative")[]
   exitTactics: ("bracket" | "momentum_reversal" | "relative" | "time")[]
@@ -118,6 +123,13 @@ interface DirectTradeStats {
   last48h: { pf: number | null; pfInfinite?: boolean; ddt: number; pnl: number }
 }
 
+const DIRECT_TRADE_OVERVIEW_CATEGORY_LABELS: Record<DirectTradeOverviewCategory, string> = {
+  general: "General",
+  trailing: "Trailing",
+  block: "Block",
+  dca: "DCA",
+}
+
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
 const DEFAULT_STATE: DirectTradeState = {
@@ -133,10 +145,10 @@ const DEFAULT_STATE: DirectTradeState = {
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
   inverseMaxSlRatio: 1.25,
-  timeframes: ["1m", "10m", "15m"],
-  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
+  timeframes: ["5m", "15m", "30m"],
+  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   historyHours: 48,
-  entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+  entryTactics: ["relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
@@ -185,6 +197,8 @@ export function DirectTradeSection() {
   const { selectedConnectionId } = useExchange()
   const [state, setState] = useState<DirectTradeState>(DEFAULT_STATE)
   const [stats, setStats] = useState<DirectTradeStats>(DEFAULT_STATS)
+  const [overview48h, setOverview48h] = useState<DirectTradeOverview48h | null>(null)
+  const [exchangeAccount15h, setExchangeAccount15h] = useState<ExchangeAccountPerformance15h | null>(null)
   const [activeConfigs, setActiveConfigs] = useState(0)
   const [openPositions, setOpenPositions] = useState(0)
   const [closedPositions, setClosedPositions] = useState(0)
@@ -212,8 +226,8 @@ export function DirectTradeSection() {
   const [localTrailing, setLocalTrailing] = useState(true)
   const [localBlock, setLocalBlock] = useState(true)
   const [localBlockMax, setLocalBlockMax] = useState(12)
-  const [localTimeframes, setLocalTimeframes] = useState<string[]>(["1m", "10m", "15m"])
-  const [localStrategyTypes, setLocalStrategyTypes] = useState<string[]>(["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
+  const [localTimeframes, setLocalTimeframes] = useState<string[]>(["5m", "15m", "30m"])
+  const [localStrategyTypes, setLocalStrategyTypes] = useState<string[]>(["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"])
   const [localHistoryHours, setLocalHistoryHours] = useState(48)
   const [localEntryTactics, setLocalEntryTactics] = useState<string[]>(["momentum", "mean_reversion", "breakout", "relative"])
   const [localExitTactics, setLocalExitTactics] = useState<string[]>(["bracket", "momentum_reversal", "relative", "time"])
@@ -250,8 +264,8 @@ export function DirectTradeSection() {
     if (!isPending("symbolCount")) setLocalSymbolCount(remoteState.symbolCount || 8)
     if (!isPending("maxPositionsPerSymbol")) setLocalMaxPosPerSymbol(remoteState.maxPositionsPerSymbol || DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL)
     if (!isPending("maxPositionsPerDirection")) setLocalMaxPosPerDir(remoteState.maxPositionsPerDirection || DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION)
-    if (!isPending("timeframes")) setLocalTimeframes(remoteState.timeframes || ["1m", "10m", "15m"])
-    if (!isPending("strategyTypes")) setLocalStrategyTypes(remoteState.strategyTypes || ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
+    if (!isPending("timeframes")) setLocalTimeframes(remoteState.timeframes || ["5m", "15m", "30m"])
+    if (!isPending("strategyTypes")) setLocalStrategyTypes(remoteState.strategyTypes || ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"])
     if (!isPending("historyHours")) setLocalHistoryHours(remoteState.historyHours ?? 48)
     if (!isPending("entryTactics")) setLocalEntryTactics(remoteState.entryTactics || ["momentum", "mean_reversion", "breakout", "relative"])
     if (!isPending("exitTactics")) setLocalExitTactics(remoteState.exitTactics || ["bracket", "momentum_reversal", "relative", "time"])
@@ -288,6 +302,7 @@ export function DirectTradeSection() {
         applyRemoteState(data.state)
       }
       if (data.stats) setStats({ ...DEFAULT_STATS, ...data.stats })
+      if (data.overview48h) setOverview48h(data.overview48h)
       if (data.activeConfigs !== undefined) setActiveConfigs(data.activeConfigs)
       if (data.openPositions !== undefined) setOpenPositions(data.openPositions)
       if (data.closedPositions !== undefined) setClosedPositions(data.closedPositions)
@@ -302,6 +317,25 @@ export function DirectTradeSection() {
     const interval = setInterval(fetchStatus, 3000)
     return () => clearInterval(interval)
   }, [fetchStatus])
+
+  const fetchExchangeAccount = useCallback(async () => {
+    try {
+      const connectionId = selectedConnectionId ?? state.connectionId
+      const query = connectionId
+        ? `?connectionId=${encodeURIComponent(String(connectionId))}`
+        : ""
+      const response = await fetch(`/api/exchange/live-summary${query}`, { cache: "no-store" })
+      if (!response.ok) return
+      const payload = await response.json()
+      if (payload.accountPerformance15h) setExchangeAccount15h(payload.accountPerformance15h)
+    } catch {}
+  }, [selectedConnectionId, state.connectionId])
+
+  useEffect(() => {
+    void fetchExchangeAccount()
+    const interval = setInterval(fetchExchangeAccount, 10_000)
+    return () => clearInterval(interval)
+  }, [fetchExchangeAccount])
 
   // ─── Actions ──────────────────────────────────────────────────────────────
 
@@ -893,7 +927,7 @@ export function DirectTradeSection() {
               <div className="space-y-2">
                 <span className="text-xs text-muted-foreground">Timeframes</span>
                 <div className="flex gap-2">
-                  {(["1m", "10m", "15m"] as const).map((tf) => (
+                  {(["5m", "15m", "30m"] as const).map((tf) => (
                     <Button
                       key={tf}
                       size="sm"
@@ -980,6 +1014,7 @@ export function DirectTradeSection() {
                     ["combination", "Combination"],
                     ["inverse", "Inverse Long/Short"],
                     ["high_protection", "High TP / SL 0.75"],
+                    ["dca", "DCA · 5× capped"],
                   ] as const).map(([type, label]) => (
                     <Button key={type} size="sm" variant={localStrategyTypes.includes(type) ? "default" : "outline"} className="h-7 px-2 text-[10px]" onClick={() => {
                       const next = localStrategyTypes.includes(type)
@@ -1144,6 +1179,121 @@ export function DirectTradeSection() {
               </div>
             </div>
           )}
+
+          {/* Canonical 48h Direct-Trade Overview */}
+          <div className="space-y-3 rounded-xl border bg-gradient-to-br from-background via-background to-muted/30 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-primary" />
+                <span className="text-sm font-semibold">Direct-Trade Overview</span>
+                <Badge variant="outline" className="text-[10px]">Last 48 hours</Badge>
+              </div>
+              <span className="text-[10px] text-muted-foreground">
+                Open = active now · Count/PF/DDT = realised closes only
+              </span>
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-2">
+              {(overview48h?.environments || []).map((environment) => (
+                <div key={environment.mode} className="overflow-hidden rounded-lg border bg-background/80">
+                  <div className="flex items-center justify-between border-b bg-muted/35 px-3 py-2">
+                    <span className="text-xs font-semibold">
+                      {environment.mode === "simulated" ? "Simulated Strategies" : "Exchange (Live) Strategies"}
+                    </span>
+                    <Badge
+                      variant={environment.mode === "exchange" ? "destructive" : "secondary"}
+                      className="text-[9px]"
+                    >
+                      {environment.mode === "exchange" ? "LIVE" : "SIM"}
+                    </Badge>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[420px] text-[11px]">
+                      <thead className="text-muted-foreground">
+                        <tr className="border-b">
+                          <th className="px-3 py-1.5 text-left font-medium">Strategy</th>
+                          <th className="px-2 py-1.5 text-right font-medium" title="Currently active running positions">Open</th>
+                          <th className="px-2 py-1.5 text-right font-medium" title="Closed positions inside the exact 48-hour window">Count</th>
+                          <th className="px-2 py-1.5 text-right font-medium" title="Weighted average PF: sum of realised gains divided by absolute sum of realised losses">PF (avg.)</th>
+                          <th className="px-3 py-1.5 text-right font-medium" title="Overall time spent below the prior realised-equity peak in this 48-hour window">DDT (overall)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono">
+                        {environment.rows.map((row) => (
+                          <tr key={row.category} className="border-b border-dashed last:border-0">
+                            <td className="px-3 py-1.5 font-sans font-medium">
+                              {DIRECT_TRADE_OVERVIEW_CATEGORY_LABELS[row.category]}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">{row.open}</td>
+                            <td className="px-2 py-1.5 text-right">{row.closed}</td>
+                            <td className="px-2 py-1.5 text-right">
+                              {formatPF(row.profitFactor, row.profitFactorInfinite)}
+                            </td>
+                            <td className="px-3 py-1.5 text-right" title={`Longest episode ${formatDDT(row.maxDrawdownEpisodeMin)} · current ${formatDDT(row.currentDrawdownTimeMin)}`}>
+                              {formatDDT(row.overallDrawdownTimeMin)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+              {!overview48h && (
+                <div className="col-span-full rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+                  Loading verified 48-hour position statistics…
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-red-500/20 bg-red-500/[0.035] p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Activity className="h-3.5 w-3.5 text-red-500" />
+                  <span className="text-xs font-semibold">At Exchange</span>
+                  <span className="text-[10px] text-muted-foreground">verified connector account data</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  PnL Ratio = current Equity / Balance 15h ago · 1.000 neutral
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="rounded-md bg-background/75 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Balance</div>
+                  <div className="font-mono text-sm font-semibold">
+                    {exchangeAccount15h?.balance == null
+                      ? "—"
+                      : `${exchangeAccount15h.balance.toFixed(2)} ${exchangeAccount15h.currency}`}
+                  </div>
+                </div>
+                <div className="rounded-md bg-background/75 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Equity</div>
+                  <div className="font-mono text-sm font-semibold">
+                    {exchangeAccount15h?.equity == null
+                      ? "—"
+                      : `${exchangeAccount15h.equity.toFixed(2)} ${exchangeAccount15h.currency}`}
+                  </div>
+                </div>
+                <div className="rounded-md bg-background/75 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">PnL Ratio · 15h</div>
+                  <div className={`font-mono text-sm font-semibold ${pnlColor(exchangeAccount15h?.pnlPercent || 0)}`}>
+                    {exchangeAccount15h?.pnlRatio == null
+                      ? "—"
+                      : `${exchangeAccount15h.pnlRatio.toFixed(4)}× (${exchangeAccount15h.pnlPercent! >= 0 ? "+" : ""}${exchangeAccount15h.pnlPercent!.toFixed(2)}%)`}
+                  </div>
+                </div>
+              </div>
+              {!exchangeAccount15h?.available && (
+                <p className="mt-2 text-[10px] text-muted-foreground">
+                  {exchangeAccount15h?.reason === "history-collecting"
+                    ? "15-hour baseline is still being collected; Balance and Equity remain current, while the ratio stays unavailable until an exact baseline exists."
+                    : exchangeAccount15h?.reason === "currency-mismatch"
+                      ? "15-hour ratio unavailable because the baseline currency differs from the current account currency."
+                      : "Exchange account values are unavailable until a fresh, non-fallback connector balance is verified."}
+                </p>
+              )}
+            </div>
+          </div>
 
           {/* Stats Grid */}
           <div className="space-y-3">

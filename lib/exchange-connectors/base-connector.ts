@@ -62,6 +62,8 @@ export interface ExchangePosition {
 
 export interface ExchangeOrder {
   orderId: string
+  /** Venue-side idempotency key supplied by the caller, when the exchange returns it. */
+  clientOrderId?: string
   symbol: string
   side: "buy" | "sell"
   type: "limit" | "market"
@@ -77,6 +79,10 @@ export interface ExchangeOrder {
 export interface ExchangeConnectorResult {
   success: boolean
   balance: number // USDT balance
+  equity?: number
+  availableMargin?: number
+  unrealizedProfit?: number
+  settlementAsset?: string
   btcPrice?: number // BTC/USDT price (optional)
   balances?: ExchangeBalance[]
   capabilities: string[]
@@ -119,17 +125,20 @@ export abstract class BaseExchangeConnector {
   constructor(credentials: ExchangeCredentials, exchange: string) {
     this.credentials = credentials
     this.rateLimiter = getRateLimiter(exchange)
-    
-    // Validate API type on construction
-    const apiValidation = validateApiType(exchange, credentials.apiType || "")
-    if (!apiValidation.isValid) {
-      this.log(`WARNING: Invalid API type - ${apiValidation.error}`)
-    }
-    
-    // Validate contract type on construction
-    const contractValidation = validateContractType(exchange, credentials.apiType || "")
-    if (!contractValidation.isValid) {
-      this.log(`WARNING: Invalid contract type - ${contractValidation.error}`)
+
+    // The deterministic paper connector is a transport mode, not an exchange
+    // venue. Validating it against real venue API/contract registries produced
+    // false warnings on every safe dev boot and obscured actionable failures.
+    if (String(exchange || "").trim().toLowerCase() !== "simulated") {
+      const apiValidation = validateApiType(exchange, credentials.apiType || "")
+      if (!apiValidation.isValid) {
+        this.log(`WARNING: Invalid API type - ${apiValidation.error}`)
+      }
+
+      const contractValidation = validateContractType(exchange, credentials.apiType || "")
+      if (!contractValidation.isValid) {
+        this.log(`WARNING: Invalid contract type - ${contractValidation.error}`)
+      }
     }
   }
 

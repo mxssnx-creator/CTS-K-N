@@ -78,7 +78,7 @@ describe("Trend indication project wiring", () => {
     expect(migrations).toContain('name: "074-trend-indication-adaptive-base-ranges"')
     expect(migrations).toContain('"settings:app_settings"')
     expect(migrations).toContain('"settings:all_settings"')
-    expect(stats).toContain('"auto", "signal", "trend"] as const')
+    expect(stats).toContain('"special", "optimal", "auto", "common", "signal", "trend"] as const')
     expect(stats).toContain('trend:          indCounts.trend')
     expect(base).toMatch(/"active_advanced"\s*\|\s*"signal"\s*\|\s*"trend"/)
     expect(base).toContain("active_situation_ratio")

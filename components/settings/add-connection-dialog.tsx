@@ -62,8 +62,9 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
     api_passphrase: "",
     margin_type: "cross",
     position_mode: "hedge",
-    is_testnet: false, // ALWAYS MAINNET
+    is_testnet: false,
   })
+  const isProdVstTemplate = selectedTemplate?.id === "bingx-x02"
 
   useEffect(() => {
     if (open) {
@@ -185,7 +186,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
       api_passphrase: "",
       margin_type: template.marginType,
       position_mode: template.positionMode,
-      is_testnet: template.testnetSupported ? false : false,
+      is_testnet: template.defaultTestnet === true,
     })
   }
 
@@ -234,7 +235,8 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
           api_passphrase: formData.api_passphrase || "",
           margin_type: formData.margin_type,
           position_mode: formData.position_mode,
-          is_testnet: formData.is_testnet,
+          is_testnet: isProdVstTemplate || formData.is_testnet,
+          predefinition_id: selectedTemplate?.id,
         }),
       })
 
@@ -289,18 +291,8 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
         balanceDisplay = ` Balance: $${balanceUSD}`
       }
 
-      // Fetch BTC price for context
-      try {
-        const priceResponse = await fetch("https://api.coinbase.com/v2/prices/BTC-USD/spot")
-        if (priceResponse.ok) {
-          const priceData = await priceResponse.json()
-          const btcPrice = priceData.data?.amount || "N/A"
-          formattedLogs.push(`✓ BTC Price: $${btcPrice}`)
-
-        }
-      } catch {
-        // BTC price is decorative context — a fetch failure is non-fatal
-      }
+      if (Number(data.btcPrice) > 0) formattedLogs.push(`✓ BTC Price: $${Number(data.btcPrice).toFixed(2)}`)
+      if (data.environment === "prod-vst") formattedLogs.push("✓ Environment: BingX Prod-VST · authenticated demo · virtual funds")
 
       if (response.ok) {
         formattedLogs.push(`\n✓ Connection test PASSED - Ready to trade!`)
@@ -350,7 +342,8 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
           api_passphrase: formData.api_passphrase || "",
           margin_type: formData.margin_type,
           position_mode: formData.position_mode,
-          is_testnet: formData.is_testnet,
+          is_testnet: isProdVstTemplate || formData.is_testnet,
+          predefinition_id: selectedTemplate?.id,
           is_enabled: true,
         }),
       })
@@ -367,9 +360,12 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
       }
 
       const result = await response.json()
+      if (result?.persistenceVerified !== true || result?.credentialsConfigured !== true) {
+        throw new Error("Connection save completed without verified credential persistence")
+      }
       const connectionId = result.id || result.connectionId
 
-      toast.success("Connection added successfully")
+      toast.success("Connection added and verified successfully")
 
       // Call both callbacks if provided
       if (onConnectionAdded) {
@@ -625,15 +621,15 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
 
               <div className="flex items-center justify-between pt-1 border-t">
                 <div>
-                  <Label className="font-medium text-xs">Testnet</Label>
+                  <Label className="font-medium text-xs">Environment</Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {formData.is_testnet ? "Paper trading" : "Live trading"}
+                    {isProdVstTemplate ? "Prod-VST authenticated demo · virtual funds" : formData.is_testnet ? "Demo/test environment" : "Prod-Live · real funds"}
                   </p>
                 </div>
                 <Switch
-                  checked={formData.is_testnet}
-                  onCheckedChange={(checked) => setFormData({ ...formData, is_testnet: checked })}
-                  disabled={loading}
+                  checked={isProdVstTemplate || formData.is_testnet}
+                  onCheckedChange={(checked) => setFormData({ ...formData, is_testnet: isProdVstTemplate || checked })}
+                  disabled={loading || isProdVstTemplate}
                 />
               </div>
 
@@ -703,7 +699,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 <AlertCircle className="h-4 w-4 shrink-0 text-amber-900 mt-0.5" />
                 <div className="text-sm text-amber-900">
                   <p className="font-semibold mb-1">Secure Your Credentials</p>
-                  <p className="text-xs">Your API credentials are encrypted and never shared. Never paste credentials in untrusted environments.</p>
+                  <p className="text-xs">Credentials are sent only to the server and are masked in later browser responses. Never paste credentials in untrusted environments.</p>
                 </div>
               </div>
 

@@ -43,6 +43,7 @@ import {
   calculateSignalTrailingTick,
   type TrailingProfile,
 } from "@/lib/signal-trailing"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 // ── Module-level import memoization for live-sync hot paths ──────────
 // `fireSyncLiveFromPseudo` and `maybeRunLiveSync` were previously doing
@@ -641,6 +642,13 @@ export class RealtimeProcessor {
         // Silent skip for foreign positions - don't pollute logs with every tick
         return
       }
+      const side = resolveConsistentTradeDirection(position.side, position.direction)
+      if (!side) {
+        console.error(
+          `[v0] [RealtimeProcessor] Refusing ${String(position?.id || "unknown")}: missing or conflicting direction`,
+        )
+        return
+      }
 
       // Phase A is the critical path — always kick off the price fetch.
       // Phase B (prev-set) only fires when prehistoric is ready, and
@@ -672,8 +680,6 @@ export class RealtimeProcessor {
       // Calculate profit/loss
       const entryPrice = parseFloat(position.entry_price || "0")
       const quantity = parseFloat(position.quantity || "0")
-      const side = position.side || "long"
-
       const pnl = side === "long"
         ? (currentPrice - entryPrice) * quantity
         : (entryPrice - currentPrice) * quantity
@@ -775,7 +781,8 @@ export class RealtimeProcessor {
    * position hashes opened before this field was persisted.
    */
   private shouldCloseTakeProfit(position: any, currentPrice: number): boolean {
-    const side = position.side || "long"
+    const side = resolveConsistentTradeDirection(position.side, position.direction)
+    if (!side) return false
 
     const assignedTpPrice = parseFloat(position.takeprofit_price || "0")
     if (assignedTpPrice > 0) {
@@ -803,7 +810,8 @@ export class RealtimeProcessor {
    * the static SL gate).
    */
   private shouldCloseStopLoss(position: any, currentPrice: number): boolean {
-    const side = position.side || "long"
+    const side = resolveConsistentTradeDirection(position.side, position.direction)
+    if (!side) return false
 
     // Trailing stop wins when armed — it's by definition tighter than the
     // static SL (otherwise the ratchet wouldn't have moved it).
@@ -861,7 +869,8 @@ export class RealtimeProcessor {
   private async updateTrailingStop(position: any, currentPrice: number): Promise<void> {
     try {
       const entryPrice = parseFloat(position.entry_price || "0")
-      const side: "long" | "short" = position.side === "short" ? "short" : "long"
+      const side = resolveConsistentTradeDirection(position.side, position.direction)
+      if (!side) return
       if (entryPrice <= 0 || currentPrice <= 0) return
 
       const startRatio = parseFloat(position.trailing_start_ratio || "0")

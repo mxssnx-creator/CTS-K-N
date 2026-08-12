@@ -22,6 +22,13 @@ import {
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
 } from "@/lib/direct-trade-coordination"
+import {
+  DEFAULT_DCA_PROFILE,
+  MAX_DCA_POSITION_VOLUME_RATIO,
+  MIN_DCA_POSITION_VOLUME_RATIO,
+  type DcaProfile,
+  type DcaTakeProfitMode,
+} from "@/lib/dca-strategy"
 
 type DirectTradeState = {
   enabled: boolean
@@ -62,6 +69,7 @@ type DirectTradeState = {
   prevPosMinCount: number
   evalPosCount: number
   trailingEnabled: boolean
+  dcaProfile: DcaProfile
 }
 
 const DEFAULT_STATE: DirectTradeState = {
@@ -77,10 +85,10 @@ const DEFAULT_STATE: DirectTradeState = {
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
   inverseMaxSlRatio: 1.25,
-  timeframes: ["1m", "10m", "15m"],
-  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
+  timeframes: ["5m", "15m", "30m"],
+  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   historyHours: 48,
-  entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+  entryTactics: ["relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
@@ -103,6 +111,11 @@ const DEFAULT_STATE: DirectTradeState = {
   prevPosMinCount: 5,
   evalPosCount: 12,
   trailingEnabled: true,
+  dcaProfile: {
+    ...DEFAULT_DCA_PROFILE,
+    stepVolumeMultipliers: [...DEFAULT_DCA_PROFILE.stepVolumeMultipliers],
+    stepDistancesPct: [...DEFAULT_DCA_PROFILE.stepDistancesPct],
+  },
 }
 
 const STRATEGY_TYPES: Array<[string, string]> = [
@@ -112,6 +125,7 @@ const STRATEGY_TYPES: Array<[string, string]> = [
   ["combination", "Combination"],
   ["inverse", "Inverse"],
   ["high_protection", "High Protection"],
+  ["dca", "DCA"],
 ]
 
 type ConnectionOption = {
@@ -240,6 +254,21 @@ export function DirectTradeSettings() {
     setState((previous) => ({ ...previous, [key]: value }))
   }
 
+  const updateDca = <K extends keyof DcaProfile>(key: K, value: DcaProfile[K]) => {
+    setState((previous) => ({
+      ...previous,
+      dcaProfile: { ...previous.dcaProfile, [key]: value },
+    }))
+  }
+
+  const updateDcaStep = (key: "stepVolumeMultipliers" | "stepDistancesPct", index: number, value: number) => {
+    setState((previous) => {
+      const values = [...previous.dcaProfile[key]]
+      values[index] = value
+      return { ...previous, dcaProfile: { ...previous.dcaProfile, [key]: values } }
+    })
+  }
+
   const apply = async () => {
     setSaving(true)
     try {
@@ -330,14 +359,14 @@ export function DirectTradeSettings() {
           </div></section>
 
           <section className="space-y-4"><div><h3 className="font-semibold">Independent coordination matrix</h3><p className="text-xs text-muted-foreground">Every selected type, timeframe combination, entry and exit tactic receives a separate set identity and performance lineage.</p></div><div className="space-y-5">
-            <SelectableList label="Timeframes" values={state.timeframes} options={[["1m", "1m"], ["10m", "10m"], ["15m", "15m"]]} onChange={(value) => update("timeframes", value)} />
+            <SelectableList label="Timeframes" values={state.timeframes} options={[["5m", "5m"], ["15m", "15m"], ["30m", "30m"]]} onChange={(value) => update("timeframes", value)} />
             <SelectableList label="Strategy types" values={state.strategyTypes} options={STRATEGY_TYPES} onChange={(value) => update("strategyTypes", value)} />
             <SelectableList label="Entry tactics" values={state.entryTactics} options={[["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]]} onChange={(value) => update("entryTactics", value)} />
             <SelectableList label="Exit tactics" values={state.exitTactics} options={[["bracket", "Bracket"], ["momentum_reversal", "Momentum reversal"], ["relative", "Relative reversal"], ["time", "Time"]]} onChange={(value) => update("exitTactics", value)} />
             <div className="max-w-xs space-y-2"><Label className="text-xs">Entry timing</Label><Select value={state.entryTiming} onValueChange={(value: DirectTradeState["entryTiming"]) => update("entryTiming", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">Current causal candle</SelectItem><SelectItem value="last_confirmed">Last confirmed candle</SelectItem></SelectContent></Select></div>
           </div></section>
 
-          <section className="space-y-4"><div><h3 className="font-semibold">Sizing, protection and blocks</h3><p className="text-xs text-muted-foreground">TP handles span 2–22× PositionCost (default 4–14×); Set creation uses the independently configurable TP step, default 4, so the full matrix remains bounded. PositionCost is deducted once after an actual close. Block targets use Base + valid blocks × Base × Block ratio.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+          <section className="space-y-4"><div><h3 className="font-semibold">Sizing, protection and blocks</h3><p className="text-xs text-muted-foreground">TP handles span 2–22× PositionCost (optimized default 4–8×); Set creation uses the independently configurable TP step, default 2, so the 0.6% seven-day winner is included at PositionCost 0.1%. PositionCost is deducted once after an actual close. Block targets use Base + valid blocks × Base × Block ratio.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             <Range label="Minimum volume factor" value={state.minVolFactor} min={0.1} max={3} step={0.1} onChange={(value) => update("minVolFactor", value)} />
             <Range label="PositionCost" value={state.positionCostPercent} min={0.02} max={1} step={0.02} suffix=" %" onChange={(value) => update("positionCostPercent", value)} />
             <div className="space-y-2">
@@ -369,6 +398,39 @@ export function DirectTradeSettings() {
             <Range label="Block minimum-PF factor" value={state.blockProfitFactorRatio} min={0.2} max={5} step={0.1} suffix="×" onChange={(value) => update("blockProfitFactorRatio", value)} />
             <div className="flex items-center justify-between rounded-md border p-3"><div><Label>Trailing protection</Label><p className="text-xs text-muted-foreground">Fixed, Auto and Combination remain independent lanes.</p></div><Switch checked={state.trailingEnabled} onCheckedChange={(value) => update("trailingEnabled", value)} /></div>
           </div></section>
+
+          <section className="space-y-4">
+            <div>
+              <h3 className="font-semibold">DCA profile</h3>
+              <p className="text-xs text-muted-foreground">Optimized 7-day defaults: Relative entry on 15m, four causal 1× adds at 0.3/0.6/1.0/1.6%, average-entry TP and a hard total exposure ceiling of 5× including the initial fill.</p>
+            </div>
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+              <Range label="DCA executable steps" value={state.dcaProfile.maxSteps} min={1} max={4} step={1} onChange={(value) => updateDca("maxSteps", value)} />
+              <Range label="DCA total volume ceiling" value={state.dcaProfile.maxPositionVolumeRatio} min={MIN_DCA_POSITION_VOLUME_RATIO} max={MAX_DCA_POSITION_VOLUME_RATIO} step={0.1} suffix="×" onChange={(value) => updateDca("maxPositionVolumeRatio", value)} />
+              <Range label="DCA add cooldown" value={state.dcaProfile.cooldownSeconds} min={0} max={3_600} step={5} suffix=" s" onChange={(value) => updateDca("cooldownSeconds", value)} />
+              <div className="space-y-2">
+                <Label className="text-xs">DCA take-profit reference</Label>
+                <Select value={state.dcaProfile.takeProfitMode} onValueChange={(value: DcaTakeProfitMode) => updateDca("takeProfitMode", value)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="average">Weighted average entry</SelectItem>
+                    <SelectItem value="first_entry">First entry</SelectItem>
+                    <SelectItem value="breakeven_plus">Breakeven plus</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Range label="Breakeven-plus target" value={state.dcaProfile.breakevenProfitPct} min={0.05} max={5} step={0.05} suffix=" %" onChange={(value) => updateDca("breakevenProfitPct", value)} />
+            </div>
+            <div className="grid gap-5 rounded-lg border p-4 md:grid-cols-2 xl:grid-cols-4">
+              {Array.from({ length: 4 }, (_, index) => (
+                <div key={index} className="space-y-4">
+                  <p className="text-xs font-semibold">Step {index + 1}</p>
+                  <Range label="Base-volume multiplier" value={state.dcaProfile.stepVolumeMultipliers[index]} min={0.1} max={2.5} step={0.1} suffix="×" onChange={(value) => updateDcaStep("stepVolumeMultipliers", index, value)} />
+                  <Range label="Adverse distance" value={state.dcaProfile.stepDistancesPct[index]} min={0.1} max={20} step={0.1} suffix=" %" onChange={(value) => updateDcaStep("stepDistancesPct", index, value)} />
+                </div>
+              ))}
+            </div>
+          </section>
 
           <section className="space-y-4"><div><h3 className="font-semibold">Closed-position evaluation</h3><p className="text-xs text-muted-foreground">Recent PF is evaluated only from closed positions. The stricter default is calibrated with the 90-hour matrix before release.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             <Range label="Full-history PF minimum" value={state.minProfitFactor} min={0.8} max={10} step={0.1} onChange={(value) => update("minProfitFactor", value)} />
