@@ -14,7 +14,10 @@ import {
   incrementHistoricAggregateOnce,
   incrementHistoricAggregatesOnce,
 } from "@/lib/redis-idempotent-list"
-import { groupHistoricIndicationCalculationConfigs } from "@/lib/trade-engine/config-set-processor"
+import {
+  groupHistoricIndicationCalculationConfigs,
+  groupHistoricIndicationCalculationGroupsByGeometry,
+} from "@/lib/trade-engine/config-set-processor"
 
 function source(path: string): string {
   return readFileSync(join(process.cwd(), path), "utf8")
@@ -41,6 +44,32 @@ describe("historic runtime generation stability", () => {
     expect(groups.find((group) => group.length === 2)?.map((config) => config.id)).toEqual([
       "a-ema",
       "z-rsi",
+    ])
+  })
+
+  test("batches factor variants by shared window geometry without merging their identities", () => {
+    const base = {
+      connectionId: "geometry-test",
+      steps: 10,
+      drawdown_ratio: 0.1,
+      active_ratio: 0.7,
+      last_part_ratio: 0.3,
+      enabled: true,
+      createdAt: "2026-08-10T00:00:00.000Z",
+      type: "RSI",
+    }
+    const exactGroups = groupHistoricIndicationCalculationConfigs([
+      { ...base, id: "factor-a" },
+      { ...base, id: "factor-b", active_ratio: 0.9 },
+      { ...base, id: "other-geometry", last_part_ratio: 0.5 },
+    ])
+    const geometryGroups = groupHistoricIndicationCalculationGroupsByGeometry(exactGroups)
+
+    expect(exactGroups).toHaveLength(3)
+    expect(geometryGroups).toHaveLength(2)
+    expect(geometryGroups.find((group) => group.length === 2)?.flat().map((config) => config.id).sort()).toEqual([
+      "factor-a",
+      "factor-b",
     ])
   })
 

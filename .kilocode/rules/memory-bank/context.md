@@ -1149,3 +1149,18 @@ credentials are present.
 - [x] A cold 1-symbol/1-hour development paper-engine run completed successfully
   inside 180 seconds with zero real exchange orders; historic aggregate batch tests,
   Special/direction/runtime regressions, TypeScript, and focused ESLint passed.
+
+## Session 2026-08-12 — Recovered post-release Historic scheduler work
+
+- [x] Workspace recovery verified that the durable backup and GitHub `main` are
+  identical at `b68c145`; uncommitted post-release work was not in that archive
+  and was therefore reapplied from the recorded implementation history.
+- [x] Historic indication factor variants with the same `steps × last_part_ratio`
+  now share one progressive price-window walk. Config result vectors, alias-list
+  persistence, aggregation markers and retry idempotency remain distinct.
+- [x] Default Strategy cooperative scheduler quantum is 8 complete candidates
+  (previously 16), without changing coverage or strategy outcomes.
+- [x] Regression coverage now verifies factor variants remain independent while
+  batching only the shared window geometry. Focused Historic, Direct-Trade
+  TP/SL/Trailing and DCA tests passed (36 tests), as did TypeScript, changed-path
+  ESLint and `git diff --check`.
