@@ -9582,6 +9582,11 @@ export class StrategyCoordinator {
                 `cf${inheritedConf.toFixed(4)}`,
                 `hc${baseDefault.prevPos?.count || 0}`,
                 `hpf${Number(baseDefault.prevPos?.positionCostRatio || 0).toFixed(4)}`,
+                // The operator coordination ratio is converted to the exact
+                // per-Set multiplier above. It is part of the executable
+                // axis projection, so omit it here and a warm LRU would keep
+                // returning stale volume after a settings change.
+                `vr${posCountsVolumeRatio.toFixed(8)}`,
               ].join(":")
               const cachedAxisSet = StrategyCoordinator._axisLruGet(axisLruKey)
               if (cachedAxisSet) {

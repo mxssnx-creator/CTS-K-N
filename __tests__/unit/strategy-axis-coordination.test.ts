@@ -493,6 +493,34 @@ describe("strategy position-count axis coordination", () => {
     expect(new Set(sets.map((set: StrategySet) => set.setKey)).size).toBe(5)
   })
 
+  test("refreshes cached axis projections when the per-Set volume ratio changes", () => {
+    const coordinator = new StrategyCoordinator("axis-volume-refresh") as any
+    coordinator._coordinationSettings.axes = {
+      prev: { enabled: false, maxWindow: 0 },
+      last: { enabled: false, maxWindow: 0 },
+      cont: { enabled: true, maxWindow: 1 },
+      pause: { enabled: false, maxWindow: 0 },
+    }
+
+    coordinator._coordinationSettings.posCountsVolumeRatio = 3
+    const first = coordinator.expandAxisSets(
+      baseSet([]), 1.2, 0, { long: 0, short: 0 }, 0,
+    ) as StrategySet[]
+    expect(first).toHaveLength(1)
+    expect(first[0].posCountsVolumeRatio).toBeCloseTo(0.006, 8)
+    expect(first[0].entries[0].sizeMultiplier).toBeCloseTo(0.006, 8)
+
+    // Same Base/axis identity hits the LRU. The changed operator setting
+    // must still produce a new executable ratio rather than stale volume.
+    coordinator._coordinationSettings.posCountsVolumeRatio = 10
+    const refreshed = coordinator.expandAxisSets(
+      baseSet([]), 1.2, 0, { long: 0, short: 0 }, 0,
+    ) as StrategySet[]
+    expect(refreshed).toHaveLength(1)
+    expect(refreshed[0].posCountsVolumeRatio).toBeCloseTo(0.02, 8)
+    expect(refreshed[0].entries[0].sizeMultiplier).toBeCloseTo(0.02, 8)
+  })
+
   test("inherits only the exact parent direction and its independent open count", () => {
     const coordinator = new StrategyCoordinator("axis-direction-lineage") as any
     coordinator._coordinationSettings.axes = {

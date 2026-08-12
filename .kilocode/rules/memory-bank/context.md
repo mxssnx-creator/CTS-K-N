@@ -4,6 +4,22 @@
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current audit checkpoint (2026-08-12)
+
+- Restored the credential-free `main@4b0ef042` archive after workspace pruning
+  and verified it against `origin/main` before making changes.
+- Historic→Realtime handoff, idempotent generation writes, owner leases,
+  control-order barriers, Base/Main/Real/Live relation/count contracts,
+  TP-specific trailing coverage, Direct-Trade lineages and system recovery are
+  exercised by the full suite. A target production URL is still required for
+  host-side deployment verification; it must not be reported as locally run.
+- Fixed a live settings race in Main position-count axis projections: the
+  settings-derived per-Set volume multiplier now participates in the bounded
+  Axis-LRU identity. Changing the operator ratio from 3 to 10 therefore
+  refreshes the executable Set from 0.006 to 0.02 Base-volume units instead of
+  retaining a stale cached ratio. Regression coverage is in
+  `strategy-axis-coordination.test.ts`.
+
 ## Current Release Checkpoint (2026-08-11)
 
 - Active publication branch: `agent/bingx-vst-soak-20260811` in
