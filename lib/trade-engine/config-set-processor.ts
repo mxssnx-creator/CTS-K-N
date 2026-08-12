@@ -41,6 +41,8 @@ interface HistoricIndicationWindowSeries {
   magnitudes: Float64Array
 }
 
+type HistoricIndicationResultsByConfig = Map<string, IndicationResult[]>
+
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
 }
@@ -91,6 +93,26 @@ export function groupHistoricIndicationCalculationConfigs(
   return [...groups.values()].map((group) =>
     [...group].sort((left, right) => String(left.id).localeCompare(String(right.id))),
   )
+}
+
+/**
+ * Arrange exact factor groups by the price-window geometry they share. This
+ * must not merge factor groups: it merely lets the historic calculator visit
+ * one geometry once and materialise each factor's independent result vector.
+ */
+export function groupHistoricIndicationCalculationGroupsByGeometry(
+  calculationGroups: readonly IndicationConfig[][],
+): IndicationConfig[][][] {
+  const groups = new Map<string, IndicationConfig[][]>()
+  for (const calculationConfigs of calculationGroups) {
+    const reference = calculationConfigs[0]
+    if (!reference) continue
+    const key = `${Number(reference.steps)}|${Number(reference.last_part_ratio)}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(calculationConfigs)
+    else groups.set(key, [calculationConfigs])
+  }
+  return [...groups.values()]
 }
 
 interface HistoricPricePoint {
@@ -1216,76 +1238,92 @@ export class ConfigSetProcessor {
     // for this symbol/run; factor-specific signal materialization remains
     // independent and exact.
     const windowSeriesCache = new Map<string, Promise<HistoricIndicationWindowSeries | null>>()
+    // A calculation group represents one exact factor combination. Several
+    // such groups can still share one immutable window geometry
+    // (steps × last-part split). Run those factors together: this walks every
+    // price window once, while each config keeps a separate result vector,
+    // list identity, aggregate marker and retry semantics.
+    const geometryGroups = groupHistoricIndicationCalculationGroupsByGeometry(calculationGroups)
     const perCalculationResults = await mapWithConcurrency(
-      calculationGroups,
+      geometryGroups,
       concurrency,
-      async (calculationConfigs) => {
+      async (geometryCalculationGroups) => {
         try {
           assertRunActive()
           await yieldToEventLoop()
           assertRunActive()
-          const referenceConfig = calculationConfigs[0]
-          const results = await runCalculation(() => this.calculateIndicationResults(
+          const references = geometryCalculationGroups.map((group) => group[0])
+          const resultsByConfig = await runCalculation(() => this.calculateIndicationResultsForConfigs(
             symbol,
             candles,
-            referenceConfig,
+            references,
             historicSeries,
             windowSeriesCache,
           ))
-          if (results.length === 0) return 0
-          let buyCount = 0
-          let sellCount = 0
-          for (const result of results) {
-            if (result.signal === "buy") buyCount++
-            else if (result.signal === "sell") sellCount++
-          }
-          const neutralCount = results.length - buyCount - sellCount
-          assertRunActive()
-          let detailRowsAccepted = results.length
-          // Every alias resolves to the deterministic group's reference LIST,
-          // so immutable detail rows are persisted only once.
-          if (typeof (this.indicationManager as any).addResults === "function") {
-            const added = await (this.indicationManager as any).addResults(
-              referenceConfig.id,
-              results,
-              dedupeScope,
-            )
-            detailRowsAccepted = Number.isFinite(Number(added)) ? Number(added) : results.length
-          } else {
-            await mapWithConcurrency(
-              results,
-              Math.max(1, Math.min(16, persistenceConcurrency)),
-              (result) => this.indicationManager.addResult(referenceConfig.id, result),
-              { yieldEvery: 16 },
-            )
-          }
+          const persisted = await mapWithConcurrency(
+            geometryCalculationGroups,
+            Math.max(1, Math.min(persistenceConcurrency, geometryCalculationGroups.length)),
+            async (calculationConfigs) => {
+              const referenceConfig = calculationConfigs[0]
+              const results = resultsByConfig.get(String(referenceConfig.id)) || []
+              if (results.length === 0) return 0
+              let buyCount = 0
+              let sellCount = 0
+              for (const result of results) {
+                if (result.signal === "buy") buyCount++
+                else if (result.signal === "sell") sellCount++
+              }
+              const neutralCount = results.length - buyCount - sellCount
+              assertRunActive()
+              let detailRowsAccepted = results.length
+              // Every alias resolves to the deterministic group's reference LIST,
+              // so immutable detail rows are persisted only once.
+              if (typeof (this.indicationManager as any).addResults === "function") {
+                const added = await (this.indicationManager as any).addResults(
+                  referenceConfig.id,
+                  results,
+                  dedupeScope,
+                )
+                detailRowsAccepted = Number.isFinite(Number(added)) ? Number(added) : results.length
+              } else {
+                await mapWithConcurrency(
+                  results,
+                  Math.max(1, Math.min(16, persistenceConcurrency)),
+                  (result) => this.indicationManager.addResult(referenceConfig.id, result),
+                  { yieldEvery: 16 },
+                )
+              }
 
-          if (!historicGeneration) return detailRowsAccepted
-          // One atomic script replaces one awaited EVAL per alias. Config
-          // identities remain separate Set members and retry-safe, while the
-          // aggregate receives the exact accepted-alias multiplier.
-          const acceptedAliases = await incrementHistoricAggregatesOnce(
-            client as any,
-            calculationConfigs.map((config) => historicAggregateMarkerKey(
-              this.connectionId,
-              "indication",
-              config.id,
-              dedupeScope,
-            )),
-            aggregateKey,
-            [
-              { field: "result_count", value: results.length },
-              { field: "buy_count", value: buyCount },
-              { field: "sell_count", value: sellCount },
-              { field: "neutral_count", value: neutralCount },
-            ],
-            7 * 24 * 60 * 60,
+              if (!historicGeneration) return detailRowsAccepted
+              // One atomic script replaces one awaited EVAL per alias. Config
+              // identities remain separate Set members and retry-safe, while the
+              // aggregate receives the exact accepted-alias multiplier.
+              const acceptedAliases = await incrementHistoricAggregatesOnce(
+                client as any,
+                calculationConfigs.map((config) => historicAggregateMarkerKey(
+                  this.connectionId,
+                  "indication",
+                  config.id,
+                  dedupeScope,
+                )),
+                aggregateKey,
+                [
+                  { field: "result_count", value: results.length },
+                  { field: "buy_count", value: buyCount },
+                  { field: "sell_count", value: sellCount },
+                  { field: "neutral_count", value: neutralCount },
+                ],
+                7 * 24 * 60 * 60,
+              )
+              return acceptedAliases * results.length
+            },
+            { yieldEvery: 1 },
           )
-          return acceptedAliases * results.length
+          return persisted.reduce((sum, value) => sum + value, 0)
         } catch (error) {
           if (error instanceof PrehistoricProcessingCancelledError) throw error
           console.error(
-            `[v0] [ConfigSetProcessor] ✗ indication group ${calculationConfigs[0]?.id || "unknown"}:`,
+            `[v0] [ConfigSetProcessor] ✗ indication geometry group ${geometryCalculationGroups[0]?.[0]?.id || "unknown"}:`,
             error instanceof Error ? error.message : String(error),
           )
           return 0
@@ -1295,7 +1333,7 @@ export class ConfigSetProcessor {
         yieldEvery: 1,
         getConcurrency: () => Math.min(
           concurrency,
-          getRuntimeCapabilityConcurrency("cpu", calculationGroups.length),
+          getRuntimeCapabilityConcurrency("cpu", geometryGroups.length),
         ),
       },
     )
@@ -1314,11 +1352,36 @@ export class ConfigSetProcessor {
     historicSeries?: HistoricPriceSeries,
     windowSeriesCache?: Map<string, Promise<HistoricIndicationWindowSeries | null>>,
   ): Promise<IndicationResult[]> {
-    const results: IndicationResult[] = []
-    const { steps, drawdown_ratio, active_ratio, last_part_ratio } = config
+    const results = await this.calculateIndicationResultsForConfigs(
+      symbol,
+      candles,
+      [config],
+      historicSeries,
+      windowSeriesCache,
+    )
+    return results.get(String(config.id)) || []
+  }
+
+  /**
+   * Materialise all factor variants for one window geometry in one progressive
+   * price walk. Callers must pass configs with equal steps and last-part ratio.
+   * This is a scheduling/performance optimization only: every config receives
+   * its own complete vector and is persisted independently by the caller.
+   */
+  private async calculateIndicationResultsForConfigs(
+    symbol: string,
+    candles: any[],
+    configs: readonly IndicationConfig[],
+    historicSeries?: HistoricPriceSeries,
+    windowSeriesCache?: Map<string, Promise<HistoricIndicationWindowSeries | null>>,
+  ): Promise<HistoricIndicationResultsByConfig> {
+    const byConfig: HistoricIndicationResultsByConfig = new Map()
+    if (configs.length === 0) return byConfig
+    const config = configs[0]
+    const { steps, last_part_ratio } = config
 
     if (!candles || candles.length < steps) {
-      return results
+      return byConfig
     }
 
     const series = historicSeries ?? buildHistoricPriceSeries(candles)
@@ -1326,7 +1389,7 @@ export class ConfigSetProcessor {
     const prices = series.prices
 
     if (prices.length < steps || steps < 4) {
-      return results
+      return byConfig
     }
 
     const requestedLastPart = Number(last_part_ratio)
@@ -1337,8 +1400,13 @@ export class ConfigSetProcessor {
     const splitIndex = Math.max(1, steps - lastPartLength)
     const firstLength = splitIndex
     const secondLength = steps - splitIndex
-    if (firstLength < 2 || secondLength < 2) return results
-    const magnitudeFactor = (1 - Number(drawdown_ratio) * 0.5) * Number(active_ratio)
+    if (firstLength < 2 || secondLength < 2) return byConfig
+    const variants = configs.map((variant) => ({
+      id: String(variant.id),
+      magnitudeFactor: (1 - Number(variant.drawdown_ratio) * 0.5) * Number(variant.active_ratio),
+      results: [] as IndicationResult[],
+    }))
+    for (const variant of variants) byConfig.set(variant.id, variant.results)
 
     // ── Adaptive signal threshold ───────────────────────────────────────
     // Previously the gate was a hard-coded `adjustedMagnitude > 0.005`
@@ -1369,33 +1437,22 @@ export class ConfigSetProcessor {
       windowSeriesCache?.set(windowCacheKey, windowSeriesPromise)
     }
     const windowSeries = await windowSeriesPromise
-    if (!windowSeries) return results
+    if (!windowSeries) return byConfig
 
     for (let i = 0; i < windowCount; i++) {
       if ((i + 1) % HISTORIC_CALC_YIELD_EVERY === 0) {
         await yieldToEventLoop()
       }
-      const adjustedMagnitude = windowSeries.magnitudes[i] * magnitudeFactor
-
-      let signal: "buy" | "sell" | "neutral" = "neutral"
-      let value = 0
-
-      if (adjustedMagnitude > signalThreshold) {
-        if (windowSeries.directions[i] > 0) {
-          signal = "buy"
-          value = adjustedMagnitude * 100
-        } else {
-          signal = "sell"
-          value = -adjustedMagnitude * 100
-        }
-      }
-
-      if (signal !== "neutral") {
-        const candle = pricePoints[i + steps - 1] || pricePoints[i]
-        results.push({
+      const magnitude = windowSeries.magnitudes[i]
+      const candle = pricePoints[i + steps - 1] || pricePoints[i]
+      for (const variant of variants) {
+        const adjustedMagnitude = magnitude * variant.magnitudeFactor
+        if (adjustedMagnitude <= signalThreshold) continue
+        const signal = windowSeries.directions[i] > 0 ? "buy" : "sell"
+        variant.results.push({
           timestamp: candle?.timestamp || new Date().toISOString(),
           symbol,
-          value,
+          value: signal === "buy" ? adjustedMagnitude * 100 : -adjustedMagnitude * 100,
           signal,
           confidence: Math.min(0.95, 0.5 + adjustedMagnitude),
         })
@@ -1405,7 +1462,7 @@ export class ConfigSetProcessor {
     // Every result belonging to this exact configuration is returned.
     // Persistence compaction may retain a bounded history, but it must never
     // truncate the current calculation pass or skip a configuration.
-    return results
+    return byConfig
   }
 
   private async calculateIndicationWindowSeries(

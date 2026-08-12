@@ -238,7 +238,7 @@ const STRATEGY_COOPERATIVE_YIELD_INTERVAL = Math.max(
   4,
   Math.min(
     256,
-    Number.parseInt(process.env.STRATEGY_COOPERATIVE_YIELD_EVERY || "16", 10) || 16,
+    Number.parseInt(process.env.STRATEGY_COOPERATIVE_YIELD_EVERY || "8", 10) || 8,
   ),
 )
 
