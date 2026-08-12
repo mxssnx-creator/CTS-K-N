@@ -278,6 +278,7 @@ describe("settings propagation", () => {
       "dcaTakeProfitMode",
       "dcaBreakevenProfitPct",
       "dcaCooldownSeconds",
+      "dcaMaxPositionVolumeRatio",
     ]) {
       expect(classifyChange([field])).toBe("reload")
     }
@@ -299,6 +300,7 @@ describe("settings propagation", () => {
       "dcaTakeProfitMode",
       "dcaBreakevenProfitPct",
       "dcaCooldownSeconds",
+      "dcaMaxPositionVolumeRatio",
     ]) {
       expect(hasStrategyAffectingChange([field])).toBe(true)
       expect(hasStrategyAffectingChange([`connection_settings.${field}`])).toBe(true)

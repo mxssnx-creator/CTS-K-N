@@ -12,6 +12,7 @@ import {
   clearHistoricListCompletionMarkers,
   historicAggregateMarkerCollectionKey,
   incrementHistoricAggregateOnce,
+  incrementHistoricAggregatesOnce,
 } from "@/lib/redis-idempotent-list"
 import { groupHistoricIndicationCalculationConfigs } from "@/lib/trade-engine/config-set-processor"
 
@@ -57,8 +58,8 @@ describe("historic runtime generation stability", () => {
 
       await expect(getCanonicalSymbolSelection(connectionId)).resolves.toEqual({
         epoch: "epoch-force",
-        symbols: ["BTCUSDT", "ETHUSDT"],
-        total: 2,
+        symbols: ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT"],
+        total: 5,
       })
     } finally {
       await client.del(settingsKey)
@@ -387,6 +388,44 @@ describe("historic runtime generation stability", () => {
       await expect(client.smembers(markerCollectionKey)).resolves.toEqual([markerKey])
     } finally {
       await client.del(markerKey, markerCollectionKey, aggregateKey)
+    }
+  })
+
+  test("historic indication aliases aggregate atomically in one batch", async () => {
+    const connectionId = `historic-alias-batch-${Date.now()}`
+    const aggregateKey = `historic:aggregate:${connectionId}:indications:epoch-1`
+    const markerCollectionKey = historicAggregateMarkerCollectionKey(aggregateKey)
+    const markerKeys = ["cfg-1", "cfg-2", "cfg-3"].map(
+      (id) => `historic:aggregate-marker:${connectionId}:indication:${id}:epoch-1:BTCUSDT`,
+    )
+    const client = getRedisClient()
+    try {
+      await client.del(aggregateKey, markerCollectionKey, ...markerKeys)
+      await expect(incrementHistoricAggregatesOnce(
+        client as any,
+        markerKeys,
+        aggregateKey,
+        [
+          { field: "result_count", value: 7 },
+          { field: "buy_count", value: 2 },
+        ],
+        3600,
+      )).resolves.toBe(3)
+      await expect(client.hgetall(aggregateKey)).resolves.toMatchObject({
+        result_count: "21",
+        buy_count: "6",
+      })
+      await expect(incrementHistoricAggregatesOnce(
+        client as any,
+        markerKeys,
+        aggregateKey,
+        [{ field: "result_count", value: 7 }],
+        3600,
+      )).resolves.toBe(0)
+      await expect(client.hgetall(aggregateKey)).resolves.toMatchObject({ result_count: "21" })
+      await expect(client.smembers(markerCollectionKey)).resolves.toEqual(expect.arrayContaining(markerKeys))
+    } finally {
+      await client.del(aggregateKey, markerCollectionKey, ...markerKeys)
     }
   })
 

@@ -1,5 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getSettings, setSettings, getRedisClient, initRedis } from "@/lib/redis-db"
+import {
+  getSettings,
+  setSettings,
+  getRedisBackend,
+  getRedisClient,
+  initRedis,
+  persistNow,
+} from "@/lib/redis-db"
 import {
   clampDirectTradeSymbolCount,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
@@ -29,6 +36,7 @@ import {
   readDirectTradeConfigsAtIndexes,
 } from "@/lib/direct-trade-config-store"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
 import {
   buildDirectTradeOpenPositionStage,
   DIRECT_TRADE_OPEN_POSITION_STAGE_KEY,
@@ -109,6 +117,7 @@ export interface DirectTradeState {
   prevPosMinCount: number         // Min positions before eval activates
   evalPosCount: number            // Coordination eval count
   trailingEnabled: boolean        // Trailing stop on/off
+  dcaProfile: DcaProfile
 }
 
 export interface DirectTradeStats {
@@ -146,10 +155,10 @@ const DEFAULT_STATE: DirectTradeState = {
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
   inverseMaxSlRatio: 1.25,
-  timeframes: ["1m", "10m", "15m"],
-  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
+  timeframes: ["5m", "15m", "30m"],
+  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   historyHours: 48,
-  entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+  entryTactics: ["relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
@@ -174,6 +183,7 @@ const DEFAULT_STATE: DirectTradeState = {
   prevPosMinCount: 5,
   evalPosCount: 12,
   trailingEnabled: true,
+  dcaProfile: DEFAULT_DCA_PROFILE,
 }
 
 const DEFAULT_STATS: DirectTradeStats = {
@@ -201,6 +211,16 @@ async function getClient() {
   return getRedisClient()
 }
 
+async function persistDirectTradeSnapshot(context: string): Promise<void> {
+  // Network Redis commits SET/MULTI before returning. Inline snapshot mode is
+  // different: force its current mutation version to disk before confirming a
+  // control-plane or position-lifecycle write that must survive SIGKILL.
+  if (typeof getRedisBackend !== "function" || getRedisBackend() !== "inline-local") return
+  if (typeof persistNow !== "function" || !(await persistNow())) {
+    throw new Error(`Direct-Trade ${context} could not be persisted before acknowledgement`)
+  }
+}
+
 async function getState(): Promise<DirectTradeState> {
   try {
     const client = await getClient()
@@ -217,8 +237,8 @@ async function getState(): Promise<DirectTradeState> {
         liveMode: persisted?.liveMode === true,
         connectionId: normaliseConnectionId(persisted?.connectionId),
         symbolOrder: normaliseSymbolOrder(persisted?.symbolOrder),
-        // Migrate the former 5m label to the exact 10m aggregation.  Existing
-        // live settings remain usable, but all new rows have an honest frame.
+        // Migrate the former 1m/10m/15m defaults to the optimized exact
+        // 5m/15m/30m coordination set.
         timeframes: normaliseDirectTradeTimeframes(persisted?.timeframes),
         strategyTypes: normaliseDirectTradeStrategyTypes(persisted?.strategyTypes),
         entryTactics: normaliseEntryTactics(persisted?.entryTactics),
@@ -234,7 +254,7 @@ async function getState(): Promise<DirectTradeState> {
         positionCostPercent: normalizePositionCostPercent(persisted?.positionCostPercent ?? DEFAULT_STATE.positionCostPercent),
         maxHoldMinutes: Math.max(1, Number(persisted?.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes),
         // The former 4–12 range was the shipped default, not an intentional
-        // cap. Upgrade that exact legacy default to the new 4–14 contract;
+        // cap. Upgrade that exact legacy default to the optimized 4–8 contract;
         // any other persisted range remains the operator's explicit choice.
         takeProfitRatioRange: Array.isArray(persisted?.takeProfitRatioRange)
           && Number(persisted.takeProfitRatioRange[0]) === 4
@@ -276,6 +296,7 @@ async function getState(): Promise<DirectTradeState> {
           ? DEFAULT_STATE.maxPositionsPerDirection
           : Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerDirection) || DEFAULT_STATE.maxPositionsPerDirection))),
         inverseMaxSlRatio: clampInverseStopLossRatio(persisted?.inverseMaxSlRatio),
+        dcaProfile: normalizeDcaProfile(persisted?.dcaProfile ?? persisted),
       }
     }
   } catch {}
@@ -285,6 +306,7 @@ async function getState(): Promise<DirectTradeState> {
 async function setState(state: DirectTradeState): Promise<void> {
   const client = await getClient()
   await client.set(DIRECT_TRADE_STATE_KEY, JSON.stringify(state))
+  await persistDirectTradeSnapshot("state")
 }
 
 function clampStopLossRatio(value: unknown, fallback = 0.75): number {
@@ -605,6 +627,7 @@ export async function POST(request: NextRequest) {
         ...(body.prevPosMinCount !== undefined ? { prevPosMinCount: Math.max(1, Number(body.prevPosMinCount) || 1) } : {}),
         ...(body.evalPosCount !== undefined ? { evalPosCount: Math.max(3, Number(body.evalPosCount) || 3) } : {}),
         ...(body.trailingEnabled !== undefined ? { trailingEnabled: body.trailingEnabled } : {}),
+        ...(body.dcaProfile !== undefined ? { dcaProfile: normalizeDcaProfile(body.dcaProfile) } : {}),
       }
       if (newState.liveMode && !newState.connectionId) {
         return NextResponse.json({ error: "Select a live exchange connection before starting Direct-Trade live execution" }, { status: 409 })
@@ -676,6 +699,7 @@ export async function POST(request: NextRequest) {
         ...(body.prevPosMinCount !== undefined ? { prevPosMinCount: Math.max(1, Number(body.prevPosMinCount) || 1) } : {}),
         ...(body.evalPosCount !== undefined ? { evalPosCount: Math.max(3, Number(body.evalPosCount) || 3) } : {}),
         ...(body.trailingEnabled !== undefined ? { trailingEnabled: body.trailingEnabled } : {}),
+        ...(body.dcaProfile !== undefined ? { dcaProfile: normalizeDcaProfile(body.dcaProfile) } : {}),
         ...(body.lastRecalcAt !== undefined && typeof body.lastRecalcAt === "string" ? { lastRecalcAt: body.lastRecalcAt } : {}),
       }
       await setState(newState)
@@ -685,6 +709,7 @@ export async function POST(request: NextRequest) {
     if (body.action === "reset-stats") {
       const client = await getClient()
       await client.set(DIRECT_TRADE_STATS_KEY, JSON.stringify(DEFAULT_STATS))
+      await persistDirectTradeSnapshot("statistics reset")
       return NextResponse.json({ success: true, message: "Stats reset" })
     }
 
@@ -723,6 +748,7 @@ export async function POST(request: NextRequest) {
       write.set(DIRECT_TRADE_CONFIG_PERFORMANCE_KEY, JSON.stringify(configPerformance))
       write.set(DIRECT_TRADE_PROCESSOR_KEY, JSON.stringify(processor))
       await write.exec()
+      await persistDirectTradeSnapshot("processor position sync")
       // The owner receives the compact, normalized settings acknowledgement
       // with the write it already performs. This lets a running worker react
       // to an operator save on its next sync instead of waiting for a loop

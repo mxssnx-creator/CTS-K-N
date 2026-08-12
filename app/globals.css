@@ -167,6 +167,44 @@
   --top-info-layer-filter: grayscale(1) contrast(1.2);
 }
 
+.blackwhiteblue {
+  --background: 222 47% 5%;
+  --foreground: 210 40% 98%;
+  --card: 222 42% 8%;
+  --card-foreground: 210 40% 98%;
+  --popover: 222 44% 7%;
+  --popover-foreground: 210 40% 98%;
+  --primary: 213 94% 58%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 215 28% 17%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217 26% 14%;
+  --muted-foreground: 215 20% 72%;
+  --accent: 216 72% 18%;
+  --accent-foreground: 211 100% 88%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 216 30% 23%;
+  --input: 216 30% 19%;
+  --ring: 213 94% 62%;
+  --chart-1: 213 94% 58%;
+  --chart-2: 199 89% 55%;
+  --chart-3: 0 0% 100%;
+  --chart-4: 220 14% 68%;
+  --chart-5: 216 72% 42%;
+  --sidebar-background: 0 0% 2%;
+  --sidebar-foreground: 210 40% 98%;
+  --sidebar-primary: 213 94% 62%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 216 42% 14%;
+  --sidebar-accent-foreground: 210 40% 98%;
+  --sidebar-border: 216 32% 20%;
+  --sidebar-ring: 213 94% 62%;
+  --top-info-layer-opacity: 0.38;
+  --top-info-layer-filter: saturate(1.35) brightness(1.08) contrast(1.15);
+  --panel-shadow: 0 1px 1px hsl(220 80% 1% / 0.55), 0 18px 44px hsl(218 90% 2% / 0.32);
+}
+
 .whiteactive {
   --background: 204 48% 97%;
   --foreground: 219 44% 13%;

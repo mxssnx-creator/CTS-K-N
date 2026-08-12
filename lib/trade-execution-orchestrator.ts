@@ -5,6 +5,7 @@ import { IndicatorCalculator } from "@/lib/indicators/calculator"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getMaxLeverageForConnection } from "@/lib/leverage-policy"
 import { placeLiveOrder } from "@/lib/live-order-service"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 /**
  * Trade Execution Orchestrator
@@ -216,12 +217,20 @@ export class TradeExecutionOrchestrator {
 
       this.log(`  Closing position: ${position.size} @ ${position.entryPrice}`)
 
+      const positionDirection = resolveConsistentTradeDirection(position.direction, position.side)
+      if (!positionDirection) {
+        return {
+          success: false,
+          error: "Open position has a missing or conflicting direction",
+        }
+      }
+
       // Step 3: Close position with retry — use inverted direction
       const closeResult = await this.closePositionWithRetry(
         connectionId,
         connection,
         symbol,
-        position.direction === "short" ? "short" : "long",
+        positionDirection,
         position.size,
       )
 

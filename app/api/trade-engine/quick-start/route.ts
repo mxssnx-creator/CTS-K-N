@@ -248,7 +248,7 @@ async function handlePost(request: Request) {
     
     await initRedis()
     if (action !== "disable" && process.env.NODE_ENV === "production") {
-      const readiness = await checkProductionReadiness()
+      const readiness = await checkProductionReadiness({ requireConnectionCredentials: false })
       if (!readiness.ready) {
         return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
       }
@@ -287,6 +287,12 @@ async function handlePost(request: Request) {
     }
     const canUseRequestedConnection = (c: any) => {
       if (!c) return false
+      // An explicitly selected connection is always safe to use when the UI
+      // has requested Paper mode.  Credential availability is an execution
+      // concern only for real orders; rejecting a credentialless BingX
+      // template here silently redirected Paper QuickStart to another account
+      // and broke per-connection coordination.
+      if (!liveTradeRequested) return true
       if (hasUsableExchangeCredentials(c)) return true
       // In production live-trade mode, a credentialless simulated/template
       // selection must not become the active QuickStart connection unless the
@@ -1023,6 +1029,7 @@ async function handlePost(request: Request) {
 
      const coordinator = getGlobalTradeEngineCoordinator()
      const quickstartEngineAlreadyRunning = coordinator.isEngineRunning(connectionId)
+     let quickstartTargetedEngineStarted = quickstartEngineAlreadyRunning
 
      const quickstartProgressionPatch = {
       phase: "recoordination",
@@ -1307,6 +1314,13 @@ async function handlePost(request: Request) {
         updated_at: quickstartGlobalStartedAt,
         coordinator_ready: "true",
       })
+      // Persistence/recoordination above may have attached this connection to
+      // the local coordinator already. Re-read actual ownership at dispatch
+      // time instead of relying on the pre-commit snapshot; a stale `false`
+      // caused forceLocalTakeover to stop and recreate the engine immediately.
+      const quickstartEngineRunningAtDispatch = coordinator.isEngineRunning(connectionId)
+      quickstartTargetedEngineStarted =
+        quickstartTargetedEngineStarted || quickstartEngineRunningAtDispatch
       
       try {
         // ── Stable QuickStart re-entry for THIS connection ─────────────
@@ -1317,7 +1331,7 @@ async function handlePost(request: Request) {
         // restarts here caused the UI to jump back to prehistoric progress,
         // duplicate epochs, and eventually crash under repeated clicks.
         try {
-          const wasRunning = quickstartEngineAlreadyRunning
+          const wasRunning = quickstartEngineRunningAtDispatch
           if (wasRunning) {
             console.log(`${LOG_PREFIX}: Connection ${connectionId} already running — reusing live engine and applying symbols without restart`)
             coordinator.invalidateSymbolsCacheForConnection(connectionId)
@@ -1416,26 +1430,29 @@ async function handlePost(request: Request) {
         // regular QuickStart boot below; calling it with only a connection id
         // was both a type error and meant production could never execute this
         // intended stop-safe path.
-        const dispatchSettings = await loadSettingsAsync()
-        await coordinator.startEngine(connectionId, {
-          connectionId,
-          connection_name: connection.name,
-          exchange: exchangeName,
-          engine_type: "main",
-          allowInProcessStart: true,
-          indicationInterval: dispatchSettings.mainEngineIntervalMs
-            ? dispatchSettings.mainEngineIntervalMs / 1000
-            : 5,
-          strategyInterval: dispatchSettings.strategyUpdateIntervalMs
-            ? dispatchSettings.strategyUpdateIntervalMs / 1000
-            : 10,
-          realtimeInterval: dispatchSettings.realtimeIntervalMs
-            ? dispatchSettings.realtimeIntervalMs / 1000
-            : 0.3,
-        }, { markAssigned: true, forceLocalTakeover: true }).catch((e: unknown) => {
-          console.warn(`${LOG_PREFIX} targeted engine start warning:`, e)
-          throw e
-        })
+        if (!quickstartEngineRunningAtDispatch) {
+          const dispatchSettings = await loadSettingsAsync()
+          const startPromise = coordinator.startEngine(connectionId, {
+            connectionId,
+            connection_name: connection.name,
+            exchange: exchangeName,
+            engine_type: "main",
+            allowInProcessStart: true,
+            indicationInterval: dispatchSettings.mainEngineIntervalMs
+              ? dispatchSettings.mainEngineIntervalMs / 1000
+              : 5,
+            strategyInterval: dispatchSettings.strategyUpdateIntervalMs
+              ? dispatchSettings.strategyUpdateIntervalMs / 1000
+              : 10,
+            realtimeInterval: dispatchSettings.realtimeIntervalMs
+              ? dispatchSettings.realtimeIntervalMs / 1000
+              : 0.3,
+          }, { markAssigned: true, forceLocalTakeover: true })
+          const engineStarted = process.env.NODE_ENV === "test" || shouldAwaitQuickStartEngineBoot()
+            ? await awaitWithTimeout(startPromise, QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS, false)
+            : await startPromise
+          quickstartTargetedEngineStarted = engineStarted || coordinator.isEngineRunning(connectionId)
+        }
 
         // CRITICAL: Apply cache fix to all indication processors after engines are started.
         // Non-blocking — just patches in-process objects, no I/O.
@@ -1468,80 +1485,39 @@ async function handlePost(request: Request) {
           updated_at: new Date().toISOString(),
         })
         
-        // Kick off the engine asynchronously — startEngine() can block for
-        // several seconds while it syncs exchange time and spins up workers.
-        // Awaiting it inside the HTTP handler causes the request to hang.
-        // We log the result via a detached promise so diagnostics are preserved.
-        const engineBoot = (async (): Promise<{ started: boolean; queued: boolean; error?: string }> => {
-          try {
-            const settings = await loadSettingsAsync()
-            const coord = getGlobalTradeEngineCoordinator()
-
-            // Legacy source guard phrase: const engineStarted = await coord.startEngine
-            const started = await coord.startEngine(connectionId, {
-              connectionId,
-              connection_name: connection.name,
-              exchange: exchangeName,
-              engine_type: "main",
-              allowInProcessStart: true,
-              indicationInterval: settings.mainEngineIntervalMs ? settings.mainEngineIntervalMs / 1000 : 5,
-              strategyInterval: settings.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 10,
-              realtimeInterval: settings.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3,
-            }, { markAssigned: true, forceLocalTakeover: true })
-
-            const engineStarted = started
-            // Legacy source guard phrase: if (!started)
-            if (!engineStarted) {
-              const skippedAt = new Date().toISOString()
-              console.warn(`${LOG_PREFIX} Main Engine start skipped or queued for ${connection.name} (async)`)
-              await logProgressionEvent(connectionId, "engine_start_skipped", "warning", "Main Trade Engine start skipped or queued via QuickStart", {
-                connectionId,
-                connectionName: connection.name,
-                exchange: exchangeName,
-                reason: "Coordinator returned false; start request was skipped or left queued",
-              })
-              await setSettings(`engine_progression:${connectionId}`, {
-                phase: "queued",
-                status: "skipped_queued",
-                progress: 15,
-                connectionId,
-                connectionName: connection.name,
-                exchange: exchangeName,
-                symbols,
-                testPassed,
-                detail: "Engine start was skipped by the coordinator and remains queued for a worker to process.",
-                updated_at: skippedAt,
-              })
-              return { started: false, queued: true }
-            }
-
-            console.log(`${LOG_PREFIX} ✓ Main Engine started for ${connection.name} (async)`)
-            await logProgressionEvent(connectionId, "engine_started", "info", "Main Trade Engine started via QuickStart", {
-              connectionId,
-              connectionName: connection.name,
-              exchange: exchangeName,
-              testPassed,
-            })
-
-            // Kick a refresh so the new symbols + bootstrap relaxations are
-            // evaluated on the very first tick rather than waiting for the timer.
-            coord.refreshEngines().catch(() => {})
-            return { started: true, queued: false }
-          } catch (engineError) {
-            console.error(`${LOG_PREFIX} Engine start failed (async):`, engineError)
-            const errorMessage = engineError instanceof Error ? engineError.message : String(engineError)
-            logProgressionEvent(connectionId, "engine_start_error", "error", "Failed to start engine", {
-              error: errorMessage,
-            }).catch(() => {})
-            return { started: false, queued: false, error: errorMessage }
-          }
-        })()
-        const shouldAwaitBoot = process.env.NODE_ENV === "test" || shouldAwaitQuickStartEngineBoot()
-        const engineBootResult = shouldAwaitBoot
-          ? await awaitWithTimeout(engineBoot, QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS, { started: false, queued: true, error: `timed out after ${QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS}ms` })
-          : { started: false, queued: true }
-        if (shouldAwaitBoot && !engineBootResult.started && engineBootResult.error) {
-          console.warn(`${LOG_PREFIX} awaited engine boot did not complete for ${connection.name}: ${engineBootResult.error}`)
+        // The targeted dispatch above is the single owner of engine startup.
+        // Starting again here used to stop/recreate X02 via forceLocalTakeover;
+        // a subsequent global refresh also started unrelated connections.
+        const engineStarted = quickstartTargetedEngineStarted || coordinator.isEngineRunning(connectionId)
+        if (!engineStarted) {
+          const skippedAt = new Date().toISOString()
+          console.warn(`${LOG_PREFIX} Main Engine start skipped or queued for ${connection.name}`)
+          await logProgressionEvent(connectionId, "engine_start_skipped", "warning", "Main Trade Engine start skipped or queued via QuickStart", {
+            connectionId,
+            connectionName: connection.name,
+            exchange: exchangeName,
+            reason: "The single targeted coordinator start is still queued or timed out",
+          })
+          await setSettings(`engine_progression:${connectionId}`, {
+            phase: "queued",
+            status: "skipped_queued",
+            progress: 15,
+            connectionId,
+            connectionName: connection.name,
+            exchange: exchangeName,
+            symbols,
+            testPassed,
+            detail: "The targeted engine start remains queued for its current worker.",
+            updated_at: skippedAt,
+          })
+        } else {
+          console.log(`${LOG_PREFIX} ✓ Main Engine started for ${connection.name}`)
+          await logProgressionEvent(connectionId, "engine_started", "info", "Main Trade Engine started via QuickStart", {
+            connectionId,
+            connectionName: connection.name,
+            exchange: exchangeName,
+            testPassed,
+          })
         }
       }
     

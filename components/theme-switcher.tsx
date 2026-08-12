@@ -19,6 +19,7 @@ const themeOptions = [
   { id: "white", label: "Clear White", description: "High-clarity neutral workspace", icon: Sun },
   { id: "grey", label: "Tactical Grey", description: "Muted analytical surfaces", icon: Palette },
   { id: "blackwhite", label: "Monochrome", description: "Pure black-and-white hierarchy", icon: Circle },
+  { id: "blackwhiteblue", label: "Black / White / Blue", description: "Deep black workspace with crisp blue controls", icon: Waves },
   { id: "whiteactive", label: "Signal Blue", description: "Bright active-monitoring palette", icon: Waves },
 ] as const
 

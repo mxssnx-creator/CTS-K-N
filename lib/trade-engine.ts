@@ -10,6 +10,8 @@
  * with any external imports of its named exports.
  */
 
+import { resolveRedisRuntimeRoot } from "./redis-runtime-root"
+
 const COORDINATOR_VERSION = "4.2.0"
 const FULL_RESTART_ESCALATION_ENABLED = false
 
@@ -26,7 +28,7 @@ const FULL_RESTART_ESCALATION_ENABLED = false
 // We now record the running version for diagnostics only — no destructive
 // cleanup. The singleton on `globalThis.__tradeEngineCoordinator` is
 // preserved across reloads.
-const coordGlobal = globalThis as unknown as {
+const coordGlobal = resolveRedisRuntimeRoot() as unknown as {
   __coordinator_version?: string
   __global_coordinator?: unknown
 }
@@ -56,6 +58,7 @@ import { clearEngineRefreshRequest, ENGINE_REFRESH_REQUEST_TTL_MS, getQueuedEngi
 import { processQueuedEngineRefreshRequests } from "./engine-refresh-queue"
 import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
 import { hasExplicitServerlessForegroundOptIn, isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "./deployment-runtime"
+import { isTruthyFlag } from "./connection-state-utils"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
 export { TradeEngine, type TradeEngineConfig, TRADE_SERVICE_NAME } from "./trade-engine/trade-engine"
@@ -974,15 +977,16 @@ export class GlobalTradeEngineCoordinator {
   }
 
   /**
-   * Start all engines for enabled connections (modern Redis-based)
-   * SYSTEMWIDE LIVE TRADE: Automatically enables live trade for connections with valid credentials
+   * Start all engines for enabled connections (modern Redis-based).
+   * Starting processing never changes the independent operator-owned Live
+   * Trade request/effective flags.
    */
   async startAll(): Promise<void> {
     try {
       console.log("[v0] [Coordinator] Starting global trade engine...")
       
       // Import Redis functions
-      const { initRedis, getAssignedAndEnabledConnections, getAllConnections, getConnection, updateConnectionState } = await import("@/lib/redis-db")
+      const { initRedis, getAssignedAndEnabledConnections, getAllConnections } = await import("@/lib/redis-db")
       const { loadSettingsAsync } = await import("@/lib/settings-storage")
       const { logProgressionEvent } = await import("@/lib/engine-progression-logs")
       
@@ -1011,9 +1015,9 @@ export class GlobalTradeEngineCoordinator {
       // not at engine startup. Demo/testnet/predefined connections run without real API keys.
       const validConnections = connections.filter((c) => {
         const hasCredentials = ((c.api_key || c.apiKey || "").length > 5 && (c.api_secret || c.apiSecret || "").length > 5)
-        const isTestnet = c.is_testnet === "1" || c.is_testnet === true
-        const isDemoMode = c.demo_mode === "1" || c.demo_mode === true
-        const isPredefined = c.is_predefined === "1" || c.is_predefined === true
+        const isTestnet = isTruthyFlag(c.is_testnet)
+        const isDemoMode = isTruthyFlag(c.demo_mode)
+        const isPredefined = isTruthyFlag(c.is_predefined)
         const isSimulated = c.connector_type === "simulated" || c.exchange_type === "simulated"
         // Allow any assigned+enabled connection: with credentials, or testnet/demo/predefined/simulated mode
         return hasCredentials || isTestnet || isDemoMode || isPredefined || isSimulated
@@ -1032,47 +1036,9 @@ export class GlobalTradeEngineCoordinator {
       
       for (const connection of validConnections) {
         try {
-          const hasCredentials = ((connection.api_key || connection.apiKey || "").length > 5 && (connection.api_secret || connection.apiSecret || "").length > 5)
-          const isTestnet = connection.is_testnet === "1" || connection.is_testnet === true
-          const isDemoMode = connection.demo_mode === "1" || connection.demo_mode === true
-          const isPredefined = connection.is_predefined === "1" || connection.is_predefined === true
-          
-          // SYSTEMWIDE LIVE TRADE: Auto-enable live trade for connections with valid credentials
-          // Check if live trade should be auto-enabled (has real credentials and not already set)
-          const currentLiveTradeStatus = connection.is_live_trade === "1" || connection.live_trade_enabled === "1"
-          const shouldAutoEnableLiveTrade = hasCredentials && !currentLiveTradeStatus && !isTestnet && !isDemoMode && !isPredefined
-          
-          if (shouldAutoEnableLiveTrade) {
-            console.log(`[v0] [Coordinator] Auto-enabling live trade for ${connection.name} (${connection.id})`)
-            try {
-              const stateSwitchVersion = Date.now().toString()
-              await updateConnectionState(connection.id, {
-                is_live_trade: "1",
-                live_trade_enabled: "1",
-                live_trade_requested: "1",
-                is_assigned: "1",
-                is_active_inserted: "1",
-                is_enabled_dashboard: "1",
-                is_active: "1",
-                state_switch_version: stateSwitchVersion,
-                updated_at: new Date().toISOString(),
-              }, stateSwitchVersion)
-              await logProgressionEvent(
-                connection.id,
-                "auto_live_trade_enabled",
-                "info",
-                "Auto-enabled live trade during global engine start",
-                { connectionId: connection.id, connectionName: connection.name, exchange: connection.exchange }
-              )
-              // Update local reference
-              connection.is_live_trade = "1"
-              connection.live_trade_enabled = "1"
-              connection.live_trade_requested = "1"
-            } catch (liveErr) {
-              console.warn(`[v0] [Coordinator] Failed to auto-enable live trade for ${connection.name}:`, liveErr)
-            }
-          }
-          
+          // Live Trade is an independent, explicit operator switch. A global
+          // processing start must preserve both requested and effective state,
+          // even when valid credentials are present.
           const config: EngineConfig = {
             connectionId: connection.id,
             allowInProcessStart: true,
@@ -1663,9 +1629,14 @@ export class GlobalTradeEngineCoordinator {
       }
 
       let stateSnapshot: Record<string, boolean> = {}
+      let hasAuthoritativeStateSnapshot = false
       try {
         if (globalState.engine_state_snapshot) {
-          stateSnapshot = JSON.parse(globalState.engine_state_snapshot)
+          const parsedSnapshot = JSON.parse(globalState.engine_state_snapshot)
+          if (parsedSnapshot && typeof parsedSnapshot === "object" && !Array.isArray(parsedSnapshot)) {
+            stateSnapshot = parsedSnapshot
+            hasAuthoritativeStateSnapshot = true
+          }
           console.log("[v0] [Coordinator] Restored engine state snapshot from pause")
         }
       } catch (err) {
@@ -1679,8 +1650,19 @@ export class GlobalTradeEngineCoordinator {
         try {
           const connectionId = connection.id
           const wasRunningBeforePause = stateSnapshot[connectionId]
-          if (wasRunningBeforePause === false) {
-            console.log(`[v0] [Coordinator] ⊘ Skipped: ${connection.name} (was not running before pause)`)
+          // Once pause() persisted a snapshot, absence is authoritative: the
+          // connection did not have a local running manager and must not be
+          // started merely because it is otherwise assigned/enabled. The old
+          // undefined=>resume fallback turned a one-card X02 pause/resume into
+          // a global X01+X02 cold start, doubled the CPU-heavy progression,
+          // and starved the connection the operator actually resumed. Only
+          // legacy paused hashes with no snapshot retain the compatibility
+          // fallback to resume all eligible connections.
+          if (
+            wasRunningBeforePause === false ||
+            (hasAuthoritativeStateSnapshot && wasRunningBeforePause !== true)
+          ) {
+            console.log(`[v0] [Coordinator] ⊘ Skipped: ${connection.name} (not running in authoritative pause snapshot)`)
             continue
           }
 
@@ -1699,7 +1681,9 @@ export class GlobalTradeEngineCoordinator {
 
           const didStart = await this.startEngine(connectionId, config)
           if (didStart) resumedCount++
-          const wasRunning = wasRunningBeforePause === true ? " (was running)" : " (no state record, defaulting to resume)"
+          const wasRunning = wasRunningBeforePause === true
+            ? " (was running)"
+            : " (legacy pause without state snapshot, defaulting to resume)"
           console.log(`[v0] [Coordinator] ${didStart ? "✓ Resumed" : "⊘ Resume start skipped"}: ${connection.name}${wasRunning}`)
         } catch (error) {
           console.error(`[v0] [Coordinator] Failed to resume engine for connection ${connection.id}:`, error)
@@ -2018,7 +2002,7 @@ export class GlobalTradeEngineCoordinator {
  * engine across module reloads. Real cleanup remains the job of explicit
  * `coordinator.stopEngine()` / `coordinator.stopAll()` calls.
  */
-const engineGlobalThis = globalThis as unknown as {
+const engineGlobalThis = resolveRedisRuntimeRoot() as unknown as {
   __tradeEngineCoordinator?: GlobalTradeEngineCoordinator
   __tradeEngineVersion?: string
   __engine_timers?: Set<ReturnType<typeof setInterval>>

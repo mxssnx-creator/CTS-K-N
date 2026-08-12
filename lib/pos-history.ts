@@ -51,6 +51,7 @@ import {
   inferRealStrategyVariant,
   type RealStrategyVariant,
 } from "@/lib/strategy-real-stats"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 // ── Constants ──────────────────────────────────────────────────────────
 const TTL_SECONDS = 90 * 24 * 60 * 60 // 90 days — the run window we care about
@@ -238,12 +239,11 @@ export function recordPosClosed(input: RecordPosClosedInput): void {
     pipeline: externalPipeline,
   } = input
 
-  if (!connectionId) return
+  const cleanDir = normalizeTradeDirection(direction)
+  if (!connectionId || !cleanDir) return
 
   const cleanSymbol = symbol || "unknown"
   const cleanType   = indicationType || "unknown"
-  const cleanDir    =
-    direction === "long" || direction === "short" ? direction : "unknown"
 
   const win  = pnl > 0
   const grossProfit = Math.max(0,  pnl)
@@ -842,7 +842,8 @@ export async function recordStrategyPositionEntry(
   const parentSetKey = String(input.parentSetKey || setKey.split("#")[0] || setKey)
   const symbol = String(input.symbol || "unknown")
   const indicationType = String(input.indicationType || "unknown")
-  const direction = input.direction === "short" ? "short" : "long"
+  const direction = normalizeTradeDirection(input.direction)
+  if (!direction) return false
   const axisKey = String(input.axisKey || "")
   const strategyVariant = inferRealStrategyVariant(setKey, input.strategyVariant)
   const client = getRedisClient()
@@ -1381,13 +1382,14 @@ export interface ValidPositionsBumpInput {
 export function bumpValidPositions(input: ValidPositionsBumpInput): void {
   const { connectionId, symbol, indicationType, direction, isRunningNow, externalPipeline } = input
   const delta = input.delta ?? 1
-  if (!connectionId || delta <= 0) return
+  const normalizedDirection = normalizeTradeDirection(direction)
+  if (!connectionId || delta <= 0 || !normalizedDirection) return
   const k = VALID_POS_KEY(connectionId)
   const client = externalPipeline ?? getRedisClient().multi()
   client.hincrby(k, "overall", delta)
   if (isRunningNow) client.hincrby(k, "combined", delta)
   client.hincrby(k, `by_symbol:${symbol || "unknown"}`, delta)
-  client.hincrby(k, `by_dir:${direction}`, delta)
+  client.hincrby(k, `by_dir:${normalizedDirection}`, delta)
   client.hincrby(k, `by_type:${indicationType || "unknown"}`, delta)
   client.expire(k, TTL_SECONDS)
   if (!externalPipeline) {
@@ -1515,11 +1517,11 @@ export interface HedgePosAccumulationInput {
  */
 export function bumpHedgePosAccumulation(input: HedgePosAccumulationInput): void {
   const { connectionId, parentSetKey, direction, entryCount, externalPipeline } = input
-  if (!connectionId || !parentSetKey || entryCount <= 0) return
+  const dir = normalizeTradeDirection(direction)
+  if (!connectionId || !parentSetKey || entryCount <= 0 || !dir) return
 
   const key    = HEDGE_ACC_KEY(connectionId)
   const client = externalPipeline ?? getRedisClient().multi()
-  const dir    = direction === "short" ? "short" : "long"
 
   client.hincrby(key, `${parentSetKey}:${dir}`,       entryCount)
   client.hincrby(key, `${parentSetKey}:sets_${dir}`,  1)

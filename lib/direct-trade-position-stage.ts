@@ -1,4 +1,5 @@
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 // This read model is deliberately separate from realised PF/DDT rows. It lets
 // the close/TP/SL/trailing worker continue to manage currently open positions
@@ -37,11 +38,15 @@ function finite(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-function calculateUnrealizedPnlAfterCost(position: Record<string, unknown>, cost: number): number | null {
+function calculateUnrealizedPnlAfterCost(
+  position: Record<string, unknown>,
+  cost: number,
+  direction: "long" | "short",
+): number | null {
   const entry = finite(position.entryPrice)
   const current = finite(position.lastObservedPrice)
   if (entry <= 0 || current <= 0) return null
-  const gross = position.direction === "short"
+  const gross = direction === "short"
     ? ((entry - current) / entry) * 100
     : ((current - entry) / entry) * 100
   return Number((gross - cost).toFixed(4))
@@ -62,7 +67,8 @@ export function buildDirectTradeOpenPositionStage(
     if (position.status !== "open") continue
     const id = typeof position.id === "string" && position.id ? position.id : `open-${rows.length}`
     const symbol = typeof position.symbol === "string" ? position.symbol : "unknown"
-    const direction = position.direction === "short" ? "short" : "long"
+    const direction = normalizeTradeDirection(position.direction, position.side)
+    if (!direction) continue
     const configKey = typeof position.configKey === "string" && position.configKey ? position.configKey : id
     const strategyType = typeof position.strategyType === "string" ? position.strategyType : "standard"
     const cost = normalizePositionCostPercent(position.positionCostPercent ?? POSITION_COST_PERCENT_DEFAULT)
@@ -79,7 +85,7 @@ export function buildDirectTradeOpenPositionStage(
       entryPrice: finite(position.entryPrice),
       lastObservedPrice: finite(position.lastObservedPrice) || null,
       positionCostPercent: cost,
-      unrealizedPnlAfterCost: calculateUnrealizedPnlAfterCost(position, cost),
+      unrealizedPnlAfterCost: calculateUnrealizedPnlAfterCost(position, cost, direction),
       trailingArmed: position.trailingArmed === true,
       exitTactic: typeof position.exitTactic === "string" ? position.exitTactic : "bracket",
     })

@@ -223,6 +223,7 @@ describe("requested regression guardrails", () => {
 
   test("global start preserves operator live intent and credential-gates only requested live trading", () => {
     const source = read("app/api/trade-engine/start/route.ts")
+    const coordinatorSource = read("lib/trade-engine.ts")
 
     expect(source).toContain("function isLiveTradeRequested")
     expect(source).toContain("validateLiveTradeRequirements")
@@ -250,6 +251,14 @@ describe("requested regression guardrails", () => {
     expect(source.indexOf("await updateConnectionState(conn.id, updatedConn")).toBeLessThan(
       source.lastIndexOf("await coordinator.startAll()"),
     )
+    const startAll = coordinatorSource.slice(
+      coordinatorSource.indexOf("async startAll(): Promise<void>"),
+      coordinatorSource.indexOf("ensureBackgroundTimers(): void"),
+    )
+    expect(startAll).toContain("processing start must preserve both requested and effective state")
+    expect(startAll).not.toContain("shouldAutoEnableLiveTrade")
+    expect(startAll).not.toContain("auto_live_trade_enabled")
+    expect(startAll).not.toContain('live_trade_requested: "1"')
   })
 
   test("stopEngine runtime cleanup preserves Main Connection assignment fields", () => {
@@ -543,11 +552,14 @@ describe("requested regression guardrails", () => {
     expect(strategyConfig).toContain("calculatePseudoClosePnl")
   })
 
-  test("simulated live stage reuses duplicate open slots without per-cycle log churn", () => {
+  test("simulated live stage reuses ordinary slots and accumulates Special without per-cycle log churn", () => {
     const source = read("lib/trade-engine/stages/live-stage.ts")
 
     expect(source).toContain("existingSimulatedSlot")
-    expect(source).toContain("if (existingSimulatedSlot) return existingSimulatedSlot")
+    expect(source).toContain("if (existingSimulatedSlot) {")
+    expect(source).toContain("if (isSpecialPosition) {")
+    expect(source).toContain("return accumulateIntoSimulatedPosition(")
+    expect(source).toContain("return existingSimulatedSlot")
     expect(source).not.toContain("simulated slot already open")
   })
 
@@ -557,7 +569,7 @@ describe("requested regression guardrails", () => {
 
     expect(source).toContain("dev_symbol_count_override")
     expect(source).toContain("getExplicitLocalSymbolCap")
-    expect(defaults).toContain("DEFAULT_SYMBOL_COUNT = 1")
+    expect(defaults).toContain("DEFAULT_SYMBOL_COUNT = CANONICAL_FORCED_SYMBOLS.length")
     expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
     expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
@@ -631,7 +643,7 @@ describe("requested regression guardrails", () => {
     expect(processor).toContain("maxPositionsPerDirection: 6")
     expect(matrix).toContain("DIRECT_TRADE_MATRIX_MAX_PER_SYMBOL) || 12")
     expect(matrix).toContain("DIRECT_TRADE_MATRIX_MAX_PER_DIRECTION) || 6")
-    expect(matrix).toContain("buildDirectTradeTakeProfitPositionCostRatios([4, 14], 4)")
+    expect(matrix).toContain("buildDirectTradeTakeProfitPositionCostRatios([4, 8], 2)")
     expect(route).toContain("takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE")
     expect(route).toContain("takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT")
     expect(dashboard).toContain('aria-label="Direct-Trade take-profit PositionCost range"')
@@ -645,6 +657,49 @@ describe("requested regression guardrails", () => {
     expect(processor).toContain("Refusing unverified BingX public host")
     expect(processor).toContain('"open-api.bingx.com"')
     expect(processor).not.toContain("open-api.bingx.pro/openApi/swap/v2/quote/ticker")
+  })
+
+  test("Direct-Trade live control orders persist and reconcile one stable economic intent", () => {
+    const processor = read("scripts/direct-trade-processor.mjs")
+    const service = read("lib/live-order-service.ts")
+    const gateway = read("app/api/trade-engine/direct-trade/order/route.ts")
+    const recoverySoak = read("scripts/run-direct-trade-recovery-soak.mjs")
+    const livePreflight = read("scripts/test-direct-trade-live-preflight.mjs")
+
+    expect(service).toContain("live:direct_order_control:")
+    expect(service).toContain("{ NX: true, EX: DIRECT_ORDER_CONTROL_TTL_SECONDS }")
+    expect(service).toContain("reconcileDirectOrderControl")
+    expect(service).toContain("getOrderDetails(record.symbol, record.orderId || undefined, exchangeClientOrderId)")
+    expect(service).toContain("idempotentReplay: true")
+    expect(processor).toContain('status: state.liveMode ? "opening" : "open"')
+    expect(processor).toContain("if (!(await persistState())) return position")
+    expect(processor).toContain("position.openControlId")
+    expect(processor).toContain("pos.closeControlId")
+    expect(processor).toContain("processPendingAccumulationOrders")
+    expect(processor).toContain("if (pos.blockPendingControlId || pos.dcaPendingControlId) continue")
+    expect(processor).toContain('if (pos.mode === "live")')
+    expect(processor).not.toContain('if (pos.mode === "live" && pos.orderId)')
+    expect(processor).toContain("position.dcaLastFailureAt = Date.now()")
+    expect(processor).toContain("pos.closeRetryAfter = Date.now() + 1_000")
+    expect(processor).toContain('p.status === "open_failed"')
+    expect(processor).not.toContain("pos.closeAttempt =")
+    expect(gateway).toContain("durableControlExists")
+    expect(gateway).toContain("countAccumulated: kind === \"open\" && stage === \"accumulation\"")
+    expect(recoverySoak).toContain('const recoveryDistDir = `.next-recovery-${process.pid}`')
+    expect(recoverySoak).toContain("NEXT_DIST_DIR: recoveryDistDir")
+    expect(recoverySoak).toContain("rmSync(recoveryDistDir, { recursive: true, force: true })")
+    expect(recoverySoak).toContain("sourceMetadataSnapshots")
+    expect(recoverySoak).toContain("writeFileSync(file, contents)")
+    expect(livePreflight).toContain('const preflightDistDir = `.next-live-preflight-${process.pid}`')
+    expect(livePreflight).toContain("NEXT_DIST_DIR: preflightDistDir")
+    expect(livePreflight).toContain("rmSync(preflightDistDir, { recursive: true, force: true })")
+    expect(livePreflight).toContain("sourceMetadataSnapshots")
+    expect(livePreflight).toContain("process.kill(-child.pid, 0)")
+    expect(livePreflight.match(/rmSync\(preflightDistDir/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(livePreflight).toContain("listeningProcessIds(port)")
+    expect(livePreflight).toContain("nextServerProcessIds()")
+    expect(livePreflight).toContain("preflightProcessIds()")
+    expect(livePreflight).toContain("NEXT_DIST_DIR=${preflightDistDir}")
   })
 
   test("standard, axis and trailing sets are ordered before adjust variants", () => {
@@ -668,8 +723,9 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("const symbolConcurrency = Math.max(")
     expect(source).toContain("Math.min(")
     expect(source).toContain("6,")
-    expect(source).toContain("const workers = Array.from({ length: symbolConcurrency }")
-    expect(source).toContain("await new Promise<void>((resolve) => setImmediate(resolve))")
+    expect(source).toContain("getRuntimeCapabilityConcurrency")
+    expect(source).toContain("getConcurrency: () => Math.min(")
+    expect(source).toContain("const evaluated = await mapWithConcurrency(")
     expect(source).toMatch(/stage: "base"[\s\S]{0,240}setImmediate/)
     expect(source).toMatch(/stage: "main"[\s\S]{0,240}setImmediate/)
     expect(source).toMatch(/stage: "real"[\s\S]{0,240}setImmediate/)
@@ -1022,11 +1078,11 @@ describe("requested regression guardrails", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
     const defaults = read("lib/symbol-selection-defaults.ts")
 
-    expect(source).toContain("effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)")
+    expect(source).toContain("effectiveForceSymbols = withCanonicalForcedSymbols(effectiveForceSymbols, devCap)")
     expect(source).toContain("localSymbolCapActive")
     expect(source).toContain("getExplicitLocalSymbolCap")
     expect(defaults).toContain("env.V0_DEV_SYMBOL_COUNT")
-    expect(source).toContain("force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates")
+    expect(source).toContain("Compare the same effective symbol list")
   })
 
   test("local symbol cap preserves operator-selected symbols before slicing", () => {
@@ -1429,6 +1485,10 @@ describe("requested regression guardrails", () => {
     expect(resumeBlock).toContain('desired_status: restoredStatus')
     expect(resumeBlock).toContain('operator_intent: restoredStatus')
     expect(resumeBlock.indexOf('await client.hdel("trade_engine:global", "paused_at", "paused_by", "previous_status")')).toBeGreaterThan(resumeBlock.indexOf('await client.hset("trade_engine:global", {'))
+    expect(resumeBlock).toContain("let hasAuthoritativeStateSnapshot = false")
+    expect(resumeBlock).toContain("hasAuthoritativeStateSnapshot = true")
+    expect(resumeBlock).toContain("hasAuthoritativeStateSnapshot && wasRunningBeforePause !== true")
+    expect(resumeBlock).toContain("legacy pause without state snapshot, defaulting to resume")
   })
 
   test("dashboard detailed logs header action scrolls within the log dialog", () => {
@@ -1614,9 +1674,12 @@ describe("requested regression guardrails", () => {
 
   test("strategy set processing evaluates every current indication without top-k sampling", () => {
     const source = read("lib/strategy-sets-processor.ts")
-    expect(source).toContain("const selectedTotal = rawTotal")
+    expect(source).toContain("let selectedTotal = 0")
+    expect(source).toContain("let rejectedDirectionTotal = 0")
+    expect(source).toContain("selectedTotal++")
     expect(source).toContain("for (const indication of indications)")
-    expect(source).toContain('(["base", "main", "real", "live"] as const).map')
+    expect(source).toContain("STRATEGY_SET_TYPES.flatMap")
+    expect(source).toContain("STRATEGY_DIRECTIONS.map")
     expect(source).toContain("Classify the complete indication inventory in one CPU pass")
     expect(source).not.toContain("selectTopIndications")
     expect(source).not.toContain("MAX_INPUT_MULTIPLIER")
@@ -1802,8 +1865,8 @@ describe("requested regression guardrails", () => {
       quickStart.indexOf("// Store in global quickstart state"),
     )
     const intentWriteIndex = step4.indexOf('await client.hset("trade_engine:global", {')
-    const targetedDispatchIndex = step4.indexOf("await coordinator.startEngine(connectionId, {")
-    const targetedStartIndex = step4.indexOf("const engineStarted = await coord.startEngine")
+    const targetedDispatchIndex = step4.indexOf("const startPromise = coordinator.startEngine(connectionId, {")
+    const targetedStartIndex = step4.indexOf("const engineStarted = process.env.NODE_ENV")
 
     expect(intentWriteIndex).toBeGreaterThanOrEqual(0)
     expect(targetedDispatchIndex).toBeGreaterThanOrEqual(0)
@@ -1812,6 +1875,9 @@ describe("requested regression guardrails", () => {
     // QuickStart must not launch a detached global sweep: that old route
     // could restart a just-stopped connection after the Stop request won.
     expect(step4).not.toMatch(/\bcoordinator\.startAll\(\)/)
+    expect((step4.match(/\.startEngine\(connectionId,/g) || [])).toHaveLength(1)
+    expect(step4).not.toContain("refreshEngines().catch")
+    expect(step4).toContain("quickstartEngineRunningAtDispatch")
     expect(step4).toContain('operator_stopped: "0"')
     expect(step4).toContain("updated_at: quickstartGlobalStartedAt")
     expect(step4).toContain("const quickstartGlobalStartedAt = new Date().toISOString()")
@@ -2260,7 +2326,8 @@ describe("requested regression guardrails", () => {
     expect(evictionBlock).toContain("Do not force a V8 collection here")
     expect(evictionBlock).not.toContain(";(globalThis as any).gc?.()")
     expect(source).toContain("const maxChunkBytes = 64 * 1024")
-    expect(source).toContain("const cooperativeYieldEveryRows = 1")
+    expect(source).toContain("const cooperativeYieldEveryRows = 32")
+    expect(source).toContain("const cooperativeYieldAfterMs = 1")
     expect(source).toContain("const stringKeys = Array.from(d.strings.keys())")
     expect(source).toContain("Map iterators include entries inserted after iteration began")
     expect(source).toContain("private hasActiveInlineEngineOwner")
@@ -2286,7 +2353,7 @@ describe("requested regression guardrails", () => {
 
 
 
-  test("production InlineLocalRedis is enabled by default unless explicitly disabled", () => {
+  test("production InlineLocalRedis is fail-closed unless explicitly enabled", () => {
     const redisDb = read("lib/redis-db.ts")
     const readiness = read("lib/production-readiness.ts")
     const envExample = read(".env.example")
@@ -2294,22 +2361,43 @@ describe("requested regression guardrails", () => {
     expect(redisDb).toContain("function isProdInlineRedisAllowed()")
     expect(redisDb).toContain("function isKiloLocalPreviewRuntime()")
     expect(redisDb).toContain("if (!isKiloLocalPreviewRuntime()) this.startPersistence()")
-    expect(redisDb).toContain('return process.env.ALLOW_PROD_INLINE_REDIS !== "0"')
-    expect(redisDb).toContain('process.env.ALLOW_PROD_INLINE_REDIS = "1"')
+    expect(redisDb).toContain('return process.env.ALLOW_PROD_INLINE_REDIS === "1"')
+    expect(redisDb).toContain("throw new Error(getMissingProductionRedisError())")
     expect(redisDb).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING")
-    expect(readiness).toContain('process.env.ALLOW_PROD_INLINE_REDIS !== "0"')
+    expect(readiness).toContain('process.env.ALLOW_PROD_INLINE_REDIS === "1"')
     expect(readiness).toContain("!kiloLocalPreviewInlineAllowed")
-    expect(readiness).toContain("ALLOW_PROD_INLINE_REDIS=0")
+    expect(readiness).toContain("ALLOW_PROD_INLINE_REDIS=1")
     expect(readiness).toContain('"Global coordinator requires shared Redis"')
     expect(readiness).toContain('"shared_persistence_required"')
-    expect(envExample).toContain("ALLOW_PROD_INLINE_REDIS=1")
+    expect(envExample).toContain("ALLOW_PROD_INLINE_REDIS=0")
   })
 
   test("production readiness exempts credentials only under the explicit paper-mode override", () => {
     const readiness = read("lib/production-readiness.ts")
     expect(readiness).toContain('const forceSimulated = process.env.FORCE_SIMULATED === "1" && process.env.FORCE_LIVE !== "1"')
-    expect(readiness).toContain("if (!forceSimulated && !hasCreds)")
+    expect(readiness).toContain("if (requireConnectionCredentials && !forceSimulated && !hasCreds)")
     expect(readiness).toContain("FORCE_LIVE always wins")
+  })
+
+  test("global pipelines cannot be deadlocked by a credentialless sibling connection", () => {
+    const readiness = read("lib/production-readiness.ts")
+    const autoStart = read("lib/trade-engine-auto-start.ts")
+    const liveToggle = read("app/api/settings/connections/[id]/live-trade/route.ts")
+    expect(readiness).toContain("requireConnectionCredentials?: boolean")
+    expect(autoStart).toContain("assertProductionReadiness({ requireConnectionCredentials: false })")
+    expect(autoStart).toContain("checkProductionReadiness({ requireConnectionCredentials: false })")
+    expect(liveToggle).toContain("checkProductionReadiness({ requireConnectionCredentials: false })")
+    expect(liveToggle).toContain("evaluateRealTradeReadiness({")
+  })
+
+  test("a targeted connection settings save never launches a global sibling healing sweep", () => {
+    const source = read("lib/connection-recoordinator.ts")
+    const targetedStart = source.slice(
+      source.indexOf("if (globalRunning)"),
+      source.indexOf("} else {", source.indexOf("if (globalRunning)")),
+    )
+    expect(targetedStart).toContain("coordinator.startMissingEngines([after])")
+    expect(targetedStart).not.toContain("runTradeEngineHealingSweep")
   })
 
   test("simulated live-stage orders use the idempotent fill/entry counter path", () => {
@@ -2382,7 +2470,8 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
     expect(coordinator).toContain("strategyBlockMaterializationBatchSize")
     expect(coordinator).toContain("materializationCursor")
-    expect(setsProcessor).toContain("const selectedTotal = rawTotal")
+    expect(setsProcessor).toContain("let selectedTotal = 0")
+    expect(setsProcessor).toContain("rejectedDirectionTotal++")
     expect(setsProcessor).not.toContain("selectTopIndications")
     expect(engineManager).toContain("process.memoryUsage().heapTotal")
     expect(engineManager).not.toContain('require("v8")')
@@ -2553,8 +2642,12 @@ describe("requested regression guardrails", () => {
     const monitor = read("components/dashboard/system-monitoring-panel.tsx")
 
     expect(source).toContain("function DashboardRuntimeFooter()")
-    expect(source).toContain("Unique Session / Instance ID")
-    expect(source).toContain("createSessionInstanceId")
+    expect(source).toContain("Current service session")
+    expect(source).toContain("data?.startup?.boot_id")
+    expect(source).toContain("data?.startup?.started_at")
+    expect(source).toContain("Restarts/reloads:")
+    expect(source).not.toContain("cts-v-dashboard-started-at")
+    expect(source).not.toContain("createSessionInstanceId")
     expect(source).toContain("Running: {formatDuration")
     expect(source).toContain("<DashboardRuntimeFooter />")
     expect(source.indexOf("<DashboardRuntimeFooter />")).toBeLessThan(source.indexOf("<SystemMonitoringPanel />"))
@@ -2566,6 +2659,18 @@ describe("requested regression guardrails", () => {
     expect(monitor).toContain("CPU")
     expect(monitor).toContain("Mem")
     expect(monitor).toContain("Redis")
+  })
+
+  test("the Overall editor closes only after verified Settings persistence", () => {
+    const page = read("app/settings/page.tsx")
+    const dialog = read("components/settings/settings-editor-dialog.tsx")
+    const overall = read("components/settings/tabs/overall-tab.tsx")
+
+    expect(page).toContain("const saveAllSettings = async (settingsOverride?: Settings): Promise<boolean>")
+    expect(page).toContain("settingsData?.persistenceVerified !== true")
+    expect(dialog).toContain("const saved = await onSave(settings)")
+    expect(dialog).toContain("if (saved !== false) onOpenChange(false)")
+    expect(overall).toContain("return saveSettings(updatedSettings)")
   })
 
   test("getConnection merges credentials and exchange settings from settings connection hash", async () => {
@@ -2689,8 +2794,8 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("[`s:${symbol}:trailing`]:   String(baseTrailingSets)")
     expect(coordinator).toContain("[`${symbol}:base:trailing`]: String(baseTrailingRunningNow)")
     expect(coordinator).toContain('cached.variant = "trailing"')
-    expect(coordinator).toContain('variant:         (baseSet.trailingProfile && profile.name === "default") ? "trailing" : profile.name')
-    expect(coordinator).toContain('variant:         baseDefault.trailingProfile ? "trailing" : "default"')
+    expect(coordinator).toContain('(set.variant ?? profile.name) as SetCoordRecord["variant"]')
+    expect(coordinator).toContain('baseDefault.trailingProfile && baseDefault.indicationType !== "special"')
   })
 
 
@@ -3163,7 +3268,8 @@ describe("requested regression guardrails", () => {
     expect(smoke).toContain("accountFlatBefore")
     expect(smoke).toContain("accountFlatAfter")
     expect(smoke).toContain("cleanupComplete")
-    expect(smoke).toContain('transport === "bingx-api"')
+    expect(smoke).toContain('const expectedTransport = report.mainnet ? "bingx-api" : "signed-rest-fallback"')
+    expect(smoke).toContain('report.transport.open?.transport === expectedTransport')
     expect(connector).toContain("SDK_ACK_WITHOUT_ORDER_ID")
     expect(connector).toContain("REST retry suppressed to prevent a duplicate order")
     expect(liveStage).toContain('client.get("live_order_smoke:active")')

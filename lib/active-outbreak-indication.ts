@@ -11,6 +11,11 @@
  * unit/performance tests execute the exact same causal calculation.
  */
 
+import {
+  evaluateIndependentDirections,
+  type IndependentDirectionEvaluation,
+} from "@/lib/directional-evaluation"
+
 export const DEFAULT_ACTIVE_OUTBREAK_RANGES = [3, 5, 10] as const
 export const DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS = [2, 3, 5] as const
 export const ACTIVE_MARKET_EXIT_SITUATIONS = [
@@ -50,6 +55,7 @@ export interface ActiveOutbreakMetrics {
   tailAgreement: number
   maximumAdverseMovePct: number
   volatilityPct: number
+  directionEvaluation: IndependentDirectionEvaluation
 }
 
 export interface ActiveOutbreakSignal {
@@ -273,6 +279,11 @@ export function calculateActiveOutbreak(input: ActiveOutbreakInput): ActiveOutbr
   if (priceChangePct + Number.EPSILON < thresholdPct) return null
 
   const direction: "long" | "short" = currentSignedMovePct >= 0 ? "long" : "short"
+  const currentDirectionalMoves = current.slice(1).map((price, index) =>
+    percentChange(current[index], price),
+  )
+  const directionEvaluation = evaluateIndependentDirections(currentDirectionalMoves)
+  if (directionEvaluation.selectedDirection !== direction) return null
   const previousSignedPriceChangePct = percentChange(previous[0], previous[previous.length - 1])
   const previousActivityPct = averageAbsoluteMovement(previous)
   const currentActivityPct = averageAbsoluteMovement(current)
@@ -344,6 +355,7 @@ export function calculateActiveOutbreak(input: ActiveOutbreakInput): ActiveOutbr
     tailAgreement: rounded(tailAgreement),
     maximumAdverseMovePct: rounded(maximumAdverseMovePct),
     volatilityPct: rounded(volatilityPct),
+    directionEvaluation,
   }
   return {
     direction,

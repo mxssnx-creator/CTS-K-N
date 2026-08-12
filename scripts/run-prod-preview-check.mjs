@@ -4,11 +4,13 @@ import { spawn } from "node:child_process"
 import { existsSync, rmSync } from "node:fs"
 import { availableParallelism } from "node:os"
 import process from "node:process"
+import { startPreviewRedisHarness } from "./preview-redis-harness.mjs"
 
 const port = Number(process.env.PORT || 3102)
 const baseUrl = `http://127.0.0.1:${port}`
 const distDir = process.env.NEXT_DIST_DIR || ".next-prod"
 let outputTail = ""
+let previewRedisEnvironment = {}
 const snapshotPath = `/tmp/cts-prod-preview-${process.pid}.json`
 const UI_MAX_SYMBOLS = 32
 const PREVIEW_CRON_SECRET = "prod-preview-cron-secret-1234567890"
@@ -64,6 +66,7 @@ function runVerifier() {
       cwd: process.cwd(),
       env: {
         ...process.env,
+        ...previewRedisEnvironment,
         BASE_URL: baseUrl,
         PORT: String(port),
         REQUIRE_FRESH_CONTINUITY: "1",
@@ -84,6 +87,7 @@ function runPostDeployVerifier() {
       cwd: process.cwd(),
       env: {
         ...process.env,
+        ...previewRedisEnvironment,
         DEPLOYMENT_URL: baseUrl,
         CRON_SECRET: PREVIEW_CRON_SECRET,
       },
@@ -103,6 +107,7 @@ function runSoakVerifier() {
       cwd: process.cwd(),
       env: {
         ...process.env,
+        ...previewRedisEnvironment,
         BASE_URL: baseUrl,
         PORT: String(port),
         START_SIMULATED_ENGINE: "1",
@@ -124,7 +129,7 @@ function runUiMaxVerifier() {
   return new Promise((resolve, reject) => {
     const verifier = spawn(process.execPath, ["scripts/verify-prod-ui-max.mjs"], {
       cwd: process.cwd(),
-      env: { ...process.env, BASE_URL: baseUrl, PORT: String(port) },
+      env: { ...process.env, ...previewRedisEnvironment, BASE_URL: baseUrl, PORT: String(port) },
       stdio: "inherit",
     })
     verifier.once("error", reject)
@@ -157,6 +162,7 @@ function startServer({ engines = false } = {}) {
     detached: process.platform !== "win32",
     env: {
       ...process.env,
+      ...previewRedisEnvironment,
       NODE_ENV: "production",
       NEXT_DIST_DIR: distDir,
       HOST: "127.0.0.1",
@@ -168,8 +174,12 @@ function startServer({ engines = false } = {}) {
       // restart-state tests; the shipped default remains enabled.
       DISABLE_TRADE_ENGINE_AUTOSTART: "1",
       DISABLE_TRADE_ENGINE_IN_PROCESS: engines ? "0" : "1",
-      DISABLE_IN_PROCESS_CONTINUITY: engines ? "0" : "1",
-      ALLOW_PROD_INLINE_REDIS: "1",
+      // The focused UI verifier starts exactly one selected connection through
+      // QuickStart.  A parallel continuity sweep can otherwise start another
+      // enabled template and turn the UI latency test into a two-engine load
+      // test unrelated to the selected card/dialog workflow.
+      DISABLE_IN_PROCESS_CONTINUITY: engines && !uiOnlyRequested ? "0" : "1",
+      ALLOW_PROD_INLINE_REDIS: "0",
       ALLOW_INLINE_REDIS_LIVE_TRADING: "0",
       ALLOW_PROD_SIMULATED: "1",
       FORCE_SIMULATED: "1",
@@ -183,6 +193,11 @@ function startServer({ engines = false } = {}) {
       CRON_SECRET: PREVIEW_CRON_SECRET,
       BINGX_API_KEY: "",
       BINGX_API_SECRET: "",
+      BINGX_APIKEY: "",
+      BINGX_SECRET: "",
+      BINGX_SECRET_KEY: "",
+      BINGX_X02_API_KEY: "",
+      BINGX_X02_API_SECRET: "",
       BYBIT_API_KEY: "",
       BYBIT_API_SECRET: "",
       PIONEX_API_KEY: "",
@@ -372,6 +387,12 @@ async function main() {
     throw new Error(`Production build not found in ${distDir}; run NEXT_DIST_DIR=${distDir} npm run build first`)
   }
 
+  const redisHarness = await startPreviewRedisHarness({
+    required: true,
+    label: "production preview",
+  })
+  previewRedisEnvironment = redisHarness.environment
+
   let firstServer
   let secondServer
   let engineServer
@@ -390,6 +411,7 @@ async function main() {
         productionUiOnly: true,
         productionUiMaxSymbolsVerified: true,
         simulatedEngineSymbols: UI_MAX_SYMBOLS,
+        redisBackend: redisHarness.kind,
         realExchangeOrdersSubmitted: 0,
       }, null, 2))
       return
@@ -496,12 +518,14 @@ async function main() {
       databaseRequestRates,
       simulatedEngineSymbols: productionSoakSymbolCount,
       productionUiMaxSymbolsVerified: maxSymbolsRequested,
+      redisBackend: redisHarness.kind,
       realExchangeOrdersSubmitted: 0,
     }, null, 2))
   } finally {
     if (firstServer) await stopServer(firstServer)
     if (secondServer) await stopServer(secondServer)
     if (engineServer) await stopServer(engineServer)
+    await redisHarness.stop()
   }
 }
 

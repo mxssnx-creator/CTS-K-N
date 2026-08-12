@@ -34,7 +34,7 @@ export async function POST(
     }
     const requested = parseBooleanInput(rawFlag)
     if (requested && process.env.NODE_ENV === "production") {
-      const production = await checkProductionReadiness()
+      const production = await checkProductionReadiness({ requireConnectionCredentials: false })
       if (!production.ready) {
         return NextResponse.json(productionReadinessJson(production), { status: 503 })
       }

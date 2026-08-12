@@ -6,7 +6,7 @@ describe("BingX public API host failover", () => {
 
   beforeEach(() => {
     process.env.BINGX_PUBLIC_ORIGIN = "https://open-api.bingx.com"
-    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://testnet-open-api.bingx.com"
+    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://open-api.bingx.pro"
     resetBingXPublicOriginForTests()
   })
 
@@ -32,19 +32,37 @@ describe("BingX public API host failover", () => {
 
     expect(seen).toEqual([
       "https://open-api.bingx.com",
-      "https://testnet-open-api.bingx.com",
-      "https://testnet-open-api.bingx.com",
+      "https://open-api.bingx.pro",
+      "https://open-api.bingx.pro",
     ])
   })
 
   test("ignores an unverified fallback origin before fetch", async () => {
-    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://open-api.bingx.pro"
+    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://example.invalid"
     const fetchImpl = jest.fn(async () => { throw new Error("primary unavailable") }) as typeof fetch
 
     await expect(fetchBingXPublic("/openApi/swap/v2/quote/ticker", {}, { fetchImpl })).rejects.toThrow("primary unavailable")
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(String(fetchImpl.mock.calls[0][0])).toContain("open-api.bingx.com")
-    expect(String(fetchImpl.mock.calls[0][0])).not.toContain("open-api.bingx.pro")
+    expect(String(fetchImpl.mock.calls[0][0])).not.toContain("example.invalid")
+  })
+
+  test("pins Prod-VST quote reads to the approved .com origin", async () => {
+    process.env.BINGX_PUBLIC_ORIGIN = "https://open-api-vst.bingx.com"
+    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
+    resetBingXPublicOriginForTests()
+    const seen: string[] = []
+    const fetchImpl = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input))
+      seen.push(url.origin)
+      throw new Error("primary unavailable")
+    }) as typeof fetch
+
+    await expect(
+      fetchBingXPublic("/openApi/swap/v2/quote/contracts", {}, { fetchImpl, timeoutMs: 1000 }),
+    ).rejects.toThrow("primary unavailable")
+
+    expect(seen).toEqual(["https://open-api-vst.bingx.com"])
   })
 
   test("refuses trade paths and write methods before fetch", async () => {
@@ -56,5 +74,20 @@ describe("BingX public API host failover", () => {
       "Refusing non-read-only BingX public request",
     )
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  test("pins an account-scoped public read to the exact Prod-VST origin", async () => {
+    const seen: string[] = []
+    const fetchImpl = jest.fn(async (input: string | URL | Request) => {
+      seen.push(new URL(String(input)).origin)
+      return Response.json({ code: 0, data: [] })
+    }) as typeof fetch
+
+    await fetchBingXPublic("/openApi/swap/v2/quote/contracts", {}, {
+      fetchImpl,
+      origins: ["https://open-api-vst.bingx.com"],
+    })
+
+    expect(seen).toEqual(["https://open-api-vst.bingx.com"])
   })
 })

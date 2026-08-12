@@ -75,7 +75,7 @@ describe("base-stage symbol admission concurrency", () => {
     sets.clear()
   })
 
-  test("concurrent same-symbol batches cannot exceed directional ceilings", async () => {
+  test("concurrent same-lane batches create only the indication-selected direction", async () => {
     const { generateBasePositions } = await import("@/lib/trade-engine/stages/base-stage")
     const connection = { id: "conn-race", name: "Race test" } as any
     const indications = Array.from({ length: 8 }, (_, index) => ({
@@ -97,7 +97,7 @@ describe("base-stage symbol admission concurrency", () => {
     const created = batches.flat()
 
     expect(created.filter((position) => position.direction === "long")).toHaveLength(1)
-    expect(created.filter((position) => position.direction === "short")).toHaveLength(1)
+    expect(created.filter((position) => position.direction === "short")).toHaveLength(0)
 
     const retry = await generateBasePositions(connection, indications, {
       maxLongPositions: 1,
@@ -106,7 +106,7 @@ describe("base-stage symbol admission concurrency", () => {
     expect(retry).toEqual([])
   })
 
-  test("same-symbol configurations retain one independent slot per direction", async () => {
+  test("same-symbol configurations retain one independent slot in their signal direction", async () => {
     const { generateBasePositions } = await import("@/lib/trade-engine/stages/base-stage")
     const connection = { id: "conn-configs", name: "Config test" } as any
     const common = {
@@ -142,11 +142,60 @@ describe("base-stage symbol admission concurrency", () => {
     })
 
     expect(created.filter((position) => position.direction === "long")).toHaveLength(2)
-    expect(created.filter((position) => position.direction === "short")).toHaveLength(2)
+    expect(created.filter((position) => position.direction === "short")).toHaveLength(0)
     expect(new Set(created.map((position) => position.laneId)).size).toBe(2)
     expect(new Set(created.map((position) => position.indicationConfigKey)).size).toBe(2)
 
     const retry = await generateBasePositions(connection, indications)
     expect(retry).toEqual([])
+  })
+
+  test("preserves naturally asymmetric indication counts and skips neutral rows", async () => {
+    const { generateBasePositions } = await import("@/lib/trade-engine/stages/base-stage")
+    const connection = { id: "conn-asymmetric", name: "Asymmetric directions" } as any
+    const common = {
+      connectionId: connection.id,
+      connectionName: connection.name,
+      symbol: "BTC-USDT",
+      timeframe: "1m",
+      timestamp: 1_700_000_200_000,
+      indicators: {},
+      strength: 0.8,
+      price: 60_000,
+      indicationType: "trend",
+      indicationName: "directional-score",
+    }
+    const indications = [
+      ...[1, 2, 3].map((index) => ({
+        ...common,
+        timestamp: common.timestamp + index,
+        signal: "buy" as const,
+        direction: "long" as const,
+        configurationId: `long-config-${index}`,
+      })),
+      {
+        ...common,
+        timestamp: common.timestamp + 4,
+        signal: "sell" as const,
+        direction: "short" as const,
+        configurationId: "short-config-1",
+      },
+      {
+        ...common,
+        timestamp: common.timestamp + 5,
+        signal: "neutral" as const,
+        configurationId: "neutral-config",
+      },
+    ]
+
+    const created = await generateBasePositions(connection, indications)
+
+    expect(created.filter((position) => position.direction === "long")).toHaveLength(3)
+    expect(created.filter((position) => position.direction === "short")).toHaveLength(1)
+    expect(created).toHaveLength(4)
+    expect(new Set(created.map((position) => position.baseSetKey)).size).toBe(4)
+    expect(created.every((position) =>
+      position.baseSetKey.endsWith(`:${position.direction}`),
+    )).toBe(true)
   })
 })

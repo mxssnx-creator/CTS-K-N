@@ -12,12 +12,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { X, Save } from "lucide-react"
 import type { Settings } from "@/lib/file-storage"
+import { useTheme } from "next-themes"
 
 interface SettingsEditorDialogProps {
   isOpen: boolean
   onOpenChange: (open: boolean) => void
   settings: Settings
-  onSave: (settings: Settings) => Promise<void>
+  onSave: (settings: Settings) => Promise<boolean | void>
   onSettingChange: (key: keyof Settings, value: any) => void
 }
 
@@ -30,12 +31,13 @@ export function SettingsEditorDialog({
 }: SettingsEditorDialogProps) {
   const [saving, setSaving] = useState(false)
   const [activeSection, setActiveSection] = useState("core")
+  const { setTheme } = useTheme()
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      await onSave(settings)
-      onOpenChange(false)
+      const saved = await onSave(settings)
+      if (saved !== false) onOpenChange(false)
     } finally {
       setSaving(false)
     }
@@ -219,13 +221,21 @@ export function SettingsEditorDialog({
               <CardContent className="space-y-6">
                 <div className="space-y-2">
                   <Label htmlFor="theme">Theme</Label>
-                  <Select value={settings.theme || "dark"} onValueChange={(value) => onSettingChange("theme", value)}>
+                  <Select value={settings.theme || "blackwhiteblue"} onValueChange={(value) => {
+                    onSettingChange("theme", value)
+                    setTheme(value)
+                  }}>
                     <SelectTrigger id="theme">
                       <SelectValue placeholder="Select theme" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="light">Light</SelectItem>
                       <SelectItem value="dark">Dark</SelectItem>
+                      <SelectItem value="blackwhiteblue">Black / White / Blue</SelectItem>
+                      <SelectItem value="white">Clear White</SelectItem>
+                      <SelectItem value="grey">Tactical Grey</SelectItem>
+                      <SelectItem value="blackwhite">Monochrome</SelectItem>
+                      <SelectItem value="whiteactive">Signal Blue</SelectItem>
                       <SelectItem value="auto">Auto</SelectItem>
                     </SelectContent>
                   </Select>

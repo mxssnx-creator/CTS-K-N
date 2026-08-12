@@ -27,6 +27,7 @@ import {
   PREVIOUS_POSITION_MIN_PF_RATIO,
   movePctToMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 export type SignalDirection = "long" | "short"
 export type SignalPerformanceDirection = SignalDirection | "overall"
@@ -1234,14 +1235,15 @@ export async function listSignalPerformance(
   const client = getRedisClient()
   const indexKey = `signal:performance:index:${safePart(connectionId)}`
   const keys = await client.smembers(indexKey).catch(() => [])
-  const states = await Promise.all(keys.map(async (key) => {
+  const states = (await Promise.all(keys.map(async (key) => {
     const raw = await client.hgetall(key).catch(() => ({}))
     const parts = key.split(":")
-    const direction = parts.at(-1) === "short" ? "short" : "long"
+    const direction = normalizeTradeDirection(parts.at(-1))
+    if (!direction) return null
     const symbol = parts.at(-2) || "unknown"
     const sourceId = parts.at(-3) || "unknown"
     return parsePerformanceState(raw, sourceId, symbol, direction)
-  }))
+  }))).filter((state): state is SignalPerformanceState => state !== null)
   return states.sort((left, right) =>
     left.symbol.localeCompare(right.symbol) ||
     left.direction.localeCompare(right.direction) ||
@@ -1673,8 +1675,8 @@ function lowStopConsensus(
   const longWeight = byDirection.long.reduce((sum, evaluation) => sum + voteWeight(evaluation), 0)
   const shortWeight = byDirection.short.reduce((sum, evaluation) => sum + voteWeight(evaluation), 0)
   const totalWeight = longWeight + shortWeight
-  if (!(totalWeight > 0)) return null
-  const direction: SignalDirection = longWeight >= shortWeight ? "long" : "short"
+  if (!(totalWeight > 0) || longWeight === shortWeight) return null
+  const direction: SignalDirection = longWeight > shortWeight ? "long" : "short"
   const contributors = byDirection[direction]
   const winningWeight = direction === "long" ? longWeight : shortWeight
   const agreement = winningWeight / totalWeight
@@ -1854,6 +1856,20 @@ async function persistSignalCycle(
   const rawWindow60 = `indications_window:${connectionId}:last60min`
   for (const key of [activeKey, activeRawKey, setWindow5, setWindow60, rawWindow5, rawWindow60]) {
     pipeline.hset(key, `${symbol}:signal`, String(activeCount))
+  }
+  const signalDirectionCounts = indications.reduce(
+    (counts, indication) => {
+      const direction = indication?.metadata?.direction
+      if (direction === "long" || direction === "short") counts[direction]++
+      return counts
+    },
+    { long: 0, short: 0 },
+  )
+  for (const key of [activeKey, setWindow5, setWindow60]) {
+    pipeline.hset(key, {
+      [`${symbol}:signal:long`]: String(signalDirectionCounts.long),
+      [`${symbol}:signal:short`]: String(signalDirectionCounts.short),
+    })
   }
   pipeline.expire(activeKey, 600)
   pipeline.expire(activeRawKey, 600)

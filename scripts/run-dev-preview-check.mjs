@@ -6,6 +6,7 @@ import { spawn } from "node:child_process"
 import { readFileSync, rmSync } from "node:fs"
 import { resolve } from "node:path"
 import process from "node:process"
+import { startPreviewRedisHarness } from "./preview-redis-harness.mjs"
 
 const port = Number(process.env.PORT || 3103)
 const baseUrl = `http://127.0.0.1:${port}`
@@ -19,6 +20,7 @@ const devDistPath = resolve(process.cwd(), devDistDir)
 const snapshotPath = `/tmp/cts-dev-preview-${process.pid}.json`
 const debugAdminSecret = `cts-dev-soak-${process.pid}-admin-secret`
 const maxSymbolsRequested = process.argv.includes("--max-symbols")
+const fullSoakRequested = process.env.DEV_PREVIEW_FULL_SOAK === "1"
 const devSoakSymbolCount = maxSymbolsRequested
   ? 32
   : Math.max(1, Math.min(32, Number(process.env.DEV_SOAK_SYMBOL_COUNT || 12)))
@@ -45,6 +47,7 @@ const devNodeHeapMb = Math.max(
   Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 12288)),
 )
 let outputTail = ""
+let previewRedisEnvironment = {}
 
 rmSync(snapshotPath, { force: true })
 rmSync(devDistPath, { recursive: true, force: true })
@@ -213,6 +216,7 @@ function runSoakVerifier() {
       cwd: process.cwd(),
       env: {
         ...process.env,
+        ...previewRedisEnvironment,
         BASE_URL: baseUrl,
         PORT: String(port),
         START_SIMULATED_ENGINE: "1",
@@ -220,10 +224,10 @@ function runSoakVerifier() {
         SOAK_DURATION_MS: String(devSoakDurationMs),
         RUNTIME_MODE: "development",
         SOAK_ADMIN_SECRET: debugAdminSecret,
-        // Constrained-host budgets: the in-process simulated Redis cannot churn
-        // 1–7 day TTL progression/snapshot keys within a memory-fitting short
-        // soak, so raise the post-warmup RSS and database key-growth budgets
-        // above the strict CI defaults. Production CI leaves these unset.
+        // Constrained-host budgets: the exhaustive calculation can churn 1–7
+        // day TTL progression keys during a short soak. Keep explicit debug
+        // budgets above the strict production defaults; full soaks still use
+        // one shared Redis backend across every Next.js worker.
         SOAK_RSS_GROWTH_LIMIT_KB: process.env.DEV_SOAK_RSS_GROWTH_LIMIT_KB || String(3 * 1024 * 1024),
         SOAK_DB_GROWTH_LIMIT: process.env.DEV_SOAK_DB_GROWTH_LIMIT || String(60_000),
       },
@@ -238,9 +242,8 @@ function runSoakVerifier() {
 }
 
 // Bounded, memory-fitting preview verification for constrained hosts (default).
-// The full stress soak runs the exhaustive engine against the in-process Redis,
-// which holds the entire key set in the Node heap and OOMs small containers
-// before its plateau/leak checks can pass. This smoke covers the real
+// The full stress soak requires shared Redis and is intentionally opt-in on
+// small CI runners. This smoke covers the real
 // production-critical path — boot, migrations, explicit QuickStart symbol
 // preservation (the dev-preview regression), and endpoint health — without the
 // unbounded key growth that exhausts an in-process Redis in a constrained box.
@@ -328,11 +331,17 @@ async function stopServer(child) {
 }
 
 async function main() {
+  const redisHarness = await startPreviewRedisHarness({
+    required: fullSoakRequested,
+    label: "development full soak",
+  })
+  previewRedisEnvironment = redisHarness.environment
   const server = spawn(process.execPath, [nextBin, "dev", "-H", "127.0.0.1", "-p", String(port)], {
     cwd: process.cwd(),
     detached: process.platform !== "win32",
     env: {
       ...process.env,
+      ...previewRedisEnvironment,
       NEXT_DIST_DIR: devDistDir,
       DISABLE_TRADE_ENGINE_AUTOSTART: "1",
       DISABLE_TRADE_ENGINE_IN_PROCESS: "0",
@@ -343,15 +352,36 @@ async function main() {
       V0_DEV_SYMBOL_COUNT: String(devSoakSymbolCount),
       ENGINE_SYMBOL_CONCURRENCY: process.env.DEV_ENGINE_SYMBOL_CONCURRENCY || "2",
       STRATEGY_FLOW_SYMBOL_CONCURRENCY: process.env.DEV_STRATEGY_SYMBOL_CONCURRENCY || "2",
-      // The development verifier runs Next's compiler, the inline Redis
-      // fallback and the complete engine in one process. Exercise the full
-      // cartesian Main calculation, but keep the existing explicit Real-row
+      // A cold exhaustive replay retains large immutable result vectors while
+      // Next's development compiler is resident in the same process. Keep one
+      // historic symbol active at a time and give the adaptive limiter a real
+      // RSS pressure boundary; without a soft limit RSS pressure is
+      // intentionally unknown and CPU lanes cannot contract before long GC
+      // pauses starve health/control routes.
+      PREHISTORIC_SYMBOL_CONCURRENCY:
+        process.env.DEV_PREHISTORIC_SYMBOL_CONCURRENCY || "1",
+      PREHISTORIC_CONFIG_CONCURRENCY:
+        process.env.DEV_PREHISTORIC_CONFIG_CONCURRENCY || "2",
+      PREHISTORIC_CONFIG_TYPE_CONCURRENCY:
+        process.env.DEV_PREHISTORIC_CONFIG_TYPE_CONCURRENCY || "1",
+      PREHISTORIC_CALC_YIELD_EVERY:
+        process.env.DEV_PREHISTORIC_CALC_YIELD_EVERY || "1024",
+      // Full dev soaks validate every configuration and every selected symbol,
+      // but use a bounded one-hour market window by default so the complete
+      // Base→Main→Real→Live lifecycle fits the 20-minute acceptance budget.
+      // Production keeps the canonical eight-hour default unless an operator
+      // explicitly supplies PREHISTORIC_RANGE_HOURS.
+      PREHISTORIC_RANGE_HOURS:
+        process.env.DEV_PREHISTORIC_RANGE_HOURS || "1",
+      CTS_RSS_SOFT_LIMIT_MB:
+        process.env.DEV_RSS_SOFT_LIMIT_MB || "4096",
+      // Exercise the full cartesian Main calculation, but keep the existing
+      // explicit Real-row
       // output boundary small enough that the diagnostic process does not
       // retain multi-gigabyte transient graphs. Production/operator defaults
       // remain unchanged.
       STRATEGY_REAL_SETS_CEILING: process.env.DEV_STRATEGY_REAL_SETS_CEILING || "600",
       STRATEGY_VARIANT_BUILD_CONCURRENCY: process.env.DEV_STRATEGY_VARIANT_BUILD_CONCURRENCY || "32",
-      PREHISTORIC_SYMBOL_CONCURRENCY: process.env.DEV_PREHISTORIC_SYMBOL_CONCURRENCY || "2",
       MARKET_DATA_LOAD_CONCURRENCY: "1",
       CRON_SYMBOL_LIMIT: String(devSoakSymbolCount),
       REDIS_DEBUG_ENABLED: "1",
@@ -382,9 +412,8 @@ async function main() {
     assertDevOutputIntegrity()
     await prewarmDevRoutes()
     assertDevOutputIntegrity()
-    const fullSoak = process.env.DEV_PREVIEW_FULL_SOAK === "1"
     try {
-      if (fullSoak) {
+      if (fullSoakRequested) {
         await runSoakVerifier()
       } else {
         await runSmokeVerifier()
@@ -404,13 +433,15 @@ async function main() {
     assertDevOutputIntegrity()
     console.log(JSON.stringify({
       success: true,
-      mode: fullSoak ? "development-paper-engine-stress" : "development-paper-engine-smoke",
+      mode: fullSoakRequested ? "development-paper-engine-stress" : "development-paper-engine-smoke",
       symbols: devSoakSymbolCount,
       nodeHeapLimitMb: devNodeHeapMb,
+      redisBackend: redisHarness.kind,
       realExchangeOrdersSubmitted: 0,
     }, null, 2))
   } finally {
     await stopServer(server)
+    await redisHarness.stop()
     rmSync(snapshotPath, { force: true })
     rmSync(devDistPath, { recursive: true, force: true })
   }

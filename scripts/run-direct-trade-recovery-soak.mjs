@@ -7,7 +7,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process"
-import { readFileSync, readdirSync, readlinkSync } from "node:fs"
+import { readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs"
 import net from "node:net"
 import process from "node:process"
 
@@ -15,6 +15,17 @@ const initialPort = Math.max(1024, Math.floor(Number(process.env.DIRECT_TRADE_RE
 let port = initialPort
 let baseUrl = `http://127.0.0.1:${port}`
 const snapshotPath = `/tmp/cts-direct-trade-recovery-${process.pid}.json`
+// Never let a dev crash/restart soak reuse the canonical production output.
+// Next's dev and production webpack runtimes are intentionally incompatible;
+// sharing `.next` makes a perfectly valid build order-dependent and can hide
+// the actual persistence contract behind `__webpack_require__` errors.
+const recoveryDistDir = `.next-recovery-${process.pid}`
+// Next dev rewrites these tracked metadata files to point at its selected
+// dist directory. Preserve the exact caller state so the diagnostic itself
+// never leaves source changes behind, even when it intentionally kills Next.
+const sourceMetadataSnapshots = new Map(
+  ["next-env.d.ts", "tsconfig.json"].map((file) => [file, readFileSync(file, "utf8")]),
+)
 let server = null
 let outputTail = ""
 
@@ -109,6 +120,7 @@ function serverEnv() {
     BYBIT_API_KEY: "",
     BYBIT_API_SECRET: "",
     V0_REDIS_SNAPSHOT_PATH: snapshotPath,
+    NEXT_DIST_DIR: recoveryDistDir,
     PORT: String(port),
     NODE_OPTIONS: process.env.DIRECT_TRADE_RECOVERY_NODE_OPTIONS || "--max-old-space-size=2048",
   }
@@ -187,8 +199,13 @@ function processGroupId(pid) {
 }
 
 function signalProcessTree(rootPid, signal) {
-  const ownProcessGroup = processGroupId(rootPid)
-  if (ownProcessGroup === rootPid) {
+  // startServer always uses detached=true on POSIX, making this exact child
+  // the leader of a private process group. Some container runtimes expose
+  // host PIDs under /proc while Node reports namespace PIDs; in that case the
+  // /proc verification above cannot resolve even though the private group is
+  // valid. Signal the group we explicitly created, then fall back to exact
+  // descendants only if group signalling is unavailable.
+  if (process.platform !== "win32") {
     try {
       process.kill(-rootPid, signal)
       return [rootPid]
@@ -311,6 +328,27 @@ async function stopServer(signal = "SIGTERM") {
       // The process can exit between the liveness check and signalling.
     }
   }
+  // Next dev may replace its compiler/server child while the parent is being
+  // killed. Re-scan only processes that newly own this test's previously free
+  // port (or appeared as a new next-server) and terminate them in a bounded
+  // loop. This closes the post-discovery race without ever touching a process
+  // that owned the port before the harness started.
+  for (let pass = 0; pass < 20; pass++) {
+    const latePortProcesses = listeningProcessIds(port)
+      .filter((pid) => !(child.listeningBefore || new Set()).has(pid))
+    const lateNextServers = nextServerProcessIds()
+      .filter((pid) => !(child.nextServerBefore || new Set()).has(pid))
+    const lateOwned = [...new Set([...latePortProcesses, ...lateNextServers])]
+    if (lateOwned.length === 0 && !(await isPortOpen())) break
+    for (const pid of lateOwned) {
+      try {
+        process.kill(pid, "SIGKILL")
+      } catch {
+        // The process can exit between the re-scan and signalling.
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
   child.stdout?.destroy()
   child.stderr?.destroy()
   server = null
@@ -336,6 +374,8 @@ async function runPhase(phase) {
 }
 
 try {
+  rmSync(snapshotPath, { force: true })
+  rmSync(recoveryDistDir, { recursive: true, force: true })
   startServer()
   await waitForReady()
   await runPhase("before-crash")
@@ -369,4 +409,7 @@ try {
   process.exitCode = 1
 } finally {
   await stopServer()
+  rmSync(recoveryDistDir, { recursive: true, force: true })
+  rmSync(snapshotPath, { force: true })
+  for (const [file, contents] of sourceMetadataSnapshots) writeFileSync(file, contents)
 }

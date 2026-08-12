@@ -25,6 +25,7 @@ import InstallManager from "@/components/settings/install-manager"
 import { LogsViewer } from "@/components/settings/logs-viewer"
 import { StatisticsOverview } from "@/components/settings/statistics-overview"
 import { SettingsEditorDialog } from "@/components/settings/settings-editor-dialog"
+import { CANONICAL_FORCED_BASE_SYMBOLS } from "@/lib/forced-symbols"
 
 interface OverallTabProps {
   settings: AppSettings
@@ -39,6 +40,7 @@ interface OverallTabProps {
   importSettings: () => void
   exporting: boolean
   importing: boolean
+  saveSettings: (settings: any) => Promise<boolean>
   newForcedSymbol: string
   setNewForcedSymbol: (value: string) => void
   connections: ExchangeConnection[]
@@ -60,6 +62,7 @@ export function OverallTab({
   importSettings,
   exporting,
   importing,
+  saveSettings,
 }: OverallTabProps) {
   const [overallSubTab, setOverallSubTab] = useState("main")
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = useState(false)
@@ -69,6 +72,28 @@ export function OverallTab({
 
   return (
     <TabsContent value="overall" className="space-y-6 animate-in fade-in duration-300">
+      <Card className="border-primary/25 bg-gradient-to-r from-primary/[0.08] via-background to-background">
+        <CardHeader className="pb-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <CardTitle className="text-lg">Configuration backup</CardTitle>
+              <CardDescription>
+                Download or restore the complete Settings snapshot and existing connection configuration. API credentials are never exported or overwritten.
+              </CardDescription>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Button onClick={exportSettings} disabled={exporting} variant="outline">
+                <Download className="mr-2 h-4 w-4" />
+                {exporting ? "Exporting..." : "Download settings"}
+              </Button>
+              <Button onClick={importSettings} disabled={importing}>
+                <Upload className="mr-2 h-4 w-4" />
+                {importing ? "Importing..." : "Upload settings"}
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+      </Card>
       <Tabs value={overallSubTab} onValueChange={setOverallSubTab}>
         <TabsList className="grid grid-cols-5 w-full bg-muted/50 p-1">
           <TabsTrigger value="main" className="settings-tab-trigger">Main</TabsTrigger>
@@ -564,32 +589,15 @@ export function OverallTab({
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {(settings.forcedSymbols || ["XRP", "BCH"]).map((symbol: string) => (
+                    {CANONICAL_FORCED_BASE_SYMBOLS.map((symbol: string) => (
                       <Badge key={symbol} variant="default" className="flex items-center gap-1 px-3 py-1">
                         {symbol}
-                        <button
-                          onClick={() => removeForcedSymbol(symbol)}
-                          className="ml-1 hover:text-destructive"
-                          type="button"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
                       </Badge>
                     ))}
                   </div>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Add symbol (e.g., MATIC)"
-                      value={newForcedSymbol}
-                      onChange={(e) => setNewForcedSymbol(e.target.value.toUpperCase())}
-                      onKeyDown={(e) => e.key === "Enter" && addForcedSymbol()}
-                      className="max-w-[200px]"
-                    />
-                    <Button variant="outline" size="sm" onClick={addForcedSymbol}>
-                      <Plus className="h-4 w-4 mr-1" />
-                      Add
-                    </Button>
-                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Locked mandatory basket. Dynamic selections may add symbols but cannot remove these four.
+                  </p>
                 </div>
               </div>
             </CardContent>
@@ -765,10 +773,10 @@ export function OverallTab({
             onOpenChange={setIsSettingsDialogOpen}
             settings={settings}
             onSave={async (updatedSettings) => {
-              // Save settings via API or parent handler
               Object.entries(updatedSettings).forEach(([key, value]) => {
                 handleSettingChange(key as keyof AppSettings, value)
               })
+              return saveSettings(updatedSettings)
             }}
             onSettingChange={handleSettingChange}
           />

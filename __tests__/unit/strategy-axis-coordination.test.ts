@@ -398,20 +398,15 @@ describe("strategy position-count axis coordination", () => {
       const prevOptions = enabled(0) ? [0, 4, 6, 8, 10, 12] : [0]
       const lastOptions = enabled(1) ? [0, 1, 2, 3, 4] : [0]
       const contMax = enabled(2) ? 8 : 0
-      const maxLiveOpen = Math.max(3, 2)
+      const parentDirectionOpen = 3
       const contOptions = enabled(2)
-        ? [0, ...AXIS_CONT.filter((v) => v <= Math.min(contMax, maxLiveOpen))]
+        ? [0, ...AXIS_CONT.filter((v) => v <= Math.min(contMax, parentDirectionOpen))]
         : [0]
 
-      const dirs = ["long", "short"] as const
-      const longOpen = 3
-      const shortOpen = 2
       const expected = prevOptions.reduce((sum, prev) => {
         return sum + lastOptions.reduce((s2, last) => {
           return s2 + contOptions.reduce((s3, cont) => {
-            const longOk = cont <= longOpen
-            const shortOk = cont <= shortOpen
-            return s3 + (longOk ? 1 : 0) + (shortOk ? 1 : 0)
+            return s3 + (cont <= parentDirectionOpen ? 1 : 0)
           }, 0)
         }, 0)
       }, 0)
@@ -435,6 +430,8 @@ describe("strategy position-count axis coordination", () => {
           expect(set.axisWindows?.cont).toBe(0)
         }
         expect(set.axisWindows?.pause).toBe(enabled(3) ? 2 : 0)
+        expect(set.direction).toBe("long")
+        expect(set.axisWindows?.direction).toBe("long")
       }
     },
   )
@@ -459,13 +456,13 @@ describe("strategy position-count axis coordination", () => {
 
     // The four closed results average only 0.75× their PositionCost, so the
     // `prev=4` PF filter must be withheld below the configured 1.2 threshold.
-    expect(sets).toHaveLength(15)
+    expect(sets).toHaveLength(9)
     expect(sets.every((set) => set.setKey.includes("_u3"))).toBe(true)
     expect(sets.every((set) => set.axisWindows?.pause === 3)).toBe(true)
     expect(sets.every((set) => set.axisWindows?.prev === 0)).toBe(true)
     expect(sets.every((set) => [0, 1, 2].includes(set.axisWindows?.last))).toBe(true)
     expect(sets.every((set) => [0, 1, 2].includes(set.axisWindows?.cont))).toBe(true)
-    expect(sets.some((set) => set.axisWindows?.cont === 2 && set.direction === "short")).toBe(false)
+    expect(sets.every((set) => set.direction === "long")).toBe(true)
     expect(Math.max(...sets.map((set) => set.entryCount))).toBe(6)
   })
 
@@ -478,7 +475,7 @@ describe("strategy position-count axis coordination", () => {
       pause: { enabled: true, maxWindow: 8 },
     }
     const sets = coordinator.expandAxisSets(baseSet([]), 1.2, 2, { long: 1, short: 1 }, 0, 100)
-    expect(sets).toHaveLength(4)
+    expect(sets).toHaveLength(2)
     expect(sets.every((set) => set.axisWindows?.prev === 0 && set.axisWindows?.last === 0)).toBe(true)
     expect(sets.every((set) => [0, 1].includes(set.axisWindows?.cont))).toBe(true)
   })
@@ -492,8 +489,65 @@ describe("strategy position-count axis coordination", () => {
       pause: { enabled: false, maxWindow: 0 },
     }
     const sets = coordinator.expandAxisSets(baseSet([]), 1.2, 4, { long: 4, short: 4 }, 0, 3)
-    expect(sets).toHaveLength(10)
-    expect(new Set(sets.map((set: StrategySet) => set.setKey)).size).toBe(10)
+    expect(sets).toHaveLength(5)
+    expect(new Set(sets.map((set: StrategySet) => set.setKey)).size).toBe(5)
+  })
+
+  test("inherits only the exact parent direction and its independent open count", () => {
+    const coordinator = new StrategyCoordinator("axis-direction-lineage") as any
+    coordinator._coordinationSettings.axes = {
+      prev: { enabled: false, maxWindow: 0 },
+      last: { enabled: false, maxWindow: 0 },
+      cont: { enabled: true, maxWindow: 8 },
+      pause: { enabled: false, maxWindow: 0 },
+    }
+    const longParent = baseSet([])
+    const shortParent = {
+      ...baseSet([]),
+      setKey: "BTCUSDT:direction:short",
+      direction: "short" as const,
+    }
+
+    const longSets = coordinator.expandAxisSets(
+      longParent,
+      1.2,
+      99,
+      { long: 3, short: 1 },
+      0,
+    ) as StrategySet[]
+    const shortSets = coordinator.expandAxisSets(
+      shortParent,
+      1.2,
+      99,
+      { long: 3, short: 1 },
+      0,
+    ) as StrategySet[]
+
+    expect(longSets).toHaveLength(4)
+    expect(shortSets).toHaveLength(2)
+    expect(longSets.every((set) => set.direction === "long")).toBe(true)
+    expect(shortSets.every((set) => set.direction === "short")).toBe(true)
+    expect(longSets.some((set) => set.setKey.includes("_dshort"))).toBe(false)
+    expect(shortSets.some((set) => set.setKey.includes("_dlong"))).toBe(false)
+  })
+
+  test("fails closed when an axis parent has no valid indication direction", () => {
+    const coordinator = new StrategyCoordinator("axis-invalid-direction") as any
+    coordinator._coordinationSettings.axes = {
+      prev: { enabled: false, maxWindow: 0 },
+      last: { enabled: false, maxWindow: 0 },
+      cont: { enabled: true, maxWindow: 8 },
+      pause: { enabled: false, maxWindow: 0 },
+    }
+    const invalidParent = { ...baseSet([]), direction: "neutral" as any }
+
+    expect(coordinator.expandAxisSets(
+      invalidParent,
+      1.2,
+      4,
+      { long: 4, short: 4 },
+      0,
+    )).toEqual([])
   })
 
   test("reserves exact active Live Sets without activating sibling axes", () => {

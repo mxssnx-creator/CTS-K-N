@@ -103,7 +103,7 @@ async function handlePost(request: NextRequest) {
 
     // Initialize Redis and verify production readiness before any engine start intent is committed.
     await initRedis()
-    const readiness = await checkProductionReadiness()
+    const readiness = await checkProductionReadiness({ requireConnectionCredentials: false })
     if (!readiness.ready) {
       return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
     }

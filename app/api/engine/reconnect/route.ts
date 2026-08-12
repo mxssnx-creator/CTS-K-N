@@ -47,7 +47,7 @@ export async function POST(request: Request) {
       log.push(`Cleared margin cooldown for ${targetConnectionId}`)
     } else {
       // Clear for all base connections.
-      const BASE_CONNECTION_IDS = ["bingx-x01"]
+      const BASE_CONNECTION_IDS = ["bingx-x01", "bingx-x02"]
       for (const connId of BASE_CONNECTION_IDS) {
         clearMarginCooldown(connId)
       }
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
     // AUTO-START DISABLED: reconnect no longer forces is_enabled_dashboard="1".
     // Connections are enabled/disabled only by explicit user action (dashboard toggle).
     // This endpoint only clears cooldowns and restarts dropped engines for already-enabled connections.
-    const BASE_CONNECTION_IDS = ["bingx-x01"]
+    const BASE_CONNECTION_IDS = ["bingx-x01", "bingx-x02"]
     const connIdsToHeal = targetConnectionId ? [targetConnectionId] : BASE_CONNECTION_IDS
     const healed = 0
     log.push(`Connection enable flags preserved as-is (auto-enable disabled)`)

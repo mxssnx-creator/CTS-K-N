@@ -1,110 +1,96 @@
 import { NextRequest, NextResponse } from "next/server"
-import { initRedis, getRedisClient, getConnection, updateConnection } from "@/lib/redis-db"
-
+import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
+import { notifySettingsChanged } from "@/lib/settings-coordinator"
+import { getAllConnections, getAppSettings, initRedis, setAppSettings } from "@/lib/redis-db"
+import { importedConnectionPatch, parseSettingsBackup } from "@/lib/settings-backup"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import { specialSettingsFromAppSettings } from "@/lib/special-strategy"
 
 export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
+
+async function readPayload(request: NextRequest): Promise<unknown> {
+  const contentType = request.headers.get("content-type") || ""
+  if (contentType.includes("multipart/form-data")) {
+    const form = await request.formData()
+    const file = form.get("file")
+    if (!(file instanceof File)) throw new Error("No backup file provided")
+    return JSON.parse(await file.text())
+  }
+  return request.json()
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData()
-    const file = formData.get("file") as File
-
-    if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 })
-    }
-
-    const content = await file.text()
-    const lines = content.split("\n")
-
+    const backup = parseSettingsBackup(await readPayload(request))
     await initRedis()
-    const client = getRedisClient()
+    const [existingSettings, existingConnections] = await Promise.all([
+      getAppSettings({ bypassCache: true }),
+      getAllConnections(),
+    ])
+    const incomingSettings: Record<string, unknown> = { ...backup.settings }
+    if (
+      Object.keys(incomingSettings).some((key) => key.startsWith("special")) ||
+      incomingSettings.special !== undefined
+    ) {
+      const normalizedSpecial = specialSettingsFromAppSettings(incomingSettings)
+      for (const [key, value] of Object.entries(normalizedSpecial)) {
+        incomingSettings[`special${key.charAt(0).toUpperCase()}${key.slice(1)}`] = value
+      }
+    }
+    const mergedSettings = { ...(existingSettings || {}), ...incomingSettings }
+    const changedKeys = changedSettingKeys(existingSettings || {}, mergedSettings, Object.keys(incomingSettings))
+    if (changedKeys.length > 0) await setAppSettings(mergedSettings)
 
-    let imported = 0
-    let skipped = 0
-    let errors = 0
-    const errorsList: string[] = []
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-
-      // Skip empty lines and comments
-      if (!trimmed || trimmed.startsWith("#")) {
-        skipped++
+    const connectionsById = new Map((existingConnections || []).map((entry: any) => [String(entry.id), entry]))
+    let connectionsUpdated = 0
+    let connectionsSkipped = 0
+    for (const imported of backup.connections) {
+      const id = typeof imported.id === "string" ? imported.id : ""
+      const existing = connectionsById.get(id)
+      if (!id || !existing) {
+        connectionsSkipped++
         continue
       }
-
-      try {
-        const match = trimmed.match(/^([^=]+)\s*=\s*(.+)$/)
-        if (!match) {
-          skipped++
-          continue
-        }
-
-        const actualKey = match[1].trim()
-        const actualValue = match[2].trim()
-
-        if (!actualKey || !actualValue) {
-          skipped++
-          continue
-        }
-
-        // Check if this is a connection field (format: connection-id:field-name)
-        if (actualKey.includes(":")) {
-          const colonIndex = actualKey.indexOf(":")
-          const connId = actualKey.substring(0, colonIndex)
-          const fieldName = actualKey.substring(colonIndex + 1)
-          const connection = await getConnection(connId)
-
-          if (connection) {
-            let parsedValue: any = actualValue
-            try {
-              if (actualValue.startsWith("{") || actualValue.startsWith("[")) {
-                parsedValue = JSON.parse(actualValue)
-              }
-            } catch {
-              parsedValue = actualValue
-            }
-
-            await updateConnection(connId, { [fieldName]: parsedValue })
-            imported++
-          } else {
-            skipped++
-          }
-        } else {
-          // Regular setting - store in Redis
-          let parsedValue: any = actualValue
-          try {
-            if (actualValue.startsWith("{") || actualValue.startsWith("[")) {
-              parsedValue = JSON.parse(actualValue)
-            }
-          } catch {
-            parsedValue = actualValue
-          }
-
-          await client.set(`settings:${actualKey}`, typeof parsedValue === "string" ? parsedValue : JSON.stringify(parsedValue), { EX: 2592000 })
-          imported++
-        }
-      } catch (error) {
-        errors++
-        const keyOnly = trimmed.split("=", 1)[0]?.trim() || "unknown"
-        errorsList.push(`Key: ${keyOnly} - ${error instanceof Error ? error.message : "Unknown error"}`)
+      const candidatePatch = importedConnectionPatch(imported)
+      const patch = Object.fromEntries(Object.entries(candidatePatch).filter(
+        ([key, value]) => JSON.stringify((existing as any)[key]) !== JSON.stringify(value),
+      ))
+      if (Object.keys(patch).length > 0) {
+        await applyMainConnectionSettingsChange(id, existing, {
+          connectionPatch: { ...patch, updated_at: new Date().toISOString() },
+          changedFieldsOverride: Object.keys(patch),
+          logTag: "settings import",
+        })
+        connectionsUpdated++
       }
     }
 
-    console.log(`[v0] Import complete: ${imported} imported, ${skipped} skipped, ${errors} errors`)
+    if (changedKeys.length > 0) {
+      await Promise.allSettled((existingConnections || []).map((connection: any) =>
+        notifySettingsChanged(String(connection.id), changedKeys),
+      ))
+    }
+
+    const persisted = await getAppSettings({ bypassCache: true })
+    const persistenceVerified = Object.entries(incomingSettings).every(
+      ([key, value]) => settingsValuesEqual(persisted[key], value),
+    )
+    if (!persistenceVerified) throw new Error("Imported settings failed persistence verification")
 
     return NextResponse.json({
       success: true,
-      imported,
-      skipped,
-      errors,
-      errorsList,
-      message: `Import complete: ${imported} items imported, ${skipped} skipped, ${errors} errors`,
+      settingsImported: Object.keys(incomingSettings).length,
+      changedSettings: changedKeys.length,
+      connectionsUpdated,
+      connectionsSkipped,
+      credentialsImported: false,
+      persistenceVerified,
     })
   } catch (error) {
-    console.error("[v0] Failed to import settings:", error)
     return NextResponse.json(
       { error: "Failed to import settings", details: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
+      { status: 400 },
     )
   }
 }

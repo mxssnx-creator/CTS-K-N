@@ -61,7 +61,10 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
     const isLiveTrade = parseBooleanInput(rawFlag)
 
     if (isLiveTrade && process.env.NODE_ENV === "production") {
-      const readiness = await checkProductionReadiness()
+      // Global infrastructure must be healthy, but credentials are evaluated
+      // for THIS connection below. A stale credentialless sibling must never
+      // block enabling the fully configured X02 VST connection.
+      const readiness = await checkProductionReadiness({ requireConnectionCredentials: false })
       if (!readiness.ready) {
         return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
       }

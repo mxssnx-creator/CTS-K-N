@@ -2,6 +2,10 @@ import { applySystemVolumeFactor } from "./constants"
 
 export type DcaTakeProfitMode = "average" | "first_entry" | "breakeven_plus"
 
+/** Hard system ceiling: total confirmed position / immutable first fill. */
+export const MAX_DCA_POSITION_VOLUME_RATIO = 5
+export const MIN_DCA_POSITION_VOLUME_RATIO = 1.4
+
 export interface DcaProfile {
   maxSteps: number
   /** Quantity multipliers relative to the confirmed initial position size. */
@@ -11,15 +15,20 @@ export interface DcaProfile {
   takeProfitMode: DcaTakeProfitMode
   breakevenProfitPct: number
   cooldownSeconds: number
+  /** Total position ceiling including the initial 1× fill (5 = 500%). */
+  maxPositionVolumeRatio: number
 }
 
 export const DEFAULT_DCA_PROFILE: DcaProfile = {
   maxSteps: 4,
-  stepVolumeMultipliers: [1.5, 2.0, 2.3, 2.5],
-  stepDistancesPct: [0.5, 1.0, 1.5, 2.0],
+  // Four additions sum to 4×, so the full position can reach but never
+  // exceed the requested 5× (500%) ceiling including its initial 1× leg.
+  stepVolumeMultipliers: [1, 1, 1, 1],
+  stepDistancesPct: [0.3, 0.6, 1, 1.6],
   takeProfitMode: "average",
   breakevenProfitPct: 0.2,
   cooldownSeconds: 30,
+  maxPositionVolumeRatio: MAX_DCA_POSITION_VOLUME_RATIO,
 }
 
 export interface DcaLegState {
@@ -98,7 +107,13 @@ export function normalizeDcaProfile(raw: unknown): DcaProfile {
     1,
     4,
   ))
-  const stepVolumeMultipliers = resolveStepArray(
+  const maxPositionVolumeRatio = finiteInRange(
+    source.maxPositionVolumeRatio ?? source.dcaMaxPositionVolumeRatio ?? source.dcaMaxVolumeRatio,
+    DEFAULT_DCA_PROFILE.maxPositionVolumeRatio,
+    MIN_DCA_POSITION_VOLUME_RATIO,
+    MAX_DCA_POSITION_VOLUME_RATIO,
+  )
+  const requestedStepVolumeMultipliers = resolveStepArray(
     source.stepVolumeMultipliers ?? source.dcaStepVolumeMultipliers,
     source,
     "dcaStepVolume",
@@ -106,6 +121,21 @@ export function normalizeDcaProfile(raw: unknown): DcaProfile {
     0.1,
     2.5,
   )
+  // Persist and execute one canonical bounded ladder. Earlier steps retain
+  // their explicit ratios; later steps are clipped against the remaining
+  // host-wide exposure allowance. This avoids a UI profile claiming 8.3×
+  // while the exchange executor silently does something different.
+  let remainingAddRatio = Math.max(0, maxPositionVolumeRatio - 1)
+  const stepVolumeMultipliers = requestedStepVolumeMultipliers.map((value) => {
+    const boundedValue = Math.max(0, Math.min(value, remainingAddRatio))
+    remainingAddRatio = Math.max(0, remainingAddRatio - boundedValue)
+    return Math.round(boundedValue * 1_000_000) / 1_000_000
+  })
+  const lastExecutableStep = stepVolumeMultipliers.reduce(
+    (last, value, index) => value > 0 ? index + 1 : last,
+    0,
+  )
+  const executableMaxSteps = Math.max(1, Math.min(maxSteps, lastExecutableStep || 1))
   const rawDistances = resolveStepArray(
     source.stepDistancesPct ?? source.dcaStepDistancesPct,
     source,
@@ -128,7 +158,7 @@ export function normalizeDcaProfile(raw: unknown): DcaProfile {
       : "average"
 
   return {
-    maxSteps,
+    maxSteps: executableMaxSteps,
     stepVolumeMultipliers,
     stepDistancesPct,
     takeProfitMode,
@@ -144,6 +174,7 @@ export function normalizeDcaProfile(raw: unknown): DcaProfile {
       0,
       3600,
     )),
+    maxPositionVolumeRatio,
   }
 }
 
@@ -207,6 +238,15 @@ export function mergeDcaProfileSources(...sources: unknown[]): DcaProfile {
     if (hasOwn(source, "cooldownSeconds") || hasOwn(source, "dcaCooldownSeconds")) {
       merged.cooldownSeconds = source.cooldownSeconds ?? source.dcaCooldownSeconds
     }
+    if (
+      hasOwn(source, "maxPositionVolumeRatio") ||
+      hasOwn(source, "dcaMaxPositionVolumeRatio") ||
+      hasOwn(source, "dcaMaxVolumeRatio")
+    ) {
+      merged.maxPositionVolumeRatio = source.maxPositionVolumeRatio
+        ?? source.dcaMaxPositionVolumeRatio
+        ?? source.dcaMaxVolumeRatio
+    }
   }
   return normalizeDcaProfile(merged)
 }
@@ -260,11 +300,36 @@ export function resolveNextDcaStep(args: {
  * @param volumeMultiplier - Ratio multiplier (default 1.0 for system baseline)
  * @returns quantity = baseQuantity * volumeMultiplier
  */
-export function calculateDcaAddQuantity(baseQuantity: number, volumeMultiplier: number): number {
+export function calculateDcaAddQuantity(
+  baseQuantity: number,
+  volumeMultiplier: number,
+  currentPositionQuantity = baseQuantity,
+  maxPositionVolumeRatio = MAX_DCA_POSITION_VOLUME_RATIO,
+): number {
   if (!Number.isFinite(baseQuantity) || baseQuantity <= 0) return 0
   // Default ratio 1.0 keeps the DCA lane at identity before the shared scalar.
   const ratio = Number.isFinite(volumeMultiplier) && volumeMultiplier > 0 ? volumeMultiplier : 1.0
-  return applySystemVolumeFactor(baseQuantity * ratio)
+  const requested = applySystemVolumeFactor(baseQuantity * ratio)
+  const boundedMaxRatio = finiteInRange(
+    maxPositionVolumeRatio,
+    MAX_DCA_POSITION_VOLUME_RATIO,
+    MIN_DCA_POSITION_VOLUME_RATIO,
+    MAX_DCA_POSITION_VOLUME_RATIO,
+  )
+  const current = Number.isFinite(currentPositionQuantity) && currentPositionQuantity > 0
+    ? currentPositionQuantity
+    : baseQuantity
+  const remaining = Math.max(0, baseQuantity * boundedMaxRatio - current)
+  return Math.max(0, Math.min(requested, remaining))
+}
+
+export function calculateDcaPositionVolumeRatio(
+  baseQuantity: number,
+  currentPositionQuantity: number,
+): number {
+  if (!Number.isFinite(baseQuantity) || baseQuantity <= 0) return 0
+  const current = Number.isFinite(currentPositionQuantity) ? Math.max(0, currentPositionQuantity) : 0
+  return current / baseQuantity
 }
 
 export function upsertDcaLeg(legs: DcaLegState[] | undefined, next: DcaLegState): DcaLegState[] {

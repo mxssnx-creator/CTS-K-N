@@ -1,12 +1,13 @@
 // Stage 2: Base Positions Generator
 // Creates every exact indication configuration independently.
-// Generates one LONG + one SHORT slot per exact configuration lane.
+// Generates one slot in the single direction selected by each indication.
 
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { ExchangeConnection } from "@/lib/types"
 import type { IndicationSignal } from "./indication-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { createHash } from "node:crypto"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 const LOG_PREFIX = "[v0] [BasePositionStage]"
 
@@ -34,8 +35,9 @@ export interface BasePosition {
 
 /**
  * Generate base positions from valid indication signals
- * Creates one LONG and one SHORT pseudo position per exact
- * connection × symbol × indication type/name/configuration × Base Set lane.
+ * Creates one pseudo position per exact connection × symbol × indication
+ * type/name/configuration × direction lane. The indication decides Long OR
+ * Short; Base must never synthesize the opposite side.
  *
  * The legacy maxLongPositions/maxShortPositions fields remain accepted for API
  * compatibility but cannot turn this per-lane invariant into a symbol-wide cap.
@@ -52,7 +54,7 @@ export async function generateBasePositions(
   const basePositions: BasePosition[] = []
 
   console.log(
-    `${LOG_PREFIX} Generating base positions for ${connection.name} (one Long + one Short per exact configuration lane)`
+    `${LOG_PREFIX} Generating base positions for ${connection.name} (one signal-selected direction per exact lane)`
   )
 
   try {
@@ -64,48 +66,47 @@ export async function generateBasePositions(
     const byLane = new Map<string, {
       laneId: string
       configurationKey: string
+      direction: "long" | "short"
       indications: IndicationSignal[]
     }>()
     for (const indication of indications) {
+      const direction = resolveConsistentTradeDirection(indication.direction, indication.signal)
+      if (!direction) continue
       const configurationKey = baseIndicationConfigurationIdentity(indication)
-      const laneId = exactBaseLaneId(indication.symbol, configurationKey)
+      const laneId = exactBaseLaneId(indication.symbol, configurationKey, direction)
       const group = byLane.get(laneId)
       if (group) group.indications.push(indication)
-      else byLane.set(laneId, { laneId, configurationKey, indications: [indication] })
+      else byLane.set(laneId, { laneId, configurationKey, direction, indications: [indication] })
     }
 
     const laneGroups = [...byLane.values()]
     const groupedResults = await mapWithConcurrency(
       laneGroups,
       concurrencyFromEnv(["BASE_POSITION_LANE_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"], 8, 32, laneGroups.length),
-      async ({ laneId, configurationKey, indications: laneIndications }) =>
+      async ({ laneId, configurationKey, direction, indications: laneIndications }) =>
         withBaseAdmissionLock(client, connectionId, laneId, async () => {
         const indication = laneIndications
           .slice()
           .sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0))[0]
         if (!indication) return []
-        const [existingLong, existingShort] = await Promise.all([
-          countExistingPositions(client, connectionId, laneId, "long"),
-          countExistingPositions(client, connectionId, laneId, "short"),
-        ])
-        let longSlots = Math.max(0, positionsPerExactLane - existingLong)
-        let shortSlots = Math.max(0, positionsPerExactLane - existingShort)
+        const existing = await countExistingPositions(client, connectionId, laneId, direction)
+        const availableSlots = Math.max(0, positionsPerExactLane - existing)
+        if (availableSlots === 0) return []
         const created: BasePosition[] = []
         const writes: Promise<unknown>[] = []
         const indicationType = normalizedLanePart(indication.indicationType || "technical")
         const indicationName = normalizedLanePart(
           indication.indicationName || indication.configurationId || indication.timeframe || "composite",
         )
-        const baseSetKey = `${connectionId}:${indication.symbol}:${configurationKey}`
+        const baseSetKey = `${connectionId}:${indication.symbol}:${configurationKey}:${direction}`
         const now = Date.now()
-        if (longSlots > 0) {
-          const longPosition: BasePosition = {
-              id: `base:${connectionId}:${laneId}:${indication.timestamp}:long`,
+        const position: BasePosition = {
+              id: `base:${connectionId}:${laneId}:${indication.timestamp}:${direction}`,
               connectionId,
               connectionName: connection.name,
               symbol: indication.symbol,
               timeframe: indication.timeframe,
-              direction: "long",
+              direction,
               entryPrice: indication.price,
               entryTime: now,
               indicationSignal: indication.signal,
@@ -119,37 +120,9 @@ export async function generateBasePositions(
               sourceIndicationTimestamp: indication.timestamp,
               createdAt: now,
               updatedAt: now,
-          }
-          created.push(longPosition)
-          writes.push(storeBasePosition(client, longPosition))
-          longSlots--
         }
-        if (shortSlots > 0) {
-          const shortPosition: BasePosition = {
-              id: `base:${connectionId}:${laneId}:${indication.timestamp}:short`,
-              connectionId,
-              connectionName: connection.name,
-              symbol: indication.symbol,
-              timeframe: indication.timeframe,
-              direction: "short",
-              entryPrice: indication.price,
-              entryTime: now,
-              indicationSignal: indication.signal,
-              indicationStrength: indication.strength,
-              indicationType,
-              indicationName,
-              indicationConfigKey: configurationKey,
-              baseSetKey,
-              laneId,
-              status: "open",
-              sourceIndicationTimestamp: indication.timestamp,
-              createdAt: now,
-              updatedAt: now,
-          }
-          created.push(shortPosition)
-          writes.push(storeBasePosition(client, shortPosition))
-          shortSlots--
-        }
+        created.push(position)
+        writes.push(storeBasePosition(client, position))
         if (writes.length > 0) await Promise.all(writes)
         return created
       }),
@@ -298,9 +271,13 @@ export function baseIndicationConfigurationIdentity(indication: IndicationSignal
   return `type=${type}|name=${name}|config=${config}`
 }
 
-function exactBaseLaneId(symbol: string, configurationKey: string): string {
+function exactBaseLaneId(
+  symbol: string,
+  configurationKey: string,
+  direction: "long" | "short",
+): string {
   return createHash("sha256")
-    .update(`${String(symbol).trim().toUpperCase()}\u0000${configurationKey}`)
+    .update(`${String(symbol).trim().toUpperCase()}\u0000${configurationKey}\u0000${direction}`)
     .digest("hex")
     .slice(0, 32)
 }

@@ -13,7 +13,7 @@ export async function GET() {
   try {
     await initRedis()
     const allConnections = await getAllConnections()
-    const baseIds = new Set(["bingx-x01", "pionex-x01", "orangex-x01"])
+    const baseIds = new Set(["bingx-x01", "bingx-x02", "pionex-x01", "orangex-x01"])
     
     // Filter for base connections that are enabled but NOT in Active panel
     const availableConnections = allConnections.filter((c: any) => {
@@ -37,6 +37,8 @@ export async function GET() {
         api_type: c.api_type,
         last_test_status: c.last_test_status,
         has_credentials: (c.api_key || "").length > 10 && (c.api_secret || "").length > 10,
+        environment: c.id === "bingx-x02" ? "prod-vst" : "prod-live",
+        virtual_funds: c.id === "bingx-x02",
       })),
       count: availableConnections.length,
     })

@@ -4,7 +4,7 @@ import { initRedis, getRedisClient } from "@/lib/redis-db"
 export const dynamic = "force-dynamic"
 
 const INDICATION_INTERVAL_TYPES = [
-  "direction", "move", "active",
+  "direction", "move", "active", "active_advanced", "special",
   "trend", "optimal", "auto",
   "common", "signal",
 ] as const

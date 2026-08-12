@@ -1,8 +1,144 @@
-# Active Context: CTS-V-yd Trading System (main project)
+# Active Context: CTS-K-N Trading System (main project)
 
 ## Current State
 
 **Project Status**: ✅ Active production trading system with validated release branches
+
+## Current Release Checkpoint (2026-08-11)
+
+- Active publication branch: `agent/bingx-vst-soak-20260811` in
+  `mxssnx-creator/CTS-K-N`. The branch starts at `c486d78`; continue from its
+  newest pushed commit and do not assume `main` already contains this release.
+- CPU/capability-adaptive processing lanes, async configuration types, forced
+  `BTCUSDT/SOLUSDT/BCHUSDT/XRPUSDT`, complete Direct/Main DCA coordination,
+  and Direct-Trade Overview strategy/exchange rolling statistics are complete.
+- The selected seven-day DCA default is the exact 15-minute relative profile:
+  TP `0.6%`, SL `1.95%`, step distances `0.3/0.6/1.0/1.6%`, four `1×` adds,
+  maximum position-volume ratio `5`. Backtest result: `+26.47794%`, PF
+  `17.64218`, maximum drawdown `1.20067%`, average DDT `136.67m`.
+- Direct live orders now use a durable 30-day economic-intent record, stable
+  cross-exchange client IDs, ACK/timeout recovery without blind replay,
+  terminal-only cumulative partial-fill accounting, crash-persistent
+  open/Block/DCA/close generations, reduce-only/hedge-mode connector controls,
+  and fail-closed unsupported spot/legacy adapters. Binance code-less success
+  and OKX per-order `sCode` are handled correctly.
+- The production installer fails closed without at least one non-placeholder
+  supported exchange credential pair, requires live readiness, shared durable
+  coordination where configured, and a fresh Direct-Trade processor heartbeat.
+  This is code/preflight verified only: an actual remote host and authenticated
+  exchange were not supplied, so no real order was submitted and no external
+  production deployment may be claimed yet.
+- Validation at this checkpoint: final 151 Jest suites / 1,037 tests,
+  TypeScript, ESLint, fresh Next production build
+  (42 static pages, 347 trace files), schema-v97/Kilo/installer/deployment
+  contracts, 1,374-file secret scan with zero findings, 48-hour paper-only live
+  lifecycle, and physical SIGKILL/same-port recovery. The live/recovery soaks
+  use isolated Next dist directories and preserve the production `BUILD_ID`,
+  `next-env.d.ts`, and `tsconfig.json` byte-for-byte.
+
+## Prod-VST X02, execution integrity and UI checkpoint (2026-08-11)
+
+- `bingx-x02` is the immutable predefined BingX Prod-VST demo connection. Its
+  environment and origin normalize to `prod-vst` and
+  `https://open-api-vst.bingx.com` across seeding, migrations, APIs, dialogs,
+  reconnects and live-order routing. Credentials remain only in the ignored,
+  mode-0600 `.env`; they are never embedded in source, reports or archives.
+- Direct/Main/Preset/Signal execution now has complete source/Set/order/position
+  relations, terminal authoritative fill accounting, simulated protection
+  metadata, canonical SL/TP calculation, exact per-source/per-symbol counters,
+  and live-position integrity statistics. The BingX 200-control-order ceiling
+  uses exact-intent batching at 198/199, switches to system-close at 200, and
+  never drops a protection intent.
+- Direct-Trade interval work is serialized: a cycle cannot overlap its
+  predecessor and every completed interval waits at least 50 ms before the
+  next starts. Global engine start preserves the operator's requested/effective
+  live flags and never auto-enables a credential-bearing connection.
+- Main Connection cards expose the exact Base Total/Valid, Main Valid/Overall,
+  Real Valid/Active and Live Long+Short/Orders stage contract, including the
+  latest-50 Real-vs-Live PF ratio. The Base PF minimum is configurable from the
+  Main/Base settings surface. Settings/Overall/Connection edit and information
+  dialogs retain X02 identity and use canonical read-after-write state.
+- Next build JSON publication is atomic for `.next*` contracts, preventing
+  zero-byte trace and route manifests. A strict single-attempt `.next-prod`
+  build completed 42/42 pages and validated 347/347 trace files. The production
+  paper UI harness passed 47 page surfaces, 32 symbols, dialogs, settings and
+  volume hot reload, 35 Signal sources, Main toggle, pause/resume/stop/start,
+  and 16/16 simulated position/order relations with zero exchange submissions.
+- The authenticated virtual-funds Prod-VST soak ran for exactly 1,200,001 ms:
+  16/16 flat cycles (four each Direct/Main/Preset/Signal; eight DCA/eight
+  Block), 80 unique venue submissions, 32/32 exposure fills, 16 position
+  creations, 16 accumulations, 32 protection orders and 16 closes. All 48
+  requested-vs-filled quantity differences were zero; 80/80 order-history IDs
+  were present; tracked exposure volume was 173.81398 USD and the counter
+  difference was only floating-point epsilon (`2.84e-14` USD). All 387 network
+  observations used the exact VST host with zero blocked/non-2xx requests.
+  SOL/BCH/XRP/ADA finished flat, while the pre-existing BTC LONG 3.0566 and ETH
+  SHORT 103.48 quantities and all baseline orders remained unchanged.
+- Final local acceptance before publication: 159 Jest suites / 1,074 tests,
+  TypeScript, ESLint, Direct-Trade 32-symbol/48-hour matrix (1,440,768 Sets),
+  Block Count 1..12 ledger (2,128,896 rows), 35-source Signal registry,
+  read-only VST stress, and deterministic 1/2/3/4/8/16-symbol concurrency
+  benchmark (peak 75,806 Sets/s, 160 MiB maximum worker heap).
+
+## Direction and Special checkpoint (2026-08-12)
+
+- All indication, Strategy, Set, position, order, fill, PF, volume, history,
+  progression and audit paths now preserve an explicit effective Long/Short
+  direction. Each indication publishes exactly one direction; theoretical
+  configuration coverage is never counted as mirrored executed orders.
+  Missing or contradictory direction fails closed across APIs and BingX,
+  Bybit, OrangeX and Pionex adapters.
+- The new `Special` family independently evaluates Long and Short market-change
+  speed, acceleration, activity, volatility, scenario persistence, order-flow,
+  depth and spread evidence over exact 15s/1m/15m/30m plus combined lanes.
+  Fixed and adaptive-Trailing exits have separate Set keys and ledgers. Hard
+  runtime limits are min step 3, max 5 positions/direction, max 3x Base volume,
+  max SL/TP distance ratio 3 and max hold 90 minutes.
+- Settings exposes the complete Special surface and per-indication Trailing and
+  Block policy for Direction, Move, Active, Active Advanced, Special, Optimal,
+  Common, Signal, Trend and Auto; both policies default on. Special runtime and
+  progression topology are included in backend counts and dashboard views.
+- The final read-only five-day VST validation dynamically selected CYS,
+  JIMOTHY, AIINU and TUT as the highest one-hour-volatility candidates with at
+  least 95% five-day coverage. TOAD was skipped at 36.36% coverage. Fixed was
+  273 trades (171 Long/102 Short), PF 0.866854, stable PF 0.535826, max DD
+  35.797579%; Trailing was 282 (177/105), PF 0.857253, stable PF 0.535205,
+  max DD 39.080569%. No fold-qualified configuration exists, so activation is
+  fail-closed. Final artifact timestamp: `2026-08-11T23-55-13-849Z`.
+- Fixed and Trailing 24h reports now share one market endpoint and twelve exact
+  two-hour UTC buckets. Fresh volatile listings are promoted only after five-day
+  coverage validation; incomplete listings no longer abort the whole run.
+- Authenticated Prod-VST final acceptance passed 4/4 Direct/Main/Preset/Signal
+  lifecycles over BTC/ETH/SOL/BCH, 2 Long and 2 Short, DCA and Block, 20 unique
+  venue submissions, exact directional/source counters, complete order history,
+  and zero residual positions/orders. A preceding six-cycle run exposed and
+  fixed the audit's implicit-Long expectation; offline re-audit was exact.
+- Acceptance at this checkpoint: TypeScript, ESLint, 163 unit suites / 1,073
+  tests, 4 integration suites
+  / 52 tests, E2E, 42-page/347-trace production build, four-symbol development
+  paper smoke, 1,386-file secret scan with zero findings, and five-symbol public
+  quote stress with 1.9 MB heap growth.
+- Detailed evidence and limitations live in
+  `SPECIAL-ENGINE-VALIDATION-2026-08-12.md`. Never claim stable profit from this
+  checkpoint; publish the safety and validation code while keeping Special
+  automatic activation disabled.
+
+## Mandatory Continuity Workflow
+
+- Treat the current CTS source tree as durable project state: never begin a risky
+  recovery, dependency, migration, soak, deployment, or Git operation without a
+  validated source checkpoint.
+- Create a credential-free, restorable workspace archive before risky steps and
+  after every completed functional block.  Exclude build output, runtime state,
+  local logs, dependency directories, Git metadata, and environment/credential
+  files; validate both archive readability and SHA-256.
+- Commit and push each coherent, tested checkpoint when GitHub authentication is
+  available.  If publishing is temporarily blocked, continue only with durable
+  archives and record the exact Git blocker; publish the queued checkpoints as
+  soon as authentication is restored.
+- This workflow is project-wide and must be continued in every new CTS chat so a
+  hang, scratch cleanup, process crash, or context switch cannot erase work.
+
 
 The starter template was replaced with the full CTS-V-yd trading system
 (strategy engine, analytics UI, API routes, tests). The code now lives in
@@ -949,6 +1085,16 @@ credentials are present.
   re-exposed here. The exact remote run sequence is documented for the operator
   below; no live orders were submitted or claimed from this session.
 
+## Session 2026-08-11 — Settings, runtime lifecycle, direction integrity
+
+- [x] Settings persistence now performs authoritative readback verification. The hidden Overall editor Save path persists through the API, numeric `0`/`1` values retain numeric types in Redis, and connection add/edit flows verify that credentials remain stored server-side while never returning them in plaintext.
+- [x] Overall Settings now starts with a versioned JSON configuration backup control. Export strips credentials and runtime/test-only state; import validates the schema, updates safe application settings and existing connection fields, preserves connection identity and credentials, notifies engines, and verifies the resulting state.
+- [x] Runtime identity is process-scoped instead of installation-scoped. Each service boot receives a new boot/session ID and start timestamp while the durable installation ID remains separate; status surfaces now report service uptime, boot/restart/reload counts, recovery/self-heal/crash counts, and the most recent recovery event.
+- [x] Live-summary direction handling is strict and independent. Long/buy and short/sell inputs map only to their own lanes; unknown/missing directions are excluded and reported as integrity failures instead of silently inflating long counts. The production UI verifier now enforces per-direction totals and rejects unexplained mirrored long/short counts.
+- [x] Added the Black / White / Blue theme and made it the default across providers, seed data, storage, and migrations while retaining the existing selectable themes.
+- [x] Validation passed: 163 Jest suites / 1,094 tests, TypeScript, ESLint, diff check, the release secret scan (1,377 files, zero findings), and an optimized 42-route production build. A credential-free two-boot standalone exercise verified Settings UI assets, settings save readback, backup round-trip, connection edits, secret-free export, changing boot IDs, stable installation ID, restart count, and service-relative uptime with no exchange orders or external calls.
+- [ ] The final authenticated BingX Prod-VST soak is intentionally blocked pending operator confirmation: the current code targets `open-api-vst.bingx.pro`, while the previously expected host was `open-api-vst.bingx.com`. Do not send stored credentials to the `.pro` endpoint without explicit approval or an endpoint correction.
+
 ## Session 2026-08-11 — Prod-mode investigation & fixes
 
 - [x] Root-caused prod issues by running the production build + `run-prod-preview-check`
@@ -977,3 +1123,29 @@ credentials are present.
   defect — would not occur on a resourced prod host.
 - [x] Committed as `09cf8e9` and pushed to `origin/main`. Reverted the auto-generated
   `next-env.d.ts`/`tsconfig.json` build noise before committing.
+
+## Session 2026-08-12 — Historic-processing performance and runtime continuity
+
+- [x] Root cause measured in the Indication historic path: 12,393 enabled config
+  identities collapse to 729 exact calculations and only 81 window geometries;
+  config discovery/grouping is ~0.4 s, while per-alias CPU passes, 12,393 awaited
+  Redis aggregate scripts per symbol, and overly frequent scheduler yields dominated.
+- [x] Added symbol/run-scoped window-profile caching (`steps × split`) so the
+  immutable sliding-window averages are calculated 81 rather than 729 times. Every
+  drawdown/active variant still materializes and counts its mathematically exact rows.
+- [x] Added one atomic Redis alias-batch aggregate script per calculation group.
+  Independent config marker identities, rolling-upgrade scalar markers, exact totals,
+  and retry idempotency are preserved while round-trips fall from 12,393 to at most
+  729 per symbol.
+- [x] Retuned cooperative historic scheduling from every 128 iterations to every
+  1,024 (bounded 64–8,192). This keeps health/API work progressive without roughly
+  164k `setImmediate` scheduler turns per 8-hour symbol.
+- [x] Moved Redis, migration, engine, and connection-coordinator singleton guards to
+  the process runtime root so Next route-module VM duplication cannot create parallel
+  historic owners; normalized missing live-position reads to an empty list.
+- [x] Dev/prod preview harnesses now share an isolated Redis service when available,
+  production inline-Redis fallback is explicit/fail-closed, and the historic range
+  can be safely shortened only through an explicit environment override for tests.
+- [x] A cold 1-symbol/1-hour development paper-engine run completed successfully
+  inside 180 seconds with zero real exchange orders; historic aggregate batch tests,
+  Special/direction/runtime regressions, TypeScript, and focused ESLint passed.

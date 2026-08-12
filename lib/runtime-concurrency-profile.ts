@@ -10,6 +10,19 @@
 
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os"
 
+export type ProcessingCapability = "control" | "cpu" | "mixed" | "io"
+export type RuntimePressureLevel = "healthy" | "elevated" | "high" | "critical"
+
+export interface RuntimePressureInput {
+  load1m?: number
+  memoryTotalMB?: number
+  memoryFreeMB?: number
+  rssMB?: number
+  rssSoftLimitMB?: number
+  eventLoopUtilizationPct?: number
+  eventLoopDelayP95Ms?: number
+}
+
 export interface RuntimeConcurrencyProfile {
   cpuCount: number
   cpuSource: "env" | "availableParallelism" | "fallback"
@@ -18,9 +31,15 @@ export interface RuntimeConcurrencyProfile {
   calculationConcurrency: number
   indicationTypeConcurrency: number
   ioConcurrency: number
+  capabilityConcurrency: Record<ProcessingCapability, number>
+  pressureLevel: RuntimePressureLevel
+  pressureScore: number
+  pressureReasons: string[]
   load1m: number
   memoryTotalMB: number
   memoryFreeMB: number
+  processRssMB: number
+  rssSoftLimitMB: number
 }
 
 function positiveInteger(value: unknown): number | null {
@@ -31,6 +50,97 @@ function positiveInteger(value: unknown): number | null {
 function bounded(value: number, minimum: number, maximum: number, itemCount = Number.POSITIVE_INFINITY): number {
   const itemLimit = Number.isFinite(itemCount) ? Math.max(1, Math.floor(itemCount)) : maximum
   return Math.max(minimum, Math.min(maximum, itemLimit, Math.floor(value)))
+}
+
+function finiteNonNegative(value: unknown, fallback = 0): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+function readProcessRssMB(): number {
+  try {
+    return finiteNonNegative(process.memoryUsage().rss / 1024 / 1024)
+  } catch {
+    return 0
+  }
+}
+
+function readRedisRssSoftLimitMB(env: NodeJS.ProcessEnv): number {
+  const configured = finiteNonNegative(env.CTS_RSS_SOFT_LIMIT_MB)
+  if (configured > 0) return configured
+  try {
+    const limits = (globalThis as typeof globalThis & {
+      __redis_mem_limits?: { rssSoftMB?: number }
+    }).__redis_mem_limits
+    return finiteNonNegative(limits?.rssSoftMB)
+  } catch {
+    return 0
+  }
+}
+
+function classifyPressure(
+  cpuCount: number,
+  metrics: Required<RuntimePressureInput>,
+  adaptiveEnabled: boolean,
+): { score: number; level: RuntimePressureLevel; reasons: string[] } {
+  if (!adaptiveEnabled) return { score: 0, level: "healthy", reasons: [] }
+
+  let score = 0
+  const reasons: string[] = []
+  const add = (points: number, reason: string) => {
+    score += points
+    reasons.push(reason)
+  }
+
+  const loadRatio = cpuCount > 0 ? metrics.load1m / cpuCount : 0
+  if (loadRatio >= 1.5) add(3, "cpu_load_critical")
+  else if (loadRatio >= 1) add(2, "cpu_load_high")
+  else if (loadRatio >= 0.75) add(1, "cpu_load_elevated")
+
+  const freeRatio = metrics.memoryTotalMB > 0
+    ? metrics.memoryFreeMB / metrics.memoryTotalMB
+    : 1
+  if (freeRatio <= 0.05) add(3, "system_memory_critical")
+  else if (freeRatio <= 0.1) add(2, "system_memory_high")
+  else if (freeRatio <= 0.2) add(1, "system_memory_elevated")
+
+  const rssRatio = metrics.rssSoftLimitMB > 0
+    ? metrics.rssMB / metrics.rssSoftLimitMB
+    : 0
+  if (rssRatio >= 0.95) add(3, "process_rss_critical")
+  else if (rssRatio >= 0.8) add(2, "process_rss_high")
+  else if (rssRatio >= 0.65) add(1, "process_rss_elevated")
+
+  if (metrics.eventLoopUtilizationPct >= 95) add(3, "event_loop_utilization_critical")
+  else if (metrics.eventLoopUtilizationPct >= 85) add(2, "event_loop_utilization_high")
+  else if (metrics.eventLoopUtilizationPct >= 70) add(1, "event_loop_utilization_elevated")
+
+  if (metrics.eventLoopDelayP95Ms >= 250) add(3, "event_loop_delay_critical")
+  else if (metrics.eventLoopDelayP95Ms >= 100) add(2, "event_loop_delay_high")
+  else if (metrics.eventLoopDelayP95Ms >= 50) add(1, "event_loop_delay_elevated")
+
+  const level: RuntimePressureLevel = score >= 6
+    ? "critical"
+    : score >= 4
+      ? "high"
+      : score >= 2
+        ? "elevated"
+        : "healthy"
+  return { score, level, reasons }
+}
+
+function reduceCpuLanes(base: number, pressure: RuntimePressureLevel): number {
+  if (pressure === "critical") return 1
+  if (pressure === "high") return Math.max(1, Math.ceil(base / 2))
+  if (pressure === "elevated") return Math.max(1, base - 1)
+  return base
+}
+
+function reduceIoLanes(base: number, pressure: RuntimePressureLevel): number {
+  if (pressure === "critical") return Math.max(2, Math.ceil(base / 4))
+  if (pressure === "high") return Math.max(2, Math.ceil(base / 2))
+  if (pressure === "elevated") return Math.max(2, Math.ceil(base * 0.75))
+  return base
 }
 
 /** Return the CPU count available to this process/container, not os.cpus(). */
@@ -57,12 +167,60 @@ export function getRuntimeCpuCount(env: NodeJS.ProcessEnv = process.env): {
 export function getRuntimeConcurrencyProfile(
   itemCount = Number.POSITIVE_INFINITY,
   env: NodeJS.ProcessEnv = process.env,
+  pressureInput: RuntimePressureInput = {},
 ): RuntimeConcurrencyProfile {
   const cpu = getRuntimeCpuCount(env)
-  const adaptiveLanes = bounded((cpu.count + 1) / 4, 1, 4, itemCount)
-  const memoryTotalMB = Math.max(0, Math.round(totalmem() / 1024 / 1024))
-  const memoryFreeMB = Math.max(0, Math.round(freemem() / 1024 / 1024))
-  const load = Number(loadavg()[0])
+  const baseCpuLanes = bounded((cpu.count + 1) / 4, 1, 4, itemCount)
+  const detectedMemoryTotalMB = Math.max(0, Math.round(totalmem() / 1024 / 1024))
+  const detectedMemoryFreeMB = Math.max(0, Math.round(freemem() / 1024 / 1024))
+  const detectedLoad = Number(loadavg()[0])
+  const memoryTotalMB = finiteNonNegative(pressureInput.memoryTotalMB, detectedMemoryTotalMB)
+  const memoryFreeMB = finiteNonNegative(pressureInput.memoryFreeMB, detectedMemoryFreeMB)
+  const load = finiteNonNegative(pressureInput.load1m, finiteNonNegative(detectedLoad))
+  const processRssMB = finiteNonNegative(pressureInput.rssMB, readProcessRssMB())
+  const rssSoftLimitMB = finiteNonNegative(
+    pressureInput.rssSoftLimitMB,
+    readRedisRssSoftLimitMB(env),
+  )
+  const metrics: Required<RuntimePressureInput> = {
+    load1m: load,
+    memoryTotalMB,
+    memoryFreeMB,
+    rssMB: processRssMB,
+    rssSoftLimitMB,
+    eventLoopUtilizationPct: finiteNonNegative(pressureInput.eventLoopUtilizationPct),
+    eventLoopDelayP95Ms: finiteNonNegative(pressureInput.eventLoopDelayP95Ms),
+  }
+  const adaptiveEnabled = env.CTS_ADAPTIVE_CONCURRENCY !== "0"
+  const pressure = classifyPressure(cpu.count, metrics, adaptiveEnabled)
+  const adaptiveLanes = bounded(
+    reduceCpuLanes(baseCpuLanes, pressure.level),
+    1,
+    4,
+    itemCount,
+  )
+  const baseIoConcurrency = Math.max(4, Math.min(32, cpu.count * 2))
+  // I/O is a host-wide budget shared by nested persistence/read groups. It is
+  // intentionally not capped by the outer CPU item count (for example, two
+  // symbols can still safely pipeline more than two independent Redis writes).
+  const ioConcurrency = Math.max(
+    1,
+    Math.min(32, Math.floor(reduceIoLanes(baseIoConcurrency, pressure.level))),
+  )
+  const mixedConcurrency = bounded(
+    pressure.level === "healthy" && cpu.count >= 8
+      ? adaptiveLanes + 1
+      : adaptiveLanes,
+    1,
+    6,
+    itemCount,
+  )
+  const controlConcurrency = bounded(
+    pressure.level === "critical" ? 1 : Math.min(2, Math.max(1, cpu.count)),
+    1,
+    2,
+    itemCount,
+  )
   return {
     cpuCount: cpu.count,
     cpuSource: cpu.source,
@@ -70,9 +228,31 @@ export function getRuntimeConcurrencyProfile(
     historicSymbolConcurrency: adaptiveLanes,
     calculationConcurrency: adaptiveLanes,
     indicationTypeConcurrency: bounded(Math.min(2, adaptiveLanes), 1, 2, itemCount),
-    ioConcurrency: Math.max(4, Math.min(32, cpu.count * 2)),
+    ioConcurrency,
+    capabilityConcurrency: {
+      control: controlConcurrency,
+      cpu: adaptiveLanes,
+      mixed: mixedConcurrency,
+      io: ioConcurrency,
+    },
+    pressureLevel: pressure.level,
+    pressureScore: pressure.score,
+    pressureReasons: pressure.reasons,
     load1m: Number.isFinite(load) && load >= 0 ? Math.round(load * 100) / 100 : 0,
     memoryTotalMB,
     memoryFreeMB,
+    processRssMB: Math.round(processRssMB * 10) / 10,
+    rssSoftLimitMB: Math.round(rssSoftLimitMB * 10) / 10,
   }
+}
+
+/** Resolve the current lane count for one work capability. Re-sample between batches. */
+export function getRuntimeCapabilityConcurrency(
+  capability: ProcessingCapability,
+  itemCount = Number.POSITIVE_INFINITY,
+  env: NodeJS.ProcessEnv = process.env,
+  pressureInput: RuntimePressureInput = {},
+): number {
+  return getRuntimeConcurrencyProfile(itemCount, env, pressureInput)
+    .capabilityConcurrency[capability]
 }

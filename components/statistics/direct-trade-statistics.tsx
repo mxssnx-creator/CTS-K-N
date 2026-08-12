@@ -244,7 +244,7 @@ export function DirectTradeStatistics() {
               <h1 className="text-xl font-semibold">Direct-Trade statistics</h1>
               <Badge variant={status.processor?.isHealthy ? "default" : "secondary"}>{status.processor?.isHealthy ? "Processor healthy" : "Processor idle"}</Badge>
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">Independent 1m / 10m / 15m sets, all selected combinations, and separate entry, exit, TP, SL and trailing evaluation lines.</p>
+            <p className="mt-1 text-sm text-muted-foreground">Independent 5m / 15m / 30m sets, all selected combinations, and separate entry, exit, TP, SL, trailing and DCA evaluation lines.</p>
           </div>
           <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh

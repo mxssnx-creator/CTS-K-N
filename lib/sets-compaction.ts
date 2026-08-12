@@ -54,6 +54,7 @@ export type SetCompactionType =
   | "indication.active"
   | "indication.optimal"
   | "indication.active_advanced"
+  | "indication.special"
   | "indication.signal"
   | "indication.trend"
   | "indication.common"

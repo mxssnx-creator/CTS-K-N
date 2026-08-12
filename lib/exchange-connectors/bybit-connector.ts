@@ -10,6 +10,7 @@ import {
   type PlaceOrderOptions,
 } from "./base-connector"
 import { aggregateTradesTo1sOHLCV } from "./aggregate-1s"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 /**
  * Bybit V5 Exchange Connector
@@ -667,19 +668,18 @@ export class BybitConnector extends BaseExchangeConnector {
    */
   private normalizeOrder(raw: any): ExchangeOrder {
     const rawStatus = String(raw.orderStatus ?? raw.status ?? "").toUpperCase()
+    const compactStatus = rawStatus.replace(/[^A-Z]/g, "")
     const normalizedStatus =
-      rawStatus === "FILLED"           ? "filled" :
-      rawStatus === "PARTLYFILLED"     ? "partially_filled" :
-      rawStatus === "PARTIALLY_FILLED" ? "partially_filled" :
-      rawStatus === "CANCELLED"        ? "cancelled" :
-      rawStatus === "CANCELED"         ? "cancelled" :
-      rawStatus === "REJECTED"         ? "cancelled" :
+      compactStatus.includes("CANCEL") || compactStatus === "REJECTED" || compactStatus === "DEACTIVATED" ? "cancelled" :
+      compactStatus === "FILLED"       ? "filled" :
+      compactStatus.includes("PART") && compactStatus.includes("FILLED") ? "partially_filled" :
       rawStatus === "NEW"              ? "pending" :
       rawStatus === "UNTRIGGERED"      ? "pending" :
       rawStatus === "TRIGGERED"        ? "pending" : "pending"
 
     return {
       orderId:     String(raw.orderId    ?? raw.orderLinkId ?? ""),
+      clientOrderId: String(raw.orderLinkId ?? raw.clientOrderId ?? "") || undefined,
       symbol:      String(raw.symbol     ?? ""),
       side:        String(raw.side       ?? "").toLowerCase() === "buy" ? "buy" : "sell",
       type:        raw.orderType === "Limit" ? "limit" : "market",
@@ -801,16 +801,16 @@ export class BybitConnector extends BaseExchangeConnector {
       const leg = positionSide
         ? positions.find(
             (p: any) =>
-              String(p.side || "").toLowerCase() === positionSide &&
+              normalizeTradeDirection(p.side) === positionSide &&
               Number.parseFloat(p.size || "0") > 0,
           )
         : positions.find((p: any) => Number.parseFloat(p.size || "0") > 0)
 
       if (!leg) return { success: false, error: "No open position to close" }
 
-      const openSide = String(leg.side || "Buy")
-      const posDirection: "long" | "short" = openSide === "Buy" ? "long" : "short"
-      const closeSide: "buy" | "sell" = openSide === "Buy" ? "sell" : "buy"
+      const posDirection = normalizeTradeDirection(leg.side)
+      if (!posDirection) return { success: false, error: "Position has no valid Buy/Sell direction" }
+      const closeSide: "buy" | "sell" = posDirection === "long" ? "sell" : "buy"
       const qty = Number.parseFloat(leg.size || "0")
       if (!qty || qty <= 0) return { success: false, error: "Position size is zero — nothing to close" }
 

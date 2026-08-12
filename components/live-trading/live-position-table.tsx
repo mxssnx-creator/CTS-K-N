@@ -161,6 +161,11 @@ export function LivePositionTable({
     const take = takeProfitPrice.trim() ? Number(takeProfitPrice) : null
     const distance = Number(trailingDistancePct)
 
+    if (!direction) {
+      setValidationError("Position direction is missing or contradictory.")
+      return
+    }
+
     if (stop !== null && (!Number.isFinite(stop) || stop <= 0)) {
       setValidationError("Stop loss must be a positive price.")
       return
@@ -315,13 +320,13 @@ export function LivePositionTable({
                     <TableRow key={position.id} className="group">
                       <TableCell className="py-1.5 pl-3">
                         <div className="flex items-center gap-2">
-                          <span className={`grid size-6 place-items-center rounded border ${direction === "long" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400"}`}>
-                            {direction === "long" ? <TrendingUp className="size-3" /> : <TrendingDown className="size-3" />}
+                          <span className={`grid size-6 place-items-center rounded border ${direction === "long" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : direction === "short" ? "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400" : "border-amber-500/30 bg-amber-500/10 text-amber-600"}`}>
+                            {direction === "long" ? <TrendingUp className="size-3" /> : direction === "short" ? <TrendingDown className="size-3" /> : <AlertTriangle className="size-3" />}
                           </span>
                           <div>
                             <div className="font-semibold">{position.symbol}</div>
                             <div className="flex items-center gap-1 text-[9px] uppercase text-muted-foreground">
-                              <span>{direction}</span>
+                              <span>{direction || "invalid"}</span>
                               <span>·</span>
                               <span>{sourceOf(position)}</span>
                               {position.setVariant ? <><span>·</span><span>{position.setVariant}</span></> : null}

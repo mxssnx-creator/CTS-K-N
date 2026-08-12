@@ -22,8 +22,10 @@ const TYPE_LABELS: Record<string, string> = {
   move: "Move",
   active: "Active",
   active_advanced: "Active+",
+  special: "Special",
   optimal: "Optimal",
   auto: "Auto",
+  common: "Common",
   signal: "Signal",
   trend: "Trend",
 }
@@ -52,7 +54,7 @@ export function IndicationsDetail({ connectionId }: { connectionId: string }) {
     )
   }
 
-  const types = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"]
+  const types = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"]
 
   return (
     <div className="flex flex-col gap-4">

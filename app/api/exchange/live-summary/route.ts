@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient, getSettings, getAllConnections } from "@/lib/redis-db"
+import {
+  calculateExchangeAccountPerformance15h,
+  recordAndCalculateExchangeAccountPerformance15h,
+} from "@/lib/exchange-account-performance"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 export const dynamic = "force-dynamic"
+
+const VERIFIED_BALANCE_MAX_AGE_MS = 5 * 60 * 1000
 
 /**
  * GET /api/exchange/live-summary
@@ -32,6 +39,7 @@ export const dynamic = "force-dynamic"
  */
 export async function GET(request: Request) {
   try {
+    const now = Date.now()
     await initRedis()
     const client = getRedisClient()
     const connections = await getAllConnections()
@@ -123,6 +131,7 @@ export async function GET(request: Request) {
         let openPositions  = 0
         let longPositions  = 0
         let shortPositions = 0
+        let invalidDirectionPositions = 0
         let unrealizedPnl  = 0
         let marginUsdSum   = 0      // used balance committed across this connection
         let volumeUsdSum   = 0      // leveraged notional across this connection
@@ -144,8 +153,12 @@ export async function GET(request: Request) {
           // stale entries.
           if (p.status && p.status !== "open") continue
 
+          const side = normalizeTradeDirection(p.direction, p.position_side, p.positionSide, p.side)
+          if (!side) {
+            invalidDirectionPositions++
+            continue
+          }
           openPositions++
-          const side = String(p.side || "long").toLowerCase()
           if (side === "short") shortPositions++
           else                  longPositions++
 
@@ -188,9 +201,16 @@ export async function GET(request: Request) {
         // The exchange connectors expose wallet balance at this layer. Equity
         // and free margin are therefore conservative derived values based on
         // the same canonical open-position snapshot, never a mirrored total.
-        const totalBal  = toNum(balanceCache?.balance)
+        const cachedBalance = optionalNum(balanceCache?.balance)
         const currency  = (balanceCache?.currency as string) || "USDT"
-        const balanceTs = toNum(balanceCache?.timestamp)
+        const balanceTs = toTimestamp(balanceCache?.timestamp ?? balanceCache?.updated_at)
+        const isFallbackBalance = isTruthy(balanceCache?.is_fallback) || isTruthy(balanceCache?.isFallback)
+        const balanceDataAvailable = cachedBalance !== null && cachedBalance >= 0 &&
+          balanceTs !== null && balanceTs <= now + 60_000 &&
+          now - balanceTs <= VERIFIED_BALANCE_MAX_AGE_MS && !isFallbackBalance
+        // Preserve a real but stale cache value for existing diagnostic
+        // consumers. Fallback balances are never exposed as exchange money.
+        const totalBal = isFallbackBalance ? 0 : cachedBalance ?? 0
         const equity = totalBal + unrealizedPnl
         const estimatedAvailable = Math.max(0, equity - marginUsdSum)
 
@@ -201,6 +221,7 @@ export async function GET(request: Request) {
           openPositions,
           longPositions,
           shortPositions,
+          invalidDirectionPositions,
           unrealizedPnl,
           // Connection-level USDT roll-ups. `marginUsd` is the canonical
           // "USDT" figure (used balance = notional / leverage); we
@@ -213,7 +234,9 @@ export async function GET(request: Request) {
             available: estimatedAvailable,
             equity,
             currency,
-            updatedAt: balanceTs || null,
+            updatedAt: balanceTs,
+            dataAvailable: balanceDataAvailable,
+            isFallback: isFallbackBalance,
           },
           positions: positions.slice(0, 20),
         }
@@ -226,6 +249,7 @@ export async function GET(request: Request) {
         acc.openPositions    += c.openPositions
         acc.longPositions    += c.longPositions
         acc.shortPositions   += c.shortPositions
+        acc.invalidDirectionPositions += c.invalidDirectionPositions
         acc.unrealizedPnl    += c.unrealizedPnl
         acc.totalBalance     += c.balance.total
         acc.availableBalance += c.balance.available
@@ -239,7 +263,7 @@ export async function GET(request: Request) {
         return acc
       },
       {
-        openPositions: 0, longPositions: 0, shortPositions: 0,
+        openPositions: 0, longPositions: 0, shortPositions: 0, invalidDirectionPositions: 0,
         unrealizedPnl: 0, totalBalance: 0, availableBalance: 0,
         equity: 0,
         marginUsd: 0, volumeUsd: 0,
@@ -248,10 +272,36 @@ export async function GET(request: Request) {
     )
     if (!totals.currency) totals.currency = "USDT"
 
+    const accountCurrencies = new Set(
+      perConnection.map((connection) => String(connection.balance.currency || "USDT").toUpperCase()),
+    )
+    const accountDataAvailable = perConnection.length > 0 &&
+      perConnection.every((connection) => connection.balance.dataAvailable) &&
+      accountCurrencies.size === 1
+    const connectionIds = perConnection.map((connection) => connection.connectionId).sort()
+    const currentAccountSnapshot = accountDataAvailable
+      ? {
+          timestamp: now,
+          balance: totals.totalBalance,
+          equity: totals.equity,
+          currency: totals.currency,
+          connectionIds,
+        }
+      : null
+    const accountPerformance15h = currentAccountSnapshot
+      ? await recordAndCalculateExchangeAccountPerformance15h(client, currentAccountSnapshot)
+          .catch(() => calculateExchangeAccountPerformance15h(currentAccountSnapshot, []))
+      : calculateExchangeAccountPerformance15h(null, [])
+
     return NextResponse.json({
       connections: perConnection,
-      totals,
-      updatedAt: Date.now(),
+      totals: {
+        ...totals,
+        accountDataAvailable,
+        directionIntegrity: totals.openPositions === totals.longPositions + totals.shortPositions,
+      },
+      accountPerformance15h,
+      updatedAt: now,
     })
   } catch (error) {
     console.error("[v0] /api/exchange/live-summary error:", error)
@@ -265,18 +315,37 @@ function toNum(v: any): number {
   return Number.isFinite(n) ? n : 0
 }
 
+function optionalNum(value: unknown): number | null {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function toTimestamp(value: unknown): number | null {
+  if (typeof value === "number" || (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim()))) {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0) return null
+    return parsed < 10_000_000_000 ? parsed * 1000 : parsed
+  }
+  if (typeof value !== "string" || !value.trim()) return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function emptyResponse() {
   return {
     connections: [],
     totals: {
-      openPositions: 0, longPositions: 0, shortPositions: 0,
+      openPositions: 0, longPositions: 0, shortPositions: 0, invalidDirectionPositions: 0,
+      directionIntegrity: true,
       unrealizedPnl: 0, totalBalance: 0, availableBalance: 0,
       equity: 0,
       // USDT roll-ups: margin = capital committed, volume = leveraged
       // notional. Both 0 when no live connections are eligible.
       marginUsd: 0, volumeUsd: 0,
       currency: "USDT",
+      accountDataAvailable: false,
     },
+    accountPerformance15h: calculateExchangeAccountPerformance15h(null, []),
     updatedAt: Date.now(),
   }
 }

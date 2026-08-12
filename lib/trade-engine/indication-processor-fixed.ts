@@ -122,6 +122,7 @@ import {
   normalizeActiveMarketExitSituations,
   type ActiveMarketExitSituation,
 } from "@/lib/active-outbreak-indication"
+import { evaluateIndependentDirections } from "@/lib/directional-evaluation"
 
 // Pre-import modules at module load time (not per-call)
 import { initRedis, getRedisClient, getMarketData, saveIndication, getSettings, getAppSettings, storeIndications } from "@/lib/redis-db"
@@ -1153,8 +1154,10 @@ export class IndicationProcessor {
       // Do not synthesize an opposite hedge indication. The historical
       // primary+opposite fan-out made every cycle contribute one long and one
       // short candidate, which in turn produced identical side/order counts.
-      const isBullish = currentClose >= currentOpen
-      const primaryDir = isBullish ? "long" : "short"
+      const primaryDirectionEvaluation = evaluateIndependentDirections([
+        currentOpen > 0 ? ((currentClose - currentOpen) / currentOpen) * 100 : 0,
+      ])
+      const primaryDir = primaryDirectionEvaluation.selectedDirection
 
       // Derive confidence from candle body vs wick ratio (stronger body = higher confidence)
       const range = currentHigh - currentLow
@@ -1411,9 +1414,9 @@ export class IndicationProcessor {
       // so in a calm market only `direction` fires; on a big bullish candle
       // with elevated volume, all legacy types can fire. Trend is appended
       // once after this loop so it is always the final indication type.
-      const pairs: Array<["long" | "short", number, number, boolean]> = [
-        [primaryDir, primaryConf, primaryPF, true],
-      ]
+      const pairs: Array<["long" | "short", number, number, boolean]> = primaryDir
+        ? [[primaryDir, primaryConf, primaryPF, true]]
+        : []
 
       for (const [dir, conf, pf, isPrimary] of pairs) {
         // 1. Direction — independent and operator-controllable.
@@ -1432,6 +1435,7 @@ export class IndicationProcessor {
               higherRangeDirection: directionPostChangeCoordination.direction,
               higherRangeAligned: dir === directionPostChangeCoordination.direction,
               directionPostChangeCoordination,
+              directionEvaluation: primaryDirectionEvaluation,
             },
           })
         }
@@ -1454,7 +1458,12 @@ export class IndicationProcessor {
             profitFactor: pf * (1 + Math.min(0.25, rangePercent / 40)),
             confidence: conf * 0.95,
             timestamp: now,
-            metadata: { direction: dir, rangePercent, primary: isPrimary },
+            metadata: {
+              direction: dir,
+              rangePercent,
+              primary: isPrimary,
+              directionEvaluation: primaryDirectionEvaluation,
+            },
           })
         }
 
@@ -1473,7 +1482,12 @@ export class IndicationProcessor {
             profitFactor: Math.min(2.5, pf * 1.15),
             confidence: Math.min(0.95, conf * 1.05),
             timestamp: now,
-            metadata: { direction: dir, bodyRatio, primary: true },
+            metadata: {
+              direction: dir,
+              bodyRatio,
+              primary: true,
+              directionEvaluation: primaryDirectionEvaluation,
+            },
           })
         }
 
@@ -1497,6 +1511,7 @@ export class IndicationProcessor {
               primary: true,
               windows: autoAlignment.windows,
               commonMultiRangeCoordination,
+              directionEvaluation: primaryDirectionEvaluation,
             },
           })
         }

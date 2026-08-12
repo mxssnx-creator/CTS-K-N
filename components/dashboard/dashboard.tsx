@@ -50,35 +50,31 @@ function formatDuration(ms: number): string {
   return `${seconds}s`
 }
 
-const STARTED_AT_STORAGE_KEY = "cts-v-dashboard-started-at"
-
-function getPersistedStartedAt(): Date | null {
-  if (typeof window === "undefined") return null
-  try {
-    const raw = localStorage.getItem(STARTED_AT_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = Date.parse(raw)
-    if (Number.isFinite(parsed)) return new Date(parsed)
-  } catch {}
-  return null
+interface RuntimeIdentity {
+  bootId: string | null
+  installationId: string | null
+  startedAt: Date | null
+  restarts: number
+  recoveries: number
+  crashes: number
+  lastRecoveryKind: string | null
 }
 
-function persistStartedAt(date: Date): void {
-  if (typeof window === "undefined") return
-  try {
-    localStorage.setItem(STARTED_AT_STORAGE_KEY, date.toISOString())
-  } catch {}
-}
-
-async function fetchStartedAtFromServer(): Promise<Date | null> {
+async function fetchRuntimeIdentity(): Promise<RuntimeIdentity | null> {
   try {
     const res = await fetch("/api/system/status", { cache: "no-store" })
     if (!res.ok) return null
     const data = await res.json()
-    const startedAt = data?.tradeEngine?.worker?.started_at || data?.engineGlobalState?.started_at
-    if (typeof startedAt === "string") {
-      const parsed = Date.parse(startedAt)
-      if (Number.isFinite(parsed)) return new Date(parsed)
+    const rawStartedAt = data?.startup?.started_at
+    const parsed = typeof rawStartedAt === "string" ? Date.parse(rawStartedAt) : Number.NaN
+    return {
+      bootId: typeof data?.startup?.boot_id === "string" ? data.startup.boot_id : null,
+      installationId: typeof data?.siteInstanceId === "string" ? data.siteInstanceId : null,
+      startedAt: Number.isFinite(parsed) ? new Date(parsed) : null,
+      restarts: Math.max(0, Number(data?.startup?.service_restart_count) || 0),
+      recoveries: Math.max(0, Number(data?.startup?.recovery_count) || 0),
+      crashes: Math.max(0, Number(data?.startup?.crash_count) || 0),
+      lastRecoveryKind: typeof data?.startup?.last_recovery_kind === "string" ? data.startup.last_recovery_kind : null,
     }
   } catch {}
   return null
@@ -89,22 +85,6 @@ function getDurableSiteInstanceId(): string | null {
   return document.documentElement.dataset.ctsSiteInstance || null
 }
 
-function createSessionInstanceId(): string {
-  if (typeof window !== "undefined") {
-    try {
-      const existing = localStorage.getItem("cts:session-instance-id")
-      if (existing && typeof existing === "string") return existing
-    } catch {}
-  }
-  const id = `session_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`
-  if (typeof window !== "undefined") {
-    try {
-      localStorage.setItem("cts:session-instance-id", id)
-    } catch {}
-  }
-  return id
-}
-
 function DashboardRuntimeFooter() {
   // All of these values are time/locale/DOM dependent. They must stay null on
   // the server render AND the first client render, otherwise the SSR HTML
@@ -113,51 +93,45 @@ function DashboardRuntimeFooter() {
   const [mounted, setMounted] = useState(false)
   const [startedAt, setStartedAt] = useState<Date | null>(null)
   const [now, setNow] = useState<Date | null>(null)
-  const [instanceId, setInstanceId] = useState<string | null>(null)
+  const [runtime, setRuntime] = useState<RuntimeIdentity | null>(null)
 
   useEffect(() => {
     setMounted(true)
-    setInstanceId(getDurableSiteInstanceId())
-    const persisted = getPersistedStartedAt()
-    if (persisted) {
-      setStartedAt(persisted)
-      setNow(persisted)
-    } else {
-      setNow(new Date())
-    }
+    setNow(new Date())
   }, [])
 
   useEffect(() => {
     if (!mounted) return
     let cancelled = false
 
-    async function resolveStartedAt() {
-      if (startedAt) return
-      const serverStartedAt = await fetchStartedAtFromServer()
+    async function refreshRuntime() {
+      const identity = await fetchRuntimeIdentity()
       if (cancelled) return
-      const finalStartedAt = serverStartedAt ?? new Date()
-      setStartedAt(finalStartedAt)
-      setNow(finalStartedAt)
-      persistStartedAt(finalStartedAt)
+      if (!identity) return
+      setRuntime(identity)
+      setStartedAt(identity.startedAt)
+      setNow(new Date())
     }
 
-    resolveStartedAt()
+    void refreshRuntime()
     const timer = window.setInterval(() => setNow(new Date()), 1000)
+    const refreshTimer = window.setInterval(() => void refreshRuntime(), 15_000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
+      window.clearInterval(refreshTimer)
     }
-  }, [mounted, startedAt])
+  }, [mounted])
 
   return (
     <Card className="border-dashed bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="font-mono">
-            Unique Session / Instance ID
+            Current service session
           </Badge>
           <span className="font-mono text-foreground break-all" suppressHydrationWarning>
-            {mounted ? (instanceId ?? "—") : "—"}
+            {mounted ? (runtime?.bootId ?? "—") : "—"}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono">
@@ -166,7 +140,13 @@ function DashboardRuntimeFooter() {
           <span suppressHydrationWarning>
             Running: {formatDuration(mounted && startedAt && now ? now.getTime() - startedAt.getTime() : 0)}
           </span>
+          <span suppressHydrationWarning>Restarts/reloads: {mounted ? (runtime?.restarts ?? 0) : 0}</span>
+          <span suppressHydrationWarning title={runtime?.lastRecoveryKind || undefined}>Recoveries: {mounted ? (runtime?.recoveries ?? 0) : 0}</span>
+          <span suppressHydrationWarning>Crash heals: {mounted ? (runtime?.crashes ?? 0) : 0}</span>
         </div>
+      </div>
+      <div className="mt-2 font-mono text-[10px] text-muted-foreground/80" suppressHydrationWarning>
+        Installation: {mounted ? (runtime?.installationId ?? getDurableSiteInstanceId() ?? "—") : "—"}
       </div>
     </Card>
   )

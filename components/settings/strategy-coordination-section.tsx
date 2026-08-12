@@ -50,7 +50,12 @@ import {
   TRAILING_STOP_RATIOS,
   trailingVariantKey,
 } from "@/lib/trailing-settings"
-import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
+import {
+  DEFAULT_DCA_PROFILE,
+  MAX_DCA_POSITION_VOLUME_RATIO,
+  MIN_DCA_POSITION_VOLUME_RATIO,
+  type DcaTakeProfitMode,
+} from "@/lib/dca-strategy"
 import { STRATEGY_AXIS_SPECS } from "@/lib/strategy-axis-settings"
 import {
   DEFAULT_BASE_MIN_STEP,
@@ -122,6 +127,7 @@ export interface CoordinationSettings {
   dcaTakeProfitMode: DcaTakeProfitMode
   dcaBreakevenProfitPct: number // 0.05..5%
   dcaCooldownSeconds: number // 0..3600 seconds between confirmed steps
+  dcaMaxPositionVolumeRatio: number // total including initial fill, 1.4..5
 
   /**
    * ── Prev-PI threshold (operator spec) ──────────────────────────────
@@ -234,6 +240,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
   dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
   dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
+  dcaMaxPositionVolumeRatio: DEFAULT_DCA_PROFILE.maxPositionVolumeRatio,
   prevPosMinCount:   5,
   prevPosWindow:    25,
   mainEvalPosCount: 25,
@@ -673,6 +680,23 @@ export function StrategyCoordinationSection({
               />
               <span className="w-8 text-right text-xs font-semibold tabular-nums">{value.dcaMaxSteps}</span>
             </div>
+          </div>
+
+          <div className="rounded-lg border border-border/60 p-3 space-y-2">
+            <div className="flex justify-between gap-3">
+              <div>
+                <Label className="text-sm font-semibold">Maximum Total Position Ratio</Label>
+                <p className="text-xs text-muted-foreground">Initial fill plus all confirmed DCA legs. The system hard-cap is 5× (500%).</p>
+              </div>
+              <span className="text-xs font-semibold tabular-nums">{value.dcaMaxPositionVolumeRatio.toFixed(1)}×</span>
+            </div>
+            <Slider
+              min={MIN_DCA_POSITION_VOLUME_RATIO}
+              max={MAX_DCA_POSITION_VOLUME_RATIO}
+              step={0.1}
+              value={[value.dcaMaxPositionVolumeRatio]}
+              onValueChange={([next]) => onChange({ ...value, dcaMaxPositionVolumeRatio: Number(next.toFixed(1)) })}
+            />
           </div>
 
           <div className="space-y-2">

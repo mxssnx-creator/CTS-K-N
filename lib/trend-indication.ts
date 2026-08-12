@@ -7,6 +7,11 @@
  * avoids mixing wall-clock sampling with candle-based calculations.
  */
 
+import {
+  evaluateIndependentDirections,
+  type IndependentDirectionEvaluation,
+} from "@/lib/directional-evaluation"
+
 export const DEFAULT_TREND_TIMEFRAMES_MINUTES = [1, 5, 15, 30] as const
 export const TREND_TIMEFRAMES_MINUTES = DEFAULT_TREND_TIMEFRAMES_MINUTES
 export const DEFAULT_TREND_DRAWDOWN_FACTORS = [-1, -2, -3] as const
@@ -86,6 +91,7 @@ export interface TrendSignal {
     activeMarketChangePct: number
     activeSituationRatio: number
     configuredActiveSituationRatio: number
+    directionEvaluation: IndependentDirectionEvaluation
   }
 }
 
@@ -201,19 +207,24 @@ export function calculateTrendSignal(
 
   const positionCostPct = Math.max(0.000001, Number(config.positionCostPct) || 0.1)
   const totalChangePct = percentChange(prices[0], prices[prices.length - 1])
-  const direction: TrendDirection = totalChangePct >= 0 ? "long" : "short"
-  const directionSign = direction === "long" ? 1 : -1
-  const positionCostRatio = Math.abs(totalChangePct) / positionCostPct
-  const minChangeRatio = Math.max(0, Number(config.minChangeRatio ?? 1))
-  if (positionCostRatio < minChangeRatio) return null
-
   const oneMinuteChanges: number[] = []
   for (let index = 1; index < prices.length; index++) {
     oneMinuteChanges.push(percentChange(prices[index - 1], prices[index]))
   }
-  const alignedMoves = oneMinuteChanges.filter((change) => change * directionSign > 0).length
-  const continuationAgreement = alignedMoves / Math.max(1, oneMinuteChanges.length)
   const minAgreement = clamp(Number(config.minAgreement ?? DEFAULT_TREND_MIN_AGREEMENT), 0, 1)
+  const directionEvaluation = evaluateIndependentDirections(oneMinuteChanges, {
+    minimumEvidence: 1,
+    minimumAgreement: minAgreement,
+  })
+  const direction = directionEvaluation.selectedDirection
+  if (!direction) return null
+  const directionSign = direction === "long" ? 1 : -1
+  if (totalChangePct * directionSign <= 0) return null
+  const positionCostRatio = Math.abs(totalChangePct) / positionCostPct
+  const minChangeRatio = Math.max(0, Number(config.minChangeRatio ?? 1))
+  if (positionCostRatio < minChangeRatio) return null
+
+  const continuationAgreement = directionEvaluation[direction].agreement
   if (continuationAgreement < minAgreement) return null
 
   const averageOneMinuteChangePct = calculateAverageOneMinuteChangePct(prices)
@@ -282,6 +293,7 @@ export function calculateTrendSignal(
       activeMarketChangePct: round(activeMarketChangePct),
       activeSituationRatio: round(activeSituationRatio),
       configuredActiveSituationRatio: round(requiredActiveRatio),
+      directionEvaluation,
     },
   }
 }

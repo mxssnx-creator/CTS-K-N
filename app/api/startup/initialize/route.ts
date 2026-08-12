@@ -15,7 +15,7 @@ export async function POST() {
     const ensureResult = await ensureDefaultExchangesExist()
     const connections = await getAllConnections()
 
-    const baseIds = ["bingx-x01", "pionex-x01", "orangex-x01"]
+    const baseIds = ["bingx-x01", "bingx-x02", "pionex-x01", "orangex-x01"]
     const baseConnections = connections.filter((c: any) => baseIds.includes(c.id))
     const withCredentials = baseConnections.filter((c: any) => (c.api_key || "").length > 10 && (c.api_secret || "").length > 10).length
 

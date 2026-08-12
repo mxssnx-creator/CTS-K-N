@@ -92,6 +92,25 @@ import {
   DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS,
   type ActiveMarketExitSituation,
 } from "@/lib/active-outbreak-indication"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import {
+  evaluateIndependentDirections,
+  type EffectiveTradeDirection,
+} from "@/lib/directional-evaluation"
+import {
+  buildSpecialTimeframeSeries,
+  calculateSpecialPositionPlan,
+  DEFAULT_SPECIAL_STRATEGY_SETTINGS,
+  evaluateSpecialIndication,
+  evaluateSpecialMultiTimeframeCoordination,
+  SPECIAL_TIMEFRAMES_SECONDS,
+  specialExitVariantSettings,
+  specialIndicationFromMultiTimeframeCoordination,
+  specialSettingsFromAppSettings,
+  type SpecialMarketActivityInput,
+  type SpecialStrategySettings,
+  type SpecialTimedObservation,
+} from "@/lib/special-strategy"
 
 // Default limits per indication type (independently configurable)
 const DEFAULT_LIMITS = {
@@ -100,6 +119,7 @@ const DEFAULT_LIMITS = {
   active: 250,
   optimal: 250,
   active_advanced: 250,
+  special: 250,
   signal: 250,
   trend: 250,
   common: 250,
@@ -220,6 +240,36 @@ return { tostring(grossProfit), tostring(grossLoss), tostring(count) }
 `
 
 type IndicationCandidate = { setKey: string; indication: any; config: any }
+
+function countDirectionalCandidates(
+  candidates: readonly IndicationCandidate[],
+): Record<EffectiveTradeDirection, number> {
+  const counts = { long: 0, short: 0 }
+  for (const candidate of candidates) {
+    const direction = resolveIndicationDirection(candidate.indication)
+    if (direction) counts[direction]++
+  }
+  return counts
+}
+
+function directionalProcessingResult(
+  type: string,
+  total: number,
+  qualifiedCandidates: readonly IndicationCandidate[],
+  evaluatedConfigurations: number,
+) {
+  return {
+    type,
+    total,
+    qualified: qualifiedCandidates.length,
+    configs: qualifiedCandidates.length,
+    byDirection: countDirectionalCandidates(qualifiedCandidates),
+    evaluatedByDirection: {
+      long: Math.max(0, evaluatedConfigurations),
+      short: Math.max(0, evaluatedConfigurations),
+    },
+  }
+}
 type OutcomePerformance = {
   classicProfitFactor: number
   averageMovePct: number
@@ -372,19 +422,20 @@ export function invalidateExactSnapshotCache(connectionId?: string): void {
 }
 
 function resolveIndicationDirection(indication: any): "long" | "short" | null {
-  if (indication?.direction === "long" || indication?.direction === "short") {
-    return indication.direction
-  }
-  if (indication?.metadata?.direction === "long" || indication?.metadata?.direction === "short") {
-    return indication.metadata.direction
-  }
   const signedValue = [
     indication?.metadata?.secondDir,
     indication?.metadata?.movement,
     indication?.metadata?.signedPriceChange,
     indication?.metadata?.netMovement,
   ].map(Number).find((value) => Number.isFinite(value) && value !== 0)
-  return signedValue === undefined ? null : signedValue > 0 ? "long" : "short"
+  const signedDirection = signedValue === undefined
+    ? null
+    : signedValue > 0 ? "long" : "short"
+  return resolveConsistentTradeDirection(
+    indication?.direction,
+    indication?.metadata?.direction,
+    signedDirection,
+  )
 }
 
 async function mapLimit<T, R>(
@@ -425,6 +476,7 @@ export interface IndicationSetLimits {
   active: number
   optimal: number
   active_advanced: number
+  special: number
   signal: number
   trend: number
   common: number
@@ -436,7 +488,7 @@ export interface PositionLimits {
 }
 
 export interface IndicationSet {
-  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "signal" | "trend" | "common"
+  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "special" | "signal" | "trend" | "common"
   connectionId: string
   symbol: string
   configKey: string // Unique key for this configuration combination
@@ -484,6 +536,7 @@ export class IndicationSetsProcessor {
     move: DEFAULT_INDICATION_TIMEOUT_MS,
     active: DEFAULT_INDICATION_TIMEOUT_MS,
     active_advanced: DEFAULT_INDICATION_TIMEOUT_MS,
+    special: DEFAULT_INDICATION_TIMEOUT_MS,
     optimal: DEFAULT_INDICATION_TIMEOUT_MS,
     trend: DEFAULT_TREND_INDICATION_TIMEOUT_MS,
     signal: DEFAULT_INDICATION_TIMEOUT_MS,
@@ -493,6 +546,7 @@ export class IndicationSetsProcessor {
     move: DEFAULT_INDICATION_TIMEOUT_MS,
     active: DEFAULT_INDICATION_TIMEOUT_MS,
     active_advanced: DEFAULT_INDICATION_TIMEOUT_MS,
+    special: DEFAULT_INDICATION_TIMEOUT_MS,
     optimal: DEFAULT_INDICATION_TIMEOUT_MS,
     trend: DEFAULT_TREND_INDICATION_TIMEOUT_MS,
     common: 1_000,
@@ -526,6 +580,9 @@ export class IndicationSetsProcessor {
   private activeAdvancedActivityRatios: number[] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
   private activeAdvancedMinPositions = 3
   private activeAdvancedContinuationRatio = 0.6
+  private specialSettings: SpecialStrategySettings = {
+    ...DEFAULT_SPECIAL_STRATEGY_SETTINGS,
+  }
   private directionEnabled = true
   private moveEnabled = true
   private activeEnabled = true
@@ -657,6 +714,7 @@ export class IndicationSetsProcessor {
         move: Math.round(activeProfile.move.timeout * 1_000),
         active: Math.round(activeProfile.active.timeout * 1_000),
         active_advanced: Math.round(activeProfile.active.timeout * 1_000),
+        special: Math.round(activeProfile.active.timeout * 1_000),
         optimal: Math.round(activeProfile.optimal.timeout * 1_000),
         trend: Math.round(activeProfile.trend.timeout * 1_000),
         signal: Math.round(activeProfile.signal.timeout * 1_000),
@@ -666,6 +724,7 @@ export class IndicationSetsProcessor {
         move: Math.round(activeProfile.move.interval * 1_000),
         active: Math.round(activeProfile.active.interval * 1_000),
         active_advanced: Math.round(activeProfile.active.interval * 1_000),
+        special: Math.round(activeProfile.active.interval * 1_000),
         optimal: Math.round(activeProfile.optimal.interval * 1_000),
         trend: Math.round(activeProfile.trend.interval * 1_000),
         common: Math.round(activeProfile.common.interval * 1_000),
@@ -675,6 +734,7 @@ export class IndicationSetsProcessor {
       this.moveEnabled = activeProfile.move.enabled
       this.activeEnabled = activeProfile.active.enabled
       this.activeAdvancedEnabled = activeProfile.active.enabled
+      this.specialSettings = specialSettingsFromAppSettings(settings)
       this.optimalEnabled = activeProfile.optimal.enabled
       this.commonEnabled = activeProfile.common.enabled
       this.trendEnabled = activeProfile.trend.enabled
@@ -723,6 +783,7 @@ export class IndicationSetsProcessor {
         if (settings.databaseSizeMove) this.limits.move = Number(settings.databaseSizeMove)
         if (settings.databaseSizeActive) this.limits.active = Number(settings.databaseSizeActive)
         if (settings.databaseSizeOptimal) this.limits.optimal = Number(settings.databaseSizeOptimal)
+        if (settings.databaseSizeSpecial) this.limits.special = Number(settings.databaseSizeSpecial)
         if (settings.databaseSizeSignal) this.limits.signal = Number(settings.databaseSizeSignal)
         if (settings.databaseSizeTrend) this.limits.trend = Number(settings.databaseSizeTrend)
         
@@ -887,6 +948,7 @@ export class IndicationSetsProcessor {
             active: limit,
             optimal: limit,
             active_advanced: limit,
+            special: limit,
             signal: limit,
             trend: limit,
             common: limit,
@@ -901,6 +963,7 @@ export class IndicationSetsProcessor {
         if (setsConfig.move) this.limits.move = Number(setsConfig.move)
         if (setsConfig.active) this.limits.active = Number(setsConfig.active)
         if (setsConfig.active_advanced) this.limits.active_advanced = Number(setsConfig.active_advanced)
+        if (setsConfig.special) this.limits.special = Number(setsConfig.special)
         if (setsConfig.optimal) this.limits.optimal = Number(setsConfig.optimal)
         if (setsConfig.signal) this.limits.signal = Number(setsConfig.signal)
         if (setsConfig.trend) this.limits.trend = Number(setsConfig.trend)
@@ -1211,6 +1274,7 @@ export class IndicationSetsProcessor {
         { type: "direction", enabled: this.directionEnabled, run: () => this.processDirectionSet(symbol, marketData) },
         { type: "move", enabled: this.moveEnabled, run: () => this.processMoveSet(symbol, marketData) },
         { type: "active_advanced", enabled: this.activeAdvancedEnabled, run: () => this.processActiveAdvancedSet(symbol, marketData) },
+        { type: "special", enabled: this.specialSettings.enabled, run: () => this.processSpecialSet(symbol, marketData) },
         { type: "optimal", enabled: this.optimalEnabled, run: () => this.processOptimalSet(symbol, marketData) },
         { type: "common", enabled: this.commonEnabled, run: () => this.processCommonSet(symbol, marketData) },
       ]
@@ -1241,7 +1305,7 @@ export class IndicationSetsProcessor {
       const trendResults = this.trendEnabled
         ? await runType("trend", () => this.processTrendSet(symbol, marketData))
         : disabledResult("trend")
-      const [directionResults, moveResults, activeAdvancedResults, optimalResults, commonResults] = typeResults
+      const [directionResults, moveResults, activeAdvancedResults, specialResults, optimalResults, commonResults] = typeResults
 
       const duration = Date.now() - startTime
       
@@ -1274,9 +1338,24 @@ export class IndicationSetsProcessor {
         (moveResults?.qualified || 0) +
         (activeResults?.qualified || 0) +
         (activeAdvancedResults?.qualified || 0) +
+        (specialResults?.qualified || 0) +
         (optimalResults?.qualified || 0) +
         (commonResults?.qualified || 0) +
         (trendResults?.qualified || 0)
+      const directionalQualified = {
+        direction: directionResults?.byDirection || { long: 0, short: 0 },
+        move: moveResults?.byDirection || { long: 0, short: 0 },
+        active: activeResults?.byDirection || { long: 0, short: 0 },
+        active_advanced: activeAdvancedResults?.byDirection || { long: 0, short: 0 },
+        special: specialResults?.byDirection || { long: 0, short: 0 },
+        optimal: optimalResults?.byDirection || { long: 0, short: 0 },
+        common: commonResults?.byDirection || { long: 0, short: 0 },
+        trend: trendResults?.byDirection || { long: 0, short: 0 },
+      }
+      const longQualified = Object.values(directionalQualified)
+        .reduce((sum, counts) => sum + Number(counts.long || 0), 0)
+      const shortQualified = Object.values(directionalQualified)
+        .reduce((sum, counts) => sum + Number(counts.short || 0), 0)
 
       // ── ACTIVE-VALID indication snapshot (per cycle, per (symbol, type)) ──
       // The legacy `:count` keys are CUMULATIVE (hincrby every commit). The
@@ -1298,15 +1377,23 @@ export class IndicationSetsProcessor {
         const { getRedisClient: _getRedis } = await import("@/lib/redis-db")
         const client = _getRedis()
         const activeKey = `indication_sets_active:${this.connectionId}`
-        await client.hset(activeKey, {
+        const activeFields: Record<string, string> = {
           [`${symbol}:direction`]:       String(directionResults?.qualified ?? 0),
           [`${symbol}:move`]:            String(moveResults?.qualified      ?? 0),
           [`${symbol}:active`]:          String(activeResults?.qualified    ?? 0),
           [`${symbol}:active_advanced`]: String(activeAdvancedResults?.qualified ?? 0),
+          [`${symbol}:special`]:         String(specialResults?.qualified ?? 0),
           [`${symbol}:optimal`]:         String(optimalResults?.qualified   ?? 0),
           [`${symbol}:common`]:          String(commonResults?.qualified    ?? 0),
           [`${symbol}:trend`]:           String(trendResults?.qualified     ?? 0),
-        })
+          [`${symbol}:long`]:            String(longQualified),
+          [`${symbol}:short`]:           String(shortQualified),
+        }
+        for (const [type, counts] of Object.entries(directionalQualified)) {
+          activeFields[`${symbol}:${type}:long`] = String(counts.long)
+          activeFields[`${symbol}:${type}:short`] = String(counts.short)
+        }
+        await client.hset(activeKey, activeFields)
         await client.expire(activeKey, 600) // 10 min — engine refreshes each cycle
 
         // ── Windowed indication counts ────────────────────────────────────
@@ -1324,31 +1411,32 @@ export class IndicationSetsProcessor {
         const moveQ = moveResults?.qualified       ?? 0
         const actQ  = activeResults?.qualified     ?? 0
         const advQ  = activeAdvancedResults?.qualified ?? 0
+        const specialQ = specialResults?.qualified ?? 0
         const optQ  = optimalResults?.qualified    ?? 0
         const commonQ = commonResults?.qualified   ?? 0
         const trendQ = trendResults?.qualified     ?? 0
         const pipe = client.multi()
-        pipe.hset(w5Key, {
+        const windowFields: Record<string, string> = {
           [`${symbol}:direction`]: String(dirQ),
           [`${symbol}:move`]: String(moveQ),
           [`${symbol}:active`]: String(actQ),
           [`${symbol}:active_advanced`]: String(advQ),
+          [`${symbol}:special`]: String(specialQ),
           [`${symbol}:optimal`]: String(optQ),
           [`${symbol}:common`]: String(commonQ),
           [`${symbol}:trend`]: String(trendQ),
-        })
+          [`${symbol}:long`]: String(longQualified),
+          [`${symbol}:short`]: String(shortQualified),
+        }
+        for (const [type, counts] of Object.entries(directionalQualified)) {
+          windowFields[`${symbol}:${type}:long`] = String(counts.long)
+          windowFields[`${symbol}:${type}:short`] = String(counts.short)
+        }
+        pipe.hset(w5Key, windowFields)
         pipe.expire(w5Key,   300) // 5 min rolling window
-        pipe.hset(w60Key, {
-          [`${symbol}:direction`]: String(dirQ),
-          [`${symbol}:move`]: String(moveQ),
-          [`${symbol}:active`]: String(actQ),
-          [`${symbol}:active_advanced`]: String(advQ),
-          [`${symbol}:optimal`]: String(optQ),
-          [`${symbol}:common`]: String(commonQ),
-          [`${symbol}:trend`]: String(trendQ),
-        })
+        pipe.hset(w60Key, windowFields)
         pipe.expire(w60Key,  4200) // 70 min rolling window
-        if (dirQ > 0 || moveQ > 0 || actQ > 0 || advQ > 0 || optQ > 0 || commonQ > 0 || trendQ > 0) {
+        if (dirQ > 0 || moveQ > 0 || actQ > 0 || advQ > 0 || specialQ > 0 || optQ > 0 || commonQ > 0 || trendQ > 0) {
           // Total indication Sets active this cycle: configs that qualified across
           // all types. Stored as a progression field so getIndicationTracking has
           // a non-zero totalIndicationSets without a separate keys() scan.
@@ -1356,6 +1444,7 @@ export class IndicationSetsProcessor {
                                      (moveResults?.configs      ?? moveQ) +
                                      (activeResults?.configs    ?? actQ) +
                                      (activeAdvancedResults?.configs ?? advQ) +
+                                     (specialResults?.configs ?? specialQ) +
                                      (optimalResults?.configs   ?? optQ) +
                                      (commonResults?.configs    ?? commonQ) +
                                      (trendResults?.configs     ?? trendQ)
@@ -1380,9 +1469,11 @@ export class IndicationSetsProcessor {
             `Move=${moveResults?.qualified}/${moveResults?.total} ` +
             `Active=${activeResults?.qualified}/${activeResults?.total} ` +
             `ActiveAdvanced=${activeAdvancedResults?.qualified}/${activeAdvancedResults?.total} ` +
+            `Special=${specialResults?.qualified}/${specialResults?.total} ` +
             `Optimal=${optimalResults?.qualified}/${optimalResults?.total} ` +
             `Common=${commonResults?.qualified}/${commonResults?.total} ` +
-            `Trend=${trendResults?.qualified}/${trendResults?.total}`,
+            `Trend=${trendResults?.qualified}/${trendResults?.total} ` +
+            `Long=${longQualified} Short=${shortQualified}`,
         )
 
         if (didLogSummary) {
@@ -1391,6 +1482,7 @@ export class IndicationSetsProcessor {
             move: moveResults,
             active: activeResults,
             active_advanced: activeAdvancedResults,
+            special: specialResults,
             optimal: optimalResults,
             common: commonResults,
             trend: trendResults,
@@ -1462,6 +1554,13 @@ export class IndicationSetsProcessor {
       candidates,
       this.outcomeAttachmentConcurrency,
       async (candidate) => {
+        const direction = resolveIndicationDirection(candidate.indication)
+        if (!direction) return null
+        candidate.indication.direction = direction
+        candidate.indication.metadata = {
+          ...(candidate.indication.metadata || {}),
+          direction,
+        }
         const profitFactor = await this.attachOutcomeBackedProfitFactor(
           symbol,
           marketData,
@@ -1477,8 +1576,6 @@ export class IndicationSetsProcessor {
         const client = await getCachedClient()
         const type = String(candidate.setKey.split(":")[3] || "")
         const commonType = String(candidate.config?.indicatorType || "")
-        const direction =
-          candidate.indication?.direction === "short" ? "short" : "long"
         const indicationName =
           commonType ||
           String(candidate.indication?.metadata?.name || type || "unknown")
@@ -1540,12 +1637,14 @@ export class IndicationSetsProcessor {
     const factorMultipliers = this.factorMultipliers
     let qualified = 0
     let total = 0
+    let evaluated = 0
     const candidates: IndicationCandidate[] = []
 
     for (const range of keyRanges) {
       for (const drawdownRatio of drawdownRatios) {
         for (const lastPartRatio of lastPartRatios) {
           for (const factorMultiplier of factorMultipliers) {
+            evaluated++
             const indication = this.calculateDirectionIndication(marketData, {
               range,
               drawdownRatio,
@@ -1558,11 +1657,8 @@ export class IndicationSetsProcessor {
             // A reversal is traded in the NEW market direction (secondDir),
             // never the direction that existed before the change. The old
             // firstDir mapping inverted every reversal-side counter.
-            const direction =
-              indication.metadata?.direction === "short" ||
-              Number(indication.metadata?.secondDir) < 0
-                ? "short"
-                : "long"
+            const direction = resolveIndicationDirection(indication)
+            if (!direction) continue
             indication.direction = direction
             // Key includes direction so long/short never share the same Redis key.
             // Without :dir the same config combo for both directions overwrites each
@@ -1585,6 +1681,7 @@ export class IndicationSetsProcessor {
       coordinated?.passed &&
       (coordinated.direction === "long" || coordinated.direction === "short")
     ) {
+      evaluated++
       total++
       const direction = coordinated.direction
       const stepKey = coordinated.passedRangeSteps.join("-") || "none"
@@ -1624,7 +1721,7 @@ export class IndicationSetsProcessor {
       await this.batchSaveIndications(pendingWrites, "direction")
     }
 
-    return { type: "direction", total, qualified, configs: pendingWrites.length }
+    return directionalProcessingResult("direction", total, pendingWrites, evaluated)
   }
 
   /**
@@ -1638,12 +1735,14 @@ export class IndicationSetsProcessor {
     const factorMultipliers = this.factorMultipliers
     let qualified = 0
     let total = 0
+    let evaluated = 0
     const candidates: IndicationCandidate[] = []
 
     for (const range of keyRanges) {
       for (const drawdownRatio of drawdownRatios) {
         for (const lastPartRatio of lastPartRatios) {
           for (const factorMultiplier of factorMultipliers) {
+            evaluated++
             const indication = this.calculateMoveIndication(marketData, {
               range,
               drawdownRatio,
@@ -1655,7 +1754,8 @@ export class IndicationSetsProcessor {
             total++
             // movement > 0 = price went up = long signal; movement < 0 = short.
             // Direction is embedded in the key so long/short are independent sets.
-            const direction = (indication.metadata?.movement || 0) >= 0 ? "long" : "short"
+            const direction = resolveIndicationDirection(indication)
+            if (!direction) continue
             indication.direction = direction
             const setKey = `indication_set:${this.connectionId}:${symbol}:move:${direction}:r${range}:dd${drawdownRatio}:lp${lastPartRatio}:f${factorMultiplier}`
 
@@ -1674,6 +1774,7 @@ export class IndicationSetsProcessor {
       coordinated?.passed &&
       (coordinated.direction === "long" || coordinated.direction === "short")
     ) {
+      evaluated++
       total++
       const direction = coordinated.direction
       const stepKey = coordinated.passedRangeSteps.join("-") || "none"
@@ -1710,7 +1811,7 @@ export class IndicationSetsProcessor {
       await this.batchSaveIndications(pendingWrites, "move")
     }
 
-    return { type: "move", total, qualified, configs: pendingWrites.length }
+    return directionalProcessingResult("move", total, pendingWrites, evaluated)
   }
 
   /**
@@ -1872,7 +1973,7 @@ export class IndicationSetsProcessor {
       await this.batchSaveIndications(pendingWrites, "active")
     }
 
-    return { type: "active", total, qualified, configs: pendingWrites.length }
+    return directionalProcessingResult("active", total, pendingWrites, evaluated)
   }
 
   /**
@@ -1890,16 +1991,19 @@ export class IndicationSetsProcessor {
     const factorMultipliers = this.factorMultipliers
     let qualified = 0
     let total = 0
+    let evaluated = 0
     const candidates: IndicationCandidate[] = []
 
     for (const activityRatio of activityRatios) {
       for (const factorMultiplier of factorMultipliers) {
+        evaluated++
         const config = { activityRatio, minPositions, continuationRatio, factorMultiplier }
         const indication = this.calculateActiveAdvancedIndication(marketData, config)
         if (!indication) continue
 
         total++
-        const direction = indication.metadata?.direction === "short" ? "short" : "long"
+        const direction = resolveIndicationDirection(indication)
+        if (!direction) continue
         indication.direction = direction
         const setKey =
           `indication_set:${this.connectionId}:${symbol}:active_advanced:${direction}` +
@@ -1916,7 +2020,270 @@ export class IndicationSetsProcessor {
       await this.batchSaveIndications(pendingWrites, "active_advanced")
     }
 
-    return { type: "active_advanced", total, qualified, configs: pendingWrites.length }
+    return directionalProcessingResult("active_advanced", total, pendingWrites, evaluated)
+  }
+
+  private getSpecialMarketActivity(marketData: any): SpecialMarketActivityInput | undefined {
+    const candles = Array.isArray(marketData?.candles)
+      ? [...marketData.candles].sort((left: any, right: any) =>
+          this.specialTimestampMs(left?.timestamp ?? left?.time ?? left?.t) -
+          this.specialTimestampMs(right?.timestamp ?? right?.time ?? right?.t),
+        )
+      : this.getForwardCandles(marketData)
+    const volumes = candles
+      .map((candle: any) => Number(candle?.volume ?? candle?.v))
+      .filter((value: number) => Number.isFinite(value) && value >= 0)
+    const directOrderFlow = Number(
+      marketData?.orderFlowImbalance ??
+      marketData?.order_flow_imbalance ??
+      marketData?.ofi,
+    )
+    const bidDepth = Number(
+      marketData?.bidDepth ??
+      marketData?.bid_depth ??
+      marketData?.orderBook?.bidDepth ??
+      marketData?.orderBook?.bidsVolume,
+    )
+    const askDepth = Number(
+      marketData?.askDepth ??
+      marketData?.ask_depth ??
+      marketData?.orderBook?.askDepth ??
+      marketData?.orderBook?.asksVolume,
+    )
+    const bid = Number(marketData?.bid ?? marketData?.bestBid ?? marketData?.orderBook?.bestBid)
+    const ask = Number(marketData?.ask ?? marketData?.bestAsk ?? marketData?.orderBook?.bestAsk)
+    const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0
+    const explicitSpread = Number(marketData?.spreadBps ?? marketData?.spread_bps)
+    const spreadBps = Number.isFinite(explicitSpread) && explicitSpread >= 0
+      ? explicitSpread
+      : mid > 0 && ask >= bid
+        ? ((ask - bid) / mid) * 10_000
+        : undefined
+    if (
+      volumes.length === 0 &&
+      !Number.isFinite(directOrderFlow) &&
+      !Number.isFinite(bidDepth) &&
+      !Number.isFinite(askDepth) &&
+      spreadBps === undefined
+    ) return undefined
+    return {
+      ...(volumes.length > 0 && { volumes }),
+      ...(Number.isFinite(directOrderFlow) && { orderFlowImbalance: directOrderFlow }),
+      ...(Number.isFinite(bidDepth) && bidDepth >= 0 && { bidDepth }),
+      ...(Number.isFinite(askDepth) && askDepth >= 0 && { askDepth }),
+      ...(spreadBps !== undefined && { spreadBps }),
+    }
+  }
+
+  private specialTimestampMs(value: unknown): number {
+    const numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric < 10_000_000_000 ? numeric * 1_000 : numeric
+    }
+    const parsed = new Date(String(value || "")).getTime()
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+
+  private getSpecialTimedObservations(marketData: any): SpecialTimedObservation[] {
+    const candles = Array.isArray(marketData?.candles) ? marketData.candles : []
+    const fromCandles = candles
+      .map((candle: any) => ({
+        timestampMs: this.specialTimestampMs(
+          candle?.timestamp ?? candle?.time ?? candle?.t ?? candle?.openTime,
+        ),
+        price: Number(candle?.close ?? candle?.price ?? candle?.last ?? candle?.markPrice),
+        volume: Number(candle?.volume ?? candle?.v),
+      }))
+      .filter((item: SpecialTimedObservation) => item.timestampMs > 0 && item.price > 0)
+    if (fromCandles.length > 0) {
+      return fromCandles.sort(
+        (left: SpecialTimedObservation, right: SpecialTimedObservation) =>
+          left.timestampMs - right.timestampMs,
+      )
+    }
+
+    const prices = Array.isArray(marketData?.prices) ? marketData.prices : []
+    const timestamps = Array.isArray(marketData?.timestamps) ? marketData.timestamps : []
+    if (prices.length !== timestamps.length) return []
+    return prices
+      .map((price: unknown, index: number) => ({
+        timestampMs: this.specialTimestampMs(timestamps[index]),
+        price: Number(price),
+        volume: Number(Array.isArray(marketData?.volumes) ? marketData.volumes[index] : 0),
+      }))
+      .filter((item: SpecialTimedObservation) => item.timestampMs > 0 && item.price > 0)
+      .sort((left: SpecialTimedObservation, right: SpecialTimedObservation) =>
+        left.timestampMs - right.timestampMs,
+      )
+  }
+
+  /**
+   * Special evaluates every exact range independently in both direction
+   * lanes. A qualified row still has exactly one effective direction; no
+   * opposite indication or strategy row is synthesized.
+   */
+  private async processSpecialSet(symbol: string, marketData: any): Promise<any> {
+    const prices = this.normalizePriceHistory(marketData)
+    const activity = this.getSpecialMarketActivity(marketData)
+    const settings = this.specialSettings
+    const allTimedObservations = this.getSpecialTimedObservations(marketData)
+    const latestTimedObservation = allTimedObservations[allTimedObservations.length - 1]
+    const requiredWindowMs = 30 * 60 * (settings.maxStep + 2) * 1_000
+    const timedObservations = latestTimedObservation
+      ? allTimedObservations.filter(
+          (observation) => observation.timestampMs >= latestTimedObservation.timestampMs - requiredWindowMs,
+        )
+      : []
+    const candidates: IndicationCandidate[] = []
+    let total = 0
+    let evaluatedPerDirection = 0
+    const settingsFingerprint = [
+      `a${settings.minimumAgreement.toFixed(3)}`,
+      `mc${settings.minimumMarketChangePct.toFixed(4)}`,
+      `act${settings.minimumActivityRatio.toFixed(3)}`,
+      `tp${settings.takeProfitMinPositionCostRatio.toFixed(3)}`,
+      `sl${settings.stopLossMaxTakeProfitRatio.toFixed(3)}`,
+      `vp${settings.maxVolumeRatio.toFixed(3)}`,
+      `mp${settings.maxPositionsPerDirection}`,
+      `hold${settings.targetHoldingSeconds}-${settings.maximumHoldingSeconds}`,
+      `tfc${settings.minimumTimeframeConfirmations}`,
+    ].join(":")
+
+    const addCandidate = (
+      indication: NonNullable<ReturnType<typeof evaluateSpecialIndication>>,
+      range: number,
+      timeframeTag: string,
+      mode: "individual" | "combined" | "native",
+    ): void => {
+      const currentPrice = prices[prices.length - 1]
+      const direction = indication.direction
+      for (const exit of specialExitVariantSettings(settings)) {
+        const positionPlan = calculateSpecialPositionPlan({
+          indication,
+          positionCostPct: this.trendPositionCostPct,
+          entryPrice: currentPrice,
+          currentPrice,
+          settings: exit.settings,
+        })
+        if (!positionPlan) continue
+        total++
+        const config = {
+          sampleRange: range,
+          direction,
+          exitVariant: exit.exitVariant,
+          trailingEnabled: exit.settings.trailingEnabled,
+          timeframe: indication.timeframeSeconds ?? timeframeTag,
+          timeframeMode: mode,
+          minStep: settings.minStep,
+          minimumAgreement: settings.minimumAgreement,
+          minimumMarketChangePct: settings.minimumMarketChangePct,
+          minimumActivityRatio: settings.minimumActivityRatio,
+          minimumTimeframeConfirmations: settings.minimumTimeframeConfirmations,
+          maxPositionsPerDirection: settings.maxPositionsPerDirection,
+          maxVolumeRatio: settings.maxVolumeRatio,
+          targetHoldingSeconds: settings.targetHoldingSeconds,
+          maximumHoldingSeconds: settings.maximumHoldingSeconds,
+          takeProfitMinPositionCostRatio: settings.takeProfitMinPositionCostRatio,
+          stopLossMaxTakeProfitRatio: settings.stopLossMaxTakeProfitRatio,
+        }
+        candidates.push({
+          setKey:
+            `indication_set:${this.connectionId}:${symbol}:special:${direction}` +
+            `:${timeframeTag}:range${range}:exit${exit.exitVariant}:${settingsFingerprint}`,
+          config,
+          indication: {
+            profitFactor: indication.profitFactor,
+            signalScore: indication.signalScore,
+            rawSignalStrength: indication.rawSignalStrength,
+            confidence: indication.confidence,
+            direction,
+            metadata: {
+              direction,
+              mode: `special_active_market_${mode}_${exit.exitVariant}`,
+              exitVariant: exit.exitVariant,
+              timeframe: indication.timeframeSeconds ?? timeframeTag,
+              timeframeCoordination: indication.timeframeCoordination,
+              directionEvaluation: indication.directionEvaluation,
+              special: {
+                lane: indication.lane,
+                positionPlan,
+                settings: config,
+                timeframeCoordination: indication.timeframeCoordination,
+              },
+              specialProtection: positionPlan.protection,
+              specialPositionPlan: positionPlan,
+            },
+          },
+        })
+      }
+    }
+
+    const timeframeEnabled = new Map<number, boolean>([
+      [15, settings.timeframe15sEnabled],
+      [60, settings.timeframe1mEnabled],
+      [15 * 60, settings.timeframe15mEnabled],
+      [30 * 60, settings.timeframe30mEnabled],
+    ])
+    const timeframeSeries = SPECIAL_TIMEFRAMES_SECONDS
+      .filter((seconds) => timeframeEnabled.get(seconds))
+      .map((seconds) => buildSpecialTimeframeSeries(timedObservations, seconds))
+      .filter((series): series is NonNullable<typeof series> => !!series)
+
+    for (let range = settings.minStep; range <= settings.maxStep; range += settings.stepSize) {
+      if (settings.individualTimeframesEnabled) {
+        for (const series of timeframeSeries) {
+          if (series.closes.length < range + 1) continue
+          evaluatedPerDirection++
+          for (const direction of ["long", "short"] as const) {
+            const indication = evaluateSpecialIndication(
+              series.closes,
+              direction,
+              range,
+              settings,
+              { ...(activity || {}), volumes: series.volumes },
+              series.timeframeSeconds,
+            )
+            if (!indication) continue
+            indication.timeframeSeconds = series.timeframeSeconds
+            addCandidate(indication, range, `tf${series.timeframeSeconds}s`, "individual")
+          }
+        }
+      }
+
+      if (settings.combinedTimeframesEnabled && timedObservations.length > 0) {
+        evaluatedPerDirection++
+        const coordination = evaluateSpecialMultiTimeframeCoordination({
+          observations: timedObservations,
+          prebuiltSeries: timeframeSeries,
+          sampleRange: range,
+          settings,
+          activity,
+        })
+        if (coordination?.selectedDirection) {
+          const indication = specialIndicationFromMultiTimeframeCoordination(
+            coordination,
+            coordination.selectedDirection,
+            settings,
+          )
+          if (indication) addCandidate(indication, range, "tfcombined", "combined")
+        }
+      }
+
+      // Legacy/native feeds may not carry timestamps. Preserve a fail-closed
+      // single-cadence lane instead of inventing 15-second bars from 1-minute
+      // samples; as soon as timed frames exist this fallback is suppressed.
+      if (timeframeSeries.length === 0 && timedObservations.length === 0) {
+        evaluatedPerDirection++
+        for (const direction of ["long", "short"] as const) {
+          const indication = evaluateSpecialIndication(prices, direction, range, settings, activity)
+          if (indication) addCandidate(indication, range, "tfnative", "native")
+        }
+      }
+    }
+
+    const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
+    if (pendingWrites.length > 0) await this.batchSaveIndications(pendingWrites, "special")
+    return directionalProcessingResult("special", total, pendingWrites, evaluatedPerDirection)
   }
 
   /**
@@ -1928,10 +2295,12 @@ export class IndicationSetsProcessor {
     const factorMultipliers = this.factorMultipliers
     let qualified = 0
     let total = 0
+    let evaluated = 0
     const candidates: IndicationCandidate[] = []
 
     for (const range of keyRanges) {
       for (const factorMultiplier of factorMultipliers) {
+        evaluated++
         const indication = this.calculateOptimalIndication(marketData, range, factorMultiplier)
         if (!indication) continue
         
@@ -1953,7 +2322,7 @@ export class IndicationSetsProcessor {
       await this.batchSaveIndications(pendingWrites, "optimal")
     }
 
-    return { type: "optimal", total, qualified, configs: pendingWrites.length }
+    return directionalProcessingResult("optimal", total, pendingWrites, evaluated)
   }
 
   /**
@@ -2047,12 +2416,9 @@ export class IndicationSetsProcessor {
       32,
     )
     await flushCandidates()
-    return {
-      type: "common",
-      total,
-      qualified,
-      configs: qualified,
-    }
+    return directionalProcessingResult("common", total, this.currentCycleEntries
+      ?.filter((entry) => entry.type === "common")
+      .map((entry) => ({ setKey: entry.setKey, indication: entry, config: entry.config })) || [], total)
   }
 
   /**
@@ -2076,11 +2442,13 @@ export class IndicationSetsProcessor {
     })
     const candidates: IndicationCandidate[] = []
     let total = 0
+    let evaluated = 0
 
     for (const timeframeMinutes of this.trendTimeframesMinutes) {
       for (const drawdownFactor of this.trendDrawdownFactors) {
         for (const lastSituationRatio of this.trendLastSituationRatios) {
           for (const activeSituationRatio of this.trendActiveSituationRatios) {
+            evaluated++
             const signal = calculateTrendSignal(prices, {
               timeframeMinutes,
               drawdownFactor,
@@ -2124,6 +2492,7 @@ export class IndicationSetsProcessor {
     }
 
     if (this.trendCombinedEnabled) {
+      evaluated++
       const combined = calculateCombinedTrendSignal(prices, {
         timeframesMinutes: this.trendTimeframesMinutes,
         drawdownFactors: this.trendDrawdownFactors,
@@ -2172,7 +2541,7 @@ export class IndicationSetsProcessor {
     const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
     if (pendingWrites.length > 0) await this.batchSaveIndications(pendingWrites, "trend")
 
-    return { type: "trend", total, qualified: pendingWrites.length, configs: pendingWrites.length }
+    return directionalProcessingResult("trend", total, pendingWrites, evaluated)
   }
 
   /**
@@ -2184,8 +2553,8 @@ export class IndicationSetsProcessor {
    *                     enforcement when the entry is replayed by the strategy
    *                     pipeline. Pulled from `indication.direction` (set
    *                     upstream in `processDirectionSet`/`processMoveSet`)
-   *                     with sane fallbacks: explicit metadata.firstDir,
-   *                     then "long" as last resort.
+   *                     with strict consistency checks. Missing or conflicting
+   *                     direction lineage is rejected; there is no default side.
    *   - `setKey`      : not stored on the entry (it lives on the Redis key
    *                     itself) — but `getSetEntries` re-attaches it for
    *                     consumers that need provenance.
@@ -2356,9 +2725,12 @@ export class IndicationSetsProcessor {
     setKey: string,
     indication: any,
   ): Promise<number> {
+    const direction = resolveIndicationDirection(indication)
+    if (!direction) return 0
+    indication.direction = direction
     const outcome = this.evaluateForwardOutcome(
       marketData,
-      indication.direction,
+      direction,
       undefined,
       indication?.metadata?.activeProtection,
     )
@@ -2863,10 +3235,16 @@ export class IndicationSetsProcessor {
 
     const firstDir = this.getDirection(firstHalf)
     const secondDir = this.getDirection(secondHalf)
+    const secondHalfMoves = secondHalf.slice(1).map((price, index) => {
+      const previous = secondHalf[index]
+      return previous > 0 ? (price - previous) / previous : 0
+    })
+    const directionEvaluation = evaluateIndependentDirections(secondHalfMoves)
 
     // Opposite direction = signal
     if ((firstDir > 0 && secondDir < 0) || (firstDir < 0 && secondDir > 0)) {
       const direction = secondDir > 0 ? "long" : "short"
+      if (directionEvaluation.selectedDirection !== direction) return null
       const oldestAfterChange = Number(secondHalf[0])
       const newestAfterChange = Number(secondHalf[secondHalf.length - 1])
       const postChangeMovement =
@@ -2896,10 +3274,12 @@ export class IndicationSetsProcessor {
         signalScore,
         rawSignalStrength: signalScore,
         confidence: Math.min(1.0, ((Math.abs(firstDir) + Math.abs(secondDir)) / 2) * factorMultiplier),
+        direction,
         metadata: {
           firstDir,
           secondDir,
           direction,
+          directionEvaluation,
           directionChanged: true,
           postChangeOnly: true,
           postChangeMovement,
@@ -2928,7 +3308,11 @@ export class IndicationSetsProcessor {
     const oldestPrice = prices[0]
     const newestPrice = prices[range - 1]
     const movement = (newestPrice - oldestPrice) / oldestPrice
+    if (!Number.isFinite(movement) || movement === 0) return null
+    const direction = movement > 0 ? "long" : "short"
     const movementMagnitude = Math.abs(movement)
+    const directionEvaluation = evaluateIndependentDirections([movement])
+    if (directionEvaluation.selectedDirection !== direction) return null
     const volatility = this.calculateVolatility(prices)
     const drawdownPenalty = movementMagnitude / Math.max(drawdownRatio * 10, 1)
     const tailWeight = 1 + lastPartRatio
@@ -2939,7 +3323,18 @@ export class IndicationSetsProcessor {
       signalScore,
       rawSignalStrength: signalScore,
       confidence: Math.min(1.0, (movementMagnitude + volatility / 2) * factorMultiplier),
-      metadata: { movement, movementMagnitude, volatility, range, drawdownRatio, lastPartRatio, factorMultiplier },
+      direction,
+      metadata: {
+        direction,
+        directionEvaluation,
+        movement,
+        movementMagnitude,
+        volatility,
+        range,
+        drawdownRatio,
+        lastPartRatio,
+        factorMultiplier,
+      },
     }
   }
 
@@ -3027,23 +3422,17 @@ export class IndicationSetsProcessor {
     }
     if (moves.length < minPositions) return null
 
-    const longMoves = moves.filter((m) => m > 0)
-    const shortMoves = moves.filter((m) => m < 0)
     const netMovement = moves.reduce((sum, movement) => sum + movement, 0)
-    if (longMoves.length === shortMoves.length && netMovement === 0) return null
-    const direction =
-      longMoves.length === shortMoves.length
-        ? netMovement > 0 ? "long" : "short"
-        : longMoves.length > shortMoves.length ? "long" : "short"
-    const alignedMoves = direction === "long" ? longMoves : shortMoves
-    if (alignedMoves.length < minPositions) return null
-
-    const continuity = alignedMoves.length / moves.length
-    if (continuity < continuationRatio) return null
-
-    const avgMagnitudePct =
-      (alignedMoves.reduce((sum, m) => sum + Math.abs(m), 0) / Math.max(1, alignedMoves.length)) * 100
-    if (avgMagnitudePct < activityRatio) return null
+    const directionEvaluation = evaluateIndependentDirections(moves, {
+      minimumEvidence: minPositions,
+      minimumAgreement: continuationRatio,
+      minimumAverageMagnitude: activityRatio / 100,
+    })
+    const direction = directionEvaluation.selectedDirection
+    if (!direction) return null
+    const selectedLane = directionEvaluation[direction]
+    const continuity = selectedLane.agreement
+    const avgMagnitudePct = selectedLane.averageMagnitude * 100
 
     const volatility = this.calculateVolatility(prices)
     const signalScore = 1.0 + ((avgMagnitudePct / Math.max(activityRatio, 0.1)) * continuity + volatility) * factorMultiplier
@@ -3056,6 +3445,7 @@ export class IndicationSetsProcessor {
       direction,
       metadata: {
         direction,
+        directionEvaluation,
         netMovement,
         activityRatio,
         minPositions,
@@ -3079,7 +3469,13 @@ export class IndicationSetsProcessor {
       const volatility = this.calculateVolatility(prices)
       const netMovement = prices[prices.length - 1] - prices[0]
       if (netMovement === 0) return null
-      const direction = netMovement > 0 ? "long" : "short"
+      const signedMoves = prices.slice(1).map((price, index) => {
+        const previous = prices[index]
+        return previous > 0 ? (price - previous) / previous : 0
+      })
+      const directionEvaluation = evaluateIndependentDirections(signedMoves)
+      const direction = directionEvaluation.selectedDirection
+      if (!direction) return null
       const signalScore = 1.0 + (steps * 0.5 + volatility) * factorMultiplier
       return {
         profitFactor: 0,
@@ -3089,6 +3485,7 @@ export class IndicationSetsProcessor {
         direction,
         metadata: {
           direction,
+          directionEvaluation,
           netMovement,
           consecutiveSteps: steps,
           volatility,
@@ -3164,6 +3561,7 @@ export class IndicationSetsProcessor {
       ...this.activeOutbreakRanges.map((range) => range * 2 + 1),
       ...this.directionMoveRanges.map((range) => range * 2),
       ...this.optimalRanges.map((range) => range * 3),
+      this.specialSettings.maxStep + 1,
       ...this.trendTimeframesMinutes.map((minutes) => minutes + 1),
     )
   }

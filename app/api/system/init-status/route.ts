@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { isTruthyFlag } from "@/lib/boolean-utils"
 import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { getRuntimeBootId, getRuntimeStartedAt } from "@/lib/runtime-startup-state"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -64,8 +65,9 @@ export async function GET(request: NextRequest) {
     // server precisely while the operator is checking progress.
     const { getRedisClient } = await import("@/lib/redis-db")
     const client = getRedisClient()
-    const [startupHash, startupCompletedAtKey, durableSiteId, siteHash, continuityHash, liveRecoveryHash, directTradeContinuityHash] = await Promise.all([
+    const [startupHash, lifecycleHash, startupCompletedAtKey, durableSiteId, siteHash, continuityHash, liveRecoveryHash, directTradeContinuityHash] = await Promise.all([
       client.hgetall("system:startup").catch(() => ({} as Record<string, string>)),
+      client.hgetall("system:runtime_lifecycle").catch(() => ({} as Record<string, string>)),
       client.get("system:startup:completed_at").catch(() => null),
       client.get("site:unique_instance:id").catch(() => null),
       client.hgetall("site:unique_instance").catch(() => ({} as Record<string, string>)),
@@ -176,7 +178,15 @@ export async function GET(request: NextRequest) {
             status: startupStatus || (startupCompleted ? "ready" : "unknown"),
             completed_at: instrumentationBootCompletedAt,
             instrumentationBootCompletedAt,
-            boot_id: (startupHash as Record<string, string>)?.boot_id || null,
+            boot_id: getRuntimeBootId(),
+            started_at: getRuntimeStartedAt(),
+            service_uptime_seconds: Math.max(0, Math.floor(process.uptime())),
+            boot_count: Number((lifecycleHash as Record<string, string>)?.boot_count || 0),
+            service_restart_count: Number((lifecycleHash as Record<string, string>)?.service_restart_count || 0),
+            reload_count: Number((lifecycleHash as Record<string, string>)?.reload_count || 0),
+            recovery_count: Number((lifecycleHash as Record<string, string>)?.recovery_count || 0),
+            self_heal_count: Number((lifecycleHash as Record<string, string>)?.self_heal_count || 0),
+            crash_count: Number((lifecycleHash as Record<string, string>)?.crash_count || 0),
             scheduler_mode: (startupHash as Record<string, string>)?.scheduler_mode || null,
             last_error: (startupHash as Record<string, string>)?.last_error || null,
             redis_key: "system:startup:completed_at",

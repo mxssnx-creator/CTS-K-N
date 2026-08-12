@@ -8,6 +8,7 @@ import {
   normalizeBaseVolumeFactor,
   normalizeIdentityVolumeFactor,
 } from "@/lib/constants"
+import { BINGX_PROD_VST_ORIGIN } from "@/lib/bingx-environment"
 
 export const dynamic = "force-dynamic"
 
@@ -36,6 +37,15 @@ const CHANNEL_VOLUME_KEYS = new Set([
   "baseVolumeFactorPreset",
   "baseVolumeFactorSignal",
 ])
+
+function enforceImmutableConnectionIdentity(id: string, body: Record<string, any>): void {
+  if (id !== "bingx-x02") return
+  body.is_testnet = true
+  body.is_predefined = true
+  body.exchange = "bingx"
+  body.environment = "prod-vst"
+  body.base_url = BINGX_PROD_VST_ORIGIN
+}
 
 function normalizeIdentityVolumePatch<T extends Record<string, any>>(value: T): T {
   const normalized: Record<string, any> = { ...value }
@@ -213,6 +223,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const sanitizedBody = normalizeIdentityVolumePatch(
       preserveMaskedConnectionSecrets(body, connection),
     )
+    enforceImmutableConnectionIdentity(id, sanitizedBody)
     delete sanitizedBody.id
     delete sanitizedBody.created_at
 
@@ -269,6 +280,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     const sanitizedBody = normalizeIdentityVolumePatch(
       preserveMaskedConnectionSecrets(body, connection),
     )
+    enforceImmutableConnectionIdentity(id, sanitizedBody)
     delete sanitizedBody.id
     delete sanitizedBody.created_at
 

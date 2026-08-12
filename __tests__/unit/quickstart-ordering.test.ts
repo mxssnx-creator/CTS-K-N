@@ -4,7 +4,7 @@ describe("QuickStart route ordering", () => {
     jest.clearAllMocks()
   })
 
-  test("commits running intent before the stop-safe targeted engine start", async () => {
+  test("keeps a credentialless predefined BingX selection in Paper mode and commits intent before targeted start", async () => {
     const callOrder: string[] = []
     const globalIntent: Record<string, string> = {}
     const connectionIntent: Record<string, string> = {
@@ -43,32 +43,35 @@ describe("QuickStart route ordering", () => {
     const startAll = jest.fn(async () => {
       callOrder.push(`startAll:${globalIntent.operator_intent}:${globalIntent.operator_stopped}`)
     })
+    const refreshEngines = jest.fn(async () => undefined)
 
     jest.doMock("@/lib/redis-db", () => ({
       initRedis: jest.fn(async () => undefined),
       getRedisClient: jest.fn(() => redisClient),
       getAllConnections: jest.fn(async () => [{
         id: "conn-1",
-        name: "Simulated BingX",
+        name: "Predefined BingX Paper",
         exchange: "bingx",
-        connector_type: "simulated",
-        exchange_type: "simulated",
+        connector_type: "bingx",
+        exchange_type: "bingx",
+        is_predefined: "1",
         api_key: "",
         api_secret: "",
       }]),
       getConnection: jest.fn(async () => ({
         id: "conn-1",
-        name: "Simulated BingX",
+        name: "Predefined BingX Paper",
         exchange: "bingx",
-        connector_type: "simulated",
-        exchange_type: "simulated",
+        connector_type: "bingx",
+        exchange_type: "bingx",
+        is_predefined: "1",
         api_key: "",
         api_secret: "",
       })),
       updateConnection: jest.fn(async () => undefined),
       updateConnectionState: jest.fn(async (_id: string, patch: Record<string, unknown>) => ({
         applied: true,
-        connection: { id: "conn-1", name: "Simulated BingX", exchange: "bingx", ...patch },
+        connection: { id: "conn-1", name: "Predefined BingX Paper", exchange: "bingx", ...patch },
       })),
       setSettings: jest.fn(async () => undefined),
       getSettings: jest.fn(async () => ({})),
@@ -89,7 +92,7 @@ describe("QuickStart route ordering", () => {
         applyPendingChangesNow: jest.fn(async () => undefined),
         startAll,
         startEngine,
-        refreshEngines: jest.fn(async () => undefined),
+        refreshEngines,
       })),
     }))
     jest.doMock("@/lib/settings-storage", () => ({
@@ -161,7 +164,9 @@ describe("QuickStart route ordering", () => {
     // the connection. QuickStart must use only the state-rechecked targeted
     // start path.
     expect(startAll).not.toHaveBeenCalled()
-    expect(startEngine).toHaveBeenCalled()
+    expect(startEngine).toHaveBeenCalledTimes(1)
+    expect(refreshEngines).not.toHaveBeenCalled()
+    expect(callOrder.filter((entry) => entry.startsWith("startEngine:"))).toHaveLength(1)
     expect(callOrder.indexOf("hset:trade_engine:global")).toBeLessThan(callOrder.findIndex((entry) => entry.startsWith("startEngine:")))
     expect(callOrder).toContain("startEngine:running:0")
   })

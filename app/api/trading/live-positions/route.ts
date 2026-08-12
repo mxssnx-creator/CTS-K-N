@@ -7,6 +7,7 @@ import { initRedis, getRedisClient, getConnection } from "@/lib/redis-db"
 import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
 import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { calculateLivePositionStatistics } from "@/lib/live-position-statistics"
 
 export const dynamic = "force-dynamic"
 
@@ -124,6 +125,9 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     orderId: pos.orderId,
     stopLossOrderId: pos.stopLossOrderId,
     takeProfitOrderId: pos.takeProfitOrderId,
+    protectionMode: pos.protectionMode,
+    systemProtectionLegs: pos.systemProtectionLegs,
+    controlOrderCapacity: pos.controlOrderCapacity,
     closePrice: pos.closePrice ?? pos.exitPrice,
     createdAt: pos.createdAt,
     updatedAt: pos.updatedAt,
@@ -273,6 +277,7 @@ export async function GET(request: Request) {
     // Re-reading every position through calculateLivePositionStats doubled
     // hydration and amplified heap churn under the 280 ms Paper lifecycle.
     const allStats = computeStats(all)
+    const completeStatistics = calculateLivePositionStatistics(all)
     const legacyStats = {
       totalFilled: all.filter((p) => p.status === "filled").length,
       totalOpen: allStats.open,
@@ -316,6 +321,7 @@ export async function GET(request: Request) {
         all: allStats,
         real: computeStats(realPositions),
         simulated: computeStats(simulatedPositions),
+        complete: completeStatistics,
       },
       partialLegacyScan,
       dataIntegrity: {
@@ -326,6 +332,7 @@ export async function GET(request: Request) {
         liveExecutionMode: liveReadiness.executionMode,
         credentialsValid: liveReadiness.credentialsValid,
         durableCoordinationReady: liveReadiness.durableCoordinationReady,
+        positionOrderRelationIntegrity: completeStatistics.relationIntegrity,
         realExchangeDataComplete: realPositions.length > 0 || !liveTradeEnabled,
         message: liveTradeEnabled
           ? "Real exchange positions are separated from simulated/paper positions and use exchange-synced order/position identifiers when available."

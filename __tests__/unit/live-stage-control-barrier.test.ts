@@ -58,6 +58,22 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("shares manual, trailing and DCA absolute protection prices with system fallback", () => {
+    expect(__liveStageTest.readAbsoluteProtectionPrices(livePosition({
+      stopLoss: 5,
+      takeProfit: 10,
+      manualProtectionOverride: { stopLossPrice: 99, takeProfitPrice: 102, updatedAt: 1 },
+    }))).toEqual({ desiredSl: 99, desiredTp: 102 })
+
+    expect(__liveStageTest.readAbsoluteProtectionPrices(livePosition({
+      stopLoss: 5,
+      takeProfit: 10,
+      trailingActive: true,
+      trailingStopPrice: 101,
+      dcaTakeProfitPrice: 103,
+    }))).toEqual({ desiredSl: 101, desiredTp: 103 })
+  })
+
   test("gives every Base-parent Pos-Count row its own direction-preserving slot", () => {
     const longA = __liveStageTest.liveExecutionSlot({
       combinedPosCounts: true,

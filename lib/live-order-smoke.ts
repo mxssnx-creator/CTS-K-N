@@ -11,6 +11,7 @@ import {
   normalizeBingXSymbol,
   type BingXInstrumentRules,
 } from "@/lib/bingx-instrument-rules"
+import { resolveAuthoritativeTradeDirection } from "@/lib/trade-direction"
 
 type TransportSnapshot = {
   transport: "bingx-api" | "signed-rest-fallback"
@@ -24,6 +25,12 @@ type SmokeConnector = BaseExchangeConnector & {
   getLastOperationTransport?: (operation: string) => TransportSnapshot
   getLastPositionsSnapshotStatus?: () => { ok: boolean; at: number; error?: string }
   getLastOpenOrdersSnapshotStatus?: () => { ok: boolean; at: number; error?: string }
+  getEnvironmentInfo?: () => {
+    environment: "prod-live" | "prod-vst"
+    baseUrl: string
+    isDemo: boolean
+    usesVirtualFunds: boolean
+  }
 }
 
 export interface LiveOrderSmokeReport {
@@ -35,6 +42,9 @@ export interface LiveOrderSmokeReport {
   success: boolean
   cleanupComplete: boolean
   mainnet: boolean
+  environment: "prod-live" | "prod-vst" | "unknown"
+  baseUrl: string
+  virtualFunds: boolean
   quantity: number
   estimatedNotionalUsdt: number
   marketPrice: number
@@ -171,6 +181,9 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
     success: false,
     cleanupComplete: false,
     mainnet: false,
+    environment: "unknown",
+    baseUrl: "",
+    virtualFunds: false,
     quantity: 0,
     estimatedNotionalUsdt: 0,
     marketPrice: 0,
@@ -234,6 +247,19 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
     report.finishedAt = new Date().toISOString()
     return report
   }
+  const environment = connector.getEnvironmentInfo?.()
+  report.environment = environment?.environment || "unknown"
+  report.baseUrl = environment?.baseUrl || ""
+  report.virtualFunds = environment?.usesVirtualFunds === true
+  if (credentials.isTestnet && (
+    environment?.environment !== "prod-vst"
+    || environment?.baseUrl !== "https://open-api-vst.bingx.com"
+    || environment?.usesVirtualFunds !== true
+  )) {
+    report.errors.push("BingX demo connection did not resolve to the exact Prod-VST virtual-funds endpoint")
+    report.finishedAt = new Date().toISOString()
+    return report
+  }
 
   const accountHash = createHash("sha256").update(credentials.apiKey).digest("hex").slice(0, 20)
   const lockKey = `lock:live-order-smoke:account:${accountHash}`
@@ -258,9 +284,12 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
   try {
     await connector.warmUpFastPath?.()
     report.fastPath = connector.getFastPathStatus?.() || { ready: false }
-    if (report.fastPath.ready !== true) {
+    if (report.mainnet && report.fastPath.ready !== true) {
       throw new Error(`bingx-api fast path is not ready: ${String(report.fastPath.lastError || "unknown")}`)
     }
+    report.checks.environmentMatchesConnection = report.mainnet
+      ? report.environment === "prod-live" && report.virtualFunds === false
+      : report.environment === "prod-vst" && report.virtualFunds === true
 
     // A TTL-backed gate blocks normal Live-stage submissions without mutating
     // durable operator intent (a killed smoke process can therefore never
@@ -280,7 +309,7 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
       throw new Error(`Account is not globally flat (positions=${preflight.positions.length}, orders=${preflight.orders.length})`)
     }
 
-    report.rules = await fetchBingXInstrumentRules(symbol)
+    report.rules = await fetchBingXInstrumentRules(symbol, fetch, report.baseUrl || undefined)
     const ticker = await connector.getTicker(symbol)
     const marketPrice = Number(ticker?.last || ticker?.ask || ticker?.bid || 0)
     if (!(marketPrice > 0)) throw new Error(`No current market price for ${symbol}`)
@@ -383,10 +412,14 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
     if (targetPosition) throw new Error(`Position did not close within 8s${close.error ? ` (${close.error})` : ""}`)
     report.checks.positionClosed = true
 
-    report.checks.sdkOpen = report.transport.open?.transport === "bingx-api"
-    report.checks.sdkClose = report.transport.close?.transport === "bingx-api"
-    if (!report.checks.sdkOpen || !report.checks.sdkClose) {
-      throw new Error(`Order lifecycle used REST fallback (open=${report.transport.open?.transport}, close=${report.transport.close?.transport})`)
+    const expectedTransport = report.mainnet ? "bingx-api" : "signed-rest-fallback"
+    report.checks.expectedOpenTransport = report.transport.open?.transport === expectedTransport
+    report.checks.expectedCloseTransport = report.transport.close?.transport === expectedTransport
+    if (!report.checks.expectedOpenTransport || !report.checks.expectedCloseTransport) {
+      throw new Error(
+        `Order lifecycle used an unexpected transport for ${report.environment} ` +
+        `(expected=${expectedTransport}, open=${report.transport.open?.transport}, close=${report.transport.close?.transport})`,
+      )
     }
   } catch (error) {
     report.errors.push(error instanceof Error ? error.message : String(error))
@@ -398,8 +431,14 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
       const residual = nonZeroPositions(targetRows).find((row) => symbolOf(row) === symbol) || null
       if (residual) {
         const residualQty = quantityOf(residual)
-        const residualSide = String(residual.positionSide ?? residual.side ?? "LONG").toUpperCase()
-        const direction = residualSide.includes("SHORT") ? "SHORT" : "LONG"
+        const residualDirection = resolveAuthoritativeTradeDirection(
+          [residual.positionSide, residual.direction],
+          [residual.side],
+        )
+        if (!residualDirection) {
+          throw new Error("Residual position has no valid Long/Short direction; automatic cleanup refused")
+        }
+        const direction = residualDirection.toUpperCase() as "LONG" | "SHORT"
         const closeSide = direction === "LONG" ? "sell" : "buy"
         await connector.placeOrder(symbol, closeSide, residualQty, undefined, "market", {
           reduceOnly: true,

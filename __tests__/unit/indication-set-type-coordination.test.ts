@@ -8,8 +8,10 @@ describe("indication set type coordination", () => {
     expect(source).toContain("typeTasks: Array")
     expect(source).toContain("mapWithConcurrency(")
     expect(source).toContain("{ yieldEvery: 1 }")
-    for (const type of ["direction", "move", "active", "active_advanced", "optimal", "common", "trend"]) {
+    for (const type of ["direction", "move", "active_advanced", "special", "optimal", "common"]) {
       expect(source).toContain(`type: \"${type}\"`)
     }
+    expect(source).toContain('runType("active", () => this.processActiveSet(symbol, marketData))')
+    expect(source).toContain('runType("trend", () => this.processTrendSet(symbol, marketData))')
   })
 })

@@ -11,6 +11,7 @@ import {
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 } from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
+import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -38,7 +39,10 @@ import { ExchangeTab } from "@/components/settings/tabs/exchange-tab"
 import { IndicationTab } from "@/components/settings/tabs/indication-tab"
 import { StrategyTab } from "@/components/settings/tabs/strategy-tab"
 import { SystemTab } from "@/components/settings/tabs/system-tab"
+import { SpecialTab } from "@/components/settings/tabs/special-tab"
 import { PageHeader } from "@/components/page-header"
+import { DEFAULT_SPECIAL_STRATEGY_SETTINGS } from "@/lib/special-strategy"
+import { defaultStrategyIndicationVariantSettings } from "@/lib/strategy-indication-policy"
 
 const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
   bybit: 500,
@@ -53,6 +57,7 @@ const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
 
 // Define Settings type for better type safety
 interface Settings {
+  [key: string]: any
   base_volume_factor: number
   volume_step_ratio: number
   positions_average: number
@@ -93,6 +98,7 @@ interface Settings {
   dcaTakeProfitMode: DcaTakeProfitMode
   dcaBreakevenProfitPct: number
   dcaCooldownSeconds: number
+  dcaMaxPositionVolumeRatio: number
   arrangementType: string
   numberOfSymbolsToSelect: number
   quoteAsset: string
@@ -485,7 +491,16 @@ interface Settings {
   accountQueryTimeoutMs?: number // 3s - 45s, default 15s
 }
 
+const specialInitialSettings: Record<string, unknown> = Object.fromEntries(
+  Object.entries(DEFAULT_SPECIAL_STRATEGY_SETTINGS).map(([key, value]) => [
+    `special${key.charAt(0).toUpperCase()}${key.slice(1)}`,
+    value,
+  ]),
+)
+
 const initialSettings: Settings = {
+  ...specialInitialSettings,
+  ...defaultStrategyIndicationVariantSettings(),
   // Overall / Main
   base_volume_factor: MIN_VOLUME_FACTOR,
   volume_step_ratio: DEFAULT_VOLUME_STEP_RATIO,
@@ -546,6 +561,7 @@ const initialSettings: Settings = {
   dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
   dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
   dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
+  dcaMaxPositionVolumeRatio: DEFAULT_DCA_PROFILE.maxPositionVolumeRatio,
   block_enabled: true,
   dca_enabled: false,
 
@@ -646,7 +662,7 @@ const initialSettings: Settings = {
    databaseLimitPerDay: 0, // Unlimited per day (0 = unlimited)
 
    mainSymbols: ["BTC", "ETH", "BNB", "XRP", "ADA", "SOL"],
-  forcedSymbols: ["XRP", "BCH"],
+  forcedSymbols: canonicalForcedBaseSymbols(),
 
   useMainSymbols: false,
   numberOfSymbolsToSelect: 8,
@@ -1572,7 +1588,8 @@ export default function SettingsPage() {
     }
   }, [connections, selectedExchangeConnection])
 
-  const saveAllSettings = async () => {
+  const saveAllSettings = async (settingsOverride?: Settings): Promise<boolean> => {
+    const settingsToSave = settingsOverride || settings
     setSaving(true)
     setReorganizing(false)
     let enginePausedBySave = false
@@ -1594,10 +1611,10 @@ export default function SettingsPage() {
       const prevDatabaseSizePreset = previousSettings.databaseSizePreset ?? 250
 
       const databaseSizesChanged =
-        prevDatabaseSizeBase !== settings.databaseSizeBase ||
-        prevDatabaseSizeMain !== settings.databaseSizeMain ||
-        prevDatabaseSizeReal !== settings.databaseSizeReal ||
-        prevDatabaseSizePreset !== settings.databaseSizePreset
+        prevDatabaseSizeBase !== settingsToSave.databaseSizeBase ||
+        prevDatabaseSizeMain !== settingsToSave.databaseSizeMain ||
+        prevDatabaseSizeReal !== settingsToSave.databaseSizeReal ||
+        prevDatabaseSizePreset !== settingsToSave.databaseSizePreset
 
       // Runtime settings hot-reload immediately. Only physical history
       // reorganization needs a pause, and Save must preserve an intentionally
@@ -1635,13 +1652,13 @@ export default function SettingsPage() {
       const settingsResponse = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings }),
+        body: JSON.stringify({ settings: settingsToSave }),
       })
       const settingsContentType = settingsResponse.headers.get("content-type") || ""
       const settingsData = settingsContentType.includes("application/json")
         ? await settingsResponse.json().catch(() => ({}))
         : { error: (await settingsResponse.text()).slice(0, 300) }
-      if (!settingsResponse.ok || settingsData?.success !== true) {
+      if (!settingsResponse.ok || settingsData?.success !== true || settingsData?.persistenceVerified !== true) {
         throw new Error(
           settingsData?.error ||
           settingsData?.message ||
@@ -1660,10 +1677,10 @@ export default function SettingsPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            baseSize: settings.databaseSizeBase,
-            mainSize: settings.databaseSizeMain,
-            realSize: settings.databaseSizeReal,
-            presetSize: settings.databaseSizePreset,
+            baseSize: settingsToSave.databaseSizeBase,
+            mainSize: settingsToSave.databaseSizeMain,
+            realSize: settingsToSave.databaseSizeReal,
+            presetSize: settingsToSave.databaseSizePreset,
           }),
         })
         const reorganizeContentType = reorganizeResponse.headers.get("content-type") || ""
@@ -1692,11 +1709,13 @@ export default function SettingsPage() {
           ? "Settings and retained histories were updated."
           : "Running engines received the changes immediately.",
       })
+      return true
     } catch (error) {
       console.error("[v0] Error saving settings:", error)
       toast.error("Error saving settings", {
         description: error instanceof Error ? error.message : "An unknown error occurred",
       })
+      return false
     } finally {
       if (enginePausedBySave) {
         try {
@@ -1725,13 +1744,16 @@ export default function SettingsPage() {
     setExporting(true)
     try {
       const response = await fetch("/api/settings/export")
-      const data = await response.json()
-
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error?.details || error?.error || `Export failed (HTTP ${response.status})`)
+      }
+      const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      a.download = `settings-${new Date().toISOString()}.json`
+      const disposition = response.headers.get("content-disposition") || ""
+      a.download = disposition.match(/filename="([^"]+)"/)?.[1] || `cts-settings-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
 
@@ -1751,26 +1773,29 @@ export default function SettingsPage() {
   const importSettings = async () => {
     const input = document.createElement("input")
     input.type = "file"
-    input.accept = "application/json"
+    input.accept = "application/json,.json"
 
     input.onchange = async (e: any) => {
       setImporting(true)
       try {
-        const file = e.target.files[0]
-        const text = await file.text()
-        const data = JSON.parse(text)
+        const file = e.target.files?.[0]
+        if (!file) return
+        const formData = new FormData()
+        formData.append("file", file)
 
         const response = await fetch("/api/settings/import", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
+          body: formData,
         })
-
-        if (!response.ok) throw new Error("Failed to import settings")
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok || data?.success !== true || data?.persistenceVerified !== true) {
+          throw new Error(data?.details || data?.error || "Failed to import settings")
+        }
 
         await loadSettings()
+        await loadConnections()
         toast.success("Settings Imported", {
-          description: "Configuration has been successfully imported and applied.",
+          description: `${data.changedSettings} settings changed; ${data.connectionsUpdated} connections updated. Credentials were not imported.`,
         })
       } catch (error) {
         console.error("[v0] Failed to import settings:", error)
@@ -2209,9 +2234,9 @@ export default function SettingsPage() {
     <AuthGuard>
       <div className="flex min-h-0 flex-col">
         <PageHeader title="Settings" description="Global engine defaults, exchange connections, strategies, and runtime controls">
-          <Button onClick={saveAllSettings} disabled={saving} size="sm">
+          <Button onClick={() => void saveAllSettings()} disabled={saving} size="sm">
             <Save className="h-4 w-4 mr-2" />
-            {reorganizing ? "Reorganizing..." : saving ? "Saving..." : "Save Changes"}
+            {reorganizing ? "Reorganizing..." : saving ? "Saving..." : "Save Settings"}
           </Button>
         </PageHeader>
         <div className="flex-1 min-h-0 overflow-auto">
@@ -2236,11 +2261,12 @@ export default function SettingsPage() {
         </Card>
         <Tabs value={activeTab} onValueChange={changeActiveTab}>
           <div className="sticky top-0 z-10 overflow-x-auto border-b bg-background/95 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-            <TabsList className="grid w-full min-w-[640px] grid-cols-5 rounded-xl">
+            <TabsList className="grid w-full min-w-[760px] grid-cols-6 rounded-xl">
               <TabsTrigger value="overall">Overall</TabsTrigger>
               <TabsTrigger value="exchange">Exchange</TabsTrigger>
               <TabsTrigger value="indication">Indication</TabsTrigger>
               <TabsTrigger value="strategy">Strategy</TabsTrigger>
+              <TabsTrigger value="special">Special</TabsTrigger>
               <TabsTrigger value="system">System</TabsTrigger>
             </TabsList>
           </div>
@@ -2262,6 +2288,7 @@ export default function SettingsPage() {
               importSettings={importSettings}
               exporting={exporting}
               importing={importing}
+              saveSettings={saveAllSettings}
             />
           </TabsContent>
 
@@ -2291,6 +2318,10 @@ export default function SettingsPage() {
 
           <TabsContent value="strategy" className="space-y-4">
             <StrategyTab settings={settings} handleSettingChange={handleSettingChange} />
+          </TabsContent>
+
+          <TabsContent value="special" className="space-y-4">
+            <SpecialTab settings={settings} handleSettingChange={handleSettingChange} />
           </TabsContent>
 
           <TabsContent value="system" className="space-y-4">

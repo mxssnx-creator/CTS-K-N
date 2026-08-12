@@ -60,15 +60,15 @@ export async function GET() {
       ? "last_confirmed"
       : "current"
     const activityVolumeRatio = Math.max(0, Number(state?.activityVolumeRatio ?? calculation?.activityVolumeRatio) || 0)
-    // 15m needs 14 prior closed candles; four hours gives the pulse sufficient
+    // 30m needs 14 prior closed candles; eight hours gives the pulse sufficient
     // context plus an alignment margin while historical evaluation stays at its
     // operator-selected range (48h default).
     const groups = await mapWithConcurrency(symbols, 4, async (symbol) => {
-      const minutes = await fetchBingXMinuteHistory(symbol, 4)
+      const minutes = await fetchBingXMinuteHistory(symbol, 8)
       const candlesByTimeframe = {
-        "1m": minutes,
-        "10m": resampleCandles(minutes, 10),
+        "5m": resampleCandles(minutes, 5),
         "15m": resampleCandles(minutes, 15),
+        "30m": resampleCandles(minutes, 30),
       } as const
       return evaluateDirectTradeEntrySignals({
         symbol,

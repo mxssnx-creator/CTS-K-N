@@ -27,6 +27,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { ExchangeConnection } from "@/lib/types"
+import { isMaskedOrEmptyConnectionSecret } from "@/lib/connection-secrets"
 
 export type { ExchangeConnection }
 import {
@@ -34,6 +35,10 @@ import {
   CONNECTION_METHODS,
   EXCHANGE_LIBRARY_PACKAGES,
 } from "@/lib/connection-predefinitions"
+
+function toBooleanFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === "1" || value === "true"
+}
 
 interface ConnectionCardProps {
   connection: ExchangeConnection
@@ -59,8 +64,9 @@ export function ConnectionCard({
   isNewlyAdded = false,
 }: ConnectionCardProps) {
   const exchange = (connection.exchange || "").toLowerCase().trim()
-  const isInserted = Boolean(connection.is_inserted)
-  const isEnabled = Boolean(connection.is_enabled)
+  const isProdVst = connection.id === "bingx-x02"
+  const isEnabled = toBooleanFlag(connection.is_enabled)
+  const isDashboardEnabled = toBooleanFlag((connection as any).is_enabled_dashboard)
   const [testingConnection, setTestingConnection] = useState(false)
   const [workingStatus, setWorkingStatus] = useState<"idle" | "testing" | "success" | "error">("idle")
   const [testLogs, setTestLogs] = useState<string[]>([])
@@ -81,11 +87,29 @@ export function ConnectionCard({
     connection_library: connection.connection_library || (exchange === "bingx" ? "sdk" : "native"),
     margin_type: connection.margin_type,
     position_mode: connection.position_mode,
-    is_testnet: false, // ALWAYS MAINNET - force to false
+    is_testnet: isProdVst || toBooleanFlag(connection.is_testnet),
     api_passphrase: connection.api_passphrase || "",
     order_type: "market",
     order_volume_usdt: 100,
   })
+
+  useEffect(() => {
+    setEditFormData({
+      api_key: connection.api_key || "",
+      api_secret: connection.api_secret || "",
+      name: connection.name,
+      api_type: connection.api_type,
+      api_subtype: connection.api_subtype,
+      connection_method: connection.connection_method,
+      connection_library: connection.connection_library || (exchange === "bingx" ? "sdk" : "native"),
+      margin_type: connection.margin_type,
+      position_mode: connection.position_mode === "one_way" ? "one-way" : connection.position_mode,
+      is_testnet: isProdVst || toBooleanFlag(connection.is_testnet),
+      api_passphrase: connection.api_passphrase || "",
+      order_type: "market",
+      order_volume_usdt: Number((connection as any).order_volume_usdt) || 100,
+    })
+  }, [connection, exchange, isProdVst])
 
   // Auto-set connection library based on connection method when editFormData changes
   useEffect(() => {
@@ -134,20 +158,21 @@ export function ConnectionCard({
 
       console.log("[v0] Testing connection with ID:", connId)
 
+      const testPayload = {
+        exchange: connection.exchange,
+        api_type: editFormData.api_type || "perpetual_futures",
+        api_subtype: editFormData.api_subtype,
+        connection_method: editFormData.connection_method || (exchange === "bingx" ? "library" : "rest"),
+        connection_library: editFormData.connection_library || (exchange === "bingx" ? "sdk" : "native"),
+        ...(!isMaskedOrEmptyConnectionSecret(editFormData.api_key) ? { api_key: editFormData.api_key } : {}),
+        ...(!isMaskedOrEmptyConnectionSecret(editFormData.api_secret) ? { api_secret: editFormData.api_secret } : {}),
+        ...(!isMaskedOrEmptyConnectionSecret(editFormData.api_passphrase) ? { api_passphrase: editFormData.api_passphrase } : {}),
+        is_testnet: isProdVst || editFormData.is_testnet,
+      }
       const response = await fetch(`/api/settings/connections/${connId}/test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          exchange: connection.exchange,
-          api_type: editFormData.api_type || "perpetual_futures",
-          api_subtype: editFormData.api_subtype,
-          connection_method: editFormData.connection_method || (exchange === "bingx" ? "library" : "rest"),
-          connection_library: editFormData.connection_library || (exchange === "bingx" ? "sdk" : "native"),
-          api_key: editFormData.api_key || "",
-          api_secret: editFormData.api_secret || "",
-          api_passphrase: editFormData.api_passphrase || "",
-          is_testnet: editFormData.is_testnet || false,
-        }),
+        body: JSON.stringify(testPayload),
       })
 
       const contentType = response.headers.get("content-type") || ""
@@ -211,8 +236,9 @@ export function ConnectionCard({
       }
 
       setWorkingStatus("success")
+      const balance = Number(data.balance)
       toast.success("Connection Test Successful", {
-        description: `Balance: ${data.balance?.toFixed(2) || "N/A"} USDT | API Type: ${data.apiType}${data.apiSubtype ? ` (${data.apiSubtype})` : ""}`,
+        description: `${data.environment === "prod-vst" ? "Prod-VST virtual funds" : "Prod-Live"} | Balance: ${Number.isFinite(balance) ? balance.toFixed(2) : "N/A"} ${data.settlementAsset || "USDT"} | API Type: ${data.apiType}${data.apiSubtype ? ` (${data.apiSubtype})` : ""}`,
       })
       setTestLogs(Array.isArray(data.log) ? data.log : (data.log ? [data.log] : []))
       setShowTestLogInstant(true)
@@ -236,9 +262,11 @@ export function ConnectionCard({
   // This prevents infinite loops when connection tests fail repeatedly
 
   const handleSaveSettings = async () => {
-    if (!editFormData.api_key || !editFormData.api_secret) {
+    const replacingKey = !isMaskedOrEmptyConnectionSecret(editFormData.api_key)
+    const replacingSecret = !isMaskedOrEmptyConnectionSecret(editFormData.api_secret)
+    if (replacingKey !== replacingSecret) {
       toast.error("Validation Error", {
-        description: "API key and secret are required",
+        description: "Enter both the API key and secret when replacing credentials.",
       })
       return
     }
@@ -259,21 +287,27 @@ export function ConnectionCard({
           connection_library: editFormData.connection_library,
           margin_type: editFormData.margin_type,
           position_mode: editFormData.position_mode,
-          is_testnet: editFormData.is_testnet,
+          is_testnet: isProdVst || editFormData.is_testnet,
           order_type: editFormData.order_type,
           order_volume_usdt: editFormData.order_volume_usdt,
         }),
       })
 
-      if (!response.ok) {
-        throw new Error("Failed to update connection settings")
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || data?.success !== true) {
+        throw new Error(data?.details || data?.error || "Failed to update connection settings")
+      }
+
+      const credentialsMustRemainConfigured = connection.credentials_configured === true || (replacingKey && replacingSecret)
+      if (credentialsMustRemainConfigured && data?.connection?.credentials_configured !== true) {
+        throw new Error("Connection settings were written, but credential persistence could not be verified")
       }
 
       toast.success("Settings Updated", {
         description: "Connection settings have been saved successfully",
       })
 
-      onEdit?.(editFormData)
+      onEdit?.(data.connection || editFormData)
       setEditDialogOpen(false)
     } catch (error) {
       toast.error("Update Failed", {
@@ -310,8 +344,11 @@ export function ConnectionCard({
     }
   }
 
-  const credentialsConfigured =
-    connection.api_key && connection.api_key !== "" && !connection.api_key.includes("PLACEHOLDER")
+  const credentialsConfigured = connection.credentials_configured === true || (
+    Boolean(connection.api_key && connection.api_secret) &&
+    !String(connection.api_key).includes("PLACEHOLDER") &&
+    !String(connection.api_secret).includes("PLACEHOLDER")
+  )
 
   return (
     <>
@@ -326,8 +363,15 @@ export function ConnectionCard({
                 <Badge variant="secondary" className="text-xs">
                   {connection.exchange.toUpperCase()}
                 </Badge>
-                {connection.is_testnet && (
+                {isProdVst ? (
+                  <>
+                    <Badge className="text-xs bg-blue-100 text-blue-900">Prod-VST</Badge>
+                    <Badge className="text-xs bg-cyan-100 text-cyan-900">Virtual funds</Badge>
+                  </>
+                ) : toBooleanFlag(connection.is_testnet) ? (
                   <Badge className="text-xs bg-blue-100 text-blue-900">Testnet</Badge>
+                ) : (
+                  <Badge className="text-xs bg-emerald-100 text-emerald-900">Prod-Live</Badge>
                 )}
                 {/* Status Badge */}
                 <Badge 
@@ -393,6 +437,11 @@ export function ConnectionCard({
           </div>
 
           {/* Credentials Warning */}
+          {credentialsConfigured && (
+            <div className="text-xs p-3 bg-emerald-50 text-emerald-800 rounded border border-emerald-200">
+              Credentials stored securely. Leave the masked fields unchanged to keep them, or enter both values to replace them.
+            </div>
+          )}
           {!credentialsConfigured && (
             <div className="text-xs p-3 bg-yellow-50 text-yellow-800 rounded border border-yellow-200">
               API credentials not configured. Please add your API key and secret to test this connection.
@@ -425,24 +474,32 @@ export function ConnectionCard({
 
           {/* Action Buttons Row */}
           <div className="flex items-center justify-between pt-2 border-t">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleTestConnection}
-              disabled={!credentialsConfigured || testingConnection}
-              className="flex items-center gap-2"
-            >
-              {testingConnection ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Testing...
-                </>
-              ) : (
-                <>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTestConnection}
+                disabled={!credentialsConfigured || testingConnection}
+                className="flex items-center gap-2"
+              >
+                {testingConnection ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Testing...
+                  </>
+                ) : (
                   <span>Test Connection</span>
-                </>
-              )}
-            </Button>
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant={isDashboardEnabled ? "default" : "outline"}
+                onClick={onActivate}
+                title={isDashboardEnabled ? "Disable in Main Connections" : "Enable in Main Connections"}
+              >
+                {isDashboardEnabled ? "In Main" : "Add to Main"}
+              </Button>
+            </div>
 
             <div className="flex items-center gap-2">
               {(showTestLogInstant || testLogs.length > 0 || (connection.last_test_log && connection.last_test_log.length > 0)) && (
@@ -642,7 +699,7 @@ export function ConnectionCard({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="hedge">Hedge Mode (Bidirectional)</SelectItem>
-                      <SelectItem value="one_way">One Way Mode</SelectItem>
+                      <SelectItem value="one-way">One Way Mode</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -681,13 +738,16 @@ export function ConnectionCard({
               {/* Testnet Toggle */}
               <div className="flex items-center justify-between p-3 border rounded-lg">
                 <div>
-                  <Label className="font-medium text-xs">Use Testnet</Label>
-                  <p className="text-xs text-muted-foreground">Test connections on testnet before live trading</p>
+                  <Label className="font-medium text-xs">Environment</Label>
+                  <p className="text-xs text-muted-foreground">
+                    {isProdVst ? "Prod-VST authenticated demo with virtual funds" : editFormData.is_testnet ? "Demo/test environment" : "Prod-Live with real funds"}
+                  </p>
                 </div>
                 <Switch
                   id="edit-testnet"
-                  checked={editFormData.is_testnet}
-                  onCheckedChange={(checked) => setEditFormData(prev => ({ ...prev, is_testnet: checked }))}
+                  checked={isProdVst || editFormData.is_testnet}
+                  onCheckedChange={(checked) => setEditFormData(prev => ({ ...prev, is_testnet: isProdVst || checked }))}
+                  disabled={isProdVst}
                 />
               </div>
             </TabsContent>
@@ -698,7 +758,7 @@ export function ConnectionCard({
                 <AlertCircle className="h-4 w-4 shrink-0 text-amber-900 mt-0.5" />
                 <div className="text-sm text-amber-900">
                   <p className="font-semibold mb-1">Secure Your Credentials</p>
-                  <p className="text-xs">Your API credentials are encrypted and never shared. Never paste credentials in untrusted environments.</p>
+                  <p className="text-xs">Stored credentials are masked and are never returned to this dialog. Never paste credentials in untrusted environments.</p>
                 </div>
               </div>
 
@@ -714,7 +774,7 @@ export function ConnectionCard({
                       type={showSecrets ? "text" : "password"}
                       value={editFormData.api_key}
                       onChange={(e) => setEditFormData((prev) => ({ ...prev, api_key: e.target.value }))}
-                      placeholder="Enter your API key"
+                      placeholder={connection.api_key_configured ? "Stored — enter to replace" : "Enter your API key"}
                       className="pr-10 bg-background"
                     />
                     <button
@@ -725,6 +785,9 @@ export function ConnectionCard({
                       {showSecrets ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    {connection.api_key_configured ? "A key is stored server-side." : "No API key is stored."}
+                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -737,9 +800,12 @@ export function ConnectionCard({
                     type={showSecrets ? "text" : "password"}
                     value={editFormData.api_secret}
                     onChange={(e) => setEditFormData((prev) => ({ ...prev, api_secret: e.target.value }))}
-                    placeholder="Enter your API secret"
+                    placeholder={connection.api_secret_configured ? "Stored — enter to replace" : "Enter your API secret"}
                     className="bg-background"
                   />
+                  <p className="text-xs text-muted-foreground">
+                    {connection.api_secret_configured ? "A secret is stored server-side." : "No API secret is stored."}
+                  </p>
                 </div>
 
                 {connection.exchange === "okx" && (
@@ -757,7 +823,7 @@ export function ConnectionCard({
                 )}
 
                 <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-900">
-                  ℹ️ Your API credentials are encrypted and only used for secure connections to {connection.exchange}.
+                  ℹ️ Stored credentials remain server-side, are masked in the browser, and are only used for authenticated connections to {connection.exchange}.
                 </div>
               </div>
             </TabsContent>

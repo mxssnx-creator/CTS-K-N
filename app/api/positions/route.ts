@@ -5,6 +5,7 @@ import {
   getClosedLivePositionReadModels,
   getOpenLivePositionReadModels,
 } from "@/lib/live-position-read-model"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 export const dynamic = "force-dynamic"
 
@@ -180,6 +181,13 @@ export async function POST(request: NextRequest) {
     if (isNaN(parseFloat(entry_price)) || isNaN(parseFloat(quantity))) {
       return NextResponse.json({ success: false, error: "entry_price and quantity must be valid numbers" }, { status: 400 })
     }
+    const direction = resolveConsistentTradeDirection(position_type, side)
+    if (!direction) {
+      return NextResponse.json(
+        { success: false, error: "position_type/side must identify one consistent Long or Short direction" },
+        { status: 400 },
+      )
+    }
 
     const client = getRedisClient()
     const posId = `pos_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -193,7 +201,7 @@ export async function POST(request: NextRequest) {
       id: posId,
       connection_id,
       symbol,
-      position_type,
+      position_type: direction,
       entry_price: String(entry_price),
       current_price: String(entry_price),
       quantity: String(quantity),
@@ -201,7 +209,7 @@ export async function POST(request: NextRequest) {
       stop_loss: String(stop_loss || ""),
       take_profit: String(take_profit || ""),
       margin_type: margin_type || "isolated",
-      side: side || "long",
+      side: direction,
       trade_mode: trade_mode || "main",
       status: "open",
       opened_at: new Date().toISOString(),
@@ -217,7 +225,7 @@ export async function POST(request: NextRequest) {
       "positions_api",
       "info",
       `Created position ${posId}`,
-      { symbol, position_type, entry_price, quantity, leverage }
+      { symbol, position_type: direction, entry_price, quantity, leverage }
     )
 
     return NextResponse.json({

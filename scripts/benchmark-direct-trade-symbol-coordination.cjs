@@ -40,11 +40,10 @@ function parseSpecs(raw) {
 
 function runSymbol(symbolIndex) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [
-      "-r",
-      "ts-node/register",
-      matrixScript,
-    ], {
+    // `ts-node/register` leaves ESM-style extensionless imports unresolved on
+    // Node 24. Use Node's repository-pinned tsx import hook directly; unlike
+    // the tsx CLI it does not need an IPC socket and works in hardened hosts.
+    const child = spawn(process.execPath, ["--import", "tsx", matrixScript], {
       cwd: repositoryRoot,
       env: {
         ...process.env,

@@ -14,6 +14,11 @@ import {
   type PlaceOrderOptions,
 } from "./base-connector"
 import { safeParseResponse } from "@/lib/safe-response-parser"
+import {
+  bingXEnvironmentForTestnetFlag,
+  bingXOriginForEnvironment,
+} from "@/lib/bingx-environment"
+import { resolveAuthoritativeTradeDirection } from "@/lib/trade-direction"
 
 /**
  * BingX Exchange Connector
@@ -272,7 +277,27 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   private getBaseUrl(): string {
-    return this.credentials.isTestnet ? "https://testnet-open-api.bingx.com" : "https://open-api.bingx.com"
+    // BingX calls its authenticated demo environment `prod-vst`.  It is not
+    // the retired `testnet-open-api` host: VST orders are real exchange API
+    // executions backed by virtual funds and therefore must use the dedicated
+    // production-grade VST origin for every account, trade and quote request.
+    return bingXOriginForEnvironment(bingXEnvironmentForTestnetFlag(this.credentials.isTestnet))
+  }
+
+  public getEnvironmentInfo(): {
+    environment: "prod-live" | "prod-vst"
+    baseUrl: string
+    isDemo: boolean
+    usesVirtualFunds: boolean
+  } {
+    const isDemo = this.credentials.isTestnet === true
+    const environment = bingXEnvironmentForTestnetFlag(isDemo)
+    return {
+      environment,
+      baseUrl: bingXOriginForEnvironment(environment),
+      isDemo,
+      usesVirtualFunds: isDemo,
+    }
   }
 
   /**
@@ -324,13 +349,15 @@ export class BingXConnector extends BaseExchangeConnector {
       //     otherwise the true skew is effectively zero and we keep offset=0
       //     (raw local time), which sits comfortably inside ±1000ms here.
       const t0 = Date.now()
-      // Bound the request and tolerate a single transient network blip. The
-      // Vercel→BingX link occasionally drops a connection ("fetch failed"); a
-      // single quick retry avoids a failed sync without hammering the endpoint.
-      // Reduced timeout from 8s to 2s for second-trading (must complete API ops within 1s).
+      // Bound the request and tolerate a single transient network blip. Prod-VST
+      // routinely takes roughly four seconds to answer this public endpoint, so
+      // the old two-second timeout guaranteed two aborts and never synchronized
+      // the clock. Keep VST's budget above that observed latency; this runs once
+      // per process-wide sync interval and never delays the actual order request.
       const fetchTime = async () => {
         const ctrl = new AbortController()
-        const timer = setTimeout(() => ctrl.abort(), 2000)
+        const timeoutMs = this.credentials.isTestnet === true ? 8_000 : 5_000
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs)
         try {
           return await fetch(`${this.getBaseUrl()}/openApi/swap/v2/server/time`, {
             method: "GET",
@@ -808,24 +835,46 @@ export class BingXConnector extends BaseExchangeConnector {
 
       // Push a quiet success marker to the UI log (no server console output).
 
-      // data.data IS the balance array
-      const balanceData = Array.isArray(data.data) ? data.data : []
+      // v3 returns `{ data: { balance: {...} } }`, while older swap/spot
+      // variants return an array directly.  The former is the documented
+      // shape used by Prod-VST.  Treating it as `[]` previously made a valid
+      // demo account appear connected with a fabricated zero balance.
+      const rawBalanceData = data.data?.balance ?? data.data
+      const balanceData = Array.isArray(rawBalanceData)
+        ? rawBalanceData
+        : rawBalanceData && typeof rawBalanceData === "object"
+          ? [rawBalanceData]
+          : []
 
-      if (!Array.isArray(balanceData)) {
-        this.logError(`Invalid balance data format: ${JSON.stringify(balanceData).substring(0, 200)}`)
+      if (balanceData.length === 0) {
+        this.logError(`Invalid balance data format: ${JSON.stringify(rawBalanceData).substring(0, 200)}`)
         throw new Error("Invalid balance data format from API")
       }
 
       // Extract USDT balance - BingX returns balance as a string number
       // For SPOT: use 'balance' field (total = free + locked, already calculated)
       // For PERPETUAL: use 'balance' field (this is the total balance in wallet)
-      const usdtEntry = balanceData.find((b: any) => b.asset === "USDT")
-      const usdtBalance = usdtEntry ? Number.parseFloat(usdtEntry.balance || "0") : 0
+      const settlementEntry = balanceData.find((b: any) => String(b.asset || "").toUpperCase() === "USDT")
+        || (this.credentials.isTestnet
+          ? balanceData.find((b: any) => String(b.asset || "").toUpperCase() === "VST")
+          : undefined)
+        || (balanceData.length === 1 ? balanceData[0] : undefined)
+      if (!settlementEntry) throw new Error("BingX settlement balance was not present in the response")
+      const settlementAsset = String(settlementEntry.asset || (this.credentials.isTestnet ? "VST" : "USDT")).toUpperCase()
+      const usdtBalance = Number.parseFloat(settlementEntry.balance || settlementEntry.walletBalance || "0") || 0
+      const equity = Number.parseFloat(settlementEntry.equity || settlementEntry.balance || "0") || usdtBalance
+      const availableMargin = Number.parseFloat(settlementEntry.availableMargin || settlementEntry.free || "0") || 0
+      const unrealizedProfit = Number.parseFloat(
+        settlementEntry.unrealizedProfit
+        || settlementEntry.unrealizedPnl
+        || settlementEntry.unrealizedPNL
+        || "0",
+      ) || 0
 
       // Get BTC price from market data (for display only — silent failure OK)
       let btcPrice = 0
       try {
-        const priceResponse = await fetch("https://open-api.bingx.com/openApi/spot/v1/ticker/24hr?symbol=BTC-USDT")
+        const priceResponse = await fetch(`${baseUrl}/openApi/swap/v2/quote/ticker?symbol=BTC-USDT`)
         if (priceResponse.ok) {
           const priceData = await priceResponse.json()
           const ticker = Array.isArray(priceData.data) ? priceData.data[0] : priceData.data
@@ -847,7 +896,10 @@ export class BingXConnector extends BaseExchangeConnector {
           return {
             asset: b.asset || "UNKNOWN",
             free: Number.parseFloat(b.availableMargin || "0"),
-            locked: Number.parseFloat(b.frozenMargin || "0"),
+            // BingX V3 spells this field `freezedMargin`; older responses and
+            // SDK wrappers expose `frozenMargin`. Preserve both so the demo
+            // balance reconciliation does not under-report reserved volume.
+            locked: Number.parseFloat(b.freezedMargin || b.frozenMargin || "0"),
             total: Number.parseFloat(b.balance || "0"),
           }
         } else {
@@ -865,13 +917,17 @@ export class BingXConnector extends BaseExchangeConnector {
       // not to the server console — they fire on every dashboard connection-test
       // poll (~1/s) and would flood the server log otherwise.
       const ts = new Date().toISOString()
-      this.logs.push(`[${ts}] ✓ Account balance: ${usdtBalance.toFixed(4)} USDT`)
+      this.logs.push(`[${ts}] ✓ Account balance: ${usdtBalance.toFixed(4)} ${settlementAsset}`)
       this.logs.push(`[${ts}] ✓ Total assets: ${balances.length}`)
       this.logs.push(`[${ts}] ✓ BTC price: $${btcPrice.toFixed(2)}`)
 
       return {
         success: true,
         balance: usdtBalance,
+        equity,
+        availableMargin,
+        unrealizedProfit,
+        settlementAsset,
         btcPrice: btcPrice,
         balances,
         capabilities: this.getCapabilities(),
@@ -1607,15 +1663,14 @@ export class BingXConnector extends BaseExchangeConnector {
       // Normalize the raw BingX order object to the ExchangeOrder interface
       // so callers can rely on `filledQty`, `filledPrice`, and normalised
       // `status` regardless of the underlying API version.
-      const raw = data.data
+      const raw = data.data?.order || data.data
       if (!raw) return null
       const rawStatus = String(raw.status ?? raw.orderStatus ?? "").toUpperCase()
+      const compactStatus = rawStatus.replace(/[^A-Z]/g, "")
       const normalizedStatus =
-        rawStatus === "FILLED"          ? "filled" :
-        rawStatus === "PARTIALLY_FILLED" ? "partially_filled" :
-        rawStatus === "CANCELED"         ? "cancelled" :
-        rawStatus === "CANCELLED"        ? "cancelled" :
-        rawStatus === "REJECTED"         ? "cancelled" :
+        compactStatus.includes("CANCEL") || compactStatus === "REJECTED" ? "cancelled" :
+        compactStatus === "FILLED"       ? "filled" :
+        compactStatus.includes("PART") && compactStatus.includes("FILLED") ? "partially_filled" :
         rawStatus === "NEW"              ? "pending" :
         rawStatus === "PENDING"          ? "pending" : "pending"
 
@@ -1631,6 +1686,7 @@ export class BingXConnector extends BaseExchangeConnector {
 
       return {
         orderId:     String(raw.orderId   ?? raw.clientOrderId ?? ""),
+        clientOrderId: String(raw.clientOrderId ?? raw.clientOrderID ?? "") || undefined,
         symbol:      String(raw.symbol    ?? ""),
         side:        String(raw.side      ?? "").toLowerCase() as "buy" | "sell",
         type:        normalizedType as ExchangeOrder["type"],
@@ -1812,7 +1868,7 @@ export class BingXConnector extends BaseExchangeConnector {
       const { signature, queryString: signedQs } = this.signParams(params)
 
       // Use different endpoint based on contract type
-      let endpoint = "/openApi/swap/v3/user/positions" // USDT Perpetual
+      let endpoint = "/openApi/swap/v2/user/positions" // USDT Perpetual
       if (effectiveContractType === "coin-perpetual") {
         endpoint = "/openApi/cswap/v1/user/positions" // Coin-M Perpetual
       }
@@ -1939,9 +1995,14 @@ export class BingXConnector extends BaseExchangeConnector {
       // reduce-only close order carries the correct `positionSide` on hedge
       // accounts. When the caller tells us explicitly, trust it; otherwise
       // infer from the exchange response.
-      const posSideNormalised = (positionSide
-        ? positionSide.toUpperCase()
-        : String(position.side || position.positionSide || "LONG").toUpperCase()) as "LONG" | "SHORT"
+      const normalizedDirection = resolveAuthoritativeTradeDirection(
+        [positionSide, position.positionSide, position.direction],
+        [position.side],
+      )
+      if (!normalizedDirection) {
+        return { success: false, error: "Position has no valid LONG/SHORT direction" }
+      }
+      const posSideNormalised: "LONG" | "SHORT" = normalizedDirection.toUpperCase() as "LONG" | "SHORT"
 
       // Close side is the OPPOSITE of the position side:
       //   LONG position  → SELL to close
@@ -2258,6 +2319,47 @@ export class BingXConnector extends BaseExchangeConnector {
 
   async setPositionMode(hedgeMode: boolean): Promise<{ success: boolean; error?: string }> {
     try {
+      // Prod-VST does not expose the position-mode mutation endpoint (it
+      // returns 100404). Demo accounts accept the LONG/SHORT positionSide on
+      // each order instead, so verify the account snapshot rather than
+      // issuing a request that can never succeed. Never claim one-way mode on
+      // VST because we cannot apply or prove that mutation there.
+      if (this.credentials.isTestnet) {
+        if (!hedgeMode) {
+          const error = "Prod-VST position mode cannot be changed to one-way; use hedge mode with an explicit positionSide"
+          this.logError(`✗ ${error}`)
+          return { success: false, error }
+        }
+
+        const positions = await this.getPositions()
+        const snapshotStatus = this.getLastPositionsSnapshotStatus()
+        if (!snapshotStatus.ok) {
+          const error = `Could not verify Prod-VST hedge-mode positions: ${snapshotStatus.error || "position snapshot failed"}`
+          this.logError(`✗ ${error}`)
+          return { success: false, error }
+        }
+
+        const activePositions = positions.filter((position: any) =>
+          Math.abs(Number(position?.positionAmt ?? position?.contracts ?? position?.size ?? 0)) > 0,
+        )
+        const incompatiblePosition = activePositions.find((position: any) => {
+          const side = String(position?.positionSide ?? position?.side ?? "").toUpperCase()
+          return side !== "LONG" && side !== "SHORT"
+        })
+        if (incompatiblePosition) {
+          const error = "Prod-VST account returned an active position without LONG/SHORT hedge-side tracking"
+          this.logError(`✗ ${error}`)
+          return { success: false, error }
+        }
+
+        this.log(
+          activePositions.length > 0
+            ? `✓ Prod-VST hedge mode verified from ${activePositions.length} active LONG/SHORT position(s)`
+            : "✓ Prod-VST hedge mode selected; orders will carry an explicit LONG/SHORT positionSide",
+        )
+        return { success: true }
+      }
+
       // Sync server time before any signed request
       await this.syncServerTime()
 
@@ -2280,6 +2382,10 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
+        if (String(data.code) === "101404" || /no need to change/i.test(String(data.msg || ""))) {
+          this.log(`Position mode already ${hedgeMode ? "hedge" : "one-way"} — no change needed`)
+          return { success: true }
+        }
         throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
       }
 
@@ -2312,7 +2418,10 @@ export class BingXConnector extends BaseExchangeConnector {
       if (apiType === "spot") {
         endpoint = `/openApi/spot/v1/ticker/price?symbol=${bingxSymbol}`
       } else {
-        endpoint = `/openApi/swap/v3/quote/price?symbol=${bingxSymbol}`
+        // Prod-VST does not expose the v3 quote/price route (100404). The v2
+        // ticker is the shared documented swap endpoint and includes bid, ask
+        // and last price on both Prod-Live and Prod-VST.
+        endpoint = `/openApi/swap/v2/quote/ticker?symbol=${bingxSymbol}`
       }
 
       const response = await this.rateLimitedFetch(`${baseUrl}${endpoint}`, {

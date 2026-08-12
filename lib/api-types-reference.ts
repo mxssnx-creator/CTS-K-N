@@ -68,7 +68,7 @@ export const EXCHANGE_API_SPECIFICATIONS = {
   bingx: {
     name: "BingX",
     baseUrl: "https://open-api.bingx.com",
-    testnetUrl: "https://testnet-open-api.bingx.com",
+    testnetUrl: "https://open-api-vst.bingx.com",
     apiVersion: "V2/V3",
     supportedTypes: {
       spot: {

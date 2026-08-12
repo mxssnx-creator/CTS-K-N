@@ -111,10 +111,15 @@ export function getMinimumBingXSmokeQuantity(
 export async function fetchBingXInstrumentRules(
   symbol: string,
   fetchImpl: typeof fetch = fetch,
+  origin?: string,
 ): Promise<BingXInstrumentRules> {
   const response = await fetchBingXPublic(BINGX_CONTRACTS_PATH, {
     method: "GET",
-  }, { timeoutMs: 15_000, fetchImpl })
+  }, {
+    timeoutMs: 15_000,
+    fetchImpl,
+    ...(origin ? { origins: [origin] } : {}),
+  })
   if (!response.ok) throw new Error(`BingX contracts request failed with HTTP ${response.status}`)
   const payload = await response.json()
   const code = (payload as any)?.code

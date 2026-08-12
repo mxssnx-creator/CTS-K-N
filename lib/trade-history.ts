@@ -88,6 +88,7 @@ export function normalizeBingXClosedOrder(order: Record<string, any>): TradeHist
   if (quantity <= 0 || exitPrice <= 0) return null
 
   const side = String(order.side ?? order.orderSide ?? "").toUpperCase()
+  if (side !== "BUY" && side !== "SELL") return null
   const positionSide = String(order.positionSide ?? order.position_side ?? "BOTH").toUpperCase()
   const grossPnl = firstFinite(
     order.profit,

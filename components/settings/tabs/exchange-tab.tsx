@@ -15,6 +15,7 @@ import { Plus, X } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
 import { Badge } from "@/components/ui/badge"
 import type { ExchangeConnection } from "@/lib/types"
+import { CANONICAL_FORCED_BASE_SYMBOLS } from "@/lib/forced-symbols"
 
 interface ExchangeTabProps {
   settings: any
@@ -439,38 +440,15 @@ export function ExchangeTab({
               <div className="space-y-3">
                 <Label>Forced Symbols (Always Traded)</Label>
                 <p className="text-xs text-muted-foreground">
-                  Symbols that will always be included regardless of other filters
+                  Locked mandatory basket; dynamic filters may only add symbols.
                 </p>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="e.g., ETHUSDT"
-                    value={newForcedSymbol}
-                    onChange={(e) => setNewForcedSymbol(e.target.value.toUpperCase())}
-                    onKeyPress={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault()
-                        addForcedSymbol()
-                      }
-                    }}
-                  />
-                  <Button onClick={addForcedSymbol} size="icon">
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </div>
                 <div className="flex flex-wrap gap-2 mt-2">
-                  {settings.forcedSymbols?.map((symbol: string) => (
+                  {CANONICAL_FORCED_BASE_SYMBOLS.map((symbol: string) => (
                     <div
                       key={symbol}
                       className="flex items-center gap-1 px-3 py-1 bg-accent text-accent-foreground rounded-full text-sm"
                     >
                       {symbol}
-                      <button
-                        type="button"
-                        onClick={() => removeForcedSymbol(symbol)}
-                        className="ml-1 hover:text-destructive"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
                     </div>
                   ))}
                 </div>

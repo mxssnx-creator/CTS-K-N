@@ -5,6 +5,7 @@
 
 import { validateApiType, validateContractType } from "@/lib/api-type-validator"
 import type { ExchangePosition } from "@/lib/exchange-connectors/base-connector"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 /**
  * Exchange-specific position fetch strategies
@@ -120,9 +121,12 @@ function parseBybitPositions(data: any, exchange: string, contractType: string):
 
   return data.result.list
     .filter((pos: any) => pos.size > 0) // Only open positions
-    .map((pos: any) => ({
+    .flatMap((pos: any) => {
+      const side = normalizeTradeDirection(pos.side)
+      if (!side) return []
+      return [{
       symbol: pos.symbol,
-      side: pos.side === "Buy" ? "long" : "short",
+      side,
       contracts: parseFloat(pos.size),
       contractSize: 1, // Bybit uses contracts
       currentPrice: parseFloat(pos.markPrice || "0"),
@@ -134,7 +138,8 @@ function parseBybitPositions(data: any, exchange: string, contractType: string):
       realizedPnl: parseFloat(pos.cumRealisedPnl),
       liquidationPrice: parseFloat(pos.bustPrice || "0"),
       timestamp: Date.now(),
-    }))
+      }]
+    })
 }
 
 function parseBingXPositions(data: any, exchange: string, contractType: string): ExchangePosition[] {
@@ -142,9 +147,12 @@ function parseBingXPositions(data: any, exchange: string, contractType: string):
 
   return data
     .filter((pos: any) => parseFloat(pos.available) > 0 || parseFloat(pos.freezed) > 0)
-    .map((pos: any) => ({
+    .flatMap((pos: any) => {
+      const side = normalizeTradeDirection(pos.positionSide)
+      if (!side) return []
+      return [{
       symbol: pos.symbol,
-      side: pos.positionSide === "LONG" ? "long" : "short",
+      side,
       contracts: parseFloat(pos.available) + parseFloat(pos.freezed),
       contractSize: 1,
       currentPrice: parseFloat(pos.markPrice || "0"),
@@ -156,7 +164,8 @@ function parseBingXPositions(data: any, exchange: string, contractType: string):
       realizedPnl: parseFloat(pos.realizedProfit || "0"),
       liquidationPrice: parseFloat(pos.liquidatePrice || "0"),
       timestamp: Date.now(),
-    }))
+      }]
+    })
 }
 
 function parseBinancePositions(data: any, exchange: string, contractType: string): ExchangePosition[] {
@@ -186,9 +195,12 @@ function parseOKXPositions(data: any, exchange: string, contractType: string): E
 
   return data.data
     .filter((pos: any) => parseFloat(pos.pos) !== 0)
-    .map((pos: any) => ({
+    .flatMap((pos: any) => {
+      const side = normalizeTradeDirection(pos.posSide)
+      if (!side) return []
+      return [{
       symbol: pos.instId, // OKX uses instId (e.g., BTC-USDT-SWAP)
-      side: pos.posSide === "long" ? "long" : "short",
+      side,
       contracts: Math.abs(parseFloat(pos.pos)),
       contractSize: 1,
       currentPrice: parseFloat(pos.markPx || "0"),
@@ -200,7 +212,8 @@ function parseOKXPositions(data: any, exchange: string, contractType: string): E
       realizedPnl: parseFloat(pos.realizedPnl || "0"),
       liquidationPrice: parseFloat(pos.liqPx || "0"),
       timestamp: Date.now(),
-    }))
+      }]
+    })
 }
 
 function parsePionexPositions(data: any, exchange: string, contractType: string): ExchangePosition[] {
@@ -208,9 +221,12 @@ function parsePionexPositions(data: any, exchange: string, contractType: string)
 
   return data
     .filter((pos: any) => parseFloat(pos.size) > 0)
-    .map((pos: any) => ({
+    .flatMap((pos: any) => {
+      const side = normalizeTradeDirection(pos.direction)
+      if (!side) return []
+      return [{
       symbol: pos.symbol,
-      side: pos.direction === "LONG" ? "long" : "short",
+      side,
       contracts: parseFloat(pos.size),
       contractSize: 1,
       currentPrice: parseFloat(pos.markPrice || "0"),
@@ -222,5 +238,6 @@ function parsePionexPositions(data: any, exchange: string, contractType: string)
       realizedPnl: 0,
       liquidationPrice: parseFloat(pos.liquidatePrice || "0"),
       timestamp: Date.now(),
-    }))
+      }]
+    })
 }

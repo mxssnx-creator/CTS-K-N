@@ -1,4 +1,5 @@
 import { getSettings } from "@/lib/redis-db"
+import { withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 
 export interface SymbolSelectionSnapshot {
   epoch: string
@@ -34,12 +35,13 @@ export async function getCanonicalSymbolSelection(connectionId: string): Promise
   // `selected_symbols` is canonical, but older routes only mirrored one of
   // the runtime aliases. Falling back in priority order keeps a mixed-version
   // deployment from binding progress ownership to an empty/stale selection.
-  const symbols = [
+  const storedSymbols = [
     state.selected_symbols,
     state.force_symbols,
     state.active_symbols,
     state.symbols,
   ].map(normalizeSymbolList).find((candidate) => candidate.length > 0) || []
+  const symbols = withCanonicalForcedSymbols(storedSymbols)
   const total = Number(state.config_set_symbols_total)
   if (symbols.length === 0 && (!Number.isFinite(total) || total <= 0)) return null
   return {

@@ -178,6 +178,7 @@ const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
   "dcaTakeProfitMode",
   "dcaBreakevenProfitPct",
   "dcaCooldownSeconds",
+  "dcaMaxPositionVolumeRatio",
   "axisPrevEnabled",
   "axisLastEnabled",
   "axisContEnabled",
@@ -232,6 +233,7 @@ const LIVE_ORDER_SETTING_FIELDS = new Set([
   "dcaTakeProfitMode",
   "dcaBreakevenProfitPct",
   "dcaCooldownSeconds",
+  "dcaMaxPositionVolumeRatio",
   "leveragePercentage",
   "useMaximalLeverage",
   "maxLeverage",
@@ -1305,15 +1307,11 @@ export async function recoordinateAfterSettingsChange(
             startErr instanceof Error ? startErr.message : String(startErr),
           )
         }
-        try {
-          const { runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
-          await runTradeEngineHealingSweep({ isStartup: false })
-        } catch (sweepErr) {
-          console.warn(
-            `[v0] [${opts.logTag}] Healing sweep after settings save failed for ${id}:`,
-            sweepErr instanceof Error ? sweepErr.message : String(sweepErr),
-          )
-        }
+        // startMissingEngines([after]) is deliberately targeted. A global
+        // healing sweep here used to start every enabled sibling whenever one
+        // connection was edited, turning a settings save into an unrelated
+        // multi-engine start and violating per-card coordination. Periodic and
+        // startup healing retain their own explicit call sites.
       } else {
         console.log(
           `[v0] [${opts.logTag}] Recoordinate: NOT starting ${id} — global engine not running (operator stop honored); settings apply on next explicit Start or continuity tick`,

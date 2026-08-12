@@ -120,6 +120,22 @@ import {
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import {
+  BINGX_CONTROL_ORDER_LIMIT,
+  ControlOrderCapacityBudget,
+  countUniqueBingXControlOrders,
+  type ControlOrderCapacitySnapshot,
+  type ProtectionOrderLeg,
+} from "@/lib/control-order-capacity"
+import {
+  calculateLivePositionStatistics,
+  type LivePositionStatistics,
+} from "@/lib/live-position-statistics"
+import {
+  SPECIAL_MAX_HOLDING_SECONDS,
+  sanitizeSpecialPositionPlan,
+  type SpecialPositionPlan,
+} from "@/lib/special-strategy"
 
 async function loadExchangeQuantityRules(symbol: string): Promise<Record<string, unknown> | null> {
   try {
@@ -392,6 +408,8 @@ interface LivePosition {
   realizedPnL?: number
   /** PositionCost percentage captured at entry for canonical PF-ratio history. */
   positionCostPct?: number
+  /** Immutable upstream Real-stage PF snapshot used for Real↔Live comparison. */
+  realProfitFactorAtEntry?: number
   timestamp?: number
   fee?: number
   feeAsset?: string
@@ -485,7 +503,7 @@ interface LivePosition {
     blockSetQuantityBefore?: number
     orderId?: string
     submittedAt: number
-    variant?: "block" | "dca" | "default"
+    variant?: "block" | "dca" | "default" | "special"
     blockCount?: number
     blockBaseQuantity?: number
     blockConfirmedAddQuantity?: number
@@ -603,6 +621,12 @@ interface LivePosition {
   // target factor 1 + count × ratio; DCA=0.5; others=1). Stored for audit and
   // protection coordination; Block order deltas use the immutable base.
   sizeMultiplier?: number
+  /** Special-only lane plan; same-side logical legs are exchange-netted. */
+  specialPositionPlan?: SpecialPositionPlan
+  /** Immutable 1x quantity used to enforce Special's total <= 3x cap. */
+  specialBaseQuantity?: number
+  /** Hard wall-clock exit, never later than 90 minutes after confirmed entry. */
+  specialExpiresAt?: number
   parentSetKey?: string
   setVariant?: "default" | "trailing" | "block" | "dca" | "pause"
   accumulatedSetKeys?: string[]
@@ -624,7 +648,11 @@ interface LivePosition {
   closedQuantity?: number
   /** Bounded, idempotent partial-order audit/quantity ledger. */
   partialOrderExecutions?: PartialOrderExecution[]
-  protectionMode?: "exchange_control" | "system_close" | "system_close_fallback"
+  protectionMode?: "exchange_control" | "hybrid_control_system" | "system_close" | "system_close_fallback"
+  /** Missing venue legs that remain protected by the engine-side price cross. */
+  systemProtectionLegs?: ProtectionOrderLeg[]
+  /** Last authoritative BingX control-order budget used for this position. */
+  controlOrderCapacity?: ControlOrderCapacitySnapshot
   // ── Set-config propagation (Set Relations → Position Protection) ──────────
   // The originating StrategySet's trailing profile and historical performance
   // snapshot are carried into the live position so that:
@@ -1346,6 +1374,11 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
         ? safeJsonParse<LivePosition["trailingProfile"]>(hash.trailingProfile, undefined)
         : hash.trailingProfile,
     }),
+    ...(hash.specialPositionPlan !== undefined && {
+      specialPositionPlan: typeof hash.specialPositionPlan === "string"
+        ? safeJsonParse<LivePosition["specialPositionPlan"]>(hash.specialPositionPlan, undefined)
+        : hash.specialPositionPlan,
+    }),
     ...(hash.prevPos !== undefined && {
       prevPos: typeof hash.prevPos === "string"
         ? safeJsonParse<LivePosition["prevPos"]>(hash.prevPos, undefined)
@@ -1387,6 +1420,12 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     manualProtectionOverride: typeof hash.manualProtectionOverride === "string"
       ? safeJsonParse<LivePosition["manualProtectionOverride"]>(hash.manualProtectionOverride, undefined)
       : hash.manualProtectionOverride,
+    systemProtectionLegs: Array.isArray(hash.systemProtectionLegs)
+      ? hash.systemProtectionLegs
+      : safeJsonParse<ProtectionOrderLeg[]>(hash.systemProtectionLegs, []),
+    controlOrderCapacity: typeof hash.controlOrderCapacity === "string"
+      ? safeJsonParse<ControlOrderCapacitySnapshot | undefined>(hash.controlOrderCapacity, undefined)
+      : hash.controlOrderCapacity,
     posCountsSetQuantities: typeof hash.posCountsSetQuantities === "string"
       ? safeJsonParse<Record<string, number>>(hash.posCountsSetQuantities, {})
       : hash.posCountsSetQuantities,
@@ -1420,6 +1459,8 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "realizedPnL",
     "realized_pnl",
     "positionCostPct",
+    "specialBaseQuantity",
+    "specialExpiresAt",
     "timestamp",
     "fee",
     "lastUpdate",
@@ -2661,7 +2702,10 @@ async function fetchCurrentPrice(symbol: string, connId?: string): Promise<numbe
 }
 interface AccumulationPlan {
   addQty: number
-  variant: "block" | "dca" | "default"
+  variant: "block" | "dca" | "default" | "special"
+  specialPositionPlan?: SpecialPositionPlan
+  specialBaseQuantity?: number
+  specialTargetQuantity?: number
   blockCount?: number
   blockBaseQuantity?: number
   blockConfirmedAddQuantity?: number
@@ -2673,12 +2717,68 @@ interface AccumulationPlan {
   dcaProfile?: DcaProfile
 }
 
+function applySpecialPlanToPosition(
+  position: LivePosition,
+  plan: SpecialPositionPlan,
+): void {
+  const direction = resolveLivePositionDirection(position)
+  const sanitized = direction ? sanitizeSpecialPositionPlan(plan, direction) : null
+  if (!sanitized) return
+  position.specialPositionPlan = sanitized
+  position.sizeMultiplier = sanitized.totalVolumeRatio
+  position.stopLoss = sanitized.protection.stopLossPct
+  position.takeProfit = sanitized.protection.takeProfitPct
+  position.trailingProfile = sanitized.protection.trailingEnabled
+    ? {
+        startRatio: sanitized.protection.trailingActivationPct / 100,
+        stopRatio: sanitized.protection.trailingDistancePct / 100,
+        stepRatio: sanitized.protection.trailingStepPct / 100,
+        mode: "fixed",
+      }
+    : undefined
+  const firstFillAt = Number(position.fills?.[0]?.timestamp || position.createdAt || Date.now())
+  const boundedHoldingSeconds = Math.min(
+    SPECIAL_MAX_HOLDING_SECONDS,
+    Math.max(1, sanitized.maximumHoldingSeconds),
+  )
+  position.specialExpiresAt = firstFillAt + boundedHoldingSeconds * 1_000
+}
+
 async function resolveAccumulationPlan(
   connId: string,
   existing: LivePosition,
   real: any,
   price: number,
 ): Promise<AccumulationPlan | null> {
+  if (String(real?.indicationType || "").trim().toLowerCase() === "special") {
+    const direction = resolveLivePositionDirection(existing)
+    if (!direction) return null
+    const specialPositionPlan = sanitizeSpecialPositionPlan(real?.specialPositionPlan, direction)
+    if (!specialPositionPlan) return null
+    const existingPlan = sanitizeSpecialPositionPlan(existing.specialPositionPlan, direction)
+    const currentQuantity = Number(existing.executedQuantity || existing.quantity || 0)
+    const initialQuantity = Number(existing.initialExecutedQuantity || currentQuantity)
+    const previousRatio = Math.max(
+      1,
+      Math.min(3, Number(existingPlan?.totalVolumeRatio ?? existing.sizeMultiplier ?? 1) || 1),
+    )
+    const specialBaseQuantity = Number(existing.specialBaseQuantity || 0) > 0
+      ? Number(existing.specialBaseQuantity)
+      : initialQuantity / previousRatio
+    if (!(specialBaseQuantity > 0) || !(currentQuantity > 0)) return null
+    const specialTargetQuantity = Math.min(
+      specialBaseQuantity * 3,
+      specialBaseQuantity * specialPositionPlan.totalVolumeRatio,
+    )
+    return {
+      addQty: Math.max(0, specialTargetQuantity - currentQuantity),
+      variant: "special",
+      specialPositionPlan,
+      specialBaseQuantity,
+      specialTargetQuantity,
+    }
+  }
+
   if (real?.setVariant === "block") {
     const blockCount = parseBlockCount(real?.setKey)
     const blockVolumeRatio = Number(real?.blockVolumeRatio ?? existing.blockVolumeRatio ?? 1)
@@ -2756,7 +2856,13 @@ async function resolveAccumulationPlan(
     })
     if (!next) return null
     const baseQuantity = Number(existing.initialExecutedQuantity ?? existing.executedQuantity ?? 0)
-    const addQty = calculateDcaAddQuantity(baseQuantity, next.volumeMultiplier)
+    const addQty = calculateDcaAddQuantity(
+      baseQuantity,
+      next.volumeMultiplier,
+      Number(existing.executedQuantity ?? existing.quantity ?? baseQuantity),
+      dcaProfile.maxPositionVolumeRatio,
+    )
+    if (!(addQty > 0)) return null
     return {
       addQty,
       variant: "dca",
@@ -2947,10 +3053,28 @@ async function accumulateIntoSimulatedPosition(
       await savePosition(existing)
       return existing
     }
+    if (plan.variant === "special" && plan.specialPositionPlan) {
+      existing.specialBaseQuantity = plan.specialBaseQuantity
+      applySpecialPlanToPosition(existing, plan.specialPositionPlan)
+      if (!(plan.addQty > 0)) {
+        const protection = computeDesiredProtectionPrices(existing)
+        existing.stopLossPrice = protection.desiredSl > 0 ? protection.desiredSl : undefined
+        existing.takeProfitPrice = protection.desiredTp > 0 ? protection.desiredTp : undefined
+        refreshProtectionHandlingMode(existing, protection.desiredSl, protection.desiredTp, true)
+        pushStep(existing, "special_plan_refresh", true, "target quantity already satisfied; protection/time contract refreshed")
+        await savePosition(existing)
+        return existing
+      }
+    }
     const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
       ? buildDcaStepSetKey(String(real?.setKey || "dca"), plan.dcaStep)
       : String(real?.setKey || "")
-    if (!real?.combinedPosCounts && accumulationSetKey && existing.accumulatedSetKeys?.includes(accumulationSetKey)) return existing
+    if (
+      plan.variant !== "special" &&
+      !real?.combinedPosCounts &&
+      accumulationSetKey &&
+      existing.accumulatedSetKeys?.includes(accumulationSetKey)
+    ) return existing
     if (plan.variant === "block" && plan.addQty <= 0) {
       const coveredSetKey = markSatisfiedBlockTarget(existing, real, plan)
       await savePosition(existing)
@@ -3001,6 +3125,10 @@ async function accumulateIntoSimulatedPosition(
             ...strategyLineageKeysForAdjustment(real, accumulationSetKey),
           ])]
       applyAccumulatedSignalRisk(draft, real)
+      if (plan.variant === "special" && plan.specialPositionPlan) {
+        draft.specialBaseQuantity = plan.specialBaseQuantity
+        applySpecialPlanToPosition(draft, plan.specialPositionPlan)
+      }
       if (real?.combinedPosCounts) {
         draft.posCountsSetRatios = { ...(real?.posCountsSetRatios || draft.posCountsSetRatios || {}) }
         draft.posCountsSetQuantities = allocatePositionSetQuantities(draft, newExec, draft.accumulatedSetKeys)
@@ -3045,8 +3173,13 @@ async function accumulateIntoSimulatedPosition(
     if (mutated) {
       Object.assign(existing, mutated)
       const protection = computeDesiredProtectionPrices(existing)
-      if (protection.desiredSl > 0) existing.assignedStopLoss = protection.desiredSl
-      if (protection.desiredTp > 0) existing.assignedTakeProfit = protection.desiredTp
+      // assignedStopLoss/assignedTakeProfit are immutable percentages from
+      // the originating strategy. Store the derived absolute trigger prices
+      // in their dedicated fields and retain the explicit Paper lifecycle
+      // ownership for every configured leg.
+      existing.stopLossPrice = protection.desiredSl > 0 ? protection.desiredSl : undefined
+      existing.takeProfitPrice = protection.desiredTp > 0 ? protection.desiredTp : undefined
+      refreshProtectionHandlingMode(existing, protection.desiredSl, protection.desiredTp, true)
       await recordPositionAdjustmentProgression(
         connId,
         existing,
@@ -3237,7 +3370,13 @@ async function accumulateIntoLivePosition(
     // Block/default overlays execute once per exact Set key. DCA is repeatable
     // by configured step and is deduped after resolveAccumulationPlan derives
     // its stable `#step:N` identity below.
-    if (!real?.combinedPosCounts && real?.setKey && real?.setVariant !== "dca" && existing.accumulatedSetKeys.includes(real.setKey)) {
+    if (
+      String(real?.indicationType || "").trim().toLowerCase() !== "special" &&
+      !real?.combinedPosCounts &&
+      real?.setKey &&
+      real?.setVariant !== "dca" &&
+      existing.accumulatedSetKeys.includes(real.setKey)
+    ) {
       pushStep(existing, "accumulate_skip", false, `setKey ${real.setKey} already accumulated`)
       await savePosition(existing)
       if (hadPendingAccumulation) {
@@ -3254,6 +3393,20 @@ async function accumulateIntoLivePosition(
         await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_retry_not_ready")
       }
       return existing
+    }
+    if (plan.variant === "special" && plan.specialPositionPlan) {
+      existing.specialBaseQuantity = plan.specialBaseQuantity
+      applySpecialPlanToPosition(existing, plan.specialPositionPlan)
+      if (!(plan.addQty > 0)) {
+        pushStep(existing, "special_plan_refresh", true, "target quantity already satisfied; protection/time contract refreshed")
+        existing.stopLossLastArmedAt = undefined
+        existing.takeProfitLastArmedAt = undefined
+        await updateProtectionOrders(connector, existing, "special_plan_refresh").catch((error) => {
+          pushStep(existing, "special_plan_rearm_failed", false, error instanceof Error ? error.message : String(error))
+        })
+        await savePosition(existing)
+        return existing
+      }
     }
     if (plan.variant === "block" && plan.addQty <= 0) {
       const coveredSetKey = markSatisfiedBlockTarget(existing, real, plan)
@@ -3302,6 +3455,15 @@ async function accumulateIntoLivePosition(
         addQty: accumulationExecutable.quantity,
       }
       pushStep(existing, "accumulation_quantity_normalized", true, `${accumulationExecutable.requestedQuantity} → ${plan.addQty} (${accumulationExecutable.reason || "exchange quantity rules"})`)
+    }
+    if (
+      plan.variant === "special" &&
+      plan.specialBaseQuantity &&
+      Number(existing.executedQuantity || 0) + plan.addQty > plan.specialBaseQuantity * 3 + 1e-12
+    ) {
+      pushStep(existing, "special_volume_cap", false, "exchange quantity rounding would exceed the hard 3x Special cap")
+      await savePosition(existing)
+      return existing
     }
     const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
       ? buildDcaStepSetKey(String(real?.setKey || "dca"), plan.dcaStep)
@@ -5461,7 +5623,28 @@ async function placeProtectionOrder(
  * candidate per row so we cannot miss a leg because the connector
  * happened to name the field differently than expected.
  */
-async function fetchLiveOrderIdSet(connector: any): Promise<Set<string> | null> {
+type LiveOrderIdSet = Set<string> & {
+  observedOrderCount?: number
+  observedControlOrderCount?: number
+  protectionCapacityBudget?: ControlOrderCapacityBudget
+}
+
+function isBingXCapacityConnector(connector: any): boolean {
+  const identity = String(
+    connector?.exchange
+    ?? connector?.exchangeId
+    ?? connector?.id
+    ?? connector?.constructor?.name
+    ?? "",
+  ).toLowerCase()
+  return identity.includes("bingx") || typeof connector?.getEnvironmentInfo === "function"
+}
+
+function protectionCapacityBudgetOf(liveOrderIds?: Set<string> | null): ControlOrderCapacityBudget | null {
+  return (liveOrderIds as LiveOrderIdSet | null | undefined)?.protectionCapacityBudget || null
+}
+
+async function fetchLiveOrderIdSet(connector: any): Promise<LiveOrderIdSet | null> {
   if (!connector || typeof connector.getOpenOrders !== "function") return null
   try {
     // 25 s upper bound — BingX getOpenOrders queues behind live-order calls
@@ -5480,7 +5663,7 @@ async function fetchLiveOrderIdSet(connector: any): Promise<Set<string> | null> 
       ? connector.getLastOpenOrdersSnapshotStatus()
       : { ok: true }
     if (snapshotStatus.ok !== true) return null
-    const set = new Set<string>()
+    const set = new Set<string>() as LiveOrderIdSet
     for (const o of orders) {
       // Prefer exchange-assigned numeric IDs over operator-supplied client IDs.
       // Using `clientOrderId`/`client_oid` as a fallback is safe only when no
@@ -5500,6 +5683,15 @@ async function fetchLiveOrderIdSet(connector: any): Promise<Set<string> | null> 
       // resolve a response-lost order without issuing a duplicate.
       const fallback = o?.clientOrderId ?? o?.clientOrderID ?? o?.client_oid
       if (fallback != null && String(fallback).length > 0) set.add(String(fallback))
+    }
+    set.observedOrderCount = orders.length
+    if (isBingXCapacityConnector(connector)) {
+      const observedControlOrderCount = countUniqueBingXControlOrders(orders)
+      set.observedControlOrderCount = observedControlOrderCount
+      set.protectionCapacityBudget = new ControlOrderCapacityBudget(
+        observedControlOrderCount,
+        BINGX_CONTROL_ORDER_LIMIT,
+      )
     }
     return set
   } catch (err) {
@@ -5827,6 +6019,68 @@ async function getCachedSystemCloseOnly(connectionId: string): Promise<boolean> 
   return inflight
 }
 
+function setSystemProtectionLeg(pos: LivePosition, leg: ProtectionOrderLeg, enabled: boolean): void {
+  const legs = new Set(pos.systemProtectionLegs || [])
+  if (enabled) legs.add(leg)
+  else legs.delete(leg)
+  pos.systemProtectionLegs = [...legs]
+}
+
+function refreshProtectionHandlingMode(
+  pos: LivePosition,
+  desiredSl: number,
+  desiredTp: number,
+  explicitSystemClose = false,
+): void {
+  const missing: ProtectionOrderLeg[] = []
+  if (desiredSl > 0 && !pos.stopLossOrderId) missing.push("stop_loss")
+  if (desiredTp > 0 && !pos.takeProfitOrderId) missing.push("take_profit")
+  pos.systemProtectionLegs = missing
+  if (explicitSystemClose) {
+    pos.protectionMode = "system_close"
+  } else if (missing.length === 0) {
+    pos.protectionMode = "exchange_control"
+  } else if (pos.stopLossOrderId || pos.takeProfitOrderId) {
+    pos.protectionMode = "hybrid_control_system"
+  } else {
+    pos.protectionMode = "system_close_fallback"
+  }
+}
+
+function reserveProtectionCapacity(
+  budget: ControlOrderCapacityBudget | null,
+  pos: LivePosition,
+  leg: ProtectionOrderLeg,
+): { allowed: boolean; reservationId: string } {
+  const reservationId = `${pos.connectionId}:${pos.id}:${leg}`
+  if (!budget) return { allowed: true, reservationId }
+  const allowed = budget.reserve(reservationId)
+  pos.controlOrderCapacity = budget.snapshot()
+  if (!allowed) {
+    setSystemProtectionLeg(pos, leg, true)
+    pos.protectionMode = pos.stopLossOrderId || pos.takeProfitOrderId
+      ? "hybrid_control_system"
+      : "system_close_fallback"
+    pushStep(
+      pos,
+      "protection_capacity_system_fallback",
+      true,
+      `${leg} kept engine-side because BingX control-order capacity is ${pos.controlOrderCapacity.observedOpen + pos.controlOrderCapacity.reserved}/${pos.controlOrderCapacity.limit}`,
+    )
+  }
+  return { allowed, reservationId }
+}
+
+function releaseProtectionCapacityReservation(
+  budget: ControlOrderCapacityBudget | null,
+  pos: LivePosition,
+  reservationId: string,
+): void {
+  if (!budget) return
+  budget.releaseReservation(reservationId)
+  pos.controlOrderCapacity = budget.snapshot()
+}
+
 async function updateProtectionOrders(
   connector: any,
   pos: LivePosition,
@@ -5922,14 +6176,25 @@ async function updateProtectionOrders(
     )
   }
 
+  const { desiredSl, desiredTp } = computeDesiredProtectionPrices(pos)
+  let capacityBudget = protectionCapacityBudgetOf(liveOrderIds)
+  if (!capacityBudget && isBingXCapacityConnector(connector)) {
+    const capacitySnapshot = await fetchLiveOrderIdSet(connector)
+    if (capacitySnapshot) {
+      if (liveOrderIds === null || liveOrderIds === undefined) liveOrderIds = capacitySnapshot
+      capacityBudget = protectionCapacityBudgetOf(capacitySnapshot)
+    }
+  }
+  if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
+
   // ── code=110206 quota backoff gate ────────────────────────────────
   // When the account's TP/SL order count has hit the exchange cap, all
   // placement attempts are suspended for PROTECTION_QUOTA_BACKOFF_MS.
   // This prevents the ~150/min cycle rate from flooding BingX with
   // rejected requests that fill the log and consume rate-limit budget.
   if (isProtectionQuotaBlocked(pos.connectionId)) {
-    if (pos.protectionMode !== "system_close_fallback") {
-      pos.protectionMode = "system_close_fallback"
+    refreshProtectionHandlingMode(pos, desiredSl, desiredTp)
+    if (pos.protectionMode !== "exchange_control") {
       result.changed = true
       pushStep(pos, "protection_quota_system_fallback", true, "exchange control-order quota is blocked; system close remains active")
     }
@@ -5941,6 +6206,7 @@ async function updateProtectionOrders(
   // period", we suspend ALL cancellation and placement attempts for TRIGGER_FREQUENCY_BACKOFF_MS.
   // This is a harder limit than quota and prevents the connector from hammering the endpoint.
   if (isTriggerFrequencyBlocked(pos.connectionId)) {
+    refreshProtectionHandlingMode(pos, desiredSl, desiredTp)
     return result
   }
 
@@ -5969,11 +6235,13 @@ async function updateProtectionOrders(
           : Promise.resolve(true),
       ])
       if (pos.stopLossOrderId && cancellations[0]) {
+        capacityBudget?.noteCancellation(pos.stopLossOrderId)
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
         result.changed = true
       }
       if (pos.takeProfitOrderId && cancellations[1]) {
+        capacityBudget?.noteCancellation(pos.takeProfitOrderId)
         pos.takeProfitOrderId = undefined
         pos.takeProfitPrice = 0
         result.changed = true
@@ -5981,7 +6249,7 @@ async function updateProtectionOrders(
       if (!cancellations.every(Boolean)) {
         pushStep(pos, "system_close_control_wait", true, "control cancellation not yet authoritative")
       }
-      pos.protectionMode = "system_close"
+      refreshProtectionHandlingMode(pos, desiredSl, desiredTp, true)
       return result
     } else if (pos.protectionMode === "system_close") {
       delete pos.protectionMode
@@ -6023,7 +6291,6 @@ async function updateProtectionOrders(
     }
   }
 
-  const { desiredSl, desiredTp } = computeDesiredProtectionPrices(pos)
   const closeSide: "buy" | "sell" = pos.direction === "long" ? "sell" : "buy"
   const priceDriftTolerance = pos.trailingActive ? 0.0001 : 0.0025
 
@@ -6188,8 +6455,10 @@ async function updateProtectionOrders(
       // reconcile pass retries; resetting it here would orphan the
       // exchange-side order and produce a phantom unprotected position
       // from our POV.
-      const cancelled = await cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss", pos.connectionId)
+      const cancelledOrderId = pos.stopLossOrderId
+      const cancelled = await cancelProtectionOrder(connector, pos.symbol, cancelledOrderId, "StopLoss", pos.connectionId)
       if (cancelled) {
+        capacityBudget?.noteCancellation(cancelledOrderId)
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
         result.changed = true
@@ -6247,6 +6516,13 @@ async function updateProtectionOrders(
         }
       }
       if (oldGone) {
+        const replacedOrderId = pos.stopLossOrderId
+        if (replacedOrderId) capacityBudget?.noteCancellation(replacedOrderId)
+        const reservation = reserveProtectionCapacity(capacityBudget, pos, "stop_loss")
+        if (!reservation.allowed) {
+          result.changed = true
+          return
+        }
         const protectionClientOrderId = await prepareProtectionSubmission(
           pos,
           "stopLoss",
@@ -6273,7 +6549,11 @@ async function updateProtectionOrders(
           // connection for PROTECTION_QUOTA_BACKOFF_MS. Do NOT clear orderId/price
           // so existing armed orders (if any) remain tracked.
           markProtectionQuotaExhausted(pos.connectionId)
+          capacityBudget?.markExhausted()
+          releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
           pos.protectionMode = "system_close_fallback"
+          setSystemProtectionLeg(pos, "stop_loss", true)
+          if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
           result.changed = true
           pushStep(pos, "protection_quota_system_fallback", true, "SL quota exhausted; using system-side trigger handling")
           // Leave existing stopLossOrderId / stopLossPrice unchanged.
@@ -6283,8 +6563,11 @@ async function updateProtectionOrders(
           pos.stopLossLastArmedAt = Date.now()
           result.changed = true
           result.slPlaced = true
+          setSystemProtectionLeg(pos, "stop_loss", false)
+          if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
           if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
         } else {
+          releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
           pos.stopLossOrderId = undefined
           pos.stopLossPrice = 0
         }
@@ -6294,8 +6577,10 @@ async function updateProtectionOrders(
 
   const tpLeg = (async () => {
     if (desiredTp <= 0 && pos.takeProfitOrderId) {
-      const cancelled = await cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit", pos.connectionId)
+      const cancelledOrderId = pos.takeProfitOrderId
+      const cancelled = await cancelProtectionOrder(connector, pos.symbol, cancelledOrderId, "TakeProfit", pos.connectionId)
       if (cancelled) {
+        capacityBudget?.noteCancellation(cancelledOrderId)
         pos.takeProfitOrderId = undefined
         pos.takeProfitPrice = 0
         result.changed = true
@@ -6328,6 +6613,13 @@ async function updateProtectionOrders(
         }
       }
       if (oldGone) {
+        const replacedOrderId = pos.takeProfitOrderId
+        if (replacedOrderId) capacityBudget?.noteCancellation(replacedOrderId)
+        const reservation = reserveProtectionCapacity(capacityBudget, pos, "take_profit")
+        if (!reservation.allowed) {
+          result.changed = true
+          return
+        }
         const protectionClientOrderId = await prepareProtectionSubmission(
           pos,
           "takeProfit",
@@ -6348,7 +6640,11 @@ async function updateProtectionOrders(
         if (id === "QUOTA_EXCEEDED") {
           // Mirror of the SL leg: suspend placement, preserve existing order data.
           markProtectionQuotaExhausted(pos.connectionId)
+          capacityBudget?.markExhausted()
+          releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
           pos.protectionMode = "system_close_fallback"
+          setSystemProtectionLeg(pos, "take_profit", true)
+          if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.takeProfit
           result.changed = true
           pushStep(pos, "protection_quota_system_fallback", true, "TP quota exhausted; using system-side trigger handling")
         } else if (tpIdOk) {
@@ -6357,8 +6653,11 @@ async function updateProtectionOrders(
           pos.takeProfitLastArmedAt = Date.now()
           result.changed = true
           result.tpPlaced = true
+          setSystemProtectionLeg(pos, "take_profit", false)
+          if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
           if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.takeProfit
         } else {
+          releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
           pos.takeProfitOrderId = undefined
           pos.takeProfitPrice = 0
         }
@@ -6388,8 +6687,9 @@ async function updateProtectionOrders(
   // the next tick. We keep result.changed for the pushStep / save path below.
   if (result.slPlaced || result.tpPlaced) {
     pos.protectionArmedQuantity = effectiveQty
-    pos.protectionMode = "exchange_control"
   }
+  refreshProtectionHandlingMode(pos, desiredSl, desiredTp)
+  if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
 
   if (result.changed) {
     pushStep(
@@ -6637,6 +6937,27 @@ export async function executeLivePosition(
       initialConnectionSettings as Record<string, any>,
     )
   }
+  const isSpecialPosition = String(realPosition.indicationType || "").trim().toLowerCase() === "special"
+  const specialPositionPlan = isSpecialPosition
+    ? sanitizeSpecialPositionPlan(realPosition.specialPositionPlan, realPosition.direction)
+    : null
+  if (specialPositionPlan) {
+    realPosition = {
+      ...realPosition,
+      specialPositionPlan,
+      sizeMultiplier: specialPositionPlan.totalVolumeRatio,
+      stopLoss: specialPositionPlan.protection.stopLossPct,
+      takeProfit: specialPositionPlan.protection.takeProfitPct,
+      trailingProfile: specialPositionPlan.protection.trailingEnabled
+        ? {
+            startRatio: specialPositionPlan.protection.trailingActivationPct / 100,
+            stopRatio: specialPositionPlan.protection.trailingDistancePct / 100,
+            stepRatio: specialPositionPlan.protection.trailingStepPct / 100,
+            mode: "fixed",
+          }
+        : undefined,
+    }
+  }
 
   const livePosition: LivePosition = {
     id: `live:${connectionId}:${realPosition.symbol}:${realPosition.direction}:${liveExecutionLane(realPosition)}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
@@ -6654,6 +6975,19 @@ export async function executeLivePosition(
     volumeUsd: 0,
     leverage: realPosition.leverage,
     positionCostPct,
+    realProfitFactorAtEntry: (() => {
+      const candidates = [
+        realPosition.netEffectivePF,
+        realPosition.blockObservedProfitFactor,
+        realPosition.presetProfitFactor,
+        realPosition.prevPos?.profitFactor,
+      ]
+      for (const candidate of candidates) {
+        const value = Number(candidate)
+        if (Number.isFinite(value) && value > 0) return value
+      }
+      return undefined
+    })(),
     marginType: "cross",
     // ── Set-config-aware initial SL% ──────────────────────────────────────
     // Use `computeSetAwareSL` so the protection level is derived from the Set's
@@ -6695,6 +7029,7 @@ export async function executeLivePosition(
     executionLane:  liveExecutionLane(realPosition),
     axisWindows:    realPosition.axisWindows,
     sizeMultiplier: realPosition.sizeMultiplier,
+    specialPositionPlan: specialPositionPlan || undefined,
     blockBaseVolumeMultiplier: realPosition.blockBaseVolumeMultiplier,
     blockVolumeRatio: realPosition.blockVolumeRatio,
     blockProfitFactorRatio: realPosition.blockProfitFactorRatio,
@@ -6741,6 +7076,7 @@ export async function executeLivePosition(
     presetProfitFactor: realPosition.presetProfitFactor,
     executionIntent,
   }
+  if (specialPositionPlan) applySpecialPlanToPosition(livePosition, specialPositionPlan)
 
   const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss)
   if (normalizedInitialSl.adjusted) {
@@ -6821,10 +7157,13 @@ export async function executeLivePosition(
     const requestedDirection = String(realPosition.direction || "").trim().toLowerCase()
     if (
       !String(realPosition.symbol || "").trim() ||
-      (requestedDirection !== "long" && requestedDirection !== "short")
+      (requestedDirection !== "long" && requestedDirection !== "short") ||
+      (isSpecialPosition && !specialPositionPlan)
     ) {
       livePosition.status = "rejected"
-      livePosition.statusReason = `Invalid inputs: symbol=${realPosition.symbol}, direction=${realPosition.direction}`
+      livePosition.statusReason = isSpecialPosition && !specialPositionPlan
+        ? "Invalid Special position plan: direction/caps/protection contract rejected"
+        : `Invalid inputs: symbol=${realPosition.symbol}, direction=${realPosition.direction}`
       pushStep(livePosition, "preflight", false, livePosition.statusReason)
       await savePosition(livePosition)
       await incrementMetric(connectionId, "live_orders_rejected_count")
@@ -7143,7 +7482,22 @@ export async function executeLivePosition(
         realPosition.direction,
         executionSlot,
       )
-      if (existingSimulatedSlot) return existingSimulatedSlot
+      if (existingSimulatedSlot) {
+        if (isSpecialPosition) {
+          const accumulationPrice = realPosition.entryPrice > 0
+            ? realPosition.entryPrice
+            : await fetchCurrentPrice(realPosition.symbol, connectionId)
+          if (accumulationPrice > 0) {
+            return accumulateIntoSimulatedPosition(
+              connectionId,
+              existingSimulatedSlot,
+              realPosition,
+              accumulationPrice,
+            )
+          }
+        }
+        return existingSimulatedSlot
+      }
     }
 
     const isSignalPositionCandidate = isActiveSignalPosition(
@@ -7296,14 +7650,27 @@ export async function executeLivePosition(
       // checkAndForceCloseOnSltpCross have valid price targets.
       if (simEntryPrice > 0) {
         const simProtection = computeDesiredProtectionPrices(livePosition)
-        if (simProtection.desiredSl > 0) livePosition.assignedStopLoss  = simProtection.desiredSl
-        if (simProtection.desiredTp > 0) livePosition.assignedTakeProfit = simProtection.desiredTp
+        // Keep the strategy-assigned percentages immutable. Paper positions
+        // have no venue control order, so persist both the absolute targets
+        // and their explicit engine-side lifecycle ownership.
+        livePosition.stopLossPrice = simProtection.desiredSl > 0 ? simProtection.desiredSl : undefined
+        livePosition.takeProfitPrice = simProtection.desiredTp > 0 ? simProtection.desiredTp : undefined
+        refreshProtectionHandlingMode(
+          livePosition,
+          simProtection.desiredSl,
+          simProtection.desiredTp,
+          true,
+        )
       }
       livePosition.executedQuantity = simQty
       livePosition.remainingQuantity = 0
       livePosition.averageExecutionPrice = simEntryPrice
       livePosition.volumeUsd = simQty * simEntryPrice
       livePosition.initialExecutedQuantity = simQty
+      if (specialPositionPlan) {
+        livePosition.specialBaseQuantity = simQty / specialPositionPlan.totalVolumeRatio
+        applySpecialPlanToPosition(livePosition, specialPositionPlan)
+      }
       livePosition.totalExecutedQuantity = simQty
       livePosition.initialEntryPrice = simEntryPrice
       livePosition.blockBaseQuantity = simQty
@@ -8284,6 +8651,10 @@ export async function executeLivePosition(
       livePosition.remainingQuantity = Math.max(0, computedVolume - fill.filledQty)
       livePosition.averageExecutionPrice = fill.filledPrice || currentPrice
       livePosition.initialExecutedQuantity ??= fill.filledQty
+      if (specialPositionPlan) {
+        livePosition.specialBaseQuantity = fill.filledQty / specialPositionPlan.totalVolumeRatio
+        applySpecialPlanToPosition(livePosition, specialPositionPlan)
+      }
       livePosition.totalExecutedQuantity = Math.max(
         Number(livePosition.totalExecutedQuantity || 0),
         fill.filledQty,
@@ -8435,14 +8806,22 @@ export async function executeLivePosition(
       // SDK for conditional orders first and keeps the venue-specific retry
       // logic inside `placeProtectionOrder`, so adding a fixed 500ms gap here
       // only leaves a fresh live position exposed longer than necessary.
-      const slClientOrderId = slPrice > 0 && !livePosition.stopLossOrderId
+      const initialLiveOrderIds = await fetchLiveOrderIdSet(exchangeConnector)
+      const initialCapacityBudget = protectionCapacityBudgetOf(initialLiveOrderIds)
+      const slCapacity = slPrice > 0 && !livePosition.stopLossOrderId
+        ? reserveProtectionCapacity(initialCapacityBudget, livePosition, "stop_loss")
+        : { allowed: false, reservationId: "" }
+      const tpCapacity = tpPrice > 0 && !livePosition.takeProfitOrderId
+        ? reserveProtectionCapacity(initialCapacityBudget, livePosition, "take_profit")
+        : { allowed: false, reservationId: "" }
+      const slClientOrderId = slPrice > 0 && !livePosition.stopLossOrderId && slCapacity.allowed
         ? await prepareProtectionSubmission(livePosition, "stopLoss", slPrice, livePosition.executedQuantity)
         : undefined
-      const tpClientOrderId = tpPrice > 0 && !livePosition.takeProfitOrderId
+      const tpClientOrderId = tpPrice > 0 && !livePosition.takeProfitOrderId && tpCapacity.allowed
         ? await prepareProtectionSubmission(livePosition, "takeProfit", tpPrice, livePosition.executedQuantity)
         : undefined
       const [slOrderId, tpOrderId] = await Promise.all([
-        (slPrice > 0 && !livePosition.stopLossOrderId)
+        (slPrice > 0 && !livePosition.stopLossOrderId && slCapacity.allowed)
           ? placeProtectionOrder(
               exchangeConnector,
               realPosition.symbol,
@@ -8453,8 +8832,8 @@ export async function executeLivePosition(
               realPosition.direction,
               slClientOrderId,
             )
-          : Promise.resolve(livePosition.stopLossOrderId || null),
-        (tpPrice > 0 && !livePosition.takeProfitOrderId)
+          : Promise.resolve(livePosition.stopLossOrderId || (slPrice > 0 ? "SYSTEM_FALLBACK" : null)),
+        (tpPrice > 0 && !livePosition.takeProfitOrderId && tpCapacity.allowed)
           ? placeProtectionOrder(
               exchangeConnector,
               realPosition.symbol,
@@ -8465,7 +8844,7 @@ export async function executeLivePosition(
               realPosition.direction,
               tpClientOrderId,
             )
-          : Promise.resolve(livePosition.takeProfitOrderId || null),
+          : Promise.resolve(livePosition.takeProfitOrderId || (tpPrice > 0 ? "SYSTEM_FALLBACK" : null)),
       ])
 
       // "PRICE_CROSSED" sentinel: market moved past the protection price between
@@ -8493,16 +8872,28 @@ export async function executeLivePosition(
       // Leave orderId/price at 0 — the position is live without protection.
       if (slOrderId === "QUOTA_EXCEEDED" || tpOrderId === "QUOTA_EXCEEDED") {
         markProtectionQuotaExhausted(connectionId)
+        initialCapacityBudget?.markExhausted()
+        livePosition.protectionMode = "system_close_fallback"
+        if (slOrderId === "QUOTA_EXCEEDED" && livePosition.pendingProtectionOrders) {
+          delete livePosition.pendingProtectionOrders.stopLoss
+        }
+        if (tpOrderId === "QUOTA_EXCEEDED" && livePosition.pendingProtectionOrders) {
+          delete livePosition.pendingProtectionOrders.takeProfit
+        }
       }
 
-      const slIdValid = slOrderId && slOrderId !== "PRICE_CROSSED" && slOrderId !== "position_exhausted" && slOrderId !== "QUOTA_EXCEEDED"
-      const tpIdValid = tpOrderId && tpOrderId !== "PRICE_CROSSED" && tpOrderId !== "position_exhausted" && tpOrderId !== "QUOTA_EXCEEDED"
+      const slIdValid = slOrderId && slOrderId !== "PRICE_CROSSED" && slOrderId !== "position_exhausted" && slOrderId !== "QUOTA_EXCEEDED" && slOrderId !== "SYSTEM_FALLBACK"
+      const tpIdValid = tpOrderId && tpOrderId !== "PRICE_CROSSED" && tpOrderId !== "position_exhausted" && tpOrderId !== "QUOTA_EXCEEDED" && tpOrderId !== "SYSTEM_FALLBACK"
 
       if (slIdValid) {
         livePosition.stopLossOrderId = slOrderId!
         livePosition.stopLossPrice = slPrice
         if (livePosition.pendingProtectionOrders) delete livePosition.pendingProtectionOrders.stopLoss
-      } else if (slPrice > 0 && slOrderId !== "QUOTA_EXCEEDED") {
+        setSystemProtectionLeg(livePosition, "stop_loss", false)
+      } else {
+        releaseProtectionCapacityReservation(initialCapacityBudget, livePosition, slCapacity.reservationId)
+      }
+      if (slPrice > 0 && slOrderId !== "QUOTA_EXCEEDED" && slOrderId !== "SYSTEM_FALLBACK" && !slIdValid) {
         // Surface the protection gap loudly so operators and the
         // dashboard see it; the next reconcile will retry.
         console.error(
@@ -8521,7 +8912,11 @@ export async function executeLivePosition(
         livePosition.takeProfitOrderId = tpOrderId!
         livePosition.takeProfitPrice = tpPrice
         if (livePosition.pendingProtectionOrders) delete livePosition.pendingProtectionOrders.takeProfit
-      } else if (tpPrice > 0 && tpOrderId !== "QUOTA_EXCEEDED") {
+        setSystemProtectionLeg(livePosition, "take_profit", false)
+      } else {
+        releaseProtectionCapacityReservation(initialCapacityBudget, livePosition, tpCapacity.reservationId)
+      }
+      if (tpPrice > 0 && tpOrderId !== "QUOTA_EXCEEDED" && tpOrderId !== "SYSTEM_FALLBACK" && !tpIdValid) {
         console.error(
           `${LOG_PREFIX} INITIAL TakeProfit placement FAILED for ${realPosition.symbol} — position is LIVE without TP until next reconcile tick`,
         )
@@ -8543,14 +8938,18 @@ export async function executeLivePosition(
       // Only set when at least one leg succeeded — otherwise the next
       // reconcile would treat the position as "armed for current qty"
       // and never retry the failed legs because qtyDrifted is false.
-      if (slOrderId || tpOrderId) {
+      if (slIdValid || tpIdValid) {
         livePosition.protectionArmedQuantity = livePosition.executedQuantity
         // Prime the cooldown so the first 30 s of reconcile ticks cannot
         // drift-cancel-replace orders we just placed milliseconds ago.
         const nowMs = Date.now()
-        if (slOrderId) livePosition.stopLossLastArmedAt = nowMs
-        if (tpOrderId) livePosition.takeProfitLastArmedAt = nowMs
+        if (slIdValid) livePosition.stopLossLastArmedAt = nowMs
+        if (tpIdValid) livePosition.takeProfitLastArmedAt = nowMs
       }
+      refreshProtectionHandlingMode(livePosition, slPrice, tpPrice)
+      if (initialCapacityBudget) livePosition.controlOrderCapacity = initialCapacityBudget.snapshot()
+      const slVenueOrderId = slIdValid ? String(slOrderId) : null
+      const tpVenueOrderId = tpIdValid ? String(tpOrderId) : null
 
       // Step record + progression log carry BOTH the assigned percent
       // and the resulting absolute trigger price, so an operator
@@ -8561,15 +8960,15 @@ export async function executeLivePosition(
       pushStep(
         livePosition,
         "place_sl_tp",
-        !!(slOrderId || tpOrderId),
-        `SL ${livePosition.stopLoss}% → ${slPrice ? slPrice.toFixed(6) : "—"} (${slOrderId || "—"}) | ` +
-        `TP ${livePosition.takeProfit}% → ${tpPrice ? tpPrice.toFixed(6) : "—"} (${tpOrderId || "—"})`
+        Boolean(slVenueOrderId || tpVenueOrderId || livePosition.systemProtectionLegs?.length),
+        `SL ${livePosition.stopLoss}% → ${slPrice ? slPrice.toFixed(6) : "—"} (${slVenueOrderId || (slPrice > 0 ? "system" : "—")}) | ` +
+        `TP ${livePosition.takeProfit}% → ${tpPrice ? tpPrice.toFixed(6) : "—"} (${tpVenueOrderId || (tpPrice > 0 ? "system" : "—")})`
       )
       await logProgressionEvent(
         connectionId,
         "live_trading",
         "info",
-        `SL/TP placed for ${realPosition.symbol} at assigned values`,
+        `SL/TP handling coordinated for ${realPosition.symbol} at assigned values`,
         {
           // Assigned (immutable strategy contract) and current
           // (mutable, override-aware) percent pairs — equal on first
@@ -8578,11 +8977,14 @@ export async function executeLivePosition(
           assignedTakeProfitPct: livePosition.assignedTakeProfit,
           stopLossPct: livePosition.stopLoss,
           takeProfitPct: livePosition.takeProfit,
-          slOrderId,
+          slOrderId: slVenueOrderId,
           slPrice,
-          tpOrderId,
+          tpOrderId: tpVenueOrderId,
           tpPrice,
           fillPrice: livePosition.averageExecutionPrice,
+          protectionMode: livePosition.protectionMode,
+          systemProtectionLegs: livePosition.systemProtectionLegs,
+          controlOrderCapacity: livePosition.controlOrderCapacity,
         },
       )
     } else {
@@ -9956,6 +10358,7 @@ export async function calculateLivePositionStats(
   totalPnL: number
   averageROI: number
   winRate: number
+  statistics: LivePositionStatistics
 }> {
   try {
     // Merge open (live) and closed (archive) indices so aggregate stats are
@@ -9965,38 +10368,20 @@ export async function calculateLivePositionStats(
       getClosedLivePositions(connectionId, 1000),
     ])
     const allPositions = [...openPositions, ...closedPositions]
-    const closed = allPositions.filter(p => p.status === "closed")
-    const open = allPositions.filter(
-      p => p.status === "open" || p.status === "filled" || p.status === "partially_filled"
-    )
-
-    let totalPnL = 0
-    let winCount = 0
-    for (const pos of closed) {
-      const lastStep = pos.progression?.find(s => s.step === "close")
-      const exitPx = lastStep ? parseFloat(lastStep.details?.split("@ ")[1] || "0") : 0
-      if (exitPx > 0 && pos.averageExecutionPrice > 0) {
-        const pnl = Math.round(
-          pos.executedQuantity *
-          (pos.direction === "long"
-            ? exitPx - pos.averageExecutionPrice
-            : pos.averageExecutionPrice - exitPx) * 100
-        ) / 100
-        totalPnL = Math.round((totalPnL + pnl) * 100) / 100
-        if (pnl > 0) winCount++
-      }
-    }
+    const statistics = calculateLivePositionStatistics(allPositions as unknown as Record<string, any>[])
 
     return {
-      totalFilled: allPositions.filter(p => p.status === "filled" || p.status === "open").length,
-      totalOpen: open.length,
-      totalClosed: closed.length,
-      totalPnL,
-      averageROI: closed.length > 0 ? Math.round((totalPnL / closed.length) * 100) / 100 : 0,
-      winRate: closed.length > 0 ? Math.round((winCount / closed.length) * 100) / 100 : 0,
+      totalFilled: statistics.filled,
+      totalOpen: statistics.open,
+      totalClosed: statistics.closed,
+      totalPnL: statistics.realizedPnl,
+      averageROI: statistics.averageRealizedRoi,
+      winRate: statistics.winRate,
+      statistics,
     }
   } catch (err) {
     console.error(`${LOG_PREFIX} Error calculating stats:`, err)
+    const statistics = calculateLivePositionStatistics([])
     return {
       totalFilled: 0,
       totalOpen: 0,
@@ -10004,6 +10389,7 @@ export async function calculateLivePositionStats(
       totalPnL: 0,
       averageROI: 0,
       winRate: 0,
+      statistics,
     }
   }
 }
@@ -10038,7 +10424,7 @@ async function checkAndForceCloseOnSltpCross(
   pos: LivePosition,
   markPrice: number,
   exchangeConnector: any,
-): Promise<"sl_hit" | "tp_hit" | "close_unconfirmed" | null> {
+): Promise<"sl_hit" | "tp_hit" | "special_time_exit" | "close_unconfirmed" | null> {
   if (!Number.isFinite(markPrice) || markPrice <= 0) return null
   if (pos.executedQuantity <= 0) return null
   const direction = resolveLivePositionDirection(pos)
@@ -10074,35 +10460,69 @@ async function checkAndForceCloseOnSltpCross(
   // confirmed filled yet; skip until it is.
   if (!fillPrice || fillPrice <= 0) return null
 
-  // ── Trailing stop: honour the ratcheted absolute price ─────────────────
-  // When trailing is active syncLiveFromPseudo has stamped trailingStopPrice
-  // onto the position. Using that absolute price means the proactive force-close
-  // fires at the RATCHETED level — not the static origin level that the
-  // percentage anchor would compute. Without this fix a trailing stop that
-  // ratcheted from, say, 2% below entry to 0.5% below entry would NEVER
-  // trigger the proactive close (the static 2% level is never reached while
-  // in profit), letting the position blow through the ratcheted stop if the
-  // exchange order somehow failed to fire.
-  let desiredSl: number
-  if (pos.trailingActive && pos.trailingStopPrice && pos.trailingStopPrice > 0) {
-    desiredSl = pos.trailingStopPrice
-  } else {
-    const slPct = Math.max(0, pos.stopLoss || 0) / 100
-    desiredSl =
-      slPct > 0
-        ? pos.direction === "long"
-          ? fillPrice * (1 - slPct)
-          : fillPrice * (1 + slPct)
-        : 0
+  // Special positions are deliberately short-lived. The target time closes a
+  // lane that has not developed meaningful favourable movement; the absolute
+  // expiry always closes it and is independently clamped to 90 minutes.
+  if (String(pos.indicationType || "").trim().toLowerCase() === "special") {
+    const plan = sanitizeSpecialPositionPlan(pos.specialPositionPlan, direction)
+    if (plan) {
+      const entryTime = Number(pos.fills?.[0]?.timestamp || pos.createdAt || Date.now())
+      const hardExpiry = entryTime + Math.min(
+        SPECIAL_MAX_HOLDING_SECONDS,
+        plan.maximumHoldingSeconds,
+      ) * 1_000
+      const persistedExpiry = Number(pos.specialExpiresAt || hardExpiry)
+      const expiry = Math.min(hardExpiry, persistedExpiry > entryTime ? persistedExpiry : hardExpiry)
+      const targetExitAt = entryTime + Math.min(
+        plan.targetHoldingSeconds,
+        plan.maximumHoldingSeconds,
+        SPECIAL_MAX_HOLDING_SECONDS,
+      ) * 1_000
+      const signedMovePct = ((markPrice - fillPrice) / fillPrice) * 100 *
+        (direction === "long" ? 1 : -1)
+      const insufficientMomentum = signedMovePct < Math.max(
+        0.01,
+        plan.protection.trailingActivationPct * 0.25,
+      )
+      const maxExpired = Date.now() >= expiry
+      const targetExpired = Date.now() >= targetExitAt && insufficientMomentum
+      if (maxExpired || targetExpired) {
+        const reason = maxExpired
+          ? "special_max_duration"
+          : "special_target_duration_no_momentum"
+        await logProgressionEvent(
+          connectionId,
+          "live_trading",
+          "info",
+          `Special time exit for ${pos.symbol} ${direction}`,
+          {
+            positionId: pos.id,
+            direction,
+            reason,
+            holdingSeconds: Math.max(0, Math.floor((Date.now() - entryTime) / 1_000)),
+            targetHoldingSeconds: plan.targetHoldingSeconds,
+            maximumHoldingSeconds: plan.maximumHoldingSeconds,
+            signedMovePct,
+          },
+        ).catch(() => {})
+        const closed = await closeLivePosition(
+          connectionId,
+          pos.id,
+          markPrice,
+          exchangeConnector,
+          reason,
+        )
+        if (closed?.status === "closed") return "special_time_exit"
+        if (closed) Object.assign(pos, closed)
+        return "close_unconfirmed"
+      }
+    }
   }
 
-  const tpPct = Math.max(0, pos.takeProfit || 0) / 100
-  const desiredTp =
-    tpPct > 0
-      ? pos.direction === "long"
-        ? fillPrice * (1 + tpPct)
-        : fillPrice * (1 - tpPct)
-      : 0
+  // Use the same canonical resolver as venue control-order reconciliation.
+  // This keeps engine-side fallback exactly coordinated with trailing,
+  // operator absolute-price overrides and DCA take-profit recalculation.
+  const { desiredSl, desiredTp } = computeDesiredProtectionPrices(pos)
 
   // Nothing to evaluate if neither protection band is configured.
   if (desiredSl <= 0 && desiredTp <= 0) return null
@@ -11356,7 +11776,12 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     // Previously each status filter triggered a full getLivePositions() scan,
     // meaning we fetched the same open-positions index from Redis FOUR times
     // just to bucket by status. Load once, then filter in memory.
-    const allOpenRaw = liveTradeOn ? await getLivePositions(connectionId) : lifecycleRows
+    const loadedOpenRows = liveTradeOn ? await getLivePositions(connectionId) : lifecycleRows
+    // Storage adapters and older snapshots may surface a missing list as
+    // undefined even though the typed contract is an array. Reconciliation is
+    // fail-closed and idempotent: an absent book means zero rows, never an
+    // exception loop that can starve the engine monitor.
+    const allOpenRaw = (Array.isArray(loadedOpenRows) ? loadedOpenRows : []) as LivePosition[]
 
     // ── Self-heal: purge terminal positions stuck in the open index ─────
     // A historical bug in redis-db savePosition() re-added rejected/cancelled/

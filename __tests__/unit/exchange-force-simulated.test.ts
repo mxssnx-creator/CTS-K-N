@@ -37,6 +37,7 @@ describe("exchange simulation safety override", () => {
     })
 
     expect(connector).toBeInstanceOf(SimulatedConnector)
+    expect((connector as any).logs).toEqual([])
   })
 
   test("fails closed on missing production credentials when simulation is not enabled", async () => {

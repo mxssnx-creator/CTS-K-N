@@ -9,6 +9,10 @@ import { getRedisClient, initRedis, getSettings, setSettings } from "@/lib/redis
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { emitStrategyUpdate } from "@/lib/broadcast-helpers"
 import {
+  normalizeTradeDirection,
+  resolveConsistentTradeDirection,
+} from "@/lib/trade-direction"
+import {
   compact,
   loadCompactionConfig,
   type CompactionConfig,
@@ -27,7 +31,7 @@ async function getCachedClient() {
 
 // Per-setKey serialize lock. `saveBatchToSet` performs a read-modify-write
 // (GET the set, push entries, SET it back). When two cycles for the same
-// (connectionId, symbol, type) overlap, the later SET overwrites the earlier
+// (connectionId, symbol, type, direction) overlap, the later SET overwrites the earlier
 // batch and qualifying entries are silently lost. Serializing per setKey makes
 // the RMW atomic with respect to other saves for that key.
 const _setSaveLocks = new Map<string, Promise<void>>()
@@ -56,6 +60,31 @@ export interface StrategySetLimits {
   main: number
   real: number
   live: number
+}
+
+type StrategySetType = keyof StrategySetLimits
+type StrategyDirection = "long" | "short"
+type StrategyBatchEntry = {
+  strategy: any
+  indicationType: string
+  sourceSetKey?: string
+}
+
+const STRATEGY_SET_TYPES: StrategySetType[] = ["base", "main", "real", "live"]
+const STRATEGY_DIRECTIONS: StrategyDirection[] = ["long", "short"]
+
+function canonicalStrategySymbol(symbol: unknown): string | null {
+  const normalized = String(symbol ?? "").trim().toUpperCase()
+  return normalized || null
+}
+
+function resolveStrategyDirection(indication: any): StrategyDirection | null {
+  return resolveConsistentTradeDirection(
+    indication?.direction,
+    indication?.metadata?.direction,
+    indication?.side,
+    indication?.metadata?.side,
+  )
 }
 
 export interface StrategySet {
@@ -157,86 +186,126 @@ export class StrategySetsProcessor {
 
 
   /**
-   * Process all strategy types independently for a symbol
+   * Process every strategy type independently for a symbol AND direction.
+   * Unknown directions fail closed: they are counted as rejected input and
+   * never leak into a Long bucket.
    */
   async processAllStrategySets(symbol: string, indications: any[]): Promise<void> {
     try {
       const startTime = Date.now()
       await this.settingsReady
 
-      const rawTotal = indications.length
-      const selectedTotal = rawTotal
+      const canonicalSymbol = canonicalStrategySymbol(symbol)
+      if (!canonicalSymbol) {
+        throw new Error("Strategy Set processing requires a non-empty symbol/market")
+      }
 
-      type BatchEntry = { strategy: any; indicationType: string }
-      const batches: Record<"base" | "main" | "real" | "live", BatchEntry[]> = {
-        base: [],
-        main: [],
-        real: [],
-        live: [],
+      const rawTotal = indications.length
+      let selectedTotal = 0
+      let rejectedDirectionTotal = 0
+      const batches: Record<StrategySetType, Record<StrategyDirection, StrategyBatchEntry[]>> = {
+        base: { long: [], short: [] },
+        main: { long: [], short: [] },
+        real: { long: [], short: [] },
+        live: { long: [], short: [] },
       }
 
       // Classify the complete indication inventory in one CPU pass. The four
       // result rows remain independently configured/stored, while Redis writes
       // run concurrently after classification. No candidate is sampled.
       for (const indication of indications) {
+        const direction = resolveStrategyDirection(indication)
+        if (!direction) {
+          rejectedDirectionTotal++
+          continue
+        }
+        selectedTotal++
         const confidence = Number(indication.confidence) || 0
         const profitFactor = Number(indication.profitFactor) || 0
         const indicationType = String(indication.type || "unknown")
+        const sourceSetKey = indication?.setKey ? String(indication.setKey) : undefined
+        const strategyMetadata = (strategyType: StrategySetType, riskLevel: string) => ({
+          ...indication.metadata,
+          connectionId: this.connectionId,
+          symbol: canonicalSymbol,
+          direction,
+          strategyType,
+          riskLevel,
+          ...(sourceSetKey && { sourceSetKey }),
+        })
         if (confidence > 0.45 && profitFactor > 0.9 && profitFactor * 0.95 >= 1) {
-          batches.base.push({
+          batches.base[direction].push({
             strategy: {
               profitFactor: profitFactor * 0.95,
               confidence,
-              metadata: { ...indication.metadata, strategyType: "base", riskLevel: "low" },
+              metadata: strategyMetadata("base", "low"),
             },
             indicationType,
+            sourceSetKey,
           })
         }
         if (confidence > 0.62 && profitFactor > 1.2) {
-          batches.main.push({
+          batches.main[direction].push({
             strategy: {
               profitFactor,
               confidence,
-              metadata: { ...indication.metadata, strategyType: "main", riskLevel: "medium" },
+              metadata: strategyMetadata("main", "medium"),
             },
             indicationType,
+            sourceSetKey,
           })
         }
         if (confidence > 0.78 && profitFactor > 1.45) {
-          batches.real.push({
+          batches.real[direction].push({
             strategy: {
               profitFactor: profitFactor * 1.1,
               confidence,
-              metadata: { ...indication.metadata, strategyType: "real", riskLevel: "high" },
+              metadata: strategyMetadata("real", "high"),
             },
             indicationType,
+            sourceSetKey,
           })
         }
         if (profitFactor >= 1) {
-          batches.live.push({
+          batches.live[direction].push({
             strategy: {
               profitFactor,
               confidence,
-              metadata: { ...indication.metadata, strategyType: "live", riskLevel: "variable" },
+              metadata: strategyMetadata("live", "variable"),
             },
             indicationType,
+            sourceSetKey,
           })
         }
       }
 
       await Promise.all(
-        (["base", "main", "real", "live"] as const).map((type) =>
-          this.saveBatchToSet(
-            `strategy_set:${this.connectionId}:${symbol}:${type}`,
-            batches[type],
-            type,
+        STRATEGY_SET_TYPES.flatMap((type) =>
+          STRATEGY_DIRECTIONS.map((direction) =>
+            this.saveBatchToSet(
+              `strategy_set:${this.connectionId}:${canonicalSymbol}:${type}:${direction}`,
+              batches[type][direction],
+              type,
+              canonicalSymbol,
+              direction,
+            ),
           ),
         ),
       )
-      const baseResults = this.toStageResult("base", rawTotal, selectedTotal, batches.base.length)
-      const mainResults = this.toStageResult("main", rawTotal, selectedTotal, batches.main.length)
-      const realResults = this.toStageResult("real", rawTotal, selectedTotal, batches.real.length)
-      const liveResults = this.toStageResult("live", rawTotal, selectedTotal, batches.live.length)
+      const resultFor = (type: StrategySetType) => this.toStageResult(
+        type,
+        rawTotal,
+        selectedTotal,
+        batches[type].long.length + batches[type].short.length,
+        {
+          long: batches[type].long.length,
+          short: batches[type].short.length,
+        },
+      )
+      const baseResults = resultFor("base")
+      const mainResults = resultFor("main")
+      const realResults = resultFor("real")
+      const liveResults = resultFor("live")
 
       const duration = Date.now() - startTime
       const totalQualified =
@@ -247,10 +316,13 @@ export class StrategySetsProcessor {
 
       if (totalQualified > 0) {
         console.log(
-          `[v0] [StrategySets] ${symbol}: All ${rawTotal} indications evaluated in ${duration}ms | Total qualified=${totalQualified} | Base qualified=${baseResults?.qualified} Main qualified=${mainResults?.qualified} Real qualified=${realResults?.qualified} Live qualified=${liveResults?.qualified}`
+          `[v0] [StrategySets] ${canonicalSymbol}: ${selectedTotal}/${rawTotal} directional indications evaluated in ${duration}ms | Total qualified=${totalQualified} | Long=${baseResults.byDirection.long + mainResults.byDirection.long + realResults.byDirection.long + liveResults.byDirection.long} Short=${baseResults.byDirection.short + mainResults.byDirection.short + realResults.byDirection.short + liveResults.byDirection.short}`
         )
 
-        await logProgressionEvent(this.connectionId, "strategies_sets", "info", `All strategy types evaluated for ${symbol}`, {
+        await logProgressionEvent(this.connectionId, "strategies_sets", "info", `All strategy types evaluated for ${canonicalSymbol}`, {
+          symbol: canonicalSymbol,
+          selectedTotal,
+          rejectedDirectionTotal,
           totalQualified,
           base: baseResults,
           main: mainResults,
@@ -272,124 +344,9 @@ export class StrategySetsProcessor {
     rawTotal: number,
     selectedTotal: number,
     qualified: number,
+    byDirection: Record<StrategyDirection, number>,
   ): any {
-    return { type, rawTotal, selectedTotal, qualified }
-  }
-
-  private async processBaseStrategySet(
-    symbol: string,
-    indications: any[],
-    rawTotal: number,
-    selectedTotal: number,
-  ): Promise<any> {
-    const setKey = `strategy_set:${this.connectionId}:${symbol}:base`
-    let qualified = 0
-
-    const batch: Array<{ strategy: any; indicationType: string }> = []
-    for (const indication of indications) {
-      // Base: broad intake (must be much higher volume than main/real)
-      if (indication.confidence > 0.45 && indication.profitFactor > 0.9) {
-        const strategy = {
-          profitFactor: indication.profitFactor * 0.95,
-          confidence: indication.confidence,
-          metadata: { ...indication.metadata, strategyType: "base", riskLevel: "low" },
-        }
-        if (strategy.profitFactor >= 1.0) {
-          qualified++
-          batch.push({ strategy, indicationType: indication.type })
-        }
-      }
-    }
-    await this.saveBatchToSet(setKey, batch, "base")
-    return this.toStageResult("base", rawTotal, selectedTotal, qualified)
-  }
-
-  /**
-   * Main Strategy Set - Balanced, medium-risk signals
-   */
-  private async processMainStrategySet(
-    symbol: string,
-    indications: any[],
-    rawTotal: number,
-    selectedTotal: number,
-  ): Promise<any> {
-    const setKey = `strategy_set:${this.connectionId}:${symbol}:main`
-    let qualified = 0
-
-    const batch: Array<{ strategy: any; indicationType: string }> = []
-    for (const indication of indications) {
-      if (indication.confidence > 0.62 && indication.profitFactor > 1.2) {
-        const strategy = {
-          profitFactor: indication.profitFactor,
-          confidence: indication.confidence,
-          metadata: { ...indication.metadata, strategyType: "main", riskLevel: "medium" },
-        }
-        if (strategy.profitFactor >= 1.0) {
-          qualified++
-          batch.push({ strategy, indicationType: indication.type })
-        }
-      }
-    }
-    await this.saveBatchToSet(setKey, batch, "main")
-    return this.toStageResult("main", rawTotal, selectedTotal, qualified)
-  }
-
-  /**
-   * Real Strategy Set - Aggressive, higher-risk signals
-   */
-  private async processRealStrategySet(
-    symbol: string,
-    indications: any[],
-    rawTotal: number,
-    selectedTotal: number,
-  ): Promise<any> {
-    const setKey = `strategy_set:${this.connectionId}:${symbol}:real`
-    let qualified = 0
-
-    const batch: Array<{ strategy: any; indicationType: string }> = []
-    for (const indication of indications) {
-      if (indication.confidence > 0.78 && indication.profitFactor > 1.45) {
-        const strategy = {
-          profitFactor: indication.profitFactor * 1.1,
-          confidence: indication.confidence,
-          metadata: { ...indication.metadata, strategyType: "real", riskLevel: "high" },
-        }
-        if (strategy.profitFactor >= 1.0) {
-          qualified++
-          batch.push({ strategy, indicationType: indication.type })
-        }
-      }
-    }
-    await this.saveBatchToSet(setKey, batch, "real")
-    return this.toStageResult("real", rawTotal, selectedTotal, qualified)
-  }
-
-  /**
-   * Live Strategy Set - All qualifying signals, real-time only
-   */
-  private async processLiveStrategySet(
-    symbol: string,
-    indications: any[],
-    rawTotal: number,
-    selectedTotal: number,
-  ): Promise<any> {
-    const setKey = `strategy_set:${this.connectionId}:${symbol}:live`
-    let qualified = 0
-
-    const batch: Array<{ strategy: any; indicationType: string }> = []
-    for (const indication of indications) {
-      if (indication.profitFactor >= 1.0) {
-        const strategy = {
-          profitFactor: indication.profitFactor,
-          confidence: indication.confidence,
-          metadata: { ...indication.metadata, strategyType: "live", riskLevel: "variable" },
-        }
-        qualified++
-        batch.push({ strategy, indicationType: indication.type })
-      }
-    }
-    await this.saveBatchToSet(setKey, batch, "live")
-    return this.toStageResult("live", rawTotal, selectedTotal, qualified)
+    return { type, rawTotal, selectedTotal, qualified, byDirection }
   }
 
   /**
@@ -405,10 +362,12 @@ export class StrategySetsProcessor {
    * RACE because they all read-modify-write the SAME `setKey`. This
    * batch path avoids the race AND collapses the I/O.
    */
-   private async saveBatchToSet(
+  private async saveBatchToSet(
     setKey: string,
-    strategies: Array<{ strategy: any; indicationType: string }>,
-    strategyType: string,
+    strategies: StrategyBatchEntry[],
+    strategyType: StrategySetType,
+    symbol: string,
+    direction: StrategyDirection,
   ): Promise<void> {
     if (strategies.length === 0) return
     // Serialize per setKey so overlapping cycles cannot clobber each other's
@@ -424,14 +383,18 @@ export class StrategySetsProcessor {
 
         const baseTs = Date.now()
         for (let i = 0; i < strategies.length; i++) {
-          const { strategy, indicationType } = strategies[i]
+          const { strategy, indicationType, sourceSetKey } = strategies[i]
           entries.push({
-            id: `${strategyType}_${baseTs}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+            id: `${strategyType}_${direction}_${baseTs}_${i}_${Math.random().toString(36).slice(2, 6)}`,
             timestamp: new Date().toISOString(),
+            connectionId: this.connectionId,
+            symbol,
+            direction,
             profitFactor: strategy.profitFactor,
             confidence: strategy.confidence,
             indicationType,
             strategyType,
+            ...(sourceSetKey && { sourceSetKey }),
             metadata: strategy.metadata,
           })
         }
@@ -448,6 +411,10 @@ export class StrategySetsProcessor {
         ])
         const prevStats = prevStatsRaw || {}
         const stats = {
+          connectionId: this.connectionId,
+          symbol,
+          direction,
+          strategyType,
           maxEntries: cfg.floor,
           currentEntries: entries.length,
           totalCalculated: (prevStats.totalCalculated || 0) + strategies.length,
@@ -466,7 +433,8 @@ export class StrategySetsProcessor {
         if (entries.length > 0) {
           emitStrategyUpdate(this.connectionId, {
             id: entries[0].id,
-            symbol: setKey.split(":")[2],
+            symbol,
+            direction,
             profit_factor: stats.avgProfitFactor || 0,
             win_rate: strategies[0].strategy?.confidence || 0,
             active_positions: entries.length,
@@ -479,92 +447,47 @@ export class StrategySetsProcessor {
   }
 
   /**
-   * Save strategy to its independent set pool (max 250 entries)
+   * Get direction-specific stats, or aggregate both independent directional
+   * lanes when no direction is requested. Legacy directionless data is read
+   * only as an upgrade fallback and is never mixed into a directional lane.
    */
-  private async saveStrategyToSet(
-    setKey: string,
-    strategy: any,
-    strategyType: string,
-    indicationType: string
-  ): Promise<void> {
+  async getSetStats(symbol: string, type: string, direction?: string): Promise<any> {
     try {
-      const client = await getCachedClient()
-      let entries: any[] = []
-
-      const existing = await client.get(setKey)
-      if (existing) {
-        try {
-          entries = JSON.parse(existing)
-        } catch {
-          entries = []
-        }
+      const canonicalSymbol = canonicalStrategySymbol(symbol)
+      if (!canonicalSymbol) return null
+      if (direction !== undefined) {
+        const canonicalDirection = normalizeTradeDirection(direction)
+        if (!canonicalDirection) return null
+        return await getSettings(
+          `strategy_set:${this.connectionId}:${canonicalSymbol}:${type}:${canonicalDirection}:stats`,
+        )
       }
 
-      // Newest-at-last (per spec) — use push, not unshift. The "best"
-      // compactor below sorts by PF when the buffer crosses the
-      // ceiling, so insertion order doesn't strictly matter for
-      // correctness, but staying chronological keeps the pre-compaction
-      // shape inspectable in admin tools.
-      entries.push({
-        id: `${strategyType}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: new Date().toISOString(),
-        profitFactor: strategy.profitFactor,
-        confidence: strategy.confidence,
-        indicationType,
-        strategyType,
-        metadata: strategy.metadata,
-      })
-
-      // ── Debounced threshold compaction (mode: "best") ────────────────
-      // Strategy pools care about *quality* — when the buffer overflows
-      // we want to keep the highest-PF entries, not the most recent
-      // ones. The compactor stable-sorts by PF desc, keeps the top
-      // `floor`, then re-sorts by timestamp ascending so downstream
-      // consumers preserve chronological semantics.
-      //
-      // The pre-existing "sort + slice on every call" pattern was the
-      // dominant CPU cost on the strategy pipeline; the new debounced
-      // policy only pays the sort once every (ceiling - floor) calls.
-      const cfg = await this.resolveCompaction(strategyType as keyof StrategySetLimits)
-      entries = compact(entries, cfg, "best")
-      const maxEntries = cfg.floor
-
-      // Save back
-      await client.set(setKey, JSON.stringify(entries))
-
-      // Update stats
-      const statsKey = `${setKey}:stats`
-      const prevStats = (await getSettings(statsKey)) || {}
-      const stats = {
-        maxEntries: maxEntries,
-        currentEntries: entries.length,
-        totalCalculated: (prevStats.totalCalculated || 0) + 1,
-        totalQualified: (prevStats.totalQualified || 0) + 1,
-        avgProfitFactor: entries.reduce((sum: number, e: any) => sum + e.profitFactor, 0) / entries.length,
-        lastCalculated: new Date().toISOString(),
+      const [long, short] = await Promise.all(STRATEGY_DIRECTIONS.map((dir) =>
+        getSettings(`strategy_set:${this.connectionId}:${canonicalSymbol}:${type}:${dir}:stats`),
+      ))
+      if (!long && !short) {
+        return await getSettings(`strategy_set:${this.connectionId}:${canonicalSymbol}:${type}:stats`)
       }
-      await setSettings(statsKey, stats)
-
-      // Broadcast strategy update to connected clients
-      emitStrategyUpdate(this.connectionId, {
-        id: entries[0].id,
-        symbol: setKey.split(':')[2], // Extract symbol from setKey
-        profit_factor: strategy.profitFactor || 0,
-        win_rate: strategy.confidence || 0,
-        active_positions: entries.length,
-      })
-    } catch (error) {
-      console.error(`[v0] [StrategySets] Failed to save to ${setKey}:`, error)
-    }
-  }
-
-  /**
-   * Get stats for a specific strategy type set
-   */
-  async getSetStats(symbol: string, type: string): Promise<any> {
-    try {
-      const setKey = `strategy_set:${this.connectionId}:${symbol}:${type}:stats`
-      return await getSettings(setKey)
+      const rows = [long, short].filter(Boolean)
+      const currentEntries = rows.reduce((sum, row) => sum + Number(row.currentEntries || 0), 0)
+      const weightedProfit = rows.reduce(
+        (sum, row) => sum + Number(row.avgProfitFactor || 0) * Number(row.currentEntries || 0),
+        0,
+      )
+      return {
+        connectionId: this.connectionId,
+        symbol: canonicalSymbol,
+        direction: "all",
+        strategyType: type,
+        maxEntries: rows.reduce((sum, row) => sum + Number(row.maxEntries || 0), 0),
+        currentEntries,
+        totalCalculated: rows.reduce((sum, row) => sum + Number(row.totalCalculated || 0), 0),
+        totalQualified: rows.reduce((sum, row) => sum + Number(row.totalQualified || 0), 0),
+        avgProfitFactor: currentEntries > 0 ? weightedProfit / currentEntries : 0,
+        lastCalculated: rows.map((row) => row.lastCalculated).filter(Boolean).sort().at(-1) || null,
+        byDirection: { long, short },
+      }
     } catch (error) {
       console.error(`[v0] [StrategySets] Failed to get stats for ${type}:`, error)
       return null
@@ -574,15 +497,37 @@ export class StrategySetsProcessor {
   /**
    * Get all entries from a specific strategy type set
    */
-  async getSetEntries(symbol: string, type: string, limit = 50): Promise<any[]> {
+  async getSetEntries(symbol: string, type: string, limit = 50, direction?: string): Promise<any[]> {
     try {
       const client = await getCachedClient()
-      const setKey = `strategy_set:${this.connectionId}:${symbol}:${type}`
-      const data = await client.get(setKey)
-
-      if (!data) return []
-
-      const entries: any[] = JSON.parse(data)
+      const canonicalSymbol = canonicalStrategySymbol(symbol)
+      if (!canonicalSymbol) return []
+      const requestedDirection = direction === undefined ? null : normalizeTradeDirection(direction)
+      if (direction !== undefined && !requestedDirection) return []
+      const keys = requestedDirection
+        ? [`strategy_set:${this.connectionId}:${canonicalSymbol}:${type}:${requestedDirection}`]
+        : STRATEGY_DIRECTIONS.map((dir) =>
+            `strategy_set:${this.connectionId}:${canonicalSymbol}:${type}:${dir}`,
+          )
+      const data = await Promise.all(keys.map((key) => client.get(key)))
+      let entries: any[] = data.flatMap((raw) => {
+        if (!raw) return []
+        try {
+          const parsed = JSON.parse(raw)
+          return Array.isArray(parsed) ? parsed : []
+        } catch {
+          return []
+        }
+      })
+      if (direction === undefined && entries.length === 0) {
+        const legacy = await client.get(`strategy_set:${this.connectionId}:${canonicalSymbol}:${type}`)
+        if (legacy) {
+          try {
+            const parsed = JSON.parse(legacy)
+            entries = Array.isArray(parsed) ? parsed : []
+          } catch { /* malformed legacy pool */ }
+        }
+      }
       // Always return in best-performance-first order
       entries.sort((a: any, b: any) => (b.profitFactor ?? 0) - (a.profitFactor ?? 0))
       return entries.slice(0, limit)

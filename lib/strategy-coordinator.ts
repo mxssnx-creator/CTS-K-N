@@ -82,10 +82,35 @@ import {
 import { resolveStrategyMemoryGuardLimits } from "@/lib/strategy-memory-guard"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import {
+  getRuntimeCapabilityConcurrency,
+  getRuntimeConcurrencyProfile,
+} from "@/lib/runtime-concurrency-profile"
+import {
   DEFAULT_BASE_MIN_STEP,
   MAX_BASE_STEP,
   MIN_BASE_STEP,
 } from "@/lib/constants"
+import {
+  countOpenMainBreakdown,
+  mainSetHasOpenLineage,
+} from "@/lib/strategy-stage-relations"
+import {
+  normalizeTradeDirection,
+  resolveConsistentTradeDirection,
+} from "@/lib/trade-direction"
+import {
+  SPECIAL_MAX_POSITIONS_PER_DIRECTION,
+  SPECIAL_MAX_SL_TO_TP_RATIO,
+  SPECIAL_MAX_VOLUME_RATIO,
+  sanitizeSpecialPositionPlan,
+  type SpecialPositionPlan,
+} from "@/lib/special-strategy"
+import {
+  defaultStrategyIndicationVariantPolicy,
+  normalizeStrategyIndicationVariantPolicy,
+  strategyIndicationVariantEnabled,
+  type StrategyIndicationVariantPolicy,
+} from "@/lib/strategy-indication-policy"
 
 /**
  * Runtime stage snapshots must not duplicate the canonical, verbose Set key
@@ -238,12 +263,7 @@ function yieldStrategyScheduler(): Promise<void> {
 }
 
 export function normalizeStrategyDirection(...values: unknown[]): "long" | "short" | null {
-  for (const value of values) {
-    const normalized = String(value ?? "").trim().toLowerCase()
-    if (normalized === "long" || normalized === "buy") return "long"
-    if (normalized === "short" || normalized === "sell") return "short"
-  }
-  return null
+  return resolveConsistentTradeDirection(...values)
 }
 
 function blockLanePart(value: unknown): string {
@@ -319,32 +339,35 @@ export function strategyIndicationConfigurationIdentity(indication: any): string
 
 export function resolveIndicationTradeDirection(indication: any): "long" | "short" | null {
   const indicationType = String(indication?.type || indication?.indicationType || "direction").toLowerCase()
-  const explicit = normalizeStrategyDirection(
-    indication?.direction,
-    indication?.metadata?.direction,
-  )
-  if (explicit) return explicit
-
+  const directDirection = normalizeTradeDirection(indication?.direction)
+  const metadataDirection = normalizeTradeDirection(indication?.metadata?.direction)
+  if (directDirection && metadataDirection && directDirection !== metadataDirection) return null
+  const explicit = directDirection ?? metadataDirection
+  let derived: "long" | "short" | null = null
   const secondDirection = Number(indication?.metadata?.secondDir)
   if (Number.isFinite(secondDirection) && secondDirection !== 0) {
-    return secondDirection > 0 ? "long" : "short"
-  }
-
-  const firstDirection = Number(indication?.metadata?.firstDir)
-  if (Number.isFinite(firstDirection) && firstDirection !== 0) {
+    derived = secondDirection > 0 ? "long" : "short"
+  } else {
+    const firstDirection = Number(indication?.metadata?.firstDir)
+    if (Number.isFinite(firstDirection) && firstDirection !== 0) {
     // Legacy Direction rows stored only the pre-reversal side. The executable
     // signal belongs to the new, opposite regime; other legacy types retain
     // the signed movement interpretation.
-    if (indicationType === "direction") return firstDirection > 0 ? "short" : "long"
-    return firstDirection > 0 ? "long" : "short"
+      derived = indicationType === "direction"
+        ? firstDirection > 0 ? "short" : "long"
+        : firstDirection > 0 ? "long" : "short"
+    }
   }
 
-  const signedMovement = [
-    indication?.metadata?.movement,
-    indication?.metadata?.signedPriceChange,
-    indication?.metadata?.netMovement,
-  ].map(Number).find((value) => Number.isFinite(value) && value !== 0)
-  return signedMovement === undefined ? null : signedMovement > 0 ? "long" : "short"
+  if (!derived) {
+    const signedMovement = [
+      indication?.metadata?.movement,
+      indication?.metadata?.signedPriceChange,
+      indication?.metadata?.netMovement,
+    ].map(Number).find((value) => Number.isFinite(value) && value !== 0)
+    derived = signedMovement === undefined ? null : signedMovement > 0 ? "long" : "short"
+  }
+  return resolveConsistentTradeDirection(explicit, derived)
 }
 
 function strategyProgressionKeys(connectionId: string): string[] {
@@ -702,6 +725,12 @@ export interface StrategySetEntry {
   activeProtectionProfileId?: string
   activeMarketExitSituation?: "momentum" | "range_extension" | "activity_fade"
   activeOrderExitType?: "TAKE_PROFIT_MARKET"
+  /** Special's bounded logical-leg and active protection calculation. */
+  specialPositionPlan?: SpecialPositionPlan
+  specialStopLossPct?: number
+  specialTakeProfitPct?: number
+  specialLogicalPositionCount?: number
+  specialTotalVolumeRatio?: number
 }
 
 /**
@@ -794,7 +823,7 @@ export function resolveLiveDispatchSizeMultiplier(
     | "blockCount"
     | "blockVolumeRatio"
     | "blockCalculatedVolumeMultiplier"
-  >,
+  > & Partial<Pick<StrategySet, "indicationType">>,
   bestEntrySizeMultiplier: unknown,
   _sizeDelta?: unknown,
 ): number {
@@ -831,6 +860,13 @@ export function resolveLiveDispatchSizeMultiplier(
   // this exact (untuned) multiplier keeps risk/progression metadata coherent.
   if (set.variant === "dca") {
     return positiveOr(set.variantSizeMultiplier ?? bestEntrySizeMultiplier, 1)
+  }
+
+  if (String(set.indicationType || "").toLowerCase() === "special") {
+    return Math.min(
+      SPECIAL_MAX_VOLUME_RATIO,
+      positiveOr(bestEntrySizeMultiplier, 1),
+    )
   }
 
   // Default and trailing Sets inherit the canonical Base identity. A stale
@@ -1209,6 +1245,10 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
     mix(indication?.metadata?.activeProtection?.stopLossPct)
     mix(indication?.metadata?.activeProtection?.takeProfitPct)
     mix(indication?.metadata?.activeProtection?.marketExitSituation)
+    mix(indication?.metadata?.specialPositionPlan?.logicalPositionCount)
+    mix(indication?.metadata?.specialPositionPlan?.totalVolumeRatio)
+    mix(indication?.metadata?.specialProtection?.stopLossPct)
+    mix(indication?.metadata?.specialProtection?.takeProfitPct)
   }
 
   return `${indications.length}|${latestTimestamp}|${(hash >>> 0).toString(36)}`
@@ -1677,7 +1717,7 @@ export function coordinateActiveRealLiveCounts(
 const AXIS_PREV     = [4, 6, 8, 10, 12]    as const
 const AXIS_LAST     = [1, 2, 3, 4]         as const
 const AXIS_CONT     = [1, 2, 3, 4, 5, 6, 7, 8] as const
-const AXIS_DIRS     = ["long", "short"]    as const
+const AXIS_KEY_DIRECTIONS = ["long", "short"] as const
 
 /**
  * ── Plan-perf Tier 2: precomputed axisKey table ────────────────────
@@ -1703,7 +1743,7 @@ const AXIS_DIRS     = ["long", "short"]    as const
  */
 const AXIS_OUTCOMES = ["pos", "neg"] as const
 type AxisOutcome = (typeof AXIS_OUTCOMES)[number]
-type AxisDir = (typeof AXIS_DIRS)[number]
+type AxisDir = (typeof AXIS_KEY_DIRECTIONS)[number]
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
@@ -1948,6 +1988,59 @@ export function deriveProtectionFromActiveOutbreak(
   }
 }
 
+/**
+ * Validate Special's active-market protection at the final strategy boundary.
+ * The SL/TP ratio is rechecked here so stale/imported indication rows cannot
+ * bypass the hard Special safety contract.
+ */
+export function deriveProtectionFromSpecial(
+  value: unknown,
+  costModel: ProtectionCostModel = conservativeCostFallbackForExchange("generic"),
+): (DerivedProtection & ProfitFactorProtection) | null {
+  const source = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {}
+  const requestedStopLossPct = Number(source.stopLossPct)
+  const requestedTakeProfitPct = Number(source.takeProfitPct)
+  if (
+    !Number.isFinite(requestedStopLossPct) || requestedStopLossPct <= 0 ||
+    !Number.isFinite(requestedTakeProfitPct) || requestedTakeProfitPct <= 0
+  ) return null
+  const boundedRequestedStop = Math.min(
+    requestedStopLossPct,
+    requestedTakeProfitPct * SPECIAL_MAX_SL_TO_TP_RATIO,
+  )
+  const stopLossPct = clampNumber(boundedRequestedStop, MIN_LIVE_STOP_LOSS_PCT, 5)
+  const costBufferPct = (
+    (costModel.takerFeeBpsPerSide * 2) +
+    costModel.estimatedSpreadBps +
+    (costModel.estimatedMarketSlippageBps * 2) +
+    (costModel.fundingHoldCostBufferBps ?? 0)
+  ) / 100
+  const adjustedTakeProfitPct = Math.max(
+    requestedTakeProfitPct,
+    stopLossPct / SPECIAL_MAX_SL_TO_TP_RATIO,
+  ) + Math.max(costBufferPct, LIVE_PROTECTION_FEE_BUFFER_PCT)
+  const takeProfitPct = clampNumber(
+    adjustedTakeProfitPct,
+    MIN_LIVE_TAKE_PROFIT_PCT,
+    MAX_LIVE_TAKE_PROFIT_PCT,
+  )
+  const effectiveTpPct = Math.max(0, takeProfitPct - costBufferPct)
+  return {
+    takeProfitPct,
+    stopLossPct: Math.min(stopLossPct, takeProfitPct * SPECIAL_MAX_SL_TO_TP_RATIO),
+    effectiveProfitFactor: takeProfitPct / stopLossPct,
+    grossPF: takeProfitPct / stopLossPct,
+    netPF: effectiveTpPct / stopLossPct,
+    costBufferPct,
+    netEffectivePF: effectiveTpPct / stopLossPct,
+    adjustedTakeProfitPct,
+    effectiveTpPct,
+    effectiveSlPct: stopLossPct,
+  }
+}
+
 function normalizePercentSetting(value: unknown, fallbackPct: number): number {
   const n = Number(value)
   if (!Number.isFinite(n) || n < 0) return fallbackPct
@@ -2006,7 +2099,7 @@ const AXIS_KEY_TABLE: ReadonlyMap<string, string> = (() => {
     for (const last of AXIS_LAST) {
       for (const cont of AXIS_CONT) {
         for (const outcome of AXIS_OUTCOMES) {
-          for (const dir of AXIS_DIRS) {
+          for (const dir of AXIS_KEY_DIRECTIONS) {
             const k = `${prev}|${last}|${cont}|${outcome}|${dir}`
             m.set(k, `p${prev}_l${last}_c${cont}_o${outcome}_d${dir}`)
           }
@@ -2151,6 +2244,7 @@ export class StrategyCoordinator {
       block:    boolean
       dca:      boolean
     }
+    indicationVariants: StrategyIndicationVariantPolicy
     /**
      * Block-strategy previous-position × volume-ratio coordination knobs.
      *
@@ -2215,6 +2309,7 @@ export class StrategyCoordinator {
       block:    true, // ← ENABLED by default (per spec)
       dca:      false, // ← OFF by default (per spec); parser also defaults false
     },
+    indicationVariants: defaultStrategyIndicationVariantPolicy(),
     blockVolumeRatio: 1.0,
     blockProfitFactorRatio: 0.8,
     blockMaxStack:    12,
@@ -2792,6 +2887,8 @@ export class StrategyCoordinator {
       this._coordinationSettings.variants.trailing = bool(s.variantTrailingEnabled, true)
       this._coordinationSettings.variants.block    = bool(s.variantBlockEnabled,    true)
       this._coordinationSettings.variants.dca      = bool(s.variantDcaEnabled,      false)
+      this._coordinationSettings.indicationVariants =
+        normalizeStrategyIndicationVariantPolicy(s)
       this._coordinationSettings.blockOnly = bool(
         s.blockOnly ?? s.variantBlockOnly ?? s.block_only,
         true,
@@ -3183,7 +3280,7 @@ export class StrategyCoordinator {
     // and can make control/health routes unavailable. Keep the safe default
     // serial and leave an explicit environment/settings override for hosts
     // that have measured a beneficial I/O-heavy profile.
-    const fallback = 1
+    const fallback = getRuntimeConcurrencyProfile(8).calculationConcurrency
     let configured = fallback
     try {
       const settings = ((await getRedisClient().hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, unknown>
@@ -3228,25 +3325,37 @@ export class StrategyCoordinator {
     // with an env override for larger workers. This keeps API/control
     // interactivity responsive while still allowing production to process
     // multiple symbols per pass.
-    const queue = [...items]
     const configuredConcurrency = await this.getStrategyFlowSymbolConcurrency()
     const symbolConcurrency = Math.max(
       1,
       Math.min(
         Number.isFinite(configuredConcurrency) ? configuredConcurrency : 1,
         4,
-        queue.length,
+        items.length,
       ),
     )
-    const workers = Array.from({ length: symbolConcurrency }, async () => {
-      while (queue.length > 0) {
-        const item = queue.shift()
-        if (!item) break
-        out[item.symbol] = await this.executeStrategyFlow(item.symbol, item.indications, isPrehistoric, ctx, skipLiveDispatch)
-        await new Promise<void>((resolve) => setImmediate(resolve))
-      }
-    })
-    await Promise.all(workers)
+    const evaluated = await mapWithConcurrency(
+      items,
+      symbolConcurrency,
+      async (item) => ({
+        symbol: item.symbol,
+        evaluations: await this.executeStrategyFlow(
+          item.symbol,
+          item.indications,
+          isPrehistoric,
+          ctx,
+          skipLiveDispatch,
+        ),
+      }),
+      {
+        yieldEvery: 1,
+        getConcurrency: () => Math.min(
+          symbolConcurrency,
+          getRuntimeCapabilityConcurrency("cpu", items.length),
+        ),
+      },
+    )
+    for (const result of evaluated) out[result.symbol] = result.evaluations
     return out
   }
 
@@ -3347,10 +3456,15 @@ export class StrategyCoordinator {
     posCtx?: PositionContext,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[]; coordIndex: CoordIndex }> {
     const signalSettings = await loadSignalIndicationSettings()
+    const signalTrailingEnabled = strategyIndicationVariantEnabled(
+      this._coordinationSettings.indicationVariants,
+      "signal",
+      "trailing",
+    )
     const signalConfigurations = buildSignalTradeConfigurations({
       trailingEnabled: signalSettings.trailingEnabled,
       trailingOnly: signalSettings.trailingOnly,
-    })
+    }).filter((configuration) => !configuration.trailing || signalTrailingEnabled)
     const expandedIndicationsUngated = indications.flatMap((indication) => {
       const indicationType =
         indication?.type || indication?.indication_type || indication?.indicationType || "direction"
@@ -3436,7 +3550,21 @@ export class StrategyCoordinator {
       signalSettings.configMinimumPfRatio,
     )
     const expandedIndications = expandedIndicationsUngated.filter((indication) => {
-      if (String(indication?.type || "").toLowerCase() !== "signal") return true
+      const indicationType = String(indication?.type || "").toLowerCase()
+      if (indicationType === "special") {
+        const specialPlan = indication?.metadata?.specialPositionPlan ??
+          indication?.metadata?.special?.positionPlan
+        if (
+          specialPlan?.exitVariant === "trailing" &&
+          !strategyIndicationVariantEnabled(
+            this._coordinationSettings.indicationVariants,
+            "special",
+            "trailing",
+          )
+        ) return false
+        return true
+      }
+      if (indicationType !== "signal") return true
       const direction = resolveIndicationTradeDirection(indication)
       const signal = indication?.metadata?.signal
       if (!direction || !signal?.sourceId || !signal?.configId) return false
@@ -3617,12 +3745,23 @@ export class StrategyCoordinator {
       const variant = variantPasses[variantIndex]
       for (const [baseSetKey, group] of setMap.entries()) {
         const isSignal = group.indicationType === "signal"
+        const isSpecial = group.indicationType === "special"
         const signalPass = variant?.signalOnly === true
-        if (isSignal) {
+        if (isSpecial) {
+          if (variant !== null) continue
+        } else if (isSignal) {
           if (!signalPass) continue
         } else if (signalPass) {
           continue
         }
+        if (
+          variant &&
+          !strategyIndicationVariantEnabled(
+            this._coordinationSettings.indicationVariants,
+            group.indicationType,
+            "trailing",
+          )
+        ) continue
         prospectiveSetKeys.push(
           isSignal || !variant ? baseSetKey : `${baseSetKey}:${variant.tag}`,
         )
@@ -3643,9 +3782,13 @@ export class StrategyCoordinator {
       const variant = variantPasses[variantIndex]
       for (const [baseSetKey, group] of setMap.entries()) {
         const isSignal = group.indicationType === "signal"
+        const isSpecial = group.indicationType === "special"
         const isSignalConfigurationPass = variant?.signalOnly === true
         let effectiveVariant: BaseTrailingVariant | null
-        if (isSignal) {
+        if (isSpecial) {
+          if (variant !== null) continue
+          effectiveVariant = null
+        } else if (isSignal) {
           if (!isSignalConfigurationPass) continue
           const exactSignalProfile =
             group.indications[0]?.metadata?.signal?.trailingProfile as
@@ -3663,6 +3806,14 @@ export class StrategyCoordinator {
           if (isSignalConfigurationPass) continue
           effectiveVariant = variant
         }
+        if (
+          effectiveVariant &&
+          !strategyIndicationVariantEnabled(
+            this._coordinationSettings.indicationVariants,
+            group.indicationType,
+            "trailing",
+          )
+        ) continue
         // Per-range Set key — keeps each trailing combo as an INDEPENDENT
         // BASE Set throughout the BASE → MAIN → REAL → LIVE flow.
         const setKey =
@@ -3722,10 +3873,17 @@ export class StrategyCoordinator {
           const activeTakeProfitPct = Number(activeProtection?.takeProfitPct)
           const activeMarketExitSituation = String(activeProtection?.marketExitSituation || "")
           const activeOrderExitType = String(activeProtection?.orderExitType || "")
+          const specialPositionPlan = group.indicationType === "special"
+            ? sanitizeSpecialPositionPlan(
+                ind.metadata?.specialPositionPlan ?? ind.metadata?.special?.positionPlan,
+                group.direction,
+              )
+            : null
+          if (group.indicationType === "special" && !specialPositionPlan) continue
 
           entries.push({
             id: `${setKey}-${entryIdx}`,
-            sizeMultiplier: 1.0,
+            sizeMultiplier: specialPositionPlan?.totalVolumeRatio ?? 1.0,
             leverage: 1,
             positionState: "new",
             profitFactor: pf,
@@ -3747,6 +3905,13 @@ export class StrategyCoordinator {
                   activeOrderExitType: "TAKE_PROFIT_MARKET" as const,
                 }),
               }),
+            ...(specialPositionPlan && {
+              specialPositionPlan,
+              specialStopLossPct: specialPositionPlan.protection.stopLossPct,
+              specialTakeProfitPct: specialPositionPlan.protection.takeProfitPct,
+              specialLogicalPositionCount: specialPositionPlan.logicalPositionCount,
+              specialTotalVolumeRatio: specialPositionPlan.totalVolumeRatio,
+            }),
           })
           entryIdx++
         }
@@ -3788,6 +3953,21 @@ export class StrategyCoordinator {
               .map((indication) => normalizeSignalRisk(indication?.metadata?.signal))
               .find((risk): risk is SignalRisk => Boolean(risk))
           : undefined
+        const representativeSpecialPlan = group.indicationType === "special"
+          ? entries.reduce(
+              (best, entry) => entry.profitFactor > best.profitFactor ? entry : best,
+              entries[0],
+            )?.specialPositionPlan
+          : undefined
+        const specialTrailingProfile: TrailingProfile | undefined =
+          representativeSpecialPlan?.protection.trailingEnabled
+            ? {
+                mode: "fixed",
+                startRatio: representativeSpecialPlan.protection.trailingActivationPct / 100,
+                stopRatio: representativeSpecialPlan.protection.trailingDistancePct / 100,
+                stepRatio: representativeSpecialPlan.protection.trailingStepPct / 100,
+              }
+            : undefined
 
         const set: StrategySet = {
           setKey,
@@ -3817,6 +3997,7 @@ export class StrategyCoordinator {
               }),
             },
           }),
+          ...(specialTrailingProfile && { trailingProfile: specialTrailingProfile }),
           // Attach prev-pos snapshot so Main/Real propagation paths can
           // reach it without re-fetching. Always carry the field even
           // when count==0 — keeps downstream null-checking simple.
@@ -4705,8 +4886,9 @@ export class StrategyCoordinator {
       let mainProgressing = 0
       for (const s of mainSets) {
         if ((s.entryCount || 0) > 0) mainProgressing++
-        if (activeKeys.has(s.setKey)) mainRunningNow++
+        if (mainSetHasOpenLineage(s, activeKeys)) mainRunningNow++
       }
+      const mainOpenBreakdown = countOpenMainBreakdown(mainSets, activeKeys)
       const mainValidOpen = Array.from(uniqueBaseSetsProduced)
         .filter((setKey) => activeKeys.has(setKey)).length
       const baseValidOpen = Array.from(baseValidSetKeys)
@@ -4732,6 +4914,11 @@ export class StrategyCoordinator {
           row_overall:       String(mainSets.length),
           row_valid_open:    String(mainValidOpen),
           row_overall_open:  String(mainRunningNow),
+          row_overall_open_standard:       String(mainOpenBreakdown.standard),
+          row_overall_open_trailing:       String(mainOpenBreakdown.trailing),
+          row_overall_open_position_count: String(mainOpenBreakdown.positionCount),
+          row_overall_open_block:          String(mainOpenBreakdown.block),
+          row_overall_open_dca:            String(mainOpenBreakdown.dca),
           count_pos_eval:    String(mainSets.length),
           sets_running_now:         String(mainRunningNow),
           sets_with_open_positions: String(mainRunningNow),
@@ -4747,6 +4934,11 @@ export class StrategyCoordinator {
           [`s:${symbol}:row_overall`]:      String(mainSets.length),
           [`s:${symbol}:row_valid_open`]:   String(mainValidOpen),
           [`s:${symbol}:row_overall_open`]: String(mainRunningNow),
+          [`s:${symbol}:row_overall_open_standard`]:       String(mainOpenBreakdown.standard),
+          [`s:${symbol}:row_overall_open_trailing`]:       String(mainOpenBreakdown.trailing),
+          [`s:${symbol}:row_overall_open_position_count`]: String(mainOpenBreakdown.positionCount),
+          [`s:${symbol}:row_overall_open_block`]:          String(mainOpenBreakdown.block),
+          [`s:${symbol}:row_overall_open_dca`]:            String(mainOpenBreakdown.dca),
           [`s:${symbol}:apf`]:        String(mainAvgPF.toFixed(4)),
           [`s:${symbol}:addt`]:       String(Math.round(mainAvgDDT)),
           [`s:${symbol}:apps`]:       String(mainAvgPosPerSet.toFixed(2)),
@@ -5074,7 +5266,12 @@ export class StrategyCoordinator {
           set.variant !== "dca" &&
           set.variant !== "block" &&
           !String(set.setKey).includes("#block:") &&
-          !isPositionCountStrategySet(set)
+          !isPositionCountStrategySet(set) &&
+          strategyIndicationVariantEnabled(
+            this._coordinationSettings.indicationVariants,
+            set.indicationType,
+            "block",
+          )
         )
         .map((set) => [set.setKey, set]),
     ).values())
@@ -5516,7 +5713,12 @@ export class StrategyCoordinator {
           set.variant !== "block" &&
           set.variant !== "dca" &&
           !String(set.setKey).includes("#block:") &&
-          !isPositionCountStrategySet(set)
+          !isPositionCountStrategySet(set) &&
+          strategyIndicationVariantEnabled(
+            this._coordinationSettings.indicationVariants,
+            set.indicationType,
+            "block",
+          )
         )
         .map((set) => [set.setKey, set]),
     ).values())
@@ -5844,7 +6046,12 @@ export class StrategyCoordinator {
           set.variant !== "block" &&
           set.variant !== "dca" &&
           !String(set.setKey).includes("#block:") &&
-          !isPositionCountStrategySet(set)
+          !isPositionCountStrategySet(set) &&
+          strategyIndicationVariantEnabled(
+            this._coordinationSettings.indicationVariants,
+            set.indicationType,
+            "block",
+          )
         )
         .map((set) => [set.setKey, set]),
     ).values())
@@ -7524,7 +7731,16 @@ export class StrategyCoordinator {
     for (const source of rowLiveSets) {
       // Row-Live Block rows do not recursively fan out from an existing Block
       // or DCA overlay. Position-count rows remain their own target family.
-      if (source.variant === "block" || source.variant === "dca" || isPositionCountStrategySet(source)) continue
+      if (
+        source.variant === "block" ||
+        source.variant === "dca" ||
+        isPositionCountStrategySet(source) ||
+        !strategyIndicationVariantEnabled(
+          this._coordinationSettings.indicationVariants,
+          source.indicationType,
+          "block",
+        )
+      ) continue
       for (let count = 1; count <= maxStack; count++) {
         const increment = calculateBlockVolumeIncrementRatio(count, ratio)
         const minimumProfitFactor = calculateBlockMinimumProfitFactor(
@@ -8152,8 +8368,14 @@ export class StrategyCoordinator {
                       takeProfitPct: bestEntry.activeTakeProfitPct,
                     })
                   : null
+                const specialProtection = set.indicationType === "special"
+                  ? deriveProtectionFromSpecial({
+                      stopLossPct: bestEntry.specialStopLossPct,
+                      takeProfitPct: bestEntry.specialTakeProfitPct,
+                    })
+                  : null
                 const protection = (
-                  activeOutbreakProtection ?? (set.indicationType === "signal"
+                  specialProtection ?? activeOutbreakProtection ?? (set.indicationType === "signal"
                     ? deriveProtectionFromSignalRisk(resolvedSignalRisk)
                     : null)
                 ) ?? deriveProtectionFromProfitFactor(
@@ -8169,7 +8391,7 @@ export class StrategyCoordinator {
                 // anchored at the trailing stop distance rather than a generic
                 // PF-derived value. For all other variants `protection.stopLossPct`
                 // is already variant-scaled (block: sizeMultiplier-up, dca: 0.5×).
-                const resolvedTrailingProfile: { startRatio: number; stopRatio: number; stepRatio: number } | undefined =
+                const resolvedTrailingProfile: TrailingProfile | undefined =
                   set.trailingProfile ??
                   (coordIndex ? coordIndex.base.byKey.get(parentKey)?.trailingProfile : undefined)
 
@@ -8181,13 +8403,19 @@ export class StrategyCoordinator {
                 if (
                   set.indicationType !== "signal" &&
                   set.indicationType !== "active" &&
+                  set.indicationType !== "special" &&
                   set.variant === "block" &&
                   effectiveSizeMult > 1.0
                 ) {
                   const slippageBuffer = Math.min(0.5, (effectiveSizeMult - 1.0) * 2.0)  // 0.2-0.5% buffer for 1.1-1.25x sizes
                   sl = Math.max(0.5, sl + slippageBuffer)  // Add buffer, but keep minimum 0.5%
                 }
-                if (set.variant === "trailing" && resolvedTrailingProfile && resolvedTrailingProfile.stopRatio > 0) {
+                if (
+                  set.indicationType !== "special" &&
+                  set.variant === "trailing" &&
+                  resolvedTrailingProfile &&
+                  resolvedTrailingProfile.stopRatio > 0
+                ) {
                   // Trailing-variant: initial SL = trailing stop distance.
                   // The live-stage `computeSetAwareSL` applies the same logic
                   // but we normalise here too so the RealPosition.stopLoss and
@@ -8217,7 +8445,16 @@ export class StrategyCoordinator {
                     rewardTarget: 0,
                     stopLoss: sl,
                     takeProfit: tp,
-                    mainPositionCount: set.entryCount,
+                    // Immutable stage-quality snapshot for the dashboard's
+                    // newest-50 Real↔Live PF comparison. This is intentionally
+                    // separate from the realised Live gross-profit/loss PF.
+                    netEffectivePF: set.avgProfitFactor,
+                    mainPositionCount: set.indicationType === "special"
+                      ? Math.min(
+                          SPECIAL_MAX_POSITIONS_PER_DIRECTION,
+                          Math.max(1, bestEntry.specialLogicalPositionCount || 1),
+                        )
+                      : set.entryCount,
                     evaluationScore: bestEntry.confidence,
                     ratioMet: bestEntry.confidence >= 0.65,
                     timestamp: Date.now(),
@@ -8248,6 +8485,7 @@ export class StrategyCoordinator {
                     setVariant:   set.variant,
                     axisWindows:  set.axisWindows,
                     signalRisk: resolvedSignalRisk,
+                    specialPositionPlan: bestEntry.specialPositionPlan,
                     executionLane:
                       set.indicationType === "signal" &&
                       isSignalDynamicTrailingProfile(resolvedTrailingProfile)
@@ -8584,7 +8822,14 @@ export class StrategyCoordinator {
                       takeProfitPct: bestEntry.activeTakeProfitPct,
                     })
                   : null
-                const tp = activeProtection?.takeProfitPct ??
+                const specialProtection = set.indicationType === "special"
+                  ? deriveProtectionFromSpecial({
+                      stopLossPct: bestEntry.specialStopLossPct,
+                      takeProfitPct: bestEntry.specialTakeProfitPct,
+                    })
+                  : null
+                const tp = specialProtection?.takeProfitPct ??
+                  activeProtection?.takeProfitPct ??
                   signalProtection?.takeProfitPct ??
                   adaptiveTrendTp ??
                   Math.max(0.5, (bestEntry.profitFactor - 1) * 100)
@@ -8592,7 +8837,8 @@ export class StrategyCoordinator {
                 const signalDynamicTrailing = isSignalDynamicTrailingProfile(profile)
                 const sl = signalDynamicTrailing
                   ? Math.max(0.8, (profile.minStopRatio ?? profile.stopRatio) * 100)
-                  : activeProtection?.stopLossPct ??
+                  : specialProtection?.stopLossPct ??
+                    activeProtection?.stopLossPct ??
                     signalProtection?.stopLossPct ??
                     Math.min(5, 100 / Math.max(1, bestEntry.profitFactor) * 0.5)
 
@@ -8634,6 +8880,7 @@ export class StrategyCoordinator {
                   configSetKey,
                   strategySetKey: set.setKey,
                   parentSetKey: set.parentSetKey || set.setKey.split("#")[0],
+                  specialPositionPlan: bestEntry.specialPositionPlan,
                   ...(profile && {
                     trailingProfile: profile,
                     trailingStartRatio: profile.startRatio,
@@ -9195,6 +9442,8 @@ export class StrategyCoordinator {
     if (!axes.prev.enabled && !axes.last.enabled && !axes.cont.enabled && !axes.pause.enabled) {
       return axisSets
     }
+    const parentDirection = normalizeStrategyDirection(baseDefault.direction)
+    if (!parentDirection) return axisSets
     // Position-Count (Pis) Sets volume ratio: the additional pos-count axis
     // Convert the 0.1..10 operator ratio to the direct per-valid-Set
     // multiplier exactly once (10 → 0.02).
@@ -9255,14 +9504,16 @@ export class StrategyCoordinator {
     const contMax = axes.cont.enabled
       ? clampNumber(Math.floor(axes.cont.maxWindow), 0, 8)
       : 0
-    const longOpen = Math.max(0, Math.floor(liveContByDir?.long ?? liveCont))
-    const shortOpen = Math.max(0, Math.floor(liveContByDir?.short ?? liveCont))
+    const parentOpen = Math.max(
+      0,
+      Math.floor(liveContByDir ? liveContByDir[parentDirection] : liveCont),
+    )
     // `cont=0` is the baseline (no continuous-count requirement) and must be
     // present whenever the cont axis is enabled so axis Sets survive before
     // any live position has accrued. Non-zero windows are then bounded by the
-    // larger of the operator maxWindow and the actual direction open count.
+    // exact parent's direction-specific open count.
     const contValues: number[] = axes.cont.enabled
-      ? [0, ...AXIS_CONT.filter((value) => value <= Math.min(contMax, Math.max(longOpen, shortOpen)))]
+      ? [0, ...AXIS_CONT.filter((value) => value <= Math.min(contMax, parentOpen))]
       : [0]
     if (contValues.length === 0) return axisSets
 
@@ -9293,10 +9544,10 @@ export class StrategyCoordinator {
         const outcomes: Array<"pos" | "neg"> = [lastAverageResult >= 0 ? "pos" : "neg"]
 
         for (const cont of contValues) {
-          for (const dir of AXIS_DIRS) {
-            const dirLiveCont = dir === "short" ? shortOpen : longOpen
-            if (axes.cont.enabled && cont > dirLiveCont) continue
-            for (const outcome of outcomes) {
+          const dir = parentDirection
+          const dirLiveCont = parentOpen
+          if (axes.cont.enabled && cont > dirLiveCont) continue
+          for (const outcome of outcomes) {
               const axisKey = `${axisKeyOf(prev, last, cont, outcome, dir)}_u${pause}`
 
               // ── Live continuous-count cap (operator spec) ──────────
@@ -9353,7 +9604,10 @@ export class StrategyCoordinator {
                 const axisSet: StrategySet = {
                   setKey:          `${parentKey}#axis:${axisKey}`,
                   parentSetKey:    parentKey,
-                  variant:         baseDefault.trailingProfile ? "trailing" : "default",
+                  variant:
+                    baseDefault.trailingProfile && baseDefault.indicationType !== "special"
+                      ? "trailing"
+                      : "default",
                   indicationType:  baseDefault.indicationType,
                   direction:       dir,
                   avgProfitFactor: inheritedPF,
@@ -9379,7 +9633,6 @@ export class StrategyCoordinator {
                 StrategyCoordinator._axisLruSet(axisLruKey, axisSet)
                 axisSets.push(axisSet)
               }
-            }
           }
         }
       }
@@ -9580,7 +9833,10 @@ export class StrategyCoordinator {
     return {
       setKey:          `${baseSet.setKey}#${profile.name}`,
       parentSetKey:    baseSet.setKey,
-      variant:         (baseSet.trailingProfile && profile.name === "default") ? "trailing" : profile.name,
+      variant:
+        baseSet.trailingProfile && baseSet.indicationType !== "special" && profile.name === "default"
+          ? "trailing"
+          : profile.name,
       axisWindows,
       indicationType:  baseSet.indicationType,
       direction:       baseSet.direction,

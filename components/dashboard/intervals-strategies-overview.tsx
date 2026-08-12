@@ -17,7 +17,7 @@ interface IntervalHealth {
 }
 
 type IndicationIntervalType =
-  | "direction" | "move" | "active"
+  | "direction" | "move" | "active" | "active_advanced" | "special"
   | "trend" | "optimal" | "auto"
   | "common" | "signal"
 
@@ -32,6 +32,8 @@ const INDICATION_INTERVALS: Array<{
   { type: "direction", label: "Direction", group: "Default", timeout: 0.25 },
   { type: "move", label: "Move", group: "Default", timeout: 0.25 },
   { type: "active", label: "Active", group: "Default", timeout: 0.25 },
+  { type: "active_advanced", label: "Active+", group: "Additional", timeout: 0.25 },
+  { type: "special", label: "Special", group: "Additional", timeout: 0.25 },
   { type: "trend", label: "Trend", group: "Additional", timeout: 0.5 },
   { type: "optimal", label: "Optimal", group: "Additional", timeout: 0.25 },
   { type: "auto", label: "Auto", group: "Additional", timeout: 0.25 },

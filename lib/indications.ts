@@ -3,10 +3,12 @@ import type { IndicationConfig, PseudoPosition } from "./types"
 import { db } from "@/lib/database"
 import { calculateSignedResultR } from "@/lib/profit-factor"
 import { buildStopLossRatios } from "@/lib/stoploss-ratio-range"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 export interface IndicationResult {
   id: string
   type: "direction" | "move" | "active"
+  direction: "long" | "short"
   symbol: string
   range: number
   config: IndicationConfig
@@ -62,6 +64,7 @@ export class IndicationEngine {
         if (signalStrength >= (config.price_change_ratio || 0.1)) {
           return await this.createIndicationResult(
             "direction",
+            secondDirection > 0 ? "long" : "short",
             symbol,
             config,
             signalStrength,
@@ -87,7 +90,14 @@ export class IndicationEngine {
     const priceChange = Math.abs(direction)
 
     if (priceChange >= (config.price_change_ratio || 0.1)) {
-      return await this.createIndicationResult("move", symbol, config, priceChange, prices[prices.length - 1])
+      return await this.createIndicationResult(
+        "move",
+        direction > 0 ? "long" : "short",
+        symbol,
+        config,
+        priceChange,
+        prices[prices.length - 1],
+      )
     }
 
     return null
@@ -107,7 +117,14 @@ export class IndicationEngine {
 
     const threshold = config.price_change_ratio || 0.5
     if (priceChangeRatio >= threshold / 100) {
-      return await this.createIndicationResult("active", symbol, config, priceChangeRatio * 100, currentPrice)
+      return await this.createIndicationResult(
+        "active",
+        currentPrice > previousPrice ? "long" : "short",
+        symbol,
+        config,
+        priceChangeRatio * 100,
+        currentPrice,
+      )
     }
 
     return null
@@ -123,17 +140,19 @@ export class IndicationEngine {
 
   private async createIndicationResult(
     type: "direction" | "move" | "active",
+    direction: "long" | "short",
     symbol: string,
     config: IndicationConfig,
     signalStrength: number,
     entryPrice: number,
   ): Promise<IndicationResult> {
     const id = uuidv4()
-    const pseudoPositions = await this.generatePseudoPositions(symbol, entryPrice, config)
+    const pseudoPositions = await this.generatePseudoPositions(symbol, entryPrice, config, direction)
 
     return {
       id,
       type,
+      direction,
       symbol,
       range: config.range,
       config,
@@ -148,6 +167,7 @@ export class IndicationEngine {
     symbol: string,
     entryPrice: number,
     config: IndicationConfig,
+    direction: "long" | "short",
   ): Promise<PseudoPosition[]> {
     const positions: PseudoPosition[] = []
     const positionCost = await this.getPositionCost()
@@ -158,7 +178,7 @@ export class IndicationEngine {
     for (let tpFactor = 2; tpFactor <= 22; tpFactor += 2) {
       for (const slRatioFixed of stopLossRatios) {
         positions.push(
-          this.createPseudoPosition(symbol, entryPrice, tpFactor, slRatioFixed, false, positionCost, config.type),
+          this.createPseudoPosition(symbol, direction, entryPrice, tpFactor, slRatioFixed, false, positionCost, config.type),
         )
 
         const trailStarts = [0.3, 0.6, 1.0]
@@ -169,6 +189,7 @@ export class IndicationEngine {
             positions.push(
               this.createPseudoPosition(
                 symbol,
+                direction,
                 entryPrice,
                 tpFactor,
                 slRatioFixed,
@@ -191,6 +212,7 @@ export class IndicationEngine {
 
   private createPseudoPosition(
     symbol: string,
+    direction: "long" | "short",
     entryPrice: number,
     tpFactor: number,
     slRatio: number,
@@ -208,6 +230,7 @@ export class IndicationEngine {
       id: uuidv4(),
       connection_id: "system",
       symbol,
+      direction,
       indication_type: validIndicationType,
       takeprofit_factor: tpFactor,
       stoploss_ratio: slRatio,
@@ -228,8 +251,9 @@ export class IndicationEngine {
 
   // Update pseudo positions with current market data
   updatePseudoPositions(positions: PseudoPosition[], currentPrice: number): PseudoPosition[] {
-    return positions.map((position) => {
-      const direction = position.direction === "short" ? "short" : "long"
+    return positions.flatMap((position) => {
+      const direction = normalizeTradeDirection(position.direction)
+      if (!direction) return []
       const positionCostPct = Number.isFinite(position.position_cost) && position.position_cost > 0 ? position.position_cost : 0.1
       const signedResultR = calculateSignedResultR(
         position.entry_price,
@@ -238,7 +262,7 @@ export class IndicationEngine {
         positionCostPct,
       )
 
-      return {
+      return [{
         ...position,
         current_price: currentPrice,
         signedResultR,
@@ -246,7 +270,7 @@ export class IndicationEngine {
         profit_factor: Math.max(0, signedResultR),
         signed_result_r: signedResultR,
         updated_at: new Date().toISOString(),
-      }
+      }]
     })
   }
 

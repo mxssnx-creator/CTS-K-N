@@ -51,7 +51,7 @@ function openPosition() {
     direction: "long",
     configKey: "recovery|BTCUSDT|long|combination",
     strategyType: "combination",
-    timeframe: "1m+10m",
+    timeframe: "5m+15m",
     entryPrice: 100,
     lastObservedPrice: 100.2,
     positionCostPercent: 0.1,
@@ -86,7 +86,7 @@ async function beforeCrash() {
   const settingsOne = await post({
     action: "update-config",
     symbolOrder: "not-a-real-order",
-    timeframes: ["1m", "15m"],
+    timeframes: ["5m", "15m"],
     strategyTypes: ["combination", "inverse"],
     entryTactics: ["relative"],
     exitTactics: ["relative", "time"],
@@ -95,7 +95,7 @@ async function beforeCrash() {
     processingIntervalMs: 280,
   })
   assert(settingsOne.state.symbolOrder === "volatility_1h", "Invalid symbol order was not normalised")
-  assert(settingsOne.state.timeframes.join(",") === "1m,15m", "Timeframe settings were not persisted")
+  assert(settingsOne.state.timeframes.join(",") === "5m,15m", "Timeframe settings were not persisted")
   assert(settingsOne.state.strategyTypes.join(",") === "combination,inverse", "Strategy settings were not persisted")
 
   const owner = `${instancePrefix}-owner`

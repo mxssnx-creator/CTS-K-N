@@ -15,7 +15,7 @@ import {
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { invalidateCompactionCache } from "@/lib/sets-compaction"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
-import { changedSettingKeys } from "@/lib/settings-diff"
+import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
 import { DEFAULT_TRAILING_VARIANTS } from "@/lib/trailing-settings"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
@@ -37,6 +37,15 @@ import {
   DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
   DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS,
 } from "@/lib/active-outbreak-indication"
+import {
+  canonicalForcedBaseSymbols,
+  canonicalForcedSymbols,
+} from "@/lib/forced-symbols"
+import {
+  DEFAULT_SPECIAL_STRATEGY_SETTINGS,
+  specialSettingsFromAppSettings,
+} from "@/lib/special-strategy"
+import { defaultStrategyIndicationVariantSettings } from "@/lib/strategy-indication-policy"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -114,8 +123,20 @@ const CHANNEL_VOLUME_FACTOR_KEYS = [
 ] as const
 const BLOCK_STACK_KEYS = ["blockMaxStack", "blockRowLiveMaxStack", "presetBlockMaxStack"] as const
 
+function flattenSpecialSettings(settings: object): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(settings).map(([key, value]) => [
+    `special${key.charAt(0).toUpperCase()}${key.slice(1)}`,
+    value,
+  ]))
+}
+
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
   const normalized: Record<string, any> = { ...settings }
+  // The operator-required base basket is immutable across old/new setting
+  // aliases. Dynamic and connection-local symbols may extend it elsewhere,
+  // but settings writes can never remove or reorder these four symbols.
+  normalized.forcedSymbols = canonicalForcedBaseSymbols()
+  normalized.forced_symbols = canonicalForcedSymbols()
   if (Object.prototype.hasOwnProperty.call(normalized, "minStep")) {
     normalized.minStep = normalizeBaseMinStep(normalized.minStep)
   }
@@ -151,12 +172,20 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
       normalized.trendTimeframesMinutes,
     )
   }
+  if (
+    Object.keys(normalized).some((key) => key.startsWith("special")) ||
+    normalized.special !== undefined
+  ) {
+    Object.assign(normalized, flattenSpecialSettings(specialSettingsFromAppSettings(normalized)))
+  }
 
   return normalized as T
 }
 
 function getDefaultSettings(): Record<string, any> {
   return {
+    ...flattenSpecialSettings(DEFAULT_SPECIAL_STRATEGY_SETTINGS),
+    ...defaultStrategyIndicationVariantSettings(),
     mainEngineIntervalMs: 700,
     presetEngineIntervalMs: 120000,
     strategyUpdateIntervalMs: 10000,
@@ -164,7 +193,7 @@ function getDefaultSettings(): Record<string, any> {
     mainEngineEnabled: true,
     presetEngineEnabled: true,
     minimum_connect_interval: 200,
-    theme: "dark",
+    theme: "blackwhiteblue",
     language: "en",
     notifications_enabled: true,
     default_leverage: 0, // 0 = resolved from exchange predefinition at order time
@@ -181,8 +210,9 @@ function getDefaultSettings(): Record<string, any> {
     max_open_positions: 10,
     max_drawdown_percent: 20,
     daily_loss_limit: 1000,
-    main_symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
-    forced_symbols: [],
+    main_symbols: canonicalForcedSymbols(),
+    forcedSymbols: canonicalForcedBaseSymbols(),
+    forced_symbols: canonicalForcedSymbols(),
     database_type: "redis",
     // Canonical prehistoric range (1-50h, step 1, default 8). Must be seeded
     // here so fresh installs pick it up on first GET /api/settings — otherwise
@@ -317,6 +347,7 @@ function getDefaultSettings(): Record<string, any> {
     dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
     dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
     dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
+    dcaMaxPositionVolumeRatio: DEFAULT_DCA_PROFILE.maxPositionVolumeRatio,
     positionCost: POSITION_COST_PERCENT_DEFAULT,
     exchangePositionCost: POSITION_COST_PERCENT_DEFAULT,
     trendEnabled: true,
@@ -385,6 +416,12 @@ async function handleGet() {
       }
     }
 
+    const canonicalSettings = normalizePositionCostSettings(settings as Record<string, any>)
+    if (JSON.stringify(settings) !== JSON.stringify(canonicalSettings)) {
+      settings = canonicalSettings
+      await setAppSettings(canonicalSettings)
+    }
+
     return NextResponse.json({ settings })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "Unknown error"
@@ -417,7 +454,11 @@ async function handlePost(request: Request) {
     // next bypass-cache read.
     const normalizedBody = normalizePositionCostSettings(body)
     const mergedSettings = normalizePositionCostSettings({ ...existingSettings, ...normalizedBody })
-    const changedKeys = changedSettingKeys(existingSettings, mergedSettings, Object.keys(normalizedBody))
+    const changedKeys = changedSettingKeys(
+      existingSettings,
+      mergedSettings,
+      [...new Set([...Object.keys(normalizedBody), "forcedSymbols", "forced_symbols"])],
+    )
     if (changedKeys.length > 0) {
       await setAppSettings(mergedSettings)
       // Bust the in-process compaction config cache only for a real change.
@@ -430,7 +471,12 @@ async function handlePost(request: Request) {
 
     console.log("[v0] Settings saved successfully to Redis (canonical + legacy mirror)")
 
-    return NextResponse.json({ success: true, settings: mergedSettings })
+    const persistedSettings = await getAppSettings({ bypassCache: true })
+    const persistenceVerified = Object.keys(normalizedBody).every(
+      (key) => settingsValuesEqual(persistedSettings[key], mergedSettings[key]),
+    )
+    if (!persistenceVerified) throw new Error("Settings persistence verification failed")
+    return NextResponse.json({ success: true, settings: persistedSettings, persistenceVerified, changedKeys })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "Unknown error"
     console.error("[v0] Failed to save settings to Redis:", errorMsg)
@@ -462,7 +508,11 @@ async function handlePut(request: Request) {
     const existingSettings = (await getAppSettings({ bypassCache: true })) || {}
     const mergedSettings = normalizePositionCostSettings({ ...existingSettings, ...incoming })
 
-    const putChangedKeys = changedSettingKeys(existingSettings, mergedSettings, Object.keys(incoming || {}))
+    const putChangedKeys = changedSettingKeys(
+      existingSettings,
+      mergedSettings,
+      [...new Set([...Object.keys(incoming || {}), "forcedSymbols", "forced_symbols"])],
+    )
     if (putChangedKeys.length > 0) {
       await setAppSettings(mergedSettings)
       invalidateCompactionCache()
@@ -471,7 +521,12 @@ async function handlePut(request: Request) {
 
     console.log("[v0] Settings updated successfully in Redis (canonical + legacy mirror)")
 
-    return NextResponse.json({ success: true, settings: mergedSettings })
+    const persistedSettings = await getAppSettings({ bypassCache: true })
+    const persistenceVerified = Object.keys(incoming).every(
+      (key) => settingsValuesEqual(persistedSettings[key], mergedSettings[key]),
+    )
+    if (!persistenceVerified) throw new Error("Settings persistence verification failed")
+    return NextResponse.json({ success: true, settings: persistedSettings, persistenceVerified, changedKeys: putChangedKeys })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "Unknown error"
     console.error("[v0] Failed to update settings in Redis:", errorMsg)

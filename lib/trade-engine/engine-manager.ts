@@ -396,6 +396,7 @@ import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrenc
 import { DEFAULT_SYMBOL_COUNT, getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
+import { withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 
 /**
  * Main realtime symbol work overlaps Redis/market-data waits with a small,
@@ -408,19 +409,12 @@ import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
  */
 function getSymbolConcurrency(symbolCount: number): number {
   const runtime = getRuntimeConcurrencyProfile(symbolCount)
-  const configured = concurrencyFromEnv(
+  return concurrencyFromEnv(
     ["ENGINE_SYMBOL_CONCURRENCY", "REALTIME_SYMBOL_CONCURRENCY"],
     runtime.symbolConcurrency,
     8,
     symbolCount,
   )
-  try {
-    const limits = (globalThis as any).__redis_mem_limits as { rssSoftMB?: number } | undefined
-    const softLimit = Number(limits?.rssSoftMB)
-    const rssMB = process.memoryUsage().rss / 1024 / 1024
-    if (Number.isFinite(softLimit) && softLimit > 0 && rssMB >= softLimit * 0.9) return 1
-  } catch { /* keep configured concurrency */ }
-  return configured
 }
 
 function getReplaySymbolConcurrency(symbolCount: number): number {
@@ -2123,6 +2117,7 @@ export class TradeEngineManager {
       // Resolve range in hours — priority: app_settings > engine state (hours) >
       // legacy engine state (days) > default.
       let rangeHours: number =
+        Number(process.env.PREHISTORIC_RANGE_HOURS) ||
         Number((appSettings as any)?.prehistoric_range_hours) ||
         Number((engineState as any)?.prehistoric_range_hours) ||
         (Number((engineState as any)?.prehistoric_range_days) * 24) ||
@@ -4673,7 +4668,7 @@ export class TradeEngineManager {
         // here; otherwise force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates
         // on every tick and causes noisy coordinator/progression churn.
         if (Array.isArray(forceSymbols) && forceSymbols.length > 0) {
-          let effectiveForceSymbols = forceSymbols.map(String).filter(Boolean)
+          let effectiveForceSymbols = withCanonicalForcedSymbols(forceSymbols)
           const localSymbolCapActive =
             process.env.NODE_ENV === "development" ||
             (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())
@@ -4683,7 +4678,7 @@ export class TradeEngineManager {
               ? Math.floor(stateCap)
               : getExplicitLocalSymbolCap()
             if (devCap) {
-              effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)
+              effectiveForceSymbols = withCanonicalForcedSymbols(effectiveForceSymbols, devCap)
             }
           }
           const sortedForce = [...effectiveForceSymbols].sort()
@@ -4737,7 +4732,7 @@ export class TradeEngineManager {
         // True Vercel deployments always have VERCEL="1" so they are unaffected.
         //
         // Behaviour:
-        //   V0_DEV_SYMBOL_COUNT=1  → resolve operator symbols, then slice to 1
+        //   V0_DEV_SYMBOL_COUNT=1  → resolve the mandatory quartet (minimum 4)
         //   V0_DEV_SYMBOL_COUNT=10 → resolve operator symbols, then slice to 10
         //   unset                  → no process-only cap; durable settings own N
         const _isLocalRun = process.env.NODE_ENV === "development" ||
@@ -4776,11 +4771,11 @@ export class TradeEngineManager {
               60_000,
               `[v0] [getSymbols] ${this.connectionId}: using force_symbols (${forceSymbols.length} symbols)`,
             )
-            const forcedResolved = forceSymbols.map(String).filter(Boolean)
+            const forcedResolved = withCanonicalForcedSymbols(forceSymbols)
             const localForcedCap = (resolve as any)._devCap
             const effectiveForced =
               typeof localForcedCap === "number" && localForcedCap >= 1
-                ? forcedResolved.slice(0, localForcedCap)
+                ? withCanonicalForcedSymbols(forcedResolved, localForcedCap)
                 : forcedResolved
             logRuntimeInfo(
               `engine:${this.connectionId}:force-symbols-effective`,
@@ -4866,23 +4861,23 @@ export class TradeEngineManager {
           }
         }
 
-        // One liquid major is the safe operator-neutral fallback. Multi-symbol
-        // baskets are selected dynamically or explicitly in settings.
-        return ["BTCUSDT"]
+        // The mandatory basket is also the fail-safe fallback. Dynamic or
+        // operator symbols may extend it but can never displace it.
+        return withCanonicalForcedSymbols([])
       } catch (error) {
         console.error("[v0] Failed to get symbols, using fallback:", error instanceof Error ? error.message : String(error))
-        return ["BTCUSDT"]
+        return withCanonicalForcedSymbols([])
       }
     }
 
-    let resolved = await resolve()
+    let resolved = withCanonicalForcedSymbols(await resolve())
     // Apply dev symbol cap (devCap was stashed on the resolve function to
     // avoid a closure variable that could race with concurrent calls).
     if (process.env.NODE_ENV === "development" ||
         (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())) {
       const devCap = (resolve as any)._devCap
       if (typeof devCap === "number" && resolved.length > devCap) {
-        resolved = resolved.slice(0, devCap)
+        resolved = withCanonicalForcedSymbols(resolved, devCap)
         logRuntimeInfo(
           `engine:${this.connectionId}:dev-symbol-cap`,
           60_000,

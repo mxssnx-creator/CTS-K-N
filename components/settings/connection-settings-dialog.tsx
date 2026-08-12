@@ -491,6 +491,7 @@ export function ConnectionSettingsDialog({
           dcaTakeProfitMode: dca.takeProfitMode,
           dcaBreakevenProfitPct: dca.breakevenProfitPct,
           dcaCooldownSeconds: dca.cooldownSeconds,
+          dcaMaxPositionVolumeRatio: dca.maxPositionVolumeRatio,
           minStep: normalizeBaseMinStep(coord.minStep ?? p.minStep),
           trailingMinStep: Math.max(
             normalizeBaseMinStep(coord.minStep ?? p.minStep),
@@ -662,6 +663,7 @@ export function ConnectionSettingsDialog({
             dcaTakeProfitMode: dca.takeProfitMode,
             dcaBreakevenProfitPct: dca.breakevenProfitPct,
             dcaCooldownSeconds: dca.cooldownSeconds,
+            dcaMaxPositionVolumeRatio: dca.maxPositionVolumeRatio,
             prevPosMinCount: (() => {
               const flat = Number((settings as Record<string, unknown>).prevPosMinCount ?? (settings as Record<string, unknown>).prevPiMinCount)
               if (Number.isFinite(flat) && flat >= 1) return Math.min(50, Math.floor(flat))

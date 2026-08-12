@@ -1,0 +1,180 @@
+import {
+  auditVstSoakExecutionRelations,
+  auditVstSoakCounters,
+  normalizeVstSoakCounterSnapshot,
+} from "@/lib/bingx-vst-soak-audit"
+
+describe("BingX Prod-VST soak accounting audit", () => {
+  test("reconciles exact count, per-symbol, and fill-volume deltas", () => {
+    const before = normalizeVstSoakCounterSnapshot({
+      progression: {
+        live_orders_placed_count: "10",
+        live_orders_filled_count: "9",
+        live_positions_created_count: "4",
+        live_orders_accumulated_count: "3",
+        live_volume_usd_total: "100",
+      },
+      perSymbol: { "BTCUSDT:long:placed": "6", "BTCUSDT:long:filled": "5" },
+    })
+    const after = normalizeVstSoakCounterSnapshot({
+      progression: {
+        live_orders_placed_count: "14",
+        live_orders_filled_count: "13",
+        live_positions_created_count: "6",
+        live_orders_accumulated_count: "5",
+        live_volume_usd_total: "121.25",
+      },
+      perSymbol: {
+        "BTCUSDT:long:placed": "8",
+        "BTCUSDT:long:filled": "7",
+        "SOLUSDT:short:placed": "2",
+        "SOLUSDT:short:filled": "2",
+      },
+      perSource: {
+        "direct-trade:placed": "2",
+        "direct-trade:filled": "2",
+        "direct-trade:position_created": "1",
+        "direct-trade:accumulated": "1",
+        "direct-trade:volume_usd": "10.5",
+        "main-trade:placed": "2",
+        "main-trade:filled": "2",
+        "main-trade:position_created": "1",
+        "main-trade:accumulated": "1",
+        "main-trade:volume_usd": "10.75",
+      },
+    })
+
+    const audit = auditVstSoakCounters({
+      before,
+      after,
+      cycles: [
+        { symbol: "BTCUSDT", direction: "long", tradePath: "direct-trade", entryVolumeUsd: 5, accumulationVolumeUsd: 5.5 },
+        { symbol: "SOLUSDT", direction: "short", tradePath: "main-trade", entryVolumeUsd: 5.25, accumulationVolumeUsd: 5.5 },
+      ],
+    })
+
+    expect(audit.success).toBe(true)
+    expect(audit.mismatches).toEqual([])
+    expect(audit.actualDelta.progression).toMatchObject({
+      live_orders_placed_count: 4,
+      live_orders_filled_count: 4,
+      live_positions_created_count: 2,
+      live_orders_accumulated_count: 2,
+      live_volume_usd_total: 21.25,
+    })
+    expect(audit.actualDelta.perSource).toMatchObject({
+      "direct-trade:filled": 2,
+      "main-trade:filled": 2,
+    })
+    expect(audit.actualDelta.perSymbol).toMatchObject({
+      "BTCUSDT:long:filled": 2,
+      "SOLUSDT:short:filled": 2,
+    })
+  })
+
+  test("reports count, coordination, and material volume differences", () => {
+    const before = normalizeVstSoakCounterSnapshot({})
+    const after = normalizeVstSoakCounterSnapshot({
+      progression: {
+        live_orders_placed_count: 2,
+        live_orders_filled_count: 1,
+        live_positions_created_count: 2,
+        live_orders_accumulated_count: 0,
+        live_volume_usd_total: 4,
+      },
+      perSymbol: { "XRPUSDT:long:placed": 2, "XRPUSDT:long:filled": 1 },
+    })
+    const audit = auditVstSoakCounters({
+      before,
+      after,
+      cycles: [{ symbol: "XRPUSDT", direction: "long", entryVolumeUsd: 5, accumulationVolumeUsd: 5 }],
+    })
+
+    expect(audit.success).toBe(false)
+    expect(audit.mismatches).toEqual(expect.arrayContaining([
+      expect.stringContaining("live_orders_filled_count"),
+      expect.stringContaining("live_positions_created_count"),
+      expect.stringContaining("live_orders_accumulated_count"),
+      expect.stringContaining("perSymbol XRPUSDT:long:filled"),
+      expect.stringContaining("live_volume_usd_total"),
+    ]))
+  })
+
+  test("reconciles order, position, protection, partial-fill, and path relations", () => {
+    const paths = ["direct-trade", "main-trade", "preset-trade", "signal-trade"]
+    const cycles = paths.map((tradePath, index) => ({
+      symbol: ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"][index],
+      direction: index % 2 === 0 ? "long" as const : "short" as const,
+      tradePath,
+      quantityStep: 0.001,
+      entry: { orderId: `${index}-entry`, submittedQuantity: 0.01, filledQuantity: 0.01, filledPrice: 100, volumeUsd: 1, status: "FILLED" },
+      accumulation: { orderId: `${index}-acc`, submittedQuantity: 0.01, filledQuantity: 0.01, filledPrice: 101, volumeUsd: 1.01, status: "FILLED" },
+      close: { orderId: `${index}-close`, submittedQuantity: 0.02, filledQuantity: 0.02, filledPrice: 102, volumeUsd: 2.04, status: "FILLED" },
+      protection: {
+        orderId: `${index}-stop`,
+        takeProfitOrderId: `${index}-take-profit`,
+        requireTakeProfit: true,
+        observedOpen: true,
+        cancelled: true,
+        observedCancelled: true,
+      },
+      positionQuantityAfterEntry: 0.01,
+      positionQuantityAfterAccumulation: 0.02,
+      positionQuantityAfterClose: 0,
+      flatAfter: true,
+    }))
+
+    const audit = auditVstSoakExecutionRelations({ cycles })
+    expect(audit).toMatchObject({
+      success: true,
+      uniqueOrderIds: true,
+      partialFillsObserved: 0,
+      totals: { exposureOrders: 8, closeOrders: 4, protectionOrders: 8 },
+    })
+    expect(audit.mismatches).toEqual([])
+  })
+
+  test("detects broken partial-fill, position, protection, and duplicate-ID relations", () => {
+    const audit = auditVstSoakExecutionRelations({
+      expectedTradePaths: ["direct-trade"],
+      cycles: [{
+        symbol: "BTCUSDT",
+        direction: "long",
+        tradePath: "direct-trade",
+        quantityStep: 0.001,
+        entry: { orderId: "duplicate", submittedQuantity: 0.02, filledQuantity: 0.01, filledPrice: 100, status: "FILLED" },
+        accumulation: { orderId: "duplicate", submittedQuantity: 0.01, filledQuantity: 0.01, filledPrice: 100, status: "NEW" },
+        close: { orderId: "close", submittedQuantity: 0.02, filledQuantity: 0.01, filledPrice: 100, status: "FILLED" },
+        protection: { orderId: "stop", observedOpen: true, cancelled: false, observedCancelled: false },
+        positionQuantityAfterEntry: 0.02,
+        positionQuantityAfterAccumulation: 0.04,
+        positionQuantityAfterClose: 0.01,
+        flatAfter: false,
+      }],
+    })
+    expect(audit.success).toBe(false)
+    expect(audit.partialFillsObserved).toBe(2)
+    expect(audit.uniqueOrderIds).toBe(false)
+    expect(audit.mismatches).toEqual(expect.arrayContaining([
+      expect.stringContaining("protection"),
+      expect.stringContaining("entry relation"),
+      expect.stringContaining("accumulation relation"),
+      expect.stringContaining("close relation"),
+      expect.stringContaining("final relation"),
+      expect.stringContaining("not unique"),
+    ]))
+  })
+
+  test("fails closed instead of silently defaulting a completed cycle to Long", () => {
+    expect(() => auditVstSoakCounters({
+      before: normalizeVstSoakCounterSnapshot({}),
+      after: normalizeVstSoakCounterSnapshot({}),
+      cycles: [{
+        symbol: "BTCUSDT",
+        direction: "" as "long",
+        entryVolumeUsd: 1,
+        accumulationVolumeUsd: 1,
+      }],
+    })).toThrow("requires one effective direction")
+  })
+})

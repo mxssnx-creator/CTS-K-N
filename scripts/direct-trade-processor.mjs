@@ -13,13 +13,15 @@
  * - 280ms processing interval
  * - Self-healing on errors (auto-restart loops)
  * - Rate limit respect (BingX: 10 req/s, backs off on 429)
- * - Exact 1m, 10m and 15m timeframes, individually and in every combination
+ * - Exact 5m, 15m and 30m timeframes, individually and in every combination
  * - Block Strategy 1-12
  * - Trailing stop support
  * - Recalculates the complete independent set grid every 2h from historic data
  * - Control orders for position management
  * - Simulated + Live mode
  */
+
+import { waitForDirectTradeNextCycle } from "./direct-trade-cycle-scheduler.mjs"
 
 const PORT = process.env.PORT ?? (
   process.argv.includes("--port")
@@ -35,6 +37,17 @@ const DIRECT_TRADE_LIVE_HISTORY_HOURS = Math.max(
   1,
   Math.floor(Number(process.env.DIRECT_TRADE_LIVE_HISTORY_HOURS) || 48),
 )
+const MAX_DIRECT_DCA_POSITION_VOLUME_RATIO = 5
+const MIN_DIRECT_DCA_POSITION_VOLUME_RATIO = 1.4
+const DEFAULT_DIRECT_DCA_PROFILE = Object.freeze({
+  maxSteps: 4,
+  stepVolumeMultipliers: Object.freeze([1, 1, 1, 1]),
+  stepDistancesPct: Object.freeze([0.3, 0.6, 1, 1.6]),
+  takeProfitMode: "average",
+  breakevenProfitPct: 0.2,
+  cooldownSeconds: 30,
+  maxPositionVolumeRatio: MAX_DIRECT_DCA_POSITION_VOLUME_RATIO,
+})
 
 // ─── Rate Limiter ─────────────────────────────────────────────────────────────
 
@@ -77,6 +90,111 @@ class RateLimiter {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
+
+function finiteDcaNumber(value, fallback, minimum, maximum) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback
+}
+
+function directDcaArray(value, fallback, minimum, maximum) {
+  let source = value
+  if (typeof source === "string") {
+    try { source = JSON.parse(source) } catch { source = source.split(/[\s,|]+/) }
+  }
+  const requested = Array.isArray(source) ? source : []
+  return Array.from({ length: 4 }, (_, index) => finiteDcaNumber(
+    requested[index],
+    fallback[index],
+    minimum,
+    maximum,
+  ))
+}
+
+function normalizeDirectDcaProfile(raw) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+  const maxPositionVolumeRatio = finiteDcaNumber(
+    source.maxPositionVolumeRatio ?? source.dcaMaxPositionVolumeRatio,
+    DEFAULT_DIRECT_DCA_PROFILE.maxPositionVolumeRatio,
+    MIN_DIRECT_DCA_POSITION_VOLUME_RATIO,
+    MAX_DIRECT_DCA_POSITION_VOLUME_RATIO,
+  )
+  const requestedVolumes = directDcaArray(
+    source.stepVolumeMultipliers ?? source.dcaStepVolumeMultipliers,
+    DEFAULT_DIRECT_DCA_PROFILE.stepVolumeMultipliers,
+    0.1,
+    2.5,
+  )
+  let remaining = Math.max(0, maxPositionVolumeRatio - 1)
+  const stepVolumeMultipliers = requestedVolumes.map((volume) => {
+    const bounded = Math.max(0, Math.min(volume, remaining))
+    remaining = Math.max(0, remaining - bounded)
+    return Number(bounded.toFixed(6))
+  })
+  const rawDistances = directDcaArray(
+    source.stepDistancesPct ?? source.dcaStepDistancesPct,
+    DEFAULT_DIRECT_DCA_PROFILE.stepDistancesPct,
+    0.1,
+    20,
+  )
+  const stepDistancesPct = rawDistances.reduce((values, distance) => {
+    values.push(Math.max(distance, values.at(-1) ?? distance))
+    return values
+  }, [])
+  const requestedMaxSteps = Math.floor(finiteDcaNumber(
+    source.maxSteps ?? source.dcaMaxSteps,
+    DEFAULT_DIRECT_DCA_PROFILE.maxSteps,
+    1,
+    4,
+  ))
+  const lastExecutableStep = stepVolumeMultipliers.reduce(
+    (last, volume, index) => volume > 0 ? index + 1 : last,
+    0,
+  )
+  const takeProfitMode = ["average", "first_entry", "breakeven_plus"].includes(source.takeProfitMode)
+    ? source.takeProfitMode
+    : DEFAULT_DIRECT_DCA_PROFILE.takeProfitMode
+  return {
+    maxSteps: Math.max(1, Math.min(requestedMaxSteps, lastExecutableStep || 1)),
+    stepVolumeMultipliers,
+    stepDistancesPct,
+    takeProfitMode,
+    breakevenProfitPct: finiteDcaNumber(
+      source.breakevenProfitPct,
+      DEFAULT_DIRECT_DCA_PROFILE.breakevenProfitPct,
+      0.05,
+      5,
+    ),
+    cooldownSeconds: Math.round(finiteDcaNumber(
+      source.cooldownSeconds,
+      DEFAULT_DIRECT_DCA_PROFILE.cooldownSeconds,
+      0,
+      3_600,
+    )),
+    maxPositionVolumeRatio,
+  }
+}
+
+function directDcaAdverseMovePct(direction, referencePrice, currentPrice) {
+  if (!(referencePrice > 0) || !(currentPrice > 0)) return 0
+  return Math.max(0, (direction === "short"
+    ? (currentPrice - referencePrice) / referencePrice
+    : (referencePrice - currentPrice) / referencePrice) * 100)
+}
+
+function directDcaTakeProfitPrice(position) {
+  const profile = normalizeDirectDcaProfile(position.dcaProfile)
+  const average = Number(position.averageEntryPrice || position.entryPrice)
+  const initial = Number(position.initialEntryPrice || position.entryPrice)
+  if (!(average > 0)) return 0
+  const reference = profile.takeProfitMode === "first_entry" && initial > 0 ? initial : average
+  const targetPct = profile.takeProfitMode === "breakeven_plus"
+    ? profile.breakevenProfitPct
+    : Math.max(0, Number(position.takeprofit) || 0)
+  if (!(targetPct > 0)) return 0
+  return position.direction === "short"
+    ? reference * (1 - targetPct / 100)
+    : reference * (1 + targetPct / 100)
+}
 
 function waitForAbortableDelay(ms, signal) {
   if (signal?.aborted) return Promise.resolve(false)
@@ -132,16 +250,16 @@ let state = {
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
   inverseMaxSlRatio: 1.25,
-  timeframes: ["1m", "10m", "15m"],
-  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
+  timeframes: ["5m", "15m", "30m"],
+  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   historyHours: 48,
-  entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+  entryTactics: ["relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
   maxHoldMinutes: 120,
-  takeProfitRatioRange: [4, 14],
-  takeProfitRatioStep: 4,
+  takeProfitRatioRange: [4, 8],
+  takeProfitRatioStep: 2,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 0.8,
@@ -161,6 +279,7 @@ let state = {
   prevPosMinCount: 5,           // Min positions before eval activates
   evalPosCount: 12,             // Coordination eval count
   trailingEnabled: true,
+  dcaProfile: normalizeDirectDcaProfile(DEFAULT_DIRECT_DCA_PROFILE),
 }
 
 let configs = []
@@ -211,7 +330,8 @@ let tickInFlight = false
 
 const BINGX_PUBLIC_HOSTS = new Set([
   "open-api.bingx.com",
-  "testnet-open-api.bingx.com",
+  "open-api.bingx.pro",
+  "open-api-vst.bingx.com",
 ])
 
 function syntheticDirectTradePrice(symbol) {
@@ -254,6 +374,9 @@ async function readDirectTradeTicker(symbol) {
 function configKey(config) {
   if (typeof config?.setKey === "string" && config.setKey) return config.setKey
   const numeric = (value) => Number(value || 0).toFixed(4)
+  const dcaProfile = (config.strategyType || "standard") === "dca"
+    ? normalizeDirectDcaProfile(config.dcaProfile || state.dcaProfile)
+    : null
   return [
     config.symbol,
     config.direction,
@@ -271,10 +394,22 @@ function configKey(config) {
     `b:${Math.max(0, Math.floor(Number(config.blockCount) || 0))}`,
     `br:${numeric(config.blockVolumeRatio ?? config.volumeRatio)}`,
     `bpf:${numeric(config.blockProfitFactorRatio ?? state.blockProfitFactorRatio)}`,
+    dcaProfile
+      ? `dca:${dcaProfile.maxSteps}:${dcaProfile.stepVolumeMultipliers.map(numeric).join(",")}:${dcaProfile.stepDistancesPct.map(numeric).join(",")}:${dcaProfile.takeProfitMode}:${numeric(dcaProfile.breakevenProfitPct)}:${dcaProfile.cooldownSeconds}:${numeric(dcaProfile.maxPositionVolumeRatio)}`
+      : "dca:none",
   ].join("|")
 }
 
 function resolveBlockSizing(config, baseQuantity) {
+  if ((config?.strategyType || "standard") === "dca") {
+    return {
+      blockCount: 0,
+      blockVolumeRatio: 0,
+      blockBaseQuantity: baseQuantity,
+      blockAddedQuantity: 0,
+      targetBlockQuantity: baseQuantity,
+    }
+  }
   const requestedCount = Math.floor(Number(config?.blockCount) || 0)
   const configuredMinimum = Math.max(0, Math.floor(Number(state.blockRange?.[0]) || 0))
   const configuredMaximum = Math.max(configuredMinimum, Math.floor(Number(state.blockRange?.[1]) || 0))
@@ -434,6 +569,7 @@ function calculationInputsSignature(input = state, historyHoursOverride = null) 
     entryTiming: input.entryTiming,
     activityVolumeRatio: input.activityVolumeRatio,
     maxHoldMinutes: input.maxHoldMinutes,
+    dcaProfile: normalizeDirectDcaProfile(input.dcaProfile),
   })
 }
 
@@ -480,6 +616,7 @@ async function recalculateConfigs() {
       entryTiming: state.entryTiming,
       activityVolumeRatio: state.activityVolumeRatio,
       maxHoldMinutes: state.maxHoldMinutes,
+      dcaProfile: normalizeDirectDcaProfile(state.dcaProfile),
     }, 300_000)
 
     if (result.success && processorLeaseHeld) {
@@ -523,17 +660,190 @@ async function recalculateConfigs() {
 
 // ─── Position Management ──────────────────────────────────────────────────────
 
+function normalizedControlOrderStatus(result) {
+  return String(result?.fill?.status || result?.details?.status || result?.details?.orderStatus || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+}
+
+function isTerminalControlOrderResult(result, requestedQuantity = 0) {
+  if (result?.controlState === "completed" || result?.controlState === "failed") return true
+  if (result?.pendingReconciliation === true) return false
+  const status = normalizedControlOrderStatus(result)
+  if ([
+    "filled",
+    "fully_filled",
+    "closed",
+    "complete",
+    "completed",
+    "done",
+    "cancelled",
+    "canceled",
+    "rejected",
+    "expired",
+    "failed",
+  ].includes(status)) return true
+  if (status.includes("partial")) return false
+  const filledQuantity = Number(result?.fill?.filledQty || result?.details?.filledQty || result?.details?.executedQty || 0)
+  return requestedQuantity > 0 && filledQuantity >= requestedQuantity * 0.999999
+}
+
+function markOpeningFailed(position, reason) {
+  position.status = "open_failed"
+  position.openState = "failed"
+  position.openFailureReason = String(reason || "Exchange order completed without an executable fill").slice(0, 300)
+  position.openFailedAt = new Date().toISOString()
+  stateDirty = true
+  log("warn", `Opening ${position.direction} ${position.symbol} ended without a position`, position.openFailureReason)
+}
+
+function finalizeOpenedPosition(position, filledPrice, filledQuantity, orderId = null) {
+  const entryPrice = Number(filledPrice)
+  const quantity = Number(filledQuantity)
+  if (!(entryPrice > 0) || !(quantity > 0)) return false
+
+  position.status = "open"
+  position.openState = "filled"
+  position.openedAt = position.openedAt || new Date().toISOString()
+  position.entryPrice = entryPrice
+  position.quantity = quantity
+  position.blockBaseQuantity = quantity
+  position.blockAddedQuantity = quantity * Number(position.blockCount || 0) * Number(position.blockVolumeRatio || 1)
+  position.targetBlockQuantity = quantity + position.blockAddedQuantity
+  if (orderId && orderId !== "N/A") position.orderId = orderId
+  position.blockLegs = [{
+    setKey: `${position.configKey}#block:0`,
+    blockCount: 0,
+    quantity,
+    entryPrice,
+    volumeRatio: position.blockVolumeRatio,
+    volumeMultiplier: 1,
+    orderId: position.orderId || null,
+    addedAt: Date.now(),
+  }]
+  position.positionLegs = [...position.blockLegs]
+  position.baseEntryNotionalUsdt = Number((entryPrice * quantity).toFixed(8))
+  position.entryNotionalUsdt = position.baseEntryNotionalUsdt
+  position.initialEntryNotionalUsdt = position.baseEntryNotionalUsdt
+  position.initialQuantity = quantity
+  position.initialEntryPrice = entryPrice
+  position.averageEntryPrice = entryPrice
+  position.dcaTakeProfitPrice = position.strategyType === "dca" ? directDcaTakeProfitPrice(position) : 0
+  position.blockLastPulseAt = lastSignalPulseAt
+  if (position.direction === "long") {
+    position.highWatermark = entryPrice
+    position.currentSlPrice = entryPrice * (1 - Number(position.stoploss || 0) / 100)
+  } else {
+    position.lowWatermark = entryPrice
+    position.currentSlPrice = entryPrice * (1 + Number(position.stoploss || 0) / 100)
+  }
+  position.lastObservedPrice = entryPrice
+  if (!position.openStatsApplied) {
+    stats.totalOrders++
+    stats.totalFilled++
+    position.openStatsApplied = true
+  }
+  stats.lastPositionAt = position.openedAt
+  stateDirty = true
+  log("info", `Opened ${position.mode} ${position.direction} ${position.symbol} @ ${entryPrice.toFixed(4)} (Type:${position.strategyType} TF:${position.timeframe} TP:${position.takeprofit}% SL:${position.stoploss}%)`)
+  return true
+}
+
+async function submitOrReconcileOpening(position, reconcileOnly = false) {
+  if (position.status !== "opening") return position.status === "open"
+  const connectionId = position.connectionId || state.connectionId
+  if (!connectionId || !PROCESSOR_TOKEN) {
+    markOpeningFailed(position, "Missing explicit live connection or worker token")
+    await persistState()
+    return false
+  }
+
+  try {
+    await rateLimiter.acquire()
+    position.openAttemptedAt = position.openAttemptedAt || new Date().toISOString()
+    const orderResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
+      kind: "open",
+      stage: "entry",
+      instanceId: processorInstanceId,
+      positionId: position.id,
+      controlId: position.openControlId,
+      connectionId,
+      symbol: position.symbol,
+      positionDirection: position.direction,
+      quantity: position.openRequestedQuantity,
+      price: position.openRequestedPrice,
+      leverage: 10,
+      reconcileOnly,
+    })
+    position.openControlState = orderResult?.controlState || position.openControlState || "acknowledged"
+    position.openOrderId = orderResult?.orderId && orderResult.orderId !== "N/A"
+      ? orderResult.orderId
+      : position.openOrderId || null
+    position.openLastCheckedAt = new Date().toISOString()
+
+    if (!orderResult?.success) {
+      if (orderResult?.controlState === "failed") {
+        markOpeningFailed(position, orderResult?.error || "Exchange rejected the entry")
+        await persistState()
+      }
+      return false
+    }
+    if (!isTerminalControlOrderResult(orderResult, position.openRequestedQuantity)) {
+      position.openState = "pending_reconciliation"
+      stateDirty = true
+      await persistState()
+      return false
+    }
+
+    const exchangeEntryPrice = Number(orderResult.fill?.filledPrice || orderResult.details?.avgPrice)
+    const exchangeFilledQuantity = Number(orderResult.fill?.filledQty || orderResult.details?.filledQty)
+    if (!(exchangeEntryPrice > 0) || !(exchangeFilledQuantity > 0)) {
+      markOpeningFailed(position, `Terminal ${normalizedControlOrderStatus(orderResult) || "exchange"} response had no fill`)
+      await persistState()
+      return false
+    }
+    const finalized = finalizeOpenedPosition(position, exchangeEntryPrice, exchangeFilledQuantity, orderResult.orderId)
+    await persistState()
+    return finalized
+  } catch (err) {
+    if (err.message?.includes("429")) rateLimiter.backoff(3_000)
+    // While enabled, the exact same control id is retried and the service
+    // reconciles it. After Stop, a 409 means no durable control reached the
+    // service, so cancelling this never-submitted opening is safe.
+    if (!state.enabled && String(err.message || err).includes("not currently authorised")) {
+      markOpeningFailed(position, "Entry was stopped before its durable exchange control was created")
+      await persistState()
+      return false
+    }
+    position.openState = "pending_reconciliation"
+    position.openLastError = String(err.message || err).slice(0, 300)
+    stateDirty = true
+    log("warn", `Opening reconciliation deferred for ${position.symbol}`, position.openLastError)
+    trackError()
+    return false
+  }
+}
+
+async function processOpeningPositions() {
+  const opening = positions.filter((position) => position.status === "opening")
+  for (const position of opening) {
+    if (Date.now() - Date.parse(position.openLastCheckedAt || "") < 1_000) continue
+    await submitOrReconcileOpening(position, !state.enabled)
+  }
+}
+
 function getOpenPositionsForSymbol(symbol, direction) {
   return positions.filter(
-    (p) => p.symbol === symbol && p.direction === direction && p.status === "open"
+    (p) => p.symbol === symbol && p.direction === direction && (p.status === "open" || p.status === "opening")
   )
 }
 
 function canOpenPosition(config) {
-  const totalOpenPositions = positions.filter((p) => p.status === "open").length
+  const totalOpenPositions = positions.filter((p) => p.status === "open" || p.status === "opening").length
   if (totalOpenPositions >= Math.max(1, Math.min(300, Number(state.maxTotalPositions) || 300))) return false
   const symbolPositions = positions.filter(
-    (p) => p.symbol === config.symbol && p.status === "open"
+    (p) => p.symbol === config.symbol && (p.status === "open" || p.status === "opening")
   )
   if (symbolPositions.length >= state.maxPositionsPerSymbol) return false
 
@@ -545,6 +855,12 @@ function canOpenPosition(config) {
 
 async function openPosition(config) {
   const posId = `dt_${config.symbol}_${config.direction}_${config.timeframe}_${Date.now()}`
+  const isDca = (config.strategyType || "standard") === "dca"
+  const dcaProfile = normalizeDirectDcaProfile(config.dcaProfile || state.dcaProfile)
+  const finalDcaDistance = dcaProfile.stepDistancesPct[Math.max(0, dcaProfile.maxSteps - 1)]
+  const effectiveStoploss = isDca
+    ? Math.max(Number(config.stoploss) || 0, finalDcaDistance + 0.35)
+    : Number(config.stoploss) || 0
 
   const position = {
     id: posId,
@@ -557,7 +873,7 @@ async function openPosition(config) {
     exitPrice: 0,
     quantity: 0,
     takeprofit: config.takeprofit,
-    stoploss: config.stoploss,
+    stoploss: effectiveStoploss,
     trailing: Boolean(config.trailing && state.trailingEnabled),
     trailingMode: config.trailingMode || (config.trailing ? "fixed" : "none"),
     trailStart: config.trailStart,
@@ -565,7 +881,7 @@ async function openPosition(config) {
     autoTrailSensitivity: config.autoTrailSensitivity ?? null,
     exitTactic: config.exitTactic || "bracket",
     maxHoldMinutes: state.maxHoldMinutes,
-    blockCount: config.blockCount,
+    blockCount: isDca ? 0 : config.blockCount,
     blockVolumeRatio: config.blockVolumeRatio ?? config.volumeRatio ?? state.blockVolumeRatio,
     blockProfitFactorRatio: config.blockProfitFactorRatio ?? state.blockProfitFactorRatio,
     entrySignalKey: config.entrySignalKey || null,
@@ -573,15 +889,26 @@ async function openPosition(config) {
     blockLastPulseAt: 0,
     blockRealizedVolumeMultiplier: 1,
     blockLegs: [],
+    positionLegs: [],
+    dcaProfile: isDca ? dcaProfile : null,
+    dcaLegs: [],
+    dcaPendingStep: 0,
+    dcaRealizedVolumeMultiplier: 1,
+    dcaTakeProfitPrice: 0,
+    initialEntryPrice: 0,
+    averageEntryPrice: 0,
     baseEntryNotionalUsdt: 0,
     initialEntryNotionalUsdt: 0,
     initialQuantity: 0,
     partialCloseQuantity: 0,
     partialEntryNotionalUsdt: 0,
     partialGrossPnlUsdt: 0,
-    closeAttempt: 0,
+    closeGeneration: 0,
+    closeControlId: null,
+    closeState: null,
+    lastAppliedCloseControlId: null,
     positionCostPercent: Math.max(0.02, Math.min(1, Number(config.positionCostPercent) || Number(state.positionCostPercent) || 0.1)),
-    status: "open",
+    status: state.liveMode ? "opening" : "open",
     openedAt: new Date().toISOString(),
     closedAt: null,
     pnl: 0,
@@ -617,97 +944,23 @@ async function openPosition(config) {
   position.blockAddedQuantity = blockSizing.blockAddedQuantity
   position.targetBlockQuantity = blockSizing.targetBlockQuantity
   position.quantity = blockSizing.blockBaseQuantity
+  position.openControlId = `dtopen_${posId}`.slice(0, 48)
+  position.openRequestedQuantity = blockSizing.blockBaseQuantity
+  position.openRequestedPrice = marketPrice
 
   if (state.liveMode) {
-    // The installed worker token and its current Redis lease are both checked
-    // by the control gateway. A browser cannot invoke this live path directly.
-    try {
-      if (!state.connectionId || !PROCESSOR_TOKEN) {
-        log("error", "Live Direct-Trade is blocked: missing explicit connection or worker token")
-        return null
-      }
-      const orderResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
-        kind: "open",
-        instanceId: processorInstanceId,
-        positionId: posId,
-        controlId: `dtopen_${posId}`.slice(0, 48),
-        connectionId: state.connectionId,
-        symbol: config.symbol,
-        positionDirection: config.direction,
-        quantity: blockSizing.blockBaseQuantity,
-        price: marketPrice,
-        leverage: 10,
-      })
-
-      if (orderResult?.success) {
-        const exchangeEntryPrice = Number(orderResult.fill?.filledPrice || orderResult.details?.avgPrice)
-        // Never use the requested quantity as an exchange fill.  A successful
-        // acknowledgement can still be pending/partial; booking the request
-        // here would create a phantom position and leave the residual venue
-        // order untracked.
-        const exchangeFilledQuantity = Number(orderResult.fill?.filledQty || orderResult.details?.filledQty)
-        if (!Number.isFinite(exchangeEntryPrice) || exchangeEntryPrice <= 0
-          || !Number.isFinite(exchangeFilledQuantity) || exchangeFilledQuantity <= 0) {
-          log("warn", `Open response for ${config.symbol} had no authoritative fill price/quantity`)
-          return null
-        }
-        position.entryPrice = exchangeEntryPrice
-        position.quantity = exchangeFilledQuantity
-        position.blockBaseQuantity = exchangeFilledQuantity
-        position.blockAddedQuantity = exchangeFilledQuantity * blockSizing.blockCount * blockSizing.blockVolumeRatio
-        position.targetBlockQuantity = exchangeFilledQuantity + position.blockAddedQuantity
-        position.orderId = orderResult.orderId
-        stats.totalOrders++
-        stats.totalFilled++
-      } else {
-        log("warn", `Order failed for ${config.symbol}`, orderResult?.error)
-        return null
-      }
-    } catch (err) {
-      if (err.message?.includes("429")) rateLimiter.backoff(3000)
-      log("error", `Order error for ${config.symbol}`, err.message)
-      trackError()
-      return null
-    }
-  } else {
-    position.entryPrice = marketPrice
-    stats.totalOrders++
-    stats.totalFilled++
+    // Persist the economic intent before touching the exchange. A process
+    // crash can therefore recover this exact control id instead of creating a
+    // second position id/order on the next tick.
+    positions.push(position)
+    stateDirty = true
+    if (!(await persistState())) return position
+    await submitOrReconcileOpening(position, false)
+    return position
   }
 
-  if (!position.entryPrice) return null
-
-  position.blockLegs = [{
-    setKey: `${position.configKey}#block:0`,
-    blockCount: 0,
-    quantity: position.quantity,
-    entryPrice: position.entryPrice,
-    volumeRatio: position.blockVolumeRatio,
-    volumeMultiplier: 1,
-    addedAt: Date.now(),
-  }]
-  position.baseEntryNotionalUsdt = Number((position.entryPrice * position.quantity).toFixed(8))
-  position.entryNotionalUsdt = position.baseEntryNotionalUsdt
-  position.initialEntryNotionalUsdt = position.baseEntryNotionalUsdt
-  position.initialQuantity = position.quantity
-  // The entry signal that opened the base leg cannot also create the first
-  // add-on. The next fresh pulse is the earliest causal Block event.
-  position.blockLastPulseAt = lastSignalPulseAt
-
-  // Set initial SL/TP prices
-  if (config.direction === "long") {
-    position.highWatermark = position.entryPrice
-    position.currentSlPrice = position.entryPrice * (1 - config.stoploss / 100)
-  } else {
-    position.lowWatermark = position.entryPrice
-    position.currentSlPrice = position.entryPrice * (1 + config.stoploss / 100)
-  }
-  position.lastObservedPrice = position.entryPrice
-
+  finalizeOpenedPosition(position, marketPrice, blockSizing.blockBaseQuantity)
   positions.push(position)
-  stats.lastPositionAt = position.openedAt
-  stateDirty = true
-  log("info", `Opened ${position.mode} ${config.direction} ${config.symbol} @ ${position.entryPrice.toFixed(4)} (TF:${config.timeframe} TP:${config.takeprofit}% SL:${config.stoploss}%)`)
   return position
 }
 
@@ -721,10 +974,17 @@ function executionConfigForPosition(position) {
 
 async function addDirectTradeBlockLeg(position, config) {
   const maximumCount = Math.max(0, Math.floor(Number(position.blockCount) || 0))
-  if (!config || maximumCount <= 0 || position.status !== "open") return false
-  if (!position.entrySignalKey || !activeSignalKeys.has(position.entrySignalKey)) return false
-  if (!lastSignalPulseAt || Date.now() - lastSignalPulseAt > 90_000) return false
-  if (Number(position.blockLastPulseAt) === lastSignalPulseAt) return false
+  const pendingCount = Math.max(0, Math.floor(Number(position.blockPendingCount) || 0))
+  const hasPendingControl = pendingCount > 0 && Boolean(position.blockPendingControlId)
+  if (maximumCount <= 0 || position.status !== "open") return false
+  if (hasPendingControl) {
+    if (Date.now() - Number(position.blockLastReconcileAt || 0) < 1_000) return false
+  } else {
+    if (!config || !state.enabled) return false
+    if (!position.entrySignalKey || !activeSignalKeys.has(position.entrySignalKey)) return false
+    if (!lastSignalPulseAt || Date.now() - lastSignalPulseAt > 90_000) return false
+    if (Number(position.blockLastPulseAt) === lastSignalPulseAt) return false
+  }
 
   const currentAddedCount = Math.max(
     0,
@@ -732,14 +992,18 @@ async function addDirectTradeBlockLeg(position, config) {
       ? position.blockLegs.filter((leg) => Number(leg?.blockCount) > 0).length
       : 0)),
   )
-  const nextCount = currentAddedCount + 1
-  position.blockLastPulseAt = lastSignalPulseAt
+  const nextCount = hasPendingControl ? pendingCount : currentAddedCount + 1
+  if (!hasPendingControl) position.blockLastPulseAt = lastSignalPulseAt
   if (nextCount > maximumCount) return false
 
   const baseQuantity = Number(position.blockBaseQuantity) || 0
   const volumeRatio = Math.max(0.1, Math.min(10, Number(position.blockVolumeRatio) || Number(state.blockVolumeRatio) || 1))
-  const requestedQuantity = baseQuantity * volumeRatio
-  const marketPrice = Number(position.lastObservedPrice) || 0
+  const requestedQuantity = hasPendingControl
+    ? Number(position.blockPendingRequestedQuantity)
+    : baseQuantity * volumeRatio
+  const marketPrice = hasPendingControl
+    ? Number(position.blockPendingRequestedPrice)
+    : Number(position.lastObservedPrice) || 0
   if (!(baseQuantity > 0) || !(requestedQuantity > 0) || !(marketPrice > 0)) return false
 
   let filledPrice = marketPrice
@@ -747,42 +1011,95 @@ async function addDirectTradeBlockLeg(position, config) {
   let orderId = null
   if (position.mode === "live") {
     try {
-      if (!state.connectionId || !PROCESSOR_TOKEN) {
+      if (!(position.connectionId || state.connectionId) || !PROCESSOR_TOKEN) {
         log("error", `Block add for ${position.symbol} blocked: missing live connection or worker token`)
         return false
       }
+      const controlGeneration = Math.max(0, Math.floor(Number(position.blockControlGeneration) || 0))
+      const stableControlId = hasPendingControl
+        ? position.blockPendingControlId
+        : `dtblk_${String(position.id).slice(-25)}_${nextCount}_${controlGeneration}`.slice(0, 48)
+      if (!hasPendingControl) {
+        position.blockPendingCount = nextCount
+        position.blockPendingControlId = stableControlId
+        position.blockPendingRequestedQuantity = requestedQuantity
+        position.blockPendingRequestedPrice = marketPrice
+        position.blockLastReconcileAt = 0
+        stateDirty = true
+        if (!(await persistState())) return false
+      }
       const orderResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
         kind: "open",
+        stage: "block",
         instanceId: processorInstanceId,
         positionId: position.id,
-        controlId: `dtblk_${String(position.id).slice(-32)}_${nextCount}`.slice(0, 48),
-        connectionId: state.connectionId,
+        controlId: stableControlId,
+        connectionId: position.connectionId || state.connectionId,
         symbol: position.symbol,
         positionDirection: position.direction,
         quantity: requestedQuantity,
         price: marketPrice,
         leverage: 10,
+        reconcileOnly: hasPendingControl,
       })
       if (!orderResult?.success) {
+        if (orderResult?.controlState === "failed") {
+          position.blockControlGeneration = controlGeneration + 1
+          position.blockPendingCount = 0
+          position.blockPendingControlId = null
+          position.blockPendingRequestedQuantity = 0
+          position.blockPendingRequestedPrice = 0
+          stateDirty = true
+          await persistState()
+        }
         log("warn", `Block add rejected for ${position.symbol} Count ${nextCount}`, orderResult?.error)
+        return false
+      }
+      if (!isTerminalControlOrderResult(orderResult, requestedQuantity)) {
+        position.blockPendingCount = nextCount
+        position.blockPendingControlId = stableControlId
+        position.blockPendingRequestedQuantity = requestedQuantity
+        position.blockPendingRequestedPrice = marketPrice
+        position.blockLastReconcileAt = Date.now()
+        stateDirty = true
+        log("debug", `Block add ${nextCount} for ${position.symbol} is pending exchange reconciliation`)
         return false
       }
       filledPrice = Number(orderResult.fill?.filledPrice || orderResult.details?.avgPrice)
       filledQuantity = Number(orderResult.fill?.filledQty || orderResult.details?.filledQty)
       orderId = orderResult.orderId || null
       if (!(filledPrice > 0) || !(filledQuantity > 0)) {
+        position.blockControlGeneration = controlGeneration + 1
+        position.blockPendingCount = 0
+        position.blockPendingControlId = null
+        position.blockPendingRequestedQuantity = 0
+        position.blockPendingRequestedPrice = 0
+        stateDirty = true
+        await persistState()
         log("warn", `Block add for ${position.symbol} Count ${nextCount} had no authoritative fill`)
         return false
       }
     } catch (err) {
       if (err.message?.includes("429")) rateLimiter.backoff(3000)
+      if (!state.enabled && String(err.message || err).includes("not currently authorised")) {
+        position.blockControlGeneration = Math.max(0, Math.floor(Number(position.blockControlGeneration) || 0)) + 1
+        position.blockPendingCount = 0
+        position.blockPendingControlId = null
+        position.blockPendingRequestedQuantity = 0
+        position.blockPendingRequestedPrice = 0
+        stateDirty = true
+        await persistState()
+        return false
+      }
       log("error", `Block add error for ${position.symbol} Count ${nextCount}`, err.message)
       trackError()
       return false
     }
   }
 
-  const existingLegs = Array.isArray(position.blockLegs) ? position.blockLegs : []
+  const existingLegs = Array.isArray(position.positionLegs) && position.positionLegs.length > 0
+    ? position.positionLegs
+    : Array.isArray(position.blockLegs) ? position.blockLegs : []
   const currentNotional = existingLegs.reduce(
     (sum, leg) => sum + Math.abs(Number(leg?.entryPrice) || 0) * Math.abs(Number(leg?.quantity) || 0),
     0,
@@ -791,13 +1108,15 @@ async function addDirectTradeBlockLeg(position, config) {
   const nextQuantity = currentQuantity + filledQuantity
   position.quantity = nextQuantity
   position.entryNotionalUsdt = Number((currentNotional + filledPrice * filledQuantity).toFixed(8))
-  position.initialEntryNotionalUsdt = position.entryNotionalUsdt
-  position.initialQuantity = (Number(position.initialQuantity) || currentQuantity) + filledQuantity
   position.blockAddedCount = nextCount
+  position.blockPendingCount = 0
+  position.blockPendingControlId = null
+  position.blockPendingRequestedQuantity = 0
+  position.blockPendingRequestedPrice = 0
   position.blockRealizedVolumeMultiplier = baseQuantity > 0 ? Number((nextQuantity / baseQuantity).toFixed(6)) : 1
   position.blockAddedQuantity = baseQuantity * nextCount * volumeRatio
   position.targetBlockQuantity = baseQuantity * (1 + maximumCount * volumeRatio)
-  position.blockLegs = [
+  position.positionLegs = [
     ...existingLegs,
     {
       setKey: `${position.configKey}#block:${nextCount}`,
@@ -813,9 +1132,11 @@ async function addDirectTradeBlockLeg(position, config) {
       addedAt: Date.now(),
     },
   ]
+  position.blockLegs = [...position.positionLegs]
   stats.totalOrders++
   stats.totalFilled++
   stateDirty = true
+  if (position.mode === "live") await persistState()
   log("info", `Added ${position.mode} Block Count ${nextCount}/${maximumCount} ${position.direction} ${position.symbol} @ ${filledPrice.toFixed(4)} qty ${filledQuantity}`)
   return true
 }
@@ -829,6 +1150,218 @@ async function processDirectTradeBlockAdds() {
   for (const position of openBlockPositions) {
     const config = executionConfigForPosition(position)
     await addDirectTradeBlockLeg(position, config)
+  }
+}
+
+async function processPendingAccumulationOrders() {
+  const pending = positions.filter((position) => position.status === "open" && (
+    position.blockPendingControlId || position.dcaPendingControlId
+  ))
+  for (const position of pending) {
+    if (position.blockPendingControlId) {
+      await addDirectTradeBlockLeg(position, executionConfigForPosition(position))
+    }
+    if (position.dcaPendingControlId) {
+      await addDirectTradeDcaLeg(
+        position,
+        Number(position.dcaPendingRequestedPrice) || Number(position.lastObservedPrice),
+      )
+    }
+  }
+}
+
+async function addDirectTradeDcaLeg(position, currentPrice) {
+  const pendingControlStep = Math.max(0, Math.floor(Number(position.dcaPendingControlStep) || 0))
+  const hasPendingControl = pendingControlStep > 0 && Boolean(position.dcaPendingControlId)
+  if ((!state.enabled && !hasPendingControl) || position.status !== "open" || position.strategyType !== "dca") return false
+  if (!(Number(currentPrice) > 0) && !hasPendingControl) return false
+
+  const profile = normalizeDirectDcaProfile(position.dcaProfile || state.dcaProfile)
+  position.dcaProfile = profile
+  if (!hasPendingControl) {
+    const retryCooldownMs = Math.max(5_000, profile.cooldownSeconds * 1_000)
+    if (Date.now() - Number(position.dcaLastFailureAt || 0) < retryCooldownMs) return false
+  }
+  const baseQuantity = Math.abs(Number(position.initialQuantity || position.blockBaseQuantity) || 0)
+  const currentQuantity = Math.abs(Number(position.quantity) || 0)
+  const initialEntryPrice = Number(position.initialEntryPrice || position.entryPrice)
+  if (!(baseQuantity > 0) || !(currentQuantity > 0) || !(initialEntryPrice > 0)) return false
+
+  const legs = Array.isArray(position.dcaLegs) ? position.dcaLegs : []
+  const completedSteps = new Set(legs.filter((leg) => Number(leg?.quantity) > 0).map((leg) => Math.floor(Number(leg.step))))
+  let nextStep = hasPendingControl ? pendingControlStep : 0
+  if (!nextStep) {
+    for (let step = 1; step <= profile.maxSteps; step++) {
+      if (!completedSteps.has(step)) { nextStep = step; break }
+    }
+  }
+  if (!nextStep) return false
+  if (hasPendingControl && Date.now() - Number(position.dcaLastReconcileAt || 0) < 1_000) return false
+
+  const lastFilledAt = legs.reduce((latest, leg) => Math.max(latest, Number(leg?.filledAt) || 0), 0)
+  if (!hasPendingControl && lastFilledAt > 0 && Date.now() - lastFilledAt < profile.cooldownSeconds * 1_000) return false
+  const adverseMove = hasPendingControl
+    ? Number(position.dcaPendingAdverseMovePct)
+    : directDcaAdverseMovePct(position.direction, initialEntryPrice, Number(currentPrice))
+  const triggerDistancePct = hasPendingControl
+    ? Number(position.dcaPendingTriggerDistancePct)
+    : profile.stepDistancesPct[nextStep - 1]
+  if (!hasPendingControl && adverseMove + 1e-12 < triggerDistancePct) return false
+
+  const volumeMultiplier = profile.stepVolumeMultipliers[nextStep - 1]
+  const remainingQuantity = Math.max(0, baseQuantity * profile.maxPositionVolumeRatio - currentQuantity)
+  const requestedQuantity = hasPendingControl
+    ? Number(position.dcaPendingRequestedQuantity)
+    : Math.max(0, Math.min(baseQuantity * volumeMultiplier, remainingQuantity))
+  if (!(requestedQuantity > Math.max(1e-12, baseQuantity * 1e-9))) return false
+
+  let filledPrice = hasPendingControl ? Number(position.dcaPendingRequestedPrice) : Number(currentPrice)
+  let filledQuantity = requestedQuantity
+  let orderId = null
+  try {
+    if (position.mode === "live") {
+      const connectionId = position.connectionId || state.connectionId
+      if (!connectionId || !PROCESSOR_TOKEN) {
+        log("error", `DCA add for ${position.symbol} blocked: missing live connection or worker token`)
+        return false
+      }
+      await rateLimiter.acquire()
+      const controlGeneration = Math.max(0, Math.floor(Number(position.dcaControlGeneration) || 0))
+      const stableControlId = hasPendingControl
+        ? position.dcaPendingControlId
+        : `dtdca_${String(position.id).slice(-24)}_${nextStep}_${controlGeneration}`.slice(0, 48)
+      if (!hasPendingControl) {
+        position.dcaPendingControlStep = nextStep
+        position.dcaPendingControlId = stableControlId
+        position.dcaPendingRequestedQuantity = requestedQuantity
+        position.dcaPendingRequestedPrice = Number(currentPrice)
+        position.dcaPendingTriggerDistancePct = triggerDistancePct
+        position.dcaPendingAdverseMovePct = adverseMove
+        position.dcaLastReconcileAt = 0
+        stateDirty = true
+        if (!(await persistState())) return false
+      }
+      const orderResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
+        kind: "open",
+        stage: "dca",
+        instanceId: processorInstanceId,
+        positionId: position.id,
+        // Retrying an ambiguous transport result reuses the exact control ID;
+        // the control gateway therefore cannot double-fill one DCA step.
+        controlId: stableControlId,
+        connectionId,
+        symbol: position.symbol,
+        positionDirection: position.direction,
+        quantity: requestedQuantity,
+        price: hasPendingControl ? Number(position.dcaPendingRequestedPrice) : Number(currentPrice),
+        leverage: 10,
+        reconcileOnly: hasPendingControl,
+      })
+      if (!orderResult?.success) {
+        if (orderResult?.controlState === "failed") {
+          position.dcaControlGeneration = controlGeneration + 1
+          position.dcaPendingControlStep = 0
+          position.dcaPendingControlId = null
+          position.dcaPendingRequestedQuantity = 0
+          position.dcaPendingRequestedPrice = 0
+          position.dcaLastFailureAt = Date.now()
+          stateDirty = true
+          await persistState()
+        }
+        log("warn", `DCA add rejected for ${position.symbol} Step ${nextStep}`, orderResult?.error)
+        return false
+      }
+      if (!isTerminalControlOrderResult(orderResult, requestedQuantity)) {
+        position.dcaPendingControlStep = nextStep
+        position.dcaPendingControlId = stableControlId
+        position.dcaLastReconcileAt = Date.now()
+        stateDirty = true
+        log("debug", `DCA Step ${nextStep} for ${position.symbol} is pending exchange reconciliation`)
+        return false
+      }
+      filledPrice = Number(orderResult.fill?.filledPrice || orderResult.details?.avgPrice)
+      filledQuantity = Number(orderResult.fill?.filledQty || orderResult.details?.filledQty)
+      orderId = orderResult.orderId || null
+      if (!(filledPrice > 0) || !(filledQuantity > 0)) {
+        position.dcaControlGeneration = controlGeneration + 1
+        position.dcaPendingControlStep = 0
+        position.dcaPendingControlId = null
+        position.dcaPendingRequestedQuantity = 0
+        position.dcaPendingRequestedPrice = 0
+        position.dcaLastFailureAt = Date.now()
+        stateDirty = true
+        await persistState()
+        log("warn", `DCA add for ${position.symbol} Step ${nextStep} had no authoritative fill`)
+        return false
+      }
+    }
+
+    const boundedFilledQuantity = Math.min(filledQuantity, remainingQuantity)
+    if (!(boundedFilledQuantity > 0)) return false
+    const currentLegs = Array.isArray(position.positionLegs) && position.positionLegs.length > 0
+      ? position.positionLegs
+      : [{ entryPrice: position.entryPrice, quantity: currentQuantity }]
+    const currentNotional = currentLegs.reduce(
+      (sum, leg) => sum + Math.abs(Number(leg?.entryPrice) || 0) * Math.abs(Number(leg?.quantity) || 0),
+      0,
+    )
+    const nextQuantity = currentQuantity + boundedFilledQuantity
+    const entryNotionalUsdt = currentNotional + filledPrice * boundedFilledQuantity
+    const leg = {
+      setKey: `${position.configKey}#dca:${nextStep}`,
+      step: nextStep,
+      quantity: boundedFilledQuantity,
+      requestedQuantity,
+      entryPrice: filledPrice,
+      baseQuantity,
+      volumeMultiplier,
+      triggerDistancePct,
+      adverseMovePct: adverseMove,
+      orderId,
+      filledAt: Date.now(),
+    }
+    position.positionLegs = [...currentLegs, leg]
+    // Compatibility readers written before the canonical position ledger use
+    // blockLegs for notional/PnL. Keep the same confirmed legs there as well.
+    position.blockLegs = [...position.positionLegs]
+    position.dcaLegs = [...legs, leg].slice(-4)
+    position.dcaPendingControlStep = 0
+    position.dcaPendingControlId = null
+    position.dcaPendingRequestedQuantity = 0
+    position.dcaPendingRequestedPrice = 0
+    position.dcaPendingTriggerDistancePct = 0
+    position.dcaPendingAdverseMovePct = 0
+    position.dcaLastFailureAt = 0
+    position.quantity = nextQuantity
+    position.entryNotionalUsdt = Number(entryNotionalUsdt.toFixed(8))
+    position.averageEntryPrice = entryNotionalUsdt / nextQuantity
+    position.entryPrice = position.averageEntryPrice
+    position.dcaRealizedVolumeMultiplier = Number((nextQuantity / baseQuantity).toFixed(6))
+    position.dcaTakeProfitPrice = directDcaTakeProfitPrice(position)
+    stats.totalOrders++
+    stats.totalFilled++
+    stateDirty = true
+    if (position.mode === "live") await persistState()
+    log("info", `Added ${position.mode} DCA Step ${nextStep}/${profile.maxSteps} ${position.direction} ${position.symbol} @ ${filledPrice.toFixed(4)} qty ${boundedFilledQuantity} total ${position.dcaRealizedVolumeMultiplier.toFixed(3)}×`)
+    return true
+  } catch (err) {
+    if (err.message?.includes("429")) rateLimiter.backoff(3_000)
+    if (!state.enabled && String(err.message || err).includes("not currently authorised")) {
+      position.dcaControlGeneration = Math.max(0, Math.floor(Number(position.dcaControlGeneration) || 0)) + 1
+      position.dcaPendingControlStep = 0
+      position.dcaPendingControlId = null
+      position.dcaPendingRequestedQuantity = 0
+      position.dcaPendingRequestedPrice = 0
+      position.dcaLastFailureAt = Date.now()
+      stateDirty = true
+      await persistState()
+      return false
+    }
+    log("error", `DCA add error for ${position.symbol} Step ${nextStep}`, err.message)
+    trackError()
+    return false
+  } finally {
+    position.dcaPendingStep = 0
   }
 }
 
@@ -929,7 +1462,34 @@ async function checkAndClosePositions() {
 
   for (const pos of openPos) {
     const currentPrice = prices[pos.symbol]
+    if (pos.closeControlId || String(pos.closeState || "").startsWith("closing")) {
+      await closePosition(
+        pos,
+        Number(pos.closeRequestedPrice) || Number(currentPrice) || Number(pos.lastObservedPrice),
+        pos.closeReason || "exchange_reconciliation",
+      )
+      continue
+    }
+    // The authoritative position size is unknown while an accumulation order
+    // is active. Reconcile that stable control before issuing a reduce-only
+    // close, otherwise the close quantity could leave an unprotected fill or
+    // flip the venue position.
+    if (pos.blockPendingControlId || pos.dcaPendingControlId) continue
     if (!currentPrice || !pos.entryPrice) continue
+
+    // A hard DCA stop always has priority over an accumulation fill. When the
+    // processor is stopped, existing positions are still closed/protected but
+    // no new DCA exposure is added.
+    if (pos.strategyType === "dca") {
+      const hardStopHit = pos.direction === "long"
+        ? currentPrice <= pos.currentSlPrice
+        : currentPrice >= pos.currentSlPrice
+      if (hardStopHit) {
+        await closePosition(pos, currentPrice, "sl")
+        continue
+      }
+      await addDirectTradeDcaLeg(pos, currentPrice)
+    }
 
     let shouldClose = false
     let exitReason = ""
@@ -950,7 +1510,9 @@ async function checkAndClosePositions() {
       }
 
       // TP check
-      const tpPrice = pos.entryPrice * (1 + pos.takeprofit / 100)
+      const tpPrice = pos.strategyType === "dca" && Number(pos.dcaTakeProfitPrice) > 0
+        ? Number(pos.dcaTakeProfitPrice)
+        : pos.entryPrice * (1 + pos.takeprofit / 100)
       if (currentPrice >= tpPrice) { shouldClose = true; exitReason = "tp" }
       // SL check
       if (currentPrice <= pos.currentSlPrice) { shouldClose = true; exitReason = pos.trailing && pos.trailingArmed ? "trailing" : "sl" }
@@ -968,7 +1530,9 @@ async function checkAndClosePositions() {
         }
       }
 
-      const tpPrice = pos.entryPrice * (1 - pos.takeprofit / 100)
+      const tpPrice = pos.strategyType === "dca" && Number(pos.dcaTakeProfitPrice) > 0
+        ? Number(pos.dcaTakeProfitPrice)
+        : pos.entryPrice * (1 - pos.takeprofit / 100)
       if (currentPrice <= tpPrice) { shouldClose = true; exitReason = "tp" }
       if (currentPrice >= pos.currentSlPrice) { shouldClose = true; exitReason = pos.trailing && pos.trailingArmed ? "trailing" : "sl" }
     }
@@ -1000,8 +1564,11 @@ async function checkAndClosePositions() {
       ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100
       : ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100
     if (pnlPercent < 0) {
-      const openTime = new Date(pos.openedAt).getTime()
-      pos.drawdownTimeMin = (Date.now() - openTime) / 60000
+      pos.drawdownStartedAt ||= Date.now()
+      const currentDrawdownTimeMin = (Date.now() - pos.drawdownStartedAt) / 60_000
+      pos.drawdownTimeMin = Math.max(Number(pos.drawdownTimeMin) || 0, currentDrawdownTimeMin)
+    } else {
+      pos.drawdownStartedAt = 0
     }
 
     if (shouldClose) {
@@ -1011,30 +1578,76 @@ async function checkAndClosePositions() {
 }
 
 async function closePosition(pos, exitPrice, reason) {
+  if (Date.now() < Number(pos.closeRetryAfter || 0)) return false
   let realizedExitPrice = Number(exitPrice)
   let realizedQuantity = Math.abs(Number(pos.quantity) || 0)
 
   // A live close is authoritative only after the exchange accepts it. Keep
   // the local row open on failure so the next leased tick retries instead of
   // reporting a phantom close and dropping protection.
-  if (pos.mode === "live" && pos.orderId) {
+  if (pos.mode === "live") {
     try {
+      if (pos.closeControlId && Date.now() - Date.parse(pos.closeLastCheckedAt || "") < 1_000) return false
+      const generation = Math.max(0, Math.floor(Number(pos.closeGeneration) || 0))
+      if (!pos.closeControlId) {
+        pos.closeControlId = `dtclose_${pos.id}_${generation}`.slice(0, 48)
+        pos.closeRequestedQuantity = realizedQuantity
+        pos.closeRequestedPrice = realizedExitPrice
+        pos.closeReason = reason
+        pos.closeSubmittedAt = null
+        pos.closeState = "closing_prepared"
+        stateDirty = true
+        // Save the exact close generation before the venue request. A crash
+        // cannot replace it with a new client id and double-reduce the book.
+        if (!(await persistState())) return false
+      }
+      const activeControlId = pos.closeControlId
+      pos.closeRequestedQuantity = Number(pos.closeRequestedQuantity) > 0
+        ? Number(pos.closeRequestedQuantity)
+        : realizedQuantity
+      pos.closeRequestedPrice = Number(pos.closeRequestedPrice) > 0
+        ? Number(pos.closeRequestedPrice)
+        : realizedExitPrice
       await rateLimiter.acquire()
-      pos.closeAttempt = Math.max(0, Math.floor(Number(pos.closeAttempt) || 0)) + 1
+      const wasSubmitted = Boolean(pos.closeSubmittedAt)
+      pos.closeSubmittedAt = pos.closeSubmittedAt || new Date().toISOString()
+      pos.closeState = "closing_submitted"
       const closeResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
         kind: "close",
         instanceId: processorInstanceId,
         positionId: pos.id,
-        controlId: `dtclose_${pos.id}_${pos.closeAttempt}`.slice(0, 48),
+        controlId: activeControlId,
         connectionId: pos.connectionId || state.connectionId,
         symbol: pos.symbol,
         positionDirection: pos.direction,
-        quantity: pos.quantity,
-        price: realizedExitPrice,
+        quantity: pos.closeRequestedQuantity,
+        price: pos.closeRequestedPrice,
         leverage: 10,
+        reconcileOnly: wasSubmitted,
       })
+      pos.closeControlState = closeResult?.controlState || pos.closeControlState
+      pos.closeOrderId = closeResult?.orderId && closeResult.orderId !== "N/A"
+        ? closeResult.orderId
+        : pos.closeOrderId || null
+      pos.closeLastCheckedAt = new Date().toISOString()
       if (!closeResult?.success) {
+        if (closeResult?.controlState === "failed") {
+          pos.closeGeneration = generation + 1
+          pos.closeControlId = null
+          pos.closeSubmittedAt = null
+          pos.closeState = "closing_retry"
+          pos.closeRetryAfter = Date.now() + 1_000
+          pos.closeLastError = String(closeResult?.error || "Exchange rejected close").slice(0, 300)
+          stateDirty = true
+          await persistState()
+        }
         log("warn", `Close order rejected for ${pos.symbol}`, closeResult?.error)
+        return false
+      }
+      if (!isTerminalControlOrderResult(closeResult, Number(pos.closeRequestedQuantity))) {
+        pos.closeState = "closing_pending_reconciliation"
+        stateDirty = true
+        await persistState()
         return false
       }
       const exchangePrice = Number(closeResult.fill?.filledPrice || closeResult.details?.avgPrice || closeResult.avgPrice)
@@ -1044,13 +1657,25 @@ async function closePosition(pos, exitPrice, reason) {
       // likewise replaced only when the exchange reports a positive fill.
       if (!Number.isFinite(exchangePrice) || exchangePrice <= 0
         || !Number.isFinite(exchangeQuantity) || exchangeQuantity <= 0) {
-        log("warn", `Close response for ${pos.symbol} had no authoritative fill price`)
+        // A terminal cancel/reject with no fill is safe to replace with the
+        // next generation. An active/ambiguous order never reaches this path.
+        pos.closeGeneration = generation + 1
+        pos.closeControlId = null
+        pos.closeSubmittedAt = null
+        pos.closeState = "closing_retry"
+        pos.closeRetryAfter = Date.now() + 1_000
+        pos.closeLastError = `Terminal ${normalizedControlOrderStatus(closeResult) || "exchange"} response had no fill`
+        stateDirty = true
+        await persistState()
+        log("warn", `Close response for ${pos.symbol} had no authoritative fill price/quantity`)
         return false
       }
       realizedExitPrice = exchangePrice
       if (exchangeQuantity < realizedQuantity * 0.999999) {
-        const currentLegs = Array.isArray(pos.blockLegs) && pos.blockLegs.length > 0
-          ? pos.blockLegs
+        const currentLegs = Array.isArray(pos.positionLegs) && pos.positionLegs.length > 0
+          ? pos.positionLegs
+          : Array.isArray(pos.blockLegs) && pos.blockLegs.length > 0
+            ? pos.blockLegs
           : [{ entryPrice: pos.entryPrice, quantity: pos.quantity }]
         const currentQuantity = currentLegs.reduce((sum, leg) => sum + Math.abs(Number(leg?.quantity) || 0), 0)
         const filledQuantity = Math.min(exchangeQuantity, currentQuantity)
@@ -1074,7 +1699,8 @@ async function closePosition(pos, exitPrice, reason) {
             remainingLegs.push({ ...leg, quantity: remainingQuantity })
           }
         }
-        pos.blockLegs = remainingLegs
+        pos.positionLegs = remainingLegs
+        pos.blockLegs = [...remainingLegs]
         pos.quantity = Math.max(0, currentQuantity - filledQuantity)
         pos.partialCloseQuantity = (Number(pos.partialCloseQuantity) || 0) + filledQuantity
         pos.partialEntryNotionalUsdt = (Number(pos.partialEntryNotionalUsdt) || 0) + partialEntryNotionalUsdt
@@ -1082,23 +1708,41 @@ async function closePosition(pos, exitPrice, reason) {
         pos.lastPartialClosePrice = realizedExitPrice
         pos.lastPartialCloseAt = new Date().toISOString()
         pos.closeState = "closing_partial"
+        pos.lastAppliedCloseControlId = activeControlId
+        pos.closeGeneration = generation + 1
+        pos.closeControlId = null
+        pos.closeSubmittedAt = null
+        pos.closeRequestedQuantity = pos.quantity
+        pos.closeRequestedPrice = realizedExitPrice
+        pos.closeRetryAfter = 0
         pos.blockRealizedVolumeMultiplier = Number(pos.blockBaseQuantity) > 0
-          ? Number(((Number(pos.initialQuantity) || currentQuantity) / Number(pos.blockBaseQuantity)).toFixed(6))
+          ? Number((pos.quantity / Number(pos.blockBaseQuantity)).toFixed(6))
+          : 1
+        pos.dcaRealizedVolumeMultiplier = Number(pos.initialQuantity) > 0
+          ? Number((pos.quantity / Number(pos.initialQuantity)).toFixed(6))
           : 1
         stateDirty = true
+        await persistState()
         log("warn", `Partial close ${pos.mode} ${pos.direction} ${pos.symbol}: ${filledQuantity.toFixed(12)} filled, ${pos.quantity.toFixed(12)} remaining`)
         return false
       }
+      pos.lastAppliedCloseControlId = activeControlId
       realizedQuantity = Math.min(exchangeQuantity, realizedQuantity)
     } catch (err) {
-      log("error", `Close order failed for ${pos.symbol}`, err.message)
+      pos.closeState = "closing_pending_reconciliation"
+      pos.closeLastError = String(err.message || err).slice(0, 300)
+      pos.closeLastCheckedAt = new Date().toISOString()
+      stateDirty = true
+      log("error", `Close order reconciliation deferred for ${pos.symbol}`, err.message)
       trackError()
       return false
     }
   }
 
-  const positionLegs = Array.isArray(pos.blockLegs) && pos.blockLegs.length > 0
-    ? pos.blockLegs
+  const positionLegs = Array.isArray(pos.positionLegs) && pos.positionLegs.length > 0
+    ? pos.positionLegs
+    : Array.isArray(pos.blockLegs) && pos.blockLegs.length > 0
+      ? pos.blockLegs
     : [{ entryPrice: pos.entryPrice, quantity: pos.quantity }]
   const entryNotionalUsdt = positionLegs.reduce(
     (sum, leg) => sum + Math.abs(Number(leg?.entryPrice) || 0) * Math.abs(Number(leg?.quantity) || 0),
@@ -1137,6 +1781,11 @@ async function closePosition(pos, exitPrice, reason) {
     : grossPnl - positionCostPercent
 
   pos.status = "closed"
+  pos.closeState = "closed"
+  pos.closeControlId = null
+  pos.closeSubmittedAt = null
+  pos.closeControlState = "completed"
+  pos.closeRetryAfter = 0
   pos.exitPrice = realizedExitPrice
   pos.quantity = (Number(pos.partialCloseQuantity) || 0) + realizedQuantity
   pos.remainingQuantity = 0
@@ -1149,6 +1798,9 @@ async function closePosition(pos, exitPrice, reason) {
   pos.grossPnlUsdt = Number(totalGrossPnlUsdt.toFixed(8))
   pos.realizedPnlUsdt = Number(realizedPnlUsdt.toFixed(8))
   pos.blockRealizedVolumeMultiplier = Number(pos.blockBaseQuantity) > 0
+    ? Number(totalPositionVolumeMultiplier.toFixed(6))
+    : 1
+  pos.dcaRealizedVolumeMultiplier = Number(pos.initialQuantity) > 0
     ? Number(totalPositionVolumeMultiplier.toFixed(6))
     : 1
 
@@ -1254,7 +1906,11 @@ async function ensureProcessorLease() {
 function applyRemoteState(nextState, source = "load") {
   if (!nextState || typeof nextState !== "object") return false
   const prev = { ...state }
-  state = { ...state, ...nextState }
+  state = {
+    ...state,
+    ...nextState,
+    dcaProfile: normalizeDirectDcaProfile(nextState.dcaProfile || state.dcaProfile),
+  }
   const persistedRecalcAt = Date.parse(nextState.lastRecalcAt || "")
   if (Number.isFinite(persistedRecalcAt) && persistedRecalcAt > 0) {
     lastRecalcAt = persistedRecalcAt
@@ -1295,6 +1951,7 @@ function applyRemoteState(nextState, source = "load") {
         strategyTypes: prev.strategyTypes,
         deactivatePosCount: prev.deactivatePosCount,
         trailingEnabled: prev.trailingEnabled,
+        dcaProfile: normalizeDirectDcaProfile(prev.dcaProfile),
       }) !== JSON.stringify({
         minVolFactor: state.minVolFactor,
         positionCostPercent: state.positionCostPercent,
@@ -1320,6 +1977,7 @@ function applyRemoteState(nextState, source = "load") {
         strategyTypes: state.strategyTypes,
         deactivatePosCount: state.deactivatePosCount,
         trailingEnabled: state.trailingEnabled,
+        dcaProfile: normalizeDirectDcaProfile(state.dcaProfile),
       })
   if (evaluationInputsChanged) {
     log("info", `Config change detected by ${source}: volFactor=${state.minVolFactor}, tp=${state.takeProfitRatioRange.join("-")}×cost step=${state.takeProfitRatioStep}, blockRatio=${state.blockVolumeRatio}, minPF=${state.minProfitFactor}`)
@@ -1394,7 +2052,11 @@ function shouldEnterNow(config) {
     (p) => p.symbol === config.symbol
       && p.direction === config.direction
       && (p.configKey || configKey(p)) === candidateKey
-      && p.status === "open"
+      && (
+        p.status === "open"
+        || p.status === "opening"
+        || (p.status === "open_failed" && Date.now() - new Date(p.openedAt).getTime() < 30_000)
+      )
   )
   if (existing) return false
 
@@ -1414,7 +2076,8 @@ function shouldEnterNow(config) {
 
   // Stagger entries: don't open all at once
   const recentOpens = positions.filter(
-    (p) => p.status === "open" && Date.now() - new Date(p.openedAt).getTime() < 30000
+    (p) => (p.status === "open" || p.status === "opening" || p.status === "open_failed")
+      && Date.now() - new Date(p.openedAt).getTime() < 30000
   )
   if (recentOpens.length >= 2) return false
 
@@ -1439,6 +2102,8 @@ async function processTick() {
   }
 
   // 2. Check and close existing positions
+  await processOpeningPositions()
+  await processPendingAccumulationOrders()
   await checkAndClosePositions()
 
   // 2b. Advance each open Direct-Trade Block lane at most once per fresh
@@ -1494,6 +2159,10 @@ async function mainLoop() {
   }
 
   while (true) {
+    // The loop itself owns serialization: every asynchronous lifecycle,
+    // persistence and venue action below must settle before the cadence wait
+    // is calculated and the next cycle may begin.
+    const cycleStartedAt = Date.now()
     try {
       const now = Date.now()
       // A lease owner receives settings with its two-second state-sync
@@ -1505,12 +2174,12 @@ async function mainLoop() {
 
       // Current market eligibility is refreshed independently from the full
       // 48h calculation. It is cheap, bounded by public API backpressure, and
-      // keeps 1m/10m/15m entry decisions continuous between two full rebuilds.
+      // keeps 5m/15m/30m entry decisions continuous between two full rebuilds.
       if (state.enabled && Date.now() - lastSignalPulseAt >= 60_000) {
         await refreshActiveSignals()
       }
 
-      const hasOpenPositions = positions.some((p) => p.status === "open")
+      const hasOpenPositions = positions.some((p) => p.status === "open" || p.status === "opening")
       const ownsLease = (state.enabled || hasOpenPositions)
         ? await ensureProcessorLease()
         : false
@@ -1521,6 +2190,8 @@ async function mainLoop() {
         // Still manage existing positions after Stop, but only from the lease
         // owner. This prevents duplicate exchange closes during a restart.
         if (hasOpenPositions && ownsLease) {
+          await processOpeningPositions()
+          await processPendingAccumulationOrders()
           await checkAndClosePositions()
           if (stateDirty) await persistState()
         } else if (state.enabled && !ownsLease && Date.now() - lastStandbyWarningAt >= 10_000) {
@@ -1536,11 +2207,15 @@ async function mainLoop() {
       if (errorsLast5min > 20) {
         log("warn", "Too many errors, backing off to 5s interval for 1 minute")
         await sleep(5000)
-        continue
       }
     }
 
-    await sleep(state.processingIntervalMs || 280)
+    await waitForDirectTradeNextCycle({
+      cycleStartedAt,
+      cycleFinishedAt: Date.now(),
+      processingIntervalMs: state.processingIntervalMs || 280,
+      sleep,
+    })
   }
 }
 

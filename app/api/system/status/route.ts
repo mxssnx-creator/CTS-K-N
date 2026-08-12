@@ -10,6 +10,7 @@ import { BatchProcessor } from "@/lib/batch-processor"
 import { isTruthyFlag } from "@/lib/boolean-utils"
 import { isConnectionReadyForEngine } from "@/lib/connection-state-helpers"
 import { buildMissingTradeEngineWorkerDiagnostic } from "@/lib/trade-engine-worker-heartbeat"
+import { getRuntimeBootId, getRuntimeStartedAt } from "@/lib/runtime-startup-state"
 
 const HEARTBEAT_FRESH_MS = 90_000;
 
@@ -45,6 +46,7 @@ export async function GET(request: NextRequest) {
     let databaseInfo: any = { status: "available", type: "redis" };
     let engineGlobalState: Record<string, string> = {};
     let startupState: Record<string, string> = {};
+    let runtimeLifecycle: Record<string, string> = {};
     let startupCompletedAtKey: string | null = null;
     let siteInstanceId: string | null = null;
     const engineStatesByConnection: Record<string, Record<string, string>> = {};
@@ -53,12 +55,13 @@ export async function GET(request: NextRequest) {
       await initRedis();
       const ensuredSiteInstance = await ensureUniqueSiteInstance().catch(() => null);
       const client = getRedisClient();
-      const [dbSize, globalState, startupHash, completedAtKey, durableSiteId, siteHash, ...connectionStates] = await Promise.all([
+      const [dbSize, globalState, startupHash, lifecycleHash, completedAtKey, durableSiteId, siteHash, ...connectionStates] = await Promise.all([
         client.dbSize(),
         client
           .hgetall("trade_engine:global")
           .catch(() => ({}) as Record<string, string>),
         client.hgetall("system:startup").catch(() => ({}) as Record<string, string>),
+        client.hgetall("system:runtime_lifecycle").catch(() => ({}) as Record<string, string>),
         client.get("system:startup:completed_at").catch(() => null),
         client.get("site:unique_instance:id").catch(() => null),
         client.hgetall("site:unique_instance").catch(() => ({}) as Record<string, string>),
@@ -77,6 +80,7 @@ export async function GET(request: NextRequest) {
       };
       engineGlobalState = globalState || {};
       startupState = startupHash || {};
+      runtimeLifecycle = lifecycleHash || {};
       startupCompletedAtKey = typeof completedAtKey === "string" ? completedAtKey : null;
       siteInstanceId =
         (typeof durableSiteId === "string" ? durableSiteId : null) ||
@@ -201,7 +205,19 @@ export async function GET(request: NextRequest) {
         status: startupState.status || (startupCompleted ? "ready" : "unknown"),
         completed_at: instrumentationBootCompletedAt,
         instrumentationBootCompletedAt,
-        boot_id: startupState.boot_id || null,
+        boot_id: getRuntimeBootId(),
+        started_at: getRuntimeStartedAt(),
+        service_uptime_seconds: Math.max(0, Math.floor(process.uptime())),
+        boot_count: toNumber(runtimeLifecycle.boot_count),
+        service_restart_count: toNumber(runtimeLifecycle.service_restart_count),
+        reload_count: toNumber(runtimeLifecycle.reload_count),
+        recovery_count: toNumber(runtimeLifecycle.recovery_count),
+        self_heal_count: toNumber(runtimeLifecycle.self_heal_count),
+        crash_count: toNumber(runtimeLifecycle.crash_count),
+        startup_failure_count: toNumber(runtimeLifecycle.startup_failure_count),
+        last_recovery_kind: runtimeLifecycle.last_recovery_kind || null,
+        last_recovery_reason: runtimeLifecycle.last_recovery_reason || null,
+        last_recovery_at: runtimeLifecycle.last_recovery_at || null,
         scheduler_mode: startupState.scheduler_mode || null,
         last_error: startupState.last_error || null,
         redis_key: "system:startup:completed_at",

@@ -4,7 +4,8 @@
  * Includes API types, library names, and exchange-specific options.
  *
  * PRIMARY EXCHANGES (auto-created and enabled on initialization):
- * - BingX (bingx-x01)
+ * - BingX Prod-Live (bingx-x01)
+ * - BingX Prod-VST / virtual funds (bingx-x02)
  * - Pionex (pionex-x01)
  * - OrangeX (orangex-x01)
  *
@@ -29,6 +30,7 @@ export interface ConnectionPredefinition {
   contractType: string
   documentationUrl: string
   testnetSupported: boolean
+  defaultTestnet?: boolean
   ccxtSupported: boolean
   apiKey?: string
   apiSecret?: string
@@ -145,7 +147,7 @@ export const EXCHANGE_CONNECTION_METHODS: Record<string, string[]> = {
   coinbase: ["rest", "library"],
 }
 
-// Base connection configurations - NO TESTNET (mainnet only for production)
+// Metadata-only connection templates. Credentials are injected server-side.
 export const CONNECTION_PREDEFINITIONS: ConnectionPredefinition[] = [
   {
     id: "bingx-x01",
@@ -164,10 +166,33 @@ export const CONNECTION_PREDEFINITIONS: ConnectionPredefinition[] = [
     contractType: "usdt-perpetual",
     documentationUrl: "https://bingx-api.github.io/docs/#/en-us/swapV2/introduce",
     testnetSupported: false, // NO TESTNET - mainnet only
+    defaultTestnet: false,
     ccxtSupported: true,
     // Predefinitions are imported by client settings components and must
     // remain metadata-only. Server seeders inject credentials from private
     // environment variables without ever putting them in a browser bundle.
+    apiKey: "",
+    apiSecret: "",
+  },
+  {
+    id: "bingx-x02",
+    name: "BingX X02",
+    displayName: "BingX X02 (Prod-VST Demo)",
+    description: "Dedicated BingX Prod-VST perpetual-futures execution with virtual funds. Authenticated orders use https://open-api-vst.bingx.com and never touch the real-funds host.",
+    exchange: "bingx",
+    apiTypes: ["perpetual_futures"],
+    apiType: "perpetual_futures",
+    connectionMethod: "library",
+    connectionLibrary: "sdk",
+    libraryPackage: "bingx-api",
+    marginType: "cross",
+    positionMode: "hedge",
+    maxLeverage: 150,
+    contractType: "usdt-perpetual",
+    documentationUrl: "https://github.com/BingX-API/api-ai-skills",
+    testnetSupported: true,
+    defaultTestnet: true,
+    ccxtSupported: false,
     apiKey: "",
     apiSecret: "",
   },

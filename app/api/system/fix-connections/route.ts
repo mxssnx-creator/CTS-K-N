@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic"
 /**
  * POST /api/system/fix-connections
  * 
- * Fixes all 3 base connections (bingx, pionex, orangex) to be:
+ * Fixes all canonical base connections (including BingX X02 Prod-VST) to be:
  * - is_active_inserted = 1 (in Active panel)
  * - is_enabled = 1 (enabled)
  * - is_enabled_dashboard = 0 (dashboard toggle off by default)
@@ -20,7 +20,7 @@ export async function POST() {
     await initRedis()
     const client = getRedisClient()
     
-    const baseConnections = ["bingx-x01", "pionex-x01", "orangex-x01"] as const
+    const baseConnections = ["bingx-x01", "bingx-x02", "pionex-x01", "orangex-x01"] as const
     
     const results: Record<string, any> = {}
     
@@ -37,6 +37,7 @@ export async function POST() {
         is_active: "0",
         is_predefined: "1",
         connection_method: "library",
+        ...(conn === "bingx-x02" ? { is_testnet: "1" } : {}),
         updated_at: new Date().toISOString(),
       }
       
@@ -58,6 +59,7 @@ export async function POST() {
         enabled: true,
         dashboard_enabled: false,
         has_credentials: hasCredentials,
+        environment: conn === "bingx-x02" ? "prod-vst" : "prod-live",
       }
     }
     
@@ -67,7 +69,7 @@ export async function POST() {
     
     return NextResponse.json({
       success: true,
-      message: `Fixed ${updatedCount}/4 base connections, ${withCredentials} with credentials`,
+      message: `Fixed ${updatedCount}/${baseConnections.length} base connections, ${withCredentials} with credentials`,
       connections: results,
       timestamp: new Date().toISOString(),
     })
@@ -85,7 +87,7 @@ export async function GET() {
     await initRedis()
     const client = getRedisClient()
     
-    const baseIds = ["bingx-x01", "pionex-x01", "orangex-x01"]
+    const baseIds = ["bingx-x01", "bingx-x02", "pionex-x01", "orangex-x01"]
     const status: Record<string, any> = {}
     
     for (const id of baseIds) {
@@ -100,6 +102,8 @@ export async function GET() {
           is_enabled_dashboard: conn.is_enabled_dashboard,
           has_credentials: !!(conn.api_key && conn.api_key.length > 10 && conn.api_secret && conn.api_secret.length > 10),
           connection_method: conn.connection_method || "rest",
+          environment: id === "bingx-x02" ? "prod-vst" : "prod-live",
+          virtual_funds: id === "bingx-x02",
         }
       } else {
         status[id] = { exists: false }

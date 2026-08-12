@@ -27,6 +27,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AlertCircle, Lock, Zap } from "lucide-react"
 import { useDashboardEvents, type DashboardEventPayload } from "@/lib/dashboard-events"
+import { isMaskedOrEmptyConnectionSecret } from "@/lib/connection-secrets"
 
 const toBooleanFlag = (value: unknown): boolean => value === true || value === 1 || value === "1" || value === "true"
 
@@ -88,7 +89,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
     api_passphrase: connection.api_passphrase || "",
     margin_type: connection.margin_type || "cross",
     position_mode: connection.position_mode || "hedge",
-    is_testnet: connection.is_testnet || false,
+    is_testnet: connection.id === "bingx-x02" || toBooleanFlag(connection.is_testnet),
     connection_method: connection.connection_method || (String(connection.exchange).toLowerCase() === "bingx" ? "library" : "rest"),
     connection_library: connection.connection_library || (String(connection.exchange).toLowerCase() === "bingx" ? "sdk" : "native"),
     api_type: connection.api_type || "perpetual",
@@ -108,17 +109,6 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
     setBtcPrice(null)
 
     try {
-      // Fetch BTC price first
-      try {
-        const priceResponse = await fetch("https://api.coinbase.com/v2/prices/BTC-USD/spot")
-        if (priceResponse.ok) {
-          const priceData = await priceResponse.json()
-          setBtcPrice(priceData.data?.amount || "N/A")
-        }
-      } catch (e) {
-        console.log("[v0] Could not fetch BTC price")
-      }
-
       console.log("[v0] [Test Connection] Using configured settings:", {
         exchange: connection.exchange,
         api_type: connection.api_type,
@@ -137,10 +127,10 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
           api_subtype: formData.api_subtype,
           connection_method: formData.connection_method,
           connection_library: formData.connection_library,
-          api_key: formData.api_key,
-          api_secret: formData.api_secret,
-          api_passphrase: formData.api_passphrase || "",
-          is_testnet: formData.is_testnet,
+          ...(!isMaskedOrEmptyConnectionSecret(formData.api_key) ? { api_key: formData.api_key } : {}),
+          ...(!isMaskedOrEmptyConnectionSecret(formData.api_secret) ? { api_secret: formData.api_secret } : {}),
+          ...(!isMaskedOrEmptyConnectionSecret(formData.api_passphrase) ? { api_passphrase: formData.api_passphrase } : {}),
+          is_testnet: connection.id === "bingx-x02" || formData.is_testnet,
         }),
       })
 
@@ -173,8 +163,10 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
       }
 
       // Add BTC price if available
-      if (btcPrice) {
-        logs.push(`✓ BTC Price: $${btcPrice}`)
+      if (Number(data.btcPrice) > 0) {
+        const observedBtcPrice = Number(data.btcPrice).toFixed(2)
+        setBtcPrice(observedBtcPrice)
+        logs.push(`✓ BTC Price: $${observedBtcPrice}`)
       }
 
       logs.push(`\n✓ Connection test PASSED - Ready to trade!`)
@@ -388,7 +380,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             <Label className="font-medium">Use Testnet</Label>
             <p className="text-xs text-muted-foreground mt-1">{formData.is_testnet ? "Testnet" : "Live"}</p>
           </div>
-          <Switch checked={formData.is_testnet === true || formData.is_testnet === "true" || formData.is_testnet === "1"} onCheckedChange={(checked) => setFormData({ ...formData, is_testnet: checked })} disabled={loading} />
+          <Switch checked={connection.id === "bingx-x02" || formData.is_testnet} onCheckedChange={(checked) => setFormData({ ...formData, is_testnet: connection.id === "bingx-x02" || checked })} disabled={loading || connection.id === "bingx-x02"} />
         </div>
 
         <div className="border-t pt-4 space-y-3">
@@ -507,6 +499,9 @@ export default function ExchangeConnectionManager() {
         .map((c: any) => ({
           ...c,
           is_enabled: toBooleanFlag(c.is_enabled),
+          is_inserted: toBooleanFlag(c.is_inserted),
+          is_active_inserted: toBooleanFlag(c.is_active_inserted),
+          is_enabled_dashboard: toBooleanFlag(c.is_enabled_dashboard),
           is_testnet: toBooleanFlag(c.is_testnet),
           is_live_trade: toBooleanFlag(c.is_live_trade),
           is_preset_trade: toBooleanFlag(c.is_preset_trade),
@@ -828,9 +823,7 @@ export default function ExchangeConnectionManager() {
                 key={conn.id}
                 connection={conn as any}
                 onToggle={() => toggleEnabled(conn.id, !conn.is_enabled)}
-                onActivate={() => {
-                  // Set as active connection
-                }}
+                onActivate={() => toggleDashboard(conn.id, !toBooleanFlag((conn as any).is_enabled_dashboard))}
                 onDelete={() => handleDeleteConnection(conn.id)}
                 onEdit={(settings) => {
                   // Handle edit

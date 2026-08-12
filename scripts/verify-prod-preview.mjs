@@ -217,7 +217,7 @@ async function main() {
   }
   if (directTrade.state && (
     !Array.isArray(directTrade.state.timeframes) ||
-    !["1m", "10m", "15m"].every((timeframe) => directTrade.state.timeframes.includes(timeframe)) ||
+    !["5m", "15m", "30m"].every((timeframe) => directTrade.state.timeframes.includes(timeframe)) ||
     Number(directTrade.state.historyHours) < 48 ||
     Number(directTrade.state.minVolFactor) < 0.1
   )) {
@@ -329,7 +329,7 @@ async function main() {
     continuityFresh: continuity.last_tick_fresh === true,
     continuitySource: continuity.last_tick_source || null,
     directTradeHistoryHours: directTrade.state?.historyHours || 48,
-    directTradeTimeframes: directTrade.state?.timeframes || ["1m", "10m", "15m"],
+    directTradeTimeframes: directTrade.state?.timeframes || ["5m", "15m", "30m"],
     directTradeStatisticRows: directTradeStatistics.rows.length,
     directTradePulseSignals: directTradePulse.signalsEvaluated,
     durationMs: Date.now() - startedAt,

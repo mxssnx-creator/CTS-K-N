@@ -191,5 +191,6 @@ function getDefaultActiveConnections(): ActiveConnection[] {
   const now = new Date().toISOString()
   return [
     { id: "active-bingx-x01", connectionId: "bingx-x01", exchangeName: "BingX", isActive: false, isBaseEnabled: true, addedAt: now },
+    { id: "active-bingx-x02", connectionId: "bingx-x02", exchangeName: "BingX Prod-VST", isActive: false, isBaseEnabled: true, addedAt: now },
   ]
 }
