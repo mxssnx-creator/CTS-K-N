@@ -682,12 +682,13 @@ export async function getStrategyTracking(
   //   strategies_{stage}_evaluated  = Sets that ENTERED the stage (input)
   // base = 100% (pipeline entry; every Base set that exists passed by definition)
   // main = Base parents passed / Base parents evaluated (before fan-out)
-  // real = Real output / Real evaluated pool (Main inputs + Real fan-out)
+  // real = logical Real passes / logical Real input. Physical Block/Row-Real
+  //        fan-out remains a capacity metric, not a funnel numerator.
   // Each clamped to [0,100].
   // CUMULATIVE FUNNEL — kept identical to the /stats route so both surfaces
   // agree. Main's related axis/variant descendants do not inflate its parent
-  // pass rate. Real stores its complete post-fan-out evaluated pool directly in
-  // `strategies_real_evaluated`, matching `strategy_detail:*:real.evaluated`.
+  // pass rate. Real stores its logical Main→Real input and logical passes in
+  // dedicated progression fields, matching `strategy_detail:*:real.evaluated`.
   const baseOutput    = Number(prog.strategies_base_total            || "0")
   const baseInput     = Number(prog.strategies_base_evaluated        || "0")
   const mainOutput    = Number(prog.strategies_main_total            || "0")
@@ -695,17 +696,18 @@ export async function getStrategyTracking(
   const mainParentsPassed = Number(prog.strategies_main_parent_passed || "0")
   const realOutput    = Number(prog.strategies_real_total            || "0")
   const realInput     = Number(prog.strategies_real_evaluated        || "0")
+  const realLogicalPassed = Number(prog.strategies_real_logical_passed || "0")
   const pct = (num: number, den: number): number =>
     den > 0 ? Math.max(0, Math.min(100, Number(((num / den) * 100).toFixed(1)))) : 0
   // base = evaluated ÷ overall generated (entry point → ~100% when any exist).
   // main = passed Base parents ÷ evaluated Base parents.
-  // real = real output ÷ Real evaluated pool (already includes Real fan-out).
+  // real = logical Real passes ÷ logical Real evaluated pool.
   const stageEvalPercent = {
     base: rows.base.total > 0 ? pct(rows.base.valid, rows.base.total) : pct(baseInput, baseOutput),
     main: rows.base.total > 0
       ? pct(rows.main.valid, rows.base.total)
       : pct(mainParentsPassed || Math.min(mainOutput, mainInput), mainInput),
-    real: rows.main.overall > 0 ? pct(rows.real.valid, rows.main.overall) : pct(realOutput, realInput),
+    real: pct(realLogicalPassed || Math.min(realOutput, realInput), realInput),
     live: rows.live.total > 0 ? pct(rows.live.mirrored, rows.live.total) : 0,
   }
 

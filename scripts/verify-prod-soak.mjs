@@ -59,6 +59,16 @@ const DB_STABLE_GROWTH_LIMIT = Math.max(
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+function describeRequestError(error) {
+  if (!(error instanceof Error)) return String(error)
+  const cause = error.cause
+  if (!cause) return `${error.name}: ${error.message}`
+  const detail = cause instanceof Error
+    ? `${cause.name}: ${cause.message}`
+    : String(cause)
+  return `${error.name}: ${error.message} (cause: ${detail})`
+}
+
 async function request(pathname, {
   method = "GET",
   body,
@@ -82,7 +92,7 @@ async function request(pathname, {
   } catch (error) {
     throw new Error(
       `${method} ${pathname} failed after ${Date.now() - started}ms: ` +
-      (error instanceof Error ? `${error.name}: ${error.message}` : String(error)),
+      describeRequestError(error),
     )
   }
   const text = await response.text()
@@ -786,6 +796,7 @@ async function main() {
   const bootIds = new Set()
   const latencies = []
   const steadyLatencies = []
+  const latencyByPath = new Map()
   const signalLatencies = []
   const steadySignalLatencies = []
   const liveExecution = []
@@ -814,6 +825,12 @@ async function main() {
   let signalObservation = new Map()
   let lastByPath = new Map()
 
+  const recordLatency = (path, latencyMs) => {
+    const values = latencyByPath.get(path) || []
+    values.push(latencyMs)
+    latencyByPath.set(path, values)
+  }
+
   const refreshSignalObservation = async (recordAsSteady) => {
     if (!VERIFY_SIGNAL_ENGINE) return
     for (const build of signalEndpointBuilders) {
@@ -826,6 +843,7 @@ async function main() {
       requests++
       signalObservationRequests++
       latencies.push(response.latencyMs)
+      recordLatency(path, response.latencyMs)
       signalLatencies.push(response.latencyMs)
       if (recordAsSteady) {
         steadyLatencies.push(response.latencyMs)
@@ -859,6 +877,7 @@ async function main() {
     rounds++
     requests += responses.length
     latencies.push(...responses.map((response) => response.latencyMs))
+    responses.forEach((response, index) => recordLatency(paths[index], response.latencyMs))
     // Exclude the first five rounds from the steady-state latency contract.
     // Next dev compiles route chunks on first access and production performs
     // cold initialization/migration reads; neither is representative of the
@@ -1561,10 +1580,25 @@ async function main() {
       ? (process.env.ALLOW_PROD_INLINE_REDIS === "1" ? 3_000 : 1_000)
       : defaultP95LimitMs
   const contractP95 = SIGNAL_FOCUSED_SOAK ? steadySignalP95 : steadyP95
+  const routeLatencyP95Ms = Object.fromEntries(
+    [...latencyByPath.entries()]
+      .map(([path, values]) => {
+        const sorted = [...values].sort((a, b) => a - b)
+        return [
+          path,
+          sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] || 0,
+        ]
+      })
+      .sort((left, right) => Number(right[1]) - Number(left[1])),
+  )
+  const slowestRouteSummary = Object.entries(routeLatencyP95Ms)
+    .slice(0, 4)
+    .map(([path, value]) => `${path}=${value}ms`)
+    .join(", ")
   if (contractP95 > steadyP95LimitMs) {
     throw new Error(
       `${SIGNAL_FOCUSED_SOAK ? "Signal API" : "Steady-state API"} p95 ${contractP95}ms ` +
-      `exceeds ${steadyP95LimitMs}ms ${RUNTIME_MODE} limit`,
+      `exceeds ${steadyP95LimitMs}ms ${RUNTIME_MODE} limit; slowest routes: ${slowestRouteSummary}`,
     )
   }
   const finalSignal = signalRuntime.at(-1)
@@ -1733,6 +1767,7 @@ async function main() {
     latencyContractScope: SIGNAL_FOCUSED_SOAK ? "signal-api" : "all-api",
     latencyContractP95Ms: contractP95,
     steadyLatencyP95LimitMs: steadyP95LimitMs,
+    routeLatencyP95Ms,
   }, null, 2))
 }
 

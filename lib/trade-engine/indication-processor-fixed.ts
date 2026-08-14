@@ -919,12 +919,11 @@ export class IndicationProcessor {
    *                                 downstream Strategy / Set keyspace
    *                                 attribute each indication to the
    *                                 simulated point in time.
-   *                              3. Fills the shared `indication_set:*`
-   *                                 keyspace via processAllIndicationSets
-   *                                 against the slice's tail candle —
-   *                                 exactly the behavior the legacy
-   *                                 `processHistoricalIndications` had
-   *                                 when iterating its candle array.
+   *                              3. Calculates an isolated exact Set
+   *                                 snapshot against the slice's tail candle.
+   *                                 Strategy consumes those rows directly;
+   *                                 historical work never mutates the live
+   *                                 Set/cooldown/outcome keyspace.
    *
    * Both modes share the SAME indication-derivation logic below: this is
    * the "unique indication processing" the spec requires for prehistoric
@@ -940,6 +939,7 @@ export class IndicationProcessor {
     asOfMs?: number,
     shouldContinue?: () => boolean,
   ): Promise<any[]> {
+    const isHistorical = typeof asOfMs === "number" && Number.isFinite(asOfMs)
     const isCurrent = (): boolean => {
       try {
         return shouldContinue?.() !== false
@@ -1198,7 +1198,7 @@ export class IndicationProcessor {
       // anchors them at the simulated candle timestamp so downstream
       // throttle keys, Set entries, and dashboard ordering line up with
       // the historical point in time the indication represents.
-      const now = typeof asOfMs === "number" && Number.isFinite(asOfMs) ? asOfMs : Date.now()
+      const now = isHistorical ? Number(asOfMs) : Date.now()
 
       // Range-percent of the current candle (used by move threshold)
       const rangePercent = currentClose > 0 ? (range / currentClose) * 100 : 0
@@ -1607,7 +1607,7 @@ export class IndicationProcessor {
       // must remain deterministic and must never issue HTTP requests. Signal
       // persists its own bounded Set lane and returns the raw indication here
       // so the canonical counters, strategy flow and lineage use the same item.
-      if (typeof asOfMs !== "number") {
+      if (!isHistorical) {
         const signalIndications = await processSignalIndications({
           connectionId: this.connectionId,
           symbol,
@@ -1680,7 +1680,8 @@ export class IndicationProcessor {
       const exactSetIndications = await exactSetProcessor
         .processAllIndicationSets(symbol, {
           ...marketData,
-          __indicationSnapshotMode: typeof asOfMs === "number" ? "historical" : "realtime",
+          __indicationSnapshotMode: isHistorical ? "historical" : "realtime",
+          __indicationSnapshotAsOfMs: isHistorical ? asOfMs : undefined,
           candles,
           prices: pricesOldestFirst,
           priceOrder: "oldest-first",
@@ -1717,8 +1718,15 @@ export class IndicationProcessor {
       // symbols/settings never leak into the next coordinated generation.
       if (!isCurrent()) return []
 
-      // Store indication payloads (raw JSON list, per-type TTL keys).
-      await storeIndications(this.connectionId, symbol, indications)
+      // Historical snapshots have the same derivation logic, but must never
+      // replace the live UI/strategy snapshot or its counters. The historic
+      // reader already resolves this exact per-symbol namespace.
+      const indicationStorageConnectionId = isHistorical
+        ? `${this.connectionId}:${symbol}:prehistoric`
+        : this.connectionId
+      await storeIndications(indicationStorageConnectionId, symbol, indications, {
+        preserveTimestamps: isHistorical,
+      })
       if (!isCurrent()) return []
 
       // ── Increment the per-type counters that the dashboard reads ─────────
@@ -1737,7 +1745,7 @@ export class IndicationProcessor {
       // type first; every row still contributes to count/value/confidence,
       // while the transport uses one bounded write group per type instead of
       // one Redis promise fan-out per row.
-      if (indications.length > 0) {
+      if (!isHistorical && indications.length > 0) {
         await trackIndicationStatsBatch(this.connectionId, symbol, indications)
       }
       if (!isCurrent()) return []
@@ -1748,7 +1756,7 @@ export class IndicationProcessor {
       // Without this write the hash stays empty after its 10-min TTL
       // expires and every active-count tile shows 0 even while the
       // engine is producing thousands of indications per minute.
-      {
+      if (!isHistorical) {
         if (!isCurrent()) return []
         const typeCounts: Record<string, number> = {
           direction: 0,

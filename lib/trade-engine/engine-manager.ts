@@ -417,6 +417,22 @@ function getSymbolConcurrency(symbolCount: number): number {
   )
 }
 
+/**
+ * The standalone Strategy timer is a CPU/heap-heavy subset of the engine
+ * loop.  Honour its dedicated setting here as well as in
+ * `executeStrategyFlowBatch`; otherwise Linux installs wrote
+ * STRATEGY_FLOW_SYMBOL_CONCURRENCY but the production timer silently ignored
+ * it.  When unset, retain the existing engine/realtime pool profile.
+ */
+function getStrategySymbolConcurrency(symbolCount: number): number {
+  return concurrencyFromEnv(
+    ["STRATEGY_FLOW_SYMBOL_CONCURRENCY"],
+    getSymbolConcurrency(symbolCount),
+    8,
+    symbolCount,
+  )
+}
+
 function getReplaySymbolConcurrency(symbolCount: number): number {
   const runtime = getRuntimeConcurrencyProfile(symbolCount)
   return concurrencyFromEnv(
@@ -3308,7 +3324,7 @@ export class TradeEngineManager {
         // operator can see a chronic per-symbol breakage.
         const strategyFailedSymbols: { symbol: string; error: string }[] = []
         const strategyResults = await withCycleDiagnostic(
-          mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
+          mapWithConcurrency(symbols, getStrategySymbolConcurrency(symbols.length), (symbol) =>
             this.strategyProcessor.processStrategy(symbol).catch((err) => {
               const msg = err instanceof Error ? err.message : String(err)
               strategyFailedSymbols.push({ symbol, error: msg })

@@ -140,6 +140,12 @@ describe("production installation and Kilo deployment contract", () => {
     expect(serviceControl).toContain('run_root awk -v wanted="$key"')
     expect(installer).toContain('run_root install -m 0600 -- "$tmp" "$ENV_FILE"')
     expect(installer).toContain('run_root systemctl disable --now "$APP_NAME-redis"')
+    // install.sh persists the npm fallback as its node_modules directory;
+    // the service must resolve that layout after a host restart.
+    expect(installer).toContain('CTS_NPM_REDIS_ROOT "$npm_redis_root/node_modules"')
+    const npmRedisService = await readFile(path.join(process.cwd(), "scripts", "npm-redis-service.mjs"), "utf8")
+    expect(npmRedisService).toContain('path.basename(path.resolve(packageRoot)) === "node_modules"')
+    expect(npmRedisService).toContain('path.dirname(path.resolve(packageRoot))')
     expect(remoteRoute).toContain('command -v base64 >/dev/null 2>&1 || fatal "base64 is required')
     expect(remoteRoute).toContain('`UserKnownHostsFile=${knownHostsPath}`')
     expect(remoteRoute).toContain("Running clean remote lifecycle: stop services, delete target")

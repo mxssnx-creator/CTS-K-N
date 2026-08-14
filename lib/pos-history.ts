@@ -1317,6 +1317,34 @@ export async function getActiveStrategySetKeys(connectionId: string): Promise<Se
 }
 
 /**
+ * Return the exact Set keys whose bounded realised-result rings can contain
+ * data.  The companion Redis SET is written in the same close transaction as
+ * the counter HASH and result ring.  We deliberately validate both
+ * cardinalities before using it as a negative index: a partially completed or
+ * legacy write returns `null`, which tells callers to retain the exhaustive
+ * lookup path rather than silently hiding a historical outcome.
+ */
+export async function getStrategySetClosedResultKeys(
+  connectionId: string,
+): Promise<Set<string> | null> {
+  try {
+    const client = getRedisClient()
+    const [members, indexedCount, countedFields] = await Promise.all([
+      client.smembers(STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)),
+      client.scard(STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)),
+      client.hlen(STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)),
+    ])
+    const keys = new Set((members || []).map(String).filter(Boolean))
+    // A mismatch can only be a concurrent/legacy/incomplete index. Failing
+    // open preserves the previous all-key LRANGE behavior and exact PF/DDT.
+    if (keys.size !== indexedCount || keys.size !== countedFields) return null
+    return keys
+  } catch {
+    return null
+  }
+}
+
+/**
  * Read bounded realised-performance windows for exact Strategy Sets.
  * Only keys known to have closes should be passed by the caller, keeping the
  * Main hot path proportional to active/validated Sets instead of all history.

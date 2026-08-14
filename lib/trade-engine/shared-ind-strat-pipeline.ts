@@ -24,8 +24,8 @@
  *                           loaded candle history to <= asOfMs, treats
  *                           the tail candle as the simulated "current"
  *                           bar, and stamps indications at asOfMs. The
- *                           shared `indication_set:*` keyspace is
- *                           filled with the simulated bar. Phase 2 is
+ *                           exact Set rows are calculated in an isolated,
+ *                           in-memory historical snapshot. Phase 2 is
  *                           SKIPPED — backdated candles must never trip
  *                           TP/SL on live pseudo positions.
  *
@@ -37,10 +37,9 @@
  *
  * ── Coordination guarantees ───────────────────────────────────────────
  * Independent timers; a slow prehistoric cycle never blocks realtime.
- * Set keyspace `indication_set:{connId}:{symbol}:{type}:{cfg}` is SHARED:
- * Prehistoric writes (per replay step), Realtime reads (per live tick).
- * `processAllIndicationSets` is idempotent per `(symbol, candle.timestamp)`
- * so overlapping replay ranges across cycles are cheap and safe.
+ * Realtime owns durable `indication_set:*`, cooldown, and pending-outcome
+ * keys. Prehistoric processing uses the same calculation code but publishes
+ * only a namespaced snapshot, so old candles cannot overwrite live state.
  */
 
 import { IndicationProcessor } from "./indication-processor-fixed"
@@ -279,11 +278,13 @@ export async function runIndStratCycle(
           .processStrategy(
             symbol,
             indications,
-            process.env.CRON_LIVE_DISPATCH === "0" ||
+            mode === "historical" ||
+              process.env.CRON_LIVE_DISPATCH === "0" ||
               process.env.CRON_LIVE_DISPATCH === "false"
               ? true
               : deps.skipLiveDispatch === true,
             shouldContinue,
+            mode === "historical" ? "prehistoric" : "realtime",
           )
           .catch((err) => {
             console.error(

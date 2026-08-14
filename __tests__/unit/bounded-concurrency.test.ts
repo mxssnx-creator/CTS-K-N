@@ -125,4 +125,10 @@ describe("bounded engine concurrency", () => {
 
     expect(after).not.toBe(before)
   })
+
+  test("exact snapshot refresh timestamps do not invalidate the strategy cache", () => {
+    const before = buildStrategyIndicationFingerprint([{ id: "old", setKey: "exact:1", timestamp: 1, price: 10 }])
+    const after = buildStrategyIndicationFingerprint([{ id: "new", setKey: "exact:1", timestamp: 2, price: 10 }])
+    expect(after).toBe(before)
+  })
 })

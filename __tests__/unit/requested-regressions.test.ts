@@ -21,7 +21,7 @@ describe("requested regression guardrails", () => {
     expect(source.indexOf("authorizeAdminBearer")).toBeLessThan(source.indexOf("await initRedis()"))
   })
 
-  test("progression stats preserve canonical row fan-out without cross-stage clamping", () => {
+  test("progression stats preserve canonical row fan-out without inflating logical stage counts", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
@@ -31,7 +31,9 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated")
     expect(coordinator).toContain('`${symbol}:real:input`')
     expect(coordinator).toContain('`${symbol}:real:relatedCreated`')
-    expect(coordinator).toContain('`${symbol}:real:evaluated`]: String(realTotalEvaluated)')
+    expect(coordinator).toContain('`${symbol}:real:evaluated`]: String(realLogicalInput)')
+    expect(coordinator).toContain('`${symbol}:real:rawEvaluated`]: String(realEvaluatedAfterFanOut)')
+    expect(coordinator).toContain('`${symbol}:real:passed`]: String(realLogicalPassed)')
 
     expect(statsRoute).toContain("const strategyRows = {")
     expect(statsRoute).toContain("overallToValidRatio: ratio(mainRowOverall, mainRowValid, false)")
@@ -715,6 +717,7 @@ describe("requested regression guardrails", () => {
 
   test("strategy flow batch keeps engine control routes responsive under 8-symbol BingX load", () => {
     const source = read("lib/strategy-coordinator.ts")
+    const engineManager = read("lib/trade-engine/engine-manager.ts")
     const migrations = read("lib/redis-migrations.ts")
 
     expect(source).toContain("STRATEGY_FLOW_SYMBOL_CONCURRENCY")
@@ -730,6 +733,9 @@ describe("requested regression guardrails", () => {
     expect(source).toMatch(/stage: "main"[\s\S]{0,240}setImmediate/)
     expect(source).toMatch(/stage: "real"[\s\S]{0,240}setImmediate/)
     expect(source).not.toContain("const SYMBOL_CONCURRENCY = 6")
+    expect(engineManager).toContain("function getStrategySymbolConcurrency")
+    expect(engineManager).toContain('["STRATEGY_FLOW_SYMBOL_CONCURRENCY"]')
+    expect(engineManager).toContain("getStrategySymbolConcurrency(symbols.length)")
     expect(migrations).toContain("067-strategy-flow-concurrency-performance-defaults")
     expect(migrations).toContain("system:database:coordination:performance")
     expect(migrations).toContain('strategy_flow_stage_yield_enabled: existing.strategy_flow_stage_yield_enabled || "1"')
@@ -763,7 +769,9 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("collectActivePositionCountsBySymbol")
     expect(source).toContain("including individual/combined Pos-Count rows")
     expect(source).toContain("...(coordIndex ? [...coordIndex.base.byKey.values()] : [])")
-    expect(source).toContain("const exactWindows = await getStrategySetWindowBatch(")
+    expect(source).toContain("const exactWindows = await this.getStrategySetWindowBatch(")
+    expect(source).toContain("getStrategySetClosedResultKeys")
+    expect(source).toContain("exhaustive behavior rather than changing PF/DDT calculations")
     expect(source).toContain("sourceOffset += sourceBatchSize")
     expect(source).toContain("logical_emitted")
     expect(source).toContain("materialization_next_cursor")
@@ -846,6 +854,7 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("{ yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL }")
     expect(source).toContain("await yieldStrategyScheduler()")
     expect(source).not.toContain("const results = await Promise.all(buildTasks)")
+    expect(source).toContain("liveSets.length <= fastPathLimit")
     expect(source).toContain("._lastRealSets[symbol] = liveSets")
     expect(source).toContain("._lastRealSetCounts[symbol] = realSets.length")
     expect(source).toContain("snapshotCoordIndexForLive(coordIndex, liveSets)")
@@ -1894,31 +1903,29 @@ describe("requested regression guardrails", () => {
     expect(targetedStartBlock).toContain('status: "skipped_queued"')
   })
 
-  test("Real-stage evaluation denominator includes related outputs and never reports negative failures", () => {
+  test("Real-stage logical funnel excludes related fan-out and never reports negative failures", () => {
     const source = read("lib/strategy-coordinator.ts")
 
     expect(source).toContain("const realRelatedCreated = realStageRelatedCreated")
     expect(source).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated + continuousRealEvaluated")
-    // The public Real percentage is the final Row-Real rolling decision
-    // whenever that evaluation ran. Raw/related fan-out can exceed its input,
-    // so using it as this percentage's denominator would exceed 100%.
-    expect(source).toContain("const passRatioReal = continuousRealEvaluated > 0")
-    expect(source).toContain("? rowRealSets.length / continuousRealEvaluated")
-    expect(source).toContain("evaluated:          String(realEvaluatedAfterFanOut)")
-    expect(source).toContain("[`s:${symbol}:evaluated`]:  String(realTotalEvaluated)")
-    expect(source).toContain('client.set(`strategies:${this.connectionId}:real:evaluated`, String(realTotalEvaluated))')
+    // Raw/related fan-out can exceed its input, so it belongs in separate
+    // capacity counters; the public funnel stays in logical lineage space.
+    expect(source).toContain("const realLogicalInput = realInputAccounting.logicalEvaluated")
+    expect(source).toContain("const realLogicalPassed = accountRealStageInputs(realQualifying).logicalEvaluated")
+    expect(source).toContain("evaluated:          String(realLogicalInput)")
+    expect(source).toContain("[`s:${symbol}:evaluated`]:  String(realLogicalInput)")
+    expect(source).toContain('client.set(`strategies:${this.connectionId}:real:evaluated`, String(realLogicalInput))')
+    expect(source).toContain('"strategies_real_raw_evaluated", realTotalEvaluated')
     expect(source).toContain("totalCreated: realTotalEvaluated")
-    expect(source).toContain("failedEvaluation: Math.max(0, realTotalEvaluated - realSets.length)")
+    expect(source).toContain("failedEvaluation: Math.max(0, realLogicalInput - realLogicalPassed)")
     expect(source).not.toContain("failedEvaluation: mainPFEligible - realSets.length")
 
-    const mainPFEligible = 3
-    const realSetsLength = 5
-    const realStageRelatedCreated = 2
-    const realRelatedCreated = realStageRelatedCreated
-    const realTotalEvaluated = mainPFEligible + realRelatedCreated
+    const logicalInput = 3
+    const logicalPassed = 2
+    const rawPhysicalWork = 5
 
-    expect(Math.max(0, realTotalEvaluated - realSetsLength)).toBe(0)
-    expect(realTotalEvaluated).toBe(5)
+    expect(Math.max(0, logicalInput - logicalPassed)).toBe(1)
+    expect(rawPhysicalWork).toBeGreaterThan(logicalInput)
   })
 
 
@@ -2039,7 +2046,7 @@ describe("requested regression guardrails", () => {
     expect(pipeline).toContain("Live exchange dispatch is intentionally owned by")
     expect(pipeline).toContain("StrategyCoordinator.createLiveSets()")
     expect(strategy).toContain("skipLiveDispatch: boolean = false")
-    expect(strategy).toContain("skipLiveDispatch,")
+    expect(strategy).toContain("skipLiveDispatch || isPrehistoric")
     expect(strategy).toContain("isCurrent,")
     expect(pipeline).toContain("shouldContinue?: () => boolean")
     expect(cron).toContain("isExpectedHistoricHandoff")
@@ -2486,14 +2493,14 @@ describe("requested regression guardrails", () => {
     expect(setProcessor).toContain('if (mode !== "historical")')
     expect(setProcessor).toContain("invalidateExactSnapshotCache")
     expect(setProcessor).toContain("exactSnapshotCacheKey(this.connectionId, symbol, marketData)")
-    expect(setProcessor).toContain("const closedForwardOutcomes = await this.closePendingRealtimeOutcomes")
+    expect(setProcessor).toContain("const closedForwardOutcomes = this.currentCyclePersistenceEnabled")
     expect(setProcessor).toContain("const refreshed = closedForwardOutcomes")
     expect(setProcessor).toContain("refreshCachedOutcomeRows(cached)")
     expect(setProcessor).toContain("writeExactSnapshotCache(snapshotKey, refreshed)")
     expect(setProcessor).toContain("writeExactSnapshotCache(snapshotKey, completed)")
     expect(setProcessor).toContain("private async closePendingRealtimeOutcomes(symbol: string, marketData: any): Promise<boolean>")
     const indicationProcessor = read("lib/trade-engine/indication-processor-fixed.ts")
-    expect(indicationProcessor).toContain('__indicationSnapshotMode: typeof asOfMs === "number" ? "historical" : "realtime"')
+    expect(indicationProcessor).toContain('__indicationSnapshotMode: isHistorical ? "historical" : "realtime"')
   })
 
   test("historic replay is fair to the 280ms Direct-Trade control plane", () => {
@@ -3114,13 +3121,15 @@ describe("requested regression guardrails", () => {
     expect(source).toMatch(/async function incrementOrdersBySymbol[\s\S]*?catch \{[\s\S]*?best-effort/)
   })
 
-  test("dashboard stats surface active advanced indications and real fan-out evaluated counts", () => {
+  test("dashboard stats surface active advanced indications and logical Real evaluated counts", () => {
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
     const quickstart = read("components/dashboard/quickstart-section.tsx")
     const activeCard = read("components/dashboard/active-connection-card.tsx")
 
-    expect(statsRoute).toContain("const afterFanOut = activeRealInput + activeRealRelatedCreated")
-    expect(statsRoute).toContain("return afterFanOut || stratEvaluated.real || 0")
+    expect(statsRoute).toContain("let activeRealPassedSeen = false")
+    expect(statsRoute).toContain("const _realLogicalPassed = Number(progHash.strategies_real_logical_passed")
+    expect(statsRoute).toContain("real: activeRealInput > 0 && activeRealPassedSeen")
+    expect(statsRoute).toContain("return activeRealInput || stratEvaluated.real || 0")
     expect(statsRoute).not.toContain("return stratEvaluated.real || 0\n            // NOTE: Real accounting has three meanings")
     expect(statsRoute).toContain("live:  activeStratByStage.live  || 0")
 
@@ -3506,7 +3515,7 @@ describe("requested regression guardrails", () => {
     expect(overview).toContain("no row is independently switchable")
     expect(overview).not.toContain("Total Indications")
     expect(coordinator).toContain("const baseValidSetKeys = new Set<string>()")
-    expect(coordinator).toContain("const mainInputCount = baseValidCount")
+    expect(coordinator).toContain("const mainBaseInputCount = baseValidCount")
     expect(coordinator).toContain("row_valid:   String(baseValidCount)")
     expect(coordinator).not.toContain("if (pf < this.PF_BASE_MIN) continue")
   })

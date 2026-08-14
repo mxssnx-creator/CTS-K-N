@@ -1,5 +1,6 @@
 import { getRedisClient } from "@/lib/redis-db"
 import {
+  getStrategySetClosedResultKeys,
   getStrategySetLedgerSnapshot,
   getStrategySetWindowBatch,
   getValidPositions,
@@ -105,6 +106,7 @@ describe("confirmed strategy-position entry ledger", () => {
       avgDDT: 7,
       recentPnls: [2.5],
     })
+    await expect(getStrategySetClosedResultKeys(connectionId)).resolves.toEqual(new Set([setKey]))
     expect(await getRedisClient().hgetall(`strategy_ledger_totals:${connectionId}`)).toMatchObject({
       exact_entries: "1",
       axis_entries: "1",
@@ -131,6 +133,13 @@ describe("confirmed strategy-position entry ledger", () => {
       closed: { [setKey]: 1 },
     })
     expect(await getRedisClient().scard(`valid_positions_active_v2:${connectionId}`)).toBe(0)
+  })
+
+  test("fails open when the closed-result index cannot prove its completeness", async () => {
+    const client = getRedisClient()
+    await client.hset(`strategy_set_closed_counts:${connectionId}`, "legacy-unindexed-set", "1")
+    await expect(getStrategySetClosedResultKeys(connectionId)).resolves.toBeNull()
+    await client.hdel(`strategy_set_closed_counts:${connectionId}`, "legacy-unindexed-set")
   })
 
   test("active position and exact Set memberships have no clock and remain identical across long cycle reads", async () => {

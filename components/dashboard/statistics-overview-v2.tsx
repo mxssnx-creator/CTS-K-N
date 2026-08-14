@@ -40,14 +40,19 @@ interface CompactStats {
   // ── Main-stage breakdown ──────────────────────────────────────────
   // Three sub-counts that let the operator see *why* Main is the size
   // it is:
-  //   • mainEvaluated       — Base Sets that entered Main evaluation
-  //                           (every promoted Base slot is counted here)
+  //   • mainEvaluated       — logical Main evaluations: Base inputs plus one
+  //                           Pos-Count lineage per Base parent and other
+  //                           related projections (not raw axis fan-out)
   //   • mainCoordCreated    — extra related variant Sets created at
   //                           Main by position coordination (trailing /
   //                           block / dca) on top of the default set
   //   • mainBlockDcaSets    — subset of coord-created Sets that carry a
   //                           Block or DCA variant tag
   mainEvaluated: number
+  mainBaseInput: number
+  mainPosCountRelated: number
+  mainOtherRelated: number
+  mainRawMaterialized: number
   mainCoordCreated: number
   mainBlockDcaSets: number
   // ── Position-Count axis windows (cumulative) ─────────────────────
@@ -209,6 +214,10 @@ const EMPTY: CompactStats = {
   activeStratReal: 0,
   activeStratTotal: 0,
   mainEvaluated: 0,
+  mainBaseInput: 0,
+  mainPosCountRelated: 0,
+  mainOtherRelated: 0,
+  mainRawMaterialized: 0,
   mainCoordCreated: 0,
   mainBlockDcaSets: 0,
   axisPrev:  { sets: 0, pos: 0, peakWindow: 0 },
@@ -726,9 +735,9 @@ export function StatisticsOverviewV2() {
 
         // ── Main-stage breakdown sources ────────────────────────────
         // Three distinct backend namespaces, all exposed by /stats:
-        //   • breakdown.strategies.mainEvaluated   — Base Sets that
-        //       reached Main evaluation (hincrby counter
-        //       `strategies_main_evaluated`).
+        //   • breakdown.strategies.mainEvaluated   — logical Main inputs:
+        //       Base inputs + one Pos-Count lineage per Base parent + other
+        //       related projections (not raw axis materialization).
         //   • mainCoordination.totalCreated        — cumulative count
         //       of related variant Sets created by Main-stage position
         //       coordination on top of the default Set (hincrby
@@ -740,6 +749,10 @@ export function StatisticsOverviewV2() {
         const mainBreakdownEval   = d.breakdown?.strategies?.mainEvaluated
           ?? d.strategyDetail?.main?.evaluated
           ?? 0
+        const mainBaseInput = Number(d.breakdown?.strategies?.mainBaseInput) || 0
+        const mainPosCountRelated = Number(d.breakdown?.strategies?.mainPosCountRelated) || 0
+        const mainOtherRelated = Number(d.breakdown?.strategies?.mainOtherRelated) || 0
+        const mainRawMaterialized = Number(d.breakdown?.strategies?.mainRawMaterialized) || 0
         const mainCoordCreated    = d.mainCoordination?.totalCreated ?? 0
         const blockSets = d.strategyVariants?.block?.createdSets ?? 0
         const dcaSets   = d.strategyVariants?.dca?.createdSets   ?? 0
@@ -841,6 +854,10 @@ export function StatisticsOverviewV2() {
             return Number(d.activeProgressing?.strategies?.total?.sets) || 0
           })(),
           mainEvaluated:    mainBreakdownEval,
+          mainBaseInput,
+          mainPosCountRelated,
+          mainOtherRelated,
+          mainRawMaterialized,
           mainCoordCreated,
           mainBlockDcaSets,
           axisPrev,
@@ -1086,8 +1103,12 @@ export function StatisticsOverviewV2() {
             title={
               `Main Sets currently alive: ${fmt(stats.activeStratMain)}\n` +
               `Cumulative Main Sets created: ${fmt(stats.stratMain)}\n` +
-              `• Evaluated (from Base): ${fmt(stats.mainEvaluated)}\n` +
-              `• Pos.coord. additionally created: ${fmt(stats.mainCoordCreated)}\n` +
+              `• Logical evaluation: ${fmt(stats.mainEvaluated)}\n` +
+              `  Base inputs: ${fmt(stats.mainBaseInput)}\n` +
+              `  Pos-Count lineages: ${fmt(stats.mainPosCountRelated)}\n` +
+              `  Other related: ${fmt(stats.mainOtherRelated)}\n` +
+              `• Raw materialized rows: ${fmt(stats.mainRawMaterialized)}\n` +
+              `• Related variants created: ${fmt(stats.mainCoordCreated)}\n` +
               `• Block + DCA Sets: ${fmt(stats.mainBlockDcaSets)}`
             }
           >
@@ -1325,12 +1346,12 @@ export function StatisticsOverviewV2() {
           stats.mainBlockDcaSets > 0 ||
           stats.realOpen > 0) && (
           <div className="mt-2 pt-2 border-t border-border/40 grid grid-cols-2 gap-2 text-[10px] sm:grid-cols-4">
-            <div className="flex flex-col gap-0.5" title="Base Sets that reached Main-stage evaluation">
-              <span className="text-muted-foreground">Main Eval (Base)</span>
+            <div className="flex flex-col gap-0.5" title="Logical Main evaluations: Base inputs + one Pos-Count lineage per Base parent + other related projections. Raw axis rows are reported separately in the tooltip.">
+              <span className="text-muted-foreground">Main Eval (logical)</span>
               <span className="font-semibold text-yellow-700 tabular-nums">{fmt(stats.mainEvaluated)}</span>
             </div>
-            <div className="flex flex-col gap-0.5" title="Additional related variant Sets created by Main-stage position coordination on top of the default Set">
-              <span className="text-muted-foreground">Pos.coord. add&apos;l</span>
+            <div className="flex flex-col gap-0.5" title="Cumulative related variants created by Main-stage coordination; this is a materialization counter, not the logical funnel denominator.">
+              <span className="text-muted-foreground">Related rows</span>
               <span className="font-semibold text-yellow-700 tabular-nums">{fmt(stats.mainCoordCreated)}</span>
             </div>
             <div className="flex flex-col gap-0.5" title="Cumulative Sets carrying a Block or DCA variant tag">

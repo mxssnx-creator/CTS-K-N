@@ -5877,20 +5877,30 @@ export async function getIndications(connectionId?: string, symbol?: string): Pr
  * Store indications for a connection - HIGH FREQUENCY OPTIMIZED
  * Maintains independent sets per configuration type for optimal performance
  */
-export async function storeIndications(connectionId: string, symbol: string, indications: any[]): Promise<void> {
+export async function storeIndications(
+  connectionId: string,
+  symbol: string,
+  indications: any[],
+  options: { preserveTimestamps?: boolean } = {},
+): Promise<void> {
   if (!indications || indications.length === 0) return
   
   const client = getRedisClient()
   const mainKey = `indications:${connectionId}`
   
   try {
-    // Stamp new indications with metadata.
+    // Stamp new live indications with metadata. Historical replay snapshots
+    // retain their simulated candle timestamp so ordering is stable and does
+    // not masquerade as a fresh realtime indication in a separate namespace.
     const ts = new Date().toISOString()
     const newIndications = indications.map(ind => ({
       ...ind,
       symbol,
       connectionId,
-      timestamp: ts,
+      timestamp:
+        options.preserveTimestamps && ind?.timestamp !== undefined && ind?.timestamp !== null
+          ? ind.timestamp
+          : ts,
       configSet: getConfigurationSet(ind.type, ind.value),
     }))
 

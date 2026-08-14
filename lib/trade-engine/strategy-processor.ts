@@ -58,14 +58,19 @@ interface FlowThrottleEntry {
   inFlight?: boolean
 }
 
-// Map<`${connectionId}:${symbol}`, FlowThrottleEntry>
+// Map<`${connectionId}:${mode}:${symbol}`, FlowThrottleEntry>
 const flowThrottle = new Map<string, FlowThrottleEntry>()
 const flowSummaryLogAt = new Map<string, number>()
 const FLOW_SUMMARY_LOG_INTERVAL_MS = 30_000
 const MAX_FLOW_THROTTLE_ENTRIES = 4096
 
-function shouldLogFlowSummary(connectionId: string, symbol: string, now = Date.now()): boolean {
-  const key = `${connectionId}:${symbol}`
+function shouldLogFlowSummary(
+  connectionId: string,
+  symbol: string,
+  mode: "realtime" | "prehistoric" = "realtime",
+  now = Date.now(),
+): boolean {
+  const key = `${connectionId}:${mode}:${symbol}`
   const previous = flowSummaryLogAt.get(key) || 0
   if (now - previous < FLOW_SUMMARY_LOG_INTERVAL_MS) return false
   flowSummaryLogAt.delete(key)
@@ -117,10 +122,12 @@ export class StrategyProcessor {
     indications: any[] = [],
     skipLiveDispatch: boolean = false,
     shouldContinue?: () => boolean,
+    mode: "realtime" | "prehistoric" = "realtime",
   ): Promise<{ strategiesEvaluated: number; liveReady: number }> {
     let reservedThrottleKey: string | undefined
     let reservedAt = 0
     let reservedFingerprint = ""
+    const isPrehistoric = mode === "prehistoric"
     const isCurrent = (): boolean => {
       try {
         return shouldContinue?.() !== false
@@ -157,45 +164,49 @@ export class StrategyProcessor {
       // When user updates connection settings via UI, a dirty flag is set.
       // On the next processor tick, we detect it and reload the configuration
       // so engine immediately reflects the new settings.
-      try {
-        const client = getRedisClient()
-        const dirtyKey = `settings:dirty:${this.connectionId}`
-        const isDirty = await client.get(dirtyKey)
-        if (isDirty) {
-          // Clear the dirty flag
-          await client.del(dirtyKey)
-          
-          // Clear flow throttle cache so next cycle re-evaluates immediately
-          clearFlowThrottleForConnection(this.connectionId)
+      // A historical replay must never consume that realtime operator signal
+      // or trigger a live re-evaluation while it is processing backdated data.
+      if (!isPrehistoric) {
+        try {
+          const client = getRedisClient()
+          const dirtyKey = `settings:dirty:${this.connectionId}`
+          const isDirty = await client.get(dirtyKey)
+          if (isDirty) {
+            // Clear the dirty flag
+            await client.del(dirtyKey)
 
-          // If this processor is owned by an in-process engine manager, ask it
-          // to run one immediate pass over all current symbols. Clearing the
-          // throttle keeps this symbol's current call productive; the manager
-          // fast-path prevents the rest of the watchlist from waiting for the
-          // next scheduled interval after a settings save.
-          try {
-            const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
-            const manager = getGlobalTradeEngineCoordinator()?.getEngineManager?.(this.connectionId)
-            if (manager && typeof (manager as any).invalidateStrategyAndCoordinationCaches === "function") {
-              ;(manager as any).invalidateStrategyAndCoordinationCaches([], "dirty-flag:strategy")
+            // Clear flow throttle cache so next cycle re-evaluates immediately
+            clearFlowThrottleForConnection(this.connectionId)
+
+            // If this processor is owned by an in-process engine manager, ask it
+            // to run one immediate pass over all current symbols. Clearing the
+            // throttle keeps this symbol's current call productive; the manager
+            // fast-path prevents the rest of the watchlist from waiting for the
+            // next scheduled interval after a settings save.
+            try {
+              const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
+              const manager = getGlobalTradeEngineCoordinator()?.getEngineManager?.(this.connectionId)
+              if (manager && typeof (manager as any).invalidateStrategyAndCoordinationCaches === "function") {
+                ;(manager as any).invalidateStrategyAndCoordinationCaches([], "dirty-flag:strategy")
+              }
+              if (manager && typeof (manager as any).triggerImmediateStrategyReevaluation === "function") {
+                ;(manager as any).triggerImmediateStrategyReevaluation("dirty-flag:strategy")
+              }
+            } catch {
+              /* Cross-process or test environments may not have a manager. */
             }
-            if (manager && typeof (manager as any).triggerImmediateStrategyReevaluation === "function") {
-              ;(manager as any).triggerImmediateStrategyReevaluation("dirty-flag:strategy")
-            }
-          } catch {
-            /* Cross-process or test environments may not have a manager. */
+
+            console.log(
+              `[v0] [StrategyProcessor] Dirty flag consumed for ${this.connectionId}; flow throttle cleared and immediate re-evaluation requested`
+            )
           }
-          
-          console.log(
-            `[v0] [StrategyProcessor] Dirty flag consumed for ${this.connectionId}; flow throttle cleared and immediate re-evaluation requested`
+        } catch (settingsErr) {
+          // Non-critical - continue processing even if dirty check fails
+          console.warn(
+            `[v0] [StrategyProcessor] Settings dirty check failed:`,
+            settingsErr instanceof Error ? settingsErr.message : String(settingsErr)
           )
         }
-      } catch (settingsErr) {
-        // Non-critical - continue processing even if dirty check fails
-        console.warn(
-          `[v0] [StrategyProcessor] Settings dirty check failed:`,
-          settingsErr instanceof Error ? settingsErr.message : String(settingsErr)
-        )
       }
       
       // If no indications passed, retrieve from Redis (populated by indication processor)
@@ -205,11 +216,13 @@ export class StrategyProcessor {
       if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
 
       if (indications.length === 0) {
-        logRuntimeInfo(
-          `strategy:${this.connectionId}:${symbol}:no-indications`,
-          30_000,
-          `[v0] [StrategyProcessor] No indications for ${symbol}/${this.connectionId}`,
-        )
+        if (!isPrehistoric) {
+          logRuntimeInfo(
+            `strategy:${this.connectionId}:${symbol}:no-indications`,
+            30_000,
+            `[v0] [StrategyProcessor] No indications for ${symbol}/${this.connectionId}`,
+          )
+        }
         return { strategiesEvaluated: 0, liveReady: 0 }
       }
 
@@ -255,13 +268,15 @@ export class StrategyProcessor {
       if (validIndications.length === 0) {
         // Log once per cycle — the aggregate cycle summary will fold
         // these together without flooding the stream.
-        await logProgressionEvent(
-          this.connectionId,
-          "strategies_skipped_no_valid_indications",
-          "info",
-          `Strategy flow skipped for ${symbol} — ${indications.length} indications retrieved but none passed validity gate (PF>=${VALIDITY_PF_FLOOR})`,
-          { symbol, indicationsRetrieved: indications.length, validIndications: 0 },
-        ).catch(() => { /* non-critical */ })
+        if (!isPrehistoric) {
+          await logProgressionEvent(
+            this.connectionId,
+            "strategies_skipped_no_valid_indications",
+            "info",
+            `Strategy flow skipped for ${symbol} — ${indications.length} indications retrieved but none passed validity gate (PF>=${VALIDITY_PF_FLOOR})`,
+            { symbol, indicationsRetrieved: indications.length, validIndications: 0 },
+          ).catch(() => { /* non-critical */ })
+        }
         return { strategiesEvaluated: 0, liveReady: 0 }
       }
       if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
@@ -278,7 +293,7 @@ export class StrategyProcessor {
       // and is ALWAYS gated by STRATEGY_FLOW_HARD_THROTTLE_MS regardless
       // of fingerprint changes (protects against pathological generators
       // that bump the timestamp every tick).
-      const throttleKey = `${this.connectionId}:${symbol}`
+      const throttleKey = `${this.connectionId}:${mode}:${symbol}`
       const now = Date.now()
       const indicationFingerprint = buildStrategyIndicationFingerprint(validIndications)
       const prev = flowThrottle.get(throttleKey)
@@ -347,13 +362,13 @@ export class StrategyProcessor {
       // still applies its own PF+DDT thresholds on derived Sets, but
       // the input to that pipeline is now pre-filtered to validated
       // indications only.
-      const coordinator = getStrategyCoordinator(this.connectionId)
+      const coordinator = getStrategyCoordinator(this.connectionId, mode)
       const results = await coordinator.executeStrategyFlow(
         symbol,
         validIndications,
-        false,
+        isPrehistoric,
         undefined,
-        skipLiveDispatch,
+        skipLiveDispatch || isPrehistoric,
         isCurrent,
       )
       if (!isCurrent()) {
@@ -368,25 +383,33 @@ export class StrategyProcessor {
       // Summing outputs would mix parent and derived populations.
       //
       // The canonical "strategies evaluated this cycle" is therefore the
-      // FINAL-stage output. We use REAL (`result.totalCreated`) as the
-      // authoritative count because Real is the last evaluation stage that
-      // runs for every symbol (Live is skipped in prehistoric/backtest mode).
+      // FINAL-stage logical input. Real reports its Pos-Count rows collapsed
+      // per Base lineage in `logicalEvaluated`, while `totalCreated` remains
+      // the raw physical work count for diagnostics.
       // `liveReady` = strategies that passed the REAL filter and are eligible
       // to promote to exchange orders.
       let realEvaluated = 0
       let realLiveReady = 0
       const stageSummary: Record<string, any> = {}
       const statsWrites: Promise<any>[] = []
-      const logFlowSummary = shouldLogFlowSummary(this.connectionId, symbol)
+      const logFlowSummary = !isPrehistoric && shouldLogFlowSummary(this.connectionId, symbol, mode)
 
       for (const result of results) {
         if (!isCurrent()) {
           releaseReservation()
           return { strategiesEvaluated: 0, liveReady: 0 }
         }
+        const logicalEvaluated = result.logicalEvaluated ?? result.totalCreated
+        // A stage may materialize several physical children from one logical
+        // input (notably Main Pos-Count axes and Real Block coordination).
+        // Keep the public pass/fail funnel in that logical domain; preserve
+        // the physical count separately for dispatch and diagnostics.
+        const logicalPassed = result.logicalPassed ?? result.passedEvaluation
         stageSummary[result.type] = {
-          setsEvaluated: result.totalCreated,
-          setsPassed: result.passedEvaluation,
+          setsEvaluated: logicalEvaluated,
+          rawWork: result.rawEvaluated ?? result.totalCreated,
+          setsPassed: logicalPassed,
+          materializedSets: result.passedEvaluation,
           setsFailed: result.failedEvaluation,
           avgProfitFactor: result.avgProfitFactor.toFixed(2),
           avgDrawdownTime: `${Math.round(result.avgDrawdownTime)}min`,
@@ -400,21 +423,23 @@ export class StrategyProcessor {
         // stage — Base/Main are intermediate filter steps of the same
         // pipeline and MUST NOT be summed together with Real.
         if (result.type === "real") {
-          realEvaluated = result.totalCreated
-          realLiveReady = result.passedEvaluation
+          realEvaluated = logicalEvaluated
+          realLiveReady = isPrehistoric ? 0 : result.passedEvaluation
         }
 
-        statsWrites.push(
-          trackStrategyStats(
-            this.connectionId,
-            symbol,
-            result.type,
-            result.totalCreated,
-            result.passedEvaluation,
-            result.avgProfitFactor,
-            result.avgDrawdownTime,
-          ).catch(() => { /* non-critical */ }),
-        )
+        if (!isPrehistoric) {
+          statsWrites.push(
+            trackStrategyStats(
+              this.connectionId,
+              symbol,
+              result.type,
+              logicalEvaluated,
+              logicalPassed,
+              result.avgProfitFactor,
+              result.avgDrawdownTime,
+            ).catch(() => { /* non-critical */ }),
+          )
+        }
       }
 
       // Await all stats writes together — no per-stage blocking.
@@ -447,7 +472,7 @@ export class StrategyProcessor {
         }
       }
 
-      // `strategiesEvaluated` here is the REAL-stage count, NOT a sum across
+      // `strategiesEvaluated` here is the logical REAL-stage count, NOT a sum across
       // stages. Callers (engine-manager, stats routes) aggregate this value
       // across SYMBOLS per cycle, which is correct — cross-symbol sums of
       // the final-stage count are meaningful totals.
@@ -486,15 +511,15 @@ export class StrategyProcessor {
       }
 
       // Execute complete strategy coordination flow (prehistoric mode)
-      const coordinator = getStrategyCoordinator(this.connectionId)
+      const coordinator = getStrategyCoordinator(this.connectionId, "prehistoric")
       const results = await coordinator.executeStrategyFlow(symbol, indications, true)
 
       // Track prehistoric progress
       await ProgressionStateManager.incrementPrehistoricCycle(this.connectionId, symbol)
       
-      const liveResult = results.find(r => r.type === "live")
+      const realResult = results.find(r => r.type === "real")
       console.log(
-        `[v0] [PrehistoricStrategy] ${symbol}: Processed ${indications.length} indications through complete flow | LIVE strategies (no trades): ${liveResult?.passedEvaluation || 0}`
+        `[v0] [PrehistoricStrategy] ${symbol}: Processed ${indications.length} indications through complete flow | REAL calculated (no trades): ${realResult?.passedEvaluation || 0}`
       )
 
       await logProgressionEvent(this.connectionId, "strategies_prehistoric", "info", `Historical strategies flowed for ${symbol}`, {

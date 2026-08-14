@@ -41,9 +41,11 @@ import {
   resolveMirroredActiveBlockCount,
 } from "@/lib/block-count-state"
 import {
+  getStrategySetClosedResultKeys,
   getStrategySetLedgerBatch,
+  getStrategySetLedgerSnapshot,
   getStrategyLedgerTotals,
-  getStrategySetWindowBatch,
+  getStrategySetWindowBatch as readStrategySetWindowBatch,
   type StrategySetLedgerSnapshot,
   type PosWindowStats,
 } from "@/lib/pos-history"
@@ -111,6 +113,10 @@ import {
   strategyIndicationVariantEnabled,
   type StrategyIndicationVariantPolicy,
 } from "@/lib/strategy-indication-policy"
+import {
+  accountMainStage,
+  accountRealStageInputs,
+} from "@/lib/strategy-stage-accounting"
 
 /**
  * Runtime stage snapshots must not duplicate the canonical, verbose Set key
@@ -424,6 +430,14 @@ export interface StrategyEvaluation {
   failedEvaluation: number  // number of Sets that failed
   avgProfitFactor: number
   avgDrawdownTime: number
+  /** Logical pipeline evaluation count, with Pos-Count fan-out collapsed per Base lineage. */
+  logicalEvaluated?: number
+  /** Logical rows that passed this stage's own filter, before physical fan-out. */
+  logicalPassed?: number
+  /** Physical runtime work count before logical lineage collapsing. */
+  rawEvaluated?: number
+  /** Additional Real coordination work (Block/Row-Real) beyond Main inputs. */
+  coordinationEvaluated?: number
   dispatchSelected?: number
   dispatchSuppressed?: number
 }
@@ -1220,9 +1234,13 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
 
   for (const indication of indications) {
     const raw = indication?.timestamp ?? indication?.calculated_at ?? indication?.created_at
+    // Exact indication-set snapshots are regenerated every cycle. Their
+    // timestamp/id is transport metadata, not a semantic strategy change.
+    const stableKey = indication?.setKey ?? indication?.set_key ?? indication?.configurationId ?? indication?.configId
+    const hasStableKey = typeof stableKey === "string" && stableKey.length > 0
     const numeric = typeof raw === "number" ? raw : Number(raw)
-    if (Number.isFinite(numeric) && numeric > latestTimestamp) latestTimestamp = numeric
-    else if (typeof raw === "string") {
+    if (!hasStableKey && Number.isFinite(numeric) && numeric > latestTimestamp) latestTimestamp = numeric
+    else if (!hasStableKey && typeof raw === "string") {
       const parsed = Date.parse(raw)
       if (Number.isFinite(parsed) && parsed > latestTimestamp) latestTimestamp = parsed
     }
@@ -1230,8 +1248,8 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
     // Hash identity plus the compact fields that can change strategy output.
     // This catches same-length replacements anywhere in the array without
     // retaining or serialising the full indication objects.
-    mix(indication?.id ?? indication?.setKey ?? indication?.configId)
-    mix(raw)
+    mix(stableKey ?? indication?.id)
+    if (!hasStableKey) mix(raw)
     mix(indication?.type ?? indication?.indication_type)
     mix(indication?.direction ?? indication?.signal)
     mix(indication?.profitFactor ?? indication?.profit_factor)
@@ -2124,23 +2142,39 @@ export interface StrategyCoordinatorConfig {
 }
 
 /**
- * Per-connection StrategyCoordinator cache.
+ * Per-connection and execution-mode StrategyCoordinator cache.
  *
  * A new StrategyCoordinator used to be created on every cron tick / flow call,
  * which reset every in-memory TTL cache (coordination settings, PF thresholds,
  * hedge params, position-window memo, open-live-set keys, and the
  * "skip if position+indication state unchanged" fingerprint) on each cycle —
  * defeating the very de-dup / "97% Redis I/O reduction" logic they implement.
- * Reusing one instance per connectionId lets those caches actually persist
- * across cycles, and lets the skip-optimization fire. The caches are TTL- or
- * per-flow-guarded, so sharing the instance is safe for the serial tick path.
+ * Reusing one instance per connection/mode lets realtime caches persist across
+ * cycles without allowing a prehistoric neutral-context pass to overwrite
+ * realtime position/fingerprint caches. The caches are TTL- or per-flow-
+ * guarded, so sharing each mode-specific instance is safe for the serial tick
+ * path.
  */
-const _strategyCoordinatorInstances: Map<string, StrategyCoordinator> = new Map()
-export function getStrategyCoordinator(connectionId: string): StrategyCoordinator {
-  let coordinator = _strategyCoordinatorInstances.get(connectionId)
+export type StrategyCoordinatorMode = "realtime" | "prehistoric"
+
+const _strategyCoordinatorInstances = new Map<
+  string,
+  Map<StrategyCoordinatorMode, StrategyCoordinator>
+>()
+
+export function getStrategyCoordinator(
+  connectionId: string,
+  mode: StrategyCoordinatorMode = "realtime",
+): StrategyCoordinator {
+  let coordinators = _strategyCoordinatorInstances.get(connectionId)
+  if (!coordinators) {
+    coordinators = new Map()
+    _strategyCoordinatorInstances.set(connectionId, coordinators)
+  }
+  let coordinator = coordinators.get(mode)
   if (!coordinator) {
     coordinator = new StrategyCoordinator(connectionId)
-    _strategyCoordinatorInstances.set(connectionId, coordinator)
+    coordinators.set(mode, coordinator)
   }
   return coordinator
 }
@@ -2148,8 +2182,9 @@ export function getStrategyCoordinator(connectionId: string): StrategyCoordinato
 export class StrategyCoordinator {
   static forceNextSettingsReload(connectionId: string): number {
     const generation = Date.now()
-    const coordinator = _strategyCoordinatorInstances.get(connectionId)
-    if (coordinator) coordinator.invalidateSettingsCaches()
+    for (const coordinator of _strategyCoordinatorInstances.get(connectionId)?.values() || []) {
+      coordinator.invalidateSettingsCaches()
+    }
     return generation
   }
   private connectionId: string
@@ -2369,6 +2404,27 @@ export class StrategyCoordinator {
     const axisEntries = (await getStrategyLedgerTotals(this.connectionId)).axisEntries
     this._strategyLedgerTotalsCache = { axisEntries, at: Date.now() }
     return axisEntries
+  }
+
+  /**
+   * Read exact rolling result rings only for Set keys that the close ledger
+   * proves can contain a terminal outcome.  A complete strategy matrix can
+   * contain tens of thousands of candidates while only a small fraction has
+   * ever closed; issuing an LRANGE for every empty key monopolizes the Node
+   * event loop and makes control/UI requests unavailable under a max-symbol
+   * engine run.  The index helper returns `null` whenever it cannot prove its
+   * own completeness, so that state intentionally falls back to the previous
+   * exhaustive behavior rather than changing PF/DDT calculations.
+   */
+  private async getStrategySetWindowBatch(
+    setKeys: string[],
+    window: number,
+  ): Promise<Map<string, PosWindowStats>> {
+    const closedResultKeys = await getStrategySetClosedResultKeys(this.connectionId)
+    const keysToRead = closedResultKeys === null
+      ? setKeys
+      : setKeys.filter((setKey) => closedResultKeys.has(setKey))
+    return readStrategySetWindowBatch(this.connectionId, keysToRead, window)
   }
 
   private async isLiveTradingEnabledForConnection(): Promise<boolean> {
@@ -3155,10 +3211,19 @@ export class StrategyCoordinator {
       // createLiveSets can resolve axis parent entries in O(1) instead of O(N).
       //
       // STAGE 1: BASE — one Set per (indication_type × direction)
-      const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(symbol, indications, posCtx)
+      const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(
+        symbol,
+        indications,
+        posCtx,
+        isPrehistoric,
+      )
       if (!isCurrent()) return []
       results.push(baseResult)
-      emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "base", data: baseResult })
+      // Historic replays must not impersonate a live cycle to dashboard
+      // subscribers. Their calculations are intentionally in-memory only.
+      if (!isPrehistoric) {
+        emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "base", data: baseResult })
+      }
       await new Promise<void>((resolve) => setImmediate(resolve))
       if (!isCurrent()) return []
 
@@ -3170,10 +3235,13 @@ export class StrategyCoordinator {
         baseSets,
         posCtx,
         coordIndex,
+        isPrehistoric,
       )
       if (!isCurrent()) return []
       results.push(mainResult)
-      emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "main", data: mainResult })
+      if (!isPrehistoric) {
+        emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "main", data: mainResult })
+      }
       await new Promise<void>((resolve) => setImmediate(resolve))
       if (!isCurrent()) return []
 
@@ -3182,10 +3250,18 @@ export class StrategyCoordinator {
       // additional related variants flow uniformly through this filter).
       // CoordIndex.validRealKeys is populated here; Real tuner writes sizeDelta
       // / tunedAvgPF onto each record for O(1) access at Live dispatch.
-      const { result: realResult, sets: realSets } = await this.evaluateRealSets(symbol, mainSets, coordIndex, posCtx)
+      const { result: realResult, sets: realSets } = await this.evaluateRealSets(
+        symbol,
+        mainSets,
+        coordIndex,
+        posCtx,
+        isPrehistoric,
+      )
       if (!isCurrent()) return []
       results.push(realResult)
-      emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "real", data: realResult })
+      if (!isPrehistoric) {
+        emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "real", data: realResult })
+      }
       await new Promise<void>((resolve) => setImmediate(resolve))
       if (!isCurrent()) return []
 
@@ -3210,9 +3286,20 @@ export class StrategyCoordinator {
         // row count separately so statistics remain complete while retained
         // memory is bounded by the exact Live mirror rather than duplicate
         // intermediate snapshots.
-        ;(this as any)._lastRealSets[symbol] = liveSets
-        ;(this as any)._lastRealSetCounts[symbol] = realSets.length
-        ;(this as any)._lastCoordIndex[symbol] = snapshotCoordIndexForLive(coordIndex, liveSets)
+        // Retaining a whole wide matrix per symbol can make a continuous
+        // process grow without bound. This is an optional fast-path only:
+        // never truncate results; simply decline to retain oversized rows.
+        const rawFastPathLimit = Number(process.env.STRATEGY_LIVE_FASTPATH_MAX_ROWS ?? 2048)
+        const fastPathLimit = Number.isFinite(rawFastPathLimit) ? Math.max(0, Math.floor(rawFastPathLimit)) : 2048
+        if (liveSets.length <= fastPathLimit) {
+          ;(this as any)._lastRealSets[symbol] = liveSets
+          ;(this as any)._lastRealSetCounts[symbol] = realSets.length
+          ;(this as any)._lastCoordIndex[symbol] = snapshotCoordIndexForLive(coordIndex, liveSets)
+        } else {
+          delete (this as any)._lastRealSets[symbol]
+          delete (this as any)._lastRealSetCounts[symbol]
+          delete (this as any)._lastCoordIndex[symbol]
+        }
 
         // Commit fingerprints only after the complete mandatory pipeline and
         // its compact Live snapshot succeed. A failed Live stage must retry
@@ -3241,7 +3328,9 @@ export class StrategyCoordinator {
       }
 
       if (!isCurrent()) return []
-      await this.logStrategyProgression(symbol, results)
+      if (!isPrehistoric) {
+        await this.logStrategyProgression(symbol, results)
+      }
 
       // Explicitly release the CoordIndex Maps so V8 can reclaim them before
       // the next cycle's allocation pressure. Without this, the Map entries
@@ -3454,6 +3543,7 @@ export class StrategyCoordinator {
     symbol: string,
     indications: any[],
     posCtx?: PositionContext,
+    isPrehistoric = false,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[]; coordIndex: CoordIndex }> {
     const signalSettings = await loadSignalIndicationSettings()
     const signalTrailingEnabled = strategyIndicationVariantEnabled(
@@ -3771,8 +3861,7 @@ export class StrategyCoordinator {
         }
       }
     }
-    const exactPositionWindows = await getStrategySetWindowBatch(
-      this.connectionId,
+    const exactPositionWindows = await this.getStrategySetWindowBatch(
       prospectiveSetKeys,
       prevPosWindow,
     )
@@ -4025,26 +4114,32 @@ export class StrategyCoordinator {
       }
     }
 
-    // Persist a compact BASE runtime read model. The full configuration
-    // lineage is already authoritative in the indication/config store and
-    // Base→Main receives the complete in-memory graph in this same cycle.
-    // Serialising that graph again here used to retain tens of MiB per symbol
-    // and made an otherwise healthy production worker miss health probes.
-    const baseKey = `strategies:${this.connectionId}:${symbol}:base:sets`
-    await setSettings(baseKey, {
-      formatVersion: 3,
-      runtimeProjection: true,
-      rows: projectRuntimeStageRows(baseSets),
-      count: baseSets.length,
-      created: new Date(),
-    })
+    // Historical replay is an offline calculation checkpoint. Its output is
+    // already tracked under `prehistoric_*` by the historic processor, so it
+    // must neither replace the live runtime snapshot nor inflate the live
+    // progression/UI counters.  Apart from correctness, this removes several
+    // Redis writes per historic Base row.
+    if (!isPrehistoric) {
+      // Persist a compact BASE runtime read model. The full configuration
+      // lineage is already authoritative in the indication/config store and
+      // Base→Main receives the complete in-memory graph in this same cycle.
+      // Serialising that graph again here used to retain tens of MiB per symbol
+      // and made an otherwise healthy production worker miss health probes.
+      const baseKey = `strategies:${this.connectionId}:${symbol}:base:sets`
+      await setSettings(baseKey, {
+        formatVersion: 3,
+        runtimeProjection: true,
+        rows: projectRuntimeStageRows(baseSets),
+        count: baseSets.length,
+        created: new Date(),
+      })
 
-    // Write Base counts to progression hash so stats API and dashboard read accurate per-stage counts.
-    // CRITICAL: Use hincrby (cumulative) not hset (snapshot). Previously each cycle overwrote the
-    // value with the current cycle's count, which made the dashboard oscillate between high/low
-    // values every few seconds ("jumping more and less"). The per-cycle snapshot is still
-    // available in `strategy_detail:{connId}:base` (`created_sets` field).
-    try {
+      // Write Base counts to progression hash so stats API and dashboard read accurate per-stage counts.
+      // CRITICAL: Use hincrby (cumulative) not hset (snapshot). Previously each cycle overwrote the
+      // value with the current cycle's count, which made the dashboard oscillate between high/low
+      // values every few seconds ("jumping more and less"). The per-cycle snapshot is still
+      // available in `strategy_detail:{connId}:base` (`created_sets` field).
+      try {
       const client = getRedisClient()
       const detailKey  = `strategy_detail:${this.connectionId}:base`
       const baseAvgPF  = baseSets.length > 0 ? baseSets.reduce((s, st) => s + st.avgProfitFactor, 0) / baseSets.length : 0
@@ -4184,21 +4279,26 @@ export class StrategyCoordinator {
       // We overwrite a single field per (symbol, stage) every cycle so
       // the latest value is always the most recent count. The stats API
       // hgetalls this hash and aggregates by stage.
-      writes.push(
-        client.hset(`strategies_active:${this.connectionId}`, {
-          [`${symbol}:base`]:          String(baseRunningNow),
-          [`${symbol}:base:trailing`]: String(baseTrailingRunningNow),
-          // base:evaluated = same as base (every Base Set IS evaluated at Base stage)
-          [`${symbol}:base:evaluated`]: String(baseSets.length),
-        }),
-        client.expire(`strategies_active:${this.connectionId}`, 600),
-      )
+      // Historical calculations are an offline checkpoint. They must not
+      // overwrite the current live UI snapshot with a large historic matrix.
+      if (!isPrehistoric) {
+        writes.push(
+          client.hset(`strategies_active:${this.connectionId}`, {
+            [`${symbol}:base`]:          String(baseRunningNow),
+            [`${symbol}:base:trailing`]: String(baseTrailingRunningNow),
+            // base:evaluated = same as base (every Base Set IS evaluated at Base stage)
+            [`${symbol}:base:evaluated`]: String(baseSets.length),
+          }),
+          client.expire(`strategies_active:${this.connectionId}`, 600),
+        )
+      }
       // Gate progression hash TTL reset — 7-day key, refresh every 500 cycles
       if (this._stratCycleCount % 500 === 1) {
         writes.push(expireStrategyProgression(client, this.connectionId, 7 * 24 * 60 * 60))
       }
       await Promise.all(writes)
-    } catch { /* non-critical */ }
+      } catch { /* non-critical */ }
+    }
 
     // ── Build BaseRegistry + seed CoordIndex for downstream stages ─────���─
     // This is the SINGLE allocation point for base data. All downstream stages
@@ -4219,6 +4319,9 @@ export class StrategyCoordinator {
         failedEvaluation: 0,
         avgProfitFactor: baseSets.length > 0 ? baseSets.reduce((s, set) => s + set.avgProfitFactor, 0) / baseSets.length : 0,
         avgDrawdownTime: 0,
+        logicalEvaluated: baseSets.length,
+        logicalPassed: baseSets.length,
+        rawEvaluated: baseSets.length,
       },
       sets: baseSets,
       coordIndex,
@@ -4259,6 +4362,7 @@ export class StrategyCoordinator {
     inputSets?: StrategySet[],
     posCtx?: PositionContext,
     coordIndex?: CoordIndex,
+    isPrehistoric = false,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[] }> {
     // Prefer in-memory input (hot-path pipelined from createBaseSets). Fall
     // back to Redis only when called standalone (tests / diagnostics).
@@ -4306,7 +4410,9 @@ export class StrategyCoordinator {
     // per record vs ~2-5 KB for the old full-set JSON.
     const fpCacheKey = `strategies:${this.connectionId}:${symbol}:main:fp:v2`
     const client = getRedisClient()
-    const fpCache = ((await client.hgetall(fpCacheKey).catch(() => null)) || {}) as Record<string, string>
+    const fpCache = isPrehistoric
+      ? {} as Record<string, string>
+      : ((await client.hgetall(fpCacheKey).catch(() => null)) || {}) as Record<string, string>
     const nextFpCache: Record<string, string> = {}
     let reused = 0
 
@@ -4640,6 +4746,14 @@ export class StrategyCoordinator {
         Number(process.env.STRATEGY_AXIS_BASE_BATCH_SIZE) ||
           this.strategyMainAxisBatchSize,
       ))
+      // Main must apply exact entry/active/closed counts, but the same sparse
+      // ledger is valid for every candidate generated in this flow. Taking one
+      // snapshot replaces three Redis HGETs per axis candidate while keeping
+      // the next live flow responsive to newly-confirmed positions. Historic
+      // replay intentionally sees no live fill ledger at all.
+      const exactSetLedgerSnapshot: StrategySetLedgerSnapshot = isPrehistoric
+        ? { entries: {}, active: {}, closed: {} }
+        : await getStrategySetLedgerSnapshot(this.connectionId)
       for (let start = 0; start < defaultSets.length; start += baseBatchSize) {
         const axisCandidates = defaultSets
           .slice(start, start + baseBatchSize)
@@ -4650,13 +4764,9 @@ export class StrategyCoordinator {
             liveContByDir,
             symbolCtx.lastPosCount,
           ))
-        const exactSetLedger = await getStrategySetLedgerBatch(
-          this.connectionId,
-          axisCandidates.map((set) => set.setKey),
-        )
         const expandedWithLedger = await this.applyExactPositionSetLedger(
           axisCandidates,
-          exactSetLedger,
+          exactSetLedgerSnapshot,
           metrics,
         )
         for (const axisSet of expandedWithLedger) {
@@ -4825,25 +4935,27 @@ export class StrategyCoordinator {
     const mainAvgPosPerSet  = n > 0 ? mainEntriesTotal / n : 0
     const mainProfileEntriesTotal = mainProfileEntries
 
-    // Persist a bounded scalar runtime projection. `mainSets` stays complete
-    // in the current coordinator flow; this key is a restart-safe diagnostic
-    // view rather than an execution source, so it must not duplicate verbose
-    // configuration keys once for every axis/variant.
-    const mainKey = `strategies:${this.connectionId}:${symbol}:main:sets`
-    await setSettings(mainKey, {
-      formatVersion: 3,
-      runtimeProjection: true,
-      rows: projectRuntimeStageRows(mainSets),
-      count: mainSets.length,
-      created: new Date(),
-    })
-    try {
-      if (Object.keys(nextFpCache).length > 0) {
-        await client.del(fpCacheKey).catch(() => {})
-        await client.hset(fpCacheKey, nextFpCache)
-        await client.expire(fpCacheKey, 300) // 5 min TTL
-      }
-    } catch { /* non-critical */ }
+    if (!isPrehistoric) {
+      // Persist a bounded scalar runtime projection. `mainSets` stays complete
+      // in the current coordinator flow; this key is a restart-safe diagnostic
+      // view rather than an execution source, so it must not duplicate verbose
+      // configuration keys once for every axis/variant.
+      const mainKey = `strategies:${this.connectionId}:${symbol}:main:sets`
+      await setSettings(mainKey, {
+        formatVersion: 3,
+        runtimeProjection: true,
+        rows: projectRuntimeStageRows(mainSets),
+        count: mainSets.length,
+        created: new Date(),
+      })
+      try {
+        if (Object.keys(nextFpCache).length > 0) {
+          await client.del(fpCacheKey).catch(() => {})
+          await client.hset(fpCacheKey, nextFpCache)
+          await client.expire(fpCacheKey, 300) // 5 min TTL
+        }
+      } catch { /* non-critical */ }
+    }
 
     const mainDetailKey = `strategy_detail:${this.connectionId}:main`
     // BASE->MAIN pass rate = fraction of Base Sets that produced ≥1 variant.
@@ -4860,14 +4972,28 @@ export class StrategyCoordinator {
     const basePassRatio = baseInputCount > 0
       ? Math.min(1, baseValidCount / baseInputCount)
       : 0
-    const mainInputCount = baseValidCount
+    // Main has two valid count domains:
+    // - physical rows: every exact Pos-Count axis projection is calculated;
+    // - logical evaluations: all Pos-Count rows belonging to one Base lineage
+    //   count once, so Base + Pos-Count produces the requested doubled set
+    //   count before other Main projections are added.
+    const mainAccounting = accountMainStage(baseValidCount, mainSets)
+    const mainBaseInputCount = baseValidCount
+    const mainLogicalEvaluated = mainAccounting.logicalEvaluated
     const mainPassedParentCount = uniqueBaseSetsProduced.size
-    const mainRelatedSetCount = Math.max(0, mainSets.length - mainPassedParentCount)
+    const mainRelatedSetCount =
+      mainAccounting.positionCountRelated + mainAccounting.otherRelated
+    const mainRawRelatedSetCount = Math.max(
+      0,
+      mainAccounting.rawMaterialized - mainAccounting.baseMirrors,
+    )
 
     // ── Write Main counts to Redis ──���─────────────────────────────────────
     // CUMULATIVE via hincrby so the dashboard does not oscillate with
-    // per-cycle snapshots (see matching fix in createBaseSets).
-    try {
+    // per-cycle snapshots (see matching fix in createBaseSets). Historical
+    // replay keeps its separate counters and must not overwrite this live
+    // view or warm the live fingerprint cache.
+    if (!isPrehistoric) try {
       const client = getRedisClient()
 
       // ── Running-now resolution for Main (cloned/filtered Sets) ──
@@ -4904,12 +5030,16 @@ export class StrategyCoordinator {
           entries_total:     String(mainEntriesTotal),
           entries_count:     String(mainEntriesTotal),
           axis_sets:         String(axisSetsAdded),
-          evaluated:         String(mainInputCount),
+          evaluated:         String(mainLogicalEvaluated),
           passed_sets:       String(mainPassedParentCount),
           pass_rate:         String(passRatioMain.toFixed(4)),
-          input_sets:        String(mainInputCount),
+          input_sets:        String(mainBaseInputCount),
           parent_sets_passed: String(mainPassedParentCount),
           related_sets:      String(mainRelatedSetCount),
+          pos_count_related_sets: String(mainAccounting.positionCountRelated),
+          other_related_sets: String(mainAccounting.otherRelated),
+          raw_materialized_sets: String(mainAccounting.rawMaterialized),
+          raw_related_sets: String(mainRawRelatedSetCount),
           row_valid:         String(mainPassedParentCount),
           row_overall:       String(mainSets.length),
           row_valid_open:    String(mainValidOpen),
@@ -4929,7 +5059,11 @@ export class StrategyCoordinator {
           [`s:${symbol}:running`]:    String(mainRunningNow),
           [`s:${symbol}:progressing`]: String(mainProgressing),
           [`s:${symbol}:passed`]:     String(mainPassedParentCount),
-          [`s:${symbol}:evaluated`]:  String(mainInputCount),
+          [`s:${symbol}:evaluated`]:  String(mainLogicalEvaluated),
+          [`s:${symbol}:input_sets`]: String(mainBaseInputCount),
+          [`s:${symbol}:pos_count_related_sets`]: String(mainAccounting.positionCountRelated),
+          [`s:${symbol}:other_related_sets`]: String(mainAccounting.otherRelated),
+          [`s:${symbol}:raw_materialized_sets`]: String(mainAccounting.rawMaterialized),
           [`s:${symbol}:row_valid`]:        String(mainPassedParentCount),
           [`s:${symbol}:row_overall`]:      String(mainSets.length),
           [`s:${symbol}:row_valid_open`]:   String(mainValidOpen),
@@ -4961,14 +5095,14 @@ export class StrategyCoordinator {
           [`s:${symbol}:row_valid_open`]: String(baseValidOpen),
         }).catch(() => {}),
         client.set(`strategies:${this.connectionId}:main:count`, String(mainSets.length)),
-        client.set(`strategies:${this.connectionId}:main:evaluated`, String(mainInputCount)),
+        client.set(`strategies:${this.connectionId}:main:evaluated`, String(mainLogicalEvaluated)),
         client.set(`strategies:${this.connectionId}:base:passed`, String(baseValidCount)),
         client.expire(`strategies:${this.connectionId}:main:count`, 86400),
         client.expire(`strategies:${this.connectionId}:main:evaluated`, 86400),
         client.expire(`strategies:${this.connectionId}:base:passed`, 86400),
       ]
       if (mainSets.length > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_total", mainSets.length))
-      if (baseValidCount > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_evaluated", baseValidCount))
+      if (mainLogicalEvaluated > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_evaluated", mainLogicalEvaluated))
       if (mainPassedParentCount > 0) {
         writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_parent_passed", mainPassedParentCount))
       }
@@ -4980,18 +5114,23 @@ export class StrategyCoordinator {
       // The stats route reads `strategies_active:{conn}` and aggregates by
       // stage suffix. Without {symbol}:main fields the `stratCounts.main`
       // bucket was always 0, making the Main column on the dashboard empty.
-      writes.push(
-        client.hset(`strategies_active:${this.connectionId}`, {
-          [`${symbol}:main`]:           String(mainRunningNow),
-          // Parent funnel and expansion accounting are deliberately separate:
-          // Main output can exceed Base input through valid axis/variant fan-out.
-          [`${symbol}:main:evaluated`]: String(mainInputCount),
-          [`${symbol}:main:input`]: String(mainInputCount),
-          [`${symbol}:main:passedParents`]: String(mainPassedParentCount),
-          [`${symbol}:main:relatedCreated`]: String(mainRelatedSetCount),
-        }),
-        client.expire(`strategies_active:${this.connectionId}`, 600),
-      )
+      if (!isPrehistoric) {
+        writes.push(
+          client.hset(`strategies_active:${this.connectionId}`, {
+            [`${symbol}:main`]:           String(mainRunningNow),
+            // `evaluated` is logical; `input` remains the Base-parent funnel
+            // used for Main's filter pass rate.
+            [`${symbol}:main:evaluated`]: String(mainLogicalEvaluated),
+            [`${symbol}:main:input`]: String(mainBaseInputCount),
+            [`${symbol}:main:passedParents`]: String(mainPassedParentCount),
+            [`${symbol}:main:relatedCreated`]: String(mainRelatedSetCount),
+            [`${symbol}:main:posCountRelated`]: String(mainAccounting.positionCountRelated),
+            [`${symbol}:main:otherRelated`]: String(mainAccounting.otherRelated),
+            [`${symbol}:main:rawMaterialized`]: String(mainAccounting.rawMaterialized),
+          }),
+          client.expire(`strategies_active:${this.connectionId}`, 600),
+        )
+      }
 
       const relatedCreated = Math.max(0, mainSets.length - reused)
       const activeVariantNames = activeVariants.map((p) => p.name)
@@ -5031,15 +5170,24 @@ export class StrategyCoordinator {
         type: "main",
         symbol,
         timestamp: new Date(),
-        totalCreated: baseSets.length,
+        // Physical Main output is the complete exact Set graph.  The logical
+        // accounting below is intentionally separate so callers never mistake
+        // the Base input for rows actually materialized at Main.
+        totalCreated: mainSets.length,
         passedEvaluation: mainSets.length,
         // failedEvaluation = Base Sets that were explicitly rejected (status=invalid),
         // not baseSets.length - uniqueBaseSetsProduced.size (which undercounts when
         // all Base Set parents appear via axis fan-out but some were still rejected
         // at PF/DDT gate). Counting status=invalid directly is authoritative.
-        failedEvaluation: Math.max(0, mainInputCount - mainPassedParentCount - skippedLowPos),
+        failedEvaluation: Math.max(0, mainBaseInputCount - mainPassedParentCount - skippedLowPos),
         avgProfitFactor: mainAvgPF,
         avgDrawdownTime: mainAvgDDT,
+        logicalEvaluated: mainLogicalEvaluated,
+        logicalPassed:
+          mainPassedParentCount +
+          mainAccounting.positionCountRelated +
+          mainAccounting.otherRelated,
+        rawEvaluated: mainAccounting.rawMaterialized,
       },
       sets: mainSets,
     }
@@ -5201,6 +5349,8 @@ export class StrategyCoordinator {
     coordIndex?: CoordIndex,
     activeRealByDirSnapshot?: { long: number; short: number },
     activeLiveByDirSnapshot?: { long: number; short: number },
+    persistStats = true,
+    includeCurrentActive = true,
   ): Promise<StrategySet[]> {
     const strategyEnabled = this._coordinationSettings.variants.block
 
@@ -5275,10 +5425,12 @@ export class StrategyCoordinator {
         )
         .map((set) => [set.setKey, set]),
     ).values())
-    const exactActiveLedger = await getStrategySetLedgerBatch(
-      this.connectionId,
-      eligibleSources.map((set) => set.setKey),
-    )
+    const exactActiveLedger = includeCurrentActive
+      ? await getStrategySetLedgerBatch(
+          this.connectionId,
+          eligibleSources.map((set) => set.setKey),
+        )
+      : { active: {} as Record<string, number> }
     const overlayKeys = new Set<string>()
     const candidates: Array<{
       source: StrategySet
@@ -5348,7 +5500,8 @@ export class StrategyCoordinator {
     if (candidates.length === 0) {
       // Clear the per-cycle active overlay snapshot instead of leaving the
       // previous cycle's non-zero values visible after the last parent closes.
-      await client.hset(statsKey, {
+      if (persistStats) {
+        await client.hset(statsKey, {
         [`s:${symbol}:active:evaluated`]: "0",
         [`s:${symbol}:active:calculated`]: "0",
         [`s:${symbol}:active:eligible`]: "0",
@@ -5387,14 +5540,17 @@ export class StrategyCoordinator {
         [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
         [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
         [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
-      }).catch(() => 0)
-      await client.expire(statsKey, 7 * 24 * 60 * 60).catch(() => 0)
+        }).catch(() => 0)
+        await client.expire(statsKey, 7 * 24 * 60 * 60).catch(() => 0)
+      }
       return overlays
     }
     const [exactWindows, unavailableKeys, activeBlockKeys] = await Promise.all([
-      getStrategySetWindowBatch(this.connectionId, candidates.map((candidate) => candidate.setKey), resultWindow),
-      this.getUnavailableBlockKeys(symbol),
-      getActiveBlockSetKeys(client, this.connectionId, symbol),
+      this.getStrategySetWindowBatch(candidates.map((candidate) => candidate.setKey), resultWindow),
+      includeCurrentActive ? this.getUnavailableBlockKeys(symbol) : Promise.resolve(new Set<string>()),
+      includeCurrentActive
+        ? getActiveBlockSetKeys(client, this.connectionId, symbol)
+        : Promise.resolve(new Set<string>()),
     ])
     let passed = 0
     let rejected = 0
@@ -5539,7 +5695,8 @@ export class StrategyCoordinator {
       }
     }
 
-    await client.hset(statsKey, {
+    if (persistStats) {
+      await client.hset(statsKey, {
       [`s:${symbol}:active:calculated`]: String(candidates.length),
       [`s:${symbol}:active:evaluated`]: String(strategyEnabled ? candidates.length : 0),
       [`s:${symbol}:active:eligible`]: String(eligible),
@@ -5588,8 +5745,9 @@ export class StrategyCoordinator {
       [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
       [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
       [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
-    }).catch(() => 0)
-    await client.expire(statsKey, 7 * 24 * 60 * 60).catch(() => 0)
+      }).catch(() => 0)
+      await client.expire(statsKey, 7 * 24 * 60 * 60).catch(() => 0)
+    }
 
     return overlays
   }
@@ -5606,7 +5764,9 @@ export class StrategyCoordinator {
   private async clearBlockProfitFactorStats(
     symbol: string,
     metrics: EvaluationMetrics,
+    persistStats = true,
   ): Promise<void> {
+    if (!persistStats) return
     const resultWindow = Math.max(1, Math.min(600, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25))
     const minimumSampleCount = Math.max(
       1,
@@ -5696,6 +5856,8 @@ export class StrategyCoordinator {
     metrics: EvaluationMetrics,
     coordIndex?: CoordIndex,
     activeSetKeys: ReadonlySet<string> = new Set<string>(),
+    persistStats = true,
+    includeCurrentActive = true,
   ): Promise<StrategySet[]> {
     const strategyEnabled = this._coordinationSettings.variants.block
 
@@ -5703,7 +5865,7 @@ export class StrategyCoordinator {
     const blockConfig = blockProfile?.configs.slice().sort((left, right) => right.pfBias - left.pfBias)[0]
     if (!blockConfig) {
       this._independentBlockLogicalEmittedBySymbol.set(symbol, 0)
-      await this.clearBlockProfitFactorStats(symbol, metrics)
+      await this.clearBlockProfitFactorStats(symbol, metrics, persistStats)
       return []
     }
 
@@ -5724,7 +5886,7 @@ export class StrategyCoordinator {
     ).values())
     if (sources.length === 0) {
       this._independentBlockLogicalEmittedBySymbol.set(symbol, 0)
-      await this.clearBlockProfitFactorStats(symbol, metrics)
+      await this.clearBlockProfitFactorStats(symbol, metrics, persistStats)
       return []
     }
 
@@ -5739,8 +5901,10 @@ export class StrategyCoordinator {
     )
     const client = getRedisClient()
     const [unavailableKeys, indexedActiveKeys] = await Promise.all([
-      this.getUnavailableBlockKeys(symbol),
-      getActiveBlockSetKeys(client, this.connectionId, symbol),
+      includeCurrentActive ? this.getUnavailableBlockKeys(symbol) : Promise.resolve(new Set<string>()),
+      includeCurrentActive
+        ? getActiveBlockSetKeys(client, this.connectionId, symbol)
+        : Promise.resolve(new Set<string>()),
     ])
     const activeKeys = new Set<string>([...activeSetKeys, ...indexedActiveKeys])
     const overlays: StrategySet[] = []
@@ -5786,8 +5950,7 @@ export class StrategyCoordinator {
       const candidateKeys = sourceBatch.flatMap((source) =>
         Array.from({ length: maxStack }, (_, index) => `${source.setKey}#block:${index + 1}`),
       )
-      const exactWindows = await getStrategySetWindowBatch(
-        this.connectionId,
+      const exactWindows = await this.getStrategySetWindowBatch(
         candidateKeys,
         resultWindow,
       )
@@ -6007,8 +6170,10 @@ export class StrategyCoordinator {
       snapshot[`${prefix}:avg_volume_increment`] = String(stats.calculated > 0 ? stats.volumeIncrementSum / stats.calculated : 0)
       snapshot[`${prefix}:sample_count`] = String(stats.sampleCount)
     }
-    await client.hset(`strategy_block_pf_stats:${this.connectionId}`, snapshot).catch(() => 0)
-    await client.expire(`strategy_block_pf_stats:${this.connectionId}`, 7 * 24 * 60 * 60).catch(() => 0)
+    if (persistStats) {
+      await client.hset(`strategy_block_pf_stats:${this.connectionId}`, snapshot).catch(() => 0)
+      await client.expire(`strategy_block_pf_stats:${this.connectionId}`, 7 * 24 * 60 * 60).catch(() => 0)
+    }
     return overlays
   }
 
@@ -6033,6 +6198,8 @@ export class StrategyCoordinator {
     metrics: EvaluationMetrics,
     coordIndex?: CoordIndex,
     activeSetKeys: ReadonlySet<string> = new Set<string>(),
+    persistStats = true,
+    includeCurrentActive = true,
   ): Promise<StrategySet[]> {
     const strategyEnabled = this._coordinationSettings.variants.block
 
@@ -6215,13 +6382,14 @@ export class StrategyCoordinator {
     }
 
     const [laneWindows, unavailableKeys, indexedActiveKeys] = await Promise.all([
-      getStrategySetWindowBatch(
-        this.connectionId,
+      this.getStrategySetWindowBatch(
         candidates.map((candidate) => candidate.laneKey),
         resultWindow,
       ),
-      this.getUnavailableBlockKeys(symbol),
-      getActiveBlockSetKeys(client, this.connectionId, symbol),
+      includeCurrentActive ? this.getUnavailableBlockKeys(symbol) : Promise.resolve(new Set<string>()),
+      includeCurrentActive
+        ? getActiveBlockSetKeys(client, this.connectionId, symbol)
+        : Promise.resolve(new Set<string>()),
     ])
     const activeKeys = new Set<string>([...activeSetKeys, ...indexedActiveKeys])
     const overlays: StrategySet[] = []
@@ -6483,7 +6651,8 @@ export class StrategyCoordinator {
       }
     }
 
-    await client.hset(`strategy_block_pf_stats:${this.connectionId}`, {
+    if (persistStats) {
+      await client.hset(`strategy_block_pf_stats:${this.connectionId}`, {
       [`s:${normalizedSymbol}:scoped_snapshot`]: JSON.stringify({
         updatedAt: Date.now(),
         strategyEnabled,
@@ -6492,8 +6661,9 @@ export class StrategyCoordinator {
         maxStack,
         lanes: scopedStats,
       }),
-    }).catch(() => 0)
-    await client.expire(`strategy_block_pf_stats:${this.connectionId}`, 7 * 24 * 60 * 60).catch(() => 0)
+      }).catch(() => 0)
+      await client.expire(`strategy_block_pf_stats:${this.connectionId}`, 7 * 24 * 60 * 60).catch(() => 0)
+    }
     return overlays
   }
 
@@ -6509,6 +6679,7 @@ export class StrategyCoordinator {
     inputSets?: StrategySet[],
     coordIndex?: CoordIndex,
     posCtx?: PositionContext,
+    isPrehistoric = false,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[] }> {
     let mainSets: StrategySet[]
     if (inputSets) {
@@ -6560,21 +6731,27 @@ export class StrategyCoordinator {
      
      // Get real active keys for validation (moved outside try block for scope access)
      let realActiveKeysForVP: Set<string> = new Set()
-     try {
-       realActiveKeysForVP = await this.getOpenPseudoSetKeys()
-     } catch { /* ignore errors - empty set is fine */ }
+     // Historic replay must evaluate its own neutral checkpoint instead of
+     // preserving or borrowing today's live exposure.  Reading current
+     // pseudo/live keys here previously made a historic run influence the
+     // live Real filter and its dashboard snapshot.
+     if (!isPrehistoric) {
+       try {
+         realActiveKeysForVP = await this.getOpenPseudoSetKeys()
+       } catch { /* ignore errors - empty set is fine */ }
 
-     // Merge in the AUTHORITATIVE set of Set keys that currently back an
-     // OPEN live position. active_config_keys (above) is keyed by config
-     // fingerprint and is not reliably populated for directly-written Real
-     // pseudo positions, so on its own it leaves Sets with live exposure
-     // unprotected from the PF/DDT gate. The live-positions index carries
-     // the real setKey/parentSetKey, giving a leak-free "is running" signal
-     // that the continuous-validity exemptions below depend on.
-     try {
-       const liveSetKeys = await this.getOpenLiveSetKeys()
-       for (const k of liveSetKeys) realActiveKeysForVP.add(k)
-     } catch { /* fail-open */ }
+       // Merge in the AUTHORITATIVE set of Set keys that currently back an
+       // OPEN live position. active_config_keys (above) is keyed by config
+       // fingerprint and is not reliably populated for directly-written Real
+       // pseudo positions, so on its own it leaves Sets with live exposure
+       // unprotected from the PF/DDT gate. The live-positions index carries
+       // the real setKey/parentSetKey, giving a leak-free "is running" signal
+       // that the continuous-validity exemptions below depend on.
+       try {
+         const liveSetKeys = await this.getOpenLiveSetKeys()
+         for (const k of liveSetKeys) realActiveKeysForVP.add(k)
+       } catch { /* fail-open */ }
+     }
      
     // ── SINGLE PASS: pos-gate + PF/DDT filter + collect qualifying sets ────���─
     // Previously: mainSets.map() [new array] → .filter() [new array] →
@@ -6591,6 +6768,10 @@ export class StrategyCoordinator {
     // position MUST stay valid_real regardless of PF/DDT wobble this cycle
     // (without this, a transient dip orphans the live position from its owner).
     const realQualifying: StrategySet[] = []
+    // Retain the exact rows that crossed the Real position gate, including
+    // later PF/DDT rejects. This is the physical input whose logical Base /
+    // Pos-Count accounting is exposed to the UI and cycle stats.
+    const realEvaluationInputs: StrategySet[] = []
     let skippedRealLowPos = 0
     for (let mainSetIndex = 0; mainSetIndex < mainSets.length; mainSetIndex++) {
       if (
@@ -6618,9 +6799,10 @@ export class StrategyCoordinator {
       // dispatch were silently 0 even though the variant was correctly built.
       const isVariantProjection = !!(s.variant && s.variant !== "default") && (s.entryCount ?? 0) > 0
 
+      const hasActiveReal = realActiveKeysForVP.has(s.setKey) || (s as any)._hasLivePositions === true
+
       // ── 1. Position-count gate ───────────────────────────────────────────
       if (posCount < realMinPos && !(isAxisSet && hasEntries) && !isVariantProjection) {
-        const hasActiveReal = realActiveKeysForVP.has(s.setKey) || (s as any)._hasLivePositions === true
         if (!hasActiveReal) {
           s.status = "invalid"
           s.rejectionReason = `insufficient_pos_count: ${posCount}/${realMinPos}`
@@ -6628,13 +6810,14 @@ export class StrategyCoordinator {
           continue
         }
         // Active Real position — keep valid despite low pos-count.
+        realEvaluationInputs.push(s)
         s.status = "valid_real"
         realQualifying.push(s)
         continue
       }
+      realEvaluationInputs.push(s)
 
       // ── 2. Active-Set continuous validity exemption ───────────────────────
-      const hasActiveReal = realActiveKeysForVP.has(s.setKey) || (s as any)._hasLivePositions === true
       if (hasActiveReal) {
         s.status = "valid_real"
         realQualifying.push(s)
@@ -6654,7 +6837,7 @@ export class StrategyCoordinator {
           : `real_high_ddt: ${s.avgDrawdownTime} > ${metrics.maxDrawdownTime}`
       }
     }
-    if (skippedRealLowPos > 0) {
+    if (!isPrehistoric && skippedRealLowPos > 0) {
       logProgressionEvent(
         this.connectionId,
         "real_stage",
@@ -6806,13 +6989,15 @@ export class StrategyCoordinator {
       netTargetWrites[bucketKey] = `${winnerDir}:${remainder}`
     }
     const axisSetsAfterHedge = axisPassthrough.length
-    try {
-      const detailClient = getRedisClient()
-      await detailClient.hset(`strategy_detail:${this.connectionId}:main`, {
-        [`s:${symbol}:axis_sets_after_hedge`]: String(axisSetsAfterHedge),
-        [`axis_sets_after_hedge`]: String(axisSetsAfterHedge),
-      }).catch(() => {})
-    } catch { /* non-critical */ }
+    if (!isPrehistoric) {
+      try {
+        const detailClient = getRedisClient()
+        await detailClient.hset(`strategy_detail:${this.connectionId}:main`, {
+          [`s:${symbol}:axis_sets_after_hedge`]: String(axisSetsAfterHedge),
+          [`axis_sets_after_hedge`]: String(axisSetsAfterHedge),
+        }).catch(() => {})
+      } catch { /* non-critical */ }
+    }
     // `netted` contains profile-variant survivors. `axisPassthrough` contains
     // the independently combined per-parent/per-direction Pos-Count rows.
     //
@@ -6867,6 +7052,8 @@ export class StrategyCoordinator {
         metrics,
         coordIndex,
         realActiveKeysForVP,
+        !isPrehistoric,
+        !isPrehistoric,
       )
       realStageRelatedCreated += (
         this._independentBlockLogicalEmittedBySymbol.get(symbol) ??
@@ -6895,6 +7082,8 @@ export class StrategyCoordinator {
         metrics,
         coordIndex,
         realActiveKeysForVP,
+        !isPrehistoric,
+        !isPrehistoric,
       )
       if (scopedBlockOverlays.length > 0) {
         realStageRelatedCreated += scopedBlockOverlays.length
@@ -6920,6 +7109,8 @@ export class StrategyCoordinator {
         coordIndex,
         posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 },
         posCtx?.perSymbolLiveOpenByDir?.[symbol] ?? { long: 0, short: 0 },
+        !isPrehistoric,
+        !isPrehistoric,
       )
       if (activePositionBlockOverlays.length > 0) {
         realStageRelatedCreated += activePositionBlockOverlays.length
@@ -6934,7 +7125,7 @@ export class StrategyCoordinator {
       )
     }
 
-    if (hedgeBuckets.size > 0) {
+    if (!isPrehistoric && hedgeBuckets.size > 0) {
       logProgressionEvent(
         this.connectionId,
         "real_stage",
@@ -6972,8 +7163,7 @@ export class StrategyCoordinator {
           return [evaluationKey, set.setKey, set.rowSourceSetKey].filter(Boolean) as string[]
         }),
       ))
-      const rowWindows = await getStrategySetWindowBatch(
-        this.connectionId,
+      const rowWindows = await this.getStrategySetWindowBatch(
         rowHistoryKeys,
         this._coordinationSettings.realEvalPosCount,
       )
@@ -7113,7 +7303,7 @@ export class StrategyCoordinator {
     // unchanged & magnitude shrunk → partial CLOSE lowest-PF; direction
     // flipped or flat:0 ���� close all in bucket then optionally re-open.
     // live_net_target tracks hedge-direction net positions for the live dispatch.
-    if (Object.keys(netTargetWrites).length > 0) {
+    if (!isPrehistoric && Object.keys(netTargetWrites).length > 0) {
       try {
         const netClient = getRedisClient()
         const targetKey = `live_net_target:${this.connectionId}`
@@ -7126,32 +7316,45 @@ export class StrategyCoordinator {
     // Base/Main. The complete Real set graph remains alive through this
     // execution pass and the full source configurations remain in their
     // independent stores; no candidate is dropped from evaluation or dispatch.
-    const realKey = `strategies:${this.connectionId}:${symbol}:real:sets`
-    await setSettings(realKey, {
-      formatVersion: 3,
-      runtimeProjection: true,
-      rows: projectRuntimeStageRows(realSets),
-      count: realSets.length,
-      created: new Date(),
-    })
+    if (!isPrehistoric) {
+      const realKey = `strategies:${this.connectionId}:${symbol}:real:sets`
+      await setSettings(realKey, {
+        formatVersion: 3,
+        runtimeProjection: true,
+        rows: projectRuntimeStageRows(realSets),
+        count: realSets.length,
+        created: new Date(),
+      })
+    }
 
     // Count of Main Sets that actually entered PF/DDT evaluation (excludes pos-count
     // pre-gated sets). After the merged pos-gate + PF/DDT pass, `realQualifying`
     // is the survivor list; `skippedRealLowPos` is the count of pos-gated rejects.
     // PF-eligible = total - pos-gated.
     const mainPFEligible = mainSets.length - skippedRealLowPos
+    const realInputAccounting = accountRealStageInputs(realEvaluationInputs)
+    const realLogicalInput = realInputAccounting.logicalEvaluated
+    const realLogicalPassed = accountRealStageInputs(realQualifying).logicalEvaluated
+    const realLogicalPassRatio = realLogicalInput > 0
+      ? Math.min(1, realLogicalPassed / realLogicalInput)
+      : 0
 
     // Real-created Block/scope rows are part of the evaluated graph even when
     // the later retention boundary does not mirror every row to Live.
     const realRelatedCreated = realStageRelatedCreated
     const continuousRealEvaluated = continuousRealCreated + continuousRealRejected
+    const rowRealPassRatio = continuousRealEvaluated > 0
+      ? Math.min(1, rowRealSets.length / continuousRealEvaluated)
+      : 0
     const realTotalEvaluated = mainPFEligible + realRelatedCreated + continuousRealEvaluated
     const realEvaluatedAfterFanOut = realTotalEvaluated
 
     // Write Real counts to progression hash — CUMULATIVE via hincrby so the dashboard
     // doesn't oscillate with per-cycle snapshots (see matching fix in createBaseSets/createMainSets).
     // Per-cycle snapshot is kept in `strategies_real_current` for components that want it.
-    try {
+    // Historic replay owns isolated `prehistoric_*` metrics and must never
+    // overwrite the live Real UI/persistence path.
+    if (!isPrehistoric) try {
       const client = getRedisClient()
       const realDetailKey = `strategy_detail:${this.connectionId}:real`
       // Single pass over realSets — replaces 4 separate .reduce() calls that each
@@ -7169,16 +7372,6 @@ export class StrategyCoordinator {
       const realAvgConf      = n > 0 ? _sumConf / n : 0
       const realEntriesTotal = _sumEC
       const realAvgPosPerSet = n > 0 ? _sumEC   / n : 0
-      // passRatioReal = fraction of Real evaluated work that passed into Real.
-      // Denominator includes both PF-eligible Main inputs and Real related/axis
-      // fan-out outputs, keeping the ratio bounded when fan-out creates more
-      // Real Sets than the original Main input count.
-      // Row-Real's percentage is only its own continuous rolling decision.
-      // The raw Main/Block fan-out graph can be wider than the final row and
-      // must not make a single-stage percentage exceed 100%.
-      const passRatioReal = continuousRealEvaluated > 0
-        ? rowRealSets.length / continuousRealEvaluated
-        : realTotalEvaluated > 0 ? Math.min(1, n / realTotalEvaluated) : 0
       // Average entryCount per Real Set ��� identical to realAvgPosPerSet.
       // The previous formula used Math.max(1, entryCount||1) which biased
       // Sets with entryCount=0 upward. Reuse the already-correct value.
@@ -7264,11 +7457,18 @@ export class StrategyCoordinator {
           avg_drawdown_time:  String(Math.round(realAvgDDT)),
           avg_pos_eval_real:  String(realAvgPosEval.toFixed(4)),
           avg_pos_per_set:    String(realAvgPosPerSet.toFixed(2)),
-          // evaluated = public Real denominator after fan-out; separate upstream
-          // input remains in strategies_active as {symbol}:real:input.
-          // evaluated = PF-eligible Main inputs plus Real related/axis-created outputs;
-          // separate upstream input remains in strategies_active as {symbol}:real:input.
-          evaluated:          String(realEvaluatedAfterFanOut),
+          // Public Real evaluation is the logical Main input after the
+          // position gate. Block/Row-Real work remains explicit below, while
+          // raw physical fan-out is retained for capacity diagnostics.
+          evaluated:          String(realLogicalInput),
+          input_sets:         String(realLogicalInput),
+          logical_passed_sets: String(realLogicalPassed),
+          base_input_sets:    String(realInputAccounting.baseInputs),
+          pos_count_related_sets: String(realInputAccounting.positionCountRelated),
+          other_related_sets: String(realInputAccounting.otherRelated),
+          raw_input_sets:     String(mainPFEligible),
+          raw_evaluated:      String(realEvaluatedAfterFanOut),
+          coordination_evaluated: String(realRelatedCreated),
           passed_sets:        String(realSets.length),
           // Public Row-Real = the final rolling Real candidates. Keep the raw
           // post-hedge/Block graph in created_sets for diagnostics, while this
@@ -7276,7 +7476,10 @@ export class StrategyCoordinator {
           row_valid:          String(rowRealSets.length),
           row_active:         String(rowRealRunningNow),
           row_active_exact:   String(activeRealSets.length),
-          pass_rate:          String(passRatioReal.toFixed(4)),
+          // Main→Real filter pass rate. Row-Real's independent rolling
+          // coordination rate is deliberately separate from this funnel.
+          pass_rate:          String(realLogicalPassRatio.toFixed(4)),
+          row_pass_rate:      String(rowRealPassRatio.toFixed(4)),
           count_pos_eval:     String(realSets.length),
           entries_total:      String(realEntriesTotal),
           // ── ACTIVELY-RUNNING metrics (operator spec) ──────────────
@@ -7310,11 +7513,20 @@ export class StrategyCoordinator {
             realSets.filter((s) => (s.entryCount || 0) > 0).length,
           ),
           [`s:${symbol}:passed`]:     String(realSets.length),
-          [`s:${symbol}:evaluated`]:  String(realTotalEvaluated),
+          [`s:${symbol}:evaluated`]:  String(realLogicalInput),
+          [`s:${symbol}:input_sets`]: String(realLogicalInput),
+          [`s:${symbol}:logical_passed_sets`]: String(realLogicalPassed),
+          [`s:${symbol}:base_input_sets`]: String(realInputAccounting.baseInputs),
+          [`s:${symbol}:pos_count_related_sets`]: String(realInputAccounting.positionCountRelated),
+          [`s:${symbol}:other_related_sets`]: String(realInputAccounting.otherRelated),
+          [`s:${symbol}:raw_input_sets`]: String(mainPFEligible),
+          [`s:${symbol}:raw_evaluated`]: String(realEvaluatedAfterFanOut),
+          [`s:${symbol}:coordination_evaluated`]: String(realRelatedCreated),
           [`s:${symbol}:row_valid`]:        String(rowRealSets.length),
           [`s:${symbol}:row_real_created`]: String(continuousRealCreated),
           [`s:${symbol}:row_real_evaluated`]: String(continuousRealEvaluated),
           [`s:${symbol}:row_real_rejected`]: String(continuousRealRejected),
+          [`s:${symbol}:row_pass_rate`]: String(rowRealPassRatio.toFixed(4)),
           [`s:${symbol}:row_active`]:       String(rowRealRunningNow),
           [`s:${symbol}:row_active_exact`]: String(activeRealSets.length),
           [`s:${symbol}:apf`]:        String(realAvgPF.toFixed(4)),
@@ -7330,11 +7542,9 @@ export class StrategyCoordinator {
         // Overwriting them with Real's realSets.length would corrupt MAIN's
         // pass statistics and make passed_sets > evaluated impossible to read.
         client.set(`strategies:${this.connectionId}:real:count`, String(realSets.length)),
-        client.set(`strategies:${this.connectionId}:real:evaluated`, String(realTotalEvaluated)),
-        client.set(`strategies:${this.connectionId}:main:passed`, String(realSets.length)),
+        client.set(`strategies:${this.connectionId}:real:evaluated`, String(realLogicalInput)),
         client.expire(`strategies:${this.connectionId}:real:count`, 86400),
         client.expire(`strategies:${this.connectionId}:real:evaluated`, 86400),
-        client.expire(`strategies:${this.connectionId}:main:passed`, 86400),
       ]
       // NOTE: real:sets persistence is handled earlier in evaluateRealSets via the
       // slim-format write (setKeys array only, ~30 bytes/set vs ~2-5 KB for a full blob).
@@ -7345,18 +7555,21 @@ export class StrategyCoordinator {
       // real:sets persistence path and the reader at createLiveSets uses getSettings()
       // which resolves the settings:-prefixed path correctly.
 
-      // strategies_real_related_created = Real Sets created via axis/variant
-      // fan-out BEYOND the Main Sets that entered (mirrors the Main stage's
-      // `strategies_main_related_created = mainSets.length - reused`). This is
-      // the "additionally created" term the dashboard can display alongside the
-      // Real evaluated pool. `strategies_real_evaluated` already includes this
-      // fan-out term so Real pass denominators stay consistent across Redis/detail
-      // fields. max(0, …) because Real can also net-filter below the input.
-      // strategies_real_total = cumulative Sets PROMOTED by REAL (passed output count).
-      // strategies_real_evaluated = every Real Set considered after current-cycle
-      // fan-out (upstream PF-eligible Main input + Real related-created fan-out).
+      // `strategies_real_evaluated` is the logical Main→Real input. Physical
+      // fan-out and coordination work are retained in dedicated counters so a
+      // 320-row axis matrix cannot masquerade as 320 unrelated evaluations.
       if (realSets.length > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_real_total", realSets.length))
-      if (realTotalEvaluated > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_real_evaluated", realTotalEvaluated))
+      if (realLogicalInput > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_real_evaluated", realLogicalInput))
+      if (realLogicalPassed > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_real_logical_passed", realLogicalPassed))
+      if (realTotalEvaluated > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_real_raw_evaluated", realTotalEvaluated))
+      if (realRelatedCreated > 0 || continuousRealEvaluated > 0) {
+        writes.push(hincrbyStrategyProgression(
+          client,
+          this.connectionId,
+          "strategies_real_coordination_evaluated",
+          realRelatedCreated + continuousRealEvaluated,
+        ))
+      }
 
       // strategies_real_related_created = Real Sets created via axis/variant
       // fan-out BEYOND the upstream Main PF-eligible input. max(0, …) because
@@ -7371,20 +7584,23 @@ export class StrategyCoordinator {
       // aggregates to a "Strategies (Real, alive now)" tile. Note this
       // is the COUNT-AFTER-SORT-AND-CAP, i.e. exactly what propagates
       // forward to Live evaluation �� not the raw post-filter count.
-      writes.push(
-        client.hset(`strategies_active:${this.connectionId}`, {
-          [`${symbol}:real`]:           String(realRunningNow),
-          // real:evaluated = PF-eligible Main inputs plus Real related/axis-created
-          // outputs. Cross-symbol sum in stats route matches the Real pass denominator.
-          [`${symbol}:real:evaluated`]: String(realTotalEvaluated),
-          // real:input = upstream Main Sets that entered Real PF eligibility
-          // before Real's current-cycle related-created fan-out.
-          [`${symbol}:real:input`]: String(mainPFEligible),
-          // real:relatedCreated = Real fan-out created this cycle beyond input.
-          [`${symbol}:real:relatedCreated`]: String(realRelatedCreated),
-        }),
-        client.expire(`strategies_active:${this.connectionId}`, 600),
-      )
+      if (!isPrehistoric) {
+        writes.push(
+          client.hset(`strategies_active:${this.connectionId}`, {
+            [`${symbol}:real`]:           String(realRunningNow),
+            [`${symbol}:real:evaluated`]: String(realLogicalInput),
+            [`${symbol}:real:input`]: String(realLogicalInput),
+            [`${symbol}:real:passed`]: String(realLogicalPassed),
+            [`${symbol}:real:rawInput`]: String(mainPFEligible),
+            [`${symbol}:real:rawEvaluated`]: String(realEvaluatedAfterFanOut),
+            [`${symbol}:real:relatedCreated`]: String(realRelatedCreated),
+            [`${symbol}:real:coordinationEvaluated`]: String(
+              realRelatedCreated + continuousRealEvaluated,
+            ),
+          }),
+          client.expire(`strategies_active:${this.connectionId}`, 600),
+        )
+      }
 
       // ── P1-1: Real-stage per-variant aggregation ──��────────���────────
       // ── Real-stage rolling sample (for averaged count stats) ──���───────
@@ -7404,11 +7620,13 @@ export class StrategyCoordinator {
           pps: Number(realPosPerRunningSet.toFixed(3)),
           open: realOpenPositions,        // running (pseudo-open) positions
         })
-        writes.push(
-          client.lpush(sampleKey, sample),
-          client.ltrim(sampleKey, 0, 599),
-          client.expire(sampleKey, 3600),
-        )
+        if (!isPrehistoric) {
+          writes.push(
+            client.lpush(sampleKey, sample),
+            client.ltrim(sampleKey, 0, 599),
+            client.expire(sampleKey, 3600),
+          )
+        }
       } catch { /* non-critical */ }
 
       // Same shape as Main's `variantAgg` but computed over the Real
@@ -7568,7 +7786,7 @@ export class StrategyCoordinator {
     // ── Position count metrics for real stage ──────────────────────
     // Track entries passing Real filter so dashboard shows promotion success
     const realEntriesTotal = realSets.reduce((sum, s) => sum + (s.entryCount ?? 0), 0)
-    try {
+    if (!isPrehistoric) try {
       const client = getRedisClient()
       if (realEntriesTotal > 0) {
         await hincrbyStrategyProgression(client, this.connectionId, "real_positions_created_count", realEntriesTotal)
@@ -7580,12 +7798,17 @@ export class StrategyCoordinator {
         type: "real",
         symbol,
         timestamp: new Date(),
-        // totalCreated = PF-eligible Main inputs plus Real related/axis-created outputs.
+        // Physical work remains the legacy total; logicalEvaluated is the
+        // public pipeline count used by the engine and dashboard statistics.
         totalCreated: realTotalEvaluated,
         passedEvaluation: realSets.length,
-        failedEvaluation: Math.max(0, realTotalEvaluated - realSets.length),
+        failedEvaluation: Math.max(0, realLogicalInput - realLogicalPassed),
         avgProfitFactor: realSets.length > 0 ? realSets.reduce((s, set) => s + set.avgProfitFactor, 0) / realSets.length : 0,
         avgDrawdownTime: realSets.length > 0 ? realSets.reduce((s, set) => s + set.avgDrawdownTime, 0) / realSets.length : 0,
+        logicalEvaluated: realLogicalInput,
+        logicalPassed: realLogicalPassed,
+        rawEvaluated: realTotalEvaluated,
+        coordinationEvaluated: realRelatedCreated + continuousRealEvaluated,
       },
       sets: realSets,
     }
@@ -7928,8 +8151,7 @@ export class StrategyCoordinator {
         ].filter(Boolean) as string[]
       }),
     ))
-    const rowWindows = await getStrategySetWindowBatch(
-      this.connectionId,
+    const rowWindows = await this.getStrategySetWindowBatch(
       rowHistoryKeys,
       this._coordinationSettings.liveEvalPosCount,
     )
@@ -7949,8 +8171,7 @@ export class StrategyCoordinator {
     // when its own rolling PF/DDT passes (or it is already actively protected).
     // This keeps Block volume/count calculation independent while making its
     // order IDs, position IDs, history, stats and next-cycle decision agree.
-    const blockWindows = await getStrategySetWindowBatch(
-      this.connectionId,
+    const blockWindows = await this.getStrategySetWindowBatch(
       builtRowLiveBlock.map((set) => set.rowEvaluationKey || set.setKey),
       this._coordinationSettings.liveEvalPosCount,
     )
@@ -9371,7 +9592,9 @@ export class StrategyCoordinator {
     const resultKeys = axisSets
       .map((set) => set.setKey)
       .filter((setKey) => (ledger.closed[setKey] || 0) > 0)
-    const windows = await getStrategySetWindowBatch(this.connectionId, resultKeys, 12)
+    const windows = resultKeys.length > 0
+      ? await this.getStrategySetWindowBatch(resultKeys, 12)
+      : new Map<string, PosWindowStats>()
     const hydrated: StrategySet[] = []
 
     for (const set of axisSets) {

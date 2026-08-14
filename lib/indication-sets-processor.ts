@@ -528,6 +528,13 @@ export class IndicationSetsProcessor {
    * configuration and is cleared as soon as the cycle is published.
    */
   private currentCycleEntries: any[] | null = null
+  /**
+   * Historical replay shares the exact calculation code with realtime, but
+   * produces an in-memory snapshot only. Durable Set, cooldown, outcome, and
+   * dashboard writes remain exclusively owned by realtime processing.
+   */
+  private currentCyclePersistenceEnabled = true
+  private currentCycleSnapshotTimestamp: number | string | null = null
   private limits: IndicationSetLimits = { ...DEFAULT_LIMITS }
   private positionLimits: PositionLimits = { ...DEFAULT_POSITION_LIMITS }
   private indicationTimeoutMs: number = DEFAULT_INDICATION_TIMEOUT_MS
@@ -1179,10 +1186,20 @@ export class IndicationSetsProcessor {
     // snapshot and made large, valid configuration grids look incomplete.
     const SLOW_CYCLE_MS = 15_000
     
+    const isHistoricalSnapshot =
+      String(marketData?.__indicationSnapshotMode || "realtime") === "historical"
+    const asOfMs = Number(marketData?.__indicationSnapshotAsOfMs)
+    this.currentCyclePersistenceEnabled = !isHistoricalSnapshot
+    this.currentCycleSnapshotTimestamp =
+      isHistoricalSnapshot && Number.isFinite(asOfMs) ? asOfMs : null
     this.currentCycleEntries = []
     try {
       await this.settingsReady
-      const closedForwardOutcomes = await this.closePendingRealtimeOutcomes(symbol, marketData)
+      // A historical candle has no permitted forward-looking outcome and must
+      // never consume or mutate the realtime pending-outcome queue.
+      const closedForwardOutcomes = this.currentCyclePersistenceEnabled
+        ? await this.closePendingRealtimeOutcomes(symbol, marketData)
+        : false
       if (!marketData) {
         console.warn(`[v0] [IndicationSets] Invalid market data for ${symbol}`)
         await logProgressionEvent(this.connectionId, "indications_sets", "warning", `Invalid market data for ${symbol}`, {
@@ -1373,7 +1390,8 @@ export class IndicationSetsProcessor {
       // O(symbols × types) total which is small (for example 12 × 6 = 72 fields). TTL
       // is short so a stopped engine doesn't leave stale "active" rows
       // forever; the next cycle naturally refreshes them.
-      try {
+      if (this.currentCyclePersistenceEnabled) {
+        try {
         const { getRedisClient: _getRedis } = await import("@/lib/redis-db")
         const client = _getRedis()
         const activeKey = `indication_sets_active:${this.connectionId}`
@@ -1453,7 +1471,8 @@ export class IndicationSetsProcessor {
           }
         }
         await pipe.exec().catch(() => {})
-      } catch { /* non-critical: dashboard falls back to cumulative */ }
+        } catch { /* non-critical: dashboard falls back to cumulative */ }
+      }
 
       if (totalQualified > 0) {
         // A processor is intentionally short-lived and reconstructed for each
@@ -1499,6 +1518,10 @@ export class IndicationSetsProcessor {
       console.error(`[v0] [IndicationSets] Failed to process sets for ${symbol}:`, error)
       this.currentCycleEntries = null
       return []
+    } finally {
+      this.currentCycleEntries = null
+      this.currentCyclePersistenceEnabled = true
+      this.currentCycleSnapshotTimestamp = null
     }
   }
 
@@ -1573,6 +1596,10 @@ export class IndicationSetsProcessor {
       // exact durable Set identity, which already includes connection, symbol,
       // indicator type, complete parameters and direction. This means a valid
       // MACD/Long tuple cannot throttle RSI, another MACD tuple, or Short.
+        // Historical replay evaluates identical candidates but must never
+        // claim a realtime cooldown; an old candle cannot suppress a current
+        // valid indication for the same exact Set.
+        if (!this.currentCyclePersistenceEnabled) return candidate
         const client = await getCachedClient()
         const type = String(candidate.setKey.split(":")[3] || "")
         const commonType = String(candidate.config?.indicatorType || "")
@@ -2570,17 +2597,8 @@ export class IndicationSetsProcessor {
     if (writes.length === 0) return
 
     try {
-      const client = await getCachedClient()
-
       const now = Date.now()
-      const timestamp = new Date().toISOString()
-
-      // Resolve compaction config once for the whole batch — type is
-      // fixed for all writes in this call (the public batchSave API
-      // takes a single `type`), so a single async resolution covers
-      // every chunk and keeps the inner loop synchronous w.r.t. config
-      // lookup.
-      const compactionCfg = await this.resolveCompaction(type as keyof IndicationSetLimits)
+      const timestamp = this.currentCycleSnapshotTimestamp ?? new Date().toISOString()
       const grouped = new Map<string, string[]>()
       writes.forEach(({ setKey, indication, config }, idx) => {
         // Unknown direction is rejected rather than silently attributed to
@@ -2614,6 +2632,16 @@ export class IndicationSetsProcessor {
         if (bucket) bucket.push(JSON.stringify(entry))
         else grouped.set(setKey, [JSON.stringify(entry)])
       })
+
+      // Strategy consumes the exact historical rows above directly. Do not
+      // append replay rows into the live Set ledger/index.
+      if (!this.currentCyclePersistenceEnabled) return
+
+      const client = await getCachedClient()
+      // Resolve compaction config once for the whole realtime batch — type is
+      // fixed for all writes in this call (the public batchSave API takes a
+      // single `type`), so a single async resolution covers every chunk.
+      const compactionCfg = await this.resolveCompaction(type as keyof IndicationSetLimits)
 
       // Append each grouped set through the shared helper so legacy JSON-array
       // keys are migrated to Redis LISTs consistently with the single-save path.
@@ -2728,6 +2756,20 @@ export class IndicationSetsProcessor {
     const direction = resolveIndicationDirection(indication)
     if (!direction) return 0
     indication.direction = direction
+    // Replay has no permitted forward window. Keep a qualifying exact row at
+    // the Base threshold without touching realtime outcome rings or queues.
+    if (!this.currentCyclePersistenceEnabled) {
+      indication.profitFactor = this.baseMinimumPfRatio
+      indication.metadata = {
+        ...indication.metadata,
+        outcomePending: false,
+        historicalSnapshot: true,
+        positionCostRatio: this.baseMinimumPfRatio,
+        positionCostPct: this.trendPositionCostPct,
+        profitFactorSource: "historical_snapshot_base",
+      }
+      return this.baseMinimumPfRatio
+    }
     const outcome = this.evaluateForwardOutcome(
       marketData,
       direction,

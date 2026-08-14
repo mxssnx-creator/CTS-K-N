@@ -1599,8 +1599,16 @@ export async function GET(
     let activeMainInput = 0
     let activeMainPassedParents = 0
     let activeMainRelatedCreated = 0
+    let activeMainPosCountRelated = 0
+    let activeMainOtherRelated = 0
+    let activeMainRawMaterialized = 0
     let activeRealInput = 0
+    let activeRealPassed = 0
+    let activeRealPassedSeen = false
     let activeRealRelatedCreated = 0
+    let activeRealRawInput = 0
+    let activeRealRawEvaluated = 0
+    let activeRealCoordinationEvaluated = 0
     // Hoisted so the raw hash is accessible in the return block for `strategiesActive`.
     let stratActiveHash: Record<string, string> | null = null
     try {
@@ -1649,6 +1657,11 @@ export async function GET(
             activeRealInput += numVal
             continue
           }
+          if (suffix === "real:passed") {
+            activeRealPassed += numVal
+            activeRealPassedSeen = true
+            continue
+          }
           if (suffix === "main:input") {
             activeMainInput += numVal
             continue
@@ -1661,8 +1674,32 @@ export async function GET(
             activeMainRelatedCreated += numVal
             continue
           }
+          if (suffix === "main:posCountRelated") {
+            activeMainPosCountRelated += numVal
+            continue
+          }
+          if (suffix === "main:otherRelated") {
+            activeMainOtherRelated += numVal
+            continue
+          }
+          if (suffix === "main:rawMaterialized") {
+            activeMainRawMaterialized += numVal
+            continue
+          }
           if (suffix === "real:relatedCreated") {
             activeRealRelatedCreated += numVal
+            continue
+          }
+          if (suffix === "real:rawInput") {
+            activeRealRawInput += numVal
+            continue
+          }
+          if (suffix === "real:rawEvaluated") {
+            activeRealRawEvaluated += numVal
+            continue
+          }
+          if (suffix === "real:coordinationEvaluated") {
+            activeRealCoordinationEvaluated += numVal
             continue
           }
           if (suffix in activeStratByStage) {
@@ -3131,14 +3168,14 @@ export async function GET(
     //   strategies_{stage}_evaluated = Sets that ENTERED the stage (input)
     // base = 100% (pipeline entry; every Base set that exists passed by definition)
     // main = Base parents passed / Base parents evaluated (before fan-out)
-    // real = Real output / Real input  (Main→Real filter survival)
+    // real = logical Real passes / logical Real input (Main→Real filter survival)
     const _pct = (num: number, den: number): number =>
       den > 0 ? Math.max(0, Math.min(100, Number(((num / den) * 100).toFixed(1)))) : 0
     // CUMULATIVE FUNNEL (operator spec): each stage's Eval% = sets that
     // survived/evaluated at the stage ÷ the full candidate pool considered at
-    // the stage. Main computes that pool as input + related fan-out. Real stores
-    // the unified pool directly in `strategies_real_evaluated`, matching
-    // `strategy_detail:*:real.evaluated`.
+    // the stage. Main counts one Pos-Count lineage per Base parent. Real keeps
+    // its logical filter denominator and numerator separate from physical
+    // Block/Row-Real fan-out, matching `strategy_detail:*:real.evaluated`.
     //   strategies_{stage}_total           = stage OUTPUT (promoted / passed)
     //   strategies_{stage}_evaluated        = stage evaluated pool
     //   strategies_{stage}_related_created  = additionally created at the stage
@@ -3149,11 +3186,13 @@ export async function GET(
     const _mainParentsPassed = Number(progHash.strategies_main_parent_passed  || "0")
     const _realOutput      = Number(progHash.strategies_real_total            || "0")
     const _realInput       = Number(progHash.strategies_real_evaluated        || "0")
+    const _realLogicalPassed = Number(progHash.strategies_real_logical_passed || "0")
     // base = evaluated ÷ overall generated (pipeline entry — every Base Set is
     //        evaluated, so ~100% when any exist, expressed as the true ratio).
     // main = passed Base parents ÷ evaluated Base parents. Related Main Sets
     //        are reported separately and never inflate this filter ratio.
-    // real = real output ÷ Real evaluated pool (already includes Real fan-out)
+    // real = logical Real passes ÷ logical Real evaluated pool. Physical
+    //       outputs remain capacity/dispatch metrics and are not a rate.
     // live evalPct = sets dispatched this cycle / real sets available for dispatch
     const _liveDispatched = stratCounts.live || 0
     const _liveBase       = stratCounts.real  || 0
@@ -3166,11 +3205,9 @@ export async function GET(
         : activeMainInput > 0
           ? _pct(activeMainPassedParents, activeMainInput)
           : _pct(_mainParentsPassed || Math.min(_mainOutput, _mainInput), _mainInput),
-      real: strategyRows.main.overall > 0
-        ? _pct(strategyRows.real.valid, strategyRows.main.overall)
-        : (activeRealInput + activeRealRelatedCreated) > 0
-          ? _pct(stratCounts.real || 0, activeRealInput + activeRealRelatedCreated)
-          : _pct(_realOutput, _realInput),
+      real: activeRealInput > 0 && activeRealPassedSeen
+        ? _pct(activeRealPassed, activeRealInput)
+        : _pct(_realLogicalPassed || Math.min(_realOutput, _realInput), _realInput),
       // Live: what fraction of Real-stage survivors were dispatched to exchange
       live: strategyRows.live.total > 0
         ? _pct(strategyRows.live.mirrored, strategyRows.live.total)
@@ -3565,24 +3602,28 @@ export async function GET(
             return eval_val
           })(),
           mainEvaluated: (() => {
-            // Main evaluation is the upstream Base-parent input. Main output can
-            // be larger because related axis/variant Sets are materialised after
-            // the parent filter, so never clamp this input to the output count.
-            return activeMainInput || stratEvaluated.main || 0
+            // Logical Main evaluation = Base inputs + one Pos-Count related
+            // evaluation per Base lineage + other related projections.
+            return stratEvaluated.main || 0
           })(),
+          mainBaseInput: activeMainInput,
           mainPassedParents: activeMainPassedParents,
           mainRelatedCreated: activeMainRelatedCreated,
+          mainPosCountRelated: activeMainPosCountRelated,
+          mainOtherRelated: activeMainOtherRelated,
+          mainRawMaterialized: activeMainRawMaterialized,
           realEvaluated: (() => {
-            // NOTE: Real accounting has three meanings:
-            // - real:input = upstream Main PF-eligible input before Real fan-out.
-            // - real:relatedCreated = current-cycle Real fan-out added to input.
-            // - stratCounts.real = Real passed output after PF/DDT filtering.
-            // Public realEvaluated is every Real Set considered after fan-out, so
-            // prefer input + relatedCreated and fall back to the writer's evaluated
-            // field for mixed deploys. It may exceed passed output; do not clamp.
-            const afterFanOut = activeRealInput + activeRealRelatedCreated
-            return afterFanOut || stratEvaluated.real || 0
+            // Real's public evaluation is its logical Main input. Block and
+            // Row-Real coordination work is surfaced separately below.
+            return activeRealInput || stratEvaluated.real || 0
           })(),
+          realLogicalPassed: activeRealPassedSeen
+            ? activeRealPassed
+            : _realLogicalPassed,
+          realRelatedCreated: activeRealRelatedCreated,
+          realCoordinationEvaluated: activeRealCoordinationEvaluated,
+          realRawInput: activeRealRawInput,
+          realRawEvaluated: activeRealRawEvaluated,
         },
       },
 

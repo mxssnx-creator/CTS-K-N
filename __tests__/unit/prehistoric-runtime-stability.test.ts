@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { getRedisClient, setSettings } from "@/lib/redis-db"
+import { getIndications, getRedisClient, setSettings, storeIndications } from "@/lib/redis-db"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { IndicationConfigManager } from "@/lib/indication-config-manager"
@@ -95,6 +95,42 @@ describe("historic runtime generation stability", () => {
     }
   })
 
+  test("local production ownership uses the same capped basket as the engine", async () => {
+    const connectionId = `selection-local-cap-${Date.now()}`
+    const client = getRedisClient()
+    const settingsKey = `settings:trade_engine_state:${connectionId}`
+    const previousNodeEnv = process.env.NODE_ENV
+    const previousRuntime = process.env.CTS_DEPLOYMENT_RUNTIME
+    try {
+      process.env.NODE_ENV = "production"
+      process.env.CTS_DEPLOYMENT_RUNTIME = "self-hosted"
+      await client.del(settingsKey)
+      await setSettings(`trade_engine_state:${connectionId}`, {
+        force_symbols: JSON.stringify([
+          "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
+          "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
+        ]),
+        dev_symbol_count_override: "12",
+        symbol_selection_epoch: "epoch-local-cap",
+      })
+
+      await expect(getCanonicalSymbolSelection(connectionId)).resolves.toEqual({
+        epoch: "epoch-local-cap",
+        symbols: [
+          "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT", "BNBUSDT",
+          "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT",
+        ],
+        total: 12,
+      })
+    } finally {
+      await client.del(settingsKey)
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = previousNodeEnv
+      if (previousRuntime === undefined) delete process.env.CTS_DEPLOYMENT_RUNTIME
+      else process.env.CTS_DEPLOYMENT_RUNTIME = previousRuntime
+    }
+  })
+
   test("repeated symbol completion increments one prehistoric cycle only once", async () => {
     const connectionId = `historic-cycle-${Date.now()}`
     const client = getRedisClient()
@@ -116,6 +152,85 @@ describe("historic runtime generation stability", () => {
       await expect(client.scard(`${scope.prehistoricKey}:symbols`)).resolves.toBe(1)
     } finally {
       await client.del(...keys)
+    }
+  })
+
+  test("historical indication snapshots stay namespaced and preserve replay time", async () => {
+    const connectionId = `historic-indication-snapshot-${Date.now()}`
+    const symbol = "BTCUSDT"
+    const historicConnectionId = `${connectionId}:${symbol}:prehistoric`
+    const client = getRedisClient()
+    const keys = [
+      `indications:${connectionId}`,
+      `indications:${connectionId}:direction`,
+      `indications_snapshot:${connectionId}:${symbol}`,
+      `indications_snapshot:index:${connectionId}`,
+      `indications:${historicConnectionId}`,
+      `indications:${historicConnectionId}:direction`,
+      `indications_snapshot:${historicConnectionId}:${symbol}`,
+      `indications_snapshot:index:${historicConnectionId}`,
+    ]
+    const replayTimestamp = 1_786_521_600_000
+    try {
+      await client.del(...keys)
+      await storeIndications(connectionId, symbol, [{
+        type: "direction",
+        marker: "live",
+        timestamp: 1_786_608_000_000,
+      }])
+      await storeIndications(historicConnectionId, symbol, [{
+        type: "direction",
+        marker: "historic",
+        timestamp: replayTimestamp,
+      }], { preserveTimestamps: true })
+
+      const [live, historic] = await Promise.all([
+        getIndications(connectionId),
+        getIndications(historicConnectionId),
+      ])
+      expect(live).toEqual(expect.arrayContaining([
+        expect.objectContaining({ marker: "live" }),
+      ]))
+      expect(live).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ marker: "historic" }),
+      ]))
+      expect(historic).toEqual(expect.arrayContaining([
+        expect.objectContaining({ marker: "historic", timestamp: replayTimestamp }),
+      ]))
+    } finally {
+      await client.del(...keys)
+    }
+  })
+
+  test("historical exact Set snapshots do not persist into the live Set keyspace", async () => {
+    const connectionId = `historic-set-snapshot-${Date.now()}`
+    const symbol = "BTCUSDT"
+    const setKey = `indication_set:${connectionId}:${symbol}:direction:long:unit`
+    const processor = new IndicationSetsProcessor(connectionId)
+    const replayTimestamp = 1_786_521_600_000
+    const client = getRedisClient()
+    try {
+      await client.del(setKey)
+      ;(processor as any).currentCycleEntries = []
+      ;(processor as any).currentCyclePersistenceEnabled = false
+      ;(processor as any).currentCycleSnapshotTimestamp = replayTimestamp
+      await (processor as any).batchSaveIndications([{
+        setKey,
+        indication: {
+          direction: "long",
+          profitFactor: 1,
+          confidence: 0.8,
+          metadata: { historicalSnapshot: true },
+        },
+        config: { range: 2 },
+      }], "direction")
+
+      expect((processor as any).currentCycleEntries).toEqual([
+        expect.objectContaining({ setKey, timestamp: replayTimestamp }),
+      ])
+      await expect(client.exists(setKey)).resolves.toBe(0)
+    } finally {
+      await client.del(setKey)
     }
   })
 
@@ -511,6 +626,45 @@ describe("historic runtime generation stability", () => {
     expect(processStrategy).not.toHaveBeenCalled()
   })
 
+  test("the shared historic pipeline forwards isolated mode and skips live handling", async () => {
+    const processStrategy = jest.fn(async () => ({
+      strategiesEvaluated: 3,
+      liveReady: 0,
+    }))
+    const updateOpenPseudoPositionsForSymbol = jest.fn(async () => 1)
+    const indications = [{ type: "direction", validated: true }]
+
+    const result = await runIndStratCycle(
+      "historic-mode-forwarding",
+      "BTCUSDT",
+      "historical",
+      {
+        indication: {
+          processIndication: async () => indications,
+        } as any,
+        strategy: { processStrategy } as any,
+        realtime: { updateOpenPseudoPositionsForSymbol } as any,
+        enableStrategyFlow: true,
+      },
+    )
+
+    expect(result).toMatchObject({
+      mode: "historical",
+      indicationCount: 1,
+      strategiesEvaluated: 3,
+      liveReady: 0,
+      pseudoUpdates: 0,
+    })
+    expect(updateOpenPseudoPositionsForSymbol).not.toHaveBeenCalled()
+    expect(processStrategy).toHaveBeenCalledWith(
+      "BTCUSDT",
+      indications,
+      true,
+      expect.any(Function),
+      "prehistoric",
+    )
+  })
+
   test("the live handoff rechecks generation before every exchange submission", () => {
     const coordinator = source("lib/strategy-coordinator.ts")
     const liveStage = source("lib/trade-engine/stages/live-stage.ts")
@@ -524,6 +678,32 @@ describe("historic runtime generation stability", () => {
     expect(liveStage.indexOf("if (!isCurrent())")).toBeLessThan(
       liveStage.indexOf("return exchangeConnector.placeOrder("),
     )
+  })
+
+  test("historic strategy calculation keeps live events, snapshots, and active exposure isolated", () => {
+    const coordinator = source("lib/strategy-coordinator.ts")
+    const pipeline = source("lib/trade-engine/shared-ind-strat-pipeline.ts")
+    const processor = source("lib/trade-engine/strategy-processor.ts")
+    const indicationProcessor = source("lib/trade-engine/indication-processor-fixed.ts")
+    const indicationSets = source("lib/indication-sets-processor.ts")
+
+    expect(coordinator).toContain("if (!isPrehistoric) {\n        emitCanonicalEvent({ type: \"strategy.stageChanged\"")
+    expect(coordinator).toContain("if (!isPrehistoric) {\n        await this.logStrategyProgression(symbol, results)")
+    expect(coordinator).toContain("!isPrehistoric,\n        !isPrehistoric,")
+    expect(coordinator).toContain("persistStats = true")
+    expect(coordinator).toContain("includeCurrentActive = true")
+    expect(coordinator).toContain("includeCurrentActive ? this.getUnavailableBlockKeys(symbol) : Promise.resolve(new Set<string>())")
+    expect(pipeline).toContain('mode === "historical" ? "prehistoric" : "realtime"')
+    expect(processor).toContain("getStrategyCoordinator(this.connectionId, mode)")
+    expect(processor).toContain("skipLiveDispatch || isPrehistoric")
+    expect(processor).toContain("if (!isPrehistoric) {")
+    expect(coordinator).toContain("getStrategySetLedgerSnapshot(this.connectionId)")
+    expect(coordinator).toContain("const exactSetLedgerSnapshot: StrategySetLedgerSnapshot = isPrehistoric")
+    expect(indicationProcessor).toContain("const indicationStorageConnectionId = isHistorical")
+    expect(indicationProcessor).toContain("preserveTimestamps: isHistorical")
+    expect(indicationProcessor).toContain("if (!isHistorical && indications.length > 0)")
+    expect(indicationSets).toContain("this.currentCyclePersistenceEnabled = !isHistoricalSnapshot")
+    expect(indicationSets).toContain("if (!this.currentCyclePersistenceEnabled) return")
   })
 
   test("the header monitor exposes bounded system, processing, settings, alert, warning, and error sections", () => {
