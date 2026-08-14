@@ -196,8 +196,11 @@ function startServer({ engines = false } = {}) {
       BINGX_APIKEY: "",
       BINGX_SECRET: "",
       BINGX_SECRET_KEY: "",
-      BINGX_X02_API_KEY: "",
-      BINGX_X02_API_SECRET: "",
+      // Non-secret test sentinels exercise the ConnectionCard's masked
+      // credential persistence/readback contract. FORCE_SIMULATED keeps this
+      // production-preview harness incapable of submitting an exchange order.
+      BINGX_X02_API_KEY: "preview_vst_noncredential_key",
+      BINGX_X02_API_SECRET: "preview_vst_noncredential_secret",
       BYBIT_API_KEY: "",
       BYBIT_API_SECRET: "",
       PIONEX_API_KEY: "",

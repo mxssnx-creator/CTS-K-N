@@ -10,15 +10,40 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, statSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import path from "node:path"
 import process from "node:process"
 
 const root = process.cwd()
-const files = execFileSync(
-  "git",
-  ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-  { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
-).split("\0").filter(Boolean)
+const excludedDirectories = new Set([
+  ".git", "node_modules", "coverage", "dist", "build", "out", ".cts-runtime", ".v0-data",
+])
+
+function listReleaseFiles(directory = root, prefix = "") {
+  const files = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (excludedDirectories.has(entry.name) || entry.name.startsWith(".next")) continue
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+    const absolute = path.join(directory, entry.name)
+    if (entry.isDirectory()) files.push(...listReleaseFiles(absolute, relative))
+    else if (entry.isFile()) files.push(relative)
+  }
+  return files
+}
+
+let files
+try {
+  files = execFileSync(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] },
+  ).split("\0").filter(Boolean)
+} catch {
+  // Credential-free release archives intentionally omit Git metadata. Fall
+  // back to the same source/runtime exclusions instead of silently skipping
+  // the scan after a Drive recovery.
+  files = listReleaseFiles()
+}
 
 const findings = []
 const ignoredLiteralSource = /^(?:__tests__\/|docs\/|scripts\/(?:test-|run-(?:dev|prod)-preview|regression\/))|(?:^|\/)fixtures?\/|(?:^|\/)__mocks__\//

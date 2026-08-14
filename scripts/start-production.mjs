@@ -24,6 +24,10 @@ const hostname = String(process.env.HOST || process.env.HOSTNAME || "0.0.0.0")
 const nodeRuntime = process.env.CTS_NODE_BIN || (process.versions.bun ? "node" : process.execPath)
 const env = {
   ...process.env,
+  // `next start` reads this variable to locate a non-default build directory.
+  // Keep the fallback aligned with the validated artifact when standalone is
+  // intentionally disabled (for example constrained production-preview runs).
+  NEXT_DIST_DIR: configuredDistDir,
   PORT: port,
   HOSTNAME: hostname,
 }

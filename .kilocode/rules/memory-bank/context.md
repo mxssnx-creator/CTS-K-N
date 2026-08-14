@@ -1180,3 +1180,28 @@ credentials are present.
   batching only the shared window geometry. Focused Historic, Direct-Trade
   TP/SL/Trailing and DCA tests passed (36 tests), as did TypeScript, changed-path
   ESLint and `git diff --check`.
+
+## Session 2026-08-14 — Drive recovery, production paper progression and backup integrity
+
+- [x] Recovered the latest credential-free Drive checkpoint (SHA-256
+  `a832274d…303a5ec3`) after transient workspace loss; its Historic isolation,
+  stage-accounting, shared-Redis and bounded Live fast-path changes are the
+  publication source.
+- [x] Corrected sanitized-backup recovery omissions: `.env.example` and the
+  versioned `app/api/monitoring/logs/route.ts` are retained; only actual local
+  environment files and log artifacts are excluded going forward.
+- [x] Production start now forwards `NEXT_DIST_DIR` to the `next start` fallback.
+  The preview harness uses explicit non-secret VST test sentinels solely to
+  validate masked credential persistence while `FORCE_SIMULATED=1` and
+  `FORCE_LIVE=0` prevent external order placement.
+- [x] Validation: 265 focused Historic/stage/cache tests + TypeScript, 30
+  Direct-Trade/Signal/Event/coordination suites (212 tests), 32-symbol Direct
+  Trade matrix (1,440,768 sets / 43.97 s / 9 MiB heap), and a 32-symbol,
+  186.9-second shared-Redis production paper soak (0 real orders, API p95 728 ms).
+  The production UI exercise passed all 47 surfaces, 35 signal sources,
+  ConnectionCard masked credentials, backup round trip, settings hot reload,
+  independent long/short lanes and global controls.
+- [ ] Authenticated BingX Prod-VST order execution remains externally blocked in
+  this sandbox because `open-api-vst.bingx.com` is not allowlisted. No VST or
+  mainnet order has been submitted; run the authenticated 20-minute VST soak
+  only on an approved host with explicitly configured VST credentials.

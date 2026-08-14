@@ -1134,6 +1134,7 @@ describe("requested regression guardrails", () => {
     const previewRunner = read("scripts/run-prod-preview-check.mjs")
     expect(previewRunner).toContain('process.env.NEXT_DIST_DIR || ".next-prod"')
     expect(previewRunner).toContain("NEXT_DIST_DIR: distDir")
+    expect(read("scripts/start-production.mjs")).toContain("NEXT_DIST_DIR: configuredDistDir")
     expect(previewRunner).toContain('existsSync(`${distDir}/BUILD_ID`)')
     expect(previewRunner).toContain('ALLOW_PROD_SIMULATED: "1"')
     expect(previewRunner).toContain("verifyOpenPositionCrashRecovery")
