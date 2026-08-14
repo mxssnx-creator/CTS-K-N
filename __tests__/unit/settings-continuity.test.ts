@@ -8,6 +8,7 @@ import {
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { parseHash } from "@/lib/redis-db"
 
 describe("settings continuity", () => {
   test("serverless paper settings acknowledge process-local state without claiming durability", async () => {
@@ -37,6 +38,22 @@ describe("settings continuity", () => {
       { variants: { block: true, dca: false }, count: 12 },
       { count: "12", variants: { dca: "false", block: "true" } },
     )).toBe(true)
+  })
+
+  test("flat Special settings keep exact numeric 0/1 distinct from booleans", () => {
+    expect(parseHash({
+      specialStepSize: "1",
+      specialMinimumScore: "1",
+      specialWalkForwardPurgeSteps: "0",
+      specialEnabled: "1",
+      specialTrailingEnabled: "0",
+    })).toEqual({
+      specialStepSize: 1,
+      specialMinimumScore: 1,
+      specialWalkForwardPurgeSteps: 0,
+      specialEnabled: true,
+      specialTrailingEnabled: false,
+    })
   })
 
   test("a full snapshot reports only effective changes", () => {

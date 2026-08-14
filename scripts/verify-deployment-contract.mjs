@@ -47,7 +47,7 @@ async function main() {
   assert(expectedSchemaVersion > 0, "Could not determine the repository schema version")
 
   const [init, database, persistence] = await Promise.all([
-    readJson("/api/system/init-status"),
+    readJson(requireFreshContinuity ? "/api/system/init-status?fresh=1" : "/api/system/init-status"),
     readJson("/api/settings/database-status"),
     readJson("/api/persistence/status"),
   ])

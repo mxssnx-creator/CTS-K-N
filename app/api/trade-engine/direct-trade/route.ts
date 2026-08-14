@@ -19,6 +19,7 @@ import {
   normaliseExitTactics,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
+  DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
@@ -41,6 +42,9 @@ import {
   buildDirectTradeOpenPositionStage,
   DIRECT_TRADE_OPEN_POSITION_STAGE_KEY,
 } from "@/lib/direct-trade-position-stage"
+import directTradeHistoryPolicy from "@/lib/direct-trade-history-policy.cjs"
+
+const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
 export const dynamic = "force-dynamic"
 
@@ -108,6 +112,9 @@ export interface DirectTradeState {
   keepEnabledPosCount: number     // Per symbol/direction/config: last N pos to check keep-enabled
   deactivatePosCount: number      // Negative last-N average permanently disables this exact config lineage
   minProfitFactor: number         // Min PF to keep config enabled
+  // Marks state written after the shipped full-history PF default changed to
+  // 4. This lets an explicit new 0.8 operator override survive later reads.
+  fullHistoryPfDefaultsVersion?: number
   // Separate historical last-position gate for fresh entries. It has no
   // authority to abandon an already-open position.
   minRecentProfitFactor: number
@@ -175,7 +182,8 @@ const DEFAULT_STATE: DirectTradeState = {
   // Evaluation defaults
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
-  minProfitFactor: 0.8,
+  minProfitFactor: DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
+  fullHistoryPfDefaultsVersion: 1,
   minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
   maxDrawdownTimeMin: 10,
@@ -249,7 +257,7 @@ async function getState(): Promise<DirectTradeState> {
         // any other persisted value remains an explicit operator choice.
         historyHours: Number(persisted?.historyHours) === 60
           ? DEFAULT_STATE.historyHours
-          : Math.max(1, Number(persisted?.historyHours) || DEFAULT_STATE.historyHours),
+          : clampDirectTradeHistoryHours(persisted?.historyHours, DEFAULT_STATE.historyHours),
         activityVolumeRatio: Math.max(0, Number(persisted?.activityVolumeRatio) || DEFAULT_STATE.activityVolumeRatio),
         positionCostPercent: normalizePositionCostPercent(persisted?.positionCostPercent ?? DEFAULT_STATE.positionCostPercent),
         maxHoldMinutes: Math.max(1, Number(persisted?.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes),
@@ -270,6 +278,16 @@ async function getState(): Promise<DirectTradeState> {
         ),
         maxTotalPositions: clampOpenPositionLimit(persisted?.maxTotalPositions, DEFAULT_STATE.maxTotalPositions),
         slRatioStep: clampStopLossRatioStep(persisted?.slRatioStep, DEFAULT_STATE.slRatioStep),
+        // Upgrade the former shipped 0.8 default only for legacy state. Once
+        // versioned, an explicit operator value (including 0.8) is preserved.
+        minProfitFactor: Math.max(
+          0.8,
+          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 1
+            && Number(persisted?.minProfitFactor) === 0.8
+            ? DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT
+            : Number(persisted?.minProfitFactor) || DEFAULT_STATE.minProfitFactor,
+        ),
+        fullHistoryPfDefaultsVersion: 1,
         // 10 was the former shipped default. Migrate exactly that value to
         // the new stricter default, while preserving custom choices.
         minRecentProfitFactor: Math.max(
@@ -526,12 +544,23 @@ export async function GET(request: NextRequest) {
       const key = statisticsFilterKey(timeframe, direction, state, strategyType)
       const totals = (index as any)?.totals && typeof (index as any).totals === "object" ? (index as any).totals : {}
       const topRows = (index as any)?.topRows && typeof (index as any).topRows === "object" ? (index as any).topRows : {}
+      const normalizedRows = Array.isArray((index as any)?.rows) ? (index as any).rows : []
+      const topRowIndexes = (index as any)?.topRowIndexes && typeof (index as any).topRowIndexes === "object"
+        ? (index as any).topRowIndexes
+        : {}
+      const selectedIndexes = Array.isArray(topRowIndexes[key]) ? topRowIndexes[key] : []
+      const rows = Number((index as any)?.schemaVersion) === 2
+        ? selectedIndexes
+            .map((rowIndex: unknown) => Number(rowIndex))
+            .filter((rowIndex: number) => Number.isInteger(rowIndex) && rowIndex >= 0 && rowIndex < normalizedRows.length)
+            .map((rowIndex: number) => normalizedRows[rowIndex])
+        : (Array.isArray(topRows[key]) ? topRows[key] : [])
       return NextResponse.json({
         success: true,
         calculation,
         selection: { timeframe, direction, state, strategyType },
         matched: Math.max(0, Number(totals[key]) || 0),
-        rows: Array.isArray(topRows[key]) ? topRows[key] : [],
+        rows,
         rowLimit: 100,
         indexVersion: typeof (index as any)?.version === "string" ? (index as any).version : null,
       })
@@ -598,7 +627,7 @@ export async function POST(request: NextRequest) {
         ...(body.inverseMaxSlRatio !== undefined ? { inverseMaxSlRatio: clampInverseStopLossRatio(body.inverseMaxSlRatio) } : {}),
         ...(body.timeframes ? { timeframes: normaliseDirectTradeTimeframes(body.timeframes) } : {}),
         ...(body.strategyTypes !== undefined ? { strategyTypes: normaliseDirectTradeStrategyTypes(body.strategyTypes) } : {}),
-        ...(body.historyHours !== undefined ? { historyHours: Math.max(1, Number(body.historyHours) || DEFAULT_STATE.historyHours) } : {}),
+        ...(body.historyHours !== undefined ? { historyHours: clampDirectTradeHistoryHours(body.historyHours, DEFAULT_STATE.historyHours) } : {}),
         ...(body.recalcIntervalMs !== undefined ? { recalcIntervalMs: clampRecalculationInterval(body.recalcIntervalMs) } : {}),
         ...(body.entryTactics !== undefined ? { entryTactics: normaliseEntryTactics(body.entryTactics) } : {}),
         ...(body.exitTactics !== undefined ? { exitTactics: normaliseExitTactics(body.exitTactics) } : {}),
@@ -619,7 +648,7 @@ export async function POST(request: NextRequest) {
         // stale PF/DDT/trailing limits until a later debounced config update.
         ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.max(3, Number(body.keepEnabledPosCount) || 3) } : {}),
         ...(body.deactivatePosCount !== undefined ? { deactivatePosCount: Math.max(3, Number(body.deactivatePosCount) || 3) } : {}),
-        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || 0.8) } : {}),
+        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
         ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || 0.8) } : {}),
         ...(body.recentEvaluationPositions !== undefined ? { recentEvaluationPositions: Math.max(3, Math.floor(Number(body.recentEvaluationPositions) || 3)) } : {}),
         ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Number(body.maxDrawdownTimeMin) || 1) } : {}),
@@ -672,7 +701,7 @@ export async function POST(request: NextRequest) {
         ...(body.inverseMaxSlRatio !== undefined ? { inverseMaxSlRatio: clampInverseStopLossRatio(body.inverseMaxSlRatio) } : {}),
         ...(body.timeframes !== undefined ? { timeframes: normaliseDirectTradeTimeframes(body.timeframes) } : {}),
         ...(body.strategyTypes !== undefined ? { strategyTypes: normaliseDirectTradeStrategyTypes(body.strategyTypes) } : {}),
-        ...(body.historyHours !== undefined ? { historyHours: Math.max(1, Number(body.historyHours) || DEFAULT_STATE.historyHours) } : {}),
+        ...(body.historyHours !== undefined ? { historyHours: clampDirectTradeHistoryHours(body.historyHours, DEFAULT_STATE.historyHours) } : {}),
         ...(body.recalcIntervalMs !== undefined ? { recalcIntervalMs: clampRecalculationInterval(body.recalcIntervalMs) } : {}),
         ...(body.entryTactics !== undefined ? { entryTactics: normaliseEntryTactics(body.entryTactics) } : {}),
         ...(body.exitTactics !== undefined ? { exitTactics: normaliseExitTactics(body.exitTactics) } : {}),
@@ -691,7 +720,7 @@ export async function POST(request: NextRequest) {
         // Evaluation settings (instant effect on processor via loadState sync)
         ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.max(3, Number(body.keepEnabledPosCount) || 3) } : {}),
         ...(body.deactivatePosCount !== undefined ? { deactivatePosCount: Math.max(3, Number(body.deactivatePosCount) || 3) } : {}),
-        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || 0.8) } : {}),
+        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
         ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || 0.8) } : {}),
         ...(body.recentEvaluationPositions !== undefined ? { recentEvaluationPositions: Math.max(3, Math.floor(Number(body.recentEvaluationPositions) || 3)) } : {}),
         ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Number(body.maxDrawdownTimeMin) || 1) } : {}),
@@ -739,6 +768,9 @@ export async function POST(request: NextRequest) {
         lastRecalcAt: typeof body.lastRecalcAt === "number" ? body.lastRecalcAt : null,
         positionCount: positions.length,
         configCount: Math.max(0, Math.floor(Number(body.configCount) || 0)),
+        historyPolicy: body.historyPolicy && typeof body.historyPolicy === "object"
+          ? body.historyPolicy
+          : null,
       }
       const write = client.multi()
       write.set(DIRECT_TRADE_POSITIONS_KEY, JSON.stringify(positions))

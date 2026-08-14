@@ -114,6 +114,12 @@ describe("production continuity invariants", () => {
     expect(providers).toContain("<SessionSynchronizer />")
     expect(providers).toContain("<ProgressTracker />")
     expect(initStatus).toContain("ensureUniqueSiteInstance")
+    expect(initStatus).toContain('request.nextUrl.searchParams.get("fresh") === "1"')
+    expect(initStatus).toContain("revision === initStatusCacheRevision")
+    expect(read("scripts/verify-prod-preview.mjs")).toContain('/api/system/init-status?fresh=1')
+    expect(read("scripts/verify-deployment-contract.mjs")).toContain(
+      'requireFreshContinuity ? "/api/system/init-status?fresh=1"',
+    )
     expect(systemStatus).toContain("ensureUniqueSiteInstance")
     expect(activeConnectionCard).toContain("getProgressionCacheKey")
   })

@@ -73,10 +73,15 @@ export async function POST(request: NextRequest) {
     }
 
     const persisted = await getAppSettings({ bypassCache: true })
-    const persistenceVerified = Object.entries(incomingSettings).every(
-      ([key, value]) => settingsValuesEqual(persisted[key], value),
-    )
-    if (!persistenceVerified) throw new Error("Imported settings failed persistence verification")
+    const mismatchedSettings = Object.entries(incomingSettings)
+      .filter(([key, value]) => !settingsValuesEqual(persisted[key], value))
+      .map(([key]) => key)
+    const persistenceVerified = mismatchedSettings.length === 0
+    if (!persistenceVerified) {
+      throw new Error(
+        `Imported settings failed persistence verification for: ${mismatchedSettings.slice(0, 20).join(", ")}`,
+      )
+    }
 
     return NextResponse.json({
       success: true,
