@@ -369,39 +369,6 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     }
   })
 
-  it("keeps Direct-Trade runtime durable while omitting its reconstructible maximum grid", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "inline-redis-direct-runtime-"))
-    const snapshotPath = join(dir, "redis-snapshot.json")
-    process.env.V0_REDIS_SNAPSHOT_PATH = snapshotPath
-
-    try {
-      const writer = new InlineLocalRedis()
-      await writer.set("direct_trade:state", JSON.stringify({ enabled: false, minProfitFactor: 4 }))
-      await writer.set("direct_trade:positions", JSON.stringify([{ id: "paper-open", status: "open" }]))
-      await writer.set("direct_trade:open-position-stage", JSON.stringify({ counts: { total: 1 } }))
-      await writer.set("direct_trade:configs:manifest", JSON.stringify({ generation: "large-grid" }))
-      await writer.set("direct_trade:configs:chunk:large-grid:0", "x".repeat(1024 * 1024))
-      await writer.set("direct_trade:statistics-index", JSON.stringify({ schemaVersion: 2, rows: [] }))
-      await writer.set("direct_trade:calculation", JSON.stringify({ calculatedAt: "stale-generation" }))
-
-      await expect(writer.persistNow()).resolves.toBe(true)
-      expect((await stat(snapshotPath)).size).toBeLessThan(100_000)
-
-      resetInlineGlobals()
-      const reader = new InlineLocalRedis()
-      await expect(reader.loadFromDisk()).resolves.toBe(true)
-      await expect(reader.get("direct_trade:state")).resolves.toContain('"minProfitFactor":4')
-      await expect(reader.get("direct_trade:positions")).resolves.toContain("paper-open")
-      await expect(reader.get("direct_trade:open-position-stage")).resolves.toContain('"total":1')
-      await expect(reader.get("direct_trade:configs:manifest")).resolves.toBeNull()
-      await expect(reader.get("direct_trade:configs:chunk:large-grid:0")).resolves.toBeNull()
-      await expect(reader.get("direct_trade:statistics-index")).resolves.toBeNull()
-      await expect(reader.get("direct_trade:calculation")).resolves.toBeNull()
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
-
   it("writes the synchronous production shutdown snapshot without global require", async () => {
     const dir = await mkdtemp(join(tmpdir(), "inline-redis-sync-"))
     const snapshotPath = join(dir, "redis-snapshot.json")

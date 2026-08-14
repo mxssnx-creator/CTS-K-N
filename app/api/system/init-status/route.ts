@@ -6,54 +6,12 @@ import { getRuntimeBootId, getRuntimeStartedAt } from "@/lib/runtime-startup-sta
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-const INIT_STATUS_CACHE_TTL_MS = 5_000
-const INIT_STATUS_CACHE_MAX_STALE_MS = 30_000
-type InitStatusSnapshot = {
-  body: string
-  headers: Array<[string, string]>
-  status: number
-  statusText: string
-  ready: boolean
-}
-let initStatusCache: {
-  expiresAt: number
-  staleUntil: number
-  snapshot: InitStatusSnapshot
-} | null = null
-let initStatusInFlight: Promise<InitStatusSnapshot> | null = null
-let initStatusCacheRevision = 0
-
-function requiresFreshInitStatus(request: NextRequest): boolean {
-  return request.nextUrl.searchParams.get("fresh") === "1"
-}
-
-function responseFromInitStatusSnapshot(snapshot: InitStatusSnapshot): Response {
-  return new Response(snapshot.body, {
-    headers: snapshot.headers,
-    status: snapshot.status,
-    statusText: snapshot.statusText,
-  })
-}
-
-async function snapshotInitStatusResponse(response: Response): Promise<InitStatusSnapshot> {
-  const body = await response.text()
-  let ready = false
-  try { ready = JSON.parse(body)?.ready === true } catch { ready = false }
-  return {
-    body,
-    headers: Array.from(response.headers.entries()),
-    status: response.status,
-    statusText: response.statusText,
-    ready,
-  }
-}
-
 /**
  * GET /api/system/init-status
  * Returns the current system initialization status
  * Used by frontend to determine if migrations have completed and system is ready
  */
-async function buildInitStatusResponse(request: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
     const { initRedis, isRedisConnected, getRedisBackend, getRedisStats, getAllConnections, isSharedPersistenceBackend, ensureUniqueSiteInstance } = await import("@/lib/redis-db")
     const { getMigrationStatus } = await import("@/lib/redis-migrations")
@@ -288,76 +246,5 @@ async function buildInitStatusResponse(request: NextRequest) {
       },
       { status: 500 }
     )
-  }
-}
-
-export async function GET(request: NextRequest) {
-  // Deployment/recovery verifiers need read-after-write consistency after an
-  // awaited continuity tick.  Normal dashboard polling keeps the short SWR
-  // window, while `?fresh=1` invalidates it and prevents an older concurrent
-  // refresh from putting its pre-tick snapshot back into the cache.
-  if (requiresFreshInitStatus(request)) {
-    const revision = ++initStatusCacheRevision
-    initStatusCache = null
-    const snapshot = await snapshotInitStatusResponse(await buildInitStatusResponse(request))
-    if (
-      revision === initStatusCacheRevision &&
-      snapshot.ready &&
-      snapshot.status >= 200 &&
-      snapshot.status < 300
-    ) {
-      initStatusCache = {
-        expiresAt: Date.now() + INIT_STATUS_CACHE_TTL_MS,
-        staleUntil: Date.now() + INIT_STATUS_CACHE_MAX_STALE_MS,
-        snapshot,
-      }
-    }
-    return responseFromInitStatusSnapshot(snapshot)
-  }
-
-  const now = Date.now()
-  const revision = initStatusCacheRevision
-  const cached = initStatusCache
-  if (cached && cached.expiresAt > now) {
-    return responseFromInitStatusSnapshot(cached.snapshot)
-  }
-  const staleSnapshot = cached && cached.staleUntil > now ? cached.snapshot : null
-  if (initStatusInFlight) {
-    return staleSnapshot
-      ? responseFromInitStatusSnapshot(staleSnapshot)
-      : responseFromInitStatusSnapshot(await initStatusInFlight)
-  }
-
-  const refresh = buildInitStatusResponse(request).then(snapshotInitStatusResponse)
-  initStatusInFlight = refresh
-  const finish = () => {
-    if (initStatusInFlight === refresh) initStatusInFlight = null
-  }
-  const cacheReady = (snapshot: InitStatusSnapshot) => {
-    // Never cache initializing/error responses. Startup callers must observe
-    // readiness as soon as migrations and instrumentation actually complete.
-    if (
-      revision === initStatusCacheRevision &&
-      snapshot.ready &&
-      snapshot.status >= 200 &&
-      snapshot.status < 300
-    ) {
-      initStatusCache = {
-        expiresAt: Date.now() + INIT_STATUS_CACHE_TTL_MS,
-        staleUntil: Date.now() + INIT_STATUS_CACHE_MAX_STALE_MS,
-        snapshot,
-      }
-    }
-    return snapshot
-  }
-
-  if (staleSnapshot) {
-    void refresh.then(cacheReady).catch(() => undefined).finally(finish)
-    return responseFromInitStatusSnapshot(staleSnapshot)
-  }
-  try {
-    return responseFromInitStatusSnapshot(cacheReady(await refresh))
-  } finally {
-    finish()
   }
 }

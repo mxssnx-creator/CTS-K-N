@@ -153,7 +153,7 @@ async function main() {
 
   const initReads = []
   for (let index = 0; index < 5; index++) {
-    const init = await request("/api/system/init-status?fresh=1", { json: true, timeoutMs: 30_000 })
+    const init = await request("/api/system/init-status", { json: true, timeoutMs: 30_000 })
     if (!init?.ready || !init?.system?.startup?.completed || init?.system?.startup?.status !== "ready") {
       throw new Error(`Startup readiness invalid: ${JSON.stringify(init?.system?.startup || init)}`)
     }

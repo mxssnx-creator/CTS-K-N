@@ -17,17 +17,10 @@
  */
 
 import { spawn } from "node:child_process"
-import { rmSync } from "node:fs"
 import process from "node:process"
 
 const port = Math.max(1024, Math.floor(Number(process.env.DIRECT_TRADE_DEV_PORT) || 3116))
 const baseUrl = `http://127.0.0.1:${port}`
-// Exec/container namespaces can reuse the same small PID across independent
-// test invocations. A PID-only filename resurrected a previous multi-GB grid
-// and made the next dev boot spend its full readiness timeout restoring stale
-// diagnostic data. Give every run a collision-free snapshot and remove both
-// recovery files on exit.
-const snapshotPath = `/tmp/cts-direct-trade-dev-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
 let server
 let outputTail = ""
 
@@ -59,6 +52,7 @@ async function stopServer() {
 }
 
 async function main() {
+  const snapshotPath = `/tmp/cts-direct-trade-dev-${process.pid}.json`
   server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "-H", "127.0.0.1", "-p", String(port)], {
     cwd: process.cwd(),
     detached: process.platform !== "win32",
@@ -123,17 +117,10 @@ async function main() {
   })
 }
 
-async function cleanup() {
-  await stopServer()
-  for (const path of [snapshotPath, `${snapshotPath}.live-wal`]) {
-    rmSync(path, { force: true })
-  }
-}
-
 main()
   .catch((error) => {
     console.error("[run-direct-trade-dev-soak] failed:", error instanceof Error ? error.message : String(error))
     if (outputTail) console.error(`[run-direct-trade-dev-soak] server tail:\n${outputTail}`)
     process.exitCode = 1
   })
-  .finally(cleanup)
+  .finally(stopServer)
