@@ -260,7 +260,10 @@ stop_existing_installation() {
     for pm2_name in "$name-scheduler" "$name" "$name-redis"; do
       pm2_pid="$(as_service_user "$user" env HOME="$home" PM2_HOME="$home/.pm2" \
         pm2 pid "$pm2_name" 2>/dev/null || true)"
-      if [[ "$pm2_pid" =~ (^|[^0-9])[1-9][0-9]*($|[^0-9]) ]]; then
+      # PM2 may print status/log text containing digits even when its daemon
+      # failed to start (for example, "PM2 version 7.0.3"). Only a PID that
+      # is exclusively numeric represents an active managed process.
+      if [[ "$pm2_pid" =~ ^[[:space:]]*[1-9][0-9]*[[:space:]]*$ ]]; then
         echo "Refusing to remove $INSTALL_DIR while PM2 process $pm2_name is still active" >&2
         exit 1
       fi
