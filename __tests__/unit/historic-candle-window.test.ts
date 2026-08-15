@@ -49,6 +49,33 @@ describe("historic chunk window", () => {
     expect(redis.lrange).toHaveBeenCalledTimes(1)
   })
 
+  test("selects the newest state without parsing the complete replay backlog", async () => {
+    const result = await getHistoricCandleWindow("BTCUSDT", {
+      afterMs: 1000,
+      beforeMs: 7000,
+      limit: 1,
+      warmup: 2,
+      lookahead: 0,
+      pendingOrder: "latest",
+    })
+
+    expect(result.warmup.map((c) => c.timestamp)).toEqual([4000, 5000])
+    expect(result.pending.map((c) => c.timestamp)).toEqual([6000])
+    expect(redis.lrange).toHaveBeenCalledWith("market_data:BTCUSDT:history:chunks", 1, 2)
+    expect(redis.lrange).toHaveBeenCalledTimes(1)
+  })
+
+  test("returns no latest candidates when the requested limit is zero", async () => {
+    const result = await getHistoricCandleWindow("BTCUSDT", {
+      afterMs: 1000,
+      beforeMs: 7000,
+      limit: 0,
+      pendingOrder: "latest",
+    })
+
+    expect(result.pending).toEqual([])
+  })
+
   test("loads only intersecting calculation chunks in bounded batches", async () => {
     const result = await getHistoricCandlesForRange("BTCUSDT", {
       startMs: 2500,

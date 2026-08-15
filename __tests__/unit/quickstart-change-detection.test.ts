@@ -1,6 +1,7 @@
 import {
   collectQuickStartChangedFields,
   quickStartValuesEqual,
+  resolveQuickStartPreviousSymbolBasket,
   sameOrderedSymbols,
 } from "@/lib/quickstart-change-detection"
 
@@ -14,6 +15,14 @@ describe("QuickStart change detection", () => {
   test("keeps the selection generation for the same ordered basket", () => {
     expect(sameOrderedSymbols(["btcusdt", "ETHUSDT"], ["BTCUSDT", "ethusdt"])).toBe(true)
     expect(sameOrderedSymbols(["BTCUSDT", "ETHUSDT"], ["ETHUSDT", "BTCUSDT"])).toBe(false)
+  })
+
+  test("uses durable operator symbols before a stale runtime mirror for epoch ownership", () => {
+    expect(resolveQuickStartPreviousSymbolBasket(
+      { selected_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]' },
+      { force_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]' },
+      { force_symbols: '["XRPUSDT","BTCUSDT","SOLUSDT","BCHUSDT"]' },
+    )).toEqual(["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"])
   })
 
   test("does not turn an idempotent QuickStart audit refresh into a processing reset", () => {
@@ -59,5 +68,32 @@ describe("QuickStart change detection", () => {
       "force_symbols",
       "connection_settings.mainProfitFactor",
     ])
+  })
+
+  test("does not reset Historic when the same basket is completed across missing aliases", () => {
+    const fields = collectQuickStartChangedFields({
+      beforeConnection: {
+        selected_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]',
+        symbol_count: "4",
+      },
+      beforeSettings: {
+        force_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]',
+        symbol_count: "4",
+      },
+      nextConnection: {
+        selected_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]',
+        active_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]',
+        force_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]',
+        symbol_count: "4",
+      },
+      nextSettings: {
+        symbols: ["btcusdt", "SOLUSDT", "BCHUSDT", "XRPUSDT"],
+        active_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]',
+        force_symbols: '["BTCUSDT","SOLUSDT","BCHUSDT","XRPUSDT"]',
+        symbol_count: 4,
+      },
+    })
+
+    expect(fields).toEqual([])
   })
 })

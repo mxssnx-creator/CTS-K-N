@@ -82,6 +82,15 @@ describe("BingX-backed trade history", () => {
     expect(route).toContain("maximum: MAX_TRADE_HISTORY_PAGE_SIZE")
   })
 
+  test("coalesces expensive dashboard snapshots without weakening forced refreshes", () => {
+    const route = readFileSync(join(process.cwd(), "app/api/trading/trade-history/route.ts"), "utf8")
+
+    expect(route).toContain("serveSerializedResponseSWR")
+    expect(route).toContain('namespace: "trade-history"')
+    expect(route).toContain("maxStaleMs: 45_000")
+    expect(route).toContain('url.searchParams.get("force") === "1"')
+  })
+
   test("keeps only filled closing orders and reports fee-adjusted net PnL", () => {
     const close = normalizeBingXClosedOrder({
       symbol: "BTC-USDT",
@@ -458,6 +467,7 @@ describe("live-order stranded-position guards", () => {
     const recoveryBlock = startup.slice(start, end)
     expect(recoveryBlock).toContain("await saveRedisPosition(pos)")
     expect(recoveryBlock).toContain("restartRecoveryRequestedAt")
+    expect(recoveryBlock).toContain("/^live:position:live:[^:]+:index$/.test(key)")
     expect(recoveryBlock).not.toContain('pos.status = "closed"')
     expect(recoveryBlock).not.toContain("startup_reconcile_max_hold_exceeded")
   })

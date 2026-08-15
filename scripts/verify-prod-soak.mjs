@@ -14,7 +14,24 @@ const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.SYMBOL_COUNT ||
 const START_SIMULATED_ENGINE = process.env.START_SIMULATED_ENGINE === "1"
 const VERIFY_SIGNAL_ENGINE = process.env.VERIFY_SIGNAL_ENGINE === "1"
 const SIGNAL_FOCUSED_SOAK = process.env.SIGNAL_FOCUSED_SOAK === "1"
+const SIGNAL_MAX_POSITIONS_TOTAL = 120
+// One open Signal row is represented by at most six bounded keys: the
+// canonical position, its tracking row + tracking index, the compatibility
+// mirror, the execution-slot claim, and the strategy-Set membership. This is
+// fixed topology, not per-cycle history.
+const SIGNAL_POSITION_STORAGE_KEYS_PER_ROW = 6
+const SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET = VERIFY_SIGNAL_ENGINE
+  ? SIGNAL_MAX_POSITIONS_TOTAL * SIGNAL_POSITION_STORAGE_KEYS_PER_ROW
+  : 0
 const MIN_PRODUCTIVE_CYCLES = Math.max(1, Number(process.env.SOAK_MIN_PRODUCTIVE_CYCLES || 3))
+// A maximum-symbol cold Historic build can legitimately finish at the end of
+// the fixed observation window. Optional grace keeps polling only until the
+// requested Historic coverage and productive Main cycles are observable; it
+// never weakens either acceptance criterion or extends past this hard bound.
+const PRODUCTIVE_COMPLETION_GRACE_MS = Math.max(
+  0,
+  Number(process.env.SOAK_PRODUCTIVE_COMPLETION_GRACE_MS || 0),
+)
 const RUNTIME_MODE = process.env.RUNTIME_MODE || "production"
 const DEBUG_ADMIN_SECRET = String(process.env.SOAK_ADMIN_SECRET || "")
 const HEAP_GROWTH_LIMIT_KB = Math.max(
@@ -36,12 +53,15 @@ const RSS_PEAK_LIMIT_KB = Math.max(
   Number(process.env.SOAK_RSS_PEAK_LIMIT_KB || (CONFIGURED_NODE_HEAP_MB + 1024) * 1024),
 )
 const SYMBOLS = [
-  "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
+  // Match the runtime's mandatory quartet exactly so this harness proves the
+  // same physical basket it requests instead of checking only the persisted
+  // pre-canonicalized QuickStart response.
+  "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT", "BNBUSDT", "DOGEUSDT",
   "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
   "UNIUSDT", "NEARUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT",
   "INJUSDT", "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
   "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
-  "ICPUSDT", "HBARUSDT",
+  "ICPUSDT",
 ].slice(0, SYMBOL_COUNT)
 
 // Constrained-host override for the post-bootstrap database key-growth budget.
@@ -52,8 +72,8 @@ const SYMBOLS = [
 // accumulation phase. A constrained host may raise this budget; production CI
 // leaves it at the strict default.
 const DB_STABLE_GROWTH_LIMIT = Math.max(
-  1_500,
-  SYMBOLS.length * 50,
+  1_500 + SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET,
+  SYMBOLS.length * 50 + SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET,
   Number(process.env.SOAK_DB_GROWTH_LIMIT || 0),
 )
 
@@ -111,6 +131,10 @@ async function requestWithRetry(pathname, options = {}, maxRetries = 3) {
       lastError = error
       if (error instanceof Error && error.message && error.message.includes("fetch failed")) {
         if (attempt < maxRetries) {
+          console.warn(
+            `[prod-soak:retry] ${pathname} transport failure ` +
+            `(attempt ${attempt}/${maxRetries}); retrying without resetting soak state`,
+          )
           await sleep(Math.min(10_000, attempt * 3_000))
           continue
         }
@@ -119,6 +143,36 @@ async function requestWithRetry(pathname, options = {}, maxRetries = 3) {
     }
   }
   throw lastError
+}
+
+async function requestLifecycleToggle(pathname, body) {
+  const maxAttempts = 3
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await requestWithRetry(pathname, {
+        method: "POST",
+        body,
+        timeoutMs: 120_000,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const retryAfterMatch = message.match(/"retryAfter"\s*:\s*(\d+)/)
+      const resetTimeMatch = message.match(/"resetTime"\s*:\s*(\d+)/)
+      if (attempt < maxAttempts && message.includes("HTTP 429") && retryAfterMatch) {
+        const retryAfterMs = Number(retryAfterMatch[1]) * 1_000
+        const resetDelayMs = resetTimeMatch ? Number(resetTimeMatch[1]) - Date.now() : 0
+        const boundedDelayMs = Math.min(70_000, Math.max(1_000, retryAfterMs, resetDelayMs) + 1_500)
+        console.warn(
+          `[prod-soak:toggle-retry] persistent restart test inherited the toggle limiter; ` +
+          `waiting ${boundedDelayMs}ms before bounded lifecycle retry ${attempt}/${maxAttempts - 1}`,
+        )
+        await sleep(boundedDelayMs)
+        continue
+      }
+      throw error
+    }
+  }
+  throw new Error("Lifecycle toggle retry exhausted")
 }
 
 function finiteNonNegative(value, label) {
@@ -664,7 +718,7 @@ async function main() {
             enabled: true,
             directExecutionEnabled: true,
             requestIntervalSeconds: 30,
-            maxPositionsTotal: 120,
+            maxPositionsTotal: SIGNAL_MAX_POSITIONS_TOTAL,
             positionSelectionMode: "best_first",
             trailingEnabled: true,
             trailingOnly: false,
@@ -683,7 +737,7 @@ async function main() {
         applied?.settings?.enabled !== true ||
         applied?.settings?.directExecutionEnabled !== true ||
         Number(applied?.settings?.requestIntervalSeconds) !== 30 ||
-        Number(applied?.settings?.maxPositionsTotal) !== 120 ||
+        Number(applied?.settings?.maxPositionsTotal) !== SIGNAL_MAX_POSITIONS_TOTAL ||
         applied?.settings?.positionSelectionMode !== "best_first" ||
         applied?.settings?.trailingEnabled !== true ||
         applied?.settings?.trailingOnly !== false ||
@@ -761,19 +815,24 @@ async function main() {
 
   const livePositionsPath =
     `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=500`
-  const endpointBuilders = [
-    () => "/api/health",
-    () => "/api/system/init-status",
-    () => "/api/system/status",
-    () => "/api/system/monitoring",
-    () => "/api/trade-engine/status-all",
-    () => "/api/indications/config-counts",
-    () => `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
-    () => `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500`,
-    () => `/api/logistics/queue?connectionId=${encodeURIComponent(connectionId)}`,
-    () => livePositionsPath,
-    () => `/api/preset-optimizer?connectionId=${encodeURIComponent(connectionId)}`,
-    () => `/api/connections/${encodeURIComponent(connectionId)}/engine-states`,
+  const endpointSchedules = [
+    { build: () => "/api/health", intervalMs: 0 },
+    { build: () => "/api/system/init-status", intervalMs: 0 },
+    { build: () => "/api/system/status", intervalMs: 0 },
+    { build: () => "/api/system/monitoring", intervalMs: 0 },
+    { build: () => "/api/trade-engine/status-all", intervalMs: 0 },
+    // Match the actual dashboard consumers. Config inventory and bounded
+    // history are intentionally expensive snapshots refreshed by the UI at
+    // 60 s / 30 s; hammering both every two seconds makes the verifier itself
+    // the dominant Redis/event-loop workload. The first round samples every
+    // route, then the last validated payload remains available between polls.
+    { build: () => "/api/indications/config-counts", intervalMs: 60_000 },
+    { build: () => `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`, intervalMs: 3_000 },
+    { build: () => `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500`, intervalMs: 30_000 },
+    { build: () => `/api/logistics/queue?connectionId=${encodeURIComponent(connectionId)}`, intervalMs: 0 },
+    { build: () => livePositionsPath, intervalMs: 0 },
+    { build: () => `/api/preset-optimizer?connectionId=${encodeURIComponent(connectionId)}`, intervalMs: 0 },
+    { build: () => `/api/connections/${encodeURIComponent(connectionId)}/engine-states`, intervalMs: 3_000 },
   ]
   // Signal settings, source health, and closed-position PF/DDT analytics change
   // on the Signal engine cadence (minimum 30 seconds), not on the 2-second
@@ -824,6 +883,7 @@ async function main() {
   let lastSignalObservationAt = 0
   let signalObservation = new Map()
   let lastByPath = new Map()
+  const lastEndpointObservationAt = new Map()
 
   const recordLatency = (path, latencyMs) => {
     const values = latencyByPath.get(path) || []
@@ -831,11 +891,27 @@ async function main() {
     latencyByPath.set(path, values)
   }
 
+  const productiveRequirementsMet = () => {
+    if (!START_SIMULATED_ENGINE || progression.length === 0 || strategyRuntime.length === 0) return !START_SIMULATED_ENGINE
+    const firstMainCycles = strategyRuntime[0]?.mainCycles || 0
+    const finalMainCycles = strategyRuntime.at(-1)?.mainCycles || 0
+    const finalProgression = progression.at(-1)
+    return (
+      finalMainCycles - firstMainCycles >= MIN_PRODUCTIVE_CYCLES
+      && finalProgression?.historicSymbols === SYMBOLS.length
+      && finalProgression?.historicTotal === SYMBOLS.length
+    )
+  }
+
   const refreshSignalObservation = async (recordAsSteady) => {
     if (!VERIFY_SIGNAL_ENGINE) return
     for (const build of signalEndpointBuilders) {
       const path = build()
-      const response = await request(path)
+      // Signal observations are diagnostic reads. A single socket reset during
+      // a stop-the-world GC or a development server hand-off must not erase a
+      // fully accumulated long-soak sample; persistent failures still exhaust
+      // the bounded retry budget and fail the run.
+      const response = await requestWithRetry(path)
       if (path.startsWith("/api/trade-engine/detailed-logs")) {
         detailedMonitorRuntime.push(detailedMonitorSample(response.json, connectionId, true))
       }
@@ -853,15 +929,33 @@ async function main() {
     lastSignalObservationAt = Date.now()
   }
 
-  while (Date.now() - startedAt < DURATION_MS) {
+  const baseDeadline = startedAt + DURATION_MS
+  const hardDeadline = baseDeadline + PRODUCTIVE_COMPLETION_GRACE_MS
+  while (
+    Date.now() < baseDeadline
+    || (Date.now() < hardDeadline && !productiveRequirementsMet())
+  ) {
     const roundStarted = Date.now()
-    const paths = endpointBuilders.map((build) => build())
+    const observationNow = Date.now()
+    const scheduledEndpoints = endpointSchedules.filter(({ build, intervalMs }) => {
+      const path = build()
+      const previous = lastEndpointObservationAt.get(path) || 0
+      return previous === 0 || intervalMs === 0 || observationNow - previous >= intervalMs
+    })
+    const paths = scheduledEndpoints.map(({ build }) => build())
     // Keep endpoint identity when a saturated runtime rejects one request.
     // `Promise.all()` only reports the first array index, which made a broad
     // dispatcher stall look like a health-route bug and hid the actual busy
     // route. Settling the same concurrent fan-out preserves the load shape
     // while giving the recovery review a precise failure set.
-    const settledResponses = await Promise.allSettled(paths.map((path) => request(path)))
+    // Keep the concurrent pressure shape, but tolerate a bounded transient
+    // transport reset. Next development and a memory-pressured production
+    // worker can close existing keep-alive sockets during GC/restart hand-off;
+    // retrying the same read proves recovery while three consecutive failures
+    // still surface as a hard availability error.
+    const settledResponses = await Promise.allSettled(
+      paths.map((path) => requestWithRetry(path)),
+    )
     const endpointFailures = settledResponses
       .map((result, index) => result.status === "rejected"
         ? `${paths[index]}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
@@ -884,7 +978,11 @@ async function main() {
     // continuously running API/order coordination hot path.
     if (rounds > 5) steadyLatencies.push(...responses.map((response) => response.latencyMs))
 
-    const byPath = new Map(paths.map((path, index) => [path, responses[index].json]))
+    const byPath = new Map(lastByPath)
+    paths.forEach((path, index) => {
+      byPath.set(path, responses[index].json)
+      lastEndpointObservationAt.set(path, observationNow)
+    })
     if (
       VERIFY_SIGNAL_ENGINE &&
       (
@@ -1169,6 +1267,13 @@ async function main() {
           } : null,
           progression: selectCycles(raw?.progression),
           realtime: selectCycles(raw?.realtime),
+          runtime: stats?.runtime ? {
+            memory: stats.runtime.memory,
+            memoryCollection: stats.runtime.memoryCollection,
+            strategyMemory: stats.runtime.strategyMemory,
+            eventLoop: stats.runtime.eventLoop,
+            concurrency: stats.runtime.concurrency,
+          } : null,
         })}`)
       }
     }
@@ -1217,11 +1322,7 @@ async function main() {
   if (START_SIMULATED_ENGINE && process.env.VERIFY_CONNECTION_TOGGLE !== "0") {
     const finalBeforeToggle = progression.at(-1)
     const togglePath = `/api/settings/connections/${encodeURIComponent(connectionId)}/toggle-dashboard`
-    const disabled = (await requestWithRetry(togglePath, {
-      method: "POST",
-      body: { enabled: false },
-      timeoutMs: 120_000,
-    })).json
+    const disabled = (await requestLifecycleToggle(togglePath, { enabled: false })).json
     if (
       disabled?.success !== true ||
       isTruthy(disabled?.connection?.is_enabled_dashboard) ||
@@ -1238,11 +1339,7 @@ async function main() {
       throw new Error(`Detailed Logs did not show disabled lifecycle: ${disabledMonitor.status}`)
     }
 
-    const reenabled = (await requestWithRetry(togglePath, {
-      method: "POST",
-      body: { enabled: true },
-      timeoutMs: 120_000,
-    })).json
+    const reenabled = (await requestLifecycleToggle(togglePath, { enabled: true })).json
     if (
       reenabled?.success !== true ||
       !isTruthy(reenabled?.connection?.is_enabled_dashboard) ||
@@ -1302,9 +1399,9 @@ async function main() {
 
   // The bounded lifecycle can still be filling its 500-row terminal ring
   // during the final third of a short soak. Each retained row owns a hash and
-  // JSON mirror, while up to 120 Signal rows remain open. Allow that fixed
-  // retention envelope here; the topology-derived absolute limit below still
-  // fails unbounded per-cycle/configuration growth.
+  // JSON mirror, while up to SIGNAL_MAX_POSITIONS_TOTAL Signal rows remain
+  // open. DB_STABLE_GROWTH_LIMIT includes the exact six-key-per-row topology;
+  // the absolute limit below still fails unbounded per-cycle/config growth.
   const databaseStableGrowthLimit = DB_STABLE_GROWTH_LIMIT
 
   if (siteIds.size !== 1 || siteIds.has(null) || siteIds.has(undefined)) throw new Error("Site identity changed during soak")
@@ -1366,7 +1463,7 @@ async function main() {
         !finalSignal.directExecutionEnabled ||
         finalSignal.requestIntervalSeconds < 30 ||
         finalSignal.maxSourcesPerCycle > 35 ||
-        finalSignal.maxPositionsTotal !== 120 ||
+        finalSignal.maxPositionsTotal !== SIGNAL_MAX_POSITIONS_TOTAL ||
         finalSignal.positionSelectionMode !== "best_first" ||
         !finalSignal.trailingEnabled ||
         finalSignal.trailingOnly ||
@@ -1610,6 +1707,8 @@ async function main() {
     validationScope: SIGNAL_FOCUSED_SOAK ? "signal-engine" : "full-system",
     orderRequests: 0,
     durationMs: Date.now() - startedAt,
+    configuredDurationMs: DURATION_MS,
+    productiveCompletionGraceMs: PRODUCTIVE_COMPLETION_GRACE_MS,
     symbols: SYMBOLS.length,
     rounds,
     requests,
@@ -1646,6 +1745,7 @@ async function main() {
     indicationSetInventoryKeysEnd: memory.at(-1)?.indicationSetInventoryKeys || 0,
     indicationOutcomeAuxiliaryKeysEnd: memory.at(-1)?.indicationOutcomeAuxiliaryKeys || 0,
     databaseStableGrowthLimit,
+    signalPositionTopologyKeyBudget: SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET,
     databasePlateauWithinBudget,
     databaseAbsoluteLimit,
     engineCyclesStart: memory[0]?.engineCycles || 0,

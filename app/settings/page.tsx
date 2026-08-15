@@ -615,7 +615,7 @@ const initialSettings: Settings = {
   maxConcurrentOperations: 100, // 10-250, default 100
   cyclePauseMs: 50, // 10-200ms, step 10, default 50ms — pause between engine cycles
   strategyMaxEntriesPerSet: 250,
-  strategyMainAxisBatchSize: 8,
+  strategyMainAxisBatchSize: 32,
   strategyBlockMaterializationBatchSize: 1024,
   strategyRealSetsSafetyCeiling: 0,
   maxRealSets: 0,

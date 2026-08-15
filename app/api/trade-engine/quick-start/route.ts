@@ -19,7 +19,7 @@ import { checkProductionReadiness, productionReadinessJson } from "@/lib/product
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
-import { buildPrehistoricGateKeys } from "@/lib/progression-scope"
+import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
 import {
   QUICKSTART_CONNECTION_TEST_TIMEOUT_MS,
   resolveQuickStartEngineBootWaitMs,
@@ -28,6 +28,7 @@ import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cach
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 import {
   collectQuickStartChangedFields,
+  resolveQuickStartPreviousSymbolBasket,
   sameOrderedSymbols,
 } from "@/lib/quickstart-change-detection"
 import { canRetainQuickStartPrehistoricCoverage } from "@/lib/quickstart-bootstrap-state"
@@ -710,12 +711,10 @@ async function handlePost(request: Request) {
       ? String(symbols.length)
       : firstExistingSetting(existingConnectionSettings, ["symbol_count"], String(symbols.length))
 
-    const previouslySelectedSymbols = parseStoredSymbols(
-      (currentEngineState as Record<string, unknown>)?.force_symbols ??
-      (currentEngineState as Record<string, unknown>)?.active_symbols ??
-      existingQuickStartSettings.force_symbols ??
-      existingQuickStartSettings.active_symbols ??
-      existingQuickStartSettings.symbols,
+    const previouslySelectedSymbols = resolveQuickStartPreviousSymbolBasket(
+      connection,
+      existingConnectionSettings,
+      currentEngineState as Record<string, unknown>,
     )
     const symbolBasketChanged = !sameOrderedSymbols(previouslySelectedSymbols, symbols)
     const previousSymbolSelectionEpoch = String(
@@ -929,6 +928,7 @@ async function handlePost(request: Request) {
        live_trade_blocked_reason: liveTradeBlockedReason || "",
        state_switch_version: stateSwitchVersion,
        state_switch_action: "quickstart_enable",
+       selected_symbols: JSON.stringify(symbols),
        active_symbols: JSON.stringify(symbols),
        force_symbols: JSON.stringify(symbols),
        symbol_order: requestedSymbolOrder,
@@ -980,6 +980,7 @@ async function handlePost(request: Request) {
       // Symbol order/count
       symbol_order: requestedSymbolOrder,
       symbol_count: effectiveSymbolCount,
+      selected_symbols: JSON.stringify(symbols),
       symbols: JSON.stringify(symbols),
       force_symbols: JSON.stringify(symbols),
       active_symbols: JSON.stringify(symbols),
@@ -1184,12 +1185,63 @@ async function handlePost(request: Request) {
     const quickstartNeedsFreshProcessing =
       quickstartRecoordination.progressionChanged === true ||
       quickstartRecoordination.progressRecoordinationRequired === true
+    // Re-read the authoritative scoped state after recoordination. The
+    // request-start snapshots above intentionally describe the *before*
+    // state; on a clean process restart, ProgressionStateManager may have just
+    // attached a fresh active session to an exact fingerprint-owned Historic
+    // cache and stamped `verified-process-restart-cache` here.
+    const quickstartScope = buildProgressionScope(connectionId, "main")
+    const [recoordinatedEngineState, recoordinatedPrehistoricState] = await Promise.all([
+      client.hgetall(quickstartScope.tradeEngineStateKey).catch(() => ({} as Record<string, unknown>)),
+      client.hgetall(quickstartScope.prehistoricKey).catch(() => ({} as Record<string, unknown>)),
+    ])
+    const quickstartRetentionEngineState = {
+      ...(currentEngineState as Record<string, unknown>),
+      ...(recoordinatedEngineState as Record<string, unknown>),
+    }
+    const quickstartRetentionPrehistoricState = {
+      ...(currentPrehistoricState as Record<string, unknown>),
+      ...(recoordinatedPrehistoricState as Record<string, unknown>),
+    }
+    const stoppedProgressionMatchesCurrentState =
+      quickstartRecoordination.progressionReason === "active progression already matches current state" ||
+      (quickstartTouchedFields.length === 0 && !quickstartNeedsFreshProcessing)
+    const expectedSymbolsHash = symbols
+      .map((symbol) => String(symbol).trim().toUpperCase())
+      .sort()
+      .join("|")
     const quickstartRetainsPrehistoricCoverage = canRetainQuickStartPrehistoricCoverage({
       engineRunning: quickstartEngineAlreadyRunning,
       needsFreshProcessing: quickstartNeedsFreshProcessing,
+      stoppedProgressionMatchesCurrentState,
+      expectedSymbolCount: symbols.length,
+      expectedSymbolsHash,
       expectedSelectionEpoch: symbolSelectionEpoch,
-      engineState: currentEngineState as Record<string, unknown>,
-      prehistoricState: currentPrehistoricState as Record<string, unknown>,
+      engineState: quickstartRetentionEngineState,
+      prehistoricState: quickstartRetentionPrehistoricState,
+    })
+    console.log(`${LOG_PREFIX}: Historic retention decision`, {
+      retained: quickstartRetainsPrehistoricCoverage,
+      engineRunning: quickstartEngineAlreadyRunning,
+      needsFreshProcessing: quickstartNeedsFreshProcessing,
+      stoppedProgressionMatchesCurrentState,
+      changedFieldCount: quickstartTouchedFields.length,
+      expectedEpochPresent: Boolean(String(symbolSelectionEpoch || "").trim()),
+      engineEpochMatches:
+        String(quickstartRetentionEngineState.symbol_selection_epoch || quickstartRetentionEngineState.quickstart_symbol_generation || "").trim() ===
+        String(symbolSelectionEpoch || "").trim(),
+      historicEpochMatches:
+        String(quickstartRetentionPrehistoricState.symbol_selection_epoch || "").trim() ===
+        String(symbolSelectionEpoch || "").trim(),
+      engineHistoricLoaded: ["1", "true"].includes(String(quickstartRetentionEngineState.prehistoric_data_loaded || "").toLowerCase()),
+      historicComplete: ["1", "true"].includes(String(quickstartRetentionPrehistoricState.is_complete || "").toLowerCase()),
+      processed: Number(quickstartRetentionPrehistoricState.symbols_processed || 0),
+      total: Number(quickstartRetentionPrehistoricState.symbols_total || 0),
+      profitFactorPresent: Object.prototype.hasOwnProperty.call(quickstartRetentionPrehistoricState, "historic_avg_profit_factor"),
+      fingerprintPresent: Boolean(String(quickstartRetentionPrehistoricState.completed_progression_fingerprint || "")),
+      symbolsHashMatches:
+        String(quickstartRetentionPrehistoricState.completed_symbols_hash || "") === expectedSymbolsHash,
+      source: String(quickstartRetentionEngineState.prehistoric_data_source || "none"),
     })
 
     await setSettings(`trade_engine_state:${connectionId}`, {
@@ -1339,6 +1391,60 @@ async function handlePost(request: Request) {
             await logProgressionEvent(connectionId, "quickstart_engine_reused", "info",
               "Running engine reused; QuickStart symbols/settings applied without stop/restart",
               { previousState: "running", newSymbols: symbols, newSymbolCount: symbols.length },
+            )
+          } else if (quickstartRetainsPrehistoricCoverage) {
+            // A prior process is no longer the runtime owner, but its exact
+            // fingerprint-owned Historic graph is complete and was verified
+            // during the durable recoordination above. Startup volatile-key
+            // cleanup may legitimately remove TTL gates while retaining the
+            // durable completed hash, so self-heal every scoped/compatibility
+            // gate before dispatch. Clear only stale runtime ownership; retain
+            // PF/sets/counters and the realtime bridge so EngineManager takes
+            // the verified cache-hit path instead of replaying Historic.
+            const retainedDoneGateKeys = buildPrehistoricGateKeys(connectionId, "main", "done")
+            const retainedFirstPassGateKeys = buildPrehistoricGateKeys(connectionId, "main", "firstpass:done")
+            const retainedAt = new Date().toISOString()
+            await Promise.all([
+              client.del(`engine_is_running:${connectionId}`).catch(() => 0),
+              // The previous process can no longer own this progression. Mark
+              // the exact verified session as stopped/reusable before the new
+              // coordinator acquires its lock. Leaving engine_started=true
+              // makes ensureJustUniqueProgression classify the old owner as a
+              // zombie and archive the otherwise valid cumulative counters.
+              // A prior clean stop may also have stamped ended_at; clearing it
+              // is safe only inside this strict cache-retention branch and lets
+              // the new process adopt the same unique progression session.
+              client.hdel(quickstartScope.progressionKey, "ended_at").catch(() => 0),
+              client.hset(quickstartScope.progressionKey, {
+                engine_started: "false",
+                prehistoric_phase_active: "false",
+                prehistoric_cycles_completed: String(symbols.length),
+                prehistoric_symbols_processed_count: String(symbols.length),
+                prehistoric_symbols_processed: JSON.stringify(symbols),
+                prehistoric_candles_processed: String(
+                  Number(quickstartRetentionPrehistoricState.candles_loaded || 0) || 0,
+                ),
+                last_update: retainedAt,
+                last_visited: retainedAt,
+              }),
+              client.set(retainedDoneGateKeys.scoped, "1", { EX: 86400 }),
+              client.set(retainedDoneGateKeys.legacy, "1", { EX: 86400 }),
+              client.set(retainedFirstPassGateKeys.scoped, "1", { EX: 86400 }),
+              client.set(retainedFirstPassGateKeys.legacy, "1", { EX: 86400 }),
+              client.set(quickstartScope.prehistoricLoadedKey, "1", { EX: 86400 }),
+              client.set(`prehistoric_loaded:${connectionId}`, "1", { EX: 86400 }),
+              client.hset(quickstartScope.tradeEngineStateKey, {
+                config_set_symbols_total: String(symbols.length),
+                config_set_symbols_processed: String(symbols.length),
+                prehistoric_data_loaded: "true",
+                prehistoric_data_source: "verified-process-restart-cache",
+                prehistoric_bootstrap_status: "complete",
+                updated_at: retainedAt,
+              }),
+            ])
+            console.log(
+              `${LOG_PREFIX}: Verified process-restart Historic cache retained for ${connectionId}; ` +
+              "completion gates were self-healed and the cumulative progression was made reusable",
             )
           } else {
             // First QuickStart for this connection in the current process:

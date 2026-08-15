@@ -3,6 +3,7 @@
 /** Start the exact production artifact created by Next's standalone output. */
 
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import process from "node:process"
@@ -22,6 +23,9 @@ const hostname = String(process.env.HOST || process.env.HOSTNAME || "0.0.0.0")
 // Bun is used as the compact global launcher, while the Next standalone
 // artifact stays on Node for exact Next.js runtime compatibility.
 const nodeRuntime = process.env.CTS_NODE_BIN || (process.versions.bun ? "node" : process.execPath)
+const runtimeStartedAt = process.env.CTS_RUNTIME_STARTED_AT || new Date().toISOString()
+const runtimeBootId = process.env.CTS_RUNTIME_BOOT_ID ||
+  `prod_${Date.now()}_${process.pid}_${randomUUID().slice(0, 12)}`
 const env = {
   ...process.env,
   // `next start` reads this variable to locate a non-default build directory.
@@ -30,6 +34,8 @@ const env = {
   NEXT_DIST_DIR: configuredDistDir,
   PORT: port,
   HOSTNAME: hostname,
+  CTS_RUNTIME_BOOT_ID: runtimeBootId,
+  CTS_RUNTIME_STARTED_AT: runtimeStartedAt,
 }
 
 const [command, args, label] = existsSync(standaloneServer)

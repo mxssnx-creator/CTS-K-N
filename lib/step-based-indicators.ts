@@ -8,6 +8,7 @@ import {
   type CommonIndicatorType,
 } from "@/lib/common-indicator-config"
 import {
+  createTechnicalIndicatorEvaluationContext,
   evaluateTechnicalIndicators,
   resampleTechnicalCandles,
   summarizeTechnicalIndicators,
@@ -246,6 +247,7 @@ export class StepBasedIndicators {
 
     for (const timeframeMinutes of normalizedTimeframes) {
       const resampled = resampleTechnicalCandles(candles, timeframeMinutes)
+      const evaluationContext = createTechnicalIndicatorEvaluationContext(resampled)
       for (let start = 0; start < parameterVariants.length; start += boundedBatchSize) {
         const batch = parameterVariants.slice(start, start + boundedBatchSize).map(({ type, parameters }) => {
           const indicators = evaluateTechnicalIndicators(
@@ -253,6 +255,7 @@ export class StepBasedIndicators {
             14,
             [type],
             parameters,
+            evaluationContext,
           )
           return {
             type,
@@ -372,6 +375,7 @@ export class StepBasedIndicators {
 
     for (const timeframeMinutes of normalizedTimeframes) {
       const resampled = resampleTechnicalCandles(candles, timeframeMinutes)
+      const evaluationContext = createTechnicalIndicatorEvaluationContext(resampled)
       const configurations: Array<{
         type: CommonIndicatorType
         parameters: TechnicalIndicatorParameters
@@ -387,6 +391,7 @@ export class StepBasedIndicators {
             14,
             [type],
             parameters,
+            evaluationContext,
           )
           return {
             type,
@@ -450,12 +455,14 @@ export class StepBasedIndicators {
 
     for (const timeframeMinutes of normalizedTimeframes) {
       const resampled = resampleTechnicalCandles(candles, timeframeMinutes)
+      const evaluationContext = createTechnicalIndicatorEvaluationContext(resampled)
       const configurations = parameterVariants.map(({ type, parameters }) => {
         const indicators = evaluateTechnicalIndicators(
           resampled,
           14,
           [type],
           parameters,
+          evaluationContext,
         )
         return {
           type,

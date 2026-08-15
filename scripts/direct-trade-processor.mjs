@@ -22,6 +22,21 @@
  */
 
 import { waitForDirectTradeNextCycle } from "./direct-trade-cycle-scheduler.mjs"
+import directTradeHistoryPolicy from "../lib/direct-trade-history-policy.cjs"
+import directTradePositionCapacity from "../lib/direct-trade-position-capacity.cjs"
+
+const {
+  DIRECT_TRADE_HISTORY_MAX_HOURS,
+  DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
+  clampDirectTradeHistoryHours,
+  assessDirectTradeHistorySufficiency,
+} = directTradeHistoryPolicy
+
+const {
+  DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
+  assessDirectTradePositionCapacity,
+  assessDirectTradeRecentOpenCapacity,
+} = directTradePositionCapacity
 
 const PORT = process.env.PORT ?? (
   process.argv.includes("--port")
@@ -35,7 +50,17 @@ const PROCESSOR_TOKEN = process.env.DIRECT_TRADE_PROCESSOR_TOKEN || ""
 // the operator's paper/backtest range.
 const DIRECT_TRADE_LIVE_HISTORY_HOURS = Math.max(
   1,
-  Math.floor(Number(process.env.DIRECT_TRADE_LIVE_HISTORY_HOURS) || 48),
+  clampDirectTradeHistoryHours(
+    process.env.DIRECT_TRADE_LIVE_HISTORY_HOURS,
+    48,
+  ),
+)
+const DIRECT_TRADE_ADAPTIVE_HISTORY_MAX_HOURS = Math.max(
+  DIRECT_TRADE_LIVE_HISTORY_HOURS,
+  clampDirectTradeHistoryHours(
+    process.env.DIRECT_TRADE_ADAPTIVE_HISTORY_MAX_HOURS,
+    DIRECT_TRADE_HISTORY_MAX_HOURS,
+  ),
 )
 const MAX_DIRECT_DCA_POSITION_VOLUME_RATIO = 5
 const MIN_DIRECT_DCA_POSITION_VOLUME_RATIO = 1.4
@@ -263,7 +288,7 @@ let state = {
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 0.8,
-  maxTotalPositions: 300,
+  maxTotalPositions: DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   maxPositionsPerSymbol: 12,
   maxPositionsPerDirection: 6,
   processingIntervalMs: 280,
@@ -271,7 +296,7 @@ let state = {
   // Evaluation settings
   keepEnabledPosCount: 12,      // Last N pos per config to check if keep enabled
   deactivatePosCount: 16,       // Negative last-N average permanently disables this exact set lineage
-  minProfitFactor: 0.8,         // Min PF to keep config enabled
+  minProfitFactor: DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   minRecentProfitFactor: 25,    // Strict historic last-12-position PF gate for future entries
   recentEvaluationPositions: 12,
   maxDrawdownTimeMin: 10,       // Max DDT to keep config enabled
@@ -290,6 +315,8 @@ let activeSignalKeys = new Set()
 let lastSignalPulseAt = 0
 let calculationVersion = null
 let calculationHistoryHours = null
+let adaptiveHistoryHours = null
+let lastHistoryPolicy = null
 let positions = []
 // Per-config performance tracking. The full candidate identity prevents TP,
 // SL, trailing and Block variants from sharing a false PF/DDT history.
@@ -332,6 +359,7 @@ const BINGX_PUBLIC_HOSTS = new Set([
   "open-api.bingx.com",
   "open-api.bingx.pro",
   "open-api-vst.bingx.com",
+  "open-api-vst.bingx.pro",
 ])
 
 function syntheticDirectTradePrice(symbol) {
@@ -426,10 +454,37 @@ function resolveBlockSizing(config, baseQuantity) {
   }
 }
 
-function requiredCalculationHistoryHours(input = state) {
+function configuredCalculationHistoryHours(input = state) {
   return input?.liveMode
     ? DIRECT_TRADE_LIVE_HISTORY_HOURS
-    : Math.max(1, Number(input?.historyHours) || 48)
+    : clampDirectTradeHistoryHours(input?.historyHours, 48)
+}
+
+function requiredCalculationHistoryHours(input = state) {
+  const configured = configuredCalculationHistoryHours(input)
+  return Math.max(
+    configured,
+    Math.min(
+      DIRECT_TRADE_ADAPTIVE_HISTORY_MAX_HOURS,
+      clampDirectTradeHistoryHours(adaptiveHistoryHours, configured),
+    ),
+  )
+}
+
+function resetAdaptiveHistory(reason) {
+  adaptiveHistoryHours = null
+  lastHistoryPolicy = null
+  if (reason) log("debug", `Historic sufficiency policy reset: ${reason}`)
+}
+
+function assessCalculationHistory(summary, currentHours) {
+  return assessDirectTradeHistorySufficiency({
+    summary,
+    configuredStrategyTypes: state.strategyTypes,
+    requestedHistoryHours: configuredCalculationHistoryHours(state),
+    currentHistoryHours: currentHours,
+    maximumHistoryHours: DIRECT_TRADE_ADAPTIVE_HISTORY_MAX_HOURS,
+  })
 }
 
 function indexExecutionConfigs() {
@@ -575,11 +630,12 @@ function calculationInputsSignature(input = state, historyHoursOverride = null) 
 
 async function recalculateConfigs() {
   log("info", "Recalculating optimal configs...")
-  // The complete 48h maximum-symbol grid can legitimately outlive the short
+  // A complete maximum-symbol historic grid can legitimately outlive the short
   // processor lease. Use one serial, abortable acknowledgement loop while
   // the request is in flight: unlike setInterval it never overlaps Redis/API
   // writes if a previous acknowledgement is slow.
   const requestedHistoryHours = requiredCalculationHistoryHours()
+  const configuredHistoryHours = configuredCalculationHistoryHours()
   const calculationInputs = calculationInputsSignature(state, requestedHistoryHours)
   const keepaliveAbort = new AbortController()
   const leaseKeepalive = (async () => {
@@ -609,8 +665,11 @@ async function recalculateConfigs() {
       recentEvaluationPositions: state.recentEvaluationPositions,
       maxDrawdownTimeMin: state.maxDrawdownTimeMin,
       // Live mode has an exact pre-entry warmup contract. The persisted paper
-      // range remains untouched, but the live generation itself is 48h.
+      // range remains untouched. If the baseline is statistically sparse the
+      // processor may request one bounded expansion without weakening any
+      // PF/DDT/win-rate gate.
       historyHours: requestedHistoryHours,
+      requestedHistoryHours: configuredHistoryHours,
       entryTactics: state.entryTactics,
       exitTactics: state.exitTactics,
       entryTiming: state.entryTiming,
@@ -630,11 +689,37 @@ async function recalculateConfigs() {
       }
       calculationVersion = result.summary?.calculatedAt || result.timestamp || calculationVersion
       calculationHistoryHours = Number(result.summary?.historyHours) || requestedHistoryHours
+      lastHistoryPolicy = assessCalculationHistory(result.summary, calculationHistoryHours)
+      if (!lastHistoryPolicy.canProceed) {
+        adaptiveHistoryHours = lastHistoryPolicy.nextHistoryHours
+        lastRecalcAt = 0
+        configs = []
+        executionConfigs = []
+        activeExecutionConfigs = []
+        executionConfigsBySignal = new Map()
+        activeSignalKeys = new Set()
+        lastSignalPulseAt = 0
+        stateDirty = true
+        log(
+          "warn",
+          `Historic ${calculationHistoryHours}h graph is insufficient (${lastHistoryPolicy.reasons.join(", ")}); ` +
+            `expanding once to ${adaptiveHistoryHours}h before realtime entries`,
+        )
+        await persistState()
+        return false
+      }
+      adaptiveHistoryHours = calculationHistoryHours
       lastRecalcAt = Date.now()
       // The API stores the full grid in chunks. Active candidates are loaded
       // after the causal pulse below, never as one multi-million-row payload.
       await loadState()
-      log("info", `Recalculated: ${Number(result.configTotal || 0)} evaluated / ${Number(result.executionConfigTotal || executionConfigs.length)} valid configs for ${result.symbols?.length || 0} symbols`)
+      log(
+        lastHistoryPolicy.sufficient ? "info" : "warn",
+        `Recalculated: ${Number(result.configTotal || 0)} evaluated / ` +
+          `${Number(result.executionConfigTotal || executionConfigs.length)} valid configs for ${result.symbols?.length || 0} symbols; ` +
+          `history=${calculationHistoryHours}h requested=${configuredHistoryHours}h ` +
+          `coverage=${lastHistoryPolicy.sufficient ? "sufficient" : "maximum reached, eligible rows only"}`,
+      )
 
       // Save to server
       await apiCall("/api/trade-engine/direct-trade", "POST", {
@@ -840,17 +925,13 @@ function getOpenPositionsForSymbol(symbol, direction) {
 }
 
 function canOpenPosition(config) {
-  const totalOpenPositions = positions.filter((p) => p.status === "open" || p.status === "opening").length
-  if (totalOpenPositions >= Math.max(1, Math.min(300, Number(state.maxTotalPositions) || 300))) return false
-  const symbolPositions = positions.filter(
-    (p) => p.symbol === config.symbol && (p.status === "open" || p.status === "opening")
-  )
-  if (symbolPositions.length >= state.maxPositionsPerSymbol) return false
-
-  const dirPositions = symbolPositions.filter((p) => p.direction === config.direction)
-  if (dirPositions.length >= state.maxPositionsPerDirection) return false
-
-  return true
+  return assessDirectTradePositionCapacity({
+    positions,
+    candidate: config,
+    maxTotalPositions: state.maxTotalPositions,
+    maxPositionsPerSymbol: state.maxPositionsPerSymbol,
+    maxPositionsPerDirection: state.maxPositionsPerDirection,
+  }).allowed
 }
 
 async function openPosition(config) {
@@ -1880,6 +1961,7 @@ async function persistState() {
       errorsLast5min,
       lastRecalcAt,
       configCount: executionConfigs.length,
+      historyPolicy: lastHistoryPolicy,
       positions,
       stats,
       configStatus: Object.fromEntries(configStatus),
@@ -1915,14 +1997,20 @@ function applyRemoteState(nextState, source = "load") {
   if (Number.isFinite(persistedRecalcAt) && persistedRecalcAt > 0) {
     lastRecalcAt = persistedRecalcAt
   }
-  if (state.liveMode && !prev.liveMode) {
-    // Entering live mode is a hard lifecycle boundary. Force a new exact
-    // 48-hour calculation and a new causal pulse before any live entry can be
-    // considered, even if the paper generation was just calculated.
+  if (state.liveMode !== prev.liveMode) {
+    // Changing execution mode is a hard lifecycle boundary. Force a new
+    // baseline calculation (plus a bounded sufficiency expansion if needed)
+    // and a new causal pulse before any entry can be considered.
+    resetAdaptiveHistory(state.liveMode ? "entered live mode" : "returned to paper mode")
     lastRecalcAt = 0
     calculationHistoryHours = null
     lastSignalPulseAt = 0
-    log("info", `Live mode requested; exact ${DIRECT_TRADE_LIVE_HISTORY_HOURS}h historic warmup required before realtime processing`)
+    log(
+      "info",
+      state.liveMode
+        ? `Live mode requested; ${DIRECT_TRADE_LIVE_HISTORY_HOURS}h baseline historic warmup required before realtime processing`
+        : `Paper mode requested; configured historic warmup required before realtime processing`,
+    )
   }
   // A persisted acknowledgement is an event from the state owner. Compare
   // only calculation inputs: UI-only status updates never cause a rebuild.
@@ -1983,6 +2071,7 @@ function applyRemoteState(nextState, source = "load") {
     log("info", `Config change detected by ${source}: volFactor=${state.minVolFactor}, tp=${state.takeProfitRatioRange.join("-")}×cost step=${state.takeProfitRatioStep}, blockRatio=${state.blockVolumeRatio}, minPF=${state.minProfitFactor}`)
     // Settings are authoritative immediately. Rebuild the entire historic
     // grid on the next owned tick instead of trading stale configurations.
+    resetAdaptiveHistory(`calculation inputs changed by ${source}`)
     lastRecalcAt = 0
   }
   return evaluationInputsChanged
@@ -2000,6 +2089,13 @@ async function loadState(includeExecution = false) {
     calculationHistoryHours = Number.isFinite(remoteCalculationHistoryHours) && remoteCalculationHistoryHours > 0
       ? remoteCalculationHistoryHours
       : null
+    if (calculationHistoryHours && result?.calculation) {
+      const remotePolicy = assessCalculationHistory(result.calculation, calculationHistoryHours)
+      lastHistoryPolicy = remotePolicy
+      adaptiveHistoryHours = remotePolicy.canProceed
+        ? calculationHistoryHours
+        : remotePolicy.nextHistoryHours
+    }
     if (!includeExecution && remoteCalculationVersion && remoteCalculationVersion !== calculationVersion) {
       calculationVersion = remoteCalculationVersion
       await refreshActiveSignals()
@@ -2075,11 +2171,7 @@ function shouldEnterNow(config) {
   }
 
   // Stagger entries: don't open all at once
-  const recentOpens = positions.filter(
-    (p) => (p.status === "open" || p.status === "opening" || p.status === "open_failed")
-      && Date.now() - new Date(p.openedAt).getTime() < 30000
-  )
-  if (recentOpens.length >= 2) return false
+  if (!assessDirectTradeRecentOpenCapacity({ positions }).allowed) return false
 
   return true
 }
@@ -2093,7 +2185,7 @@ async function processTick() {
   tickCount++
 
   // 1. Check if recalculation needed (every 2h)
-  if (state.liveMode && calculationHistoryHours !== requiredCalculationHistoryHours()) {
+  if (calculationHistoryHours !== requiredCalculationHistoryHours()) {
     lastRecalcAt = 0
   }
   let calculationFresh = true
@@ -2173,7 +2265,7 @@ async function mainLoop() {
       }
 
       // Current market eligibility is refreshed independently from the full
-      // 48h calculation. It is cheap, bounded by public API backpressure, and
+      // bounded historic calculation. It is cheap, rate-limited, and
       // keeps 5m/15m/30m entry decisions continuous between two full rebuilds.
       if (state.enabled && Date.now() - lastSignalPulseAt >= 60_000) {
         await refreshActiveSignals()

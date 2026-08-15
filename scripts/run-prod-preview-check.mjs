@@ -185,6 +185,12 @@ function startServer({ engines = false } = {}) {
       FORCE_SIMULATED: "1",
       FORCE_LIVE: "0",
       V0_DEV_SYMBOL_COUNT: engines ? String(productionSoakSymbolCount) : "4",
+      CTS_NODE_HEAP_MB: process.env.PREVIEW_NODE_HEAP_MB || "5632",
+      CTS_MEMORY_LIMIT_MB: process.env.PREVIEW_MEMORY_LIMIT_MB || "8192",
+      CTS_RSS_SOFT_LIMIT_MB: process.env.PREVIEW_RSS_SOFT_LIMIT_MB || "4096",
+      CTS_RSS_HARD_LIMIT_MB: process.env.PREVIEW_RSS_HARD_LIMIT_MB || "7168",
+      CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS:
+        process.env.PREVIEW_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS || "1",
       ENGINE_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_ENGINE_SYMBOL_CONCURRENCY || defaultPreviewConcurrency) : "1",
       STRATEGY_FLOW_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_STRATEGY_SYMBOL_CONCURRENCY || defaultPreviewConcurrency) : "1",
       PREHISTORIC_SYMBOL_CONCURRENCY: process.env.PREVIEW_PREHISTORIC_SYMBOL_CONCURRENCY || defaultPreviewConcurrency,
@@ -213,7 +219,7 @@ function startServer({ engines = false } = {}) {
       // memory contract.
       NODE_OPTIONS: [
         "--max-old-space-size=5632",
-        "--max-semi-space-size=256",
+        "--max-semi-space-size=128",
         "--expose-gc",
         process.env.PREVIEW_NODE_OPTIONS || "",
       ].filter(Boolean).join(" "),

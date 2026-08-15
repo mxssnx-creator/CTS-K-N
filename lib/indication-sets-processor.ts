@@ -164,22 +164,78 @@ const DEFAULT_OUTCOME_ATTACHMENT_CONCURRENCY = 8
 // before it can publish the current Set snapshot. Inline Redis and already
 // resolved promises otherwise keep the work in the microtask queue, so a
 // minute-boundary rebuild can monopolize the HTTP event loop even though the
-// work is nominally async. Yield after a small, complete candidate batch; this
-// changes scheduling only and never drops or samples a configuration.
+// work is nominally async. Keep the default at the measured four-candidate
+// control-plane quantum: the exhaustive four-symbol soak stayed below its
+// steady API p95 contract at four, while 32/64-candidate experiments exceeded
+// it. Redis persistence is independently transport-batched below, so this
+// responsiveness setting never drops or samples a configuration.
 const INDICATION_CANDIDATE_YIELD_INTERVAL = Math.max(
   4,
   Math.min(
     256,
-    Number.parseInt(process.env.INDICATION_CANDIDATE_YIELD_EVERY || "16", 10) || 16,
+    Number.parseInt(process.env.INDICATION_CANDIDATE_YIELD_EVERY || "4", 10) || 4,
   ),
 )
 
-async function yieldIndicationScheduler(): Promise<void> {
-  if (typeof setImmediate === "function") {
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    return
+// Common evaluates the largest exact Cartesian grid. Keep each synchronous
+// indicator-calculation burst below the control-plane latency budget while
+// retaining every configuration. Candidate persistence is independently
+// batched below, so this calculation quantum does not change Redis coverage.
+const COMMON_INDICATION_CALC_BATCH_SIZE = Math.max(
+  4,
+  Math.min(
+    128,
+    Number.parseInt(process.env.COMMON_INDICATION_CALC_BATCH_SIZE || "4", 10) || 4,
+  ),
+)
+
+// Shared Redis must not receive one network round-trip for every exact Common
+// tuple. These are transport batches only: every cooldown, pending outcome,
+// Set row, and index membership is still written independently in Redis.
+const INDICATION_REDIS_BATCH_SIZE = Math.max(
+  16,
+  Math.min(
+    256,
+    Number.parseInt(process.env.INDICATION_REDIS_BATCH_SIZE || "128", 10) || 128,
+  ),
+)
+
+// Keep exact-candidate checks frequent, but schedule a real event-loop turn
+// only after a bounded amount of CPU time.  The previous unconditional
+// setImmediate every four candidates made a saturated UI/soak poll queue win
+// thousands of turns during one Common matrix.  A wall-clock slice preserves
+// responsiveness while allowing cheap candidates to progress in one turn;
+// it changes scheduling only and never samples or drops a candidate.
+const INDICATION_COOPERATIVE_TIME_SLICE_MS = Math.max(
+  4,
+  Math.min(
+    50,
+    Number.parseInt(process.env.INDICATION_COOPERATIVE_TIME_SLICE_MS || "8", 10) || 8,
+  ),
+)
+let indicationLastMacrotaskYieldAt = Date.now()
+let indicationMacrotaskYieldInFlight: Promise<void> | null = null
+
+function yieldIndicationScheduler(force = false): Promise<void> {
+  if (
+    !force &&
+    Date.now() - indicationLastMacrotaskYieldAt < INDICATION_COOPERATIVE_TIME_SLICE_MS
+  ) {
+    return Promise.resolve()
   }
-  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  if (indicationMacrotaskYieldInFlight) return indicationMacrotaskYieldInFlight
+
+  indicationMacrotaskYieldInFlight = new Promise<void>((resolve) => {
+    if (typeof setImmediate === "function") {
+      setImmediate(resolve)
+    } else {
+      setTimeout(resolve, 0)
+    }
+  }).finally(() => {
+    indicationLastMacrotaskYieldAt = Date.now()
+    indicationMacrotaskYieldInFlight = null
+  })
+  return indicationMacrotaskYieldInFlight
 }
 
 const RECORD_OUTCOME_SAMPLE_SCRIPT = `
@@ -239,7 +295,188 @@ redis.call("SADD", outcomeIndexKey, sampleKey, statsKey)
 return { tostring(grossProfit), tostring(grossLoss), tostring(count) }
 `
 
+const APPEND_PENDING_OUTCOMES_SCRIPT = `
+local pendingKey = KEYS[1]
+local guardKey = KEYS[2]
+local cap = tonumber(ARGV[1]) or 1000
+local length = tonumber(redis.call("LLEN", pendingKey)) or 0
+
+for index = 2, #ARGV, 2 do
+  if length < cap then
+    local setKey = ARGV[index]
+    local payload = ARGV[index + 1]
+    if redis.call("SADD", guardKey, setKey) == 1 then
+      redis.call("RPUSH", pendingKey, payload)
+      length = length + 1
+    end
+  end
+end
+
+if length > cap then
+  redis.call("LTRIM", pendingKey, -cap, -1)
+  length = cap
+end
+redis.call("EXPIRE", pendingKey, 86400)
+redis.call("EXPIRE", guardKey, 86400)
+return length
+`
+
+// Atomically drain a symbol's current pending queue. LRANGE followed by DEL
+// in separate commands can erase a newly appended lane between the two calls;
+// the guard Set alone cannot protect a different Set identity from that race.
+const DRAIN_PENDING_OUTCOMES_SCRIPT = `
+local values = redis.call("LRANGE", KEYS[1], 0, -1)
+if #values > 0 then redis.call("DEL", KEYS[1]) end
+return values
+`
+
+// Close every pending sample for one exact Set in one Redis script. Besides
+// removing thousands of per-row round trips, LSET preserves the LIST type and
+// makes the aggregate + persisted indication patch one atomic transition.
+// Importantly, a bootstrap row is pending with the Base PF (normally 0.80),
+// not PF=0; outcomePending is the authoritative predicate.
+const CLOSE_PENDING_OUTCOME_GROUP_SCRIPT = `
+local sampleKey = KEYS[1]
+local statsKey = KEYS[2]
+local outcomeIndexKey = KEYS[3]
+local setKey = KEYS[4]
+local dedupeKey = KEYS[8]
+local cap = tonumber(ARGV[1]) or 1000
+local positionCostPct = tonumber(ARGV[2]) or 0
+local itemCount = tonumber(ARGV[3]) or 0
+
+local grossProfit = tonumber(redis.call("HGET", statsKey, "grossProfit"))
+local grossLoss = tonumber(redis.call("HGET", statsKey, "grossLoss"))
+local count = tonumber(redis.call("HGET", statsKey, "count"))
+local aggregateValid = grossProfit ~= nil and grossLoss ~= nil and count ~= nil and grossProfit >= 0 and grossLoss >= 0 and count >= 0
+
+local outcomes = {}
+local argumentIndex = 4
+for itemIndex = 1, itemCount do
+  local sampleJson = ARGV[argumentIndex]
+  local sampleProfit = tonumber(ARGV[argumentIndex + 1]) or 0
+  local sampleLoss = tonumber(ARGV[argumentIndex + 2]) or 0
+  local outcomeJson = ARGV[argumentIndex + 3]
+  local sampleId = ARGV[argumentIndex + 4]
+  local sampleScore = tonumber(ARGV[argumentIndex + 5]) or 0
+  argumentIndex = argumentIndex + 6
+
+  local okOutcome, decodedOutcome = pcall(cjson.decode, outcomeJson)
+  outcomes[itemIndex] = okOutcome and decodedOutcome or {}
+
+  if redis.call("ZADD", dedupeKey, "NX", sampleScore, sampleId) == 1 then
+    redis.call("RPUSH", sampleKey, sampleJson)
+    if aggregateValid then
+      grossProfit = grossProfit + math.max(sampleProfit, 0)
+      grossLoss = grossLoss + math.max(sampleLoss, 0)
+      count = count + 1
+    end
+  end
+end
+
+local dedupeLength = redis.call("ZCARD", dedupeKey)
+if dedupeLength > cap then
+  redis.call("ZREMRANGEBYRANK", dedupeKey, 0, dedupeLength - cap - 1)
+end
+redis.call("EXPIRE", dedupeKey, 691200)
+
+local length = redis.call("LLEN", sampleKey)
+local overflow = length - cap
+if overflow > 0 then
+  if aggregateValid then
+    local evicted = redis.call("LRANGE", sampleKey, 0, overflow - 1)
+    for _, raw in ipairs(evicted) do
+      local ok, decoded = pcall(cjson.decode, raw)
+      if ok and type(decoded) == "table" then
+        grossProfit = grossProfit - math.max(tonumber(decoded["profit"]) or 0, 0)
+        grossLoss = grossLoss - math.max(tonumber(decoded["loss"]) or 0, 0)
+        count = count - 1
+      end
+    end
+  end
+  redis.call("LTRIM", sampleKey, -cap, -1)
+end
+
+if not aggregateValid then
+  grossProfit = 0
+  grossLoss = 0
+  count = 0
+  local samples = redis.call("LRANGE", sampleKey, 0, -1)
+  for _, raw in ipairs(samples) do
+    local ok, decoded = pcall(cjson.decode, raw)
+    if ok and type(decoded) == "table" then
+      grossProfit = grossProfit + math.max(tonumber(decoded["profit"]) or 0, 0)
+      grossLoss = grossLoss + math.max(tonumber(decoded["loss"]) or 0, 0)
+      count = count + 1
+    end
+  end
+end
+grossProfit = math.max(grossProfit or 0, 0)
+grossLoss = math.max(grossLoss or 0, 0)
+count = math.max(count or 0, 0)
+
+redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count))
+redis.call("SADD", outcomeIndexKey, sampleKey, statsKey, dedupeKey)
+
+local averageMovePct = count > 0 and ((grossProfit - grossLoss) / count) * 100 or 0
+local positionCostRatio = positionCostPct > 0 and (averageMovePct / positionCostPct) * 0.1 or 0
+positionCostRatio = math.floor((positionCostRatio + 0.000000000001) * 100000000 + 0.5) / 100000000
+local classicProfitFactor = grossLoss > 0 and grossProfit / grossLoss or (grossProfit > 0 and grossProfit / 0.000001 or 0)
+
+local typeReply = redis.call("TYPE", setKey)
+local setType = type(typeReply) == "table" and typeReply["ok"] or tostring(typeReply)
+local patched = 0
+if setType == "list" and itemCount > 0 then
+  local entries = redis.call("LRANGE", setKey, 0, -1)
+  for entryIndex = #entries, 1, -1 do
+    if patched >= itemCount then break end
+    local ok, entry = pcall(cjson.decode, entries[entryIndex])
+    if ok and type(entry) == "table" then
+      local metadata = entry["metadata"]
+      if type(metadata) == "table" and metadata["outcomePending"] == true then
+        patched = patched + 1
+        entry["profitFactor"] = positionCostRatio
+        metadata["outcomePending"] = false
+        metadata["outcome"] = outcomes[patched] or {}
+        metadata["realizedProfitFactor"] = classicProfitFactor
+        metadata["averageMovePct"] = averageMovePct
+        metadata["positionCostRatio"] = positionCostRatio
+        metadata["positionCostPct"] = positionCostPct
+        metadata["profitFactorSource"] = "position_cost_relative_realized_outcomes"
+        entry["metadata"] = metadata
+        redis.call("LSET", setKey, entryIndex - 1, cjson.encode(entry))
+      end
+    end
+  end
+end
+
+if patched > 0 then
+  for keyIndex = 5, #KEYS do
+    redis.call("SADD", KEYS[keyIndex], setKey)
+  end
+end
+
+return { tostring(grossProfit), tostring(grossLoss), tostring(count), tostring(patched), setType }
+`
+
 type IndicationCandidate = { setKey: string; indication: any; config: any }
+type PendingRealtimeOutcomeWrite = { setKey: string; payload: string }
+type CompletedRealtimeOutcomeWrite = {
+  setKey: string
+  indication: any
+  outcome: any
+  sample: {
+    profit: number
+    loss: number
+    pnlPct: number
+    closedAt: string
+  }
+}
+type NormalizedForwardCandleSeries = {
+  candles: any[]
+  timestamps: number[]
+  timestampsAscending: boolean
+}
 
 function countDirectionalCandidates(
   candidates: readonly IndicationCandidate[],
@@ -470,6 +707,21 @@ async function mapLimit<T, R>(
   return results
 }
 
+function pipelineResultValue(result: any): any {
+  // Native node-redis returns raw values; ioredis-compatible adapters may
+  // return [error, value]. Keep the hot path portable across both shapes.
+  if (
+    Array.isArray(result) &&
+    result.length === 2 &&
+    (result[0] === null || result[0] instanceof Error)
+  ) {
+    if (result[0]) throw result[0]
+    return result[1]
+  }
+  if (result instanceof Error) throw result
+  return result
+}
+
 export interface IndicationSetLimits {
   direction: number
   move: number
@@ -535,6 +787,13 @@ export class IndicationSetsProcessor {
    */
   private currentCyclePersistenceEnabled = true
   private currentCycleSnapshotTimestamp: number | string | null = null
+  /**
+   * One processor instance owns one symbol calculation. Outcome attachment can
+   * inspect the same 5,400-candle source thousands of times (one exact Common
+   * Set per configuration). Cache normalization by source-array identity so
+   * those inspections do not repeatedly allocate map/filter/reverse arrays.
+   */
+  private readonly forwardCandleSeriesCache = new WeakMap<any[], NormalizedForwardCandleSeries>()
   private limits: IndicationSetLimits = { ...DEFAULT_LIMITS }
   private positionLimits: PositionLimits = { ...DEFAULT_POSITION_LIMITS }
   private indicationTimeoutMs: number = DEFAULT_INDICATION_TIMEOUT_MS
@@ -1059,6 +1318,103 @@ export class IndicationSetsProcessor {
     return length
   }
 
+  private async appendIndicationEntryGroups(
+    client: any,
+    groupedEntries: Array<[string, string[]]>,
+    type: string,
+    cfg: CompactionConfig,
+  ): Promise<void> {
+    const fallbackConcurrency = concurrencyFromEnv(
+      ["INDICATION_SET_WRITE_CONCURRENCY"],
+      12,
+      24,
+      groupedEntries.length,
+    )
+    for (let start = 0; start < groupedEntries.length; start += INDICATION_REDIS_BATCH_SIZE) {
+      const chunk = groupedEntries.slice(start, start + INDICATION_REDIS_BATCH_SIZE)
+      const pipeline = client.pipeline()
+      const pushResultIndexes = new Map<string, number>()
+      const indexMembers = new Map<string, Set<string>>()
+      let commandIndex = 0
+
+      for (const [setKey, serializedEntries] of chunk) {
+        pushResultIndexes.set(setKey, commandIndex++)
+        pipeline.rpush(setKey, ...serializedEntries)
+        const symbol = setKey.split(":")[2]
+        for (const indexKey of this.getSetIndexKeys(symbol, type)) {
+          let members = indexMembers.get(indexKey)
+          if (!members) {
+            members = new Set()
+            indexMembers.set(indexKey, members)
+          }
+          members.add(setKey)
+        }
+      }
+      const indexResultIndexes = new Map<string, number>()
+      for (const [indexKey, members] of indexMembers) {
+        indexResultIndexes.set(indexKey, commandIndex++)
+        pipeline.sadd(indexKey, ...members)
+      }
+
+      let results: any[]
+      try {
+        results = await pipeline.exec()
+      } catch {
+        await mapWithConcurrency(
+          chunk,
+          fallbackConcurrency,
+          async ([setKey, serializedEntries]) => {
+            await this.appendIndicationEntries(client, setKey, serializedEntries, cfg)
+            await this.indexSetKey(client, setKey, setKey.split(":")[2], type)
+          },
+          { yieldEvery: 1 },
+        )
+        continue
+      }
+
+      const failedRows: Array<[string, string[]]> = []
+      const trimKeys: string[] = []
+      for (const entry of chunk) {
+        const [setKey] = entry
+        try {
+          const length = Number(pipelineResultValue(results[pushResultIndexes.get(setKey)!]))
+          if (!Number.isFinite(length)) throw new Error("Missing RPUSH result")
+          if (length >= compactionCeiling(cfg)) trimKeys.push(setKey)
+        } catch {
+          failedRows.push(entry)
+        }
+      }
+      if (failedRows.length > 0) {
+        await mapWithConcurrency(
+          failedRows,
+          fallbackConcurrency,
+          async ([setKey, serializedEntries]) => {
+            await this.appendIndicationEntries(client, setKey, serializedEntries, cfg)
+            await this.indexSetKey(client, setKey, setKey.split(":")[2], type)
+          },
+          { yieldEvery: 1 },
+        )
+      }
+
+      for (const [indexKey, members] of indexMembers) {
+        try {
+          pipelineResultValue(results[indexResultIndexes.get(indexKey)!])
+        } catch {
+          await client.sadd(indexKey, ...members)
+        }
+      }
+      if (trimKeys.length > 0) {
+        await mapWithConcurrency(
+          trimKeys,
+          fallbackConcurrency,
+          async (setKey) => client.ltrim(setKey, -cfg.floor, -1),
+          { yieldEvery: 1 },
+        )
+      }
+      await yieldIndicationScheduler()
+    }
+  }
+
   private async readIndicationSetEntries(client: any, setKey: string): Promise<any[]> {
     try {
       const listValues: string[] = await client.lrange(setKey, 0, -1)
@@ -1573,6 +1929,8 @@ export class IndicationSetsProcessor {
     marketData: any,
     candidates: IndicationCandidate[],
   ): Promise<IndicationCandidate[]> {
+    const pendingOutcomes: PendingRealtimeOutcomeWrite[] = []
+    const completedOutcomes: CompletedRealtimeOutcomeWrite[] = []
     const attached = await mapLimit(
       candidates,
       this.outcomeAttachmentConcurrency,
@@ -1589,68 +1947,150 @@ export class IndicationSetsProcessor {
           marketData,
           candidate.setKey,
           candidate.indication,
+          pendingOutcomes,
+          completedOutcomes,
         )
-        if (profitFactor < this.baseMinimumPfRatio) return null
-
-      // The cooldown is claimed only AFTER a valid evaluation. Its key is the
-      // exact durable Set identity, which already includes connection, symbol,
-      // indicator type, complete parameters and direction. This means a valid
-      // MACD/Long tuple cannot throttle RSI, another MACD tuple, or Short.
-        // Historical replay evaluates identical candidates but must never
-        // claim a realtime cooldown; an old candle cannot suppress a current
-        // valid indication for the same exact Set.
-        if (!this.currentCyclePersistenceEnabled) return candidate
-        const client = await getCachedClient()
-        const type = String(candidate.setKey.split(":")[3] || "")
-        const commonType = String(candidate.config?.indicatorType || "")
-        const indicationName =
-          commonType ||
-          String(candidate.indication?.metadata?.name || type || "unknown")
-        const configuredCommonTimeoutSeconds = Number(
-          (this.commonSettings?.[commonType] as any)?.timeout,
-        )
-        const configuredCommonIntervalSeconds = Number(
-          (this.commonSettings?.[commonType] as any)?.interval,
-        )
-        const timeoutMs = type === "common"
-          ? Math.max(
-              0,
-              this.indicationIntervalMsByType.common,
-              Math.round(
-                Math.max(
-                  Number.isFinite(configuredCommonTimeoutSeconds)
-                    ? configuredCommonTimeoutSeconds
-                    : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
-                  Number.isFinite(configuredCommonIntervalSeconds)
-                    ? configuredCommonIntervalSeconds
-                    : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
-                ) * 1_000,
-              ),
-            )
-          : Math.max(
-              0,
-              this.indicationTimeoutMsByType[type] ?? this.indicationTimeoutMs,
-              this.indicationIntervalMsByType[type] ?? this.indicationTimeoutMs,
-            )
-        if (timeoutMs <= 0) return candidate
-        const admitted = await client.set(
-          indicationValidatedCooldownKey({
-            connectionId: this.connectionId,
-            symbol,
-            type,
-            name: indicationName,
-            direction,
-            config: candidate.config,
-          }),
-          String(Date.now()),
-          { NX: true, PX: timeoutMs },
-        ).catch(() => null)
-        return admitted ? candidate : null
+        // Completed outcomes receive their exact aggregate in one batched
+        // Redis transport below. Pending/historic outcomes are final here.
+        if (
+          !Number.isNaN(profitFactor) &&
+          profitFactor < this.baseMinimumPfRatio
+        ) return null
+        return candidate
       },
       INDICATION_CANDIDATE_YIELD_INTERVAL,
     )
 
-    return attached.filter((candidate): candidate is IndicationCandidate => candidate !== null)
+    // Realized rows used to issue one EVAL round-trip for every exact Common
+    // tuple. Queue the same independent atomic scripts into bounded pipelines;
+    // results are applied before Base qualification, so semantics do not
+    // change while the transport cost falls from O(rows) RTTs to O(batches).
+    if (completedOutcomes.length > 0) {
+      await this.persistCompletedRealtimeOutcomes(completedOutcomes)
+    }
+    // Pending rows and cooldown claims use the same bounded transport policy.
+    if (this.currentCyclePersistenceEnabled && pendingOutcomes.length > 0) {
+      await this.persistPendingRealtimeOutcomes(symbol, pendingOutcomes)
+    }
+    const qualified = attached.filter(
+      (candidate): candidate is IndicationCandidate =>
+        candidate !== null &&
+        Number(candidate.indication?.profitFactor) >= this.baseMinimumPfRatio,
+    )
+    // Historical replay must never claim a realtime cooldown; an old candle
+    // cannot suppress a current valid indication for the same exact Set.
+    if (!this.currentCyclePersistenceEnabled) return qualified
+    return this.claimQualifiedCandidateCooldowns(symbol, qualified)
+  }
+
+  private candidateCooldown(
+    symbol: string,
+    candidate: IndicationCandidate,
+  ): { key: string; timeoutMs: number } | null {
+    const direction = resolveIndicationDirection(candidate.indication)
+    if (!direction) return null
+    const type = String(candidate.setKey.split(":")[3] || "")
+    const commonType = String(candidate.config?.indicatorType || "")
+    const indicationName =
+      commonType ||
+      String(candidate.indication?.metadata?.name || type || "unknown")
+    const configuredCommonTimeoutSeconds = Number(
+      (this.commonSettings?.[commonType] as any)?.timeout,
+    )
+    const configuredCommonIntervalSeconds = Number(
+      (this.commonSettings?.[commonType] as any)?.interval,
+    )
+    const timeoutMs = type === "common"
+      ? Math.max(
+          0,
+          this.indicationIntervalMsByType.common,
+          Math.round(
+            Math.max(
+              Number.isFinite(configuredCommonTimeoutSeconds)
+                ? configuredCommonTimeoutSeconds
+                : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
+              Number.isFinite(configuredCommonIntervalSeconds)
+                ? configuredCommonIntervalSeconds
+                : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
+            ) * 1_000,
+          ),
+        )
+      : Math.max(
+          0,
+          this.indicationTimeoutMsByType[type] ?? this.indicationTimeoutMs,
+          this.indicationIntervalMsByType[type] ?? this.indicationTimeoutMs,
+        )
+    if (timeoutMs <= 0) return null
+    return {
+      key: indicationValidatedCooldownKey({
+        connectionId: this.connectionId,
+        symbol,
+        type,
+        name: indicationName,
+        direction,
+        config: candidate.config,
+      }),
+      timeoutMs,
+    }
+  }
+
+  private async claimQualifiedCandidateCooldowns(
+    symbol: string,
+    candidates: IndicationCandidate[],
+  ): Promise<IndicationCandidate[]> {
+    if (candidates.length === 0) return []
+    const client = await getCachedClient()
+    const admitted: IndicationCandidate[] = []
+
+    for (let start = 0; start < candidates.length; start += INDICATION_REDIS_BATCH_SIZE) {
+      const chunk = candidates.slice(start, start + INDICATION_REDIS_BATCH_SIZE)
+      const claims = chunk.map((candidate) => ({
+        candidate,
+        cooldown: this.candidateCooldown(symbol, candidate),
+      }))
+      const immediate = claims.filter((claim) => claim.cooldown === null)
+      admitted.push(...immediate.map((claim) => claim.candidate))
+      const guarded = claims.filter(
+        (claim): claim is typeof claim & { cooldown: { key: string; timeoutMs: number } } =>
+          claim.cooldown !== null,
+      )
+      if (guarded.length === 0) continue
+
+      try {
+        const pipeline = client.pipeline()
+        const claimedAt = String(Date.now())
+        for (const { cooldown } of guarded) {
+          pipeline.set(cooldown.key, claimedAt, { NX: true, PX: cooldown.timeoutMs })
+        }
+        const results = await pipeline.exec()
+        for (let index = 0; index < guarded.length; index++) {
+          let value: any = null
+          try { value = pipelineResultValue(results?.[index]) } catch { value = null }
+          if (value) admitted.push(guarded[index].candidate)
+        }
+      } catch {
+        // Adapter-safe fallback. Atomic SET NX semantics preserve exact-lane
+        // admission even if a provider does not implement pipelines.
+        const fallback = await mapLimit(
+          guarded,
+          this.outcomeAttachmentConcurrency,
+          async ({ candidate, cooldown }) => {
+            const value = await client.set(
+              cooldown.key,
+              String(Date.now()),
+              { NX: true, PX: cooldown.timeoutMs },
+            ).catch(() => null)
+            return value ? candidate : null
+          },
+          INDICATION_CANDIDATE_YIELD_INTERVAL,
+        )
+        admitted.push(...fallback.filter(
+          (candidate): candidate is IndicationCandidate => candidate !== null,
+        ))
+      }
+      await yieldIndicationScheduler()
+    }
+    return admitted
   }
 
   /**
@@ -2436,11 +2876,12 @@ export class IndicationSetsProcessor {
           })
           if (candidates.length >= batchSize) await flushCandidates()
         }
-        // Also flush a short batch when the current configuration block was
-        // mostly neutral, so no timeframe retains an unnecessary tail graph.
-        await flushCandidates()
+        // Keep short tails across calculation-yield boundaries. `candidates`
+        // is still strictly bounded by `batchSize`, and flushing only full
+        // persistence batches avoids thousands of tiny Redis pipelines while
+        // the calculation loop continues yielding to API/control requests.
       },
-      32,
+      COMMON_INDICATION_CALC_BATCH_SIZE,
     )
     await flushCandidates()
     return directionalProcessingResult("common", total, this.currentCycleEntries
@@ -2643,23 +3084,15 @@ export class IndicationSetsProcessor {
       // single `type`), so a single async resolution covers every chunk.
       const compactionCfg = await this.resolveCompaction(type as keyof IndicationSetLimits)
 
-      // Append each grouped set through the shared helper so legacy JSON-array
-      // keys are migrated to Redis LISTs consistently with the single-save path.
       const groupedEntries = Array.from(grouped.entries())
-      const writeConcurrency = concurrencyFromEnv(
-        ["INDICATION_SET_WRITE_CONCURRENCY"],
-        12,
-        24,
-        groupedEntries.length,
-      )
-      await mapWithConcurrency(
+      // RPUSH rows plus their three maintained indexes in bounded transport
+      // batches. Legacy JSON-string keys still take the exact one-time
+      // migration fallback inside appendIndicationEntries().
+      await this.appendIndicationEntryGroups(
+        client,
         groupedEntries,
-        writeConcurrency,
-        async ([setKey, serializedEntries]) => {
-          await this.appendIndicationEntries(client, setKey, serializedEntries, compactionCfg)
-          await this.indexSetKey(client, setKey, setKey.split(":")[2], type)
-        },
-        { yieldEvery: 1 },
+        type,
+        compactionCfg,
       )
     } catch (error) {
       // Silent fail for non-critical batch operations
@@ -2752,6 +3185,8 @@ export class IndicationSetsProcessor {
     marketData: any,
     setKey: string,
     indication: any,
+    deferredPendingOutcomes?: PendingRealtimeOutcomeWrite[],
+    deferredCompletedOutcomes?: CompletedRealtimeOutcomeWrite[],
   ): Promise<number> {
     const direction = resolveIndicationDirection(indication)
     if (!direction) return 0
@@ -2783,17 +3218,15 @@ export class IndicationSetsProcessor {
         pnlPct: outcome.pnlPct,
         closedAt: new Date().toISOString(),
       }
-      const performance = await this.recordOutcomeSample(setKey, sample)
-      indication.profitFactor = performance.positionCostRatio
-      indication.metadata = {
-        ...indication.metadata,
-        outcome,
-        realizedProfitFactor: performance.classicProfitFactor,
-        averageMovePct: performance.averageMovePct,
-        positionCostRatio: performance.positionCostRatio,
-        positionCostPct: this.trendPositionCostPct,
-        profitFactorSource: "position_cost_relative_realized_outcomes",
+      if (deferredCompletedOutcomes) {
+        deferredCompletedOutcomes.push({ setKey, indication, outcome, sample })
+        // NaN is an internal deferred marker only. The batched persistence
+        // barrier below replaces it before qualification or publication.
+        indication.profitFactor = Number.NaN
+        return Number.NaN
       }
+      const performance = await this.recordOutcomeSample(setKey, sample)
+      this.applyCompletedOutcomePerformance(indication, outcome, performance)
       return performance.positionCostRatio
     }
 
@@ -2809,8 +3242,102 @@ export class IndicationSetsProcessor {
       bootstrapWithoutHistory: true,
       profitFactorSource: "pending_realtime_outcome",
     }
-    await this.persistPendingRealtimeOutcome(symbol, setKey, indication)
+    const pendingWrite = this.pendingRealtimeOutcomeWrite(setKey, indication)
+    if (deferredPendingOutcomes) deferredPendingOutcomes.push(pendingWrite)
+    else await this.persistPendingRealtimeOutcomes(symbol, [pendingWrite])
     return this.baseMinimumPfRatio
+  }
+
+  private applyCompletedOutcomePerformance(
+    indication: any,
+    outcome: any,
+    performance: OutcomePerformance,
+  ): void {
+    indication.profitFactor = performance.positionCostRatio
+    indication.metadata = {
+      ...indication.metadata,
+      outcome,
+      outcomePending: false,
+      realizedProfitFactor: performance.classicProfitFactor,
+      averageMovePct: performance.averageMovePct,
+      positionCostRatio: performance.positionCostRatio,
+      positionCostPct: this.trendPositionCostPct,
+      profitFactorSource: "position_cost_relative_realized_outcomes",
+    }
+  }
+
+  private async persistCompletedRealtimeOutcomes(
+    writes: CompletedRealtimeOutcomeWrite[],
+  ): Promise<void> {
+    if (writes.length === 0) return
+    const client = await getCachedClient()
+    const canPipelineAtomicScripts =
+      typeof client.eval === "function" && typeof client.pipeline === "function"
+
+    if (!canPipelineAtomicScripts) {
+      await mapWithConcurrency(
+        writes,
+        concurrencyFromEnv(
+          ["INDICATION_OUTCOME_CONCURRENCY"],
+          8,
+          20,
+          writes.length,
+        ),
+        async (write) => {
+          const performance = await this.recordOutcomeSample(write.setKey, write.sample)
+          this.applyCompletedOutcomePerformance(write.indication, write.outcome, performance)
+        },
+        { yieldEvery: 1 },
+      )
+      return
+    }
+
+    const cap = 1000
+    for (let start = 0; start < writes.length; start += INDICATION_REDIS_BATCH_SIZE) {
+      const chunk = writes.slice(start, start + INDICATION_REDIS_BATCH_SIZE)
+      const pipeline = client.pipeline()
+      for (const write of chunk) {
+        const key = `${write.setKey}:outcomes`
+        const statsKey = `${write.setKey}:outcome_stats`
+        const connectionId = String(write.setKey.split(":")[1] || this.connectionId)
+        const outcomeIndexKey = `indication_sets:outcome_keys:index:${connectionId}`
+        pipeline.eval(RECORD_OUTCOME_SAMPLE_SCRIPT, {
+          keys: [key, statsKey, outcomeIndexKey],
+          arguments: [
+            JSON.stringify(write.sample),
+            String(this.toOutcomeAmount(write.sample.profit)),
+            String(this.toOutcomeAmount(write.sample.loss)),
+            String(cap),
+          ],
+        })
+      }
+      const results = await pipeline.exec()
+      if (!Array.isArray(results) || results.length !== chunk.length) {
+        throw new Error(
+          `[IndicationSets] Outcome pipeline returned ${results?.length ?? 0}/${chunk.length} results`,
+        )
+      }
+      for (let index = 0; index < chunk.length; index++) {
+        const result = pipelineResultValue(results[index])
+        const grossProfit = Number(result?.[0] ?? 0)
+        const grossLoss = Number(result?.[1] ?? 0)
+        const count = Number(result?.[2] ?? 0)
+        if (
+          !Number.isFinite(grossProfit) ||
+          !Number.isFinite(grossLoss) ||
+          !Number.isFinite(count)
+        ) {
+          throw new Error("[IndicationSets] Outcome pipeline returned malformed aggregate")
+        }
+        const performance = this.outcomePerformanceFromStats(grossProfit, grossLoss, count)
+        this.applyCompletedOutcomePerformance(
+          chunk[index].indication,
+          chunk[index].outcome,
+          performance,
+        )
+      }
+      await yieldIndicationScheduler()
+    }
   }
 
   /**
@@ -3027,12 +3554,13 @@ export class IndicationSetsProcessor {
     }
   }
 
-  private async persistPendingRealtimeOutcome(symbol: string, setKey: string, indication: any): Promise<void> {
-    try {
-      const client = await getCachedClient()
-      const key = `indication_outcomes_pending:${this.connectionId}:${symbol}`
-      const guardKey = `indication_outcomes_pending_guard:${this.connectionId}:${symbol}`
-      const pending = {
+  private pendingRealtimeOutcomeWrite(
+    setKey: string,
+    indication: any,
+  ): PendingRealtimeOutcomeWrite {
+    return {
+      setKey,
+      payload: JSON.stringify({
         setKey,
         direction: indication.direction,
         signalScore: indication.signalScore,
@@ -3041,28 +3569,65 @@ export class IndicationSetsProcessor {
           activeProtection: indication.metadata.activeProtection,
         }),
         openedAt: Date.now(),
-      }
-      // An unchanged realtime snapshot needs one forward-observation slot per
-      // exact Set, not one duplicate slot per pulse. The durable guard keeps
-      // this idempotent across processor instances and workers.
-      const added = await client.sadd(guardKey, setKey)
-      if (Number(added) !== 1) return
-      // Per-symbol pending-outcome list cap. In dev this was the single biggest
-      // in-memory Redis family (~150 KB/symbol × symbols = multiple MB restored
-      // into the InlineLocalRedis Map every boot). 1000 pending signals/symbol is
-      // far more than the low-RAM dev VM needs; 100 is plenty to evaluate forward
-      // outcomes. Production keeps the full 1000-entry window.
-      // Scale with symbol count: 30 per symbol in dev (e.g. 300 for 10 symbols).
+      }),
+    }
+  }
+
+  private async persistPendingRealtimeOutcomes(
+    symbol: string,
+    writes: PendingRealtimeOutcomeWrite[],
+  ): Promise<void> {
+    if (writes.length === 0) return
+    try {
+      const client = await getCachedClient()
+      const key = `indication_outcomes_pending:${this.connectionId}:${symbol}`
+      const guardKey = `indication_outcomes_pending_guard:${this.connectionId}:${symbol}`
+      // One forward-observation slot per exact Set. The atomic script checks
+      // the durable guard and the cap together, closing the former SADD→LLEN
+      // race between overlapping engine workers.
       const pendingCap = 1000
-      const currentLength = Number(await client.llen(key)) || 0
-      if (currentLength >= pendingCap) {
-        await client.srem(guardKey, setKey).catch(() => 0)
-        return
+      for (let start = 0; start < writes.length; start += INDICATION_REDIS_BATCH_SIZE) {
+        const chunk = writes.slice(start, start + INDICATION_REDIS_BATCH_SIZE)
+        let persistedWithScript = false
+        if (typeof client.eval === "function") {
+          try {
+            await client.eval(APPEND_PENDING_OUTCOMES_SCRIPT, {
+              keys: [key, guardKey],
+              arguments: [
+                String(pendingCap),
+                ...chunk.flatMap((write) => [write.setKey, write.payload]),
+              ],
+            })
+            persistedWithScript = true
+          } catch {
+            // A possibly committed script remains idempotent because the
+            // fallback below observes the same Set guard.
+          }
+        }
+        if (!persistedWithScript) {
+          await mapLimit(
+            chunk,
+            this.outcomeAttachmentConcurrency,
+            async ({ setKey, payload }) => {
+              const added = await client.sadd(guardKey, setKey)
+              if (Number(added) !== 1) return
+              const currentLength = Number(await client.llen(key)) || 0
+              if (currentLength >= pendingCap) {
+                await client.srem(guardKey, setKey).catch(() => 0)
+                return
+              }
+              await client.rpush(key, payload)
+              await client.ltrim(key, -pendingCap, -1)
+            },
+            INDICATION_CANDIDATE_YIELD_INTERVAL,
+          )
+          await Promise.all([
+            client.expire(key, 86400),
+            client.expire(guardKey, 86400),
+          ])
+        }
+        await yieldIndicationScheduler()
       }
-      await client.rpush(key, JSON.stringify(pending))
-      await client.ltrim(key, -pendingCap, -1)
-      await client.expire(key, 86400)
-      await client.expire(guardKey, 86400)
     } catch { /* non-critical */ }
   }
 
@@ -3072,9 +3637,19 @@ export class IndicationSetsProcessor {
     try {
       const client = await getCachedClient()
       const key = `indication_outcomes_pending:${this.connectionId}:${symbol}`
-      const raw: string[] = await client.lrange(key, 0, -1)
+      // Drain atomically so another owner cannot append a different exact lane
+      // between LRANGE and DEL and have that fresh observation erased.
+      let raw: string[]
+      if (typeof client.eval === "function") {
+        raw = await client.eval(DRAIN_PENDING_OUTCOMES_SCRIPT, {
+          keys: [key],
+          arguments: [],
+        })
+      } else {
+        raw = await client.lrange(key, 0, -1)
+        if (raw?.length) await client.del(key)
+      }
       if (!raw?.length) return false
-      await client.del(key)
 
       // Separate still-pending from newly-closed in a single synchronous pass
       // (evaluateForwardOutcome is pure-sync — no I/O).
@@ -3104,80 +3679,214 @@ export class IndicationSetsProcessor {
       // Process closed items — fan out get+record+set per unique setKey.
       // Group by setKey first so we do at most one get/set per key even if
       // multiple pending items share the same set.
-      const bySetKey = new Map<string, Array<{ pending: any; closed: any }>>()
-      for (const { pending, closed } of closedItems) {
+      const bySetKey = new Map<string, Array<{ item: string; pending: any; closed: any }>>()
+      for (const { item, pending, closed } of closedItems) {
+        if (!pending?.setKey) continue
         const arr = bySetKey.get(pending.setKey) ?? []
-        arr.push({ pending, closed })
+        arr.push({ item, pending, closed })
         bySetKey.set(pending.setKey, arr)
       }
 
       const outcomeGroups = [...bySetKey.entries()]
-      await mapWithConcurrency(
-        outcomeGroups,
-        concurrencyFromEnv(["INDICATION_OUTCOME_CONCURRENCY"], 8, 20, outcomeGroups.length),
-        async ([setKey, items]) => {
-          // Record all outcome samples for this setKey before reading entries,
-          // so the final PF reflects all closed outcomes from this cycle.
-          let performance: OutcomePerformance = this.outcomePerformanceFromStats(0, 0, 0)
-          for (const { closed } of items) {
-            performance = await this.recordOutcomeSample(setKey, {
-              profit:   Math.max(closed.pnlPct, 0),
-              loss:     Math.max(-closed.pnlPct, 0),
-              pnlPct:   closed.pnlPct,
-              closedAt: new Date().toISOString(),
-            })
+      const successfulSetKeys = new Set<string>()
+      const failedGroups = new Map<string, Array<{ item: string; pending: any; closed: any }>>()
+
+      const patchLegacyEntries = async (
+        setKey: string,
+        items: Array<{ item: string; pending: any; closed: any }>,
+        performance: OutcomePerformance,
+      ): Promise<void> => {
+        const entries = await this.readIndicationSetEntries(client, setKey)
+        let patchCount = items.length
+        let patched = false
+        for (let index = entries.length - 1; index >= 0 && patchCount > 0; index--) {
+          // outcomePending, not a numeric PF value, owns the state. Bootstrap
+          // rows already carry the Base PF and therefore are normally nonzero.
+          if (entries[index]?.metadata?.outcomePending) {
+            const closed = items[items.length - patchCount].closed
+            entries[index].profitFactor = performance.positionCostRatio
+            entries[index].metadata = {
+              ...entries[index].metadata,
+              outcomePending: false,
+              outcome: closed,
+              realizedProfitFactor: performance.classicProfitFactor,
+              averageMovePct: performance.averageMovePct,
+              positionCostRatio: performance.positionCostRatio,
+              positionCostPct: this.trendPositionCostPct,
+              profitFactorSource: "position_cost_relative_realized_outcomes",
+            }
+            patchCount--
+            patched = true
           }
-          // Single read-modify-write per setKey regardless of how many
-          // pending items referenced it. Read through the shared helper so
-          // LIST-backed sets stay in the modern representation and legacy
-          // JSON-array strings are still readable during migration.
-          const entries = await this.readIndicationSetEntries(client, setKey)
-          let patchCount = items.length
-          let patched = false
-          for (let i = entries.length - 1; i >= 0 && patchCount > 0; i--) {
-            if (entries[i]?.profitFactor === 0 && entries[i]?.metadata?.outcomePending) {
-              const closed = items[items.length - patchCount].closed
-              entries[i].profitFactor = performance.positionCostRatio
-              entries[i].metadata = {
-                ...entries[i].metadata,
-                outcomePending: false,
-                outcome: closed,
-                realizedProfitFactor: performance.classicProfitFactor,
-                averageMovePct: performance.averageMovePct,
-                positionCostRatio: performance.positionCostRatio,
-                positionCostPct: this.trendPositionCostPct,
-                profitFactorSource: "position_cost_relative_realized_outcomes",
+        }
+        if (!patched) return
+        this.recentlyClosedOutcomeSetKeys.add(setKey)
+        const type = (setKey.split(":")[3] || "direction") as keyof IndicationSetLimits
+        const cfg = await this.resolveCompaction(type)
+        const serializedEntries = entries.map((entry) => JSON.stringify(entry))
+        await client.del(setKey)
+        const length = serializedEntries.length > 0
+          ? await client.rpush(setKey, ...serializedEntries)
+          : 0
+        if (length >= compactionCeiling(cfg)) {
+          await client.ltrim(setKey, -cfg.floor, -1)
+        }
+        await this.indexSetKey(client, setKey, setKey.split(":")[2], type)
+      }
+
+      const scriptOptions = (
+        setKey: string,
+        items: Array<{ item: string; pending: any; closed: any }>,
+      ) => {
+        const setParts = setKey.split(":")
+        const setSymbol = setParts[2] || symbol
+        const type = setParts[3] || "direction"
+        const closedAt = new Date().toISOString()
+        return {
+          keys: [
+            `${setKey}:outcomes`,
+            `${setKey}:outcome_stats`,
+            `indication_sets:outcome_keys:index:${this.connectionId}`,
+            setKey,
+            ...this.getSetIndexKeys(setSymbol, type),
+            `${setKey}:outcome_closed_ids`,
+          ],
+          arguments: [
+            "1000",
+            String(this.trendPositionCostPct),
+            String(items.length),
+            ...items.flatMap(({ pending, closed }, index) => {
+              const sample = {
+                profit: Math.max(closed.pnlPct, 0),
+                loss: Math.max(-closed.pnlPct, 0),
+                pnlPct: closed.pnlPct,
+                closedAt,
               }
-              patchCount--
-              patched = true
+              const openedAt = Number(pending.openedAt) || 0
+              const sampleId = String(
+                pending.outcomeId ||
+                pending.id ||
+                `${openedAt}:${pending.direction || "unknown"}:${index}`,
+              )
+              return [
+                JSON.stringify(sample),
+                String(sample.profit),
+                String(sample.loss),
+                JSON.stringify(closed),
+                sampleId,
+                String(openedAt),
+              ]
+            }),
+          ],
+        }
+      }
+
+      const applyScriptResult = async (
+        setKey: string,
+        items: Array<{ item: string; pending: any; closed: any }>,
+        rawResult: any,
+      ): Promise<void> => {
+        const result = pipelineResultValue(rawResult)
+        const performance = this.outcomePerformanceFromStats(
+          Number(result?.[0] ?? 0),
+          Number(result?.[1] ?? 0),
+          Number(result?.[2] ?? 0),
+        )
+        const patched = Number(result?.[3] ?? 0)
+        const setType = String(result?.[4] ?? "")
+        if (patched > 0) this.recentlyClosedOutcomeSetKeys.add(setKey)
+        if (setType === "string") {
+          // One-time legacy conversion. The outcome sample was already
+          // recorded by the idempotent script; only the old JSON value needs
+          // conversion to the canonical LIST representation here.
+          await patchLegacyEntries(setKey, items, performance)
+        }
+        successfulSetKeys.add(setKey)
+      }
+
+      if (
+        outcomeGroups.length > 0 &&
+        typeof client.eval === "function" &&
+        typeof client.pipeline === "function"
+      ) {
+        for (let start = 0; start < outcomeGroups.length; start += INDICATION_REDIS_BATCH_SIZE) {
+          const chunk = outcomeGroups.slice(start, start + INDICATION_REDIS_BATCH_SIZE)
+          let results: any[] | null = null
+          try {
+            const pipeline = client.pipeline()
+            for (const [setKey, items] of chunk) {
+              pipeline.eval(CLOSE_PENDING_OUTCOME_GROUP_SCRIPT, scriptOptions(setKey, items))
+            }
+            results = await pipeline.exec()
+          } catch {
+            results = null
+          }
+
+          for (let index = 0; index < chunk.length; index++) {
+            const [setKey, items] = chunk[index]
+            try {
+              // A direct retry is safe: each opened outcome owns an exact
+              // bounded dedupe identity inside the atomic script.
+              const rawResult = results
+                ? results[index]
+                : await client.eval(
+                    CLOSE_PENDING_OUTCOME_GROUP_SCRIPT,
+                    scriptOptions(setKey, items),
+                  )
+              await applyScriptResult(setKey, items, rawResult)
+            } catch {
+              try {
+                const retried = await client.eval(
+                  CLOSE_PENDING_OUTCOME_GROUP_SCRIPT,
+                  scriptOptions(setKey, items),
+                )
+                await applyScriptResult(setKey, items, retried)
+              } catch {
+                failedGroups.set(setKey, items)
+              }
             }
           }
-          if (!patched) return
-          this.recentlyClosedOutcomeSetKeys.add(setKey)
+          await yieldIndicationScheduler()
+        }
+      } else {
+        // Compatibility path for a minimal Redis adapter without EVAL or
+        // pipelines. It keeps the same aggregate-before-patch semantics.
+        await mapWithConcurrency(
+          outcomeGroups,
+          concurrencyFromEnv(["INDICATION_OUTCOME_CONCURRENCY"], 8, 20, outcomeGroups.length),
+          async ([setKey, items]) => {
+            try {
+              let performance: OutcomePerformance = this.outcomePerformanceFromStats(0, 0, 0)
+              for (const { closed } of items) {
+                performance = await this.recordOutcomeSample(setKey, {
+                  profit: Math.max(closed.pnlPct, 0),
+                  loss: Math.max(-closed.pnlPct, 0),
+                  pnlPct: closed.pnlPct,
+                  closedAt: new Date().toISOString(),
+                })
+              }
+              await patchLegacyEntries(setKey, items, performance)
+              successfulSetKeys.add(setKey)
+            } catch {
+              failedGroups.set(setKey, items)
+            }
+          },
+          { yieldEvery: 1 },
+        )
+      }
 
-          // Preserve LIST-backed indication_set:* keys when closing pending
-          // realtime outcomes. DEL + RPUSH recreates the key as a Redis LIST
-          // instead of SET-ing a legacy JSON string, then applies the same
-          // compaction and index policy used by appendIndicationEntries().
-          const type = (setKey.split(":")[3] || "direction") as keyof IndicationSetLimits
-          const cfg = await this.resolveCompaction(type)
-          const serializedEntries = entries.map((entry) => JSON.stringify(entry))
-          await client.del(setKey)
-          const length = serializedEntries.length > 0 ? await client.rpush(setKey, ...serializedEntries) : 0
-          if (length >= compactionCeiling(cfg)) {
-            await client.ltrim(setKey, -cfg.floor, -1)
-          }
-          await this.indexSetKey(client, setKey, setKey.split(":")[2], type)
-        },
-      )
+      // A transport failure never drops the drained observation: requeue the
+      // exact raw payload and leave its guard claimed for a later retry.
+      const failedItems = [...failedGroups.values()].flatMap((items) => items.map(({ item }) => item))
+      if (failedItems.length > 0) await client.rpush(key, ...failedItems)
 
-      if (closedItems.length > 0) {
+      if (successfulSetKeys.size > 0) {
         const guardKey = `indication_outcomes_pending_guard:${this.connectionId}:${symbol}`
-        await client.srem(guardKey, ...Array.from(bySetKey.keys())).catch(() => 0)
+        await client.srem(guardKey, ...Array.from(successfulSetKeys)).catch(() => 0)
         await client.expire(guardKey, 86400).catch(() => 0)
       }
       await client.expire(key, 86400)
-      return closedItems.length > 0
+      return successfulSetKeys.size > 0
     } catch {
       return false
     }
@@ -3246,22 +3955,56 @@ export class IndicationSetsProcessor {
       : Array.isArray(marketData?.forwardCandles)
         ? marketData.forwardCandles
         : []
-    const candles = raw
-      .map((c: any) => (typeof c === "number" ? { open: c, high: c, low: c, close: c } : c))
-      .filter((c: any) => Number.isFinite(Number(c?.close ?? c?.price ?? c?.open)))
-      .filter((c: any) => {
-        if (!Number.isFinite(openedAt)) return true
-        const rawTimestamp = c?.timestamp ?? c?.time ?? c?.t
+    let normalized = this.forwardCandleSeriesCache.get(raw)
+    if (!normalized) {
+      const candles = raw
+        .map((c: any) => (typeof c === "number" ? { open: c, high: c, low: c, close: c } : c))
+        .filter((c: any) => Number.isFinite(Number(c?.close ?? c?.price ?? c?.open)))
+      const timestamps: number[] = candles.map((candle: any): number => {
+        const rawTimestamp = candle?.timestamp ?? candle?.time ?? candle?.t
         const numeric = Number(rawTimestamp)
-        const timestamp = Number.isFinite(numeric)
-          ? numeric < 10_000_000_000 ? numeric * 1_000 : numeric
-          : new Date(String(rawTimestamp || "")).getTime()
-        return Number.isFinite(timestamp) && timestamp >= Number(openedAt)
+        if (Number.isFinite(numeric)) {
+          return numeric < 10_000_000_000 ? numeric * 1_000 : numeric
+        }
+        return new Date(String(rawTimestamp || "")).getTime()
       })
-    if (candles.length < 2) return candles
-    const firstTs = Number(candles[0]?.timestamp ?? candles[0]?.time ?? 0)
-    const lastTs = Number(candles[candles.length - 1]?.timestamp ?? candles[candles.length - 1]?.time ?? 0)
-    return firstTs > lastTs ? candles.slice().reverse() : candles
+      if (
+        candles.length >= 2 &&
+        Number.isFinite(timestamps[0]) &&
+        Number.isFinite(timestamps[timestamps.length - 1]) &&
+        timestamps[0] > timestamps[timestamps.length - 1]
+      ) {
+        candles.reverse()
+        timestamps.reverse()
+      }
+      const timestampsAscending = timestamps.every((timestamp: number, index: number) =>
+        Number.isFinite(timestamp) &&
+        (index === 0 || timestamp >= timestamps[index - 1]),
+      )
+      normalized = { candles, timestamps, timestampsAscending }
+      this.forwardCandleSeriesCache.set(raw, normalized)
+    }
+
+    if (!Number.isFinite(openedAt)) return normalized.candles
+    const threshold = Number(openedAt)
+    if (!normalized.timestampsAscending) {
+      return normalized.candles.filter((_, index) => {
+        const timestamp = normalized!.timestamps[index]
+        return Number.isFinite(timestamp) && timestamp >= threshold
+      })
+    }
+
+    // Normal exchange candles are chronological. Binary search turns every
+    // pending-outcome lookup from O(history) into O(log history), while the
+    // returned ordering and inclusive openedAt boundary remain unchanged.
+    let low = 0
+    let high = normalized.timestamps.length
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2)
+      if (normalized.timestamps[middle] < threshold) low = middle + 1
+      else high = middle
+    }
+    return low === 0 ? normalized.candles : normalized.candles.slice(low)
   }
 
   private calculateDirectionIndication(

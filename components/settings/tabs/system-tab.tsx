@@ -180,11 +180,11 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     <div className="flex items-center justify-between">
                       <Label>Main Axis Async Batch</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.strategyMainAxisBatchSize ?? 8).toLocaleString()}
+                        {(settings.strategyMainAxisBatchSize ?? 32).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[settings.strategyMainAxisBatchSize ?? 8]}
+                      value={[settings.strategyMainAxisBatchSize ?? 32]}
                       onValueChange={(v) => handleSettingChange("strategyMainAxisBatchSize", v[0])}
                       min={1}
                       max={32}
@@ -193,7 +193,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     <p className="text-xs text-muted-foreground">
                       Base Sets expanded per bounded async batch. Every configured
                       position-count Set is still processed; this is not a ceiling.
-                      Default <strong>8</strong>.
+                      Default <strong>32</strong>.
                     </p>
                   </div>
 

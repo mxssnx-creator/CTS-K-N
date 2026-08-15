@@ -55,7 +55,7 @@ const calculation = await request("/api/trade-engine/direct-trade/calculate", {
     maxSlRatio: 0.75,
     inverseMaxSlRatio: 1.25,
     trailingEnabled: true,
-    minProfitFactor: 0.8,
+    minProfitFactor: 4,
     maxDrawdownTimeMin: 10,
     maxHoldMinutes: 120,
     blockRange: [1, 12],
@@ -90,6 +90,16 @@ for (let round = 0; round < rounds; round++) {
   if (status?.state?.liveMode === true) {
     throw new Error("Dev soak refuses a server that is in live mode")
   }
+  // This calculation/pulse harness deliberately leaves Direct-Trade stopped,
+  // so the absence of a processor heartbeat is healthy: no processor is
+  // required until the engine is enabled or an open position must be managed.
+  // Report the same required/healthy semantics as the continuity watchdog
+  // instead of presenting an intentionally absent worker as a failure.
+  const processorRequired = status?.processorRequired === true
+  const processorHealthy = status?.processorHealthy === true
+  if (!processorHealthy) {
+    throw new Error(`Direct-Trade processor was required but unhealthy in pulse ${round + 1}`)
+  }
   for (let index = 0; index < statistics.length; index++) {
     const rows = Array.isArray(statistics[index]?.rows) ? statistics[index].rows : []
     if (rows.length > 0 && !rows.every((row) =>
@@ -105,7 +115,8 @@ for (let round = 0; round < rounds; round++) {
     elapsedMs: Date.now() - startedAt,
     signalsEvaluated: Number(pulse.signalsEvaluated || 0),
     activeSignals: pulse.activeSignalKeys.length,
-    processorHealthy: status?.processor?.isHealthy === true,
+    processorRequired,
+    processorHealthy,
     strategyTypes: Object.fromEntries(statistics.map((snapshot, index) => [strategyTypes[index], {
       matched: Number(snapshot?.matched || 0),
       topRows: Array.isArray(snapshot?.rows) ? snapshot.rows.length : 0,

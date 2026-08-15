@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import { existsSync, lstatSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -97,7 +98,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('upsert_env BINGX_ENVIRONMENT "$bingx_environment"')
     expect(installer).toContain('bingx_environment="prod-vst"')
     expect(installer).toContain('upsert_env BINGX_PUBLIC_ORIGIN "https://open-api-vst.bingx.com"')
-    expect(installer).toContain('upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api-vst.bingx.com"')
+    expect(installer).toContain('upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api-vst.bingx.pro"')
+    expect(installer).toContain('upsert_env BINGX_VST_ORIGIN "$bingx_vst_origin"')
     expect(installer).toContain('BingX X02 Prod-VST (virtual funds)')
     expect(installer).toContain('upsert_env BINGX_X02_API_KEY "$bingx_vst_key"')
     expect(installer).toContain('upsert_env BINGX_X02_API_SECRET "$bingx_vst_secret"')
@@ -183,10 +185,25 @@ describe("production installation and Kilo deployment contract", () => {
     expect(nextFsRmCompat).toContain("writeFileWithAtomicNextJsonPublish")
     expect(nextFsRmCompat).toContain("await nativeRename(temporary, resolved)")
     expect(nextFsRmCompat).toContain("fsPromises.writeFile = writeFileWithAtomicNextJsonPublish")
-    expect(await readFile(path.join(process.cwd(), "scripts", "build-next-with-trace-retry.mjs"), "utf8"))
-      .toContain('"run", "build:next"')
-    expect(execFileSync("git", ["ls-files", "--stage"], { cwd: process.cwd(), encoding: "utf8" }))
-      .not.toMatch(/^160000 /m)
+    const buildWrapper = await readFile(path.join(process.cwd(), "scripts", "build-next-with-trace-retry.mjs"), "utf8")
+    expect(buildWrapper).toContain('"run", "build:next"')
+    expect(buildWrapper).toContain("function listArchiveSourceFiles")
+    expect(buildWrapper).toContain("listArchiveSourceFiles()")
+    const devPreview = await readFile(path.join(process.cwd(), "scripts", "run-dev-preview-check.mjs"), "utf8")
+    expect(devPreview).toContain("SOAK_PRODUCTIVE_COMPLETION_GRACE_MS")
+    const gitMetadata = path.join(process.cwd(), ".git")
+    if (existsSync(gitMetadata)) {
+      expect(execFileSync("git", ["ls-files", "--stage"], { cwd: process.cwd(), encoding: "utf8" }))
+        .not.toMatch(/^160000 /m)
+    } else {
+      // Credential-free Drive/release archives intentionally omit Git
+      // metadata. Prove the equivalent install contract from the extracted
+      // tree instead of making a valid archive checkout untestable.
+      expect(packageJson.dependencies["@kilocode/app-builder-db"])
+        .toBe("file:vendor/app-builder-db-marker")
+      expect(lstatSync(path.join(process.cwd(), "vendor", "app-builder-db-marker")).isDirectory())
+        .toBe(true)
+    }
     execFileSync("bash", ["-n", "scripts/install.sh"], { cwd: process.cwd() })
     execFileSync("bash", ["-n", "scripts/bootstrap-install.sh"], { cwd: process.cwd() })
     execFileSync("bash", ["-n", "scripts/update.sh"], { cwd: process.cwd() })

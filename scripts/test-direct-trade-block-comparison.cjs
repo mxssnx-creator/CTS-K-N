@@ -14,6 +14,7 @@ const {
   directTradeTakeProfitPercent,
   evaluateDirectTradeSets,
   resampleCandles,
+  DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
 } = require("../lib/direct-trade-coordination.ts")
 const {
   calculateBlockMinimumProfitFactor,
@@ -34,7 +35,10 @@ const blockMinimum = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_BLOC
 const blockMaximum = Math.max(blockMinimum, Math.min(12, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_MAX_COUNT) || 12)))
 const blockVolumeRatio = Math.max(0.1, Math.min(10, Number(process.env.DIRECT_TRADE_BLOCK_VOLUME_RATIO) || 1))
 const blockProfitFactorRatio = Math.max(0.2, Math.min(5, Number(process.env.DIRECT_TRADE_BLOCK_PF_RATIO) || 0.8))
-const minProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_BLOCK_MIN_PF) || 0.8)
+const minProfitFactor = Math.max(
+  0.8,
+  Number(process.env.DIRECT_TRADE_BLOCK_MIN_PF) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
+)
 const minRecentProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_BLOCK_MIN_RECENT_PF) || 25)
 const recentEvaluationPositions = Math.max(3, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_RECENT_POSITIONS) || 12))
 const maxDrawdownTimeMin = Math.max(1, Number(process.env.DIRECT_TRADE_BLOCK_MAX_DDT_MIN) || 10)

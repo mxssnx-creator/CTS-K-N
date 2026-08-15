@@ -81,6 +81,10 @@ import {
   markStrategyPositionInactive,
   recordStrategyPositionEntry,
 } from "@/lib/pos-history"
+import {
+  inferRealStrategyVariant,
+  type RealStrategyVariant,
+} from "@/lib/strategy-real-stats"
 import { getLivePositionSetLineageKeys } from "@/lib/live-position-lineage"
 import {
   resolveCombinedPosCountDelta,
@@ -718,6 +722,30 @@ function axisKeyFromLineage(
   return `p${axisWindows.prev || 0}_l${axisWindows.last || 0}_c${axisWindows.cont || 0}_u${axisWindows.pause || 0}_${outcome}${direction ? `_${direction}` : ""}`
 }
 
+/**
+ * Preserve the Real-stage variant on the confirmed-position ledger.
+ *
+ * Exact adjustment Set keys remain authoritative because a Block/DCA fill can
+ * be added to a position that originally carried a trailing Base profile. For
+ * the originating fill, prefer the persisted position variant and use the
+ * trailing profile as a backwards-compatible recovery signal for rows written
+ * before `setVariant` was durable.
+ */
+function resolveConfirmedStrategyVariant(
+  position: Pick<LivePosition, "setVariant" | "trailingProfile">,
+  setKey: string,
+): RealStrategyVariant {
+  const keyedVariant = inferRealStrategyVariant(setKey)
+  if (keyedVariant !== "default") return keyedVariant
+
+  const explicit = String(position.setVariant || "").trim().toLowerCase()
+  if (explicit === "block" || explicit === "dca" || explicit === "trailing") {
+    return explicit
+  }
+  if (position.trailingProfile) return "trailing"
+  return "default"
+}
+
 async function recordConfirmedStrategyEntry(
   connectionId: string,
   position: LivePosition,
@@ -764,6 +792,7 @@ async function recordConfirmedStrategyEntry(
         axisKey: isPrimary
           ? String(lineage?.axisKey || axisKeyFromLineage(memberSetKey, lineage?.axisWindows || position.axisWindows))
           : "",
+        strategyVariant: resolveConfirmedStrategyVariant(position, memberSetKey),
         countGlobalPosition: index === 0,
       })
       inserted = memberInserted || inserted
@@ -789,6 +818,7 @@ async function recordConfirmedStrategyEntry(
     indicationType: String(lineage?.indicationType || position.indicationType || inferredType || "unknown"),
     direction,
     axisKey: String(lineage?.axisKey || axisKeyFromLineage(setKey, lineage?.axisWindows || position.axisWindows)),
+    strategyVariant: resolveConfirmedStrategyVariant(position, setKey),
   })
 }
 
@@ -2965,6 +2995,36 @@ function strategyLineageKeysForAdjustment(
     ...(Array.isArray(real?.accumulatedSetKeys) ? real.accumulatedSetKeys : []),
     real?.blockLaneKey,
   ].map((value: unknown) => String(value || "").trim()).filter(Boolean))]
+}
+
+/**
+ * Seed the durable Live lineage from the exact Real dispatch identity.
+ *
+ * A non-combined Real row can carry both its executable row key (for example
+ * `#row_real#row_live`) and broader accumulation aliases. Dropping the exact
+ * key at the Real -> Live boundary makes relation statistics report a false
+ * mismatch and can merge otherwise independent execution lanes. Combined
+ * position-count rows are the intentional exception: their accumulated keys
+ * already are the authoritative constituent Set identities and the synthetic
+ * combined row must not be counted as an additional Set.
+ */
+function initialLivePositionSetLineage(real: Pick<
+  RealPosition,
+  "setKey" | "accumulatedSetKeys" | "combinedPosCounts"
+>): string[] {
+  const inherited = Array.isArray(real.accumulatedSetKeys)
+    ? real.accumulatedSetKeys
+        .map(String)
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : []
+  if (real.combinedPosCounts && inherited.length > 0) {
+    return [...new Set(inherited)]
+  }
+  return [...new Set([
+    String(real.setKey || "").trim(),
+    ...inherited,
+  ].filter(Boolean))]
 }
 
 /**
@@ -6793,10 +6853,7 @@ export async function executeLivePosition(
       blockLaneKind:  realPosition.blockLaneKind,
       blockLaneKey:   realPosition.blockLaneKey,
       blockSourceId:  realPosition.blockSourceId,
-      accumulatedSetKeys:
-      Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
-        ? realPosition.accumulatedSetKeys
-        : (realPosition.setKey ? [realPosition.setKey] : []),
+      accumulatedSetKeys: initialLivePositionSetLineage(realPosition),
     combinedPosCounts: realPosition.combinedPosCounts ?? false,
     posCountsTargetFlat: realPosition.posCountsTargetFlat ?? false,
     posCountsLongSetCount: realPosition.posCountsLongSetCount,
@@ -6875,10 +6932,7 @@ export async function executeLivePosition(
       blockLaneKey:   realPosition.blockLaneKey,
       blockSourceId:  realPosition.blockSourceId,
       blockOnly:      realPosition.blockOnly,
-      accumulatedSetKeys:
-        Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
-          ? realPosition.accumulatedSetKeys
-          : (realPosition.setKey ? [realPosition.setKey] : []),
+      accumulatedSetKeys: initialLivePositionSetLineage(realPosition),
       combinedPosCounts: realPosition.combinedPosCounts ?? false,
       posCountsTargetFlat: realPosition.posCountsTargetFlat ?? false,
       posCountsLongSetCount: realPosition.posCountsLongSetCount,
@@ -7050,10 +7104,7 @@ export async function executeLivePosition(
     blockOnly: realPosition.blockOnly,
     blockVolumeIncrementRatio: realPosition.blockVolumeIncrementRatio,
     blockCalculatedVolumeMultiplier: realPosition.blockCalculatedVolumeMultiplier,
-    accumulatedSetKeys:
-      Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
-        ? realPosition.accumulatedSetKeys
-        : (realPosition.setKey ? [realPosition.setKey] : []),
+    accumulatedSetKeys: initialLivePositionSetLineage(realPosition),
     combinedPosCounts: realPosition.combinedPosCounts ?? false,
     posCountsTargetFlat: realPosition.posCountsTargetFlat ?? false,
     posCountsLongSetCount: realPosition.posCountsLongSetCount,
@@ -13312,6 +13363,7 @@ export async function syncLiveFromPseudo(
 
 export const __liveStageTest = {
   liveExecutionSlot,
+  resolveConfirmedStrategyVariant,
   async refreshLockTTLWithClient(client: any, key: string, token: string, ttlMs: number) {
     return (await evalLockLua(client, REFRESH_LOCK_TTL_LUA, key, [token, String(ttlMs)])) === 1
   },

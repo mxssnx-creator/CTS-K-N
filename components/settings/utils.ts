@@ -124,7 +124,7 @@ export const initialSettings: Settings = {
 
   // Strategy retention/scheduling controls — batching never truncates Sets.
   strategyMaxEntriesPerSet: 250,
-  strategyMainAxisBatchSize: 8,
+  strategyMainAxisBatchSize: 32,
   strategyBlockMaterializationBatchSize: 1024,
   strategyRealSetsSafetyCeiling: 0,
   maxRealSets: 0,

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { rmSync, openSync, closeSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { killTestDevPort } from './kill-test-dev-port.mjs'
+import { acquireDevArtifactLock } from './dev-artifact-lock.mjs'
 
 const port = Number(process.env.PORT || 3002)
 const host = process.env.HOST || '127.0.0.1'
@@ -35,18 +36,28 @@ async function waitForRoute(path, attempts = 30) {
 }
 
 let child = null
+let releaseDevArtifactLock = () => {}
 
 if (ownsServer) {
-  await killExisting()
-  rmSync('.next', { recursive: true, force: true })
+  releaseDevArtifactLock = acquireDevArtifactLock({ artifactName: 'next-dev' })
+  try {
+    await killExisting()
+    rmSync('.next', { recursive: true, force: true })
 
-  const out = openSync(logPath, 'w')
-  child = spawn('npm', ['run', 'dev', '--', '--hostname', host], {
-    detached: true,
-    stdio: ['ignore', out, out],
-    env: { ...process.env, PORT: String(port) },
-  })
-  closeSync(out)
+    const out = openSync(logPath, 'w')
+    try {
+      child = spawn('npm', ['run', 'dev', '--', '--hostname', host], {
+        detached: true,
+        stdio: ['ignore', out, out],
+        env: { ...process.env, PORT: String(port) },
+      })
+    } finally {
+      closeSync(out)
+    }
+  } catch (error) {
+    releaseDevArtifactLock()
+    throw error
+  }
 }
 
 let exitCode = 0
@@ -84,6 +95,7 @@ try {
     try { process.kill(-child.pid, 'SIGKILL') } catch {}
     await killExisting()
   }
+  releaseDevArtifactLock()
 }
 
 process.exit(exitCode)

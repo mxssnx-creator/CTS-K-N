@@ -99,6 +99,8 @@ describe("production continuity invariants", () => {
     expect(continuity).toContain("CONTINUITY_MINUTE_INTERVAL_MS = 60_000")
     expect(continuity).toContain("void enqueueContinuityAutoStartJob()")
     expect(continuity).toContain("Defer the expensive indication/strategy fallback")
+    expect(continuity).toContain('if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART === "1") return')
+    expect(continuity).toContain("Starting the portable fallback")
     expect(continuity).toContain("state.minuteTimer = setInterval")
     expect(migrations).toContain('name: "070-stable-site-instance-and-portable-minute-continuity"')
     expect(migrations).toContain('name: "071-unified-database-maintenance-and-secondary-indexes"')
@@ -114,6 +116,12 @@ describe("production continuity invariants", () => {
     expect(providers).toContain("<SessionSynchronizer />")
     expect(providers).toContain("<ProgressTracker />")
     expect(initStatus).toContain("ensureUniqueSiteInstance")
+    expect(initStatus).toContain('request.nextUrl.searchParams.get("fresh") === "1"')
+    expect(initStatus).toContain("revision === initStatusCacheRevision")
+    expect(read("scripts/verify-prod-preview.mjs")).toContain('/api/system/init-status?fresh=1')
+    expect(read("scripts/verify-deployment-contract.mjs")).toContain(
+      'requireFreshContinuity ? "/api/system/init-status?fresh=1"',
+    )
     expect(systemStatus).toContain("ensureUniqueSiteInstance")
     expect(activeConnectionCard).toContain("getProgressionCacheKey")
   })

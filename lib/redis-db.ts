@@ -10,6 +10,12 @@ import {
 import { createKiloDatabaseQuery, hasKiloDatabaseBackend, resolveKiloDatabaseConfig, type KiloDatabaseMethod } from "./kilo-database-client"
 import { scanRedisKeys } from "./redis-scan"
 import { resolveRedisRuntimeRoot } from "./redis-runtime-root"
+import { createRedisLockToken, releaseOwnedRedisLock } from "./redis-lock-utils"
+import {
+  getRuntimeBootstrapKeys,
+  LATEST_REDIS_SCHEMA_VERSION,
+  RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS,
+} from "./redis-runtime-bootstrap"
 import {
   archiveClosedLivePositionAnalytics,
   buildLivePositionAnalyticsSnapshot,
@@ -137,6 +143,29 @@ const globalForRedis = resolveRedisRuntimeRoot() as unknown as {
 }
 
 export type RedisBackend = "inline-local" | "redis-network" | "kilo-sqlite-snapshot"
+
+// These Direct-Trade generation products are deterministic derivatives of
+// the durable settings/history inputs. Persisting the maximum configuration
+// grid made inline snapshots hundreds of megabytes large and allowed a stale
+// generation to dominate restart time and heap. Runtime state (positions,
+// order ownership, lifecycle ledgers and operator settings) remains durable;
+// only the safely reconstructible calculation products are omitted.
+const REBUILDABLE_DIRECT_TRADE_SNAPSHOT_KEYS = new Set([
+  "direct_trade:configs",
+  "direct_trade:configs:manifest",
+  "direct_trade:execution-configs",
+  "direct_trade:execution-index",
+  "direct_trade:execution-signal-index",
+  "direct_trade:active-signals",
+  "direct_trade:calculation",
+  "direct_trade:calculation-progress",
+  "direct_trade:statistics-index",
+])
+
+function isRebuildableDirectTradeSnapshotKey(key: string): boolean {
+  return REBUILDABLE_DIRECT_TRADE_SNAPSHOT_KEYS.has(key)
+    || key.startsWith("direct_trade:configs:chunk:")
+}
 
 const KILO_SNAPSHOT_TABLE = "cts_runtime_snapshot"
 
@@ -450,12 +479,14 @@ export class InlineLocalRedis implements RedisClientLike {
     return JSON.stringify({
       v: 1,
       savedAt: Date.now(),
-      strings: Array.from(d.strings.entries()),
+      strings: Array.from(d.strings.entries())
+        .filter(([key]) => !isRebuildableDirectTradeSnapshotKey(key)),
       hashes: Array.from(d.hashes.entries()),
       sets: Array.from(d.sets.entries()).map(([k, s]) => [k, Array.from(s)]),
       lists: Array.from(d.lists.entries()),
       sorted_sets: Array.from(d.sorted_sets.entries()).map(([k, z]) => [k, z.entries]),
-      ttl: Array.from(d.ttl.entries()),
+      ttl: Array.from(d.ttl.entries())
+        .filter(([key]) => !isRebuildableDirectTradeSnapshotKey(key)),
       mutationVersion: this.mutationVersion(),
     })
   }
@@ -476,11 +507,13 @@ export class InlineLocalRedis implements RedisClientLike {
     // therefore included by the next snapshot instead of being falsely marked
     // durable by this one.
     const stringKeys = Array.from(d.strings.keys())
+      .filter((key) => !isRebuildableDirectTradeSnapshotKey(key))
     const hashKeys = Array.from(d.hashes.keys())
     const setKeys = Array.from(d.sets.keys())
     const listKeys = Array.from(d.lists.keys())
     const sortedSetKeys = Array.from(d.sorted_sets.keys())
     const ttlKeys = Array.from(d.ttl.keys())
+      .filter((key) => !isRebuildableDirectTradeSnapshotKey(key))
 
     for (const key of stringKeys) {
       if (d.strings.has(key)) yield JSON.stringify(["s", key, d.strings.get(key)])
@@ -1390,6 +1423,16 @@ export class InlineLocalRedis implements RedisClientLike {
 
   async startPersistence(): Promise<boolean> {
     if (typeof process === "undefined" || !process.versions?.node) return false
+    // Jest repeatedly tears down isolated module runtimes while the process
+    // itself stays alive. A background snapshot timer created by one of those
+    // runtimes would fire later and try to import Node built-ins through an
+    // already-destroyed Jest environment. Persistence behaviour is exercised
+    // explicitly through saveToDisk()/persistNow() tests; opt in only when a
+    // test intentionally needs the periodic timer itself.
+    if (
+      process.env.JEST_WORKER_ID &&
+      process.env.INLINE_REDIS_TEST_BACKGROUND_PERSISTENCE !== "1"
+    ) return true
     if (globalForRedis.__redis_persistence_tick_started) return true
     globalForRedis.__redis_persistence_tick_started = true
 
@@ -2435,7 +2478,17 @@ export class InlineLocalRedis implements RedisClientLike {
     const deadline = Date.now() + 5_000
     while (Date.now() < deadline) {
       const inFlight = globalForRedis.__redis_snapshot_save_promise
-      if (inFlight) await inFlight.catch(() => false)
+      if (inFlight) {
+        const remainingMs = Math.max(0, deadline - Date.now())
+        if (remainingMs === 0) return false
+        const completedWithinDeadline = await Promise.race([
+          inFlight.then(() => true, () => true),
+          new Promise<boolean>((resolve) => {
+            setTimeout(() => resolve(false), remainingMs)
+          }),
+        ])
+        if (!completedWithinDeadline) return false
+      }
       if (this.persistedVersion() >= requiredVersion) return true
       await this.saveToDisk()
       if (this.persistedVersion() >= requiredVersion) return true
@@ -3324,6 +3377,14 @@ class UpstashRestRedisClient implements RedisClientLike {
   }
   private pipelineCommand(method: string, args: any[]): Array<string | number> {
     const normalizedMethod = method.toLowerCase()
+    if (normalizedMethod === "eval" && args[1] && typeof args[1] === "object") {
+      const options = args[1] as { keys?: unknown[]; arguments?: unknown[] }
+      const keys = Array.isArray(options.keys) ? options.keys.map(redisHashScalar) : []
+      const scriptArguments = Array.isArray(options.arguments)
+        ? options.arguments.map(redisHashScalar)
+        : []
+      return ["EVAL", redisHashScalar(args[0]), keys.length, ...keys, ...scriptArguments]
+    }
     if (normalizedMethod === "hset" && args[1] && typeof args[1] === "object" && !Array.isArray(args[1])) {
       const command: Array<string | number> = ["HSET", String(args[0])]
       for (const [field, value] of Object.entries(normalizeRedisHash(args[1]))) {
@@ -3678,6 +3739,81 @@ export async function cleanupVolatileRuntimeState({
   return { deleted, preserved }
 }
 
+const SHARED_VOLATILE_CLEANUP_LOCK_SECONDS = 60
+const SHARED_VOLATILE_CLEANUP_WAIT_MS = 65_000
+
+async function hasSharedRuntimeMarker(
+  client: RedisClientLike,
+  kind: "base" | "ready",
+): Promise<boolean> {
+  const keys = getRuntimeBootstrapKeys()
+  const markerKey = kind === "base" ? keys.baseMarker : keys.readyMarker
+  const markerValue = kind === "base" ? keys.baseMarkerValue : keys.readyMarkerValue
+  const [schemaVersion, marker] = await Promise.all([
+    client.get("_schema_version").catch(() => null),
+    client.get(markerKey).catch(() => null),
+  ])
+  return Number(schemaVersion || 0) === LATEST_REDIS_SCHEMA_VERSION && marker === markerValue
+}
+
+async function ensureSharedVolatileStartupCleanup(client: RedisClientLike): Promise<boolean> {
+  const keys = getRuntimeBootstrapKeys()
+  // Redis command failures are different from lock contention. Let command
+  // failures escape immediately so initRedis() can remain available and retry
+  // cleanup on the next call; silently converting them to `null` made every
+  // affected worker spin for the full 65-second contention window.
+  if ((await client.get(keys.cleanupMarker)) === keys.cleanupMarkerValue) {
+    return true
+  }
+
+  const deadline = Date.now() + SHARED_VOLATILE_CLEANUP_WAIT_MS
+  while (Date.now() < deadline) {
+    const token = createRedisLockToken("volatile-startup-cleanup")
+    const acquired = await client.set(keys.cleanupLock, token, {
+      NX: true,
+      EX: SHARED_VOLATILE_CLEANUP_LOCK_SECONDS,
+    })
+    if (acquired === "OK") {
+      try {
+        if ((await client.get(keys.cleanupMarker)) === keys.cleanupMarkerValue) {
+          return true
+        }
+        await cleanupVolatileRuntimeState({
+          mode: "activeOwnerSafe",
+          reason: "runtime-bootstrap-owner",
+        })
+        await Promise.all([
+          client.set(keys.cleanupMarker, keys.cleanupMarkerValue, {
+            EX: RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS,
+          }),
+          // Retain compatibility with completeStartup's existing immediate
+          // second-call guard; the boot-scoped marker above owns correctness.
+          client.set("runtime:volatile_cleanup:startup_claim", keys.cleanupMarkerValue, {
+            EX: 30 * 60,
+          }),
+        ])
+        globalForRedis.__redis_volatile_startup_cleanup_ran = true
+        return true
+      } finally {
+        await releaseOwnedRedisLock(client, keys.cleanupLock, token).catch(() => false)
+      }
+    }
+    if ((await client.get(keys.cleanupMarker)) === keys.cleanupMarkerValue) {
+      globalForRedis.__redis_volatile_startup_cleanup_ran = true
+      return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, 75))
+  }
+  return false
+}
+
+async function markSharedRuntimeReady(client: RedisClientLike): Promise<void> {
+  const keys = getRuntimeBootstrapKeys()
+  await client.set(keys.readyMarker, keys.readyMarkerValue, {
+    EX: RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS,
+  })
+}
+
 /**
  * Full initialisation: core Redis + schema migrations. `isConnected` only
  * becomes true AFTER migrations have completed, and every caller awaits the
@@ -3715,47 +3851,45 @@ export async function initRedis(): Promise<void> {
   // is at the current migration bundle. This keeps dev hot-reload and long-lived
   // production workers from trusting a stale in-memory readiness flag after a
   // code deploy adds new migrations.
-  if (globalForRedis.__redis_fully_connected) {
+  if (globalForRedis.__redis_fully_connected || isConnected) {
     isConnected = true
     coreInitialized = true
     connectionsInitialized = true
     migrationsRan = true
     try {
       await ensureCoreRedis()
-      const { getLatestMigrationVersion, runMigrations } = await import("@/lib/redis-migrations")
-      const latestVersion = getLatestMigrationVersion()
-      const currentVersion = Number((await redisInstance!.get("_schema_version").catch(() => "0")) || "0")
-      if (!Number.isFinite(currentVersion) || currentVersion < latestVersion) {
-        console.log(
-          `[v0] [Redis] Global ready marker is stale: schema v${currentVersion || 0} < code v${latestVersion}; running pending migrations`,
-        )
-        globalForRedis.__redis_fully_connected = false
-        migrationsRan = false
-        await runMigrations()
-        globalForRedis.__redis_fully_connected = true
+      if (await hasSharedRuntimeMarker(redisInstance!, "ready")) {
+        if (isKiloSnapshotBackend() && redisInstance instanceof InlineLocalRedis) {
+          await redisInstance.refreshFromSharedSnapshot()
+        }
+        return
       }
-      if (isKiloSnapshotBackend() && redisInstance instanceof InlineLocalRedis) {
-        await redisInstance.refreshFromSharedSnapshot()
-      }
+      // A database reset, restore, code/schema update, or incomplete cleanup
+      // invalidates the shared ready marker. Fall through to the full guarded
+      // path; the Base marker still avoids loading the migration bundle when
+      // only cleanup needs a retry.
+      isConnected = false
+      migrationsRan = false
+      globalForRedis.__redis_fully_connected = false
     } catch (error) {
       isConnected = false
       migrationsRan = false
       globalForRedis.__redis_fully_connected = false
       throw error
     }
-    return
-  }
-  if (isConnected) {
-    if (isKiloSnapshotBackend() && redisInstance instanceof InlineLocalRedis) {
-      await redisInstance.refreshFromSharedSnapshot()
-    }
-    return
   }
 
   if (globalForRedis.__redis_init_promise) return globalForRedis.__redis_init_promise
 
   globalForRedis.__redis_init_promise = (async () => {
     await ensureCoreRedis()
+
+    // The first worker performs migrations/Base repair and publishes a
+    // boot-scoped marker. Peer route workers can prove the same schema and skip
+    // importing/evaluating the 8k-line migration bundle entirely.
+    if (!migrationsRan && await hasSharedRuntimeMarker(getRedisClient(), "base")) {
+      migrationsRan = true
+    }
 
     if (!migrationsRan) {
       // runMigrations() calls ensureCoreRedis() internally (NOT initRedis), so
@@ -3813,10 +3947,13 @@ export async function initRedis(): Promise<void> {
     // Startup volatile cleanup: clear stale locks, transient indexes, and
     // rebuildable pipeline families after the official core init + successful
     // migration path has completed, but before exposing Redis as fully ready.
-    if (!isProductionEnvironment() || !globalForRedis.__redis_volatile_startup_cleanup_ran) {
-      await cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "initRedis" }).catch(() => null)
-      if (isProductionEnvironment()) globalForRedis.__redis_volatile_startup_cleanup_ran = true
-    }
+    const cleanupCompleted = await ensureSharedVolatileStartupCleanup(getRedisClient()).catch((error) => {
+      console.warn(
+        "[v0] [Redis] Shared volatile startup cleanup will retry on the next init:",
+        error instanceof Error ? error.message : error,
+      )
+      return false
+    })
 
     if (isKiloSnapshotBackend() && redisInstance instanceof InlineLocalRedis) {
       const persisted = await redisInstance.persistNow()
@@ -3824,6 +3961,7 @@ export async function initRedis(): Promise<void> {
         throw new Error("Kilo managed runtime snapshot could not be initialized without overwriting a newer revision")
       }
     }
+    if (cleanupCompleted) await markSharedRuntimeReady(getRedisClient())
     isConnected = true
     globalForRedis.__redis_fully_connected = true
   })()
@@ -4010,9 +4148,39 @@ const NUMERIC_HASH_FIELDS = new Set([
   "stage_min_pos_count_base", "stageMinPosCountBase",
   "stage_min_pos_count_main", "stageMinPosCountMain",
   "stage_min_pos_count_real", "stageMinPosCountReal",
+  "specialMinStep", "specialMaxStep", "specialStepSize", "specialActiveWindow",
+  "specialMinimumEvidence", "specialMinimumAgreement", "specialMinimumMarketChangePct",
+  "specialMinimumScore", "specialNoiseFilterPct", "specialMomentumWeight",
+  "specialActivityWeight", "specialVolatilityWeight", "specialMarketChangeSpeedWeight",
+  "specialMinimumMarketChangeSpeedRatio", "specialMaximumMarketChangeSpeedPctPerSecond",
+  "specialScenarioWeight", "specialScenarioMinimumScore", "specialPastActivityPersistenceMinimum",
+  "specialActivityBreakoutRatio", "specialReversalAccelerationMinimumPct",
+  "specialActivityLookback", "specialMinimumActivityRatio", "specialMarketActivityFadeRatio",
+  "specialMaximumVolatilityPct", "specialVolatilityTargetPct",
+  "specialMinimumVolatilityVolumeScale", "specialOrderFlowWeight",
+  "specialMinimumDirectionalOrderFlow", "specialMaximumSpreadBps",
+  "specialMinimumHoldingSteps", "specialMaximumHoldingSteps", "specialMinimumHoldingSeconds",
+  "specialTargetHoldingSeconds", "specialMaximumHoldingSeconds",
+  "specialMinimumTimeframeConfirmations", "specialMinimumCombinedScoreMargin",
+  "specialTimeframe15sWeight", "specialTimeframe1mWeight", "specialTimeframe15mWeight",
+  "specialTimeframe30mWeight", "specialMaxPositionsPerDirection",
+  "specialAdditionalPositionStepPositionCostRatio", "specialVolumeIncrementRatio",
+  "specialMaxVolumeRatio", "specialTakeProfitMinPositionCostRatio",
+  "specialTakeProfitMaxPositionCostRatio", "specialTakeProfitVolatilityMultiplier",
+  "specialTakeProfitMarketChangeMultiplier", "specialStopLossMinPositionCostRatio",
+  "specialStopLossVolatilityMultiplier", "specialStopLossMaxTakeProfitRatio",
+  "specialTrailingVolatilityAdaptationWeight", "specialTrailingSpeedAdaptationWeight",
+  "specialTrailingActivityAdaptationWeight", "specialTrailingScenarioAdaptationWeight",
+  "specialTrailingActivationTakeProfitRatio", "specialTrailingDistanceTakeProfitRatio",
+  "specialTrailingStepTakeProfitRatio", "specialRoundTripCostPct",
+  "specialMinimumTakeProfitAfterCostsRatio", "specialBacktestMinimumTrades",
+  "specialBacktestMinimumTradesPerDirection", "specialBacktestMinimumTradesPerSymbol",
+  "specialBacktestMinimumStableProfitFactor", "specialBacktestMaximumDrawdownPct",
+  "specialWalkForwardFolds", "specialWalkForwardPurgeSteps",
+  "specialWalkForwardMaximumFoldLossPct",
 ])
 
-function parseHash(hash: Record<string, string> | null): Record<string, any> | null {
+export function parseHash(hash: Record<string, string> | null): Record<string, any> | null {
   // Empty hash → null. Real Redis hGetAll returns {} for missing keys (the
   // emulator now matches that), but getSettings' contract is `any | null`
   // and every caller relies on `getSettings(...) || fallback` to detect
@@ -5377,7 +5545,7 @@ export function setConnectionRunningState(id: string, isRunning: boolean): void 
 
 // ========== Migration State Management ==========
 
-const globalMigrationState = globalThis as unknown as { __migrations_run?: boolean }
+const globalMigrationState = resolveRedisRuntimeRoot() as unknown as { __migrations_run?: boolean }
 
 /**
  * Check if migrations have run — uses in-memory state. Returns true if we've

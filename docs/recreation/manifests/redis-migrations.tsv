@@ -93,3 +93,7 @@ version	name	source
 92	092-exact-indication-cadence-and-unlimited-preset-types	lib/redis-migrations.ts
 93	093-pf-floor-and-continuous-row-live-defaults	lib/redis-migrations.ts
 94	094-expand-block-count-defaults-to-canonical-twelve	lib/redis-migrations.ts
+95	095-active-outbreak-ranges-and-market-protection-profiles	lib/redis-migrations.ts
+96	096-compact-identical-historic-indication-detail-lists	lib/redis-migrations.ts
+97	097-enforce-canonical-mandatory-symbol-basket	lib/redis-migrations.ts
+98	098-predefine-bingx-x02-prod-vst	lib/redis-migrations.ts

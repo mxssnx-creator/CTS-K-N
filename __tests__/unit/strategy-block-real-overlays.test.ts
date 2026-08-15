@@ -9,6 +9,7 @@ import {
 import {
   collectActivePositionCountsBySymbol,
   isPositionCountStrategySet,
+  limitLiveDispatchCandidatesFairly,
   resolveBlockNormalProfitFactor,
   resolveLiveDispatchSizeMultiplier,
   selectLiveDispatchCandidates,
@@ -845,6 +846,50 @@ describe("Real-stage Block overlays", () => {
     )
   })
 
+  test("bounds physical dispatch fairly so Standard cannot starve Signal trailing", () => {
+    const signal = (
+      index: number,
+      variant: "default" | "trailing",
+      active = false,
+    ) => ({
+      ...source(`BTCUSDT:signal:long:source-${index}:${variant}`, "long"),
+      indicationType: "signal",
+      variant,
+      signalRisk: {
+        stopLossPct: 0.5,
+        takeProfitPct: 1,
+        rewardRisk: 2,
+        sourceId: `source-${index}`,
+        sourceIds: [`source-${index}`],
+        configId: `${variant}-${index}`,
+        configIds: [`${variant}-${index}`],
+        agreement: 1,
+        confidence: 0.8,
+        generatedAt: Date.now(),
+      },
+      ...(variant === "trailing"
+        ? {
+            trailingProfile: {
+              mode: "signal_dynamic" as const,
+              startRatio: 0,
+              stopRatio: 0.008,
+              stepRatio: 0.004,
+            },
+          }
+        : {}),
+      ...(active ? { _hasLivePositions: true } : {}),
+    }) as StrategySet
+
+    const standard = Array.from({ length: 20 }, (_, index) => signal(index, "default", index < 2))
+    const trailing = Array.from({ length: 4 }, (_, index) => signal(index + 20, "trailing"))
+    const bounded = limitLiveDispatchCandidatesFairly([...standard, ...trailing], 8)
+
+    expect(bounded).toHaveLength(8)
+    expect(bounded.some((candidate) => candidate.trailingProfile?.mode === "signal_dynamic")).toBe(true)
+    expect(bounded.filter((candidate) => candidate._hasLivePositions === true)).toHaveLength(0)
+    expect(new Set(bounded.map((candidate) => candidate.setKey)).size).toBe(8)
+  })
+
   test("keeps exact Signal Block lanes eligible when Block-only removes their Standard rows", () => {
     const signalBlock = (sourceId: string, configId: string) => ({
       ...source(`BTCUSDT:signal:long:${sourceId}:${configId}#block:1`, "long"),
@@ -1240,6 +1285,11 @@ describe("Real-stage Block overlays", () => {
     for (const pnl of [1, 1, -1, -1, -1]) {
       await client.lpush(countOneRing, `${pnl}|0|5`)
     }
+    // Production close booking updates the bounded ring and its exact indexes
+    // atomically. Keep this focused fixture on that canonical contract so the
+    // closed-result negative index may safely skip every other cold lane.
+    await client.hset(`strategy_set_closed_counts:${comparisonConnectionId}`, countOneKey, "5")
+    await client.sadd(`strategy_closed_set_keys:${comparisonConnectionId}`, countOneKey)
 
     try {
       const overlays = await coordinator.buildIndependentBlockCountOverlaysForReal(
@@ -1273,6 +1323,8 @@ describe("Real-stage Block overlays", () => {
     } finally {
       await client.del(
         countOneRing,
+        `strategy_set_closed_counts:${comparisonConnectionId}`,
+        `strategy_closed_set_keys:${comparisonConnectionId}`,
         `strategy_block_pf_stats:${comparisonConnectionId}`,
       )
     }
@@ -1294,6 +1346,8 @@ describe("Real-stage Block overlays", () => {
     for (const pnl of [1, 1, 1, 1, -10]) {
       await client.lpush(ringKey, `${pnl}|0|5`)
     }
+    await client.hset(`strategy_set_closed_counts:${connectionId}`, countOneKey, "5")
+    await client.sadd(`strategy_closed_set_keys:${connectionId}`, countOneKey)
 
     try {
       const overlays = await coordinator.buildIndependentBlockCountOverlaysForReal(
@@ -1307,7 +1361,12 @@ describe("Real-stage Block overlays", () => {
       expect(overlays.map((set) => set.blockCount)).toEqual([2])
       expect(overlays[0].blockProfitFactorSampleCount).toBe(0)
     } finally {
-      await client.del(ringKey, `strategy_block_pf_stats:${connectionId}`)
+      await client.del(
+        ringKey,
+        `strategy_set_closed_counts:${connectionId}`,
+        `strategy_closed_set_keys:${connectionId}`,
+        `strategy_block_pf_stats:${connectionId}`,
+      )
     }
   })
 

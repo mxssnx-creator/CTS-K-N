@@ -65,6 +65,7 @@ describe("Direct-Trade API state and processor lease", () => {
         maxDrawdownTimeMin: 99,
         trailingEnabled: false,
         keepEnabledPosCount: 99,
+        historyHours: 999,
         maxPositionsPerSymbol: 999,
         maxPositionsPerDirection: 999,
         blockProfitFactorRatio: 99,
@@ -81,6 +82,7 @@ describe("Direct-Trade API state and processor lease", () => {
         maxDrawdownTimeMin: 99,
         trailingEnabled: false,
         keepEnabledPosCount: 99,
+        historyHours: 90,
         maxPositionsPerSymbol: 300,
         maxPositionsPerDirection: 300,
         blockProfitFactorRatio: 5,
@@ -132,9 +134,11 @@ describe("Direct-Trade API state and processor lease", () => {
     try {
       await redis.set("direct_trade:state", JSON.stringify({
         takeProfitRatioRange: [4, 12],
+        maxTotalPositions: 300,
         maxPositionsPerSymbol: 3,
         maxPositionsPerDirection: 2,
         historyHours: 60,
+        minProfitFactor: 0.8,
       }))
       const migrated = await (await GET()).json()
       expect(migrated.state).toMatchObject({
@@ -143,6 +147,8 @@ describe("Direct-Trade API state and processor lease", () => {
         historyHours: 48,
         maxPositionsPerSymbol: 12,
         maxPositionsPerDirection: 6,
+        maxTotalPositions: 100,
+        minProfitFactor: 4,
       })
 
       await redis.set("direct_trade:state", JSON.stringify({
@@ -150,6 +156,8 @@ describe("Direct-Trade API state and processor lease", () => {
         takeProfitRatioStep: 1,
         maxPositionsPerSymbol: 5,
         maxPositionsPerDirection: 2,
+        maxTotalPositions: 225,
+        minProfitFactor: 1.7,
       }))
       const custom = await (await GET()).json()
       expect(custom.state).toMatchObject({
@@ -157,6 +165,8 @@ describe("Direct-Trade API state and processor lease", () => {
         takeProfitRatioStep: 1,
         maxPositionsPerSymbol: 5,
         maxPositionsPerDirection: 2,
+        maxTotalPositions: 225,
+        minProfitFactor: 1.7,
       })
     } finally {
       await redis.del(...DIRECT_KEYS)
@@ -244,6 +254,46 @@ describe("Direct-Trade API state and processor lease", () => {
       expect(payload).toMatchObject({ success: true, matched: 4500, indexVersion: "test-index" })
       expect(payload.rows).toEqual([{ setKey: "lineage-1", symbol: "BTCUSDT", direction: "long", timeframe: "1m", valid: true }])
       expect(payload).not.toHaveProperty("configs")
+    } finally {
+      await redis.del(...DIRECT_KEYS)
+    }
+  })
+
+  test("statistics resolves normalized v2 top-row references without duplicating rows", async () => {
+    const [{ GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.del(...DIRECT_KEYS)
+    try {
+      const key = "5m\u0001short\u0001inactive\u0001inverse"
+      const row = {
+        setKey: "lineage-v2",
+        symbol: "SOLUSDT",
+        direction: "short",
+        timeframe: "5m",
+        strategyType: "inverse",
+        valid: false,
+      }
+      await redis.set("direct_trade:calculation", JSON.stringify({
+        byTimeframe: { "5m": { evaluated: 9, valid: 4 } },
+        byStrategyType: { inverse: { evaluated: 9, valid: 4 } },
+      }))
+      await redis.set("direct_trade:statistics-index", JSON.stringify({
+        schemaVersion: 2,
+        version: "test-index-v2",
+        totals: { [key]: 5 },
+        rows: [row],
+        topRowIndexes: { [key]: [0] },
+      }))
+
+      const response = await GET(new Request(
+        "http://localhost/api/trade-engine/direct-trade?view=statistics&timeframe=5m&direction=short&state=inactive&strategyType=inverse",
+      ) as any)
+      const payload = await response.json()
+      expect(payload).toMatchObject({ success: true, matched: 5, indexVersion: "test-index-v2" })
+      expect(payload.rows).toEqual([row])
     } finally {
       await redis.del(...DIRECT_KEYS)
     }

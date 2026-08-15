@@ -153,6 +153,12 @@ interface HistoricWindowOptions {
   limit: number
   warmup?: number
   lookahead?: number
+  /**
+   * Exact replay consumes the oldest pending candles. The in-process
+   * Realtime bridge asks for only the newest pending state so a multi-minute
+   * bootstrap/restart gap never allocates or evaluates the complete backlog.
+   */
+  pendingOrder?: "earliest" | "latest"
 }
 
 function candleTimestamp(candle: any): number {
@@ -300,6 +306,7 @@ export async function getHistoricCandleWindow(
   const limit = Math.max(0, Math.floor(Number(options.limit) || 0))
   const warmupCount = Math.max(0, Math.floor(Number(options.warmup) || 0))
   const lookaheadCount = Math.max(0, Math.floor(Number(options.lookahead) || 0))
+  const pendingOrder = options.pendingOrder === "latest" ? "latest" : "earliest"
   const empty = { warmup: [] as any[], pending: [] as any[], lookahead: [] as any[] }
   if (!Number.isFinite(afterMs) || !Number.isFinite(beforeMs) || beforeMs < afterMs) return empty
 
@@ -308,30 +315,58 @@ export async function getHistoricCandleWindow(
   if (ranges.length === 0) {
     candles = await getParsedCandlesCached(symbol)
   } else {
-    let first = ranges.findIndex((range) => range.end >= afterMs)
-    if (first < 0) first = ranges.length - 1
-    let warmupNeeded = warmupCount
-    while (first > 0 && warmupNeeded > 0) {
-      warmupNeeded -= Math.max(1, Number(ranges[first].count) || 0)
-      first--
-    }
+    let first: number
+    let last: number
+    if (pendingOrder === "latest") {
+      // State-bridge reads must remain O(warmup + limit), not O(backlog).
+      // Start at the final chunk that can contain a candle before the current
+      // window boundary, then walk backwards only far enough for the requested
+      // latest samples and warmup. A checkpoint left behind for hours/days
+      // therefore never parses the complete gap just to select its final row.
+      const firstFutureRange = ranges.findIndex((range) => range.start >= beforeMs)
+      last = firstFutureRange < 0 ? ranges.length - 1 : Math.max(0, firstFutureRange - 1)
+      first = last
+      let rowsNeeded = warmupCount + Math.max(1, limit)
+      while (first > 0 && rowsNeeded > Math.max(0, Number(ranges[first].count) || 0)) {
+        rowsNeeded -= Math.max(1, Number(ranges[first].count) || 0)
+        first--
+      }
+    } else {
+      first = ranges.findIndex((range) => range.end >= afterMs)
+      if (first < 0) first = ranges.length - 1
+      let warmupNeeded = warmupCount
+      while (first > 0 && warmupNeeded > 0) {
+        warmupNeeded -= Math.max(1, Number(ranges[first].count) || 0)
+        first--
+      }
 
-    let last = ranges.findIndex((range, index) => index >= first && range.end >= beforeMs)
-    if (last < 0) last = ranges.length - 1
-    let lookaheadNeeded = lookaheadCount
-    while (last + 1 < ranges.length && lookaheadNeeded > Math.max(0, Number(ranges[last].count) || 0)) {
-      lookaheadNeeded -= Math.max(1, Number(ranges[last].count) || 0)
-      last++
+      last = ranges.findIndex((range, index) => index >= first && range.end >= beforeMs)
+      if (last < 0) last = ranges.length - 1
+      let lookaheadNeeded = lookaheadCount
+      while (last + 1 < ranges.length && lookaheadNeeded > Math.max(0, Number(ranges[last].count) || 0)) {
+        lookaheadNeeded -= Math.max(1, Number(ranges[last].count) || 0)
+        last++
+      }
     }
 
     const rawChunks = await getRedisClient().lrange(`market_data:${symbol}:history:chunks`, first, last)
     candles = normalizeHistoricCandles(Array.isArray(rawChunks) ? rawChunks : [])
   }
 
-  const warmup = candles.filter((candle) => candleTimestamp(candle) <= afterMs).slice(-warmupCount)
-  const pending = candles
+  const pendingCandidates = candles
     .filter((candle) => candleTimestamp(candle) > afterMs && candleTimestamp(candle) < beforeMs)
-    .slice(0, limit)
+  const pending = limit === 0
+    ? []
+    : pendingOrder === "latest"
+      ? pendingCandidates.slice(-limit)
+      : pendingCandidates.slice(0, limit)
+  const firstPendingTs = pending.length > 0 ? candleTimestamp(pending[0]) : afterMs
+  const warmupBoundary = pendingOrder === "latest" ? firstPendingTs : afterMs
+  const warmup = candles
+    .filter((candle) => pendingOrder === "latest"
+      ? candleTimestamp(candle) < warmupBoundary
+      : candleTimestamp(candle) <= warmupBoundary)
+    .slice(-warmupCount)
   const lookahead = candles.filter((candle) => candleTimestamp(candle) >= beforeMs).slice(0, lookaheadCount)
   return { warmup, pending, lookahead }
 }

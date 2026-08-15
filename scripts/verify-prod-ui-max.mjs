@@ -95,6 +95,12 @@ function finiteNonNegative(value, label) {
   return numeric
 }
 
+function validServiceBootId(value) {
+  const normalized = String(value || "")
+  return normalized.length >= 12 && ["boot_", "prod_", "dev_", "dev-preview_"]
+    .some((prefix) => normalized.startsWith(prefix))
+}
+
 function assertStatsRelationships(stats) {
   for (const type of ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"]) {
     finiteNonNegative(stats?.indicationsByType?.[type], `indicationsByType.${type}`)
@@ -259,7 +265,7 @@ async function main() {
 
     const systemStatus = (await request("/api/system/status", { timeoutMs: 30_000 })).data
     if (
-      !String(systemStatus?.startup?.boot_id || "").startsWith("boot_") ||
+      !validServiceBootId(systemStatus?.startup?.boot_id) ||
       !Number.isFinite(Date.parse(systemStatus?.startup?.started_at || "")) ||
       Number(systemStatus?.startup?.service_uptime_seconds) < 0 ||
       String(systemStatus?.startup?.boot_id) === String(systemStatus?.siteInstanceId || "") ||

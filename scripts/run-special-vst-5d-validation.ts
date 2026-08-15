@@ -13,7 +13,9 @@ import {
   type SpecialWalkForwardResult,
 } from "@/lib/special-strategy"
 
-const VST_ORIGIN = "https://open-api-vst.bingx.com"
+const VST_ORIGIN = process.env.BINGX_PUBLIC_ORIGIN || "https://open-api-vst.bingx.com"
+const VST_FALLBACK_ORIGIN = process.env.BINGX_PUBLIC_FALLBACK_ORIGIN || "https://open-api-vst.bingx.pro"
+const VST_ORIGINS = [VST_ORIGIN, VST_FALLBACK_ORIGIN]
 const DEFAULT_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT"] as const
 const TARGET_SYMBOL_COUNT = 4
 const VOLATILITY_POOL_SIZE = 32
@@ -174,7 +176,7 @@ function rankedSummary(item: SpecialWalkForwardResult, rank: number) {
 
 async function vstJson(path: string): Promise<any> {
   const response = await fetchBingXPublic(path, {}, {
-    origins: [VST_ORIGIN],
+    origins: VST_ORIGINS,
     timeoutMs: 20_000,
   })
   const payload = await response.json().catch(() => null) as any
@@ -524,7 +526,7 @@ function resultMarkdown(
 }
 
 async function main(): Promise<void> {
-  if (new URL(VST_ORIGIN).origin !== VST_ORIGIN) throw new Error("VST origin invariant failed")
+  if (new URL(VST_ORIGIN).origin !== VST_ORIGIN.replace(/\/$/, "")) throw new Error("VST origin invariant failed")
   const startedAt = Date.now()
   const memoryBefore = process.memoryUsage()
   let peakRss = memoryBefore.rss

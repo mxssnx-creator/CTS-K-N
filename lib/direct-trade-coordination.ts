@@ -44,6 +44,11 @@ export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [4
 // The range control remains single-ratio precise, while a sparse default Set
 // stride keeps the full 32-symbol matrix below four million configurations.
 export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 2
+// Full-history admission must show a materially positive gross-profit/loss
+// ratio before the much stricter latest-position gate is even considered.
+// Runtime defaults and migrations mirror this value; operators may still
+// choose a lower explicit value down to the safety floor of 0.8.
+export const DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT = 4
 // Recent closed positions are a stronger gate than the long-history PF.
 // Keep this exported so calculation and runtime use the identical default.
 export const DIRECT_TRADE_RECENT_PF_DEFAULT = 25

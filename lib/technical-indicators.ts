@@ -23,6 +23,45 @@ export interface TechnicalIndicatorResult {
 export type TechnicalIndicatorParameters =
   Partial<Record<CommonIndicatorType, Record<string, number>>>
 
+/**
+ * Per-candle-stream calculation cache used by exhaustive Common evaluation.
+ *
+ * A Common grid changes thresholds independently of its underlying series
+ * parameters (for example one RSI period is paired with many overbought /
+ * oversold thresholds). Re-normalising thousands of identical candle arrays
+ * and rebuilding the same RSI/SMA/EMA series for every threshold tuple made
+ * the engine monopolise the HTTP event loop. The context is deliberately
+ * scoped to one immutable resampled array, so it has no cross-tick staleness
+ * risk and becomes collectible as soon as that timeframe finishes.
+ */
+export interface TechnicalIndicatorEvaluationContext {
+  candles: TechnicalCandle[]
+  closes: number[]
+  movingAverages: WeakMap<number[], Map<number, number[]>>
+  exponentialAverages: WeakMap<number[], Map<number, number[]>>
+  rsiByPeriod: Map<number, number[]>
+  atrByPeriod: Map<number, number[]>
+  adxByPeriod: Map<number, ReturnType<typeof adx>>
+  stochasticByPeriods: Map<string, ReturnType<typeof stochastic>>
+  psarBySettings: Map<string, ReturnType<typeof parabolicSar>>
+  macdBySettings: Map<string, { macd: number[]; signal: number[] }>
+  bollingerByPeriod: Map<number, { middle: number[]; mean: number; deviation: number }>
+  cciByPeriod: Map<number, { value: number; mean: number; meanDeviation: number }>
+  fibonacciByLookback: Map<number, {
+    high: number
+    low: number
+    level382: number
+    level500: number
+    level618: number
+  }>
+  williamsByPeriod: Map<number, { high: number; low: number; value: number }>
+  vwapByPeriod: Map<number, number[]>
+  typicalPrices?: number[]
+  accumulationDistribution?: number[]
+  onBalanceVolume?: number[]
+  averageVolume?: number
+}
+
 function finite(value: unknown, fallback = 0): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
@@ -347,6 +386,79 @@ function rollingVwap(candles: TechnicalCandle[], periodInput: number): number[] 
   return result
 }
 
+export function createTechnicalIndicatorEvaluationContext(
+  rawCandles: unknown[],
+): TechnicalIndicatorEvaluationContext {
+  const candles = normalizeTechnicalCandles(rawCandles)
+  return {
+    candles,
+    closes: candles.map((candle) => candle.close),
+    movingAverages: new WeakMap(),
+    exponentialAverages: new WeakMap(),
+    rsiByPeriod: new Map(),
+    atrByPeriod: new Map(),
+    adxByPeriod: new Map(),
+    stochasticByPeriods: new Map(),
+    psarBySettings: new Map(),
+    macdBySettings: new Map(),
+    bollingerByPeriod: new Map(),
+    cciByPeriod: new Map(),
+    fibonacciByLookback: new Map(),
+    williamsByPeriod: new Map(),
+    vwapByPeriod: new Map(),
+  }
+}
+
+function cachedSeries(
+  cache: WeakMap<number[], Map<number, number[]>>,
+  values: number[],
+  periodInput: number,
+  calculate: (series: number[], period: number) => number[],
+): number[] {
+  const period = Math.max(1, Math.round(periodInput))
+  let byPeriod = cache.get(values)
+  if (!byPeriod) {
+    byPeriod = new Map()
+    cache.set(values, byPeriod)
+  }
+  let series = byPeriod.get(period)
+  if (!series) {
+    series = calculate(values, period)
+    byPeriod.set(period, series)
+  }
+  return series
+}
+
+function cachedSma(
+  context: TechnicalIndicatorEvaluationContext,
+  values: number[],
+  period: number,
+): number[] {
+  return cachedSeries(context.movingAverages, values, period, sma)
+}
+
+function cachedEma(
+  context: TechnicalIndicatorEvaluationContext,
+  values: number[],
+  period: number,
+): number[] {
+  return cachedSeries(context.exponentialAverages, values, period, ema)
+}
+
+function cachedByPeriod<T>(
+  cache: Map<number, T>,
+  periodInput: number,
+  calculate: (period: number) => T,
+): T {
+  const period = Math.max(1, Math.round(periodInput))
+  let value = cache.get(period)
+  if (value === undefined) {
+    value = calculate(period)
+    cache.set(period, value)
+  }
+  return value
+}
+
 function result(
   type: CommonIndicatorType,
   directionValue: TechnicalDirection,
@@ -378,8 +490,10 @@ export function evaluateTechnicalIndicators(
   periodInput: number,
   enabledTypes?: readonly CommonIndicatorType[],
   parametersByType?: TechnicalIndicatorParameters,
+  evaluationContext?: TechnicalIndicatorEvaluationContext,
 ): Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>> {
-  const candles = normalizeTechnicalCandles(rawCandles)
+  const context = evaluationContext || createTechnicalIndicatorEvaluationContext(rawCandles)
+  const candles = context.candles
   if (candles.length === 0) return {}
   const types = new Set(enabledTypes)
   const include = (type: CommonIndicatorType) => types.size === 0 || types.has(type)
@@ -388,7 +502,7 @@ export function evaluateTechnicalIndicators(
   const longPeriod = Math.max(shortPeriod + 1, period)
   const lastIndex = candles.length - 1
   const current = candles[lastIndex]
-  const closes = candles.map((candle) => candle.close)
+  const closes = context.closes
   const output: Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>> = {}
   const percentageDistance = (from: number, to: number) => from > 0 ? (to - from) / from * 100 : 0
   const parameter = (
@@ -399,24 +513,26 @@ export function evaluateTechnicalIndicators(
     max: number,
   ) => clamp(finite(parametersByType?.[type]?.[key], fallback), min, max)
 
-  const maShortPeriod = Math.round(parameter("ma", "shortPeriod", shortPeriod, 2, 300))
-  const maLongPeriod = Math.max(
-    maShortPeriod + 1,
-    Math.round(parameter("ma", "longPeriod", longPeriod, 3, 500)),
-  )
-  const shortSma = sma(closes, maShortPeriod)
-  const longSma = sma(closes, maLongPeriod)
-  const shortEma = ema(closes, maShortPeriod)
-  const longEma = ema(closes, maLongPeriod)
-  const smaDelta = percentageDistance(longSma[lastIndex], shortSma[lastIndex])
-  const emaDelta = percentageDistance(longEma[lastIndex], shortEma[lastIndex])
-  if (include("ma") && candles.length >= maLongPeriod) {
-    const blended = (smaDelta + emaDelta) / 2
-    output.ma = result("ma", direction(blended, 0.000001), Math.abs(blended) / 0.5, current.close, blended, {
-      simple: shortSma[lastIndex],
-      exponential: shortEma[lastIndex],
-      long: (longSma[lastIndex] + longEma[lastIndex]) / 2,
-    })
+  if (include("ma")) {
+    const maShortPeriod = Math.round(parameter("ma", "shortPeriod", shortPeriod, 2, 300))
+    const maLongPeriod = Math.max(
+      maShortPeriod + 1,
+      Math.round(parameter("ma", "longPeriod", longPeriod, 3, 500)),
+    )
+    if (candles.length >= maLongPeriod) {
+      const shortSma = cachedSma(context, closes, maShortPeriod)
+      const longSma = cachedSma(context, closes, maLongPeriod)
+      const shortEma = cachedEma(context, closes, maShortPeriod)
+      const longEma = cachedEma(context, closes, maLongPeriod)
+      const smaDelta = percentageDistance(longSma[lastIndex], shortSma[lastIndex])
+      const emaDelta = percentageDistance(longEma[lastIndex], shortEma[lastIndex])
+      const blended = (smaDelta + emaDelta) / 2
+      output.ma = result("ma", direction(blended, 0.000001), Math.abs(blended) / 0.5, current.close, blended, {
+        simple: shortSma[lastIndex],
+        exponential: shortEma[lastIndex],
+        long: (longSma[lastIndex] + longEma[lastIndex]) / 2,
+      })
+    }
   }
   if (include("sma")) {
     const configuredShort = Math.round(parameter("sma", "shortPeriod", shortPeriod, 2, 300))
@@ -427,8 +543,8 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredLong) {
       // Official moving averages require a complete long lookback.
     } else {
-    const shortValues = sma(closes, configuredShort)
-    const longValues = sma(closes, configuredLong)
+    const shortValues = cachedSma(context, closes, configuredShort)
+    const longValues = cachedSma(context, closes, configuredLong)
     const delta = percentageDistance(longValues[lastIndex], shortValues[lastIndex])
     output.sma = result("sma", direction(delta, 0.000001), Math.abs(delta) / 0.5, shortValues[lastIndex], delta, {
       short: shortValues[lastIndex],
@@ -445,8 +561,8 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredLong) {
       // Wait for the complete configured long lookback.
     } else {
-    const shortValues = ema(closes, configuredShort)
-    const longValues = ema(closes, configuredLong)
+    const shortValues = cachedEma(context, closes, configuredShort)
+    const longValues = cachedEma(context, closes, configuredLong)
     const delta = percentageDistance(longValues[lastIndex], shortValues[lastIndex])
     output.ema = result("ema", direction(delta, 0.000001), Math.abs(delta) / 0.5, shortValues[lastIndex], delta, {
       short: shortValues[lastIndex],
@@ -465,14 +581,19 @@ export function evaluateTechnicalIndicators(
     if (candles.length < slowPeriod + signalPeriod) {
       // MACD needs the slow window plus a complete signal window.
     } else {
-    const fast = ema(closes, fastPeriod)
-    const slow = ema(closes, slowPeriod)
-    const macd = closes.map((_, index) => fast[index] - slow[index])
-    const signalSeries = ema(macd, signalPeriod)
-    const histogram = macd[lastIndex] - signalSeries[lastIndex]
+    const cacheKey = `${fastPeriod}:${slowPeriod}:${signalPeriod}`
+    let cached = context.macdBySettings.get(cacheKey)
+    if (!cached) {
+      const fast = cachedEma(context, closes, fastPeriod)
+      const slow = cachedEma(context, closes, slowPeriod)
+      const macd = closes.map((_, index) => fast[index] - slow[index])
+      cached = { macd, signal: cachedEma(context, macd, signalPeriod) }
+      context.macdBySettings.set(cacheKey, cached)
+    }
+    const histogram = cached.macd[lastIndex] - cached.signal[lastIndex]
     const normalized = current.close > 0 ? histogram / current.close * 100 : 0
-    output.macd = result("macd", direction(histogram), Math.abs(normalized) / 0.2, macd[lastIndex], histogram, {
-      signalLine: signalSeries[lastIndex],
+    output.macd = result("macd", direction(histogram), Math.abs(normalized) / 0.2, cached.macd[lastIndex], histogram, {
+      signalLine: cached.signal[lastIndex],
       histogram,
     })
     }
@@ -485,7 +606,11 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredPeriod + 1) {
       // Wait for a complete RSI seed.
     } else {
-    const values = rsi(candles, configuredPeriod)
+    const values = cachedByPeriod(
+      context.rsiByPeriod,
+      configuredPeriod,
+      (cachedPeriod) => rsi(candles, cachedPeriod),
+    )
     const value = values[lastIndex]
     const midpoint = (oversold + overbought) / 2
     const directional = value <= oversold
@@ -506,12 +631,22 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredPeriod) {
       // Wait for a full Bollinger window.
     } else {
-    const middle = sma(closes, configuredPeriod)
-    const start = Math.max(0, candles.length - configuredPeriod)
-    const mean = middle[lastIndex]
-    const variance = candles.slice(start).reduce((sum, candle) => sum + (candle.close - mean) ** 2, 0) /
-      Math.max(1, candles.length - start)
-    const deviation = Math.sqrt(variance)
+    const cached = cachedByPeriod(
+      context.bollingerByPeriod,
+      configuredPeriod,
+      (cachedPeriod) => {
+        const middle = cachedSma(context, closes, cachedPeriod)
+        const start = Math.max(0, candles.length - cachedPeriod)
+        const mean = middle[lastIndex]
+        const variance = candles.slice(start).reduce(
+          (sum, candle) => sum + (candle.close - mean) ** 2,
+          0,
+        ) / Math.max(1, candles.length - start)
+        return { middle, mean, deviation: Math.sqrt(variance) }
+      },
+    )
+    const mean = cached.mean
+    const deviation = cached.deviation
     const upper = mean + deviation * stdDev
     const lower = mean - deviation * stdDev
     const bandPosition = upper > lower ? (current.close - lower) / (upper - lower) : 0.5
@@ -533,7 +668,12 @@ export function evaluateTechnicalIndicators(
     if (candles.length < kPeriod + dPeriod - 1) {
       // Wait for complete %K and %D windows.
     } else {
-    const values = stochastic(candles, kPeriod, dPeriod)
+    const stochasticKey = `${kPeriod}:${dPeriod}`
+    let values = context.stochasticByPeriods.get(stochasticKey)
+    if (!values) {
+      values = stochastic(candles, kPeriod, dPeriod)
+      context.stochasticByPeriods.set(stochasticKey, values)
+    }
     const k = values.k[lastIndex]
     const d = values.d[lastIndex]
     const delta = k - d
@@ -557,7 +697,11 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredPeriod * 2) {
       // Wilder ADX needs both the directional and ADX seed windows.
     } else {
-    const values = adx(candles, configuredPeriod)
+    const values = cachedByPeriod(
+      context.adxByPeriod,
+      configuredPeriod,
+      (cachedPeriod) => adx(candles, cachedPeriod),
+    )
     const value = values.adx[lastIndex]
     const delta = values.plusDi[lastIndex] - values.minusDi[lastIndex]
     output.adx = result("adx", value >= threshold ? direction(delta) : "neutral", value / 50, value, delta, {
@@ -574,9 +718,13 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredPeriod + 1) {
       // Wait for a complete ATR seed.
     } else {
-    const values = atr(candles, configuredPeriod)
+    const values = cachedByPeriod(
+      context.atrByPeriod,
+      configuredPeriod,
+      (cachedPeriod) => atr(candles, cachedPeriod),
+    )
     const value = values[lastIndex]
-    const baseline = longSma[lastIndex]
+    const baseline = cachedSma(context, closes, longPeriod)[lastIndex]
     const delta = current.close - baseline
     const normalized = value > 0 ? delta / (value * multiplier) : 0
     output.atr = result("atr", direction(normalized, 0.1), Math.abs(normalized) / 2, value, normalized, {
@@ -593,7 +741,12 @@ export function evaluateTechnicalIndicators(
     if (candles.length < 3) {
       // PSAR needs two seed candles and one evaluated candle.
     } else {
-    const values = parabolicSar(candles, acceleration, maximum)
+    const psarKey = `${acceleration}:${maximum}`
+    let values = context.psarBySettings.get(psarKey)
+    if (!values) {
+      values = parabolicSar(candles, acceleration, maximum)
+      context.psarBySettings.set(psarKey, values)
+    }
     const sarValue = values.values[lastIndex]
     const delta = current.close - sarValue
     output.psar = result("psar", values.directions[lastIndex], Math.abs(delta) / Math.max(current.close * 0.01, 1e-9), sarValue, delta)
@@ -606,15 +759,30 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredPeriod) {
       // Wait for the complete CCI lookback.
     } else {
-    const typical = candles.map((candle) => (candle.high + candle.low + candle.close) / 3)
-    const means = sma(typical, configuredPeriod)
-    const start = Math.max(0, candles.length - configuredPeriod)
-    const meanDeviation = typical.slice(start).reduce((sum, value) => sum + Math.abs(value - means[lastIndex]), 0) /
-      Math.max(1, candles.length - start)
-    const value = meanDeviation > 0 ? (typical[lastIndex] - means[lastIndex]) / (0.015 * meanDeviation) : 0
-    output.cci = result("cci", direction(value, threshold), Math.abs(value) / Math.max(200, threshold), value, value, {
-      mean: means[lastIndex],
-      meanDeviation,
+    const cached = cachedByPeriod(
+      context.cciByPeriod,
+      configuredPeriod,
+      (cachedPeriod) => {
+        const typical = context.typicalPrices || candles.map(
+          (candle) => (candle.high + candle.low + candle.close) / 3,
+        )
+        context.typicalPrices = typical
+        const means = cachedSma(context, typical, cachedPeriod)
+        const start = Math.max(0, candles.length - cachedPeriod)
+        const mean = means[lastIndex]
+        const meanDeviation = typical.slice(start).reduce(
+          (sum, value) => sum + Math.abs(value - mean),
+          0,
+        ) / Math.max(1, candles.length - start)
+        const value = meanDeviation > 0
+          ? (typical[lastIndex] - mean) / (0.015 * meanDeviation)
+          : 0
+        return { value, mean, meanDeviation }
+      },
+    )
+    output.cci = result("cci", direction(cached.value, threshold), Math.abs(cached.value) / Math.max(200, threshold), cached.value, cached.value, {
+      mean: cached.mean,
+      meanDeviation: cached.meanDeviation,
       threshold,
     })
     }
@@ -629,9 +797,10 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredLong) {
       // Wait for complete short/long ADL smoothing windows.
     } else {
-    const values = accumulationDistribution(candles)
-    const short = sma(values, configuredShort)
-    const long = sma(values, configuredLong)
+    const values = context.accumulationDistribution || accumulationDistribution(candles)
+    context.accumulationDistribution = values
+    const short = cachedSma(context, values, configuredShort)
+    const long = cachedSma(context, values, configuredLong)
     const delta = short[lastIndex] - long[lastIndex]
     const scale = Math.max(1, Math.abs(long[lastIndex]))
     output.adl = result("adl", direction(delta), Math.abs(delta) / scale * 10, values[lastIndex], delta, {
@@ -647,26 +816,37 @@ export function evaluateTechnicalIndicators(
     if (candles.length < lookback) {
       // Wait for the configured Fibonacci range.
     } else {
-    const window = candles.slice(-lookback)
-    const high = Math.max(...window.map((candle) => candle.high))
-    const low = Math.min(...window.map((candle) => candle.low))
-    const span = high - low
-    const level382 = high - span * 0.382
-    const level500 = high - span * 0.5
-    const level618 = high - span * 0.618
-    const nearest = [level382, level500, level618].sort(
+    const cached = cachedByPeriod(
+      context.fibonacciByLookback,
+      lookback,
+      (cachedLookback) => {
+        const window = candles.slice(-cachedLookback)
+        const high = Math.max(...window.map((candle) => candle.high))
+        const low = Math.min(...window.map((candle) => candle.low))
+        const span = high - low
+        return {
+          high,
+          low,
+          level382: high - span * 0.382,
+          level500: high - span * 0.5,
+          level618: high - span * 0.618,
+        }
+      },
+    )
+    const span = cached.high - cached.low
+    const nearest = [cached.level382, cached.level500, cached.level618].sort(
       (left, right) => Math.abs(current.close - left) - Math.abs(current.close - right),
     )[0] ?? current.close
     const delta = current.close - nearest
     const deltaPct = current.close > 0 ? Math.abs(delta) / current.close * 100 : 0
     const fibonacciDirection = deltaPct <= tolerancePct ? direction(delta) : "neutral"
     output.fibonacci = result("fibonacci", fibonacciDirection, span > 0 ? Math.abs(delta) / span * 4 : 0, nearest, delta, {
-      high,
-      low,
+      high: cached.high,
+      low: cached.low,
       tolerancePct,
-      level382,
-      level500,
-      level618,
+      level382: cached.level382,
+      level500: cached.level500,
+      level618: cached.level618,
     })
     }
   }
@@ -690,14 +870,24 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredPeriod) {
       // Wait for the complete Williams %R range.
     } else {
-    const window = candles.slice(-configuredPeriod)
-    const high = Math.max(...window.map((candle) => candle.high))
-    const low = Math.min(...window.map((candle) => candle.low))
-    const value = high > low ? -100 * (high - current.close) / (high - low) : -50
-    const directional = value <= oversold ? "long" : value >= overbought ? "short" : "neutral"
-    output.williamsR = result("williamsR", directional, Math.abs(value + 50) / 50, value, value + 50, {
-      high,
-      low,
+    const cached = cachedByPeriod(
+      context.williamsByPeriod,
+      configuredPeriod,
+      (cachedPeriod) => {
+        const window = candles.slice(-cachedPeriod)
+        const high = Math.max(...window.map((candle) => candle.high))
+        const low = Math.min(...window.map((candle) => candle.low))
+        return {
+          high,
+          low,
+          value: high > low ? -100 * (high - current.close) / (high - low) : -50,
+        }
+      },
+    )
+    const directional = cached.value <= oversold ? "long" : cached.value >= overbought ? "short" : "neutral"
+    output.williamsR = result("williamsR", directional, Math.abs(cached.value + 50) / 50, cached.value, cached.value + 50, {
+      high: cached.high,
+      low: cached.low,
       oversold,
       overbought,
     })
@@ -713,12 +903,16 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredLong) {
       // Wait for complete OBV smoothing windows.
     } else {
-    const values = onBalanceVolume(candles)
-    const short = sma(values, configuredShort)
-    const long = sma(values, configuredLong)
+    const values = context.onBalanceVolume || onBalanceVolume(candles)
+    context.onBalanceVolume = values
+    const short = cachedSma(context, values, configuredShort)
+    const long = cachedSma(context, values, configuredLong)
     const delta = short[lastIndex] - long[lastIndex]
-    const averageVolume = candles.slice(-period).reduce((sum, candle) => sum + candle.volume, 0) /
+    const averageVolume = context.averageVolume ?? (
+      candles.slice(-period).reduce((sum, candle) => sum + candle.volume, 0) /
       Math.min(period, candles.length)
+    )
+    context.averageVolume = averageVolume
     output.obv = result("obv", direction(delta), Math.abs(delta) / Math.max(averageVolume * period, 1), values[lastIndex], delta, {
       short: short[lastIndex],
       long: long[lastIndex],
@@ -733,7 +927,11 @@ export function evaluateTechnicalIndicators(
     if (candles.length < configuredPeriod) {
       // Wait for the complete rolling VWAP window.
     } else {
-    const values = rollingVwap(candles, configuredPeriod)
+    const values = cachedByPeriod(
+      context.vwapByPeriod,
+      configuredPeriod,
+      (cachedPeriod) => rollingVwap(candles, cachedPeriod),
+    )
     const value = values[lastIndex]
     const deltaPct = percentageDistance(value, current.close)
     output.vwap = result("vwap", direction(deltaPct, deviationThreshold), Math.abs(deltaPct), value, deltaPct, {

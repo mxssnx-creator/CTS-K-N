@@ -67,7 +67,7 @@ async function beforeCrash() {
     processingIntervalMs: 280,
     minRecentProfitFactor: 25,
     recentEvaluationPositions: 12,
-    maxTotalPositions: 300,
+    maxTotalPositions: 100,
     blockRange: [0, 12],
   })
   assert(started.state.enabled === true, "Start did not enable Direct-Trade")

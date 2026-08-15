@@ -1868,6 +1868,22 @@ export class GlobalTradeEngineCoordinator {
         if (!lastHb) continue
         const age = now - lastHb
         if (age > STALL_THRESHOLD_MS) {
+          // Exhaustive indication/strategy matrices can legitimately exceed
+          // the generic heartbeat threshold. The manager's owner-aware
+          // admission proves that the canonical pipeline is still active;
+          // refresh liveness only and never re-arm another timer/work pass on
+          // top of it. This closes the watchdog/settings race that previously
+          // multiplied a 5.8-second flow into several minutes of contention.
+          if (manager.isCanonicalPipelineInFlight) {
+            this.stallEscalation.delete(id)
+            await manager.refreshCanonicalPipelineHeartbeat().catch((error: unknown) => {
+              console.warn(
+                `[v0] [Watchdog] busy-pipeline heartbeat refresh failed for ${id}:`,
+                error instanceof Error ? error.message : String(error),
+              )
+            })
+            continue
+          }
           const consecutiveStalls = (this.stallEscalation.get(id) ?? 0) + 1
           this.stallEscalation.set(id, consecutiveStalls)
           await publishEngineEvent("engine.heartbeat.missed", { connectionId: id, lastHeartbeatAt: lastHb, ageMs: age, reason: "event-watchdog" }).catch(() => undefined)

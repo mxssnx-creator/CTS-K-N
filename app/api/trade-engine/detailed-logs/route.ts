@@ -496,7 +496,7 @@ export async function GET(request: Request) {
         )
         const settingsSynchronized =
           !settingsRequestedVersion || settingsRequestedVersion === settingsAppliedVersion
-        const lastProgressAt = Math.max(
+        const historicProgressAt = Math.max(
           toEpochMs(prehistoricHash.updated_at),
           toEpochMs(prehistoricHash.last_processed_at),
           toEpochMs((state as any).prehistoric_last_processed_at),
@@ -504,7 +504,29 @@ export async function GET(request: Request) {
           toEpochMs((state as any).prehistoric_recoordination_requested_at),
           toEpochMs((state as any).prehistoric_bootstrap_failed_at),
         )
+        // A complete Strategy pass over a dense 32-symbol matrix can outlive
+        // one timer heartbeat while it is still making forward progress. The
+        // progression hash is written at every completed indication/strategy
+        // tick and is independent from the heartbeat timer, so use both
+        // channels before declaring the live lifecycle stalled.
+        const runtimeActivityAt = Math.max(
+          toEpochMs(progHash.last_activity_at),
+          toEpochMs(progHash.last_indication_tick_at),
+          toEpochMs(progHash.last_strategy_tick_at),
+          toEpochMs(progHash.last_realtime_tick_at),
+          toEpochMs((state as any).last_indication_run),
+          toEpochMs((state as any).last_strategy_run),
+          toEpochMs((state as any).last_realtime_run),
+          toEpochMs((state as any).last_live_positions_run),
+        )
+        const lastProgressAt = Math.max(historicProgressAt, runtimeActivityAt)
         const progressAgeMs = lastProgressAt > 0 ? Math.max(0, now - lastProgressAt) : null
+        const historicProgressAgeMs = historicProgressAt > 0
+          ? Math.max(0, now - historicProgressAt)
+          : null
+        const runtimeActivityAgeMs = runtimeActivityAt > 0
+          ? Math.max(0, now - runtimeActivityAt)
+          : null
         const signalCapacityUpdatedAt = toEpochMs(signalCapacityRaw.updated_at)
         const signalCapacityTotal = toNumber(signalCapacityRaw.total)
         const signalCapacityLimit = normalizeSignalMaxPositions(
@@ -514,8 +536,16 @@ export async function GET(request: Request) {
         const stalled =
           dashboardEnabled &&
           (
-            (!entryProcessorsGated && (heartbeatAgeMs == null || heartbeatAgeMs > HEARTBEAT_STALE_MS)) ||
-            (bootstrapActive && progressAgeMs != null && progressAgeMs > PROCESSING_STALE_MS)
+            (
+              !entryProcessorsGated &&
+              (heartbeatAgeMs == null || heartbeatAgeMs > HEARTBEAT_STALE_MS) &&
+              (runtimeActivityAgeMs == null || runtimeActivityAgeMs > PROCESSING_STALE_MS)
+            ) ||
+            (
+              bootstrapActive &&
+              historicProgressAgeMs != null &&
+              historicProgressAgeMs > PROCESSING_STALE_MS
+            )
           )
 
         return {
@@ -620,6 +650,10 @@ export async function GET(request: Request) {
             heartbeatFresh: heartbeatAgeMs != null && heartbeatAgeMs <= HEARTBEAT_STALE_MS,
             lastProgressAt: lastProgressAt > 0 ? new Date(lastProgressAt).toISOString() : null,
             progressAgeMs,
+            historicProgressAt: historicProgressAt > 0 ? new Date(historicProgressAt).toISOString() : null,
+            historicProgressAgeMs,
+            runtimeActivityAt: runtimeActivityAt > 0 ? new Date(runtimeActivityAt).toISOString() : null,
+            runtimeActivityAgeMs,
             stalled,
             selectionEpoch: selectionEpoch || null,
             historicSelectionEpoch: historicSelectionEpoch || null,

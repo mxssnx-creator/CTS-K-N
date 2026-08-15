@@ -1,4 +1,8 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
+import {
+  getCanonicalPipelineAdmission,
+  type CanonicalPipelineAdmission,
+} from "@/lib/canonical-pipeline-admission"
 import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { hasStrategyAffectingChange, hasSymbolAffectingChange, isGenericConnectionSettingsReload } from "@/lib/trade-engine/settings-change-fields"
 import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
@@ -27,6 +31,39 @@ const getHeapStatistics: (() => { heap_size_limit?: number; heap_total_size?: nu
  */
 
 const _ENGINE_BUILD_VERSION = "11.0.0"
+
+const DEFAULT_PREHISTORIC_RANGE_HOURS = 8
+const MIN_PREHISTORIC_RANGE_HOURS = 1
+const MAX_PREHISTORIC_RANGE_HOURS = 50
+
+/**
+ * Resolve one canonical Historic window for bootstrap and continuous replay.
+ *
+ * The development/profiling override intentionally has highest priority; the
+ * operator setting remains authoritative in normal production. Keeping this
+ * in one helper prevents a completed 1-hour bootstrap from immediately
+ * starting an 8-hour continuous replay that reprocesses a different window.
+ */
+export function resolvePrehistoricRangeHours(
+  appSettings: Record<string, unknown> | null | undefined,
+  engineState?: Record<string, unknown> | null,
+  environmentValue: unknown = process.env.PREHISTORIC_RANGE_HOURS,
+): number {
+  const configured = [
+    environmentValue,
+    appSettings?.prehistoric_range_hours,
+    appSettings?.prehistoricRangeHours,
+    engineState?.prehistoric_range_hours,
+    Number(engineState?.prehistoric_range_days) * 24,
+    DEFAULT_PREHISTORIC_RANGE_HOURS,
+  ]
+    .map(Number)
+    .find((value) => Number.isFinite(value) && value > 0) ?? DEFAULT_PREHISTORIC_RANGE_HOURS
+  return Math.min(
+    MAX_PREHISTORIC_RANGE_HOURS,
+    Math.max(MIN_PREHISTORIC_RANGE_HOURS, Math.round(configured)),
+  )
+}
 
 const ACK_APPLIED_SETTINGS_GENERATION_LUA = `
 local currentSettings = redis.call('HGET', KEYS[1], 'settings_recoordination_requested_version') or ''
@@ -112,6 +149,9 @@ declare global {
   var __memory_monitor__: {
     lastGC?: number
     highWaterMark?: number
+    gcInFlight?: boolean
+    lastGCMode?: "maintenance-async" | "urgent-sync"
+    lastGCDurationMs?: number
   } | undefined
 }
 if (typeof globalThis.totalStrategiesEvaluated === "undefined") {
@@ -181,21 +221,70 @@ function checkMemoryAndTriggerGC(): void {
     // Complete strategy matrices intentionally allocate hundreds of thousands
     // of short-lived rows. On a high-RAM host V8 otherwise retains those pages
     // for several cycles because there is no allocation pressure near its hard
-    // limit. One maintenance collection at most every 30 seconds bounds RSS
-    // without putting GC in the per-symbol calculation path.
+    // limit. A Major GC still contains stop-the-world phases even when Node's
+    // API is invoked asynchronously; measured 30-second collections stalled
+    // every API route for 1.5-3.4 seconds. The per-symbol memory admission
+    // guard independently collects at the RSS soft boundary, so routine
+    // maintenance can safely use a wider default cadence without weakening
+    // the 6/8 GiB crash barriers.
     const maintenanceThresholdMB = Math.max(1024, Math.min(2048, heapLimitMB * 0.45))
-    const maintenanceDue = heapUsedMB > maintenanceThresholdMB && now - lastGC >= 30_000
-    if (urgent || maintenanceDue) {
-      if (global.gc) {
-        global.gc()
-        globalThis.__memory_monitor__.lastGC = now
-      }
-      if (urgent) {
-        console.warn(
-          `[v0] Memory pressure: ${heapUsedMB}MB / ${heapLimitMB}MB ` +
-          `(${Math.round((heapUsedMB / heapLimitMB) * 100)}%) - GC triggered`,
-        )
-      }
+    const configuredMaintenanceIntervalMs = Number(process.env.CTS_MAINTENANCE_GC_INTERVAL_MS)
+    const maintenanceIntervalMs = Number.isFinite(configuredMaintenanceIntervalMs)
+      ? Math.max(30_000, Math.min(600_000, Math.round(configuredMaintenanceIntervalMs)))
+      : 120_000
+    const maintenanceDue =
+      heapUsedMB > maintenanceThresholdMB && now - lastGC >= maintenanceIntervalMs
+    const monitor = globalThis.__memory_monitor__
+    const collector = global.gc as undefined | ((options?: {
+      type?: "major" | "minor"
+      execution?: "sync" | "async"
+    }) => void | Promise<void>)
+    if (!collector || monitor.gcInFlight || (!urgent && !maintenanceDue)) return
+
+    // A normal Major GC and an exhaustive Base→Main→Real allocation burst must
+    // not compete on the same event loop. The process-wide Strategy lease is
+    // released between symbols; defer routine collection to that boundary.
+    // Urgent >80% heap pressure still collects immediately to prevent OOM.
+    if (!urgent && getStrategyMemoryCoordinationSnapshot().activeFlows > 0) return
+
+    // An urgent collection is deliberately synchronous: once the process is
+    // above 80% of its explicit V8 ceiling, avoiding an OOM takes precedence
+    // over one control-request latency sample. The normal 30-second
+    // maintenance path must be asynchronous. Its previous stop-the-world full
+    // GC paused every API/UI request for several seconds whenever an exhaustive
+    // 32-symbol matrix held 2-3 GiB of short-lived objects.
+    if (urgent) {
+      const startedAt = Date.now()
+      collector()
+      monitor.lastGC = now
+      monitor.lastGCMode = "urgent-sync"
+      monitor.lastGCDurationMs = Date.now() - startedAt
+      console.warn(
+        `[v0] Memory pressure: ${heapUsedMB}MB / ${heapLimitMB}MB ` +
+        `(${Math.round((heapUsedMB / heapLimitMB) * 100)}%) - urgent GC triggered`,
+      )
+      return
+    }
+
+    monitor.gcInFlight = true
+    monitor.lastGC = now
+    monitor.lastGCMode = "maintenance-async"
+    const startedAt = Date.now()
+    try {
+      const pending = collector({ type: "major", execution: "async" })
+      // Current supported Linux installs (Node 22+) return a Promise for this
+      // V8 mode. If a future runtime returns void, the request is already
+      // complete; either way the in-flight flag is released exactly once.
+      Promise.resolve(pending)
+        .catch(() => undefined)
+        .finally(() => {
+          monitor.gcInFlight = false
+          monitor.lastGCDurationMs = Date.now() - startedAt
+        })
+    } catch {
+    // Maintenance collection is best-effort. Never fall back to a surprise
+      // synchronous full GC; V8 automatic GC and the urgent boundary remain.
+      monitor.gcInFlight = false
     }
   } catch (err) {
     // Silently ignore memory check errors
@@ -396,7 +485,13 @@ import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrenc
 import { DEFAULT_SYMBOL_COUNT, getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
+import { getStrategyMemoryCoordinationSnapshot } from "@/lib/strategy-memory-guard"
 import { withCanonicalForcedSymbols } from "@/lib/forced-symbols"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import {
+  historicReplayNeedsRealtimeWarmup,
+  resolveHistoricReplayMode,
+} from "./historic-replay-policy"
 
 /**
  * Main realtime symbol work overlaps Redis/market-data waits with a small,
@@ -739,6 +834,8 @@ export class TradeEngineManager {
   private lastAppliedSettingsEvent?: import("@/lib/settings-coordinator").SettingsChangeEvent
   /** Prevents dirty-flag and hot-reload fast paths from recursively fanning out. */
   private immediateStrategyReevaluationInFlight = false
+  /** Process-wide single-flight guard shared with historic and cron owners. */
+  private readonly canonicalPipelineAdmission: CanonicalPipelineAdmission
   /**
    * Coalesced settings pass waiting for the cold historic writer to finish.
    * Running Base→Main→Real while that writer owns the Set graph duplicates
@@ -754,6 +851,7 @@ export class TradeEngineManager {
 
   constructor(config: EngineConfig) {
     this.connectionId = config.connectionId
+    this.canonicalPipelineAdmission = getCanonicalPipelineAdmission(config.connectionId)
     this.indicationProcessor = new IndicationProcessor(config.connectionId)
     this.strategyProcessor = new StrategyProcessor(config.connectionId)
     this.pseudoPositionManager = new PseudoPositionManager(config.connectionId)
@@ -814,6 +912,52 @@ export class TradeEngineManager {
    */
   get isEngineRunning(): boolean {
     return this.isRunning
+  }
+
+  /** True while an exhaustive scheduled or immediate canonical pass owns the process. */
+  get isCanonicalPipelineInFlight(): boolean {
+    return this.canonicalPipelineAdmission.isBusy
+  }
+
+  get canonicalPipelineAgeMs(): number {
+    return this.canonicalPipelineAdmission.ageMs()
+  }
+
+  /**
+   * A long exhaustive pass is productive work, not a stalled timer. Let the
+   * watchdog renew liveness without starting another processor generation.
+   */
+  async refreshCanonicalPipelineHeartbeat(): Promise<void> {
+    if (!this.isRunning || !this.canonicalPipelineAdmission.isBusy) return
+    const nowMs = Date.now()
+    const nowIso = new Date(nowMs).toISOString()
+    const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
+    const client = getRedisClient()
+    await Promise.all([
+      client.hset(scope.tradeEngineStateKey, {
+        status: "running",
+        last_processor_heartbeat: String(nowMs),
+        last_indication_run: nowIso,
+      }),
+      // Legacy/unscoped readers (ownership filter + global watchdog) still
+      // consume this key during rolling deployments. Keep it in lockstep with
+      // the engine-scoped state so a just-completed long matrix cannot be
+      // mistaken for a 3-minute stall.
+      client.hset(`settings:trade_engine_state:${this.connectionId}`, {
+        status: "running",
+        last_processor_heartbeat: String(nowMs),
+        last_indication_run: nowIso,
+      }),
+      client.hset(scope.progressionKey, {
+        last_activity_at: String(nowMs),
+      }),
+      client.hset("trade_engine:global", {
+        actual_status: "running",
+        active_worker_id: `${process.pid}:${this.connectionId}`,
+        last_heartbeat_at: String(nowMs),
+        last_heartbeat_iso: nowIso,
+      }),
+    ])
   }
 
   /**
@@ -1452,6 +1596,10 @@ export class TradeEngineManager {
       this.liveProgressionsArmed = false
       this.prehistoricReloadQueued = false
       this.pendingImmediateStrategyReevaluation = false
+      this.canonicalPipelineAdmission.release("scheduled")
+      this.canonicalPipelineAdmission.release("immediate")
+      this.canonicalPipelineAdmission.release("historic")
+      this.canonicalPipelineAdmission.release("bootstrap")
       this.prehistoricBootstrapGeneration++
       this.entryProcessingGeneration++
       this.settingsWatcherGeneration++
@@ -1711,6 +1859,10 @@ export class TradeEngineManager {
     this.isRunning = false
     this.liveProgressionsArmed = false
     this.pendingImmediateStrategyReevaluation = false
+    this.canonicalPipelineAdmission.release("scheduled")
+    this.canonicalPipelineAdmission.release("immediate")
+    this.canonicalPipelineAdmission.release("historic")
+    this.canonicalPipelineAdmission.release("bootstrap")
     this.prehistoricReloadQueued = false
     // Cooperative cancellation: any full-range worker that is currently
     // awaiting Redis/CPU work will fail its next guard before it can publish
@@ -1902,6 +2054,7 @@ export class TradeEngineManager {
     const generationEpoch = this.epoch
     const bootstrapGeneration = ++this.prehistoricBootstrapGeneration
     let succeeded = false
+    let ownsBootstrapAdmission = false
     const bootstrapStartedAt = new Date(this.prehistoricBootstrapStartedAt).toISOString()
 
     const shouldContinue = () =>
@@ -1934,6 +2087,36 @@ export class TradeEngineManager {
           `Historic bootstrap started (${reason})`,
           { bootstrapGeneration, engineEpoch: generationEpoch, reason },
         )
+
+        // A portable cron fallback, settings-immediate pass, or scheduled
+        // current cycle can already own this exhaustive Set graph when manual
+        // QuickStart begins. Historic bootstrap used to ignore the shared
+        // admission gate and run beside it, multiplying heap and extending the
+        // first Main cycle by minutes. Wait cooperatively and preserve the
+        // other owner's lease.
+        const admissionWaitStartedAt = Date.now()
+        let lastAdmissionWarningAt = 0
+        while (shouldContinue() && !this.canonicalPipelineAdmission.tryAcquire("bootstrap")) {
+          const now = Date.now()
+          if (now - lastAdmissionWarningAt >= 30_000) {
+            lastAdmissionWarningAt = now
+            console.warn(
+              `[v0] [Engine ${this.connectionId}] Historic bootstrap waiting for canonical ` +
+                `pipeline owner=${this.canonicalPipelineAdmission.activeOwner || "unknown"} ` +
+                `age=${this.canonicalPipelineAdmission.ageMs(now)}ms`,
+            )
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+        if (!shouldContinue()) {
+          throw new PrehistoricRunSupersededError(this.connectionId, bootstrapGeneration)
+        }
+        ownsBootstrapAdmission = true
+        await setSettings(`trade_engine_state:${this.connectionId}`, {
+          prehistoric_bootstrap_admission_wait_ms: Date.now() - admissionWaitStartedAt,
+          prehistoric_bootstrap_admission_owner: "bootstrap",
+          updated_at: new Date().toISOString(),
+        })
         await withCycleDeadline(
           this.loadPrehistoricData({
             shouldContinue,
@@ -2046,6 +2229,10 @@ export class TradeEngineManager {
           },
         ).catch(() => {})
       } finally {
+        if (ownsBootstrapAdmission) {
+          this.canonicalPipelineAdmission.release("bootstrap")
+          ownsBootstrapAdmission = false
+        }
         this.prehistoricBootstrapInFlight = false
         if (!this.isCurrentGeneration(generationEpoch)) return
 
@@ -2106,10 +2293,7 @@ export class TradeEngineManager {
     // User can override via `app_settings.prehistoric_range_hours` (1-50h, step 1).
     // Legacy `trade_engine_state:{id}.prehistoric_range_days` is still respected for
     // backward compatibility.
-    const DEFAULT_RANGE_HOURS = 8
     const DEFAULT_TIMEFRAME_SECONDS = 1
-    const MIN_RANGE_HOURS = 1
-    const MAX_RANGE_HOURS = 50
 
     const calcStartTs = Date.now()
     const assertCurrentRun = () => {
@@ -2132,14 +2316,10 @@ export class TradeEngineManager {
 
       // Resolve range in hours — priority: app_settings > engine state (hours) >
       // legacy engine state (days) > default.
-      let rangeHours: number =
-        Number(process.env.PREHISTORIC_RANGE_HOURS) ||
-        Number((appSettings as any)?.prehistoric_range_hours) ||
-        Number((engineState as any)?.prehistoric_range_hours) ||
-        (Number((engineState as any)?.prehistoric_range_days) * 24) ||
-        DEFAULT_RANGE_HOURS
-      if (!Number.isFinite(rangeHours) || rangeHours <= 0) rangeHours = DEFAULT_RANGE_HOURS
-      rangeHours = Math.min(MAX_RANGE_HOURS, Math.max(MIN_RANGE_HOURS, Math.round(rangeHours)))
+      const rangeHours = resolvePrehistoricRangeHours(
+        appSettings as Record<string, unknown>,
+        engineState as Record<string, unknown>,
+      )
 
       const storedTimeframeSec: number =
         Number((engineState as any)?.prehistoric_timeframe_seconds) || DEFAULT_TIMEFRAME_SECONDS
@@ -2339,15 +2519,53 @@ export class TradeEngineManager {
       if (!stillOwnsSelection) {
         throw new PrehistoricRunSupersededError(this.connectionId, run.bootstrapGeneration)
       }
+      // Bootstrap has already evaluated the complete window through
+      // `prehistoricEnd`. In the normal single-process topology its matrix can
+      // take minutes, while one exact 1-second replay pass can itself take
+      // longer than a candle interval. Starting at the old range boundary
+      // consequently creates an unbounded queue that monopolises the shared
+      // Base→Main→Real owner. Bridge the checkpoint to completion time and let
+      // the already-armed Realtime progression own the current state. Exact
+      // replay is retained only when an operator explicitly provisions and
+      // capacity-tests an isolated worker.
+      const replayMode = resolveHistoricReplayMode()
+      const replayCheckpointTs = replayMode === "exact" ? prehistoricEnd.getTime() : Date.now()
+      const replayBootstrapBridgeMs = Math.max(0, replayCheckpointTs - prehistoricEnd.getTime())
+      await Promise.all(
+        symbols.map((symbol) => redisClient.set(
+          `prehistoric:checkpoint:${this.connectionId}:${symbol}`,
+          String(replayCheckpointTs),
+          { EX: 7 * 24 * 60 * 60 },
+        )),
+      )
+      assertCurrentRun()
       const prehistoricKey = buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey
+      const completedProgression = await redisClient
+        .hgetall(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey)
+        .catch(() => ({} as Record<string, string>))
+      let completedProgressionFingerprint = ""
+      try {
+        const completedSnapshot = completedProgression.progress_settings_snapshot
+          ? JSON.parse(completedProgression.progress_settings_snapshot)
+          : {}
+        completedProgressionFingerprint = String(completedSnapshot.progression_fingerprint || "")
+      } catch {
+        // A missing/corrupt snapshot must never create a reusable cache.  The
+        // current run may still finish, but the next start will recalculate.
+      }
       await redisClient.hset(prehistoricKey, {
         is_complete: "1",
         symbol_selection_epoch: writerSelectionEpoch,
+        completed_progression_fingerprint: completedProgressionFingerprint,
+        completed_symbols_hash: symbols.map((symbol) => String(symbol).trim().toUpperCase()).sort().join("|"),
         symbols_processed: String(finalScard),
         symbols_total: String(processingResult.symbolsTotal),
         candles_loaded: String(processingResult.candlesProcessed),
         indicators_calculated: String(processingResult.indicationResults),
         total_duration_ms: String(totalPrehistoricDurationMs),
+        replay_mode: replayMode,
+        replay_checkpoint_at: String(replayCheckpointTs),
+        replay_bootstrap_bridge_ms: String(replayBootstrapBridgeMs),
         completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -2616,13 +2834,25 @@ export class TradeEngineManager {
         !this.liveProgressionsArmed ||
         entryGeneration !== this.entryProcessingGeneration
       ) return
-      if (await this.stopIfSupersededByNewGeneration("indication-tick")) return
+      // The settings fast-path and this scheduled loop drive the exact same
+      // canonical pipeline. Admit only one owner before the first await so a
+      // settings event observed inside this tick cannot start a second wide
+      // matrix while the scheduled one is still active.
+      if (!this.canonicalPipelineAdmission.tryAcquire("scheduled")) {
+        scheduleNext(false)
+        return
+      }
+      if (await this.stopIfSupersededByNewGeneration("indication-tick")) {
+        this.canonicalPipelineAdmission.release("scheduled")
+        return
+      }
 
 
       // Check pause state before executing cycle (cached, 1 s TTL)
       try {
         if (await isGloballyPausedCached()) {
           // Engine paused - reschedule but skip processing
+          this.canonicalPipelineAdmission.release("scheduled")
           scheduleNext(false)
           return
         }
@@ -3153,6 +3383,16 @@ export class TradeEngineManager {
         console.error("[v0] Indication processor error:", error)
       } finally {
         lastRealtimeCompletedAt = Date.now()
+        // Refresh both scoped and rolling-deploy heartbeat surfaces while the
+        // lease is still held. A watchdog callback delayed by CPU work may run
+        // immediately after release; it must observe this completion rather
+        // than the pre-cycle timestamp.
+        await this.refreshCanonicalPipelineHeartbeat().catch(() => undefined)
+        this.canonicalPipelineAdmission.release("scheduled")
+        // A settings save that arrived during this pass is consumed by the
+        // naturally scheduled next tick. Do not retain a stale request that
+        // could later fan out a duplicate immediate pass.
+        this.pendingImmediateStrategyReevaluation = false
         // Preserve start-to-start cadence plus a short post-completion breath.
         if (!aborted) scheduleNext(producedIndications)
       }
@@ -4038,14 +4278,18 @@ export class TradeEngineManager {
    * 12-symbol attach doubled peak memory and delayed protection/cycle one.
    *
    * The one-time bootstrap has already produced the authoritative history at
-   * every call site. This short poll therefore changes only scheduling, not the
-   * data gate. A bounded fallback keeps replay self-healing if the first live
-   * pipeline is unusually slow or repeatedly errors.
+   * every call site. The in-process Realtime bridge must observe a completed
+   * live pipeline before advancing its watermark; unlike exact replay it must
+   * never use a timeout fallback that could skip ahead before current state was
+   * evaluated.
    */
   private schedulePrehistoricProgressionAfterRealtimeWarmup(): void {
     if (!this.isRunning || this.prehistoricTimer || this.prehistoricBootstrapInFlight) return
 
     const startedAt = Date.now()
+    const replayMode = resolveHistoricReplayMode()
+    const requiresRealtimeWarmup = historicReplayNeedsRealtimeWarmup(replayMode)
+    let warmupWarningEmitted = false
     const fallbackAfterMs = Math.max(
       60_000,
       Math.min(5 * 60_000, Number(process.env.PREHISTORIC_REPLAY_WARMUP_MAX_MS) || 120_000),
@@ -4057,19 +4301,31 @@ export class TradeEngineManager {
       const livePositionsReady = this.componentHealth.realtime.cycleCount > 0
       const fallbackDue = Date.now() - startedAt >= fallbackAfterMs
 
-      if ((realtimeReady && livePositionsReady) || fallbackDue) {
+      const realtimeWarm = realtimeReady && livePositionsReady
+      const exactFallback = fallbackDue && !requiresRealtimeWarmup
+
+      if (realtimeWarm || exactFallback) {
         if (this.prehistoricTimer) {
           unregisterEngineTimer(this.prehistoricTimer)
           this.prehistoricTimer = undefined
         }
-        if (fallbackDue && !(realtimeReady && livePositionsReady)) {
+        if (exactFallback && !realtimeWarm) {
           console.warn(
-            `[v0] [Engine ${this.connectionId}] starting continuous historic replay after warmup fallback ` +
+            `[v0] [Engine ${this.connectionId}] starting explicit exact historic replay after warmup fallback ` +
               `(realtimeReady=${realtimeReady}, livePositionsReady=${livePositionsReady})`,
           )
         }
         this.startPrehistoricProgression()
         return
+      }
+
+      if (fallbackDue && requiresRealtimeWarmup && !warmupWarningEmitted) {
+        warmupWarningEmitted = true
+        console.warn(
+          `[v0] [Engine ${this.connectionId}] historic Realtime bridge remains gated until a current ` +
+            `pipeline and LivePositions cycle complete (realtimeReady=${realtimeReady}, ` +
+            `livePositionsReady=${livePositionsReady})`,
+        )
       }
 
       if (this.prehistoricTimer) unregisterEngineTimer(this.prehistoricTimer)
@@ -4095,6 +4351,7 @@ export class TradeEngineManager {
     let cycleCount = 0
     let firstPassDone = false
     const connId = this.connectionId
+    const replayMode = resolveHistoricReplayMode()
     const entryGeneration = this.entryProcessingGeneration
     // Adaptive pause tracking — see scheduleNext above.
     let _ppLastSteps = 0
@@ -4125,8 +4382,9 @@ export class TradeEngineManager {
       // zero-delay loop could run twelve complete historic Base→Main→Real
       // graphs back-to-back and starve the 280 ms Direct-Trade/control plane.
       // An idle slice backs off: first idle gets 3 s, then climbs by 3 s per
-      // consecutive idle up to 30 s. No candle is skipped: cursor + durable
-      // checkpoint decide which symbol/candle is processed next.
+      // consecutive idle up to 30 s. Exact mode preserves chronological
+      // candle ownership; the default bridge separately reports every
+      // coalesced time window instead of labelling it as replay work.
       const pause = (() => {
         if (_ppLastSteps > 0) {
           _ppConsecutiveIdle = 0
@@ -4143,6 +4401,26 @@ export class TradeEngineManager {
       registerEngineTimer(this.prehistoricTimer)
     }
 
+    // A realtime or settings-immediate matrix may already own the shared
+    // single-threaded Node worker. Historic replay must not overlap that
+    // exhaustive graph: doing so inflated a normal Real stage from seconds to
+    // more than a minute and starved status/UI requests. Retry quickly without
+    // touching the replay checkpoint or the adaptive-idle counters. The short
+    // hand-off window also lets historic work acquire the gate between
+    // realtime cycles instead of being postponed by the normal idle backoff.
+    const scheduleAdmissionRetry = () => {
+      if (
+        !this.isRunning ||
+        !this.liveProgressionsArmed ||
+        entryGeneration !== this.entryProcessingGeneration
+      ) return
+      try {
+        if (this.prehistoricTimer) unregisterEngineTimer(this.prehistoricTimer)
+      } catch { /* stale handle is fine */ }
+      this.prehistoricTimer = setTimeout(tick, 50)
+      registerEngineTimer(this.prehistoricTimer)
+    }
+
     const tick = async () => {
       if (
         !this.isRunning ||
@@ -4150,6 +4428,10 @@ export class TradeEngineManager {
         entryGeneration !== this.entryProcessingGeneration
       ) return
       if (await this.stopIfSupersededByNewGeneration("prehistoric-tick")) return
+      if (!this.canonicalPipelineAdmission.tryAcquire("historic")) {
+        scheduleAdmissionRetry()
+        return
+      }
       const cycleStart = Date.now()
 
       try {
@@ -4158,7 +4440,6 @@ export class TradeEngineManager {
         // reason to keep reshuffling checkpoint order while catch-up is active.
         const symbols = await this.getSymbols()
         if (!symbols || symbols.length === 0) {
-          scheduleNext()
           return
         }
 
@@ -4167,56 +4448,57 @@ export class TradeEngineManager {
         // restart.
         const { getAppSettings } = await import("@/lib/redis-db")
         const appSettings = await getAppSettings().catch(() => ({} as any))
-        const rawHours = Number(
-          appSettings?.prehistoric_range_hours ?? appSettings?.prehistoricRangeHours ?? 8,
-        )
-        const rangeHours = Math.max(1, Math.min(50, Number.isFinite(rawHours) ? rawHours : 8))
+        const rangeHours = resolvePrehistoricRangeHours(appSettings as Record<string, unknown>)
         const windowEndMs = Date.now()
         const windowStartMs = windowEndMs - rangeHours * 60 * 60 * 1000
 
-        // ── Step A: Bulk-load market data ONCE per cycle (DEADLINE-WRAPPED) ──
+        // ── Step A: Bulk-load market data for exact replay only ─────────
         // `loadMarketDataForEngine` can take seconds on first boot with many
         // symbols. Without a deadline, a hung network call blocks the entire
         // prehistoric tick forever. 30s deadline lets scheduleNext re-arm the
         // loop if the load hangs.
-        try {
-          const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
-          await withCycleDeadline(
-            loadMarketDataForEngine(symbols, {
-              requireHistory: true,
-              minimumHistoryCandles: ENGINE_STAGE_HISTORY_CANDLES,
-              connectionId: this.connectionId,
-            }),
-            `Prehistoric ${connId} loadMarketData`,
-            CYCLE_DEADLINE_MS,
-          )
-        } catch (loadErr) {
-          console.warn(
-            `[v0] [PrehistoricProgression] Market-data load warning:`,
-            loadErr instanceof Error ? loadErr.message : String(loadErr),
-          )
+        if (replayMode === "exact") {
+          try {
+            const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
+            await withCycleDeadline(
+              loadMarketDataForEngine(symbols, {
+                requireHistory: true,
+                minimumHistoryCandles: ENGINE_STAGE_HISTORY_CANDLES,
+                connectionId: this.connectionId,
+              }),
+              `Prehistoric ${connId} loadMarketData`,
+              CYCLE_DEADLINE_MS,
+            )
+          } catch (loadErr) {
+            console.warn(
+              `[v0] [PrehistoricProgression] Market-data load warning:`,
+              loadErr instanceof Error ? loadErr.message : String(loadErr),
+            )
+          }
         }
 
-        // ── Step B: Per-symbol step-by-step replay ───────────────────────
-        // For each symbol, walk the loaded candles from the per-symbol
-        // checkpoint forward at the data's native timeframe interval
-        // (1 s — that's what the loader writes), and call the SAME shared
-        // pipeline the Realtime Progression uses, once per candle, with
-        // `asOfMs` set to that candle's timestamp.
+        // ── Step B: Per-symbol Historic -> Realtime hand-off ─────────────
+        // The normal in-process mode advances the durable watermark to the
+        // newest locally loaded candle only after a complete current Realtime
+        // cycle. Re-evaluating an ever-growing 1-second backlog with the full
+        // Base→Main→Real graph cannot converge when one graph takes longer
+        // than one second; it also prevents Main/Real from processing current
+        // prices. The bridge is explicit in telemetry and never claims those
+        // skipped intervals were replayed.
+        //
+        // `PREHISTORIC_REPLAY_MODE=exact` retains chronological, per-candle
+        // execution for an isolated/capacity-tested worker.
         //
         // Cross-cycle checkpointing: `prehistoric:checkpoint:{connId}:{symbol}`
-        // stores the timestamp of the last replayed candle. On the next
-        // cycle we resume from there, so the loop only ever replays NEW
-        // candles (the freshly-loaded tail) — not the entire range every
-        // pass. This makes back-to-back cycles cheap once the catch-up
-        // phase completes.
+        // stores either the last exactly replayed candle or the last explicitly
+        // bridged current-state boundary. These have separate counters so
+        // operator reports cannot confuse coalesced lag with evaluated work.
         //
         // Per-cycle safety cap: MAX_REPLAY_STEPS_PER_SYMBOL bounds the
         // number of replay steps per symbol per cycle to prevent CPU starvation.
-        // Each step runs a complete Base→Main→Real pass, so one is the safe
-        // default for the single authoritative Node owner. It still advances
-        // every historical candle exactly once via the durable checkpoint;
-        // dedicated workers can explicitly raise it to 30.
+        // In explicit exact mode each step runs a complete Base→Main→Real pass,
+        // so one is the safe default. Dedicated workers can explicitly raise
+        // it to 30; bridge mode does not use this value.
         const configuredReplaySteps = Number(process.env.PREHISTORIC_REPLAY_STEPS_PER_SYMBOL)
         const MAX_REPLAY_STEPS_PER_SYMBOL = Number.isFinite(configuredReplaySteps)
           ? Math.max(1, Math.min(30, Math.floor(configuredReplaySteps)))
@@ -4229,9 +4511,29 @@ export class TradeEngineManager {
           entryGeneration === this.entryProcessingGeneration &&
           cycleSettingsVersion === this.settingsVersion
 
-        const replayOneSymbol = async (
-          symbol: string,
-        ): Promise<{ symbol: string; stepsReplayed: number; indications: number; strategies: number; durationMs: number; error?: string }> => {
+        type ReplaySymbolResult = {
+          symbol: string
+          stepsReplayed: number
+          indications: number
+          strategies: number
+          coalescedWindows: number
+          coalescedLagMs: number
+          checkpointAt: number
+          durationMs: number
+          error?: string
+        }
+        const emptyReplayResult = (symbol: string, startedAt: number): ReplaySymbolResult => ({
+          symbol,
+          stepsReplayed: 0,
+          indications: 0,
+          strategies: 0,
+          coalescedWindows: 0,
+          coalescedLagMs: 0,
+          checkpointAt: 0,
+          durationMs: Date.now() - startedAt,
+        })
+
+        const replayOneSymbol = async (symbol: string): Promise<ReplaySymbolResult> => {
           const symStart = Date.now()
           try {
             // Resolve resume point. On the very first cycle (no checkpoint)
@@ -4250,14 +4552,37 @@ export class TradeEngineManager {
             const replayWindow = await getHistoricCandleWindow(symbol, {
               afterMs: resumeFrom,
               beforeMs: windowEndMs,
-              limit: MAX_REPLAY_STEPS_PER_SYMBOL,
-              warmup: 300,
+              limit: replayMode === "exact" ? MAX_REPLAY_STEPS_PER_SYMBOL : 1,
+              warmup: replayMode === "exact" ? 300 : 0,
               lookahead: 0,
+              pendingOrder: replayMode === "exact" ? "earliest" : "latest",
             })
             const pending = replayWindow.pending
 
             if (pending.length === 0) {
-              return { symbol, stepsReplayed: 0, indications: 0, strategies: 0, durationMs: Date.now() - symStart }
+              return emptyReplayResult(symbol, symStart)
+            }
+
+            if (replayMode === "realtime-bridge") {
+              const latest = pending[pending.length - 1]
+              const latestTs = Number(latest?.timestamp ?? latest?.time ?? latest?.openTime ?? 0)
+              if (!Number.isFinite(latestTs) || latestTs <= resumeFrom || !shouldContinue()) {
+                return emptyReplayResult(symbol, symStart)
+              }
+              // Do not report a successful bridge until its durable watermark
+              // exists. A failed write must retry instead of silently dropping
+              // the gap on the next cycle.
+              await client.set(ckptKey, String(latestTs), { EX: 7 * 24 * 60 * 60 })
+              return {
+                symbol,
+                stepsReplayed: 0,
+                indications: 0,
+                strategies: 0,
+                coalescedWindows: 1,
+                coalescedLagMs: Math.max(0, latestTs - resumeFrom),
+                checkpointAt: latestTs,
+                durationMs: Date.now() - symStart,
+              }
             }
 
             // Cap per-cycle work so cold starts don't starve the loop.
@@ -4331,6 +4656,9 @@ export class TradeEngineManager {
                   stepsReplayed: 0,
                   indications: 0,
                   strategies: 0,
+                  coalescedWindows: 0,
+                  coalescedLagMs: 0,
+                  checkpointAt: 0,
                   durationMs: Date.now() - symStart,
                 }
               }
@@ -4351,6 +4679,9 @@ export class TradeEngineManager {
               stepsReplayed,
               indications: indicationsTotal,
               strategies: strategiesTotal,
+              coalescedWindows: 0,
+              coalescedLagMs: 0,
+              checkpointAt: lastReplayedTs,
               durationMs: Date.now() - symStart,
             }
           } catch (err) {
@@ -4359,6 +4690,9 @@ export class TradeEngineManager {
               stepsReplayed: 0,
               indications: 0,
               strategies: 0,
+              coalescedWindows: 0,
+              coalescedLagMs: 0,
+              checkpointAt: 0,
               durationMs: Date.now() - symStart,
               error: err instanceof Error ? err.message : String(err),
             }
@@ -4407,14 +4741,7 @@ export class TradeEngineManager {
           )
         }, timeoutMs)
         slowReplayDiagnostic.unref?.()
-        let results: Awaited<ReturnType<typeof mapWithConcurrency<string, {
-          symbol: string
-          stepsReplayed: number
-          indications: number
-          strategies: number
-          durationMs: number
-          error?: string
-        }>>>
+        let results: ReplaySymbolResult[]
         try {
           results = await mapWithConcurrency(scheduledSymbols, replayConcurrency, replayOneSymbol, { yieldEvery: 1 })
         } finally {
@@ -4430,19 +4757,40 @@ export class TradeEngineManager {
           (acc: number, r: any) => acc + (Number(r?.stepsReplayed) || 0),
           0,
         )
+        const coalescedWindowsTotal = results.reduce(
+          (acc: number, r: any) => acc + (Number(r?.coalescedWindows) || 0),
+          0,
+        )
+        const coalescedLagMsTotal = results.reduce(
+          (acc: number, r: any) => acc + (Number(r?.coalescedLagMs) || 0),
+          0,
+        )
+        const lastCheckpointAt = results.reduce(
+          (latest: number, r: any) => Math.max(latest, Number(r?.checkpointAt) || 0),
+          0,
+        )
         _ppLastSteps = stepsTotal
 
         // Emit one first-productive-pass event. The continuous replay never
         // writes completion gates; those belong solely to the verified full
         // bootstrap, so a replay error cannot accidentally unlock entries.
-        if (!firstPassDone && stepsTotal > 0) {
+        if (!firstPassDone && stepsTotal + coalescedWindowsTotal > 0) {
           firstPassDone = true
           await logProgressionEvent(
             connId,
             "prehistoric_progression",
             "info",
             `Prehistoric Progression first-pass complete (${scheduledSymbols.length}/${symbols.length} symbols, ${duration} ms)`,
-            { cycle: cycleCount, scheduledSymbols: scheduledSymbols.length, totalSymbols: symbols.length, durationMs: duration },
+            {
+              cycle: cycleCount,
+              mode: replayMode,
+              scheduledSymbols: scheduledSymbols.length,
+              totalSymbols: symbols.length,
+              stepsReplayed: stepsTotal,
+              coalescedWindows: coalescedWindowsTotal,
+              coalescedLagMs: coalescedLagMsTotal,
+              durationMs: duration,
+            },
           ).catch(() => {})
         }
 
@@ -4474,13 +4822,19 @@ export class TradeEngineManager {
             telemetryClient.hincrby(progKey, "prehistoric_replay_steps_total", stepsTotal),
             telemetryClient.hincrby(progKey, "prehistoric_replay_indications_total", indTotal),
             telemetryClient.hincrby(progKey, "prehistoric_replay_strategies_total", stratTotal),
+            telemetryClient.hincrby(progKey, "prehistoric_replay_coalesced_windows_total", coalescedWindowsTotal),
+            telemetryClient.hincrby(progKey, "prehistoric_replay_coalesced_lag_ms_total", coalescedLagMsTotal),
             telemetryClient.hset(progKey, {
+              prehistoric_replay_mode: replayMode,
               prehistoric_progression_last_cycle_at: String(nowMs),
               prehistoric_progression_last_cycle_ms: String(duration),
               prehistoric_progression_last_symbols: String(successCount),
               prehistoric_progression_last_steps: String(stepsTotal),
               prehistoric_progression_last_indications: String(indTotal),
               prehistoric_progression_last_strategies: String(stratTotal),
+              prehistoric_replay_last_coalesced_windows: String(coalescedWindowsTotal),
+              prehistoric_replay_last_coalesced_lag_ms: String(coalescedLagMsTotal),
+              prehistoric_replay_last_checkpoint_at: String(lastCheckpointAt),
             }),
             telemetryClient.expire(progKey, 7 * 24 * 60 * 60),
           ])
@@ -4490,7 +4844,8 @@ export class TradeEngineManager {
           `engine:${this.connectionId}:prehistoric-cycle`,
           30_000,
           `[v0] [PrehistoricProgression] cycle=${cycleCount} symbols=${scheduledSymbols.length}/${symbols.length} ` +
-            `steps=${stepsTotal} indications=${indTotal} strategies=${stratTotal} ` +
+            `mode=${replayMode} steps=${stepsTotal} coalesced=${coalescedWindowsTotal} ` +
+            `coalescedLagMs=${coalescedLagMsTotal} indications=${indTotal} strategies=${stratTotal} ` +
             `duration=${duration}ms range=${rangeHours}h`,
         )
       } catch (err) {
@@ -4499,6 +4854,8 @@ export class TradeEngineManager {
           err instanceof Error ? err.message : String(err),
         )
       } finally {
+        await this.refreshCanonicalPipelineHeartbeat().catch(() => undefined)
+        this.canonicalPipelineAdmission.release("historic")
         scheduleNext()
       }
     }
@@ -4729,12 +5086,17 @@ export class TradeEngineManager {
         // Fire both primary lookups concurrently so the first tick after TTL
         // expiry doesn't pay two sequential Redis round-trips.
         // getSettings() automatically prepends "settings:" prefix to keys.
-        const [connState, connSettings] = await Promise.all([
+        const [connState, connSettings, operatorSettings] = await Promise.all([
           getSettings(`trade_engine_state:${this.connectionId}`),
           // getConnection() is the canonical mirror-aware reader. Calling
           // getSettings("connection:…") here reads only settings:connection:…
           // and can retain a stale pre-QuickStart force_symbols/live state.
           getConnection(this.connectionId),
+          // QuickStart/settings commits persist their symbol basket in these
+          // mirrored hashes. They remain authoritative across an engine stop,
+          // unlike the unscoped runtime state which heartbeat/startup workers
+          // are allowed to rewrite.
+          getCanonicalConnectionSettingsOverlay(this.connectionId),
         ])
 
         // ── DEV / LOCAL-PROD SYMBOL CAP ───────────────────────────────────
@@ -4769,6 +5131,26 @@ export class TradeEngineManager {
           // stayed at 0/N symbols with no indication/strategy calculations.
           // Resolve the real list first, then slice it at the end if needed.
           ;(resolve as any)._devCap = devCap ?? undefined
+        }
+
+        if (operatorSettings && typeof operatorSettings === "object") {
+          const symbolsField =
+            (operatorSettings as any).force_symbols ||
+            (operatorSettings as any).selected_symbols ||
+            (operatorSettings as any).active_symbols ||
+            (operatorSettings as any).symbols
+          let symbols = symbolsField
+          if (typeof symbols === "string") {
+            try { symbols = JSON.parse(symbols) } catch { /* ignore */ }
+          }
+          if (Array.isArray(symbols) && symbols.length > 0) {
+            logRuntimeInfo(
+              `engine:${this.connectionId}:operator-symbols`,
+              60_000,
+              `[v0] [getSymbols] ${this.connectionId}: using durable operator symbols (${symbols.length} symbols)`,
+            )
+            return symbols.map(String).filter(Boolean)
+          }
         }
 
         if (connState && typeof connState === "object") {
@@ -4982,7 +5364,17 @@ export class TradeEngineManager {
       )
       return
     }
-    if (this.immediateStrategyReevaluationInFlight) return
+    if (
+      this.immediateStrategyReevaluationInFlight ||
+      !this.canonicalPipelineAdmission.tryAcquire("immediate")
+    ) {
+      // The active scheduled pass observes the new settings generation and
+      // either uses it in this pass or fails closed before publication. Its
+      // next self-scheduled tick is the correctness fallback, so overlapping
+      // an additional exhaustive pass is both unnecessary and harmful.
+      this.pendingImmediateStrategyReevaluation = true
+      return
+    }
     this.immediateStrategyReevaluationInFlight = true
     void (async () => {
       const entryGeneration = this.entryProcessingGeneration
@@ -5024,6 +5416,9 @@ export class TradeEngineManager {
         )
       } finally {
         this.immediateStrategyReevaluationInFlight = false
+        await this.refreshCanonicalPipelineHeartbeat().catch(() => undefined)
+        this.canonicalPipelineAdmission.release("immediate")
+        this.pendingImmediateStrategyReevaluation = false
       }
     })()
   }

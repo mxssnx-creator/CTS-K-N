@@ -2,6 +2,7 @@
 
 import { monitorEventLoopDelay, performance } from "node:perf_hooks"
 import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
+import { getStrategyMemoryCoordinationSnapshot } from "@/lib/strategy-memory-guard"
 
 type EventLoopDelayReader = {
   enable: () => void
@@ -39,6 +40,13 @@ export function getRuntimeTelemetry(itemCount = Number.POSITIVE_INFINITY) {
   const capturedAt = new Date().toISOString()
   let memory = { rssMB: 0, heapUsedMB: 0, heapTotalMB: 0, externalMB: 0, arrayBuffersMB: 0 }
   let eventLoop = { utilizationPct: 0, delayP50Ms: 0, delayP95Ms: 0, delayMaxMs: 0 }
+  let memoryCollection = {
+    highWaterMarkMB: 0,
+    inFlight: false,
+    lastAt: 0,
+    lastMode: "none",
+    lastDurationMs: 0,
+  }
 
   try {
     const usage = process.memoryUsage()
@@ -71,16 +79,40 @@ export function getRuntimeTelemetry(itemCount = Number.POSITIVE_INFINITY) {
     // supported memory/concurrency fields and publish zero event-loop values.
   }
 
+  try {
+    const monitor = (globalThis as typeof globalThis & {
+      __memory_monitor__?: {
+        highWaterMark?: number
+        gcInFlight?: boolean
+        lastGC?: number
+        lastGCMode?: string
+        lastGCDurationMs?: number
+      }
+    }).__memory_monitor__
+    memoryCollection = {
+      highWaterMarkMB: rounded(Number(monitor?.highWaterMark || 0)),
+      inFlight: monitor?.gcInFlight === true,
+      lastAt: Number(monitor?.lastGC || 0),
+      lastMode: String(monitor?.lastGCMode || "none"),
+      lastDurationMs: rounded(Number(monitor?.lastGCDurationMs || 0)),
+    }
+  } catch {
+    // Collection telemetry is best-effort and never controls admission.
+  }
+
   const concurrency = getRuntimeConcurrencyProfile(itemCount, process.env, {
     rssMB: memory.rssMB,
     eventLoopUtilizationPct: eventLoop.utilizationPct,
     eventLoopDelayP95Ms: eventLoop.delayP95Ms,
   })
+  const strategyMemory = getStrategyMemoryCoordinationSnapshot(process.env)
 
   return {
     capturedAt,
     concurrency,
     memory,
+    memoryCollection,
+    strategyMemory,
     eventLoop,
     node: {
       version: process.version,

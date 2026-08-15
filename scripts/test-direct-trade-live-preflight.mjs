@@ -5,8 +5,9 @@
  *
  * This is a paper-only contract test. It starts the real Next API and the
  * real Direct-Trade processor, requests Live mode with a deliberately stale
- * paper range, and proves that the worker first publishes an exact 48h
- * calculation before its realtime ticks continue. FORCE_SIMULATED is forced
+ * paper range, and proves that the worker publishes at least the 48h baseline
+ * (or one bounded expansion up to 90h when coverage is sparse) before its
+ * realtime ticks continue. FORCE_SIMULATED is forced
  * in the child server, so this test can never submit an exchange order.
  */
 
@@ -140,13 +141,15 @@ async function waitForWarmup() {
     if (
       last?.state?.liveMode === true &&
       calculationReady &&
-      historyHours === 48 &&
+      historyHours >= 48 &&
+      historyHours <= 90 &&
+      last?.processor?.historyPolicy?.canProceed !== false &&
       tickCount > 0 &&
       last?.processor?.isHealthy === true
     ) return last
     await sleep(1_000)
   }
-  throw new Error(`48h live warmup/realtime tick did not complete: ${JSON.stringify(last)}`)
+  throw new Error(`Bounded 48-90h live warmup/realtime tick did not complete: ${JSON.stringify(last)}`)
 }
 
 async function stopChild(child) {
@@ -239,7 +242,8 @@ async function main() {
         connectionId: "bingx-x01",
         symbolCount,
         symbols,
-        // Both paper and live paths use the unified 48h warmup contract.
+        // Live starts at 48h and may expand to 90h only if the result graph is
+        // too sparse; no evaluation threshold is relaxed.
         historyHours: 48,
         timeframes: ["5m"],
         strategyTypes: ["standard"],
@@ -248,7 +252,7 @@ async function main() {
         trailingEnabled: false,
         minRecentProfitFactor: 0.8,
         recentEvaluationPositions: 3,
-        minProfitFactor: 0.8,
+        minProfitFactor: 4,
         maxDrawdownTimeMin: 10,
         activityVolumeRatio: 0,
         processingIntervalMs: 500,
@@ -282,6 +286,7 @@ async function main() {
       requestedPaperHistoryHours: 48,
       requiredLiveHistoryHours: 48,
       publishedHistoryHours: Number(status.calculation.historyHours),
+      historyPolicy: status.processor.historyPolicy,
       calculationStatus: status.calculationProgress.status,
       processorTicks: Number(status.processor.tickCount),
       processorHealthy: status.processor.isHealthy === true,

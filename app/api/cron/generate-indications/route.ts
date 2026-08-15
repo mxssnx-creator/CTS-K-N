@@ -33,6 +33,10 @@ import { ConfigSetProcessor, type ProcessingResult } from "@/lib/trade-engine/co
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
 import { isForcedSimulation } from "@/lib/real-trade-gates"
+import {
+  getCanonicalPipelineAdmission,
+  type CanonicalPipelineAdmission,
+} from "@/lib/canonical-pipeline-admission"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -445,6 +449,10 @@ export async function GET(request: Request) {
 
   const cronLockToken = createCronLockToken()
   let acquiredCronLock = false
+  const canonicalCronOwners: Array<{
+    connectionId: string
+    admission: CanonicalPipelineAdmission
+  }> = []
 
   try {
     const { initRedis, getRedisClient, getAssignedAndEnabledConnections, getConnection, getAppSettings } = await import("@/lib/redis-db")
@@ -502,7 +510,20 @@ export async function GET(request: Request) {
       client,
       () => false,
     )
-    const activeConnections = ownership.eligible
+    // The Redis heartbeat decides whether a different process owns the
+    // connection. Inside this process, use the exact same owner-aware gate as
+    // manager realtime, historic replay, and settings-triggered passes. This
+    // closes the minute-boundary race where a delayed heartbeat let cron start
+    // a second exhaustive matrix beside a healthy in-process manager.
+    const activeConnections = ownership.eligible.filter((connection) => {
+      const connectionId = String(connection?.id || "")
+      if (!connectionId) return false
+      const admission = getCanonicalPipelineAdmission(connectionId)
+      if (!admission.tryAcquire("cron")) return false
+      canonicalCronOwners.push({ connectionId, admission })
+      return true
+    })
+    const skippedBusyPipelineOwners = ownership.eligible.length - activeConnections.length
 
     // Cron intentionally uses the same assigned-and-enabled connection set as
     // the engine coordinator, with only fresh queued start requests merged after
@@ -514,7 +535,10 @@ export async function GET(request: Request) {
         generated: 0,
         connections: 0,
         skippedFreshEngineOwners: ownership.skippedFreshOwners,
-        message: ownership.skippedFreshOwners > 0
+        skippedBusyPipelineOwners,
+        message: skippedBusyPipelineOwners > 0
+          ? "An in-process canonical pipeline already owns every eligible connection"
+          : ownership.skippedFreshOwners > 0
           ? "Healthy trade-engine owners already coordinate all active connections"
           : "No active connections",
         timestamp: Date.now(),
@@ -813,6 +837,7 @@ export async function GET(request: Request) {
       generated: totalIndications,
       connections: activeConnections.length,
       skippedFreshEngineOwners: ownership.skippedFreshOwners,
+      skippedBusyPipelineOwners,
       strategies: { base: totalBase, main: totalMain, real: totalReal },
       timestamp: Date.now(),
     })
@@ -837,6 +862,9 @@ export async function GET(request: Request) {
   } finally {
     // Always release both guards so the next tick can run.
     _cronInFlight = false
+    for (const { admission } of canonicalCronOwners) {
+      admission.release("cron")
+    }
     // Release the Redis lock early (before TTL) so subsequent ticks don't wait
     // when this handler finishes quickly, but only if this invocation still owns
     // the token. Atomic Lua compare-and-delete is used when exposed by the Redis

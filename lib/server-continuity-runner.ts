@@ -60,6 +60,12 @@ function shouldSkipInProcessTimers(): boolean {
 export async function enqueueContinuityIndicationJob(): Promise<void> {
   const state = g.__cts_continuity_runner
   if (!state || state.indicationInFlight) return
+  // An explicit auto-start disable means the operator/test harness will choose
+  // when the first manager generation begins. Starting the portable fallback
+  // anyway made a long pre-warm silently launch a second Base→Main→Real matrix
+  // before QuickStart. External cron invocations remain available; the normal
+  // production default (auto-start enabled) is unchanged.
+  if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART === "1") return
   state.indicationInFlight = true
   try {
     const { publishEngineEvent } = await import("@/lib/engine-event-bus")

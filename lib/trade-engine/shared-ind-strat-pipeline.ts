@@ -36,7 +36,10 @@
  *             gated on indicationCount > 0)
  *
  * ── Coordination guarantees ───────────────────────────────────────────
- * Independent timers; a slow prehistoric cycle never blocks realtime.
+ * Timers are independent, but their exhaustive graph is admitted through one
+ * process-wide owner gate so two modes never overlap. The normal in-process
+ * Historic continuation uses a Realtime state bridge; exact replay is an
+ * explicit isolated-worker mode and can delay the next current cycle.
  * Realtime owns durable `indication_set:*`, cooldown, and pending-outcome
  * keys. Prehistoric processing uses the same calculation code but publishes
  * only a namespaced snapshot, so old candles cannot overwrite live state.

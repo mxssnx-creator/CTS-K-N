@@ -11,11 +11,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import {
+  DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   DIRECT_TRADE_MAX_SYMBOLS,
 } from "@/lib/direct-trade-limits"
 import {
+  DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
@@ -98,12 +100,12 @@ const DEFAULT_STATE: DirectTradeState = {
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 0.8,
-  maxTotalPositions: 300,
+  maxTotalPositions: DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
-  minProfitFactor: 0.8,
+  minProfitFactor: DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
   maxDrawdownTimeMin: 10,

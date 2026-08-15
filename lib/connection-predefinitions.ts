@@ -178,7 +178,7 @@ export const CONNECTION_PREDEFINITIONS: ConnectionPredefinition[] = [
     id: "bingx-x02",
     name: "BingX X02",
     displayName: "BingX X02 (Prod-VST Demo)",
-    description: "Dedicated BingX Prod-VST perpetual-futures execution with virtual funds. Authenticated orders use https://open-api-vst.bingx.com and never touch the real-funds host.",
+    description: "Dedicated BingX Prod-VST perpetual-futures execution with virtual funds. Authenticated orders use one explicitly pinned official VST host (.com primary or .pro alternative) and never touch the real-funds host.",
     exchange: "bingx",
     apiTypes: ["perpetual_futures"],
     apiType: "perpetual_futures",

@@ -60,6 +60,7 @@ export interface LoadMarketDataOptions {
 const REALTIME_CANDLE_TAIL = 300
 const HISTORIC_CHUNK_SIZE = 2_000
 const MARKET_DATA_TTL_SECONDS = 24 * 60 * 60
+const MINIMUM_SECOND_HISTORY_DENSITY = 0.95
 // The indication grid contains inclusive ranges through 90 samples by
 // default. A 5-candle pre-startup placeholder is useful for a ticker, but it
 // is not a valid prehistoric cache and must never make the Main/Real stages
@@ -72,6 +73,90 @@ const DEFAULT_MINIMUM_HISTORY_CANDLES = 90
 // 90 one-minute bars require 5,400 one-second samples.
 export const ENGINE_STAGE_HISTORY_MINUTES = 90
 export const ENGINE_STAGE_HISTORY_CANDLES = ENGINE_STAGE_HISTORY_MINUTES * 60
+
+export interface SecondHistoryCoverage {
+  complete: boolean
+  requiredCandles: number
+  uniqueSeconds: number
+  oldestTimestamp: number
+  latestTimestamp: number
+  spanMs: number
+  densityRatio: number
+  latestAgeMs: number
+  maxLatestAgeMs: number
+}
+
+/**
+ * Prove that a nominal 1-second history is both dense and recent enough for
+ * time-window evaluation.  Counting sparse public-trade buckets alone is not
+ * sufficient: 5,400 traded seconds spread over several hours cannot evaluate
+ * the configured latest 90 one-minute bars.  Paper mode can replace an
+ * incomplete venue sample with a complete synthetic fixture; live mode stays
+ * entry-gated by the caller.
+ */
+export function analyzeSecondHistoryCoverage(
+  candles: readonly Pick<MarketDataCandle, "timestamp">[],
+  minimumHistoryCandles: number,
+  nowMs = Date.now(),
+): SecondHistoryCoverage {
+  const requiredCandles = Math.max(1, Math.floor(Number(minimumHistoryCandles) || 1))
+  const timestamps: number[] = []
+  let ordered = true
+  let previous = Number.NEGATIVE_INFINITY
+  for (const candle of candles || []) {
+    const raw = Number(candle?.timestamp)
+    if (!Number.isFinite(raw)) continue
+    const timestamp = Math.floor(raw / 1_000) * 1_000
+    if (timestamp < previous) ordered = false
+    if (timestamp !== previous) timestamps.push(timestamp)
+    previous = timestamp
+  }
+  if (!ordered) {
+    timestamps.sort((left, right) => left - right)
+    let write = 0
+    for (let read = 0; read < timestamps.length; read++) {
+      if (write > 0 && timestamps[read] === timestamps[write - 1]) continue
+      timestamps[write++] = timestamps[read]
+    }
+    timestamps.length = write
+  }
+
+  const uniqueSeconds = timestamps.length
+  const tailStart = Math.max(0, uniqueSeconds - requiredCandles)
+  const oldestTimestamp = uniqueSeconds > 0 ? timestamps[tailStart] : 0
+  const latestTimestamp = uniqueSeconds > 0 ? timestamps[uniqueSeconds - 1] : 0
+  const spanMs = latestTimestamp > 0 && oldestTimestamp > 0
+    ? Math.max(0, latestTimestamp - oldestTimestamp)
+    : 0
+  const occupiedSeconds = spanMs > 0 ? Math.floor(spanMs / 1_000) + 1 : uniqueSeconds > 0 ? 1 : 0
+  const densityRatio = occupiedSeconds > 0
+    ? Math.min(1, Math.min(requiredCandles, uniqueSeconds) / occupiedSeconds)
+    : 0
+  // The realtime hot tail covers at most five minutes.  A history ending
+  // beyond that boundary cannot be bridged to "now" without a real gap.
+  const maxLatestAgeMs = Math.max(
+    30_000,
+    Math.min(REALTIME_CANDLE_TAIL * 1_000, Math.floor(requiredCandles * 100)),
+  )
+  const latestAgeMs = latestTimestamp > 0 ? nowMs - latestTimestamp : Number.POSITIVE_INFINITY
+  const complete =
+    uniqueSeconds >= requiredCandles &&
+    densityRatio >= MINIMUM_SECOND_HISTORY_DENSITY &&
+    latestAgeMs >= -30_000 &&
+    latestAgeMs <= maxLatestAgeMs
+
+  return {
+    complete,
+    requiredCandles,
+    uniqueSeconds,
+    oldestTimestamp,
+    latestTimestamp,
+    spanMs,
+    densityRatio,
+    latestAgeMs,
+    maxLatestAgeMs,
+  }
+}
 
 function syntheticMarketDataAllowed(): boolean {
   // Synthetic candles are a paper/test fixture only.  A live process must
@@ -110,10 +195,14 @@ async function writeHistoricCandleChunks(
     await client.rpush(chunksKey, JSON.stringify(chunk))
   }
   await client.set(metaKey, JSON.stringify({
-    version: 1,
+    version: 2,
     chunkSize: HISTORIC_CHUNK_SIZE,
     candleCount: candles.length,
     ranges,
+    coverage: analyzeSecondHistoryCoverage(
+      candles,
+      Math.min(candles.length, ENGINE_STAGE_HISTORY_CANDLES),
+    ),
     updatedAt: new Date().toISOString(),
   }))
   await Promise.all([
@@ -316,13 +405,28 @@ export async function loadMarketDataForEngine(
           const metadata = JSON.parse(metadataRaw)
           const candleCount = Number(metadata?.candleCount)
           const ranges = Array.isArray(metadata?.ranges) ? metadata.ranges : []
+          const coverage = metadata?.coverage as Partial<SecondHistoryCoverage> | undefined
           const candles = JSON.parse(candlesRaw)
           const envelope = JSON.parse(cachedValues[offset] as string)
           const hotTailMinimum = Math.min(REALTIME_CANDLE_TAIL, minimumHistoryCandles)
+          const coverageLatestTimestamp = Number(coverage?.latestTimestamp)
+          const coverageLatestAgeMs = Number.isFinite(coverageLatestTimestamp)
+            ? Date.now() - coverageLatestTimestamp
+            : Number.POSITIVE_INFINITY
+          const coverageMaxAgeMs = Math.max(
+            30_000,
+            Math.min(REALTIME_CANDLE_TAIL * 1_000, Math.floor(minimumHistoryCandles * 100)),
+          )
           return (
+            Number(metadata?.version) < 2 ||
             !Number.isFinite(candleCount) ||
             candleCount < minimumHistoryCandles ||
             ranges.length === 0 ||
+            coverage?.complete !== true ||
+            Number(coverage?.uniqueSeconds || 0) < minimumHistoryCandles ||
+            Number(coverage?.densityRatio || 0) < MINIMUM_SECOND_HISTORY_DENSITY ||
+            coverageLatestAgeMs < -30_000 ||
+            coverageLatestAgeMs > coverageMaxAgeMs ||
             !Array.isArray(candles) ||
             candles.length < hotTailMinimum ||
             !Array.isArray(envelope?.candles) ||
@@ -391,8 +495,13 @@ export async function loadMarketDataForEngine(
         let candles: MarketDataCandle[]
         let source: string
 
-        const requiredCandles = options.requireHistory ? minimumHistoryCandles : 1
-        if (realData && realData.candles.length >= requiredCandles) {
+        const requiredCandles = options.requireHistory
+          ? Math.max(minimumHistoryCandles, ENGINE_STAGE_HISTORY_CANDLES)
+          : 1
+        const realCoverage = realData
+          ? analyzeSecondHistoryCoverage(realData.candles, requiredCandles)
+          : null
+        if (realData && realCoverage?.complete) {
           candles = realData.candles
           source = realData.source
           realDataCount++
@@ -400,7 +509,11 @@ export async function loadMarketDataForEngine(
           if (realData && realData.candles.length > 0) {
             console.warn(
               `[v0] [MarketData] ${symbol}: venue returned only ${realData.candles.length} ` +
-                `candle(s), requires ${requiredCandles}; refusing partial history`,
+                `candle(s), requires ${requiredCandles} dense/recent seconds ` +
+                `(unique=${realCoverage?.uniqueSeconds || 0}, ` +
+                `density=${Number(realCoverage?.densityRatio || 0).toFixed(3)}, ` +
+                `latestAgeMs=${Math.round(Number(realCoverage?.latestAgeMs || 0))}); ` +
+                `refusing partial history`,
             )
           }
           if (!syntheticMarketDataAllowed()) {
@@ -419,7 +532,11 @@ export async function loadMarketDataForEngine(
           candles = generateSyntheticCandles(
             symbol,
             basePrice,
-            Math.max(250, minimumHistoryCandles),
+            Math.max(
+              250,
+              minimumHistoryCandles,
+              options.requireHistory ? ENGINE_STAGE_HISTORY_CANDLES : 0,
+            ),
           )
           source = "synthetic"
           syntheticCount++
@@ -488,7 +605,21 @@ export async function loadMarketDataForEngine(
           console.log(`[v0] [MarketData] ✓ ${symbol}: $${priceStr} ${sourceLabel} (${candles.length} intervals)`)
         }
         await Promise.all(writes)
-        await writeHistoricCandleChunks(client, symbol, candles)
+        const completeStageCoverage = analyzeSecondHistoryCoverage(
+          candles,
+          Math.max(minimumHistoryCandles, ENGINE_STAGE_HISTORY_CANDLES),
+        )
+        if (completeStageCoverage.complete) {
+          await writeHistoricCandleChunks(client, symbol, candles)
+        } else if (options.requireHistory) {
+          // This should only be reachable when an operator requests a history
+          // window larger than the available paper fixture.  Never replace an
+          // older complete index with this partial sample.
+          console.warn(
+            `[v0] [MarketData] ${symbol}: loaded tail does not satisfy complete stage history; ` +
+              `preserving the prior chunk index`,
+          )
+        }
 
         loaded++
       } catch (error) {
@@ -627,7 +758,19 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
     // complete refresh may replace the history index; partial refreshes keep
     // the last complete index and update the hot/latest keys above.
     if (candles.length >= ENGINE_STAGE_HISTORY_CANDLES) {
-      await writeHistoricCandleChunks(client, symbol, candles)
+      const coverage = analyzeSecondHistoryCoverage(
+        candles,
+        ENGINE_STAGE_HISTORY_CANDLES,
+      )
+      if (coverage.complete) {
+        await writeHistoricCandleChunks(client, symbol, candles)
+      } else {
+        console.warn(
+          `[v0] [MarketData] ${symbol}: refresh has ${candles.length} sparse/stale candles ` +
+            `(density=${coverage.densityRatio.toFixed(3)}, ` +
+            `latestAgeMs=${Math.round(coverage.latestAgeMs)}); preserving complete historic index`,
+        )
+      }
     } else {
       const existingMetaRaw = await client.get(`market_data:${symbol}:history:meta`).catch(() => null)
       let existingCandleCount = 0

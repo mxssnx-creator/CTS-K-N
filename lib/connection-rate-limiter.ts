@@ -15,6 +15,28 @@ interface RateLimitResult {
   timeoutMs?: number
 }
 
+export function isRateLimitWindowExpired(now: number, windowStart: number, windowMs: number): boolean {
+  return now - windowStart >= windowMs
+}
+
+export function shouldStartNewRateLimitWindow(
+  windowStartValue: string | null | undefined,
+  now: number,
+  windowMs: number,
+): boolean {
+  if (!windowStartValue) return true
+  const windowStart = Number.parseInt(windowStartValue, 10)
+  return !Number.isFinite(windowStart) || isRateLimitWindowExpired(now, windowStart, windowMs)
+}
+
+export function remainingRateLimitWindowTtlSeconds(
+  now: number,
+  windowStart: number,
+  windowMs: number,
+): number {
+  return Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000))
+}
+
 /**
  * Systemwide rate limiter with timeout management for connection requests
  * Uses Redis for distributed rate limiting across multiple servers
@@ -61,13 +83,20 @@ export class ConnectionRateLimiter {
       const windowStart = windowStartStr ? Number.parseInt(windowStartStr, 10) : now
 
       // Check if window has expired
-      if (now - windowStart > this.config.windowMs) {
-        // Reset: new window
-        await client.set(`${key}:window`, now.toString())
-        await client.set(`${key}:count`, "1")
-        await client.expire(key, Math.ceil(this.config.windowMs / 1000))
-        await client.expire(`${key}:window`, Math.ceil(this.config.windowMs / 1000))
-        await client.expire(`${key}:count`, Math.ceil(this.config.windowMs / 1000))
+      // The exact boundary belongs to the next window. Using `>` left a
+      // millisecond-wide race where a caller that obeyed Retry-After exactly
+      // was rejected again with another full-window 429.
+      // The two Redis keys can expire a few milliseconds apart. If `window`
+      // has disappeared while the old `count` is still visible, treating the
+      // missing window as `now` attaches that stale count to a brand-new
+      // 60-second window and can loop forever. Missing/invalid/expired window
+      // state therefore initializes BOTH keys together with fresh TTLs.
+      if (shouldStartNewRateLimitWindow(windowStartStr, now, this.config.windowMs)) {
+        const ttlSeconds = Math.ceil(this.config.windowMs / 1000)
+        await Promise.all([
+          client.set(`${key}:window`, now.toString(), { EX: ttlSeconds }),
+          client.set(`${key}:count`, "1", { EX: ttlSeconds }),
+        ])
 
         return {
           allowed: true,
@@ -95,8 +124,14 @@ export class ConnectionRateLimiter {
         }
       }
 
-      // Update counter
-      await client.set(`${key}:count`, newCount.toString())
+      // Redis SET clears an existing TTL unless KEEPTTL is requested. The
+      // cross-backend adapter intentionally exposes only common SET options,
+      // so reapply the *remaining* absolute-window TTL on every increment.
+      // Without this, the count became immortal (TTL=-1) while `window`
+      // expired, permanently rate-limiting the connection after 30 toggles.
+      await client.set(`${key}:count`, newCount.toString(), {
+        EX: remainingRateLimitWindowTtlSeconds(now, windowStart, this.config.windowMs),
+      })
 
       return {
         allowed: true,

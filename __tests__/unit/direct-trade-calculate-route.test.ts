@@ -116,9 +116,16 @@ describe("Direct-Trade historical calculation route", () => {
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("interval=1m")
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("startTime=")
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+    const statisticsIndex = JSON.parse((await getRedisClient().get("direct_trade:statistics-index")) || "{}")
     expect(persisted).toHaveLength(312)
     expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(312)
     expect(persisted.every((config: any) => config.blockEvaluations === undefined)).toBe(true)
+    expect(statisticsIndex).toMatchObject({ schemaVersion: 2 })
+    expect(Array.isArray(statisticsIndex.rows) && statisticsIndex.rows.length > 0).toBe(true)
+    expect(statisticsIndex.rows.every((row: any) => row.blockEvaluations === undefined)).toBe(true)
+    expect(Object.values(statisticsIndex.topRowIndexes || {}).every((indexes: any) =>
+      Array.isArray(indexes) && indexes.every((index: any) => Number.isInteger(index)),
+    )).toBe(true)
     expect(persisted.every((config: any) => config.timeframe === "5m" && config.bestMarketExitAnalysisOnly === true)).toBe(true)
     expect(persisted.every((config: any) =>
       Number.isFinite(config.takeprofit) &&

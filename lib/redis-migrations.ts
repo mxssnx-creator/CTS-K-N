@@ -44,6 +44,11 @@ import {
 } from "./forced-symbols"
 import { BINGX_PROD_VST_ORIGIN, configuredBingXEnvironment } from "./bingx-environment"
 import { resolveRedisRuntimeRoot } from "./redis-runtime-root"
+import {
+  getRuntimeBootstrapKeys,
+  LATEST_REDIS_SCHEMA_VERSION,
+  RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS,
+} from "./redis-runtime-bootstrap"
 
 /**
  * Reset the in-process migration guards.
@@ -95,6 +100,7 @@ export function resetMigrationRunState(): void {
   globalMigrationGuard.__coverage_repair_done = false
   globalMigrationGuard.__coverage_repair_fingerprint = null
   globalMigrationGuard.__coverage_repair_promise = null
+  ;(resolveRedisRuntimeRoot() as unknown as Record<string, unknown>).__v0_devBootGuardDone = false
   // A destructive/import reset calls this before replaying migrations. Clear
   // only the idempotent seed-complete marker so the existing reset routes can
   // run their unchanged runPreStartup() step again after the fresh schema.
@@ -6825,7 +6831,13 @@ const migrations: Migration[] = [
 ]
 
 export function getLatestMigrationVersion(): number {
-  return Math.max(...migrations.map((m) => m.version))
+  const latest = Math.max(...migrations.map((m) => m.version))
+  if (latest !== LATEST_REDIS_SCHEMA_VERSION) {
+    throw new Error(
+      `Redis schema constant v${LATEST_REDIS_SCHEMA_VERSION} does not match migration bundle v${latest}`,
+    )
+  }
+  return latest
 }
 
 export function getMigrationBundleHealth(): { latestVersion: number; totalMigrations: number; sequential: boolean } {
@@ -7427,6 +7439,81 @@ if (!hasExisting) {
   return { createdOrUpdated, credentialsInjected }
 }
 
+const BASE_BOOTSTRAP_LOCK_TTL_SECONDS = 60
+const BASE_BOOTSTRAP_WAIT_MS = 65_000
+
+/**
+ * Coordinate the idempotent health/Base repair once across all Next workers.
+ * Route handlers execute in separate operating-system workers, so JavaScript
+ * globals alone cannot stop every bundle from repeating hundreds of Redis
+ * reads/writes. The launcher-provided boot id plus SET NX gives one worker the
+ * repair lease; peers wait for its durable completion marker and then use the
+ * lightweight health snapshot. A new boot, schema version, environment, symbol
+ * count, or explicit database flush gets a distinct/missing marker and repairs
+ * normally.
+ */
+async function ensureRuntimeBaseBootstrap(
+  client: any,
+  finalVersion: number,
+  options: { force?: boolean } = {},
+): Promise<{
+  databaseHealth: Record<string, string>
+  ensured: { createdOrUpdated: number; credentialsInjected: number }
+  skipped: boolean
+}> {
+  const keys = getRuntimeBootstrapKeys(finalVersion)
+  const markerValue = keys.baseMarkerValue
+  if (options.force) await client.del(keys.baseMarker).catch(() => 0)
+
+  const databaseHealth = await ensureDatabaseHealthMetadata(client)
+  if ((await client.get(keys.baseMarker).catch(() => null)) === markerValue) {
+    return {
+      databaseHealth,
+      ensured: { createdOrUpdated: 0, credentialsInjected: 0 },
+      skipped: true,
+    }
+  }
+
+  const deadline = Date.now() + BASE_BOOTSTRAP_WAIT_MS
+  while (Date.now() < deadline) {
+    const token = createRedisLockToken("base-bootstrap")
+    const acquired = await client.set(keys.baseLock, token, {
+      NX: true,
+      EX: BASE_BOOTSTRAP_LOCK_TTL_SECONDS,
+    }).catch(() => null)
+
+    if (acquired === "OK") {
+      try {
+        if (!options.force && (await client.get(keys.baseMarker).catch(() => null)) === markerValue) {
+          return {
+            databaseHealth,
+            ensured: { createdOrUpdated: 0, credentialsInjected: 0 },
+            skipped: true,
+          }
+        }
+        const ensured = await ensureBaseConnections(client)
+        await client.set(keys.baseMarker, markerValue, { EX: RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS })
+        return { databaseHealth, ensured, skipped: false }
+      } finally {
+        await releaseOwnedRedisLock(client, keys.baseLock, token).catch(() => false)
+      }
+    }
+
+    if ((await client.get(keys.baseMarker).catch(() => null)) === markerValue) {
+      return {
+        databaseHealth,
+        ensured: { createdOrUpdated: 0, credentialsInjected: 0 },
+        skipped: true,
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 75))
+  }
+
+  throw new Error(
+    `Timed out waiting ${BASE_BOOTSTRAP_WAIT_MS}ms for the shared Base bootstrap lease`,
+  )
+}
+
 // Per-process set of one-shot diagnostic messages already emitted by
 // `ensureBaseConnections`. Avoids log spam when migrations run on every
 // HTTP request due to module reload (HMR / cold-warm).
@@ -7915,8 +8002,8 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
         // Redis is at latest — fast-path return. Keep health metadata repaired
         // even when the version key is already current (e.g. a previous deploy
         // wrote _schema_version but missed the lightweight health hash).
-        const databaseHealth = await ensureDatabaseHealthMetadata(client)
-        const ensured = await ensureBaseConnections(client)
+        const bootstrap = await ensureRuntimeBaseBootstrap(client, finalVer)
+        const { databaseHealth, ensured } = bootstrap
         // Only log when something actually changed; otherwise the "ensured=0,
         // credentialsInjected=0" line spams every HTTP request because the
         // migration loader runs on every module reload (HMR / cold-warm).
@@ -7977,8 +8064,8 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
         ensureBootstrapDiag.add("already_latest")
         console.log(`[v0] [Migrations] Already at latest version ${finalVersion}`)
       }
-      const databaseHealth = await ensureDatabaseHealthMetadata(client)
-      const ensured = await ensureBaseConnections(client)
+      const bootstrap = await ensureRuntimeBaseBootstrap(client, finalVersion)
+      const { databaseHealth, ensured } = bootstrap
       // Only log when something actually changed (see same-pattern note above).
       if (ensured.createdOrUpdated > 0 || ensured.credentialsInjected > 0) {
         console.log(
@@ -8046,7 +8133,8 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
     // Ensure schema version reflects the final target (defensive; the loop
     // already stamped the last migration's version).
     await client.set("_schema_version", finalVersion.toString())
-    const databaseHealth = await ensureDatabaseHealthMetadata(client)
+    const bootstrap = await ensureRuntimeBaseBootstrap(client, finalVersion, { force: true })
+    const { databaseHealth } = bootstrap
     
     // Track migration runs
     const runCount = await client.get("_migration_total_runs")
@@ -8061,7 +8149,7 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
     const finalVersionCheck = await client.get("_schema_version")
     console.log(`[v0] [Migrations] ✓ Verification: Schema version is now ${finalVersionCheck}`)
     
-    const ensured = await ensureBaseConnections(client)
+    const { ensured } = bootstrap
     console.log(`[v0] [Migrations] ✓ Ensured ${ensured.createdOrUpdated} base connections; injected credentials for ${ensured.credentialsInjected}`)
     
      // Mark migrations as run in this process

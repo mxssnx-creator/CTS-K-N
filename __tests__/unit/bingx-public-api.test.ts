@@ -47,7 +47,7 @@ describe("BingX public API host failover", () => {
     expect(String(fetchImpl.mock.calls[0][0])).not.toContain("example.invalid")
   })
 
-  test("pins Prod-VST quote reads to the approved .com origin", async () => {
+  test("fails Prod-VST quote reads over from official .com to official .pro", async () => {
     process.env.BINGX_PUBLIC_ORIGIN = "https://open-api-vst.bingx.com"
     process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
     resetBingXPublicOriginForTests()
@@ -62,7 +62,10 @@ describe("BingX public API host failover", () => {
       fetchBingXPublic("/openApi/swap/v2/quote/contracts", {}, { fetchImpl, timeoutMs: 1000 }),
     ).rejects.toThrow("primary unavailable")
 
-    expect(seen).toEqual(["https://open-api-vst.bingx.com"])
+    expect(seen).toEqual([
+      "https://open-api-vst.bingx.com",
+      "https://open-api-vst.bingx.pro",
+    ])
   })
 
   test("refuses trade paths and write methods before fetch", async () => {

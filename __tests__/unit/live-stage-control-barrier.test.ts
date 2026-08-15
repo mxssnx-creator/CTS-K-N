@@ -58,6 +58,27 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("books confirmed positions under their actual Real-stage variant", () => {
+    expect(__liveStageTest.resolveConfirmedStrategyVariant({
+      setVariant: "trailing",
+    } as any, "BTCUSDT:signal:long#default#row_live")).toBe("trailing")
+
+    expect(__liveStageTest.resolveConfirmedStrategyVariant({
+      trailingProfile: { stopRatio: 0.01 },
+    } as any, "BTCUSDT:signal:short#default#row_live")).toBe("trailing")
+
+    // The adjustment that changed logistics/volume owns the category even
+    // when it is attached to a position with a trailing Base profile.
+    expect(__liveStageTest.resolveConfirmedStrategyVariant({
+      setVariant: "trailing",
+      trailingProfile: { stopRatio: 0.01 },
+    } as any, "BTCUSDT:signal:long#block:3#row_live")).toBe("block")
+
+    expect(__liveStageTest.resolveConfirmedStrategyVariant({
+      setVariant: "default",
+    } as any, "BTCUSDT:direction:long#row_live")).toBe("default")
+  })
+
   test("shares manual, trailing and DCA absolute protection prices with system fallback", () => {
     expect(__liveStageTest.readAbsoluteProtectionPrices(livePosition({
       stopLoss: 5,

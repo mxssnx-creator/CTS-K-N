@@ -41,41 +41,58 @@ type WorkflowConnection = {
 }
 
 
-const SNAPSHOT_TTL_MS = 1000
-// When a specific connectionId is requested (e.g. from the Logistics sidebar
-// page) we bypass the shared cache because different callers want different
-// focus connections.
-let cachedSnapshot: any | null = null
-let cachedSnapshotAt = 0
-let snapshotInFlight: Promise<any> | null = null
+const SNAPSHOT_TTL_MS = 5_000
+const SNAPSHOT_MAX_STALE_MS = 30_000
+type CachedWorkflowSnapshot = { snapshot: any; at: number }
+// Cache per requested focus connection. The previous preferred-connection
+// bypass rebuilt positions, trades, logs, progression and stage hashes on
+// every two-second Logistics poll, which contended with the exhaustive engine
+// on the same Redis connection. A short stale-while-revalidate window keeps
+// each connection isolated and the UI responsive without hiding a stopped or
+// reconfigured workflow for more than one normal dashboard refresh cadence.
+const cachedSnapshots = new Map<string, CachedWorkflowSnapshot>()
+const snapshotInFlight = new Map<string, Promise<any>>()
 
 export async function getDashboardWorkflowSnapshot(options?: { preferredConnectionId?: string }) {
   const preferredConnectionId = options?.preferredConnectionId
-
-  if (preferredConnectionId) {
-    // Per-connection requests are uncached to avoid mixing focus connections.
-    return buildDashboardWorkflowSnapshot(preferredConnectionId)
-  }
-
+  const cacheKey = preferredConnectionId || "__default__"
   const now = Date.now()
-  if (cachedSnapshot && now - cachedSnapshotAt < SNAPSHOT_TTL_MS) {
-    return cachedSnapshot
+  const cached = cachedSnapshots.get(cacheKey)
+  if (cached && now - cached.at < SNAPSHOT_TTL_MS) {
+    return cached.snapshot
   }
 
-  if (snapshotInFlight) {
-    return snapshotInFlight
+  const existingRefresh = snapshotInFlight.get(cacheKey)
+  if (existingRefresh) {
+    return cached && now - cached.at < SNAPSHOT_MAX_STALE_MS
+      ? cached.snapshot
+      : existingRefresh
   }
 
-  snapshotInFlight = buildDashboardWorkflowSnapshot()
+  let refresh: Promise<any>
+  refresh = buildDashboardWorkflowSnapshot(preferredConnectionId)
+    .then((snapshot) => {
+      cachedSnapshots.delete(cacheKey)
+      cachedSnapshots.set(cacheKey, { snapshot, at: Date.now() })
+      while (cachedSnapshots.size > 128) {
+        const oldest = cachedSnapshots.keys().next().value
+        if (oldest === undefined) break
+        cachedSnapshots.delete(oldest)
+      }
+      return snapshot
+    })
+    .finally(() => {
+      if (snapshotInFlight.get(cacheKey) === refresh) snapshotInFlight.delete(cacheKey)
+    })
+  snapshotInFlight.set(cacheKey, refresh)
 
-  try {
-    const snapshot = await snapshotInFlight
-    cachedSnapshot = snapshot
-    cachedSnapshotAt = Date.now()
-    return snapshot
-  } finally {
-    snapshotInFlight = null
+  if (cached && now - cached.at < SNAPSHOT_MAX_STALE_MS) {
+    // Keep the refresh observed even though this caller can use the last good
+    // immutable snapshot immediately.
+    void refresh.catch(() => undefined)
+    return cached.snapshot
   }
+  return refresh
 }
 
 async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {

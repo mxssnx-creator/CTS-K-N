@@ -88,10 +88,14 @@ async function reconcileStrandedPositions() {
         )
         break
       }
-      // `live:position:*` over-matches the `live:position:tracking:*` pointer
-      // keys, which hold a PLAIN STRING (e.g. "live:bingx-x01:...") not a JSON
-      // position object. Skip them so JSON.parse doesn't throw on every boot.
-      if (key.startsWith("live:position:tracking:")) continue
+      // `live:position:*` also matches pointer keys and the alternate-position
+      // LIST index. Neither is a JSON position payload; GET against the LIST
+      // raises WRONGTYPE on every boot. Keep real alternate payload keys while
+      // excluding only their exact metadata index.
+      if (
+        key.startsWith("live:position:tracking:") ||
+        /^live:position:live:[^:]+:index$/.test(key)
+      ) continue
       try {
         const raw = await client.get(key)
         if (!raw) continue
@@ -381,7 +385,13 @@ async function completeStartupInternal() {
     // Initialize memory management for long-term stability
     try {
       const { initMemoryManager } = await import("@/lib/memory-manager")
-      const maxHeapMB = process.env.NODE_ENV === "production" ? 2048 : 1024
+      // Keep the maintenance monitor on the same heap contract as the launch
+      // wrapper and Strategy memory guard. A hardcoded 1/2 GiB legacy value
+      // caused needless full GCs in correctly sized 5–12 GiB engine workers.
+      const configuredHeapMB = Number(process.env.CTS_NODE_HEAP_MB)
+      const maxHeapMB = Number.isFinite(configuredHeapMB) && configuredHeapMB >= 256
+        ? configuredHeapMB
+        : (process.env.NODE_ENV === "production" ? 2048 : 1024)
       initMemoryManager(maxHeapMB)
     } catch (e) {
       console.warn(`[v0] [Startup] Memory manager initialization skipped (non-fatal):`, e instanceof Error ? e.message : e)

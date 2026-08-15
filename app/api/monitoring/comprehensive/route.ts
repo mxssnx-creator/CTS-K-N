@@ -7,6 +7,7 @@ import {
   initRedis,
 } from "@/lib/redis-db"
 import { getSystemResourceMetrics } from "@/lib/system-resource-metrics"
+import { getStrategyMemoryCoordinationSnapshot } from "@/lib/strategy-memory-guard"
 import { getDashboardWorkflowSnapshot } from "@/lib/dashboard-workflow"
 import {
   getClosedLivePositionReadModels,
@@ -31,6 +32,7 @@ export async function GET() {
     await initRedis()
     const client = getRedisClient()
     const resourceMetrics = getSystemResourceMetrics()
+    const memoryCoordination = getStrategyMemoryCoordinationSnapshot()
     const [
       connections,
       workflow,
@@ -98,6 +100,7 @@ export async function GET() {
         memoryTotal: resourceMetrics.memoryTotalBytes,
         heapUsed: resourceMetrics.heapUsedBytes,
         rss: resourceMetrics.rssBytes,
+        memoryCoordination,
         processCount: 1,
       },
       database: {

@@ -106,4 +106,46 @@ describe("live positions PnL enrichment", () => {
     expect(row).not.toHaveProperty("partialOrderExecutions")
     expect(row.exchangeData).not.toHaveProperty("internalRecoveryPayload")
   })
+
+  test("preserves Signal-Trailing lane identity and dynamic profile in the compact view", async () => {
+    mockGetLivePositions.mockResolvedValue([
+      {
+        id: "pos-signal-trailing",
+        status: "simulated",
+        direction: "long",
+        symbol: "BTCUSDT",
+        indicationType: "signal",
+        setVariant: "trailing",
+        executionLane: "signal_trailing",
+        averageExecutionPrice: 100,
+        executedQuantity: 1,
+        trailingProfile: {
+          mode: "signal_dynamic",
+          startRatio: 0,
+          stopRatio: 0.008,
+          stepRatio: 0.004,
+          minStopRatio: 0.008,
+          positiveMoveRatio: 0.4,
+          updateStopRangeRatio: 0.5,
+        },
+        createdAt: 1,
+      },
+    ])
+
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01"))
+    const body = await response.json()
+
+    expect(body.positions[0]).toMatchObject({
+      id: "pos-signal-trailing",
+      indicationType: "signal",
+      setVariant: "trailing",
+      executionLane: "signal_trailing",
+      trailingProfile: {
+        mode: "signal_dynamic",
+        minStopRatio: 0.008,
+        positiveMoveRatio: 0.4,
+        updateStopRangeRatio: 0.5,
+      },
+    })
+  })
 })

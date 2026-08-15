@@ -28,6 +28,7 @@ import type {
 } from "@/lib/direct-trade-overview-stats"
 import type { ExchangeAccountPerformance15h } from "@/lib/exchange-account-performance"
 import {
+  DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
@@ -162,7 +163,7 @@ const DEFAULT_STATE: DirectTradeState = {
   maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
-  minProfitFactor: 0.8,
+  minProfitFactor: DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
   maxDrawdownTimeMin: 10,
@@ -216,7 +217,7 @@ export function DirectTradeSection() {
   const [localPositionCost, setLocalPositionCost] = useState(0.1)
   const [localMaxSl, setLocalMaxSl] = useState(0.75)
   const [localInverseMaxSl, setLocalInverseMaxSl] = useState(1.25)
-  const [localMinPF, setLocalMinPF] = useState(0.8)
+  const [localMinPF, setLocalMinPF] = useState(DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT)
   const [localMinRecentPF, setLocalMinRecentPF] = useState(10)
   const [localRecentEvaluationPositions, setLocalRecentEvaluationPositions] = useState(12)
   const [localMaxDDT, setLocalMaxDDT] = useState(10)
@@ -279,7 +280,7 @@ export function DirectTradeSection() {
       setLocalBlock(remoteState.blockRange?.[1] > 0)
       setLocalBlockMax(remoteState.blockRange?.[1] || 12)
     }
-    if (!isPending("minProfitFactor")) setLocalMinPF(remoteState.minProfitFactor ?? 0.8)
+    if (!isPending("minProfitFactor")) setLocalMinPF(remoteState.minProfitFactor ?? DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT)
     if (!isPending("minRecentProfitFactor")) setLocalMinRecentPF(remoteState.minRecentProfitFactor ?? DIRECT_TRADE_RECENT_PF_DEFAULT)
     if (!isPending("recentEvaluationPositions")) setLocalRecentEvaluationPositions(remoteState.recentEvaluationPositions ?? 12)
     if (!isPending("maxDrawdownTimeMin")) setLocalMaxDDT(remoteState.maxDrawdownTimeMin ?? 10)

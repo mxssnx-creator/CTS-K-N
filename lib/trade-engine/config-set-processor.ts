@@ -54,7 +54,7 @@ async function yieldToEventLoop(): Promise<void> {
 // changing it affects scheduling only, never evaluation results.
 const HISTORIC_CALC_YIELD_EVERY = Math.max(
   64,
-  Math.min(8192, Number.parseInt(process.env.PREHISTORIC_CALC_YIELD_EVERY || "1024", 10) || 1024),
+  Math.min(8192, Number.parseInt(process.env.PREHISTORIC_CALC_YIELD_EVERY || "256", 10) || 256),
 )
 
 function groupConfigsByType<T extends { type?: string }>(configs: T[]): Array<[string, T[]]> {

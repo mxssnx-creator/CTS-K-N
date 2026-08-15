@@ -13,12 +13,19 @@ const {
   directTradeTakeProfitPercent,
   evaluateDirectTradeSets,
   resampleCandles,
+  DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
 } = require("../lib/direct-trade-coordination.ts")
+const {
+  DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
+} = require("../lib/direct-trade-position-capacity.cjs")
 
 const symbolCount = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_SYMBOLS) || 32))
 const startSymbolIndex = Math.max(0, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_START_SYMBOL) || 0))
 const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_HOURS) || 48))
-const minProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_PF) || 0.8)
+const minProfitFactor = Math.max(
+  0.8,
+  Number(process.env.DIRECT_TRADE_MATRIX_MIN_PF) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
+)
 const minRecentProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_RECENT_PF) || 25)
 const recentEvaluationPositions = Math.max(3, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_RECENT_POSITIONS) || 12))
 const positionCostPercent = Math.max(0.02, Math.min(1, Number(process.env.DIRECT_TRADE_MATRIX_POSITION_COST_PERCENT) || 0.1))
@@ -31,7 +38,10 @@ const calibrationRecentPfThresholds = [...new Set(
 // Paper-test-only capacity: this does not change the engine's configured
 // production limits or create orders. It models best-first selection across
 // otherwise independent, valid historical candidates.
-const maxSimulatedPositions = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_POSITIONS) || 300))
+const maxSimulatedPositions = Math.max(
+  1,
+  Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_POSITIONS) || DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS),
+)
 const maxPositionsPerSymbol = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_SYMBOL) || 12))
 const maxPositionsPerDirection = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_DIRECTION) || 6))
 const progressEnabled = process.env.DIRECT_TRADE_MATRIX_PROGRESS === "1"
@@ -118,7 +128,7 @@ function candidateCompare(left, right) {
 
 // A min-heap holds only the requested best-first paper candidates, so the
 // load test does not retain a multi-million-row config grid merely to report
-// a 300-position capacity check.
+// the calibrated active-position capacity check.
 function addBestFirstCandidate(candidate) {
   // Retain only the candidates that can possibly survive the exact worker
   // caps. Keeping the best `maxPositionsPerDirection` candidates per

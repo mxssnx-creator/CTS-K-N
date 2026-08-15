@@ -34,14 +34,18 @@ import {
   averageDirectTradeTakeProfitRatio,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
+  DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   type DirectTradeEntryTiming,
   type DirectTradeStrategyType,
   type DirectTradeTrailOption,
 } from "@/lib/direct-trade-coordination"
+import directTradeHistoryPolicy from "@/lib/direct-trade-history-policy.cjs"
+
+const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
 export const dynamic = "force-dynamic"
-// A 32-symbol, 48-hour public-history refresh is a real full-grid operation.
+// A 32-symbol, bounded 48-90-hour public-history refresh is a real full-grid operation.
 // Give long-lived/compatible deployment runtimes enough wall time to page the
 // exchange without silently truncating the requested independent evaluation.
 export const maxDuration = 300
@@ -72,6 +76,7 @@ interface CalculationRequest {
   recentEvaluationPositions?: number
   maxDrawdownTimeMin?: number
   historyHours?: number
+  requestedHistoryHours?: number
   entryTactics?: string[]
   exitTactics?: string[]
   entryTiming?: DirectTradeEntryTiming
@@ -172,6 +177,7 @@ function exactNumericAxisKey(value: unknown): string {
 function createCalculationSummaryAccumulator(details: {
   symbols: string[]
   historyHours: number
+  requestedHistoryHours: number
   timeframes: string[]
   combinations: number
   entryTactics: string[]
@@ -207,6 +213,12 @@ function createCalculationSummaryAccumulator(details: {
   const byTakeProfitPercent: Record<string, CalculationAxisBucket> = {}
   let evaluatedSets = 0
   let validSets = 0
+  const eligibleSymbols = new Set<string>()
+  const eligibleSymbolDirections = new Set<string>()
+  const eligibleSymbolDirectionsByDirection = {
+    long: new Set<string>(),
+    short: new Set<string>(),
+  }
   let totalScore = 0
   let baseGrossProfit = 0
   let baseGrossLoss = 0
@@ -253,6 +265,9 @@ function createCalculationSummaryAccumulator(details: {
     appendCalculationAxisBucket(timeframe, config)
     if (config.valid) {
       validSets++
+      eligibleSymbols.add(config.symbol)
+      eligibleSymbolDirections.add(`${config.symbol}|${config.direction}`)
+      eligibleSymbolDirectionsByDirection[config.direction].add(config.symbol)
     }
     appendCalculationAxisBucket(byEntryTactic[config.entryTactic], config)
     appendCalculationAxisBucket(byExitTactic[config.exitTactic], config)
@@ -332,6 +347,15 @@ function createCalculationSummaryAccumulator(details: {
       evaluatedSets,
       validSets,
       deactivatedSets: evaluatedSets - validSets,
+      requestedHistoryHours: details.requestedHistoryHours,
+      historyExpanded: details.historyHours > details.requestedHistoryHours,
+      eligibleSymbols: [...eligibleSymbols].sort(),
+      eligibleSymbolCount: eligibleSymbols.size,
+      eligibleSymbolDirectionCount: eligibleSymbolDirections.size,
+      eligibleSymbolDirectionsByDirection: {
+        long: eligibleSymbolDirectionsByDirection.long.size,
+        short: eligibleSymbolDirectionsByDirection.short.size,
+      },
       blockEnabled: details.blockRange[1] > 0,
       blockEvaluatedSets,
       blockValidSets,
@@ -416,6 +440,39 @@ type StatisticsRow = Pick<EvaluatedDirectTradeConfig,
   "blockCalculatedVolumeMultiplier" | "blockRealizedVolumeMultiplier"
 >
 
+// `Pick<>` is compile-time only. Passing the original evaluated config into
+// the Statistics accumulator used to retain and later stringify every nested
+// `blockEvaluations` ledger even though StatisticsRow does not declare it.
+// At the 32-symbol grid that duplicated the twelve-count ledger across every
+// top-row filter and exceeded V8's maximum string length. Keep this explicit
+// runtime projection next to the type so the read model remains genuinely
+// compact as new evaluation fields are added.
+const STATISTICS_ROW_FIELDS = [
+  "setKey", "symbol", "direction", "signalDirection", "strategyType", "timeframe",
+  "entryTactic", "exitTactic", "valid", "deactivationReason", "profitFactor",
+  "profitFactorInfinite", "winRate", "totalTrades", "maxDrawdownTimeMin", "score",
+  "totalPnl", "bestMarketExitPnl", "positionCostPercent", "takeprofit",
+  "takeProfitPositionCostRatio", "stoploss", "lastPositionPnl",
+  "lastPositionBestMarketExitPnl", "lastPositionDrawdownTimeMin", "lastPositionExitReason",
+  "recentPositionCount", "recentProfitFactor", "recentProfitFactorInfinite", "recentWinRate",
+  "recentTotalPnl", "recentAvgDrawdownTimeMin", "blockCount", "blockProfitFactorRatio",
+  "blockValid", "blockDeactivationReason", "blockObservedProfitFactor",
+  "blockObservedProfitFactorInfinite", "blockNormalProfitFactor", "blockMinimumProfitFactor",
+  "blockConfiguredMinimumProfitFactor", "blockProfitFactorDifference", "blockComparisonAvailable",
+  "blockProfitFactorToMinimumDifference", "blockProfitFactorWindow", "blockProfitFactorSampleCount",
+  "blockAvgDrawdownTimeMin", "blockMaxDrawdownTimeMin", "blockTotalPnl",
+  "blockVolumeIncrementRatio", "blockCalculatedVolumeMultiplier", "blockRealizedVolumeMultiplier",
+] as const satisfies readonly (keyof StatisticsRow)[]
+
+function compactStatisticsRow(config: EvaluatedDirectTradeConfig): StatisticsRow {
+  const row: Partial<StatisticsRow> = {}
+  for (const field of STATISTICS_ROW_FIELDS) {
+    const value = config[field]
+    if (value !== undefined) (row as Record<string, unknown>)[field] = value
+  }
+  return row as StatisticsRow
+}
+
 function statisticsFilterKey(timeframe: string, direction: string, state: string, strategyType = "all"): string {
   return `${timeframe}\u0001${direction}\u0001${state}\u0001${strategyType}`
 }
@@ -435,7 +492,8 @@ function createStatisticsIndexAccumulator() {
     rows.splice(index, 0, config)
     if (rows.length > 100) rows.pop()
   }
-  const append = (config: StatisticsRow) => {
+  const append = (config: EvaluatedDirectTradeConfig) => {
+    const row = compactStatisticsRow(config)
     const state = config.valid ? "valid" : "inactive"
     for (const timeframe of ["all", config.timeframe]) {
       for (const direction of ["all", config.direction]) {
@@ -444,7 +502,7 @@ function createStatisticsIndexAccumulator() {
             const key = statisticsFilterKey(timeframe, direction, activityState, strategyType)
             totals[key] = (totals[key] || 0) + 1
             const rows = topRows[key] || (topRows[key] = [])
-            insertTopRow(rows, config)
+            insertTopRow(rows, row)
           }
         }
       }
@@ -452,11 +510,31 @@ function createStatisticsIndexAccumulator() {
   }
   return {
     append,
-    finish: () => ({
-      version: new Date().toISOString(),
-      totals,
-      topRows,
-    }),
+    finish: () => {
+      // The same selected row participates in up to sixteen filter buckets.
+      // Normalise it once and persist integer references instead of repeating
+      // the full row in JSON for every timeframe/direction/state/type view.
+      const rows: StatisticsRow[] = []
+      const rowIndexes = new Map<StatisticsRow, number>()
+      const topRowIndexes: Record<string, number[]> = {}
+      for (const [key, selectedRows] of Object.entries(topRows)) {
+        topRowIndexes[key] = selectedRows.map((row) => {
+          const existing = rowIndexes.get(row)
+          if (existing !== undefined) return existing
+          const index = rows.length
+          rows.push(row)
+          rowIndexes.set(row, index)
+          return index
+        })
+      }
+      return {
+        schemaVersion: 2,
+        version: new Date().toISOString(),
+        totals,
+        rows,
+        topRowIndexes,
+      }
+    },
   }
 }
 
@@ -501,14 +579,21 @@ export async function POST(request: NextRequest) {
       : [1, 12]
     blockRange.sort((left, right) => left - right)
     const trailingEnabled = body.trailingEnabled !== false
-    const minProfitFactor = Math.max(0.8, numberOr(body.minProfitFactor, 0.8))
+    const minProfitFactor = Math.max(
+      0.8,
+      numberOr(body.minProfitFactor, DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT),
+    )
     // A 12-position recent window avoids accepting a historical PF that is
     // already contradicted by the latest closed positions. The shared strict
     // default is checked by the deterministic full-matrix paper test.
     const minRecentProfitFactor = Math.max(0.8, numberOr(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
     const recentEvaluationPositions = Math.max(3, Math.floor(numberOr(body.recentEvaluationPositions, 12)))
     const maxDrawdownTimeMin = Math.max(1, numberOr(body.maxDrawdownTimeMin, 10))
-    const historyHours = Math.max(1, numberOr(body.historyHours, 48))
+    const historyHours = clampDirectTradeHistoryHours(body.historyHours, 48)
+    const requestedHistoryHours = Math.min(
+      historyHours,
+      clampDirectTradeHistoryHours(body.requestedHistoryHours, historyHours),
+    )
     const entryTactics = normaliseEntryTactics(body.entryTactics)
     const exitTactics = normaliseExitTactics(body.exitTactics)
     const entryTiming: DirectTradeEntryTiming = body.entryTiming === "last_confirmed" ? "last_confirmed" : "current"
@@ -608,6 +693,7 @@ export async function POST(request: NextRequest) {
     const summaryAccumulator = createCalculationSummaryAccumulator({
       symbols,
       historyHours,
+      requestedHistoryHours,
       timeframes,
       combinations: timeframeSets.length,
       entryTactics,

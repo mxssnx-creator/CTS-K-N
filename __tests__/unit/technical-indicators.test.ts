@@ -6,6 +6,7 @@ import {
   type CommonIndicatorSettings,
 } from "@/lib/common-indicator-config"
 import {
+  createTechnicalIndicatorEvaluationContext,
   evaluateTechnicalIndicators,
   normalizeTechnicalCandles,
   onBalanceVolume,
@@ -114,6 +115,37 @@ describe("Common technical indicators", () => {
     for (const timeframe of ["1", "5", "15"]) {
       expect(streaming[timeframe].indicators).toEqual(exhaustive[timeframe].indicators)
       expect(streaming[timeframe].summary).toEqual(exhaustive[timeframe].summary)
+    }
+  })
+
+  test("reuses one timeframe context without changing any configuration result", () => {
+    const source = resampleTechnicalCandles(
+      candles(Array.from({ length: 240 }, (_, index) =>
+        100 + Math.sin(index / 9) * 3 + index * 0.02,
+      )),
+      1,
+    )
+    const context = createTechnicalIndicatorEvaluationContext(source)
+
+    for (const definition of COMMON_INDICATOR_DEFINITIONS) {
+      const configurations = commonIndicatorParameterConfigurations(
+        definition,
+        DEFAULT_COMMON_INDICATION_SETTINGS[definition.storageKey] as CommonIndicatorSettings,
+      )
+      for (const parameters of [configurations[0], configurations.at(-1)]) {
+        expect(evaluateTechnicalIndicators(
+          source,
+          14,
+          [definition.type],
+          { [definition.type]: parameters },
+          context,
+        )).toEqual(evaluateTechnicalIndicators(
+          source,
+          14,
+          [definition.type],
+          { [definition.type]: parameters },
+        ))
+      }
     }
   })
 })

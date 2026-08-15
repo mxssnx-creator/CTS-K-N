@@ -16,6 +16,7 @@ import { buildLiveTradingAnalytics } from "@/lib/live-trading-analytics"
 import type { TradingAnalyticsRow } from "@/lib/live-trading-analytics"
 import { LIVE_POSITION_ANALYTICS_WINDOW_MS } from "@/lib/live-position-analytics-archive"
 import { getClosedLivePositionReadModels } from "@/lib/live-position-read-model"
+import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -228,7 +229,7 @@ async function fetchExchangeHistory(
  * Exchange closes/commission are authoritative; the local archive supplies
  * strategy lineage, entry/open timestamps, and a continuity fallback.
  */
-export async function GET(request: NextRequest) {
+async function buildTradeHistoryResponse(request: NextRequest): Promise<Response> {
   try {
     const { searchParams } = new URL(request.url)
     const connectionId = String(searchParams.get("connection_id") || searchParams.get("connectionId") || "").trim()
@@ -248,13 +249,12 @@ export async function GET(request: NextRequest) {
 
     await initRedis()
     const client = getRedisClient()
-    const connection = await getConnection(connectionId)
-    if (!connection) {
-      return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
-    }
-
     const analyticsNow = Date.now()
-    const [localPage, analyticsSnapshots, cached] = await Promise.all([
+    // The connection row, durable position snapshots and exchange cache are
+    // independent. Resolve them in one Redis turn so high-frequency dashboard
+    // polling cannot serially queue four waits behind a CPU-heavy progression.
+    const [connection, localPage, analyticsSnapshots, cached] = await Promise.all([
+      getConnection(connectionId),
       loadClosedPositionSnapshotPage(client, connectionId, { offset, limit }),
       getClosedLivePositionReadModels(connectionId, {
         recentLimit: TRADE_HISTORY_PAGE_SIZE,
@@ -264,6 +264,9 @@ export async function GET(request: NextRequest) {
         ? readCachedExchangeHistory(client, connectionId)
         : Promise.resolve(null),
     ])
+    if (!connection) {
+      return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
+    }
     const localRows = localPage.snapshots
       .map((position) => normalizeLocalTradeHistoryRow(position))
       .filter((row): row is TradeHistoryRow => !!row)
@@ -372,4 +375,22 @@ export async function GET(request: NextRequest) {
       { status: 500 },
     )
   }
+}
+
+export async function GET(request: NextRequest): Promise<Response> {
+  const url = new URL(request.url)
+  // Unit tests exercise exact per-request behavior, and force=1 is an explicit
+  // operator request for an immediate exchange refresh. Neither should reuse a
+  // prior serialized dashboard snapshot.
+  if (process.env.NODE_ENV === "test" || url.searchParams.get("force") === "1") {
+    return buildTradeHistoryResponse(request)
+  }
+
+  return serveSerializedResponseSWR({
+    namespace: "trade-history",
+    key: url.searchParams.toString(),
+    freshMs: 10_000,
+    maxStaleMs: 45_000,
+    producer: () => buildTradeHistoryResponse(request),
+  })
 }

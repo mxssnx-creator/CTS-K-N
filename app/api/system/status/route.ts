@@ -11,6 +11,7 @@ import { isTruthyFlag } from "@/lib/boolean-utils"
 import { isConnectionReadyForEngine } from "@/lib/connection-state-helpers"
 import { buildMissingTradeEngineWorkerDiagnostic } from "@/lib/trade-engine-worker-heartbeat"
 import { getRuntimeBootId, getRuntimeStartedAt } from "@/lib/runtime-startup-state"
+import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 
 const HEARTBEAT_FRESH_MS = 90_000;
 
@@ -25,7 +26,7 @@ function isFreshHeartbeat(value: unknown, now = Date.now()): boolean {
 }
 
 export const dynamic = "force-dynamic";
-export async function GET(request: NextRequest) {
+async function buildSystemStatusResponse(request: NextRequest) {
   try {
     const coordinator = ConnectionCoordinator.getInstance();
     const batchProcessor = BatchProcessor.getInstance();
@@ -337,4 +338,15 @@ export async function GET(request: NextRequest) {
       { status: 500 },
     );
   }
+}
+
+export async function GET(request: NextRequest) {
+  if (process.env.NODE_ENV === "test") return buildSystemStatusResponse(request)
+  return serveSerializedResponseSWR({
+    namespace: "system-status",
+    key: "global",
+    freshMs: 5_000,
+    maxStaleMs: 30_000,
+    producer: () => buildSystemStatusResponse(request),
+  })
 }

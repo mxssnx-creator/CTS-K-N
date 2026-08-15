@@ -2,7 +2,6 @@ import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getSettings, getConnection, getAppSettings } from "@/lib/redis-db"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import { aggregateLastXClosedPositions } from "@/lib/trade-engine/closed-position-aggregation"
-import { getGlobalCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
 import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import {
@@ -21,6 +20,7 @@ import { getRuntimeTelemetry } from "@/lib/runtime-telemetry"
 import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
 import { buildConnectionStageOverview } from "@/lib/connection-stage-overview"
 import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -37,7 +37,8 @@ const statsSlowDiagnosticAt = new Map<string, number>()
 // read model in the same engine pulse. It is deliberately much shorter than
 // any strategy/signal cadence, and cache keys retain the requested engine
 // type so scopes never bleed into one another.
-const STATS_RESPONSE_CACHE_TTL_MS = 3_000
+const STATS_RESPONSE_CACHE_TTL_MS = 5_000
+const STATS_RESPONSE_CACHE_MAX_STALE_MS = 30_000
 const STATS_RESPONSE_CACHE_MAX_ENTRIES = 64
 type StatsResponseSnapshot = {
   body: string
@@ -45,7 +46,11 @@ type StatsResponseSnapshot = {
   status: number
   statusText: string
 }
-const statsResponseCache = new Map<string, { expiresAt: number; snapshot: StatsResponseSnapshot }>()
+const statsResponseCache = new Map<string, {
+  expiresAt: number
+  staleUntil: number
+  snapshot: StatsResponseSnapshot
+}>()
 const statsResponseInFlight = new Map<string, Promise<StatsResponseSnapshot>>()
 
 function statsResponseCacheKey(request: NextRequest, connectionId: string): string {
@@ -84,6 +89,7 @@ function cacheStatsResponse(key: string, snapshot: StatsResponseSnapshot): void 
   }
   statsResponseCache.set(key, {
     expiresAt: Date.now() + STATS_RESPONSE_CACHE_TTL_MS,
+    staleUntil: Date.now() + STATS_RESPONSE_CACHE_MAX_STALE_MS,
     snapshot,
   })
 }
@@ -564,10 +570,17 @@ export async function GET(
   const responseCacheKey = statsResponseCacheKey(request, connectionId)
   const cached = statsResponseCache.get(responseCacheKey)
   if (cached && cached.expiresAt > Date.now()) return responseFromStatsSnapshot(cached.snapshot)
-  if (cached) statsResponseCache.delete(responseCacheKey)
+  const staleSnapshot = cached && cached.staleUntil > Date.now()
+    ? cached.snapshot
+    : null
+  if (cached && !staleSnapshot) statsResponseCache.delete(responseCacheKey)
 
   const inFlight = statsResponseInFlight.get(responseCacheKey)
-  if (inFlight) return responseFromStatsSnapshot(await inFlight)
+  if (inFlight) {
+    return staleSnapshot
+      ? responseFromStatsSnapshot(staleSnapshot)
+      : responseFromStatsSnapshot(await inFlight)
+  }
 
   const requestStartedAt = Date.now()
   // Exhaustive stage snapshots can legitimately take longer while a large
@@ -644,6 +657,8 @@ export async function GET(
       strategyDetailRealHashRaw,
       strategyDetailLiveHashRaw,
       blockProfitFactorStatsHashRaw,
+      globalEngineStateRaw,
+      runningHintRaw,
     ] = await Promise.all([
       client.hgetall(scope.progressionKey).catch(() => null),
       activeProgressionKey === scope.legacyProgressionKey ? Promise.resolve(activeProgressionRaw) : client.hgetall(scope.legacyProgressionKey).catch(() => null),
@@ -704,6 +719,8 @@ export async function GET(
       client.hgetall(`strategy_detail:${connectionId}:live`).catch(() => null),
       // Count-specific Block PF snapshots written during Real evaluation.
       client.hgetall(`strategy_block_pf_stats:${connectionId}`).catch(() => null),
+      client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
+      client.get(`engine_is_running:${connectionId}`).catch(() => null),
     ])
 
     const scopedProgHash: Record<string, string> = scopedProgHashRaw || {}
@@ -1459,55 +1476,27 @@ export async function GET(
       }))
       .sort((a, b) => (b.long + b.short) - (a.long + a.short) || a.symbol.localeCompare(b.symbol))
 
-    // engineProgression phase and engine_state status are the canonical source of
-    // truth for whether the engine is actively running. realtimeIndicationCycles
-    // stays non-zero after a stop (it reflects the last run's cycle count, not
-    // a live signal), so it must be gated by the authoritative phase/status.
-    //
-    // RACE-CONDITION FIX: After a server restart the engine_progression Redis hash
-    // retains the last phase written (e.g. "realtime") from a previous process.
-    // The in-memory coordinator starts empty (no engines running), so the Redis
-    // hash alone produces a false-positive "running" signal. We cross-check with
-    // the in-memory coordinator: if the coordinator explicitly says the engine is
-    // NOT running for this connection, treat it as stopped regardless of Redis.
-    const coord = getGlobalCoordinator()
-    const coordSaysRunning: boolean = coord
-      ? coord.isEngineRunning(connectionId)
-      : false
-    const globalEngineState: Record<string, string> =
-      (await client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>))) || {}
-    const globalIntent =
-      globalEngineState.operator_intent ||
-      globalEngineState.desired_status ||
-      globalEngineState.status ||
-      ""
-    const globalRunning = globalIntent === "running"
-    const globalPaused = globalIntent === "paused"
-    const processorHeartbeat = Math.max(
-      n((engineState as any)?.last_processor_heartbeat),
-      n((es as any)?.last_processor_heartbeat),
-    )
-    const hasFreshProcessorHeartbeat =
-      processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
-    // A missing local coordinator is NOT definitive in production/serverless:
-    // another worker may own the engine and publish fresh Redis heartbeats.
-    // Only mark stopped when local coordinator is absent AND Redis has no
-    // running intent/heartbeat proof.
-    const coordDefinitelyStopped =
-      coord !== null && !coordSaysRunning && !globalRunning && !hasFreshProcessorHeartbeat
-
-    const engineIsStopped =
-      globalPaused ||
-      coordDefinitelyStopped ||
-      ep?.phase === "stopped" ||
-      ((es.status === "stopped" || es.status === "idle") && !globalRunning && !hasFreshProcessorHeartbeat)
+    // Old progression cycles survive a restart and therefore are not liveness
+    // proof. Resolve the shared Redis flag/state/heartbeat view without loading
+    // the complete in-process TradeEngine graph into this read-only route.
+    const globalEngineState: Record<string, string> = globalEngineStateRaw || {}
+    const connectionProcessingEnabled = connection && Object.prototype.hasOwnProperty.call(connection, "is_enabled_dashboard")
+      ? [true, 1, "1", "true"].includes((connection as any).is_enabled_dashboard)
+      : undefined
+    const engineRuntime = resolveDistributedEngineRuntime({
+      runningHint: runningHintRaw,
+      states: [engineState as Record<string, unknown>, es as Record<string, unknown>],
+      globalState: globalEngineState,
+      connectionEnabled: connectionProcessingEnabled,
+    })
+    const engineIsStopped = !engineRuntime.running || ep?.phase === "stopped"
     const realtimeIsActive =
       !engineIsStopped &&
       (realtimeIndicationCycles > 0 ||
         ep?.phase === "live_trading" ||
         ep?.phase === "realtime" ||
         es.status === "running" ||
-        (globalRunning && hasFreshProcessorHeartbeat))
+        engineRuntime.heartbeatFresh)
 
     // ── BREAKDOWN section ────────────────────────────────���───────────────────
     // Indication per-type counts live in two places:
@@ -2280,7 +2269,9 @@ export async function GET(
               "row_active_exact", "row_mirrored", "row_total_open",
               "row_valid_open", "row_overall_open",
               "apf", "addt", "apps", "aper", "dispatch_selected",
-              "dispatch_suppressed", "ts",
+              "dispatch_suppressed", "qualified_before_materialization",
+              "materialization_ceiling", "materialization_truncated",
+              "materialization_active_preserved", "materialization_families_preserved", "ts",
             ]) {
               if (`s:${symbol}:${f}` in dh) staleFields.push(`s:${symbol}:${f}`)
             }
@@ -2819,6 +2810,31 @@ export async function GET(
         evaluated: realRowEvaluated,
         rejected: realRowRejected,
         validRatio: ratio(realRowValid, realRowEvaluated),
+        qualifiedBeforeMaterialization: aggregateFreshRowField(
+          strategyDetailRealHash,
+          "qualified_before_materialization",
+          "qualified_sets_before_materialization",
+        ),
+        materializationCeiling: aggregateFreshRowField(
+          strategyDetailRealHash,
+          "materialization_ceiling",
+          "materialization_ceiling",
+        ),
+        materializationTruncated: aggregateFreshRowField(
+          strategyDetailRealHash,
+          "materialization_truncated",
+          "materialization_truncated",
+        ),
+        materializationActivePreserved: aggregateFreshRowField(
+          strategyDetailRealHash,
+          "materialization_active_preserved",
+          "materialization_active_preserved",
+        ),
+        materializationFamiliesPreserved: aggregateFreshRowField(
+          strategyDetailRealHash,
+          "materialization_families_preserved",
+          "materialization_families_preserved",
+        ),
         active: realRowActive,
         activeExactRows: aggregateFreshRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
         activeRatio: ratio(realRowActive, realRowValid),
@@ -3269,18 +3285,14 @@ export async function GET(
     //   7. final fallback → "idle" (not "unknown" — cleaner UX)
     const phase: string = (() => {
       // On a fresh server boot the engine_progression Redis hash retains the
-      // previous phase ("realtime", "live_trading", etc.).  If the in-memory
-      // coordinator says definitively stopped, always return "idle" — the
-      // stale Redis phase is not trustworthy.
+      // previous phase ("realtime", "live_trading", etc.). If distributed
+      // Redis liveness proof is absent, the stale phase is not trustworthy.
       if (engineIsStopped) {
         // Prefer explicit ep.phase when it matches stopped/idle, otherwise idle.
         if (ep?.phase === "stopped") return "stopped"
         return "idle"
       }
       if (ep?.phase && ep.phase !== "unknown") return ep.phase
-      if ((es.status === "stopped" || es.status === "idle") && !globalRunning && !hasFreshProcessorHeartbeat) {
-        return es.status === "stopped" ? "stopped" : "idle"
-      }
       if (es.status === "running" || realtimeIsActive) {
         if (historicIsComplete || es.prehistoric_data_loaded === "1" || es.prehistoric_data_loaded === true) {
           return "live_trading"
@@ -4350,6 +4362,13 @@ export async function GET(
 
       metadata: {
         engineRunning: realtimeIsActive,
+        runtimeEvidence: {
+          reason: engineRuntime.reason,
+          status: engineRuntime.status,
+          heartbeatAt: engineRuntime.heartbeatAt || null,
+          heartbeatAgeMs: engineRuntime.heartbeatAgeMs,
+          heartbeatFresh: engineRuntime.heartbeatFresh,
+        },
         phase,
         progress,
         message,
@@ -4455,14 +4474,27 @@ export async function GET(
 
   const responsePromise = mainLogic().then(snapshotStatsResponse)
   statsResponseInFlight.set(responseCacheKey, responsePromise)
+  const finishRefresh = () => {
+    if (statsResponseInFlight.get(responseCacheKey) === responsePromise) {
+      statsResponseInFlight.delete(responseCacheKey)
+    }
+    clearTimeout(slowDiagnostic)
+  }
+  if (staleSnapshot) {
+    // Keep the complete canonical rebuild running, but do not make a dashboard
+    // poll wait behind it. The last successful snapshot is at most 30 seconds
+    // old and all live-position/control endpoints remain independently fresh.
+    void responsePromise
+      .then((snapshot) => cacheStatsResponse(responseCacheKey, snapshot))
+      .catch(() => undefined)
+      .finally(finishRefresh)
+    return responseFromStatsSnapshot(staleSnapshot)
+  }
   try {
     const snapshot = await responsePromise
     cacheStatsResponse(responseCacheKey, snapshot)
     return responseFromStatsSnapshot(snapshot)
   } finally {
-    if (statsResponseInFlight.get(responseCacheKey) === responsePromise) {
-      statsResponseInFlight.delete(responseCacheKey)
-    }
-    clearTimeout(slowDiagnostic)
+    finishRefresh()
   }
 }

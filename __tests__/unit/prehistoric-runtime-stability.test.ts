@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { getIndications, getRedisClient, setSettings, storeIndications } from "@/lib/redis-db"
-import { buildProgressionScope } from "@/lib/progression-scope"
+import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
+import { buildProgressionFingerprint } from "@/lib/progression-fingerprint"
 import { IndicationConfigManager } from "@/lib/indication-config-manager"
 import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
 import { StrategyConfigManager } from "@/lib/strategy-config-manager"
@@ -131,6 +132,49 @@ describe("historic runtime generation stability", () => {
     }
   })
 
+  test("durable operator symbols survive a stale unscoped runtime mirror", async () => {
+    const connectionId = `selection-toggle-handoff-${Date.now()}`
+    const client = getRedisClient()
+    const scope = buildProgressionScope(connectionId)
+    const keys = [
+      `settings:trade_engine_state:${connectionId}`,
+      `trade_engine_state:${connectionId}`,
+      scope.tradeEngineStateKey,
+      `connection:${connectionId}`,
+      `connection_settings:${connectionId}`,
+      `settings:connection_settings:${connectionId}`,
+    ]
+    const expected = ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT"]
+    try {
+      await client.del(...keys)
+      await client.hset(`settings:trade_engine_state:${connectionId}`, {
+        selected_symbols: JSON.stringify(["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "WIFUSDT"]),
+        force_symbols: "",
+        active_symbols: "",
+        symbols: "",
+        symbol_selection_epoch: "stale-runtime-epoch",
+      })
+      await client.hset(`connection_settings:${connectionId}`, {
+        force_symbols: JSON.stringify(expected),
+        selected_symbols: JSON.stringify(expected),
+      })
+      await client.hset(scope.tradeEngineStateKey, {
+        force_symbols: JSON.stringify(expected),
+        selected_symbols: JSON.stringify(expected),
+        symbol_selection_epoch: "quickstart-epoch",
+        config_set_symbols_total: String(expected.length),
+      })
+
+      await expect(getCanonicalSymbolSelection(connectionId)).resolves.toEqual({
+        epoch: "quickstart-epoch",
+        symbols: expected,
+        total: expected.length,
+      })
+    } finally {
+      await client.del(...keys)
+    }
+  })
+
   test("repeated symbol completion increments one prehistoric cycle only once", async () => {
     const connectionId = `historic-cycle-${Date.now()}`
     const client = getRedisClient()
@@ -150,6 +194,170 @@ describe("historic runtime generation stability", () => {
       const progression = await client.hgetall(scope.progressionKey)
       expect(progression.prehistoric_cycles_completed).toBe("1")
       await expect(client.scard(`${scope.prehistoricKey}:symbols`)).resolves.toBe(1)
+    } finally {
+      await client.del(...keys)
+    }
+  })
+
+  test("process restart preserves only a complete fingerprint-owned Historic cache", async () => {
+    const connectionId = `historic-restart-cache-${Date.now()}`
+    const client = getRedisClient()
+    const scope = buildProgressionScope(connectionId)
+    const doneKeys = buildPrehistoricGateKeys(connectionId, "main", "done")
+    const firstPassKeys = buildPrehistoricGateKeys(connectionId, "main", "firstpass:done")
+    const symbols = ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"]
+    const symbolsHash = symbols.slice().sort().join("|")
+    const selectionEpoch = `selection-${Date.now()}`
+    const connectionKey = `connection:${connectionId}`
+    const keys = [
+      connectionKey,
+      scope.progressionKey,
+      `${scope.progressionKey}:prehistoric_symbols_set`,
+      scope.prehistoricKey,
+      `${scope.prehistoricKey}:symbols`,
+      scope.prehistoricLoadedKey,
+      `prehistoric_loaded:${connectionId}`,
+      doneKeys.scoped,
+      doneKeys.legacy,
+      firstPassKeys.scoped,
+      firstPassKeys.legacy,
+      scope.tradeEngineStateKey,
+      `trade_engine_state:${connectionId}`,
+      `settings:trade_engine_state:${connectionId}`,
+      `connection_settings:${connectionId}`,
+      `settings:connection_settings:${connectionId}`,
+      `realtime:${connectionId}`,
+    ]
+    try {
+      await client.del(...keys)
+      const connection = {
+        force_symbols: JSON.stringify(symbols),
+        selected_symbols: JSON.stringify(symbols),
+        is_live_trade: "0",
+        is_testnet: "1",
+      }
+      const engineState = {
+        force_symbols: JSON.stringify(symbols),
+        selected_symbols: JSON.stringify(symbols),
+        symbol_selection_epoch: selectionEpoch,
+        config_set_symbols_total: String(symbols.length),
+      }
+      await Promise.all([
+        client.hset(connectionKey, connection),
+        client.hset(scope.tradeEngineStateKey, engineState),
+      ])
+      const fingerprint = buildProgressionFingerprint({
+        connectionId,
+        engineType: "main",
+        connData: connection,
+        tradeEngineState: engineState,
+        connectionSettings: {},
+      })
+      await Promise.all([
+        client.hset(scope.prehistoricKey, {
+          is_complete: "1",
+          historic_avg_profit_factor: "0.0000",
+          symbols_processed: String(symbols.length),
+          symbols_total: String(symbols.length),
+          symbol_selection_epoch: selectionEpoch,
+          completed_progression_fingerprint: fingerprint,
+          completed_symbols_hash: symbolsHash,
+          candles_loaded: "21600",
+          indicators_calculated: "48000",
+        }),
+        client.sadd(`${scope.prehistoricKey}:symbols`, ...symbols),
+        client.set(doneKeys.scoped, "1", { EX: 86400 }),
+        client.set(firstPassKeys.scoped, "1", { EX: 86400 }),
+        client.set(scope.prehistoricLoadedKey, "1", { EX: 86400 }),
+        client.set(`realtime:${connectionId}`, "restart-telemetry", { EX: 86400 }),
+      ])
+
+      await expect(
+        ProgressionStateManager.recoordinateForActualOne(connectionId, "main"),
+      ).resolves.toEqual(expect.objectContaining({
+        changed: true,
+        reason: "no active progression — verified Historic cache preserved",
+      }))
+
+      const progression = await client.hgetall(scope.progressionKey)
+      const state = await client.hgetall(scope.tradeEngineStateKey)
+      expect(progression.prehistoric_phase_active).toBe("false")
+      expect(progression.prehistoric_symbols_processed_count).toBe(String(symbols.length))
+      expect(state.prehistoric_data_source).toBe("verified-process-restart-cache")
+      await expect(client.get(`realtime:${connectionId}`)).resolves.toBe("restart-telemetry")
+      await expect(client.get(doneKeys.legacy)).resolves.toBe("1")
+      await expect(client.get(firstPassKeys.legacy)).resolves.toBe("1")
+      await expect(client.get(`prehistoric_loaded:${connectionId}`)).resolves.toBe("1")
+    } finally {
+      await client.del(...keys)
+    }
+  })
+
+  test("process restart rejects a completed Historic cache with the wrong fingerprint", async () => {
+    const connectionId = `historic-restart-mismatch-${Date.now()}`
+    const client = getRedisClient()
+    const scope = buildProgressionScope(connectionId)
+    const doneKeys = buildPrehistoricGateKeys(connectionId, "main", "done")
+    const firstPassKeys = buildPrehistoricGateKeys(connectionId, "main", "firstpass:done")
+    const symbols = ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"]
+    const connectionKey = `connection:${connectionId}`
+    const keys = [
+      connectionKey,
+      scope.progressionKey,
+      scope.prehistoricKey,
+      `${scope.prehistoricKey}:symbols`,
+      scope.prehistoricLoadedKey,
+      `prehistoric_loaded:${connectionId}`,
+      doneKeys.scoped,
+      doneKeys.legacy,
+      firstPassKeys.scoped,
+      firstPassKeys.legacy,
+      scope.tradeEngineStateKey,
+      `trade_engine_state:${connectionId}`,
+      `settings:trade_engine_state:${connectionId}`,
+      `connection_settings:${connectionId}`,
+      `settings:connection_settings:${connectionId}`,
+      `realtime:${connectionId}`,
+      `prehistoric:progress:${connectionId}`,
+    ]
+    try {
+      await client.del(...keys)
+      await Promise.all([
+        client.hset(connectionKey, {
+          force_symbols: JSON.stringify(symbols),
+          selected_symbols: JSON.stringify(symbols),
+        }),
+        client.hset(scope.tradeEngineStateKey, {
+          force_symbols: JSON.stringify(symbols),
+          selected_symbols: JSON.stringify(symbols),
+          symbol_selection_epoch: "mismatch-epoch",
+          config_set_symbols_total: String(symbols.length),
+        }),
+        client.hset(scope.prehistoricKey, {
+          is_complete: "1",
+          historic_avg_profit_factor: "1.5",
+          symbols_processed: String(symbols.length),
+          symbols_total: String(symbols.length),
+          symbol_selection_epoch: "mismatch-epoch",
+          completed_progression_fingerprint: "wrong-settings-fingerprint",
+          completed_symbols_hash: symbols.slice().sort().join("|"),
+        }),
+        client.sadd(`${scope.prehistoricKey}:symbols`, ...symbols),
+        client.set(doneKeys.scoped, "1"),
+        client.set(firstPassKeys.scoped, "1"),
+        client.set(scope.prehistoricLoadedKey, "1"),
+        client.set(`realtime:${connectionId}`, "stale"),
+      ])
+
+      await expect(
+        ProgressionStateManager.recoordinateForActualOne(connectionId, "main"),
+      ).resolves.toEqual(expect.objectContaining({
+        changed: true,
+        reason: "no active progression",
+      }))
+      await expect(client.get(scope.prehistoricLoadedKey)).resolves.toBeNull()
+      await expect(client.get(doneKeys.scoped)).resolves.toBeNull()
+      await expect(client.get(`realtime:${connectionId}`)).resolves.toBeNull()
     } finally {
       await client.del(...keys)
     }
@@ -345,6 +553,125 @@ describe("historic runtime generation stability", () => {
       })
     } finally {
       await client.del(outcomesKey, statsKey, indexKey)
+    }
+  })
+
+  test("reuses normalized forward candles and preserves inclusive timestamp filtering", () => {
+    const processor = Object.create(IndicationSetsProcessor.prototype) as any
+    processor.forwardCandleSeriesCache = new WeakMap()
+    const newestFirst = [
+      { timestamp: 1_786_608_120, close: 103 },
+      { timestamp: 1_786_608_060, close: 102 },
+      { timestamp: 1_786_608_000, close: 101 },
+    ]
+    const marketData = {
+      candles: newestFirst,
+      forwardCandles: newestFirst,
+    }
+
+    const complete = processor.getForwardCandles(marketData)
+    expect(complete.map((candle: any) => candle.close)).toEqual([101, 102, 103])
+    expect(processor.getForwardCandles(marketData)).toBe(complete)
+    expect(
+      processor.getForwardCandles(marketData, 1_786_608_060_000)
+        .map((candle: any) => candle.close),
+    ).toEqual([102, 103])
+  })
+
+  test("closes Base-PF pending rows exactly once and persists the realized aggregate", async () => {
+    const connectionId = `pending-outcome-close-${Date.now()}`
+    const symbol = "BTCUSDT"
+    const client = getRedisClient()
+    const setKey = `indication_set:${connectionId}:${symbol}:direction:long:test`
+    const pendingKey = `indication_outcomes_pending:${connectionId}:${symbol}`
+    const guardKey = `indication_outcomes_pending_guard:${connectionId}:${symbol}`
+    const outcomesKey = `${setKey}:outcomes`
+    const statsKey = `${setKey}:outcome_stats`
+    const dedupeKey = `${setKey}:outcome_closed_ids`
+    const outcomeIndexKey = `indication_sets:outcome_keys:index:${connectionId}`
+    const setIndexes = [
+      `indication_sets:index:${connectionId}`,
+      `indication_sets:index:${connectionId}:${symbol}`,
+      `indication_sets:index:${connectionId}:${symbol}:direction`,
+    ]
+    const openedAt = Date.now() - 180_000
+    const pendingPayload = JSON.stringify({
+      setKey,
+      direction: "long",
+      openedAt,
+    })
+    const pendingEntry = {
+      id: "pending-base-row",
+      timestamp: new Date(openedAt).toISOString(),
+      type: "direction",
+      direction: "long",
+      profitFactor: 0.8,
+      metadata: {
+        direction: "long",
+        outcomePending: true,
+        positionCostRatio: 0.8,
+      },
+    }
+
+    try {
+      await client.del(
+        setKey,
+        pendingKey,
+        guardKey,
+        outcomesKey,
+        statsKey,
+        dedupeKey,
+        outcomeIndexKey,
+        ...setIndexes,
+      )
+      await client.rpush(setKey, JSON.stringify(pendingEntry))
+      await client.rpush(pendingKey, pendingPayload)
+      await client.sadd(guardKey, setKey)
+
+      const processor = new IndicationSetsProcessor(connectionId)
+      await (processor as any).settingsReady
+      const marketData = {
+        executionPrice: 100,
+        candles: [
+          { timestamp: openedAt, open: 100, high: 100.05, low: 99.95, close: 100 },
+          { timestamp: openedAt + 60_000, open: 100, high: 101, low: 99.95, close: 100.8 },
+          { timestamp: openedAt + 120_000, open: 100.8, high: 101.5, low: 100.7, close: 101.2 },
+        ],
+      }
+
+      await expect(
+        (processor as any).closePendingRealtimeOutcomes(symbol, marketData),
+      ).resolves.toBe(true)
+
+      const rows = await client.lrange(setKey, 0, -1)
+      const realized = JSON.parse(rows.at(-1) || "{}")
+      expect(realized.metadata?.outcomePending).toBe(false)
+      expect(realized.metadata?.profitFactorSource).toBe(
+        "position_cost_relative_realized_outcomes",
+      )
+      expect(Number(realized.profitFactor)).toBe(Number(realized.metadata?.positionCostRatio))
+      expect(Number(realized.profitFactor)).not.toBe(0.8)
+      await expect(client.llen(pendingKey)).resolves.toBe(0)
+      await expect(client.sismember(guardKey, setKey)).resolves.toBe(0)
+      await expect(client.llen(outcomesKey)).resolves.toBe(1)
+      await expect(client.hgetall(statsKey)).resolves.toMatchObject({ count: "1" })
+
+      // A second close sees an empty atomic drain and cannot double-count.
+      await expect(
+        (processor as any).closePendingRealtimeOutcomes(symbol, marketData),
+      ).resolves.toBe(false)
+      await expect(client.llen(outcomesKey)).resolves.toBe(1)
+    } finally {
+      await client.del(
+        setKey,
+        pendingKey,
+        guardKey,
+        outcomesKey,
+        statsKey,
+        dedupeKey,
+        outcomeIndexKey,
+        ...setIndexes,
+      )
     }
   })
 

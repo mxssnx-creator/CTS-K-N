@@ -24,9 +24,9 @@
  */
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getConnection, getRedisClient } from "@/lib/redis-db"
-import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 
 export const runtime = "nodejs"
 export const maxDuration = 15
@@ -49,7 +49,17 @@ export async function GET(
 
   try {
     await initRedis()
-    const connection = await getConnection(connectionId)
+    const client = getRedisClient()
+    // Connection metadata and distributed runtime evidence are independent
+    // Redis reads. Start them together so a saturated progression worker does
+    // not make the dashboard pay two complete event-loop/transport waits.
+    const [connection, runningHintRaw, runtimeState, settingsState, globalState] = await Promise.all([
+      getConnection(connectionId),
+      client.get(`engine_is_running:${connectionId}`).catch(() => null),
+      client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
+    ])
     if (!connection) {
       return NextResponse.json(
         { success: false, error: "Connection not found" },
@@ -57,27 +67,18 @@ export async function GET(
       )
     }
 
-    const coordinator = getGlobalTradeEngineCoordinator()
-    const engineRunning =
-      !!coordinator && coordinator.isEngineRunning(connectionId)
-
-    // Redis hint key for stale-flag detection — written as string "0"/"1" by setRunningFlag and DELETE route
-    // (and future reconciliation code) as a string value (setRunningFlag uses client.set).
-    // Used as a tiebreaker when the in-memory manager is missing.
-    let runningHint = false
-    try {
-      const client = getRedisClient()
-      const hint = await client.get(`engine_is_running:${connectionId}`)
-      const raw = typeof hint === "string" ? hint : ""
-      runningHint = raw === "true" || raw === "1"
-    } catch {
-      /* non-critical */
-    }
-
     // DB flags — the canonical source of truth for the slider `checked` state.
     // is_active_inserted / is_assigned are panel assignment only;
     // is_enabled_dashboard is the explicit processing switch.
     const flagEnabled = toBoolean((connection as any).is_enabled_dashboard)
+    const engineRuntime = resolveDistributedEngineRuntime({
+      runningHint: runningHintRaw,
+      states: [runtimeState, settingsState],
+      globalState,
+      connectionEnabled: flagEnabled,
+    })
+    const engineRunning = engineRuntime.running
+    const runningHint = engineRuntime.runningHint === true
     // UI sliders represent the operator's requested state, not only the
     // immediately executable/effective flag. When credentials are missing the
     // live-trade endpoint preserves `live_trade_requested=1` while keeping
@@ -153,6 +154,13 @@ export async function GET(
         connectionId,
         engineRunning,
         runningHint,
+        runtimeEvidence: {
+          reason: engineRuntime.reason,
+          status: engineRuntime.status,
+          heartbeatAt: engineRuntime.heartbeatAt || null,
+          heartbeatAgeMs: engineRuntime.heartbeatAgeMs,
+          heartbeatFresh: engineRuntime.heartbeatFresh,
+        },
         enabled: buildEnableState(flagEnabled),
         // Keep the original top-level properties for older dashboard clients,
         // while exposing explicit stable names to prevent Main/Preset mode

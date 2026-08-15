@@ -240,7 +240,7 @@ function getDefaultSettings(): Record<string, any> {
     // Strategy retention/scheduling controls. Main batching never truncates
     // the exhaustive position-count configuration space.
     strategyMaxEntriesPerSet: 250,
-    strategyMainAxisBatchSize: 8,
+    strategyMainAxisBatchSize: 32,
     strategyBlockMaterializationBatchSize: 1024,
     strategyRealSetsSafetyCeiling: 0,
     maxRealSets: 0,

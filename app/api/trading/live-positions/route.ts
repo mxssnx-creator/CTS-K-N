@@ -8,6 +8,7 @@ import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
 import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { calculateLivePositionStatistics } from "@/lib/live-position-statistics"
+import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 
 export const dynamic = "force-dynamic"
 
@@ -104,9 +105,13 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     trailingActive: pos.trailingActive,
     trailingStopPrice: pos.trailingStopPrice,
     trailingProfile: pos.trailingProfile && {
+      mode: pos.trailingProfile.mode,
       startRatio: pos.trailingProfile.startRatio,
       stopRatio: pos.trailingProfile.stopRatio,
       stepRatio: pos.trailingProfile.stepRatio,
+      minStopRatio: pos.trailingProfile.minStopRatio,
+      positiveMoveRatio: pos.trailingProfile.positiveMoveRatio,
+      updateStopRangeRatio: pos.trailingProfile.updateStopRangeRatio,
     },
     manualProtectionOverride: pos.manualProtectionOverride && {
       stopLossPrice: pos.manualProtectionOverride.stopLossPrice,
@@ -117,6 +122,10 @@ function toLivePositionView(pos: any): Record<string, unknown> {
       source: pos.manualProtectionOverride.source,
     },
     setVariant: pos.setVariant,
+    // Lane identity is part of the compact operational read model. Dropping
+    // it made a correctly persisted Signal-Trailing position indistinguishable
+    // from Signal-Standard in the UI, analytics, and production soak checks.
+    executionLane: pos.executionLane ?? pos.execution_lane,
     setKey: pos.setKey,
     parentSetKey: pos.parentSetKey,
     indicationType: pos.indicationType,
@@ -219,7 +228,7 @@ function computeStats(positions: any[]) {
  *   status                      - optional filter (e.g. "open", "closed", "error")
  *   source                      - all|real|simulated|unknown (default all)
  */
-export async function GET(request: Request) {
+async function buildLivePositionsResponse(request: Request) {
   const { searchParams } = new URL(request.url)
   const connectionId = searchParams.get("connection_id") || searchParams.get("connectionId") || "bingx-x01"
   const closedLimit = Math.min(1000, Math.max(1, parseInt(searchParams.get("closedLimit") || "200", 10)))
@@ -352,4 +361,20 @@ export async function GET(request: Request) {
       stats: null,
     })
   }
+}
+
+export async function GET(request: Request) {
+  if (process.env.NODE_ENV === "test") return buildLivePositionsResponse(request)
+  const url = new URL(request.url)
+  const connectionId = url.searchParams.get("connection_id") || url.searchParams.get("connectionId") || "bingx-x01"
+  const closedLimit = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("closedLimit") || "200", 10)))
+  const status = url.searchParams.get("status") || "all"
+  const source = (url.searchParams.get("source") || "all").toLowerCase()
+  return serveSerializedResponseSWR({
+    namespace: "live-positions",
+    key: `${connectionId}|${closedLimit}|${status}|${source}`,
+    freshMs: 2_000,
+    maxStaleMs: 15_000,
+    producer: () => buildLivePositionsResponse(request),
+  })
 }

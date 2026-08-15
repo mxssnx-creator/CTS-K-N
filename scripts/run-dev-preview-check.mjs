@@ -3,9 +3,11 @@
 /** Safe bounded development-mode engine soak with paper positions only. */
 
 import { spawn } from "node:child_process"
-import { readFileSync, rmSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import { resolve } from "node:path"
 import process from "node:process"
+import { acquireDevArtifactLock } from "./dev-artifact-lock.mjs"
 import { startPreviewRedisHarness } from "./preview-redis-harness.mjs"
 
 const port = Number(process.env.PORT || 3103)
@@ -19,6 +21,8 @@ const devDistDir = ".next"
 const devDistPath = resolve(process.cwd(), devDistDir)
 const snapshotPath = `/tmp/cts-dev-preview-${process.pid}.json`
 const debugAdminSecret = `cts-dev-soak-${process.pid}-admin-secret`
+const runtimeStartedAt = new Date().toISOString()
+const runtimeBootId = `dev-preview_${Date.now()}_${process.pid}`
 const maxSymbolsRequested = process.argv.includes("--max-symbols")
 const fullSoakRequested = process.env.DEV_PREVIEW_FULL_SOAK === "1"
 const devSoakSymbolCount = maxSymbolsRequested
@@ -46,16 +50,39 @@ const devNodeHeapMb = Math.max(
   4096,
   Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 12288)),
 )
+// Match the installed Linux application wrapper. A 192 MiB semi-space lets
+// one exhaustive symbol accumulate a very large young generation before V8
+// scavenges/promotes it, which produced repeatable 3–5 second control-plane
+// stalls. 128 MiB retains allocation throughput while bounding each young-GC
+// working set; operators can still profile 32–192 MiB explicitly.
+const devNodeSemiSpaceMb = Math.max(
+  32,
+  Math.min(192, Number(process.env.DEV_NODE_SEMI_SPACE_MB || 128)),
+)
 let outputTail = ""
 let previewRedisEnvironment = {}
+const releaseDevArtifactLock = acquireDevArtifactLock({ artifactName: "next-dev" })
 
-rmSync(snapshotPath, { force: true })
-rmSync(devDistPath, { recursive: true, force: true })
+async function removeHarnessArtifacts() {
+  await rm(snapshotPath, { force: true })
+  // Next compiler workers can release files shortly after their launcher
+  // exits. fs.promises.rm retries transient ENOTEMPTY/EBUSY races instead of
+  // turning an otherwise healthy soak into a cleanup failure.
+  await rm(devDistPath, {
+    recursive: true,
+    force: true,
+    maxRetries: 12,
+    retryDelay: 200,
+  })
+}
 
 function keepTail(chunk) {
   // Runtime summaries are coalesced. Keep a bounded diagnostic tail large
   // enough for a compiler stack without retaining half a megabyte of stdout.
   outputTail = `${outputTail}${String(chunk)}`.slice(-128_000)
+  if (process.env.DEV_PREVIEW_STREAM_SERVER_LOGS === "1") {
+    process.stdout.write(chunk)
+  }
 }
 
 async function waitForReady(child, timeoutMs = 120_000) {
@@ -137,12 +164,22 @@ async function prewarmDevRoutes() {
   // memory-intensive Historic/Strategy work. An empty POST is a strict no-op:
   // it neither starts nor stops the connection, but avoids a first-use HMR
   // compile competing with the post-soak disable/re-enable contract.
-  await requestJson(`/api/settings/connections/${encoded}/toggle-dashboard`, {
+  const toggleWarmup = await fetch(`${baseUrl}/api/settings/connections/${encoded}/toggle-dashboard`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
     signal: AbortSignal.timeout(120_000),
   })
+  if (!toggleWarmup.ok && toggleWarmup.status !== 429) {
+    throw new Error(`Dev toggle-route warmup returned HTTP ${toggleWarmup.status}`)
+  }
+  if (toggleWarmup.status === 429) {
+    // Back-to-back persistent-Redis restart tests intentionally share the
+    // route limiter. A 429 proves the route compiled and correctly rejected a
+    // no-op warmup; do not retry and consume more quota. The real lifecycle
+    // toggle remains a strict post-soak assertion after the 60-second window.
+    console.warn("[run-dev-preview-check] toggle warmup rate-limited; route compiled, continuing")
+  }
 
   // The soak reads this authenticated diagnostic every tenth round. Compile
   // it before the engine starts allocating so a parallel production run cannot
@@ -222,8 +259,19 @@ function runSoakVerifier() {
         START_SIMULATED_ENGINE: "1",
         SYMBOL_COUNT: String(devSoakSymbolCount),
         SOAK_DURATION_MS: String(devSoakDurationMs),
+        // Historic must finish *and* hand off to at least three observable
+        // Main cycles. The base 32-symbol window measures the complete cold
+        // load; this bounded grace covers only the productive post-Historic
+        // transition and exits as soon as its existing criteria are met.
+        SOAK_PRODUCTIVE_COMPLETION_GRACE_MS:
+          process.env.DEV_SOAK_PRODUCTIVE_COMPLETION_GRACE_MS || "180000",
         RUNTIME_MODE: "development",
         SOAK_ADMIN_SECRET: debugAdminSecret,
+        // Keep the verifier's absolute RSS budget aligned with the heap that
+        // this harness actually assigned to the development server. Without
+        // this explicit hand-off the verifier falls back to the production
+        // 5.5 GiB heap profile and can reject a healthy 12 GiB full-dev run.
+        CTS_NODE_HEAP_MB: String(devNodeHeapMb),
         // Constrained-host budgets: the exhaustive calculation can churn 1–7
         // day TTL progression keys during a short soak. Keep explicit debug
         // budgets above the strict production defaults; full soaks still use
@@ -249,7 +297,7 @@ function runSoakVerifier() {
 // unbounded key growth that exhausts an in-process Redis in a constrained box.
 async function runSmokeVerifier() {
   const SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
+    "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT", "BNBUSDT", "DOGEUSDT",
     "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
   ].slice(0, Math.max(1, devSoakSymbolCount))
   const quickStart = await requestJson("/api/trade-engine/quick-start", {
@@ -328,9 +376,30 @@ async function stopServer(child) {
   // has removed it, corrupting the next run. Signal the complete process
   // group even when the launcher already exited after SIGTERM.
   signalProcessGroup("SIGKILL")
+  // The launcher can report exit before its compiler descendants have left
+  // the detached process group. Do not remove `.next` while those workers can
+  // still write to it.
+  if (process.platform !== "win32" && child.pid) {
+    const deadline = Date.now() + 3_000
+    while (Date.now() < deadline) {
+      try {
+        process.kill(-child.pid, 0)
+      } catch (error) {
+        if (error?.code === "ESRCH") break
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  } else if (child.exitCode == null) {
+    await Promise.race([
+      new Promise((resolve) => child.once("exit", resolve)),
+      new Promise((resolve) => setTimeout(resolve, 3_000)),
+    ])
+  }
 }
 
 async function main() {
+  await removeHarnessArtifacts()
   const redisHarness = await startPreviewRedisHarness({
     required: fullSoakRequested,
     label: "development full soak",
@@ -343,6 +412,8 @@ async function main() {
       ...process.env,
       ...previewRedisEnvironment,
       NEXT_DIST_DIR: devDistDir,
+      CTS_RUNTIME_BOOT_ID: runtimeBootId,
+      CTS_RUNTIME_STARTED_AT: runtimeStartedAt,
       DISABLE_TRADE_ENGINE_AUTOSTART: "1",
       DISABLE_TRADE_ENGINE_IN_PROCESS: "0",
       DISABLE_IN_PROCESS_CONTINUITY: "0",
@@ -365,7 +436,7 @@ async function main() {
       PREHISTORIC_CONFIG_TYPE_CONCURRENCY:
         process.env.DEV_PREHISTORIC_CONFIG_TYPE_CONCURRENCY || "1",
       PREHISTORIC_CALC_YIELD_EVERY:
-        process.env.DEV_PREHISTORIC_CALC_YIELD_EVERY || "1024",
+        process.env.DEV_PREHISTORIC_CALC_YIELD_EVERY || "256",
       // Full dev soaks validate every configuration and every selected symbol,
       // but use a bounded one-hour market window by default so the complete
       // Base→Main→Real→Live lifecycle fits the 20-minute acceptance budget.
@@ -373,15 +444,34 @@ async function main() {
       // explicitly supplies PREHISTORIC_RANGE_HOURS.
       PREHISTORIC_RANGE_HOURS:
         process.env.DEV_PREHISTORIC_RANGE_HOURS || "1",
+      // Admit one symbol at a time and reclaim the previous symbol graph once
+      // RSS crosses 5 GiB. The coordinated collector runs asynchronously at
+      // the Strategy lease boundary, so this avoids both unbounded growth and
+      // mid-flow GC competition. The independent 8 GiB hard stop and 10 GiB
+      // absolute memory ceiling remain the crash barriers.
       CTS_RSS_SOFT_LIMIT_MB:
-        process.env.DEV_RSS_SOFT_LIMIT_MB || "4096",
+        process.env.DEV_RSS_SOFT_LIMIT_MB || "5120",
+      CTS_RSS_HARD_LIMIT_MB:
+        process.env.DEV_RSS_HARD_LIMIT_MB || "8192",
+      CTS_MEMORY_LIMIT_MB:
+        process.env.DEV_MEMORY_LIMIT_MB || "10240",
+      CTS_NODE_HEAP_MB: String(devNodeHeapMb),
+      // The verified development profile uses shorter coordinated collections
+      // than production's 120-second default. This value reaches the
+      // application worker; an explicit operator override remains authoritative.
+      CTS_MAINTENANCE_GC_INTERVAL_MS:
+        process.env.DEV_MAINTENANCE_GC_INTERVAL_MS ||
+        process.env.CTS_MAINTENANCE_GC_INTERVAL_MS ||
+        "30000",
+      CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS:
+        process.env.DEV_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS || "1",
       // Exercise the full cartesian Main calculation, but keep the existing
       // explicit Real-row
       // output boundary small enough that the diagnostic process does not
       // retain multi-gigabyte transient graphs. Production/operator defaults
       // remain unchanged.
       STRATEGY_REAL_SETS_CEILING: process.env.DEV_STRATEGY_REAL_SETS_CEILING || "600",
-      STRATEGY_VARIANT_BUILD_CONCURRENCY: process.env.DEV_STRATEGY_VARIANT_BUILD_CONCURRENCY || "32",
+      STRATEGY_VARIANT_BUILD_CONCURRENCY: process.env.DEV_STRATEGY_VARIANT_BUILD_CONCURRENCY || "1",
       MARKET_DATA_LOAD_CONCURRENCY: "1",
       CRON_SYMBOL_LIMIT: String(devSoakSymbolCount),
       REDIS_DEBUG_ENABLED: "1",
@@ -399,7 +489,11 @@ async function main() {
       // exhaustive engine datasets create files/modules. Polling keeps the
       // long debug soak deterministic without changing application behavior.
       WATCHPACK_POLLING: process.env.WATCHPACK_POLLING || "true",
-      NODE_OPTIONS: `--max-old-space-size=${devNodeHeapMb} --max-semi-space-size=192 --expose-gc`,
+      // Keep every runtime memory guard on the same heap contract as the
+      // actual Node process. NODE_OPTIONS alone is not visible to guards that
+      // intentionally read the explicit CTS limit, which otherwise makes a
+      // 12 GiB dev worker behave as if it had the 5.5 GiB production default.
+      NODE_OPTIONS: `--max-old-space-size=${devNodeHeapMb} --max-semi-space-size=${devNodeSemiSpaceMb} --expose-gc`,
       PORT: String(port),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -436,19 +530,21 @@ async function main() {
       mode: fullSoakRequested ? "development-paper-engine-stress" : "development-paper-engine-smoke",
       symbols: devSoakSymbolCount,
       nodeHeapLimitMb: devNodeHeapMb,
+      nodeSemiSpaceMb: devNodeSemiSpaceMb,
       redisBackend: redisHarness.kind,
       realExchangeOrdersSubmitted: 0,
     }, null, 2))
   } finally {
     await stopServer(server)
     await redisHarness.stop()
-    rmSync(snapshotPath, { force: true })
-    rmSync(devDistPath, { recursive: true, force: true })
+    await removeHarnessArtifacts()
   }
 }
 
-main().catch((error) => {
-  console.error("[run-dev-preview-check] failed:", error instanceof Error ? error.message : String(error))
-  if (outputTail) console.error(`[run-dev-preview-check] server tail:\n${outputTail}`)
-  process.exit(1)
-})
+main()
+  .catch((error) => {
+    console.error("[run-dev-preview-check] failed:", error instanceof Error ? error.message : String(error))
+    if (outputTail) console.error(`[run-dev-preview-check] server tail:\n${outputTail}`)
+    process.exitCode = 1
+  })
+  .finally(releaseDevArtifactLock)

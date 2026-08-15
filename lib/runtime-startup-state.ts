@@ -1,36 +1,16 @@
 import { getRedisClient } from "@/lib/redis-db"
 import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { getRuntimeBootId, getRuntimeStartedAt } from "@/lib/runtime-boot-id"
+
+export { getRuntimeBootId, getRuntimeStartedAt } from "@/lib/runtime-boot-id"
 
 type RuntimeStartupStatus = "starting" | "ready" | "error"
 
 type StartupRuntimeGlobal = typeof globalThis & {
-  __cts_runtime_boot_id?: string
-  __cts_runtime_started_at?: string
   __cts_runtime_lifecycle_recorded_boot_id?: string
 }
 
 const runtimeGlobal = globalThis as StartupRuntimeGlobal
-
-function createBootId(): string {
-  const suffix = (() => {
-    try {
-      return globalThis.crypto?.randomUUID?.().slice(0, 12)
-    } catch {
-      return undefined
-    }
-  })() || Math.random().toString(36).slice(2, 14)
-  return `boot_${Date.now()}_${process.pid}_${suffix}`
-}
-
-export function getRuntimeBootId(): string {
-  runtimeGlobal.__cts_runtime_boot_id ||= createBootId()
-  return runtimeGlobal.__cts_runtime_boot_id
-}
-
-export function getRuntimeStartedAt(): string {
-  runtimeGlobal.__cts_runtime_started_at ||= new Date().toISOString()
-  return runtimeGlobal.__cts_runtime_started_at
-}
 
 async function recordRuntimeBootOnce(): Promise<void> {
   const bootId = getRuntimeBootId()

@@ -10,6 +10,7 @@ describe("system monitoring route", () => {
       client.del(`connection:${connectionId}`),
       client.del(`progression:${connectionId}:main`),
       client.del(`settings:trade_engine_state:${connectionId}:main`),
+      client.del(`engine_is_running:${connectionId}`),
       client.del(`realtime:${connectionId}`),
       client.del(`indication_sets:index:${connectionId}`),
       client.del(`indication_sets:outcome_keys:index:${connectionId}`),
@@ -27,6 +28,7 @@ describe("system monitoring route", () => {
         name: "Monitoring route test",
         exchange: "bingx",
         engine_type: "main",
+        is_enabled_dashboard: "1",
       }),
       client.sadd("connections", connectionId),
       client.sadd("connections:main:enabled", connectionId),
@@ -38,8 +40,10 @@ describe("system monitoring route", () => {
       }),
       client.hset(`settings:trade_engine_state:${connectionId}:main`, {
         status: "running",
+        last_processor_heartbeat: String(Date.now()),
         realtime_cycle_count: "13",
       }),
+      client.set(`engine_is_running:${connectionId}`, "1"),
       client.hset(`realtime:${connectionId}`, { cycle_count: "13" }),
       client.sadd(`indication_sets:index:${connectionId}`, "indication-set-a", "indication-set-b"),
       client.sadd(

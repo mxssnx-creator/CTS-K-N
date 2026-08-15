@@ -23,17 +23,32 @@ class MemoryManager {
   private constructor() {}
 
   static getInstance(): MemoryManager {
-    if (!MemoryManager.instance) {
-      MemoryManager.instance = new MemoryManager()
+    const shared = globalThis as typeof globalThis & {
+      __cts_memory_manager__?: MemoryManager
     }
-    return MemoryManager.instance
+    if (!shared.__cts_memory_manager__) {
+      shared.__cts_memory_manager__ = new MemoryManager()
+    }
+    MemoryManager.instance = shared.__cts_memory_manager__
+    return shared.__cts_memory_manager__
   }
 
   /**
    * Initialize memory monitoring and GC management
    */
   initialize(maxHeapMB: number = 1024) {
-    this.maxHeapMB = maxHeapMB
+    const configured = Number(maxHeapMB)
+    this.maxHeapMB = Number.isFinite(configured) && configured >= 256
+      ? Math.round(configured)
+      : 1024
+
+    // Startup/HMR may initialize the coordinator more than once. Preserve a
+    // single process-wide monitor instead of leaking one five-minute interval
+    // per module generation.
+    if (this.gcInterval) {
+      clearInterval(this.gcInterval as any)
+      this.gcInterval = null
+    }
 
     // Force GC every 5 minutes
     this.gcInterval = setInterval(() => {
@@ -47,7 +62,7 @@ class MemoryManager {
       } catch (e) {}
     }
 
-    console.log(`[v0] [Memory] Manager initialized (max: ${maxHeapMB}MB, warning: ${Math.round(this.warningThreshold * 100)}%)`)
+    console.log(`[v0] [Memory] Manager initialized (max: ${this.maxHeapMB}MB, warning: ${Math.round(this.warningThreshold * 100)}%)`)
   }
 
   /**

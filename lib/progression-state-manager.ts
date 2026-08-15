@@ -99,6 +99,7 @@ import {
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import { getCanonicalSymbolSelection } from "@/lib/trade-engine/symbol-selection-ownership"
 
 export interface ProgressionRecoordinationResult {
   changed: boolean
@@ -1082,15 +1083,15 @@ export class ProgressionStateManager {
       // running production engine can still be stamping the previous basket while
       // QuickStart/settings recoordination is trying to start the next 12-symbol
       // epoch. Only fall back to engine state after connection/settings mirrors.
-      let currentSymbols: string[] = parseSymbols(connectionSettings.selected_symbols)
-      if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.force_symbols)
-      if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.selected_symbols)
+      let currentSymbols: string[] = parseSymbols(connectionSettings.force_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.selected_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.force_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.selected_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.active_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.active_symbols)
-      if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.selected_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.force_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.selected_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.active_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.symbols)
       currentSymbols = [...new Set(
@@ -1267,6 +1268,107 @@ export class ProgressionStateManager {
       const mismatch = symbolMismatch || settingsMismatch
 
       if (initializedMissingProgression) {
+        // A clean process stop can remove the active progression hash while
+        // leaving the completed 24-hour Historic cache intact.  Treat that as
+        // a restart attachment, not as a new calculation, but only when every
+        // durable ownership signal agrees with the exact current settings and
+        // symbol basket.  A missing/legacy fingerprint deliberately falls
+        // through to the cold-reset path below.
+        const currentSelection = await getCanonicalSymbolSelection(connectionId).catch(() => null)
+        const [
+          historicState,
+          persistedHistoricSymbols,
+          scopedDone,
+          legacyDone,
+          scopedFirstPass,
+          legacyFirstPass,
+          scopedLoaded,
+          legacyLoaded,
+        ] = await Promise.all([
+          client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
+          client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]),
+          client.get(doneGateKeys.scoped).catch(() => null),
+          client.get(doneGateKeys.legacy).catch(() => null),
+          client.get(firstPassGateKeys.scoped).catch(() => null),
+          client.get(firstPassGateKeys.legacy).catch(() => null),
+          client.get(scope.prehistoricLoadedKey).catch(() => null),
+          client.get(`prehistoric_loaded:${connectionId}`).catch(() => null),
+        ])
+        const persistedHistoricHash = persistedHistoricSymbols
+          .map((symbol) => String(symbol).trim().toUpperCase())
+          .filter(Boolean)
+          .sort()
+          .join("|")
+        const historicFingerprint = String(historicState.completed_progression_fingerprint || "")
+        const selectionEpochMatches =
+          !currentSelection?.epoch ||
+          String(historicState.symbol_selection_epoch || "") === currentSelection.epoch
+        const completedHistoricCacheMatches =
+          liveSymbolCount > 0 &&
+          historicState.is_complete === "1" &&
+          Object.prototype.hasOwnProperty.call(historicState, "historic_avg_profit_factor") &&
+          Number(historicState.symbols_processed || 0) === liveSymbolCount &&
+          Number(historicState.symbols_total || 0) === liveSymbolCount &&
+          persistedHistoricHash === liveSymbolsHash &&
+          String(historicState.completed_symbols_hash || "") === liveSymbolsHash &&
+          historicFingerprint !== "" &&
+          historicFingerprint === liveFingerprint &&
+          selectionEpochMatches &&
+          (scopedDone === "1" || legacyDone === "1") &&
+          (scopedFirstPass === "1" || legacyFirstPass === "1") &&
+          (scopedLoaded === "1" || legacyLoaded === "1")
+
+        if (completedHistoricCacheMatches) {
+          const nowIso = new Date().toISOString()
+          // Self-heal both scoped and compatibility gates before exposing the
+          // new session. This also makes a restart robust when only one mirror
+          // survived a prior interrupted write.
+          await Promise.all([
+            client.set(doneGateKeys.scoped, "1", { EX: 86400 }),
+            client.set(doneGateKeys.legacy, "1", { EX: 86400 }),
+            client.set(firstPassGateKeys.scoped, "1", { EX: 86400 }),
+            client.set(firstPassGateKeys.legacy, "1", { EX: 86400 }),
+            client.set(scope.prehistoricLoadedKey, "1", { EX: 86400 }),
+            client.set(`prehistoric_loaded:${connectionId}`, "1", { EX: 86400 }),
+          ])
+          await client.hset(key, {
+            symbol_count: String(liveSymbolCount),
+            active_symbols_hash: liveSymbolsHash,
+            started_for_settings_version: nowIso,
+            progress_settings_snapshot: JSON.stringify(liveSnapshot),
+            engine_type: engineType || "main",
+            prehistoric_phase_active: "false",
+            prehistoric_cycles_completed: String(liveSymbolCount),
+            prehistoric_symbols_processed_count: String(liveSymbolCount),
+            prehistoric_symbols_processed: JSON.stringify(currentSymbols),
+            prehistoric_candles_processed: String(Number(historicState.candles_loaded || 0) || 0),
+            last_update: nowIso,
+          }).catch(() => {})
+          await client.hset(scope.tradeEngineStateKey, {
+            config_set_symbols_total: String(liveSymbolCount),
+            config_set_symbols_processed: String(liveSymbolCount),
+            config_set_candles_processed: String(Number(historicState.candles_loaded || 0) || 0),
+            config_set_indication_results: String(Number(historicState.indicators_calculated || 0) || 0),
+            prehistoric_data_loaded: "true",
+            prehistoric_data_source: "verified-process-restart-cache",
+            prehistoric_bootstrap_status: "complete",
+            updated_at: nowIso,
+          }).catch(() => {})
+          emitCanonicalEvent({
+            type: "progression.epochStarted",
+            connectionId,
+            stage: "live",
+            epoch: initializedEpoch,
+            settingsVersion: liveSnapshot.updated_at,
+            data: { reason: "no active progression — verified Historic cache preserved", symbolCount: liveSymbolCount },
+          })
+          return {
+            changed: true,
+            reason: "no active progression — verified Historic cache preserved",
+            newEpoch: initializedEpoch,
+          }
+        }
+
         await Promise.all([
           client.del(doneGateKeys.scoped).catch(() => {}),
           client.del(doneGateKeys.legacy).catch(() => {}),

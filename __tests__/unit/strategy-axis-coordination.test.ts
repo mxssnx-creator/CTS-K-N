@@ -772,7 +772,7 @@ describe("strategy position-count axis coordination", () => {
     expect(counts).toEqual({ real: 1, live: 1, liveEvaluated: 5000 })
   })
 
-  test("combines pos-count Sets per exact Base and direction without hedging", () => {
+  test("combines pos-count Sets per exact Base and direction without hedging", async () => {
     const coordinator = new StrategyCoordinator("combine-pos") as any
     const longA = {
       setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong",
@@ -807,7 +807,7 @@ describe("strategy position-count axis coordination", () => {
     const nonAxis = { setKey: "BTCUSDT:direction:long", direction: "long" as const, variant: "default" as const, avgProfitFactor: 1.2 }
     const input = [longA, longB, shortA, nonAxis]
 
-    const result = coordinator.combinePosCountAxisSets(input, "BTCUSDT")
+    const result = await coordinator.combinePosCountAxisSets(input, "BTCUSDT")
 
     // Non-axis set passes through unchanged
     expect(result).toContainEqual(nonAxis)
@@ -840,7 +840,7 @@ describe("strategy position-count axis coordination", () => {
     })
   })
 
-  test("keeps equal long and short pos-count rows independently", () => {
+  test("keeps equal long and short pos-count rows independently", async () => {
     const coordinator = new StrategyCoordinator("combine-flat") as any
     const axis = (direction: "long" | "short") => ({
       setKey: `BTCUSDT:direction:${direction}#axis:p4_l1_c1_opos_d${direction}`,
@@ -856,7 +856,7 @@ describe("strategy position-count axis coordination", () => {
       entries: [],
       indicationType: "direction",
     })
-    const result = coordinator.combinePosCountAxisSets([axis("long"), axis("short")], "BTCUSDT")
+    const result = await coordinator.combinePosCountAxisSets([axis("long"), axis("short")], "BTCUSDT")
     expect(result).toHaveLength(2)
     expect(result.map((set: StrategySet) => set.direction).sort()).toEqual(["long", "short"])
     expect(result.every((set: StrategySet) =>

@@ -10,6 +10,10 @@ import {
   type PresetListFilters,
 } from "@/lib/preset-store"
 import type { PresetIndicatorType } from "@/lib/preset-optimizer"
+import {
+  invalidateSerializedResponseSWR,
+  serveSerializedResponseSWR,
+} from "@/lib/serialized-response-swr"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -57,7 +61,7 @@ function errorResponse(error: unknown) {
   return NextResponse.json({ success: false, error: message || "Preset optimizer request failed" }, { status: 500 })
 }
 
-export async function GET(request: NextRequest) {
+async function buildPresetOptimizerResponse(request: NextRequest) {
   const connectionId = request.nextUrl.searchParams.get("connectionId")?.trim()
   if (!connectionId) {
     return NextResponse.json({ success: false, error: "connectionId query parameter required" }, { status: 400 })
@@ -75,6 +79,19 @@ export async function GET(request: NextRequest) {
   }
 }
 
+export async function GET(request: NextRequest) {
+  if (process.env.NODE_ENV === "test") return buildPresetOptimizerResponse(request)
+  const connectionId = request.nextUrl.searchParams.get("connectionId")?.trim() || "missing"
+  const key = `${connectionId}|${request.nextUrl.searchParams.toString()}`
+  return serveSerializedResponseSWR({
+    namespace: "preset-optimizer",
+    key,
+    freshMs: 5_000,
+    maxStaleMs: 30_000,
+    producer: () => buildPresetOptimizerResponse(request),
+  })
+}
+
 export async function PATCH(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({})) as Record<string, any>
@@ -87,6 +104,7 @@ export async function PATCH(request: NextRequest) {
       (body.settings || {}) as Record<string, unknown>,
       connectionId,
     )
+    invalidateSerializedResponseSWR("preset-optimizer", connectionId)
     const overview = await getPresetOverview(connectionId)
     return NextResponse.json({ success: true, settings, data: overview })
   } catch (error) {
@@ -114,6 +132,7 @@ export async function POST(request: NextRequest) {
         settings: body.settings && typeof body.settings === "object" ? body.settings : undefined,
       })
       const overview = await getPresetOverview(connectionId)
+      invalidateSerializedResponseSWR("preset-optimizer", connectionId)
       return NextResponse.json({ success: true, progress, data: overview })
     }
 
@@ -131,6 +150,7 @@ export async function POST(request: NextRequest) {
           : undefined,
       })
       const overview = await getPresetOverview(connectionId)
+      invalidateSerializedResponseSWR("preset-optimizer", connectionId)
       return NextResponse.json({ success: true, preset, data: overview })
     }
 
@@ -140,6 +160,7 @@ export async function POST(request: NextRequest) {
         lastAction: String(body.lastAction || "ui_refresh"),
         updatedAt: new Date().toISOString(),
       })
+      invalidateSerializedResponseSWR("preset-optimizer", connectionId)
       return NextResponse.json({ success: true, engine })
     }
 

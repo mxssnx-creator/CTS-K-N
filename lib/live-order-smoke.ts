@@ -12,6 +12,10 @@ import {
   type BingXInstrumentRules,
 } from "@/lib/bingx-instrument-rules"
 import { resolveAuthoritativeTradeDirection } from "@/lib/trade-direction"
+import {
+  BINGX_PROD_VST_FALLBACK_ORIGIN,
+  BINGX_PROD_VST_ORIGIN,
+} from "@/lib/bingx-environment"
 
 type TransportSnapshot = {
   transport: "bingx-api" | "signed-rest-fallback"
@@ -251,12 +255,16 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
   report.environment = environment?.environment || "unknown"
   report.baseUrl = environment?.baseUrl || ""
   report.virtualFunds = environment?.usesVirtualFunds === true
+  const approvedVstOrigins = new Set([
+    BINGX_PROD_VST_ORIGIN,
+    BINGX_PROD_VST_FALLBACK_ORIGIN,
+  ])
   if (credentials.isTestnet && (
     environment?.environment !== "prod-vst"
-    || environment?.baseUrl !== "https://open-api-vst.bingx.com"
+    || !approvedVstOrigins.has(String(environment?.baseUrl))
     || environment?.usesVirtualFunds !== true
   )) {
-    report.errors.push("BingX demo connection did not resolve to the exact Prod-VST virtual-funds endpoint")
+    report.errors.push("BingX demo connection did not resolve to an approved exact Prod-VST virtual-funds endpoint")
     report.finishedAt = new Date().toISOString()
     return report
   }

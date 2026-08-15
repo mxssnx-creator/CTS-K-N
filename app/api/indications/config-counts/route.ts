@@ -30,7 +30,11 @@ export async function GET() {
     await initRedis()
     const client = getRedisClient()
     const [settings, rawCommonSettings, rawSignalSettings] = await Promise.all([
-      getAppSettings({ bypassCache: true }),
+      // setAppSettings bumps the in-process version and invalidates this cache,
+      // while the 30-second hard refresh still observes out-of-band writers.
+      // Polling every two seconds therefore need not reread both complete
+      // settings hashes during every exhaustive progression slice.
+      getAppSettings(),
       client.get(COMMON_INDICATION_SETTINGS_KEY),
       client.get(SIGNAL_INDICATION_SETTINGS_KEY),
     ])

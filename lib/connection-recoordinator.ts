@@ -419,7 +419,13 @@ export async function applyMainConnectionSettingsChange(
       ? withSharedPersistenceLease
       : async <T>(_scope: string, work: () => Promise<T>): Promise<T> => work()
     const commit = async () => {
-    const settingsPatch = normalizeIdentityVolumeFields(opts.settingsPatch || {})
+    // Symbol aliases are a single piece of operator intent.  Keep every
+    // connection-settings mirror coherent in the same guarded commit; leaving
+    // a stale `selected_symbols` next to a fresh `force_symbols` made restart
+    // recoordination fall back to an older basket under load.
+    const settingsPatch = normalizeSymbolAliasesInPatch(
+      normalizeIdentityVolumeFields(opts.settingsPatch || {}),
+    )
     const redis = getRedisClient()
     const sharedLockToken = typeof getRedisBackend === "function" && getRedisBackend() === "redis-network"
       ? await acquireSharedSettingsCommitLock(redis, id)
@@ -499,8 +505,8 @@ export async function applyMainConnectionSettingsChange(
 
     for (const additional of opts.additionalSettingsPatches || []) {
       if (!additional?.settingsKey || Object.keys(additional.settingsPatch || {}).length === 0) continue
-      const normalizedAdditionalPatch = normalizeIdentityVolumeFields(
-        additional.settingsPatch,
+      const normalizedAdditionalPatch = normalizeSymbolAliasesInPatch(
+        normalizeIdentityVolumeFields(additional.settingsPatch),
       )
       if (stateGuardedBundle) {
         const hashPatch = stringifyHashPatch(normalizedAdditionalPatch)

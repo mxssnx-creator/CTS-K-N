@@ -4,8 +4,23 @@ import { randomUUID } from "node:crypto"
 import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
-const VST_ORIGIN = "https://open-api-vst.bingx.com"
-const VST_HOST = "open-api-vst.bingx.com"
+const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
+const VST_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
+const requestedVstOrigin = String(process.env.BINGX_VST_SOAK_ORIGIN || VST_PRIMARY_ORIGIN).trim()
+const VST_ORIGIN = (() => {
+  let origin = ""
+  try { origin = new URL(requestedVstOrigin).origin } catch { /* rejected below */ }
+  if (
+    origin !== requestedVstOrigin.replace(/\/$/, "") ||
+    (origin !== VST_PRIMARY_ORIGIN && origin !== VST_FALLBACK_ORIGIN)
+  ) {
+    throw new Error(
+      `BINGX_VST_SOAK_ORIGIN must be ${VST_PRIMARY_ORIGIN} or ${VST_FALLBACK_ORIGIN}`,
+    )
+  }
+  return origin
+})()
+const VST_HOST = new URL(VST_ORIGIN).hostname
 const SOAK_CONFIRMATION = "I understand Prod-VST places authenticated orders with virtual funds"
 const EXACT_DURATION_MS = 20 * 60 * 1_000
 const EXACT_LIVE_CYCLE_COUNT = 16
@@ -285,7 +300,10 @@ async function main(): Promise<void> {
   ]) delete process.env[key]
 
   process.env.BINGX_ENVIRONMENT = "prod-vst"
+  process.env.BINGX_VST_ORIGIN = VST_ORIGIN
   process.env.BINGX_PUBLIC_ORIGIN = VST_ORIGIN
+  // Authenticated soaks stay on exactly one selected host. In particular an
+  // ambiguous order write is never replayed automatically on the other host.
   process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = VST_ORIGIN
   process.env.DISABLE_BINGX_SDK_ORDERS = "1"
   process.env.FORCE_SIMULATED = "0"

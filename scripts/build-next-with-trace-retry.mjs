@@ -88,18 +88,62 @@ function stopLateBuildWriters(pid) {
   sleep(100)
 }
 
+const archiveSourceExcludedDirectories = new Set([
+  ".git",
+  "node_modules",
+  "coverage",
+  "dist",
+  "build",
+  "out",
+  ".cts-runtime",
+  ".v0-data",
+  "validation-results",
+  "data",
+  "logs",
+])
+
+function isRuntimeEnvironmentFile(file) {
+  const name = basename(file)
+  return name === ".env"
+    || (name.startsWith(".env.") && name !== ".env.example")
+    || name === ".dev.vars"
+}
+
+function listArchiveSourceFiles(directory = process.cwd(), prefix = "") {
+  const files = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (
+      archiveSourceExcludedDirectories.has(entry.name)
+      || entry.name === ".next"
+      || entry.name.startsWith(".next-")
+    ) continue
+    const file = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (isRuntimeEnvironmentFile(file)) continue
+    const absolute = join(directory, entry.name)
+    if (entry.isDirectory()) files.push(...listArchiveSourceFiles(absolute, file))
+    else files.push(file)
+  }
+  return files
+}
+
 function getTrackedSourceState() {
   const listed = spawnSync("git", ["ls-files", "-z"], {
     cwd: process.cwd(),
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
   })
-  if (listed.status !== 0) throw new Error("could not enumerate tracked source files before build")
+  // Sanitized Drive/release archives intentionally omit `.git`. Preserve the
+  // mixed-revision/merge-marker guard by fingerprinting the extracted source
+  // tree with the same build, dependency, runtime-state and credential
+  // exclusions instead of disabling the guard or refusing a valid recovery.
+  const sourceFiles = listed.status === 0
+    ? listed.stdout.split("\0").filter(Boolean)
+    : listArchiveSourceFiles()
 
   const conflicts = []
   const hash = createHash("sha256")
   const files = new Map()
-  for (const file of listed.stdout.split("\0").filter(Boolean).sort()) {
+  for (const file of sourceFiles.sort()) {
     // Next intentionally normalizes these two files for custom dist dirs.
     if (file === "next-env.d.ts" || file === "tsconfig.json" || !existsSync(file)) continue
     const metadata = lstatSync(file)

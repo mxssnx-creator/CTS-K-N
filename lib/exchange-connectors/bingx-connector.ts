@@ -16,7 +16,7 @@ import {
 import { safeParseResponse } from "@/lib/safe-response-parser"
 import {
   bingXEnvironmentForTestnetFlag,
-  bingXOriginForEnvironment,
+  configuredBingXOriginForEnvironment,
 } from "@/lib/bingx-environment"
 import { resolveAuthoritativeTradeDirection } from "@/lib/trade-direction"
 
@@ -281,7 +281,9 @@ export class BingXConnector extends BaseExchangeConnector {
     // the retired `testnet-open-api` host: VST orders are real exchange API
     // executions backed by virtual funds and therefore must use the dedicated
     // production-grade VST origin for every account, trade and quote request.
-    return bingXOriginForEnvironment(bingXEnvironmentForTestnetFlag(this.credentials.isTestnet))
+    return configuredBingXOriginForEnvironment(
+      bingXEnvironmentForTestnetFlag(this.credentials.isTestnet),
+    )
   }
 
   public getEnvironmentInfo(): {
@@ -294,7 +296,7 @@ export class BingXConnector extends BaseExchangeConnector {
     const environment = bingXEnvironmentForTestnetFlag(isDemo)
     return {
       environment,
-      baseUrl: bingXOriginForEnvironment(environment),
+      baseUrl: configuredBingXOriginForEnvironment(environment),
       isDemo,
       usesVirtualFunds: isDemo,
     }

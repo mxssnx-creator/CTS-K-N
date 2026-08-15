@@ -2,7 +2,6 @@ import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getSettings, getConnection } from "@/lib/redis-db"
 import { getProgressionLogs, forceFlushLogs } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
-import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
 import {
   buildPrehistoricGateKeys,
@@ -11,7 +10,7 @@ import {
   ensureScopedProgressionFromLegacy,
   progressionReadKeys,
 } from "@/lib/progression-scope"
-import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 
 export const dynamic = "force-dynamic"
 export const dynamicParams = true
@@ -149,14 +148,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // may still write trade_engine_state:{id}. Reading only one hash made the
     // progress endpoint use stale symbol totals and appear stuck in prod.
     const client = getRedisClient()
-    const [scopedEngineState, scopedRawEngineState, legacySettingsEngineState, legacyRawEngineState] = await Promise.all([
+    const [scopedEngineState, scopedRawEngineState, legacySettingsEngineState, legacyRawEngineState, runningFlag] = await Promise.all([
       client.hgetall(scope.tradeEngineStateKey).catch(() => ({})),
       client.hgetall(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({})),
       client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({})),
       client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({})),
+      client.get(`engine_is_running:${connectionId}`).catch(() => null),
     ]).catch((e) => {
       console.warn(`[v0] [ProgressionAPI] Failed to get engine state for ${connectionId}:`, e)
-      return [{}, {}, {}, {}] as any[]
+      return [{}, {}, {}, {}, null] as any[]
     })
     const engineState = {
       ...(legacyRawEngineState || {}),
@@ -181,29 +181,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     } catch {
       globalState = {}
     }
-    const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""
-    const isGloballyRunning = globalIntent === "running" || (!globalIntent && (globalState?.operator_stopped !== "1" && globalState?.operator_stopped !== "true"))
     let configuredSymbolCount = getConfiguredSymbolCount(connection, engineState)
-    
-     // PHASE 2 FIX: Check running flag directly from coordinator (most reliable)
-     // Get current engine running state from coordinator
-     let isEngineRunning = false
-     try {
-       const coordinator = getGlobalTradeEngineCoordinator()
-       if (coordinator) {
-         isEngineRunning = coordinator.isEngineRunning(connectionId)
-       }
-     } catch (e) {
-       console.warn(`[v0] [ProgressionAPI] ${connectionId}: Failed to check coordinator state, falling back to Redis flag`)
-       const runningFlag = await client?.get(`engine_is_running:${connectionId}`).catch(() => null)
-       isEngineRunning = runningFlag === "true" || runningFlag === "1"
-     }
     
     // Check if this connection is currently active/dashboard enabled
     const isActive = connection?.is_enabled_dashboard === "1" || connection?.is_enabled_dashboard === true
     const isEnabled = connection?.is_enabled === "1" || connection?.is_enabled === true
     const isInserted = connection?.is_inserted === "1" || connection?.is_inserted === true
     const isActiveInserted = connection?.is_active_inserted === "1" || connection?.is_active_inserted === true
+    const engineRuntime = resolveDistributedEngineRuntime({
+      runningHint: runningFlag,
+      states: [legacyRawEngineState, legacySettingsEngineState, scopedRawEngineState, scopedEngineState],
+      globalState,
+      connectionEnabled: isActive,
+    })
+    const isEngineRunning = engineRuntime.running
     
     // Get progression state (cycles, success rates)
     let progressionState = await ProgressionStateManager.getProgressionState(connectionId, engineType).catch((e) => {
@@ -248,20 +239,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       progressionState.strategyCycleCount ||
       progressionState.strategyLiveCycleCount ||
       0
-    const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)
-    const hasFreshProcessorHeartbeat = processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
-    const hasRecentActivity = hasFreshProcessorHeartbeat || (engineState?.last_indication_run
-      ? (Date.now() - new Date(engineState.last_indication_run).getTime()) < 60000 // Active in last 60s
-      : false)
+    const processorHeartbeat = engineRuntime.heartbeatAt
+    const hasFreshProcessorHeartbeat = engineRuntime.heartbeatFresh
+    const hasRecentActivity = hasFreshProcessorHeartbeat
     
-    // Engine is running only when there is current runtime evidence, or when
-    // production continuity has explicit/implicit running intent for an
-    // assigned+enabled connection that may still be attaching its first worker.
-    const engineRunning = isEngineRunning || 
-      hasFreshProcessorHeartbeat ||
-      (isGloballyRunning && (isActiveInserted || isInserted) && isEnabled) ||
-      engineState?.status === "running" ||
-      hasRecentActivity
+    // Persisted intent and old cycle counts are not liveness proof. The shared
+    // resolver accepts a fresh processor heartbeat, with one bounded startup
+    // grace window before the first heartbeat is published.
+    const engineRunning = isEngineRunning
 
     let indicationsCount = parseInt(progHash.indications_count || "0", 10)
     let strategiesCount  = parseInt(progHash.strategies_count  || "0", 10)
@@ -650,6 +635,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         // loss does not show a false stopped state while Redis/global/runtime
         // evidence proves the engine is active.
         isEngineRunning: engineRunning,
+        runtimeEvidence: {
+          reason: engineRuntime.reason,
+          status: engineRuntime.status,
+          heartbeatAt: processorHeartbeat || null,
+          heartbeatAgeMs: engineRuntime.heartbeatAgeMs,
+          heartbeatFresh: engineRuntime.heartbeatFresh,
+        },
         coordinatorEngineRunning: isEngineRunning,
         hasRecentActivity,
         globalEngineStatus: globalState?.status || "unknown",

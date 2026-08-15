@@ -752,6 +752,13 @@ configure_cpu_parallelism() {
   [[ -n "$(env_value REALTIME_SYMBOL_CONCURRENCY)" ]] || upsert_env REALTIME_SYMBOL_CONCURRENCY "$symbol_pool"
   [[ -n "$(env_value PREHISTORIC_SYMBOL_CONCURRENCY)" ]] || upsert_env PREHISTORIC_SYMBOL_CONCURRENCY "$historic_pool"
   [[ -n "$(env_value STRATEGY_FLOW_SYMBOL_CONCURRENCY)" ]] || upsert_env STRATEGY_FLOW_SYMBOL_CONCURRENCY "$symbol_pool"
+  # All connections share one in-process Strategy allocation budget. More
+  # than one simultaneously retained Base→Main→Real graph increases peak RSS
+  # much faster than throughput on Node's single JavaScript thread and can
+  # trigger long full-heap collections that starve health/control routes.
+  # Operators can still raise the explicit environment value after profiling.
+  local memory_flow_pool=1
+  [[ -n "$(env_value CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS)" ]] || upsert_env CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS "$memory_flow_pool"
   [[ -n "$(env_value PRESET_SYMBOL_CONCURRENCY)" ]] || upsert_env PRESET_SYMBOL_CONCURRENCY "$symbol_pool"
   ok "CPU parallelism: ${cpu_count} cores, ${symbol_pool} safe symbol worker, libuv pool ${io_pool} (explicit env may raise workers)"
 }
@@ -761,7 +768,7 @@ configure_memory_watchdog() {
   # work. The remaining budget is intentionally based on *available* memory,
   # so a server that is already busy never receives the old fixed 5.6 GiB Node
   # heap or a restart threshold it cannot sustain.
-  local total_kb available_kb total_mb available_mb reserve_mb process_budget_mb runtime_max_mb runtime_high_mb app_heap_mb scheduler_max_mb scheduler_heap_mb direct_trade_max_mb direct_trade_heap_mb
+  local total_kb available_kb total_mb available_mb reserve_mb process_budget_mb runtime_max_mb runtime_high_mb runtime_soft_mb app_heap_mb scheduler_max_mb scheduler_heap_mb direct_trade_max_mb direct_trade_heap_mb
   read -r total_kb available_kb < <(effective_memory_limits_kb)
   total_mb=$(( total_kb / 1024 ))
   available_mb=$(( available_kb / 1024 ))
@@ -781,6 +788,7 @@ configure_memory_watchdog() {
   runtime_max_mb=$(( process_budget_mb - scheduler_max_mb - direct_trade_max_mb ))
   (( runtime_max_mb >= 768 )) || fatal "Effective available memory is too low for the CTS application after worker reserves"
   runtime_high_mb=$(( runtime_max_mb * 88 / 100 ))
+  runtime_soft_mb=$(( runtime_max_mb * 75 / 100 ))
   app_heap_mb=$(( runtime_max_mb * 70 / 100 ))
   (( app_heap_mb < 512 )) && app_heap_mb=512
   (( app_heap_mb > 12288 )) && app_heap_mb=12288
@@ -793,6 +801,12 @@ configure_memory_watchdog() {
 
   upsert_env CTS_EFFECTIVE_MEMORY_MB "$total_mb"
   upsert_env CTS_AVAILABLE_MEMORY_MB "$available_mb"
+  # The application must coordinate against its own systemd service ceiling,
+  # not the larger host/cgroup total. Soft pressure serialises new Strategy
+  # graphs; the hard value matches MemoryMax exactly.
+  upsert_env CTS_MEMORY_LIMIT_MB "$runtime_max_mb"
+  upsert_env CTS_RSS_SOFT_LIMIT_MB "$runtime_soft_mb"
+  upsert_env CTS_RSS_HARD_LIMIT_MB "$runtime_max_mb"
   upsert_env CTS_NODE_HEAP_MB "$app_heap_mb"
   upsert_env CTS_SCHEDULER_NODE_HEAP_MB "$scheduler_heap_mb"
   upsert_env CTS_DIRECT_TRADE_NODE_HEAP_MB "$direct_trade_heap_mb"
@@ -944,6 +958,8 @@ configure_environment_and_redis() {
   local bingx_secret="${BINGX_API_SECRET:-${BINGX_SECRET_KEY:-${BINGX_SECRET:-$(env_value BINGX_API_SECRET)}}}"
   local bingx_vst_key="${BINGX_X02_API_KEY:-$(env_value BINGX_X02_API_KEY)}"
   local bingx_vst_secret="${BINGX_X02_API_SECRET:-$(env_value BINGX_X02_API_SECRET)}"
+  local bingx_vst_origin="${BINGX_VST_ORIGIN:-$(env_value BINGX_VST_ORIGIN)}"
+  [[ -n "$bingx_vst_origin" ]] || bingx_vst_origin="https://open-api-vst.bingx.com"
   local bingx_environment="${BINGX_ENVIRONMENT:-$(env_value BINGX_ENVIRONMENT)}"
   [[ -n "$bingx_environment" ]] || bingx_environment="prod-live"
   case "${bingx_environment,,}" in
@@ -954,8 +970,15 @@ configure_environment_and_redis() {
       ;;
     prod-vst|vst|demo|testnet)
       bingx_environment="prod-vst"
+      case "$bingx_vst_origin" in
+        https://open-api-vst.bingx.com|https://open-api-vst.bingx.pro) ;;
+        *) fatal "Unsupported BINGX_VST_ORIGIN '$bingx_vst_origin'; expected official .com or .pro Prod-VST origin" ;;
+      esac
       upsert_env BINGX_PUBLIC_ORIGIN "https://open-api-vst.bingx.com"
-      upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api-vst.bingx.com"
+      upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api-vst.bingx.pro"
+      # Authenticated requests are pinned to one explicit host; never retry an
+      # ambiguous order write automatically across .com/.pro.
+      upsert_env BINGX_VST_ORIGIN "$bingx_vst_origin"
       ;;
     *)
       fatal "Unsupported BINGX_ENVIRONMENT '$bingx_environment'; expected prod-live or prod-vst"

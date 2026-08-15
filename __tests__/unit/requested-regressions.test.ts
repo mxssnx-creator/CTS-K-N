@@ -795,7 +795,8 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("const activeCount = activeCombinedByDir[dir]")
     expect(source).toContain("perSymbolLiveOpenByDir")
     expect(source).toContain("getUnavailableBlockKeys(symbol)")
-    expect(source).toContain("dispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))")
+    expect(source).toContain("limitLiveDispatchCandidatesFairly(")
+    expect(source).toContain("boundedDispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))")
     expect(liveStage).toContain("Block Set ${realPosition.setKey || \"unknown\"} waits for authoritative parent fill")
     expect(liveStage).toContain("real?.sizeMultiplier ?? existing.sizeMultiplier")
     expect(liveStage).toContain("calculateBlockRemainingAddQuantity(")
@@ -845,7 +846,9 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("_boundedDynCeiling")
     expect(source).toContain("strategyBlockMaterializationBatchSize")
     expect(source).toContain("_independentBlockMaterializationCursorBySymbol")
-    expect(source).toContain("Every unique qualifying row reaches Real")
+    expect(source).toContain("Every unique qualifying row is evaluated at Real")
+    expect(source).toContain("limitRealRowsForMaterialization(")
+    expect(source).toContain('process.env.STRATEGY_REAL_SETS_CEILING || "0"')
     expect(source).toContain("private static readonly _AXIS_LRU_MAX = (() =>")
     expect(source).toContain("STRATEGY_VARIANT_BUILD_CONCURRENCY")
     expect(source).toContain("const buildTasks: Array<() => Promise<VariantBuildResult>>")
@@ -860,6 +863,56 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("snapshotCoordIndexForLive(coordIndex, liveSets)")
     expect(source).not.toContain("._lastRealSets[symbol] = realSets")
     expect(source).not.toContain("snapshotCoordIndexForLive(coordIndex, realSets)")
+  })
+
+  test("historic and indication CPU loops use responsive default scheduling quanta", () => {
+    const historic = read("lib/trade-engine/config-set-processor.ts")
+    const indications = read("lib/indication-sets-processor.ts")
+    const strategy = read("lib/strategy-coordinator.ts")
+    const envExample = read(".env.example")
+
+    expect(historic).toContain('process.env.PREHISTORIC_CALC_YIELD_EVERY || "256"')
+    expect(indications).toContain('process.env.INDICATION_CANDIDATE_YIELD_EVERY || "4"')
+    expect(indications).toContain('process.env.COMMON_INDICATION_CALC_BATCH_SIZE || "4"')
+    expect(envExample).toContain("PREHISTORIC_CALC_YIELD_EVERY=256")
+    expect(envExample).toContain("INDICATION_CANDIDATE_YIELD_EVERY=4")
+    expect(envExample).toContain("COMMON_INDICATION_CALC_BATCH_SIZE=4")
+    expect(envExample).toContain("STRATEGY_COOPERATIVE_YIELD_EVERY=64")
+    expect(envExample).toContain("STRATEGY_AXIS_BASE_BATCH_SIZE=32")
+    expect(envExample).toContain("STRATEGY_REDIS_HASH_WRITE_BATCH_SIZE=256")
+    expect(envExample).toContain("STRATEGY_COOPERATIVE_TIME_SLICE_MS=8")
+    expect(envExample).toContain("INDICATION_COOPERATIVE_TIME_SLICE_MS=8")
+    expect(envExample).toContain("LIVE_DISPATCH_PER_CYCLE=4")
+    expect(strategy).toContain('process.env.LIVE_DISPATCH_PER_CYCLE || "4"')
+    expect(strategy).toContain("hsetStrategyRecordInBatches(client, fpCacheKey, nextFpCache)")
+    expect(strategy).toContain("hsetStrategyRecordInBatches(netClient, targetKey, netTargetWrites)")
+  })
+
+  test("routine engine memory collection cannot stop the UI event loop", () => {
+    const engineManager = read("lib/trade-engine/engine-manager.ts")
+
+    expect(engineManager).toContain('execution: "async"')
+    expect(engineManager).toContain("monitor.gcInFlight = true")
+    expect(engineManager).toContain("getStrategyMemoryCoordinationSnapshot().activeFlows > 0")
+    expect(read("scripts/run-dev-preview-check.mjs")).toContain("CTS_NODE_HEAP_MB: String(devNodeHeapMb)")
+    expect(read("scripts/run-dev-preview-check.mjs")).toContain("DEV_NODE_SEMI_SPACE_MB || 128")
+    expect(read("scripts/run-dev-preview-check.mjs")).toContain("--max-semi-space-size=${devNodeSemiSpaceMb}")
+    expect(read("scripts/run-dev-preview-check.mjs")).toContain("DEV_MAINTENANCE_GC_INTERVAL_MS")
+    expect(read("lib/runtime-telemetry.ts")).toContain("memoryCollection")
+    expect(read("lib/runtime-telemetry.ts")).toContain("strategyMemory")
+    expect(read("scripts/verify-prod-soak.mjs")).toContain("memoryCollection: stats.runtime.memoryCollection")
+    expect(read("scripts/verify-prod-soak.mjs")).toContain("strategyMemory: stats.runtime.strategyMemory")
+    expect(engineManager).toContain('monitor.lastGCMode = "maintenance-async"')
+    expect(engineManager).toContain('monitor.lastGCMode = "urgent-sync"')
+    expect(engineManager).toContain("CTS_MAINTENANCE_GC_INTERVAL_MS")
+    expect(engineManager).toContain(": 120_000")
+    expect(read(".env.example")).toContain("CTS_MAINTENANCE_GC_INTERVAL_MS=120000")
+    expect(engineManager).toContain("Never fall back to a surprise")
+    const memoryGuard = read("lib/strategy-memory-guard.ts")
+    expect(memoryGuard).toContain("resolveStrategyGcCooldownMs")
+    expect(memoryGuard).toContain("CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS")
+    expect(memoryGuard).toContain('gc({ type: "major", execution: "async" })')
+    expect(memoryGuard).toContain('level === "critical"')
   })
 
   test("coordinator startEngine allows explicit local takeover while passive production starts stay queued", () => {
@@ -979,7 +1032,12 @@ describe("requested regression guardrails", () => {
     const closeEnd = setProcessor.indexOf("private evaluateForwardOutcome", closeStart)
     const closeBlock = setProcessor.slice(closeStart, closeEnd)
 
+    expect(setProcessor).toContain("DRAIN_PENDING_OUTCOMES_SCRIPT")
+    expect(setProcessor).toContain("CLOSE_PENDING_OUTCOME_GROUP_SCRIPT")
+    expect(setProcessor).toContain('redis.call("LSET", setKey')
     expect(closeBlock).toContain("await this.readIndicationSetEntries(client, setKey)")
+    expect(closeBlock).toContain("entries[index]?.metadata?.outcomePending")
+    expect(closeBlock).not.toContain("entries[index]?.profitFactor === 0")
     expect(closeBlock).toContain("await client.del(setKey)")
     expect(closeBlock).toContain("await client.rpush(setKey, ...serializedEntries)")
     expect(closeBlock).toContain("compactionCeiling(cfg)")
@@ -1154,21 +1212,47 @@ describe("requested regression guardrails", () => {
     const pkg = JSON.parse(read("package.json"))
     const soak = read("scripts/verify-prod-soak.mjs")
     const devRunner = read("scripts/run-dev-preview-check.mjs")
+    const routeSmoke = read("scripts/smoke-routes-test.mjs")
+    const devArtifactLock = read("scripts/dev-artifact-lock.mjs")
     const liveQuickstart = read("scripts/test-quickstart-3symbols.js")
 
     expect(pkg.scripts["test:quickstart-12"]).toBe("node scripts/run-dev-preview-check.mjs")
     expect(devRunner).toContain('RUNTIME_MODE: "development"')
     expect(devRunner).toContain('process.env.DEV_NODE_HEAP_MB || 12288')
+    expect(devRunner).toContain('CTS_NODE_HEAP_MB: String(devNodeHeapMb)')
+    expect(devRunner).toContain('process.env.DEV_RSS_SOFT_LIMIT_MB || "5120"')
+    expect(devRunner).toContain('process.env.DEV_RSS_HARD_LIMIT_MB || "8192"')
+    expect(devRunner).toContain('acquireDevArtifactLock({ artifactName: "next-dev" })')
+    expect(routeSmoke).toContain("acquireDevArtifactLock({ artifactName: 'next-dev' })")
+    expect(devArtifactLock).toContain('openSync(path, "wx", 0o600)')
+    expect(devArtifactLock).toContain("Wait for it to finish instead of running concurrent .next writers.")
     expect(devRunner).toContain("60_000 + devSoakSymbolCount * 10_000")
     expect(devRunner).toContain('WATCHPACK_POLLING: process.env.WATCHPACK_POLLING || "true"')
+    expect(devRunner).toContain("toggleWarmup.status === 429")
+    expect(devRunner).toContain("do not retry and consume more quota")
     expect(devRunner).toContain('process.env.DEV_STRATEGY_REAL_SETS_CEILING || "600"')
-    expect(devRunner).toContain('process.env.DEV_STRATEGY_VARIANT_BUILD_CONCURRENCY || "32"')
+    expect(devRunner).toContain('process.env.DEV_STRATEGY_VARIANT_BUILD_CONCURRENCY || "1"')
     expect(devRunner).toContain('BINGX_API_KEY: ""')
     expect(soak).toContain("liveTrade: false")
     expect(soak).toContain("is_live_trade: false")
     expect(soak).toContain("realEvalPosCount: 1")
     expect(soak).toContain("Paper position lifecycle was not exercised")
     expect(soak).toContain("Engine did not publish the exact")
+    expect(soak).toContain("paths.map((path) => requestWithRetry(path))")
+    expect(soak).toContain("retrying without resetting soak state")
+    expect(soak).toContain("requestLifecycleToggle")
+    expect(soak).toContain("prod-soak:toggle-retry")
+    expect(soak).toContain("const endpointSchedules = [")
+    expect(soak).toContain("SIGNAL_POSITION_STORAGE_KEYS_PER_ROW = 6")
+    expect(soak).toContain("SIGNAL_MAX_POSITIONS_TOTAL * SIGNAL_POSITION_STORAGE_KEYS_PER_ROW")
+    expect(soak).toContain("signalPositionTopologyKeyBudget: SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET")
+    const prodUi = read("scripts/verify-prod-ui-max.mjs")
+    expect(prodUi).toContain('["boot_", "prod_", "dev_", "dev-preview_"]')
+    expect(prodUi).toContain("!validServiceBootId(systemStatus?.startup?.boot_id)")
+    expect(soak).toContain("intervalMs: 60_000")
+    expect(soak).toContain("intervalMs: 30_000")
+    expect(soak).toContain("const byPath = new Map(lastByPath)")
+    expect(soak).toContain('"BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"')
     expect(soak).toContain('directExecutionEnabled: true')
     expect(soak).toContain("finalSignal.sourcePerformanceLookback !== 12")
     expect(soak).toContain("finalSignal.lanePerformanceLookback !== 10")
@@ -1422,18 +1506,63 @@ describe("requested regression guardrails", () => {
     )
   })
 
-  test("status-all derives running state from operator intent and fresh engine status", () => {
+  test("status-all derives running state from process-independent Redis runtime evidence", () => {
     const source = read("app/api/trade-engine/status-all/route.ts")
 
-    expect(source).toContain('globalState.operator_intent || globalState.desired_status || globalState.status')
-    expect(source).toContain('const heartbeatFresh = (() => {')
-    expect(source).toContain('statusText === "running"')
-    expect(source).toContain('const isRunning = !globallyPaused && !operatorStopped && (localManagerRunning || remoteWorkerRunning)')
-    expect(source).toContain('const remoteWorkerRunning = heartbeatFresh && statusText === "running"')
+    expect(source).toContain('import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"')
+    expect(source).toContain('client.get(`engine_is_running:${conn.id}`)')
+    expect(source).toContain('const runtime = resolveDistributedEngineRuntime({')
+    expect(source).toContain('states: [runtimeState, settingsState]')
+    expect(source).toContain('const isRunning = runtime.running')
     expect(source).toContain("...settingsState")
     expect(source).toContain("...runtimeState")
     expect(source).toContain("runtimeState.force_symbols || runtimeState.active_symbols || runtimeState.symbols")
-    expect(source).not.toContain('const isRunning = globallyRunning && !globallyPaused')
+    expect(source).toContain("__status_all_connections_snapshot")
+    expect(source).toContain("__status_all_connections_inflight")
+    expect(source).toContain("Active connection read timed out; serving the last complete status snapshot")
+    expect(source).toContain("__status_all_engine_symbols")
+    expect(source).toContain("rememberCompleteEngineSymbols(conn.id, resolvedSymbols)")
+    expect(source).toContain("recoverCompleteEngineSymbols(conn.id)")
+    expect(source).toContain("Engine symbol read timed out")
+    expect(source).not.toContain("withTimeout(getActiveConnectionsForEngine(), 2000, [])")
+    expect(source).not.toContain('from "@/lib/trade-engine"')
+  })
+
+  test("high-frequency read-only routes do not instantiate the complete trade-engine graph", () => {
+    for (const path of [
+      "app/api/trade-engine/status-all/route.ts",
+      "app/api/connections/[id]/engine-states/route.ts",
+      "app/api/connections/progression/[id]/route.ts",
+      "app/api/connections/progression/[id]/stats/route.ts",
+      "app/api/system/monitoring/route.ts",
+    ]) {
+      const source = read(path)
+      expect(source).toContain("resolveDistributedEngineRuntime")
+      expect(source).not.toContain('from "@/lib/trade-engine"')
+      expect(source).not.toContain('import("@/lib/trade-engine")')
+    }
+  })
+
+  test("high-frequency dashboard reads parallelize independent Redis snapshots", () => {
+    const engineStates = read("app/api/connections/[id]/engine-states/route.ts")
+    const tradeHistory = read("app/api/trading/trade-history/route.ts")
+    const configCounts = read("app/api/indications/config-counts/route.ts")
+
+    expect(engineStates).toContain("const [connection, runningHintRaw, runtimeState, settingsState, globalState] = await Promise.all")
+    expect(tradeHistory).toContain("const [connection, localPage, analyticsSnapshots, cached] = await Promise.all")
+    expect(configCounts).toContain("getAppSettings(),")
+    expect(configCounts).not.toContain("bypassCache: true")
+  })
+
+  test("detailed lifecycle monitoring requires both heartbeat and runtime progress to be stale", () => {
+    const source = read("app/api/trade-engine/detailed-logs/route.ts")
+
+    expect(source).toContain("const historicProgressAt = Math.max(")
+    expect(source).toContain("const runtimeActivityAt = Math.max(")
+    expect(source).toContain("toEpochMs(progHash.last_strategy_tick_at)")
+    expect(source).toContain("heartbeatAgeMs > HEARTBEAT_STALE_MS) &&")
+    expect(source).toContain("runtimeActivityAgeMs > PROCESSING_STALE_MS")
+    expect(source).toContain("historicProgressAgeMs > PROCESSING_STALE_MS")
   })
 
   test("connection enable paths keep global coordinator intent stable when engines can run", () => {
@@ -1836,16 +1965,20 @@ describe("requested regression guardrails", () => {
 
   test("Redis init rechecks stale global readiness before skipping migrations", () => {
     const source = read("lib/redis-db.ts")
+    const bootstrap = read("lib/redis-runtime-bootstrap.ts")
+    const blockStart = source.indexOf("if (globalForRedis.__redis_fully_connected || isConnected)")
     const globalReadyBlock = source.slice(
-      source.indexOf("if (globalForRedis.__redis_fully_connected)"),
-      source.indexOf("if (isConnected) return", source.indexOf("if (globalForRedis.__redis_fully_connected)")),
+      blockStart,
+      source.indexOf("if (globalForRedis.__redis_init_promise)", blockStart),
     )
 
-    expect(globalReadyBlock).toContain("getLatestMigrationVersion")
-    expect(globalReadyBlock).toContain('redisInstance!.get("_schema_version")')
-    expect(globalReadyBlock).toContain("currentVersion < latestVersion")
-    expect(globalReadyBlock).toContain("await runMigrations()")
-    expect(globalReadyBlock).toContain("Global ready marker is stale")
+    expect(globalReadyBlock).toContain('hasSharedRuntimeMarker(redisInstance!, "ready")')
+    expect(globalReadyBlock).toContain("globalForRedis.__redis_fully_connected = false")
+    expect(globalReadyBlock).toContain("migrationsRan = false")
+    expect(source).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
+    expect(source).toContain('import("@/lib/redis-migrations")')
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 98")
+    expect(source).toContain('client.get("_schema_version").catch(() => null)')
   })
 
   test("QuickStart re-entry preserves running progressions instead of forced restarts", () => {
@@ -1859,13 +1992,58 @@ describe("requested regression guardrails", () => {
     expect(quickStart).toContain("quickstartRecoordination.progressionChanged === true")
     expect(quickStart).toContain("canRetainQuickStartPrehistoricCoverage")
     expect(quickStart).toContain("const quickstartRetainsPrehistoricCoverage =")
+    expect(quickStart).toContain("recoordinatedEngineState")
+    expect(quickStart).toContain("recoordinatedPrehistoricState")
+    expect(quickStart).toContain("Verified process-restart Historic cache retained")
+    expect(quickStart).toContain("completion gates were self-healed")
+    expect(quickStart).toContain('engine_started: "false"')
+    expect(quickStart).toContain("prehistoric_cycles_completed: String(symbols.length)")
+    expect(quickStart).toContain('client.hdel(quickstartScope.progressionKey, "ended_at")')
+    expect(quickStart).toContain("cumulative progression was made reusable")
+    expect(quickStart).toContain("retainedDoneGateKeys.scoped")
+    expect(quickStart).toContain("quickstartScope.prehistoricLoadedKey")
+    expect(quickStart).toContain("stoppedProgressionMatchesCurrentState")
+    expect(quickStart).toContain("expectedSymbolsHash")
+    expect(quickStart).toContain("quickstartTouchedFields.length === 0 && !quickstartNeedsFreshProcessing")
     expect(quickStart).toContain("config_set_symbols_processed: quickstartRetainsPrehistoricCoverage ? symbols.length : 0")
     expect(quickStart).toContain("if (!quickstartRetainsPrehistoricCoverage)")
     expect(quickStart).toContain("coordinator.invalidateSymbolsCacheForConnection(connectionId)")
     expect(quickStart).not.toContain("quickstart_engine_restart")
 
+    const changeDetection = read("lib/quickstart-change-detection.ts")
+    expect(changeDetection).toContain("resolveQuickStartPreviousSymbolBasket")
+    expect(changeDetection).toContain("symbolAliasUnchanged")
+
     expect(coordinator).toContain("FULL_RESTART_ESCALATION_ENABLED = false")
     expect(coordinator).toContain("restart escalation disabled")
+  })
+
+  test("QuickStart and guarded settings commits keep every symbol alias coherent", () => {
+    const quickStart = read("app/api/trade-engine/quick-start/route.ts")
+    const recoordinator = read("lib/connection-recoordinator.ts")
+    const progression = read("lib/progression-state-manager.ts")
+
+    expect(quickStart.match(/selected_symbols: JSON\.stringify\(symbols\)/g)?.length).toBeGreaterThanOrEqual(2)
+    expect(recoordinator).toContain("const settingsPatch = normalizeSymbolAliasesInPatch(")
+    expect(recoordinator).toContain("const normalizedAdditionalPatch = normalizeSymbolAliasesInPatch(")
+    expect(progression.indexOf("connectionSettings.force_symbols"))
+      .toBeLessThan(progression.indexOf("connectionSettings.selected_symbols"))
+    expect(read("lib/trade-engine/engine-manager.ts"))
+      .toContain("getCanonicalConnectionSettingsOverlay(this.connectionId)")
+    expect(read("lib/trade-engine/symbol-selection-ownership.ts"))
+      .toContain("The unscoped settings state is also a runtime heartbeat target")
+  })
+
+  test("Common indication calculation yields without fragmenting Redis persistence", () => {
+    const source = read("lib/indication-sets-processor.ts")
+    const commonStart = source.indexOf("private async processCommonSet")
+    const commonEnd = source.indexOf("private async processTrendSet", commonStart)
+    const commonBlock = source.slice(commonStart, commonEnd)
+
+    expect(source).toContain('process.env.COMMON_INDICATION_CALC_BATCH_SIZE || "4"')
+    expect(commonBlock).toContain("COMMON_INDICATION_CALC_BATCH_SIZE")
+    expect(commonBlock.match(/await flushCandidates\(\)/g)?.length).toBe(2)
+    expect(commonBlock).toContain("flushing only full")
   })
 
   test("QuickStart commits running Redis intent before dispatching engine starts", () => {
@@ -1936,14 +2114,14 @@ describe("requested regression guardrails", () => {
     const progressionRoute = read("app/api/connections/progression/[id]/route.ts")
     const statusRoute = read("app/api/connections/status/route.ts")
 
-    expect(progressionRoute).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
-    expect(progressionRoute).toContain('const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""')
-    expect(progressionRoute).toContain('const [scopedEngineState, scopedRawEngineState, legacySettingsEngineState, legacyRawEngineState] = await Promise.all')
+    expect(progressionRoute).toContain('import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"')
+    expect(progressionRoute).toContain('const [scopedEngineState, scopedRawEngineState, legacySettingsEngineState, legacyRawEngineState, runningFlag] = await Promise.all')
     expect(progressionRoute).toContain('const activeProgressionSymbolCount = toNumber(progHash.symbol_count) || toNumber(progHash.quickstart_symbol_count)')
     expect(progressionRoute).toContain('const finalHistoricProgress = calculateHistoricProgress(')
     expect(progressionRoute).not.toContain('prehistoricProgress.percentComplete = 100')
-    expect(progressionRoute).toContain('const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)')
-    expect(progressionRoute).toContain('hasFreshProcessorHeartbeat ||')
+    expect(progressionRoute).toContain('const engineRuntime = resolveDistributedEngineRuntime({')
+    expect(progressionRoute).toContain('const processorHeartbeat = engineRuntime.heartbeatAt')
+    expect(progressionRoute).not.toContain('from "@/lib/trade-engine"')
 
     expect(statusRoute).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
     expect(statusRoute).toContain('import { buildProgressionScope } from "@/lib/progression-scope"')
@@ -2001,6 +2179,9 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("first-pass fallback opened live gates")
     expect(source).not.toContain('writePrehistoricGate(client, connId, this.currentEngineType, "done")')
     expect(source).toContain("schedulePrehistoricProgressionAfterRealtimeWarmup")
+    expect(source).toContain('this.canonicalPipelineAdmission.tryAcquire("bootstrap")')
+    expect(source).toContain('this.canonicalPipelineAdmission.release("bootstrap")')
+    expect(source).toContain("prehistoric_bootstrap_admission_wait_ms")
   })
 
   test("continuous historic replay reports slow cycles without detaching live workers", () => {
@@ -2013,6 +2194,34 @@ describe("requested regression guardrails", () => {
     expect(block).toContain("await mapWithConcurrency(scheduledSymbols, replayConcurrency, replayOneSymbol, { yieldEvery: 1 })")
     expect(block).toContain("clearTimeout(slowReplayDiagnostic)")
     expect(block).not.toContain("withCycleDeadline(")
+  })
+
+  test("verified Historic bootstrap bridges in-process lag but preserves opt-in exact replay", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+    const checkpoint = source.indexOf('const replayCheckpointTs = replayMode === "exact" ? prehistoricEnd.getTime() : Date.now()')
+    const completion = source.indexOf('is_complete: "1"', checkpoint)
+    const gates = source.indexOf("writePrehistoricGate(redisClient", checkpoint)
+
+    expect(source).toContain("resolvePrehistoricRangeHours(")
+    expect(source).toContain("const rangeHours = resolvePrehistoricRangeHours(appSettings as Record<string, unknown>)")
+    expect(source).toContain("`prehistoric:checkpoint:${this.connectionId}:${symbol}`")
+    expect(source).toContain("historicReplayNeedsRealtimeWarmup")
+    expect(source).toContain("prehistoric_replay_coalesced_windows_total")
+    expect(source).toContain('pendingOrder: replayMode === "exact" ? "earliest" : "latest"')
+    expect(checkpoint).toBeGreaterThan(0)
+    expect(completion).toBeGreaterThan(checkpoint)
+    expect(gates).toBeGreaterThan(completion)
+  })
+
+  test("all process memory monitors use the launched heap contract", () => {
+    const startup = read("lib/startup-coordinator.ts")
+    const manager = read("lib/memory-manager.ts")
+    const devRunner = read("scripts/run-dev-preview-check.mjs")
+
+    expect(startup).toContain("const configuredHeapMB = Number(process.env.CTS_NODE_HEAP_MB)")
+    expect(manager).toContain("__cts_memory_manager__")
+    expect(manager).toContain("clearInterval(this.gcInterval as any)")
+    expect(devRunner).toContain("CTS_NODE_HEAP_MB: String(devNodeHeapMb)")
   })
 
   test("production cron route uses canonical ind-strat pipeline for all configured symbols", () => {
@@ -2588,6 +2797,9 @@ describe("requested regression guardrails", () => {
     expect(block).toContain("initializedMissingProgression = true")
     expect(block).toContain('const settingsMismatch = storedFingerprint === "" || storedFingerprint !== liveFingerprint')
     expect(block).toContain("if (initializedMissingProgression)")
+    expect(block).toContain("completedHistoricCacheMatches")
+    expect(block).toContain("completed_progression_fingerprint")
+    expect(block).toContain("verified-process-restart-cache")
     expect(block).toContain("progress_settings_snapshot: JSON.stringify(liveSnapshot)")
     expect(block).toContain("client.del(`realtime:${connectionId}`)")
     expect(block).toContain('reason: "no active progression"')
@@ -3527,6 +3739,32 @@ describe("requested regression guardrails", () => {
     expect(route).toContain("const activeStratStageSeen: Record<string, boolean>")
     expect(route).toContain("activeStratStageSeen[suffix] = true")
     expect(route).toContain("stratCounts[type] = activeStratStageSeen[type] ? fromActive")
+  })
+
+  test("Next workers share one Redis-coordinated runtime Base bootstrap", () => {
+    const migrations = read("lib/redis-migrations.ts")
+    const bootId = read("lib/runtime-boot-id.ts")
+    const bootstrap = read("lib/redis-runtime-bootstrap.ts")
+    const redisDb = read("lib/redis-db.ts")
+    const devLauncher = read("scripts/start-development.mjs")
+    const prodLauncher = read("scripts/start-production.mjs")
+    const devVerifier = read("scripts/run-dev-preview-check.mjs")
+
+    expect(bootId).toContain("process.env.CTS_RUNTIME_BOOT_ID")
+    expect(migrations).toContain("ensureRuntimeBaseBootstrap")
+    expect(bootstrap).toContain("system:database:base-bootstrap:")
+    expect(migrations).toContain("NX: true")
+    expect(migrations).toContain("RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS")
+    expect(migrations).toContain("await releaseOwnedRedisLock(client, keys.baseLock, token)")
+    expect(migrations).toContain("__v0_devBootGuardDone = false")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 98")
+    expect(redisDb).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
+    expect(redisDb).toContain("ensureSharedVolatileStartupCleanup")
+    expect(redisDb).toContain("markSharedRuntimeReady")
+    for (const launcher of [devLauncher, prodLauncher, devVerifier]) {
+      expect(launcher).toContain("CTS_RUNTIME_BOOT_ID")
+      expect(launcher).toContain("CTS_RUNTIME_STARTED_AT")
+    }
   })
 
 })

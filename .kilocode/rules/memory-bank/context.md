@@ -4,6 +4,122 @@
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current recovery and validation checkpoint (2026-08-15)
+
+- Persistent-workspace rule (binding for every new CTS chat): continue from
+  `/workspace/CTS-K-N-v3.7`; the recovered
+  `/workspace/scratch/2401a4646209/cts-latest` tree is a read-only fallback.
+  Keep installer/runtime/Redis
+  state outside the source tree in `/workspace/CTS-K-N-runtime`, never run automatic workspace
+  cleanup, and never replace the tree from an older archive without first
+  comparing it to the newest durable checkpoint. Create a sanitized local and
+  Google Drive checkpoint after each green functional milestone and before each
+  risky long soak/build/publication step. The durable Drive target is folder
+  `CTS-K-N BingX X02 VST Release 2026-08-11` (`1K_4E4ZdHJRsqrY1nS6vCfLg6VEuWqS5C`).
+  Source archives must include the credential-free `.env.example`, while
+  excluding real `.env` files, credentials, logs, raw trade reports, database
+  snapshots, build output and dependencies.
+- The complete GitHub head namespace was fetched and compared by commit date,
+  ancestry, patch identity and tree. No hidden branch is newer than
+  `agent/historic-runtime-stability-20260814@df217176`; `main@9ee7b7ec` is
+  its ancestor, and the misleadingly named `CTS-v5.6@48e991a7` dates from
+  2026-08-06 and is already contained in current history. The recovered
+  `CTS-K-N-current-main` directory is newer only as an uncommitted working
+  tree (109 modified plus 27 new files), and that complete tree is now
+  consolidated in the persistent checkout.
+- Persistent operator tooling is installed outside Git: GitHub CLI `2.97.0`
+  is under `/workspace/tools/github-cli`; Redis server and CLI `8.10.0` are
+  under `/workspace/tools/redis`. The reusable runtime wrappers and safe
+  loopback configuration are in `/workspace/CTS-K-N-runtime`. Shared Redis
+  uses protected mode, 16 databases, AOF `everysec`, RDB snapshots and
+  `noeviction`; a physical wrapper stop/start retained probes in both DB0 and
+  DB8. Local live-order placement remains explicitly disabled.
+- The 2026-08-15 `redis-safety` current-main checkpoint was integrated onto
+  `agent/historic-runtime-stability-20260814` without replacing Git metadata or
+  the verified branch ancestry. Its Drive SHA-256 is
+  `445722ff4e0e4aa583faaac525cd4e8fba00be38fd259d426dd7c0eadfdb9613`.
+  Independent acceptance exposed and fixed one remaining bootstrap defect:
+  a failed shared-Redis cleanup command was previously treated as 65 seconds
+  of lock contention, and Jest-created inline snapshot timers could outlive
+  their module environment. Redis command errors now retry on the next init
+  without the contention spin, periodic persistence stays disabled in Jest
+  unless explicitly requested, and the complete suite passes 181/181 suites
+  and 1,215/1,215 tests. TypeScript, ESLint, source syntax, diff checks and the
+  1,420-file secret scan are green.
+- Direct Trade now has a default active global position capacity of `100` and
+  a separate hard operator maximum of `300` (still `12` per symbol / `6` per
+  direction). Exact legacy default `300` settings migrate once to `100`; custom
+  operator values remain unchanged. Minimum PF remains `4`.
+- The full 32-symbol Shared-Redis Dev cold replay on 2026-08-15 completed
+  Historic `32/32` in `350295 ms` with `115168` candles, `23600845` indication
+  results, zero errors, 36 Signal indications and up to 29 paper positions. It
+  stayed within the configured RSS/heap safety caps and compacted Redis from
+  roughly 49k to 34k keys. The acceptance harness then stopped normally (no
+  crash) because only 2 of the required 3 per-symbol Main cycles completed in
+  the bounded grace period. Root cause: the Dev harness configured
+  `STRATEGY_REAL_SETS_CEILING=600`, but runtime never consumed it; one symbol
+  retained 57,576 qualified Real objects downstream. The repaired limit is
+  post-evaluation only, keeps complete logical/raw counts, preserves every
+  exact active lineage even above the ceiling, and remains unlimited by
+  default in production. A full cold rerun is mandatory before publication.
+
+- Durable publication target is PR `#184`, branch
+  `agent/historic-runtime-stability-20260814`, in
+  `mxssnx-creator/CTS-K-N`. Always fetch the live branch head immediately before
+  publishing and use a verified fast-forward update. The post-recovery safe head
+  is `df2171764a297fef4870c709d1c7f20b590d2775`; its source tree is the verified
+  pre-publication tree `273d9bbb50072c92bfe40dfc0f757f1c12faad5b`.
+- Historic indication writes are bounded and batched, the historic-to-realtime
+  handoff retains its evaluated symbol/direction state, and non-combined
+  Real-to-Live dispatch now retains both the exact executable row Set and its
+  broader Block lineage. Combined position-count dispatch remains intentionally
+  member-only so one Base-related pos-count group is counted exactly once.
+- Direct Trade defaults to minimum PF `4`; the exhaustive 48-hour and 90-hour
+  grids, normalized generation-v2 configuration transport, bounded position
+  capacities (`100` default, `300` hard global / `12` per symbol / `6` per direction), and restart
+  reconstruction are covered by dedicated regression and soak contracts.
+- Inline Redis no longer persists the reconstructible Direct-Trade maximum grid,
+  while settings, position/order ownership and lifecycle ledgers stay durable.
+  Critical snapshot barriers have a bounded five-second wait. Flat Special
+  numeric settings preserve numeric `0`/`1` instead of being coerced to booleans.
+- Settings/import and init-status freshness, unique dev/build snapshots, Direct
+  calculation route serialization, and SWR response reuse close the known UI,
+  event-overlap and concurrent-request stalls. The detailed evidence templates
+  are `docs/CTS-K-N-VALIDATION-RESULTS-2026-08-14.md` and `.json`; refresh them
+  with the final 2026-08-15 rerun instead of copying historic claims forward.
+- The pre-cleanup acceptance evidence was: 173 Jest suites / 1,172 tests,
+  TypeScript, ESLint, source syntax, a 42-page Next 15.5.18 production build,
+  Linux preflight, 32-symbol development and production progression soaks,
+  35-source Signal soak, Direct 48h/90h maximum grids and fail-closed BingX VST
+  credential checks. No authenticated exchange credential survived in source,
+  no order was submitted from the sanitized environment, and the alternate
+  `open-api-vst.bingx.pro` host remained fail-closed/unverified.
+- Platform scratch-workspace pruning cannot be disabled by project code. The
+  mandatory continuity boundary is therefore external: after every completed
+  functional block create and hash a sanitized Google Drive archive, push the
+  coherent GitHub checkpoint, and preserve the results/delta report in durable
+  Library/Drive storage. At the start of every new CTS chat, recover and verify
+  the latest external checkpoint before modifying or installing anything.
+- Recovery rerun installed the lockfile-complete dependency graph and the
+  installer-supported `redis-memory-server` fallback under the external runtime
+  root `/workspace/CTS-K-N-runtime`. Redis `stable` starts with
+  durable AOF/RDB data in `redis-data`, `appendfsync=everysec`, protected mode
+  and `noeviction`; a physical stop/start retained the exact verification key.
+  Because Codex command sandboxes isolate network namespaces, shared-Redis app
+  tests must run in the same managed shell session as that Redis process here;
+  a normal Linux systemd/PM2 install does not have this sandbox limitation.
+- The new reproducible Historic-DCA entry point is
+  `scripts/optimize-dca-14d.ts`. The exact 14-day run covered 2,016 candidates,
+  four symbols, both directions and 5m/15m/30m with costs/slippage. Under a 6%
+  drawdown and single-loss ceiling, two candidates passed two 7-day folds; the
+  best had 50 positions (17 Long/33 Short), PF 1.6903, +13.1489% simulated
+  initial-notional PnL, 5.6004% max drawdown and zero total-loss events. No
+  candidate passed four independent 3.5-day folds, so this is not evidence for
+  a stable-profit guarantee and must not silently replace production defaults.
+  The complete aggregate result is
+  `validation-results/dca-historic-14d-2026-08-15.json` (runtime evidence,
+  excluded from source archives); publish a summarized result separately.
+
 ## Current audit checkpoint (2026-08-12)
 
 - Restored the credential-free `main@4b0ef042` archive after workspace pruning
@@ -1205,3 +1321,34 @@ credentials are present.
   this sandbox because `open-api-vst.bingx.com` is not allowlisted. No VST or
   mainnet order has been submitted; run the authenticated 20-minute VST soak
   only on an approved host with explicitly configured VST credentials.
+
+## Session 2026-08-15 — Persistent shared-Redis continuation checkpoint
+
+- [x] Continue from the persistent source workspace
+  `/workspace/scratch/2401a4646209/cts-latest`; do not auto-clean it between
+  chats. Runtime artifacts live in the sibling `cts-runtime` directory and
+  must never enter source archives or GitHub commits.
+- [x] Shared Redis is persistent in unified shell session `7774`. Preserve DB0's
+  single durability marker exactly; use DB1 for development, DB2 for production,
+  and DB3 for isolated recovery diagnostics. Never flush or mutate DB0.
+- [x] GitHub `main` was reverified at
+  `9ee7b7ec84998db2430f9b960096fc7b7109e2ee`; current publication work remains
+  on PR #184 / `agent/historic-runtime-stability-20260814` until the final gate.
+- [x] Added cooperative Pos-Count combination and a fair physical Live-dispatch
+  budget of four Sets/cycle. Strategy evaluation/statistics remain exhaustive;
+  only paper/exchange dispatch is bounded and continued fairly across cycles.
+  Focused regression suites pass 230/230.
+- [x] Uploaded the sanitized intermediate Drive checkpoint
+  `CTS-K-N-current-sanitized-dev32-dispatch-checkpoint-2026-08-15T020830Z.tar.gz`
+  (5,453,733 bytes, SHA-256
+  `7c898da5fdccb0de3b27adccf41c87c40ad505c5d8a38726895502ca0d37b67d`,
+  Drive ID `1I5SjVtclMuUDBkHHsACzhiU1TY2-n5xN`) plus checksum file ID
+  `1e1x-EDcLM2lHlEeqJzeI2t1ZMMGA7mSN`. The archive contains `.env.example`
+  and excludes credentials, runtime `.env` files, logs, raw reports, database
+  snapshots, build output and dependencies.
+- [ ] The latest cold 32-symbol development soak completed without crash and
+  kept RSS near 6.1 GiB, but correctly failed its responsiveness gate: p95 was
+  3,755 ms versus the 3,000 ms limit. Do not weaken the limit. Continue by
+  locating the remaining multi-second synchronous/GC slice, then rerun dev,
+  Redis recovery, build/Linux preflight, production soak, 14-day DCA and final
+  verification before the final Drive backup and GitHub push.

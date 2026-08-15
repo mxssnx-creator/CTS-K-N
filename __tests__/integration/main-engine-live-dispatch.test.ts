@@ -364,6 +364,48 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
   })
 
+  test("keeps the exact Real row Set in non-combined Live lineage", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const { calculateLivePositionStatistics } = await import("@/lib/live-position-statistics")
+    connection.is_live_trade = "0"
+    connection.live_trade_requested = "0"
+
+    const broaderBlockKey = "SOLUSDT:direction:short#axis:p4_l1_c1_opos_dshort_u0#block"
+    const blockLaneKey = `${broaderBlockKey}#block_lane:direction`
+    const exactLiveSetKey = `${broaderBlockKey}#row_real#row_live`
+    const result = await executeLivePosition(connection.id, {
+      id: "real-row-lineage",
+      connectionId: connection.id,
+      symbol: "SOLUSDT",
+      direction: "short",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending",
+      timestamp: Date.now(),
+      setKey: exactLiveSetKey,
+      parentSetKey: broaderBlockKey,
+      indicationType: "direction",
+      setVariant: "block",
+      blockOnly: true,
+      blockLaneKey,
+      accumulatedSetKeys: [broaderBlockKey, blockLaneKey],
+      combinedPosCounts: false,
+    } as any, recordingConnector)
+
+    expect(result.status).toBe("simulated")
+    expect(result.accumulatedSetKeys).toEqual(expect.arrayContaining([
+      exactLiveSetKey,
+      broaderBlockKey,
+      blockLaneKey,
+    ]))
+    expect(calculateLivePositionStatistics([result as any]).relationIntegrity).toEqual(
+      expect.objectContaining({ success: true, mismatchCount: 0 }),
+    )
+  })
+
   test("preserves Signal source/risk lineage and arms correctly-sided SL/TP controls", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
     const signalRisk = {

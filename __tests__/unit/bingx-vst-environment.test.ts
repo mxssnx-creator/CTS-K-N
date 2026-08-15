@@ -1,15 +1,27 @@
 import {
+  BINGX_PROD_VST_FALLBACK_ORIGIN,
   BINGX_PROD_VST_ORIGIN,
+  configuredBingXOriginForEnvironment,
   normalizeBingXEnvironment,
 } from "@/lib/bingx-environment"
 import { BingXConnector } from "@/lib/exchange-connectors/bingx-connector"
 
 describe("BingX Prod-VST connector contract", () => {
   const originalFetch = global.fetch
+  const originalVstOrigin = process.env.BINGX_VST_ORIGIN
+
+  beforeEach(() => {
+    delete process.env.BINGX_VST_ORIGIN
+  })
 
   afterEach(() => {
     global.fetch = originalFetch
     jest.restoreAllMocks()
+  })
+
+  afterAll(() => {
+    if (originalVstOrigin === undefined) delete process.env.BINGX_VST_ORIGIN
+    else process.env.BINGX_VST_ORIGIN = originalVstOrigin
   })
 
   test("normalizes explicit environment aliases and fails closed on unknown values", () => {
@@ -17,6 +29,13 @@ describe("BingX Prod-VST connector contract", () => {
     expect(normalizeBingXEnvironment("testnet")).toBe("prod-vst")
     expect(normalizeBingXEnvironment("mainnet")).toBe("prod-live")
     expect(() => normalizeBingXEnvironment("staging")).toThrow("Unsupported BINGX_ENVIRONMENT")
+    expect(configuredBingXOriginForEnvironment("prod-vst")).toBe(BINGX_PROD_VST_ORIGIN)
+    process.env.BINGX_VST_ORIGIN = BINGX_PROD_VST_FALLBACK_ORIGIN
+    expect(configuredBingXOriginForEnvironment("prod-vst")).toBe(BINGX_PROD_VST_FALLBACK_ORIGIN)
+    process.env.BINGX_VST_ORIGIN = "https://example.invalid"
+    expect(() => configuredBingXOriginForEnvironment("prod-vst")).toThrow(
+      "Unsupported BINGX_VST_ORIGIN",
+    )
   })
 
   test("keeps balance, quotes, orders, positions, and mode changes on Prod-VST", async () => {
@@ -180,5 +199,34 @@ describe("BingX Prod-VST connector contract", () => {
       success: false,
       error: "Prod-VST position mode cannot be changed to one-way; use hedge mode with an explicit positionSide",
     })
+  })
+
+  test("pins every authenticated Prod-VST request to an explicit official .pro origin", async () => {
+    process.env.BINGX_VST_ORIGIN = BINGX_PROD_VST_FALLBACK_ORIGIN
+    const seen: URL[] = []
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      seen.push(url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/quote/ticker") {
+        return Response.json({ code: 0, data: { symbol: "BTC-USDT", lastPrice: "60000" } })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+
+    const connector = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+    expect(connector.getEnvironmentInfo().baseUrl).toBe(BINGX_PROD_VST_FALLBACK_ORIGIN)
+    await expect(connector.getTicker("BTCUSDT")).resolves.toMatchObject({ last: 60000 })
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every((url) => url.origin === BINGX_PROD_VST_FALLBACK_ORIGIN)).toBe(true)
   })
 })

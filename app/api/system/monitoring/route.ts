@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { getSystemResourceMetrics } from "@/lib/system-resource-metrics"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -8,6 +9,37 @@ export const runtime = "nodejs"
 const MONITORING_KEY_SAMPLE_LIMIT = 20_000
 const MONITORING_KEY_SAMPLE_TTL_MS = 5_000
 let keyInventoryCache: { at: number; keys: string[] } | null = null
+const MONITORING_RESPONSE_TTL_MS = 5_000
+const MONITORING_RESPONSE_MAX_STALE_MS = 30_000
+type MonitoringResponseSnapshot = {
+  body: string
+  headers: Array<[string, string]>
+  status: number
+  statusText: string
+}
+let monitoringResponseCache: {
+  expiresAt: number
+  staleUntil: number
+  snapshot: MonitoringResponseSnapshot
+} | null = null
+let monitoringResponseInFlight: Promise<MonitoringResponseSnapshot> | null = null
+
+function responseFromMonitoringSnapshot(snapshot: MonitoringResponseSnapshot): Response {
+  return new Response(snapshot.body, {
+    headers: snapshot.headers,
+    status: snapshot.status,
+    statusText: snapshot.statusText,
+  })
+}
+
+async function snapshotMonitoringResponse(response: Response): Promise<MonitoringResponseSnapshot> {
+  return {
+    body: await response.text(),
+    headers: Array.from(response.headers.entries()),
+    status: response.status,
+    statusText: response.statusText,
+  }
+}
 
 async function readRedisDbSize(client: ReturnType<typeof getRedisClient>): Promise<number> {
   try {
@@ -119,7 +151,7 @@ async function collectConnectionIds(
   return Array.from(ids)
 }
 
-export async function GET() {
+async function buildMonitoringResponse() {
   try {
     const resourceMetrics = getSystemResourceMetrics()
     let client: ReturnType<typeof getRedisClient> | null = null
@@ -208,14 +240,9 @@ export async function GET() {
       estimatedDbBytes = 0
     }
 
-    let coordinatorEngineCount = 0
-    try {
-      const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
-      const coordinator = getGlobalTradeEngineCoordinator()
-      coordinatorEngineCount = coordinator?.getActiveEngineCount?.() ?? 0
-    } catch {
-      coordinatorEngineCount = 0
-    }
+    const globalEngineState = client
+      ? await client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>))
+      : {}
     
     let totalIndicationCycles = 0
     let totalStrategyCycles = 0
@@ -237,15 +264,18 @@ export async function GET() {
             (connectionHash as any)?.engine_type || (connectionHash as any)?.engineType || "main",
           ).replace(/[^A-Za-z0-9._-]/g, "_") || "main"
           const engineTypes = Array.from(new Set([configuredEngineType, "main", "preset"]))
-          const [legacyProgression, legacyEngineState, realtimeState, scopedProgressions, scopedEngineStates] = await Promise.all([
+          const [legacyProgression, legacyRawEngineState, legacyEngineState, realtimeState, scopedProgressions, scopedRawEngineStates, scopedEngineStates, runningHint] = await Promise.all([
             client.hgetall(`progression:${connectionId}`).catch(() => ({})),
+            client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({})),
             client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({})),
             client.hgetall(`realtime:${connectionId}`).catch(() => ({})),
             Promise.all(engineTypes.map((type) => client.hgetall(`progression:${connectionId}:${type}`).catch(() => ({})))),
+            Promise.all(engineTypes.map((type) => client.hgetall(`trade_engine_state:${connectionId}:${type}`).catch(() => ({})))),
             Promise.all(engineTypes.map((type) => client.hgetall(`settings:trade_engine_state:${connectionId}:${type}`).catch(() => ({})))),
+            client.get(`engine_is_running:${connectionId}`).catch(() => null),
           ])
           const progressionHashes = [legacyProgression, ...scopedProgressions] as Array<Record<string, any>>
-          const engineStateHashes = [legacyEngineState, ...scopedEngineStates] as Array<Record<string, any>>
+          const engineStateHashes = [legacyRawEngineState, legacyEngineState, ...scopedRawEngineStates, ...scopedEngineStates] as Array<Record<string, any>>
           const maxField = (hashes: Array<Record<string, any>>, field: string): number =>
             hashes.reduce((max, hash) => Math.max(max, Number(hash?.[field]) || 0), 0)
           const hasCycleSource = [...progressionHashes, ...engineStateHashes, realtimeState]
@@ -269,13 +299,25 @@ export async function GET() {
               maxField(engineStateHashes, "strategy_cycle_count"),
             )
             const stateRunning = engineStateHashes.some((state) => state?.status === "running")
+            const hasProcessingFlag = Object.prototype.hasOwnProperty.call(connectionHash || {}, "is_enabled_dashboard")
+            const connectionEnabled = hasProcessingFlag
+              ? [true, 1, "1", "true"].includes((connectionHash as any).is_enabled_dashboard)
+              : undefined
+            const runtime = resolveDistributedEngineRuntime({
+              runningHint,
+              states: engineStateHashes,
+              globalState: globalEngineState,
+              connectionEnabled,
+            })
             if (indCycles > 0 || stratCycles > 0 || realtimeCycles > 0 || stateRunning) {
               totalIndicationCycles += indCycles
               totalStrategyCycles   += stratCycles
               totalRealtimeCycles   += realtimeCycles
-              indicationsRunning     = indCycles > 0 || stateRunning
-              strategiesRunning      = stratCycles > 0 || stateRunning
-              realtimeRunning        = realtimeCycles > 0 || stateRunning
+            }
+            if (runtime.running) {
+              indicationsRunning ||= indCycles > 0 || stateRunning
+              strategiesRunning ||= stratCycles > 0 || stateRunning
+              realtimeRunning ||= realtimeCycles > 0 || stateRunning
               redisActiveEngineCount++
             }
           }
@@ -300,28 +342,14 @@ export async function GET() {
                 Number(state.realtime_cycle_count) || 0,
                 Number(state.live_positions_cycle_count) || 0,
               )
-              if (state.status === "running") {
-                indicationsRunning     = true
-                strategiesRunning      = true
-                realtimeRunning        = true
-                redisActiveEngineCount++
-              }
             }
           } catch {}
         }
       } catch {}
     }
     
-    let redisEngineRunning = false
-    try {
-      const globalEngine = client ? await client.hgetall("trade_engine:global") : null
-      if (globalEngine && Object.keys(globalEngine).length > 0) {
-        redisEngineRunning = globalEngine.status === "running"
-      }
-    } catch {}
-    
-    const engineRunning = redisEngineRunning || indicationsRunning || strategiesRunning || realtimeRunning || coordinatorEngineCount > 0
-    const activeEngineCount = Math.max(coordinatorEngineCount, redisActiveEngineCount)
+    const activeEngineCount = redisActiveEngineCount
+    const engineRunning = activeEngineCount > 0
     const indicationsEngineRunning = indicationsRunning || (engineRunning && activeEngineCount > 0)
     const strategiesEngineRunning = strategiesRunning || (engineRunning && activeEngineCount > 0)
 
@@ -360,7 +388,7 @@ export async function GET() {
       modules: {
         redis: redisAvailable,
         persistence: keys > 0,
-        coordinator: engineRunning || coordinatorEngineCount > 0,
+        coordinator: engineRunning,
         logger: true,
       },
       engines: {
@@ -416,5 +444,45 @@ export async function GET() {
       },
       { status: 200 }
     )
+  }
+}
+
+export async function GET() {
+  const now = Date.now()
+  const cached = monitoringResponseCache
+  if (cached && cached.expiresAt > now) {
+    return responseFromMonitoringSnapshot(cached.snapshot)
+  }
+  const staleSnapshot = cached && cached.staleUntil > now ? cached.snapshot : null
+  if (monitoringResponseInFlight) {
+    return staleSnapshot
+      ? responseFromMonitoringSnapshot(staleSnapshot)
+      : responseFromMonitoringSnapshot(await monitoringResponseInFlight)
+  }
+
+  const refresh = buildMonitoringResponse().then(snapshotMonitoringResponse)
+  monitoringResponseInFlight = refresh
+  const finish = () => {
+    if (monitoringResponseInFlight === refresh) monitoringResponseInFlight = null
+  }
+  const cacheSuccessful = (snapshot: MonitoringResponseSnapshot) => {
+    if (snapshot.status >= 200 && snapshot.status < 300) {
+      monitoringResponseCache = {
+        expiresAt: Date.now() + MONITORING_RESPONSE_TTL_MS,
+        staleUntil: Date.now() + MONITORING_RESPONSE_MAX_STALE_MS,
+        snapshot,
+      }
+    }
+    return snapshot
+  }
+
+  if (staleSnapshot) {
+    void refresh.then(cacheSuccessful).catch(() => undefined).finally(finish)
+    return responseFromMonitoringSnapshot(staleSnapshot)
+  }
+  try {
+    return responseFromMonitoringSnapshot(cacheSuccessful(await refresh))
+  } finally {
+    finish()
   }
 }

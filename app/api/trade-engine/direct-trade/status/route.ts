@@ -62,6 +62,11 @@ export async function GET() {
         new Date(right.closedAt || right.exitTime || 0).getTime(),
       )
     const openPositions = positions.filter((p: any) => p.status === "open")
+    const processorRequired = state?.enabled === true || openPositions.length > 0
+    const processorHeartbeatHealthy = Boolean(
+      processor?.lastTick && (now - new Date(processor.lastTick).getTime()) < 7000,
+    )
+    const processorHealthy = !processorRequired || processorHeartbeatHealthy
 
     const rollingStats = {
       last12Pos: calculateRollingPF(closedPositions.slice(-12)),
@@ -97,6 +102,8 @@ export async function GET() {
       openPositions: openPositions.length,
       openPositionStage,
       closedPositions: closedPositions.length,
+      processorRequired,
+      processorHealthy,
       overview48h,
       configStatus,
       calculation,
@@ -107,7 +114,8 @@ export async function GET() {
         lastTick: processor.lastTick,
         tickCount: processor.tickCount,
         errorsLast5min: processor.errorsLast5min || 0,
-        isHealthy: processor.lastTick && (now - new Date(processor.lastTick).getTime()) < 7000,
+        historyPolicy: processor.historyPolicy || null,
+        isHealthy: processorHeartbeatHealthy,
       } : null,
       recovery: recoveryRequestRaw ? (() => {
         try {

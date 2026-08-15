@@ -1,4 +1,6 @@
-import { getSettings } from "@/lib/redis-db"
+import { getRedisClient, getSettings } from "@/lib/redis-db"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import { buildProgressionScope } from "@/lib/progression-scope"
 import { withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 import { getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
@@ -55,21 +57,69 @@ function effectiveCanonicalSymbols(state: Record<string, unknown>, storedSymbols
 }
 
 export async function getCanonicalSymbolSelection(connectionId: string): Promise<SymbolSelectionSnapshot | null> {
-  const state = (await getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))) as Record<string, unknown>
-  // `selected_symbols` is canonical, but older routes only mirrored one of
-  // the runtime aliases. Falling back in priority order keeps a mixed-version
-  // deployment from binding progress ownership to an empty/stale selection.
+  const client = getRedisClient()
+  const scope = buildProgressionScope(connectionId, "main")
+  const [state, rawState, scopedState, connection, connectionSettings] = await Promise.all([
+    getSettings(`trade_engine_state:${connectionId}`).catch(() => ({})),
+    client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({})),
+    client.hgetall(scope.tradeEngineStateKey).catch(() => ({})),
+    client.hgetall(`connection:${connectionId}`).catch(() => ({})),
+    getCanonicalConnectionSettingsOverlay(connectionId).catch(() => ({})),
+  ]) as Array<Record<string, unknown>>
+
+  // Operator settings and guarded/scoped QuickStart state are durable intent.
+  // The unscoped settings state is also a runtime heartbeat target and can be
+  // rewritten by a freshly compiled worker during a disable/enable handoff.
+  // Prefer the durable mirrors so that one stale/blank heartbeat hash cannot
+  // replace an explicit basket with a dynamic top-N selection.
   const storedSymbols = [
-    state.selected_symbols,
+    connectionSettings.force_symbols,
+    connectionSettings.selected_symbols,
+    connection.force_symbols,
+    connection.selected_symbols,
+    scopedState.force_symbols,
+    scopedState.selected_symbols,
+    rawState.force_symbols,
+    rawState.selected_symbols,
     state.force_symbols,
+    state.selected_symbols,
+    connectionSettings.active_symbols,
+    connectionSettings.symbols,
+    connection.active_symbols,
+    connection.symbols,
+    scopedState.active_symbols,
+    scopedState.symbols,
+    rawState.active_symbols,
+    rawState.symbols,
     state.active_symbols,
     state.symbols,
   ].map(normalizeSymbolList).find((candidate) => candidate.length > 0) || []
-  const symbols = effectiveCanonicalSymbols(state, storedSymbols)
-  const total = Number(state.config_set_symbols_total)
+  const authorityState = {
+    ...state,
+    ...rawState,
+    ...scopedState,
+    ...connection,
+    ...connectionSettings,
+  }
+  const symbols = effectiveCanonicalSymbols(authorityState, storedSymbols)
+  const total = Number(
+    scopedState.config_set_symbols_total ??
+    rawState.config_set_symbols_total ??
+    state.config_set_symbols_total ??
+    connectionSettings.config_set_symbols_total ??
+    connection.symbol_count,
+  )
   if (symbols.length === 0 && (!Number.isFinite(total) || total <= 0)) return null
   return {
-    epoch: String(state.symbol_selection_epoch || state.quickstart_symbol_generation || ""),
+    epoch: String(
+      scopedState.symbol_selection_epoch ||
+      rawState.symbol_selection_epoch ||
+      state.symbol_selection_epoch ||
+      scopedState.quickstart_symbol_generation ||
+      rawState.quickstart_symbol_generation ||
+      state.quickstart_symbol_generation ||
+      "",
+    ),
     symbols,
     total: symbols.length > 0 ? symbols.length : Math.max(0, total || 0),
   }

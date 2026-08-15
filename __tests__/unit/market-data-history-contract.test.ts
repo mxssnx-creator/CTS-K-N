@@ -15,6 +15,8 @@ describe("market-data history contract", () => {
     const source = await readFile(sourceFile("lib/market-data-loader.ts"), "utf8")
     expect(source).toContain("if (candles.length >= ENGINE_STAGE_HISTORY_CANDLES)")
     expect(source).toContain("preserving the incomplete/absent prehistoric index")
+    expect(source).toContain("analyzeSecondHistoryCoverage")
+    expect(source).toContain("MINIMUM_SECOND_HISTORY_DENSITY")
   })
 
   it("overlays the current realtime tail when the stage reads historic chunks", async () => {
@@ -33,6 +35,7 @@ describe("market-data history contract", () => {
   it("yields complete candidate batches to keep control APIs schedulable", async () => {
     const source = await readFile(sourceFile("lib/indication-sets-processor.ts"), "utf8")
     expect(source).toContain("INDICATION_CANDIDATE_YIELD_INTERVAL")
+    expect(source).toContain("INDICATION_COOPERATIVE_TIME_SLICE_MS")
     expect(source).toContain("yieldIndicationScheduler()")
     expect(source).toContain("changes scheduling only")
   })
