@@ -255,7 +255,7 @@ export function resolveStrategyGcCooldownMs(
     ? ["CTS_STRATEGY_GC_CRITICAL_INTERVAL_MS", 1_000, 250, 10_000]
     : level === "high"
       ? ["CTS_STRATEGY_GC_HIGH_INTERVAL_MS", 5_000, 1_000, 60_000]
-      : ["CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS", 30_000, 5_000, 300_000]
+      : ["CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS", 30_000, 5_000, 600_000]
   const configured = Number(env[envKey])
   return Number.isFinite(configured)
     ? Math.max(minimum, Math.min(maximum, Math.round(configured)))

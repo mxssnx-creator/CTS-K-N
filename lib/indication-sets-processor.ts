@@ -210,7 +210,7 @@ const INDICATION_COOPERATIVE_TIME_SLICE_MS = Math.max(
   4,
   Math.min(
     50,
-    Number.parseInt(process.env.INDICATION_COOPERATIVE_TIME_SLICE_MS || "8", 10) || 8,
+    Number.parseInt(process.env.INDICATION_COOPERATIVE_TIME_SLICE_MS || "4", 10) || 4,
   ),
 )
 let indicationLastMacrotaskYieldAt = Date.now()

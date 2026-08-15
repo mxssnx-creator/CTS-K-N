@@ -38,7 +38,11 @@ const statsSlowDiagnosticAt = new Map<string, number>()
 // any strategy/signal cadence, and cache keys retain the requested engine
 // type so scopes never bleed into one another.
 const STATS_RESPONSE_CACHE_TTL_MS = 5_000
-const STATS_RESPONSE_CACHE_MAX_STALE_MS = 30_000
+// A complete 32-symbol Base→Main→Real pass can occupy several minutes under
+// the memory guard. Keep the last successful projection available while one
+// coalesced refresh is running; the refresh still starts every five seconds
+// and replaces this snapshot as soon as it finishes.
+const STATS_RESPONSE_CACHE_MAX_STALE_MS = 5 * 60_000
 const STATS_RESPONSE_CACHE_MAX_ENTRIES = 64
 type StatsResponseSnapshot = {
   body: string

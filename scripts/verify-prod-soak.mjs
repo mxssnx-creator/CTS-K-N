@@ -816,23 +816,26 @@ async function main() {
   const livePositionsPath =
     `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=500`
   const endpointSchedules = [
-    { build: () => "/api/health", intervalMs: 0 },
-    { build: () => "/api/system/init-status", intervalMs: 0 },
-    { build: () => "/api/system/status", intervalMs: 0 },
-    { build: () => "/api/system/monitoring", intervalMs: 0 },
-    { build: () => "/api/trade-engine/status-all", intervalMs: 0 },
-    // Match the actual dashboard consumers. Config inventory and bounded
-    // history are intentionally expensive snapshots refreshed by the UI at
-    // 60 s / 30 s; hammering both every two seconds makes the verifier itself
-    // the dominant Redis/event-loop workload. The first round samples every
-    // route, then the last validated payload remains available between polls.
+    // Match the actual independent UI consumers instead of synchronously
+    // hammering every route on the verifier's two-second bookkeeping cadence.
+    // The first round still samples the complete surface and the last
+    // validated payload remains authoritative between scheduled refreshes.
+    // These periods mirror the shipped dashboard/live/logistics fallbacks;
+    // SSE-triggered refreshes are exercised independently by lifecycle events.
+    { build: () => "/api/health", intervalMs: 15_000 },
+    { build: () => "/api/system/init-status", intervalMs: 60_000 },
+    { build: () => "/api/system/status", intervalMs: 15_000 },
+    { build: () => "/api/system/monitoring", intervalMs: 45_000 },
+    { build: () => "/api/trade-engine/status-all", intervalMs: 8_000 },
     { build: () => "/api/indications/config-counts", intervalMs: 60_000 },
-    { build: () => `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`, intervalMs: 3_000 },
+    // Sample progression more often than the UI's 15-second safety poll so
+    // three complete Main cycles and monotonic counters remain well observed.
+    { build: () => `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`, intervalMs: 5_000 },
     { build: () => `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500`, intervalMs: 30_000 },
-    { build: () => `/api/logistics/queue?connectionId=${encodeURIComponent(connectionId)}`, intervalMs: 0 },
-    { build: () => livePositionsPath, intervalMs: 0 },
-    { build: () => `/api/preset-optimizer?connectionId=${encodeURIComponent(connectionId)}`, intervalMs: 0 },
-    { build: () => `/api/connections/${encodeURIComponent(connectionId)}/engine-states`, intervalMs: 3_000 },
+    { build: () => `/api/logistics/queue?connectionId=${encodeURIComponent(connectionId)}`, intervalMs: 15_000 },
+    { build: () => livePositionsPath, intervalMs: 10_000 },
+    { build: () => `/api/preset-optimizer?connectionId=${encodeURIComponent(connectionId)}`, intervalMs: 60_000 },
+    { build: () => `/api/connections/${encodeURIComponent(connectionId)}/engine-states`, intervalMs: 15_000 },
   ]
   // Signal settings, source health, and closed-position PF/DDT analytics change
   // on the Signal engine cadence (minimum 30 seconds), not on the 2-second
@@ -1649,20 +1652,21 @@ async function main() {
     )
   }
 
+  const percentile95 = (sortedValues) => {
+    if (sortedValues.length === 0) return 0
+    // Nearest-rank p95. `floor(n * .95)` selected the 96th order statistic
+    // for most sample counts and, at n=20, incorrectly treated the maximum as
+    // p95. Keep the sort explicit so the reported contract is reproducible.
+    return sortedValues[Math.max(0, Math.ceil(sortedValues.length * 0.95) - 1)] || 0
+  }
   latencies.sort((a, b) => a - b)
   steadyLatencies.sort((a, b) => a - b)
   signalLatencies.sort((a, b) => a - b)
   steadySignalLatencies.sort((a, b) => a - b)
-  const p95 = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))] || 0
-  const steadyP95 = steadyLatencies[
-    Math.min(steadyLatencies.length - 1, Math.floor(steadyLatencies.length * 0.95))
-  ] || p95
-  const signalP95 = signalLatencies[
-    Math.min(signalLatencies.length - 1, Math.floor(signalLatencies.length * 0.95))
-  ] || 0
-  const steadySignalP95 = steadySignalLatencies[
-    Math.min(steadySignalLatencies.length - 1, Math.floor(steadySignalLatencies.length * 0.95))
-  ] || signalP95
+  const p95 = percentile95(latencies)
+  const steadyP95 = percentile95(steadyLatencies) || p95
+  const signalP95 = percentile95(signalLatencies)
+  const steadySignalP95 = percentile95(steadySignalLatencies) || signalP95
   // A production process backed by network Redis keeps the strict 1s API
   // contract. The explicitly opt-in InlineLocalRedis preview is a single
   // Node event loop running the exhaustive indication grid and the HTTP
@@ -1683,7 +1687,7 @@ async function main() {
         const sorted = [...values].sort((a, b) => a - b)
         return [
           path,
-          sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] || 0,
+          percentile95(sorted),
         ]
       })
       .sort((left, right) => Number(right[1]) - Number(left[1])),

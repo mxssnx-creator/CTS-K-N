@@ -14,6 +14,9 @@ describe("strategy memory guard", () => {
     expect(resolveStrategyGcCooldownMs("elevated", {
       CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS: "45000",
     })).toBe(45_000)
+    expect(resolveStrategyGcCooldownMs("elevated", {
+      CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS: "999999",
+    })).toBe(600_000)
   })
 
   test("uses proportional limits when shared Redis does not install inline limits", () => {

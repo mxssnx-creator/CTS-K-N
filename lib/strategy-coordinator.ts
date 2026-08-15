@@ -243,13 +243,14 @@ function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnap
 // requests even when a single set is expensive to materialise. This is a
 // scheduling quantum, not a cap: every candidate is still evaluated. A
 // four-row quantum is unnecessarily fine for this wider strategy loop, while
-// 128 rows breached the measured dev control-plane p95. The verified midpoint
-// is 64 rows; large Redis writes are independently bounded below.
+// 64+ rows breached the measured 32-symbol dev control-plane p95. The verified
+// full-basket quantum is 32 rows; large Redis writes are independently bounded
+// below.
 const STRATEGY_COOPERATIVE_YIELD_INTERVAL = Math.max(
   4,
   Math.min(
     256,
-    Number.parseInt(process.env.STRATEGY_COOPERATIVE_YIELD_EVERY || "64", 10) || 64,
+    Number.parseInt(process.env.STRATEGY_COOPERATIVE_YIELD_EVERY || "32", 10) || 32,
   ),
 )
 
@@ -265,7 +266,7 @@ const STRATEGY_COOPERATIVE_TIME_SLICE_MS = Math.max(
   4,
   Math.min(
     50,
-    Number.parseInt(process.env.STRATEGY_COOPERATIVE_TIME_SLICE_MS || "8", 10) || 8,
+    Number.parseInt(process.env.STRATEGY_COOPERATIVE_TIME_SLICE_MS || "4", 10) || 4,
   ),
 )
 let strategyLastMacrotaskYieldAt = Date.now()

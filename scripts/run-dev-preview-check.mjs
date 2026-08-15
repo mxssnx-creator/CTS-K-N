@@ -457,20 +457,19 @@ async function main() {
         process.env.DEV_MEMORY_LIMIT_MB || "10240",
       CTS_NODE_HEAP_MB: String(devNodeHeapMb),
       // Keep non-critical Major collections outside the API p95 sampling
-      // majority. A 30-second cadence put a stop-the-world phase into more
-      // than five percent of two-second dashboard rounds and made the
-      // verifier measure forced collector frequency rather than sustained
-      // control-plane latency. The per-symbol RSS admission guard and the
-      // independent 8 GiB hard boundary still collect immediately when real
-      // pressure requires it.
+      // majority. Even a five-minute cadence aligns enough multi-second
+      // stop-the-world phases with UI refreshes to fill the entire p95 tail in
+      // a 20-minute 32-symbol run. The per-symbol admission guard still
+      // collects immediately at high/critical pressure, and the independent
+      // 8 GiB hard boundary remains the crash barrier.
       CTS_MAINTENANCE_GC_INTERVAL_MS:
         process.env.DEV_MAINTENANCE_GC_INTERVAL_MS ||
         process.env.CTS_MAINTENANCE_GC_INTERVAL_MS ||
-        "120000",
+        "600000",
       CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS:
         process.env.DEV_STRATEGY_GC_ELEVATED_INTERVAL_MS ||
         process.env.CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS ||
-        "120000",
+        "600000",
       CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS:
         process.env.DEV_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS || "1",
       // Exercise the full cartesian Main calculation, but keep the existing

@@ -27,6 +27,7 @@ import { initRedis, getConnection, getRedisClient } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 
 export const runtime = "nodejs"
 export const maxDuration = 15
@@ -36,12 +37,7 @@ export const fetchCache = "force-no-store"
 const toBoolean = (v: unknown) =>
   v === true || v === 1 || v === "1" || v === "true"
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const { id: connectionId } = await params
-
+async function buildEngineStatesResponse(connectionId: string): Promise<Response> {
   const headers = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     Pragma: "no-cache",
@@ -192,4 +188,21 @@ export async function GET(
       { status: 500, headers }
     )
   }
+}
+
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: connectionId } = await params
+  if (process.env.NODE_ENV === "test") return buildEngineStatesResponse(connectionId)
+
+  return serveSerializedResponseSWR({
+    namespace: "engine-states",
+    key: connectionId,
+    freshMs: 2_000,
+    maxStaleMs: 30_000,
+    serveExpiredImmediately: true,
+    producer: () => buildEngineStatesResponse(connectionId),
+  })
 }
