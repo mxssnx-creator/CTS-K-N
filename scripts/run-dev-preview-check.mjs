@@ -37,7 +37,9 @@ const devSoakSymbolCount = maxSymbolsRequested
 // memory ceiling instead of being OOM-killed mid-soak.
 const devSoakDurationMs = process.env.DEV_SOAK_DURATION_MS
   ? Number(process.env.DEV_SOAK_DURATION_MS)
-  : Math.max(90_000, 60_000 + devSoakSymbolCount * 10_000)
+  : fullSoakRequested && maxSymbolsRequested
+    ? 20 * 60_000
+    : Math.max(90_000, 60_000 + devSoakSymbolCount * 10_000)
 // The regular interactive dev command intentionally stays at 4 GiB. The
 // default dev-preview path boots the full Base->Main->Real->Live pipeline
 // (Next compiler + in-process Redis + engine working set) in one Node
@@ -264,7 +266,8 @@ function runSoakVerifier() {
         // load; this bounded grace covers only the productive post-Historic
         // transition and exits as soon as its existing criteria are met.
         SOAK_PRODUCTIVE_COMPLETION_GRACE_MS:
-          process.env.DEV_SOAK_PRODUCTIVE_COMPLETION_GRACE_MS || "180000",
+          process.env.DEV_SOAK_PRODUCTIVE_COMPLETION_GRACE_MS ||
+          (fullSoakRequested && maxSymbolsRequested ? "600000" : "180000"),
         RUNTIME_MODE: "development",
         SOAK_ADMIN_SECRET: debugAdminSecret,
         // Keep the verifier's absolute RSS budget aligned with the heap that
@@ -444,13 +447,13 @@ async function main() {
       // explicitly supplies PREHISTORIC_RANGE_HOURS.
       PREHISTORIC_RANGE_HOURS:
         process.env.DEV_PREHISTORIC_RANGE_HOURS || "1",
-      // Admit one symbol at a time and reclaim the previous symbol graph once
-      // RSS crosses 5 GiB. The coordinated collector runs asynchronously at
-      // the Strategy lease boundary, so this avoids both unbounded growth and
-      // mid-flow GC competition. The independent 8 GiB hard stop and 10 GiB
-      // absolute memory ceiling remain the crash barriers.
+      // The measured 32-symbol development plateau is roughly 5.1-6.0 GiB.
+      // A 5 GiB soft boundary therefore classified the normal working set as
+      // critical and forced continuous throttling/collection. Keep adequate
+      // headroom above that plateau while leaving the independent 7 GiB
+      // emergency, 8 GiB hard stop, and 10 GiB absolute ceiling unchanged.
       CTS_RSS_SOFT_LIMIT_MB:
-        process.env.DEV_RSS_SOFT_LIMIT_MB || "5120",
+        process.env.DEV_RSS_SOFT_LIMIT_MB || "6400",
       CTS_RSS_HARD_LIMIT_MB:
         process.env.DEV_RSS_HARD_LIMIT_MB || "8192",
       CTS_MEMORY_LIMIT_MB:

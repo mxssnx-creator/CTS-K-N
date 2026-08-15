@@ -852,10 +852,12 @@ custom-worker.ts
 data/.gitkeep
 data/connections.json
 data/settings.json
+docs/CTS-K-N-DCA-MAIN-SPECIAL-VALIDATION-2026-08-15.md
 docs/CTS-K-N-VALIDATION-RESULTS-2026-08-14.json
 docs/CTS-K-N-VALIDATION-RESULTS-2026-08-14.md
 docs/DCA-HISTORIC-14D-VALIDATION-2026-08-15.md
 docs/DCA-HISTORIC-42D-18S-VALIDATION-2026-08-15.md
+docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
 docs/dca-optimization-7d-2026-08-11.md
 docs/direct-trade-async-scale-48h.json
 docs/direct-trade-block-48h.json

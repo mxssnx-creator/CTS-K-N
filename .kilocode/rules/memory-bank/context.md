@@ -1399,3 +1399,47 @@ credentials are present.
   checkpoint, and create the final sanitized archive/checksum. The full Drive
   source archive remains blocked until the user explicitly says
   `Drive-Quellarchiv freigegeben`; do not infer this approval.
+
+## Session 2026-08-15 — Main DCA, Special 7-day, memory calibration, and forced Main checkpoint
+
+- [x] The user-requested immediate GitHub checkpoint was published and `main`
+  was fast-forwarded/force-updated to the identical verified tree at connector
+  commit `f4b8b17f45811372d63a32bf0bf8a11931646d9d`. The recoverable pre-update ref
+  is `backup/main-before-runtime-merge-20260815-9ee7b7ec`; local, branch, and
+  remote tracking refs were reconciled without changing the source tree.
+- [x] Main DCA technical validation passed 6/6 focused suites and 90/90 tests,
+  including sequential Real→Live DCA steps, immutable first-fill quantities,
+  5× exposure ceiling, protection retention, runtime settings propagation,
+  Direct calculation, and independent Block/DCA lineage. Economic activation
+  remains fail-closed because the 42-day/18-symbol global and adaptive tests
+  are both unqualified.
+- [x] Special was expanded from a fixed five-day/four-symbol/twelve-variant
+  harness to a parameterized 7-day/eight-symbol run with four exposure/DD risk
+  envelopes: 24 base candidates and 48 Fixed/Trailing configurations across
+  four purged chronological folds. All eight histories had 10,080/10,080 1m
+  rows. Zero candidate qualified; best Trailing produced 214 positions, PF
+  0.9525, -8.4869% net PnL, 30.9240% DD and worst-fold PF 0. Automatic Special
+  activation remains rejected. Detailed reports are in
+  `docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md` and
+  `docs/CTS-K-N-DCA-MAIN-SPECIAL-VALIDATION-2026-08-15.md`.
+- [x] The current pre-fix development harness used a 5,120 MiB RSS soft limit,
+  not the stale 4 GiB value from the earlier chat. A controlled 32-symbol run
+  remained productive around 5.0–6.02 GiB but recorded 18 memory throttles,
+  two Elevated GCs, ~96% event-loop utilization and API p95 4,456 ms, so it
+  correctly failed the unchanged 3,000 ms gate. The new dev-only soft limit is
+  6,400 MiB; 7,168 MiB emergency, 8,192 MiB hard and 10,240 MiB absolute limits
+  are unchanged. Dashboard fallback polls now retain their natural per-request
+  completion phases, and full 32-symbol acceptance defaults to 20+10 minutes.
+- [ ] The post-fix 20-minute soak is pending: Work mode rejected the command
+  after the session hit its Codex long-execution usage limit and reported next
+  availability on 2026-08-20. Do not label this gate passed and do not bypass
+  the execution restriction. The persistent safe helper is
+  `/workspace/CTS-K-N-runtime/run-dev-soak-32.sh`, currently assigned to empty
+  DB12 and fail-closed on a non-empty database.
+- [x] Post-change static/test gates: focused changed-path 200/200, Main DCA
+  90/90, canonical Jest 181/181 suites and 1,216/1,216 tests, TypeScript, full
+  ESLint, source-syntax, recreation verification (1,416 files), and credential
+  scan (1,424 files, zero findings). Real/authenticated order requests remained
+  zero. Publish a final GitHub/Drive report/checksum checkpoint after the
+  handoff commit; a new full Drive source archive still requires the exact
+  explicit phrase `Drive-Quellarchiv freigegeben`.

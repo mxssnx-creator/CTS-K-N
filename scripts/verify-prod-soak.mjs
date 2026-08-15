@@ -119,7 +119,8 @@ async function request(pathname, {
   if (!response.ok) throw new Error(`${method} ${pathname} HTTP ${response.status}: ${text.slice(0, 4_000)}`)
   let json
   try { json = text ? JSON.parse(text) : {} } catch { throw new Error(`${pathname} returned invalid JSON`) }
-  return { json, latencyMs: Date.now() - started }
+  const completedAt = Date.now()
+  return { json, latencyMs: completedAt - started, completedAt }
 }
 
 async function requestWithRetry(pathname, options = {}, maxRetries = 3) {
@@ -984,7 +985,14 @@ async function main() {
     const byPath = new Map(lastByPath)
     paths.forEach((path, index) => {
       byPath.set(path, responses[index].json)
-      lastEndpointObservationAt.set(path, observationNow)
+      // Browser fallback timers are scheduled after their individual request
+      // completes. Recording one shared pre-fan-out timestamp made every
+      // independent dashboard consumer re-converge on the same wall-clock
+      // boundary, creating an artificial 12-route burst once per common
+      // interval. Preserve the initial mount fan-out, then let actual response
+      // completion times establish the same naturally staggered phases as the
+      // shipped UI.
+      lastEndpointObservationAt.set(path, responses[index].completedAt)
     })
     if (
       VERIFY_SIGNAL_ENGINE &&

@@ -16,15 +16,21 @@ import {
 const VST_ORIGIN = process.env.BINGX_PUBLIC_ORIGIN || "https://open-api-vst.bingx.com"
 const VST_FALLBACK_ORIGIN = process.env.BINGX_PUBLIC_FALLBACK_ORIGIN || "https://open-api-vst.bingx.pro"
 const VST_ORIGINS = [VST_ORIGIN, VST_FALLBACK_ORIGIN]
-const DEFAULT_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT"] as const
-const TARGET_SYMBOL_COUNT = 4
+const requestedTargetSymbolCount = Number(process.env.SPECIAL_VST_TARGET_SYMBOLS)
+const TARGET_SYMBOL_COUNT = Number.isFinite(requestedTargetSymbolCount)
+  ? Math.max(4, Math.min(18, Math.floor(requestedTargetSymbolCount)))
+  : 4
 const VOLATILITY_POOL_SIZE = 32
 const SOURCE_INTERVAL_MS = 60_000
-const DAYS = 5
+const requestedDays = Number(process.env.SPECIAL_VST_DAYS)
+const DAYS = Number.isFinite(requestedDays)
+  ? Math.max(5, Math.min(14, Math.floor(requestedDays)))
+  : 5
 const REQUIRED_ROWS = DAYS * 24 * 60
 const PAGE_LIMIT = 1_000
-const MAX_PAGES = 12
+const MAX_PAGES = Math.max(12, Math.ceil(REQUIRED_ROWS / PAGE_LIMIT) + 3)
 const MINIMUM_COVERAGE_RATIO = 0.95
+const WINDOW_LABEL = `${DAYS}-day`
 
 type Kline = {
   timestamp: number
@@ -331,7 +337,7 @@ async function selectMostVolatileSymbols(): Promise<{
   if (measured.length < TARGET_SYMBOL_COUNT) {
     throw new Error(`Only ${measured.length} symbols had complete one-hour VST volatility data`)
   }
-  // Return the complete measured ranking. The caller verifies five-day
+  // Return the complete measured ranking. The caller verifies the requested
   // history in rank order and promotes the next candidate when a newly listed
   // high-volatility contract cannot cover the requested validation window.
   const selection = measured.map((row, index) => ({ ...row, rank: index + 1 }))
@@ -377,7 +383,7 @@ function candidateSettings(): Partial<SpecialStrategySettings>[] {
     roundTripCostPct: 0.12,
     marketActivityFadeRatio: 0.5,
   }
-  return [
+  const templates: Partial<SpecialStrategySettings>[] = [
     {
       ...common,
       minStep: 3,
@@ -493,6 +499,48 @@ function candidateSettings(): Partial<SpecialStrategySettings>[] {
       maximumHoldingSeconds: 5_400,
     },
   ]
+  // Evaluate each signal topology under four independent risk envelopes.
+  // The original single 3x/5-position envelope could rank a profitable but
+  // unnecessarily deep equity path without ever testing whether the same
+  // entry logic retained enough activity at materially lower exposure.
+  const riskEnvelopes: Partial<SpecialStrategySettings>[] = [
+    {
+      maxPositionsPerDirection: 3,
+      maxVolumeRatio: 1.5,
+      additionalPositionStepPositionCostRatio: 2,
+      stopLossMaxTakeProfitRatio: 1.25,
+      backtestMaximumDrawdownPct: 6,
+      walkForwardMaximumFoldLossPct: 2.5,
+    },
+    {
+      maxPositionsPerDirection: 4,
+      maxVolumeRatio: 2,
+      additionalPositionStepPositionCostRatio: 2.5,
+      stopLossMaxTakeProfitRatio: 1.75,
+      backtestMaximumDrawdownPct: 8,
+      walkForwardMaximumFoldLossPct: 3.5,
+    },
+    {
+      maxPositionsPerDirection: 5,
+      maxVolumeRatio: 2.5,
+      additionalPositionStepPositionCostRatio: 3,
+      stopLossMaxTakeProfitRatio: 2.25,
+      backtestMaximumDrawdownPct: 10,
+      walkForwardMaximumFoldLossPct: 4.5,
+    },
+    {
+      maxPositionsPerDirection: 5,
+      maxVolumeRatio: 3,
+      additionalPositionStepPositionCostRatio: 3,
+      stopLossMaxTakeProfitRatio: 3,
+      backtestMaximumDrawdownPct: 12,
+      walkForwardMaximumFoldLossPct: 5,
+    },
+  ]
+  return templates.flatMap((template) => riskEnvelopes.map((risk) => ({
+    ...template,
+    ...risk,
+  })))
 }
 
 function intervalMarkdown(stats: ReturnType<typeof calculateSpecial24HourTwoHourStats>): string[] {
@@ -561,9 +609,9 @@ async function main(): Promise<void> {
       candidate: VolatilitySelection
       data: Awaited<ReturnType<typeof fetchKlines>>
     }> = []
-    // Verify five-day history in volatility order. This is intentionally
-    // sequential and stops as soon as four contracts qualify, avoiding a
-    // 32-symbol five-day download while still handling fresh listings safely.
+    // Verify the requested history in volatility order. This is intentionally
+    // sequential and stops as soon as the requested basket qualifies, avoiding
+    // a full-pool download while still handling fresh listings safely.
     for (const candidate of volatilitySelection.selection) {
       let data: Awaited<ReturnType<typeof fetchKlines>>
       try {
@@ -588,7 +636,7 @@ async function main(): Promise<void> {
           symbol: candidate.symbol,
           volatilityRank: candidate.rank,
           coverageRatio: round(candidateCoverageRatio),
-          reason: `five-day coverage ${percent(candidateCoverageRatio)} is below ${percent(MINIMUM_COVERAGE_RATIO)}`,
+          reason: `${WINDOW_LABEL} coverage ${percent(candidateCoverageRatio)} is below ${percent(MINIMUM_COVERAGE_RATIO)}`,
         })
         continue
       }
@@ -598,7 +646,7 @@ async function main(): Promise<void> {
     if (eligibleFetched.length < TARGET_SYMBOL_COUNT) {
       throw new Error(
         `Only ${eligibleFetched.length} ${explicitSymbols ? "explicit" : "ranked"} symbols had ` +
-        `${percent(MINIMUM_COVERAGE_RATIO)} five-day VST coverage`,
+        `${percent(MINIMUM_COVERAGE_RATIO)} ${WINDOW_LABEL} VST coverage`,
       )
     }
     const selectedVolatility = eligibleFetched.map(({ candidate }, index) => ({
@@ -655,6 +703,28 @@ async function main(): Promise<void> {
     const bestFixed = ranked.find((item) => item.result.exitVariant === "fixed")
     const bestTrailing = ranked.find((item) => item.result.exitVariant === "trailing")
     const best = ranked[0]
+    const walkForwardQualified = ranked.filter((item) => item.walkForwardQualified)
+    const qualifiedLowestDrawdown = [...walkForwardQualified].sort((left, right) =>
+      left.result.maxDrawdownPct - right.result.maxDrawdownPct ||
+      right.result.totalTrades - left.result.totalTrades ||
+      right.walkForwardScore - left.walkForwardScore,
+    )[0]
+    const diagnosticLowestDrawdown = [...ranked].sort((left, right) =>
+      left.result.maxDrawdownPct - right.result.maxDrawdownPct ||
+      right.result.totalTrades - left.result.totalTrades ||
+      right.walkForwardScore - left.walkForwardScore,
+    )[0]
+    const nonCatastrophic = ranked.filter((item) => !item.catastrophicVeto && item.result.totalTrades > 0)
+    const activityRiskPool = walkForwardQualified.length > 0
+      ? walkForwardQualified
+      : nonCatastrophic.length > 0
+        ? nonCatastrophic
+        : ranked
+    const highActivityLowDrawdown = [...activityRiskPool].sort((left, right) => {
+      const leftScore = left.result.totalTrades / Math.max(0.25, 1 + left.result.maxDrawdownPct)
+      const rightScore = right.result.totalTrades / Math.max(0.25, 1 + right.result.maxDrawdownPct)
+      return rightScore - leftScore || right.walkForwardScore - left.walkForwardScore
+    })[0]
     // Fixed and Trailing must be compared over the exact same market clock.
     // Using each ledger's last trade would shift sparse variants into different
     // 24-hour windows and make their two-hour rows look comparable when they
@@ -689,7 +759,7 @@ async function main(): Promise<void> {
       commonWindow: { start: iso(commonStart), end: iso(commonEnd) },
       symbols,
       symbolSelection: {
-        mode: explicitSymbols ? "explicit-control" : "most-volatile-1h-with-five-day-coverage-among-top-liquid-vst-usdt",
+        mode: explicitSymbols ? "explicit-control" : `most-volatile-1h-with-${WINDOW_LABEL}-coverage-among-top-liquid-vst-usdt`,
         liquidityPoolLimit: VOLATILITY_POOL_SIZE,
         measuredPoolSize: volatilitySelection.poolSize,
         ranking: selectedVolatility,
@@ -707,7 +777,7 @@ async function main(): Promise<void> {
         historicalOrderFlowImbalance: false,
         historicalSpread: false,
         oneHourVolatilitySelection: !explicitSymbols,
-        fiveDayCoverageFallback: !explicitSymbols,
+        requestedWindowCoverageFallback: !explicitSymbols,
       },
       costModel: { positionCostPct: 0.1, roundTripCostPct: 0.12, assumption: "0.10% taker round trip + 0.02% slippage buffer" },
       candidateCountBeforeExitExpansion: candidateSettings().length,
@@ -720,6 +790,15 @@ async function main(): Promise<void> {
       bestFirst: ranked.map((item, index) => rankedSummary(item, index + 1)),
       bestFixed: bestFixed ? rankedSummary(bestFixed, ranked.indexOf(bestFixed) + 1) : null,
       bestTrailing: bestTrailing ? rankedSummary(bestTrailing, ranked.indexOf(bestTrailing) + 1) : null,
+      qualifiedLowestDrawdown: qualifiedLowestDrawdown
+        ? rankedSummary(qualifiedLowestDrawdown, ranked.indexOf(qualifiedLowestDrawdown) + 1)
+        : null,
+      diagnosticLowestDrawdown: diagnosticLowestDrawdown
+        ? rankedSummary(diagnosticLowestDrawdown, ranked.indexOf(diagnosticLowestDrawdown) + 1)
+        : null,
+      highActivityLowDrawdown: highActivityLowDrawdown
+        ? rankedSummary(highActivityLowDrawdown, ranked.indexOf(highActivityLowDrawdown) + 1)
+        : null,
       stats24hWindow: {
         commonMarketEnd: iso(commonEnd),
         alignedEnd: iso(stats24hTwoHourByVariant.fixed[11]?.intervalEnd
@@ -748,18 +827,18 @@ async function main(): Promise<void> {
       },
       limitations: [
         "BingX Prod-VST historical klines reject 15s; the validator does not fabricate 15-second bars.",
-        "Historical quote snapshots do not provide synchronized order-book OFI or spread for the full five-day window.",
-        "A five-day demo sample is validation evidence, not a guarantee of future profit or highest achievable performance.",
+        `Historical quote snapshots do not provide synchronized order-book OFI or spread for the full ${WINDOW_LABEL} window.`,
+        `A ${WINDOW_LABEL} demo sample is validation evidence, not a guarantee of future profit or highest achievable performance.`,
       ],
       generatedAt: new Date().toISOString(),
     }
 
     const markdown = [
-      "# Special — BingX Prod-VST five-day validation",
+      `# Special — BingX Prod-VST ${WINDOW_LABEL} validation`,
       "",
       `Decision: **${deploymentDecision}**. No configuration was auto-applied.`,
       "",
-      `Source: \`${VST_ORIGIN}\`, read-only 1m swap klines, ${iso(commonStart)} to ${iso(commonEnd)}. The four most volatile symbols over the preceding hour were selected from the ${VOLATILITY_POOL_SIZE} most liquid eligible VST USDT contracts; ${ranked.length} independent Fixed/Trailing configurations used four purged chronological folds.`,
+      `Source: \`${VST_ORIGIN}\`, read-only 1m swap klines, ${iso(commonStart)} to ${iso(commonEnd)}. The ${TARGET_SYMBOL_COUNT} most volatile symbols over the preceding hour were selected from the ${VOLATILITY_POOL_SIZE} most liquid eligible VST USDT contracts; ${ranked.length} independent Fixed/Trailing configurations used four purged chronological folds.`,
       "",
       "## Most volatile one-hour symbols (best first)",
       "",
@@ -768,8 +847,8 @@ async function main(): Promise<void> {
       ...selectedVolatility.map((item) => `| ${item.rank} | ${item.symbol} | ${item.realizedVolatilityPct} | ${item.rangePct} | ${item.absoluteMovePct} | ${item.spreadBps} | ${Math.round(item.quoteVolume)} |`),
       "",
       rejectedVolatilityCandidates.length > 0
-        ? `Skipped for incomplete five-day history: ${rejectedVolatilityCandidates.map((item) => `${item.symbol} (${percent(item.coverageRatio)})`).join(", ")}.`
-        : "No higher-ranked volatility candidate was skipped for incomplete five-day history.",
+        ? `Skipped for incomplete ${WINDOW_LABEL} history: ${rejectedVolatilityCandidates.map((item) => `${item.symbol} (${percent(item.coverageRatio)})`).join(", ")}.`
+        : `No higher-ranked volatility candidate was skipped for incomplete ${WINDOW_LABEL} history.`,
       "",
       "The 15-second historical endpoint is unavailable and no synthetic 15-second bars were created. Therefore even a profitable candidate remains blocked from automatic activation until genuine 15-second VST history/live replay covers that lane.",
       "",
@@ -783,6 +862,12 @@ async function main(): Promise<void> {
       "",
       ...resultMarkdown("Best adaptive Trailing variant", bestTrailing, commonEnd),
       "",
+      ...resultMarkdown("Lowest-drawdown walk-forward-qualified variant", qualifiedLowestDrawdown, commonEnd),
+      "",
+      ...resultMarkdown("Lowest-drawdown diagnostic (not qualified)", diagnosticLowestDrawdown, commonEnd),
+      "",
+      ...resultMarkdown("High-activity / low-drawdown diagnostic", highActivityLowDrawdown, commonEnd),
+      "",
       "## Performance and limitations",
       "",
       `Optimization ${optimizationMs}ms; peak RSS ${round(peakRss / 1024 / 1024, 2)}MB; peak heap ${round(peakHeapUsed / 1024 / 1024, 2)}MB.`,
@@ -790,15 +875,15 @@ async function main(): Promise<void> {
       "- Counts are produced from separate Long and Short ledgers; equality is neither forced nor used as a success criterion.",
       "- PF includes the configured round-trip cost assumption; DD is an additive percentage-equity drawdown in this validation model.",
       "- OFI and historical spread are not claimed because synchronized VST history was unavailable from the tested public route.",
-      "- Five days cannot prove future profitability; failed qualification or incomplete coverage blocks activation.",
+      `- ${DAYS} days cannot prove future profitability; failed qualification or incomplete coverage blocks activation.`,
       "",
     ].join("\n")
 
     const outputDir = join(process.cwd(), ".agent-logs")
     await mkdir(outputDir, { recursive: true })
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
-    const jsonPath = join(outputDir, `special-vst-5d-${timestamp}.json`)
-    const markdownPath = join(outputDir, `special-vst-5d-${timestamp}.md`)
+    const jsonPath = join(outputDir, `special-vst-${DAYS}d-${timestamp}.json`)
+    const markdownPath = join(outputDir, `special-vst-${DAYS}d-${timestamp}.md`)
     await Promise.all([
       writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8"),
       writeFile(markdownPath, `${markdown}\n`, "utf8"),
@@ -818,6 +903,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(`[special-vst-5d] ${error instanceof Error ? error.stack || error.message : String(error)}`)
+  console.error(`[special-vst-${DAYS}d] ${error instanceof Error ? error.stack || error.message : String(error)}`)
   process.exitCode = 1
 })
