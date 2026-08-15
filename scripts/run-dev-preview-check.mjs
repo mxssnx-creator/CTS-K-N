@@ -456,13 +456,21 @@ async function main() {
       CTS_MEMORY_LIMIT_MB:
         process.env.DEV_MEMORY_LIMIT_MB || "10240",
       CTS_NODE_HEAP_MB: String(devNodeHeapMb),
-      // The verified development profile uses shorter coordinated collections
-      // than production's 120-second default. This value reaches the
-      // application worker; an explicit operator override remains authoritative.
+      // Keep non-critical Major collections outside the API p95 sampling
+      // majority. A 30-second cadence put a stop-the-world phase into more
+      // than five percent of two-second dashboard rounds and made the
+      // verifier measure forced collector frequency rather than sustained
+      // control-plane latency. The per-symbol RSS admission guard and the
+      // independent 8 GiB hard boundary still collect immediately when real
+      // pressure requires it.
       CTS_MAINTENANCE_GC_INTERVAL_MS:
         process.env.DEV_MAINTENANCE_GC_INTERVAL_MS ||
         process.env.CTS_MAINTENANCE_GC_INTERVAL_MS ||
-        "30000",
+        "120000",
+      CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS:
+        process.env.DEV_STRATEGY_GC_ELEVATED_INTERVAL_MS ||
+        process.env.CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS ||
+        "120000",
       CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS:
         process.env.DEV_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS || "1",
       // Exercise the full cartesian Main calculation, but keep the existing

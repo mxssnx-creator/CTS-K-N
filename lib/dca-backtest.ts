@@ -39,6 +39,7 @@ export interface DcaBacktestTrade {
   volumeRatio: number
   dcaSteps: number
   pnlPctOfInitialNotional: number
+  holdTimeMin: number
   drawdownTimeMin: number
   maxAdversePnlPct: number
 }
@@ -133,6 +134,53 @@ function entryDirection(
   return null
 }
 
+type PreparedDcaMarket = {
+  candles: DcaBacktestCandle[]
+  directions: Map<DcaBacktestEntry, Array<DcaBacktestDirection | null>>
+}
+
+// Long optimizer runs evaluate thousands of risk profiles over the exact same
+// immutable candle arrays.  Sorting/filtering the market and recalculating the
+// EMA/RSI entry decision for every profile used to dominate the six-week
+// search even though DCA distances, volume and protection do not affect entry
+// direction.  Cache only those profile-independent inputs by array identity;
+// every candidate still executes its complete independent position lifecycle.
+const preparedMarketCache = new WeakMap<object, PreparedDcaMarket>()
+
+function prepareDcaMarket(
+  sourceCandles: readonly DcaBacktestCandle[],
+): PreparedDcaMarket {
+  const cacheKey = sourceCandles as object
+  const cached = preparedMarketCache.get(cacheKey)
+  if (cached) return cached
+  const prepared = {
+    candles: [...sourceCandles]
+      .filter((candle) =>
+        Number.isFinite(candle.time) &&
+        candle.close > 0 &&
+        candle.high > 0 &&
+        candle.low > 0
+      )
+      .sort((left, right) => left.time - right.time),
+    directions: new Map<DcaBacktestEntry, Array<DcaBacktestDirection | null>>(),
+  }
+  preparedMarketCache.set(cacheKey, prepared)
+  return prepared
+}
+
+function preparedEntryDirections(
+  prepared: PreparedDcaMarket,
+  entry: DcaBacktestEntry,
+): Array<DcaBacktestDirection | null> {
+  const cached = prepared.directions.get(entry)
+  if (cached) return cached
+  const directions = prepared.candles.map((_candle, index) =>
+    entryDirection(prepared.candles, index, entry),
+  )
+  prepared.directions.set(entry, directions)
+  return directions
+}
+
 function weightedAverage(legs: Array<{ price: number; quantity: number }>): number {
   const quantity = legs.reduce((sum, leg) => sum + leg.quantity, 0)
   return quantity > 0
@@ -165,9 +213,9 @@ export function runDcaBacktest(
   sourceCandles: readonly DcaBacktestCandle[],
   rawConfig: DcaBacktestConfig,
 ): DcaBacktestResult {
-  const candles = [...sourceCandles]
-    .filter((candle) => Number.isFinite(candle.time) && candle.close > 0 && candle.high > 0 && candle.low > 0)
-    .sort((left, right) => left.time - right.time)
+  const prepared = prepareDcaMarket(sourceCandles)
+  const candles = prepared.candles
+  const entryDirections = preparedEntryDirections(prepared, rawConfig.entry)
   const profile = normalizeDcaProfile(rawConfig.profile)
   const timeframeMinutes = rawConfig.timeframeMinutes
   const takeProfitPct = finitePositive(rawConfig.takeProfitPct, 0.6)
@@ -185,7 +233,7 @@ export function runDcaBacktest(
 
   let index = 30
   while (index < candles.length - 1) {
-    const direction = entryDirection(candles, index, rawConfig.entry)
+    const direction = entryDirections[index]
     if (!direction) {
       index++
       continue
@@ -307,6 +355,10 @@ export function runDcaBacktest(
       volumeRatio,
       dcaSteps: legs.length - 1,
       pnlPctOfInitialNotional,
+      holdTimeMin: Math.max(
+        0,
+        ((candles[exitIndex]?.time ?? entryCandle.time) - entryCandle.time) / 60_000,
+      ),
       drawdownTimeMin: longestDrawdownMs / 60_000,
       maxAdversePnlPct,
     })

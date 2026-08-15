@@ -21,7 +21,7 @@
   snapshots, build output and dependencies.
 - The complete GitHub head namespace was fetched and compared by commit date,
   ancestry, patch identity and tree. No hidden branch is newer than
-  `agent/historic-runtime-stability-20260814@df217176`; `main@9ee7b7ec` is
+  `agent/historic-runtime-stability-20260814@e15970cc`; `main@9ee7b7ec` is
   its ancestor, and the misleadingly named `CTS-v5.6@48e991a7` dates from
   2026-08-06 and is already contained in current history. The recovered
   `CTS-K-N-current-main` directory is newer only as an uncommitted working
@@ -44,7 +44,7 @@
   their module environment. Redis command errors now retry on the next init
   without the contention spin, periodic persistence stays disabled in Jest
   unless explicitly requested, and the complete suite passes 181/181 suites
-  and 1,215/1,215 tests. TypeScript, ESLint, source syntax, diff checks and the
+  and 1,216/1,216 tests. TypeScript, ESLint, source syntax, diff checks and the
   1,420-file secret scan are green.
 - Direct Trade now has a default active global position capacity of `100` and
   a separate hard operator maximum of `300` (still `12` per symbol / `6` per
@@ -67,8 +67,8 @@
   `agent/historic-runtime-stability-20260814`, in
   `mxssnx-creator/CTS-K-N`. Always fetch the live branch head immediately before
   publishing and use a verified fast-forward update. The post-recovery safe head
-  is `df2171764a297fef4870c709d1c7f20b590d2775`; its source tree is the verified
-  pre-publication tree `273d9bbb50072c92bfe40dfc0f757f1c12faad5b`.
+  is `e15970cc0bbbed9b47c59995e6dc5b8f5d28d8fd`; its source tree is the verified
+  recovery tree `fd50a0c850c30420e56c804cdb385de1a33e459e`.
 - Historic indication writes are bounded and batched, the historic-to-realtime
   handoff retains its evaluated symbol/direction state, and non-combined
   Real-to-Live dispatch now retains both the exact executable row Set and its
@@ -108,6 +108,12 @@
   Because Codex command sandboxes isolate network namespaces, shared-Redis app
   tests must run in the same managed shell session as that Redis process here;
   a normal Linux systemd/PM2 install does not have this sandbox limitation.
+- The canonical Jest contract must run with the process-isolated inline backend,
+  not the mutable persistent Redis dataset. The durable helper is
+  `/workspace/CTS-K-N-runtime/run-tests-isolated-inline.sh`; production-backend
+  compatibility and application soaks remain separate shared-Redis gates. A
+  cross-session `flock` now prevents two isolated tool namespaces from opening
+  the same persistent AOF concurrently.
 - The new reproducible Historic-DCA entry point is
   `scripts/optimize-dca-14d.ts`. The exact 14-day run covered 2,016 candidates,
   four symbols, both directions and 5m/15m/30m with costs/slippage. Under a 6%
@@ -119,6 +125,19 @@
   The complete aggregate result is
   `validation-results/dca-historic-14d-2026-08-15.json` (runtime evidence,
   excluded from source archives); publish a summarized result separately.
+- The superseding 42-day / 18-symbol DCA test is
+  `scripts/optimize-dca-42d.ts`. It verified 36 complete 5m/15m histories,
+  screened 4,322 short-range configurations, fully re-ran 204 diversified
+  finalists across six weekly folds, and then froze per-symbol choices after
+  28 training days for an untouched 14-day out-of-sample test. No global
+  candidate qualified: the least-risk fallback produced 1,263 positions, PF
+  0.7963, -8.0524% equal-weight net PnL and 8.1811% equal-weight drawdown. The
+  training-only adaptive basket selected eight symbols but failed both OOS
+  weeks (202 positions, PF 0.5135, -7.2735% equal-weight PnL, 7.3560% DD); only
+  BTC stayed positive. Therefore DCA remains disabled and no losing profile may
+  replace production defaults. The detailed source-safe report is
+  `docs/DCA-HISTORIC-42D-18S-VALIDATION-2026-08-15.md`; the 6.1 MiB JSON stays
+  ignored as local runtime evidence.
 
 ## Current audit checkpoint (2026-08-12)
 
@@ -1352,3 +1371,31 @@ credentials are present.
   locating the remaining multi-second synchronous/GC slice, then rerun dev,
   Redis recovery, build/Linux preflight, production soak, 14-day DCA and final
   verification before the final Drive backup and GitHub push.
+
+## Session 2026-08-15 — 42-day DCA and responsiveness continuation
+
+- [x] The authoritative persistent source is now
+  `/workspace/CTS-K-N-v3.7`; `/workspace/scratch/2401a4646209/CTS-K-N-current-main`
+  was independently compared and overlaid only where newer. The published
+  branch checkpoint is `agent/historic-runtime-stability-20260814@e15970cc`;
+  no newer hidden GitHub branch/repository was found.
+- [x] Availability-first stale-while-revalidate responses now cover trade
+  history, live positions, preset optimization and indication configuration
+  counts. Expired successful snapshots can be returned immediately while one
+  background refresh is coalesced, avoiding stop-the-world GC latency in the
+  two-second polling cadence. Noncritical elevated-memory Major GC cadence is
+  120 seconds; hard RSS/heap safety limits are unchanged.
+- [x] Exact DCA result: 42 days, 18 symbols, 4,322 candidates, 204 full
+  finalists, six chronological folds, and 28d-train/14d-OOS selection. Both the
+  global and symbol-adaptive modes are unqualified, so the safe configured
+  decision is `dcaAdjustment=false` / `dca_enabled=false`; real-order placement
+  also remains disabled. See the detailed Markdown report for all symbol,
+  direction, exit, DCA-step, drawdown and stop-buffer statistics.
+- [x] Acceptance before the final 32-symbol soak: canonical isolated Jest
+  181/181 suites and 1,216/1,216 tests, TypeScript, full ESLint, source-syntax
+  verifier and 1,422-file credential scan all pass with zero findings.
+- [ ] Rerun the eight-minute 32-symbol shared-Redis Dev soak with the repaired
+  API/GC path, then refresh recreation manifests, publish a fast-forward GitHub
+  checkpoint, and create the final sanitized archive/checksum. The full Drive
+  source archive remains blocked until the user explicitly says
+  `Drive-Quellarchiv freigegeben`; do not infer this approval.

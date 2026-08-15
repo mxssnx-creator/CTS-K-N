@@ -88,6 +88,7 @@ export async function GET(request: NextRequest) {
     key,
     freshMs: 5_000,
     maxStaleMs: 30_000,
+    serveExpiredImmediately: true,
     producer: () => buildPresetOptimizerResponse(request),
   })
 }

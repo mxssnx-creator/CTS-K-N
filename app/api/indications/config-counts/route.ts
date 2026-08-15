@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { calculateIndicationConfigurationCounts } from "@/lib/indication-configuration-counts"
 import { getAppSettings, getRedisClient, initRedis } from "@/lib/redis-db"
+import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -25,7 +26,7 @@ function parseCommonSettings(raw: string | null): unknown {
  * Common and Signal configurations all retain exact independent identities;
  * only the coordinated Auto aggregate is runtime-only.
  */
-export async function GET() {
+async function buildConfigurationCountsResponse(): Promise<Response> {
   try {
     await initRedis()
     const client = getRedisClient()
@@ -55,4 +56,17 @@ export async function GET() {
       { status: 500 },
     )
   }
+}
+
+export async function GET(): Promise<Response> {
+  if (process.env.NODE_ENV === "test") return buildConfigurationCountsResponse()
+
+  return serveSerializedResponseSWR({
+    namespace: "indication-config-counts",
+    key: "current",
+    freshMs: 30_000,
+    maxStaleMs: 2 * 60_000,
+    serveExpiredImmediately: true,
+    producer: buildConfigurationCountsResponse,
+  })
 }

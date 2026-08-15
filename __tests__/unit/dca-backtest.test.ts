@@ -51,6 +51,7 @@ describe("DCA seven-day optimizer core", () => {
     expect(result.grossProfitPct).toBeGreaterThanOrEqual(0)
     expect(result.grossLossPct).toBeGreaterThanOrEqual(0)
     expect(result.maxEquityDrawdownPct).toBeGreaterThanOrEqual(0)
+    expect(result.trades.every((trade) => trade.holdTimeMin >= 0)).toBe(true)
     if (result.grossLossPct > 0) {
       expect(result.profitFactor).toBeCloseTo(result.grossProfitPct / result.grossLossPct)
     }

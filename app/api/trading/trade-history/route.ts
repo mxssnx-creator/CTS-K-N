@@ -391,6 +391,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     key: url.searchParams.toString(),
     freshMs: 10_000,
     maxStaleMs: 45_000,
+    serveExpiredImmediately: true,
     producer: () => buildTradeHistoryResponse(request),
   })
 }

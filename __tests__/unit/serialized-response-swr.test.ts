@@ -88,4 +88,49 @@ describe("serialized response stale-while-revalidate cache", () => {
     expect(await refreshed.json()).toEqual({ version: 2 })
     expect(refreshed.headers.get("x-cts-read-model-cache")).toBe("fresh")
   })
+
+  test("can serve an expired snapshot immediately while its refresh continues", async () => {
+    let now = 10_000
+    jest.spyOn(Date, "now").mockImplementation(() => now)
+    let refreshResolve!: (response: Response) => void
+    const producer = jest.fn()
+      .mockResolvedValueOnce(Response.json({ version: 1 }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        refreshResolve = resolve
+      }))
+
+    await serveSerializedResponseSWR({
+      namespace,
+      key: "availability-first",
+      freshMs: 10,
+      maxStaleMs: 20,
+      serveExpiredImmediately: true,
+      producer,
+    })
+
+    now = 10_100
+    let settled = false
+    const expiredPromise = serveSerializedResponseSWR({
+      namespace,
+      key: "availability-first",
+      freshMs: 10,
+      maxStaleMs: 20,
+      busyWaitMs: 10_000,
+      serveExpiredImmediately: true,
+      producer,
+    }).then((response) => {
+      settled = true
+      return response
+    })
+
+    await Promise.resolve()
+    expect(settled).toBe(true)
+    const expired = await expiredPromise
+    expect(expired.headers.get("x-cts-read-model-cache")).toBe("stale-if-busy")
+    expect(await expired.json()).toEqual({ version: 1 })
+    expect(producer).toHaveBeenCalledTimes(2)
+
+    refreshResolve(Response.json({ version: 2 }))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  })
 })

@@ -375,6 +375,7 @@ export async function GET(request: Request) {
     key: `${connectionId}|${closedLimit}|${status}|${source}`,
     freshMs: 2_000,
     maxStaleMs: 15_000,
+    serveExpiredImmediately: true,
     producer: () => buildLivePositionsResponse(request),
   })
 }

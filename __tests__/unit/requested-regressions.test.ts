@@ -1552,6 +1552,8 @@ describe("requested regression guardrails", () => {
     expect(tradeHistory).toContain("const [connection, localPage, analyticsSnapshots, cached] = await Promise.all")
     expect(configCounts).toContain("getAppSettings(),")
     expect(configCounts).not.toContain("bypassCache: true")
+    expect(configCounts).toContain('namespace: "indication-config-counts"')
+    expect(configCounts).toContain("serveExpiredImmediately: true")
   })
 
   test("detailed lifecycle monitoring requires both heartbeat and runtime progress to be stale", () => {

@@ -120,6 +120,16 @@ export async function serveSerializedResponseSWR(options: {
   freshMs?: number
   maxStaleMs?: number
   busyWaitMs?: number
+  /**
+   * Return an expired complete snapshot without waiting for its refresh.
+   *
+   * This is intended for read-only operational projections whose producer is
+   * allowed to finish in the background.  A previous successful snapshot is
+   * still more useful than making every dashboard reader wait behind a large
+   * in-process strategy/GC slice.  Cold reads remain strict and mutations can
+   * continue to invalidate their namespace normally.
+   */
+  serveExpiredImmediately?: boolean
   producer: () => Promise<Response>
 }): Promise<Response> {
   const exactKey = cacheKey(options.namespace, options.key)
@@ -137,6 +147,15 @@ export async function serveSerializedResponseSWR(options: {
     // a transient Redis/read-model failure cannot become an unhandled promise.
     void pending.catch(() => undefined)
     return restoreResponse(cached, "stale")
+  }
+
+  if (cached && options.serveExpiredImmediately) {
+    // The refresh is already coalesced above. Observe its rejection, but do
+    // not put a timer on the request path: under stop-the-world GC that timer
+    // fires late as well and turns a nominal 1.5 s wait into a multi-second
+    // control-plane stall.
+    void pending.catch(() => undefined)
+    return restoreResponse(cached, "stale-if-busy")
   }
 
   if (cached) {

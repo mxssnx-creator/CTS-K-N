@@ -60,6 +60,7 @@
     "test:direct-trade:80h": "DIRECT_TRADE_MATRIX_HOURS=80 NODE_OPTIONS='--max-old-space-size=2048' node --import tsx scripts/test-direct-trade-matrix.cjs",
     "test:direct-trade:90h": "DIRECT_TRADE_MATRIX_SYMBOLS=32 DIRECT_TRADE_MATRIX_HOURS=90 DIRECT_TRADE_MATRIX_MAX_POSITIONS=100 NODE_OPTIONS='--max-old-space-size=3072' node --import tsx scripts/test-direct-trade-matrix.cjs",
     "test:dca:historic:14d": "NODE_OPTIONS='--max-old-space-size=2048' node --import tsx scripts/optimize-dca-14d.ts",
+    "test:dca:historic:42d:18": "NODE_OPTIONS='--max-old-space-size=4096' node --import tsx scripts/optimize-dca-42d.ts",
     "test:direct-trade:dev-soak": "node scripts/test-direct-trade-dev-soak.mjs",
     "test:direct-trade:dev-paper": "node scripts/run-direct-trade-dev-soak.mjs",
     "test:direct-trade:recovery": "node scripts/run-direct-trade-recovery-soak.mjs",
