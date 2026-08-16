@@ -45,9 +45,17 @@ export class ProductionErrorHandler {
       this.handleUncaughtException(error)
     })
 
-    // Handle graceful shutdown signals
-    process.on('SIGTERM', () => this.handleShutdown('SIGTERM'))
-    process.on('SIGINT', () => this.handleShutdown('SIGINT'))
+    // SIGTERM/SIGINT are real platform-issued termination signals (deploy,
+    // scale-down, manual kill) — not something this process should ever send
+    // itself. We use them ONLY as a best-effort trigger to close live
+    // exchange positions before the platform's own kill completes; we NEVER
+    // call process.exit() here. Calling process.exit() from an application
+    // module raced the platform's shutdown sequence and was the root cause of
+    // the "session regularly restarting" crash-loop — the platform already
+    // owns the process lifecycle and will terminate the process on its own
+    // schedule regardless of what this handler does.
+    process.on('SIGTERM', () => this.handleShutdownSignal('SIGTERM'))
+    process.on('SIGINT', () => this.handleShutdownSignal('SIGINT'))
 
     // Mark initialization
     ;(globalThis as any).__errorHandlerInitialized = true
@@ -103,58 +111,31 @@ export class ProductionErrorHandler {
     // would kill all engines and force a worker restart — the exact crash the
     // operator reported. We log + track and SURVIVE; the active handler in
     // lib/error-handler.ts additionally self-heals (re-arms running engines).
-    // Graceful shutdown remains wired to SIGTERM/SIGINT only (handleShutdown).
+    // SIGTERM/SIGINT only trigger a best-effort position close, never exit.
   }
 
   /**
-   * Handle shutdown signals
+   * Best-effort reaction to a platform-issued SIGTERM/SIGINT. This does NOT
+   * call process.exit() — the platform (PM2/systemd/Vercel) already sent the
+   * signal and owns when the process actually dies. We only race to close
+   * live exchange positions within a short budget before that happens, so
+   * positions don't stay open on the exchange with no local process managing
+   * their stop-loss/take-profit.
    */
-  private static handleShutdown(signal: string) {
-    console.log(`[SHUTDOWN] Received ${signal}, initiating graceful shutdown...`)
-    this.gracefulShutdown(0)
-  }
-
-  /**
-   * Graceful shutdown sequence
-   */
-  private static gracefulShutdown(exitCode: number) {
-    if (this.isShuttingDown) {
-      console.log('[SHUTDOWN] Already shutting down, forcing exit...')
-      process.exit(exitCode)
-      return
-    }
-
+  private static handleShutdownSignal(signal: string) {
+    if (this.isShuttingDown) return
     this.isShuttingDown = true
-
-    // Give 10 seconds for cleanup before forcing exit
-    const shutdownTimeout = setTimeout(() => {
-      console.error('[SHUTDOWN] Forced exit after timeout')
-      process.exit(exitCode)
-    }, 10000)
-
-    // Do NOT call shutdownTimeout.unref() — we need the event loop to stay
-    // alive long enough for emergencyCloseAllPositions() to complete. The 10s
-    // hard-kill above is our backstop.
-
-    // Attempt graceful cleanup — close all open live positions on the exchange
-    // before the process dies. This is the last-resort safety net to prevent
-    // positions staying open on the exchange after a dev server restart.
+    console.log(`[SHUTDOWN] Received ${signal}: attempting best-effort live position close (no process.exit)`)
     this.emergencyCloseAllPositions()
-      .then(() => {
-        console.log('[SHUTDOWN] Emergency position close complete, exiting...')
-        process.exit(exitCode)
-      })
-      .catch((error) => {
-        console.error('[SHUTDOWN] Error during emergency close:', error)
-        process.exit(exitCode)
-      })
+      .then(() => console.log('[SHUTDOWN] Emergency position close attempt complete'))
+      .catch((error) => console.error('[SHUTDOWN] Error during emergency close:', error))
   }
 
   /**
    * Emergency close all open live positions across all connections.
    * Best-effort — errors per connection are swallowed so other connections
-   * still get cleaned up. Called synchronously from the SIGTERM handler
-   * with a hard 8s budget (within the 10s shutdown window).
+   * still get cleaned up. Runs with a hard 8s budget since the platform may
+   * force-kill the process shortly after SIGTERM.
    */
   private static async emergencyCloseAllPositions(): Promise<void> {
     try {

@@ -26,6 +26,15 @@
  *   initializeTradeEngineAutoStart() → startServerContinuityRunner()
  */
 
+// MUST be the very first import. `lib/error-handler` installs process-level
+// `uncaughtException`/`unhandledRejection` hooks as a module side effect that
+// survive instead of exiting. Without this being first, any rejection during
+// `completeStartup()` below (Redis init, migrations, reconciliation) hits
+// Node's default behavior — an unhandled rejection crashes the process — and
+// the supervisor (PM2/systemd) restarts it. That is the exact "session
+// regularly restarting" failure mode: install the safety net before anything
+// else can fail.
+import "@/lib/error-handler"
 import { isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 // Guard against double-execution across HMR / module re-evaluation. Failed

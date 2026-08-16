@@ -59,6 +59,35 @@ function finiteEnvNumber(name: string, fallback: number, min: number, max: numbe
   return Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value))) : fallback
 }
 
+/**
+ * Guard against a misconfigured `V0_REDIS_SNAPSHOT_PATH`. A bare relative
+ * value (e.g. a typo like "refis" instead of a proper "redis" path) resolves
+ * to a loose file directly inside the project working directory: inside the
+ * dev server's watched tree (causing constant recompiles/restarts) and
+ * inside the git working copy (risking huge runtime files getting committed
+ * and blocking pushes). Reject any candidate whose directory would be the
+ * project root itself and fall back to the safe `.v0-data/` default instead.
+ */
+function sanitizeSnapshotPathValue(
+  raw: string | undefined,
+  path: { resolve: (...s: string[]) => string; dirname: (s: string) => string },
+  cwd: string,
+): string | null {
+  const trimmed = String(raw || "").trim()
+  if (!trimmed) return null
+  const resolved = path.resolve(cwd, trimmed)
+  const resolvedCwd = path.resolve(cwd)
+  if (path.dirname(resolved) === resolvedCwd) {
+    console.warn(
+      `[v0] [Redis] Ignoring V0_REDIS_SNAPSHOT_PATH="${trimmed}" — it resolves directly ` +
+        `into the project working directory, which the dev server watches and git tracks. ` +
+        `Falling back to the default .v0-data/redis-snapshot.json path.`,
+    )
+    return null
+  }
+  return resolved
+}
+
 function isKiloLocalPreviewRuntime(): boolean {
   if (
     process.env.KILO_LOCAL_PREVIEW_INLINE_REDIS !== "1" ||
@@ -480,15 +509,31 @@ export class InlineLocalRedis implements RedisClientLike {
       // `next.config.mjs`, which short-circuits the load (the runtime
       // guard above already returns `null` before this line ever runs).
       const path = await import("path")
-      const explicit = process.env.V0_REDIS_SNAPSHOT_PATH
+      const primary = path.join(process.cwd(), ".v0-data", "redis-snapshot.json")
+      const explicit = sanitizeSnapshotPathValue(process.env.V0_REDIS_SNAPSHOT_PATH, path, process.cwd())
       if (explicit) {
         return { dir: path.dirname(explicit), file: explicit }
       }
       // Prefer cwd/.v0-data; fall back to /tmp in restricted environments.
-      const primary = path.join(process.cwd(), ".v0-data", "redis-snapshot.json")
       return { dir: path.dirname(primary), file: primary }
     } catch {
       return null
+    }
+  }
+
+  /**
+   * True only when the operator configured a valid (sanitized) explicit
+   * snapshot path. A rejected/misconfigured value (see
+   * `sanitizeSnapshotPathValue`) must behave exactly like "unconfigured" —
+   * including still allowing the `/tmp` fallback candidate.
+   */
+  private async hasExplicitSnapshotPath(): Promise<boolean> {
+    if (typeof process === "undefined" || !process.versions?.node) return false
+    try {
+      const path = await import("path")
+      return sanitizeSnapshotPathValue(process.env.V0_REDIS_SNAPSHOT_PATH, path, process.cwd()) !== null
+    } catch {
+      return false
     }
   }
 
@@ -993,7 +1038,7 @@ export class InlineLocalRedis implements RedisClientLike {
 
     const primary = await this.resolveSnapshotPath()
     if (!primary) return false
-    const candidates = process.env.V0_REDIS_SNAPSHOT_PATH
+    const candidates = (await this.hasExplicitSnapshotPath())
       ? [primary]
       : [primary, await this.tmpFallbackPath()].filter(Boolean) as Array<{ dir: string; file: string }>
     const entry = JSON.stringify({
@@ -1288,7 +1333,7 @@ export class InlineLocalRedis implements RedisClientLike {
     // An explicit path is an operator durability contract. Never silently
     // restore from `/tmp` when that path is configured: an ephemeral fallback
     // could resurrect a different/stale database and falsely report success.
-    const candidates = process.env.V0_REDIS_SNAPSHOT_PATH
+    const candidates = (await this.hasExplicitSnapshotPath())
       ? [target]
       : [target, await this.tmpFallbackPath()].filter(Boolean) as Array<{ file: string }>
     for (const c of candidates) {
@@ -1372,7 +1417,7 @@ export class InlineLocalRedis implements RedisClientLike {
       const snapshotVersion = this.mutationVersion()
       // With an explicit persistent-volume path, fail closed instead of
       // silently succeeding on ephemeral `/tmp`.
-      const candidates = process.env.V0_REDIS_SNAPSHOT_PATH
+      const candidates = (await this.hasExplicitSnapshotPath())
         ? [primary]
         : [primary, await this.tmpFallbackPath()].filter(Boolean) as Array<{ dir: string; file: string }>
       for (const c of candidates) {
@@ -1439,8 +1484,9 @@ export class InlineLocalRedis implements RedisClientLike {
     } catch {
       return false
     }
-    const explicit = process.env.V0_REDIS_SNAPSHOT_PATH
-    const primaryFile = explicit || pathMod.join(process.cwd(), ".v0-data", "redis-snapshot.json")
+    const defaultFile = pathMod.join(process.cwd(), ".v0-data", "redis-snapshot.json")
+    const explicit = sanitizeSnapshotPathValue(process.env.V0_REDIS_SNAPSHOT_PATH, pathMod, process.cwd())
+    const primaryFile = explicit || defaultFile
     const tmpFile = pathMod.join("/tmp", "v0-redis-snapshot.json")
     if (this.persistedVersion() >= this.mutationVersion()) return true
     const snapshotVersion = this.mutationVersion()
@@ -2091,7 +2137,7 @@ export class InlineLocalRedis implements RedisClientLike {
       evicted += trimBucket(keys, cap)
     }
 
-    // ── STRING single-pass ────────────────────────────────────────────────
+    // ── STRING single-pass ─────────��──────────────────────────────────────
     // indications:* string blobs get a lower string cap (vs hash cap) since
     // the blob format is larger than the hash representation.
     const strBuckets = new Map<string, string[]>()

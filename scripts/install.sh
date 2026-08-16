@@ -1430,8 +1430,18 @@ install_pm2_runtime() {
   fi
   local home runtime_max_mb scheduler_max_mb direct_trade_max_mb
   home="$(service_home)"
+  # NOTE: PM2's --max-memory-restart is measured against RSS, while
+  # lib/startup-coordinator.ts configures the in-process memory manager's
+  # soft-warning ceiling against V8 heapUsed (2048MB in production). RSS is
+  # always >= heapUsed (native buffers, sockets, Redis client, BingX HTTP
+  # keep-alives all add on top of the heap), so a 1024MB PM2 ceiling
+  # guarantees PM2 hard-kills and restarts the app long before the app's own
+  # memory management ever gets a chance to warn or GC. That mismatch was the
+  # root cause of the process "regularly restarting" in production. Default
+  # to 2560MB (2048MB heap ceiling + ~512MB RSS overhead headroom) so PM2 only
+  # intervenes as a true last resort, and keep it operator-configurable.
   runtime_max_mb="$(env_value CTS_RUNTIME_MEMORY_MAX_MB)"
-  [[ "$runtime_max_mb" =~ ^[0-9]+$ ]] || runtime_max_mb=1024
+  [[ "$runtime_max_mb" =~ ^[0-9]+$ ]] || runtime_max_mb=2560
   scheduler_max_mb="$(env_value CTS_SCHEDULER_MEMORY_MAX_MB)"
   direct_trade_max_mb="$(env_value CTS_DIRECT_TRADE_MEMORY_MAX_MB)"
   [[ "$scheduler_max_mb" =~ ^[0-9]+$ ]] || scheduler_max_mb=384

@@ -124,8 +124,10 @@ export async function ensureDefaultExchangesExist() {
       } as Record<string, any>
 
       if (!existing) {
-        normalizedBase.api_key = hasConfiguredCreds ? apiKey : ""
-        normalizedBase.api_secret = hasConfiguredCreds ? apiSecret : ""
+        // Only the connection's own alias resolver can provide credentials.
+        // A missing X01 credential must stay blank even when X02 is configured.
+        normalizedBase.api_key = hasConfiguredCreds && cfg.id === "bingx-x01" ? apiKey : ""
+        normalizedBase.api_secret = hasConfiguredCreds && cfg.id === "bingx-x01" ? apiSecret : ""
         await createConnection(normalizedBase)
         created++
       } else {
@@ -155,8 +157,18 @@ export async function ensureDefaultExchangesExist() {
           repairPatch.base_url = BINGX_PROD_VST_ORIGIN
         }
         if (hasConfiguredCreds) {
-          if (!String(existing.api_key || "").trim()) repairPatch.api_key = apiKey
-          if (!String(existing.api_secret || "").trim()) repairPatch.api_secret = apiSecret
+          // Credentials are connection-scoped. Never let X02 VST aliases seed
+          // X01, or allow a missing X01 credential to be repaired from another
+          // connection's environment.
+          const credentialOwner = cfg.id === "bingx-x01"
+            ? "bingx-x01"
+            : cfg.id === "bingx-x02"
+              ? "bingx-x02"
+              : cfg.id
+          if (credentialOwner === cfg.id) {
+            if (!String(existing.api_key || "").trim()) repairPatch.api_key = apiKey
+            if (!String(existing.api_secret || "").trim()) repairPatch.api_secret = apiSecret
+          }
         }
         if (Object.keys(repairPatch).length > 0) {
           repairPatch.updated_at = now
