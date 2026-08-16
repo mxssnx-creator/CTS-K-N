@@ -1681,7 +1681,13 @@ export class InlineLocalRedis implements RedisClientLike {
       // RSS hard: 82% of usable — critical eviction + sleep above this (was 75%).
       const rssHardMB   = Math.round(usableMB * 0.82)
       const _nSyms      = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
-      const maxKeys     = Math.round(1_000 + _nSyms * 800 * Math.max(1, usableMB / 2_048))
+      // Keep the inline emulator bounded by dataset size, not VM size. Scaling
+      // this with RAM allowed an 8 GB host to accumulate millions of entries
+      // before eviction, which is exactly the Redis-memory-overrun failure mode.
+      const maxKeys     = Math.min(
+        finiteEnvNumber("CTS_REDIS_MAX_KEYS", 12_000, 2_000, 50_000),
+        Math.max(2_000, 1_000 + _nSyms * 1_500),
+      )
       const prev = globalCleanup.__redis_mem_limits
       const changed = !prev || prev.rssHardMB !== rssHardMB
       globalCleanup.__redis_mem_limits = { heapMB, rssSoftMB, rssHardMB, maxKeys }
@@ -1782,9 +1788,9 @@ export class InlineLocalRedis implements RedisClientLike {
         if (!shouldRunFullCleanup) return
         _lastFullCleanupMs = now
 
-        // Finish any remaining TTL entries before a slower full eviction pass.
-        this.cleanupExpiredKeys()
-
+        // Never perform an unbounded TTL scan on the hot path. A full TTL map
+        // walk can briefly retain every expired key and trigger the same heap
+        // spike we are trying to prevent; continue with bounded slices only.
         if (!evictionDue) return
         _lastEvictionMs = now
 
@@ -1797,10 +1803,9 @@ export class InlineLocalRedis implements RedisClientLike {
               : heapUsedMB > CMEM.heapMB
                 ? `Heap=${heapUsedMB.toFixed(0)}MB >${CMEM.heapMB}MB`
                 : `Keys=${totalKeys} >${CMEM.maxKeys}`
-          // describeKeyFamilies() performs full key-family scans; only pay that
-          // cost when a log line will actually be emitted.
-          const families = this.describeKeyFamilies()
-          console.log(`[v0] [Redis Memory] ${reason} — evicting. Families: ${families}`)
+          // Avoid a second full keyspace/value scan while already under memory
+          // pressure. Key counts are enough to identify the event safely.
+          console.warn(`[v0] [Redis Memory] ${reason} — bounded eviction started` )
         }
 
         if (isCritical) {
@@ -1979,7 +1984,7 @@ export class InlineLocalRedis implements RedisClientLike {
     // with ~8× fewer comparisons per key (average 3 prefix checks vs 24).
     //
     // Bucket names mirror the old family rules, so the cap values are unchanged.
-    // ── Dynamic per-symbol eviction caps ──────────────────────────────────
+    // ── Dynamic per-symbol eviction caps ───────────────────────────��──────
     // Scale linearly with symbol count only — do NOT scale with RAM because
     // larger machines don't need more indication/strategy keys, they just have
     // more headroom before OOM. Scaling caps with RAM was the root cause of
@@ -2077,7 +2082,9 @@ export class InlineLocalRedis implements RedisClientLike {
       if (bucket === null) continue
       let arr = hashBuckets.get(bucket)
       if (!arr) { arr = []; hashBuckets.set(bucket, arr) }
-      arr.push(key)
+      const cap = CAPS[bucket] ?? 0
+      if (arr.length < cap + 1) arr.push(key)
+      else this.deleteKey(arr.shift()!)
     }
     for (const [bucket, keys] of hashBuckets) {
       const cap = CAPS[bucket] ?? 0
@@ -2095,7 +2102,9 @@ export class InlineLocalRedis implements RedisClientLike {
       const strBucket = bucket === "indications" ? "indications_str" : bucket
       let arr = strBuckets.get(strBucket)
       if (!arr) { arr = []; strBuckets.set(strBucket, arr) }
-      arr.push(key)
+      const cap = CAPS[strBucket] ?? 0
+      if (arr.length < cap + 1) arr.push(key)
+      else this.deleteKey(arr.shift()!)
     }
     for (const [bucket, keys] of strBuckets) {
       const cap = CAPS[bucket] ?? 0
@@ -2140,7 +2149,14 @@ export class InlineLocalRedis implements RedisClientLike {
         const ts = Number(fields["closedAt"] ?? fields["updatedAt"] ?? 0)
         let arr = terminalByConn.get(connKey)
         if (!arr) { arr = []; terminalByConn.set(connKey, arr) }
-        arr.push([key, ts])
+        if (arr.length < MAX_TERMINAL_POSITIONS + 1) {
+          arr.push([key, ts])
+        } else {
+          arr.sort((a, b) => b[1] - a[1])
+          const oldest = arr.pop()
+          if (oldest) this.deleteKey(oldest[0])
+          arr.push([key, ts])
+        }
       }
       for (const [, positions] of terminalByConn) {
         if (positions.length <= MAX_TERMINAL_POSITIONS) continue
@@ -2166,26 +2182,19 @@ export class InlineLocalRedis implements RedisClientLike {
         (key.startsWith("pseudo_positions:") || key.startsWith("real_pseudo_positions:")) &&
         members.size > SET_MEMBER_CAP
       ) {
-        const arr = Array.from(members)
-        const keep = new Set(arr.slice(arr.length - SET_MEMBER_CAP))
-        this.data.sets.set(key, keep)
-        evicted += arr.length - keep.size
+        let removed = 0
+        while (members.size > SET_MEMBER_CAP) {
+          const oldest = members.values().next().value as string | undefined
+          if (oldest === undefined) break
+          members.delete(oldest)
+          removed++
+        }
+        evicted += removed
       }
     }
 
-    // ── TTL expiry sweep ─────────────────────────────────────────────────────
-    // Eagerly delete any keys whose TTL has already passed. Without this, expired
-    // keys stay in the Map until a reader calls isExpired(), so the eviction
-    // loop above sees them as live entries and keeps them under caps.
-    if (this.data.ttl) {
-      const now = Date.now()
-      for (const [key, expireAt] of this.data.ttl.entries()) {
-        if (expireAt <= now) {
-          this.deleteKey(key)
-          evicted++
-        }
-      }
-    }
+    // TTL expiry is handled by the incremental bounded sweep in the timer.
+    // Never scan the complete TTL map inside an eviction pass under pressure.
 
     // Most bucket removals go through deleteKey(), but terminal-position trims
     // and oversized membership-set replacement mutate their Maps directly.
@@ -4980,7 +4989,7 @@ export function invalidateAppSettingsCache(): void {
 //
 // The counter read is itself cached in-process for 250 ms so a tight
 // inner loop doing many reads doesn't hammer Redis on every call.
-// ─────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────���────────────
 
 const SETTINGS_VERSION_KEY = "settings_version" as const
 let _settingsVersionCached: number = 0
