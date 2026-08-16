@@ -91,14 +91,19 @@ export async function GET() {
       isTruthyFlag(c.is_enabled) && isTruthyFlag(c.is_enabled_dashboard) && isTruthyFlag(c.is_live_trade),
     )
 
-    const positions: any[] = []
-    for (const connection of liveConnections) {
-      const [open, closed] = await Promise.all([
-        getLivePositions(connection.id).catch(() => []),
-        getClosedLivePositions(connection.id, 250).catch(() => []),
-      ])
-      positions.push(...open, ...closed)
-    }
+    // These reads are independent per connection. Fetching them serially made
+    // stats latency grow linearly with the number of enabled live connections,
+    // which was a primary p95 problem zone.
+    const perConnectionPositions = await Promise.all(
+      liveConnections.map(async (connection: any) => {
+        const [open, closed] = await Promise.all([
+          getLivePositions(connection.id).catch(() => []),
+          getClosedLivePositions(connection.id, 250).catch(() => []),
+        ])
+        return [...open, ...closed]
+      }),
+    )
+    const positions: any[] = perConnectionPositions.flat()
 
     const realPositions = positions
       .filter(isRealExchangePosition)

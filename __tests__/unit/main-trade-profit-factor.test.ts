@@ -15,35 +15,38 @@ import path from "node:path"
 
 describe("Main Trade PositionCost-relative PF ratios", () => {
   test("uses the exact systemwide range, grid, and stage defaults", () => {
-    expect(MAIN_TRADE_PF_RATIO_MIN).toBe(0.8)
-    expect(MAIN_TRADE_PF_RATIO_MAX).toBe(2.7)
+    expect(MAIN_TRADE_PF_RATIO_MIN).toBe(1.05)
+    expect(MAIN_TRADE_PF_RATIO_MAX).toBe(2.2)
     expect(MAIN_TRADE_STAGE_PF_DEFAULTS).toEqual({
-      base: 0.8,
-      main: 1.12,
-      real: 1.12,
-      live: 1.12,
+      base: 1.15,
+      main: 1.15,
+      real: 1.15,
+      live: 1.15,
     })
-    expect(normalizeMainTradePfRatio(0.079)).toBe(0.8)
-    expect(normalizeMainTradePfRatio(0.811)).toBe(0.82)
-    expect(normalizeMainTradePfRatio(99)).toBe(2.7)
+    expect(normalizeMainTradePfRatio(0.079)).toBe(1.05)
+    expect(normalizeMainTradePfRatio(1.081)).toBe(1.1)
+    expect(normalizeMainTradePfRatio(99)).toBe(2.2)
   })
 
-  test("enforces the systemwide 0.80 stage floor", () => {
-    expect(mainTradeStagePfMin("base")).toBe(0.8)
-    expect(mainTradeStagePfMin("main")).toBe(0.8)
-    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(0.8)
-    expect(normalizeMainTradeStagePfRatio("base", 0.39)).toBe(0.8)
-    expect(normalizeMainTradeStagePfRatio("base", 0.82)).toBe(0.82)
-    expect(normalizeMainTradeStagePfRatio("main", 0.08)).toBe(0.8)
+  test("enforces the systemwide PF stage floors", () => {
+    expect(mainTradeStagePfMin("base")).toBe(1.1)
+    expect(mainTradeStagePfMin("main")).toBe(1.05)
+    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(1.1)
+    expect(normalizeMainTradeStagePfRatio("base", 1.08)).toBe(1.1)
+    expect(normalizeMainTradeStagePfRatio("base", 1.12)).toBe(1.1)
+    expect(normalizeMainTradeStagePfRatio("main", 0.08)).toBe(1.05)
   })
 
-  test("converts the ratio against PositionCost exactly once", () => {
-    expect(mainTradePfRatioToMovePct(0.1, 0.1)).toBe(0.8)
-    expect(mainTradePfRatioToMovePct(0.8, 0.1)).toBe(0.8)
-    expect(mainTradePfRatioToMovePct(1.12, 0.2)).toBe(2.24)
-    expect(movePctToMainTradePfRatio(0.8, 0.1)).toBe(0.8)
-    expect(mainTradePfRatioPasses(0.799, 0.1, 0.8)).toBe(false)
-    expect(mainTradePfRatioPasses(0.8, 0.1, 0.8)).toBe(true)
+  test("maps PF to PositionCost-relative positive move", () => {
+    expect(mainTradePfRatioToMovePct(1.0, 0.1)).toBe(0)
+    expect(mainTradePfRatioToMovePct(1.1, 0.1)).toBeCloseTo(0.1, 12)
+    expect(mainTradePfRatioToMovePct(1.3, 0.1)).toBeCloseTo(0.3, 12)
+    expect(mainTradePfRatioToMovePct(1.15, 0.2)).toBeCloseTo(0.3, 12)
+    expect(movePctToMainTradePfRatio(0, 0.1)).toBe(1)
+    expect(movePctToMainTradePfRatio(0.1, 0.1)).toBeCloseTo(1.1, 12)
+    expect(movePctToMainTradePfRatio(0.3, 0.1)).toBeCloseTo(1.3, 12)
+    expect(mainTradePfRatioPasses(0.104, 0.1, 1.1)).toBe(false)
+    expect(mainTradePfRatioPasses(0.1, 0.1, 1.1)).toBe(true)
   })
 
   test("keeps classic PF diagnostic separate from the stage ratio", () => {
@@ -54,7 +57,7 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
 
     expect(stats.profitFactor).toBe(10)
     expect(stats.averagePnlPct).toBeCloseTo(0.1, 12)
-    expect(stats.positionCostRatio).toBeCloseTo(0.1, 12)
+    expect(stats.positionCostRatio).toBeCloseTo(1.1, 12)
     expect(stats.positionCostRatioCount).toBe(2)
   })
 
