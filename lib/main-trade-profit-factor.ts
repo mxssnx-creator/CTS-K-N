@@ -108,8 +108,13 @@ export function mainTradePfRatioToMovePct(
   positionCostPct: unknown,
 ): number {
   const cost = Math.max(0, finite(positionCostPct, 0))
-  const normalized = normalizeMainTradePfRatio(ratio)
-  return round(cost * ((normalized - MAIN_TRADE_PF_RATIO_BASE) / MAIN_TRADE_PF_RATIO_MOVE_SCALE))
+  // This is a pure math conversion, not a configured-setting normalization:
+  // do NOT clamp to MAIN_TRADE_PF_RATIO_MIN (the operator-selectable floor,
+  // 1.05) here. The neutral base ratio (1.00, meaning "no move") is a valid
+  // input below that floor and must convert to exactly 0%, not be pulled up
+  // to the minimum selectable setting and produce a false positive move.
+  const value = Math.max(MAIN_TRADE_PF_RATIO_BASE, finite(ratio, MAIN_TRADE_PF_RATIO_BASE))
+  return round(cost * ((value - MAIN_TRADE_PF_RATIO_BASE) / MAIN_TRADE_PF_RATIO_MOVE_SCALE))
 }
 
 /**
