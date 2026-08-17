@@ -11,22 +11,38 @@ export function parseEnvironmentFile(source, options = {}) {
     typeof options.onWarning === "function"
       ? options.onWarning
       : (message) => console.warn(`[run-with-env] ${message}`)
+  // Tracks the key of an in-progress assignment so raw multi-line values
+  // (e.g. PEM/SSH private keys) keep their continuation lines instead of
+  // being reported as malformed.
+  let currentKey = null
   for (const rawLine of source.split(/\n/)) {
     const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine
-    if (!line.trim() || line.trimStart().startsWith("#")) continue
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith("#")) {
+      currentKey = null
+      continue
+    }
+    // A line is a real KEY=VALUE assignment only when the text before the
+    // first "=" is a valid identifier. Otherwise it is either a continuation
+    // of an open multi-line value (e.g. base64 PEM/SSH body, which may
+    // legitimately contain "=") or an unsupported/orphan line.
     const separator = line.indexOf("=")
-    if (separator < 1) {
+    const candidateKey = separator >= 1 ? line.slice(0, separator).trim() : ""
+    const isAssignment =
+      separator >= 1 && /^[A-Z_][A-Z0-9_]*$/.test(candidateKey)
+    if (!isAssignment) {
+      if (currentKey !== null) {
+        parsed[currentKey] += "\n" + line
+        continue
+      }
       warn(`Skipping unsupported environment line: ${JSON.stringify(line)}`)
       continue
     }
-    const key = line.slice(0, separator).trim()
+    const key = candidateKey
     let value = line.slice(separator + 1)
-    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
-      warn(`Skipping environment line with invalid key: ${JSON.stringify(key)}`)
-      continue
-    }
     if (value.includes("\0")) {
       warn(`Skipping environment value containing NUL for key: ${key}`)
+      currentKey = null
       continue
     }
 
@@ -41,6 +57,7 @@ export function parseEnvironmentFile(source, options = {}) {
           .replace(/\\\\/g, "\\")
       }
     }
+    currentKey = key
     parsed[key] = value
   }
   return parsed
