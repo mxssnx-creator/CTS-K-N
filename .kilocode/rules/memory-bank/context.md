@@ -1443,3 +1443,22 @@ credentials are present.
   zero. Publish a final GitHub/Drive report/checksum checkpoint after the
   handoff commit; a new full Drive source archive still requires the exact
   explicit phrase `Drive-Quellarchiv freigegeben`.
+- [x] fix(tests): resolved 2 failing `install-deployment-contract.test.ts` tests
+  ("passes the executable Kilo/Cloudflare static preflight" and "passes the
+  complete Kilo runtime, owner, and deploy-credential preflight") caused by a
+  stray gitignored `bun.lock` that the Kilo deploy preflight
+  (`scripts/kilo-deploy-preflight.mjs` line 96) rejects via
+  `!existsSync("bun.lock")`. Added `jest.global-setup.js` + `globalSetup` in
+  `jest.config.ts` to purge `bun.lock`/`bun.lockb` before the Jest contract runs,
+  so the pnpm-only deploy gate stays green even when a sandbox `bun install`
+  regenerates the lockfile. Verified: `pnpm test:all` 183 suites / 1220 tests,
+  `pnpm typecheck` ✓, `pnpm lint` ✓, `pnpm test` smoke ✓.
+- [x] Confirmed only BingX X02 Prod-VST is runtime-enabled for live order
+  placement: credentials are isolated to `BINGX_X02_API_KEY`/`BINGX_X02_API_SECRET`
+  (`lib/base-connection-credentials.ts` line 17-19) and never leak into X01
+  (verified by `bingx-vst-migration.test.ts` "X02 remains Prod-VST"); connections
+  without usable credentials fall through `evaluateRealTradeReadiness` with
+  `blockCode: "credentials_missing"` and never select the real-exchange branch in
+  `createLiveOrderConnector`. Other base connections (bingx-x01/x01, bybit-x03,
+  pionex-x01, orangex-x01) remain fail-closed unless their env credentials are
+  present.
