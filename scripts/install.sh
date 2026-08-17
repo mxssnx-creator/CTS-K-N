@@ -482,9 +482,12 @@ run_preflight() {
     || fatal "No supported package manager found (apt, dnf, or yum)"
   ok "Package manager: $PACKAGE_MANAGER"
 
-  local disk_kb memory_total_kb memory_available_kb
+  local disk_kb memory_total_kb memory_available_kb memory_limits
   disk_kb="$(df -Pk "$PROJECT_ROOT" | awk 'NR==2 {print $4}')"
-  read -r memory_total_kb memory_available_kb < <(effective_memory_limits_kb)
+  # Avoid bash process substitution here: constrained SSH/bootstrap shells may
+  # not mount /dev/fd, even though command substitution is available.
+  memory_limits="$(effective_memory_limits_kb)"
+  read -r memory_total_kb memory_available_kb <<< "$memory_limits"
   (( disk_kb >= 4 * 1024 * 1024 )) || fatal "At least 4 GiB free disk is required"
   # The relative watchdog reserves memory for the app plus scheduler and
   # Direct-Trade worker. Keep the preflight threshold aligned with that

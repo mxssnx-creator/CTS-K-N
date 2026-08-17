@@ -454,12 +454,14 @@ describe("strategy position-count axis coordination", () => {
       100,
     ) as StrategySet[]
 
-    // The four closed results average only 0.75× their PositionCost, so the
-    // `prev=4` PF filter must be withheld below the configured 1.2 threshold.
-    expect(sets).toHaveLength(9)
+    // Historic PnL is converted to the PositionCost-relative ratio scale
+    // before the prev-window gate. This window remains positive (ratio 2.0),
+    // so the mature prev variants are eligible rather than being discarded as
+    // a classic-PF 0.75 window.
+    expect(sets).toHaveLength(18)
     expect(sets.every((set) => set.setKey.includes("_u3"))).toBe(true)
     expect(sets.every((set) => set.axisWindows?.pause === 3)).toBe(true)
-    expect(sets.every((set) => set.axisWindows?.prev === 0)).toBe(true)
+    expect(new Set(sets.map((set) => set.axisWindows?.prev))).toEqual(new Set([0, 4]))
     expect(sets.every((set) => [0, 1, 2].includes(set.axisWindows?.last))).toBe(true)
     expect(sets.every((set) => [0, 1, 2].includes(set.axisWindows?.cont))).toBe(true)
     expect(sets.every((set) => set.direction === "long")).toBe(true)
