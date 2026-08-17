@@ -2499,7 +2499,13 @@ export class BingXConnector extends BaseExchangeConnector {
       let cursorEndMs = Date.now()
 
       for (let page = 0; page < pages; page += 1) {
-        const params = new URLSearchParams({ symbol: bingxSymbol, interval, limit: String(pageSize), endTime: String(cursorEndMs) })
+        const params = new URLSearchParams({
+          symbol: bingxSymbol,
+          interval,
+          limit: String(pageSize),
+          startTime: String(Math.max(0, cursorEndMs - pageSize * stepMs)),
+          endTime: String(cursorEndMs),
+        })
         const path = apiType === "spot" ? "/openApi/spot/v2/market/kline" : "/openApi/swap/v3/quote/klines"
         const response = await this.rateLimitedFetch(`${baseUrl}${path}?${params.toString()}`, {
           headers: { "X-BX-APIKEY": this.credentials.apiKey },
@@ -2622,6 +2628,7 @@ export class BingXConnector extends BaseExchangeConnector {
       if (!seedResp.ok) return null
       const seedData = await seedResp.json()
       const seedRows = (Array.isArray(seedData?.data) ? seedData.data : []).map(toRow)
+      this.log(`getOHLCV1s(${symbol}): seed rows=${seedRows.length} apiType=${apiType}`)
       if (seedRows.length === 0) return []
 
       const allRows: ReturnType<typeof toRow>[] = [...seedRows]
@@ -2679,7 +2686,8 @@ export class BingXConnector extends BaseExchangeConnector {
         .filter((r) => Number.isFinite(r.timestamp) && Number.isFinite(r.price))
         .map((r) => ({ timestamp: r.timestamp, price: r.price, quantity: r.quantity }))
       return aggregateTradesTo1sOHLCV(trades, startMs, endMs)
-    } catch {
+    } catch (error) {
+      this.log(`getOHLCV1s(${symbol}): unexpected backfill error=${error instanceof Error ? error.message : String(error)}`)
       return null
     }
   }
