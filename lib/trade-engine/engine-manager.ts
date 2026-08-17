@@ -1,4 +1,6 @@
+import { appendFileSync } from "node:fs"
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
+const __DBG = (m: string) => { try { appendFileSync("cts-debug.log", `${Date.now()} [${process.pid}] ${m}\n`) } catch {} }
 import {
   getCanonicalPipelineAdmission,
   type CanonicalPipelineAdmission,
@@ -2126,7 +2128,9 @@ export class TradeEngineManager {
           `Engine ${this.connectionId} prehistoric bootstrap`,
           PREHISTORIC_BOOTSTRAP_DEADLINE_MS,
         )
+        __DBG(`POST_LOAD ${this.connectionId} shouldContinue=${shouldContinue()} epoch=${this.epoch} gen=${generationEpoch} bootGen=${this.prehistoricBootstrapGeneration} myGen=${bootstrapGeneration}`)
         if (!shouldContinue()) {
+          __DBG(`SUPERSEDED_AT_2129 ${this.connectionId}`)
           throw new PrehistoricRunSupersededError(this.connectionId, bootstrapGeneration)
         }
         const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
@@ -2151,12 +2155,14 @@ export class TradeEngineManager {
           updated_at: new Date().toISOString(),
         })
         if (!shouldContinue()) {
+          __DBG(`SUPERSEDED_AT_2137 ${this.connectionId}`)
           await Promise.allSettled([
             redisClient.del(cacheKey),
             redisClient.del(scope.prehistoricLoadedKey),
           ])
           throw new PrehistoricRunSupersededError(this.connectionId, bootstrapGeneration)
         }
+        __DBG(`PRE_ADVANCE ${this.connectionId} shouldContinue=${shouldContinue()}`)
         // ── Phase hand-off: prehistoric → live_trading ─────────────────
         // Prehistoric finished filling sets. The `:done` flag was set
         // inside loadPrehistoricData, so the indication/strategy/realtime
@@ -2192,6 +2198,7 @@ export class TradeEngineManager {
           !this.isCurrentGeneration(generationEpoch) ||
           this.prehistoricBootstrapGeneration !== bootstrapGeneration
         if (superseded) {
+          __DBG(`CAUGHT_SUPERSEDED ${this.connectionId} bootGen=${bootstrapGeneration} curGen=${this.prehistoricBootstrapGeneration} isCurrentGen=${this.isCurrentGeneration(generationEpoch)} epoch=${this.epoch} gen=${generationEpoch}`)
           await logProgressionEvent(
             this.connectionId,
             "prehistoric_bootstrap_superseded",
