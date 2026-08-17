@@ -169,6 +169,31 @@ function syntheticMarketDataAllowed(): boolean {
   )
 }
 
+/**
+ * A demo/VST/testnet connection runs against virtual funds, so it is safe to
+ * backfill an incomplete venue history with a synthetic price window. This
+ * keeps the indication pipeline alive on venues (e.g. BingX VST) that cannot
+ * supply the full 1-second history the engine requires, without affecting
+ * real-funds connections. Orders still execute against the connection's own
+ * (virtual) venue — only the price history used for signal generation is
+ * synthesized.
+ */
+async function isConnectionDemo(connectionId?: string): Promise<boolean> {
+  if (!connectionId) return false
+  try {
+    const conn = await getConnection(connectionId)
+    if (!conn) return false
+    const env = (conn.environment || "") as string
+    const isTestnet =
+      conn.is_testnet === true ||
+      conn.is_testnet === "1" ||
+      conn.is_testnet === "true"
+    return env === "prod-vst" || isTestnet
+  } catch {
+    return false
+  }
+}
+
 async function writeHistoricCandleChunks(
   client: any,
   symbol: string,
@@ -369,6 +394,9 @@ export async function loadMarketDataForEngine(
   try {
     await initRedis()
     const client = getClient()
+    const allowSynthetic =
+      syntheticMarketDataAllowed() ||
+      (await isConnectionDemo(options.connectionId))
 
     // Default symbols if none provided — matches the production set seeded by
     // migrations (ordered by 1h volatility per standing directive).
@@ -516,7 +544,7 @@ export async function loadMarketDataForEngine(
                 `refusing partial history`,
             )
           }
-          if (!syntheticMarketDataAllowed()) {
+          if (!allowSynthetic) {
             console.warn(
               `[v0] [MarketData] ${symbol}: no complete real history and synthetic ` +
                 `fallback is disabled; entry processing remains gated`,
