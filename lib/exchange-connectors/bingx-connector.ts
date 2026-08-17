@@ -19,6 +19,7 @@ import {
   configuredBingXOriginForEnvironment,
 } from "@/lib/bingx-environment"
 import { resolveAuthoritativeTradeDirection } from "@/lib/trade-direction"
+import { ErrorHandler, ErrorCode } from "@/lib/error-handling"
 
 /**
  * BingX Exchange Connector
@@ -49,6 +50,33 @@ export class BingXConnector extends BaseExchangeConnector {
   private lastPositionsSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
   private lastOpenOrdersSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
   private lastOrderHistorySnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
+
+  /**
+   * Global BingX rate-limit circuit breaker.
+   *
+   * BingX enforces a hard "over 20 × code=109421 (order-not-found) requests
+   * within 480 000 ms" window and then returns 109429 with a
+   * "can retry after time: <ts>" hint. The engine legitimately queries many
+   * orders that no longer exist, so without a shared cooldown it blows past
+   * that window and gets locked out for the full 480 s — and the naive retry
+   * loop re-triggers the limit continuously (a storm).
+   *
+   * Once ANY order call observes a 109429/109421, we record the timestamp BingX
+   * told us to wait until. Every subsequent order call then sleeps until that
+   * timestamp before firing, so at most ~1 error is generated per window
+   * instead of hundreds.
+   *
+   * This is a STATIC (class-level) field so every BingXConnector instance for
+   * the same process — including the per-symbol reconciliation lanes — shares
+   * one cooldown and coordinates. Without that, each lane would trip the limit
+   * independently and keep the storm alive.
+   *
+   * The cooldown is forced to at least 510 s (BingX's 480 s rolling window plus
+   * a 30 s buffer) so the error window is guaranteed to fully clear before we
+   * call again.
+   */
+  private static bingxRateLimitUntil = 0
+
   private lastOperationTransport = new Map<string, {
     transport: "bingx-api" | "signed-rest-fallback"
     at: number
@@ -1015,8 +1043,20 @@ export class BingXConnector extends BaseExchangeConnector {
             timestamp: String(this.getTimestamp()),
           }
           if (price && orderType === "limit") orderPayload.price = String(price)
-          if (options.hedgeMode !== false && options.positionSide) {
-            orderPayload.positionSide = options.positionSide
+          // Derive positionSide for the SDK fast-path exactly like the REST
+          // fallback below. BingX requires positionSide in hedge mode; if we
+          // only sent it when the caller passed one explicitly we'd emit no
+          // positionSide in the common hedge-mode-without-explicit-side case
+          // and BingX rejects with 109400 "positionSide: This field is
+          // required".
+          const sdkHedgeMode = options.hedgeMode !== false
+          const sdkEffectivePositionSide: "LONG" | "SHORT" =
+            options.positionSide ||
+            (options.reduceOnly
+              ? (side === "sell" ? "LONG" : "SHORT")
+              : (side === "buy" ? "LONG" : "SHORT"))
+          if (sdkHedgeMode) {
+            orderPayload.positionSide = sdkEffectivePositionSide
           } else if (options.reduceOnly) {
             orderPayload.reduceOnly = "true"
           }
@@ -1629,8 +1669,68 @@ export class BingXConnector extends BaseExchangeConnector {
     }
   }
 
-  async getOrder(symbol: string, orderId: string): Promise<any> {
+  /**
+   * Shared wrapper for every BingX order/trade REST call.
+   *
+   * 1. Honours the global circuit breaker: if we are inside a rate-limit
+   *    cooldown, sleep until it expires *before* firing (so no error is
+   *    generated during the lockout).
+   * 2. On a 109429/109421 response, parse BingX's "can retry after time"
+   *    hint, extend the global cooldown, and back off for that duration.
+   *
+   * This is what prevents the retry storm: a single observed limit error
+   * silences every other concurrent order call for the rest of the window.
+   */
+  private async bingxRateLimitedCall<T>(
+    operation: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    // Wait out any active cooldown before making the call. A small random
+    // jitter is added so concurrent lanes don't all wake and fire at the exact
+    // same instant (which would itself re-trip the limit).
+    if (BingXConnector.bingxRateLimitUntil > Date.now()) {
+      const waitMs = BingXConnector.bingxRateLimitUntil - Date.now()
+      const jitter = Math.floor(Math.random() * 8_000)
+      console.warn(
+        `[v0] [BingXConnector] ${operation}: rate-limit cooldown active — ` +
+        `waiting ${waitMs + jitter}ms before calling BingX`,
+      )
+      await new Promise((resolve) => setTimeout(resolve, waitMs + jitter))
+    }
+
     try {
+      return await call()
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      const isRateLimit =
+        errorMsg.includes("109429") ||
+        errorMsg.includes("109421") ||
+        errorMsg.toLowerCase().includes("rate limit")
+
+      if (isRateLimit) {
+        // BingX's 480 s rolling window must fully clear. The parsed retry-after
+        // hint can be slightly short of the true window, so force a floor of
+        // 510 s (window + 30 s buffer). A shorter cooldown would expire while
+        // the window still holds the original errors and immediately re-trip.
+        const MIN_COOLDOWN_MS = 510_000
+        const bingxDelay = ErrorHandler.parseBingXRetryAfter(errorMsg)
+        const candidate = bingxDelay !== null ? Math.max(bingxDelay, MIN_COOLDOWN_MS) : MIN_COOLDOWN_MS
+        const retryTs = Date.now() + candidate
+        if (retryTs > BingXConnector.bingxRateLimitUntil) {
+          BingXConnector.bingxRateLimitUntil = retryTs
+        }
+        const remaining = BingXConnector.bingxRateLimitUntil - Date.now()
+        console.warn(
+          `[v0] [BingXConnector] ${operation}: BingX rate-limit (109429/109421) ` +
+          `observed — global cooldown set for ${remaining}ms`,
+        )
+      }
+      throw error
+    }
+  }
+
+  async getOrder(symbol: string, orderId: string): Promise<any> {
+    return this.bingxRateLimitedCall("getOrder", async () => {
       // Sync server time before any signed request
       await this.syncServerTime()
 
@@ -1659,6 +1759,12 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
+        // Rate-limit codes must throw so the shared cooldown engages.
+        if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+          throw new Error(
+            `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
+          )
+        }
         return null
       }
 
@@ -1700,16 +1806,16 @@ export class BingXConnector extends BaseExchangeConnector {
         timestamp:   Number(raw.time       ?? raw.createTime ?? Date.now()),
         updateTime:  Number(raw.updateTime ?? raw.time       ?? Date.now()),
       }
-    } catch (error) {
+    }).catch((error) => {
       const errorMsg = error instanceof Error ? error.message : String(error)
       this.logError(`✗ Failed to fetch order: ${errorMsg}`)
       return null
-    }
+    })
   }
 
   async getOpenOrders(symbol?: string): Promise<any[]> {
     this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
-    try {
+    return this.bingxRateLimitedCall("getOpenOrders", async () => {
       // Sync server time before any signed request
       await this.syncServerTime()
 
@@ -1736,6 +1842,12 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
+        // Rate-limit codes must throw so the shared cooldown engages.
+        if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+          throw new Error(
+            `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
+          )
+        }
         this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: `${data.code}:${data.msg || "exchange_error"}` }
         return []
       }
@@ -1745,12 +1857,12 @@ export class BingXConnector extends BaseExchangeConnector {
       const orders = Array.isArray(rows) ? rows : []
       this.lastOpenOrdersSnapshotStatus = { ok: true, at: Date.now(), error: "" }
       return orders
-    } catch (error) {
+    }).catch((error) => {
       const errorMsg = error instanceof Error ? error.message : String(error)
       this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: errorMsg }
       this.logError(`✗ Failed to fetch open orders: ${errorMsg}`)
       return []
-    }
+    })
   }
 
   /**
@@ -1765,42 +1877,51 @@ export class BingXConnector extends BaseExchangeConnector {
   ): Promise<{ ok: boolean; rows: any[]; error?: string }> {
     this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
     try {
-      // Sync server time before any signed request
-      await this.syncServerTime()
+      const result = await this.bingxRateLimitedCall("getOrderHistorySnapshot", async () => {
+        // Sync server time before any signed request
+        await this.syncServerTime()
 
-      this.log(`Fetching order history${symbol ? ` for ${symbol}` : ""} (limit: ${limit})`)
+        this.log(`Fetching order history${symbol ? ` for ${symbol}` : ""} (limit: ${limit})`)
 
-      // Perp: /openApi/swap/v2/trade/allOrders (not v3).
-      const endpoint = this.credentials.apiType === "spot" ? "/openApi/spot/v1/trade/allOrders" : "/openApi/swap/v2/trade/allOrders"
+        // Perp: /openApi/swap/v2/trade/allOrders (not v3).
+        const endpoint = this.credentials.apiType === "spot" ? "/openApi/spot/v1/trade/allOrders" : "/openApi/swap/v2/trade/allOrders"
 
-      const params: Record<string, any> = {
-        limit,
-        timestamp: this.getTimestamp(),
-      }
+        const params: Record<string, any> = {
+          limit,
+          timestamp: this.getTimestamp(),
+        }
 
-      if (symbol) {
-        params.symbol = this.toBingXSymbol(symbol)
-      }
+        if (symbol) {
+          params.symbol = this.toBingXSymbol(symbol)
+        }
 
-      const { signature, queryString: signedQs } = this.signParams(params)
-      const url = `${this.getBaseUrl()}${endpoint}?${signedQs}&signature=${signature}`
+        const { signature, queryString: signedQs } = this.signParams(params)
+        const url = `${this.getBaseUrl()}${endpoint}?${signedQs}&signature=${signature}`
 
-      const response = await this.rateLimitedFetch(url, {
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+        const response = await this.rateLimitedFetch(url, {
+          headers: { "X-BX-APIKEY": this.credentials.apiKey },
+        })
+
+        const data = await this.safeJson(response)
+
+        if (!this.isBingXSuccess(data.code)) {
+          // Rate-limit codes must throw so the shared cooldown engages.
+          if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+            throw new Error(
+              `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
+            )
+          }
+          const error = `${data.code}:${data.msg || "exchange_error"}`
+          this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error }
+          return { ok: false, rows: [], error }
+        }
+
+        const rows = data.data?.orders || data.data
+        const normalizedRows = Array.isArray(rows) ? rows : []
+        this.lastOrderHistorySnapshotStatus = { ok: true, at: Date.now(), error: "" }
+        return { ok: true, rows: normalizedRows }
       })
-
-      const data = await this.safeJson(response)
-
-      if (!this.isBingXSuccess(data.code)) {
-        const error = `${data.code}:${data.msg || "exchange_error"}`
-        this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error }
-        return { ok: false, rows: [], error }
-      }
-
-      const rows = data.data?.orders || data.data
-      const normalizedRows = Array.isArray(rows) ? rows : []
-      this.lastOrderHistorySnapshotStatus = { ok: true, at: Date.now(), error: "" }
-      return { ok: true, rows: normalizedRows }
+      return result
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
       this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error: errorMsg }
@@ -3442,32 +3563,41 @@ export class BingXConnector extends BaseExchangeConnector {
     clientOrderId?: string
   ): Promise<{ success: boolean; order?: any; error?: string }> {
     try {
-      const params: Record<string, any> = {
-        symbol: this.toBingXSymbol(symbol),
-        timestamp: this.getTimestamp(),
-      }
-      
-      if (orderId) params.orderId = orderId
-      if (clientOrderId) params.clientOrderID = clientOrderId
-      
-      const { signature, queryString: signedQs } = this.signParams(params)
-      const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/openOrder?${signedQs}&signature=${signature}`
-      
-      const response = await this.rateLimitedFetch(url, {
-        method: "GET",
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+      const result = await this.bingxRateLimitedCall("getOpenOrder", async () => {
+        const params: Record<string, any> = {
+          symbol: this.toBingXSymbol(symbol),
+          timestamp: this.getTimestamp(),
+        }
+
+        if (orderId) params.orderId = orderId
+        if (clientOrderId) params.clientOrderID = clientOrderId
+
+        const { signature, queryString: signedQs } = this.signParams(params)
+        const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/openOrder?${signedQs}&signature=${signature}`
+
+        const response = await this.rateLimitedFetch(url, {
+          method: "GET",
+          headers: { "X-BX-APIKEY": this.credentials.apiKey },
+        })
+
+        const data = await this.safeJson(response)
+
+        if (!this.isBingXSuccess(data.code)) {
+          // Rate-limit codes must throw so the shared cooldown engages.
+          if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+            throw new Error(
+              `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
+            )
+          }
+          throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
+        }
+
+        return {
+          success: true,
+          order: data.data,
+        }
       })
-      
-      const data = await this.safeJson(response)
-      
-      if (!this.isBingXSuccess(data.code)) {
-        throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
-      }
-      
-      return {
-        success: true,
-        order: data.data,
-      }
+      return result
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
       // Suppress logging for expected transient errors: order already filled/cancelled/not found/timestamp mismatch
@@ -3477,11 +3607,11 @@ export class BingXConnector extends BaseExchangeConnector {
         errorMsg.includes("code=109421") ||
         errorMsg.includes("code=100421") ||
         errorMsg.includes("timestamp")
-      
+
       if (!isExpectedError) {
         this.logError(`✗ Failed to get open order: ${errorMsg}`)
       }
-      
+
       return {
         success: false,
         error: errorMsg,
@@ -3501,32 +3631,41 @@ export class BingXConnector extends BaseExchangeConnector {
     clientOrderId?: string
   ): Promise<{ success: boolean; order?: any; error?: string }> {
     try {
-      const params: Record<string, any> = {
-        symbol: this.toBingXSymbol(symbol),
-        timestamp: this.getTimestamp(),
-      }
-      
-      if (orderId) params.orderId = orderId
-      if (clientOrderId) params.clientOrderID = clientOrderId
-      
-      const { signature, queryString: signedQs } = this.signParams(params)
-      const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/order?${signedQs}&signature=${signature}`
-      
-      const response = await this.rateLimitedFetch(url, {
-        method: "GET",
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+      const result = await this.bingxRateLimitedCall("getOrderDetails", async () => {
+        const params: Record<string, any> = {
+          symbol: this.toBingXSymbol(symbol),
+          timestamp: this.getTimestamp(),
+        }
+
+        if (orderId) params.orderId = orderId
+        if (clientOrderId) params.clientOrderID = clientOrderId
+
+        const { signature, queryString: signedQs } = this.signParams(params)
+        const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/order?${signedQs}&signature=${signature}`
+
+        const response = await this.rateLimitedFetch(url, {
+          method: "GET",
+          headers: { "X-BX-APIKEY": this.credentials.apiKey },
+        })
+
+        const data = await this.safeJson(response)
+
+        if (!this.isBingXSuccess(data.code)) {
+          // Rate-limit codes must throw so the shared cooldown engages.
+          if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+            throw new Error(
+              `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
+            )
+          }
+          throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
+        }
+
+        return {
+          success: true,
+          order: data.data,
+        }
       })
-      
-      const data = await this.safeJson(response)
-      
-      if (!this.isBingXSuccess(data.code)) {
-        throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
-      }
-      
-      return {
-        success: true,
-        order: data.data,
-      }
+      return result
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
       // Suppress logging for expected transient errors: order already filled/cancelled/not found/timestamp mismatch
@@ -3536,11 +3675,11 @@ export class BingXConnector extends BaseExchangeConnector {
         errorMsg.includes("code=109421") ||
         errorMsg.includes("code=100421") ||
         errorMsg.includes("timestamp")
-      
+
       if (!isExpectedError) {
         this.logError(`✗ Failed to get order: ${errorMsg}`)
       }
-      
+
       return {
         success: false,
         error: errorMsg,

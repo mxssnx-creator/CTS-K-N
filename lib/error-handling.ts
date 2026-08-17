@@ -210,16 +210,43 @@ export class ErrorHandler {
   }
 
   /**
-   * Get retry delay based on error code
+   * Parse the "can retry after time: <timestamp>" field from a BingX
+   * rate-limit (109429) error message. Returns the delay in ms until that
+   * timestamp, clamped to [1000, 600000]. Returns null if absent.
    */
-  static getRetryDelay(code: ErrorCode, attempt: number): number {
+  static parseBingXRetryAfter(errorMsg: string): number | null {
+    if (!errorMsg) return null
+    const match = errorMsg.match(/can retry after time:\s*(\d+)/i)
+    if (!match) return null
+    const retryAt = parseInt(match[1], 10)
+    if (Number.isNaN(retryAt)) return null
+    const delayMs = retryAt - Date.now()
+    return Math.max(1000, Math.min(600_000, delayMs))
+  }
+
+  /**
+   * Get retry delay based on error code.
+   *
+   * For BingX RATE_LIMITED (109429) errors the raw message contains a
+   * "can retry after time: <timestamp>" hint. When present we honour it
+   * (capped at 500 s) so the caller waits exactly as long as BingX demands
+   * instead of hammering the API and extending the 480 s window. This is
+   * what breaks the retry storm.
+   */
+  static getRetryDelay(code: ErrorCode, attempt: number, errorMsg?: string): number {
     const baseDelay = 1000 // 1 second
     const exponential = Math.pow(2, attempt - 1)
 
     switch (code) {
-      case ErrorCode.RATE_LIMITED:
-        // Back off longer for rate limit
+      case ErrorCode.RATE_LIMITED: {
+        if (errorMsg) {
+          const bingxDelay = ErrorHandler.parseBingXRetryAfter(errorMsg)
+          if (bingxDelay !== null) {
+            return Math.min(500_000, bingxDelay)
+          }
+        }
         return baseDelay * exponential * 5
+      }
       case ErrorCode.API_TIMEOUT:
         return baseDelay * exponential * 2
       case ErrorCode.CONNECTION_FAILED:
@@ -295,7 +322,8 @@ export async function withErrorHandling<T>(
 
       // Retry if not last attempt
       if (attempt < maxRetries) {
-        const delay = ErrorHandler.getRetryDelay(lastCode, attempt)
+        const errorMsg = lastError instanceof Error ? lastError.message : String(lastError)
+        const delay = ErrorHandler.getRetryDelay(lastCode, attempt, errorMsg)
         UnifiedLogger.retry(context, attempt, maxRetries, delay)
         await new Promise((resolve) => setTimeout(resolve, delay))
       }
