@@ -2485,44 +2485,60 @@ export class BingXConnector extends BaseExchangeConnector {
         }
       }
 
-      let endpoint = ""
-      if (apiType === "spot") {
-        endpoint = `/openApi/spot/v2/market/kline?symbol=${bingxSymbol}&interval=${interval}&limit=${limit}`
-      } else {
-        endpoint = `/openApi/swap/v3/quote/klines?symbol=${bingxSymbol}&interval=${interval}&limit=${limit}`
+      const requestedLimit = Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 250))
+      const maxPageSize = 500
+      const pageSize = Math.min(requestedLimit, maxPageSize)
+      const pages = Math.min(24, Math.max(1, Math.ceil(requestedLimit / maxPageSize)))
+      const intervalMs: Record<string, number> = {
+        "1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+        "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+        "1w": 604_800_000, "1M": 2_592_000_000,
+      }
+      const stepMs = intervalMs[timeframe] || intervalMs["1m"]
+      const candlesByTimestamp = new Map<number, { timestamp: number; open: number; high: number; low: number; close: number; volume: number }>()
+      let cursorEndMs = Date.now()
+
+      for (let page = 0; page < pages; page += 1) {
+        const params = new URLSearchParams({
+          symbol: bingxSymbol,
+          interval,
+          limit: String(pageSize),
+          startTime: String(Math.max(0, cursorEndMs - pageSize * stepMs)),
+          endTime: String(cursorEndMs),
+        })
+        const path = apiType === "spot" ? "/openApi/spot/v2/market/kline" : "/openApi/swap/v3/quote/klines"
+        const response = await this.rateLimitedFetch(`${baseUrl}${path}?${params.toString()}`, {
+          headers: { "X-BX-APIKEY": this.credentials.apiKey },
+        })
+        const contentType = response.headers.get("content-type") || ""
+        if (contentType.includes("text/html") || !response.ok) return null
+        const data = await this.safeJson(response)
+        if (data.code !== 0 && data.code !== "0") return null
+        const klines = Array.isArray(data.data) ? data.data : []
+        if (klines.length === 0) break
+
+        let oldestTimestamp = Number.POSITIVE_INFINITY
+        for (const c of klines) {
+          const timestamp = Number.parseInt(c.time || c[0], 10)
+          if (!Number.isFinite(timestamp)) continue
+          oldestTimestamp = Math.min(oldestTimestamp, timestamp)
+          candlesByTimestamp.set(timestamp, {
+            timestamp,
+            open: Number.parseFloat(c.open || c[1]),
+            high: Number.parseFloat(c.high || c[2]),
+            low: Number.parseFloat(c.low || c[3]),
+            close: Number.parseFloat(c.close || c[4]),
+            volume: Number.parseFloat(c.volume || c[5]),
+          })
+        }
+        if (!Number.isFinite(oldestTimestamp)) break
+        const nextEndMs = oldestTimestamp
+        if (nextEndMs >= cursorEndMs) break
+        cursorEndMs = nextEndMs
       }
 
-      const response = await this.rateLimitedFetch(`${baseUrl}${endpoint}`, {
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
-      })
-
-      // Check for HTML response (API gateway error pages)
-      const contentType = response.headers.get("content-type") || ""
-      if (contentType.includes("text/html") || !response.ok) {
-        // Silently return null - OHLCV data not critical, will retry next cycle
-        return null
-      }
-
-      const data = await this.safeJson(response)
-
-      if (data.code !== 0 && data.code !== "0") {
-        // Silently return null to avoid log flooding
-        return null
-      }
-
-      // BingX returns different formats for spot vs swap
-      const klines = Array.isArray(data.data) ? data.data : []
-      
-      const candles = klines.map((c: any) => ({
-        timestamp: Number.parseInt(c.time || c[0]),
-        open: Number.parseFloat(c.open || c[1]),
-        high: Number.parseFloat(c.high || c[2]),
-        low: Number.parseFloat(c.low || c[3]),
-        close: Number.parseFloat(c.close || c[4]),
-        volume: Number.parseFloat(c.volume || c[5])
-      }))
-
-      this.log(`✓ OHLCV fetched: ${candles.length} candles`)
+      const candles = [...candlesByTimestamp.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-requestedLimit)
+      this.log(`✓ OHLCV fetched: ${candles.length} candles across ${pages} page budget`)
       return candles
     } catch {
       // Silently return null - OHLCV errors are expected when API returns HTML error pages
@@ -2612,6 +2628,7 @@ export class BingXConnector extends BaseExchangeConnector {
       if (!seedResp.ok) return null
       const seedData = await seedResp.json()
       const seedRows = (Array.isArray(seedData?.data) ? seedData.data : []).map(toRow)
+      this.log(`getOHLCV1s(${symbol}): seed rows=${seedRows.length} apiType=${apiType}`)
       if (seedRows.length === 0) return []
 
       const allRows: ReturnType<typeof toRow>[] = [...seedRows]
@@ -2638,19 +2655,29 @@ export class BingXConnector extends BaseExchangeConnector {
         iterations < maxIterations
       ) {
         iterations++
-        const fromId = Math.max(0, minId - pageLimit)
+        // `fromId` is inclusive on BingX. Step back one trade to avoid
+        // receiving the same oldest row and tripping the no-progress guard;
+        // subtracting a whole page can skip exchange-specific id ranges.
+        const fromId = Math.max(0, minId - 1)
         const pageUrl = buildSignedHistoryUrl(fromId)
         const resp = await this.rateLimitedFetch(pageUrl, { headers })
+        const rawBody = await resp.text()
+        let data: any = null
+        try {
+          data = rawBody ? JSON.parse(rawBody) : null
+        } catch {
+          data = null
+        }
         if (!resp.ok) {
-          this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} failed (HTTP ${resp.status}); stopping backfill with ${allRows.length} rows`)
+          this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} failed (HTTP ${resp.status} code=${data?.code ?? "unknown"} msg=${data?.msg ?? "unknown"}); stopping backfill with ${allRows.length} rows`)
           break
         }
-        const data = await resp.json()
         if (data && data.code !== undefined && !this.isBingXSuccess(data.code)) {
           this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} rejected (code=${data.code} msg=${data.msg}); stopping backfill with ${allRows.length} rows`)
           break
         }
         const rows = (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []).map(toRow)
+        console.warn(`[v0] [BingXBackfill] ${symbol} page=${iterations} http=${resp.status} code=${data?.code ?? "none"} rows=${rows.length} minId=${minId}`)
         if (rows.length === 0) break
         allRows.push(...rows)
         const pageMinId = rows.reduce(
@@ -2669,7 +2696,8 @@ export class BingXConnector extends BaseExchangeConnector {
         .filter((r) => Number.isFinite(r.timestamp) && Number.isFinite(r.price))
         .map((r) => ({ timestamp: r.timestamp, price: r.price, quantity: r.quantity }))
       return aggregateTradesTo1sOHLCV(trades, startMs, endMs)
-    } catch {
+    } catch (error) {
+      this.log(`getOHLCV1s(${symbol}): unexpected backfill error=${error instanceof Error ? error.message : String(error)}`)
       return null
     }
   }

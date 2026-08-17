@@ -208,10 +208,13 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         live_volume_factor: 2.5,
       })
       expect(await client.hget("connection_settings:conn-ledger", "posCountsVolumeRatio")).toBe("3")
-      expect(await client.hget("connection_settings:conn-ledger", "baseProfitFactor")).toBe("0.8")
-      expect(await client.hget("connection_settings:conn-ledger", "mainProfitFactor")).toBe("1.12")
-      expect(await client.hget("connection_settings:conn-ledger", "realProfitFactor")).toBe("1.12")
-      expect(await client.hget("connection_settings:conn-ledger", "liveProfitFactor")).toBe("1.12")
+      // Systemwide Main Trade PF policy: base/main/real/live all default to 1.15
+      // (MAIN_TRADE_STAGE_PF_DEFAULTS) when no prior value exists — see
+      // lib/main-trade-profit-factor.ts.
+      expect(await client.hget("connection_settings:conn-ledger", "baseProfitFactor")).toBe("1.15")
+      expect(await client.hget("connection_settings:conn-ledger", "mainProfitFactor")).toBe("1.15")
+      expect(await client.hget("connection_settings:conn-ledger", "realProfitFactor")).toBe("1.15")
+      expect(await client.hget("connection_settings:conn-ledger", "liveProfitFactor")).toBe("1.15")
       expect(await client.hget("connection_settings:conn-ledger", "blockOnly")).toBe("true")
       expect(await client.hget("connection_settings:conn-ledger", "variantBlockOnly")).toBe("true")
       expect(await client.hget("connection_settings:conn-ledger", "indicationTimeoutMs")).toBe("250")
@@ -380,33 +383,35 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 98 })
 
-      expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
-      expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
-      expect(await client.hget("connection:conn-stage-floor", "mainProfitFactor")).toBe("0.8")
+      // Systemwide Main Trade PF floors: base clamps to 1.10 (MAIN_TRADE_BASE_PF_RATIO_MIN),
+      // main/real/live clamp to 1.05 (MAIN_TRADE_PF_RATIO_MIN) — see lib/main-trade-profit-factor.ts.
+      expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("1.1")
+      expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("1.1")
+      expect(await client.hget("connection:conn-stage-floor", "mainProfitFactor")).toBe("1.05")
       expect(JSON.parse(String(
         await client.hget("connection:conn-stage-floor", "connection_settings"),
       ))).toMatchObject({
-        baseProfitFactor: 0.8,
-        mainProfitFactor: 0.8,
+        baseProfitFactor: 1.1,
+        mainProfitFactor: 1.05,
         strategies: {
           main: {
-            base: { min_profit_factor: 0.8 },
-            main: { min_profit_factor: 0.8 },
+            base: { min_profit_factor: 1.1 },
+            main: { min_profit_factor: 1.05 },
           },
         },
       })
-      expect(await client.hget("connection_settings:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
-      expect(await client.hget("connection_settings:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
-      expect(await client.hget("connection_settings:conn-stage-floor", "mainProfitFactor")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-stage-floor", "baseProfitFactor")).toBe("1.1")
+      expect(await client.hget("connection_settings:conn-stage-floor", "base_min_profit_factor")).toBe("1.1")
+      expect(await client.hget("connection_settings:conn-stage-floor", "mainProfitFactor")).toBe("1.05")
       expect(JSON.parse(String(
         await client.hget("connection_settings:conn-stage-floor", "strategies"),
       ))).toMatchObject({
         main: {
-          base: { min_profit_factor: 0.8 },
-          main: { min_profit_factor: 0.8 },
+          base: { min_profit_factor: 1.1 },
+          main: { min_profit_factor: 1.05 },
         },
         preset: {
-          base: { min_profit_factor: 0.8 },
+          base: { min_profit_factor: 1.1 },
         },
       })
       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
@@ -427,7 +432,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
     }
   })
 
-  test("raises the schema-89 stage floor to 0.80 and preserves higher downstream settings", async () => {
+  test("raises the schema-89 stale 0.8 default to the current 1.15 default and preserves higher downstream settings", async () => {
     const dir = await mkdtemp(join(tmpdir(), "migration-090-default-"))
     process.env = {
       ...originalEnv,
@@ -483,16 +488,21 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         version: 98,
       })
 
-      expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.8")
+      // The legacy sentinel value 0.8 (the old systemwide default) is recognized
+      // as "still on default" and is upgraded straight to the current default
+      // 1.15, rather than merely clamped to the 1.10 floor. The higher
+      // mainProfitFactor (1.3) and downstream preset values are preserved
+      // untouched since they already clear their respective floors.
+      expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("1.15")
       expect(await client.hget("connection:conn-v90", "mainProfitFactor")).toBe("1.3")
-      expect(await client.hget("connection_settings:conn-v90", "baseProfitFactor")).toBe("0.8")
-      expect(await client.hget("connection_settings:conn-v90", "base_min_profit_factor")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-v90", "baseProfitFactor")).toBe("1.15")
+      expect(await client.hget("connection_settings:conn-v90", "base_min_profit_factor")).toBe("1.15")
       expect(await client.hget("connection_settings:conn-v90", "mainProfitFactor")).toBe("1.3")
       expect(JSON.parse(String(
         await client.hget("connection_settings:conn-v90", "strategies"),
       ))).toMatchObject({
         main: {
-          base: { enabled: true, is_enabled: true, min_profit_factor: 0.8 },
+          base: { enabled: true, is_enabled: true, min_profit_factor: 1.15 },
           main: { enabled: true, is_enabled: true, min_profit_factor: 1.3 },
         },
         preset: {

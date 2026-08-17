@@ -25,7 +25,15 @@ node_modules
 .v0-data/redis-snapshot.json.live-wal*
 
 # Redis/reference snapshots can contain connection metadata or credentials.
-refis*
+redis*
+
+# Defensive: a misconfigured V0_REDIS_SNAPSHOT_PATH (e.g. a bare relative
+# value/typo) can otherwise write large runtime snapshot/WAL/temp files
+# directly into the repo root. The code now rejects and falls back safely,
+# but keep git from ever tracking one of these loose files regardless.
+/refis*
+/redis-snapshot.json*
+/v0-redis-snapshot.json*
 
 # Build outputs and local runtime snapshots (never commit)
 .next/

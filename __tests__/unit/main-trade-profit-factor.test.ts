@@ -45,7 +45,8 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     expect(movePctToMainTradePfRatio(0, 0.1)).toBe(1)
     expect(movePctToMainTradePfRatio(0.1, 0.1)).toBeCloseTo(1.1, 12)
     expect(movePctToMainTradePfRatio(0.3, 0.1)).toBeCloseTo(1.3, 12)
-    expect(mainTradePfRatioPasses(0.104, 0.1, 1.1)).toBe(false)
+    // 0.104% is 1.104× PositionCost-relative PF and therefore clears 1.10.
+    expect(mainTradePfRatioPasses(0.104, 0.1, 1.1)).toBe(true)
     expect(mainTradePfRatioPasses(0.1, 0.1, 1.1)).toBe(true)
   })
 

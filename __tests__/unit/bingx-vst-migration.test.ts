@@ -143,6 +143,13 @@ describe("BingX environment migration safety", () => {
       expect(await client.hget("connection:bingx-x01", "api_key")).toBe("")
       expect(await client.hget("connection:bingx-x01", "api_secret")).toBe("")
 
+      // Re-running the idempotent base seeder must preserve the isolation.
+      const seeder = await import("@/lib/default-exchanges-seeder")
+      seeder.resetSeedingFlag()
+      await seeder.ensureDefaultExchangesExist()
+      expect(await client.hget("connection:bingx-x01", "api_key")).toBe("")
+      expect(await client.hget("connection:bingx-x01", "api_secret")).toBe("")
+
       process.env.BINGX_ENVIRONMENT = "prod-live"
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 98 })

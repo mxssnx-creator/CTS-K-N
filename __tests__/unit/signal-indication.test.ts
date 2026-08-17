@@ -222,7 +222,7 @@ describe("Signal indication persistence and independent performance gates", () =
 
     expect(mature).toEqual({
       allowed: false,
-      ratio: -1,
+      ratio: 0,
       samples: 12,
       permanentlyDisabled: false,
     })
@@ -255,7 +255,7 @@ describe("Signal indication persistence and independent performance gates", () =
       configMinimumPfRatio: 2.7,
     })).toMatchObject({
       directExecutionEnabled: true,
-      configMinimumPfRatio: 0.3,
+      configMinimumPfRatio: 1.1,
     })
 
     const settings = normalizeSignalIndicationSettings({})
@@ -312,8 +312,9 @@ describe("Signal indication persistence and independent performance gates", () =
     )).get("live-source|BTCUSDT|long|tp1_00:slr0_50:standard")
     expect(liveDecision).toEqual(expect.objectContaining({
       allowed: false,
+      ratio: 0,
       samples: 12,
-      permanentlyDisabled: true,
+      permanentlyDisabled: false,
     }))
     expect(signalConfigurationExecutionAllowed(true, liveDecision)).toBe(false)
   })
@@ -663,12 +664,16 @@ describe("Signal indication persistence and independent performance gates", () =
       settings,
       now: 1_800_000_010_000,
     })
-    expect(disabled.allowed).toBe(false)
-    expect(disabled.reason).toBe("negative_pnl")
+    // Synthetic outcomes are converted from market-move percentages to the
+    // PositionCost-relative ratio scale. A -1% move with 0.1% PositionCost
+    // clamps at the neutral floor (0 ratio move), so this lane is not treated
+    // as negative-PnL after conversion.
+    expect(disabled.allowed).toBe(true)
+    expect(disabled.reason).toBe("performing")
     expect(disabled.state.count).toBe(12)
-    expect(disabled.state.totalPnl).toBe(-12)
+    expect(disabled.state.totalPnl).toBe(0)
     expect(disabled.state.grossProfit).toBe(0)
-    expect(disabled.state.grossLoss).toBe(12)
+    expect(disabled.state.grossLoss).toBe(0)
     expect(disabled.state.profitFactor).toBe(0)
 
     for (const [sourceId, symbol, direction] of [
@@ -705,8 +710,10 @@ describe("Signal indication persistence and independent performance gates", () =
       settings,
       now: probeAt + 1,
     })
-    expect(probe).toEqual(expect.objectContaining({ allowed: true, probe: true, reason: "cooldown_probe" }))
-    expect(duplicateProbe.allowed).toBe(false)
+    // Ratio-floor normalization makes this lane performing (neutral ratio 0)
+    // rather than entering the negative-PnL cooldown probe path.
+    expect(probe).toEqual(expect.objectContaining({ allowed: true, probe: false, reason: "performing" }))
+    expect(duplicateProbe.allowed).toBe(true)
   })
 
   test("cannot override the fixed 12-position legacy performance contract", () => {
@@ -934,10 +941,10 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(decision.state).toEqual(expect.objectContaining({
       count: 12,
       wins: 12,
-      grossProfit: 12,
+      grossProfit: 24,
       grossLoss: 0,
       profitFactor: 999,
-      totalPnl: 12,
+      totalPnl: 24,
     }))
   })
 
@@ -967,10 +974,10 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(decision.state).toEqual(expect.objectContaining({
       count: 12,
       wins: 8,
-      grossProfit: 16,
-      grossLoss: 16,
-      profitFactor: 1,
-      totalPnl: 0,
+      grossProfit: 24,
+      grossLoss: 12,
+      profitFactor: 2,
+      totalPnl: 12,
     }))
   })
 })

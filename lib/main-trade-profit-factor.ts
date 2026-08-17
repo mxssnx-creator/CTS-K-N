@@ -28,9 +28,10 @@ export const MAIN_TRADE_PF_RATIO_MOVE_SCALE = 0.1
 export const PREVIOUS_POSITION_MIN_PF_RATIO = 1.1
 
 // Base is exhaustive, but the separate Base Valid row is intentionally
-// meaningful: a complete Set must clear at least 0.80 before it can enter the
-// Main funnel. Keeping the coded minimum equal to the default prevents an old
-// 0.40 value from silently weakening the stage on a hot reload.
+// meaningful: a complete Set must clear at least 1.10 (one PositionCost of
+// positive move) before it can enter the Main funnel. Keeping the coded
+// minimum equal to the systemwide floor prevents an old, weaker value from
+// silently reducing the stage on a hot reload.
 export const MAIN_TRADE_BASE_PF_RATIO_MIN = 1.1
 export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.15
 export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.15
@@ -107,8 +108,13 @@ export function mainTradePfRatioToMovePct(
   positionCostPct: unknown,
 ): number {
   const cost = Math.max(0, finite(positionCostPct, 0))
-  const normalized = normalizeMainTradePfRatio(ratio)
-  return round(cost * ((normalized - MAIN_TRADE_PF_RATIO_BASE) / MAIN_TRADE_PF_RATIO_MOVE_SCALE))
+  // This is a pure math conversion, not a configured-setting normalization:
+  // do NOT clamp to MAIN_TRADE_PF_RATIO_MIN (the operator-selectable floor,
+  // 1.05) here. The neutral base ratio (1.00, meaning "no move") is a valid
+  // input below that floor and must convert to exactly 0%, not be pulled up
+  // to the minimum selectable setting and produce a false positive move.
+  const value = Math.max(MAIN_TRADE_PF_RATIO_BASE, finite(ratio, MAIN_TRADE_PF_RATIO_BASE))
+  return round(cost * ((value - MAIN_TRADE_PF_RATIO_BASE) / MAIN_TRADE_PF_RATIO_MOVE_SCALE))
 }
 
 /**
