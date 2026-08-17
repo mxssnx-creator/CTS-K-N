@@ -5,17 +5,30 @@ import { readFile } from "node:fs/promises"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
 
-export function parseEnvironmentFile(source) {
+export function parseEnvironmentFile(source, options = {}) {
   const parsed = {}
+  const warn =
+    typeof options.onWarning === "function"
+      ? options.onWarning
+      : (message) => console.warn(`[run-with-env] ${message}`)
   for (const rawLine of source.split(/\n/)) {
     const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine
     if (!line.trim() || line.trimStart().startsWith("#")) continue
     const separator = line.indexOf("=")
-    if (separator < 1) throw new Error("Environment file contains a malformed line")
+    if (separator < 1) {
+      warn(`Skipping unsupported environment line: ${JSON.stringify(line)}`)
+      continue
+    }
     const key = line.slice(0, separator).trim()
     let value = line.slice(separator + 1)
-    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) throw new Error(`Invalid environment key: ${key}`)
-    if (value.includes("\0")) throw new Error(`Environment value contains NUL: ${key}`)
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+      warn(`Skipping environment line with invalid key: ${JSON.stringify(key)}`)
+      continue
+    }
+    if (value.includes("\0")) {
+      warn(`Skipping environment value containing NUL for key: ${key}`)
+      continue
+    }
 
     const quote = value[0]
     if ((quote === "\"" || quote === "'") && value.endsWith(quote) && value.length >= 2) {
