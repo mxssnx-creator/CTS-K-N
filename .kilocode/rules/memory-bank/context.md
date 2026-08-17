@@ -1443,3 +1443,10 @@ credentials are present.
   zero. Publish a final GitHub/Drive report/checksum checkpoint after the
   handoff commit; a new full Drive source archive still requires the exact
   explicit phrase `Drive-Quellarchiv freigegeben`.
+
+## Session 2026-08-17 — Remote X02 Prod-VST service recovery and progression
+
+- [x] Repaired the remote `/opt/cts-kn` environment on `152.53.114.112`: X02 Prod-VST credentials are loaded, legacy `BINGX_API_*` aliases are populated for the application's required X01 initialization path, mainnet aliases remain cleared, live order placement remains disabled, and a fresh cron secret was generated without exposing secrets in logs.
+- [x] Restarted and verified both `cts-kn.service` and `cts-kn-scheduler.service`; nginx now proxies the public HTTP endpoint to port 3002 instead of the default page. Remote app and scheduler are active, public/local HTTP returns successfully, and X02 is visible as a live connection in the control plane.
+- [x] Safe remote progression recovered after history warm-up: engine status is running, `activeEngineCount=1`, global heartbeat is fresh, 455 indication cycles / 17 indication windows / 1 strategy are visible, 4/4 symbols are processed, and recent fatal/connector/Redis errors are zero. No live order was submitted.
+- [ ] Connection-scoped heartbeat still reports stale/false in the aggregate status endpoint despite the engine/global heartbeat being healthy; investigate before claiming long-duration production readiness. The UI remains on X01 by default, while X02 is available in the selector and reported live in Smart Overview.
