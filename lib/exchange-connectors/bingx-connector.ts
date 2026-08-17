@@ -2655,19 +2655,29 @@ export class BingXConnector extends BaseExchangeConnector {
         iterations < maxIterations
       ) {
         iterations++
-        const fromId = Math.max(0, minId - pageLimit)
+        // `fromId` is inclusive on BingX. Step back one trade to avoid
+        // receiving the same oldest row and tripping the no-progress guard;
+        // subtracting a whole page can skip exchange-specific id ranges.
+        const fromId = Math.max(0, minId - 1)
         const pageUrl = buildSignedHistoryUrl(fromId)
         const resp = await this.rateLimitedFetch(pageUrl, { headers })
+        const rawBody = await resp.text()
+        let data: any = null
+        try {
+          data = rawBody ? JSON.parse(rawBody) : null
+        } catch {
+          data = null
+        }
         if (!resp.ok) {
-          this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} failed (HTTP ${resp.status}); stopping backfill with ${allRows.length} rows`)
+          this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} failed (HTTP ${resp.status} code=${data?.code ?? "unknown"} msg=${data?.msg ?? "unknown"}); stopping backfill with ${allRows.length} rows`)
           break
         }
-        const data = await resp.json()
         if (data && data.code !== undefined && !this.isBingXSuccess(data.code)) {
           this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} rejected (code=${data.code} msg=${data.msg}); stopping backfill with ${allRows.length} rows`)
           break
         }
         const rows = (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []).map(toRow)
+        console.warn(`[v0] [BingXBackfill] ${symbol} page=${iterations} http=${resp.status} code=${data?.code ?? "none"} rows=${rows.length} minId=${minId}`)
         if (rows.length === 0) break
         allRows.push(...rows)
         const pageMinId = rows.reduce(
