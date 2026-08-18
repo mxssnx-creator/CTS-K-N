@@ -1,6 +1,6 @@
-import { appendFileSync } from "node:fs"
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
-const __DBG = (m: string) => { try { appendFileSync("/workspace/6995fed7-bbea-4273-9cb0-04a70d5daeb4/sessions/agent_c8ee7b1f-49bc-47d3-b262-273cb909654f/cts-debug.log", `${Date.now()} [${process.pid}] ${m}\n`) } catch {} }
+// Diagnostics must never synchronously write to disk from the engine hot path.
+const __DBG = (_message: string): void => {}
 import {
   getCanonicalPipelineAdmission,
   type CanonicalPipelineAdmission,
@@ -4376,7 +4376,7 @@ export class TradeEngineManager {
       try {
         if (this.prehistoricTimer) unregisterEngineTimer(this.prehistoricTimer)
       } catch { /* stale handle is fine */ }
-      // ── Adaptive pause ────────────────────────────────────────────────
+      // ── Adaptive pause ───���────────────────────────────────────────────
       // When all symbols' checkpoints are caught up (no new candles to
       // replay), the next tick produces 0 steps across every symbol.
       // Running back-to-back in that state is pure churn — each cycle
