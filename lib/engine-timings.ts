@@ -157,10 +157,11 @@ export interface EngineTimings {
 
 export const DEFAULT_ENGINE_TIMINGS: EngineTimings = {
   cronSyncIntervalSeconds:   15,
-  // Local exchange reconciliation targets five sweeps/sec. Slow venue calls
-  // never overlap; the next sweep starts as soon as both cadence gates allow.
-  liveSyncIntervalMs:          200,
-  liveSyncPauseMs:              50,
+  // Keep exchange reconciliation responsive without creating a permanent
+  // five-sweeps/sec CPU wakeup on a long-lived server. Slow venue calls are
+  // single-flight and rate-limited, so a 1 s cadence is safer for CPU/RSS.
+  liveSyncIntervalMs:        1_000,
+  liveSyncPauseMs:             150,
   heartbeatIntervalMs:       1_000,
   // A changed indication fingerprint can reach Strategy/Live after the 250 ms
   // hard floor. Unchanged fingerprints remain suppressed until the 5 s
@@ -184,9 +185,9 @@ export const DEFAULT_ENGINE_TIMINGS: EngineTimings = {
   //   and let pending microtasks/I-O callbacks drain. Not a pacing timer.
   prehistoricIntervalMs:       1_000,  // Loop A: 1 s cadence
   prehistoricCyclePauseMs:        50,  // Loop A: post-completion breath
-  realtimeIntervalMs:            300,  // Loop B: 300 ms cadence
-  realtimeCyclePauseMs:           50,  // Loop B: post-completion breath
-  livePositionsCyclePauseMs:       50,  // Loop C: post-completion breath
+  realtimeIntervalMs:          1_000,  // Loop B: 1 s cadence
+  realtimeCyclePauseMs:           150,  // Loop B: post-completion breath
+  livePositionsCyclePauseMs:     150,  // Loop C: post-completion breath
   // ── Hedge Accumulation defaults (disabled until opted-in) ────────────────
    neutralizeEnabled:               false,
    neutralizeThresholdPct:          10,   // 10 % imbalance before reducing
@@ -202,10 +203,10 @@ export const DEFAULT_ENGINE_TIMINGS: EngineTimings = {
 // would silence the dashboard's "engine alive" indicator).
 export const ENGINE_TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; max: number }> = {
   cronSyncIntervalSeconds:   { min: 5,           max: 60                  },
-  // 200 ms is the supported fast-path floor. Single-flight execution and the
-  // exchange limiter prevent overlap/rate storms at this cadence.
-  liveSyncIntervalMs:        { min: 200,         max: 5_000               },
-  liveSyncPauseMs:           { min: 10,          max: 1_000               },
+  // 500 ms is the supported fast-path floor. Single-flight execution and the
+  // exchange limiter prevent overlap/rate storms while avoiding a hot loop.
+  liveSyncIntervalMs:        { min: 500,         max: 5_000 },
+  liveSyncPauseMs:            { min: 50,          max: 1_000 },
   heartbeatIntervalMs:       { min: 250,         max: 30_000              },
   strategyFlowMinIntervalMs: { min: 250,         max: 60_000              },
   strategyFlowHardThrottleMs:{ min: 100,         max: 30_000              },
@@ -219,17 +220,14 @@ export const ENGINE_TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; ma
   apiCancelOrderTimeoutMs:   { min: 5_000,       max: 60_000              },
   apiPositionTimeoutMs:      { min: 5_000,       max: 60_000              },
   // ── Three-progression bounds ──────────────────────────────────────────
-  // Interval floors at 200 ms prevent a runaway 1 ms cadence from locking
-  // the event loop. Interval ceilings at 60 s let operators "park" a loop.
-  //
-  // Pause bounds are intentionally narrow (10–500 ms) because these are
-  // anti-hang breaths, not pacing timers. A pause > 500 ms would make the
-  // loop feel unresponsive; < 10 ms would give no meaningful yield.
-  prehistoricIntervalMs:     { min: 200,         max: 60_000              },
-  prehistoricCyclePauseMs:   { min: 10,          max: 500                 },  // breath, not cadence
-  realtimeIntervalMs:        { min: 200,         max: 60_000              },
-  realtimeCyclePauseMs:      { min: 10,          max: 2_000               },  // breath, not cadence
-  livePositionsCyclePauseMs: { min: 10,          max: 2_000               },  // breath, not cadence
+  // Interval floors prevent a runaway sub-200 ms cadence from locking the
+  // event loop. Interval ceilings at 60 s let operators "park" a loop.
+  // Pauses are real scheduling breaths, not a substitute for cadence.
+  prehistoricIntervalMs:     { min: 500,         max: 60_000              },
+  prehistoricCyclePauseMs:   { min: 50,          max: 1_000               },  // breath, not cadence
+  realtimeIntervalMs:        { min: 500,         max: 60_000              },
+  realtimeCyclePauseMs:      { min: 50,          max: 2_000               },  // breath, not cadence
+  livePositionsCyclePauseMs: { min: 50,          max: 2_000               },  // breath, not cadence
 // ── Hedge Accumulation bounds ─────────────────────────────────────────────
    neutralizeEnabled:           { min: 0,           max: 1  /* boolean */    },
    neutralizeThresholdPct:      { min: 0,           max: 50                  },

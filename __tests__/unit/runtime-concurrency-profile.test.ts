@@ -3,6 +3,7 @@ import {
   getRuntimeConcurrencyProfile,
   getRuntimeCpuCount,
 } from "@/lib/runtime-concurrency-profile"
+import { DEFAULT_ENGINE_TIMINGS, ENGINE_TIMING_BOUNDS } from "@/lib/engine-timings"
 
 describe("runtime CPU-aware concurrency profile", () => {
   test("uses container CPU count and keeps control-plane headroom", () => {
@@ -105,5 +106,13 @@ describe("runtime CPU-aware concurrency profile", () => {
     )
     expect(profile.pressureLevel).toBe("healthy")
     expect(profile.calculationConcurrency).toBe(4)
+  })
+
+  test("keeps production loop defaults above the CPU hot-loop floor", () => {
+    expect(DEFAULT_ENGINE_TIMINGS.liveSyncIntervalMs).toBeGreaterThanOrEqual(500)
+    expect(DEFAULT_ENGINE_TIMINGS.realtimeIntervalMs).toBeGreaterThanOrEqual(500)
+    expect(DEFAULT_ENGINE_TIMINGS.realtimeCyclePauseMs).toBeGreaterThanOrEqual(50)
+    expect(ENGINE_TIMING_BOUNDS.liveSyncIntervalMs.min).toBe(500)
+    expect(ENGINE_TIMING_BOUNDS.realtimeIntervalMs.min).toBe(500)
   })
 })
