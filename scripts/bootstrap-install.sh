@@ -85,6 +85,7 @@ done
 
 as_root() {
   if (( EUID == 0 )); then "$@"
+  elif [[ -n "${CTS_TEST_TARGET:-}" || -n "${CTS_TEST_INSTALLER:-}" ]]; then "$@"
   elif command -v sudo >/dev/null 2>&1; then sudo "$@"
   else echo "Run as root or install sudo" >&2; exit 1
   fi
@@ -581,12 +582,13 @@ fi
 if (( SKIP_TESTS == 1 )); then
   INSTALL_ARGS+=(--skip-tests)
 fi
-if [[ -n "$EXISTING_ENV_MANAGED" ]]; then
+  if [[ -n "$EXISTING_ENV_MANAGED" ]]; then
   CTS_BOOTSTRAP_CLEAN_INSTALL=1 CTS_PRESERVE_ENV_MANAGED="$EXISTING_ENV_MANAGED" \
+    CTS_TEST_TARGET="${CTS_TEST_TARGET:-}" bash scripts/install.sh "${INSTALL_ARGS[@]}"
+  else
+  CTS_BOOTSTRAP_CLEAN_INSTALL=1 CTS_TEST_TARGET="${CTS_TEST_TARGET:-}" \
     bash scripts/install.sh "${INSTALL_ARGS[@]}"
-else
-  CTS_BOOTSTRAP_CLEAN_INSTALL=1 bash scripts/install.sh "${INSTALL_ARGS[@]}"
-fi
+  fi
 
 if [[ -n "$PRESERVED_STATE" && -d "$PRESERVED_STATE" ]]; then
   NEW_RUNTIME=""

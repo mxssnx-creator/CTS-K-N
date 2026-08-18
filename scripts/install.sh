@@ -512,7 +512,7 @@ run_preflight() {
   # Contract tests provide a mocked systemctl boundary. Keep the real host
   # preflight strict while allowing that isolated fixture to exercise the
   # installer without requiring PID 1 to be systemd.
-  if [[ -z "${CTS_TEST_TARGET:-}" ]]; then
+  if [[ -z "${CTS_TEST_TARGET:-}" && -z "${CTS_TEST_INSTALLER:-}" ]]; then
     command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] \
     || fatal "The requested systemd runtime is not active on this host"
   fi
