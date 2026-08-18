@@ -6,7 +6,9 @@ __v0_jsx-dev-runtime.ts
 .v0-trash/
 .vercel/
 
-# Environment variables
+# Private keys and environment variables
+cts_key
+*.pem
 .env
 .env.*
 !.env.example

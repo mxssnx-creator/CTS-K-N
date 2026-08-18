@@ -59,7 +59,7 @@ async function stopServer() {
 }
 
 async function main() {
-  server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "-H", "127.0.0.1", "-p", String(port)], {
+  server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--webpack", "-H", "127.0.0.1", "-p", String(port)], {
     cwd: process.cwd(),
     detached: process.platform !== "win32",
     env: {

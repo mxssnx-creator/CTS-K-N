@@ -421,6 +421,9 @@ async function main() {
       DISABLE_TRADE_ENGINE_IN_PROCESS: "0",
       DISABLE_IN_PROCESS_CONTINUITY: "0",
       ALLOW_PROD_SIMULATED: "1",
+      // The harness is deliberately single-process; permit its inline Redis
+      // fallback when no external preview Redis is available.
+      ALLOW_PROD_INLINE_REDIS: "1",
       FORCE_SIMULATED: "1",
       FORCE_LIVE: "0",
       V0_DEV_SYMBOL_COUNT: String(devSoakSymbolCount),
