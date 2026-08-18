@@ -94,7 +94,9 @@ export class ConnectionRateLimiter {
       const key = `${this.config.keyPrefix}${connectionId}`
       const now = Date.now()
 
-      // Get current window start time from Redis
+      // Use one Redis-side transaction for the read/decision/write sequence.
+      // The local admission tail prevents same-process races; WATCH/MULTI below
+      // also protects multiple app workers sharing this limiter.
       const windowStartStr = await client.get(`${key}:window`)
       const windowStart = windowStartStr ? Number.parseInt(windowStartStr, 10) : now
 
