@@ -5,7 +5,7 @@
 
  ✓ Starting...
 [v0] [Redis] Explicit ALLOW_PROD_INLINE_REDIS=1 is active; using InlineLocalRedis in production/preview. This is intended for single-process/local deployments and is not shared across multiple workers.
- ✓ Ready in 327ms
+ ✓ Ready in 293ms
 [v0] [Migrations] Current: v0, Target: v98
 [v0] [Migrations] Running 98 pending migrations as a combined batch...
 [v0] [Migrations] ✓ Successfully migrated v0 -> v98
@@ -23,10 +23,11 @@
 [v0] [LivePositionStage] [sync-skip] conn=bingx-x02 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={}
 [v0] [Redis] Explicit ALLOW_PROD_INLINE_REDIS=1 is active; using InlineLocalRedis in production/preview. This is intended for single-process/local deployments and is not shared across multiple workers.
 [v0] [Heartbeat] Market data refreshed for 4 symbols
-[v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [140 repetitive messages coalesced]
+[v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [139 repetitive messages coalesced]
 [v0] [LivePositionStage] [sync-skip] conn=bingx-x02 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [2 repetitive messages coalesced]
 [v0] [getSymbols] bingx-x01: using durable operator symbols (4 symbols) [1 repetitive messages coalesced]
 [v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [148 repetitive messages coalesced]
 [v0] [LivePositionStage] [sync-skip] conn=bingx-x02 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [1 repetitive messages coalesced]
 [v0] [Heartbeat] Market data refreshed for 4 symbols [1 repetitive messages coalesced]
 [v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [148 repetitive messages coalesced]
+[v0] [LivePositionStage] [sync-skip] conn=bingx-x02 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [1 repetitive messages coalesced]

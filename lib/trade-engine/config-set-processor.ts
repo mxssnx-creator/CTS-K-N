@@ -22,6 +22,8 @@ import {
   mapWithConcurrency,
 } from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
+import { appendFileSync } from "node:fs"
+const __DBGC = (m: string) => { try { appendFileSync("/workspace/6995fed7-bbea-4273-9cb0-04a70d5daeb4/sessions/agent_c8ee7b1f-49bc-47d3-b262-273cb909654f/cts-debug.log", `${Date.now()} [${process.pid}] ${m}\n`) } catch {} }
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 import {
   clearHistoricAggregateMarkers,
@@ -503,6 +505,7 @@ export class ConfigSetProcessor {
     const processOneSymbol = async (symbol: string): Promise<void> => {
       const tSymStart = Date.now()
       try {
+        __DBGC(`PS_sym_start ${symbol}`)
         await assertCurrentSelection()
         // --- Load all available candles for this symbol ---
         let candles: any[] = []
@@ -541,6 +544,7 @@ export class ConfigSetProcessor {
           }
         }
         await assertCurrentSelection()
+        __DBGC(`PS_sym_candles ${symbol} ${candles.length}`)
 
         if (candles.length === 0) {
           console.log(`[v0] [ConfigSetProcessor] ⚠ no candles for ${symbol} — skipping`)
@@ -701,6 +705,7 @@ export class ConfigSetProcessor {
         const historicGeneration = historicGenerationFromScope(
           `${writerSelectionEpoch || this.epoch}:${symbol}`,
         )
+        __DBGC(`PS_sym_before_calc ${symbol} combinedCandles=${combinedCandles.length}`)
         const [indicationResults, strategyPositions] = await Promise.all([
           combinedCandles.length > 0
             ? this.processIndicationConfigs(
@@ -732,6 +737,7 @@ export class ConfigSetProcessor {
               )
             : Promise.resolve(0),
         ])
+        __DBGC(`PS_sym_after_calc ${symbol} ind=${indicationResults} strat=${strategyPositions}`)
         const tCalcMs = Date.now() - tCalcStart
         await assertCurrentSelection()
 

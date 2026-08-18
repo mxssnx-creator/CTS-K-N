@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs"
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
-const __DBG = (m: string) => { try { appendFileSync("cts-debug.log", `${Date.now()} [${process.pid}] ${m}\n`) } catch {} }
+const __DBG = (m: string) => { try { appendFileSync("/workspace/6995fed7-bbea-4273-9cb0-04a70d5daeb4/sessions/agent_c8ee7b1f-49bc-47d3-b262-273cb909654f/cts-debug.log", `${Date.now()} [${process.pid}] ${m}\n`) } catch {} }
 import {
   getCanonicalPipelineAdmission,
   type CanonicalPipelineAdmission,
@@ -2065,6 +2065,7 @@ export class TradeEngineManager {
 
     void (async () => {
       try {
+        __DBG(`LB_START ${this.connectionId} epoch=${this.epoch} bootGen=${bootstrapGeneration}`)
         // Persist a dedicated historic activity anchor. General engine
         // `updated_at` continues to move while exit recovery/realtime health
         // runs, so monitoring cannot use it to detect a stuck Historic worker.
@@ -2114,11 +2115,13 @@ export class TradeEngineManager {
           throw new PrehistoricRunSupersededError(this.connectionId, bootstrapGeneration)
         }
         ownsBootstrapAdmission = true
+        __DBG(`LB_ADMISSION_ACQUIRED ${this.connectionId} waitMs=${Date.now() - admissionWaitStartedAt}`)
         await setSettings(`trade_engine_state:${this.connectionId}`, {
           prehistoric_bootstrap_admission_wait_ms: Date.now() - admissionWaitStartedAt,
           prehistoric_bootstrap_admission_owner: "bootstrap",
           updated_at: new Date().toISOString(),
         })
+        __DBG(`LB_BEFORE_LOAD ${this.connectionId}`)
         await withCycleDeadline(
           this.loadPrehistoricData({
             shouldContinue,
@@ -2128,23 +2131,25 @@ export class TradeEngineManager {
           `Engine ${this.connectionId} prehistoric bootstrap`,
           PREHISTORIC_BOOTSTRAP_DEADLINE_MS,
         )
-        __DBG(`POST_LOAD ${this.connectionId} shouldContinue=${shouldContinue()} epoch=${this.epoch} gen=${generationEpoch} bootGen=${this.prehistoricBootstrapGeneration} myGen=${bootstrapGeneration}`)
-        if (!shouldContinue()) {
-          __DBG(`SUPERSEDED_AT_2129 ${this.connectionId}`)
-          throw new PrehistoricRunSupersededError(this.connectionId, bootstrapGeneration)
+        __DBG(`POST_LOAD ${this.connectionId} shouldContinue=${shouldContinue()} isRunning=${this.isRunning}`)
+        // loadPrehistoricData resolved: the historic matrix is complete and
+        // `is_complete` was already persisted inside it. A concurrent
+        // settings/symbol generation bump (e.g. the enable call's own is_enabled
+        // write triggering a hot-reload) must NOT wedge the engine at
+        // prehistoric_data — the just-finished run is authoritative and any
+        // newer generation re-runs its own bootstrap. Genuinely-incomplete work
+        // is already cancelled *inside* loadPrehistoricData (via
+        // ownsCanonicalSymbolSelectionEpoch / assertCurrentRun), so the only
+        // reason to abandon the hand-off here is if the engine was stopped.
+        if (!this.isRunning) {
+          __DBG(`PREHISTORIC_DONE_BUT_STOPPED ${this.connectionId}`)
+          return
         }
         const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
         await Promise.all([
           redisClient.set(cacheKey, "1", { EX: 86400 }),
           redisClient.set(scope.prehistoricLoadedKey, "1", { EX: 86400 }),
         ])
-        if (!shouldContinue()) {
-          await Promise.allSettled([
-            redisClient.del(cacheKey),
-            redisClient.del(scope.prehistoricLoadedKey),
-          ])
-          throw new PrehistoricRunSupersededError(this.connectionId, bootstrapGeneration)
-        }
         await setSettings(`trade_engine_state:${this.connectionId}`, {
           prehistoric_data_loaded: true,
           prehistoric_data_source: "background",
@@ -2154,15 +2159,6 @@ export class TradeEngineManager {
           prehistoric_data_error: "",
           updated_at: new Date().toISOString(),
         })
-        if (!shouldContinue()) {
-          __DBG(`SUPERSEDED_AT_2137 ${this.connectionId}`)
-          await Promise.allSettled([
-            redisClient.del(cacheKey),
-            redisClient.del(scope.prehistoricLoadedKey),
-          ])
-          throw new PrehistoricRunSupersededError(this.connectionId, bootstrapGeneration)
-        }
-        __DBG(`PRE_ADVANCE ${this.connectionId} shouldContinue=${shouldContinue()}`)
         // ── Phase hand-off: prehistoric → live_trading ─────────────────
         // Prehistoric finished filling sets. The `:done` flag was set
         // inside loadPrehistoricData, so the indication/strategy/realtime
@@ -2320,6 +2316,7 @@ export class TradeEngineManager {
         getSettings(`trade_engine_state:${this.connectionId}`),
         getAppSettings(),
       ])
+      __DBG(`LD_after_settings ${this.connectionId}`)
 
       // Resolve range in hours — priority: app_settings > engine state (hours) >
       // legacy engine state (days) > default.
@@ -2401,6 +2398,7 @@ export class TradeEngineManager {
       const configProcessor = new ConfigSetProcessor(this.connectionId, this.epoch)
       const configInitResult = await configProcessor.initializeConfigSets()
       assertCurrentRun()
+      __DBG(`LD_after_initconfig ${this.connectionId}`)
       await logProgressionEvent(this.connectionId, "prehistoric_config_init", "info", "Config sets initialized", {
         indicationConfigs: configInitResult.indications,
         strategyConfigs: configInitResult.strategies,
@@ -2418,6 +2416,7 @@ export class TradeEngineManager {
         },
       )
       assertCurrentRun()
+      __DBG(`LD_after_processPrehistoric ${this.connectionId}`)
       if (
         processingResult.symbolsProcessed < processingResult.symbolsTotal ||
         processingResult.errors > 0
@@ -2577,11 +2576,13 @@ export class TradeEngineManager {
         updated_at: new Date().toISOString(),
       })
       await redisClient.expire(prehistoricKey, 86400)
+      __DBG(`LH_after_expire ${this.connectionId}`)
       assertCurrentRun()
       await Promise.all([
         writePrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "done"),
         writePrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "firstpass:done"),
       ])
+      __DBG(`LH_after_gate ${this.connectionId}`)
       assertCurrentRun()
 
       // Emit a log event (NOT a phase overwrite) so the dashboard can show
@@ -2615,8 +2616,9 @@ export class TradeEngineManager {
         `candles=${processingResult.candlesProcessed} | ` +
         `indications=${processingResult.indicationResults} | ` +
         `strategies=${processingResult.strategyPositions} | ` +
-        `errors=${processingResult.errors}`,
+          `errors=${processingResult.errors}`,
       )
+      __DBG(`LH_RETURNING ${this.connectionId}`)
     } catch (error) {
       // A ConfigSetProcessor owns an additional canonical-symbol-selection
       // token. Its private cancellation error can arrive while this engine
