@@ -15,6 +15,17 @@ const CACHE = new Map<string, { data: any; timestamp: number }>()
 // High-frequency TTL: 200ms ensures fresh data each indication cycle (1000ms interval)
 // but avoids redundant Redis round-trips within the same cycle across parallel symbol processing
 const CACHE_TTL = 200 // ms
+const CACHE_MAX_ENTRIES = 64
+
+function setBoundedCache(symbol: string, data: any, timestamp = Date.now()): void {
+  CACHE.delete(symbol)
+  CACHE.set(symbol, { data, timestamp })
+  while (CACHE.size > CACHE_MAX_ENTRIES) {
+    const oldest = CACHE.keys().next().value
+    if (oldest === undefined) break
+    CACHE.delete(oldest)
+  }
+}
 
 // In-flight deduplication: if a fetch is already in-progress for a symbol, await the same promise
 const IN_FLIGHT = new Map<string, Promise<any>>()
@@ -47,7 +58,7 @@ export async function getMarketDataCached(symbol: string): Promise<any> {
       const latest = Array.isArray(rawData) ? rawData[0] : rawData
 
       if (latest) {
-        CACHE.set(symbol, { data: latest, timestamp: Date.now() })
+        setBoundedCache(symbol, latest)
         return latest
       }
       return null
@@ -75,10 +86,11 @@ export async function prefetchMarketDataBatch(symbols: string[]): Promise<void> 
     const client = getRedisClient()
     const now = Date.now()
 
-    // Filter to only symbols whose cache is stale
-    const stale = symbols.filter((s) => {
+    // Deduplicate symbols and avoid overlapping individual fetches.
+    const uniqueSymbols = [...new Set(symbols.filter(Boolean))]
+    const stale = uniqueSymbols.filter((s) => {
       const c = CACHE.get(s)
-      return !c || now - c.timestamp >= CACHE_TTL
+      return (!c || now - c.timestamp >= CACHE_TTL) && !IN_FLIGHT.has(s)
     })
     if (stale.length === 0) return
 
@@ -93,7 +105,7 @@ export async function prefetchMarketDataBatch(symbols: string[]): Promise<void> 
       for (let i = 0; i < stale.length; i++) {
         const data = results[i]
         if (data && typeof data === "object" && Object.keys(data).length > 0) {
-          CACHE.set(stale[i], { data, timestamp: Date.now() })
+          setBoundedCache(stale[i], data)
         }
       }
     }

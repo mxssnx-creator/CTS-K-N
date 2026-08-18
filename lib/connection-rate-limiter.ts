@@ -44,6 +44,7 @@ export function remainingRateLimitWindowTtlSeconds(
  */
 export class ConnectionRateLimiter {
   private config: RateLimitConfig
+  private readonly admissionTails = new Map<string, Promise<void>>()
 
   constructor(config: Partial<RateLimitConfig> = {}) {
     this.config = {
@@ -60,6 +61,21 @@ export class ConnectionRateLimiter {
    * @returns Rate limit result with allowed status and remaining requests
    */
   async checkLimit(connectionId: string): Promise<RateLimitResult> {
+    const previous = this.admissionTails.get(connectionId) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => { release = resolve })
+    const tail = previous.then(() => current)
+    this.admissionTails.set(connectionId, tail)
+    await previous
+    try {
+      return await this.checkLimitUnlocked(connectionId)
+    } finally {
+      release()
+      if (this.admissionTails.get(connectionId) === tail) this.admissionTails.delete(connectionId)
+    }
+  }
+
+  private async checkLimitUnlocked(connectionId: string): Promise<RateLimitResult> {
     try {
       await initRedis()
       const client = getRedisClient()

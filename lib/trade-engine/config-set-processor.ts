@@ -22,8 +22,8 @@ import {
   mapWithConcurrency,
 } from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
-import { appendFileSync } from "node:fs"
-const __DBGC = (m: string) => { try { appendFileSync("/workspace/6995fed7-bbea-4273-9cb0-04a70d5daeb4/sessions/agent_c8ee7b1f-49bc-47d3-b262-273cb909654f/cts-debug.log", `${Date.now()} [${process.pid}] ${m}\n`) } catch {} }
+// Diagnostics must never synchronously write to disk during strategy preparation.
+const __DBGC = (_message: string): void => {}
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 import {
   clearHistoricAggregateMarkers,
