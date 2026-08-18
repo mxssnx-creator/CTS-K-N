@@ -37,7 +37,8 @@
     ".next-prod-stage13/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     ".next/types/**/*.ts",
-    "next-env.d.ts"
+    "next-env.d.ts",
+    ".next-prod/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
