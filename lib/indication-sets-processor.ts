@@ -292,6 +292,11 @@ end
 
 redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count))
 redis.call("SADD", outcomeIndexKey, sampleKey, statsKey)
+-- The index is a rebuildable discovery structure. Expire it with the same
+-- horizon as the outcome projection so abandoned set keys do not accumulate.
+redis.call("EXPIRE", outcomeIndexKey, 7 * 24 * 60 * 60)
+redis.call("EXPIRE", sampleKey, 7 * 24 * 60 * 60)
+redis.call("EXPIRE", statsKey, 7 * 24 * 60 * 60)
 return { tostring(grossProfit), tostring(grossLoss), tostring(count) }
 `
 
@@ -3413,6 +3418,9 @@ export class IndicationSetsProcessor {
           tx.rpush(key, serializedSample)
           if (evictCount > 0) tx.ltrim(key, -cap, -1)
           tx.sadd(outcomeIndexKey, key, statsKey)
+          tx.expire(outcomeIndexKey, 7 * 24 * 60 * 60)
+          tx.expire(key, 7 * 24 * 60 * 60)
+          tx.expire(statsKey, 7 * 24 * 60 * 60)
           const execResult = await tx.exec()
           if (!canWatch || execResult !== null) {
             return this.repairOutcomeStatsFromSamples(client, key, statsKey)
@@ -3446,6 +3454,9 @@ export class IndicationSetsProcessor {
           count: String(count),
         })
         tx.sadd(outcomeIndexKey, key, statsKey)
+        tx.expire(outcomeIndexKey, 7 * 24 * 60 * 60)
+        tx.expire(key, 7 * 24 * 60 * 60)
+        tx.expire(statsKey, 7 * 24 * 60 * 60)
         const execResult = await tx.exec()
         if (!canWatch || execResult !== null) {
             return this.outcomePerformanceFromStats(grossProfit, grossLoss, count)
