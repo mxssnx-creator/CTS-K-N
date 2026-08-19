@@ -196,15 +196,18 @@ export class StrategyProcessor {
               /* Cross-process or test environments may not have a manager. */
             }
 
-            console.log(
-              `[v0] [StrategyProcessor] Dirty flag consumed for ${this.connectionId}; flow throttle cleared and immediate re-evaluation requested`
+            logRuntimeInfo(
+              `strategy:${this.connectionId}:dirty-flag-consumed`,
+              30_000,
+              `[v0] [StrategyProcessor] Dirty flag consumed; flow throttle cleared and immediate re-evaluation requested`,
             )
           }
         } catch (settingsErr) {
           // Non-critical - continue processing even if dirty check fails
-          console.warn(
-            `[v0] [StrategyProcessor] Settings dirty check failed:`,
-            settingsErr instanceof Error ? settingsErr.message : String(settingsErr)
+          logRuntimeInfo(
+            `strategy:${this.connectionId}:dirty-flag-error`,
+            30_000,
+            `[v0] [StrategyProcessor] Settings dirty check failed: ${settingsErr instanceof Error ? settingsErr.message : String(settingsErr)}`,
           )
         }
       }
