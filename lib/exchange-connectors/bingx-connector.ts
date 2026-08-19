@@ -76,6 +76,9 @@ export class BingXConnector extends BaseExchangeConnector {
    * call again.
    */
   private static bingxRateLimitUntil = 0
+  private static bingxCooldownWait: Promise<void> | null = null
+  private static bingxCallTail: Promise<void> = Promise.resolve()
+  private static lastCooldownLogAt = 0
 
   private lastOperationTransport = new Map<string, {
     transport: "bingx-api" | "signed-rest-fallback"
@@ -1685,20 +1688,32 @@ export class BingXConnector extends BaseExchangeConnector {
     operation: string,
     call: () => Promise<T>,
   ): Promise<T> {
-    // Wait out any active cooldown before making the call. A small random
-    // jitter is added so concurrent lanes don't all wake and fire at the exact
-    // same instant (which would itself re-trip the limit).
-    if (BingXConnector.bingxRateLimitUntil > Date.now()) {
-      const waitMs = BingXConnector.bingxRateLimitUntil - Date.now()
-      const jitter = Math.floor(Math.random() * 8_000)
-      console.warn(
-        `[v0] [BingXConnector] ${operation}: rate-limit cooldown active — ` +
-        `waiting ${waitMs + jitter}ms before calling BingX`,
-      )
-      await new Promise((resolve) => setTimeout(resolve, waitMs + jitter))
-    }
+    // All order/reconciliation calls share one FIFO lane. This prevents the
+    // per-symbol Promise pools from waking together after cooldown and firing
+    // another burst that immediately re-trips BingX.
+    const previous = BingXConnector.bingxCallTail
+    let release!: () => void
+    BingXConnector.bingxCallTail = new Promise<void>((resolve) => { release = resolve })
+    await previous
 
     try {
+      if (BingXConnector.bingxRateLimitUntil > Date.now()) {
+        const waitMs = BingXConnector.bingxRateLimitUntil - Date.now()
+        if (!BingXConnector.bingxCooldownWait) {
+          const delayMs = waitMs + 2_000
+          BingXConnector.bingxCooldownWait = new Promise<void>((resolve) => {
+            setTimeout(resolve, delayMs)
+          }).finally(() => {
+            BingXConnector.bingxCooldownWait = null
+          })
+        }
+        if (Date.now() - BingXConnector.lastCooldownLogAt > 30_000) {
+          BingXConnector.lastCooldownLogAt = Date.now()
+          console.warn(`[v0] [BingXConnector] ${operation}: shared rate-limit cooldown active; requests gated`)
+        }
+        await BingXConnector.bingxCooldownWait
+      }
+
       return await call()
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
@@ -1726,6 +1741,8 @@ export class BingXConnector extends BaseExchangeConnector {
         )
       }
       throw error
+    } finally {
+      release()
     }
   }
 
