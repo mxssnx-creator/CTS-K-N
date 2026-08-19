@@ -1,4 +1,4 @@
-import { publishEngineEvent, readEngineEvents, waitForEngineEvent } from "@/lib/engine-event-bus"
+import { publishEngineEvent, readEngineEvents, waitForAnyEngineEvent, waitForEngineEvent } from "@/lib/engine-event-bus"
 
 jest.mock("@/lib/redis-db", () => {
   const list: string[] = []
@@ -80,6 +80,19 @@ describe("engine event bus", () => {
 
     await expect(pending).resolves.toMatchObject({
       payload: { connectionId: "conn-a", stage: "cycle", cycle: 12 },
+    })
+  })
+
+  test("waits across modules through the global event channel", async () => {
+    const pending = waitForAnyEngineEvent((event) => event.payload.connectionId === "conn-global")
+    await publishEngineEvent("engine.heartbeat.updated", {
+      connectionId: "conn-global",
+      heartbeatAt: Date.now(),
+      source: "coordinator",
+    })
+    await expect(pending).resolves.toMatchObject({
+      type: "engine.heartbeat.updated",
+      payload: { connectionId: "conn-global", source: "coordinator" },
     })
   })
 
