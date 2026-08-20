@@ -68,12 +68,12 @@ export const MIN_VOLUME_STEP_RATIO = 0.2
 export const MAX_VOLUME_STEP_RATIO = 1.8
 
 // Base indication windows are exhaustive from the configured minimum through
-// 30. Four is the operator-requested fresh-install default; values 2 and 3
+// 30. Five is the operator-requested fresh-install default; values 2, 3, and 4
 // remain selectable and changing the lower bound never samples the remaining
 // integer windows.
 export const MIN_BASE_STEP = 2
 export const MAX_BASE_STEP = 30
-export const DEFAULT_BASE_MIN_STEP = 4
+export const DEFAULT_BASE_MIN_STEP = 5
 
 export function normalizeBaseMinStep(raw: unknown): number {
   const parsed = Number(raw)
