@@ -180,6 +180,8 @@ __tests__/unit/real-position-durability.test.ts
 __tests__/unit/realtime-cycle-diagnostic.test.ts
 __tests__/unit/redis-db-network-client.test.ts
 __tests__/unit/redis-db-write-budget.test.ts
+__tests__/unit/redis-memory-policy.test.ts
+__tests__/unit/redis-memory-pressure.test.ts
 __tests__/unit/redis-migration-080.test.ts
 __tests__/unit/redis-persistence-cleanup.test.ts
 __tests__/unit/redis-runtime-root.test.ts
@@ -848,6 +850,8 @@ components/ui/textarea.tsx
 components/ui/tooltip.tsx
 components/volume/volume-calculator-widget.tsx
 configs/preset-long-30-2.2.json
+cts-debug.log
+cts-server.log
 custom-worker.ts
 data/.gitkeep
 data/connections.json
@@ -857,6 +861,8 @@ docs/CTS-K-N-VALIDATION-RESULTS-2026-08-14.json
 docs/CTS-K-N-VALIDATION-RESULTS-2026-08-14.md
 docs/DCA-HISTORIC-14D-VALIDATION-2026-08-15.md
 docs/DCA-HISTORIC-42D-18S-VALIDATION-2026-08-15.md
+docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.json
+docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.md
 docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
 docs/dca-optimization-7d-2026-08-11.md
 docs/direct-trade-async-scale-48h.json
@@ -892,6 +898,7 @@ hooks/use-trade-engine-status.ts
 hooks/use-websocket.ts
 instrumentation.ts
 jest.config.ts
+jest.global-setup.js
 lib/BLOCK_STRATEGY_SYSTEM.md
 lib/active-connections.ts
 lib/active-indication-profile.ts

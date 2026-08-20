@@ -282,3 +282,24 @@ Related tracked detail reports:
 
 - `docs/DCA-HISTORIC-42D-18S-VALIDATION-2026-08-15.md`
 - `docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md`
+
+## 2026-08-20 post-fix 32-symbol development soak
+
+The previously pending full run was executed from independently verified
+GitHub `main` (`1851c00`, tree `6c8e935`) on isolated Redis DB13, exclusively
+in credential-free paper mode. It is **not accepted**: steady API p95 was
+3,714 ms versus the unchanged 3,000 ms limit. RSS remained below the unchanged
+7,168/8,192/10,240 MiB protection boundaries but ended at 6,778 MiB, above the
+6,400 MiB soft limit; event-loop utilization reached 95.4% and delay p95/max
+reached 133.1/5,763 ms. Productive evidence included 35 Main/Indication/
+Strategy cycles, 1,202 Realtime cycles, 1,233 LivePosition cycles, 1,202 signal
+indications, 73 paper signal positions, and 36 trailing positions. Real and
+authenticated orders remained zero.
+
+The exact report and machine-readable statistics are:
+
+- `docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.md`
+- `docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.json`
+
+The 6,400/7,168/8,192/10,240 MiB boundaries and 3,000 ms API gate remain
+unchanged. No previously rejected DCA or Special candidate was enabled.

@@ -360,5 +360,11 @@ export function getEngineTimings(): EngineTimings {
 }
 
 // Kick a refresh on module load so the first tick after process start
-// doesn't have to fall back to DEFAULTS.
-refreshEngineTimings().catch(() => {})
+// doesn't have to fall back to DEFAULTS. Jest imports this module in tests
+// that only exercise the immutable defaults; starting Redis initialization in
+// that case outlives the test environment and turns an otherwise-green suite
+// into a process-level failure. Runtime callers still refresh eagerly, while
+// tests can explicitly call refreshEngineTimings() when Redis is in scope.
+if (process.env.NODE_ENV !== "test") {
+  refreshEngineTimings().catch(() => {})
+}

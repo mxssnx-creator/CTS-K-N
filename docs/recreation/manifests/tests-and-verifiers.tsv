@@ -156,6 +156,8 @@ unit	__tests__/unit/real-position-durability.test.ts
 unit	__tests__/unit/realtime-cycle-diagnostic.test.ts
 unit	__tests__/unit/redis-db-network-client.test.ts
 unit	__tests__/unit/redis-db-write-budget.test.ts
+unit	__tests__/unit/redis-memory-policy.test.ts
+unit	__tests__/unit/redis-memory-pressure.test.ts
 unit	__tests__/unit/redis-migration-080.test.ts
 unit	__tests__/unit/redis-persistence-cleanup.test.ts
 unit	__tests__/unit/redis-runtime-root.test.ts

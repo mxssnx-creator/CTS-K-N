@@ -1,0 +1,88 @@
+{
+  "date": "2026-08-20",
+  "result": "FAIL",
+  "failureGate": "steadyApiP95Ms",
+  "source": {
+    "githubMainBeforeValidation": "1851c00db71e485d474289f259a060b440fe32bc",
+    "treeBeforeValidation": "6c8e93570c0ad52ec5d8645f34a51d589430ad8a",
+    "priorCheckpoint": "605ddba",
+    "aheadOfPriorCheckpoint": 33,
+    "branch": "agent/postfix-soak-validation-20260820"
+  },
+  "safety": {
+    "mode": "development-paper-simulation",
+    "symbols": 32,
+    "forceSimulated": true,
+    "forceLive": false,
+    "credentialsPresent": false,
+    "realOrdersObserved": 0,
+    "realPositionsObserved": 0,
+    "redisDatabase": 13,
+    "redisKeysAfterShutdown": 115659
+  },
+  "limitsMiB": {
+    "rssSoft": 6400,
+    "rssEmergency": 7168,
+    "rssHard": 8192,
+    "absoluteMemory": 10240,
+    "nodeHeap": 12288
+  },
+  "observation": {
+    "configuredDurationMs": 1200000,
+    "productiveCompletionGraceMs": 600000,
+    "rounds": 530,
+    "outerRssStartKiB": 4223256,
+    "outerRssPeakKiB": 6846672,
+    "internalRssStartMiB": 4329,
+    "internalRssEndMiB": 6778,
+    "heapUsedEndMiB": 3637.7,
+    "heapTotalEndMiB": 4680.8,
+    "externalEndMiB": 1023,
+    "arrayBuffersEndMiB": 997.2,
+    "strategyRssPeakMiB": 6754.6,
+    "strategyThrottleCount": 18,
+    "strategyGcCount": 2,
+    "strategyGcWaitMs": 7378,
+    "maintenanceGcLastDurationMs": 2347,
+    "eventLoopUtilizationPct": 95.4,
+    "eventLoopDelayP50Ms": 22.6,
+    "eventLoopDelayP95Ms": 133.1,
+    "eventLoopDelayMaxMs": 5763,
+    "redisKeysFirstSample": 25114,
+    "redisKeysLastSample": 110885,
+    "mainCycles": 35,
+    "indicationCycles": 35,
+    "strategyCycles": 35,
+    "realtimeMonitorCycles": 1202,
+    "livePositionCycles": 1233,
+    "signalIndications": 1202,
+    "signalPaperPositions": 73,
+    "signalTrailingPositions": 36
+  },
+  "api": {
+    "steadyP95Ms": 3714,
+    "limitMs": 3000,
+    "withinLimit": false,
+    "slowestRouteP95Ms": {
+      "/api/system/init-status": 6888,
+      "/api/system/monitoring": 6745,
+      "/api/trading/trade-history?connection_id=bingx-x01&limit=500": 4574,
+      "/api/preset-optimizer?connectionId=bingx-x01": 4432
+    }
+  },
+  "tests": {
+    "focusedSuites": 1,
+    "focusedTests": 7,
+    "jestSuites": 183,
+    "jestTests": 1221,
+    "jestExitCode": 0,
+    "typecheck": "PASS",
+    "lint": "PASS",
+    "sourceSyntax": "PASS",
+    "recreationManifestProjectFiles": 1423,
+    "recreationManifestVerification": "PASS",
+    "credentialScanFiles": 1431,
+    "credentialScanFindings": 0
+  },
+  "rawLog": "/workspace/CTS-K-N-runtime/logs/dev-soak-32-2026-08-20T05-37-29Z.log"
+}

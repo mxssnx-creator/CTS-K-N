@@ -1467,3 +1467,30 @@ credentials are present.
   `createLiveOrderConnector`. Other base connections (bingx-x01/x01, bybit-x03,
   pionex-x01, orangex-x01) remain fail-closed unless their env credentials are
   present.
+
+## Session 2026-08-20 — GitHub recovery and 32-symbol post-fix soak
+
+- [x] The previous persistent directories had disappeared. GitHub `main` was
+  independently verified as the newer authority at `1851c00` / tree `6c8e935`,
+  33 commits ahead of the last recorded `605ddba`, then restored to
+  `/workspace/CTS-K-N-v3.7`. Runtime, pnpm 10.28.1, GitHub CLI 2.97.0, and
+  official Redis 8.10.1 were restored under persistent `/workspace` paths.
+- [x] Ran the pending full 32-symbol development soak on initially empty,
+  isolated Redis DB13 with blank credentials, `FORCE_SIMULATED=1` and
+  `FORCE_LIVE=0`. No real/authenticated order or real position was observed.
+- [ ] The soak correctly remains failed: steady API p95 3,714 ms exceeded the
+  unchanged 3,000 ms limit. Final internal RSS was 6,778 MiB, below the
+  unchanged 7,168/8,192/10,240 MiB protection boundaries but above the 6,400
+  MiB soft limit; event-loop utilization/p95/max were 95.4% / 133.1 ms /
+  5,763 ms. Productive counters reached 35 Main/Indication/Strategy cycles,
+  1,202 Realtime cycles, 1,233 LivePosition cycles, 1,202 signal indications,
+  73 paper signal positions and 36 trailing positions. Do not weaken gates or
+  label the runtime accepted.
+- [x] Fixed a test-only module-load leak: engine timing defaults no longer
+  start an unobserved Redis initialization under Jest. Production eager refresh
+  remains unchanged. Canonical Jest now exits zero with 183/183 suites and
+  1,221/1,221 tests; TypeScript and full ESLint pass.
+- [x] Detailed evidence is tracked in
+  `docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.{md,json}`. The full raw log
+  remains in `/workspace/CTS-K-N-runtime/logs/`. No source archive may be
+  uploaded to Drive without the exact phrase `Drive-Quellarchiv freigegeben`.
