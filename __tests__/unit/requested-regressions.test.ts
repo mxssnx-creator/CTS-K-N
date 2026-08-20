@@ -607,14 +607,14 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("Engine start skipped - missing credentials")
   })
 
-  test("base pseudo-position steps keep the 2-step floor and default to 4", () => {
+  test("base pseudo-position steps keep the 2-step floor and default to 5", () => {
     const manager = read("lib/indication-config-manager.ts")
     const constants = read("lib/constants.ts")
     const settingsTab = read("components/settings/tabs/strategy-tab.tsx")
     const coordinationSection = read("components/settings/strategy-coordination-section.tsx")
 
     expect(constants).toContain("export const MIN_BASE_STEP = 2")
-    expect(constants).toContain("export const DEFAULT_BASE_MIN_STEP = 4")
+    expect(constants).toContain("export const DEFAULT_BASE_MIN_STEP = 5")
     expect(manager).toContain("MAX_BASE_STEP - minStep + 1")
     expect(manager).toContain("(_, index) => index + minStep")
     expect(settingsTab).toContain("Steps generated: 2, 3, 4, …, 29, 30")

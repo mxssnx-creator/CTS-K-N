@@ -123,10 +123,13 @@ export class ConnectionRateLimiter {
         }
       }
 
-      // Increment counter for current window
-      const countStr = await client.get(`${key}:count`)
-      const count = countStr ? Number.parseInt(countStr, 10) : 0
-      const newCount = count + 1
+      // INCR is atomic across workers and avoids a GET/SET race that let
+      // concurrent callers overshoot the exchange quota.
+      const newCount = await client.incr(`${key}:count`)
+      await client.expire(
+        `${key}:count`,
+        remainingRateLimitWindowTtlSeconds(now, windowStart, this.config.windowMs),
+      )
 
       if (newCount > this.config.maxRequests) {
         // Rate limit exceeded
@@ -141,15 +144,6 @@ export class ConnectionRateLimiter {
           timeoutMs: this.config.timeoutMs,
         }
       }
-
-      // Redis SET clears an existing TTL unless KEEPTTL is requested. The
-      // cross-backend adapter intentionally exposes only common SET options,
-      // so reapply the *remaining* absolute-window TTL on every increment.
-      // Without this, the count became immortal (TTL=-1) while `window`
-      // expired, permanently rate-limiting the connection after 30 toggles.
-      await client.set(`${key}:count`, newCount.toString(), {
-        EX: remainingRateLimitWindowTtlSeconds(now, windowStart, this.config.windowMs),
-      })
 
       return {
         allowed: true,

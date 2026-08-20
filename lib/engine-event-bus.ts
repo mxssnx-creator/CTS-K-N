@@ -28,6 +28,7 @@ export type EngineEvent<T extends EngineEventName = EngineEventName> = {
 }
 
 type Handler<T extends EngineEventName> = (event: EngineEvent<T>) => void | Promise<void>
+type AnyHandler = (event: EngineEvent) => void | Promise<void>
 
 const STREAM_KEY = "engine:events"
 const MAX_EVENTS = 10_000
@@ -47,17 +48,31 @@ export async function publishEngineEvent<T extends EngineEventName>(
   payload: EngineEventPayloads[T],
 ): Promise<EngineEvent<T>> {
   const event: EngineEvent<T> = { id: eventId(type, payload), type, payload, createdAt: new Date().toISOString() }
-  try {
-    await initRedis().catch(() => undefined)
-    const client = getRedisClient()
-    await client.rpush(STREAM_KEY, JSON.stringify(event))
-    await client.ltrim(STREAM_KEY, -MAX_EVENTS, -1).catch(() => undefined)
-  } catch (error) {
-    console.warn("[v0] [EngineEventBus] durable append failed:", error instanceof Error ? error.message : String(error))
-  }
+  // Notify in-process consumers first. Redis persistence is intentionally
+  // best-effort and must never add network latency to state transitions.
   emitter.emit(type, event)
   emitter.emit("*", event)
+
+  void (async () => {
+    try {
+      await initRedis().catch(() => undefined)
+      const client = getRedisClient()
+      await client.rpush(STREAM_KEY, JSON.stringify(event))
+      await client.ltrim(STREAM_KEY, -MAX_EVENTS, -1).catch(() => undefined)
+    } catch (error) {
+      console.warn("[v0] [EngineEventBus] durable append failed:", error instanceof Error ? error.message : String(error))
+    }
+  })()
   return event
+}
+
+export function onAnyEngineEvent(handler: AnyHandler): () => void {
+  const listener = (event: EngineEvent) => {
+    try { void Promise.resolve(handler(event)).catch((e) => console.warn("[v0] [EngineEventBus] global handler failed:", e instanceof Error ? e.message : String(e))) }
+    catch (e) { console.warn("[v0] [EngineEventBus] global handler failed:", e instanceof Error ? e.message : String(e)) }
+  }
+  emitter.on("*", listener)
+  return () => emitter.off("*", listener)
 }
 
 export function onEngineEvent<T extends EngineEventName>(type: T, handler: Handler<T>): () => void {
@@ -67,6 +82,73 @@ export function onEngineEvent<T extends EngineEventName>(type: T, handler: Handl
   }
   emitter.on(type, listener)
   return () => emitter.off(type, listener)
+}
+
+/**
+ * Wait for the next matching engine event. Event delivery is the primary
+ * completion path; timeout/abort are safety boundaries for crashed producers.
+ */
+export function waitForAnyEngineEvent(
+  predicate: (event: EngineEvent) => boolean = () => true,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<EngineEvent> {
+  const { timeoutMs = 30_000, signal } = options
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      emitter.off("*", listener)
+      if (timeout) clearTimeout(timeout)
+      signal?.removeEventListener("abort", onAbort)
+    }
+    const onAbort = () => {
+      cleanup()
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("Event wait aborted"))
+    }
+    const listener = (event: EngineEvent) => {
+      if (!predicate(event)) return
+      cleanup()
+      resolve(event)
+    }
+    if (signal?.aborted) return onAbort()
+    emitter.on("*", listener)
+    signal?.addEventListener("abort", onAbort, { once: true })
+    timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error("Timed out waiting for an engine event"))
+    }, timeoutMs)
+  })
+}
+
+export function waitForEngineEvent<T extends EngineEventName>(
+  type: T,
+  predicate: (event: EngineEvent<T>) => boolean = () => true,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<EngineEvent<T>> {
+  const { timeoutMs = 30_000, signal } = options
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      emitter.off(type, listener)
+      if (timeout) clearTimeout(timeout)
+      signal?.removeEventListener("abort", onAbort)
+    }
+    const onAbort = () => {
+      cleanup()
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("Event wait aborted"))
+    }
+    const listener = (event: EngineEvent<T>) => {
+      if (!predicate(event)) return
+      cleanup()
+      resolve(event)
+    }
+    if (signal?.aborted) return onAbort()
+    emitter.on(type, listener)
+    signal?.addEventListener("abort", onAbort, { once: true })
+    timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error(`Timed out waiting for engine event ${type}`))
+    }, timeoutMs)
+  })
 }
 
 export async function readEngineEvents(start = 0, stop = -1): Promise<EngineEvent[]> {

@@ -227,13 +227,13 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         "connection_settings:conn-ledger",
         "strategyBlockMaterializationBatchSize",
       )).toBe("1024")
-      expect(await client.hget("connection_settings:conn-ledger", "minStep")).toBe("4")
+      expect(await client.hget("connection_settings:conn-ledger", "minStep")).toBe("5")
       expect(await client.hget("connection_settings:conn-ledger", "mainEvalPosCount")).toBe("25")
       expect(await client.hget("connection_settings:conn-ledger", "realEvalPosCount")).toBe("20")
       expect(JSON.parse(String(
         await client.hget("connection_settings:conn-ledger", "coordination_settings"),
       ))).toMatchObject({
-        minStep: 4,
+        minStep: 5,
         mainEvalPosCount: 25,
         realEvalPosCount: 20,
       })

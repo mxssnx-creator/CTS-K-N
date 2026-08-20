@@ -1,4 +1,4 @@
-import { publishEngineEvent, readEngineEvents } from "@/lib/engine-event-bus"
+import { publishEngineEvent, readEngineEvents, waitForAnyEngineEvent, waitForEngineEvent } from "@/lib/engine-event-bus"
 
 jest.mock("@/lib/redis-db", () => {
   const list: string[] = []
@@ -58,6 +58,51 @@ describe("engine event bus", () => {
     expect(event.type).toBe("progression.stage.completed")
     expect(event.payload).toMatchObject({ connectionId: "conn-a", stage: "cycle", cycle: 12 })
   })
+  test("waits for matching events without polling", async () => {
+    const pending = waitForEngineEvent("progression.stage.completed", (event) => {
+      return event.payload.connectionId === "conn-a" && event.payload.stage === "cycle"
+    })
+
+    await publishEngineEvent("progression.stage.completed", {
+      connectionId: "conn-b",
+      stage: "cycle",
+      successful: true,
+      cycle: 11,
+      timestamp: "2026-07-09T00:00:01.000Z",
+    })
+    await publishEngineEvent("progression.stage.completed", {
+      connectionId: "conn-a",
+      stage: "cycle",
+      successful: true,
+      cycle: 12,
+      timestamp: "2026-07-09T00:00:02.000Z",
+    })
+
+    await expect(pending).resolves.toMatchObject({
+      payload: { connectionId: "conn-a", stage: "cycle", cycle: 12 },
+    })
+  })
+
+  test("waits across modules through the global event channel", async () => {
+    const pending = waitForAnyEngineEvent((event) => event.payload.connectionId === "conn-global")
+    await publishEngineEvent("engine.heartbeat.updated", {
+      connectionId: "conn-global",
+      heartbeatAt: Date.now(),
+      source: "coordinator",
+    })
+    await expect(pending).resolves.toMatchObject({
+      type: "engine.heartbeat.updated",
+      payload: { connectionId: "conn-global", source: "coordinator" },
+    })
+  })
+
+  test("supports aborting an event wait", async () => {
+    const controller = new AbortController()
+    const pending = waitForEngineEvent("engine.heartbeat.updated", () => true, { signal: controller.signal })
+    controller.abort(new Error("test abort"))
+    await expect(pending).rejects.toThrow("test abort")
+  })
+
   test("refresh request events carry connection, action, version, and reason", async () => {
     await publishEngineEvent("engine.refresh.requested", {
       connectionId: "conn-a",

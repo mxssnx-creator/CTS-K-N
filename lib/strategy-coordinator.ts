@@ -2683,7 +2683,7 @@ export class StrategyCoordinator {
 
 
   /**
-   * ── Plan-perf Tier 1: parsed-fingerprint LRU ───────────────────────
+   * ── Plan-perf Tier 1: parsed-fingerprint LRU ──────────────��────────
    *
    * The fpCache stored in Redis is keyed by `fingerprint → JSON.stringify(set)`.
    * Until this perf pass, every cache HIT cost a full `JSON.parse` of a
@@ -4563,7 +4563,7 @@ export class StrategyCoordinator {
     // positions use their explicit direct-execution policy; Main always
     // enforces the configured PositionCost-relative PF/history gates.
     const metrics: EvaluationMetrics = { ...metricsMain }
-    // ── Stage-validation min-position threshold (operator spec) ────
+    // ���─ Stage-validation min-position threshold (operator spec) ────
     // "Main has to evaluate from stage Base with profitfactor for X
     //  pre pseudo positions for specific config … if less pos exist
     //  in set then do not validate."
@@ -5164,7 +5164,7 @@ export class StrategyCoordinator {
       mainAccounting.rawMaterialized - mainAccounting.baseMirrors,
     )
 
-    // ── Write Main counts to Redis ──���─────────────────────────────────────
+    // ── Write Main counts to Redis ──���─────���───────────────────────────────
     // CUMULATIVE via hincrby so the dashboard does not oscillate with
     // per-cycle snapshots (see matching fix in createBaseSets). Historical
     // replay keeps its separate counters and must not overwrite this live
@@ -7521,12 +7521,18 @@ export class StrategyCoordinator {
     // unchanged & magnitude shrunk → partial CLOSE lowest-PF; direction
     // flipped or flat:0 ���� close all in bucket then optionally re-open.
     // live_net_target tracks hedge-direction net positions for the live dispatch.
-    if (!isPrehistoric && Object.keys(netTargetWrites).length > 0) {
+    if (!isPrehistoric) {
       try {
         const netClient = getRedisClient()
         const targetKey = `live_net_target:${this.connectionId}`
-        await hsetStrategyRecordInBatches(netClient, targetKey, netTargetWrites)
-        await netClient.expire(targetKey, 7 * 24 * 60 * 60)
+        // This hash is a current-cycle projection, not an append-only ledger.
+        // Replace it atomically at the cycle boundary so retired symbols,
+        // indication axes, and outcome combinations cannot accumulate forever.
+        await netClient.del(targetKey)
+        if (Object.keys(netTargetWrites).length > 0) {
+          await hsetStrategyRecordInBatches(netClient, targetKey, netTargetWrites)
+          await netClient.expire(targetKey, 7 * 24 * 60 * 60)
+        }
       } catch { /* non-critical */ }
     }
 
@@ -9691,7 +9697,7 @@ export class StrategyCoordinator {
    * context). The `default` variant is always on — it mirrors the original
    * one-Set-per-base behaviour and is what Real/Live have always consumed.
    *
-   * ── P2-3: Closed-only contract for statistics-driven gates ────────
+   * ── P2-3: Closed-only contract for statistics-driven gates ───────��
    * The `ctx` input here comes from `getPositionContext()`, which (as
    * of P2-1) enforces a strict `status==="closed"` filter on every
    * statistical field it builds:

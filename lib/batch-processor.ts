@@ -27,8 +27,10 @@ export class BatchProcessor {
   private queue: BatchTask[] = []
   private processing = false
   private results: Map<string, BatchResult> = new Map()
-  private maxConcurrentTasks = 10
+  private maxConcurrentTasks = 3
   private activeTasks = 0
+  private readonly maxCompletedResults = 2_000
+  private lastQueueLogAt = 0
 
   private constructor() {}
 
@@ -51,8 +53,8 @@ export class BatchProcessor {
     this.queue.push(fullTask)
     this.queue.sort((a, b) => b.priority - a.priority) // Sort by priority (higher first)
 
-    console.log(`[v0] Batch task enqueued: ${task.id} (queue size: ${this.queue.length})`)
-    this.processBatch()
+    this.logQueueSummary()
+    void this.processBatch()
 
     return fullTask.id
   }
@@ -61,7 +63,31 @@ export class BatchProcessor {
    * Enqueue multiple tasks at once
    */
   enqueueBatch<T = any>(tasks: Omit<BatchTask<T>, "timestamp">[]): string[] {
-    return tasks.map((task) => this.enqueue(task))
+    const ids = tasks.map((task) => {
+      const fullTask: BatchTask<T> = { ...task, timestamp: Date.now() }
+      this.queue.push(fullTask)
+      return fullTask.id
+    })
+
+    this.queue.sort((a, b) => b.priority - a.priority)
+    this.logQueueSummary()
+    void this.processBatch()
+    return ids
+  }
+
+  private logQueueSummary(): void {
+    const now = Date.now()
+    if (now - this.lastQueueLogAt < 10_000) return
+    this.lastQueueLogAt = now
+    console.debug(`[v0] Batch queue: ${this.queue.length} queued, ${this.activeTasks} active`)
+  }
+
+  private trimResults(): void {
+    while (this.results.size > this.maxCompletedResults) {
+      const oldest = this.results.keys().next().value
+      if (oldest === undefined) break
+      this.results.delete(oldest)
+    }
   }
 
   /**
@@ -85,7 +111,7 @@ export class BatchProcessor {
         this.executeTask(task)
           .then((result) => {
             this.results.set(task.id, result)
-            console.log(`[v0] Batch task completed: ${task.id} (success: ${result.success})`)
+            this.trimResults()
           })
           .catch((error) => {
             const result: BatchResult = {
@@ -97,7 +123,8 @@ export class BatchProcessor {
               timestamp: Date.now(),
             }
             this.results.set(task.id, result)
-            console.error(`[v0] Batch task failed: ${task.id}`, error)
+            this.trimResults()
+            console.debug(`[v0] Batch task failed: ${task.operation} (${result.error ?? "unknown"})`)
           })
           .finally(() => {
             this.activeTasks--
