@@ -1012,6 +1012,11 @@ export class BingXConnector extends BaseExchangeConnector {
     orderType: "limit" | "market" = "limit",
     options: PlaceOrderOptions = {},
   ): Promise<{ success: boolean; orderId?: string; error?: string; filledPrice?: number; avgPrice?: number; price?: number; filledQty?: number; executedQty?: number; status?: string }> {
+    // Order placement previously bypassed the shared FIFO/cooldown gate
+    // entirely, so it could keep firing (and re-tripping) BingX's rate limit
+    // during an active 109429/109421 lockout window that the order-status
+    // read paths were already honouring. Join the same lane here.
+    const release = await this.acquireBingxSlot("placeOrder")
     try {
       // Validate and canonicalise before either transport sees the order. The
       // SDK used to run before this guard, allowing invalid/sub-step amounts
@@ -1312,8 +1317,11 @@ export class BingXConnector extends BaseExchangeConnector {
       return { success: true, orderId: orderId ? String(orderId) : undefined, filledPrice: Number(orderInfo.avgPrice ?? orderInfo.price ?? orderInfo.filledPrice ?? 0) || undefined, avgPrice: Number(orderInfo.avgPrice ?? 0) || undefined, price: Number(orderInfo.price ?? 0) || undefined, filledQty: Number(orderInfo.executedQty ?? orderInfo.filledQty ?? orderInfo.cumQty ?? 0) || undefined, executedQty: Number(orderInfo.executedQty ?? 0) || undefined, status: orderInfo.status }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      this.recordBingxRateLimitIfMatched("placeOrder", errorMsg)
       this.logError(`✗ Failed to place order: ${errorMsg}`)
       return { success: false, error: errorMsg }
+    } finally {
+      release()
     }
   }
 
@@ -1339,6 +1347,10 @@ export class BingXConnector extends BaseExchangeConnector {
     kind: "stop_loss" | "take_profit",
     options: PlaceOrderOptions = {},
   ): Promise<{ success: boolean; orderId?: string; error?: string; orderPrice?: number; stopPrice?: number; price?: number }> {
+    // SL/TP placement previously bypassed the shared FIFO/cooldown gate
+    // entirely (see placeOrder). Join the same lane so protection orders
+    // never fire into an active rate-limit lockout window either.
+    const release = await this.acquireBingxSlot("placeStopOrder")
     try {
       // Sync server time before any signed request
       await this.syncServerTime()
@@ -1561,8 +1573,11 @@ export class BingXConnector extends BaseExchangeConnector {
       return { success: true, orderId: String(orderId), orderPrice: stopRounded, stopPrice: stopRounded }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      this.recordBingxRateLimitIfMatched("placeStopOrder", errorMsg)
       this.logError(`✗ Failed to place stop order: ${errorMsg}`)
       return { success: false, error: errorMsg }
+    } finally {
+      release()
     }
   }
 
@@ -1684,10 +1699,19 @@ export class BingXConnector extends BaseExchangeConnector {
    * This is what prevents the retry storm: a single observed limit error
    * silences every other concurrent order call for the rest of the window.
    */
-  private async bingxRateLimitedCall<T>(
-    operation: string,
-    call: () => Promise<T>,
-  ): Promise<T> {
+  /**
+   * Join the shared FIFO lane and wait out any active rate-limit cooldown.
+   *
+   * Extracted from `bingxRateLimitedCall` so that order-mutating calls
+   * (placeOrder / placeStopOrder / setLeverage / setMarginType) can also
+   * queue behind — and wait out — the same cooldown as the order-status
+   * read paths, instead of firing independently through the generic
+   * per-request throttle alone. Callers MUST invoke the returned `release`
+   * in a `finally` block once their network activity for this call has
+   * settled, or every later call queued behind them on the FIFO lane will
+   * hang forever.
+   */
+  private async acquireBingxSlot(operation: string): Promise<() => void> {
     // All order/reconciliation calls share one FIFO lane. This prevents the
     // per-symbol Promise pools from waking together after cooldown and firing
     // another burst that immediately re-trips BingX.
@@ -1696,50 +1720,68 @@ export class BingXConnector extends BaseExchangeConnector {
     BingXConnector.bingxCallTail = new Promise<void>((resolve) => { release = resolve })
     await previous
 
-    try {
-      if (BingXConnector.bingxRateLimitUntil > Date.now()) {
-        const waitMs = BingXConnector.bingxRateLimitUntil - Date.now()
-        if (!BingXConnector.bingxCooldownWait) {
-          const delayMs = waitMs + 2_000
-          BingXConnector.bingxCooldownWait = new Promise<void>((resolve) => {
-            setTimeout(resolve, delayMs)
-          }).finally(() => {
-            BingXConnector.bingxCooldownWait = null
-          })
-        }
-        if (Date.now() - BingXConnector.lastCooldownLogAt > 30_000) {
-          BingXConnector.lastCooldownLogAt = Date.now()
-          console.warn(`[v0] [BingXConnector] ${operation}: shared rate-limit cooldown active; requests gated`)
-        }
-        await BingXConnector.bingxCooldownWait
+    if (BingXConnector.bingxRateLimitUntil > Date.now()) {
+      const waitMs = BingXConnector.bingxRateLimitUntil - Date.now()
+      if (!BingXConnector.bingxCooldownWait) {
+        const delayMs = waitMs + 2_000
+        BingXConnector.bingxCooldownWait = new Promise<void>((resolve) => {
+          setTimeout(resolve, delayMs)
+        }).finally(() => {
+          BingXConnector.bingxCooldownWait = null
+        })
       }
+      if (Date.now() - BingXConnector.lastCooldownLogAt > 30_000) {
+        BingXConnector.lastCooldownLogAt = Date.now()
+        console.warn(`[v0] [BingXConnector] ${operation}: shared rate-limit cooldown active; requests gated`)
+      }
+      await BingXConnector.bingxCooldownWait
+    }
 
+    return release
+  }
+
+  /**
+   * Detect a 109429/109421/"rate limit" failure message and extend the
+   * shared cooldown. Extracted so every call path that can observe a
+   * rate-limit rejection (reads via `bingxRateLimitedCall` and the
+   * order-mutating methods that call this directly from their own catch
+   * block) escalates the same global lockout instead of only some of them.
+   */
+  private recordBingxRateLimitIfMatched(operation: string, errorMsg: string): void {
+    const isRateLimit =
+      errorMsg.includes("109429") ||
+      errorMsg.includes("109421") ||
+      errorMsg.toLowerCase().includes("rate limit")
+    if (!isRateLimit) return
+
+    // BingX's 480 s rolling window must fully clear. The parsed retry-after
+    // hint can be slightly short of the true window, so force a floor of
+    // 510 s (window + 30 s buffer). A shorter cooldown would expire while
+    // the window still holds the original errors and immediately re-trip.
+    const MIN_COOLDOWN_MS = 510_000
+    const bingxDelay = ErrorHandler.parseBingXRetryAfter(errorMsg)
+    const candidate = bingxDelay !== null ? Math.max(bingxDelay, MIN_COOLDOWN_MS) : MIN_COOLDOWN_MS
+    const retryTs = Date.now() + candidate
+    if (retryTs > BingXConnector.bingxRateLimitUntil) {
+      BingXConnector.bingxRateLimitUntil = retryTs
+    }
+    const remaining = BingXConnector.bingxRateLimitUntil - Date.now()
+    console.warn(
+      `[v0] [BingXConnector] ${operation}: BingX rate-limit (109429/109421) ` +
+      `observed — global cooldown set for ${remaining}ms`,
+    )
+  }
+
+  private async bingxRateLimitedCall<T>(
+    operation: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    const release = await this.acquireBingxSlot(operation)
+    try {
       return await call()
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
-      const isRateLimit =
-        errorMsg.includes("109429") ||
-        errorMsg.includes("109421") ||
-        errorMsg.toLowerCase().includes("rate limit")
-
-      if (isRateLimit) {
-        // BingX's 480 s rolling window must fully clear. The parsed retry-after
-        // hint can be slightly short of the true window, so force a floor of
-        // 510 s (window + 30 s buffer). A shorter cooldown would expire while
-        // the window still holds the original errors and immediately re-trip.
-        const MIN_COOLDOWN_MS = 510_000
-        const bingxDelay = ErrorHandler.parseBingXRetryAfter(errorMsg)
-        const candidate = bingxDelay !== null ? Math.max(bingxDelay, MIN_COOLDOWN_MS) : MIN_COOLDOWN_MS
-        const retryTs = Date.now() + candidate
-        if (retryTs > BingXConnector.bingxRateLimitUntil) {
-          BingXConnector.bingxRateLimitUntil = retryTs
-        }
-        const remaining = BingXConnector.bingxRateLimitUntil - Date.now()
-        console.warn(
-          `[v0] [BingXConnector] ${operation}: BingX rate-limit (109429/109421) ` +
-          `observed — global cooldown set for ${remaining}ms`,
-        )
-      }
+      this.recordBingxRateLimitIfMatched(operation, errorMsg)
       throw error
     } finally {
       release()
@@ -2279,6 +2321,10 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   async setLeverage(symbol: string, leverage: number): Promise<{ success: boolean; error?: string }> {
+    // Leverage-set previously bypassed the shared FIFO/cooldown gate
+    // entirely (see placeOrder). Join the same lane so it never fires into
+    // an active rate-limit lockout window either.
+    const release = await this.acquireBingxSlot("setLeverage")
     try {
       // NO pre-sync — lazy URL builder computes timestamp at send time.
       // The comment at line 1857 is now outdated: "the first sync we do at
@@ -2374,8 +2420,11 @@ export class BingXConnector extends BaseExchangeConnector {
       return { success: true }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      this.recordBingxRateLimitIfMatched("setLeverage", errorMsg)
       this.logError(`✗ Failed to set leverage: ${errorMsg}`)
       return { success: false, error: errorMsg }
+    } finally {
+      release()
     }
   }
 
