@@ -2429,6 +2429,10 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   async setMarginType(symbol: string, marginType: "cross" | "isolated"): Promise<{ success: boolean; error?: string }> {
+    // Margin-type-set previously bypassed the shared FIFO/cooldown gate
+    // entirely (see placeOrder). Join the same lane so it never fires into
+    // an active rate-limit lockout window either.
+    const release = await this.acquireBingxSlot("setMarginType")
     try {
       // NO pre-sync — lazy URL builder computes timestamp at send time, same as setLeverage.
 
@@ -2495,6 +2499,7 @@ export class BingXConnector extends BaseExchangeConnector {
       return { success: true }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      this.recordBingxRateLimitIfMatched("setMarginType", errorMsg)
       // 109418 = symbol is offline/delisted — not a real error, just skip it.
       // Any other failure is a real error worth surfacing.
       if (/109418/.test(errorMsg) || /is offline currently/i.test(errorMsg)) {
@@ -2503,6 +2508,8 @@ export class BingXConnector extends BaseExchangeConnector {
         this.logError(`✗ Failed to set margin type: ${errorMsg}`)
       }
       return { success: false, error: errorMsg }
+    } finally {
+      release()
     }
   }
 
