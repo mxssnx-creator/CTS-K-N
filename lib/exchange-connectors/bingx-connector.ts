@@ -1722,7 +1722,10 @@ export class BingXConnector extends BaseExchangeConnector {
     BingXConnector.bingxCallTail = new Promise<void>((resolve) => { release = resolve })
     await previous
 
-    if (BingXConnector.bingxRateLimitUntil > Date.now()) {
+    // Recheck after waiting for the FIFO predecessor. A predecessor can trip
+    // the circuit breaker after this caller's initial check, so never let a
+    // queued request bypass a newly-established cooldown.
+    while (BingXConnector.bingxRateLimitUntil > Date.now()) {
       const waitMs = BingXConnector.bingxRateLimitUntil - Date.now()
       if (!BingXConnector.bingxCooldownWait) {
         const delayMs = waitMs + 2_000
