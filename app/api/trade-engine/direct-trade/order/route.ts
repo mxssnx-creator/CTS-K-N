@@ -58,8 +58,13 @@ export async function POST(request: NextRequest) {
     const reconcileOnly = body?.reconcileOnly === true
     const stage = body?.stage === "block" || body?.stage === "dca" ? "accumulation" : "entry"
 
-    if (!kind || !instanceId || !connectionId || !positionId || !positionDirection || !Number.isFinite(quantity) || quantity <= 0 || !clientOrderId) {
+    const symbol = safeText(body?.symbol, 40).toUpperCase()
+    const validSymbol = /^[A-Z0-9]{2,20}USDT$/.test(symbol)
+    if (!kind || !instanceId || !connectionId || !positionId || !positionDirection || !validSymbol || !Number.isFinite(quantity) || quantity <= 0 || !clientOrderId) {
       return NextResponse.json({ success: false, error: "Invalid Direct-Trade control order" }, { status: 400 })
+    }
+    if (kind === "open" && stage === "entry" && !reconcileOnly && (!Number.isFinite(price) || price <= 0)) {
+      return NextResponse.json({ success: false, error: "Direct-Trade entries require a valid reference price" }, { status: 400 })
     }
 
     await initRedis()
@@ -90,7 +95,7 @@ export async function POST(request: NextRequest) {
       : positionDirection === "long" ? "short" : "long"
     const result = await placeLiveOrder({
       connectionId,
-      symbol: safeText(body?.symbol, 40),
+      symbol,
       side,
       positionDirection,
       quantity,

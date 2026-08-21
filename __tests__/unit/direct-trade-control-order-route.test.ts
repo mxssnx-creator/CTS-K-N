@@ -156,6 +156,34 @@ describe("Direct-Trade leased control-order route", () => {
     }))
   })
 
+  test("rejects malformed symbols and missing entry prices before exchange submission", async () => {
+    const { POST } = await import("@/app/api/trade-engine/direct-trade/order/route")
+
+    const invalidSymbol = await POST(request({
+      kind: "open",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_1",
+      connectionId: "bingx-x02",
+      symbol: "DYDX",
+      positionDirection: "long",
+      quantity: 0.25,
+      price: 100,
+    }) as any)
+    expect(invalidSymbol.status).toBe(400)
+
+    const missingPrice = await POST(request({
+      kind: "open",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_2",
+      connectionId: "bingx-x02",
+      symbol: "BTCUSDT",
+      positionDirection: "long",
+      quantity: 0.25,
+    }) as any)
+    expect(missingPrice.status).toBe(400)
+    expect(placeLiveOrderMock).not.toHaveBeenCalled()
+  })
+
   test("after Stop allows only reconciliation of an already durable open control", async () => {
     const [{ POST }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/order/route"),
