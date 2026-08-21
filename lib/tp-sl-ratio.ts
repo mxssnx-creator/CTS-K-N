@@ -1,9 +1,10 @@
 /**
  * Shared TP/SL ratio helpers.
  *
- * `takeprofit_factor` is stored as the absolute take-profit percent.
- * `stoploss_ratio` is stored as a ratio of that TP distance, not as an
- * independent percent. Example: TP=10 and SL ratio=0.5 => SL distance=5%.
+ * This legacy helper multiplies a TP magnitude by an SL-to-TP ratio.  Its
+ * caller owns the coordinate: legacy live callers pass market-price percent;
+ * configuration-set engines use the explicit PositionCost converters in
+ * `position-cost.ts` before turning a ratio into a market-price percent.
  */
 export function resolveStopLossPercent(takeprofitFactor: number, stoplossRatio: number): number {
   const tp = Number(takeprofitFactor)

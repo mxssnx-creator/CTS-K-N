@@ -3,6 +3,8 @@ import { SystemLogger } from "@/lib/system-logger"
 import { initRedis, getAllConnections } from "@/lib/redis-db"
 import { getLivePositions, getClosedLivePositions } from "@/lib/trade-engine/stages/live-stage"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { closedPnl, openPnl } from "@/lib/live-position-pnl"
+import { isLiveOpenStatus } from "@/lib/live-position-status"
 
 export const dynamic = "force-dynamic"
 
@@ -31,37 +33,15 @@ function isRealExchangePosition(pos: any): boolean {
   )
 }
 
-function closedPnl(pos: any): number {
-  const stored = Number(pos?.realizedPnL ?? pos?.realized_pnl ?? pos?.pnl)
-  if (Number.isFinite(stored) && stored !== 0) return stored
-  const qty = Number(pos?.executedQuantity ?? pos?.quantity ?? 0) || 0
-  const entry = Number(pos?.averageExecutionPrice ?? pos?.entryPrice ?? 0) || 0
-  const close = Number(pos?.closePrice ?? pos?.exitPrice ?? 0) || 0
-  if (qty > 0 && entry > 0 && close > 0) {
-    return qty * (String(pos?.direction).toLowerCase() === "short" ? entry - close : close - entry)
-  }
-  return Number.isFinite(stored) ? stored : 0
-}
-
-function openPnl(pos: any): number {
-  const stored = Number(pos?.unrealizedPnL ?? pos?.unrealized_pnl ?? pos?.exchangeData?.unrealizedPnl ?? pos?.exchangeData?.unrealizedPnL)
-  if (Number.isFinite(stored) && stored !== 0) return stored
-  const qty = Number(pos?.executedQuantity ?? pos?.quantity ?? 0) || 0
-  const entry = Number(pos?.averageExecutionPrice ?? pos?.entryPrice ?? 0) || 0
-  const mark = Number(pos?.markPrice ?? pos?.exchangeData?.markPrice ?? 0) || 0
-  if (qty > 0 && entry > 0 && mark > 0) {
-    return qty * (String(pos?.direction).toLowerCase() === "short" ? entry - mark : mark - entry)
-  }
-  return Number.isFinite(stored) ? stored : 0
-}
-
 function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
 
 function buildStats(positions: any[]): TradeStats {
   const closed = positions.filter((p) => p.status === "closed")
-  const open = positions.filter((p) => p.status !== "closed")
+  // Rejected/cancelled/error rows are terminal outcomes, not current market
+  // exposure. Counting every non-closed record as open inflated live PnL.
+  const open = positions.filter((p) => isLiveOpenStatus(p.status))
   const wins = closed.filter((p) => closedPnl(p) > 0).length
   const losses = closed.filter((p) => closedPnl(p) < 0).length
   const grossProfit = closed.reduce((sum, p) => sum + Math.max(0, closedPnl(p)), 0)
@@ -81,13 +61,18 @@ function buildStats(positions: any[]): TradeStats {
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     console.log("[v0] Fetching real exchange trading statistics")
 
     await initRedis()
     const connections = await getAllConnections()
+    const params = new URL(request.url).searchParams
+    const requestedConnectionId = String(
+      params?.get("connection_id") ?? params?.get("connectionId") ?? "",
+    ).trim()
     const liveConnections = connections.filter((c: any) =>
+      (!requestedConnectionId || String(c.id) === requestedConnectionId) &&
       isTruthyFlag(c.is_enabled) && isTruthyFlag(c.is_enabled_dashboard) && isTruthyFlag(c.is_live_trade),
     )
 
@@ -116,6 +101,7 @@ export async function GET() {
       source: "exchange_live_positions",
       simulatedExcluded: true,
       connectionCount: liveConnections.length,
+      connectionId: requestedConnectionId || null,
     })
   } catch (error) {
     console.error("[v0] Failed to fetch stats:", error)

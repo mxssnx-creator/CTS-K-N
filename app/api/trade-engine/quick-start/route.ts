@@ -26,6 +26,7 @@ import {
 } from "@/lib/quickstart-timeouts"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 import {
   collectQuickStartChangedFields,
   resolveQuickStartPreviousSymbolBasket,
@@ -34,6 +35,7 @@ import {
 import { canRetainQuickStartPrehistoricCoverage } from "@/lib/quickstart-bootstrap-state"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
   normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
 
@@ -529,7 +531,7 @@ async function handlePost(request: Request) {
           apiKey: connection.api_key,
           apiSecret: connection.api_secret,
           apiPassphrase: connection.api_passphrase || "",
-          isTestnet: connection.is_testnet === true || connection.is_testnet === "1" || connection.is_testnet === "true",
+          isTestnet: isTruthyFlag(connection.is_testnet),
           apiType: connection.api_type || "perpetual_futures",
         })
         
@@ -681,7 +683,7 @@ async function handlePost(request: Request) {
         const connector = await createExchangeConnector(exchangeName, {
           apiKey: connection.api_key,
           apiSecret: connection.api_secret,
-          isTestnet: connection.is_testnet === true || connection.is_testnet === "1" || connection.is_testnet === "true",
+          isTestnet: isTruthyFlag(connection.is_testnet),
         })
         if (typeof connector.getTopSymbols === "function") {
           const topSymbols = await connector.getTopSymbols(requestedCount)
@@ -807,21 +809,21 @@ async function handlePost(request: Request) {
        existingQuickStartSettings,
        ["mainProfitFactor", "main_min_profit_factor"],
        ["mainProfitFactor", "main_min_profit_factor"],
-       1.12,
+       MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
      )))
      const resolvedRealProfitFactor = String(normalizeMainTradeStagePfRatio("real", resolveQuickStartValue(
        body,
        existingQuickStartSettings,
        ["realProfitFactor", "real_min_profit_factor"],
        ["realProfitFactor", "real_min_profit_factor"],
-       1.12,
+       MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
      )))
      const resolvedLiveProfitFactor = String(normalizeMainTradeStagePfRatio("live", resolveQuickStartValue(
        body,
        existingQuickStartSettings,
        ["liveProfitFactor", "live_min_profit_factor"],
        ["liveProfitFactor", "live_min_profit_factor"],
-       1.12,
+       MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
      )))
      const resolvedVariantTrailing = stringifySettingValue(resolveQuickStartValue(
        body,
@@ -963,8 +965,8 @@ async function handlePost(request: Request) {
     // `config_set_symbols_total` so the /stats endpoint no longer defaults
     // to the hard-coded "3" when the historical phase reports progress.
     // Also reset the processed counter to 0 so progress starts correctly.
-    // Operator-spec defaults for quickstart: Base Valid ratio 0.40 and
-    // Main/Real/Live ratios 1.12,
+    // Operator-spec defaults for quickstart: Base/Main/Real/Live use the
+    // PositionCost-relative 1.10 threshold,
     // trailing on, block on, dca off, control orders on, minimum live volume, volatility_1h.
     // These are persisted to connection_settings so the engine reads them on the
     // first tick instead of using its compiled defaults.

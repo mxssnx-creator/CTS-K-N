@@ -142,6 +142,7 @@ function toStatisticsPseudoPosition(position: TradingPosition): PseudoPosition {
     entry_price: entryPrice,
     current_price: Number(position.current_price) || 0,
     profit_factor: 1 + realizedPnl / positionCost,
+    profit_factor_kind: "main_trade_pf_ratio",
     signedResultR: realizedPnl / positionCost,
     costNormalizedReturn: realizedPnl / positionCost,
     position_cost: positionCost,
@@ -318,15 +319,8 @@ export default function StatisticsPage() {
         const response = await fetch(url)
         const data = await response.json()
         const inventory = Array.isArray(data?.connections) ? data.connections : []
-        const isTruthy = (value: unknown) => value === true || value === 1 || value === "1" || value === "true"
         const realConnections = inventory.filter((c: any) =>
           c?.id && !String(c.id).startsWith("demo") && c.id !== "demo-mode",
-        )
-        const activeConnections = realConnections.filter((c: any) =>
-          isTruthy(c.is_enabled_dashboard) ||
-          isTruthy(c.is_active_inserted) ||
-          isTruthy(c.is_inserted) ||
-          isTruthy(c.is_enabled),
         )
         setHasRealConnections(realConnections.length > 0)
 
@@ -336,7 +330,7 @@ export default function StatisticsPage() {
           setSettings(settingsData.settings || {})
         }
 
-        if (realConnections.length === 0) {
+        if (realConnections.length === 0 || !selectedConnectionId) {
           // Statistics must never invent profitable/loss-making rows on an
           // unconfigured production install. Render an honest zero dataset.
           const engine = new AnalyticsEngine([])
@@ -354,11 +348,10 @@ export default function StatisticsPage() {
           // positions and hard-coded realized_pnl=0, making PnL, PF, win rate,
           // history and time-series wrong even while the dashboard was correct.
           try {
-            const scopeIds: string[] = selectedConnectionId
-              ? [selectedConnectionId]
-              : (activeConnections.length > 0 ? activeConnections : realConnections)
-                  .map((c: any) => String(c.id || ""))
-                  .filter(Boolean)
+            // Every statistics panel is an active-connection projection. A
+            // missing selection must render no data rather than aggregate
+            // account ledgers and make a later switch appear contaminated.
+            const scopeIds = [selectedConnectionId]
 
             const responses = await Promise.all(
               scopeIds.map(async (id: string) => {
@@ -968,6 +961,19 @@ export default function StatisticsPage() {
               <div className="text-xs font-semibold text-foreground">No exchange data yet</div>
               <div className="text-xs text-muted-foreground">
                 No exchange connection is configured. Statistics remain at honest zero values until a connection produces positions or trades.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {hasRealConnections && !selectedConnectionId && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="text-xs font-semibold text-foreground">Select an active connection</div>
+              <div className="text-xs text-muted-foreground">
+                Statistics stay empty until a specific exchange connection is selected.
               </div>
             </div>
           </div>
@@ -2116,7 +2122,11 @@ export default function StatisticsPage() {
             </TabsContent>
 
             <TabsContent value="preset" className="space-y-6">
-              <PresetTradeStats filter={filter} positions={positions} />
+              <PresetTradeStats
+                filter={filter}
+                positions={positions}
+                connectionId={selectedConnectionId}
+              />
             </TabsContent>
 
             <TabsContent value="adjust" className="space-y-6">

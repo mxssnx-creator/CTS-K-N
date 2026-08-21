@@ -220,12 +220,12 @@ describe("Signal indication persistence and independent performance gates", () =
     )
     const [mature, freshConfig, freshDirection] = [...decisions.values()]
 
-    expect(mature).toEqual({
+    expect(mature).toMatchObject({
       allowed: false,
-      ratio: 0,
       samples: 12,
       permanentlyDisabled: false,
     })
+    expect(mature.ratio).toBeCloseTo(-0.1, 12)
     expect(signalConfigurationExecutionAllowed(true, mature)).toBe(false)
     expect(freshConfig).toEqual(expect.objectContaining({
       allowed: true,
@@ -312,10 +312,10 @@ describe("Signal indication persistence and independent performance gates", () =
     )).get("live-source|BTCUSDT|long|tp1_00:slr0_50:standard")
     expect(liveDecision).toEqual(expect.objectContaining({
       allowed: false,
-      ratio: 0,
       samples: 12,
-      permanentlyDisabled: false,
+      permanentlyDisabled: true,
     }))
+    expect(liveDecision?.ratio).toBeCloseTo(-0.1, 12)
     expect(signalConfigurationExecutionAllowed(true, liveDecision)).toBe(false)
   })
 
@@ -664,16 +664,14 @@ describe("Signal indication persistence and independent performance gates", () =
       settings,
       now: 1_800_000_010_000,
     })
-    // Synthetic outcomes are converted from market-move percentages to the
-    // PositionCost-relative ratio scale. A -1% move with 0.1% PositionCost
-    // clamps at the neutral floor (0 ratio move), so this lane is not treated
-    // as negative-PnL after conversion.
-    expect(disabled.allowed).toBe(true)
-    expect(disabled.reason).toBe("performing")
+    // A -1% gross move becomes -1.1% after the mandatory 0.1% PositionCost,
+    // therefore its canonical ratio is -0.1 and the lane must be disabled.
+    expect(disabled.allowed).toBe(false)
+    expect(disabled.reason).toBe("negative_pnl")
     expect(disabled.state.count).toBe(12)
-    expect(disabled.state.totalPnl).toBe(0)
+    expect(disabled.state.totalPnl).toBeCloseTo(-1.2, 12)
     expect(disabled.state.grossProfit).toBe(0)
-    expect(disabled.state.grossLoss).toBe(0)
+    expect(disabled.state.grossLoss).toBeCloseTo(1.2, 12)
     expect(disabled.state.profitFactor).toBe(0)
 
     for (const [sourceId, symbol, direction] of [
@@ -710,10 +708,10 @@ describe("Signal indication persistence and independent performance gates", () =
       settings,
       now: probeAt + 1,
     })
-    // Ratio-floor normalization makes this lane performing (neutral ratio 0)
-    // rather than entering the negative-PnL cooldown probe path.
-    expect(probe).toEqual(expect.objectContaining({ allowed: true, probe: false, reason: "performing" }))
-    expect(duplicateProbe.allowed).toBe(true)
+    // A mature net-negative lane receives exactly one cooldown probe; a
+    // concurrent/repeated attempt remains blocked until that probe resolves.
+    expect(probe).toEqual(expect.objectContaining({ allowed: true, probe: true, reason: "cooldown_probe" }))
+    expect(duplicateProbe).toEqual(expect.objectContaining({ allowed: false, probe: false, reason: "negative_pnl" }))
   })
 
   test("cannot override the fixed 12-position legacy performance contract", () => {
@@ -938,14 +936,14 @@ describe("Signal indication persistence and independent performance gates", () =
     })
     expect(decision.allowed).toBe(true)
     expect(decision.reason).toBe("performing")
-    expect(decision.state).toEqual(expect.objectContaining({
+    expect(decision.state).toMatchObject({
       count: 12,
       wins: 12,
-      grossProfit: 24,
       grossLoss: 0,
       profitFactor: 999,
-      totalPnl: 24,
-    }))
+    })
+    expect(decision.state.grossProfit).toBeCloseTo(22.8, 12)
+    expect(decision.state.totalPnl).toBeCloseTo(22.8, 12)
   })
 
   test("calculates exact gross-profit/gross-loss PF for every independent last-12 lane", async () => {
@@ -971,13 +969,13 @@ describe("Signal indication persistence and independent performance gates", () =
       settings,
       now: 1_800_000_100_000,
     })
-    expect(decision.state).toEqual(expect.objectContaining({
+    expect(decision.state).toMatchObject({
       count: 12,
       wins: 8,
-      grossProfit: 24,
-      grossLoss: 12,
-      profitFactor: 2,
-      totalPnl: 12,
-    }))
+    })
+    expect(decision.state.grossProfit).toBeCloseTo(23.2, 12)
+    expect(decision.state.grossLoss).toBeCloseTo(12.4, 12)
+    expect(decision.state.profitFactor).toBeCloseTo(23.2 / 12.4, 12)
+    expect(decision.state.totalPnl).toBeCloseTo(10.8, 12)
   })
 })

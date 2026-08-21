@@ -1,3 +1,9 @@
+import {
+  resolvePositionQuantity,
+  resolveRealizedPnl,
+  resolveUnrealizedPnl,
+} from "@/lib/live-position-pnl"
+
 export type LiveStrategySource = "direct-trade" | "main-trade" | "preset-trade" | "signal-trade" | "unknown"
 
 export interface LivePositionStatisticsLane {
@@ -96,11 +102,11 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
   const status = String(position.status || "").toLowerCase()
   const isClosed = status === "closed"
   const isOpen = OPEN_STATUSES.has(status) && !isClosed
-  const executed = Math.max(0, finite(position.executedQuantity ?? position.quantity))
+  const executed = Math.max(0, resolvePositionQuantity(position) ?? 0)
   const closedQuantity = Math.max(0, finite(position.closedQuantity))
   const totalExecuted = Math.max(
     0,
-    finite(position.totalExecutedQuantity),
+    resolvePositionQuantity(position, true) ?? 0,
     isClosed ? executed : executed + closedQuantity,
   )
   const entryPrice = Math.max(0, finite(position.averageExecutionPrice ?? position.entryPrice))
@@ -125,9 +131,9 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
     closedQuantity: isClosed ? totalExecuted : closedQuantity,
     lifetimeVolumeUsd,
     openVolumeUsd,
-    realizedPnl: finite(position.realizedPnL ?? position.realized_pnl ?? position.pnl),
+    realizedPnl: resolveRealizedPnl(position) ?? 0,
     unrealizedPnl: isOpen
-      ? finite(position.unrealizedPnL ?? position.unrealized_pnl ?? position.exchangeData?.unrealizedPnl)
+      ? resolveUnrealizedPnl(position) ?? 0
       : 0,
     fees: fills.reduce((sum: number, fill: any) => sum + Math.max(0, finite(fill?.fee)), 0),
   }

@@ -6,6 +6,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { parseBooleanInput } from "@/lib/boolean-utils"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 /**
  * POST /api/settings/connections/[id]/enable
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             apiKey: connection.api_key || "",
             apiSecret: connection.api_secret || "",
             apiPassphrase: connection.api_passphrase || undefined,
-            isTestnet: connection.is_testnet === "1" || connection.is_testnet === true,
+            isTestnet: isTruthyFlag(connection.is_testnet),
             apiType: connection.api_type,
             marginType: connection.margin_type,
             positionMode: connection.position_mode,

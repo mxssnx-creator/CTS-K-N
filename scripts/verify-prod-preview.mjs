@@ -238,11 +238,17 @@ async function main() {
     throw new Error("Direct-Trade Statistics/Pulse API schema invalid")
   }
 
-  const connectionId = String(connectionsPayload.connections[0]?.id || "")
+  const requestedConnectionId = String(process.env.VERIFY_CONNECTION_ID || "").trim()
+  const selectedConnection = requestedConnectionId
+    ? connectionsPayload.connections.find((connection) => String(connection?.id) === requestedConnectionId)
+    : connectionsPayload.connections[0]
+  const connectionId = String(selectedConnection?.id || "")
+  if (requestedConnectionId && !connectionId) {
+    throw new Error(`Requested production preview connection ${requestedConnectionId} is unavailable`)
+  }
   let history = null
   const progressionReads = []
   if (connectionId) {
-    const selectedConnection = connectionsPayload.connections.find((connection) => String(connection?.id) === connectionId)
     await verifyConnectionSwitchAndSse(connectionId, asBoolean(selectedConnection?.is_enabled))
 
     history = await request(

@@ -35,6 +35,14 @@ export function PresetConfigBar({ config, onToggle, executionStatus }: PresetCon
   const totalTrades = config.total_trades || 0
   const takeprofitFactor = config.takeprofit_factor || 0
   const stoplossRatio = config.stoploss_ratio || 0
+  const configuredPositionCost = Number(
+    config.position_cost ?? config.positionCost ?? config.position_cost_pct ?? 0.1,
+  )
+  const positionCostPct = Number.isFinite(configuredPositionCost) && configuredPositionCost > 0
+    ? configuredPositionCost
+    : 0.1
+  const takeProfitPct = takeprofitFactor * positionCostPct
+  const stopLossPct = stoplossRatio * takeProfitPct
   const trailingEnabled = config.trailing_enabled ?? false
   const isActive = config.is_active ?? false
   const configId = config.config_id || config.id || ""
@@ -47,12 +55,20 @@ export function PresetConfigBar({ config, onToggle, executionStatus }: PresetCon
   const trailStart = config.trail_start || 0
   const trailStop = config.trail_stop || 0
 
-  // Mock chart data for last 10 days
-  const chartData = Array.from({ length: 10 }, (_, i) => ({
-    day: i + 1,
-    balance: 10000 + Math.random() * 2000 - 1000,
-    equity: 10000 + Math.random() * 2000 - 1000,
-  }))
+  // Never fabricate performance data in a trading view. The parent may pass
+  // persisted daily/equity observations; otherwise state that the series is
+  // unavailable rather than rendering a random chart that looks real.
+  const chartData = Array.isArray(config.performance_history)
+    ? config.performance_history
+      .map((point: any, index: number) => ({
+        day: Number(point?.day ?? index + 1),
+        balance: Number(point?.balance),
+        equity: Number(point?.equity),
+      }))
+      .filter((point: { balance: number; equity: number }) =>
+        Number.isFinite(point.balance) && Number.isFinite(point.equity),
+      )
+    : []
 
   const indicatorColorMap: Record<string, string> = {
     rsi: "bg-blue-500",
@@ -126,7 +142,7 @@ export function PresetConfigBar({ config, onToggle, executionStatus }: PresetCon
 
             <div>
               <div className="font-medium text-green-600">{profitFactor.toFixed(2)}</div>
-              <div className="text-xs text-muted-foreground">Profit Factor</div>
+              <div className="text-xs text-muted-foreground">Classic PF (net)</div>
             </div>
 
             <div>
@@ -168,15 +184,15 @@ export function PresetConfigBar({ config, onToggle, executionStatus }: PresetCon
 
               <div>
                 <div className="text-muted-foreground">Take Profit</div>
-                <div className="font-medium">{takeprofitFactor}x (0.1% cost)</div>
-                <div className="text-xs text-muted-foreground mt-1">{(takeprofitFactor * 0.1).toFixed(2)}% target</div>
+                <div className="font-medium">{takeprofitFactor}× PositionCost ({positionCostPct.toFixed(2)}%)</div>
+                <div className="text-xs text-muted-foreground mt-1">{takeProfitPct.toFixed(2)}% gross target</div>
               </div>
 
               <div>
                 <div className="text-muted-foreground">Stop Loss</div>
                 <div className="font-medium">{stoplossRatio}x ratio</div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  {(stoplossRatio * takeprofitFactor * 0.1).toFixed(2)}% risk
+                  {stopLossPct.toFixed(2)}% risk
                 </div>
               </div>
 
@@ -224,16 +240,20 @@ export function PresetConfigBar({ config, onToggle, executionStatus }: PresetCon
             </div>
 
             <div>
-              <div className="text-sm font-medium mb-2">Last 10 Days Performance</div>
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={chartData}>
-                  <XAxis dataKey="day" stroke="#888888" fontSize={12} />
-                  <YAxis stroke="#888888" fontSize={12} />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="balance" stroke="#10b981" strokeWidth={2} dot={false} name="Balance" />
-                  <Line type="monotone" dataKey="equity" stroke="#3b82f6" strokeWidth={2} dot={false} name="Equity" />
-                </LineChart>
-              </ResponsiveContainer>
+              <div className="text-sm font-medium mb-2">Recorded Performance</div>
+              {chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={200}>
+                  <LineChart data={chartData}>
+                    <XAxis dataKey="day" stroke="#888888" fontSize={12} />
+                    <YAxis stroke="#888888" fontSize={12} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="balance" stroke="#10b981" strokeWidth={2} dot={false} name="Balance" />
+                    <Line type="monotone" dataKey="equity" stroke="#3b82f6" strokeWidth={2} dot={false} name="Equity" />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-sm text-muted-foreground">No persisted performance series is available for this configuration.</p>
+              )}
             </div>
 
             {/* Status badges */}

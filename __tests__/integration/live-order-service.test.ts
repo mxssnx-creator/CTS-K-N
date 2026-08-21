@@ -116,6 +116,52 @@ describe("live-order-service integration accounting", () => {
     })
   })
 
+  test("configures margin then leverage before a new entry and never changes venue settings for reduce-only exits", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const calls: string[] = []
+    const connector = {
+      setMarginType: jest.fn(async (_symbol: string, marginType: string) => {
+        calls.push(`margin:${marginType}`)
+        return { success: true }
+      }),
+      setLeverage: jest.fn(async (_symbol: string, leverage: number) => {
+        calls.push(`leverage:${leverage}`)
+        return { success: true }
+      }),
+      placeOrder: jest.fn(async () => {
+        calls.push("order")
+        return { success: true, orderId: "ordered-after-preflight", status: "filled", filledQty: 1, filledPrice: 100 }
+      }),
+    }
+
+    await expect(placeLiveOrder({
+      connectionId: "conn-margin-ordering",
+      symbol: "BTCUSDT",
+      side: "long",
+      quantity: 1,
+      price: 100,
+      leverage: 7,
+      marginType: "isolated",
+      connector,
+      connection: { id: "conn-margin-ordering", position_mode: "one_way" },
+    })).resolves.toMatchObject({ success: true })
+    expect(calls).toEqual(["margin:isolated", "leverage:7", "order"])
+
+    calls.length = 0
+    await expect(placeLiveOrder({
+      connectionId: "conn-margin-ordering",
+      symbol: "BTCUSDT",
+      side: "sell",
+      positionDirection: "long",
+      quantity: 1,
+      price: 100,
+      reduceOnly: true,
+      connector,
+      connection: { id: "conn-margin-ordering", position_mode: "one_way" },
+    })).resolves.toMatchObject({ success: true })
+    expect(calls).toEqual(["order"])
+  })
+
   test("Direct-Trade live order reconciles exchange-only acknowledgements before recording the fill", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {

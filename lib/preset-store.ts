@@ -19,6 +19,7 @@ import {
 import { getHistoricCandlesForRange } from "@/lib/trade-engine/market-data-cache"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 const PREFIX = "preset_optimizer:v2"
 const GENERATION_RETENTION = 2
@@ -199,7 +200,7 @@ async function loadPresetHistoricRange(input: {
       apiPassphrase: String(connection.api_passphrase ?? connection.apiPassphrase ?? "") || undefined,
       apiType: String(connection.api_type ?? connection.apiType ?? "perpetual_futures"),
       contractType: String(connection.contract_type ?? connection.contractType ?? "") || undefined,
-      isTestnet: connection.is_testnet === true || connection.is_testnet === "1",
+      isTestnet: isTruthyFlag(connection.is_testnet),
     })
     const exchangeRaw = await connector.getOHLCV(input.symbol, timeframe, limit)
     const exchangeCandles = normalizeCandles(Array.isArray(exchangeRaw) ? exchangeRaw : [])

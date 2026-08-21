@@ -8,6 +8,12 @@ import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
 import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { calculateLivePositionStatistics } from "@/lib/live-position-statistics"
+import {
+  derivePositionRoi,
+  resolveRealizedPnl,
+  resolveUnrealizedPnl,
+  roundPositionPnl,
+} from "@/lib/live-position-pnl"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 
 export const dynamic = "force-dynamic"
@@ -56,7 +62,8 @@ function compactExchangeData(raw: unknown): Record<string, unknown> | undefined 
   const source = raw as Record<string, unknown>
   const fields = [
     "source", "markPrice", "currentPrice", "unrealizedPnl", "unrealizedPnL",
-    "marginUsd", "exchangeOrderId", "exchangePositionId", "orderId", "syncedAt",
+    "marginUsd", "fees", "totalFees", "fundingFee", "fundingFees",
+    "exchangeOrderId", "exchangePositionId", "orderId", "syncedAt",
   ]
   const compact = Object.fromEntries(
     fields
@@ -94,6 +101,9 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     leverage: pos.leverage,
     marginType: pos.marginType,
     volumeUsd: pos.volumeUsd,
+    positionCostPct: pos.positionCostPct,
+    fees: pos.fees ?? pos.totalFees ?? pos.fee,
+    fundingFee: pos.fundingFee ?? pos.fundingFees ?? pos.funding,
     unrealizedPnL: pos.unrealizedPnL,
     realizedPnL: pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl,
     unrealizedRoi: pos.unrealizedRoi,
@@ -149,49 +159,18 @@ function toLivePositionView(pos: any): Record<string, unknown> {
   return view
 }
 
-function isMissingNumericValue(value: unknown): boolean {
-  return value === undefined || value === null || Number.isNaN(Number(value))
-}
-
 function enrichPnl(pos: any) {
-  const exchangePnl = Number(pos.unrealizedPnL ?? pos.unrealized_pnl ?? pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL)
-  if (Number.isFinite(exchangePnl) && pos.status !== "closed") {
-    pos.unrealizedPnL = Math.round(exchangePnl * 100) / 100
+  const closed = String(pos.status || "").toLowerCase() === "closed"
+  const pnl = closed ? resolveRealizedPnl(pos) : resolveUnrealizedPnl(pos)
+  if (pnl !== undefined) {
+    if (closed) pos.realizedPnL = roundPositionPnl(pnl)
+    else pos.unrealizedPnL = roundPositionPnl(pnl)
   }
 
-  if (isMissingNumericValue(pos.unrealizedPnL) && pos.status !== "closed" && !isMissingNumericValue(pos.markPrice ?? pos.exchangeData?.markPrice) && !isMissingNumericValue(pos.averageExecutionPrice) && !isMissingNumericValue(pos.executedQuantity)) {
-    const markPrice = Number(pos.markPrice ?? pos.exchangeData.markPrice)
-    const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
-    const qty = Number(pos.executedQuantity || 0)
-    if (entryPrice > 0 && markPrice > 0 && qty > 0) {
-      const pnl = qty * (pos.direction === "long" ? markPrice - entryPrice : entryPrice - markPrice)
-      pos.unrealizedPnL = Math.round(pnl * 100) / 100
-    }
-  }
-
-  let realized = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
-  if ((!Number.isFinite(realized) || realized === 0) && pos.status === "closed") {
-    const qty = Number(pos.executedQuantity || pos.quantity || 0)
-    const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
-    const closePrice = Number(pos.closePrice || pos.exitPrice || 0)
-    if (qty > 0 && entryPrice > 0 && closePrice > 0) {
-      realized = qty * (pos.direction === "short" ? entryPrice - closePrice : closePrice - entryPrice)
-    }
-  }
-  if (pos.status === "closed" && Number.isFinite(realized)) {
-    pos.realizedPnL = Math.round(realized * 100) / 100
-  }
-
-  const pnl = Number(pos.unrealizedPnL ?? pos.realizedPnL)
-  const lev = Math.max(1, Number(pos.leverage || 1))
-  const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
-  const qty = Number(pos.executedQuantity || pos.quantity || 0)
-  const notional = entryPrice * qty
-  const margin = notional > 0 ? notional / lev : 0
-  if (Number.isFinite(pnl) && margin > 0) {
-    const roi = Math.round((pnl / margin) * 100 * 100) / 100
-    if (pos.status === "closed") pos.realizedRoi = roi
-    else pos.unrealizedRoi = roi
+  const roi = derivePositionRoi(pos, pnl, closed)
+  if (roi !== undefined) {
+    if (closed) pos.realizedRoi = roundPositionPnl(roi)
+    else pos.unrealizedRoi = roundPositionPnl(roi)
   }
 
   return pos
@@ -200,10 +179,10 @@ function enrichPnl(pos: any) {
 function computeStats(positions: any[]) {
   const closed = positions.filter((p) => p.status === "closed")
   const open = positions.filter((p) => isLiveOpenStatus(p.status))
-  const totalRealizedPnL = closed.reduce((sum, p) => sum + (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0), 0)
-  const totalUnrealizedPnL = open.reduce((sum, p) => sum + (Number(p.unrealizedPnL ?? p.unrealized_pnl ?? p.exchangeData?.unrealizedPnl ?? p.exchangeData?.unrealizedPnL) || 0), 0)
-  const wins = closed.filter((p) => (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0) > 0).length
-  const losses = closed.filter((p) => (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0) < 0).length
+  const totalRealizedPnL = closed.reduce((sum, p) => sum + (resolveRealizedPnl(p) ?? 0), 0)
+  const totalUnrealizedPnL = open.reduce((sum, p) => sum + (resolveUnrealizedPnl(p) ?? 0), 0)
+  const wins = closed.filter((p) => (resolveRealizedPnl(p) ?? 0) > 0).length
+  const losses = closed.filter((p) => (resolveRealizedPnl(p) ?? 0) < 0).length
   const winRate = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 10000) / 100 : 0
   return {
     total: positions.length,
@@ -223,14 +202,22 @@ function computeStats(positions: any[]) {
  * buckets (via dedicated Redis index lists), plus aggregate stats.
  *
  * Query params:
- *   connection_id / connectionId - connection to query (default "bingx-x01")
+ *   connection_id / connectionId - required connection to query
  *   closedLimit                 - max number of closed positions to include (default 200)
  *   status                      - optional filter (e.g. "open", "closed", "error")
  *   source                      - all|real|simulated|unknown (default all)
  */
 async function buildLivePositionsResponse(request: Request) {
   const { searchParams } = new URL(request.url)
-  const connectionId = searchParams.get("connection_id") || searchParams.get("connectionId") || "bingx-x01"
+  const connectionId = String(
+    searchParams.get("connection_id") || searchParams.get("connectionId") || "",
+  ).trim()
+  if (!connectionId) {
+    return NextResponse.json(
+      { error: "connection_id query parameter required" },
+      { status: 400 },
+    )
+  }
   const closedLimit = Math.min(1000, Math.max(1, parseInt(searchParams.get("closedLimit") || "200", 10)))
   const statusFilter = searchParams.get("status") || undefined
   const sourceFilter = (searchParams.get("source") || "all").toLowerCase()
@@ -366,7 +353,15 @@ async function buildLivePositionsResponse(request: Request) {
 export async function GET(request: Request) {
   if (process.env.NODE_ENV === "test") return buildLivePositionsResponse(request)
   const url = new URL(request.url)
-  const connectionId = url.searchParams.get("connection_id") || url.searchParams.get("connectionId") || "bingx-x01"
+  const connectionId = String(
+    url.searchParams.get("connection_id") || url.searchParams.get("connectionId") || "",
+  ).trim()
+  if (!connectionId) {
+    return NextResponse.json(
+      { error: "connection_id query parameter required" },
+      { status: 400 },
+    )
+  }
   const closedLimit = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("closedLimit") || "200", 10)))
   const status = url.searchParams.get("status") || "all"
   const source = (url.searchParams.get("source") || "all").toLowerCase()

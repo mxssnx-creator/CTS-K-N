@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "auditedAt": "2026-08-21",
+  "scope": {
+    "profitFactor": "PositionCost coordinate separated from classic realized PF",
+    "connections": ["bingx-x01", "bingx-x02"],
+    "symbols": 32,
+    "realOrdersSubmitted": 0
+  },
+  "validation": {
+    "jest": { "suites": 197, "tests": 1274, "passed": true },
+    "productionBuild": { "passed": true, "staticPages": 42, "traceFiles": 347 },
+    "devSimulation": { "passed": true, "symbols": 32, "heapLimitMiB": 4096, "redis": "inline-local-smoke" },
+    "productionSimulation": {
+      "passed": true,
+      "connectionIsolation": true,
+      "scopedSettingsReadback": true,
+      "latencyMs": { "p50": 6.45, "p95": 26.71, "max": 36.57 },
+      "memoryMiB": { "rss": 559.6, "heapUsed": 245.7 },
+      "eventLoop": { "utilizationPctRounded": 0, "delayP50Ms": 20.5, "delayP95Ms": 33.5, "delayMaxMs": 402.1 }
+    },
+    "directTradeMatrix": { "symbols": 32, "evaluatedSets": 960512, "validSets": 884, "elapsedMs": 42003, "peakHeapMiB": 92 },
+    "credentials": { "filesScanned": 1451, "findings": 0 }
+  },
+  "safety": {
+    "mainnetOrders": "blocked",
+    "prodVst": "preflight blocked because X02 VST credentials are not configured",
+    "multiworker": "not run without a shared Redis server"
+  }
+}

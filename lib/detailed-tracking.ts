@@ -471,7 +471,7 @@ export async function getStrategyTracking(
   // source + key names + defaults the engine gate uses in
   // `strategy-coordinator.loadAppPFThresholds` (`mainProfitFactor` /
   // `realProfitFactor`, connection hash overlaid on global app settings,
-  // 0.80..2.70 grid, defaults main/real 1.12). The old display read
+  // 1.00..2.20 grid, defaults main/real 1.10). The old display read
   // `settings.minProfitFactorMain` / `minProfitFactorReal` (legacy keys)
   // which are NEVER written anywhere — so the dashboard PF
   // ceiling permanently diverged from the gate the engine enforced.

@@ -26,6 +26,7 @@ import {
 import {
   PREVIOUS_POSITION_MIN_PF_RATIO,
   movePctToMainTradePfRatio,
+  netMovePctAfterPositionCost,
 } from "@/lib/main-trade-profit-factor"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 
@@ -958,6 +959,7 @@ export async function recordSignalPerformanceOutcome(input: {
   symbol: string
   direction: SignalDirection
   pnl: number
+  /** Gross signed market move in percent; one PositionCost is deducted here. */
   pnlPct?: number
   positionCostPct?: number
   sourceIds: readonly string[]
@@ -996,17 +998,22 @@ export async function recordSignalPerformanceOutcome(input: {
   )]
   const closedAt = input.closedAt ?? Date.now()
   const explicitMovePct = Number(input.pnlPct)
-  const marketMovePct = Number.isFinite(explicitMovePct)
+  const grossMarketMovePct = Number.isFinite(explicitMovePct)
     ? explicitMovePct
     : input.pnl
   const positionCostPct =
     Number(input.positionCostPct) > 0 ? Number(input.positionCostPct) : 0.1
-  // Previous-position quality is stored in PositionCost-relative units so
-  // different volumes remain comparable. Older close callers and deterministic
-  // tests may not yet carry pnlPct; their signed PnL is retained as a
-  // compatibility fallback instead of silently dropping the outcome.
+  // Previous-position quality is stored after exactly one PositionCost. The
+  // exchange PnL remains authoritative for reporting, but admission quality
+  // must use the same net result contract as every other strategy set.
+  // Older close callers and deterministic tests may not yet carry pnlPct;
+  // their signed PnL remains a percentage-compatible fallback.
+  const netMarketMovePct = netMovePctAfterPositionCost(
+    grossMarketMovePct,
+    positionCostPct,
+  )
   const costRelativeRatio = movePctToMainTradePfRatio(
-    marketMovePct,
+    netMarketMovePct,
     positionCostPct,
   )
 
@@ -1018,7 +1025,8 @@ export async function recordSignalPerformanceOutcome(input: {
     const sample = JSON.stringify({
       positionId: input.positionId,
       pnl: costRelativeRatio,
-      marketMovePct,
+      grossMarketMovePct,
+      netMarketMovePct,
       positionCostPct,
       closedAt,
     })

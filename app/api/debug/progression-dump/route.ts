@@ -7,7 +7,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 /**
- * GET /api/debug/progression-dump?id=bingx-x01
+ * GET /api/debug/progression-dump?id=<active-connection-id>
  * Dumps the raw Redis keys for a connection so we can see exactly what's stored.
  */
 export async function GET(request: NextRequest) {
@@ -26,7 +26,10 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  const id = request.nextUrl.searchParams.get("id") || "bingx-x01"
+  const id = String(request.nextUrl.searchParams.get("id") || "").trim()
+  if (!id) {
+    return NextResponse.json({ error: "id query parameter required" }, { status: 400 })
+  }
   const engineType = request.nextUrl.searchParams.get("engineType") || "main"
 
   try {

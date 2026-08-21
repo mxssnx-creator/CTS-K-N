@@ -6,6 +6,7 @@ import {
   initRedis,
 } from "@/lib/redis-db"
 import { createExchangeConnector } from "@/lib/exchange-connectors"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -228,10 +229,7 @@ async function createReadOnlyConnector(
     apiKey: String(connection?.api_key || ""),
     apiSecret: String(connection?.api_secret || ""),
     apiPassphrase: String(connection?.api_passphrase || ""),
-    isTestnet:
-      connection?.is_testnet === true ||
-      connection?.is_testnet === "1" ||
-      connection?.is_testnet === "true",
+    isTestnet: isTruthyFlag(connection?.is_testnet),
     apiType: connection?.api_type || "perpetual_futures",
   })
 }

@@ -47,6 +47,7 @@ import {
   logLiveOrderFinal,
   type LiveOrderTrace,
 } from "@/lib/live-order-logger"
+import { setupLiveOrderMarginAndLeverage } from "@/lib/live-order-service"
 import {
   isConnectionLiveTradeEnabled,
   isConnectionPresetTradeEnabled,
@@ -81,6 +82,7 @@ import {
   markStrategyPositionInactive,
   recordStrategyPositionEntry,
 } from "@/lib/pos-history"
+import { netMovePctAfterPositionCost } from "@/lib/main-trade-profit-factor"
 import {
   inferRealStrategyVariant,
   type RealStrategyVariant,
@@ -1368,9 +1370,12 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     createdAt: Number(hash.createdAt || 0),
     updatedAt: Number(hash.updatedAt || 0),
     closedAt: Number(hash.closedAt || 0) || undefined,
-    realizedPnL: Number(hash.realizedPnL ?? hash.realized_pnl ?? 0) || undefined,
-    unrealized_pnl: Number(hash.unrealized_pnl ?? 0) || undefined,
-    unrealized_pnl_percent: Number(hash.unrealized_pnl_percent ?? 0) || undefined,
+    // Zero is an authoritative exchange result, not an absent value. Keeping
+    // it through a Redis restart prevents reporting routes from recomputing a
+    // synthetic mark-to-market PnL over the venue's settled zero.
+    realizedPnL: parseRedisFiniteNumber(hash.realizedPnL ?? hash.realized_pnl),
+    unrealized_pnl: parseRedisFiniteNumber(hash.unrealized_pnl),
+    unrealized_pnl_percent: parseRedisFiniteNumber(hash.unrealized_pnl_percent),
     fills: Array.isArray(hash.fills) ? hash.fills : safeJsonParse<FillRecord[]>(hash.fills, []),
     progression: Array.isArray(hash.progression) ? hash.progression : safeJsonParse<any[]>(hash.progression, []),
     exchangeData: typeof hash.exchangeData === "string" ? safeJsonParse<Record<string, unknown>>(hash.exchangeData, {}) : hash.exchangeData,
@@ -2236,16 +2241,21 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       const realizedPnl = Number.isFinite(Number(position.realizedPnL))
         ? Number(position.realizedPnL)
         : 0
+      const positionCostPct = Number(position.positionCostPct) > 0
+        ? Number(position.positionCostPct)
+        : 0.1
+      const grossPnlPct = notional > 0 ? (realizedPnl / notional) * 100 : 0
       await markStrategyPositionInactive(
         position.connectionId,
         position.id,
         String(position.status).toLowerCase() === "closed"
           ? {
               pnl: realizedPnl,
-              ...(notional > 0 && { pnlPct: (realizedPnl / notional) * 100 }),
-              ...(Number(position.positionCostPct) > 0 && {
-                positionCostPct: Number(position.positionCostPct),
-              }),
+              // Strategy-set history uses the canonical net percentage. The
+              // raw exchange PnL above is intentionally preserved for API/UI
+              // reporting and accounting.
+              pnlPct: netMovePctAfterPositionCost(grossPnlPct, positionCostPct),
+              positionCostPct,
               drawdownMinutes: openedAt > 0 && closedAt > openedAt
                 ? (closedAt - openedAt) / 60_000
                 : 0,
@@ -7958,49 +7968,59 @@ export async function executeLivePosition(
       await VolumeCalculator.logVolumeCalculation(connectionId, realPosition.symbol, volumeResult).catch(() => {})
     }
 
-    // ── Step 4: Configure leverage + margin type on exchange ───────────────
-    // T2.3 perf: parallelize the two pre-flight venue calls. They are
-    // idempotent and independent — `setLeverage` configures the
-    // per-symbol leverage bracket, `setMarginType` configures
-    // cross/isolated. Running them concurrently shaves one full
-    // round-trip off every live entry. Both still complete BEFORE the
-    // order is placed, so the venue sees consistent margin semantics
-    // for the order. Errors are captured per-call and logged
-    // independently — a failure in one does NOT skip the other.
+    // ── Step 4: Configure margin type, then leverage, on exchange ─────────
+    // These calls must not be parallelized. On BingX and several other futures
+    // venues leverage is scoped by the currently selected margin mode; a
+    // concurrent update can therefore acknowledge both requests yet execute
+    // the entry with stale venue state. The shared helper also joins the
+    // connector's FIFO/cooldown lane and fails closed before placeOrder.
     const marginTypeSetting = (connSettings.margin_type as "cross" | "isolated") || "cross"
     livePosition.marginType = marginTypeSetting
-
-    const setLeveragePromise: Promise<{ ok: boolean; note: string }> =
-      typeof exchangeConnector.setLeverage === "function"
-        ? exchangeConnector
-            .setLeverage(realPosition.symbol, livePosition.leverage)
-            .then((lev: any) => ({
-              ok: !!lev?.success,
-              note: lev?.error || `leverage=${livePosition.leverage}`,
-            }))
-            .catch((err: unknown) => ({ ok: false, note: String(err) }))
-        : Promise.resolve({
-            ok: true,
-            note: "connector does not expose setLeverage ��� skipping",
-          })
-
-    const setMarginTypePromise: Promise<{ ok: boolean; note: string }> =
-      typeof exchangeConnector.setMarginType === "function"
-        ? exchangeConnector
-            .setMarginType(realPosition.symbol, marginTypeSetting)
-            .then((m: any) => ({
-              ok: !!m?.success,
-              note: m?.error || `margin=${marginTypeSetting}`,
-            }))
-            .catch((err: unknown) => ({ ok: false, note: String(err) }))
-        : Promise.resolve({
-            ok: true,
-            note: "connector does not expose setMarginType — skipping",
-          })
-
-    const [levResult, marginResult] = await Promise.all([setLeveragePromise, setMarginTypePromise])
-    pushStep(livePosition, "set_leverage", levResult.ok, levResult.note)
-    pushStep(livePosition, "set_margin_type", marginResult.ok, marginResult.note)
+    try {
+      const configured = await setupLiveOrderMarginAndLeverage(
+        exchangeConnector,
+        realPosition.symbol,
+        { marginType: marginTypeSetting, leverage: livePosition.leverage },
+      )
+      pushStep(
+        livePosition,
+        "set_margin_type",
+        true,
+        configured.marginConfigured ? `margin=${configured.marginType}` : "connector has no margin-mode endpoint",
+      )
+      pushStep(
+        livePosition,
+        "set_leverage",
+        true,
+        configured.leverageConfigured ? `leverage=${livePosition.leverage}` : "leverage=1 or connector has no leverage endpoint",
+      )
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      livePosition.status = "error"
+      livePosition.statusReason = `Exchange entry preflight failed before placement: ${reason}`
+      pushStep(livePosition, "set_margin_type", false, livePosition.statusReason)
+      pushStep(livePosition, "set_leverage", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await Promise.all([
+        incrementMetric(connectionId, "live_orders_failed_count"),
+        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+        logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
+          symbol: realPosition.symbol,
+          direction: realPosition.direction,
+          marginType: marginTypeSetting,
+          leverage: livePosition.leverage,
+        }),
+      ])
+      if (liveOrderLockToken) {
+        await releaseLock(
+          connectionId,
+          realPosition.symbol,
+          realPosition.direction + _lockDirSuffix,
+          liveOrderLockToken,
+        ).catch(() => {})
+      }
+      return livePosition
+    }
     if (await abortSuperseded()) return livePosition
 
 
@@ -11068,12 +11088,12 @@ export async function reconcileLivePositions(
         // the canonical record alone owns the single real close.
         if (canonicalIdBySlot.get(logicalSlotKey) !== pos.id) {
           if (exPos) {
-            const mP = parseFloat(String(exPos.markPrice ?? exPos.indexPrice ?? exPos.lastPrice ?? "0"))
-            const uP = parseFloat(String(exPos.unrealizedProfit ?? exPos.unrealisedPnl ?? exPos.unrealizedPnl ?? "0"))
+            const mP = parseRedisFiniteNumber(exPos.markPrice ?? exPos.indexPrice ?? exPos.lastPrice)
+            const uP = parseRedisFiniteNumber(exPos.unrealizedProfit ?? exPos.unrealisedPnl ?? exPos.unrealizedPnl)
             pos.exchangeData = {
               ...pos.exchangeData,
-              markPrice: mP || pos.exchangeData?.markPrice,
-              unrealizedPnL: uP || pos.exchangeData?.unrealizedPnL,
+              markPrice: mP && mP > 0 ? mP : pos.exchangeData?.markPrice,
+              unrealizedPnL: uP ?? pos.exchangeData?.unrealizedPnL,
               syncedAt: Date.now(),
             }
             pos.updatedAt = Date.now()
@@ -11123,17 +11143,17 @@ export async function reconcileLivePositions(
 
         if (exPos) {
           clearExchangeAbsence(pos)
-          const markPrice = parseFloat(String(exPos.markPrice ?? exPos.indexPrice ?? exPos.lastPrice ?? "0"))
-          const liqPrice  = parseFloat(String(exPos.liquidationPrice ?? exPos.liqPrice ?? "0"))
-          const uPnl      = parseFloat(String(exPos.unrealizedProfit ?? exPos.unrealisedPnl ?? exPos.unrealizedPnl ?? "0"))
+          const markPrice = parseRedisFiniteNumber(exPos.markPrice ?? exPos.indexPrice ?? exPos.lastPrice)
+          const liqPrice  = parseRedisFiniteNumber(exPos.liquidationPrice ?? exPos.liqPrice)
+          const uPnl      = parseRedisFiniteNumber(exPos.unrealizedProfit ?? exPos.unrealisedPnl ?? exPos.unrealizedPnl)
           const authoritativeSize = Math.abs(parseFloat(String(exPos.size ?? exPos.positionAmt ?? exPos.quantity ?? "0"))) || 0
           const authoritativeEntry = parseFloat(String(exPos.entryPrice ?? exPos.avgPrice ?? "0")) || 0
 
           pos.exchangeData = {
             ...pos.exchangeData,
-            markPrice: markPrice || pos.exchangeData?.markPrice,
-            liquidationPrice: liqPrice || pos.exchangeData?.liquidationPrice,
-            unrealizedPnL: uPnl || pos.exchangeData?.unrealizedPnL,
+            markPrice: markPrice && markPrice > 0 ? markPrice : pos.exchangeData?.markPrice,
+            liquidationPrice: liqPrice && liqPrice > 0 ? liqPrice : pos.exchangeData?.liquidationPrice,
+            unrealizedPnL: uPnl ?? pos.exchangeData?.unrealizedPnL,
             syncedAt: Date.now(),
           }
           pos.updatedAt = Date.now()
@@ -11249,7 +11269,7 @@ export async function reconcileLivePositions(
           const crossed = await checkAndForceCloseOnSltpCross(
             connectionId,
             pos,
-            markPrice,
+            markPrice ?? 0,
             exchangeConnector,
           )
           if (crossed) {
@@ -12173,8 +12193,8 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
                 ],
                 exchangeData: {
                   markPrice,
-                  liquidationPrice: parseFloat(String(exPos.liquidationPrice ?? "0")) || undefined,
-                  unrealizedPnL: parseFloat(String(exPos.unrealizedProfit ?? exPos.unrealizedPnl ?? "0")) || undefined,
+                  liquidationPrice: parseRedisFiniteNumber(exPos.liquidationPrice),
+                  unrealizedPnL: parseRedisFiniteNumber(exPos.unrealizedProfit ?? exPos.unrealizedPnl),
                   syncedAt: Date.now(),
                 },
                 progression: [
@@ -12350,15 +12370,15 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           // while correct for plain numeric strings — silently coerced
           // BingX's occasional null/empty-string returns to 0, gating
           // the SL/TP cross check.
-          const markPrice = parseFloat(String(exchangePos.markPrice ?? exchangePos.indexPrice ?? exchangePos.lastPrice ?? "0")) || 0
-          const liqPrice  = parseFloat(String(exchangePos.liquidationPrice ?? exchangePos.liqPrice ?? "0")) || 0
-          const uPnl      = parseFloat(String(exchangePos.unrealizedProfit ?? exchangePos.unrealisedPnl ?? exchangePos.unrealizedPnl ?? "0")) || 0
+          const markPrice = parseRedisFiniteNumber(exchangePos.markPrice ?? exchangePos.indexPrice ?? exchangePos.lastPrice)
+          const liqPrice  = parseRedisFiniteNumber(exchangePos.liquidationPrice ?? exchangePos.liqPrice)
+          const uPnl      = parseRedisFiniteNumber(exchangePos.unrealizedProfit ?? exchangePos.unrealisedPnl ?? exchangePos.unrealizedPnl)
           position.exchangeData = {
             ...position.exchangeData,
             marginType: (exchangePos as any).marginType,
-            markPrice: markPrice || position.exchangeData?.markPrice,
-            liquidationPrice: liqPrice || position.exchangeData?.liquidationPrice,
-            unrealizedPnL: uPnl || position.exchangeData?.unrealizedPnL,
+            markPrice: markPrice && markPrice > 0 ? markPrice : position.exchangeData?.markPrice,
+            liquidationPrice: liqPrice && liqPrice > 0 ? liqPrice : position.exchangeData?.liquidationPrice,
+            unrealizedPnL: uPnl ?? position.exchangeData?.unrealizedPnL,
             syncedAt: Date.now(),
           }
           // Recover averageExecutionPrice / entryPrice from exchange if the

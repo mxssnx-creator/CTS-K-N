@@ -6,6 +6,11 @@
 import type { IndicatorConfig } from "./indicators"
 import { db } from "@/lib/database"
 import { buildStopLossRatios } from "@/lib/stoploss-ratio-range"
+import {
+  DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS,
+  normalizePositionCostPercent,
+} from "@/lib/position-cost"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 
 export interface PresetConfiguration {
   id: string
@@ -21,23 +26,36 @@ export interface PresetConfiguration {
 }
 
 export class PresetConfigGenerator {
-  private static cachedPositionCost: number | null = null
-  private static lastFetch = 0
+  private static readonly cachedPositionCosts = new Map<string, { value: number; loadedAt: number }>()
 
-  private static async getPositionCost(): Promise<number> {
+  private static async getPositionCost(connectionId?: string): Promise<number> {
     const now = Date.now()
-    if (this.cachedPositionCost !== null && now - this.lastFetch < 60000) {
-      return this.cachedPositionCost
+    const scope = String(connectionId || "").trim()
+    const cached = this.cachedPositionCosts.get(scope)
+    if (cached && now - cached.loadedAt < 60_000) {
+      return cached.value
     }
 
     try {
-      const value = await db.getSetting("positionCost")
-      this.cachedPositionCost = value ? Number.parseFloat(value) : 0.1 // Default 10%
-      this.lastFetch = now
-      return this.cachedPositionCost
+      if (scope) {
+        // A selected connection owns its own cost basis.  Never borrow a
+        // global/X01 setting when the user is testing another connection.
+        const settings = await getCanonicalConnectionSettingsOverlay(scope)
+        const value = normalizePositionCostPercent(
+          settings.positionCost ?? settings.exchangePositionCost ?? settings.exchange_position_cost,
+        )
+        this.cachedPositionCosts.set(scope, { value, loadedAt: now })
+        return value
+      }
+
+      // Compatibility for older direct callers that predate connection
+      // selection. New API routes always provide `connectionId` above.
+      const value = normalizePositionCostPercent(await db.getSetting("positionCost"))
+      this.cachedPositionCosts.set(scope, { value, loadedAt: now })
+      return value
     } catch (error) {
       console.error("[v0] Failed to get positionCost:", error)
-      return 0.1 // Default 10%
+      return 0.1 // Default 0.10%
     }
   }
 
@@ -109,15 +127,16 @@ export class PresetConfigGenerator {
   static async generateAllConfigurations(
     symbols: string[],
     indicatorConfigs: IndicatorConfig[],
+    connectionId?: string,
   ): Promise<PresetConfiguration[]> {
     const configurations: PresetConfiguration[] = []
     const timeframes = ["4h", "8h", "12h"]
-    const takeprofitFactors = [2, 3, 4, 6, 8, 12]
+    const takeprofitFactors = DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS
     const stoplossRatios = buildStopLossRatios()
     const trailStarts = [0.3, 0.6, 1.0]
     const trailStops = [0.1, 0.2, 0.3]
 
-    const positionCost = await this.getPositionCost()
+    const positionCost = await this.getPositionCost(connectionId)
 
     let configId = 0
 

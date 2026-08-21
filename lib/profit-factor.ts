@@ -1,5 +1,9 @@
 import { POSITION_COST_PERCENT_DEFAULT } from "./position-cost"
 import { normalizeTradeDirection } from "./trade-direction"
+import {
+  mainTradePfRatioToSignedResultR,
+  normalizeMainTradeStagePfRatio,
+} from "./main-trade-profit-factor"
 
 export const POSITION_COST_PCT_DEFAULT = POSITION_COST_PERCENT_DEFAULT
 
@@ -20,6 +24,10 @@ export interface CostNormalizedAggregate {
 function finiteNumber(value: unknown, fallback = 0): number {
   const numeric = Number(value)
   return Number.isFinite(numeric) ? numeric : fallback
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {}
 }
 
 export function calculatePriceMovePct(
@@ -71,6 +79,54 @@ function resultToSignedR(result: unknown): number | null {
     direction,
     finiteNumber(record.positionCostPct ?? record.position_cost_pct ?? record.positionCost ?? record.position_cost, POSITION_COST_PCT_DEFAULT),
   )
+}
+
+/**
+ * Resolve a pseudo-position result without guessing from the overloaded
+ * legacy `profit_factor` field. A `0.6 R` result is a gain, whereas a
+ * Main-stage coordinate of `1.06` represents the same gain. The explicit
+ * signed fields always win; tagged coordinates are converted deliberately.
+ */
+export function resolvePseudoPositionSignedResultR(position: unknown): number {
+  const record = asRecord(position)
+  for (const value of [
+    record.signedResultR,
+    record.signed_result_r,
+    record.costNormalizedReturn,
+    record.netR,
+  ]) {
+    const numeric = Number(value)
+    if (Number.isFinite(numeric)) return numeric
+  }
+
+  const legacyValue = Number(record.profit_factor ?? record.profitFactor)
+  if (!Number.isFinite(legacyValue)) return 0
+  const kind = String(
+    record.profit_factor_kind ?? record.profitFactorKind ?? record.profitFactorSource ?? "",
+  ).trim().toLowerCase()
+  if (["main_trade_pf_ratio", "main-stage-ratio", "position_cost_ratio"].includes(kind)) {
+    // The operator coordinate begins at 1.00. Older ledgers occasionally
+    // wrote an untagged signed Result-R such as 0.6 together with the newer
+    // coordinate tag. Treat that impossible tagged 0.x value as the neutral
+    // 1.00 coordinate instead of manufacturing a negative result from it.
+    return mainTradePfRatioToSignedResultR(
+      normalizeMainTradeStagePfRatio("main", legacyValue),
+    )
+  }
+  // Untagged compatibility pseudo rows historically stored signed Result-R.
+  return legacyValue
+}
+
+/**
+ * Convert a pseudo-position's semantic Result-R into its configured monetary
+ * PositionCost basis. This avoids treating a ratio below one as a loss.
+ */
+export function resolvePseudoPositionNetPnl(position: unknown): number {
+  const record = asRecord(position)
+  const positionCost = finiteNumber(
+    record.position_cost ?? record.positionCost ?? record.margin_used ?? record.marginUsd,
+  )
+  return resolvePseudoPositionSignedResultR(record) * positionCost
 }
 
 export function aggregateCostNormalizedResults(results: unknown[]): CostNormalizedAggregate {

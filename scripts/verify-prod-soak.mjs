@@ -34,6 +34,7 @@ const PRODUCTIVE_COMPLETION_GRACE_MS = Math.max(
 )
 const RUNTIME_MODE = process.env.RUNTIME_MODE || "production"
 const DEBUG_ADMIN_SECRET = String(process.env.SOAK_ADMIN_SECRET || "")
+const REQUESTED_CONNECTION_ID = String(process.env.SOAK_CONNECTION_ID || "").trim()
 const HEAP_GROWTH_LIMIT_KB = Math.max(
   128 * 1024,
   Number(
@@ -353,6 +354,7 @@ function signalRuntimeSample(
   statusPayload,
   positionsPayload,
   indicationAnalytics,
+  connectionId,
 ) {
   const settings = settingsPayload?.settings || {}
   const descriptors = Array.isArray(settingsPayload?.sources) ? settingsPayload.sources : []
@@ -360,7 +362,7 @@ function signalRuntimeSample(
     ? Object.entries(settings.sources)
     : []
   const connectionStatus = Array.isArray(statusPayload?.connections)
-    ? statusPayload.connections[0] || {}
+    ? statusPayload.connections.find((item) => String(item?.id) === String(connectionId)) || {}
     : {}
   const sourceHealth = Array.isArray(connectionStatus?.sourceHealth)
     ? connectionStatus.sourceHealth
@@ -603,8 +605,18 @@ async function main() {
     throw new Error("SIGNAL_FOCUSED_SOAK requires VERIFY_SIGNAL_ENGINE=1")
   }
   const inventory = (await request("/api/connections")).json
-  let connectionId = String(inventory?.connections?.[0]?.id || "")
-  if (!connectionId) throw new Error("No connection available for production soak")
+  const availableConnections = Array.isArray(inventory?.connections) ? inventory.connections : []
+  const selectedConnection = REQUESTED_CONNECTION_ID
+    ? availableConnections.find((connection) => String(connection?.id) === REQUESTED_CONNECTION_ID)
+    : availableConnections[0]
+  let connectionId = String(selectedConnection?.id || "")
+  if (!connectionId) {
+    throw new Error(
+      REQUESTED_CONNECTION_ID
+        ? `Requested production soak connection ${REQUESTED_CONNECTION_ID} is unavailable`
+        : "No connection available for production soak",
+    )
+  }
 
   if (START_SIMULATED_ENGINE) {
     const quickStart = (await request("/api/trade-engine/quick-start", {
@@ -623,9 +635,9 @@ async function main() {
         // position-history warmup than this bounded smoke. Mirror the fresh
         // live-QuickStart bootstrap thresholds inside the isolated snapshot so
         // Base -> Main -> Real -> Live/paper is exercised within one minute.
-        baseProfitFactor: 0.8,
-        mainProfitFactor: 0.75,
-        realProfitFactor: 0.75,
+        baseProfitFactor: 1,
+        mainProfitFactor: 1,
+        realProfitFactor: 1,
         prevPosMinCount: 1,
         mainEvalPosCount: 1,
         realEvalPosCount: 1,
@@ -1183,6 +1195,7 @@ async function main() {
       byPath.get(`/api/indications/signals/status?connectionId=${encodeURIComponent(connectionId)}`),
       positions,
       byPath.get(`/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`),
+      connectionId,
     )
     const previousSignalSample = signalRuntime.at(-1)
     if (
@@ -1304,6 +1317,7 @@ async function main() {
       lastByPath.get(`/api/indications/signals/status?connectionId=${encodeURIComponent(connectionId)}`),
       lastByPath.get(livePositionsPath),
       lastByPath.get(`/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`),
+      connectionId,
     )
     const previousFinalSignal = signalRuntime.at(-1)
     if (finalSignalSample.openSignalPositions > finalSignalSample.maxPositionsTotal) {

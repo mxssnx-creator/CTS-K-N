@@ -9,6 +9,12 @@
  * - Live exchange trading
  */
 import { createHash } from "node:crypto"
+import {
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  MAIN_TRADE_PF_RATIO_MAX,
+  MAIN_TRADE_PF_RATIO_MIN,
+  MAIN_TRADE_PF_RATIO_STEP,
+} from "@/lib/main-trade-profit-factor"
 
 export interface PrehistoricDataConfig {
   timeframeSeconds: number // Load timeframe in seconds (default: 1)
@@ -35,7 +41,7 @@ export interface IndicationEvaluationConfig {
 export interface PseudoPositionConfig {
   // Timeout for pseudo positions
   timeoutSeconds: { min: number; max: number; default: number; step: number }
-  // TakeProfit ranges (step count: 2-20)
+  // TakeProfit ranges (fresh-install minimum: 5)
   takeProfitSteps: { min: number; max: number; default: number; step: number }
   // StopLoss ratios
   stopLossRatio: { min: number; max: number; default: number; step: number }
@@ -49,15 +55,15 @@ export interface PseudoPositionConfig {
 }
 
 export interface StrategyEvaluationConfig {
-  // Main strategy: PositionCost-relative PF ratio (0.80-2.70, default: 1.12)
+  // Main strategy: PositionCost-relative PF ratio (1.00-2.20, default: 1.10)
   mainMinProfitFactor: { min: number; max: number; default: number; step: number }
-  // Real strategy: PositionCost-relative PF ratio (default: 1.12)
+  // Real strategy: PositionCost-relative PF ratio (default: 1.10)
   realMinProfitFactor: number
   // Real strategy: max drawdown time (12 hours)
   realMaxDrawdownTimeSeconds: number
   // Position counts to evaluate
   positionCountsToEvaluate: number[] // [1,2,3,4,5,6,8,10,12,15,20,30]
-  // Recent position counts (PositionCost-relative min PF ratio: 1.12)
+  // Recent position counts (PositionCost-relative min PF ratio: 1.10)
   recentPositionCounts: number[] // [1,2,3,4]
   recentPositionMinProfitFactor: number
   // Configuration variations (1-6 independent sets)
@@ -102,7 +108,7 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
 
   pseudoPosition: {
     timeoutSeconds: { min: 1, max: 1, default: 1, step: 1 },
-    takeProfitSteps: { min: 2, max: 20, default: 5, step: 1 },
+    takeProfitSteps: { min: 5, max: 20, default: 5, step: 1 },
     stopLossRatio: { min: 0.25, max: 2.5, default: 0.5, step: 0.25 },
     trailingStart: { min: 0.2, max: 1.0, default: 0.5, step: 0.2 },
     trailingStop: { min: 0.1, max: 0.5, default: 0.2, step: 0.1 },
@@ -111,12 +117,17 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
   },
 
   strategyEvaluation: {
-    mainMinProfitFactor: { min: 0.8, max: 2.7, default: 1.12, step: 0.02 },
-    realMinProfitFactor: 1.12,
+    mainMinProfitFactor: {
+      min: MAIN_TRADE_PF_RATIO_MIN,
+      max: MAIN_TRADE_PF_RATIO_MAX,
+      default: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+      step: MAIN_TRADE_PF_RATIO_STEP,
+    },
+    realMinProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
     realMaxDrawdownTimeSeconds: 43200, // 12 hours
     positionCountsToEvaluate: Array.from({ length: 30 }, (_, index) => index + 1),
     recentPositionCounts: [1, 2, 3, 4],
-    recentPositionMinProfitFactor: 1.12,
+    recentPositionMinProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
     pseudoPositionConfigurations: [1, 2, 3, 4, 5, 6],
   },
 }

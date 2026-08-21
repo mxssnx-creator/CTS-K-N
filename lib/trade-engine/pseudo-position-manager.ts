@@ -9,7 +9,7 @@ import { VolumeCalculator } from "@/lib/volume-calculator"
 import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { emitPositionUpdate } from "@/lib/broadcast-helpers"
 import { StrategyConfigManager, type PseudoPosition as StrategyPseudoPosition } from "@/lib/strategy-config-manager"
-import { calculatePseudoClosePnl, PSEUDO_POSITION_CLOSE_COST_RATIO } from "@/lib/pseudo-position-costs"
+import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 import { markStrategyPositionInactive, recordStrategyPositionEntry } from "@/lib/pos-history"
 import {
   isSignalDynamicTrailingProfile,
@@ -375,6 +375,14 @@ export class PseudoPositionManager {
     indicationType: string
     side: "long" | "short"
     entryPrice: number
+    /** Explicit market-price TP used by live/coordinator dispatch. */
+    takeProfitPct?: number
+    /** Explicit market-price SL used by live/coordinator dispatch. */
+    stopLossPct?: number
+    /**
+     * Legacy compatibility fields.  Callers with configuration-set axes must
+     * convert their PositionCost ratios before calling this live manager.
+     */
     takeprofitFactor: number
     stoplossRatio: number
     profitFactor: number
@@ -524,15 +532,25 @@ export class PseudoPositionManager {
         return null
       }
 
-      // Calculate take profit and stop loss prices
-      const takeProfitFactor = specialPositionPlan?.protection.takeProfitPct ?? params.takeprofitFactor
+      // Live-coordinator protections are explicit market-price percents.
+      // Keep the legacy factor/ratio fallback only for older callers; mixing
+      // the two coordinates previously turned an already-derived 0.20% SL
+      // into TP×SL (0.02%) a second time.
+      const explicitTakeProfitPct = Number(params.takeProfitPct)
+      const explicitStopLossPct = Number(params.stopLossPct)
+      const takeProfitFactor = specialPositionPlan?.protection.takeProfitPct ??
+        (Number.isFinite(explicitTakeProfitPct) && explicitTakeProfitPct > 0
+          ? explicitTakeProfitPct
+          : params.takeprofitFactor)
       const takeProfitPrice =
         params.side === "long"
           ? params.entryPrice * (1 + takeProfitFactor / 100)
           : params.entryPrice * (1 - takeProfitFactor / 100)
 
       const stopLossPercent = specialPositionPlan?.protection.stopLossPct ??
-        resolveStopLossPercent(takeProfitFactor, params.stoplossRatio)
+        (Number.isFinite(explicitStopLossPct) && explicitStopLossPct > 0
+          ? explicitStopLossPct
+          : resolveStopLossPercent(takeProfitFactor, params.stoplossRatio))
       const stopLossPrice =
         params.side === "long"
           ? params.entryPrice * (1 - stopLossPercent / 100)
@@ -574,6 +592,9 @@ export class PseudoPositionManager {
         quantity: String(finalVolume),
         position_cost: String(positionCost),
         position_cost_pct: String(volumeCalc.positionCostPercent),
+        takeprofit_pct: String(takeProfitFactor),
+        stoploss_pct: String(stopLossPercent),
+        protection_coordinate: "absolute_pct",
         takeprofit_factor: String(takeProfitFactor),
         takeprofit_price: String(takeProfitPrice),
         stoploss_ratio: String(params.stoplossRatio),
@@ -866,6 +887,7 @@ export class PseudoPositionManager {
       const entryPrice = parseFloat(position.entry_price || "0")
       const currentPrice = parseFloat(position.current_price || "0")
       const quantity = parseFloat(position.quantity || "0")
+      const configuredPositionCostPct = Number(position.position_cost_pct || "0.1")
       const side = resolveConsistentTradeDirection(position.side, position.direction)
       if (!side) {
         console.warn(`[v0] [PseudoPosMgr] Refusing to close ${positionId}: invalid direction lineage`)
@@ -879,7 +901,14 @@ export class PseudoPositionManager {
         grossPnlPct,
         netPnlPct,
         notional,
-      } = calculatePseudoClosePnl({ entryPrice, currentPrice, quantity, side })
+        positionCostPct,
+      } = calculatePseudoClosePnl({
+        entryPrice,
+        currentPrice,
+        quantity,
+        side,
+        positionCostPct: configuredPositionCostPct,
+      })
 
       const client = getRedisClient()
       const closedAtIso = new Date().toISOString()
@@ -922,7 +951,8 @@ export class PseudoPositionManager {
         realized_pnl: String(pnl),
         gross_realized_pnl: String(grossPnl),
         position_cost: String(positionCost),
-        position_cost_ratio: String(PSEUDO_POSITION_CLOSE_COST_RATIO),
+        position_cost_ratio: String(positionCostPct / 100),
+        position_cost_pct: String(positionCostPct),
         realized_pnl_pct: String(netPnlPct),
         gross_realized_pnl_pct: String(grossPnlPct),
       })
@@ -996,7 +1026,7 @@ export class PseudoPositionManager {
       // reader never drift.
       // ── PI history accumulator (atomic, in-pipeline) ────────────────
       // Lifetime per (symbol × indicationType × direction) HASH that the
-      // strategy coordinator reads at Base creation to blend prev-PI PF
+      // strategy coordinator reads at Base creation to blend previous-position PF
       // into avgProfitFactor and at Real to tune size/leverage. Uses
       // hincrby so concurrent closes never lose a count, and composes
       // into the existing close pipeline so the whole transaction stays
@@ -1371,7 +1401,13 @@ export class PseudoPositionManager {
           const entry = parseFloat(p.entry_price || "0")
           const current = parseFloat(p.current_price || "0")
           const qty = parseFloat(p.quantity || "0")
-          pnl = calculatePseudoClosePnl({ entryPrice: entry, currentPrice: current, quantity: qty, side }).netPnl
+          pnl = calculatePseudoClosePnl({
+            entryPrice: entry,
+            currentPrice: current,
+            quantity: qty,
+            side,
+            positionCostPct: Number(p.position_cost_pct || "0.1"),
+          }).netPnl
         }
         totalPnl += pnl
         if (side === "long") {
@@ -1397,7 +1433,13 @@ export class PseudoPositionManager {
               ? stored
               : (() => {
                   const current = parseFloat(p.current_price || "0")
-                  return calculatePseudoClosePnl({ entryPrice: entry, currentPrice: current, quantity: qty, side }).netPnl
+                  return calculatePseudoClosePnl({
+                    entryPrice: entry,
+                    currentPrice: current,
+                    quantity: qty,
+                    side,
+                    positionCostPct: Number(p.position_cost_pct || "0.1"),
+                  }).netPnl
                 })()
             return acc + (pnl / notional) * 100
           }, 0)

@@ -247,8 +247,8 @@ function IndWindow({ label, count, total }: { label: string; count: number; tota
 
 export function QuickstartOverviewDialog() {
   const { selectedConnectionId, selectedConnection, selectedExchange } = useExchange()
-  const connectionId = selectedConnectionId || "default-bingx-001"
-  const connectionLabel = selectedConnection?.name || (selectedExchange || "").toUpperCase() || connectionId
+  const connectionId = selectedConnectionId ?? null
+  const connectionLabel = selectedConnection?.name || (selectedExchange || "").toUpperCase() || "No connection selected"
 
   const [isOpen, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -844,7 +844,7 @@ export function QuickstartOverviewDialog() {
           {/* ── Strategies ────────────────────────────────────────────────── */}
           <TabsContent value="strategies" className="flex-1 overflow-y-auto p-4 space-y-3">
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Main strategies are formed from evaluated Base pseudo-position sets, coordinated via pis-count and
+              Main strategies are formed from evaluated Base pseudo-position sets, coordinated via pos-count and
               continuous-count factors plus additional strategies — not always new sets but coordinated variable
               mappings for high-frequency evaluation. Real strategies filter Main by highest-confidence coordination.
             </p>

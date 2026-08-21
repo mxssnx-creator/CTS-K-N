@@ -3,11 +3,15 @@
  * Tests configurations against historical data asynchronously
  */
 
-import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { initRedis, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { TechnicalIndicators } from "./indicators"
 import type { PresetConfiguration } from "./preset-config-generator"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import {
+  normalizePositionCostPercent,
+  stopLossPositionCostRatioToPercent,
+  takeProfitPositionCostRatioToPercent,
+} from "@/lib/position-cost"
 
 export interface TestResult {
   configId: string
@@ -139,11 +143,20 @@ export class PresetTester {
       const entryPrice = prices[i]
       const entryTime = new Date(marketData[i].timestamp)
 
+      const positionCostPct = normalizePositionCostPercent(config.position_cost)
+      const takeProfitPercent = takeProfitPositionCostRatioToPercent(
+        positionCostPct,
+        config.takeprofit_factor,
+      )
       const tpPrice = signal.direction === "long"
-        ? entryPrice * (1 + (config.takeprofit_factor * config.position_cost) / 100)
-        : entryPrice * (1 - (config.takeprofit_factor * config.position_cost) / 100)
+        ? entryPrice * (1 + takeProfitPercent / 100)
+        : entryPrice * (1 - takeProfitPercent / 100)
 
-      const stopLossPercent = resolveStopLossPercent(config.takeprofit_factor, config.stoploss_ratio) * config.position_cost
+      const stopLossPercent = stopLossPositionCostRatioToPercent(
+        positionCostPct,
+        config.takeprofit_factor,
+        config.stoploss_ratio,
+      )
       const slPrice = signal.direction === "long"
         ? entryPrice * (1 - stopLossPercent / 100)
         : entryPrice * (1 + stopLossPercent / 100)
@@ -165,13 +178,29 @@ export class PresetTester {
         }
       }
 
-      const pnl = signal.direction === "long"
-        ? ((exitPrice - entryPrice) / entryPrice) * balance * 0.1
-        : ((entryPrice - exitPrice) / entryPrice) * balance * 0.1
+      // PnL and PF are evaluated after exactly one configured PositionCost.
+      // The allocation stays at 10% of balance, so the cost is charged to the
+      // same notional rather than to the whole account.
+      const grossPnlPercent = signal.direction === "long"
+        ? ((exitPrice - entryPrice) / entryPrice) * 100
+        : ((entryPrice - exitPrice) / entryPrice) * 100
+      const netPnlPercent = grossPnlPercent - positionCostPct
+      const pnl = (netPnlPercent / 100) * balance * 0.1
 
       balance += pnl
       equity = balance
-      trades.push({ entryPrice, exitPrice, entryTime, exitTime, direction: signal.direction, pnl, exitReason })
+      trades.push({
+        entryPrice,
+        exitPrice,
+        entryTime,
+        exitTime,
+        direction: signal.direction,
+        pnl,
+        grossPnlPercent,
+        netPnlPercent,
+        positionCostPct,
+        exitReason,
+      })
 
       if (equity > maxEquity) {
         maxEquity = equity

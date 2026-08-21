@@ -33,6 +33,7 @@ import {
 } from "@/lib/constants"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 import {
   normalizeExchangeQuantityRules,
   resolveExecutableQuantity,
@@ -187,8 +188,7 @@ export class VolumeCalculator {
             apiSecret: connection.api_secret,
             apiType: connection.api_type,
             contractType: connection.contract_type,
-            isTestnet:
-              connection.is_testnet === true || connection.is_testnet === "true",
+            isTestnet: isTruthyFlag(connection.is_testnet),
           })
           try {
             const result = await connector.getBalance()
@@ -1030,31 +1030,35 @@ export class VolumeCalculator {
     const { entryPrice, currentPrice, volume, leverage, side, stopLossPrice, takeProfitPrice } = params
 
     const positionValue = volume * currentPrice
+    const entryNotional = entryPrice * volume
+    const safeLeverage = Math.max(1, Number(leverage) || 1)
+    const marginUsd = entryNotional > 0 ? entryNotional / safeLeverage : 0
 
-    let unrealizedPnL = 0
-    if (side === "long") {
-      unrealizedPnL = (currentPrice - entryPrice) * volume * leverage
-    } else {
-      unrealizedPnL = (entryPrice - currentPrice) * volume * leverage
-    }
+    // Leverage changes required margin and ROI; it never multiplies the
+    // quote-currency PnL of a fixed contract quantity.
+    const signedPriceMove = side === "long"
+      ? currentPrice - entryPrice
+      : entryPrice - currentPrice
+    const unrealizedPnL = signedPriceMove * volume
 
-    const unrealizedPnLPercent = (unrealizedPnL / (entryPrice * volume)) * 100
+    const unrealizedPnLPercent = entryNotional > 0 ? (unrealizedPnL / entryNotional) * 100 : 0
+    const unrealizedRoiPercent = marginUsd > 0 ? (unrealizedPnL / marginUsd) * 100 : 0
 
     let potentialLoss = 0
     if (stopLossPrice) {
       if (side === "long") {
-        potentialLoss = (stopLossPrice - entryPrice) * volume * leverage
+        potentialLoss = (stopLossPrice - entryPrice) * volume
       } else {
-        potentialLoss = (entryPrice - stopLossPrice) * volume * leverage
+        potentialLoss = (entryPrice - stopLossPrice) * volume
       }
     }
 
     let potentialProfit = 0
     if (takeProfitPrice) {
       if (side === "long") {
-        potentialProfit = (takeProfitPrice - entryPrice) * volume * leverage
+        potentialProfit = (takeProfitPrice - entryPrice) * volume
       } else {
-        potentialProfit = (entryPrice - takeProfitPrice) * volume * leverage
+        potentialProfit = (entryPrice - takeProfitPrice) * volume
       }
     }
 
@@ -1065,8 +1069,11 @@ export class VolumeCalculator {
 
     return {
       positionValue,
+      entryNotional,
+      marginUsd,
       unrealizedPnL,
       unrealizedPnLPercent,
+      unrealizedRoiPercent,
       potentialLoss,
       potentialProfit,
       riskRewardRatio,

@@ -4,7 +4,7 @@ import path from "node:path"
 const root = process.cwd()
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8")
 
-describe("coherent strategy snapshots and schema v98", () => {
+describe("coherent strategy snapshots and schema v99", () => {
   test("uses symbol-local active lineage under parallel symbol processing", () => {
     const source = read("lib/strategy-coordinator.ts")
     expect(source).toContain("private _activeKeysCache = new Map<string")
@@ -50,7 +50,7 @@ describe("coherent strategy snapshots and schema v98", () => {
   test("migrations are sequential through the coherent schema", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
-    expect(versions.at(-1)).toBe(98)
+    expect(versions.at(-1)).toBe(99)
     expect(versions.every((version, index) => version === index + 1)).toBe(true)
     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
     expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')

@@ -313,7 +313,7 @@ function getDefaultSettings(): Record<string, any> {
     presetCountPerSymbol: 4,
     presetTpMin: 3,
     presetTpMax: 30,
-    presetTpStep: 1,
+    presetTpStep: 5,
     presetSlMin: 0.25,
     presetSlMax: 2,
     presetSlStep: 0.25,

@@ -46,11 +46,11 @@ describe("connection card stage overview contract", () => {
     expect(card).toContain("Ratio <strong")
   })
 
-  test("Base setting copy and engine share the 1.10 minimum", () => {
+  test("Base setting copy and engine share the neutral 1.00 floor", () => {
     const settings = read("components/settings/strategy/base-strategy-settings.tsx")
     const ratios = read("lib/main-trade-profit-factor.ts")
-    expect(settings).toContain("minimum 1.10, default 1.15; range 1.10–2.20")
-    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_MIN = 1.1")
-    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.15")
+    expect(settings).toContain("minimum 1.00, default 1.10; range 1.00–2.20")
+    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_MIN = 1.0")
+    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.1")
   })
 })

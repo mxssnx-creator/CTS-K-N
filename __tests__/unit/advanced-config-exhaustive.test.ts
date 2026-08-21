@@ -41,12 +41,13 @@ function compactConfig(): AdvancedEngineConfig {
 describe("advanced compatibility configuration generator", () => {
   test("uses the canonical stage ratios and exact independent cooldowns", () => {
     expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.mainMinProfitFactor).toEqual({
-      min: 0.8,
-      max: 2.7,
-      default: 1.12,
-      step: 0.02,
+      min: 1,
+      max: 2.2,
+      default: 1.1,
+      step: 0.1,
     })
-    expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.realMinProfitFactor).toBe(1.12)
+    expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.realMinProfitFactor).toBe(1.1)
+    expect(DEFAULT_ADVANCED_CONFIG.pseudoPosition.takeProfitSteps).toMatchObject({ min: 5, default: 5 })
     expect(DEFAULT_ADVANCED_CONFIG.indicationEvaluation.timeoutSeconds.default).toBe(0.25)
     expect(DEFAULT_ADVANCED_CONFIG.pseudoPosition.timeoutSeconds.default).toBe(1)
     expect(DEFAULT_ADVANCED_CONFIG.indicationEvaluation.maxPositionsPerDirection.default).toBe(1)

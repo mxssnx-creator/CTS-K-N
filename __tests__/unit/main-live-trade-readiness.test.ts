@@ -2,6 +2,7 @@ import {
   evaluateRealTradeReadiness,
   getRealTradeBlockReason,
   hasUsableLiveCredentials,
+  isBingXVirtualFundsDemo,
 } from "@/lib/real-trade-gates"
 
 const credentialed = {
@@ -233,6 +234,52 @@ describe("Main Trade Engine live execution readiness", () => {
         canPlaceRealOrders: true,
         executionMode: "live",
         blockCode: null,
+      })
+    } finally {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: previousNodeEnv,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+    }
+  })
+
+  test("allows only the explicit BingX VST virtual-funds path without opening a mainnet bypass", () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    try {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: "production",
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+      process.env.REDIS_URL = "redis://shared-test"
+      delete process.env.ALLOW_LIVE_ORDER_PLACEMENT
+
+      const vst = {
+        ...credentialed,
+        exchange: "bingx",
+        is_testnet: "1",
+        is_live_trade: "1",
+        live_trade_requested: "1",
+      }
+      expect(isBingXVirtualFundsDemo(vst)).toBe(true)
+      expect(evaluateRealTradeReadiness(vst)).toMatchObject({
+        canPlaceRealOrders: true,
+        executionMode: "live",
+        blockCode: null,
+      })
+
+      expect(evaluateRealTradeReadiness({ ...vst, is_testnet: "0" })).toMatchObject({
+        canPlaceRealOrders: false,
+        executionMode: "blocked",
+        blockCode: "placement_disabled",
+      })
+      expect(evaluateRealTradeReadiness({ ...vst, exchange: "bybit" })).toMatchObject({
+        canPlaceRealOrders: false,
+        executionMode: "blocked",
+        blockCode: "placement_disabled",
       })
     } finally {
       Object.defineProperty(process.env, "NODE_ENV", {

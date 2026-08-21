@@ -280,10 +280,12 @@ function applyBlockAdjustment(
     blocks.length - 1
   ]
   
-  const profitFactor = 
+  const avgSignedResultR =
     calculateAvg(lastBlock)
   
-  if (profitFactor < 0) {
+  // Signed Result-R uses 0 as neutral. Do not use a Main-stage
+  // PositionCost PF coordinate here: values below 1 are not a PnL sign.
+  if (avgSignedResultR < 0) {
     // Absolute, non-compounding target:
     return baseRatio * (
       1 + adjustmentRatio * activeBlockCount
@@ -311,7 +313,7 @@ function applyDCAdjustment(
 ): number {
   const lossPositions = 
     positions.filter(
-      p => p.profit_factor < 0
+      p => p.signedResultR < 0
     )
   
   if (lossPositions.length > 0) {
@@ -345,9 +347,9 @@ function applyDCAdjustment(
                 <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">
                   {`{
   symbol: "BTC/USDT",
-  positionCost: 0.1,        // 10% ratio
+  positionCost: 0.1,        // 0.10% cost
   entryPrice: 50000,
-  takeprofitFactor: 2.0,
+  takeProfitPositionCostRatio: 5, // 0.50% gross TP
   stoplossRatio: 0.5
   // NO volume field
 }`}

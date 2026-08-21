@@ -15,6 +15,7 @@ import {
   normalizeDcaProfile,
   type DcaProfile,
 } from "./dca-strategy"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "./position-cost"
 
 // Kept free of Next/runtime aliases so the deterministic CLI matrix can load
 // this module through tsx. These values mirror the canonical
@@ -33,17 +34,20 @@ export const DIRECT_TRADE_TIMEFRAMES = ["5m", "15m", "30m"] as const
 export const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"] as const
 export const DIRECT_TRADE_EXIT_TACTICS = ["bracket", "momentum_reversal", "relative", "time"] as const
 // Direct-Trade protection is expressed in PositionCost multiples, not as an
-// unrelated fixed price percentage.  With the default PositionCost of 0.1%,
-// the optimized default 4–8 grid therefore evaluates TP targets from 0.4%
-// to 0.8%, including the 7-day winner at 0.6%.
+// unrelated fixed price percentage. With the default PositionCost of 0.1%,
+// the fresh 5–10 grid therefore evaluates TP targets from 0.5% to 1.0%.
 // Keeping the ratio integral makes the UI, persisted state and set identity
 // unambiguous across a PositionCost change.
 export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN = 2
 export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 22
-export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [4, 8]
-// The range control remains single-ratio precise, while a sparse default Set
-// stride keeps the full 32-symbol matrix below four million configurations.
-export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 2
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [
+  DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO,
+  DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO * 2,
+]
+// The range control remains single-ratio precise. Five is the systemwide
+// fresh-install TP Set stride; an explicit operator value can still choose a
+// denser grid when its capacity budget permits it.
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 5
 // Full-history admission must show a materially positive gross-profit/loss
 // ratio before the much stricter latest-position gate is even considered.
 // Runtime defaults and migrations mirror this value; operators may still

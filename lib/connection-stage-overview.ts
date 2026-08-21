@@ -2,6 +2,7 @@ import {
   calculateClosedPositionSignedResultR,
   type ClosedPositionLike,
 } from "@/lib/trade-engine/closed-position-aggregation"
+import { MAIN_TRADE_BASE_PF_RATIO_DEFAULT } from "@/lib/main-trade-profit-factor"
 
 export const CONNECTION_STAGE_PF_WINDOW = 50
 
@@ -276,7 +277,7 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
     base: {
       total: baseTotal,
       valid: baseValid,
-      pfMinimum: finite(input.base?.pfMinimum, 0.8),
+      pfMinimum: finite(input.base?.pfMinimum, MAIN_TRADE_BASE_PF_RATIO_DEFAULT),
       validPercent: baseTotal > 0 ? rounded((baseValid / baseTotal) * 100, 1) : 0,
     },
     main: {

@@ -180,8 +180,8 @@ function StratCard({
 
 export function QuickstartComprehensiveLogDialog() {
   const { selectedConnectionId, selectedConnection, selectedExchange } = useExchange()
-  const activeConnectionId = selectedConnectionId || "default-bingx-001"
-  const connectionLabel = selectedConnection?.name || (selectedExchange || "").toUpperCase() || activeConnectionId
+  const activeConnectionId = selectedConnectionId ?? null
+  const connectionLabel = selectedConnection?.name || (selectedExchange || "").toUpperCase() || "No connection selected"
 
   const [open, setOpen] = useState(false)
   const [stats, setStats] = useState<StatsResponse | null>(null)
@@ -513,7 +513,7 @@ export function QuickstartComprehensiveLogDialog() {
             ) : (
               <>
                 <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  Main strategies evaluate Base pseudo-position sets via pis-count and continuous-count factor
+                  Main strategies evaluate Base pseudo-position sets via pos-count and continuous-count factor
                   coordination — not necessarily new sets, but variable-mapped coordinations for high-frequency
                   processing. Real strategies are the highest-confidence subset of Main.
                 </p>

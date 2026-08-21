@@ -16,4 +16,16 @@ describe("net position-cost result contract", () => {
     expect(close.positionCost).toBeCloseTo(0.1, 10)
     expect(close.netPnl).toBeCloseTo(0.1, 10)
   })
+
+  test("uses the stored per-position cost instead of silently reverting to 0.1%", () => {
+    const close = calculatePseudoClosePnl({
+      entryPrice: 100,
+      currentPrice: 100.2,
+      quantity: 1,
+      side: "long",
+      positionCostPct: 0.2,
+    })
+    expect(close.positionCost).toBeCloseTo(0.2, 10)
+    expect(close.netPnl).toBeCloseTo(0, 10)
+  })
 })

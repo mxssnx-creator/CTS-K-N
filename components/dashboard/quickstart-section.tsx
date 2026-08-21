@@ -104,8 +104,8 @@ interface IndicationConfigCounts {
   }>
 }
 
-// Live exchange footer — aggregates REAL-exchange positions & account balance
-// across every enabled connection. Not the same as pseudo-position counts.
+// Live exchange footer — shows REAL-exchange positions & account balance for
+// the explicitly selected connection. Not the same as pseudo-position counts.
   interface ExchangeLiveSummary {
     connections: Array<{
       connectionId: string
@@ -393,11 +393,9 @@ function MiniStat({ label, value, sub }: { label: string; value: string; sub?: s
 
 export function QuickstartSection() {
   const { selectedConnectionId, selectedExchange } = useExchange()
-  // Use the exchange-selected connection. Fall back to "bingx-x01" ONLY
-  // once a connection has been added to the Active panel so the QuickStart
-  // strip shows meaningful stats rather than a stale 404 response from a
-  // connection that doesn't exist yet. An explicit null means "no selection
-  // yet" and the polling useEffect guards against it below.
+  // Use the exchange-selected connection only. An explicit null means no
+  // selection yet; the polling effects guard it rather than borrowing another
+  // connection's stats or processing state.
   const connectionId = selectedConnectionId ?? null
 
   // volatile symbol for start button label
@@ -810,11 +808,20 @@ export function QuickstartSection() {
       .then((d: IndicationConfigCounts | null) => { if (d) setConfigCounts(d) })
       .catch(() => { /* non-critical */ }), [])
 
-  const fetchLiveSummary = useCallback(() =>
-    fetch("/api/exchange/live-summary", { cache: "no-store" })
+  const fetchLiveSummary = useCallback(() => {
+    // A dashboard selection is a data boundary: never retain or aggregate a
+    // previous connection's live balances/positions while the selector is
+    // empty or changing.
+    if (!connectionId) {
+      setLiveSummary(null)
+      return Promise.resolve()
+    }
+
+    return fetch(`/api/exchange/live-summary?connectionId=${encodeURIComponent(connectionId)}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: ExchangeLiveSummary | null) => { if (d) setLiveSummary(d) })
-      .catch(() => { /* non-critical */ }), [])
+      .catch(() => { /* non-critical */ })
+  }, [connectionId])
 
   useEffect(() => {
     fetchStats()

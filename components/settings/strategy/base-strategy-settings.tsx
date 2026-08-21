@@ -122,7 +122,7 @@ export default function BaseStrategySettings({
                 )}
               />
               <p className="text-xs text-muted-foreground">
-                PositionCost-relative Base Valid ratio (minimum 1.10, default 1.15; range 1.10–2.20).
+                PositionCost-relative Base Valid ratio (minimum 1.00, default 1.10; range 1.00–2.20).
               </p>
             </div>
           </div>

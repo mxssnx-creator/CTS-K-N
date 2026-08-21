@@ -4,7 +4,7 @@
  */
 
 import { saveSettings } from "@/lib/settings-storage"
-import { saveConnection } from "@/lib/redis-db"
+import { getAllConnections, saveConnection } from "@/lib/redis-db"
 import { loadMarketDataForEngine } from "@/lib/market-data-loader"
 import { getPredefinedAsExchangeConnections } from "@/lib/connection-predefinitions"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
@@ -18,6 +18,8 @@ export interface ProductionSeedOptions {
   seedMarketData?: boolean
   seedProgression?: boolean
   symbols?: string[]
+  /** Optional explicit market-data scopes; otherwise only active connections. */
+  connectionIds?: string[]
 }
 
 /**
@@ -41,7 +43,7 @@ export async function seedProductionData(options: ProductionSeedOptions = {}): P
     
     // Seed market data for trading
     if (options.seedMarketData !== false) {
-      await seedMarketData(options.symbols)
+      await seedMarketData(options.symbols, options.connectionIds)
     }
     
     // Seed progression state
@@ -206,7 +208,7 @@ async function seedPredefinedConnections(): Promise<void> {
 /**
  * Seed initial market data
  */
-async function seedMarketData(symbols: string[] = []): Promise<void> {
+async function seedMarketData(symbols: string[] = [], connectionIds?: string[]): Promise<void> {
   try {
     console.log("[v0] [ProductionSeeder] Seeding initial market data...")
     
@@ -216,11 +218,30 @@ async function seedMarketData(symbols: string[] = []): Promise<void> {
       "MATICUSDT", "SOLUSDT", "UNIUSDT", "APTUSDT", "ARBUSDT"
     ]
     
-    // Load market data for engine
-    const loaded = await loadMarketDataForEngine(targetSymbols, { connectionId: "bingx-x01" })
-    
+    const explicitIds = [...new Set((connectionIds || []).map((id) => String(id || "").trim()).filter(Boolean))]
+    const configuredConnections = explicitIds.length > 0
+      ? explicitIds
+      : (await getAllConnections())
+        .filter((connection: any) =>
+          connection?.is_active === true || connection?.is_active === "1" || connection?.is_active === "true",
+        )
+        .map((connection: any) => String(connection.id || "").trim())
+        .filter(Boolean)
+
+    if (configuredConnections.length === 0) {
+      console.log("[v0] [ProductionSeeder] No active connection selected; skipping unscoped market-data seed")
+      return
+    }
+
+    let loaded = 0
+    for (const connectionId of configuredConnections) {
+      loaded += await loadMarketDataForEngine(targetSymbols, { connectionId })
+    }
+
     if (loaded > 0) {
-      console.log(`[v0] [ProductionSeeder] ✅ Market data seeded for ${loaded} symbols`)
+      console.log(
+        `[v0] [ProductionSeeder] ✅ Market data seeded for ${loaded} symbol loads across ${configuredConnections.length} connection(s)`,
+      )
     } else {
       console.warn("[v0] [ProductionSeeder] ⚠ No market data loaded")
     }

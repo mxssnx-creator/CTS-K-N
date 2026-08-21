@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { sql } from "@/lib/db"
 import { nanoid } from "nanoid"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "@/lib/position-cost"
 
 // GET /api/preset-sets - Get all configuration sets
 export const dynamic = "force-dynamic"
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
         ${body.symbol_mode || "main"}, ${body.symbols || []}, 
         ${body.exchange_order_by || null}, ${body.exchange_limit || 10},
         ${body.indication_type}, ${JSON.stringify(body.indication_params)},
-        ${body.takeprofit_min || 2.0}, ${body.takeprofit_max || 30.0}, ${body.takeprofit_step || 2.0},
+        ${body.takeprofit_min || DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO}, ${body.takeprofit_max || 30.0}, ${body.takeprofit_step || DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO},
         ${body.stoploss_min || 0.3}, ${body.stoploss_max || 3.0}, ${body.stoploss_step || 0.3},
         ${body.trailing_enabled !== false}, ${body.trail_starts || [0.5, 1.0, 1.5]}, 
         ${body.trail_stops || [0.2, 0.4, 0.6]},

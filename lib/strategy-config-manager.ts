@@ -47,6 +47,8 @@ export interface PseudoPosition {
    * (symbol × type × direction) Pos history hash.
    */
   indication_type?: string
+  /** UI percent used for the one-time close-cost deduction. */
+  position_cost_pct?: number
 }
 
 export interface StrategyStats {
@@ -224,6 +226,7 @@ export class StrategyConfigManager {
       p.exit_price?.toString() || "0",
       normalizeTradeDirection(p.direction) || "",
       p.indication_type || "",
+      p.position_cost_pct?.toString() || "",
     ].join("|")
   }
 
@@ -366,6 +369,7 @@ export class StrategyConfigManager {
       exit_price:  parts[8] ? (parseFloat(parts[8]) || undefined) : undefined,
       direction,
       indication_type: parts[10] || undefined,
+      position_cost_pct: parts[11] ? (parseFloat(parts[11]) || undefined) : undefined,
     }
   }
 
@@ -507,6 +511,7 @@ export class StrategyConfigManager {
         currentPrice: exitPrice,
         quantity: 1,
         side: direction,
+        positionCostPct: pos.position_cost_pct,
       }).netPnlPct
       const closedPos: PseudoPosition = {
         ...pos,

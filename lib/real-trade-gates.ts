@@ -120,6 +120,23 @@ export function hasUsableLiveCredentials(settings: Record<string, any>): boolean
   return !banned.test(key) && !banned.test(secret)
 }
 
+/**
+ * BingX calls its virtual-funds environment "Prod-VST".  It is an
+ * authenticated exchange endpoint, but it is not a mainnet account: the
+ * connector resolves this exact combination to `open-api-vst.bingx.com`.
+ *
+ * Keep the exception deliberately narrow.  A generic `is_testnet` flag is
+ * not enough because other venues may use a flag with different semantics;
+ * and an unflagged BingX connection must continue through the explicit
+ * production mainnet placement gate below.
+ */
+export function isBingXVirtualFundsDemo(settings: Record<string, any>): boolean {
+  return (
+    String(settings.exchange || "").trim().toLowerCase() === "bingx" &&
+    truthy(settings.is_testnet ?? settings.isTestnet)
+  )
+}
+
 export function getRealTradeInfrastructureBlockReason(): string {
   if (
     !hasSharedRedisConfig() &&
@@ -224,7 +241,8 @@ export function evaluateRealTradeReadiness(
     blockReason = infrastructureReason
   } else if (
     process.env.NODE_ENV === "production" &&
-    process.env.ALLOW_LIVE_ORDER_PLACEMENT !== "1"
+    process.env.ALLOW_LIVE_ORDER_PLACEMENT !== "1" &&
+    !isBingXVirtualFundsDemo(settings)
   ) {
     blockCode = "placement_disabled"
     blockReason = "Live trading is disabled on this production server because ALLOW_LIVE_ORDER_PLACEMENT is not set to 1"

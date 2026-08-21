@@ -24,9 +24,30 @@ interface TestResult {
 
 class IntegrationTestSuite {
   private results: TestResult[] = []
-  private baseUrl = "http://localhost:3002"
-  private connectionId = "bingx-x01"
-  private symbol = "BTCUSDT"
+  private baseUrl: string
+  private connectionId: string
+  private symbol: string
+
+  /**
+   * A diagnostic run must be explicitly scoped. Falling back to X01 here
+   * would test the wrong account after the operator changes connections.
+   */
+  constructor({
+    connectionId,
+    baseUrl = "http://localhost:3002",
+    symbol = "BTCUSDT",
+  }: {
+    connectionId: string
+    baseUrl?: string
+    symbol?: string
+  }) {
+    this.connectionId = String(connectionId || "").trim()
+    if (!this.connectionId) {
+      throw new Error("IntegrationTestSuite requires an explicit connectionId")
+    }
+    this.baseUrl = baseUrl
+    this.symbol = symbol
+  }
 
   /**
    * Test 1: Batch API Client - Basic Queuing

@@ -3696,7 +3696,7 @@ export function ActiveConnectionCard({
                       className="mt-1 truncate text-[9px] text-muted-foreground"
                       title={`Standard ${connectionStageOverview.main.breakdown.standard}, Trailing ${connectionStageOverview.main.breakdown.trailing}, Position-count ${connectionStageOverview.main.breakdown.positionCount}, Block ${connectionStageOverview.main.breakdown.block}, DCA ${connectionStageOverview.main.breakdown.dca}`}
                     >
-                      +{connectionStageOverview.main.additional.toLocaleString()} related · S {connectionStageOverview.main.breakdown.standard} · T {connectionStageOverview.main.breakdown.trailing} · Pis {connectionStageOverview.main.breakdown.positionCount} · B {connectionStageOverview.main.breakdown.block} · D {connectionStageOverview.main.breakdown.dca}
+                      +{connectionStageOverview.main.additional.toLocaleString()} related · S {connectionStageOverview.main.breakdown.standard} · T {connectionStageOverview.main.breakdown.trailing} · Pos {connectionStageOverview.main.breakdown.positionCount} · B {connectionStageOverview.main.breakdown.block} · D {connectionStageOverview.main.breakdown.dca}
                     </div>
                   </div>
 

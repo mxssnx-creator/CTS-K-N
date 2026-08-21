@@ -63,7 +63,10 @@ export const DEFAULT_PRESET_OPTIMIZER_SETTINGS: PresetOptimizerSettings = {
   presetsPerSymbol: 4,
   minProfitFactor: 0.7,
   maxDrawdownHours: 5,
-  takeProfit: { min: 3, max: 30, step: 1 },
+  // Fresh preset grids begin at the systemwide five-step floor. The
+  // normalizer still accepts an explicit legacy three-step range so existing
+  // persisted presets remain reproducible until an operator changes them.
+  takeProfit: { min: 5, max: 30, step: 1 },
   stopLossRatio: { min: 0.25, max: 2, step: 0.25 },
   trailingEnabled: true,
   trailingIndependent: true,
@@ -214,6 +217,23 @@ function clamp(value: number, min: number, max: number): number {
 function round(value: number, decimals = 6): number {
   const factor = 10 ** decimals
   return Math.round((value + Number.EPSILON) * factor) / factor
+}
+
+/**
+ * Express a gross price move in net PositionCost multiples.
+ *
+ * One gross PositionCost is neutral (0R) after the cost is deducted once;
+ * two gross costs are +1R. This keeps the optimizer's PF, win rate, daily
+ * totals, drawdown and ranking on the same cost-adjusted basis as Direct,
+ * Base/Main/Real and Auto-Optimal calculations.
+ */
+export function netPositionCostMultiple(
+  grossMovePct: unknown,
+  positionCostPct: unknown,
+): number {
+  const gross = finite(grossMovePct, 0)
+  const cost = Math.max(0, finite(positionCostPct, 0))
+  return cost > 0 ? (gross - cost) / cost : 0
 }
 
 function snap(value: unknown, min: number, max: number, step: number, fallback: number): number {
@@ -1326,7 +1346,7 @@ function metricsForCandidate(
     const rawMovePct = path.entry.direction === "long"
       ? ((exit.price - path.entryPrice) / path.entryPrice) * 100
       : ((path.entryPrice - exit.price) / path.entryPrice) * 100
-    const value = positionCostPct > 0 ? rawMovePct / positionCostPct : 0
+    const value = netPositionCostMultiple(rawMovePct, positionCostPct)
     const exitTime = candles[exit.index]?.timestamp ?? path.entryTime
     // Match the engine's one-active-position-per-symbol/direction constraint.
     // Signals occurring while their direction already has an open historical

@@ -6,6 +6,8 @@
  * analytics and stores only the fields used by reporting.
  */
 
+import { resolvePositionQuantity, resolveRealizedPnl } from "@/lib/live-position-pnl"
+
 export const LIVE_POSITION_ANALYTICS_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
 export const LIVE_POSITION_ANALYTICS_RETENTION_MS = 73 * 60 * 60 * 1000
 const ANALYTICS_PRUNE_INTERVAL_SECONDS = 60
@@ -131,18 +133,9 @@ export function buildLivePositionAnalyticsSnapshot(
     ),
     closedAt,
     updatedAt: finite(position.updatedAt),
-    realizedPnL: finite(
-      position.realizedPnL ??
-      position.realized_pnl ??
-      position.pnl,
-    ) ?? 0,
+    realizedPnL: resolveRealizedPnl(position as Record<string, any>) ?? 0,
     volumeUsd: finite(position.volumeUsd),
-    quantity: finite(
-      position.executedQuantity ??
-      position.filledQuantity ??
-      position.quantity ??
-      position.size,
-    ),
+    quantity: resolvePositionQuantity(position as Record<string, any>, true) ?? finite(position.size),
     entryPrice: finite(
       position.averageExecutionPrice ??
       position.entryPrice ??

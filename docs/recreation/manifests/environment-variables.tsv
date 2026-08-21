@@ -122,6 +122,7 @@ DEV_PREVIEW_FULL_SOAK	test-or-operator-tool	no	no	1	scripts/run-dev-preview-chec
 DEV_PREVIEW_STREAM_SERVER_LOGS	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_RSS_HARD_LIMIT_MB	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/run-dev-preview-check.mjs
 DEV_RSS_SOFT_LIMIT_MB	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/run-dev-preview-check.mjs
+DEV_SOAK_CONNECTION_ID	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_SOAK_DB_GROWTH_LIMIT	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_SOAK_PRODUCTIVE_COMPLETION_GRACE_MS	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
@@ -318,6 +319,8 @@ PREVIEW_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS	test-or-operator-tool	no	no	1	scripts/r
 PREVIEW_STRATEGY_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-prod-preview-check.mjs
 PROCESSING_METRICS_TRACKER_IDLE_TTL_MS	application-runtime	no	no	1	lib/processing-metrics.ts
 PROCESSOR_HEARTBEAT_FRESH_MS	application-runtime	no	no	1	lib/redis-db.ts
+PROD_INLINE_AUDIT_HEAP_MB	test-or-operator-tool	no	no	1	scripts/run-production-inline-ui-audit.mjs
+PROD_INLINE_AUDIT_PORT	test-or-operator-tool	no	no	1	scripts/run-production-inline-ui-audit.mjs
 PROD_PREVIEW_SERVER_LOGS	test-or-operator-tool	no	no	1	scripts/run-prod-preview-check.mjs
 PROD_SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/run-prod-preview-check.mjs
 PROD_SOAK_SYMBOL_COUNT	test-or-operator-tool	no	no	1	scripts/run-prod-preview-check.mjs
@@ -351,6 +354,7 @@ SIGNAL_PROBE_SYMBOL	test-or-operator-tool	no	no	1	scripts/verify-signal-sources.
 SIGNAL_PROBE_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-signal-sources.ts
 SOAK_ADMIN_SECRET	test-or-operator-tool	yes	no	1	scripts/verify-prod-soak.mjs
 SOAK_API_P95_LIMIT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
+SOAK_CONNECTION_ID	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_DB_GROWTH_LIMIT	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_HEAP_GROWTH_LIMIT_KB	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
@@ -392,6 +396,7 @@ VERCEL_ENV	platform-provided	no	no	4	app/api/trade-engine/quick-start/route.ts,l
 VERCEL_GIT_COMMIT_SHA	platform-provided	no	no	1	lib/redis-db.ts
 VERCEL_PROJECT_PRODUCTION_URL	platform-provided	no	no	4	lib/deployment-runtime.ts,lib/startup-validation.ts,next.config.mjs,scripts/production-deploy-init.mjs
 VERCEL_URL	platform-provided	no	no	4	app/api/settings/connections/route.ts,lib/deployment-runtime.ts,lib/startup-validation.ts,scripts/verify-deployment-contract.mjs
+VERIFY_CONNECTION_ID	test-or-operator-tool	no	no	1	scripts/verify-prod-preview.mjs
 VERIFY_CONNECTION_TOGGLE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 VERIFY_SIGNAL_ENGINE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 VOLATILE_STATE_OWNER_FRESH_MS	application-runtime	no	no	1	lib/redis-db.ts

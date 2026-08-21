@@ -1,3 +1,5 @@
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS } from "@/lib/position-cost"
+
 export interface DetailedIndicationCount {
   type: string
   parameter: string
@@ -135,18 +137,18 @@ export class IndicationCalculator {
     const total_all_indications = total_direction + total_move + total_active // 2,800 + 2,800 + 32,400 = 38,000
 
     // Strategy Configuration
-    const tp_factors = 11 // 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22
+    const tp_factors = DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS.length
     const sl_ratios = Math.floor((2.5 - 0.25) / 0.25) + 1 // 10
     const trailing_options = 4 // None + 3 variations
 
     const configs_per_direction = total_all_indications * tp_factors * sl_ratios * trailing_options
-    // 38,000 × 11 × 10 × 4 = 16,720,000
+    // Keep this diagnostic in lockstep with fresh Base set generation.
 
     const maxPositionsPerConfigSet = 1 // Default
     const positions_per_direction = configs_per_direction * maxPositionsPerConfigSet
 
     // Both directions (Long AND Short - completely independent)
-    const total_both_directions = positions_per_direction * 2 // 70,224,000
+    const total_both_directions = positions_per_direction * 2
 
     const detailed_breakdown = `
 ═══════════════════════════════════════════════════════════════════
@@ -220,8 +222,8 @@ export class IndicationCalculator {
 
 ⚙️  STRATEGY CONFIGURATION:
 
-• TP Factors: 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22 = 11 options
-• SL Ratios: 0.25 to 2.5 (step 0.25) = 10 options
+• TP Factors: ${DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS.join(", ")} = ${tp_factors} options
+• SL Ratios: 0.25 to 2.5 (step 0.25) = ${sl_ratios} options
 • Trailing Options: 4 (None + 3 variations)
 
 ═══════════════════════════════════════════════════════════════════
@@ -231,18 +233,18 @@ export class IndicationCalculator {
 ┌─ PER DIRECTION (Long OR Short) ─────────────────────────────────┐
 │                                                                  │
 │ Configurations = Indications × TP × SL × Trailing               │
-│                = 38,000 × 11 × 21 × 4                            │
-│                = 35,112,000 unique configurations                │
+│                = ${total_all_indications.toLocaleString()} × ${tp_factors} × ${sl_ratios} × ${trailing_options}                            │
+│                = ${configs_per_direction.toLocaleString()} unique configurations                │
 │                                                                  │
 │ With maxPositionsPerConfigSet = 1:                               │
-│ Positions = 35,112,000 × 1 = 35,112,000 positions               │
+│ Positions = ${configs_per_direction.toLocaleString()} × 1 = ${positions_per_direction.toLocaleString()} positions               │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌─ BOTH DIRECTIONS (Long AND Short - INDEPENDENT) ────────────────┐
 │                                                                  │
-│ Total Positions = 35,112,000 × 2 directions                     │
-│                 = 70,224,000 positions per symbol                │
+│ Total Positions = ${positions_per_direction.toLocaleString()} × 2 directions                     │
+│                 = ${total_both_directions.toLocaleString()} positions per symbol                │
 │                                                                  │
 │ ✓ Long and Short are COMPLETELY INDEPENDENT                     │
 │ ✓ Each direction has separate position limits                   │
@@ -254,9 +256,9 @@ export class IndicationCalculator {
 
 📊 SCALING WITH maxPositionsPerConfigSet:
 
-• maxPositionsPerConfigSet = 1:  70,224,000 positions/symbol
-• maxPositionsPerConfigSet = 5:  351,120,000 positions/symbol
-• maxPositionsPerConfigSet = 10: 702,240,000 positions/symbol
+• maxPositionsPerConfigSet = 1:  ${total_both_directions.toLocaleString()} positions/symbol
+• maxPositionsPerConfigSet = 5:  ${(total_both_directions * 5).toLocaleString()} positions/symbol
+• maxPositionsPerConfigSet = 10: ${(total_both_directions * 10).toLocaleString()} positions/symbol
 
 ═══════════════════════════════════════════════════════════════════
 

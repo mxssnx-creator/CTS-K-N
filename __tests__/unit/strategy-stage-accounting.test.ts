@@ -43,6 +43,18 @@ describe("strategy stage logical accounting", () => {
     })
   })
 
+  test("keeps a thousands-row axis fan-out out of the public Main funnel", () => {
+    const parent = "BTCUSDT:direction:long"
+    const sets = [
+      mirror(parent),
+      ...Array.from({ length: 2_400 }, (_, index) => axis(parent, `p${index}_l1_c0`)),
+    ]
+
+    const accounting = accountMainStage(1, sets)
+    expect(accounting.logicalEvaluated).toBe(2)
+    expect(accounting.rawMaterialized).toBe(2_401)
+  })
+
   test("Real logical inputs preserve one Pos-Count lineage while raw work remains visible", () => {
     const parent = "ETHUSDT:direction:long"
     const input = [

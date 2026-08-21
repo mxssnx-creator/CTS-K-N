@@ -31,6 +31,7 @@ import {
 } from "@/lib/indication-lane-identity"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS } from "@/lib/position-cost"
 
 export interface IndicationState {
   symbol: string
@@ -1172,7 +1173,7 @@ export class IndicationStateManager {
   ): Promise<void> {
     try {
       // Define ALL possible configurations (UNLIMITED sets)
-      const tpFactors = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+      const tpFactors = DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS
       // Stop-loss grid: systemwide range 0.25..maxStopLossRatio (default/max 2.5), step 0.25.
       const slRatios = await this.getStopLossRatios()
       const trailingOptions = [
@@ -1270,7 +1271,7 @@ export class IndicationStateManager {
   ): Promise<void> {
     try {
       // Define ALL possible configurations (UNLIMITED sets)
-      const tpFactors = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+      const tpFactors = DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS
       // Stop-loss grid: systemwide range 0.25..maxStopLossRatio (default/max 2.5), step 0.25.
       const slRatios = await this.getStopLossRatios()
       const trailingOptions = [
@@ -1580,7 +1581,7 @@ export class IndicationStateManager {
     marketChangeRange: number,
     lastPartRatio: number,
   ): Promise<void> {
-    const tpFactors = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+    const tpFactors = DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS
     // Stop-loss grid: systemwide range 0.25..maxStopLossRatio (default/max 2.5), step 0.25.
     const slRatios = await this.getStopLossRatios()
       const trailingOptions = [

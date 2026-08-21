@@ -256,6 +256,27 @@ jest.mock("@/lib/trade-engine/progression-writes", () => ({
 jest.mock("@/lib/live-order-service", () => ({
   recordPerSymbolOrderCounter: jest.fn(async () => undefined),
   recordLiveOrderProgression: (...args: any[]) => mockRecordLiveOrderProgression(...args),
+  setupLiveOrderMarginAndLeverage: jest.fn(async (
+    connector: any,
+    symbol: string,
+    options: { marginType?: "cross" | "isolated"; leverage?: number } = {},
+  ) => {
+    const marginType = options.marginType || "cross"
+    let marginConfigured = false
+    if (typeof connector?.setMarginType === "function") {
+      const margin = await connector.setMarginType(symbol, marginType)
+      if (margin?.success === false) throw new Error(margin.error || "margin rejected")
+      marginConfigured = true
+    }
+    const leverage = Math.max(1, Number(options.leverage) || 1)
+    let leverageConfigured = false
+    if (leverage > 1 && typeof connector?.setLeverage === "function") {
+      const leverageResult = await connector.setLeverage(symbol, leverage)
+      if (leverageResult?.success === false) throw new Error(leverageResult.error || "leverage rejected")
+      leverageConfigured = true
+    }
+    return { marginType, marginConfigured, leverageConfigured }
+  }),
 }))
 
 jest.mock("@/lib/preset-store", () => ({

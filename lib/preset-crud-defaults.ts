@@ -1,5 +1,6 @@
 import { COMMON_INDICATOR_TYPES } from "@/lib/common-indicator-config"
 import { MAIN_TRADE_BASE_PF_RATIO_DEFAULT } from "@/lib/main-trade-profit-factor"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS } from "@/lib/position-cost"
 
 export const PRESET_DEFAULT_INDICATION_TYPES = [
   "direction",
@@ -39,6 +40,8 @@ export const PRESET_DEFAULT_STRATEGY_TYPES = [
 ] as const
 
 export const PRESET_DEFAULT_MIN_PF_RATIO = MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+
+export const PRESET_DEFAULT_TAKE_PROFIT_STEPS = DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS
 
 export function presetStringList(
   value: unknown,

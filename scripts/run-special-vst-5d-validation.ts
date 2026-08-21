@@ -545,7 +545,7 @@ function candidateSettings(): Partial<SpecialStrategySettings>[] {
 
 function intervalMarkdown(stats: ReturnType<typeof calculateSpecial24HourTwoHourStats>): string[] {
   return [
-    "| UTC interval | PIs | Long | Short | PF | DD max % | DDT max |",
+    "| UTC interval | Pos | Long | Short | PF | DD max % | DDT max |",
     "|---|---:|---:|---:|---:|---:|---:|",
     ...stats.map((row) =>
       `| ${iso(row.intervalStart).slice(0, 16)}–${iso(row.intervalEnd).slice(11, 16)} | ${row.pisCount} | ${row.longCount} | ${row.shortCount} | ${round(row.profitFactor, 3)} | ${round(row.maxDrawdownPct, 3)} | ${Math.round(row.maxDrawdownDurationSeconds)}s |`,
@@ -565,7 +565,7 @@ function resultMarkdown(
     "",
     `Walk-forward qualified: **${item.walkForwardQualified ? "yes" : "no"}**; full-period qualified: **${result.qualified ? "yes" : "no"}**.`,
     "",
-    `PIs ${result.totalTrades} (Long ${result.longTrades}, Short ${result.shortTrades}); PF ${round(result.profitFactor, 3)}; stable PF ${round(result.stableProfitFactor, 3)}; worst-fold PF ${round(item.worstFoldProfitFactor, 3)}; max DD ${round(result.maxDrawdownPct, 3)}%; net ${round(result.netPnlPct, 3)}%.`,
+    `Pos ${result.totalTrades} (Long ${result.longTrades}, Short ${result.shortTrades}); PF ${round(result.profitFactor, 3)}; stable PF ${round(result.stableProfitFactor, 3)}; worst-fold PF ${round(item.worstFoldProfitFactor, 3)}; max DD ${round(result.maxDrawdownPct, 3)}%; net ${round(result.netPnlPct, 3)}%.`,
     "",
     "### Last 24 hours, all symbols combined, two-hour intervals",
     "",

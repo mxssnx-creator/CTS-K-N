@@ -86,6 +86,23 @@ describe("settings propagation", () => {
     expect(hsets.find((w) => w.key === "progression:conn-main")?.value).toHaveProperty("settings_changed_at")
   })
 
+  test("durable settings envelopes retain the exact caller generation and expose their own event identity", async () => {
+    const { notifySettingsChanged } = await import("@/lib/settings-coordinator")
+
+    const event = await notifySettingsChanged(
+      "conn-main",
+      ["minimal_step_count"],
+      { settings_version: "conn-main:old" },
+      { settings_version: "conn-main:settings-v42", updated_at: "2026-08-21T18:00:00.000Z" },
+    )
+
+    expect(event.eventId).toEqual(expect.any(String))
+    expect(event.newValues).toMatchObject({
+      settings_version: "conn-main:settings-v42",
+      settings_event_id: event.eventId,
+    })
+  })
+
   test("in-process settings event fires after durable reload state is written", async () => {
     const { notifySettingsChanged, onSettingsChanged } = await import("@/lib/settings-coordinator")
     const observed: Array<{ hasReloadState: boolean; pendingExists: boolean }> = []
@@ -221,7 +238,7 @@ describe("settings propagation", () => {
 
     expect(recoordinator).toContain('settings_recoordination_pending: "1"')
     expect(recoordinator).toContain('strategy_recompute_requested: "1"')
-    expect(recoordinator).toContain("settings_recoordination_requested_event_id: settingsEvent.id")
+    expect(recoordinator).toContain("settings_recoordination_requested_event_id: requestedSettingsEventId")
     expect(recoordinator).toContain("await coordinator.applyPendingChangesNow(id)")
 
     const applyBlock = manager.slice(

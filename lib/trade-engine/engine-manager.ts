@@ -6,6 +6,7 @@ import {
   type CanonicalPipelineAdmission,
 } from "@/lib/canonical-pipeline-admission"
 import { publishEngineEvent } from "@/lib/engine-event-bus"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { hasStrategyAffectingChange, hasSymbolAffectingChange, isGenericConnectionSettingsReload } from "@/lib/trade-engine/settings-change-fields"
 import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
 import {
@@ -3924,7 +3925,7 @@ export class TradeEngineManager {
               const apiKey = (connection as any).api_key || (connection as any).apiKey || ""
               const apiSecret = (connection as any).api_secret || (connection as any).apiSecret || ""
               if (apiKey && apiSecret) {
-                const isTestnet = connection.is_testnet === true || connection.is_testnet === "true"
+                const isTestnet = isTruthyFlag(connection.is_testnet)
                 const connectorKey = `${connection.exchange}:${apiKey}:${apiSecret.slice(-8)}:${isTestnet}:${connection.api_type ?? ""}:${connection.contract_type ?? ""}`
                 if (cachedConnector && cachedConnectorKey === connectorKey) {
                   connector = cachedConnector
@@ -5837,7 +5838,7 @@ export class TradeEngineManager {
       const completedAt = new Date().toISOString()
       const eventValues = (event.newValues || {}) as Record<string, unknown>
       const appliedVersion = String(eventValues.settings_version || eventValues.updated_at || event.timestamp || completedAt)
-      const appliedEventId = String(eventValues.settings_event_id || appliedVersion)
+      const appliedEventId = String(eventValues.settings_event_id || event.eventId || appliedVersion)
       const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
       const client = getRedisClient()
       await client.hset(scope.progressionKey, { connection_id: this.connectionId, engine_type: scope.engineType })
@@ -5879,7 +5880,7 @@ export class TradeEngineManager {
     try {
       const eventValues = (event?.newValues || {}) as Record<string, unknown>
       const requestedVersion = String(eventValues.settings_version || eventValues.updated_at || event?.timestamp || "")
-      const requestedEventId = String(eventValues.settings_event_id || requestedVersion)
+      const requestedEventId = String(eventValues.settings_event_id || event?.eventId || requestedVersion)
       const patch = {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "1",

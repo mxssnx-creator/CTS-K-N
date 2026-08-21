@@ -93,11 +93,15 @@ export interface DirectTradeState {
   activityVolumeRatio: number
   maxHoldMinutes: number
   // Integer multipliers of PositionCost used to build the TP grid. The
-  // default starts at 4× PositionCost and may be configured from 2× to 22×.
+  // fresh default starts at 5× PositionCost; legacy values 2×–22× remain
+  // valid when an operator selected them explicitly.
   takeProfitRatioRange: [number, number]
   // The selected range uses unit handles; this is the sparse Set-generation
   // stride, kept separate so a 32-symbol matrix remains bounded.
   takeProfitRatioStep: number
+  // Allows the previous shipped TP defaults to move to the 5× contract once
+  // without repeatedly rewriting later operator choices.
+  takeProfitDefaultsVersion?: number
   blockRange: [number, number]
   // The Block increase ratio is independent from the base position-size
   // factor. For a base quantity B and N valid Blocks: B + (N × B × ratio).
@@ -177,6 +181,7 @@ const DEFAULT_STATE: DirectTradeState = {
   maxHoldMinutes: 120,
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+  takeProfitDefaultsVersion: 2,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 0.8,
@@ -245,6 +250,22 @@ async function getState(): Promise<DirectTradeState> {
       // deliberate operator capacity choices.
       const hasLegacyCapacityDefaults = Number(persisted?.maxPositionsPerSymbol) === 3
         && Number(persisted?.maxPositionsPerDirection) === 2
+      const takeProfitDefaultsVersion = Number(persisted?.takeProfitDefaultsVersion) || 0
+      const hasFormerShippedTakeProfitGrid = Array.isArray(persisted?.takeProfitRatioRange)
+        && Number(persisted.takeProfitRatioRange[0]) === 4
+        && (Number(persisted.takeProfitRatioRange[1]) === 12
+          || Number(persisted.takeProfitRatioRange[1]) === 8)
+        && (persisted?.takeProfitRatioStep === undefined
+          || Number(persisted.takeProfitRatioStep) === 2)
+      // A short-lived pre-version transition could have written the new range
+      // while retaining the old default step. Treat that exact unversioned
+      // pair as one legacy default, never as an operator-selected dense grid.
+      const hasUnversionedTransitionGrid = Array.isArray(persisted?.takeProfitRatioRange)
+        && Number(persisted.takeProfitRatioRange[0]) === DEFAULT_STATE.takeProfitRatioRange[0]
+        && Number(persisted.takeProfitRatioRange[1]) === DEFAULT_STATE.takeProfitRatioRange[1]
+        && Number(persisted?.takeProfitRatioStep) === 2
+      const hasLegacyTakeProfitDefaults = takeProfitDefaultsVersion < 2
+        && (hasFormerShippedTakeProfitGrid || hasUnversionedTransitionGrid)
       return {
         ...DEFAULT_STATE,
         ...persisted,
@@ -267,21 +288,22 @@ async function getState(): Promise<DirectTradeState> {
         activityVolumeRatio: Math.max(0, Number(persisted?.activityVolumeRatio) || DEFAULT_STATE.activityVolumeRatio),
         positionCostPercent: normalizePositionCostPercent(persisted?.positionCostPercent ?? DEFAULT_STATE.positionCostPercent),
         maxHoldMinutes: Math.max(1, Number(persisted?.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes),
-        // The former 4–12 range was the shipped default, not an intentional
-        // cap. Upgrade that exact legacy default to the optimized 4–8 contract;
-        // any other persisted range remains the operator's explicit choice.
-        takeProfitRatioRange: Array.isArray(persisted?.takeProfitRatioRange)
-          && Number(persisted.takeProfitRatioRange[0]) === 4
-          && Number(persisted.takeProfitRatioRange[1]) === 12
+        // Former shipped 4–12 and 4–8 grids were defaults, not deliberate
+        // caps. Upgrade only those exact legacy defaults to the fresh 5–10
+        // contract; any other persisted range remains the operator's choice.
+        takeProfitRatioRange: hasLegacyTakeProfitDefaults
           ? DEFAULT_STATE.takeProfitRatioRange
           : normaliseDirectTradeTakeProfitRatioRange(
             persisted?.takeProfitRatioRange,
             DEFAULT_STATE.takeProfitRatioRange,
           ),
-        takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(
-          persisted?.takeProfitRatioStep,
-          DEFAULT_STATE.takeProfitRatioStep,
-        ),
+        takeProfitRatioStep: hasLegacyTakeProfitDefaults
+          ? DEFAULT_STATE.takeProfitRatioStep
+          : normaliseDirectTradeTakeProfitRatioStep(
+            persisted?.takeProfitRatioStep,
+            DEFAULT_STATE.takeProfitRatioStep,
+          ),
+        takeProfitDefaultsVersion: 2,
         // Upgrade exactly the former shipped 300-position default once. A
         // different persisted limit is an explicit operator choice.
         maxTotalPositions: (Number(persisted?.positionCapacityDefaultsVersion) || 0) < 1

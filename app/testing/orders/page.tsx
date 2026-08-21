@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { LIVE_ORDER_CONFIRMATION_PHRASE } from "@/lib/live-order-safety"
+import { useExchange } from "@/lib/exchange-context"
 
 interface TestResult {
   testName: string
@@ -43,7 +44,8 @@ interface PlacedOrder {
 }
 
 export default function OrderTestingPage() {
-  const [connectionId, setConnectionId] = useState("bingx-x01")
+  const { selectedConnectionId } = useExchange()
+  const connectionId = selectedConnectionId ?? ""
   const [loading, setLoading] = useState(false)
   const [report, setReport] = useState<TestReport | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -215,14 +217,14 @@ export default function OrderTestingPage() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="text-sm font-medium">Connection ID</label>
+              <label className="text-sm font-medium">Selected connection</label>
               <input
                 type="text"
                 value={connectionId}
-                onChange={(e) => setConnectionId(e.target.value)}
-                placeholder="bingx-x01"
+                readOnly
+                placeholder="Select an active connection"
                 className="w-full px-3 py-2 border border-input bg-background rounded-md mt-1"
-                disabled={placingOrder}
+                disabled
               />
             </div>
             <div>
@@ -327,18 +329,18 @@ export default function OrderTestingPage() {
       <Card>
         <CardHeader>
           <CardTitle>Test Configuration</CardTitle>
-          <CardDescription>Select connection and run comprehensive tests</CardDescription>
+          <CardDescription>Run comprehensive tests for the active connection selection</CardDescription>
         </CardHeader>
         <CardContent className="flex gap-4 items-end">
           <div className="flex-1">
-            <label className="text-sm font-medium">Connection ID</label>
+            <label className="text-sm font-medium">Selected connection</label>
             <input
               type="text"
               value={connectionId}
-              onChange={(e) => setConnectionId(e.target.value)}
-              placeholder="Enter connection ID"
+              readOnly
+              placeholder="Select an active connection"
               className="w-full px-3 py-2 border border-input bg-background rounded-md mt-1"
-              disabled={loading}
+              disabled
             />
           </div>
           <Button onClick={runTests} disabled={loading || !liveRequestReady || !connectionId.trim()} className="gap-2">

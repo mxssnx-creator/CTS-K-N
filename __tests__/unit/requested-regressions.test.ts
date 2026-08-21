@@ -535,7 +535,7 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain('client.keys("*")')
   })
 
-  test("pseudo position close PnL and PF inputs are net of 0.1% position cost", () => {
+  test("pseudo position close PnL and PF inputs use the stored one-time position cost", () => {
     const helper = read("lib/pseudo-position-costs.ts")
     const pseudoManager = read("lib/trade-engine/pseudo-position-manager.ts")
     const posHistory = read("lib/pos-history.ts")
@@ -543,12 +543,13 @@ describe("requested regression guardrails", () => {
     const strategyConfig = read("lib/strategy-config-manager.ts")
 
     expect(helper).toContain("PSEUDO_POSITION_CLOSE_COST_RATIO = 0.001")
+    expect(helper).toContain("normalizePositionCostPercent")
     expect(helper).toContain("const netPnl = grossPnl - positionCost")
     expect(helper).toContain("netPnlPct")
-    expect(pseudoManager).toContain("calculatePseudoClosePnl({ entryPrice, currentPrice, quantity, side })")
+    expect(pseudoManager).toContain("positionCostPct: configuredPositionCostPct")
     expect(pseudoManager).toContain("realized_pnl: String(pnl)")
     expect(pseudoManager).toContain("gross_realized_pnl: String(grossPnl)")
-    expect(pseudoManager).toContain("position_cost_ratio: String(PSEUDO_POSITION_CLOSE_COST_RATIO)")
+    expect(pseudoManager).toContain("position_cost_ratio: String(positionCostPct / 100)")
     expect(posHistory).toContain("PnL is already cost-adjusted")
     expect(configProcessor).toContain("netPnlPct")
     expect(strategyConfig).toContain("calculatePseudoClosePnl")
@@ -645,7 +646,7 @@ describe("requested regression guardrails", () => {
     expect(processor).toContain("maxPositionsPerDirection: 6")
     expect(matrix).toContain("DIRECT_TRADE_MATRIX_MAX_PER_SYMBOL) || 12")
     expect(matrix).toContain("DIRECT_TRADE_MATRIX_MAX_PER_DIRECTION) || 6")
-    expect(matrix).toContain("buildDirectTradeTakeProfitPositionCostRatios([4, 8], 2)")
+    expect(matrix).toContain("buildDirectTradeTakeProfitPositionCostRatios([5, 10], 5)")
     expect(route).toContain("takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE")
     expect(route).toContain("takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT")
     expect(dashboard).toContain('aria-label="Direct-Trade take-profit PositionCost range"')
@@ -1983,7 +1984,7 @@ describe("requested regression guardrails", () => {
     expect(globalReadyBlock).toContain("migrationsRan = false")
     expect(source).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(source).toContain('import("@/lib/redis-migrations")')
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 98")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 99")
     expect(source).toContain('client.get("_schema_version").catch(() => null)')
   })
 
@@ -3763,7 +3764,7 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain("RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS")
     expect(migrations).toContain("await releaseOwnedRedisLock(client, keys.baseLock, token)")
     expect(migrations).toContain("__v0_devBootGuardDone = false")
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 98")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 99")
     expect(redisDb).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(redisDb).toContain("ensureSharedVolatileStartupCleanup")
     expect(redisDb).toContain("markSharedRuntimeReady")
@@ -3771,6 +3772,40 @@ describe("requested regression guardrails", () => {
       expect(launcher).toContain("CTS_RUNTIME_BOOT_ID")
       expect(launcher).toContain("CTS_RUNTIME_STARTED_AT")
     }
+  })
+
+  test("BingX live entry, protection, and venue setup keep their shared cooldown gate", () => {
+    const bingx = read("lib/exchange-connectors/bingx-connector.ts")
+
+    const methods = [
+      { marker: "async placeOrder(", operation: "placeOrder" },
+      { marker: "override async placeStopOrder(", operation: "placeStopOrder" },
+      { marker: "async setLeverage(", operation: "setLeverage" },
+      { marker: "async setMarginType(", operation: "setMarginType" },
+    ]
+    for (const { marker, operation } of methods) {
+      const start = bingx.indexOf(marker)
+      expect(start).toBeGreaterThanOrEqual(0)
+      const end = bingx.indexOf("\n  async ", start + marker.length)
+      const block = bingx.slice(start, end === -1 ? undefined : end)
+      expect(block).toContain(`const release = await this.acquireBingxSlot("${operation}")`)
+      expect(block).toMatch(/finally\s*\{\s*release\(\)\s*\}/)
+    }
+  })
+
+  test("SL/TP sizing is based on confirmed fills and cannot exceed an explicit reduction override", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(liveStage).toContain(
+      "const rawEffectiveQty = pos.executedQuantity > 0 ? pos.executedQuantity : (pos.quantity ?? 0)",
+    )
+    expect(liveStage).toContain("? Math.min(rawEffectiveQty, requestedOverride)")
+    expect(liveStage).toContain(
+      'await prepareProtectionSubmission(livePosition, "stopLoss", slPrice, livePosition.executedQuantity)',
+    )
+    expect(liveStage).toContain(
+      'await prepareProtectionSubmission(livePosition, "takeProfit", tpPrice, livePosition.executedQuantity)',
+    )
   })
 
 })

@@ -1,7 +1,7 @@
 import { getRuntimeBootId } from "./runtime-boot-id"
 
 /** Keep this in lockstep with the highest entry in redis-migrations.ts. */
-export const LATEST_REDIS_SCHEMA_VERSION = 98
+export const LATEST_REDIS_SCHEMA_VERSION = 99
 export const RUNTIME_BASE_BOOTSTRAP_REVISION = "3"
 export const RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS = 365 * 24 * 60 * 60
 

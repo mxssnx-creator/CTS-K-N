@@ -13,6 +13,7 @@ import { logProgressionEvent } from "./engine-progression-logs"
 import { concurrencyFromEnv, forEachWithConcurrency, mapWithConcurrency } from "./bounded-concurrency"
 import {
   movePctToMainTradePfRatio,
+  netMovePctAfterPositionCost,
   normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import {
@@ -20,17 +21,51 @@ import {
   overlayNonEmpty,
 } from "@/lib/connection-settings-overlay"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import {
+  normalizePositionCostPercent,
+  stopLossPositionCostRatioToPercent,
+  takeProfitPositionCostRatioToPercent,
+} from "@/lib/position-cost"
 
 export function calculatePositionProtectionPrices(position: any): { takeprofit: number; stoploss: number } {
   const entryPrice = Number(position.entry_price) || 0
-  const takeprofitRatio = Math.max(0, Number(position.takeprofit_factor) || 1) / 100
-  const stoplossRatio = Math.max(0, Number(position.stoploss_ratio) || 1) / 100
   const direction = resolveConsistentTradeDirection(position.direction, position.side)
   if (!direction) throw new TypeError("Position protection requires one valid, consistent direction")
+  const explicitTpPrice = Number(position.takeprofit_price ?? position.take_profit)
+  const explicitSlPrice = Number(position.stoploss_price ?? position.stop_loss)
+  if (
+    Number.isFinite(explicitTpPrice) && explicitTpPrice > 0 &&
+    Number.isFinite(explicitSlPrice) && explicitSlPrice > 0
+  ) {
+    return { takeprofit: explicitTpPrice, stoploss: explicitSlPrice }
+  }
+
+  const explicitTpPct = Number(position.takeprofit_pct ?? position.takeProfitPct)
+  const explicitSlPct = Number(position.stoploss_pct ?? position.stopLossPct)
+  const positionCostPct = normalizePositionCostPercent(
+    position.position_cost_pct ?? position.positionCostPct,
+  )
+  const usesPositionCostCoordinate = String(
+    position.protection_coordinate ?? position.takeprofit_coordinate ?? "",
+  ).toLowerCase() === "position_cost_ratio"
+  const takeProfitPct = Number.isFinite(explicitTpPct) && explicitTpPct > 0
+    ? explicitTpPct
+    : usesPositionCostCoordinate
+      ? takeProfitPositionCostRatioToPercent(positionCostPct, position.takeprofit_factor)
+      : Math.max(0, Number(position.takeprofit_factor) || 1)
+  const stopLossPct = Number.isFinite(explicitSlPct) && explicitSlPct > 0
+    ? explicitSlPct
+    : usesPositionCostCoordinate
+      ? stopLossPositionCostRatioToPercent(
+          positionCostPct,
+          position.takeprofit_factor,
+          position.stoploss_ratio,
+        )
+      : Math.max(0, Number(position.stoploss_ratio) || 1)
   const isShort = direction === "short"
   return {
-    takeprofit: entryPrice * (isShort ? 1 - takeprofitRatio : 1 + takeprofitRatio),
-    stoploss: entryPrice * (isShort ? 1 + stoplossRatio : 1 - stoplossRatio),
+    takeprofit: entryPrice * (isShort ? 1 - takeProfitPct / 100 : 1 + takeProfitPct / 100),
+    stoploss: entryPrice * (isShort ? 1 + stopLossPct / 100 : 1 - stopLossPct / 100),
   }
 }
 
@@ -40,6 +75,8 @@ export function calculatePositionCostRelativeAverageRatio(
 ): number {
   if (positions.length === 0) return 0
   const totalRatio = positions.reduce((sum, position) => {
+    // Closed-position writers store `profit_loss` / `pnlPct` as the net
+    // result after one PositionCost. Do not subtract a second time here.
     const pnlPct = Number(
       position.profit_loss ??
       position.profitLoss ??
@@ -159,11 +196,17 @@ export class PositionFlowCoordinator {
         return
       }
 
-      const profitLoss = this.calculateProfitLoss(position, direction)
-      const isWin = direction === "long"
-        ? position.current_price >= position.entry_price * (1 + (position.takeprofit_factor || 1) / 100)
-        : position.current_price <= position.entry_price * (1 - (position.takeprofit_factor || 1) / 100)
-      const drawdown = this.calculateDrawdown(position, direction)
+      const stageSettings = await this.loadMainTradeStageSettings()
+      const grossProfitLoss = this.calculateGrossProfitLoss(position, direction)
+      // Evaluation and PF ratios are defined after PositionCost. The live
+      // exchange PnL report remains venue-authoritative elsewhere; this only
+      // changes strategy qualification semantics.
+      const profitLoss = netMovePctAfterPositionCost(
+        grossProfitLoss,
+        stageSettings.positionCostPct,
+      )
+      const isWin = profitLoss > 0
+      const drawdown = this.calculateDrawdown(profitLoss)
 
       if (position.position_level === "base" && position.base_position_id) {
         await this.basePseudoManager.updatePerformance(position.base_position_id, profitLoss, isWin, drawdown)
@@ -327,14 +370,13 @@ export class PositionFlowCoordinator {
     }
   }
 
-  private calculateProfitLoss(position: any, direction: "long" | "short"): number {
+  private calculateGrossProfitLoss(position: any, direction: "long" | "short"): number {
     const priceChange = (position.current_price - position.entry_price) / position.entry_price
     const multiplier = direction === "long" ? 1 : -1
     return priceChange * multiplier * 100
   }
 
-  private calculateDrawdown(position: any, direction: "long" | "short"): number {
-    const profitLoss = this.calculateProfitLoss(position, direction)
+  private calculateDrawdown(profitLoss: number): number {
     return profitLoss < 0 ? Math.abs(profitLoss) : 0
   }
 
@@ -365,6 +407,15 @@ export class PositionFlowCoordinator {
       if (existingMain) return
 
       const mainId = `mp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const takeProfitPct = takeProfitPositionCostRatioToPercent(
+        stageSettings.positionCostPct,
+        basePos.takeprofit_factor,
+      )
+      const stopLossPct = stopLossPositionCostRatioToPercent(
+        stageSettings.positionCostPct,
+        basePos.takeprofit_factor,
+        basePos.stoploss_ratio,
+      )
       const mainPseudo = {
         id: mainId,
         connection_id: this.connectionId,
@@ -373,6 +424,10 @@ export class PositionFlowCoordinator {
         indication_range: basePos.indication_range,
         takeprofit_factor: basePos.takeprofit_factor,
         stoploss_ratio: basePos.stoploss_ratio,
+        protection_coordinate: "position_cost_ratio",
+        position_cost_pct: stageSettings.positionCostPct,
+        takeprofit_pct: takeProfitPct,
+        stoploss_pct: stopLossPct,
         trailing_enabled: basePos.trailing_enabled || false,
         trail_start: basePos.trail_start,
         trail_stop: basePos.trail_stop,

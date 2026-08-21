@@ -1,4 +1,5 @@
 import { canonicalForcedSymbols } from "./forced-symbols"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "./position-cost"
 
 export const EXCHANGE_CONFIGS = {
   bybit: {
@@ -146,7 +147,11 @@ export const INDICATION_RANGES = {
 }
 
 export const STRATEGY_RANGES = {
-  takeprofit: { min: 2, max: 22, step: 1 },
+  takeprofit: {
+    min: DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO,
+    max: 22,
+    step: DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO,
+  },
   stoploss: { min: 0.25, max: 2.5, step: 0.25 },
   trail_start: [0.3, 0.6, 1.0],
   trail_stop: [0.1, 0.2, 0.3],

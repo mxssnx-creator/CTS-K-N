@@ -6,8 +6,8 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 5 (then evaluate every integer through 30).
-    expect(result.totalPossibleSets).toBe(51_032)
-    expect(result.totalEvaluationConfigurations).toBe(13_725)
+    expect(result.totalPossibleSets).toBe(50_992)
+    expect(result.totalEvaluationConfigurations).toBe(13_715)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(17)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
@@ -15,7 +15,7 @@ describe("indication configuration counts", () => {
       move: 942,
       active: 9_774,
       active_advanced: 36,
-      special: 560,
+      special: 520,
       optimal: 156,
       auto: 0,
       signal: 23_328,
@@ -31,9 +31,9 @@ describe("indication configuration counts", () => {
       },
     })
     expect(result.types.find((type) => type.type === "special")).toMatchObject({
-      evaluationConfigurations: 140,
+      evaluationConfigurations: 130,
       params: {
-        ranges: 28,
+        ranges: 26,
         enabledTimeframes: 4,
         individualModes: 4,
         combinedModes: 1,

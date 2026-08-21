@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { getTradeEngine } from "@/lib/trade-engine"
 import { initRedis, getRedisClient, getActiveConnectionsForEngine, withSharedPersistenceLease } from "@/lib/redis-db"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -132,7 +133,7 @@ async function handlePost() {
               apiSecret,
               apiType: connection.api_type,
               contractType: connection.contract_type,
-              isTestnet: connection.is_testnet === true || connection.is_testnet === "true",
+              isTestnet: isTruthyFlag(connection.is_testnet),
             })
             if (!connector) return
             

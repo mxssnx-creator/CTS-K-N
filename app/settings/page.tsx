@@ -104,7 +104,7 @@ interface Settings {
   quoteAsset: string
   // ── Main Trade PF thresholds per stage ───────────────────────────
   // Operator-tunable gates for Base → Main → Real → Live promotion.
-  // PositionCost-ratio defaults: Base Valid 0.40; Main/Real/Live 1.12. Wired into
+  // PositionCost-ratio defaults: Base Valid and Main/Real/Live 1.10. Wired into
   // `lib/strategy-coordinator.ts` via `loadAppPFThresholds()` so a
   // slider change in the Strategies tab flows into the live engine
   // within 5s (TTL cap on the loader cache).
@@ -571,13 +571,13 @@ const initialSettings: Settings = {
   quoteAsset: "USDT", // Moved to exchange tab default
 
   // ── Main Trade PF thresholds per stage (spec defaults) ───────────
-  // Base 0.9 / Main 1.0 / Real 1.0 / Live 1.0 — operator-tunable via
+  // Base/Main/Real/Live 1.10 — operator-tunable via
   // Settings → Strategy → Main → Profit Factor Thresholds. Read by
   // `lib/strategy-coordinator.ts` on every flow cycle (5s TTL cache).
   baseProfitFactor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
-  mainProfitFactor: 1.12,
-  realProfitFactor: 1.12,
-  liveProfitFactor: 1.12,
+  mainProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  realProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  liveProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 
   // Risk Management
   trailingStopLoss: false,
@@ -589,7 +589,7 @@ const initialSettings: Settings = {
   realEvalPosCount: 20,
   liveEvalPosCount: 15,
 
-  // Position-Count (Pis) Sets volume ratio (Main-stage axis Sets only).
+  // Position-Count (Pos) Sets volume ratio (Main-stage axis Sets only).
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
 
   // Trade Engine Intervals (milliseconds)
@@ -689,7 +689,7 @@ const initialSettings: Settings = {
   presetCountPerSymbol: 4,
   presetTpMin: 3,
   presetTpMax: 30,
-  presetTpStep: 1,
+  presetTpStep: 5,
   presetSlMin: 0.25,
   presetSlMax: 2,
   presetSlStep: 0.25,
@@ -1008,7 +1008,7 @@ export default function SettingsPage() {
     presetCountPerSymbol: initialSettings.presetCountPerSymbol ?? 4,
     presetTpMin: initialSettings.presetTpMin ?? 3,
     presetTpMax: initialSettings.presetTpMax ?? 30,
-    presetTpStep: initialSettings.presetTpStep ?? 1,
+    presetTpStep: initialSettings.presetTpStep ?? 5,
     presetSlMin: initialSettings.presetSlMin ?? 0.25,
     presetSlMax: initialSettings.presetSlMax ?? 2,
     presetSlStep: initialSettings.presetSlStep ?? 0.25,

@@ -24,6 +24,32 @@ describe("position-flow protection calculations", () => {
     expect(protection.stoploss).toBeCloseTo(101.5)
   })
 
+  test("converts tagged configuration-set TP/SL axes from PositionCost once", () => {
+    const protection = calculatePositionProtectionPrices({
+      entry_price: 100,
+      direction: "long",
+      protection_coordinate: "position_cost_ratio",
+      position_cost_pct: 0.1,
+      takeprofit_factor: 5,
+      stoploss_ratio: 0.5,
+    })
+
+    // TP = 5 × 0.10% = 0.50%; SL = 0.50% × 0.5 = 0.25%.
+    expect(protection.takeprofit).toBeCloseTo(100.5, 12)
+    expect(protection.stoploss).toBeCloseTo(99.75, 12)
+  })
+
+  test("prefers canonical stored protection prices over ambiguous legacy factors", () => {
+    expect(calculatePositionProtectionPrices({
+      entry_price: 100,
+      direction: "short",
+      takeprofit_price: 99.8,
+      stoploss_price: 100.1,
+      takeprofit_factor: 5,
+      stoploss_ratio: 1,
+    })).toEqual({ takeprofit: 99.8, stoploss: 100.1 })
+  })
+
   test("uses the PositionCost-relative ratio instead of classic gross PF", () => {
     // Each position's raw pnl% move is converted to the ratio scale (neutral
     // 1.00, +0.10 per PositionCost of positive move) via movePctToMainTradePfRatio
