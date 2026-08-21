@@ -87,7 +87,7 @@ import {
   relieveStrategyMemoryPressure,
 } from "@/lib/strategy-memory-guard"
 import { limitRealRowsForMaterialization } from "@/lib/strategy-real-materialization-limit"
-import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { concurrencyFromEnv, forEachWithConcurrency, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import {
   getRuntimeCapabilityConcurrency,
   getRuntimeConcurrencyProfile,
@@ -5450,7 +5450,7 @@ export class StrategyCoordinator {
       // microtask and allocation storm in the Inline Redis deployment, which
       // prevents health and recovery routes from getting a turn. The pool is
       // only a scheduling bound: each exact Set is still claimed and written.
-      await mapWithConcurrency(
+      await forEachWithConcurrency(
         setMeta,
         concurrencyFromEnv(
           ["PSEUDO_POSITION_WRITE_CONCURRENCY"],
@@ -9286,7 +9286,7 @@ export class StrategyCoordinator {
           const historicalCandidates = qualifying.filter(
             (set) => set.variant !== "block" && set.variant !== "dca",
           )
-          await mapWithConcurrency(
+          await forEachWithConcurrency(
             historicalCandidates,
             concurrencyFromEnv(
               ["PSEUDO_POSITION_WRITE_CONCURRENCY"],
@@ -9295,7 +9295,7 @@ export class StrategyCoordinator {
               historicalCandidates.length,
             ),
             async (set) => {
-              if (!isCurrent()) return false
+              if (!isCurrent()) return
               try {
                 // Axis Sets carry one synthetic representative entry; for SL/TP
                 // derivation we need the full entries[] from the Base Set.
@@ -9314,7 +9314,7 @@ export class StrategyCoordinator {
                   (best, e) => (e.profitFactor > best.profitFactor ? e : best),
                   effectiveEntries[0],
                 )
-                if (!bestEntry) return false
+                if (!bestEntry) return
 
                 const adaptiveTrendTp = set.indicationType === "trend"
                   ? bestEntry.adaptiveTpFactors?.find(
@@ -9382,7 +9382,7 @@ export class StrategyCoordinator {
                   `${set.indicationType}:${set.direction}:${symbol}` +
                   `:tp${tp.toFixed(2)}:sl${sl.toFixed(2)}${trailingSuffix}${axisSuffix}`
 
-                if (!isCurrent()) return false
+                if (!isCurrent()) return
                 const posId = await posManager.createPosition({
                   symbol,
                   side: set.direction,
@@ -9405,10 +9405,10 @@ export class StrategyCoordinator {
                     trailingStepRatio: profile.stepRatio,
                   }),
                 })
-                return posId ? ("created" as const) : ("gated" as const)
+                void posId
               } catch (posErr) {
                 console.error(`[v0] [StrategyFlow] ${symbol} LIVE: createPosition error:`, posErr instanceof Error ? posErr.message : String(posErr))
-                return "error" as const
+                return
               }
             },
             { yieldEvery: 1 },

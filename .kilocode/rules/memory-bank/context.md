@@ -4,6 +4,59 @@
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current audited release checkpoint (2026-08-21)
+
+- Continue from `/workspace/CTS-K-N-v3.7` and preserve the persistent
+  workspace/checkpoints; do not run broad automatic cleanup. Source changes
+  and release evidence are published through GitHub only after the full gate is
+  green. Credentials, private keys, raw account reports, Redis snapshots and
+  build output stay outside Git and source archives.
+- Memory coordination is deliberately conservative: effective host/cgroup
+  memory now feeds the runtime profile, strategy graphs have a shared default
+  admission limit of one, and non-result fan-outs use bounded `forEach`
+  processing rather than retaining unnecessary result arrays. The final
+  32-symbol simulated production audit remained healthy at 548.3 MiB RSS with
+  a 4 GiB soft limit and API p95 26.74 ms; connection isolation and scoped
+  settings readback both passed.
+- BingX X02 remains immutable `prod-vst` on the official
+  `https://open-api-vst.bingx.com` origin. Cancellation now invalidates both
+  aggregate and symbol open-order snapshots immediately, and order-detail
+  parsing accepts the VST `{ data: { order } }` response shape. The final
+  authenticated VST preflight passed on 2026-08-21 without submitting an
+  order. The preceding complete virtual-funds soak passed with all tracked
+  orders terminal and cleanup complete; X01 real-money gates remain
+  fail-closed.
+- Direct-Trade's safe lifecycle preflight remains paper-only: it expands a
+  sparse history from 48 h to at most 90 h without relaxing qualification,
+  keeps the processor healthy, and reports zero real exchange orders.
+- Production metadata normalization now removes every transient Next route-type
+  include (`.next-*` and `.next/dev`) from `tsconfig.json`, retaining only the
+  canonical `.next/types` universe. It exits cleanly after a partial Dev build
+  with no production `BUILD_ID`; the trace build remains responsible for
+  rejecting incomplete production artifacts.
+- The server deployment path is documented in
+  `docs/REMOTE-TAILSCALE-PULL-AGENT.md`. `scripts/install-pull-agent.sh`
+  installs a root-owned, timer-driven updater that refuses dirty checkouts and
+  non-fast-forward remote history, then delegates to the canonical clean
+  `scripts/update.sh` lifecycle. It stores no exchange/Tailscale/SSH secrets.
+  Tailscale SSH must be enabled by an authorized Tailnet login and policy; do
+  not copy private OpenSSH keys to the server.
+- The current Codex sandbox cannot be used as a Tailnet endpoint: it has no
+  writable system package state for Tailscale/Redis and both the provider SSH
+  route and the supplied Tailnet address return `Network is unreachable`.
+  Therefore the remote server is unchanged. Complete the documented Tailscale
+  login from the VPS console or another writable authorized Tailnet node, then
+  run the server bootstrap and pull-agent commands there.
+- Latest local gate evidence: 193/193 Unit suites and 1,228/1,228 tests,
+  4/4 integration suites and 54/54 tests, TypeScript, ESLint, shell/source
+  syntax, Kilo deployment preflight (37 checks), a trace-valid Next build (347
+  trace files), Dev Paper smoke, and the 32-symbol simulated production UI
+  audit. The E2E localhost-only test was skipped when no server was running;
+  the Dev/Prod harnesses cover the live server workflows. A true local
+  multi-worker shared-Redis preview remains infrastructure-blocked until a
+  real `redis-server` or configured shared Redis is available; never report
+  the inline single-worker audit as a substitute.
+
 ## Current recovery and validation checkpoint (2026-08-15)
 
 - Persistent-workspace rule (binding for every new CTS chat): continue from

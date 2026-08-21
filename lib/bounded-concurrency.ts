@@ -42,25 +42,27 @@ async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
 }
 
-export async function mapWithConcurrency<T, R>(
+/**
+ * Execute a bounded pool without retaining a result per item.
+ *
+ * This is deliberately the common scheduling primitive for both `map` and
+ * `forEach`: large persistence/update fan-outs must retain the same adaptive
+ * lane and error contract as result-producing calculations, but a no-result
+ * caller should not allocate an O(n) array of `undefined` values merely to
+ * discard it when the pool has drained.
+ */
+async function runWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
-  mapper: (item: T, index: number) => Promise<R>,
+  runner: (item: T, index: number) => Promise<void>,
   options: {
     yieldEvery?: number
-    /**
-     * Optional runtime lane sampler. The initially requested `concurrency`
-     * remains the hard ceiling; the sampler can reduce (or later restore)
-     * active lanes between completed tasks as CPU/RSS/event-loop pressure
-     * changes.
-     */
     getConcurrency?: () => number
   } = {},
-): Promise<R[]> {
-  if (items.length === 0) return []
+): Promise<void> {
+  if (items.length === 0) return
 
   const limit = clampConcurrency(concurrency, 1, items.length, items.length)
-  const results = new Array<R>(items.length)
   const yieldEvery = Math.max(0, Math.floor(options.yieldEvery ?? 1))
 
   if (options.getConcurrency) {
@@ -79,7 +81,7 @@ export async function mapWithConcurrency<T, R>(
     const launch = (index: number) => {
       let task!: Promise<void>
       task = (async () => {
-        results[index] = await mapper(items[index], index)
+        await runner(items[index], index)
         completed++
         if (yieldEvery > 0 && completed % yieldEvery === 0) {
           await yieldToEventLoop()
@@ -107,7 +109,7 @@ export async function mapWithConcurrency<T, R>(
         }
       }
     }
-    return results
+    return
   }
 
   let nextIndex = 0
@@ -117,7 +119,7 @@ export async function mapWithConcurrency<T, R>(
     while (true) {
       const index = nextIndex++
       if (index >= items.length) return
-      results[index] = await mapper(items[index], index)
+      await runner(items[index], index)
       completedByWorker++
       if (yieldEvery > 0 && completedByWorker % yieldEvery === 0) {
         await yieldToEventLoop()
@@ -126,6 +128,34 @@ export async function mapWithConcurrency<T, R>(
   }
 
   await Promise.all(Array.from({ length: limit }, () => worker()))
+}
+
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+  options: {
+    yieldEvery?: number
+    /**
+     * Optional runtime lane sampler. The initially requested `concurrency`
+     * remains the hard ceiling; the sampler can reduce (or later restore)
+     * active lanes between completed tasks as CPU/RSS/event-loop pressure
+     * changes.
+     */
+    getConcurrency?: () => number
+  } = {},
+): Promise<R[]> {
+  if (items.length === 0) return []
+
+  const results = new Array<R>(items.length)
+  await runWithConcurrency(
+    items,
+    concurrency,
+    async (item, index) => {
+      results[index] = await mapper(item, index)
+    },
+    options,
+  )
   return results
 }
 
@@ -213,5 +243,5 @@ export async function forEachWithConcurrency<T>(
   mapper: (item: T, index: number) => Promise<void>,
   options: { yieldEvery?: number; getConcurrency?: () => number } = {},
 ): Promise<void> {
-  await mapWithConcurrency(items, concurrency, mapper, options)
+  await runWithConcurrency(items, concurrency, mapper, options)
 }

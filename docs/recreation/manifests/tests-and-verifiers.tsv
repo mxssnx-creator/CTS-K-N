@@ -159,6 +159,7 @@ unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
 unit	__tests__/unit/pseudo-position-close-idempotency.test.ts
 unit	__tests__/unit/pseudo-position-semantics.test.ts
+unit	__tests__/unit/pull-agent-install-script.test.ts
 unit	__tests__/unit/quickstart-bootstrap-state.test.ts
 unit	__tests__/unit/quickstart-change-detection.test.ts
 unit	__tests__/unit/quickstart-ordering.test.ts

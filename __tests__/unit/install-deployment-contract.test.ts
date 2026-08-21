@@ -639,6 +639,7 @@ describe("production installation and Kilo deployment contract", () => {
       await mkdir(dist, { recursive: true })
       await Promise.all([
         writeFile(path.join(root, "next-env.d.ts"), ""),
+        writeFile(path.join(dist, "BUILD_ID"), "fixture-build\n"),
         writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
         writeFile(path.join(dist, "prerender-manifest.json"), '{"version":4,"routes":{},"dynamicRoutes":{},"notFoundRoutes":[],"preview":{}}\n'),
         writeFile(path.join(dist, "required-server-files.json"), '{"config":{"trailingSlash":false,"images":{"unoptimized":true,"deviceSizes":[640,1080]}}}\n'),
@@ -677,6 +678,7 @@ describe("production installation and Kilo deployment contract", () => {
       ])
       await Promise.all([
         writeFile(path.join(root, "next-env.d.ts"), ""),
+        writeFile(path.join(dist, "BUILD_ID"), "fixture-build\n"),
         writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
         writeFile(path.join(dist, "required-server-files.json"), '{"config":{"images":{}}}\n'),
         writeFile(path.join(dist, "images-manifest.json"), "{}\n"),
@@ -719,8 +721,15 @@ describe("production installation and Kilo deployment contract", () => {
       await mkdir(dist, { recursive: true })
       await Promise.all([
         writeFile(path.join(root, "next-env.d.ts"), ""),
+        writeFile(path.join(dist, "BUILD_ID"), "fixture-build\n"),
         writeFile(path.join(root, "tsconfig.json"), JSON.stringify({
-          include: ["**/*.ts", ".next/types/**/*.ts", ".next-prod/types/**/*.ts"],
+          include: [
+            "**/*.ts",
+            ".next/types/**/*.ts",
+            ".next-prod/types/**/*.ts",
+            ".next-live-preflight-123/types/**/*.ts",
+            ".next/dev/types/**/*.ts",
+          ],
         })),
         writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
         writeFile(path.join(dist, "prerender-manifest.json"), '{"version":4,"routes":{},"dynamicRoutes":{},"notFoundRoutes":[],"preview":{}}\n'),
@@ -733,6 +742,26 @@ describe("production installation and Kilo deployment contract", () => {
         cwd: root,
         env: { ...process.env, NEXT_DIST_DIR: ".next-prod" },
       })
+      const tsconfig = JSON.parse(await readFile(path.join(root, "tsconfig.json"), "utf8"))
+      expect(tsconfig.include).toEqual(["**/*.ts", ".next/types/**/*.ts"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps metadata canonical when an interrupted dev build has no production artifact", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-next-no-build-id-"))
+    const normalizer = path.join(process.cwd(), "scripts/normalize-next-env.mjs")
+    try {
+      await Promise.all([
+        mkdir(path.join(root, ".next"), { recursive: true }),
+        writeFile(path.join(root, "next-env.d.ts"), ""),
+        writeFile(path.join(root, "tsconfig.json"), JSON.stringify({
+          include: ["**/*.ts", ".next/types/**/*.ts", ".next/dev/types/**/*.ts"],
+        })),
+      ])
+
+      expect(() => execFileSync(process.execPath, [normalizer], { cwd: root })).not.toThrow()
       const tsconfig = JSON.parse(await readFile(path.join(root, "tsconfig.json"), "utf8"))
       expect(tsconfig.include).toEqual(["**/*.ts", ".next/types/**/*.ts"])
     } finally {

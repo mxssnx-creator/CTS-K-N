@@ -129,6 +129,11 @@ async function main() {
       V0_DEV_SYMBOL_COUNT: String(symbols.length),
       ENGINE_SYMBOL_CONCURRENCY: "2",
       STRATEGY_FLOW_SYMBOL_CONCURRENCY: "2",
+      // The global Strategy graph lease is deliberately independent of the
+      // two symbol lanes above. Match the Linux production install: work
+      // inside a graph may overlap, but only one full graph may be retained
+      // while memory is healthy unless an operator explicitly profiles more.
+      CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS: "1",
       PREHISTORIC_SYMBOL_CONCURRENCY: "1",
       PREHISTORIC_CONFIG_CONCURRENCY: "2",
       PREHISTORIC_CONFIG_TYPE_CONCURRENCY: "1",

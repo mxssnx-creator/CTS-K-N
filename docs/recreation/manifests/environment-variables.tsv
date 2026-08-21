@@ -6,7 +6,7 @@ ALLOW_KILO_SQLITE_LIVE_TRADING	application-runtime	no	yes	6	.env.example,lib/pro
 ALLOW_LIVE_ORDER_PLACEMENT	application-runtime	no	yes	8	.env.example,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/runtime/dashboard-pulse/route.ts,lib/live-order-safety.ts,lib/real-trade-gates.ts,scripts/direct-place-order.ts,scripts/run-bingx-vst-live-soak.ts
 ALLOW_PROCESS_LOCAL_DEPLOY_VERIFY	test-or-operator-tool	no	no	1	scripts/verify-deployment-contract.mjs
 ALLOW_PROD_INLINE_REDIS	application-runtime	no	yes	9	.env.example,__tests__/unit/requested-regressions.test.ts,custom-worker.ts,lib/production-readiness.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/kilo-deploy-preflight.mjs,scripts/run-bingx-vst-live-soak.ts,scripts/verify-prod-soak.mjs
-ALLOW_PROD_SIMULATED	application-runtime	no	no	8	__tests__/integration/live-order-service.test.ts,__tests__/unit/exchange-force-simulated.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/trade-engine/quick-start/route.ts,lib/exchange-connectors/factory.ts,lib/exchange-connectors/index.ts,lib/live-order-service.ts,lib/market-data-loader.ts
+ALLOW_PROD_SIMULATED	application-runtime	no	yes	9	.env.example,__tests__/integration/live-order-service.test.ts,__tests__/unit/exchange-force-simulated.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/trade-engine/quick-start/route.ts,lib/exchange-connectors/factory.ts,lib/exchange-connectors/index.ts,lib/live-order-service.ts,lib/market-data-loader.ts
 ALLOW_REAL_ORDER_TEST	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/test-quickstart-3symbols.js
 API_BASE	test-or-operator-tool	no	no	1	scripts/validate-comprehensive.mjs
 AWS_LAMBDA_FUNCTION_NAME	platform-provided	no	no	5	lib/connections-file-storage.ts,lib/deployment-runtime.ts,lib/file-storage.ts,lib/redis-persistence.ts,lib/settings-storage.ts
@@ -17,7 +17,7 @@ BINGX_API_KEY	test-or-operator-tool	yes	yes	7	.env.example,__tests__/unit/bingx-
 BINGX_API_SECRET	test-or-operator-tool	yes	yes	7	.env.example,__tests__/unit/bingx-vst-migration.test.ts,__tests__/unit/env-credential-loading.test.ts,scripts/add-bingx-credentials.js,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts,scripts/standalone-bingx-live-diagnostic.mjs
 BINGX_APIKEY	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 BINGX_ENVIRONMENT	application-runtime	no	yes	6	.env.example,__tests__/unit/bingx-vst-migration.test.ts,lib/bingx-environment.ts,lib/redis-runtime-bootstrap.ts,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts
-BINGX_PUBLIC_FALLBACK_ORIGIN	application-runtime	no	no	5	__tests__/unit/bingx-public-api.test.ts,lib/bingx-public-api.ts,scripts/run-bingx-vst-live-soak.ts,scripts/run-special-vst-5d-validation.ts,scripts/stress-bingx-public-32.mjs
+BINGX_PUBLIC_FALLBACK_ORIGIN	application-runtime	no	yes	6	.env.example,__tests__/unit/bingx-public-api.test.ts,lib/bingx-public-api.ts,scripts/run-bingx-vst-live-soak.ts,scripts/run-special-vst-5d-validation.ts,scripts/stress-bingx-public-32.mjs
 BINGX_PUBLIC_ORIGIN	application-runtime	no	yes	7	.env.example,__tests__/unit/bingx-public-api.test.ts,lib/bingx-public-api.ts,scripts/direct-trade-processor.mjs,scripts/run-bingx-vst-live-soak.ts,scripts/run-special-vst-5d-validation.ts,scripts/stress-bingx-public-32.mjs
 BINGX_SECRET	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 BINGX_STRESS_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
@@ -25,7 +25,7 @@ BINGX_STRESS_RETRIES	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-3
 BINGX_STRESS_SYMBOL_COUNT	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_TICKER_ROUNDS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
-BINGX_VST_ORIGIN	application-runtime	no	no	3	__tests__/unit/bingx-vst-environment.test.ts,lib/bingx-environment.ts,scripts/run-bingx-vst-live-soak.ts
+BINGX_VST_ORIGIN	application-runtime	no	yes	4	.env.example,__tests__/unit/bingx-vst-environment.test.ts,lib/bingx-environment.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_ALLOW_SHORT	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_CONFIRM	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_CYCLES	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
