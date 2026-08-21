@@ -96,7 +96,13 @@ export function resolveStrategyMemoryGuardLimits(
   env: NodeJS.ProcessEnv = process.env,
 ): StrategyMemoryGuardLimits {
   const total = Math.max(512, finitePositive(totalMemoryMb) ?? 4096)
-  const usable = Math.max(1500, total - 1500)
+  // Keep the historical 1.5 GiB reserve on normal CTS hosts, but never let
+  // the calculated usable budget exceed the process/cgroup ceiling on a
+  // smaller container. The former `max(1500, total - 1500)` made a 512 MiB
+  // runtime advertise 1.5 GiB of usable memory and delayed the hard guard
+  // until after the kernel could OOM-kill the process.
+  const reserveMb = Math.min(1500, Math.max(128, total - 128))
+  const usable = Math.max(128, total - reserveMb)
   const configuredSoft =
     finitePositive(env.CTS_RSS_SOFT_LIMIT_MB) ??
     finitePositive(env.CTS_RUNTIME_MEMORY_HIGH_MB) ??
@@ -105,9 +111,15 @@ export function resolveStrategyMemoryGuardLimits(
     finitePositive(env.CTS_RSS_HARD_LIMIT_MB) ??
     finitePositive(env.CTS_RUNTIME_MEMORY_MAX_MB) ??
     finitePositive(sharedLimits?.rssHardMB)
+  // Retain a real recovery window below both the soft and hard thresholds.
+  // The bounds contract gracefully for a small container rather than creating
+  // a soft/hard pair larger than the process is permitted to allocate.
+  const softHeadroomMb = Math.max(128, Math.min(256, Math.round(total * 0.1)))
+  const rssSoftFloorMb = Math.max(128, Math.min(384, total - 128))
+  const rssSoftCeilingMb = Math.max(rssSoftFloorMb, total - softHeadroomMb)
   const rssSoftMb = Math.round(Math.min(
-    Math.max(384, total - 256),
-    configuredSoft ?? usable * 0.72,
+    rssSoftCeilingMb,
+    Math.max(rssSoftFloorMb, configuredSoft ?? usable * 0.72),
   ))
   // A standalone soft limit (used by Dev/preview harnesses) must still create
   // an actual overrun boundary. Keep enough room for one exhaustive symbol to
@@ -117,12 +129,17 @@ export function resolveStrategyMemoryGuardLimits(
       ? Math.min(total * 0.94, Math.max(rssSoftMb + 512, rssSoftMb * 1.5))
       : usable * 0.82
   )
-  const rssHardMb = Math.max(
-    rssSoftMb + 128,
-    Math.round(derivedHard),
+  const minimumHardGapMb = Math.max(32, Math.min(128, Math.round(total * 0.08)))
+  const rssHardCeilingMb = Math.max(
+    rssSoftMb + minimumHardGapMb,
+    total - Math.max(32, Math.round(total * 0.04)),
   )
+  const rssHardMb = Math.round(Math.min(
+    rssHardCeilingMb,
+    Math.max(rssSoftMb + minimumHardGapMb, Math.round(derivedHard)),
+  ))
   const emergencyReserveMb = Math.max(
-    128,
+    minimumHardGapMb,
     Math.min(1024, Math.round(rssHardMb * 0.15)),
   )
   const rssEmergencyMb = Math.max(
@@ -223,11 +240,13 @@ const memoryCoordination = memoryGlobal.__cts_strategy_memory_coordination__ ??=
 }
 
 function configuredMaxActiveFlows(env: NodeJS.ProcessEnv): number {
-  const configured = Number(
-    env.CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS ??
-    env.STRATEGY_FLOW_SYMBOL_CONCURRENCY ??
-    1,
-  )
+  // A symbol-lane setting controls work *inside* an admitted graph. It must
+  // not silently multiply the number of complete Base→Main→Real graphs that
+  // are retained at once; doing so turns a harmless per-symbol throughput
+  // adjustment into a process-wide RSS spike. Linux installs set this
+  // explicitly, and all other runtimes conservatively retain one graph until
+  // an operator deliberately raises this memory-specific limit.
+  const configured = Number(env.CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS ?? 1)
   return Math.max(1, Math.min(4, Number.isFinite(configured) ? Math.floor(configured) : 1))
 }
 

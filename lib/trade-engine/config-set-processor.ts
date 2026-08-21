@@ -19,6 +19,7 @@ import { buildProgressionScope } from "@/lib/progression-scope"
 import {
   concurrencyFromEnv,
   createAdaptiveConcurrencyLimiter,
+  forEachWithConcurrency,
   mapWithConcurrency,
 } from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
@@ -1307,10 +1308,10 @@ export class ConfigSetProcessor {
                 )
                 detailRowsAccepted = Number.isFinite(Number(added)) ? Number(added) : results.length
               } else {
-                await mapWithConcurrency(
+                await forEachWithConcurrency(
                   results,
                   Math.max(1, Math.min(16, persistenceConcurrency)),
-                  (result) => this.indicationManager.addResult(referenceConfig.id, result),
+                  async (result) => { await this.indicationManager.addResult(referenceConfig.id, result) },
                   { yieldEvery: 16 },
                 )
               }
@@ -1620,10 +1621,10 @@ export class ConfigSetProcessor {
                   } else if (typeof (this.strategyManager as any).addPositions === "function") {
                     await (this.strategyManager as any).addPositions(config.id, positions, dedupeScope)
                   } else {
-                    await mapWithConcurrency(
+                    await forEachWithConcurrency(
                       positions,
                       Math.max(1, Math.min(16, perTypePersistenceConcurrency)),
-                      (position) => this.strategyManager.addPosition(config.id, position),
+                      async (position) => { await this.strategyManager.addPosition(config.id, position) },
                       { yieldEvery: 16 },
                     )
                   }

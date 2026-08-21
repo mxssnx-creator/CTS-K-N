@@ -183,6 +183,7 @@ __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
 __tests__/unit/pseudo-position-close-idempotency.test.ts
 __tests__/unit/pseudo-position-semantics.test.ts
+__tests__/unit/pull-agent-install-script.test.ts
 __tests__/unit/quickstart-bootstrap-state.test.ts
 __tests__/unit/quickstart-change-detection.test.ts
 __tests__/unit/quickstart-ordering.test.ts
@@ -880,6 +881,7 @@ docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.md
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.checksums.sha256
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.json
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.md
+docs/REMOTE-TAILSCALE-PULL-AGENT.md
 docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
 docs/dca-optimization-7d-2026-08-11.md
 docs/direct-trade-async-scale-48h.json
@@ -1345,6 +1347,7 @@ scripts/final-validation-test.mjs
 scripts/generate-recreation-manifests.mjs
 scripts/init-engine-and-verify.mjs
 scripts/inject-bingx-creds.js
+scripts/install-pull-agent.sh
 scripts/install.sh
 scripts/kill-test-dev-port.mjs
 scripts/kilo-deploy-preflight.mjs

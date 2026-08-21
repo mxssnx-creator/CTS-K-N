@@ -120,6 +120,27 @@ export class BingXConnector extends BaseExchangeConnector {
   getLastOrderHistorySnapshotStatus(): { ok: boolean; at: number; error?: string } {
     return { ...this.lastOrderHistorySnapshotStatus }
   }
+
+  /**
+   * A successful venue mutation makes both the symbol-specific and aggregate
+   * open-order snapshots stale. The cache is process-wide to protect the API
+   * during ordinary dashboard polling, so it must be invalidated explicitly
+   * after a cancel instead of waiting up to its 15-second TTL. Otherwise a
+   * confirmed SL/TP cancellation can still appear open to the next
+   * reconciliation pass and trigger a duplicate cancel/false protection
+   * failure.
+   */
+  private invalidateOpenOrdersSnapshot(symbol?: string): void {
+    BingXConnector.openOrdersSnapshotCache.delete("__all__")
+    if (symbol) {
+      BingXConnector.openOrdersSnapshotCache.delete(this.toBingXSymbol(symbol))
+    }
+    this.lastOpenOrdersSnapshotStatus = {
+      ok: false,
+      at: Date.now(),
+      error: "invalidated_after_order_mutation",
+    }
+  }
   // ── Native bingx-api package client ───────────────────────────────────────
   // The library path is the default for supported mainnet-swap calls. The
   // hand-signed BingX REST implementation remains the authoritative fallback.
@@ -1600,6 +1621,7 @@ export class BingXConnector extends BaseExchangeConnector {
           if (this.isBingXSuccess(sdkData?.code) || this.isOrderAlreadyGone(sdkData)) {
             this.sdkLastError = ""
             this.markOperationTransport("cancelOrder", "bingx-api")
+            this.invalidateOpenOrdersSnapshot(symbol)
             this.log(`✓ Order cancelled via bingx-api`)
             return { success: true }
           }
@@ -1669,6 +1691,7 @@ export class BingXConnector extends BaseExchangeConnector {
         const code = String(data.code)
         if (this.isOrderAlreadyGone(data)) {
           this.markOperationTransport("cancelOrder", "signed-rest-fallback", "order already absent")
+          this.invalidateOpenOrdersSnapshot(symbol)
           this.log(`Order ${orderId} already gone (code=${code}) — treating as cancelled`)
           return { success: true }
         }
@@ -1681,6 +1704,7 @@ export class BingXConnector extends BaseExchangeConnector {
         "signed-rest-fallback",
         this.sdkLastError || "bingx-api operation unavailable",
       )
+      this.invalidateOpenOrdersSnapshot(symbol)
       return { success: true }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
@@ -3693,7 +3717,11 @@ export class BingXConnector extends BaseExchangeConnector {
 
         return {
           success: true,
-          order: data.data,
+          // Prod-VST wraps the authoritative order once more as
+          // `{ data: { order: ... } }`. Return the actual order shape just
+          // like getOrder(), so Direct-Trade reconciliation can recover by
+          // order/client ID without depending on a venue-specific wrapper.
+          order: data.data?.order || data.data,
         }
       })
       return result
@@ -3769,7 +3797,11 @@ export class BingXConnector extends BaseExchangeConnector {
 
         return {
           success: true,
-          order: data.data,
+          // Prod-VST wraps the authoritative order once more as
+          // `{ data: { order: ... } }`. Return the actual order shape just
+          // like getOrder(), so Direct-Trade reconciliation can recover by
+          // order/client ID without depending on a venue-specific wrapper.
+          order: data.data?.order || data.data,
         }
       })
       return result

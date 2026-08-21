@@ -2,6 +2,7 @@ import {
   getRuntimeCapabilityConcurrency,
   getRuntimeConcurrencyProfile,
   getRuntimeCpuCount,
+  resolveRuntimeMemoryBudget,
 } from "@/lib/runtime-concurrency-profile"
 import { DEFAULT_ENGINE_TIMINGS, ENGINE_TIMING_BOUNDS } from "@/lib/engine-timings"
 
@@ -33,6 +34,40 @@ describe("runtime CPU-aware concurrency profile", () => {
     })
     expect(profile.symbolConcurrency).toBe(1)
     expect(profile.calculationConcurrency).toBe(1)
+  })
+
+  test("uses cgroup and service ceilings instead of the larger host memory", () => {
+    const budget = resolveRuntimeMemoryBudget(
+      { CTS_RUNTIME_MEMORY_MAX_MB: "4096" },
+      {
+        hostTotalMB: 65_536,
+        hostFreeMB: 50_000,
+        cgroupLimitMB: 8_192,
+        cgroupUsedMB: 7_000,
+      },
+    )
+
+    expect(budget).toEqual({ totalMB: 4_096, freeMB: 1_192 })
+  })
+
+  test("uses the service high-water mark when a legacy deployment has no explicit RSS soft limit", () => {
+    const profile = getRuntimeConcurrencyProfile(
+      64,
+      {
+        CTS_CPU_COUNT: "16",
+        CTS_ADAPTIVE_CONCURRENCY: "1",
+        CTS_RUNTIME_MEMORY_HIGH_MB: "4000",
+      },
+      {
+        load1m: 1,
+        memoryTotalMB: 16_000,
+        memoryFreeMB: 8_000,
+        rssMB: 3_900,
+      },
+    )
+
+    expect(profile.rssSoftLimitMB).toBe(4_000)
+    expect(profile.pressureReasons).toContain("process_rss_critical")
   })
 
   test("coordinates lanes by workload capability on a healthy host", () => {

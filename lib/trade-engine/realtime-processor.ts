@@ -37,7 +37,7 @@ import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 // cold start.
 import { getEngineTimings } from "@/lib/engine-timings"
 import { performanceProfiler } from "@/lib/performance-profiler"
-import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { concurrencyFromEnv, forEachWithConcurrency, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { buildPrehistoricGateKeys } from "@/lib/progression-scope"
 import {
   calculateSignalTrailingTick,
@@ -308,10 +308,10 @@ export class RealtimeProcessor {
       // Process all positions for this symbol in parallel. Each call
       // carries the position hash through so the manager skips a second
       // HGETALL.
-      await mapWithConcurrency(
+      await forEachWithConcurrency(
         positions,
         concurrencyFromEnv(["PSEUDO_POSITION_CONCURRENCY"], 12, 32, positions.length),
-        (position) => this.processPositionOnce(position, prehistoricReady),
+        async (position) => { await this.processPositionOnce(position, prehistoricReady) },
       )
 
       // Surface the per-symbol pseudo-update counters so the dashboard
@@ -522,10 +522,10 @@ export class RealtimeProcessor {
       // `prehistoricReady` is passed as an advisory flag so Phase B
       // (prev-set enrichment) can be conditionally skipped without
       // blocking Phase A (mark-to-market + TP/SL).
-      await mapWithConcurrency(
+      await forEachWithConcurrency(
         activePositions,
         concurrencyFromEnv(["PSEUDO_POSITION_CONCURRENCY"], 12, 32, activePositions.length),
-        (position) => this.processPositionOnce(position, prehistoricReady),
+        async (position) => { await this.processPositionOnce(position, prehistoricReady) },
       )
 
       // ── Cross-tick visibility for the "open positions are being

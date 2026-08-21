@@ -55,6 +55,16 @@ describe("strategy memory guard", () => {
     expect(limits.rssEmergencyMb).toBeLessThan(limits.rssHardMb)
   })
 
+  test("never advertises thresholds beyond a small process ceiling", () => {
+    const limits = resolveStrategyMemoryGuardLimits(undefined, 512)
+
+    expect(limits.totalMemoryMb).toBe(512)
+    expect(limits.usableMemoryMb).toBeLessThanOrEqual(limits.totalMemoryMb)
+    expect(limits.rssSoftMb).toBeLessThan(limits.rssHardMb)
+    expect(limits.rssHardMb).toBeLessThanOrEqual(limits.totalMemoryMb)
+    expect(limits.rssEmergencyMb).toBeLessThanOrEqual(limits.rssHardMb)
+  })
+
   test("honours the Linux service ceiling and derives a standalone Dev hard guard", () => {
     expect(resolveStrategyMemoryGuardLimits(undefined, 20_480, {
       CTS_RUNTIME_MEMORY_HIGH_MB: "6000",
@@ -73,6 +83,16 @@ describe("strategy memory guard", () => {
       rssHardMb: 6_144,
       rssEmergencyMb: 5_222,
     }))
+  })
+
+  test("keeps complete strategy graphs serial by default even when symbol lanes increase", () => {
+    expect(getStrategyMemoryCoordinationSnapshot({
+      STRATEGY_FLOW_SYMBOL_CONCURRENCY: "4",
+    }).maxActiveFlows).toBe(1)
+    expect(getStrategyMemoryCoordinationSnapshot({
+      STRATEGY_FLOW_SYMBOL_CONCURRENCY: "4",
+      CTS_STRATEGY_MEMORY_MAX_ACTIVE_FLOWS: "3",
+    }).maxActiveFlows).toBe(3)
   })
 
   test("exposes pressure and serialises process-wide Strategy allocation leases", async () => {

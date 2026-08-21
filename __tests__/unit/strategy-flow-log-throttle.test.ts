@@ -23,10 +23,11 @@ describe("strategy-flow diagnostic throttling", () => {
 
   test("bounds CPU-heavy variant and paper-position scheduling", () => {
     const source = readFileSync(join(process.cwd(), "lib/strategy-coordinator.ts"), "utf8")
-    expect(source).toContain('import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"')
+    expect(source).toContain('import { concurrencyFromEnv, forEachWithConcurrency, mapWithConcurrency } from "@/lib/bounded-concurrency"')
     expect(source).toContain('Math.max(1, Math.min(16, Math.floor(configuredVariantConcurrency)))')
     expect(source).toContain('"PSEUDO_POSITION_WRITE_CONCURRENCY"')
     expect(source).toContain("await mapWithConcurrency(")
+    expect(source).toContain("await forEachWithConcurrency(")
     expect(source).not.toContain("await Promise.all(\n            historicalCandidates.map")
   })
 

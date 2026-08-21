@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
@@ -25,6 +25,15 @@ const SOAK_CONFIRMATION = "I understand Prod-VST places authenticated orders wit
 const EXACT_DURATION_MS = 20 * 60 * 1_000
 const EXACT_LIVE_CYCLE_COUNT = 16
 const MONITOR_INTERVAL_MS = 15_000
+// A complete VST lifecycle makes several serialized authenticated calls
+// (entry, accumulation, SL, TP, verification, cancellation and close). Keep
+// enough space for one whole lifecycle plus the trailing audit window; this
+// prevents an explicit short smoke profile from generating valid work that is
+// guaranteed to overrun its requested duration.
+const MIN_LIVE_CYCLE_WINDOW_MS = 60_000
+// BingX documents a two-request-per-second IP limit for the exact order query.
+// Keep this below that cap even when the final audit has many completed cycles.
+const ORDER_DETAIL_AUDIT_SPACING_MS = 600
 const SYMBOL_CANDIDATES = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT",
 ] as const
@@ -213,6 +222,11 @@ async function main(): Promise<void> {
   const runStartedMs = Date.now()
   const runId = randomUUID()
   const runSuffix = runId.replace(/-/g, "").slice(0, 8)
+  // The inline Redis backend persists to a file even in this deliberately
+  // isolated live-VST harness. A PID is not unique across container runs, so
+  // use the run UUID and clear both snapshot and WAL before startup. That
+  // prevents any counter/lease state from a prior demo run being restored.
+  const redisSnapshotPath = `/tmp/cts-bingx-vst-soak-${runId}.json`
   const reportDir = join(process.cwd(), ".agent-logs")
   const reportPath = join(reportDir, `bingx-vst-soak-${new Date(runStartedMs).toISOString().replace(/[:.]/g, "-")}.json`)
   const network: NetworkObservation[] = []
@@ -312,7 +326,11 @@ async function main(): Promise<void> {
   process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "1"
   process.env.ALLOW_PROD_INLINE_REDIS = "1"
   process.env.DISABLE_IN_PROCESS_CONTINUITY = "0"
-  process.env.V0_REDIS_SNAPSHOT_PATH = `/tmp/cts-bingx-vst-soak-${process.pid}.json`
+  await Promise.all([
+    rm(redisSnapshotPath, { force: true }),
+    rm(`${redisSnapshotPath}.live-wal`, { force: true }),
+  ])
+  process.env.V0_REDIS_SNAPSHOT_PATH = redisSnapshotPath
   ;(process.env as Record<string, string | undefined>).NODE_ENV = "development"
   for (const key of [
     "REDIS_URL",
@@ -837,6 +855,13 @@ async function main(): Promise<void> {
           TRADE_PATHS.length,
           Math.min(8, Math.round(finite(process.env.BINGX_VST_SOAK_CYCLES) || 6)),
         )
+    const plannedCycleWindowMs = requestedDuration / plannedCycleCount
+    if (plannedCycleWindowMs < MIN_LIVE_CYCLE_WINDOW_MS) {
+      throw new Error(
+        `Requested soak window cannot safely fit ${plannedCycleCount} complete cycles: ` +
+        `${Math.round(plannedCycleWindowMs)}ms/cycle < ${MIN_LIVE_CYCLE_WINDOW_MS}ms minimum`,
+      )
+    }
     const cyclePlans = Array.from({ length: plannedCycleCount }, (_, index) => {
       const tradePath = TRADE_PATHS[index % TRADE_PATHS.length]
       const repetition = Math.floor(index / TRADE_PATHS.length)
@@ -853,6 +878,7 @@ async function main(): Promise<void> {
     })
     report.liveIntensity = {
       plannedCycles: plannedCycleCount,
+      plannedCycleWindowMs,
       plannedExposureOrders: plannedCycleCount * 2,
       plannedProtectionOrders: plannedCycleCount * 2,
       plannedCloseOrders: plannedCycleCount,
@@ -1264,28 +1290,59 @@ async function main(): Promise<void> {
     }
     if (missingTradePaths.length > 0) throw new Error(`Trade-path coverage is incomplete: ${missingTradePaths.join(", ")}`)
 
-    const allVenueIds = [...trackedVenueOrderIds.keys()]
+    const trackedVenueEntries = [...trackedVenueOrderIds.entries()]
+    const allVenueIds = trackedVenueEntries.map(([orderId]) => orderId)
     report.venueHistory.uniqueOrderIds = new Set(allVenueIds).size === allVenueIds.length
-    const missingHistoryIds: string[] = []
+    const detailByOrderId = new Map<string, { verified: boolean; status: string; error?: string }>()
+    for (let index = 0; index < trackedVenueEntries.length; index++) {
+      const [orderId, metadata] = trackedVenueEntries[index]
+      const detail = await connector.getOrderDetails(metadata.symbol, orderId)
+      const order = detail?.order
+      const status = String(order?.status ?? order?.orderStatus ?? "")
+      const verified = detail?.success === true && orderIdOf(order) === orderId && terminalStatus(status)
+      detailByOrderId.set(orderId, {
+        verified,
+        status,
+        ...(verified ? {} : { error: detail?.error || "missing_or_nonterminal_order_detail" }),
+      })
+      if (index + 1 < trackedVenueEntries.length) await sleep(ORDER_DETAIL_AUDIT_SPACING_MS)
+    }
+    const listMissingOrderIds: string[] = []
+    const missingDetailIds: string[] = []
     for (const symbol of soakSymbols) {
       const snapshot = await connector.getOrderHistorySnapshot(symbol, 50)
       if (!snapshot.ok) throw new Error(`Order history failed for ${symbol}: ${snapshot.error || "unknown"}`)
       const historyIds = new Set(snapshot.rows.map((row: any) => orderIdOf(row)).filter(Boolean))
-      const expected = [...trackedVenueOrderIds.entries()]
+      const expected = trackedVenueEntries
         .filter(([, metadata]) => metadata.symbol === symbol)
         .map(([orderId]) => orderId)
-      const missing = expected.filter((orderId) => !historyIds.has(orderId))
-      missingHistoryIds.push(...missing)
+      const listMissing = expected.filter((orderId) => !historyIds.has(orderId))
+      const detailVerified = expected.filter((orderId) => detailByOrderId.get(orderId)?.verified)
+      const detailMissing = expected.filter((orderId) => !detailByOrderId.get(orderId)?.verified)
+      listMissingOrderIds.push(...listMissing)
+      missingDetailIds.push(...detailMissing)
       report.venueHistory[symbol] = {
         expectedOrderIds: expected,
         observedExpectedOrderIds: expected.filter((orderId) => historyIds.has(orderId)),
-        missingOrderIds: missing,
+        // A busy account can return an older limited history page. Preserve
+        // that observation, but rely on the exact per-ID endpoint for the
+        // correctness gate below.
+        listMissingOrderIds: listMissing,
+        detailVerifiedOrderIds: detailVerified,
+        detailMissingOrderIds: detailMissing,
+        detailStatuses: Object.fromEntries(expected.map((orderId) => [
+          orderId,
+          detailByOrderId.get(orderId)?.status || "",
+        ])),
         returnedRows: snapshot.rows.length,
       }
     }
-    report.venueHistory.missingOrderIds = missingHistoryIds
+    report.venueHistory.listMissingOrderIds = listMissingOrderIds
+    report.venueHistory.missingOrderIds = missingDetailIds
     if (!report.venueHistory.uniqueOrderIds) throw new Error("Duplicate venue order IDs were observed")
-    if (missingHistoryIds.length) throw new Error(`Venue history is missing created order IDs: ${missingHistoryIds.join(", ")}`)
+    if (missingDetailIds.length) {
+      throw new Error(`Authoritative order detail is missing created order IDs: ${missingDetailIds.join(", ")}`)
+    }
 
     report.differences = {
       requestedVsFilledQuantity: report.cycles.flatMap((cycle: CycleReport) => [
@@ -1310,7 +1367,8 @@ async function main(): Promise<void> {
       executionRelations: executionAudit.mismatches,
       volumeUsd: counterAudit.volumeDifferenceUsd,
       account: report.account.difference,
-      missingHistoryIds,
+      listMissingOrderIds,
+      missingHistoryIds: missingDetailIds,
     }
     report.cleanupComplete = true
     report.success = network.every((row) => !row.blocked) && report.errors.length === 0

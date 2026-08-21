@@ -8,6 +8,7 @@
  * explicit override for a host-specific benchmark.
  */
 
+import { readFileSync } from "node:fs"
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os"
 
 export type ProcessingCapability = "control" | "cpu" | "mixed" | "io"
@@ -42,6 +43,18 @@ export interface RuntimeConcurrencyProfile {
   rssSoftLimitMB: number
 }
 
+export interface RuntimeMemoryBudgetInput {
+  hostTotalMB?: number
+  hostFreeMB?: number
+  cgroupLimitMB?: number
+  cgroupUsedMB?: number
+}
+
+export interface RuntimeMemoryBudget {
+  totalMB: number
+  freeMB: number
+}
+
 function positiveInteger(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : null
@@ -57,6 +70,78 @@ function finiteNonNegative(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
 
+function finitePositive(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function readCgroupMemoryMb(filenames: string[]): number | null {
+  for (const filename of filenames) {
+    try {
+      const raw = readFileSync(filename, "utf8").trim()
+      // cgroup v2 reports `max` for an unlimited container; cgroup v1 can
+      // expose a near-MAX_INT sentinel for the same condition.
+      if (!raw || raw === "max") continue
+      const bytes = finitePositive(raw)
+      if (bytes > 0 && bytes < 2 ** 60) return bytes / 1024 / 1024
+    } catch {
+      // The next cgroup version/path or host metric remains available.
+    }
+  }
+  return null
+}
+
+/**
+ * Resolve the memory budget visible to this process rather than the host.
+ *
+ * `os.totalmem()` and `os.freemem()` frequently report the physical host from
+ * inside a container.  Treating those values as the engine budget lets a
+ * 4–8 GiB service keep every lane open even though its cgroup is about to
+ * OOM-kill it.  This helper makes the adaptive profile use the same service
+ * and cgroup ceiling as the Strategy admission guard.
+ */
+export function resolveRuntimeMemoryBudget(
+  env: NodeJS.ProcessEnv = process.env,
+  observed: RuntimeMemoryBudgetInput = {},
+): RuntimeMemoryBudget {
+  const hostTotalMB = finitePositive(observed.hostTotalMB) ||
+    Math.max(0, totalmem() / 1024 / 1024)
+  const hostFreeMB = finiteNonNegative(
+    observed.hostFreeMB,
+    Math.max(0, freemem() / 1024 / 1024),
+  )
+  const cgroupLimitMB = finitePositive(observed.cgroupLimitMB) || readCgroupMemoryMb([
+    "/sys/fs/cgroup/memory.max",
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+  ]) || 0
+  const observedCgroupUsed = observed.cgroupUsedMB
+  const cgroupUsedMB = observedCgroupUsed === undefined
+    ? readCgroupMemoryMb([
+      "/sys/fs/cgroup/memory.current",
+      "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ])
+    : finiteNonNegative(observedCgroupUsed)
+  const serviceLimitMB = finitePositive(env.CTS_RUNTIME_MEMORY_MAX_MB) ||
+    finitePositive(env.CTS_MEMORY_LIMIT_MB)
+
+  const totalCandidates = [hostTotalMB, cgroupLimitMB, serviceLimitMB]
+    .filter((value) => value > 0)
+  const totalMB = Math.max(0, Math.floor(
+    totalCandidates.length > 0 ? Math.min(...totalCandidates) : hostTotalMB,
+  ))
+
+  const freeCandidates = [hostFreeMB]
+  if (cgroupLimitMB > 0 && cgroupUsedMB !== null) {
+    freeCandidates.push(Math.max(0, cgroupLimitMB - cgroupUsedMB))
+  }
+  const freeMB = Math.max(0, Math.floor(Math.min(
+    totalMB || Number.POSITIVE_INFINITY,
+    ...freeCandidates.filter((value) => Number.isFinite(value) && value >= 0),
+  )))
+
+  return { totalMB, freeMB }
+}
+
 function readProcessRssMB(): number {
   try {
     return finiteNonNegative(process.memoryUsage().rss / 1024 / 1024)
@@ -68,6 +153,12 @@ function readProcessRssMB(): number {
 function readRedisRssSoftLimitMB(env: NodeJS.ProcessEnv): number {
   const configured = finiteNonNegative(env.CTS_RSS_SOFT_LIMIT_MB)
   if (configured > 0) return configured
+  // Linux installs always persist both values, but the production service
+  // high-water mark is the correct fallback for older/smaller deployments.
+  // Without it an otherwise constrained worker reports RSS pressure as zero
+  // and keeps its CPU lanes fully open until the kernel intervenes.
+  const runtimeHigh = finiteNonNegative(env.CTS_RUNTIME_MEMORY_HIGH_MB)
+  if (runtimeHigh > 0) return runtimeHigh
   try {
     const limits = (globalThis as typeof globalThis & {
       __redis_mem_limits?: { rssSoftMB?: number }
@@ -171,8 +262,9 @@ export function getRuntimeConcurrencyProfile(
 ): RuntimeConcurrencyProfile {
   const cpu = getRuntimeCpuCount(env)
   const baseCpuLanes = bounded((cpu.count + 1) / 4, 1, 4, itemCount)
-  const detectedMemoryTotalMB = Math.max(0, Math.round(totalmem() / 1024 / 1024))
-  const detectedMemoryFreeMB = Math.max(0, Math.round(freemem() / 1024 / 1024))
+  const detectedMemory = resolveRuntimeMemoryBudget(env)
+  const detectedMemoryTotalMB = detectedMemory.totalMB
+  const detectedMemoryFreeMB = detectedMemory.freeMB
   const detectedLoad = Number(loadavg()[0])
   const memoryTotalMB = finiteNonNegative(pressureInput.memoryTotalMB, detectedMemoryTotalMB)
   const memoryFreeMB = finiteNonNegative(pressureInput.memoryFreeMB, detectedMemoryFreeMB)

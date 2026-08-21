@@ -1,6 +1,7 @@
 import {
   clampConcurrency,
   createAdaptiveConcurrencyLimiter,
+  forEachWithConcurrency,
   mapSettledWithConcurrency,
   mapWithConcurrency,
 } from "../../lib/bounded-concurrency"
@@ -86,6 +87,40 @@ describe("bounded engine concurrency", () => {
 
     expect(results).toEqual([1, 2, 3])
     expect(peak).toBe(1)
+  })
+
+  test("runs result-free pools without changing adaptive lane or error semantics", async () => {
+    let desired = 3
+    let active = 0
+    let peak = 0
+    const completed: number[] = []
+
+    await forEachWithConcurrency(
+      Array.from({ length: 12 }, (_, index) => index),
+      3,
+      async (item) => {
+        active++
+        peak = Math.max(peak, active)
+        await new Promise((resolve) => setTimeout(resolve, 1))
+        active--
+        completed.push(item)
+        if (completed.length === 3) desired = 1
+      },
+      { getConcurrency: () => desired, yieldEvery: 0 },
+    )
+
+    expect(peak).toBe(3)
+    expect(completed.sort((left, right) => left - right)).toEqual(
+      Array.from({ length: 12 }, (_, index) => index),
+    )
+
+    const started: number[] = []
+    await expect(forEachWithConcurrency([0, 1, 2], 2, async (item) => {
+      started.push(item)
+      if (item === 0) throw new Error("expected")
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }, { getConcurrency: () => 2 })).rejects.toThrow("expected")
+    expect(started).toEqual([0, 1])
   })
 
   test("shares one adaptive budget across independent async branches", async () => {

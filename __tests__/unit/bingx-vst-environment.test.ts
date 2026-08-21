@@ -16,6 +16,7 @@ describe("BingX Prod-VST connector contract", () => {
 
   afterEach(() => {
     global.fetch = originalFetch
+    ;(BingXConnector as any).openOrdersSnapshotCache?.clear()
     jest.restoreAllMocks()
   })
 
@@ -163,6 +164,14 @@ describe("BingX Prod-VST connector contract", () => {
       filledQty: 0.001,
       filledPrice: 60000,
     })
+    await expect(connector.getOrderDetails("BTCUSDT", "vst-order-1")).resolves.toMatchObject({
+      success: true,
+      order: expect.objectContaining({
+        orderId: "vst-order-1",
+        clientOrderID: "cts-vst-test-1",
+        status: "FILLED",
+      }),
+    })
     await expect(connector.getPositions("BTCUSDT")).resolves.toEqual([
       expect.objectContaining({
         symbol: "BTC-USDT",
@@ -199,6 +208,48 @@ describe("BingX Prod-VST connector contract", () => {
       success: false,
       error: "Prod-VST position mode cannot be changed to one-way; use hedge mode with an explicit positionSide",
     })
+  })
+
+  test("refreshes a symbol snapshot immediately after a confirmed VST cancellation", async () => {
+    let orderOpen = true
+    const requests: Array<{ pathname: string; method: string }> = []
+    global.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      const method = String(init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase()
+      requests.push({ pathname: url.pathname, method })
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/openOrders") {
+        return Response.json({
+          code: 0,
+          data: { orders: orderOpen ? [{ orderId: "vst-stop-1", symbol: "BTC-USDT" }] : [] },
+        })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/order" && method === "DELETE") {
+        orderOpen = false
+        return Response.json({ code: 0, data: { orderId: "vst-stop-1" } })
+      }
+      throw new Error(`Unexpected request: ${method} ${url.pathname}`)
+    }) as typeof fetch
+
+    const connector = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+    ;(connector as any).getSdkTradeService = jest.fn(async () => null)
+
+    await expect(connector.getOpenOrders("BTCUSDT")).resolves.toEqual([
+      expect.objectContaining({ orderId: "vst-stop-1" }),
+    ])
+    await expect(connector.cancelOrder("BTCUSDT", "vst-stop-1")).resolves.toEqual({ success: true })
+    await expect(connector.getOpenOrders("BTCUSDT")).resolves.toEqual([])
+
+    expect(requests.filter((request) => request.pathname === "/openApi/swap/v2/trade/openOrders")).toHaveLength(2)
   })
 
   test("pins every authenticated Prod-VST request to an explicit official .pro origin", async () => {

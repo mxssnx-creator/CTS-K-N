@@ -30,25 +30,44 @@ if (current !== desired) {
 }
 
 // Next automatically appends the active custom dist directory to
-// tsconfig.include. Keeping both `.next/types` and `.next-prod/types` makes a
-// later standalone `tsc --noEmit` merge two incompatible generated Route
-// unions even though each build passed Next's own type validation. The custom
-// build has already validated its generated types, so restore the repository's
-// canonical single `.next` type universe after that build completes.
+// tsconfig.include. Interrupted preview/preflight builds can leave several of
+// these entries behind (for example `.next-live-preflight-*/types`), which
+// makes a later standalone `tsc --noEmit` merge incompatible generated Route
+// unions even though every individual build passed Next's own type validation.
+// Each custom build has already validated its generated types, so retain only
+// the canonical `.next/types` universe after every build completes.
 const distDir = process.env.NEXT_DIST_DIR || '.next'
 const standaloneDistDir = join(distDir, 'standalone', basename(distDir))
-if (resolve(distDir) !== resolve('.next') && existsSync('tsconfig.json')) {
+const canonicalNextTypesInclude = '.next/types/**/*.ts'
+const transientNextTypesInclude = /^\.next(?:-[^/]+|\/dev)\/types\/\*\*\/\*\.ts$/
+if (existsSync('tsconfig.json')) {
   try {
     const tsconfig = JSON.parse(readFileSync('tsconfig.json', 'utf8'))
-    const customTypesInclude = `${distDir.replace(/\/+$/, '')}/types/**/*.ts`
-    if (Array.isArray(tsconfig.include) && tsconfig.include.includes(customTypesInclude)) {
-      tsconfig.include = tsconfig.include.filter((entry) => entry !== customTypesInclude)
+    const transientIncludes = Array.isArray(tsconfig.include)
+      ? tsconfig.include.filter((entry) => (
+        typeof entry === 'string' &&
+        entry !== canonicalNextTypesInclude &&
+        transientNextTypesInclude.test(entry)
+      ))
+      : []
+    if (transientIncludes.length > 0) {
+      tsconfig.include = tsconfig.include.filter((entry) => !transientIncludes.includes(entry))
       writeFileSync('tsconfig.json', `${JSON.stringify(tsconfig, null, 2)}\n`)
-      console.log(`[next-env] removed isolated ${customTypesInclude} from canonical TypeScript includes`)
+      console.log(`[next-env] removed ${transientIncludes.length} transient Next type include(s) from canonical TypeScript includes`)
     }
   } catch (error) {
-    throw new Error(`[next-env] could not normalize custom dist TypeScript includes: ${error.message}`)
+    throw new Error(`[next-env] could not normalize transient Next TypeScript includes: ${error.message}`)
   }
+}
+
+// Development and interrupted test harnesses may leave an otherwise empty
+// `.next` directory behind. They have no standalone production artifact to
+// repair, so keep the source metadata canonical and exit successfully instead
+// of manufacturing provider files from partial compiler state. The build
+// wrapper independently rejects a production artifact without BUILD_ID.
+if (!existsSync(join(distDir, 'BUILD_ID'))) {
+  console.log(`[next-env] skipped artifact normalization: ${join(distDir, 'BUILD_ID')} is absent`)
+  process.exit(0)
 }
 
 // ── routes-manifest.json cross-copy ────────────────────────────────────────

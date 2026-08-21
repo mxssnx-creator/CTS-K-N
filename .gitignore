@@ -45,6 +45,7 @@ redis*
 .next-prod-final/
 .next-prod-release-final/
 .next-audit/
+/.next-*/
 .v0-dev/
 .v0-prod/
 .open-next/
