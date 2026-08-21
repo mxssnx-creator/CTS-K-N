@@ -58,6 +58,12 @@ sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn \
   --runtime auto --service-user cts-kn --safe-simulation
 ```
 
+For authenticated BingX X02 demo orders, do not use `--safe-simulation`.
+Supply `BINGX_ENVIRONMENT=prod-vst`, `BINGX_X02_API_KEY`, and
+`BINGX_X02_API_SECRET` through a protected seed environment file; fresh
+installations default to `prod-vst`. `prod-live` is an explicit later opt-in
+for BingX X01 mainnet credentials and must never reuse the X02 VST keys.
+
 Pass canonical installer options after `--`, for example `-- --skip-tests`.
 Pass bootstrap options, including `--seed-env-file /root/cts-kn.seed.env`,
 before `--` so a seed located inside the old target can be preserved before

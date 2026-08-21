@@ -104,7 +104,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("upsert_env CTS_REQUIRE_LIVE_TRADE_READY 0")
     expect(installer).toContain("Safe simulation mode is active")
     expect(installer).toContain('upsert_env BINGX_ENVIRONMENT "$bingx_environment"')
-    expect(installer).toContain('bingx_environment="prod-vst"')
+    expect(installer).toContain('[[ -n "$bingx_environment" ]] || bingx_environment="prod-vst"')
     expect(installer).toContain('upsert_env BINGX_PUBLIC_ORIGIN "https://open-api-vst.bingx.com"')
     expect(installer).toContain('upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api-vst.bingx.pro"')
     expect(installer).toContain('upsert_env BINGX_VST_ORIGIN "$bingx_vst_origin"')

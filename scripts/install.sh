@@ -990,7 +990,9 @@ configure_environment_and_redis() {
   local bingx_vst_origin="${BINGX_VST_ORIGIN:-$(env_value BINGX_VST_ORIGIN)}"
   [[ -n "$bingx_vst_origin" ]] || bingx_vst_origin="https://open-api-vst.bingx.com"
   local bingx_environment="${BINGX_ENVIRONMENT:-$(env_value BINGX_ENVIRONMENT)}"
-  [[ -n "$bingx_environment" ]] || bingx_environment="prod-live"
+  # New long-lived deployments start on BingX's virtual-funds endpoint.  A
+  # real-funds target must always be selected explicitly via prod-live.
+  [[ -n "$bingx_environment" ]] || bingx_environment="prod-vst"
   case "${bingx_environment,,}" in
     prod-live|live|mainnet|production)
       bingx_environment="prod-live"
