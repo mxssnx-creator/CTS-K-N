@@ -25,10 +25,12 @@ import {
   PRESET_DEFAULT_INDICATION_TYPES,
   PRESET_DEFAULT_MIN_PF_RATIO,
   PRESET_DEFAULT_STRATEGY_TYPES,
+  PRESET_DEFAULT_TAKE_PROFIT_STEPS,
   PRESET_INDICATION_GROUPS,
 } from "@/lib/preset-crud-defaults"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_PF_RATIO_MIN,
   MAIN_TRADE_PF_RATIO_MAX,
   MAIN_TRADE_PF_RATIO_STEP,
   normalizeMainTradeStagePfRatio,
@@ -47,7 +49,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
     description: "",
     indication_types: [...PRESET_DEFAULT_INDICATION_TYPES],
     indication_ranges: [...PRESET_DEFAULT_INDICATION_RANGES],
-    takeprofit_steps: [2, 3, 4, 6, 8, 12],
+    takeprofit_steps: [...PRESET_DEFAULT_TAKE_PROFIT_STEPS],
     stoploss_ratios: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
     trailing_enabled: true,
     trail_starts: [0.3, 0.6, 1.0],
@@ -78,7 +80,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
         description: "",
         indication_types: [...PRESET_DEFAULT_INDICATION_TYPES],
         indication_ranges: [...PRESET_DEFAULT_INDICATION_RANGES],
-        takeprofit_steps: [2, 3, 4, 6, 8, 12],
+        takeprofit_steps: [...PRESET_DEFAULT_TAKE_PROFIT_STEPS],
         stoploss_ratios: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
         trailing_enabled: true,
         trail_starts: [0.3, 0.6, 1.0],
@@ -210,11 +212,11 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
               <Card>
                 <CardHeader>
                   <CardTitle>Take Profit Steps</CardTitle>
-                  <CardDescription>TP steps in relation to 0.1% position cost (2, 3, 4, 6, 8, 12)</CardDescription>
+                  <CardDescription>TP steps in relation to position cost (fresh default: 5, 6, 8, 12)</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
-                    {[2, 3, 4, 6, 8, 12].map((step) => (
+                    {PRESET_DEFAULT_TAKE_PROFIT_STEPS.map((step) => (
                       <Badge
                         key={step}
                         variant={formData.takeprofit_steps?.includes(step) ? "default" : "outline"}
@@ -452,7 +454,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
                       id="min_profit_factor"
                       type="number"
                       step={MAIN_TRADE_PF_RATIO_STEP}
-                      min={MAIN_TRADE_BASE_PF_RATIO_DEFAULT}
+                      min={MAIN_TRADE_PF_RATIO_MIN}
                       max={MAIN_TRADE_PF_RATIO_MAX}
                       value={formData.min_profit_factor}
                       onChange={(e) =>
@@ -466,7 +468,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
                       }
                     />
                     <p className="text-xs text-muted-foreground">
-                      Base Valid grid 0.40–2.70, step 0.02. Downstream Main/Real/Live defaults remain independently set to 1.12.
+                      1.00 is neutral after one PositionCost; each 0.10 adds one more PositionCost of required net result. Range 1.00–2.20.
                     </p>
                   </div>
 

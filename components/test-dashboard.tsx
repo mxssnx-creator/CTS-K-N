@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
+import { useExchange } from '@/lib/exchange-context'
 import {
   Play,
   Square,
@@ -106,7 +107,6 @@ interface LogEntry {
   level: 'info' | 'warn' | 'error' | 'ok'
 }
 
-const CONN_ID = 'bingx-x01'
 const POLL_MS = 2000
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -196,6 +196,8 @@ function DebugToggleRow({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function TestDashboard() {
+  const { selectedConnectionId } = useExchange()
+  const connectionId = selectedConnectionId || ''
   const [stats, setStats] = useState<StatsPayload | null>(null)
   const [debugConfig, setDebugConfig] = useState<DebugConfig>({
     enabled: false,
@@ -223,8 +225,12 @@ export function TestDashboard() {
 
   // ── Fetch stats ──────────────────────────────────────────────────────────
   const fetchStats = useCallback(async () => {
+    if (!connectionId) {
+      setStats(null)
+      return
+    }
     try {
-      const res = await fetch(`/api/connections/progression/${CONN_ID}/stats`)
+      const res = await fetch(`/api/connections/progression/${connectionId}/stats`)
       if (!res.ok) {
         addLog(`Stats ${res.status}: ${res.statusText}`, 'warn')
         return
@@ -234,7 +240,7 @@ export function TestDashboard() {
     } catch (e) {
       addLog(`Stats fetch error: ${e}`, 'error')
     }
-  }, [addLog])
+  }, [addLog, connectionId])
 
   // ── Poll toggle ──────────────────────────────────────────────────────────
   const startPolling = useCallback(() => {
@@ -256,9 +262,13 @@ export function TestDashboard() {
 
   // Always poll while mounted so the UI stays live
   useEffect(() => {
+    if (!connectionId) {
+      stopPolling()
+      return
+    }
     startPolling()
     return () => stopPolling()
-  }, [])
+  }, [connectionId, startPolling, stopPolling])
 
   // Auto-scroll logs
   useEffect(() => {
@@ -373,7 +383,7 @@ export function TestDashboard() {
           <div className='flex items-center gap-3'>
             <div className={`w-2.5 h-2.5 rounded-full ${phaseColor(phase)}`} />
             <span className='font-semibold text-sm tracking-tight'>
-              {CONN_ID} &mdash; <span className='font-mono'>{phase}</span>
+              {connectionId || 'No connection selected'} &mdash; <span className='font-mono'>{phase}</span>
             </span>
             <Badge variant={running ? 'default' : 'secondary'} className='text-xs'>
               {running ? 'Running' : 'Stopped'}

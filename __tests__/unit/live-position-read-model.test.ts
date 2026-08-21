@@ -99,4 +99,24 @@ describe("live position read model", () => {
       updatedAt: 500,
     })
   })
+
+  it("preserves zero-valued exchange PnL fields from a hash restart", () => {
+    const normalized = normalizeLivePositionReadModel({
+      unrealizedPnL: "0",
+      unrealized_pnl: "0",
+      unrealized_pnl_percent: "0",
+      averageExecutionPrice: "100",
+      markPrice: "120",
+      leverage: "10",
+    })
+
+    expect(normalized).toMatchObject({
+      unrealizedPnL: 0,
+      unrealized_pnl: 0,
+      unrealized_pnl_percent: 0,
+      averageExecutionPrice: 100,
+      markPrice: 120,
+      leverage: 10,
+    })
+  })
 })

@@ -14,6 +14,7 @@ import { indicatorCalculator, PriceData } from "@/lib/indicators/calculator"
 import { getRedisClient, getConnection } from "@/lib/redis-db"
 import { placeLiveOrder } from "@/lib/live-order-service"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 // shim: existing code uses redisDb.set; map to InlineLocalRedis instance.
 const redisDb = {
   set: (key: string, val: string, opts?: { ex?: number }) =>
@@ -140,7 +141,7 @@ export class TradeEngineStateMachine {
           apiSecret: connData?.api_secret || "",
           apiType:   connData?.api_type,
           contractType: connData?.contract_type,
-          isTestnet: connData?.is_testnet === true || connData?.is_testnet === "true",
+          isTestnet: isTruthyFlag(connData?.is_testnet),
         },
       )
 

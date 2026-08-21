@@ -4,7 +4,10 @@ import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  mainTradePfRatioToSignedResultR,
+  signedResultRToMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS } from "@/lib/position-cost"
 
 function strategyId(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -20,7 +23,10 @@ export interface StrategyResult {
   isActive: boolean
   validation_state: "valid" | "invalid" | "pending"
   last_positions: PseudoPosition[]
+  /** Canonical Main-stage PositionCost coordinate (neutral = 1.00). */
   avg_profit_factor: number
+  /** Signed net PositionCost multiple; neutral = 0.  Optional for legacy UI. */
+  avg_signed_result_r?: number
   should_open_position: boolean
   volume_factor: number
   stats: {
@@ -59,7 +65,8 @@ export class StrategyEngine {
     applyAdjustments = true,
   ): StrategyResult {
     const lastPositions = pseudoPositions.slice(-config.last_positions_count)
-    const avgProfitFactor = this.calculateAverageProfitFactor(lastPositions)
+    const avgSignedResultR = this.calculateAverageSignedResultR(lastPositions)
+    const avgProfitFactor = signedResultRToMainTradePfRatio(avgSignedResultR)
 
     const isValid = avgProfitFactor >= MAIN_TRADE_BASE_PF_RATIO_DEFAULT
 
@@ -97,6 +104,7 @@ export class StrategyEngine {
       validation_state: isValid ? "valid" : "invalid",
       last_positions: lastPositions,
       avg_profit_factor: avgProfitFactor,
+      avg_signed_result_r: avgSignedResultR,
       should_open_position: isValid,
       volume_factor: adjustedVolumeFactor,
       stats: this.calculateStrategyStats(pseudoPositions, config),
@@ -110,13 +118,8 @@ export class StrategyEngine {
   ): StrategyResult {
     const mainPositions = pseudoPositions.slice(-config.main_positions_count)
 
-    const positivePositions = mainPositions.filter((p) => p.profit_factor > 0)
-    const negativePositions = mainPositions.filter((p) => p.profit_factor <= 0)
-
-    const positiveAvg = positivePositions.length > 0 ? this.calculateAverageProfitFactor(positivePositions) : 0
-    const negativeAvg = negativePositions.length > 0 ? this.calculateAverageProfitFactor(negativePositions) : 0
-
-    const overallAvg = this.calculateAverageProfitFactor(mainPositions)
+    const overallSignedResultR = this.calculateAverageSignedResultR(mainPositions)
+    const overallAvg = signedResultRToMainTradePfRatio(overallSignedResultR)
     const isValid = overallAvg >= MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
 
     let adjustedVolumeFactor = 1
@@ -151,6 +154,7 @@ export class StrategyEngine {
       validation_state: isValid ? "valid" : "invalid",
       last_positions: mainPositions,
       avg_profit_factor: overallAvg,
+      avg_signed_result_r: overallSignedResultR,
       should_open_position: isValid,
       volume_factor: adjustedVolumeFactor,
       stats: this.calculateStrategyStats(pseudoPositions, config),
@@ -164,13 +168,14 @@ export class StrategyEngine {
     applyAdjustments = true,
   ): StrategyResult {
     const lastPositions = pseudoPositions.slice(-config.last_positions_count)
-    const avgProfitFactor = this.calculateAverageProfitFactor(lastPositions)
+    const avgSignedResultR = this.calculateAverageSignedResultR(lastPositions)
+    const avgProfitFactor = signedResultRToMainTradePfRatio(avgSignedResultR)
 
     const last20 = pseudoPositions.slice(-20)
     const last25 = pseudoPositions.slice(-25)
 
-    const avg20 = this.calculateAverageProfitFactor(last20)
-    const avg25 = this.calculateAverageProfitFactor(last25)
+    const avg20 = signedResultRToMainTradePfRatio(this.calculateAverageSignedResultR(last20))
+    const avg25 = signedResultRToMainTradePfRatio(this.calculateAverageSignedResultR(last25))
 
     const isValid =
       (avg20 >= MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT ||
@@ -209,6 +214,7 @@ export class StrategyEngine {
       validation_state: isValid ? "valid" : "invalid",
       last_positions: lastPositions,
       avg_profit_factor: avgProfitFactor,
+      avg_signed_result_r: avgSignedResultR,
       should_open_position: isValid,
       volume_factor: adjustedVolumeFactor,
       stats: this.calculateStrategyStats(pseudoPositions, config),
@@ -229,7 +235,7 @@ export class StrategyEngine {
   }
 
   private applyDCAdjustment(positions: PseudoPosition[], _dcaLevels: number): number {
-    const lossPositions = positions.filter((p) => p.profit_factor < 0)
+    const lossPositions = positions.filter((p) => this.resolveSignedResultR(p) < 0)
 
     if (lossPositions.length > 0) {
       // DCA is its own identity-based lane. It must never compound a Block,
@@ -297,9 +303,42 @@ export class StrategyEngine {
     return strategies
   }
 
-  private calculateAverageProfitFactor(positions: PseudoPosition[]): number {
+  /**
+   * A legacy pseudo row's `profit_factor` is a signed Result-R value, whose
+   * neutral point is 0.  Newer writers carry an explicit signed field; prefer
+   * it so a display-only PF coordinate can never be misread as PnL.
+   */
+  private resolveSignedResultR(position: PseudoPosition): number {
+    const raw = position as PseudoPosition & Record<string, unknown>
+    for (const value of [
+      raw.signedResultR,
+      raw.signed_result_r,
+      raw.costNormalizedReturn,
+    ]) {
+      const numeric = Number(value)
+      if (Number.isFinite(numeric)) return numeric
+    }
+
+    const legacyFactor = Number(raw.profit_factor)
+    const semantics = String(
+      raw.profit_factor_kind ?? raw.profitFactorKind ?? raw.profitFactorSource ?? "",
+    ).trim().toLowerCase()
+    if (
+      ["main_trade_pf_ratio", "main-stage-ratio", "position_cost_ratio"].includes(semantics) &&
+      Number.isFinite(legacyFactor)
+    ) {
+      return mainTradePfRatioToSignedResultR(legacyFactor)
+    }
+    return Number.isFinite(legacyFactor) ? legacyFactor : 0
+  }
+
+  private calculateAverageSignedResultR(positions: PseudoPosition[]): number {
     if (positions.length === 0) return 0
-    return positions.reduce((sum, p) => sum + p.profit_factor, 0) / positions.length
+    return positions.reduce((sum, p) => sum + this.resolveSignedResultR(p), 0) / positions.length
+  }
+
+  private calculateAverageCoordinationRatio(positions: PseudoPosition[]): number {
+    return signedResultRToMainTradePfRatio(this.calculateAverageSignedResultR(positions))
   }
 
   private calculateStrategyStats(positions: PseudoPosition[], config: StrategyConfig) {
@@ -307,15 +346,15 @@ export class StrategyEngine {
     const last20 = positions.slice(-20)
     const last50 = positions.slice(-50)
 
-    const winningPositions = positions.filter((p) => p.profit_factor > 0)
+    const winningPositions = positions.filter((p) => this.resolveSignedResultR(p) > 0)
     const winRate = positions.length > 0 ? winningPositions.length / positions.length : 0
 
     const drawdownHours = this.calculateDrawdownHours(positions)
 
     return {
-      last_8_avg: this.calculateAverageProfitFactor(last8),
-      last_20_avg: this.calculateAverageProfitFactor(last20),
-      last_50_avg: this.calculateAverageProfitFactor(last50),
+      last_8_avg: this.calculateAverageCoordinationRatio(last8),
+      last_20_avg: this.calculateAverageCoordinationRatio(last20),
+      last_50_avg: this.calculateAverageCoordinationRatio(last50),
       positions_per_day: this.calculatePositionsPerDay(positions),
       drawdown_hours: drawdownHours,
       total_trades: positions.length,
@@ -339,14 +378,15 @@ export class StrategyEngine {
     let currentDrawdownStart: Date | null = null
 
     positions.forEach((position) => {
-      if (position.profit_factor > maxProfit) {
-        maxProfit = position.profit_factor
+      const signedResultR = this.resolveSignedResultR(position)
+      if (signedResultR > maxProfit) {
+        maxProfit = signedResultR
         if (currentDrawdownStart) {
           const drawdownEnd = new Date(position.updated_at)
           drawdownHours += (drawdownEnd.getTime() - currentDrawdownStart.getTime()) / (1000 * 60 * 60)
           currentDrawdownStart = null
         }
-      } else if (position.profit_factor <= maxProfit && !currentDrawdownStart) {
+      } else if (signedResultR <= maxProfit && !currentDrawdownStart) {
         currentDrawdownStart = new Date(position.updated_at)
       }
     })
@@ -366,7 +406,7 @@ export class StrategyEngine {
     const configs: StrategyConfig[] = []
 
     const stopLossRatios = buildStopLossRatios()
-    for (let tp = 2; tp <= 22; tp++) {
+    for (const tp of DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS) {
       for (const sl of stopLossRatios) {
         configs.push({
           takeprofit_factor: tp,

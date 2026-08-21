@@ -2,6 +2,8 @@ import { NextResponse } from "next/server"
 import { initRedis, getAllConnections } from "@/lib/redis-db"
 import { getLivePositions, getClosedLivePositions } from "@/lib/trade-engine/stages/live-stage"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
+import { isLiveOpenStatus } from "@/lib/live-position-status"
 
 export const dynamic = "force-dynamic"
 
@@ -36,19 +38,7 @@ function isRealExchangePosition(pos: any): boolean {
 
 function pnlOf(pos: any): number {
   const isClosed = String(pos?.status || "").toLowerCase() === "closed"
-  const stored = isClosed
-    ? Number(pos?.realizedPnL ?? pos?.realized_pnl ?? pos?.pnl)
-    : Number(pos?.unrealizedPnL ?? pos?.unrealized_pnl ?? pos?.exchangeData?.unrealizedPnl ?? pos?.exchangeData?.unrealizedPnL)
-  if (Number.isFinite(stored) && stored !== 0) return stored
-  const qty = Number(pos?.executedQuantity ?? pos?.quantity ?? 0) || 0
-  const entry = Number(pos?.averageExecutionPrice ?? pos?.entryPrice ?? 0) || 0
-  const exitOrMark = isClosed
-    ? Number(pos?.closePrice ?? pos?.exitPrice ?? 0) || 0
-    : Number(pos?.markPrice ?? pos?.exchangeData?.markPrice ?? 0) || 0
-  if (qty > 0 && entry > 0 && exitOrMark > 0) {
-    return qty * (String(pos?.direction).toLowerCase() === "short" ? entry - exitOrMark : exitOrMark - entry)
-  }
-  return Number.isFinite(stored) ? stored : 0
+  return (isClosed ? resolveRealizedPnl(pos || {}) : resolveUnrealizedPnl(pos || {})) ?? 0
 }
 
 function round2(n: number): number {
@@ -62,25 +52,51 @@ function finalizeStats(stats: SymbolStats): SymbolStats {
   return stats
 }
 
-export async function GET() {
+function grossProfitFactor(values: readonly number[]): number {
+  const grossProfit = values.reduce((sum, value) => sum + Math.max(0, value), 0)
+  const grossLoss = values.reduce((sum, value) => sum + Math.abs(Math.min(0, value)), 0)
+  return grossLoss > 0 ? round2(grossProfit / grossLoss) : grossProfit > 0 ? 999 : 0
+}
+
+export async function GET(request: Request) {
   try {
     console.log("[v0] Fetching aggregated exchange-positions statistics")
 
     await initRedis()
     const connections = await getAllConnections()
+    const params = new URL(request.url).searchParams
+    const requestedConnectionId = String(
+      params.get("connection_id") ?? params.get("connectionId") ?? "",
+    ).trim()
+    // Symbol statistics feed connection-specific UI panels. Aggregating all
+    // enabled ledgers when a selection is missing leaks one connection's
+    // performance into another and makes switching appear stale.
+    if (!requestedConnectionId) {
+      return NextResponse.json(
+        { error: "connection_id query parameter required", symbols: [] },
+        { status: 400 },
+      )
+    }
     const activeConnections = connections.filter((c: any) =>
+      String(c.id) === requestedConnectionId &&
       isTruthyFlag(c.is_enabled_dashboard) &&
       isTruthyFlag(c.is_enabled) &&
       isTruthyFlag(c.is_live_trade),
     )
 
     const bySymbol = new Map<string, SymbolStats>()
-    for (const connection of activeConnections) {
-      const [open, closed] = await Promise.all([
-        getLivePositions(connection.id).catch(() => []),
-        getClosedLivePositions(connection.id, 250).catch(() => []),
-      ])
-      for (const pos of [...open, ...closed].filter(isRealExchangePosition)) {
+    const closedPnlBySymbol = new Map<string, Array<{ pnl: number; closedAt: number }>>()
+    // Connection ledgers are independent. Fetch in parallel so the selected
+    // connection remains fast even while other active connections are busy.
+    const ledgers = await Promise.all(
+      activeConnections.map(async (connection: any) => ({
+        connectionId: connection.id,
+        open: await getLivePositions(connection.id).catch(() => []),
+        closed: await getClosedLivePositions(connection.id, 250).catch(() => []),
+      })),
+    )
+    for (const ledger of ledgers) {
+      for (const pos of [...ledger.open, ...ledger.closed].filter(isRealExchangePosition)) {
         const symbol = String((pos as any).symbol || "UNKNOWN")
         const current = bySymbol.get(symbol) || {
           symbol,
@@ -97,13 +113,26 @@ export async function GET() {
           profitFactor50: 0,
           source: "exchange_live_positions" as const,
         }
+        const isClosed = String((pos as any).status || "").toLowerCase() === "closed"
+        const isOpen = isLiveOpenStatus((pos as any).status)
+        if (!isClosed && !isOpen) continue
         current.livePositions += 1
         const pnl = pnlOf(pos)
-        if ((pos as any).status === "closed") {
+        if (isClosed) {
           current.closedPositions += 1
           current.realizedPnl = round2(current.realizedPnl + pnl)
           if (pnl > 0) current.wins += 1
           if (pnl < 0) current.losses += 1
+          const windows = closedPnlBySymbol.get(symbol) || []
+          const closedAtRaw = (pos as any).closedAt || (pos as any).closed_at || (pos as any).updatedAt || 0
+          const closedAtNumeric = Number(closedAtRaw)
+          windows.push({
+            pnl,
+            closedAt: Number.isFinite(closedAtNumeric)
+              ? closedAtNumeric
+              : Date.parse(String(closedAtRaw)) || 0,
+          })
+          closedPnlBySymbol.set(symbol, windows)
         } else {
           current.openPositions += 1
           current.unrealizedPnl = round2(current.unrealizedPnl + pnl)
@@ -113,7 +142,13 @@ export async function GET() {
     }
 
     const symbols = Array.from(bySymbol.values())
-      .map(finalizeStats)
+      .map((stats) => {
+        const rows = (closedPnlBySymbol.get(stats.symbol) || [])
+          .sort((left, right) => right.closedAt - left.closedAt)
+        stats.profitFactor250 = grossProfitFactor(rows.slice(0, 250).map((row) => row.pnl))
+        stats.profitFactor50 = grossProfitFactor(rows.slice(0, 50).map((row) => row.pnl))
+        return finalizeStats(stats)
+      })
       .sort((a, b) => Math.abs(b.effectivePnl) - Math.abs(a.effectivePnl))
       .slice(0, 22)
 
@@ -121,6 +156,7 @@ export async function GET() {
       symbols,
       source: "exchange_live_positions",
       simulatedExcluded: true,
+      connectionId: requestedConnectionId,
     })
   } catch (error) {
     console.error("[v0] Failed to fetch exchange-positions statistics:", error)

@@ -672,12 +672,16 @@ async function main(): Promise<void> {
       symbol: soakSymbols[index % soakSymbols.length],
       direction: index % 2 === 0 ? "long" : "short",
       indication_type: expectedIndicationTypes[index % expectedIndicationTypes.length],
-      takeprofit_factor: 2 + (index % 21),
+      takeprofit_factor: [5, 10, 15, 20][index % 4],
       stoploss_ratio: 0.25 + (index % 10) * 0.25,
       trailing_enabled: index % 2 === 0,
       entry_price: 100,
       current_price: 100 + (index % 5) - 2,
+      // Explicit semantic tag ensures the 0.5R coverage row remains a
+      // positive Result-R rather than being misread as a stage coordinate.
       profit_factor: index % 4 === 0 ? 0.5 : 1.5 + (index % 3) * 0.25,
+      profit_factor_kind: "signed_result_r",
+      signedResultR: index % 4 === 0 ? 0.5 : 1.5 + (index % 3) * 0.25,
       position_cost: 1,
       status: "closed",
       created_at: new Date(Date.now() - (60 - index) * 60_000).toISOString(),

@@ -111,7 +111,7 @@ export interface CoordinationSettings {
   trailingVariants: string[]
 
   /**
-   * ── Position-Count (Pis) Sets volume ratio ───────────────────────
+   * ── Position-Count (Pos) Sets volume ratio ───────────────────────
    * Operator coordination ratio applied ONLY to pos-count (axis) Sets.
    * Range 0.1..10 step 0.1, default 3. Ratio 10 maps to 0.02× Base
    * volume for each valid Set.
@@ -130,7 +130,7 @@ export interface CoordinationSettings {
   dcaMaxPositionVolumeRatio: number // total including initial fill, 1.4..5
 
   /**
-   * ── Prev-PI threshold (operator spec) ──────────────────────────────
+   * ── Prev-Pos threshold (operator spec) ─────────────────────────────
    *
    * Activation threshold for the historic-PI blend at Base stage and
    * the per-variant Real-stage tuner. Below this many CLOSED positions
@@ -202,7 +202,7 @@ export interface CoordinationSettings {
 /**
  * Operator-spec defaults.
  * - trailing: on, block: on, dca: off (per directive)
- * - minStep: 4 (default; exhaustive configured minimum through 30)
+ * - minStep: 5 (default; exhaustive configured minimum through 30)
  * - maxStopLossRatio: 2.5 (default=max; range 0.25-2.5, step 0.25)
  * - trailingMinStep: 4 (default; range 2-30)
  * - PF defaults set in DEFAULT_STRATEGY_PROFILE (base=1.0, main/real=1.2)
@@ -1198,7 +1198,7 @@ export function StrategyCoordinationSection({
           <div className="flex items-center justify-between gap-2">
             <div>
               <CardTitle className="text-sm">
-                Position-Count (Pis) Sets Volume Ratio
+                Position-Count (Pos) Sets Volume Ratio
               </CardTitle>
               <CardDescription className="text-xs">
                 Coordination ratio for every independently valid additional
@@ -1213,7 +1213,7 @@ export function StrategyCoordinationSection({
         <CardContent className="space-y-4">
           <div className="rounded-lg border border-border/60 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <Label className="text-sm font-semibold">Pis Volume Ratio</Label>
+              <Label className="text-sm font-semibold">Pos Volume Ratio</Label>
               <span className="text-xs font-semibold tabular-nums w-12 text-right">
                 {value.posCountsVolumeRatio.toFixed(1)}
               </span>
@@ -1239,9 +1239,9 @@ export function StrategyCoordinationSection({
         </CardContent>
       </Card>
 
-      {/* ── Prev-PI Influence card ───────────────────────────────────
-          Operator spec: "make sure strategies are evaluating prev pis
-          and profitfactors min from historic … prev pis cnts are
+      {/* ── Prev-Pos Influence card ──────────────────────────────────
+          Operator spec: "make sure strategies are evaluating previous positions
+          and profitfactors min from historic … previous position counts are
           working and added to settings,strategy".
 
           One number — the activation threshold below which the engine
@@ -1254,7 +1254,7 @@ export function StrategyCoordinationSection({
           <div className="flex items-center justify-between gap-2">
             <div>
               <CardTitle className="text-sm">
-                Prev-PI Influence — Historic Blend Threshold
+                Prev-Pos Influence — Historic Blend Threshold
               </CardTitle>
               <CardDescription className="text-xs">
                 Activation gate for the historic-PF blend at Base and the

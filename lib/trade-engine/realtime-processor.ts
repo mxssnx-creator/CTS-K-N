@@ -44,6 +44,7 @@ import {
   type TrailingProfile,
 } from "@/lib/signal-trailing"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 // ── Module-level import memoization for live-sync hot paths ──────────
 // `fireSyncLiveFromPseudo` and `maybeRunLiveSync` were previously doing
@@ -1120,7 +1121,7 @@ export class RealtimeProcessor {
         apiSecret,
         apiType: connection.api_type,
         contractType: connection.contract_type,
-        isTestnet: connection.is_testnet === true || connection.is_testnet === "true",
+        isTestnet: isTruthyFlag(connection.is_testnet),
       })
 
       const { syncLiveFromPseudo } = await __ensureLiveStageModule()
@@ -1275,7 +1276,7 @@ export class RealtimeProcessor {
         apiSecret,
         apiType: connection.api_type,
         contractType: connection.contract_type,
-        isTestnet: connection.is_testnet === true || connection.is_testnet === "true",
+        isTestnet: isTruthyFlag(connection.is_testnet),
       })
       if (!connector) {
         console.warn(`[v0] [Realtime] live sync skipped: createExchangeConnector returned null for ${this.connectionId}`)

@@ -22,6 +22,7 @@ import {
   MAIN_TRADE_STAGE_PF_DEFAULTS,
   normalizeMainTradeStagePfRatio,
 } from "./main-trade-profit-factor"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "./position-cost"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "./pos-count-volume-ratio"
 import {
   DEFAULT_COMMON_INDICATION_SETTINGS,
@@ -6826,6 +6827,211 @@ const migrations: Migration[] = [
       // Retain X02 and its environment on rollback. Removing an authenticated
       // trading connection (or changing it to real funds) would be destructive.
       await client.set("_schema_version", "97")
+    },
+  },
+  {
+    version: 99,
+    name: "099-position-cost-net-ratio-and-tp-set-defaults",
+    up: async (client: any) => {
+      const stages = ["base", "main", "real", "live"] as const
+      const aliases = {
+        base: ["baseProfitFactor", "base_min_profit_factor"],
+        main: ["mainProfitFactor", "main_min_profit_factor"],
+        real: ["realProfitFactor", "real_min_profit_factor"],
+        live: ["liveProfitFactor", "live_min_profit_factor"],
+      } as const
+      const semantics = "position-cost-net-v3"
+      let flatFieldsUpdated = 0
+      let structuredDocumentsUpdated = 0
+      let directTradeDefaultsUpdated = 0
+
+      // 1.15 was the shipped pre-v3 default. It represented an ambiguous
+      // half-step in the former scale, so it must become the documented
+      // positive default (1.10), not snap upward to 1.20. Other explicit
+      // settings are retained on the canonical 0.10 PositionCost grid.
+      const normalizeStageValue = (
+        stage: typeof stages[number],
+        value: unknown,
+      ): number => {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
+        if (Math.abs(parsed - 1.15) < 1e-9) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
+        return normalizeMainTradeStagePfRatio(stage, parsed)
+      }
+
+      const normalizeDocument = (document: Record<string, any>): boolean => {
+        let changed = false
+        for (const stage of stages) {
+          const stageAliases = aliases[stage]
+          const current = stageAliases
+            .map((field) => document[field])
+            .find((value) => value != null && value !== "")
+          if (current != null) {
+            const next = normalizeStageValue(stage, current)
+            for (const field of stageAliases) {
+              if (Number(document[field]) !== next) {
+                document[field] = next
+                changed = true
+              }
+            }
+          }
+        }
+        for (const container of [document, document.strategies]) {
+          if (!container || typeof container !== "object") continue
+          for (const channelName of ["main", "preset"]) {
+            const channel = container[channelName]
+            if (!channel || typeof channel !== "object") continue
+            for (const stage of stages) {
+              const row = channel[stage]
+              if (!row || typeof row !== "object" || row.min_profit_factor == null) continue
+              const next = normalizeStageValue(stage, row.min_profit_factor)
+              if (Number(row.min_profit_factor) !== next) {
+                row.min_profit_factor = next
+                changed = true
+              }
+            }
+          }
+        }
+        if (document.mainTradePfRatioSemantics !== semantics) {
+          document.mainTradePfRatioSemantics = semantics
+          changed = true
+        }
+        return changed
+      }
+
+      const normalizeHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0) return
+        const patch: Record<string, string> = {}
+        if (values.mainTradePfRatioSemantics !== semantics) {
+          patch.mainTradePfRatioSemantics = semantics
+        }
+        if (values._main_trade_pf_ratio_semantics !== semantics) {
+          patch._main_trade_pf_ratio_semantics = semantics
+        }
+        for (const stage of stages) {
+          const stageAliases = aliases[stage]
+          const current = stageAliases
+            .map((field) => values[field])
+            .find((value) => value != null && value !== "")
+          if (current == null) continue
+          const next = normalizeStageValue(stage, current)
+          for (const field of stageAliases) {
+            if (Number(values[field]) !== next) {
+              patch[field] = String(next)
+              flatFieldsUpdated++
+            }
+          }
+        }
+        for (const field of ["connection_settings", "coordination_settings", "coordinationSettings", "strategies"]) {
+          const raw = values[field]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(raw) as Record<string, any>
+            if (normalizeDocument(document)) {
+              patch[field] = JSON.stringify(document)
+              structuredDocumentsUpdated++
+            }
+          } catch {
+            // Keep malformed recovery payloads untouched; the canonical flat
+            // settings still control runtime behavior and a later save repairs
+            // the structured representation.
+          }
+        }
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      const connectionIds = new Set<string>()
+      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
+        const id = String(connection?.id || "")
+        if (id) connectionIds.add(id)
+      }
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+      const keyPrefixes = [
+        "connection:",
+        "settings:connection:",
+        "connection_settings:",
+        "settings:connection_settings:",
+        "trade_engine_state:",
+        "settings:trade_engine_state:",
+      ] as const
+      for (const prefix of keyPrefixes) {
+        for (const key of await scanRedisKeys(client, `${prefix}*`)) {
+          const id = String(key).slice(prefix.length)
+          if (id) connectionIds.add(id)
+        }
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key)
+      }
+      for (const id of connectionIds) {
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeHash(key)
+        }
+      }
+
+      // Direct-Trade owns one global state document. Upgrade only the exact
+      // shipped 4–8/4–12 grids and the unversioned 5–10/step-2 transition;
+      // intentionally selected legacy grids remain untouched.
+      const rawDirectTrade = await client.get("direct_trade:state").catch(() => null)
+      if (typeof rawDirectTrade === "string" && rawDirectTrade.trim().startsWith("{")) {
+        try {
+          const state = JSON.parse(rawDirectTrade) as Record<string, any>
+          const version = Number(state.takeProfitDefaultsVersion) || 0
+          const range = Array.isArray(state.takeProfitRatioRange) ? state.takeProfitRatioRange : []
+          const step = Number(state.takeProfitRatioStep)
+          const oldShippedGrid = Number(range[0]) === 4
+            && (Number(range[1]) === 8 || Number(range[1]) === 12)
+            && (!Number.isFinite(step) || step === 2)
+          const unversionedTransition = Number(range[0]) === DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO
+            && Number(range[1]) === DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO * 2
+            && step === 2
+          if (version < 2 && (oldShippedGrid || unversionedTransition)) {
+            state.takeProfitRatioRange = [
+              DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO,
+              DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO * 2,
+            ]
+            state.takeProfitRatioStep = DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO
+            state.takeProfitDefaultsVersion = 2
+            await client.set("direct_trade:state", JSON.stringify(state))
+            directTradeDefaultsUpdated++
+          }
+        } catch {
+          // A malformed Direct-Trade state is handled by its own route's
+          // fail-safe default recovery; never destroy it during migration.
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        main_trade_pf_semantics: semantics,
+        main_trade_pf_neutral_ratio: "1",
+        main_trade_pf_positive_step: "0.1",
+        main_trade_pf_one_cost_ratio: "1",
+        main_trade_pf_two_cost_ratio: "1.1",
+        main_trade_pf_default_ratio: String(MAIN_TRADE_STAGE_PF_DEFAULTS.main),
+        main_trade_pf_flat_fields_updated: String(flatFieldsUpdated),
+        main_trade_pf_structured_documents_updated: String(structuredDocumentsUpdated),
+        direct_trade_tp_default_range: `${DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO}-${DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO * 2}`,
+        direct_trade_tp_default_step: String(DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO),
+        direct_trade_tp_defaults_updated: String(directTradeDefaultsUpdated),
+        schema_version: "99",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // The net PositionCost semantics and non-destructive default upgrade
+      // remain safe on rollback; only the schema cursor moves back.
+      await client.set("_schema_version", "98")
     },
   },
 ]

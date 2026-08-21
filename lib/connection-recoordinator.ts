@@ -792,8 +792,21 @@ export async function recoordinateAfterSettingsChange(
 
   // Step 1 — durable notify (Redis envelope read by all running engines).
   let settingsEvent: ReturnType<typeof emitCanonicalEvent>
+  let settingsChangeEvent: Awaited<ReturnType<typeof notifySettingsChanged>>
+  const requestedSettingsVersion = String(
+    opts.settingsVersion ||
+    (after as any).settings_version ||
+    (after as any).updated_at ||
+    new Date().toISOString(),
+  )
   try {
-    await notifySettingsChanged(id, changedFields, before, after)
+    // Keep the route's issued version in the durable settings envelope even
+    // if a cache/mirror reader momentarily returns an older connection shape.
+    // The owner ACK is compare-and-set against this exact value.
+    settingsChangeEvent = await notifySettingsChanged(id, changedFields, before, {
+      ...after,
+      settings_version: requestedSettingsVersion,
+    })
     // UI/cross-tab broadcasts sit behind the same durable commit barrier as
     // the engine notification. A failed Redis write must never look like a
     // completed save in another dashboard tab.
@@ -801,14 +814,14 @@ export async function recoordinateAfterSettingsChange(
       type: "settings.saved",
       connectionId: id,
       stage: "settings",
-      settingsVersion: (after as any).settings_version || (after as any).updated_at || new Date().toISOString(),
+      settingsVersion: requestedSettingsVersion,
       data: { changedFields, logTag: opts.logTag },
     })
     emitCanonicalEvent({
       type: "settings.hotReloaded",
       connectionId: id,
       stage: "settings",
-      settingsVersion: (after as any).settings_version || (after as any).updated_at || settingsEvent.settingsVersion,
+      settingsVersion: requestedSettingsVersion,
       parentEventId: settingsEvent.id,
       data: { changedFields },
     })
@@ -823,10 +836,16 @@ export async function recoordinateAfterSettingsChange(
     // layer consumed by engine-owning processes.
     throw notifyErr
   }
-  const requestedSettingsVersion = String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id)
   // Keep event identity tied to the emitted canonical settings event:
-  // settings_recoordination_requested_event_id: settingsEvent.id
-  const requestedSettingsEventId = settingsEvent.id
+  // the durable settings queue is what the engine owner consumes, so its ID
+  // rather than a separate UI broadcast ID is the CAS acknowledgement key.
+  // The production coordinator always returns the durable envelope, but a
+  // compatibility adapter (or an older embedded worker) may acknowledge the
+  // write without returning it. Do not turn a successfully persisted settings
+  // save into a 500 in that case: retain the canonical event as a strictly
+  // local fallback. The normal path remains the durable queue event ID that
+  // the engine owner consumes and ACKs.
+  const requestedSettingsEventId = String(settingsChangeEvent?.eventId || settingsEvent.id)
 
   // Force singleton strategy coordinators to drop any generation-gated settings
   // reads on the next strategy cycle. This is intentionally before local

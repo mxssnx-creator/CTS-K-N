@@ -16,16 +16,16 @@ interface StrategyRowCompactProps {
 }
 
 // Mini bar chart - renders horizontally in compact form
-function MiniBarChart({ factor, min = -2, max = 2 }: { factor: number; min?: number; max?: number }) {
+function MiniBarChart({ factor, min = 0, max = 2.2 }: { factor: number; min?: number; max?: number }) {
   const normalized = ((factor - min) / (max - min)) * 100
-  const isPositive = factor >= 0
-  const color = isPositive
-    ? factor >= 1.12
-      ? "bg-green-500"
-      : factor >= 0.8
-        ? "bg-yellow-500"
-        : "bg-orange-500"
-    : "bg-red-500"
+  // This UI field is the Main-stage PositionCost coordinate: 1.00 is
+  // neutral.  It is not a signed PnL field, so a value below one is shown as
+  // below-coordinate/amber rather than as a negative result/red.
+  const color = factor >= 1.2
+    ? "bg-green-500"
+    : factor >= 1
+      ? "bg-blue-500"
+      : "bg-amber-500"
   
   return (
     <div className="flex items-center gap-1 min-w-[60px]">

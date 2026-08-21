@@ -22,6 +22,7 @@ import {
   type IndicationParameterRange,
 } from "@/lib/indication-range-calculator"
 import { PageLoading, PageState } from "@/components/page-scaffold"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "@/lib/position-cost"
 
 export default function SetsPage() {
   const [sets, setSets] = useState<PresetConfigurationSet[]>([])
@@ -39,9 +40,9 @@ export default function SetsPage() {
       oversold: INDICATOR_DEFAULTS.rsi.oversold.default,
       overbought: INDICATOR_DEFAULTS.rsi.overbought.default,
     },
-    takeprofit_min: 2.0,
+    takeprofit_min: DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO,
     takeprofit_max: 30.0,
-    takeprofit_step: 2.0,
+    takeprofit_step: 5.0,
     stoploss_min: 0.3,
     stoploss_max: 3.0,
     stoploss_step: 0.3,
@@ -92,9 +93,9 @@ export default function SetsPage() {
         oversold: INDICATOR_DEFAULTS.rsi.oversold.default,
         overbought: INDICATOR_DEFAULTS.rsi.overbought.default,
       },
-      takeprofit_min: 2.0,
+      takeprofit_min: DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO,
       takeprofit_max: 30.0,
-      takeprofit_step: 2.0,
+      takeprofit_step: 5.0,
       stoploss_min: 0.3,
       stoploss_max: 3.0,
       stoploss_step: 0.3,

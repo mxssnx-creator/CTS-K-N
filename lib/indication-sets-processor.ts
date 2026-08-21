@@ -72,6 +72,7 @@ import {
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   movePctToMainTradePfRatio,
+  netMovePctAfterPositionCost,
   normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import { indicationValidatedCooldownKey } from "@/lib/indication-lane-identity"
@@ -238,6 +239,12 @@ function yieldIndicationScheduler(force = false): Promise<void> {
   return indicationMacrotaskYieldInFlight
 }
 
+// Sample v2 stores the gross market move used by the Main-stage
+// PositionCost coordinate. Net execution PnL remains attached separately for
+// accounting/audit. The basis marker prevents an existing rolling list from
+// mixing old net samples with the new gross basis during a deploy.
+const OUTCOME_SAMPLE_BASIS = "gross_market_move_v2"
+
 const RECORD_OUTCOME_SAMPLE_SCRIPT = `
 local sampleKey = KEYS[1]
 local statsKey = KEYS[2]
@@ -246,6 +253,12 @@ local sampleJson = ARGV[1]
 local sampleProfit = tonumber(ARGV[2]) or 0
 local sampleLoss = tonumber(ARGV[3]) or 0
 local cap = tonumber(ARGV[4]) or 1000
+local basis = ARGV[5] or ""
+
+if redis.call("HGET", statsKey, "basis") ~= basis then
+  redis.call("DEL", sampleKey)
+  redis.call("DEL", statsKey)
+end
 
 redis.call("RPUSH", sampleKey, sampleJson)
 local len = redis.call("LLEN", sampleKey)
@@ -290,7 +303,7 @@ else
   count = math.max(count + 1 - evictedCount, 0)
 end
 
-redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count))
+redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count), "basis", basis)
 redis.call("SADD", outcomeIndexKey, sampleKey, statsKey)
 -- The index is a rebuildable discovery structure. Expire it with the same
 -- horizon as the outcome projection so abandoned set keys do not accumulate.
@@ -338,7 +351,8 @@ return values
 // Close every pending sample for one exact Set in one Redis script. Besides
 // removing thousands of per-row round trips, LSET preserves the LIST type and
 // makes the aggregate + persisted indication patch one atomic transition.
-// Importantly, a bootstrap row is pending with the Base PF (normally 0.80),
+// Importantly, a bootstrap row is pending with the canonical neutral Base PF
+// (1.00 after one PositionCost is deducted),
 // not PF=0; outcomePending is the authoritative predicate.
 const CLOSE_PENDING_OUTCOME_GROUP_SCRIPT = `
 local sampleKey = KEYS[1]
@@ -349,6 +363,13 @@ local dedupeKey = KEYS[8]
 local cap = tonumber(ARGV[1]) or 1000
 local positionCostPct = tonumber(ARGV[2]) or 0
 local itemCount = tonumber(ARGV[3]) or 0
+local basis = ARGV[4] or ""
+
+if redis.call("HGET", statsKey, "basis") ~= basis then
+  redis.call("DEL", sampleKey)
+  redis.call("DEL", statsKey)
+  redis.call("DEL", dedupeKey)
+end
 
 local grossProfit = tonumber(redis.call("HGET", statsKey, "grossProfit"))
 local grossLoss = tonumber(redis.call("HGET", statsKey, "grossLoss"))
@@ -356,7 +377,7 @@ local count = tonumber(redis.call("HGET", statsKey, "count"))
 local aggregateValid = grossProfit ~= nil and grossLoss ~= nil and count ~= nil and grossProfit >= 0 and grossLoss >= 0 and count >= 0
 
 local outcomes = {}
-local argumentIndex = 4
+local argumentIndex = 5
 for itemIndex = 1, itemCount do
   local sampleJson = ARGV[argumentIndex]
   local sampleProfit = tonumber(ARGV[argumentIndex + 1]) or 0
@@ -420,11 +441,17 @@ grossProfit = math.max(grossProfit or 0, 0)
 grossLoss = math.max(grossLoss or 0, 0)
 count = math.max(count or 0, 0)
 
-redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count))
+redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count), "basis", basis)
 redis.call("SADD", outcomeIndexKey, sampleKey, statsKey, dedupeKey)
 
 local averageMovePct = count > 0 and ((grossProfit - grossLoss) / count) * 100 or 0
-local positionCostRatio = positionCostPct > 0 and (averageMovePct / positionCostPct) * 0.1 or 0
+-- Keep the atomic Redis path on the exact same net PositionCost basis as
+-- outcomePerformanceFromStats / movePctToMainTradePfRatio: one gross cost is
+-- neutral (1.00), and each additional gross cost adds 0.10 to the ratio.
+local netMovePct = averageMovePct - positionCostPct
+local positionCostRatio = positionCostPct > 0
+  and (1 + (netMovePct / positionCostPct) * 0.1)
+  or 1
 positionCostRatio = math.floor((positionCostRatio + 0.000000000001) * 100000000 + 0.5) / 100000000
 local classicProfitFactor = grossLoss > 0 and grossProfit / grossLoss or (grossProfit > 0 and grossProfit / 0.000001 or 0)
 
@@ -3217,12 +3244,7 @@ export class IndicationSetsProcessor {
       indication?.metadata?.activeProtection,
     )
     if (outcome.completed) {
-      const sample = {
-        profit: Math.max(outcome.pnlPct, 0),
-        loss: Math.max(-outcome.pnlPct, 0),
-        pnlPct: outcome.pnlPct,
-        closedAt: new Date().toISOString(),
-      }
+      const sample = this.createOutcomeSample(outcome)
       if (deferredCompletedOutcomes) {
         deferredCompletedOutcomes.push({ setKey, indication, outcome, sample })
         // NaN is an internal deferred marker only. The batched persistence
@@ -3313,6 +3335,7 @@ export class IndicationSetsProcessor {
             String(this.toOutcomeAmount(write.sample.profit)),
             String(this.toOutcomeAmount(write.sample.loss)),
             String(cap),
+            OUTCOME_SAMPLE_BASIS,
           ],
         })
       }
@@ -3361,9 +3384,18 @@ export class IndicationSetsProcessor {
     const connectionId = String(setKey.split(":")[1] || this.connectionId)
     const outcomeIndexKey = `indication_sets:outcome_keys:index:${connectionId}`
     const cap = 1000
-    const serializedSample = JSON.stringify(sample)
     const sampleProfit = this.toOutcomeAmount(sample?.profit)
     const sampleLoss = this.toOutcomeAmount(sample?.loss)
+    // Keep the low-level helper safe for diagnostics/tests and older callers
+    // that supply only profit/loss. Production paths construct the richer v2
+    // sample through createOutcomeSample above.
+    const normalizedSample = {
+      ...(sample || {}),
+      basis: OUTCOME_SAMPLE_BASIS,
+      profit: sampleProfit,
+      loss: sampleLoss,
+    }
+    const serializedSample = JSON.stringify(normalizedSample)
 
     const evalLua = (client as any)?.eval as
       | ((script: string, options: { keys: string[]; arguments: string[] }) => Promise<any>)
@@ -3371,7 +3403,13 @@ export class IndicationSetsProcessor {
     if (typeof evalLua === "function") {
       const result = await evalLua.call(client, RECORD_OUTCOME_SAMPLE_SCRIPT, {
         keys: [key, statsKey, outcomeIndexKey],
-        arguments: [serializedSample, String(sampleProfit), String(sampleLoss), String(cap)],
+        arguments: [
+          serializedSample,
+          String(sampleProfit),
+          String(sampleLoss),
+          String(cap),
+          OUTCOME_SAMPLE_BASIS,
+        ],
       })
       const grossProfit = Number(result?.[0] ?? 0)
       const grossLoss = Number(result?.[1] ?? 0)
@@ -3409,12 +3447,16 @@ export class IndicationSetsProcessor {
       try {
         const rawStats = await client.hgetall(statsKey)
         const existingStats = this.parseOutcomeStats(rawStats)
-
-        const currentLength = Number(await client.llen(key)) || 0
+        const resetBasis = String(rawStats?.basis || "") !== OUTCOME_SAMPLE_BASIS
+        const currentLength = resetBasis ? 0 : Number(await client.llen(key)) || 0
         const evictCount = Math.max(0, currentLength + 1 - cap)
 
         if (!existingStats) {
           const tx = client.multi()
+          if (resetBasis) {
+            tx.del(key)
+            tx.del(statsKey)
+          }
           tx.rpush(key, serializedSample)
           if (evictCount > 0) tx.ltrim(key, -cap, -1)
           tx.sadd(outcomeIndexKey, key, statsKey)
@@ -3452,6 +3494,7 @@ export class IndicationSetsProcessor {
           grossProfit: String(grossProfit),
           grossLoss: String(grossLoss),
           count: String(count),
+          basis: OUTCOME_SAMPLE_BASIS,
         })
         tx.sadd(outcomeIndexKey, key, statsKey)
         tx.expire(outcomeIndexKey, 7 * 24 * 60 * 60)
@@ -3474,9 +3517,34 @@ export class IndicationSetsProcessor {
     return Number.isFinite(amount) && amount > 0 ? amount : 0
   }
 
+  /**
+   * Stage qualification consumes the raw market move and subtracts the
+   * configured PositionCost exactly once.  Execution PnL is retained in the
+   * sample separately so a fee/slippage estimate never gets mistaken for a
+   * second PositionCost deduction.
+   */
+  private createOutcomeSample(outcome: any, closedAt = new Date().toISOString()): any {
+    const grossMoveFraction = Number(
+      outcome?.grossMoveFraction ?? outcome?.gross_move_fraction ?? outcome?.pnlFraction,
+    )
+    const netPnlPct = Number(outcome?.netPnlPct ?? outcome?.pnlPct)
+    const costPct = Number(outcome?.costPct)
+    const gross = Number.isFinite(grossMoveFraction) ? grossMoveFraction : 0
+    return {
+      basis: OUTCOME_SAMPLE_BASIS,
+      profit: Math.max(gross, 0),
+      loss: Math.max(-gross, 0),
+      grossMoveFraction: gross,
+      ...(Number.isFinite(netPnlPct) && { netPnlPct }),
+      ...(Number.isFinite(costPct) && { costPct }),
+      closedAt,
+    }
+  }
+
   private parseOutcomeSample(raw: string): { profit: number; loss: number } | null {
     try {
       const sample = JSON.parse(raw)
+      if (sample?.basis !== OUTCOME_SAMPLE_BASIS) return null
       return {
         profit: this.toOutcomeAmount(sample?.profit),
         loss: this.toOutcomeAmount(sample?.loss),
@@ -3491,6 +3559,7 @@ export class IndicationSetsProcessor {
   ): { grossProfit: number; grossLoss: number; count: number } | null {
     if (
       !stats ||
+      stats.basis !== OUTCOME_SAMPLE_BASIS ||
       !Object.prototype.hasOwnProperty.call(stats, "grossProfit") ||
       !Object.prototype.hasOwnProperty.call(stats, "grossLoss") ||
       !Object.prototype.hasOwnProperty.call(stats, "count")
@@ -3533,6 +3602,7 @@ export class IndicationSetsProcessor {
       grossProfit: String(grossProfit),
       grossLoss: String(grossLoss),
       count: String(count),
+      basis: OUTCOME_SAMPLE_BASIS,
     })
     return this.outcomePerformanceFromStats(grossProfit, grossLoss, count)
   }
@@ -3550,7 +3620,7 @@ export class IndicationSetsProcessor {
     const safeCount = Math.max(0, Number(count) || 0)
     // Outcome samples are stored as decimal market returns (0.01 = 1%).
     // Convert their rolling signed average to percentage points before
-    // mapping onto the operator's PositionCost-relative 0.80…2.70 scale.
+    // mapping onto the operator's PositionCost-relative 1.00…2.20 scale.
     const averageMovePct = safeCount > 0
       ? ((grossProfit - grossLoss) / safeCount) * 100
       : 0
@@ -3558,7 +3628,7 @@ export class IndicationSetsProcessor {
       classicProfitFactor: this.profitFactorFromOutcomeStats(grossProfit, grossLoss),
       averageMovePct,
       positionCostRatio: movePctToMainTradePfRatio(
-        averageMovePct,
+        netMovePctAfterPositionCost(averageMovePct, this.trendPositionCostPct),
         this.trendPositionCostPct,
       ),
       count: safeCount,
@@ -3766,13 +3836,9 @@ export class IndicationSetsProcessor {
             "1000",
             String(this.trendPositionCostPct),
             String(items.length),
+            OUTCOME_SAMPLE_BASIS,
             ...items.flatMap(({ pending, closed }, index) => {
-              const sample = {
-                profit: Math.max(closed.pnlPct, 0),
-                loss: Math.max(-closed.pnlPct, 0),
-                pnlPct: closed.pnlPct,
-                closedAt,
-              }
+              const sample = this.createOutcomeSample(closed, closedAt)
               const openedAt = Number(pending.openedAt) || 0
               const sampleId = String(
                 pending.outcomeId ||
@@ -3869,12 +3935,10 @@ export class IndicationSetsProcessor {
             try {
               let performance: OutcomePerformance = this.outcomePerformanceFromStats(0, 0, 0)
               for (const { closed } of items) {
-                performance = await this.recordOutcomeSample(setKey, {
-                  profit: Math.max(closed.pnlPct, 0),
-                  loss: Math.max(-closed.pnlPct, 0),
-                  pnlPct: closed.pnlPct,
-                  closedAt: new Date().toISOString(),
-                })
+                performance = await this.recordOutcomeSample(
+                  setKey,
+                  this.createOutcomeSample(closed),
+                )
               }
               await patchLegacyEntries(setKey, items, performance)
               successfulSetKeys.add(setKey)
@@ -3936,13 +4000,21 @@ export class IndicationSetsProcessor {
       if (direction === "short" && high >= sl) { exit = sl; reason = "stop_loss"; break }
     }
     const gross = direction === "long" ? (exit - entry) / entry : (entry - exit) / entry
+    const net = gross - cost
     return {
       completed: true,
       entry,
       exit,
       reason,
-      pnlPct: gross - cost,
-      costPct: cost,
+      // Fractions are retained for the internal rolling sample. Public
+      // `*Pct` fields are actual percentage points, matching the rest of the
+      // strategy/position APIs and avoiding a silent 100× display error.
+      grossMoveFraction: gross,
+      grossMovePct: gross * 100,
+      netPnlFraction: net,
+      netPnlPct: net * 100,
+      pnlPct: net * 100,
+      costPct: cost * 100,
       horizonCandles: horizon,
       takeProfitPct: takeProfitRatio * 100,
       stopLossPct: stopLossRatio * 100,

@@ -27,9 +27,10 @@ interface PresetSelectionDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSelectPreset: (presetId: string) => Promise<void>
+  connectionId: string | null
 }
 
-export function PresetSelectionDialog({ open, onOpenChange, onSelectPreset }: PresetSelectionDialogProps) {
+export function PresetSelectionDialog({ open, onOpenChange, onSelectPreset, connectionId }: PresetSelectionDialogProps) {
   const [presets, setPresets] = useState<PresetOption[]>([])
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -39,12 +40,17 @@ export function PresetSelectionDialog({ open, onOpenChange, onSelectPreset }: Pr
     if (open) {
       loadPresets()
     }
-  }, [open])
+  }, [open, connectionId])
 
   const loadPresets = async () => {
+    if (!connectionId) {
+      setPresets([])
+      setSelectedPreset(null)
+      return
+    }
     try {
       setIsLoading(true)
-      const response = await fetch("/api/presets", {
+      const response = await fetch(`/api/presets?connectionId=${encodeURIComponent(connectionId)}`, {
         cache: "no-store",
         headers: { "Cache-Control": "no-cache" },
       })
@@ -114,6 +120,12 @@ export function PresetSelectionDialog({ open, onOpenChange, onSelectPreset }: Pr
           <div className="flex items-center justify-center p-8">
             <Loader2 className="h-8 w-8 animate-spin" />
           </div>
+        ) : !connectionId ? (
+          <Card>
+            <CardContent className="p-8 text-center">
+              <p className="text-muted-foreground">Select an active connection before choosing a preset.</p>
+            </CardContent>
+          </Card>
         ) : presets.length === 0 ? (
           <Card>
             <CardContent className="p-8 text-center">

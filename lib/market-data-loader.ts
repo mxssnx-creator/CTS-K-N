@@ -30,6 +30,7 @@ import { getClient, initRedis, getAllConnections, getConnection } from "@/lib/re
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { isForcedSimulation } from "@/lib/real-trade-gates"
 import { workloadConcurrency } from "@/lib/runtime-parallelism"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 export interface MarketDataCandle {
   timestamp: number
@@ -184,10 +185,7 @@ async function isConnectionDemo(connectionId?: string): Promise<boolean> {
     const conn = await getConnection(connectionId)
     if (!conn) return false
     const env = (conn.environment || "") as string
-    const isTestnet =
-      conn.is_testnet === true ||
-      conn.is_testnet === "1" ||
-      conn.is_testnet === "true"
+    const isTestnet = isTruthyFlag(conn.is_testnet)
     return env === "prod-vst" || isTestnet
   } catch {
     return false

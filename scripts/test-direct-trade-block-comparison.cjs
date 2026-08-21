@@ -292,7 +292,7 @@ function buildPlans() {
   const autoTrailOptions = [0.75, 1, 1.25].map((autoTrailSensitivity) => ({
     trailing: true, trailStart: 0.5, trailStop: 0.3, mode: "auto", autoTrailSensitivity,
   }))
-  const ratios = buildDirectTradeTakeProfitPositionCostRatios([4, 8], 2)
+  const ratios = buildDirectTradeTakeProfitPositionCostRatios([5, 10], 5)
   const tpRange = ratios.map((ratio) => directTradeTakeProfitPercent(positionCostPercent, ratio))
   return { ratios, tpRange, noTrailingOption, fixedTrailOptions, autoTrailOptions }
 }

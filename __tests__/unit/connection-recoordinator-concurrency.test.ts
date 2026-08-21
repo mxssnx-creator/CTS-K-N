@@ -6,7 +6,7 @@ let maxActiveProgressionRecoordinates = 0
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 jest.mock("@/lib/settings-coordinator", () => ({
-  notifySettingsChanged: jest.fn(async () => undefined),
+  notifySettingsChanged: jest.fn(async () => ({ eventId: "settings-change:event" })),
   detectChangedFields: jest.fn(() => []),
 }))
 
@@ -249,11 +249,40 @@ describe("connection recoordinator serialization", () => {
       settings_recoordination_completed: "0",
       settings_recoordination_fields: JSON.stringify(["live_volume_factor"]),
       settings_recoordination_requested_version: expect.any(String),
-      settings_recoordination_requested_event_id: "settings.saved:event",
+      settings_recoordination_requested_event_id: "settings-change:event",
       settings_recoordination_reason: "live-order-settings-reload:queued-for-processing",
     })
     expect(progression.stats_recalculation_requested).toBeUndefined()
     expect(liveState.live_order_settings_fields).toBe(JSON.stringify(["live_volume_factor"]))
     expect(ProgressionStateManager.recoordinateForActualOne).not.toHaveBeenCalled()
+  })
+
+  test("uses the route-issued settings generation and durable queue identity for owner ACKs", async () => {
+    const { recoordinateAfterSettingsChange } = await import("@/lib/connection-recoordinator")
+    const { notifySettingsChanged } = await import("@/lib/settings-coordinator")
+
+    await recoordinateAfterSettingsChange(
+      "conn-generation",
+      { id: "conn-generation", minimal_step_count: 3 },
+      // Model a stale cache shape: the caller knows the committed version even
+      // if the object supplied to the coordinator has not yet exposed it.
+      { id: "conn-generation", minimal_step_count: 5 },
+      {
+        logTag: "generation-save",
+        settingsVersion: "conn-generation:settings-v42",
+        changedFieldsOverride: ["minimal_step_count"],
+      },
+    )
+
+    expect(notifySettingsChanged).toHaveBeenCalledWith(
+      "conn-generation",
+      ["minimal_step_count"],
+      expect.any(Object),
+      expect.objectContaining({ settings_version: "conn-generation:settings-v42" }),
+    )
+    expect(hashes.get("progression:conn-generation")).toMatchObject({
+      settings_recoordination_requested_version: "conn-generation:settings-v42",
+      settings_recoordination_requested_event_id: "settings-change:event",
+    })
   })
 })

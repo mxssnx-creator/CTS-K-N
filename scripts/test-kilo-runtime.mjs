@@ -247,7 +247,7 @@ async function main() {
     const settingsUi = await loadPageAssets("/settings", [
       "ProfitFactor factor",
       "Independent Block counts",
-      "Position-Count (Pis) Sets Volume Ratio",
+      "Position-Count (Pos) Sets Volume Ratio",
     ])
     const presetsUi = await loadPageAssets("/presets", [
       "ProfitFactor factor",

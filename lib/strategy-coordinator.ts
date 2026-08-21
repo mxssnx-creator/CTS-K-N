@@ -73,6 +73,7 @@ import {
 import {
   MAIN_TRADE_STAGE_PF_DEFAULTS,
   PREVIOUS_POSITION_MIN_PF_RATIO,
+  mainTradePfRatioToGrossMovePct,
   movePctToMainTradePfRatio,
   normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
@@ -661,7 +662,7 @@ export interface StrategySet {
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
   /**
-   * Position-Count (Pis) Sets volume ratio applied to this Main-stage
+   * Position-Count (Pos) Sets volume ratio applied to this Main-stage
    * additional pos-count Set. Carried through Real/Live so Live dispatch
    * sizes the open exchange order at this fraction of the base volume.
    */
@@ -762,7 +763,7 @@ export interface StrategySet {
   trailingProfile?: TrailingProfile
 
   /**
-   * ── Prev-PI snapshot attached at Base creation ─────────────────────
+   * ── Prev-Pos snapshot attached at Base creation ────────────────────
    *
    * Per operator spec: "make sure strategies are evaluating prev pos and
    * profitfactors min from historic … prev pos cnts are working and
@@ -1978,9 +1979,18 @@ function resolveProtectionCostModel(exchange: string, settings: Record<string, u
   }
 }
 export function sanitizeLiveProfitFactor(profitFactor: unknown, fallback = 1): number {
-  const pf = Number(profitFactor)
-  const fb = Number.isFinite(fallback) && fallback > 0 ? fallback : 1
-  return Number.isFinite(pf) && pf > 0 ? pf : fb
+  // A Live Set carries the Main-stage PositionCost coordinate, not a classic
+  // gross-profit/gross-loss PF. Normalize before a value can influence a price
+  // target; a stale 0.x signed Result-R must not become a negative target or a
+  // reward/risk multiplier.
+  const fb = normalizeMainTradeStagePfRatio(
+    "live",
+    Number.isFinite(Number(fallback)) ? fallback : 1,
+  )
+  return normalizeMainTradeStagePfRatio(
+    "live",
+    Number.isFinite(Number(profitFactor)) ? profitFactor : fb,
+  )
 }
 
 const LIVE_PROTECTION_FEE_BUFFER_PCT = 0.12
@@ -2030,7 +2040,7 @@ const MAX_LIVE_TAKE_PROFIT_PCT = 22
 const MIN_LIVE_STOP_LOSS_PCT = 0.2
 const MIN_LIVE_TAKE_PROFIT_PCT = 0.2
 
-function deriveProtectionFromProfitFactor(
+export function deriveProtectionFromProfitFactor(
   profitFactor: number,
   positionCostPct: number,
   sizeMultiplier = 1,
@@ -2045,10 +2055,15 @@ function deriveProtectionFromProfitFactor(
     (costModel.estimatedMarketSlippageBps * 2) +
     (costModel.fundingHoldCostBufferBps ?? 0)
   ) / 100
-  const grossTakeProfitPct = Math.max(MIN_LIVE_TAKE_PROFIT_PCT, stopLossPct * Math.max(1, pf))
-  const adjustedTakeProfitPct = grossTakeProfitPct + Math.max(costBufferPct, LIVE_PROTECTION_FEE_BUFFER_PCT)
+  // `pf` is the operator's PositionCost-relative coordinate. Do not treat it
+  // as a reward/risk multiplier: ratio 1.10 at a 0.10% PositionCost means an
+  // exact 0.20% gross market target. PositionCost is the configured complete
+  // cost budget, so adding fee/spread/slippage again here would break the
+  // operator's 1.00 / 1.10 / 1.20 cost-step contract.
+  const grossTakeProfitPct = mainTradePfRatioToGrossMovePct(pf, baseRiskPct)
+  const adjustedTakeProfitPct = grossTakeProfitPct
   const takeProfitPct = clampNumber(adjustedTakeProfitPct, MIN_LIVE_TAKE_PROFIT_PCT, MAX_LIVE_TAKE_PROFIT_PCT)
-  const effectiveTpPct = Math.max(0, takeProfitPct - costBufferPct)
+  const effectiveTpPct = Math.max(0, takeProfitPct - baseRiskPct)
   return {
     takeProfitPct,
     stopLossPct,
@@ -2248,12 +2263,12 @@ function deriveConfiguredStatsFromProfitFactor(
   profitFactor: number,
   positionCostPct: number,
 ): { takeProfitPct: number; stopLossPct: number; tpR: number; slR: number; rewardRisk: number } {
-  const pf = Number.isFinite(profitFactor) && profitFactor > 0 ? profitFactor : 1
+  const pf = sanitizeLiveProfitFactor(profitFactor, 1)
   const posCost = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1
-  // Mirrors the live pseudo-position TP/SL configuration so configured
-  // reward/risk stays separate from realized performance factor.
-  const takeProfitPct = Math.max(0.5, (pf - 1) * 100)
-  const stopLossPct = Math.min(5, 100 / Math.max(1, pf) * 0.5)
+  // Mirrors the Live-order coordinate: PositionCost is deducted once, so
+  // 1.10 with a 0.10% cost maps to a 0.20% gross TP.
+  const takeProfitPct = Math.max(MIN_LIVE_TAKE_PROFIT_PCT, mainTradePfRatioToGrossMovePct(pf, posCost))
+  const stopLossPct = clampNumber(posCost, MIN_LIVE_STOP_LOSS_PCT, 5)
   return {
     takeProfitPct,
     stopLossPct,
@@ -2900,8 +2915,8 @@ export class StrategyCoordinator {
    *   - `METRICS.{base|main|real|live}.minProfitFactor` (Set-average
    *      gate consumed at lines 695/1117/1468)
    *
-   * Every value is normalized to the canonical 0.80..2.70 grid (step 0.02).
-   * Defaults are Base 0.80 and Main/Real/Live 1.12. NaN, negative and
+   * Every value is normalized to the canonical 1.00..2.20 grid (step 0.10).
+   * Defaults are Base/Main/Real/Live 1.10. NaN, negative and
    * out-of-range legacy values are repaired by the same helper used by the
    * settings APIs and migrations.
    *
@@ -3163,7 +3178,7 @@ export class StrategyCoordinator {
         ? Math.max(1, Math.min(4, Math.round(rowBpcr * 2) / 2))
         : this._coordinationSettings.blockPauseCountRatio
 
-      // ── Position-Count (Pis) Sets volume ratio ───────────────
+      // ── Position-Count (Pos) Sets volume ratio ───────────────
       // Applied only to Main's additional Pos-Count Sets. This is the
       // operator ratio (0.1..10), not the direct physical multiplier.
       const pcvr = Number(s.posCountsVolumeRatio)
@@ -3888,7 +3903,7 @@ export class StrategyCoordinator {
     }
 
     const baseSets: StrategySet[] = []
-    // ── Prev-PI batch prefetch (one round-trip, all (type×dir) buckets) ──
+    // ── Prev-Pos batch prefetch (one round-trip, all (type×dir) buckets) ──
     // Per spec: strategies must "evaluate prev pos and profitfactors min
     // from historic … prev pos cnts are working and added to settings,
     // strategy". We fetch the lifetime success/PF/DDT for every (type,
@@ -4186,7 +4201,7 @@ export class StrategyCoordinator {
         const rawAvgPF = entries.reduce((s, e) => s + e.profitFactor, 0) / entries.length
         const avgConf = entries.reduce((s, e) => s + e.confidence, 0) / entries.length
 
-        // ── Prev-PI min-blend on avgProfitFactor ─────────────────────────
+        // ── Prev-Pos min-blend on avgProfitFactor ────────────────────────
         // Operator spec: "evaluating prev pos and profitfactors min from
         // historic". When the historic bucket has at least `prevPosMinCount`
         // closed positions, the Set's avgProfitFactor becomes the MIN of
@@ -5217,7 +5232,11 @@ export class StrategyCoordinator {
           raw_materialized_sets: String(mainAccounting.rawMaterialized),
           raw_related_sets: String(mainRawRelatedSetCount),
           row_valid:         String(mainPassedParentCount),
-          row_overall:       String(mainSets.length),
+          // Public Main rows live in logical lineage space. Keep the physical
+          // Cartesian work separately in raw_materialized_sets so a single
+          // Pos-Count parent with thousands of axes cannot inflate the UI's
+          // valid/overall set funnel.
+          row_overall:       String(mainLogicalEvaluated),
           row_valid_open:    String(mainValidOpen),
           row_overall_open:  String(mainRunningNow),
           row_overall_open_standard:       String(mainOpenBreakdown.standard),
@@ -5241,7 +5260,7 @@ export class StrategyCoordinator {
           [`s:${symbol}:other_related_sets`]: String(mainAccounting.otherRelated),
           [`s:${symbol}:raw_materialized_sets`]: String(mainAccounting.rawMaterialized),
           [`s:${symbol}:row_valid`]:        String(mainPassedParentCount),
-          [`s:${symbol}:row_overall`]:      String(mainSets.length),
+          [`s:${symbol}:row_overall`]:      String(mainLogicalEvaluated),
           [`s:${symbol}:row_valid_open`]:   String(mainValidOpen),
           [`s:${symbol}:row_overall_open`]: String(mainRunningNow),
           [`s:${symbol}:row_overall_open_standard`]:       String(mainOpenBreakdown.standard),
@@ -9022,7 +9041,7 @@ export class StrategyCoordinator {
                     ...(!set.combinedPosCounts && set.accumulatedSetKeys && set.accumulatedSetKeys.length > 0
                       ? { accumulatedSetKeys: set.accumulatedSetKeys }
                       : {}),
-                    // Position-Count (Pis) Sets volume ratio — forwarded so the
+                    // Position-Count (Pos) Sets volume ratio — forwarded so the
                     // Real position (and Live exchange order) sizes the additional
                     // Main-stage axis Sets at this reduced fraction of base volume.
                     ...(set.posCountsVolumeRatio && set.posCountsVolumeRatio > 0
@@ -9320,11 +9339,15 @@ export class StrategyCoordinator {
                       takeProfitPct: bestEntry.specialTakeProfitPct,
                     })
                   : null
+                const positionCostProtection = deriveProtectionFromProfitFactor(
+                  bestEntry.profitFactor,
+                  livePositionCostPct,
+                )
                 const tp = specialProtection?.takeProfitPct ??
                   activeProtection?.takeProfitPct ??
                   signalProtection?.takeProfitPct ??
                   adaptiveTrendTp ??
-                  Math.max(0.5, (bestEntry.profitFactor - 1) * 100)
+                  positionCostProtection.takeProfitPct
                 const profile = set.trailingProfile
                 const signalDynamicTrailing = isSignalDynamicTrailingProfile(profile)
                 const sl = signalDynamicTrailing
@@ -9332,7 +9355,7 @@ export class StrategyCoordinator {
                   : specialProtection?.stopLossPct ??
                     activeProtection?.stopLossPct ??
                     signalProtection?.stopLossPct ??
-                    Math.min(5, 100 / Math.max(1, bestEntry.profitFactor) * 0.5)
+                    positionCostProtection.stopLossPct
 
                 // Multi-step trailing — Set carries its own profile from
                 // BASE, so trailing-on/off and the three ratios are
@@ -9365,6 +9388,8 @@ export class StrategyCoordinator {
                   side: set.direction,
                   indicationType: set.indicationType,
                   entryPrice,
+                  takeProfitPct: tp,
+                  stopLossPct: sl,
                   takeprofitFactor: tp,
                   stoplossRatio: sl,
                   profitFactor: bestEntry.profitFactor,
@@ -9938,7 +9963,7 @@ export class StrategyCoordinator {
     }
     const parentDirection = normalizeStrategyDirection(baseDefault.direction)
     if (!parentDirection) return axisSets
-    // Position-Count (Pis) Sets volume ratio: the additional pos-count axis
+    // Position-Count (Pos) Sets volume ratio: the additional pos-count axis
     // Convert the 0.1..10 operator ratio to the direct per-valid-Set
     // multiplier exactly once (10 → 0.02).
     const posCountsCoordinationRatio = normalizePosCountVolumeRatio(

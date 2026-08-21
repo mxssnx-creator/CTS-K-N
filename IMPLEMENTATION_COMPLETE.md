@@ -100,7 +100,7 @@ All 7 major fixes and 5 implementation phases from the comprehensive implementat
 
 ### Step 11: Strategy Tab Slider
 - **File**: `components/settings/tabs/strategy-tab.tsx` (lines 884-903)
-- **Component**: Position-Count (Pis) Sets Volume Ratio slider
+- **Component**: Position-Count (Pos) Sets Volume Ratio slider
 - **Configuration**:
   - Range: 0.01–0.25
   - Step: 0.01

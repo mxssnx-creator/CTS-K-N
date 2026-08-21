@@ -52,7 +52,7 @@ The validator ranked the 32 most liquid eligible VST USDT contracts by one-hour 
 
 ### Best results, ranked before rejection
 
-| Exit | PIs | Long/Short | PF | Stable PF | Worst-fold PF | Max DD | Net PnL |
+| Exit | Pos | Long/Short | PF | Stable PF | Worst-fold PF | Max DD | Net PnL |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Fixed | 273 | 171/102 | 0.8669 | 0.5358 | 0.1207 | 35.7976% | -44.0389% |
 | Adaptive Trailing | 282 | 177/105 | 0.8573 | 0.5352 | 0.1982 | 39.0806% | -47.9704% |

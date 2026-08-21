@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Play, Pause, Square, Activity, Target } from "lucide-react"
 import { toast } from "@/lib/simple-toast"
+import { useExchange } from "@/lib/exchange-context"
 import { PresetSelectionDialog } from "./preset-selection-dialog"
 
 interface EngineStatus {
@@ -33,6 +34,7 @@ interface EngineStatus {
 }
 
 export function GlobalTradeEngineControls() {
+  const { selectedConnectionId } = useExchange()
   const [status, setStatus] = useState<EngineStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [isStarting, setIsStarting] = useState(false)
@@ -212,11 +214,14 @@ export function GlobalTradeEngineControls() {
   }
 
   const handleSelectPreset = async (presetId: string) => {
+    if (!selectedConnectionId) {
+      throw new Error("Select an active connection before activating a preset")
+    }
     try {
       const response = await fetch("/api/presets/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ presetId }),
+        body: JSON.stringify({ presetId, connectionId: selectedConnectionId }),
       })
 
       if (response.ok) {
@@ -225,7 +230,9 @@ export function GlobalTradeEngineControls() {
         
         // Dispatch event to refresh all UI components
         if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("preset-activated", { detail: { presetId } }))
+          window.dispatchEvent(new CustomEvent("preset-activated", {
+            detail: { presetId, connectionId: selectedConnectionId },
+          }))
         }
       } else {
         const data = await response.json()
@@ -337,7 +344,7 @@ export function GlobalTradeEngineControls() {
           {/* Preset Selection Button */}
           <Button
             onClick={() => setPresetDialogOpen(true)}
-            disabled={engineActionPending}
+            disabled={engineActionPending || !selectedConnectionId}
             variant="outline"
             size="sm"
             className="min-w-24 flex-1 text-xs"
@@ -355,6 +362,7 @@ export function GlobalTradeEngineControls() {
           open={presetDialogOpen}
           onOpenChange={setPresetDialogOpen}
           onSelectPreset={handleSelectPreset}
+          connectionId={selectedConnectionId}
         />
       </CardContent>
     </Card>

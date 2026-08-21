@@ -132,13 +132,18 @@ export class SymbolDataProcessor {
     const totalErrors = results.reduce((sum, r) => sum + r.errors, 0)
     const successCount = results.filter(r => r.success).length
 
-    await this.progressManager.setPrehistoricCompleted(successCount === symbols.length)
-    
-    // Mark prehistoric complete in tracker
-    await tracker.markComplete("live")
+    // The progress manager and the durable realtime gate must agree. The
+    // previous flow marked the manager complete from a local count and then
+    // unconditionally published the tracker gate, so an errored symbol could
+    // start realtime against an incomplete historic basket.
+    const historicReady = await tracker.markComplete("live")
+    await this.progressManager.setPrehistoricCompleted(historicReady)
+    await this.progressManager.setPrehistoricInProgress(false)
     
     await this.progressManager.addInfoLog(
-      `Prehistoric load complete: ${successCount}/${symbols.length} symbols, ${totalCandles} candles, ${totalErrors} errors`
+      historicReady
+        ? `Prehistoric load complete: ${successCount}/${symbols.length} symbols, ${totalCandles} candles, ${totalErrors} errors`
+        : `Prehistoric load blocked: ${successCount}/${symbols.length} symbols succeeded, ${totalCandles} candles, ${totalErrors} errors; realtime gate remains closed`,
     )
 
     return results

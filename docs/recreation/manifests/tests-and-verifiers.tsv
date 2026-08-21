@@ -40,6 +40,7 @@ unit	__tests__/unit/active-outbreak-strategy-protection.test.ts
 unit	__tests__/unit/admin-auth.test.ts
 unit	__tests__/unit/advanced-config-exhaustive.test.ts
 unit	__tests__/unit/auth-runtime-secret.test.ts
+unit	__tests__/unit/backtest-result-accounting.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
 unit	__tests__/unit/base-position-batch-coordination.test.ts
 unit	__tests__/unit/base-stage-concurrency.test.ts
@@ -48,6 +49,7 @@ unit	__tests__/unit/bingx-library-fast-path.test.ts
 unit	__tests__/unit/bingx-public-api.test.ts
 unit	__tests__/unit/bingx-vst-environment.test.ts
 unit	__tests__/unit/bingx-vst-migration.test.ts
+unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
 unit	__tests__/unit/block-count-state.test.ts
 unit	__tests__/unit/bounded-concurrency.test.ts
@@ -56,6 +58,7 @@ unit	__tests__/unit/connection-card-stage-overview-contract.test.ts
 unit	__tests__/unit/connection-coordinator.test.ts
 unit	__tests__/unit/connection-rate-limiter-boundary.test.ts
 unit	__tests__/unit/connection-recoordinator-concurrency.test.ts
+unit	__tests__/unit/connection-scope-ui-contract.test.ts
 unit	__tests__/unit/connection-secret-status.test.ts
 unit	__tests__/unit/connection-settings-merge-clamp.test.ts
 unit	__tests__/unit/connection-stage-overview.test.ts
@@ -99,14 +102,18 @@ unit	__tests__/unit/forced-symbols.test.ts
 unit	__tests__/unit/futures-connectors-contract.test.ts
 unit	__tests__/unit/health-route-liveness-budget.test.ts
 unit	__tests__/unit/historic-candle-window.test.ts
+unit	__tests__/unit/historic-progression-generation.test.ts
 unit	__tests__/unit/historic-replay-policy.test.ts
 unit	__tests__/unit/indication-configuration-counts.test.ts
 unit	__tests__/unit/indication-connection-selection.test.ts
 unit	__tests__/unit/indication-lane-identity.test.ts
+unit	__tests__/unit/indication-outcome-cost-basis.test.ts
 unit	__tests__/unit/indication-set-type-coordination.test.ts
 unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
+unit	__tests__/unit/live-order-preflight.test.ts
+unit	__tests__/unit/live-pnl-calculation.test.ts
 unit	__tests__/unit/live-pos-count-target.test.ts
 unit	__tests__/unit/live-position-actions.test.ts
 unit	__tests__/unit/live-position-analytics-archive.test.ts
@@ -117,6 +124,7 @@ unit	__tests__/unit/live-position-stats-sources.test.ts
 unit	__tests__/unit/live-position-status.test.ts
 unit	__tests__/unit/live-positions-pnl.test.ts
 unit	__tests__/unit/live-stage-control-barrier.test.ts
+unit	__tests__/unit/live-stage-position-cost-coordinate.test.ts
 unit	__tests__/unit/live-stage-redis-position-lock.test.ts
 unit	__tests__/unit/live-trade-block-clearance.test.ts
 unit	__tests__/unit/live-trading-analytics.test.ts
@@ -139,14 +147,18 @@ unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/position-cost-net-results.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
 unit	__tests__/unit/prehistoric-bootstrap-handoff.test.ts
+unit	__tests__/unit/prehistoric-progress-tracker.test.ts
 unit	__tests__/unit/prehistoric-runtime-stability.test.ts
+unit	__tests__/unit/preset-config-display-contract.test.ts
 unit	__tests__/unit/preset-optimizer.test.ts
 unit	__tests__/unit/preset-type-config.test.ts
 unit	__tests__/unit/production-continuity.test.ts
+unit	__tests__/unit/progression-live-snapshot.test.ts
 unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
 unit	__tests__/unit/pseudo-position-close-idempotency.test.ts
+unit	__tests__/unit/pseudo-position-semantics.test.ts
 unit	__tests__/unit/quickstart-bootstrap-state.test.ts
 unit	__tests__/unit/quickstart-change-detection.test.ts
 unit	__tests__/unit/quickstart-ordering.test.ts
@@ -168,6 +180,7 @@ unit	__tests__/unit/runtime-boot-id.test.ts
 unit	__tests__/unit/runtime-concurrency-profile.test.ts
 unit	__tests__/unit/runtime-log-throttle.test.ts
 unit	__tests__/unit/runtime-telemetry-compatibility.test.ts
+unit	__tests__/unit/runtime-telemetry-interval.test.ts
 unit	__tests__/unit/security-hardening-encryption.test.ts
 unit	__tests__/unit/serialized-response-swr.test.ts
 unit	__tests__/unit/settings-backup.test.ts
@@ -192,6 +205,7 @@ unit	__tests__/unit/strategy-flow-log-throttle.test.ts
 unit	__tests__/unit/strategy-indication-policy.test.ts
 unit	__tests__/unit/strategy-memory-guard.test.ts
 unit	__tests__/unit/strategy-position-entry-ledger.test.ts
+unit	__tests__/unit/strategy-profit-factor-contract.test.ts
 unit	__tests__/unit/strategy-real-materialization-limit.test.ts
 unit	__tests__/unit/strategy-real-stats.test.ts
 unit	__tests__/unit/strategy-sets-processor.test.ts

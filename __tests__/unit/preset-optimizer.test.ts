@@ -4,6 +4,7 @@ import {
   buildCommonIndicatorConfigurations,
   buildTrailingConfigurations,
   generatePresetSignals,
+  netPositionCostMultiple,
   normalizePresetOptimizerSettings,
   optimizePresetsForSymbol,
   rangeValues,
@@ -11,13 +12,21 @@ import {
 } from "@/lib/preset-optimizer"
 
 describe("preset optimizer", () => {
+  test("uses a net PositionCost basis for every candidate result", () => {
+    // One gross cost is neutral after fees/cost; each extra gross cost adds
+    // exactly one net R to PF, drawdown and win/loss calculations.
+    expect(netPositionCostMultiple(0.1, 0.1)).toBeCloseTo(0, 12)
+    expect(netPositionCostMultiple(0.2, 0.1)).toBeCloseTo(1, 12)
+    expect(netPositionCostMultiple(-0.1, 0.1)).toBeCloseTo(-2, 12)
+  })
+
   test("normalizes the requested production ranges and defaults", () => {
     const settings = normalizePresetOptimizerSettings({
       historyDays: 99,
       presetsPerSymbol: 0,
       minProfitFactor: 0.73,
       maxDrawdownHours: 5,
-      takeProfit: { min: 3, max: 30, step: 1 },
+      takeProfit: { min: 5, max: 30, step: 1 },
       stopLossRatio: { min: 0.25, max: 2, step: 0.25 },
       trailingStart: { min: 0.5, max: 1.5, step: 0.1 },
       trailingStop: { min: 0.2, max: 0.4, step: 0.1 },
@@ -36,7 +45,7 @@ describe("preset optimizer", () => {
       presetsPerSymbol: 1,
       minProfitFactor: 0.7,
       maxDrawdownHours: 5,
-      takeProfit: { min: 3, max: 30, step: 1 },
+      takeProfit: { min: 5, max: 30, step: 1 },
       stopLossRatio: { min: 0.25, max: 2, step: 0.25 },
       trailingStart: { min: 0.5, max: 1.5, step: 0.1 },
       trailingStop: { min: 0.2, max: 0.4, step: 0.1 },
@@ -54,7 +63,7 @@ describe("preset optimizer", () => {
       historyDays: 14,
       minProfitFactor: 0.7,
       maxDrawdownHours: 5,
-      takeProfit: { min: 3, max: 30, step: 1 },
+      takeProfit: { min: 5, max: 30, step: 1 },
       stopLossRatio: { min: 0.25, max: 2, step: 0.25 },
       trailingStart: { min: 0.5, max: 1.5, step: 0.1 },
       trailingStop: { min: 0.2, max: 0.4, step: 0.1 },

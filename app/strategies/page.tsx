@@ -334,7 +334,7 @@ export default function StrategiesPage() {
           { icon: Activity,   label: "Active",     value: stats.active, tint: "text-green-500" },
           { icon: Target,     label: "Valid",      value: stats.valid, tint: "text-indigo-500" },
           { icon: TrendingUp, label: "Profitable", value: stats.profitable, tint: "text-amber-500" },
-          { icon: Settings,   label: "Avg PF",     value: stats.avgProfitFactor.toFixed(2), tint: "text-primary" },
+          { icon: Settings,   label: "Avg PF ratio", value: stats.avgProfitFactor.toFixed(2), tint: "text-primary" },
         ].map((stat) => (
           <Card key={stat.label} className="border-border bg-card">
             <CardContent className="p-2 flex items-center gap-2">

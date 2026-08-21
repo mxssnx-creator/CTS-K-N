@@ -2,11 +2,13 @@ import { type NextRequest, NextResponse } from "next/server"
 import { query, execute } from "@/lib/db"
 import { nanoid } from "nanoid"
 import { SystemLogger } from "@/lib/system-logger"
+import { getSettings } from "@/lib/redis-db"
 import {
   PRESET_DEFAULT_INDICATION_RANGES,
   PRESET_DEFAULT_INDICATION_TYPES,
   PRESET_DEFAULT_MIN_PF_RATIO,
   PRESET_DEFAULT_STRATEGY_TYPES,
+  PRESET_DEFAULT_TAKE_PROFIT_STEPS,
   presetNumberList,
   presetStringList,
 } from "@/lib/preset-crud-defaults"
@@ -35,11 +37,16 @@ export async function GET(request: NextRequest) {
 
     const searchParams = request.nextUrl.searchParams
     const activeOnly = searchParams.get("active") === "true"
+    const requestedConnectionId = String(
+      searchParams.get("connectionId") || searchParams.get("connection_id") || "",
+    ).trim()
 
     console.log("[v0] Fetching presets, activeOnly:", activeOnly)
     await SystemLogger.logAPI(`Fetching presets (activeOnly: ${activeOnly})`, "info", "GET /api/presets")
 
-    const queryText = activeOnly
+    // Preset definitions are shared assets. Activation is connection-scoped;
+    // only the legacy no-scope response reads the historical DB flag.
+    const queryText = activeOnly && !requestedConnectionId
       ? "SELECT * FROM presets WHERE is_active = true ORDER BY is_predefined DESC, created_at DESC"
       : "SELECT * FROM presets ORDER BY is_predefined DESC, created_at DESC"
 
@@ -48,11 +55,15 @@ export async function GET(request: NextRequest) {
 
     console.log("[v0] Successfully fetched", presets.length, "presets")
 
+    const activePreset = requestedConnectionId
+      ? await getSettings(`active_preset:${requestedConnectionId}`).catch(() => null)
+      : null
+    const activePresetId = String(activePreset?.id || "")
     const validatedPresets = presets.map((preset: any) => ({
       ...preset,
       indication_types: presetStringList(preset.indication_types, PRESET_DEFAULT_INDICATION_TYPES),
       indication_ranges: presetNumberList(preset.indication_ranges, PRESET_DEFAULT_INDICATION_RANGES),
-      takeprofit_steps: preset.takeprofit_steps ? JSON.parse(preset.takeprofit_steps) : [2, 3, 4, 6, 8, 12],
+      takeprofit_steps: preset.takeprofit_steps ? JSON.parse(preset.takeprofit_steps) : [...PRESET_DEFAULT_TAKE_PROFIT_STEPS],
       stoploss_ratios: preset.stoploss_ratios
         ? JSON.parse(preset.stoploss_ratios)
         : [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
@@ -75,11 +86,15 @@ export async function GET(request: NextRequest) {
       block_adjustment_enabled: preset.block_adjustment_enabled === true,
       dca_adjustment_enabled: preset.dca_adjustment_enabled === true,
       backtest_enabled: preset.backtest_enabled === true,
-      is_active: preset.is_active === true,
+      is_active: requestedConnectionId
+        ? String(preset.id) === activePresetId
+        : preset.is_active === true,
       is_predefined: preset.is_predefined === true,
     }))
 
-    return NextResponse.json(validatedPresets)
+    return NextResponse.json(activeOnly && requestedConnectionId
+      ? validatedPresets.filter((preset) => preset.is_active)
+      : validatedPresets)
   } catch (error) {
     console.error("[v0] Failed to fetch presets:", error)
     await SystemLogger.logError(error, "api", "GET /api/presets")
@@ -119,7 +134,7 @@ export async function POST(request: NextRequest) {
         body.description || null,
         JSON.stringify(presetStringList(body.indication_types, PRESET_DEFAULT_INDICATION_TYPES)),
         JSON.stringify(presetNumberList(body.indication_ranges, PRESET_DEFAULT_INDICATION_RANGES)),
-        JSON.stringify(body.takeprofit_steps || [2, 3, 4, 6, 8, 12]),
+        JSON.stringify(body.takeprofit_steps || PRESET_DEFAULT_TAKE_PROFIT_STEPS),
         JSON.stringify(body.stoploss_ratios || [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]),
         body.trailing_enabled !== undefined ? body.trailing_enabled : true,
         JSON.stringify(body.trail_starts || [0.3, 0.6, 1.0]),

@@ -156,7 +156,7 @@ const autoTrailOptions = [0.75, 1, 1.25].map((autoTrailSensitivity) => ({
   autoTrailSensitivity,
 }))
 const noTrailingOption = { trailing: false, trailStart: 0, trailStop: 0, mode: "none" }
-const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios([4, 8], 2)
+const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios([5, 10], 5)
 const takeProfitRange = takeProfitPositionCostRatios.map((ratio) =>
   directTradeTakeProfitPercent(positionCostPercent, ratio),
 )
@@ -405,8 +405,8 @@ const report = {
   recentPositionPFMinimum: minRecentProfitFactor,
   recentEvaluationPositions,
   positionCostPercent,
-  takeProfitRatioRange: [4, 8],
-  takeProfitRatioStep: 2,
+  takeProfitRatioRange: [5, 10],
+  takeProfitRatioStep: 5,
   takeProfitPositionCostRatios,
   evaluatedSets,
   validSets,

@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge"
 import { Loader2, Info, TrendingUp, AlertCircle } from "lucide-react"
 import { toast } from "@/lib/simple-toast"
 import type { PresetType } from "@/lib/types-preset-coordination"
+import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "@/lib/position-cost"
 
 interface BaseSettings {
   trailingEnabled: boolean
@@ -84,9 +85,9 @@ export function CreateConfigurationSetDialog({
   const [paramRanges, setParamRanges] = useState<Record<string, { from: number; to: number; step: number }>>({})
 
   // Position configuration ranges
-  const [takeProfitFrom, setTakeProfitFrom] = useState(2)
+  const [takeProfitFrom, setTakeProfitFrom] = useState(DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO)
   const [takeProfitTo, setTakeProfitTo] = useState(12)
-  const [takeProfitStep, setTakeProfitStep] = useState(2)
+  const [takeProfitStep, setTakeProfitStep] = useState(DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO)
   const [stopLossFrom, setStopLossFrom] = useState(0.2)
   const [stopLossTo, setStopLossTo] = useState(1.5)
   const [stopLossStep, setStopLossStep] = useState(0.2)

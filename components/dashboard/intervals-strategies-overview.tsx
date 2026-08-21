@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Clock, Activity, CheckCircle, AlertCircle, RefreshCw } from "lucide-react"
+import { useExchange } from "@/lib/exchange-context"
 
 interface IntervalHealth {
   enabled: boolean
@@ -51,20 +52,26 @@ interface StrategyStats {
 }
 
 export function IntervalsStrategiesOverview({ connections }: { connections: any[] }) {
+  const { selectedConnectionId } = useExchange()
   const [intervals, setIntervals] = useState<IntervalsData>({})
   const [strategies, setStrategies] = useState<StrategyStats[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    loadData()
-    const intervalId = setInterval(loadData, 5000)
+    if (!selectedConnectionId) {
+      setIntervals({})
+      setStrategies([])
+      setIsLoading(false)
+      return
+    }
+    void loadData(selectedConnectionId)
+    const intervalId = setInterval(() => { void loadData(selectedConnectionId) }, 5000)
     return () => clearInterval(intervalId)
-  }, [connections])
+  }, [selectedConnectionId, connections])
 
-  const loadData = async () => {
+  const loadData = async (connectionId = selectedConnectionId) => {
+    if (!connectionId) return
     try {
-      const connectionId = connections[0]?.id || connections[0]?.connection_id || "default"
-      
       const [intervalsRes, strategiesRes] = await Promise.all([
         fetch(`/api/monitoring/intervals/${connectionId}`).catch(() => null),
         fetch(`/api/monitoring/strategies/${connectionId}`).catch(() => null),
@@ -182,7 +189,7 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
               <Clock className="h-5 w-5 text-blue-500" />
               <CardTitle>Intervals Health</CardTitle>
             </div>
-            <Button variant="outline" size="sm" onClick={loadData}>
+            <Button variant="outline" size="sm" onClick={() => { void loadData() }} disabled={!selectedConnectionId}>
               <RefreshCw className="h-4 w-4 mr-2" />
               Refresh
             </Button>

@@ -105,7 +105,9 @@ export interface SpecialStrategySettings {
 
 export const DEFAULT_SPECIAL_STRATEGY_SETTINGS: Readonly<SpecialStrategySettings> = Object.freeze({
   enabled: true,
-  minStep: SPECIAL_MIN_STEP,
+  // Keep the historic safety floor selectable at three, but start every new
+  // Special Set at the systemwide five-step default.
+  minStep: 5,
   maxStep: 30,
   stepSize: 1,
   activeWindow: 5,

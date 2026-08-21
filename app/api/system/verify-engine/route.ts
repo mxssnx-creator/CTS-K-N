@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getSettings, initRedis, getRedisClient, getAllConnections } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 export const dynamic = "force-dynamic"
 
@@ -86,7 +87,7 @@ export async function GET() {
         exchange: conn.exchange,
         engineRunning: engineStatus !== null,
         isActive,
-        isTestnet: conn.is_testnet === true,
+        isTestnet: isTruthyFlag(conn.is_testnet),
         phases: {
           prehistoric: {
             completed: prehistoricComplete,

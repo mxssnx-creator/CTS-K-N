@@ -109,7 +109,7 @@ export function StrategyBar({ strategy, onToggle, onVolumeFactorChange, minimalP
 
             <div className="w-32 space-y-1 shrink-0">
               <div className="flex justify-between text-xs">
-                <span className="truncate">Avg R: {strategy.stats.total_trades > 0 ? strategy.avg_profit_factor.toFixed(3) : "—"}</span>
+                <span className="truncate">PF ratio: {strategy.stats.total_trades > 0 ? strategy.avg_profit_factor.toFixed(3) : "—"}</span>
                 <span className={`${isProfitable ? "text-green-600" : "text-gray-500"} ml-1`}>
                   {isProfitable ? "✓" : "✗"}
                 </span>
@@ -117,7 +117,7 @@ export function StrategyBar({ strategy, onToggle, onVolumeFactorChange, minimalP
               <div className="w-full bg-gray-200 rounded-full h-1">
                 <div
                   className={`h-1 rounded-full ${barColor} transition-all duration-300`}
-                  style={{ width: `${Math.min(Math.abs(strategy.avg_profit_factor) * 50, 100)}%` }}
+                  style={{ width: `${Math.min(Math.max(strategy.avg_profit_factor / 2.2, 0), 1) * 100}%` }}
                 />
               </div>
             </div>

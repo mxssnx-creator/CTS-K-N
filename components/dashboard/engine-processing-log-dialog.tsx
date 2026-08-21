@@ -65,7 +65,7 @@ interface ProcessingStats {
 
 export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { connectionId?: string }) {
   const { selectedConnectionId } = useExchange()
-  const activeConnectionId = propConnectionId || selectedConnectionId || "default-bingx-001"
+  const activeConnectionId = propConnectionId || selectedConnectionId || null
 
   const [open, setOpen] = useState(false)
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -83,6 +83,10 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
   }, [])
 
   const fetchStats = useCallback(async () => {
+    if (!activeConnectionId) {
+      addLog("info", "Select an active connection before monitoring processing.")
+      return
+    }
     try {
       // Single canonical /stats endpoint — returns historic, realtime, breakdown in one call
       const statsRes = await fetch(
@@ -204,6 +208,7 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
   }, [activeConnectionId, addLog])
 
   const startPolling = useCallback(() => {
+    if (!activeConnectionId) return
     setIsPolling(true)
     addLog("info", `Started monitoring: ${activeConnectionId}`)
     fetchStats()

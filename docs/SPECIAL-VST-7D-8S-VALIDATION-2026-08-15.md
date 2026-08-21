@@ -38,11 +38,11 @@ The 15-second historical endpoint is unavailable and no synthetic 15-second bars
 
 Walk-forward qualified: **no**; full-period qualified: **no**.
 
-PIs 194 (Long 117, Short 77); PF 0.928; stable PF 0.212; worst-fold PF 0; max DD 30.924%; net -12.768%.
+Pos 194 (Long 117, Short 77); PF 0.928; stable PF 0.212; worst-fold PF 0; max DD 30.924%; net -12.768%.
 
 ### Last 24 hours, all symbols combined, two-hour intervals
 
-| UTC interval | PIs | Long | Short | PF | DD max % | DDT max |
+| UTC interval | Pos | Long | Short | PF | DD max % | DDT max |
 |---|---:|---:|---:|---:|---:|---:|
 | 2026-08-14T18:00–20:00 | 1 | 1 | 0 | 100 | 0 | 0s |
 | 2026-08-14T20:00–22:00 | 1 | 1 | 0 | 100 | 0 | 0s |
@@ -61,11 +61,11 @@ PIs 194 (Long 117, Short 77); PF 0.928; stable PF 0.212; worst-fold PF 0; max DD
 
 Walk-forward qualified: **no**; full-period qualified: **no**.
 
-PIs 214 (Long 128, Short 86); PF 0.952; stable PF 0.212; worst-fold PF 0; max DD 30.924%; net -8.487%.
+Pos 214 (Long 128, Short 86); PF 0.952; stable PF 0.212; worst-fold PF 0; max DD 30.924%; net -8.487%.
 
 ### Last 24 hours, all symbols combined, two-hour intervals
 
-| UTC interval | PIs | Long | Short | PF | DD max % | DDT max |
+| UTC interval | Pos | Long | Short | PF | DD max % | DDT max |
 |---|---:|---:|---:|---:|---:|---:|
 | 2026-08-14T18:00–20:00 | 1 | 1 | 0 | 100 | 0 | 0s |
 | 2026-08-14T20:00–22:00 | 2 | 2 | 0 | 2.393 | 0.607 | 5940s |
@@ -96,4 +96,3 @@ Optimization 1184358ms; peak RSS 153MB; peak heap 35MB.
 - PF includes the configured round-trip cost assumption; DD is an additive percentage-equity drawdown in this validation model.
 - OFI and historical spread are not claimed because synchronized VST history was unavailable from the tested public route.
 - 7 days cannot prove future profitability; failed qualification or incomplete coverage blocks activation.
-

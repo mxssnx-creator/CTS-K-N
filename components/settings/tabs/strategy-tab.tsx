@@ -649,7 +649,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                     <Label>Take Profit / position cost</Label>
                     <PresetOptimizerSlider label="Minimum" value={Number(settings.presetTpMin ?? 3)} min={3} max={30} step={1} onChange={(value) => handleSettingChange("presetTpMin", value)} />
                     <PresetOptimizerSlider label="Maximum" value={Number(settings.presetTpMax ?? 30)} min={3} max={30} step={1} onChange={(value) => handleSettingChange("presetTpMax", value)} />
-                    <PresetOptimizerSlider label="Step" value={Number(settings.presetTpStep ?? 1)} min={1} max={27} step={1} onChange={(value) => handleSettingChange("presetTpStep", value)} />
+                    <PresetOptimizerSlider label="Step" value={Number(settings.presetTpStep ?? 5)} min={1} max={27} step={1} onChange={(value) => handleSettingChange("presetTpStep", value)} />
                   </div>
                   <div className="space-y-3 rounded-lg border p-3">
                     <Label>Stop Loss / Take Profit</Label>
@@ -907,9 +907,9 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       </p>
                     </div>
 
-                    {/* Position-Count (Pis) Sets coordination ratio */}
+                    {/* Position-Count (Pos) Sets coordination ratio */}
                     <div className="space-y-2 md:col-span-3">
-                      <Label>Position-Count (Pis) Sets Volume Ratio</Label>
+                      <Label>Position-Count (Pos) Sets Volume Ratio</Label>
                       <div className="flex items-center gap-3">
                         <Slider
                           min={POS_COUNT_VOLUME_RATIO_MIN}

@@ -410,7 +410,7 @@ export default function MonitoringPage() {
               <CardDescription>Live profit/loss metrics, win rates, and last 25 executed positions</CardDescription>
             </CardHeader>
             <CardContent>
-              <PnLDashboard connectionId={selectedConnectionId || "bingx-x01"} />
+              <PnLDashboard connectionId={selectedConnectionId} />
             </CardContent>
           </Card>
         </TabsContent>

@@ -14,6 +14,10 @@ import {
 } from "lucide-react"
 import { AuthGuard } from "@/components/auth-guard"
 import { useExchange } from "@/lib/exchange-context"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 import { cn } from "@/lib/utils"
 import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 import { useDashboardEvents } from "@/lib/dashboard-events"
@@ -316,10 +320,10 @@ function MainSystemTab({
     return fallback
   }
   const positionCost = settingNumber("positionCost", 0.1)
-  const basePf = settingNumber("baseProfitFactor", 0.4)
-  const mainPf = settingNumber("mainProfitFactor", 1.12)
-  const realPf = settingNumber("realProfitFactor", 1.12)
-  const livePf = settingNumber("liveProfitFactor", 1.12)
+  const basePf = settingNumber("baseProfitFactor", MAIN_TRADE_BASE_PF_RATIO_DEFAULT)
+  const mainPf = settingNumber("mainProfitFactor", MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT)
+  const realPf = settingNumber("realProfitFactor", MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT)
+  const livePf = settingNumber("liveProfitFactor", MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT)
   const mainLookback = settingNumber("mainEvalPosCount", 25)
   const realLookback = settingNumber("realEvalPosCount", 20)
   const indicationTimeoutMs = settingNumber("indicationTimeoutMs", 250)
@@ -877,7 +881,7 @@ function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void 
 
 function LogisticsContent() {
   const { selectedConnectionId } = useExchange()
-  const connId = selectedConnectionId || "bingx-x01"
+  const connId = selectedConnectionId ?? null
 
   const [tab,          setTab]          = useState<Tab>("main")
   const [stats,        setStats]        = useState<EngineStats | null>(null)
@@ -891,6 +895,17 @@ function LogisticsContent() {
 
   const loadAll = useCallback(async (silent: boolean = false) => {
     const sequence = ++loadSequenceRef.current
+    // Connection selection is a hard data boundary. Do not silently render
+    // X01 (or stale previous data) while no connection is selected.
+    if (!connId) {
+      setStats(null)
+      setQueueData(null)
+      setStrategyRows(null)
+      setLivePos([])
+      setLastRefresh(null)
+      setRefreshing(false)
+      return
+    }
     if (!silent) setRefreshing(true)
     try {
       const [statsRes, queueRes, livePosRes, settingsRes, progressionRes] = await Promise.allSettled([
@@ -932,7 +947,7 @@ function LogisticsContent() {
     const refresh = () => { void loadAll(true) }
     return { "monitoring.updated": refresh }
   }, [loadAll])
-  useDashboardEvents(connId, dashboardEventHandlers)
+  useDashboardEvents(connId || "*", dashboardEventHandlers)
 
   useEffect(() => {
     void loadAll()
@@ -974,6 +989,11 @@ function LogisticsContent() {
 
       {/* Content */}
       <div className="flex flex-col gap-3 p-4">
+        {!connId && (
+          <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+            Select an active connection to view its isolated engine workflow and positions.
+          </div>
+        )}
         {/* Tab bar */}
         <TabBar active={tab} onChange={setTab} />
 

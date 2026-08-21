@@ -23,6 +23,9 @@ interface PnLStats {
   open_positions: number
   total_pnl: number
   total_pnl_percent: number
+  realized_pnl: number
+  unrealized_pnl: number
+  total_margin: number
   wins: number
   losses: number
   break_even: number
@@ -47,14 +50,22 @@ interface ApiResponse {
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json())
 
-export function PnLDashboard({ connectionId = "bingx-x01" }: { connectionId?: string }) {
+export function PnLDashboard({ connectionId }: { connectionId?: string | null }) {
   const { data, error, isLoading } = useSWR<ApiResponse>(
-    `/api/trade-engine/pnl-stats?connection_id=${connectionId}`,
+    connectionId ? `/api/trade-engine/pnl-stats?connection_id=${encodeURIComponent(connectionId)}` : null,
     fetcher,
     { refreshInterval: 5000 } // Refresh every 5 seconds
   )
 
   const stats = data?.stats
+
+  if (!connectionId) {
+    return (
+      <div className="w-full rounded-lg border border-border bg-card p-6 text-center">
+        <p className="text-muted-foreground">Select an active connection to view its PnL statistics.</p>
+      </div>
+    )
+  }
 
   if (isLoading) {
     return (
@@ -94,12 +105,15 @@ export function PnLDashboard({ connectionId = "bingx-x01" }: { connectionId?: st
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {/* Total PnL */}
         <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-sm font-medium text-muted-foreground">Total PnL</p>
+          <p className="text-sm font-medium text-muted-foreground">Effective PnL</p>
           <p className={`text-2xl font-bold ${stats.total_pnl >= 0 ? "text-green-600" : "text-red-600"}`}>
             {formatCurrency(stats.total_pnl)}
           </p>
           <p className={`text-xs ${stats.total_pnl_percent >= 0 ? "text-green-600" : "text-red-600"}`}>
-            {formatPercent(stats.total_pnl_percent)}
+            {formatPercent(stats.total_pnl_percent)} on used margin
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Realized {formatCurrency(stats.realized_pnl)} · Open {formatCurrency(stats.unrealized_pnl)}
           </p>
         </div>
 
@@ -114,11 +128,11 @@ export function PnLDashboard({ connectionId = "bingx-x01" }: { connectionId?: st
 
         {/* Profit Factor */}
         <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-sm font-medium text-muted-foreground">Profit Factor</p>
-          <p className={`text-2xl font-bold ${stats.profit_factor >= 1.2 ? "text-green-600" : stats.profit_factor >= 1 ? "text-blue-600" : "text-red-600"}`}>
+          <p className="text-sm font-medium text-muted-foreground">Closed PF (gross)</p>
+          <p className={`text-2xl font-bold ${stats.profit_factor >= 1.2 ? "text-green-600" : stats.profit_factor >= 1 ? "text-blue-600" : "text-amber-600"}`}>
             {stats.profit_factor.toFixed(2)}
           </p>
-          <p className="text-xs text-muted-foreground">Avg Win: {formatCurrency(stats.avg_win)}</p>
+          <p className="text-xs text-muted-foreground">Closed wins/losses; PnL is evaluated separately.</p>
         </div>
 
         {/* Expectancy */}

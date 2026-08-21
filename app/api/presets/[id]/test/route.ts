@@ -11,6 +11,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const { id } = await params
     const body = await request.json()
     const { connectionId, symbols, testPeriodHours = 12 } = body
+    const scopedConnectionId = String(connectionId || "").trim()
+    if (!scopedConnectionId) {
+      return NextResponse.json(
+        { error: "connectionId is required; select an active connection before testing a preset" },
+        { status: 400 },
+      )
+    }
 
     // Get preset configuration
     const presetResult = await sql`
@@ -28,10 +35,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // Generate every configured test combination. Throughput is bounded by
     // worker pools in PresetTester; no top-K ceiling changes the topology.
     const testSymbols = symbols && symbols.length > 0 ? symbols : ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
-    const configurations = await PresetConfigGenerator.generateAllConfigurations(testSymbols, indicatorConfigs)
+    const configurations = await PresetConfigGenerator.generateAllConfigurations(
+      testSymbols,
+      indicatorConfigs,
+      scopedConnectionId,
+    )
 
     // Initialize tester
-    const tester = new PresetTester(connectionId)
+    const tester = new PresetTester(scopedConnectionId)
 
     // Test configurations
     const results = await tester.testConfigurations(configurations, testPeriodHours)
@@ -60,7 +71,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           trail_start, trail_stop, profit_factor, win_rate, total_trades
         )
         VALUES (
-          ${id}, ${connectionId}, ${config.id},
+          ${id}, ${scopedConnectionId}, ${config.id},
           ${config.indicator.type}, ${JSON.stringify(config.indicator.params)}, ${config.symbol}, ${config.timeframe},
           ${config.takeprofit_factor}, ${config.stoploss_ratio}, ${config.trailing_enabled},
           ${config.trail_start || null}, ${config.trail_stop || null},

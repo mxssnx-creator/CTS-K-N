@@ -596,7 +596,7 @@ function ExchangePositionRow({
 
 export function StatisticsOverviewV2() {
   const { selectedConnectionId } = useExchange()
-  const connectionId = selectedConnectionId || "default-bingx-001"
+  const connectionId = selectedConnectionId || ""
   const [stats, setStats] = useState<CompactStats>(EMPTY)
   const [tradeHistoryMode, setTradeHistoryMode] = useState<"exchange" | "simulated">("exchange")
   const [tradeHistoryRows, setTradeHistoryRows] = useState<TradeHistoryRow[]>([])
@@ -621,6 +621,7 @@ export function StatisticsOverviewV2() {
   }, [])
 
   const loadTradeHistory = useCallback(async (force = false, complete = false) => {
+    if (!connectionId) return
     const requestSequence = ++historyFetchSeqRef.current
     try {
       const fetchPage = async (offset: number, refresh: boolean) => {
@@ -680,6 +681,7 @@ export function StatisticsOverviewV2() {
     setTradeHistoryRows([])
     setTradeHistoryLoaded(false)
     lastHistoryClosedCountRef.current = 0
+    if (!connectionId) return
     void loadTradeHistory(false, true)
     const interval = window.setInterval(() => { void loadTradeHistory(false) }, 30_000)
     return () => {
@@ -717,6 +719,7 @@ export function StatisticsOverviewV2() {
     // local state. Called on mount, every 3s, and on global engine /
     // connection / live-trade toggle events for immediate refresh.
     const load = async () => {
+      if (!connectionId) return
       const requestSeq = ++statsFetchSeqRef.current
       try {
         const res = await fetch(

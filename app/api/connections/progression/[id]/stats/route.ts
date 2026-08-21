@@ -20,7 +20,9 @@ import { getRuntimeTelemetry } from "@/lib/runtime-telemetry"
 import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
 import { buildConnectionStageOverview } from "@/lib/connection-stage-overview"
 import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
+import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -73,6 +75,62 @@ function responseFromStatsSnapshot(snapshot: StatsResponseSnapshot): Response {
     status: snapshot.status,
     statusText: snapshot.statusText,
   })
+}
+
+/**
+ * The expensive full snapshot may be intentionally stale while a 32-symbol
+ * graph is being rebuilt. Overlay only volatile worker counters from Redis so
+ * selected-connection progress remains live without letting a dashboard poll
+ * trigger competing full graph materialisation.
+ */
+async function responseFromVolatileStatsSnapshot(
+  snapshot: StatsResponseSnapshot,
+  request: NextRequest,
+  connectionId: string,
+): Promise<Response> {
+  try {
+    await initRedis()
+    const client = getRedisClient()
+    const params = request.nextUrl?.searchParams || new URL(request.url || "http://localhost").searchParams
+    const requestedEngineType = params.get("engineType") || params.get("engine_type") || ""
+    const connection = await getConnection(connectionId).catch(() => null)
+    const engineType = stableString(
+      requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main",
+    ) || "main"
+    const scope = buildProgressionScope(connectionId, engineType)
+    const progressionKeys = Array.from(new Set(progressionReadKeys(scope)))
+    const [progressionHashes, prehistoricRaw, realtimeRaw, legacyState, settingsState, scopedState, scopedSettings] = await Promise.all([
+      Promise.all(progressionKeys.map((key) => client.hgetall(key).catch(() => ({} as Record<string, string>)))),
+      client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`realtime:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+    ])
+    const progression = progressionHashes.find((hash) => Object.keys(hash || {}).length > 0) || {}
+    const body = JSON.parse(snapshot.body)
+    const overlaid = overlayVolatileProgressionStats(body, {
+      progression,
+      prehistoric: prehistoricRaw || {},
+      realtime: realtimeRaw || {},
+      engineState: {
+        ...(legacyState || {}),
+        ...(settingsState || {}),
+        ...(scopedState || {}),
+        ...(scopedSettings || {}),
+      },
+    })
+    if (!overlaid) return responseFromStatsSnapshot(snapshot)
+    return new Response(JSON.stringify(overlaid), {
+      headers: snapshot.headers,
+      status: snapshot.status,
+      statusText: snapshot.statusText,
+    })
+  } catch {
+    // A cache hit must remain available if a transient Redis read fails.
+    return responseFromStatsSnapshot(snapshot)
+  }
 }
 
 async function snapshotStatsResponse(response: Response): Promise<StatsResponseSnapshot> {
@@ -478,35 +536,22 @@ function aggregateOrdersBySymbol(
       createdAt: Number(hash.createdAt || 0),
       updatedAt: Number(hash.updatedAt || 0),
       closedAt: Number(hash.closedAt || 0) || undefined,
-      realizedPnL: Number(hash.realizedPnL ?? hash.realized_pnl ?? 0) || undefined,
+      realizedPnL: (() => {
+        const raw = hash.realizedPnL ?? hash.realized_pnl
+        if (raw === undefined || raw === null || raw === "") return undefined
+        const value = Number(raw)
+        return Number.isFinite(value) ? value : undefined
+      })(),
       exchangeData: typeof hash.exchangeData === "string" ? parseMaybeJson<Record<string, any>>(hash.exchangeData, {}) : hash.exchangeData,
     }
   }
 
   function effectiveRealizedPnl(pos: Record<string, any>): number {
-    const stored = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
-    if (Number.isFinite(stored) && stored !== 0) return stored
-    const qty = Number(pos.executedQuantity ?? pos.quantity ?? 0) || 0
-    const entry = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
-    const close = Number(pos.closePrice ?? pos.exitPrice ?? pos.lastPrice ?? 0) || 0
-    const dir = String(pos.direction || "").toLowerCase()
-    if (qty > 0 && entry > 0 && close > 0) {
-      return qty * (dir === "short" ? entry - close : close - entry)
-    }
-    return Number.isFinite(stored) ? stored : 0
+    return resolveRealizedPnl(pos) ?? 0
   }
 
   function effectiveUnrealizedPnl(pos: Record<string, any>): number {
-    const stored = Number(pos.unrealizedPnL ?? pos.unrealized_pnl ?? pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL)
-    if (Number.isFinite(stored) && stored !== 0) return stored
-    const qty = Number(pos.executedQuantity ?? pos.quantity ?? 0) || 0
-    const entry = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
-    const mark = Number(pos.markPrice ?? pos.exchangeData?.markPrice ?? pos.current_price ?? 0) || 0
-    const dir = String(pos.direction || "").toLowerCase()
-    if (qty > 0 && entry > 0 && mark > 0) {
-      return qty * (dir === "short" ? entry - mark : mark - entry)
-    }
-    return Number.isFinite(stored) ? stored : 0
+    return resolveUnrealizedPnl(pos) ?? 0
   }
 
 /**
@@ -582,7 +627,7 @@ export async function GET(
   const inFlight = statsResponseInFlight.get(responseCacheKey)
   if (inFlight) {
     return staleSnapshot
-      ? responseFromStatsSnapshot(staleSnapshot)
+      ? responseFromVolatileStatsSnapshot(staleSnapshot, request, connectionId)
       : responseFromStatsSnapshot(await inFlight)
   }
 
@@ -781,7 +826,7 @@ export async function GET(
     // progression hash while the operator has already reduced the connection
     // to a smaller basket. Using that raw count directly produced impossible
     // UI values such as "10/1".
-    const rawHistoricSymbolsProcessed = pick(
+    let rawHistoricSymbolsProcessed = pick(
       n(prehistoricHash.symbols_processed),
       prehistoricSymbolCount,
       n(progHash.prehistoric_symbols_processed_count),
@@ -819,6 +864,11 @@ export async function GET(
     const activeSelectionEpoch = String((es as any).symbol_selection_epoch || (es as any).quickstart_symbol_generation || "")
     const prehistoricSelectionEpoch = String((prehistoricHash as any).symbol_selection_epoch || "")
     const prehistoricTotalIsActive = !activeSelectionEpoch || !prehistoricSelectionEpoch || activeSelectionEpoch === prehistoricSelectionEpoch
+    // A completed historic hash from a former symbol generation must never
+    // seed the new selection's numerator. Without this guard a stale 32/32
+    // could be clamped to a newly selected 5-symbol basket and displayed as a
+    // false, permanently stuck 5/5 before the new worker had processed one.
+    if (!prehistoricTotalIsActive) rawHistoricSymbolsProcessed = 0
     const canonicalSelectedSymbols = normalizeSymbolList(es.selected_symbols)
     const activeQuickstartTotal = Math.max(quickstartCount, quickstartSymbols.length)
     const engineProgressSubTotal = ep?.phase === "prehistoric_data" ? n(ep?.sub_total) : 0
@@ -3119,7 +3169,7 @@ export async function GET(
       intervalsProcessed:      n(prehistoricHash.intervals_processed) || n(progHash.prehistoric_intervals_processed),
       missingIntervalsLoaded:  n(prehistoricHash.missing_intervals)   || n(progHash.prehistoric_missing_loaded),
       currentSymbol:           prehistoricHash.current_symbol         || progHash.prehistoric_current_symbol || "",
-      isComplete:              prehistoricHash.is_complete === "1",
+      isComplete:              historicIsComplete,
       // Aggregate profit factor across every closed prehistoric position
       // — written by `ConfigSetProcessor` after each prehistoric run
       // (`historic_avg_profit_factor` field on the `prehistoric:{id}`
@@ -4492,7 +4542,7 @@ export async function GET(
       .then((snapshot) => cacheStatsResponse(responseCacheKey, snapshot))
       .catch(() => undefined)
       .finally(finishRefresh)
-    return responseFromStatsSnapshot(staleSnapshot)
+    return responseFromVolatileStatsSnapshot(staleSnapshot, request, connectionId)
   }
   try {
     const snapshot = await responsePromise

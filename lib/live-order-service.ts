@@ -28,6 +28,7 @@ export const LIVE_ORDER_REDIS_KEYS = {
 export type LiveOrderDirection = "long" | "short"
 export type LiveOrderMode = "live" | "simulated"
 export type LiveOrderSourceLane = "direct-trade" | "main-trade" | "preset-trade" | "signal-trade" | "other"
+export type LiveOrderMarginType = "cross" | "isolated"
 
 export interface PlaceLiveOrderInput {
   connectionId: string
@@ -35,6 +36,8 @@ export interface PlaceLiveOrderInput {
   side: string
   quantity: number
   leverage?: number
+  /** Margin mode is part of the entry contract, never a post-order repair. */
+  marginType?: LiveOrderMarginType
   price?: number
   orderType?: "market" | "limit"
   requireLiveConfirmation?: boolean
@@ -701,13 +704,51 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
   return { connector, mode: "live", willUseRealExchange }
 }
 
-export async function setupLiveOrderLeverage(connector: any, symbol: string, leverage = 1): Promise<void> {
+export function normalizeLiveOrderMarginType(value: unknown): LiveOrderMarginType {
+  return String(value || "").trim().toLowerCase().includes("isolated")
+    ? "isolated"
+    : "cross"
+}
+
+export async function setupLiveOrderLeverage(connector: any, symbol: string, leverage = 1): Promise<boolean> {
   if (leverage > 1 && typeof connector?.setLeverage === "function") {
     const result = await connector.setLeverage(symbol, leverage)
     if (result?.success === false) {
       throw new Error(result?.error || `Exchange rejected ${leverage}x leverage for ${symbol}`)
     }
+    return true
   }
+  return false
+}
+
+/**
+ * Configure a new entry's venue state in the only safe order: margin mode
+ * first, then leverage, then the order itself.  The exchange connector owns
+ * its cooldown/FIFO lane, so awaiting these calls also keeps the sequence
+ * intact under concurrent symbol processing.
+ *
+ * Reduce-only exits deliberately skip this routine: changing account settings
+ * while closing an existing position can be rejected by venues and must never
+ * prevent a protective exit.
+ */
+export async function setupLiveOrderMarginAndLeverage(
+  connector: any,
+  symbol: string,
+  options: { marginType?: unknown; leverage?: unknown } = {},
+): Promise<{ marginType: LiveOrderMarginType; marginConfigured: boolean; leverageConfigured: boolean }> {
+  const marginType = normalizeLiveOrderMarginType(options.marginType)
+  let marginConfigured = false
+  if (typeof connector?.setMarginType === "function") {
+    const result = await connector.setMarginType(symbol, marginType)
+    if (result?.success === false) {
+      throw new Error(result?.error || `Exchange rejected ${marginType} margin for ${symbol}`)
+    }
+    marginConfigured = true
+  }
+
+  const leverage = Math.max(1, Number(options.leverage) || 1)
+  const leverageConfigured = await setupLiveOrderLeverage(connector, symbol, leverage)
+  return { marginType, marginConfigured, leverageConfigured }
 }
 
 export function validateLiveOrderQuantity(input: { quantity: number; price?: number }): void {
@@ -843,7 +884,7 @@ export async function recordLiveOrderProgression(
   return true
 }
 
-export async function persistLiveOrderPosition(input: { connectionId: string; symbol: string; direction: LiveOrderDirection; quantity: number; leverage?: number; fill: ParsedFill; orderId?: string; existingPosition?: any; livePositionId?: string; status?: string }): Promise<any> {
+export async function persistLiveOrderPosition(input: { connectionId: string; symbol: string; direction: LiveOrderDirection; quantity: number; leverage?: number; marginType?: LiveOrderMarginType; fill: ParsedFill; orderId?: string; existingPosition?: any; livePositionId?: string; status?: string }): Promise<any> {
   // A live position must never be valued from a ticker fallback.  A ticker is
   // an observation, not an exchange execution, and using it creates phantom
   // fills/PF and can strand a pending order after a response-only ack.  The
@@ -867,7 +908,7 @@ export async function persistLiveOrderPosition(input: { connectionId: string; sy
     quantity: execQty,
     volumeUsd: (execQty || 0) * (fillPrice || 0),
     leverage: input.leverage || 1,
-    marginType: input.existingPosition?.marginType || "cross",
+    marginType: input.marginType || input.existingPosition?.marginType || "cross",
     status: input.status || (hasAuthoritativeFill ? "open" : "placed"),
     fills: hasAuthoritativeFill ? [{ timestamp: now, quantity: execQty, price: fillPrice, fee: 0, feeAsset: "" }] : [],
     progression: input.existingPosition?.progression || [],
@@ -1090,8 +1131,19 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     return response
   }
 
+  const configuredMarginType = normalizeLiveOrderMarginType(
+    input.marginType
+    ?? input.existingPosition?.marginType
+    ?? (connection as any)?.margin_type
+    ?? (connection as any)?.marginType,
+  )
   try {
-    await setupLiveOrderLeverage(connector, symbol, Number(input.leverage || 1))
+    if (!input.reduceOnly) {
+      await setupLiveOrderMarginAndLeverage(connector, symbol, {
+        marginType: configuredMarginType,
+        leverage: Number(input.leverage || 1),
+      })
+    }
   } catch (error) {
     // Leverage configuration happens strictly before placeOrder. Therefore a
     // failure here is definitive: mark the claimed generation terminal so the
@@ -1208,7 +1260,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const terminal = !willUseRealExchange || isTerminalLiveOrderResult(result, submitted.quantity)
   let position: any = null
   if (!willUseRealExchange) {
-    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
+    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, marginType: configuredMarginType, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
     if (input.updateCounters !== false) await recordLiveOrderProgression(
       input.connectionId,
       symbol,
@@ -1219,7 +1271,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
       progressionOptions,
     )
   } else {
-    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId })
+    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, marginType: configuredMarginType, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId })
     if (input.updateCounters !== false) {
       const identity = progressionIdentity(exchangeOrderId)
       await recordLiveOrderProgression(input.connectionId, symbol, direction, "placed", 0, identity ? `${symbol}:${direction}:${identity}:placed` : undefined, progressionOptions)

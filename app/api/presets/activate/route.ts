@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
-import { query, execute } from "@/lib/db"
-import { getSettings, setSettings } from "@/lib/redis-db"
+import { query } from "@/lib/db"
+import { getConnection, setSettings } from "@/lib/redis-db"
 import { getWebSocketManager } from "@/lib/websocket-server"
 import { SystemLogger } from "@/lib/system-logger"
 import {
@@ -8,6 +8,7 @@ import {
   PRESET_DEFAULT_INDICATION_TYPES,
   PRESET_DEFAULT_MIN_PF_RATIO,
   PRESET_DEFAULT_STRATEGY_TYPES,
+  PRESET_DEFAULT_TAKE_PROFIT_STEPS,
   presetNumberList,
   presetStringList,
 } from "@/lib/preset-crud-defaults"
@@ -18,9 +19,18 @@ export async function POST(request: Request) {
   try {
     const body = await request.json()
     const { presetId, connectionId } = body
+    const scopedConnectionId = String(connectionId || "").trim()
 
     if (!presetId) {
       return NextResponse.json({ error: "Preset ID is required" }, { status: 400 })
+    }
+    if (!scopedConnectionId) {
+      return NextResponse.json({ error: "Select an active connection before activating a preset" }, { status: 400 })
+    }
+
+    const connection = await getConnection(scopedConnectionId)
+    if (!connection) {
+      return NextResponse.json({ error: "Selected connection was not found" }, { status: 404 })
     }
 
     console.log(`[v0] [API] [Presets] Activating preset: ${presetId}`)
@@ -33,19 +43,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Preset not found" }, { status: 404 })
     }
 
-    await execute(
-      "UPDATE presets SET is_active = false WHERE is_active = true"
-    )
-    await execute(
-      "UPDATE presets SET is_active = true WHERE id = $1",
-      [presetId]
-    )
-
-    await setSettings("active_preset", {
+    await setSettings(`active_preset:${scopedConnectionId}`, {
       id: presetId,
       name: preset.name,
       activatedAt: new Date().toISOString(),
-      connectionId: connectionId || null,
+      connectionId: scopedConnectionId,
     })
 
     const activeConfig = {
@@ -54,7 +56,7 @@ export async function POST(request: Request) {
       description: preset.description,
       indication_types: presetStringList(preset.indication_types, PRESET_DEFAULT_INDICATION_TYPES),
       indication_ranges: presetNumberList(preset.indication_ranges, PRESET_DEFAULT_INDICATION_RANGES),
-      takeprofit_steps: preset.takeprofit_steps ? JSON.parse(preset.takeprofit_steps) : [2, 3, 4, 6, 8, 12],
+      takeprofit_steps: preset.takeprofit_steps ? JSON.parse(preset.takeprofit_steps) : [...PRESET_DEFAULT_TAKE_PROFIT_STEPS],
       stoploss_ratios: preset.stoploss_ratios ? JSON.parse(preset.stoploss_ratios) : [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
       trailing_enabled: preset.trailing_enabled === true,
       trail_starts: preset.trail_starts ? JSON.parse(preset.trail_starts) : [0.3, 0.6, 1.0],
@@ -74,7 +76,7 @@ export async function POST(request: Request) {
       data: {
         presetId,
         name: preset.name,
-        connectionId: connectionId || null,
+        connectionId: scopedConnectionId,
         activatedAt: new Date().toISOString(),
         config: activeConfig,
       },
@@ -89,6 +91,7 @@ export async function POST(request: Request) {
       message: `Preset ${preset.name} activated successfully`,
       name: preset.name,
       presetId,
+      connectionId: scopedConnectionId,
       config: activeConfig,
     })
   } catch (error) {

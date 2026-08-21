@@ -12,6 +12,7 @@ import { formatSampledMetric, grossProfitFactorTitle } from "@/lib/metric-format
 interface PresetTradeStatsProps {
   filter: AnalyticsFilter
   positions: TradingPosition[]
+  connectionId?: string | null
 }
 
 interface PresetStats {
@@ -30,13 +31,13 @@ interface PresetStats {
   worst_symbol: string
 }
 
-export function PresetTradeStats({ filter, positions }: PresetTradeStatsProps) {
+export function PresetTradeStats({ filter, positions, connectionId }: PresetTradeStatsProps) {
   const [presets, setPresets] = useState<any[]>([])
   const [presetStats, setPresetStats] = useState<PresetStats[]>([])
 
   useEffect(() => {
-    loadPresets()
-  }, [])
+    void loadPresets()
+  }, [connectionId])
 
   useEffect(() => {
     if (presets.length > 0) {
@@ -45,8 +46,12 @@ export function PresetTradeStats({ filter, positions }: PresetTradeStatsProps) {
   }, [presets, filter, positions])
 
   const loadPresets = async () => {
+    if (!connectionId) {
+      setPresets([])
+      return
+    }
     try {
-      const response = await fetch("/api/presets")
+      const response = await fetch(`/api/presets?connectionId=${encodeURIComponent(connectionId)}`)
       const data = await response.json()
       setPresets(data)
     } catch (error) {

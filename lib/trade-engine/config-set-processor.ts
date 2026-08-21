@@ -569,7 +569,14 @@ export class ConfigSetProcessor {
             const distinctSkipProcessed = clampProcessedToTotal(await client.scard(prehistoricSymbolsKey), canonicalSymbolsTotal)
             await client.hset(prehistoricKey, {
               symbols_processed: String(distinctSkipProcessed),
+              symbol_selection_epoch: writerSelectionEpoch,
+              last_update: new Date().toISOString(),
             })
+            await ProgressionStateManager.incrementPrehistoricCycle(
+              this.connectionId,
+              symbol,
+              writerSelectionEpoch,
+            ).catch(() => {})
             // Advance the dashboard percent bar even for data-less symbols,
             // using the SAME `engine_progression` schema the main path writes.
             const totalSyms = Math.max(1, canonicalSymbolsTotal)
@@ -577,8 +584,8 @@ export class ConfigSetProcessor {
             void setEngineProgress({
               phase: "prehistoric_data",
               progress: skipPct,
-              detail: `Prehistoric calc filling sets — ${symbolsProcessed}/${totalSyms} symbols processed (no data: ${symbol})`,
-              sub_current: symbolsProcessed,
+              detail: `Prehistoric calc filling sets — ${distinctSkipProcessed}/${totalSyms} symbols processed (no data: ${symbol})`,
+              sub_current: distinctSkipProcessed,
               sub_total: totalSyms,
               sub_item: symbol,
               connection_id: this.connectionId,
@@ -859,7 +866,14 @@ export class ConfigSetProcessor {
           const distinctErrProcessed = clampProcessedToTotal(await client.scard(prehistoricSymbolsKey), canonicalSymbolsTotal)
           await client.hset(prehistoricKey, {
             symbols_processed: String(distinctErrProcessed),
+            symbol_selection_epoch: writerSelectionEpoch,
+            last_update: new Date().toISOString(),
           })
+          await ProgressionStateManager.incrementPrehistoricCycle(
+            this.connectionId,
+            symbol,
+            writerSelectionEpoch,
+          ).catch(() => {})
           const totalSyms = Math.max(1, canonicalSymbolsTotal)
           const errPct = Math.min(95, 15 + Math.round((distinctErrProcessed / totalSyms) * 80))
           void setEngineProgress({
@@ -1143,6 +1157,7 @@ export class ConfigSetProcessor {
           this.connectionId,
           canonicalSymbolsTotal,
           writerSelectionEpoch,
+          errors === 0,
         )
       }
     } catch (err) {
@@ -1586,6 +1601,7 @@ export class ConfigSetProcessor {
                 candles,
                 calculationConfigs[0],
                 historicSeries,
+                positionCostPct,
               ))
               if (positions.length === 0) return 0
               const persistedCounts = await mapWithConcurrency(
@@ -1739,6 +1755,7 @@ export class ConfigSetProcessor {
     candles: any[],
     config: StrategyConfig,
     historicSeries?: HistoricPriceSeries,
+    positionCostPct = 0.1,
   ): Promise<PseudoPosition[]> {
     const positions: PseudoPosition[] = []
     const { position_cost_step, takeprofit, stoploss, type } = config
@@ -1785,6 +1802,7 @@ export class ConfigSetProcessor {
           currentPrice,
           quantity: 1,
           side: positionSide,
+          positionCostPct,
         }).netPnlPct
 
         const takeProfitHit = pnl >= takeprofit
@@ -1811,6 +1829,7 @@ export class ConfigSetProcessor {
             // historic write fan-out.
             direction: positionSide,
             indication_type: type,
+            position_cost_pct: positionCostPct,
           })
 
           inPosition = false
@@ -1831,6 +1850,7 @@ export class ConfigSetProcessor {
         currentPrice: lastPrice,
         quantity: 1,
         side: positionSide,
+        positionCostPct,
       }).netPnlPct
 
       positions.push({
@@ -1843,6 +1863,7 @@ export class ConfigSetProcessor {
         result: netPnlPct,
         direction: positionSide,
         indication_type: type,
+        position_cost_pct: positionCostPct,
       })
     }
 

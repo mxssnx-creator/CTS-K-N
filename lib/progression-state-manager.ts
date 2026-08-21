@@ -592,7 +592,8 @@ export class ProgressionStateManager {
     connectionId: string,
     symbolTotal?: number,
     symbolSelectionEpoch?: string,
-  ): Promise<void> {
+    processingSucceeded = true,
+  ): Promise<boolean> {
     try {
       // Ensure Redis is initialised BEFORE using the client.
       // getRedisClient() returns null on cold-boot; binding `client` first then
@@ -607,21 +608,34 @@ export class ProgressionStateManager {
       const scope = buildProgressionScope(connectionId)
       const key = scope.progressionKey
 
-      await client.hset(key, {
-        prehistoric_phase_active: "false",
-        ...(symbolSelectionEpoch ? { symbol_selection_epoch: symbolSelectionEpoch } : {}),
-        last_update: new Date().toISOString(),
-      })
+      // Completion can race a symbol-selection change between the processor's
+      // last ownership check and this durable write. Do not let a former
+      // generation clear the active phase or overwrite its X/Y counters.
+      if (symbolSelectionEpoch) {
+        const activeEpoch = await client
+          .hget(scope.tradeEngineStateKey, "symbol_selection_epoch")
+          .catch(() => null)
+        if (activeEpoch && activeEpoch !== symbolSelectionEpoch) {
+          console.warn(`[v0] Ignoring stale prehistoric completion for ${connectionId}`)
+          return false
+        }
+      }
 
       // Reconcile the prehistoric counter hash + dashboard progress bar to the
       // authoritative distinct SET cardinality without fabricating completion.
+      let isComplete = false
+      let finalProcessed = 0
+      let total = Math.max(1, symbolTotal ?? 1)
       try {
         const distinct = await client
           .scard(`${scope.prehistoricKey}:symbols`)
           .catch(() => 0)
-        const total = Math.max(1, symbolTotal ?? distinct ?? 1)
-        const finalProcessed = Math.min(Math.max(0, distinct), total)
-        const isComplete = finalProcessed >= total
+        total = Math.max(1, symbolTotal ?? distinct ?? 1)
+        finalProcessed = Math.min(Math.max(0, distinct), total)
+        // Coverage alone is not a completion. A failed worker can have an
+        // attempted-symbol marker while its historic rows/checkpoints remain
+        // incomplete, so keep the phase active and the realtime gates closed.
+        isComplete = processingSucceeded && finalProcessed >= total
         await client.hset(scope.prehistoricKey, {
           symbols_processed: String(finalProcessed),
           symbols_total: String(total),
@@ -642,9 +656,41 @@ export class ProgressionStateManager {
         }).catch(() => { /* non-critical */ })
       } catch { /* non-critical */ }
 
-      console.log(`[v0] [Prehistoric] Phase completed for connection ${connectionId}`)
+      await client.hset(key, {
+        // An incomplete/error run must remain visibly active so the next
+        // event-driven retry continues it rather than presenting a completed
+        // historic phase with a hidden closed realtime gate.
+        prehistoric_phase_active: isComplete ? "false" : "true",
+        ...(symbolSelectionEpoch ? { symbol_selection_epoch: symbolSelectionEpoch } : {}),
+        last_update: new Date().toISOString(),
+      })
+
+      if (!isComplete) {
+        const doneKeys = buildPrehistoricGateKeys(connectionId, "main", "done")
+        const firstPassKeys = buildPrehistoricGateKeys(connectionId, "main", "firstpass:done")
+        await client.del(
+          doneKeys.scoped,
+          doneKeys.legacy,
+          firstPassKeys.scoped,
+          firstPassKeys.legacy,
+        ).catch(() => undefined)
+      }
+
+      await publishEngineEvent("progression.stage.completed", {
+        connectionId,
+        stage: "prehistoric_data",
+        successful: isComplete,
+        timestamp: new Date().toISOString(),
+      }).catch(() => undefined)
+
+      console.log(
+        `[v0] [Prehistoric] Phase ${isComplete ? "completed" : "awaiting retry"} for connection ${connectionId} ` +
+        `(${finalProcessed}/${total}${processingSucceeded ? "" : ", worker errors"})`,
+      )
+      return isComplete
     } catch (error) {
       console.error(`[v0] Failed to mark prehistoric phase complete:`, error)
+      return false
     }
   }
 

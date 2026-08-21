@@ -28,17 +28,17 @@ function upwardMinuteSeries(size = 80): DirectTradeCandle[] {
 }
 
 describe("Direct-Trade independent historical coordination", () => {
-  test("uses the 2–22 PositionCost TP contract with the optimized 4–8 default and 2× stride", () => {
-    expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([4, 8])
+  test("uses the 2–22 PositionCost TP contract with the fresh 5–10 default and 5× stride", () => {
+    expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([5, 10])
     expect(normaliseDirectTradeTakeProfitRatioRange([0, 99])).toEqual([2, 22])
-    expect(normaliseDirectTradeTakeProfitRatioStep(undefined)).toBe(2)
+    expect(normaliseDirectTradeTakeProfitRatioStep(undefined)).toBe(5)
     expect(normaliseDirectTradeTakeProfitRatioStep(0)).toBe(1)
     expect(buildDirectTradeTakeProfitPositionCostRatios([2, 5], 1)).toEqual([2, 3, 4, 5])
-    expect(buildDirectTradeTakeProfitPositionCostRatios([4, 8])).toEqual([4, 6, 8])
-    expect(directTradeTakeProfitPercent(0.1, 4)).toBe(0.4)
+    expect(buildDirectTradeTakeProfitPositionCostRatios([5, 10])).toEqual([5, 10])
+    expect(directTradeTakeProfitPercent(0.1, 5)).toBe(0.5)
     expect(directTradeTakeProfitPercent(0.1, 22)).toBe(2.2)
-    expect(averageDirectTradeTakeProfitRatio([4, 8, 12, 14])).toBe(9.5)
-    expect(averageDirectTradeTakeProfitRatio([4, 8, 12, 14].map((ratio) => directTradeTakeProfitPercent(0.1, ratio))) ).toBe(0.95)
+    expect(averageDirectTradeTakeProfitRatio([5, 10])).toBe(7.5)
+    expect(averageDirectTradeTakeProfitRatio([5, 10].map((ratio) => directTradeTakeProfitPercent(0.1, ratio))) ).toBe(0.75)
   })
 
   test("calculates aggregate PF from summed net ratio components, not averages", () => {

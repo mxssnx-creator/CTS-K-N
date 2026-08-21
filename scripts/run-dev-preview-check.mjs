@@ -63,6 +63,7 @@ const devNodeSemiSpaceMb = Math.max(
 )
 let outputTail = ""
 let previewRedisEnvironment = {}
+let auditConnectionId = ""
 const releaseDevArtifactLock = acquireDevArtifactLock({ artifactName: "next-dev" })
 
 async function removeHarnessArtifacts() {
@@ -102,13 +103,26 @@ async function waitForReady(child, timeoutMs = 120_000) {
 
 async function requestJson(pathname, options = {}) {
   let lastFailure = ""
+  const timeoutMs = Math.max(1_000, Number(options.timeoutMs) || 60_000)
+  const requestOptions = { ...options }
+  delete requestOptions.timeoutMs
   for (let attempt = 1; attempt <= 4; attempt++) {
-    const response = await fetch(new URL(pathname, baseUrl), {
-      cache: "no-store",
-      signal: AbortSignal.timeout(30_000),
-      ...options,
-      headers: { Accept: "application/json", ...(options.headers || {}) },
-    })
+    let response
+    try {
+      response = await fetch(new URL(pathname, baseUrl), {
+        cache: "no-store",
+        ...requestOptions,
+        signal: requestOptions.signal || AbortSignal.timeout(timeoutMs),
+        headers: { Accept: "application/json", ...(requestOptions.headers || {}) },
+      })
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.message : String(error)
+      if (attempt < 4) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
+        continue
+      }
+      break
+    }
     const text = await response.text()
     if (response.ok) {
       try {
@@ -128,15 +142,33 @@ async function requestJson(pathname, options = {}) {
   throw new Error(`Dev route warmup ${pathname} failed after compilation retries: ${lastFailure}`)
 }
 
+async function resolveAuditConnectionId() {
+  if (auditConnectionId) return auditConnectionId
+  const inventory = await requestJson("/api/connections")
+  const connections = Array.isArray(inventory?.connections) ? inventory.connections : []
+  const requested = String(process.env.DEV_SOAK_CONNECTION_ID || "").trim()
+  const selected = requested
+    ? connections.find((connection) => String(connection?.id) === requested)
+    : connections[0]
+  const resolved = String(selected?.id || "").trim()
+  if (!resolved) {
+    throw new Error(
+      requested
+        ? `Dev audit connection ${requested} was not found`
+        : "Dev audit requires an explicit available connection",
+    )
+  }
+  auditConnectionId = resolved
+  return auditConnectionId
+}
+
 async function prewarmDevRoutes() {
   // Next dev compiles App routes on first request. Compiling eleven large API
   // graphs concurrently while the engine is allocating Strategy Sets can make
   // Next expose a half-installed route module ("handler is not a function").
   // Compile them serially before QuickStart so the soak measures application
   // processing and route execution, not a compiler stampede.
-  const inventory = await requestJson("/api/connections")
-  const connectionId = String(inventory?.connections?.[0]?.id || "")
-  if (!connectionId) throw new Error("Dev route warmup found no connection")
+  const connectionId = await resolveAuditConnectionId()
   const encoded = encodeURIComponent(connectionId)
   for (const pathname of [
     "/api/health",
@@ -249,7 +281,8 @@ function assertDevOutputIntegrity() {
   }
 }
 
-function runSoakVerifier() {
+async function runSoakVerifier() {
+  const connectionId = await resolveAuditConnectionId()
   return new Promise((resolve, reject) => {
     const verifier = spawn(process.execPath, ["scripts/verify-prod-soak.mjs"], {
       cwd: process.cwd(),
@@ -258,6 +291,7 @@ function runSoakVerifier() {
         ...previewRedisEnvironment,
         BASE_URL: baseUrl,
         PORT: String(port),
+        SOAK_CONNECTION_ID: connectionId,
         START_SIMULATED_ENGINE: "1",
         SYMBOL_COUNT: String(devSoakSymbolCount),
         SOAK_DURATION_MS: String(devSoakDurationMs),
@@ -300,21 +334,27 @@ function runSoakVerifier() {
 // unbounded key growth that exhausts an in-process Redis in a constrained box.
 async function runSmokeVerifier() {
   const SYMBOLS = [
-    "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT", "BNBUSDT", "DOGEUSDT",
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
     "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
+    "UNIUSDT", "NEARUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT",
+    "INJUSDT", "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
+    "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
+    "ICPUSDT", "HBARUSDT",
   ].slice(0, Math.max(1, devSoakSymbolCount))
+  const connectionId = await resolveAuditConnectionId()
   const quickStart = await requestJson("/api/trade-engine/quick-start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       action: "enable",
+      connectionId,
       symbolCount: SYMBOLS.length,
       symbols: SYMBOLS,
       liveTrade: false,
       is_live_trade: false,
-      baseProfitFactor: 0.8,
-      mainProfitFactor: 0.75,
-      realProfitFactor: 0.75,
+      baseProfitFactor: 1,
+      mainProfitFactor: 1,
+      realProfitFactor: 1,
       prevPosMinCount: 1,
       mainEvalPosCount: 1,
       realEvalPosCount: 1,
@@ -335,7 +375,6 @@ async function runSmokeVerifier() {
   }
   const status = await requestJson("/api/trade-engine/status-all")
   if (!status) throw new Error("status-all returned no data")
-  const connectionId = String(status?.connections?.[0]?.id || "bingx-x01")
   const healthEndpoints = [
     "/api/health",
     "/api/system/init-status",

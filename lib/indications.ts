@@ -1,9 +1,13 @@
 import { v4 as uuidv4 } from "uuid"
 import type { IndicationConfig, PseudoPosition } from "./types"
-import { db } from "@/lib/database"
 import { calculateSignedResultR } from "@/lib/profit-factor"
 import { buildStopLossRatios } from "@/lib/stoploss-ratio-range"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import {
+  DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS,
+  normalizePositionCostPercent,
+} from "@/lib/position-cost"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 
 export interface IndicationResult {
   id: string
@@ -19,11 +23,18 @@ export interface IndicationResult {
 }
 
 export class IndicationEngine {
+  private readonly connectionId: string
   private marketData: Map<string, number[]> = new Map()
   private activeIndications: Map<string, IndicationResult> = new Map()
   private cachedPositionCost: number | null = null
   private lastPositionCostFetch = 0
   private readonly CACHE_TTL = 60000 // 1 minute cache
+
+  constructor(connectionId?: string) {
+    // `system` is deliberately a neutral compatibility scope, never an alias
+    // for the currently selected exchange connection.
+    this.connectionId = String(connectionId || "system").trim() || "system"
+  }
 
   private async getPositionCost(): Promise<number> {
     const now = Date.now()
@@ -32,13 +43,17 @@ export class IndicationEngine {
     }
 
     try {
-      const value = await db.getSetting("positionCost")
-      this.cachedPositionCost = value ? Number.parseFloat(value) : 0.1 // Default 10%
+      const settings: Record<string, unknown> = this.connectionId === "system"
+        ? {}
+        : await getCanonicalConnectionSettingsOverlay(this.connectionId)
+      this.cachedPositionCost = normalizePositionCostPercent(
+        settings.positionCost ?? settings.exchangePositionCost ?? settings.exchange_position_cost,
+      )
       this.lastPositionCostFetch = now
       return this.cachedPositionCost
     } catch (error) {
       console.error("[v0] Failed to get positionCost setting:", error)
-      return 0.1 // Default 10%
+      return 0.1 // Default 0.10%
     }
   }
 
@@ -174,8 +189,10 @@ export class IndicationEngine {
 
     // Systemwide stop-loss sweep: 0.25..2.5 step 0.25.
     const stopLossRatios = buildStopLossRatios()
-    // TP factors 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22 (11 values)
-    for (let tpFactor = 2; tpFactor <= 22; tpFactor += 2) {
+    // Fresh set grids start at five PositionCost multiples and use the
+    // system-wide capacity-safe stride. Existing persisted low factors stay
+    // readable; this controls only newly generated configurations.
+    for (const tpFactor of DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS) {
       for (const slRatioFixed of stopLossRatios) {
         positions.push(
           this.createPseudoPosition(symbol, direction, entryPrice, tpFactor, slRatioFixed, false, positionCost, config.type),
@@ -228,7 +245,7 @@ export class IndicationEngine {
 
     return {
       id: uuidv4(),
-      connection_id: "system",
+      connection_id: this.connectionId,
       symbol,
       direction,
       indication_type: validIndicationType,
@@ -267,7 +284,12 @@ export class IndicationEngine {
         current_price: currentPrice,
         signedResultR,
         costNormalizedReturn: signedResultR,
-        profit_factor: Math.max(0, signedResultR),
+        // Keep the legacy field signed instead of clamping losses to zero.
+        // `profit_factor` on this compatibility pseudo-row is Result-R,
+        // whose neutral point is 0; the Main-stage coordinate is generated
+        // separately by StrategyEngine when it evaluates the row.
+        profit_factor: signedResultR,
+        profit_factor_kind: "signed_result_r",
         signed_result_r: signedResultR,
         updated_at: new Date().toISOString(),
       }]

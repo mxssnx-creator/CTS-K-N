@@ -3,6 +3,11 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import type { PseudoPosition } from "@/lib/types"
+import {
+  resolvePseudoPositionNetPnl,
+  resolvePseudoPositionSignedResultR,
+} from "@/lib/profit-factor"
+import { signedResultRToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts"
 import { TrendingUp, TrendingDown, Clock, Activity } from "lucide-react"
 
@@ -58,10 +63,12 @@ export function AdjustStrategyStats({
       const blockPositions = recentPositions.slice(i, i + blockSize)
       if (blockPositions.length === 0) continue
 
-      const profitFactors = blockPositions.map((p) => p.profit_factor)
+      const profitFactors = blockPositions.map((p) =>
+        signedResultRToMainTradePfRatio(resolvePseudoPositionSignedResultR(p)),
+      )
       const avgProfitFactor = profitFactors.reduce((sum, pf) => sum + pf, 0) / profitFactors.length
       const avgProfit =
-        blockPositions.reduce((sum, p) => sum + (p.profit_factor - 1) * p.position_cost, 0) / blockPositions.length
+        blockPositions.reduce((sum, p) => sum + resolvePseudoPositionNetPnl(p), 0) / blockPositions.length
 
       blocks.push({
         blockSize,
@@ -112,7 +119,7 @@ export function AdjustStrategyStats({
 
     for (let i = 0; i < recentPositions.length; i++) {
       const position = recentPositions[i]
-      const profit = (position.profit_factor - 1) * position.position_cost
+      const profit = resolvePseudoPositionNetPnl(position)
 
       if (profit < 0) {
         if (currentDrawdownStart === -1) {

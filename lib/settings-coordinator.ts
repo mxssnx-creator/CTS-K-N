@@ -298,8 +298,20 @@ export async function notifySettingsChanged(
       ...changedFields,
     ]))
     const authoritativeConnection = await getConnection(connectionId).catch(() => null)
+    const eventId = nextSettingsEventId(connectionId)
+    // The engine owner must acknowledge the very same durable envelope that
+    // the request path marks pending in progression state.  Preserve the
+    // caller's just-committed generation metadata even when a short-lived
+    // reader sees an older connection mirror, and make the queue identity
+    // explicit in `newValues` for portable consumers.
+    const generationValues = {
+      ...compactSettingsEventValues(pending?.newValues),
+      ...compactSettingsEventValues(authoritativeConnection),
+      ...compactSettingsEventValues(newValues),
+      settings_event_id: eventId,
+    }
     const mergedEvent: SettingsChangeEvent = {
-      eventId: nextSettingsEventId(connectionId),
+      eventId,
       connectionId,
       changedFields: mergedFields,
       changeType: classifyChange(mergedFields),
@@ -308,7 +320,7 @@ export async function notifySettingsChanged(
       // not retain entire connection snapshots (especially credentials and
       // nested strategy trees) in every pending event.
       previousValues: compactSettingsEventValues(pending?.previousValues ?? previousValues),
-      newValues: compactSettingsEventValues(authoritativeConnection || newValues || pending?.newValues),
+      newValues: generationValues,
       supersedesEventId: pending?.eventId,
     }
     await setSettings(`settings_change:${connectionId}`, mergedEvent)

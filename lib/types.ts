@@ -66,6 +66,13 @@ export interface PseudoPosition {
   entry_price: number
   current_price: number
   profit_factor: number
+  /**
+   * Semantic tag for mixed historical rows.  Legacy pseudo rows use signed
+   * Result-R (neutral = 0); stage snapshots use the PositionCost coordinate
+   * (neutral = 1.00).  Consumers must not infer a PnL sign from the field
+   * name alone.
+   */
+  profit_factor_kind?: "signed_result_r" | "main_trade_pf_ratio" | "position_cost_ratio"
   signedResultR?: number
   costNormalizedReturn?: number
   signed_result_r?: number
@@ -213,7 +220,7 @@ export type AdjustmentStrategyType = AdjustStrategyType | AdditionalStrategyType
 export type AdjustmentType = AdjustmentStrategyType
 
 export interface StrategyConfig {
-  takeprofit_factor: number // 2-22
+  takeprofit_factor: number // fresh grid: 5, 10, 15, 20; legacy values readable
   stoploss_ratio: number // 0.25-2.5
   trailing_enabled: boolean
   trail_start?: number // 0.3, 0.6, 1.0
@@ -362,7 +369,7 @@ export interface SystemSettings {
   presetCountPerSymbol?: number // per symbol and indication type; default 4
   presetTpMin?: number // position-cost factor; default 3
   presetTpMax?: number // position-cost factor; default 30
-  presetTpStep?: number // default 1
+  presetTpStep?: number // default 5
   presetSlMin?: number // ratio of TP; default 0.25
   presetSlMax?: number // ratio of TP; default 2.0
   presetSlStep?: number // default 0.25

@@ -4,6 +4,10 @@ import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import type { PseudoPosition } from "@/lib/types"
+import {
+  resolvePseudoPositionNetPnl,
+  resolvePseudoPositionSignedResultR,
+} from "@/lib/profit-factor"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts"
 import { TrendingUp, TrendingDown, Activity, CheckCircle2, XCircle } from "lucide-react"
 
@@ -73,7 +77,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
           withoutAdjustment.push(...block)
         } else {
           const prevBlock = blocks[index - 1]
-          const prevBlockProfit = prevBlock.reduce((sum, p) => sum + (p.profit_factor - 1) * p.position_cost, 0)
+          const prevBlockProfit = prevBlock.reduce((sum, p) => sum + resolvePseudoPositionNetPnl(p), 0)
 
           if (prevBlockProfit < 0) {
             // Previous block was negative, so this block would have adjustment
@@ -88,13 +92,13 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
       const withStats = {
         avgPnL:
           withAdjustment.length > 0
-            ? withAdjustment.reduce((sum, p) => sum + (p.profit_factor - 1) * p.position_cost, 0) /
+            ? withAdjustment.reduce((sum, p) => sum + resolvePseudoPositionNetPnl(p), 0) /
               withAdjustment.length
             : 0,
         positionCount: withAdjustment.length,
         winRate:
           withAdjustment.length > 0
-            ? withAdjustment.filter((p) => p.profit_factor > 1).length / withAdjustment.length
+            ? withAdjustment.filter((p) => resolvePseudoPositionSignedResultR(p) > 0).length / withAdjustment.length
             : 0,
       }
 
@@ -102,13 +106,13 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
       const withoutStats = {
         avgPnL:
           withoutAdjustment.length > 0
-            ? withoutAdjustment.reduce((sum, p) => sum + (p.profit_factor - 1) * p.position_cost, 0) /
+            ? withoutAdjustment.reduce((sum, p) => sum + resolvePseudoPositionNetPnl(p), 0) /
               withoutAdjustment.length
             : 0,
         positionCount: withoutAdjustment.length,
         winRate:
           withoutAdjustment.length > 0
-            ? withoutAdjustment.filter((p) => p.profit_factor > 1).length / withoutAdjustment.length
+            ? withoutAdjustment.filter((p) => resolvePseudoPositionSignedResultR(p) > 0).length / withoutAdjustment.length
             : 0,
       }
 

@@ -3,6 +3,7 @@ import { PseudoPositionManager } from "@/lib/trade-engine/pseudo-position-manage
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { normalizeTradeDirection, resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
 
 /**
  * Live Positions API
@@ -51,13 +52,16 @@ function generateMockPositions(connectionId: string, count: number = 25): Positi
     const currentPrice = entryPrice * (1 + (Math.random() - 0.5) * 0.05)
     const quantity = 0.1 + Math.random() * 1
     const leverage = Math.floor(1 + Math.random() * 20)
-    const pnl = (currentPrice - entryPrice) * quantity * leverage
-    const pnlPercent = ((currentPrice - entryPrice) / entryPrice) * 100
+    const side: "LONG" | "SHORT" = Math.random() > 0.5 ? "LONG" : "SHORT"
+    // Quote-currency PnL is quantity × price difference. Leverage changes
+    // margin/ROI, never the quote-currency PnL itself.
+    const pnl = (side === "LONG" ? currentPrice - entryPrice : entryPrice - currentPrice) * quantity
+    const pnlPercent = entryPrice * quantity > 0 ? (pnl / (entryPrice * quantity)) * 100 : 0
 
     return {
       id: `pos-${connectionId}-${i}`,
       symbol,
-      side: Math.random() > 0.5 ? "LONG" : "SHORT",
+      side,
       entryPrice,
       currentPrice,
       quantity,
@@ -98,16 +102,9 @@ function normalise(raw: Record<string, any>): Position | null {
   // at close time); recompute mark-to-market for open rows. This matches
   // what `getPositionStats` does so dashboards stay consistent.
   const status = raw.status || "open"
-  let unrealizedPnl: number
-  if (status === "closed" && raw.realized_pnl != null) {
-    const stored = parseFloat(raw.realized_pnl)
-    unrealizedPnl = Number.isFinite(stored) ? stored : 0
-  } else {
-    unrealizedPnl =
-      side === "LONG"
-        ? (currentPrice - entryPrice) * quantity
-        : (entryPrice - currentPrice) * quantity
-  }
+  const unrealizedPnl = status === "closed"
+    ? resolveRealizedPnl(raw) ?? 0
+    : resolveUnrealizedPnl(raw) ?? 0
   const unrealizedPnlPercent = notional > 0 ? (unrealizedPnl / notional) * 100 : 0
 
   const tpPrice = parseFloat(raw.takeprofit_price || raw.take_profit || "0")
@@ -209,12 +206,9 @@ function normaliseLivePosition(raw: Record<string, any>): Position | null {
   const side: "LONG" | "SHORT" = direction === "short" ? "SHORT" : "LONG"
   const status = String(raw.status || "open")
 
-  let unrealizedPnl: number
-  if (status === "closed" && raw.realizedPnl != null) {
-    unrealizedPnl = parseFloat(raw.realizedPnl)
-  } else {
-    unrealizedPnl = side === "LONG" ? (currentPrice - entryPrice) * quantity : (entryPrice - currentPrice) * quantity
-  }
+  const unrealizedPnl = status === "closed"
+    ? resolveRealizedPnl(raw) ?? 0
+    : resolveUnrealizedPnl(raw) ?? 0
   const unrealizedPnlPercent = notional > 0 ? (unrealizedPnl / notional) * 100 : 0
 
   const tpPrice = parseFloat(raw.takeProfitPrice || raw.takeprofit_price || raw.take_profit || "0")

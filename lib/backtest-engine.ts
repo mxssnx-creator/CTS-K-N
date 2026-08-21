@@ -3,11 +3,14 @@
  * Evaluates preset strategies using historical data with profit factor and drawdown metrics
  */
 
-import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { getSettings, setSettings } from "@/lib/redis-db"
 import { sql } from "@/lib/db"
 import { calculateSignedResultR } from "@/lib/profit-factor"
-import { normalizePositionCostPercent } from "@/lib/position-cost"
+import {
+  normalizePositionCostPercent,
+  stopLossPositionCostRatioToPercent,
+  takeProfitPositionCostRatioToPercent,
+} from "@/lib/position-cost"
 
 interface BacktestTrade {
   symbol: string
@@ -22,6 +25,7 @@ interface BacktestTrade {
   signedResultR: number
   profit_factor: number
   signed_result_r: number
+  profit_factor_kind: "signed_result_r"
   strategy_config: any
 }
 
@@ -271,8 +275,22 @@ export class BacktestEngine {
     const avgPrice = recentPrices.reduce((sum, p) => sum + p, 0) / recentPrices.length
     const priceChange = (currentPrice - avgPrice) / avgPrice
 
-    // Random entry with 5% probability (for simulation)
-    return Math.abs(priceChange) > 0.01 && Math.random() < 0.05
+    // A historical test must be reproducible: sampling entries with
+    // Math.random made the same candles produce a different PF, drawdown and
+    // valid-set count every run.  The momentum threshold itself is the entry
+    // rule, while the loop's timeout skip bounds resulting work.
+    return Math.abs(priceChange) > 0.01
+  }
+
+  private inferEntrySide(marketData: any[], entryIndex: number): "long" | "short" {
+    const current = Number(marketData[entryIndex]?.price)
+    const previous = Number(marketData[Math.max(0, entryIndex - 1)]?.price)
+    // An up-momentum signal enters long and a down-momentum signal enters
+    // short. Equal/invalid samples use long deterministically rather than a
+    // random coin flip.
+    return Number.isFinite(current) && Number.isFinite(previous) && current < previous
+      ? "short"
+      : "long"
   }
 
   /**
@@ -281,15 +299,26 @@ export class BacktestEngine {
   private simulateTrade(symbol: string, marketData: any[], entryIndex: number, strategy: any): BacktestTrade | null {
     const entryPrice = marketData[entryIndex].price
     const entryTime = new Date(marketData[entryIndex].timestamp)
-    const side: "long" | "short" = Math.random() > 0.5 ? "long" : "short"
+    const side = this.inferEntrySide(marketData, entryIndex)
+    const positionCostPct = this.getPositionCostPct(strategy)
 
-    // Calculate TP and SL prices
+    // Config-set TP/SL values are PositionCost-relative axes.  Do not treat a
+    // fresh factor of 5 as a literal 5% move: at the default 0.10% cost it is
+    // a 0.50% gross TP and its configured SL is scaled from the same basis.
+    const takeProfitPercent = takeProfitPositionCostRatioToPercent(
+      positionCostPct,
+      strategy.takeprofit_factor,
+    )
     const tpPrice =
       side === "long"
-        ? entryPrice * (1 + (strategy.takeprofit_factor * 0.001) / 0.1) // TP in relation to 0.1% position cost
-        : entryPrice * (1 - (strategy.takeprofit_factor * 0.001) / 0.1)
+        ? entryPrice * (1 + takeProfitPercent / 100)
+        : entryPrice * (1 - takeProfitPercent / 100)
 
-    const stopLossPercent = resolveStopLossPercent(strategy.takeprofit_factor, strategy.stoploss_ratio)
+    const stopLossPercent = stopLossPositionCostRatioToPercent(
+      positionCostPct,
+      strategy.takeprofit_factor,
+      strategy.stoploss_ratio,
+    )
     const slPrice =
       side === "long"
         ? entryPrice * (1 - stopLossPercent / 100)
@@ -364,7 +393,6 @@ export class BacktestEngine {
     // Calculate a closed, net result.  Position cost is deducted exactly once
     // before every PF/DDT/Sharpe input; the gross number remains auditable.
     const grossProfitLoss = side === "long" ? exitPrice - entryPrice : entryPrice - exitPrice
-    const positionCostPct = this.getPositionCostPct(strategy)
     const positionCost = entryPrice * (positionCostPct / 100)
     const profitLoss = grossProfitLoss - positionCost
     const signedResultR = calculateSignedResultR(entryPrice, exitPrice, side, positionCostPct)
@@ -380,8 +408,11 @@ export class BacktestEngine {
       gross_profit_loss: grossProfitLoss,
       position_cost: positionCost,
       signedResultR,
-      profit_factor: Math.max(0, signedResultR),
+      // Compatibility field intentionally remains signed Result-R. Clamping
+      // below-zero values erased losses and falsely reported them as neutral.
+      profit_factor: signedResultR,
       signed_result_r: signedResultR,
+      profit_factor_kind: "signed_result_r",
       strategy_config: strategy,
     }
   }
@@ -404,11 +435,13 @@ export class BacktestEngine {
   private calculateMetrics(trades: BacktestTrade[]) {
     const totalTrades = trades.length
     const winningTrades = trades.filter((t) => t.profit_loss > 0).length
-    const losingTrades = trades.filter((t) => t.profit_loss <= 0).length
-    const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0
+    const losingTrades = trades.filter((t) => t.profit_loss < 0).length
+    const flatTrades = totalTrades - winningTrades - losingTrades
+    const decidedTrades = winningTrades + losingTrades
+    const winRate = decidedTrades > 0 ? (winningTrades / decidedTrades) * 100 : 0
 
     const totalProfit = trades.filter((t) => t.signedResultR > 0).reduce((sum, t) => sum + t.signedResultR, 0)
-    const totalLoss = Math.abs(trades.filter((t) => t.signedResultR <= 0).reduce((sum, t) => sum + t.signedResultR, 0))
+    const totalLoss = Math.abs(trades.filter((t) => t.signedResultR < 0).reduce((sum, t) => sum + t.signedResultR, 0))
     const netProfit = totalProfit - totalLoss
     
     // Both positive and negative R results are already net of one close cost;
@@ -432,8 +465,12 @@ export class BacktestEngine {
 
     // Calculate Sharpe and Sortino ratios
     const returns = trades.map((t) => t.signedResultR)
-    const avgReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length
-    const stdDev = Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length)
+    const avgReturn = returns.length > 0
+      ? returns.reduce((sum, r) => sum + r, 0) / returns.length
+      : 0
+    const stdDev = returns.length > 0
+      ? Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length)
+      : 0
     const sharpeRatio = stdDev > 0 ? avgReturn / stdDev : 0
 
     const negativeReturns = returns.filter((r) => r < 0)
@@ -447,6 +484,7 @@ export class BacktestEngine {
       totalTrades,
       winningTrades,
       losingTrades,
+      flatTrades,
       winRate,
       totalProfit,
       totalLoss,
@@ -474,15 +512,18 @@ export class BacktestEngine {
 
     let cumulativePnL = 0
     let peak = 0
+    let cumulativeRiskBudget = 0
     let maxDrawdown = 0
     let currentDrawdownStart: Date | null = null
     let maxDrawdownDuration = 0
     const drawdownPeriods: DrawdownPeriod[] = []
+    let activeDrawdownMax = 0
 
     for (const trade of sortedTrades) {
       cumulativePnL += trade.profit_loss
+      cumulativeRiskBudget += Math.max(Math.abs(trade.position_cost), Number.EPSILON)
 
-      if (cumulativePnL > peak) {
+      if (cumulativePnL >= peak) {
         // New peak - end any current drawdown
         if (currentDrawdownStart) {
           const duration = (trade.exit_time.getTime() - currentDrawdownStart.getTime()) / (1000 * 60 * 60)
@@ -490,9 +531,10 @@ export class BacktestEngine {
             start: currentDrawdownStart,
             end: trade.exit_time,
             duration_hours: duration,
-            max_drawdown_percent: ((peak - cumulativePnL) / peak) * 100,
+            max_drawdown_percent: activeDrawdownMax,
           })
           currentDrawdownStart = null
+          activeDrawdownMax = 0
         }
         peak = cumulativePnL
       } else if (cumulativePnL < peak) {
@@ -501,11 +543,26 @@ export class BacktestEngine {
           currentDrawdownStart = trade.exit_time
         }
 
-        const currentDrawdown = ((peak - cumulativePnL) / peak) * 100
+        // A backtest begins at zero equity. Divide early drawdowns by the
+        // accumulated PositionCost budget rather than zero so the metric is
+        // finite and remains interpretable in cost units.
+        const denominator = Math.max(Math.abs(peak), cumulativeRiskBudget, Number.EPSILON)
+        const currentDrawdown = ((peak - cumulativePnL) / denominator) * 100
         if (currentDrawdown > maxDrawdown) {
           maxDrawdown = currentDrawdown
         }
+        activeDrawdownMax = Math.max(activeDrawdownMax, currentDrawdown)
       }
+    }
+
+    if (currentDrawdownStart && sortedTrades.length > 0) {
+      const end = sortedTrades[sortedTrades.length - 1].exit_time
+      drawdownPeriods.push({
+        start: currentDrawdownStart,
+        end,
+        duration_hours: Math.max(0, (end.getTime() - currentDrawdownStart.getTime()) / (1000 * 60 * 60)),
+        max_drawdown_percent: activeDrawdownMax,
+      })
     }
 
     // Calculate max drawdown duration
