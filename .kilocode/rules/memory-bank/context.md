@@ -1494,3 +1494,50 @@ credentials are present.
   `docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.{md,json}`. The full raw log
   remains in `/workspace/CTS-K-N-runtime/logs/`. No source archive may be
   uploaded to Drive without the exact phrase `Drive-Quellarchiv freigegeben`.
+
+## Session 2026-08-21 — systemwide PF, progression, live-order and connection audit
+
+- [x] Working branch `agent/systemwide-live-audit-20260821` was reconciled
+  against `origin/main@a0f81d3`. The systemwide implementation checkpoint is
+  `03daf5b`; the immediately following release-metadata normalization keeps
+  `next-env.d.ts` on the canonical `.next` route-type reference and removes the
+  temporary `.next-prod` type universe from `tsconfig.json`.
+- [x] Fixed and regression-tested: logical-versus-raw valid-set accounting,
+  stale historic-generation handling, event-correlated settings recoordination,
+  connection-scoped positions/PnL/settings/statistics, cost-subtracted
+  strategy results, live PnL zero preservation, and the canonical Main/Live
+  PositionCost coordinate (`1.00` neutral; `1.10`/`1.20` add one/two net
+  PositionCost steps). New TP grids begin at `5, 10, 15, 20 × PositionCost`;
+  the exact canonical SL grid is `0.25..2.5` in `0.25` steps. User-facing
+  wording uses Positions/Pos; retained `pi_*` keys are explicit legacy
+  persistence compatibility only.
+- [x] Live-order contracts cover per-connection cooldown/FIFO behavior,
+  collision-resistant durable client IDs, Margin → Leverage → Entry ordering,
+  fail-closed preflight errors, authoritative-fill-only price/quantity
+  accounting, and fill-sized SL/TP protection. The Direct-Trade paper live
+  lifecycle expanded a sparse 48-hour history only to the bounded 90-hour
+  limit and remained healthy with zero exchange orders.
+- [x] Current local gates: 197/197 Jest suites and 1,274/1,274 tests;
+  TypeScript, ESLint, source-syntax, 1,451-file credential scan (zero
+  findings), recreation-manifest verification (1,443 files), and 37/37 Kilo
+  deployment-preflight checks. The final Next 15 production build rendered
+  42 pages and validated 347 trace files. Its forced-paper 32-symbol UI run
+  passed all 47 surfaces, X01/X02 isolation, settings hot reload, Main
+  pause/resume/stop/start, and relation integrity, with zero real positions
+  and zero exchange orders. This does not weaken or supersede the failed
+  2026-08-20 long-duration 32-symbol API-p95 acceptance gate.
+- [x] `docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.{md,json,checksums.sha256}`
+  records the source-safe audit evidence. Recreation manifests were
+  regenerated after the implementation changes.
+- [ ] Remote host deployment remains blocked before any `/opt` change: the
+  supplied `xssnetlnx-cts-kex.txt` has an OpenSSH header but fails local
+  `ssh-keygen -y` parsing with `error in libcrypto`. The supplied CA public key
+  is valid, but it cannot replace a usable private key. No SSH connection,
+  reinstall, restart or remote mutation was attempted. Await a complete,
+  parseable key (and its passphrase if encrypted) plus a reachable host route.
+- [ ] Authenticated BingX X02 Prod-VST was safely preflighted but blocked
+  before network access because this checkout has no `.env` and no
+  `BINGX_X02_API_KEY`/`BINGX_X02_API_SECRET`. It made zero network requests and
+  zero orders. Keep credentials only in ignored mode-0600 `.env`; never commit
+  them. A real virtual-funds cycle may run only after that credential gate
+  passes; Mainnet remains out of scope.
