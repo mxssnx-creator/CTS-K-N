@@ -48,6 +48,16 @@ scheduler and local Redis service; preserve CTS-owned state outside the target;
 delete the exact target directory; clone the requested revision; then run the
 complete installation, migration, build, restart and continuity contract.
 
+For an owner/debug deployment that must run the complete app without any real
+exchange order path, use explicit safe simulation. It forces paper connectors,
+disables live-order placement even when preserved credentials exist, and does
+not require exchange credentials:
+
+```bash
+sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn \
+  --runtime auto --service-user cts-kn --safe-simulation
+```
+
 Pass canonical installer options after `--`, for example `-- --skip-tests`.
 Pass bootstrap options, including `--seed-env-file /root/cts-kn.seed.env`,
 before `--` so a seed located inside the old target can be preserved before

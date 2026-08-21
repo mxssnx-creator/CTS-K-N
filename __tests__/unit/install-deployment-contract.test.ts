@@ -55,6 +55,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('PNPM_VERSION="10.28.1"')
     expect(installer).toContain('DEFAULT_PROJECT_NAME="cts-kn"')
     expect(installer).toContain("--reinstall")
+    expect(installer).toContain("--safe-simulation")
+    expect(installer).toContain("SAFE_SIMULATION=0")
     expect(installer).toContain("ensure_python_pip_and_bun")
     expect(installer).toContain('local pnpm_version=""')
     expect(installer).toContain('pnpm_version="$(pnpm --version 2>/dev/null || true)"')
@@ -95,6 +97,12 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("upsert_env FORCE_SIMULATED 0")
     expect(installer).toContain("upsert_env ALLOW_LIVE_ORDER_PLACEMENT 1")
     expect(installer).toContain("upsert_env CTS_REQUIRE_LIVE_TRADE_READY 1")
+    expect(installer).toContain("upsert_env FORCE_SIMULATED 1")
+    expect(installer).toContain("upsert_env FORCE_LIVE 0")
+    expect(installer).toContain("upsert_env ALLOW_PROD_SIMULATED 1")
+    expect(installer).toContain("upsert_env ALLOW_LIVE_ORDER_PLACEMENT 0")
+    expect(installer).toContain("upsert_env CTS_REQUIRE_LIVE_TRADE_READY 0")
+    expect(installer).toContain("Safe simulation mode is active")
     expect(installer).toContain('upsert_env BINGX_ENVIRONMENT "$bingx_environment"')
     expect(installer).toContain('bingx_environment="prod-vst"')
     expect(installer).toContain('upsert_env BINGX_PUBLIC_ORIGIN "https://open-api-vst.bingx.com"')
@@ -116,6 +124,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(bootstrap).toContain('pm2 pid "$pm2_name"')
     expect(bootstrap).toContain("while PM2 process $pm2_name is still active")
     expect(bootstrap).toContain("--resolve-only")
+    expect(bootstrap).toContain("--safe-simulation")
     expect(bootstrap).toContain("cts-state")
     expect(bootstrap).toContain("Saved persistent CTS state outside the target directory")
     expect(bootstrap).toContain("resume_preserved_state_after_failed_clean_install")
@@ -281,10 +290,12 @@ describe("production installation and Kilo deployment contract", () => {
         "--port", "3002",
         "--runtime", "systemd",
         "--service-user", "root",
+        "--safe-simulation",
       ], { cwd: target, env, encoding: "utf8", stdio: "pipe" })
 
       expect(await readFile(capture, "utf8")).not.toBe(`${target}\n`)
       await expect(readFile(path.join(target, "scripts", "install.sh"), "utf8")).resolves.toContain("CTS_INSTALLED_RUNTIME")
+      await expect(readFile(installArgs, "utf8")).resolves.toContain("--safe-simulation\n")
 
       // This is the exact recovery state left by a clone failure: the old
       // checkout is gone, but its persistent data was safely archived beside
