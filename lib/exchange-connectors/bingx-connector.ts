@@ -79,6 +79,8 @@ export class BingXConnector extends BaseExchangeConnector {
   private static bingxCooldownWait: Promise<void> | null = null
   private static bingxCallTail: Promise<void> = Promise.resolve()
   private static lastCooldownLogAt = 0
+  private static readonly openOrdersSnapshotTtlMs = 15_000
+  private static readonly openOrdersSnapshotCache = new Map<string, { orders: any[]; at: number }>()
 
   private lastOperationTransport = new Map<string, {
     transport: "bingx-api" | "signed-rest-fallback"
@@ -1720,7 +1722,10 @@ export class BingXConnector extends BaseExchangeConnector {
     BingXConnector.bingxCallTail = new Promise<void>((resolve) => { release = resolve })
     await previous
 
-    if (BingXConnector.bingxRateLimitUntil > Date.now()) {
+    // Recheck after waiting for the FIFO predecessor. A predecessor can trip
+    // the circuit breaker after this caller's initial check, so never let a
+    // queued request bypass a newly-established cooldown.
+    while (BingXConnector.bingxRateLimitUntil > Date.now()) {
       const waitMs = BingXConnector.bingxRateLimitUntil - Date.now()
       if (!BingXConnector.bingxCooldownWait) {
         const delayMs = waitMs + 2_000
@@ -1873,7 +1878,23 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   async getOpenOrders(symbol?: string): Promise<any[]> {
-    this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
+    const cacheKey = symbol ? this.toBingXSymbol(symbol) : "__all__"
+    const cached = BingXConnector.openOrdersSnapshotCache.get(cacheKey)
+    const now = Date.now()
+    if (cached && now - cached.at < BingXConnector.openOrdersSnapshotTtlMs) {
+      this.lastOpenOrdersSnapshotStatus = { ok: true, at: cached.at, error: "cache" }
+      return cached.orders.map((order) => ({ ...order }))
+    }
+
+    // Do not wake another signed request while the shared BingX circuit breaker
+    // is active. Preserve the last authoritative snapshot when available; an
+    // empty fallback is retained for the existing connector contract.
+    if (BingXConnector.bingxRateLimitUntil > now) {
+      this.lastOpenOrdersSnapshotStatus = { ok: false, at: now, error: "rate_limit_cooldown" }
+      return cached ? cached.orders.map((order) => ({ ...order })) : []
+    }
+
+    this.lastOpenOrdersSnapshotStatus = { ok: false, at: now, error: "request_in_progress" }
     return this.bingxRateLimitedCall("getOpenOrders", async () => {
       // Sync server time before any signed request
       await this.syncServerTime()
@@ -1914,7 +1935,12 @@ export class BingXConnector extends BaseExchangeConnector {
       // Swap openOrders returns { orders: [...] }; spot returns an array directly.
       const rows = data.data?.orders || data.data
       const orders = Array.isArray(rows) ? rows : []
-      this.lastOpenOrdersSnapshotStatus = { ok: true, at: Date.now(), error: "" }
+      const snapshotAt = Date.now()
+      BingXConnector.openOrdersSnapshotCache.set(cacheKey, {
+        orders: orders.map((order) => ({ ...order })),
+        at: snapshotAt,
+      })
+      this.lastOpenOrdersSnapshotStatus = { ok: true, at: snapshotAt, error: "" }
       return orders
     }).catch((error) => {
       const errorMsg = error instanceof Error ? error.message : String(error)
@@ -3703,6 +3729,14 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId?: string,
     clientOrderId?: string
   ): Promise<{ success: boolean; order?: any; error?: string }> {
+    const now = Date.now()
+    if (BingXConnector.bingxRateLimitUntil > now) {
+      return {
+        success: false,
+        error: `BingX private API cooldown active until ${new Date(BingXConnector.bingxRateLimitUntil).toISOString()}`,
+      }
+    }
+
     try {
       const result = await this.bingxRateLimitedCall("getOrderDetails", async () => {
         const params: Record<string, any> = {
