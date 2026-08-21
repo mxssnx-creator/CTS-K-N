@@ -3726,6 +3726,14 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId?: string,
     clientOrderId?: string
   ): Promise<{ success: boolean; order?: any; error?: string }> {
+    const now = Date.now()
+    if (BingXConnector.bingxRateLimitUntil > now) {
+      return {
+        success: false,
+        error: `BingX private API cooldown active until ${new Date(BingXConnector.bingxRateLimitUntil).toISOString()}`,
+      }
+    }
+
     try {
       const result = await this.bingxRateLimitedCall("getOrderDetails", async () => {
         const params: Record<string, any> = {
