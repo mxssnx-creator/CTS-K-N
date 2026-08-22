@@ -93,6 +93,7 @@ interface ProgressionData {
       completed: number
       total: number
       failed: number
+      progressPercent: number
       currentSymbol: string
       currentStage: string
       lastActivityAt: string | null
@@ -856,6 +857,7 @@ export function ActiveConnectionCard({
                     completed: Number(h.configWork?.completed) || 0,
                     total: Number(h.configWork?.total) || 0,
                     failed: Number(h.configWork?.failed) || 0,
+                    progressPercent: Number(h.configWork?.progressPercent) || 0,
                     currentSymbol: String(h.configWork?.currentSymbol || ""),
                     currentStage: String(h.configWork?.currentStage || ""),
                     lastActivityAt: h.configWork?.lastActivityAt ? String(h.configWork.lastActivityAt) : null,
@@ -2752,6 +2754,17 @@ export function ActiveConnectionCard({
                       const configWorkCompleted = configWork?.completed ?? 0
                       const configWorkTotal = configWork?.total ?? 0
                       const configWorkFailed = configWork?.failed ?? 0
+                      const configWorkPercent = Math.max(
+                        0,
+                        Math.min(
+                          100,
+                          Number.isFinite(Number(configWork?.progressPercent))
+                            ? Math.round(Number(configWork?.progressPercent))
+                            : configWorkTotal > 0
+                              ? Math.round((configWorkCompleted / configWorkTotal) * 100)
+                              : 0,
+                        ),
+                      )
                       const currentSymbol = pp?.currentSymbol || configWork?.currentSymbol || prehistoricStats?.currentSymbol || ""
                       const hasData =
                         Boolean(pp) ||
@@ -2799,7 +2812,7 @@ export function ActiveConnectionCard({
                             >
                               <span className="text-muted-foreground">Config work</span>
                               <span className="font-medium tabular-nums">
-                                {formatK(configWorkCompleted)}/{formatK(configWorkTotal)}
+                                {formatK(configWorkCompleted)}/{formatK(configWorkTotal)} ({configWorkPercent}%)
                               </span>
                               {configWorkFailed > 0 && (
                                 <span className="text-destructive tabular-nums" title="Calculation groups that completed with an error; historic entry processing stays gated.">

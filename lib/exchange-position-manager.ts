@@ -105,6 +105,11 @@ export class ExchangePositionManager {
         exchange_order_id: params.exchangeOrderId || null,
         symbol: params.symbol,
         side: params.side,
+        // Keep an explicit direction mirror for legacy readers. Newer code
+        // should prefer `side`, but older tracking rows historically read
+        // `direction` during trailing calculations; persisting both makes the
+        // long/short contract restart-safe and backward compatible.
+        direction: params.side,
         entry_price: params.entryPrice,
         current_price: params.entryPrice,
         quantity: finalQuantity,
@@ -204,11 +209,13 @@ export class ExchangePositionManager {
 
       let trailActivated = position.trail_activated
       let trailHighPrice = position.trail_high_price
+      let trailStopPrice = Number(position.trail_stop_price)
+      const isShort = position.direction === "short" || position.side === "short"
 
       if (position.trailing_enabled && !trailActivated) {
         // For shorts, price DROP is profitable — invert the direction
         // so trail_start correctly gates at a positive percentage.
-        const priceDelta = position.direction === "short"
+        const priceDelta = isShort
           ? (position.entry_price - updates.currentPrice)
           : (updates.currentPrice - position.entry_price)
         const profitPercent = (priceDelta / position.entry_price) * 100
@@ -221,11 +228,29 @@ export class ExchangePositionManager {
       if (trailActivated) {
         // Trail-high: tracks the most-favourable price since activation.
         // For longs, that's the HIGHEST price; for shorts, the LOWEST.
-        const isFavourable = position.direction === "short"
+        const isFavourable = isShort
           ? updates.currentPrice < (trailHighPrice || Infinity)
           : updates.currentPrice > (trailHighPrice || -Infinity)
         if (isFavourable) {
           trailHighPrice = updates.currentPrice
+        }
+
+        // This manager is a persistent exchange-history/read-model mirror;
+        // record the actual current trailing trigger as well as its
+        // high/low-water anchor so a UI reload or process restart can show a
+        // correct, monotonic trailing state. The live-stage owns venue order
+        // enforcement; this field is intentionally tracking-only.
+        const trailDistancePct = Number(position.trail_stop)
+        const anchor = Number(trailHighPrice)
+        if (Number.isFinite(trailDistancePct) && trailDistancePct > 0 && Number.isFinite(anchor) && anchor > 0) {
+          const candidate = isShort
+            ? anchor * (1 + trailDistancePct / 100)
+            : anchor * (1 - trailDistancePct / 100)
+          if (Number.isFinite(candidate) && candidate > 0) {
+            trailStopPrice = Number.isFinite(trailStopPrice) && trailStopPrice > 0
+              ? isShort ? Math.min(trailStopPrice, candidate) : Math.max(trailStopPrice, candidate)
+              : candidate
+          }
         }
       }
 
@@ -243,6 +268,7 @@ export class ExchangePositionManager {
         price_low: priceLow,
         trail_activated: trailActivated,
         trail_high_price: trailHighPrice,
+        trail_stop_price: Number.isFinite(trailStopPrice) && trailStopPrice > 0 ? trailStopPrice : null,
         last_updated_at: new Date().toISOString(),
         last_sync_at: new Date().toISOString(),
         sync_status: "synced",

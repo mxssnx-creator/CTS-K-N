@@ -1077,6 +1077,52 @@ describe("historic runtime generation stability", () => {
     }
   })
 
+  test("compact aggregate members preserve exact-once counts and migrate an older full-key member", async () => {
+    const connectionId = `historic-compact-marker-${Date.now()}`
+    const markerKey = `historic:aggregate-marker:${connectionId}:strategy:cfg:with:colon:epoch-1:BTCUSDT`
+    const aggregateKey = `historic:aggregate:${connectionId}:strategies:epoch-1`
+    const markerCollectionKey = historicAggregateMarkerCollectionKey(aggregateKey)
+    const compactMember = JSON.stringify(["cfg:with:colon", "BTCUSDT"])
+    const client = getRedisClient()
+    try {
+      await client.del(markerKey, markerCollectionKey, aggregateKey)
+      await expect(incrementHistoricAggregateOnce(
+        client as any,
+        markerKey,
+        aggregateKey,
+        [{ field: "position_count", value: 3 }],
+        3600,
+        compactMember,
+      )).resolves.toBe(true)
+      await expect(incrementHistoricAggregateOnce(
+        client as any,
+        markerKey,
+        aggregateKey,
+        [{ field: "position_count", value: 3 }],
+        3600,
+        compactMember,
+      )).resolves.toBe(false)
+      await expect(client.smembers(markerCollectionKey)).resolves.toEqual([compactMember])
+
+      await client.del(markerCollectionKey, aggregateKey)
+      await client.sadd(markerCollectionKey, markerKey)
+      await expect(incrementHistoricAggregateOnce(
+        client as any,
+        markerKey,
+        aggregateKey,
+        [{ field: "position_count", value: 3 }],
+        3600,
+        compactMember,
+      )).resolves.toBe(false)
+      await expect(client.hgetall(aggregateKey)).resolves.toEqual({})
+      await expect(client.smembers(markerCollectionKey)).resolves.toEqual(
+        expect.arrayContaining([markerKey, compactMember]),
+      )
+    } finally {
+      await client.del(markerKey, markerCollectionKey, aggregateKey)
+    }
+  })
+
   test("superseded and failed historic runs stay gated and retry real work", () => {
     const manager = source("lib/trade-engine/engine-manager.ts")
     const processor = source("lib/trade-engine/config-set-processor.ts")

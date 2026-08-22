@@ -95,6 +95,83 @@ describe("executing Live-stage control barriers", () => {
     }))).toEqual({ desiredSl: 101, desiredTp: 103 })
   })
 
+  test("keeps explicit sub-one-percent pseudo protection values in percent units", () => {
+    expect(__liveStageTest.resolvePseudoProtectionPercents({
+      protection_coordinate: "absolute_pct",
+      stoploss_pct: "0.8",
+      takeprofit_pct: "0.5",
+      // Legacy fields deliberately repeat the same sub-one-percent values.
+      // They are percent values for current pseudo rows, not 80% / 50% ratios.
+      stoploss_ratio: "0.8",
+      takeprofit_factor: "0.5",
+    })).toEqual({ slPct: 0.8, tpPct: 0.5 })
+
+    expect(__liveStageTest.resolvePseudoProtectionPercents({
+      protection_coordinate: "position_cost_ratio",
+      position_cost_pct: "0.1",
+      takeprofit_factor: "5",
+      stoploss_ratio: "0.5",
+    })).toEqual({ slPct: 0.25, tpPct: 0.5 })
+
+    // Legacy rows without explicit coordinate fields retain their documented
+    // decimal-ratio interpretation for compatibility.
+    expect(__liveStageTest.resolvePseudoProtectionPercents({
+      stoploss_ratio: "0.02",
+      takeprofit_factor: "0.05",
+    })).toEqual({ slPct: 2, tpPct: 5 })
+  })
+
+  test("rejects delayed trailing updates that would loosen exchange protection", () => {
+    expect(__liveStageTest.isTrailingStopTightening(
+      livePosition({ direction: "long", trailingStopPrice: 101 }),
+      100.5,
+    )).toBe(false)
+    expect(__liveStageTest.isTrailingStopTightening(
+      livePosition({ direction: "long", trailingStopPrice: 101 }),
+      101.5,
+    )).toBe(true)
+    expect(__liveStageTest.isTrailingStopTightening(
+      livePosition({ direction: "short", trailingStopPrice: 99 }),
+      99.5,
+    )).toBe(false)
+    expect(__liveStageTest.isTrailingStopTightening(
+      livePosition({ direction: "short", trailingStopPrice: 99 }),
+      98.5,
+    )).toBe(true)
+  })
+
+  test("keeps a just-armed trailing stop in place until its re-arm cooldown expires", async () => {
+    const position = livePosition({
+      stopLoss: 5,
+      trailingActive: true,
+      trailingStopPrice: 99,
+      stopLossPrice: 98,
+      stopLossLastArmedAt: Date.now(),
+      protectionArmedQuantity: 1,
+      exchangeData: { markPrice: 100 },
+    })
+    const exchange = connector({
+      placeStopOrder: jest.fn(async () => ({ success: true, orderId: "replacement-sl" })),
+    })
+
+    await expect(
+      __liveStageTest.updateProtectionOrders(
+        exchange,
+        position,
+        "trailing_ratchet",
+        new Set(["sl-1"]),
+      ),
+    ).resolves.toMatchObject({ changed: false, slPlaced: false })
+
+    // Cancelling before the 200 ms trailing cooldown then declining to place
+    // a replacement leaves an exchange position briefly unprotected. A recent
+    // ratchet must therefore retain the currently armed stop unchanged.
+    expect(exchange.cancelOrder).not.toHaveBeenCalled()
+    expect(exchange.placeStopOrder).not.toHaveBeenCalled()
+    expect(position.stopLossOrderId).toBe("sl-1")
+    expect(position.stopLossPrice).toBe(98)
+  })
+
   test("gives every Base-parent Pos-Count row its own direction-preserving slot", () => {
     const longA = __liveStageTest.liveExecutionSlot({
       combinedPosCounts: true,

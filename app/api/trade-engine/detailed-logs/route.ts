@@ -499,10 +499,19 @@ export async function GET(request: Request) {
         const historicProgressAt = Math.max(
           toEpochMs(prehistoricHash.updated_at),
           toEpochMs(prehistoricHash.last_processed_at),
+          toEpochMs(prehistoricHash.config_work_last_activity_at),
+          toEpochMs(prehistoricHash.config_work_last_activity_ms),
+          toEpochMs(progHash.prehistoric_config_work_last_activity_at),
           toEpochMs((state as any).prehistoric_last_processed_at),
           toEpochMs((state as any).prehistoric_bootstrap_started_at),
           toEpochMs((state as any).prehistoric_recoordination_requested_at),
           toEpochMs((state as any).prehistoric_bootstrap_failed_at),
+        )
+        const bootstrapHeartbeatAt = Math.max(
+          toEpochMs((state as any).prehistoric_bootstrap_heartbeat_at),
+          toEpochMs((state as any).prehistoric_bootstrap_heartbeat_iso),
+          toEpochMs(progHash.prehistoric_bootstrap_heartbeat_at),
+          toEpochMs(progHash.prehistoric_bootstrap_heartbeat_iso),
         )
         // A complete Strategy pass over a dense 32-symbol matrix can outlive
         // one timer heartbeat while it is still making forward progress. The
@@ -527,12 +536,23 @@ export async function GET(request: Request) {
         const runtimeActivityAgeMs = runtimeActivityAt > 0
           ? Math.max(0, now - runtimeActivityAt)
           : null
+        const bootstrapHeartbeatAgeMs = bootstrapHeartbeatAt > 0
+          ? Math.max(0, now - bootstrapHeartbeatAt)
+          : null
         const signalCapacityUpdatedAt = toEpochMs(signalCapacityRaw.updated_at)
         const signalCapacityTotal = toNumber(signalCapacityRaw.total)
         const signalCapacityLimit = normalizeSignalMaxPositions(
           toNumber(signalCapacityRaw.limit) || configuredSignalPositionLimit,
         )
         const bootstrapActive = ["running", "queued", "superseding", "retry_wait"].includes(bootstrapStatus)
+        const historicProgressDelayed =
+          bootstrapStatus === "running" &&
+          historicProgressAgeMs != null &&
+          historicProgressAgeMs > PROCESSING_STALE_MS
+        const bootstrapLivenessAt = Math.max(bootstrapHeartbeatAt, heartbeatAt)
+        const bootstrapLivenessAgeMs = bootstrapLivenessAt > 0
+          ? Math.max(0, now - bootstrapLivenessAt)
+          : null
         const stalled =
           dashboardEnabled &&
           (
@@ -544,7 +564,8 @@ export async function GET(request: Request) {
             (
               bootstrapActive &&
               historicProgressAgeMs != null &&
-              historicProgressAgeMs > PROCESSING_STALE_MS
+              historicProgressAgeMs > PROCESSING_STALE_MS &&
+              (bootstrapLivenessAgeMs == null || bootstrapLivenessAgeMs > HEARTBEAT_STALE_MS)
             )
           )
 
@@ -652,8 +673,14 @@ export async function GET(request: Request) {
             progressAgeMs,
             historicProgressAt: historicProgressAt > 0 ? new Date(historicProgressAt).toISOString() : null,
             historicProgressAgeMs,
+            historicProgressDelayed,
             runtimeActivityAt: runtimeActivityAt > 0 ? new Date(runtimeActivityAt).toISOString() : null,
             runtimeActivityAgeMs,
+            bootstrapHeartbeatAt: bootstrapHeartbeatAt > 0 ? new Date(bootstrapHeartbeatAt).toISOString() : null,
+            bootstrapHeartbeatAgeMs,
+            bootstrapHeartbeatFresh: bootstrapHeartbeatAgeMs != null && bootstrapHeartbeatAgeMs <= HEARTBEAT_STALE_MS,
+            bootstrapLivenessAt: bootstrapLivenessAt > 0 ? new Date(bootstrapLivenessAt).toISOString() : null,
+            bootstrapLivenessAgeMs,
             stalled,
             selectionEpoch: selectionEpoch || null,
             historicSelectionEpoch: historicSelectionEpoch || null,
@@ -860,6 +887,21 @@ export async function GET(request: Request) {
           details: {
             heartbeatAgeMs: lifecycle.heartbeatAgeMs,
             progressAgeMs: lifecycle.progressAgeMs,
+            bootstrapStatus: lifecycle.bootstrapStatus,
+          },
+        })
+      }
+      if (item.dashboardEnabled && lifecycle.historicProgressDelayed && !lifecycle.stalled) {
+        alerts.push({
+          id: `historic-progress-delayed-${item.id}`,
+          level: "warning",
+          category: "Historic processing",
+          message: `${item.name} historic work has not published a completed unit recently, but its bootstrap worker is still alive. Entry processors remain safely gated.`,
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+          details: {
+            historicProgressAgeMs: lifecycle.historicProgressAgeMs,
+            bootstrapHeartbeatAgeMs: lifecycle.bootstrapHeartbeatAgeMs,
             bootstrapStatus: lifecycle.bootstrapStatus,
           },
         })

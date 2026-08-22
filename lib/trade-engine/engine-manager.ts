@@ -991,6 +991,29 @@ export class TradeEngineManager {
   }
 
   /**
+   * The historic bootstrap can spend more than a watchdog interval inside one
+   * dense calculation unit. Publish its own liveness marker so monitoring can
+   * distinguish productive, gated work from a worker that has actually died.
+   */
+  private async refreshPrehistoricBootstrapHeartbeat(): Promise<void> {
+    if (!this.isRunning || !this.prehistoricBootstrapInFlight) return
+    const nowMs = Date.now()
+    const nowIso = new Date(nowMs).toISOString()
+    const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
+    const client = getRedisClient()
+    const patch = {
+      prehistoric_bootstrap_heartbeat_at: String(nowMs),
+      prehistoric_bootstrap_heartbeat_iso: nowIso,
+    }
+    await Promise.all([
+      client.hset(scope.tradeEngineStateKey, patch),
+      client.hset(`settings:trade_engine_state:${this.connectionId}`, patch),
+      client.hset(scope.progressionKey, patch),
+      client.hset(scope.legacyProgressionKey, patch),
+    ])
+  }
+
+  /**
    * Start the trade engine.
    *
    * @param config   The engine configuration to launch with.
@@ -2110,6 +2133,7 @@ export class TradeEngineManager {
           entry_processors_gated: true,
           updated_at: bootstrapStartedAt,
         })
+        await this.refreshPrehistoricBootstrapHeartbeat().catch(() => undefined)
         await this.updateProgressionPhase(
           "prehistoric_data",
           15,
@@ -5656,6 +5680,7 @@ export class TradeEngineManager {
             updated_at: new Date(now).toISOString(),
           }).catch(() => undefined),
         ])
+        await this.refreshPrehistoricBootstrapHeartbeat().catch(() => undefined)
         if (heartbeatCount % 3 === 1) {
           await publishEngineEvent("engine.heartbeat.updated", {
             connectionId: this.connectionId,

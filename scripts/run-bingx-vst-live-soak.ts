@@ -93,6 +93,15 @@ interface CycleReport {
     observedOpen: boolean
     cancelled: boolean
     observedCancelled: boolean
+    engineTrailingUpdate?: {
+      initialStopPrice: number
+      ratchetedStopPrice: number
+      initialStopCancelled: boolean
+      replacementObservedOpen: boolean
+      replacementCancelled: boolean
+      takeProfitRetained: boolean
+      staleUpdateRejected: boolean
+    }
   }
   close?: ManagedOrderResult
   positionQuantityAfterEntry?: number
@@ -235,6 +244,11 @@ async function main(): Promise<void> {
   const preflightOnly = process.env.BINGX_VST_SOAK_PREFLIGHT_ONLY === "1"
   const requestedDuration = finite(process.env.BINGX_VST_SOAK_DURATION_MS) || EXACT_DURATION_MS
   const allowShort = process.env.BINGX_VST_SOAK_ALLOW_SHORT === "1"
+  // Optional focused proof that the production trailing bridge itself — not
+  // merely the venue's conditional-order API — performs a safe
+  // cancel-confirm-replace cycle and rejects a subsequently stale ratchet.
+  // It remains Prod-VST only and shares the same isolated account cleanup.
+  const verifyEngineTrailingUpdate = process.env.BINGX_VST_SOAK_ENGINE_TRAILING_UPDATE === "1"
 
   const report: any = {
     schemaVersion: 3,
@@ -535,6 +549,7 @@ async function main(): Promise<void> {
       signalRegistryModule,
       capacityModule,
       statisticsModule,
+      liveStageModule,
     ] = await Promise.all([
       import("@/lib/exchange-connectors/bingx-connector"),
       import("@/lib/redis-db"),
@@ -549,6 +564,7 @@ async function main(): Promise<void> {
       import("@/lib/signal-source-registry"),
       import("@/lib/control-order-capacity"),
       import("@/lib/live-position-statistics"),
+      import("@/lib/trade-engine/stages/live-stage"),
     ])
     connector = new connectorModule.BingXConnector({
       apiKey,
@@ -880,9 +896,10 @@ async function main(): Promise<void> {
       plannedCycles: plannedCycleCount,
       plannedCycleWindowMs,
       plannedExposureOrders: plannedCycleCount * 2,
-      plannedProtectionOrders: plannedCycleCount * 2,
+      plannedProtectionOrders: plannedCycleCount * (verifyEngineTrailingUpdate ? 3 : 2),
       plannedCloseOrders: plannedCycleCount,
-      plannedVenueSubmissions: plannedCycleCount * 5,
+      plannedVenueSubmissions: plannedCycleCount * (verifyEngineTrailingUpdate ? 6 : 5),
+      engineTrailingUpdate: verifyEngineTrailingUpdate,
       pathCycles: Object.fromEntries(TRADE_PATHS.map((path) => [
         path.id,
         cyclePlans.filter((plan) => plan.tradePath.id === path.id).length,
@@ -1019,6 +1036,235 @@ async function main(): Promise<void> {
       }
     }
 
+    /**
+     * Exercise the same pseudo-position -> live-stage bridge used by the
+     * realtime engine.  The regular lifecycle below proves the venue-facing
+     * API; this focused probe additionally proves that an actual strategy
+     * trailing update:
+     *
+     *   1. persists a live position,
+     *   2. cancels the previously armed stop only after it is safe to replace,
+     *   3. creates and observes the tighter replacement on BingX VST, and
+     *   4. refuses a late, less-protective (stale) trailing value.
+     *
+     * No test position is retained: each resulting control order is observed,
+     * cancelled and then the existing reduce-only close path flattens the
+     * exposure before the next cycle.
+     */
+    const runEngineTrailingUpdateProbe = async (input: {
+      index: number
+      symbol: SoakSymbol
+      direction: "long" | "short"
+      tradePath: (typeof TRADE_PATHS)[number]
+      pricePrecision: number
+      quantity: number
+      entry: ManagedOrderResult
+      accumulation: ManagedOrderResult
+    }): Promise<NonNullable<CycleReport["protection"]>> => {
+      const { index, symbol, direction, tradePath, pricePrecision, quantity, entry, accumulation } = input
+      const weightedEntry = (entry.filledPrice * entry.filledQuantity + accumulation.filledPrice * accumulation.filledQuantity) /
+        Math.max(quantity, 1e-12)
+      if (!(weightedEntry > 0) || !(quantity > 0)) throw new Error("Engine trailing probe lacks an authoritative fill")
+      const precision = Math.max(0, Math.min(12, pricePrecision))
+      const priceAt = (value: number) => Number(value.toFixed(precision))
+      const initialStopPrice = priceAt(weightedEntry * (direction === "long" ? 0.5 : 1.5))
+      const ratchetedStopPrice = priceAt(weightedEntry * (direction === "long" ? 0.6 : 1.4))
+      const staleStopPrice = priceAt(weightedEntry * (direction === "long" ? 0.55 : 1.45))
+      const takeProfitPrice = priceAt(weightedEntry * (direction === "long" ? 1.5 : 0.5))
+      const positionId = `vst-trailing-${runSuffix}-${index}`
+      const setKey = `vst-trailing-set-${runSuffix}-${index}`
+      const trackingId = `sys-vst-trailing-${runSuffix}-${index}`
+      const now = Date.now()
+      const probePosition = {
+        id: positionId,
+        connectionId,
+        symbol,
+        direction,
+        side: direction,
+        status: "open",
+        statusReason: "vst_engine_trailing_probe",
+        setKey,
+        parentSetKey: setKey,
+        accumulatedSetKeys: [setKey],
+        executionIntent: tradePath.id,
+        indicationType: tradePath.id === "signal-trade" ? "signal" : "direction",
+        system_tracking_id: trackingId,
+        quantity,
+        executedQuantity: quantity,
+        totalExecutedQuantity: quantity,
+        remainingQuantity: quantity,
+        averageExecutionPrice: weightedEntry,
+        entryPrice: weightedEntry,
+        leverage: 1,
+        stopLoss: 50,
+        takeProfit: 50,
+        assignedStopLoss: 50,
+        assignedTakeProfit: 50,
+        protectionArmedQuantity: 0,
+        fills: [
+          { quantity: entry.filledQuantity, price: entry.filledPrice, timestamp: now },
+          { quantity: accumulation.filledQuantity, price: accumulation.filledPrice, timestamp: now + 1 },
+        ],
+        createdAt: now,
+        updatedAt: now,
+        version: 0,
+      }
+      const openIndexKey = `live:positions:${connectionId}`
+      const jsonKey = `live:position:${positionId}`
+      const hashKey = `live_positions:${connectionId}:${positionId}`
+      let initialStopOrderId = ""
+      let replacementStopOrderId = ""
+      let takeProfitOrderId = ""
+      try {
+        await redisClient.set(jsonKey, JSON.stringify(probePosition))
+        await redisClient.lpush(openIndexKey, positionId)
+
+        const initiallyArmed = await liveStageModule.recalculateAndApplySLTP(
+          connectionId,
+          positionId,
+          connector,
+          { stopLossPct: 50, takeProfitPct: 50 },
+        )
+        initialStopOrderId = String(initiallyArmed?.stopLossOrderId || "")
+        takeProfitOrderId = String(initiallyArmed?.takeProfitOrderId || "")
+        if (!initialStopOrderId || !takeProfitOrderId) {
+          throw new Error("Live-stage did not arm initial VST stop-loss and take-profit")
+        }
+        trackedControlOrders.set(initialStopOrderId, symbol)
+        trackedControlOrders.set(takeProfitOrderId, symbol)
+        trackedVenueOrderIds.set(initialStopOrderId, { symbol, kind: "trailing-static-replaced" })
+        trackedVenueOrderIds.set(takeProfitOrderId, { symbol, kind: "take-profit-cancelled" })
+        const [initialStopObserved, takeProfitObserved] = await Promise.all([
+          waitForOrderVisibility(symbol, initialStopOrderId, true),
+          waitForOrderVisibility(symbol, takeProfitOrderId, true),
+        ])
+        if (!initialStopObserved || !takeProfitObserved) {
+          throw new Error("Initial live-stage protections were not visible on BingX VST")
+        }
+
+        // The engine's active-trailing replacement guard is intentionally
+        // short but non-zero (200 ms). Crossing it here proves the ordinary
+        // replacement path rather than a no-op rate-limit branch.
+        await sleep(260)
+        await liveStageModule.syncLiveFromPseudo(connectionId, {
+          id: `pseudo-${positionId}`,
+          system_tracking_id: trackingId,
+          strategy_set_key: setKey,
+          symbol,
+          side: direction,
+          direction,
+          stoploss_pct: 50,
+          takeprofit_pct: 50,
+          trailing_active: "1",
+          trailing_stop_price: String(ratchetedStopPrice),
+        }, connector)
+        const afterRatchet = (await liveStageModule.getLivePositions(connectionId))
+          .find((position: any) => position.id === positionId)
+        replacementStopOrderId = String(afterRatchet?.stopLossOrderId || "")
+        const retainedTakeProfitOrderId = String(afterRatchet?.takeProfitOrderId || "")
+        const persistedRatchet = Number(afterRatchet?.trailingStopPrice || 0)
+        const stopReplaced = Boolean(replacementStopOrderId) && replacementStopOrderId !== initialStopOrderId
+        const takeProfitRetained = retainedTakeProfitOrderId === takeProfitOrderId
+        const ratchetPersisted = Math.abs(persistedRatchet - ratchetedStopPrice) <=
+          Math.max(1e-8, Math.abs(ratchetedStopPrice) * 1e-8)
+        if (
+          !stopReplaced ||
+          !takeProfitRetained ||
+          !ratchetPersisted
+        ) {
+          throw new Error(
+            `Live-stage trailing update mismatch ` +
+            `(stopReplaced=${stopReplaced}, takeProfitRetained=${takeProfitRetained}, ratchetPersisted=${ratchetPersisted})`,
+          )
+        }
+        trackedControlOrders.delete(initialStopOrderId)
+        trackedControlOrders.set(replacementStopOrderId, symbol)
+        trackedVenueOrderIds.set(replacementStopOrderId, { symbol, kind: "trailing-ratcheted-cancelled" })
+        const [initialStopCancelled, replacementObservedOpen] = await Promise.all([
+          waitForOrderVisibility(symbol, initialStopOrderId, false),
+          waitForOrderVisibility(symbol, replacementStopOrderId, true),
+        ])
+        if (!initialStopCancelled || !replacementObservedOpen) {
+          throw new Error("Live-stage trailing replacement was not authoritatively observed on BingX VST")
+        }
+
+        // A stale asynchronous pseudo tick must never loosen an already
+        // ratcheted exchange stop. The live-stage has an early and a locked
+        // durable monotonic guard; verify both externally by requiring the
+        // existing order id and stored stop to remain unchanged.
+        await liveStageModule.syncLiveFromPseudo(connectionId, {
+          id: `pseudo-stale-${positionId}`,
+          system_tracking_id: trackingId,
+          strategy_set_key: setKey,
+          symbol,
+          side: direction,
+          direction,
+          stoploss_pct: 50,
+          takeprofit_pct: 50,
+          trailing_active: "1",
+          trailing_stop_price: String(staleStopPrice),
+        }, connector)
+        const afterStaleUpdate = (await liveStageModule.getLivePositions(connectionId))
+          .find((position: any) => position.id === positionId)
+        const staleUpdateRejected =
+          String(afterStaleUpdate?.stopLossOrderId || "") === replacementStopOrderId &&
+          Math.abs(Number(afterStaleUpdate?.trailingStopPrice || 0) - ratchetedStopPrice) <=
+            Math.max(1e-8, Math.abs(ratchetedStopPrice) * 1e-8)
+        if (!staleUpdateRejected) {
+          throw new Error("A stale pseudo trailing update loosened the live-stage stop")
+        }
+
+        const [replacementCancellation, takeProfitCancellation] = await Promise.all([
+          connector.cancelOrder(symbol, replacementStopOrderId),
+          connector.cancelOrder(symbol, takeProfitOrderId),
+        ])
+        const [replacementCancelled, takeProfitCancelled] = await Promise.all([
+          replacementCancellation.success
+            ? waitForOrderVisibility(symbol, replacementStopOrderId, false)
+            : Promise.resolve(false),
+          takeProfitCancellation.success
+            ? waitForOrderVisibility(symbol, takeProfitOrderId, false)
+            : Promise.resolve(false),
+        ])
+        if (!replacementCancelled || !takeProfitCancelled) {
+          throw new Error("Trailing probe cleanup could not authoritatively cancel live protections")
+        }
+        trackedControlOrders.delete(replacementStopOrderId)
+        trackedControlOrders.delete(takeProfitOrderId)
+        return {
+          orderId: replacementStopOrderId,
+          takeProfitOrderId,
+          requireTakeProfit: true,
+          stopPrice: ratchetedStopPrice,
+          takeProfitPrice,
+          observedOpen: true,
+          cancelled: replacementCancellation.success === true && takeProfitCancellation.success === true,
+          observedCancelled: replacementCancelled && takeProfitCancelled,
+          engineTrailingUpdate: {
+            initialStopPrice,
+            ratchetedStopPrice,
+            initialStopCancelled,
+            replacementObservedOpen,
+            replacementCancelled,
+            takeProfitRetained,
+            staleUpdateRejected,
+          },
+        }
+      } finally {
+        // The probe uses an isolated temporary Redis instance. Remove its
+        // artificial strategy record eagerly so a later cycle can only match
+        // its own pseudo position, even if the harness is expanded to reuse a
+        // symbol/direction pair.
+        await Promise.all([
+          redisClient.del(jsonKey).catch(() => 0),
+          redisClient.del(hashKey).catch(() => 0),
+        ])
+        if (typeof redisClient.lrem === "function") {
+          await redisClient.lrem(openIndexKey, 0, positionId).catch(() => 0)
+        }
+      }
+    }
+
     for (let index = 0; index < cyclePlans.length; index++) {
       const { symbol, direction, tradePath, progression, scheduledOffsetMs } = cyclePlans[index]
       await monitorUntil(soakStartedMs + scheduledOffsetMs)
@@ -1090,83 +1336,96 @@ async function main(): Promise<void> {
         )
 
         const pricePrecision = Math.max(0, Math.min(12, rules.pricePrecision))
-        const stopPrice = Number((marketPrice * (direction === "long" ? 0.5 : 1.5)).toFixed(pricePrecision))
-        const takeProfitPrice = Number((marketPrice * (direction === "long" ? 1.5 : 0.5)).toFixed(pricePrecision))
-        const protectionSide = direction === "long" ? "sell" as const : "buy" as const
-        const protectionOptions = (clientOrderId: string) => ({
-          reduceOnly: true,
-          positionSide: direction.toUpperCase() as "LONG" | "SHORT",
-          hedgeMode: true,
-          clientOrderId,
-        })
-        const [stopLoss, takeProfit] = await Promise.all([
-          connector.placeStopOrder(
+        if (verifyEngineTrailingUpdate) {
+          cycle.protection = await runEngineTrailingUpdateProbe({
+            index,
             symbol,
-            protectionSide,
-            cycle.positionQuantityAfterAccumulation,
-            stopPrice,
-            "stop_loss",
-            protectionOptions(safeClientId("ctsvstsl", runSuffix, index)),
-          ),
-          connector.placeStopOrder(
-            symbol,
-            protectionSide,
-            cycle.positionQuantityAfterAccumulation,
-            takeProfitPrice,
-            "take_profit",
-            protectionOptions(safeClientId("ctsvsttp", runSuffix, index)),
-          ),
-        ])
-        for (const [kind, result] of [["stop-loss", stopLoss], ["take-profit", takeProfit]] as const) {
-          if (result?.success && result?.orderId) {
-            const orderId = String(result.orderId)
-            trackedControlOrders.set(orderId, symbol)
-            trackedVenueOrderIds.set(orderId, { symbol, kind: `${kind}-cancelled` })
+            direction,
+            tradePath,
+            pricePrecision,
+            quantity: cycle.positionQuantityAfterAccumulation,
+            entry: cycle.entry,
+            accumulation: cycle.accumulation,
+          })
+        } else {
+          const stopPrice = Number((marketPrice * (direction === "long" ? 0.5 : 1.5)).toFixed(pricePrecision))
+          const takeProfitPrice = Number((marketPrice * (direction === "long" ? 1.5 : 0.5)).toFixed(pricePrecision))
+          const protectionSide = direction === "long" ? "sell" as const : "buy" as const
+          const protectionOptions = (clientOrderId: string) => ({
+            reduceOnly: true,
+            positionSide: direction.toUpperCase() as "LONG" | "SHORT",
+            hedgeMode: true,
+            clientOrderId,
+          })
+          const [stopLoss, takeProfit] = await Promise.all([
+            connector.placeStopOrder(
+              symbol,
+              protectionSide,
+              cycle.positionQuantityAfterAccumulation,
+              stopPrice,
+              "stop_loss",
+              protectionOptions(safeClientId("ctsvstsl", runSuffix, index)),
+            ),
+            connector.placeStopOrder(
+              symbol,
+              protectionSide,
+              cycle.positionQuantityAfterAccumulation,
+              takeProfitPrice,
+              "take_profit",
+              protectionOptions(safeClientId("ctsvsttp", runSuffix, index)),
+            ),
+          ])
+          for (const [kind, result] of [["stop-loss", stopLoss], ["take-profit", takeProfit]] as const) {
+            if (result?.success && result?.orderId) {
+              const orderId = String(result.orderId)
+              trackedControlOrders.set(orderId, symbol)
+              trackedVenueOrderIds.set(orderId, { symbol, kind: `${kind}-cancelled` })
+            }
           }
-        }
-        if (!stopLoss?.success || !stopLoss?.orderId || !takeProfit?.success || !takeProfit?.orderId) {
-          throw new Error(
-            `Protection orders failed: SL=${stopLoss?.error || stopLoss?.orderId || "missing"}, ` +
-            `TP=${takeProfit?.error || takeProfit?.orderId || "missing"}`,
-          )
-        }
-        const protectionOrderId = String(stopLoss.orderId)
-        const takeProfitOrderId = String(takeProfit.orderId)
-        const [stopObservedOpen, takeProfitObservedOpen] = await Promise.all([
-          waitForOrderVisibility(symbol, protectionOrderId, true),
-          waitForOrderVisibility(symbol, takeProfitOrderId, true),
-        ])
-        const [stopCancellation, takeProfitCancellation] = await Promise.all([
-          connector.cancelOrder(symbol, protectionOrderId),
-          connector.cancelOrder(symbol, takeProfitOrderId),
-        ])
-        const [stopObservedCancelled, takeProfitObservedCancelled] = await Promise.all([
-          stopCancellation.success
-            ? waitForOrderVisibility(symbol, protectionOrderId, false)
-            : Promise.resolve(false),
-          takeProfitCancellation.success
-            ? waitForOrderVisibility(symbol, takeProfitOrderId, false)
-            : Promise.resolve(false),
-        ])
-        if (stopCancellation.success && stopObservedCancelled) trackedControlOrders.delete(protectionOrderId)
-        if (takeProfitCancellation.success && takeProfitObservedCancelled) trackedControlOrders.delete(takeProfitOrderId)
-        const observedOpen = stopObservedOpen && takeProfitObservedOpen
-        const cancelled = stopCancellation.success === true && takeProfitCancellation.success === true
-        const observedCancelled = stopObservedCancelled && takeProfitObservedCancelled
-        cycle.protection = {
-          orderId: protectionOrderId,
-          takeProfitOrderId,
-          requireTakeProfit: true,
-          stopPrice,
-          takeProfitPrice,
-          observedOpen,
-          cancelled,
-          observedCancelled,
-        }
-        if (!observedOpen || !cancelled || !observedCancelled) {
-          throw new Error(
-            `Protection coordination failed (open=${observedOpen}, cancelled=${cancelled}, absent=${observedCancelled})`,
-          )
+          if (!stopLoss?.success || !stopLoss?.orderId || !takeProfit?.success || !takeProfit?.orderId) {
+            throw new Error(
+              `Protection orders failed: SL=${stopLoss?.error || stopLoss?.orderId || "missing"}, ` +
+              `TP=${takeProfit?.error || takeProfit?.orderId || "missing"}`,
+            )
+          }
+          const protectionOrderId = String(stopLoss.orderId)
+          const takeProfitOrderId = String(takeProfit.orderId)
+          const [stopObservedOpen, takeProfitObservedOpen] = await Promise.all([
+            waitForOrderVisibility(symbol, protectionOrderId, true),
+            waitForOrderVisibility(symbol, takeProfitOrderId, true),
+          ])
+          const [stopCancellation, takeProfitCancellation] = await Promise.all([
+            connector.cancelOrder(symbol, protectionOrderId),
+            connector.cancelOrder(symbol, takeProfitOrderId),
+          ])
+          const [stopObservedCancelled, takeProfitObservedCancelled] = await Promise.all([
+            stopCancellation.success
+              ? waitForOrderVisibility(symbol, protectionOrderId, false)
+              : Promise.resolve(false),
+            takeProfitCancellation.success
+              ? waitForOrderVisibility(symbol, takeProfitOrderId, false)
+              : Promise.resolve(false),
+          ])
+          if (stopCancellation.success && stopObservedCancelled) trackedControlOrders.delete(protectionOrderId)
+          if (takeProfitCancellation.success && takeProfitObservedCancelled) trackedControlOrders.delete(takeProfitOrderId)
+          const observedOpen = stopObservedOpen && takeProfitObservedOpen
+          const cancelled = stopCancellation.success === true && takeProfitCancellation.success === true
+          const observedCancelled = stopObservedCancelled && takeProfitObservedCancelled
+          cycle.protection = {
+            orderId: protectionOrderId,
+            takeProfitOrderId,
+            requireTakeProfit: true,
+            stopPrice,
+            takeProfitPrice,
+            observedOpen,
+            cancelled,
+            observedCancelled,
+          }
+          if (!observedOpen || !cancelled || !observedCancelled) {
+            throw new Error(
+              `Protection coordination failed (open=${observedOpen}, cancelled=${cancelled}, absent=${observedCancelled})`,
+            )
+          }
         }
 
         const authoritativePosition = await positionLeg(symbol, direction)
@@ -1289,6 +1548,24 @@ async function main(): Promise<void> {
       executionRelations: executionAudit,
     }
     if (missingTradePaths.length > 0) throw new Error(`Trade-path coverage is incomplete: ${missingTradePaths.join(", ")}`)
+    if (verifyEngineTrailingUpdate) {
+      const trailingProofs = report.cycles.map((cycle: CycleReport) => cycle.protection?.engineTrailingUpdate)
+      const trailingUpdatePassed = trailingProofs.length === report.cycles.length && trailingProofs.every((proof: NonNullable<CycleReport["protection"]>["engineTrailingUpdate"]) =>
+        proof?.initialStopCancelled === true &&
+        proof?.replacementObservedOpen === true &&
+        proof?.replacementCancelled === true &&
+        proof?.takeProfitRetained === true &&
+        proof?.staleUpdateRejected === true,
+      )
+      report.coverageMatrix.trailingUpdate = {
+        enabled: true,
+        verifiedCycles: trailingProofs.filter(Boolean).length,
+        passed: trailingUpdatePassed,
+      }
+      if (!trailingUpdatePassed) {
+        throw new Error("Engine trailing update proof is incomplete")
+      }
+    }
 
     const trackedVenueEntries = [...trackedVenueOrderIds.entries()]
     const allVenueIds = trackedVenueEntries.map(([orderId]) => orderId)

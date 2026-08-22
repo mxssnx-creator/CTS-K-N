@@ -46,6 +46,11 @@ export class PresetPseudoPositionManager {
   private activePseudoPositions: Map<string, PseudoPositionConfig> = new Map()
   private positionsByConfig: Map<string, Set<string>> = new Map()
   private trailHighPrices: Map<string, number> = new Map()
+  // A 1 s timer is only a target cadence. Database work can occasionally
+  // outlast it, so retain the current promise and never pile a second full
+  // scan behind it. This bounds memory and write pressure under slow DB or
+  // market-data conditions while preserving the next available update.
+  private updateInFlight: Promise<void> | null = null
 
   constructor(connectionId: string, presetTypeId: string) {
     this.connectionId = connectionId
@@ -67,12 +72,8 @@ export class PresetPseudoPositionManager {
     await this.loadActivePseudoPositions()
 
     // Start 1-second update loop
-    this.updateInterval = setInterval(async () => {
-      try {
-        await this.updateAllPseudoPositions()
-      } catch (error) {
-        console.error("[v0] Pseudo position update error:", error)
-      }
+    this.updateInterval = setInterval(() => {
+      void this.runUpdateCycle()
     }, this.UPDATE_INTERVAL_MS)
 
     this.isRunning = true
@@ -89,10 +90,32 @@ export class PresetPseudoPositionManager {
 
     if (this.updateInterval) {
       clearInterval(this.updateInterval)
+      this.updateInterval = undefined
     }
 
     this.isRunning = false
+    // Do not leave a large per-position trail map behind after a manager is
+    // stopped or restarted. Wait for its one bounded in-flight scan first so
+    // it cannot repopulate the map after this cleanup.
+    await this.updateInFlight?.catch(() => undefined)
+    this.activePseudoPositions.clear()
+    this.positionsByConfig.clear()
+    this.trailHighPrices.clear()
     console.log("[v0] Pseudo position manager stopped")
+  }
+
+  /** Run at most one complete update scan at a time. */
+  private async runUpdateCycle(): Promise<void> {
+    if (this.updateInFlight) return this.updateInFlight
+    const cycle = this.updateAllPseudoPositions()
+    this.updateInFlight = cycle
+    try {
+      await cycle
+    } catch (error) {
+      console.error("[v0] Pseudo position update error:", error)
+    } finally {
+      if (this.updateInFlight === cycle) this.updateInFlight = null
+    }
   }
 
   /**
@@ -180,9 +203,12 @@ export class PresetPseudoPositionManager {
         if (update.status === "closed") {
           await this.closePseudoPosition(position.id, update)
           this.activePseudoPositions.delete(position.id)
+          this.trailHighPrices.delete(`trail_${position.id}`)
 
           const configKey = this.getConfigKeyFromPosition(position)
-          this.positionsByConfig.get(configKey)?.delete(position.id)
+          const configuredPositions = this.positionsByConfig.get(configKey)
+          configuredPositions?.delete(position.id)
+          if (configuredPositions?.size === 0) this.positionsByConfig.delete(configKey)
         } else {
           await this.updatePseudoPosition(position.id, update)
         }
@@ -296,6 +322,12 @@ export class PresetPseudoPositionManager {
    * Load active pseudo positions from database
    */
   private async loadActivePseudoPositions(): Promise<void> {
+    // A restarted manager must rebuild tracking strictly from durable open
+    // rows; retaining prior maps leaks closed entries and can apply stale
+    // trailing high/low watermarks to a freshly loaded position id.
+    this.activePseudoPositions.clear()
+    this.positionsByConfig.clear()
+    this.trailHighPrices.clear()
     const positions = await sql<any>`SELECT * FROM preset_pseudo_positions 
        WHERE connection_id = ${this.connectionId} 
          AND preset_type_id = ${this.presetTypeId} 

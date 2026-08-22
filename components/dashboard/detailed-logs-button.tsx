@@ -118,6 +118,14 @@ type ConnectionMonitor = {
     heartbeatFresh: boolean
     lastProgressAt: string | null
     progressAgeMs: number | null
+    historicProgressAt?: string | null
+    historicProgressAgeMs?: number | null
+    historicProgressDelayed?: boolean
+    bootstrapHeartbeatAt?: string | null
+    bootstrapHeartbeatAgeMs?: number | null
+    bootstrapHeartbeatFresh?: boolean
+    bootstrapLivenessAt?: string | null
+    bootstrapLivenessAgeMs?: number | null
     stalled: boolean
     selectionEpoch: string | null
     historicSelectionEpoch: string | null
@@ -819,6 +827,16 @@ function ConnectionLifecycleCard({ connection }: { connection: ConnectionMonitor
           label="Progress"
           value={lifecycle.progressAgeMs == null ? "never" : `${formatAge(lifecycle.progressAgeMs)} ago`}
           good={!connection.dashboardEnabled || !lifecycle.stalled}
+        />
+        <LifecycleDatum
+          label="Historic work"
+          value={lifecycle.historicProgressAgeMs == null ? "waiting" : `${formatAge(lifecycle.historicProgressAgeMs)} ago`}
+          good={!connection.dashboardEnabled || !lifecycle.historicProgressDelayed}
+        />
+        <LifecycleDatum
+          label="Boot heartbeat"
+          value={lifecycle.bootstrapLivenessAgeMs == null ? "waiting" : `${formatAge(lifecycle.bootstrapLivenessAgeMs)} ago`}
+          good={!connection.dashboardEnabled || lifecycle.bootstrapLivenessAgeMs == null || lifecycle.bootstrapLivenessAgeMs <= 120_000}
         />
         <LifecycleDatum
           label="Generation"

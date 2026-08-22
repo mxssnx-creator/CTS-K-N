@@ -291,6 +291,21 @@ const STRATEGY_REDIS_HASH_WRITE_BATCH_SIZE = Math.max(
   ),
 )
 
+// The fingerprint cache is a best-effort rebuild accelerator, not an
+// execution ledger. Keeping one entry for every complete Main Cartesian row
+// made a 32-symbol process retain hundreds of MiB in Redis before it could
+// expire. Bound it per symbol; an LRU/cache miss simply rebuilds the exact
+// deterministic variant from its Base Set and therefore cannot affect order
+// correctness or coverage.
+const STRATEGY_FINGERPRINT_REDIS_MAX_FIELDS = Math.max(
+  64,
+  Math.min(
+    4_096,
+    Number.parseInt(process.env.STRATEGY_FINGERPRINT_REDIS_MAX_FIELDS || "1024", 10) || 1_024,
+  ),
+)
+const STRATEGY_FINGERPRINT_CACHE_TTL_SECONDS = 300
+
 /**
  * Let timers, health probes, and read-only API handlers run between complete
  * coordination batches. `await` on an already-resolved Redis/memory promise
@@ -2724,6 +2739,11 @@ export class StrategyCoordinator {
   // reference (~2-5 KB) so capping tightly saves 8-40 MB of heap in practice.
   private static readonly _FP_LRU_MAX = 1_024
   private static _fpLru: Map<string, StrategySet> = new Map()
+  // v2 was an unbounded cache. It must be actively removed during the first
+  // v3 pass instead of waiting for its TTL: an existing all-symbol process
+  // could otherwise keep its old multi-hundred-megabyte hash resident for up
+  // to five minutes after a rollout.
+  private static _clearedLegacyFingerprintCaches = new Set<string>()
   private static _fpLruGet(fp: string): StrategySet | undefined {
     const hit = StrategyCoordinator._fpLru.get(fp)
     if (hit !== undefined) {
@@ -4592,19 +4612,37 @@ export class StrategyCoordinator {
     const baseValidSetKeys = new Set<string>()
 
     // ── 1. Fingerprint-cache lookup ───────────────���────────────────────────
-    // Fetch last cycle's fingerprint map up-front. `fpCacheKey:v2` stores a
+    // Fetch last cycle's fingerprint map up-front. `fpCacheKey:v3` stores a
     // per-symbol hash of { fingerprint: JSON.stringify(slimDelta) } entries
     // where slimDelta carries ONLY scalar aggregate fields (no entries[]).
-    // `:v2` suffix ensures old full-set blobs (stored under `main:fp`) are
-    // ignored — they would fail the `Array.isArray(cached.entries)` guard
-    // and cause unnecessary rebuilds until expiry. New slim format: ~80 bytes
-    // per record vs ~2-5 KB for the old full-set JSON.
-    const fpCacheKey = `strategies:${this.connectionId}:${symbol}:main:fp:v2`
+    // `:v3` is deliberately bounded; v2 admitted every full Cartesian row
+    // and could retain 10+ MiB for a single symbol. A cache miss only rebuilds
+    // the exact deterministic variant from the Base Set.
+    const fpCacheKey = `strategies:${this.connectionId}:${symbol}:main:fp:v3`
+    const legacyFpCacheKey = `strategies:${this.connectionId}:${symbol}:main:fp:v2`
     const client = getRedisClient()
+    if (
+      !isPrehistoric &&
+      !StrategyCoordinator._clearedLegacyFingerprintCaches.has(legacyFpCacheKey)
+    ) {
+      await client.del(legacyFpCacheKey).catch(() => 0)
+      StrategyCoordinator._clearedLegacyFingerprintCaches.add(legacyFpCacheKey)
+    }
     const fpCache = isPrehistoric
       ? {} as Record<string, string>
       : ((await client.hgetall(fpCacheKey).catch(() => null)) || {}) as Record<string, string>
     const nextFpCache: Record<string, string> = {}
+    let nextFpCacheCount = 0
+    const retainFingerprint = (fingerprint: string, delta: string): boolean => {
+      if (Object.prototype.hasOwnProperty.call(nextFpCache, fingerprint)) {
+        nextFpCache[fingerprint] = delta
+        return true
+      }
+      if (nextFpCacheCount >= STRATEGY_FINGERPRINT_REDIS_MAX_FIELDS) return false
+      nextFpCache[fingerprint] = delta
+      nextFpCacheCount++
+      return true
+    }
     let reused = 0
 
     // ── 2. Variant profiles ─────────────────────────────────────────────
@@ -4775,7 +4813,7 @@ export class StrategyCoordinator {
                 cached.variant = "trailing"
               }
               cachedSet = cached
-              nextFpCache[fingerprint] = fpCache[fingerprint]
+              retainFingerprint(fingerprint, fpCache[fingerprint])
             }
           }
 
@@ -4808,7 +4846,7 @@ export class StrategyCoordinator {
                 trailingProfile: built.trailingProfile,
                 signalRisk:      built.signalRisk,
               }
-              nextFpCache[fingerprint] = JSON.stringify(slimDelta)
+              retainFingerprint(fingerprint, JSON.stringify(slimDelta))
               StrategyCoordinator._fpLruSet(fingerprint, built)
             }
           }
@@ -5140,10 +5178,12 @@ export class StrategyCoordinator {
         created: new Date(),
       })
       try {
-        if (Object.keys(nextFpCache).length > 0) {
-          await client.del(fpCacheKey).catch(() => {})
+        // Rewrite the bounded cache even when this cycle generated no rows so
+        // stale fingerprints never outlive the canonical Main projection.
+        await client.del(fpCacheKey).catch(() => {})
+        if (nextFpCacheCount > 0) {
           await hsetStrategyRecordInBatches(client, fpCacheKey, nextFpCache)
-          await client.expire(fpCacheKey, 300) // 5 min TTL
+          await client.expire(fpCacheKey, STRATEGY_FINGERPRINT_CACHE_TTL_SECONDS)
         }
       } catch { /* non-critical */ }
     }

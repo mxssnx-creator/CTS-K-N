@@ -3239,6 +3239,11 @@ export async function GET(
       historicAvgProfitFactorCount: n(prehistoricHash.historic_avg_profit_factor_count) ||
         n(strategyDetailRealHash.created_sets),
     }
+    const historicConfigWorkProgressPercent = prehistoricMeta.configWorkUnitsTotal > 0
+      ? Math.min(100, Math.round(
+          (prehistoricMeta.configWorkUnitsCompleted / prehistoricMeta.configWorkUnitsTotal) * 100,
+        ))
+      : 0
 
     // ── WINDOW DATA (last 5min / 60min) ──────────────────────────────────────
     // Stored in sorted sets scored by unix-ms timestamp. Counts are exact
@@ -3560,6 +3565,7 @@ export async function GET(
           completed: n(prehistoricMeta.configWorkUnitsCompleted),
           total: n(prehistoricMeta.configWorkUnitsTotal),
           failed: n(prehistoricMeta.configWorkFailedUnits),
+          progressPercent: historicConfigWorkProgressPercent,
           currentSymbol: prehistoricMeta.configWorkCurrentSymbol || "",
           currentStage: prehistoricMeta.configWorkCurrentStage || "",
           lastActivityAt: prehistoricMeta.configWorkLastActivityAt || null,

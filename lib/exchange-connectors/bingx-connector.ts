@@ -1448,6 +1448,7 @@ export class BingXConnector extends BaseExchangeConnector {
           if (this.isBingXSuccess(sdkData?.code) && sdkOrderId) {
             this.sdkLastError = ""
             this.markOperationTransport("placeStopOrder", "bingx-api")
+            this.invalidateOpenOrdersSnapshot(symbol)
             this.log(`✓ ${orderType} placed via SDK: ${sdkOrderId} @ ${stopStr}`)
             return { success: true, orderId: sdkOrderId, orderPrice: stopRounded, stopPrice: stopRounded }
           }
@@ -1519,6 +1520,7 @@ export class BingXConnector extends BaseExchangeConnector {
             const info = tsData.data?.order || tsData.data || {}
             const id = info.orderId || info.orderID || tsData.data?.orderId
             if (id) {
+              this.invalidateOpenOrdersSnapshot(symbol)
               this.log(`✓ ${orderType} placed on timestamp retry: ${id}`)
               return { success: true, orderId: String(id), orderPrice: stopRounded, stopPrice: stopRounded }
             }
@@ -1547,6 +1549,7 @@ export class BingXConnector extends BaseExchangeConnector {
             const info2 = retryData2.data?.order || retryData2.data || {}
             const id2 = info2.orderId || info2.id || retryData2.data?.orderId
             if (id2) {
+              this.invalidateOpenOrdersSnapshot(symbol)
               this.log(`✓ ${orderType} placed on reduceOnly hedge retry: ${id2}`)
               return { success: true, orderId: String(id2), orderPrice: stopRounded, stopPrice: stopRounded }
             }
@@ -1574,6 +1577,7 @@ export class BingXConnector extends BaseExchangeConnector {
             const info = retryData.data?.order || retryData.data || {}
             const id = info.orderId || info.id || retryData.data?.orderId
             if (id) {
+              this.invalidateOpenOrdersSnapshot(symbol)
               this.log(`✓ ${orderType} placed on one-way retry: ${id}`)
               return { success: true, orderId: String(id), orderPrice: stopRounded, stopPrice: stopRounded }
             }
@@ -1594,6 +1598,7 @@ export class BingXConnector extends BaseExchangeConnector {
         this.logError(`✗ ${orderType} placement failed: ${errorMsg}`)
         return { success: false, error: errorMsg }
       }
+      this.invalidateOpenOrdersSnapshot(symbol)
       this.log(`✓ ${orderType} placed: ${orderId} @ ${stopStr}`)
       return { success: true, orderId: String(orderId), orderPrice: stopRounded, stopPrice: stopRounded }
     } catch (error) {

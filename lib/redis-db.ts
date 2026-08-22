@@ -47,7 +47,7 @@ export const INLINE_REDIS_MEMORY_POLICY = {
   maxTerminalPositionsPerConnection: 200,
   maxPseudoPositionMembersPerKey: 800,
   maxScanSessions: 64,
-  maxScanSeenKeys: 2_000,
+  maxScanSessionLifetimeMs: 120_000,
   maxSnapshotBytes: 256 * 1024 * 1024,
   maxWalBytes: 32 * 1024 * 1024,
   ttlSweepBatch: 2_000,
@@ -218,6 +218,22 @@ function isRebuildableDirectTradeSnapshotKey(key: string): boolean {
     || key.startsWith("direct_trade:configs:chunk:")
 }
 
+/**
+ * Runtime outputs which are intentionally excluded from durable Inline Redis
+ * snapshots. They are recreated by the next indication/Main cycle from
+ * durable operator settings, market history, open positions and outcome
+ * ledgers. Keeping them in a snapshot causes a cold restart to duplicate a
+ * large calculation graph before the engine has a chance to rebuild it.
+ *
+ * Do not add live positions, order ownership, cooldowns, pending outcomes or
+ * indication_set rows here: those remain authoritative restart state.
+ */
+function isRebuildableInlineSnapshotKey(key: string): boolean {
+  return isRebuildableDirectTradeSnapshotKey(key) ||
+    key.startsWith("indications_snapshot:") ||
+    /^strategies:[^:]+:[^:]+:main:fp:v(?:2|3)$/.test(key)
+}
+
 const KILO_SNAPSHOT_TABLE = "cts_runtime_snapshot"
 
 function hasKiloManagedDatabaseConfig(): boolean {
@@ -355,9 +371,10 @@ export class InlineLocalRedis implements RedisClientLike {
    *
    * Redis cursors are opaque. Keeping the backing Map iterators here lets one
    * cursor visit each key once instead of rebuilding and filtering the whole
-   * keyspace for every page. The previous implementation was O(keys × pages)
-   * and could monopolise the HTTP event loop for several seconds while a
-   * historic-generation marker cleanup was running.
+   * keyspace for every page. Stable storage-type precedence removes duplicate
+   * keys without retaining one `seen` entry per key: the old 2k seen-key budget
+   * discarded an otherwise healthy cursor mid-scan, restarted it at page one,
+   * and could leave historic marker cleanup running forever on a full matrix.
    */
   private scanSessions = new Map<string, {
     pattern: string
@@ -365,7 +382,6 @@ export class InlineLocalRedis implements RedisClientLike {
     iterators: Array<Iterator<string>>
     collectionIndex: number
     remaining: number
-    seen: Set<string>
     page: number
     expiresAt: number
   }>()
@@ -375,7 +391,7 @@ export class InlineLocalRedis implements RedisClientLike {
   private enforceScanSessionBudget(): void {
     const now = Date.now()
     for (const [cursor, session] of this.scanSessions) {
-      if (session.expiresAt <= now || session.seen.size > INLINE_REDIS_MEMORY_POLICY.maxScanSeenKeys) {
+      if (session.expiresAt <= now) {
         this.scanSessions.delete(cursor)
       }
     }
@@ -561,13 +577,19 @@ export class InlineLocalRedis implements RedisClientLike {
       v: 1,
       savedAt: Date.now(),
       strings: Array.from(d.strings.entries())
-        .filter(([key]) => !isRebuildableDirectTradeSnapshotKey(key)),
-      hashes: Array.from(d.hashes.entries()),
-      sets: Array.from(d.sets.entries()).map(([k, s]) => [k, Array.from(s)]),
-      lists: Array.from(d.lists.entries()),
-      sorted_sets: Array.from(d.sorted_sets.entries()).map(([k, z]) => [k, z.entries]),
+        .filter(([key]) => !isRebuildableInlineSnapshotKey(key)),
+      hashes: Array.from(d.hashes.entries())
+        .filter(([key]) => !isRebuildableInlineSnapshotKey(key)),
+      sets: Array.from(d.sets.entries())
+        .filter(([key]) => !isRebuildableInlineSnapshotKey(key))
+        .map(([k, s]) => [k, Array.from(s)]),
+      lists: Array.from(d.lists.entries())
+        .filter(([key]) => !isRebuildableInlineSnapshotKey(key)),
+      sorted_sets: Array.from(d.sorted_sets.entries())
+        .filter(([key]) => !isRebuildableInlineSnapshotKey(key))
+        .map(([k, z]) => [k, z.entries]),
       ttl: Array.from(d.ttl.entries())
-        .filter(([key]) => !isRebuildableDirectTradeSnapshotKey(key)),
+        .filter(([key]) => !isRebuildableInlineSnapshotKey(key)),
       mutationVersion: this.mutationVersion(),
     })
   }
@@ -588,13 +610,17 @@ export class InlineLocalRedis implements RedisClientLike {
     // therefore included by the next snapshot instead of being falsely marked
     // durable by this one.
     const stringKeys = Array.from(d.strings.keys())
-      .filter((key) => !isRebuildableDirectTradeSnapshotKey(key))
+      .filter((key) => !isRebuildableInlineSnapshotKey(key))
     const hashKeys = Array.from(d.hashes.keys())
+      .filter((key) => !isRebuildableInlineSnapshotKey(key))
     const setKeys = Array.from(d.sets.keys())
+      .filter((key) => !isRebuildableInlineSnapshotKey(key))
     const listKeys = Array.from(d.lists.keys())
+      .filter((key) => !isRebuildableInlineSnapshotKey(key))
     const sortedSetKeys = Array.from(d.sorted_sets.keys())
+      .filter((key) => !isRebuildableInlineSnapshotKey(key))
     const ttlKeys = Array.from(d.ttl.keys())
-      .filter((key) => !isRebuildableDirectTradeSnapshotKey(key))
+      .filter((key) => !isRebuildableInlineSnapshotKey(key))
 
     for (const key of stringKeys) {
       if (d.strings.has(key)) yield JSON.stringify(["s", key, d.strings.get(key)])
@@ -699,24 +725,38 @@ export class InlineLocalRedis implements RedisClientLike {
     snapshotVersion: number,
   ): void {
     const maxChunkBytes = 1024 * 1024
+    const maxSnapshotBytes = finiteEnvNumber(
+      "CTS_REDIS_MAX_SNAPSHOT_BYTES",
+      INLINE_REDIS_MEMORY_POLICY.maxSnapshotBytes,
+      8 * 1024 * 1024,
+      512 * 1024 * 1024,
+    )
     let chunk = ""
     let chunkBytes = 0
+    let writtenBytes = 0
+    const writeBounded = (data: string): void => {
+      writtenBytes += Buffer.byteLength(data)
+      if (writtenBytes > maxSnapshotBytes) {
+        throw new Error(`Inline Redis snapshot exceeds ${maxSnapshotBytes} bytes`)
+      }
+      fsSync.writeFileSync(fd, data, "utf8")
+    }
     for (const line of this.snapshotV2Lines(snapshotVersion)) {
       const framed = `${line}\n`
       const framedBytes = Buffer.byteLength(framed)
       if (chunk && chunkBytes + framedBytes > maxChunkBytes) {
-        fsSync.writeFileSync(fd, chunk, "utf8")
+        writeBounded(chunk)
         chunk = ""
         chunkBytes = 0
       }
       if (framedBytes > maxChunkBytes) {
-        fsSync.writeFileSync(fd, framed, "utf8")
+        writeBounded(framed)
       } else {
         chunk += framed
         chunkBytes += framedBytes
       }
     }
-    if (chunk) fsSync.writeFileSync(fd, chunk, "utf8")
+    if (chunk) writeBounded(chunk)
   }
 
   /**
@@ -1726,14 +1766,15 @@ export class InlineLocalRedis implements RedisClientLike {
       const rssSoftMB   = Math.round(usableMB * 0.72)
       // RSS hard: 82% of usable — critical eviction + sleep above this (was 75%).
       const rssHardMB   = Math.round(usableMB * 0.82)
-      const _nSyms      = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
-      // Keep the inline emulator bounded by dataset size, not VM size. Scaling
-      // this with RAM allowed an 8 GB host to accumulate millions of entries
-      // before eviction, which is exactly the Redis-memory-overrun failure mode.
-      const maxKeys     = Math.min(
-        finiteEnvNumber("CTS_REDIS_MAX_KEYS", 12_000, 2_000, 50_000),
-        Math.max(2_000, 1_000 + _nSyms * 1_500),
-      )
+      // Capacity has to cover the deterministic all-indicators configuration
+      // matrix before it considers runtime pipeline rows. The shipped 17 × 26
+      // × 27 configuration grid alone creates ~12k durable config keys, and a
+      // 32-symbol historic run adds bounded result/index records. A 2.5–12k
+      // ceiling treated that healthy durable state as a leak, repeatedly swept
+      // it and could stall the Historic → Main hand-off. Transient families
+      // remain independently capped below; heap/RSS pressure still overrides
+      // this advisory key budget immediately.
+      const maxKeys = finiteEnvNumber("CTS_REDIS_MAX_KEYS", 50_000, 2_000, 100_000)
       const prev = globalCleanup.__redis_mem_limits
       const changed = !prev || prev.rssHardMB !== rssHardMB
       globalCleanup.__redis_mem_limits = { heapMB, rssSoftMB, rssHardMB, maxKeys }
@@ -1978,6 +2019,18 @@ export class InlineLocalRedis implements RedisClientLike {
     // transient pipeline data (not operator config) and must be evictable.
     // The protected guard is narrowed to the genuine operator sub-families only.
     const isProtected = (k: string): boolean => {
+      // The complete indication configuration matrix, its bounded result
+      // references, and the active historic-generation ledgers are durable
+      // correctness state. Evicting them under generic key pressure can make a
+      // completed bootstrap look partial or recount a retry. The explicit
+      // completion cleanup removes generation markers once it is safe.
+      if (/^indication:[^:]+:config:/.test(k)) return true
+      if (/^indication:[^:]+:configs:index$/.test(k)) return true
+      if (k.startsWith("historic:aggregate:") || k.startsWith("historic:aggregate-marker:")) return true
+      // Strategy configuration documents are durable operator/calculation
+      // definitions. Position/result lists retain their dedicated bounded
+      // policy below rather than being accidentally protected by this prefix.
+      if (/^strategy:[^:]+:config:[^:]+$/.test(k)) return true
       if (k.startsWith("live:position:"))    return true  // open/closed live positions
       if (k.startsWith("live:positions:"))   return true  // open/closed index LISTs
       if (k.startsWith("progression:"))      return true  // progression counters
@@ -2942,6 +2995,21 @@ export class InlineLocalRedis implements RedisClientLike {
     return Array.from(uniqueKeys)
   }
 
+  /**
+   * Inline storage keeps five backing Maps. Redis itself allows only one type
+   * per key, but historic compatibility data can temporarily leave the same
+   * name in more than one Map. Give the earliest storage family precedence so
+   * SCAN remains duplicate-free without a keyspace-sized `seen` Set.
+   */
+  private scanKeyBelongsToCollection(key: string, collectionIndex: number): boolean {
+    const visible = (present: boolean) => present && !this.isExpired(key)
+    if (collectionIndex > 0 && visible(this.data.strings.has(key))) return false
+    if (collectionIndex > 1 && visible(this.data.hashes.has(key))) return false
+    if (collectionIndex > 2 && visible(this.data.sets.has(key))) return false
+    if (collectionIndex > 3 && visible(this.data.lists.has(key))) return false
+    return true
+  }
+
   private scanPatternRegex(pattern: string): RegExp {
     const regexPattern = pattern
       .replace(/\*/g, ".*")
@@ -3031,9 +3099,8 @@ export class InlineLocalRedis implements RedisClientLike {
         // appended entries; without a budget, a continuously-writing engine
         // could keep one diagnostic scan alive forever.
         remaining: collections.reduce((sum, collection) => sum + collection.size, 0),
-        seen: new Set<string>(),
         page: 0,
-        expiresAt: now + 30_000,
+        expiresAt: now + INLINE_REDIS_MEMORY_POLICY.maxScanSessionLifetimeMs,
       }
       if (this.scanSessions.size >= 64) {
         const oldest = this.scanSessions.keys().next().value
@@ -3049,7 +3116,8 @@ export class InlineLocalRedis implements RedisClientLike {
       session.remaining > 0 &&
       session.collectionIndex < session.iterators.length
     ) {
-      const iterator = session.iterators[session.collectionIndex]
+      const collectionIndex = session.collectionIndex
+      const iterator = session.iterators[collectionIndex]
       const next = iterator.next()
       if (next.done) {
         session.collectionIndex++
@@ -3059,12 +3127,11 @@ export class InlineLocalRedis implements RedisClientLike {
       examined++
       session.remaining--
       const key = String(next.value)
-      if (session.seen.has(key)) continue
-      session.seen.add(key)
+      if (!this.scanKeyBelongsToCollection(key, collectionIndex)) continue
       if (!this.isExpired(key) && session.regex.test(key)) keys.push(key)
     }
 
-    session.expiresAt = now + 30_000
+    session.expiresAt = now + INLINE_REDIS_MEMORY_POLICY.maxScanSessionLifetimeMs
     const complete = session.remaining <= 0 || session.collectionIndex >= session.iterators.length
     if (complete) {
       this.scanSessions.delete(cursorId)
