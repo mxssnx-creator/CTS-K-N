@@ -17,6 +17,9 @@ describe("BingX Prod-VST connector contract", () => {
   afterEach(() => {
     global.fetch = originalFetch
     ;(BingXConnector as any).openOrdersSnapshotCache?.clear()
+    ;(BingXConnector as any).sharedTimeOffset = 0
+    ;(BingXConnector as any).sharedLastSync = 0
+    ;(BingXConnector as any).sharedSyncPromise = null
     jest.restoreAllMocks()
   })
 
@@ -37,6 +40,45 @@ describe("BingX Prod-VST connector contract", () => {
     expect(() => configuredBingXOriginForEnvironment("prod-vst")).toThrow(
       "Unsupported BINGX_VST_ORIGIN",
     )
+  })
+
+  test("anchors a slow VST time sample at response arrival so the next signature stays behind the venue clock", async () => {
+    const originalNow = Date.now
+    let now = 1_700_000_000_000
+    Date.now = () => now
+
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname !== "/openApi/swap/v2/server/time") {
+        throw new Error(`Unexpected request: ${url.pathname}`)
+      }
+      // The venue emits its clock just before it returns the response. A
+      // midpoint estimate would turn this 6s first request into a +2.7s
+      // offset and produce a future-dated signed request.
+      now += 6_000
+      return Response.json({ code: 0, data: { serverTime: now - 280 } })
+    }) as typeof fetch
+
+    try {
+      const connector = new BingXConnector({
+        apiKey: "demo-api-key",
+        apiSecret: "demo-api-secret",
+        isTestnet: true,
+        apiType: "perpetual_futures",
+        contractType: "usdt-perpetual",
+        positionMode: "hedge",
+      })
+      await (connector as any).syncServerTime()
+
+      expect((connector as any).timeOffset).toBe(-280)
+      expect((connector as any).getTimestamp()).toBe(now - 2_280)
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/openApi/swap/v2/server/time"),
+        expect.objectContaining({ cache: "no-store" }),
+      )
+    } finally {
+      Date.now = originalNow
+    }
   })
 
   test("keeps balance, quotes, orders, positions, and mode changes on Prod-VST", async () => {
@@ -195,6 +237,14 @@ describe("BingX Prod-VST connector contract", () => {
   })
 
   test("fails closed instead of claiming a VST one-way mode mutation", async () => {
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+
     const connector = new BingXConnector({
       apiKey: "demo-api-key",
       apiSecret: "demo-api-secret",
@@ -203,6 +253,7 @@ describe("BingX Prod-VST connector contract", () => {
       contractType: "usdt-perpetual",
       positionMode: "hedge",
     })
+    await (connector as any).syncServerTime()
 
     await expect(connector.setPositionMode(false)).resolves.toEqual({
       success: false,
