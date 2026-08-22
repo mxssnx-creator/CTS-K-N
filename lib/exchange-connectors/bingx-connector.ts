@@ -398,12 +398,13 @@ export class BingXConnector extends BaseExchangeConnector {
       //  3. Use a SINGLE request. Hammering this endpoint with several samples
       //     trips the per-endpoint rate limiter (100410), which is exactly what
       //     we're trying to avoid.
-      //  4. High, asymmetric RTT on the Vercel→BingX link makes the midpoint
-      //     offset estimate noisy (±rtt/2). A spurious +600ms correction can
-      //     itself push requests out of the window (code 100421 / 109400). So we
-      //     only ADOPT the offset when it exceeds the measurement noise band;
-      //     otherwise the true skew is effectively zero and we keep offset=0
-      //     (raw local time), which sits comfortably inside ±1000ms here.
+      //  4. BingX serializes `serverTime` immediately before the response is
+      //     returned, rather than at the midpoint of our round trip. Measuring
+      //     against the midpoint turns a slow first request into a *positive*
+      //     offset of roughly RTT/2. That can make the next signed timestamp
+      //     future-dated and BingX reports the misleading 100001 signature
+      //     failure. Measure against response arrival instead: it can only be
+      //     slightly late, which is safe with our recvWindow and lag bias.
       const t0 = Date.now()
       // Bound the request and tolerate a single transient network blip. Prod-VST
       // routinely takes roughly four seconds to answer this public endpoint, so
@@ -417,7 +418,11 @@ export class BingXConnector extends BaseExchangeConnector {
         try {
           return await fetch(`${this.getBaseUrl()}/openApi/swap/v2/server/time`, {
             method: "GET",
-            headers: { "Content-Type": "application/json" },
+            // Next.js may otherwise cache a public GET when this connector is
+            // invoked from a production route. A cached clock sample is worse
+            // than no sample because it produces an invalid signature.
+            cache: "no-store",
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
             signal: ctrl.signal,
           })
         } finally {
@@ -443,18 +448,15 @@ export class BingXConnector extends BaseExchangeConnector {
 
       if (serverTime > 0) {
         const rtt = t1 - t0
-        const localMidpoint = t0 + rtt / 2
-        const measured = serverTime - localMidpoint
-        // ALWAYS adopt the measured offset. The previous noise-band gate kept
-        // offset=0 whenever |measured| < rtt/2, which on this high-RTT link
-        // meant the clock was effectively never corrected — and a VM clock
-        // running fast then sent future timestamps that BingX rejected with
-        // 100421. The downstream timestampLagMs bias makes a slightly-too-large
-        // offset harmless (we'd just be a touch later, absorbed by recvWindow),
-        // so adopting the raw estimate is strictly safer than ignoring it.
-        // Round to an integer here too so `timeOffset` never carries the
-        // half-millisecond from `rtt/2` (defense-in-depth alongside the floor
-        // in getTimestamp()).
+        // The exchange timestamp represents the response-side clock. A
+        // midpoint is wrong on asymmetric/slow routes: the measured offset
+        // becomes positive by roughly half the RTT and makes the following
+        // request future-dated. Anchor to arrival, which intentionally errs
+        // on the late side and therefore remains valid within recvWindow.
+        const measured = serverTime - t1
+        // Always adopt the measured offset. The downstream timestampLagMs
+        // makes a slightly-too-large estimate safe by keeping the signed
+        // timestamp behind the venue clock.
         const newOffset = Math.round(measured)
         this.timeOffset = newOffset
         // Record the ACTUAL completion time so the throttle window isn't
