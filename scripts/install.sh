@@ -1255,7 +1255,10 @@ prepare_runtime_permissions() {
   # service identity until their group is set explicitly.
   run_root chown "$install_owner:$service_group" "$PROJECT_ROOT"
   run_root chmod g+rx "$PROJECT_ROOT"
-  for runtime_path in node_modules .next scripts package.json pnpm-lock.yaml pnpm-workspace.yaml next.config.js next.config.mjs next.config.ts; do
+  # lib must stay group-readable: the Direct-Trade processor service imports
+  # lib/*.cjs helpers directly (not through the standalone Next build), so the
+  # service user needs read/traverse access to the whole directory.
+  for runtime_path in node_modules .next scripts lib package.json pnpm-lock.yaml pnpm-workspace.yaml next.config.js next.config.mjs next.config.ts; do
     [[ -e "$PROJECT_ROOT/$runtime_path" ]] || continue
     run_root chown -R "$install_owner:$service_group" "$PROJECT_ROOT/$runtime_path"
     run_root chmod -R g+rX "$PROJECT_ROOT/$runtime_path"
