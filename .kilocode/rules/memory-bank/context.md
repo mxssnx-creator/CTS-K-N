@@ -7,6 +7,55 @@ Total output lines: 1636
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current trailing / production validation checkpoint (2026-08-23)
+
+- The complete pseudo-position → live-position trailing path was audited and
+  hardened. The ratchet is monotonic by direction (long stops never decrease;
+  short stops never increase), exact configured step boundaries advance, stale
+  asynchronous snapshots cannot loosen a persisted live stop, and the
+  fire-and-forget realtime handoff is coalesced per pseudo position rather
+  than accumulating venue requests. The live-stage replacement cooldown now
+  gates cancellation and placement as one operation; a just-armed stop is
+  never removed when a replacement is still rate-limited.
+- BingX control-order placement now invalidates both aggregate and
+  symbol-specific open-order snapshots on every successful SDK, REST, and
+  retry path. This fixes a real stale-cache failure: a following liveness
+  sweep could otherwise read the pre-placement aggregate snapshot and
+  unnecessarily cancel/recreate an unchanged take-profit while ratcheting the
+  stop. Regression coverage is in `bingx-vst-environment.test.ts`.
+- Authenticated BingX X02 Prod-VST validation remains strictly virtual-funds
+  only. The full 20-minute run completed 16/16 Direct/Main/Preset/Signal
+  cycles across long and short sides, with each entry, accumulation,
+  protection lifecycle, reduce-only close, counter/relation audit, exact
+  order-detail check and account cleanup passing. A follow-up four-path
+  engine probe exercised the actual pseudo→live bridge: initial SL armed,
+  ratcheted SL cancel-confirm-replaced, TP retained, a stale looser update
+  rejected, and all selected test symbols flat. Its global account-baseline
+  gate intentionally remained fail-closed because unrelated VST positions
+  changed concurrently outside the selected symbols; the test did not touch
+  them and left no test exposure or test control order.
+- Current local evidence on this exact worktree: TypeScript; 197/197 unit
+  suites (1,260 tests); 4/4 integration suites (54 tests); a trace-valid
+  Next production build (347 trace files); 32-symbol / 48-hour Direct-Trade
+  max-grid evaluation (960,512 sets, 142 MiB evaluator heap); 32-symbol
+  isolated Dev API soak (chunked 97 chunks, trailing fixed/auto coverage);
+  physical Direct-Trade crash/restart recovery; and a fresh 60-second
+  production-paper full-system soak. The latter exercised all 35 Signal
+  sources, 32 symbols, 22 observed position lifecycles and 11 trailing Signal
+  positions, with p95 API latency 323 ms, zero real orders, RSS 2.57 GiB
+  below the 6.5 GiB budget, and no heap-growth breach.
+- Inline Redis scans no longer retain per-session keyspace-sized `seen` sets;
+  bounded iterators, a finite lifetime and durable-key protections allow
+  historic marker cleanup to finish without an unbounded memory path.
+  Rebuildable indicator/fingerprint caches are excluded from persisted
+  snapshots; durable order, position, ownership and cooldown state remains
+  persisted. Do not add credentials, VST reports, snapshots, build output or
+  `.agent-logs` to Git.
+- The remote Linux/Tailscale server remains unchanged from this sandbox. A
+  true multi-worker production run still requires a reachable shared Redis
+  server; the successful local production evidence is explicitly
+  single-worker inline-Redis fallback, not a substitute for that remote gate.
+
 ## Current Linux production remediation checkpoint (2026-08-22)
 
 - The reported Linux production symptoms were reproduced locally with the

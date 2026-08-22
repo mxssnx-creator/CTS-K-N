@@ -7,6 +7,14 @@ describe("volatile progression stats overlay", () => {
     const cached = {
       historic: { symbolsProcessed: 0, symbolsTotal: 32, cyclesCompleted: 0 },
       realtime: { cycleCounters: { indication: 0, strategy: 0, realtime: 0 } },
+      mainCoordination: {
+        activeVariants: ["default"],
+        activeVariantCount: 1,
+        totalCycles: 0,
+        totalCreated: 0,
+        totalReused: 0,
+        positionContext: { continuous: 0, lastWins: 0, lastLosses: 0, prevLosses: 0, prevTotal: 0 },
+      },
       metadata: { lastUpdate: "old" },
       connectionStageOverview: { base: { total: 99 } },
     }
@@ -15,6 +23,12 @@ describe("volatile progression stats overlay", () => {
         indication_cycle_count: "7",
         strategy_cycle_count: "7",
         realtime_cycle_count: "7",
+        strategies_main_active_variants: "default,trailing",
+        strategies_main_active_variant_count: "2",
+        strategies_main_cycles: "7",
+        strategies_main_related_created: "11",
+        strategies_main_related_reused: "4",
+        strategies_main_ctx_continuous: "3",
         frames_processed: "21",
         last_activity_at: "1700000000000",
         phase: "prehistoric_data",
@@ -31,6 +45,15 @@ describe("volatile progression stats overlay", () => {
       realtime: {
         cycleCounters: { indication: 7, strategy: 7, realtime: 7 },
         framesProcessed: 21,
+      },
+      mainCoordination: {
+        activeVariants: ["default", "trailing"],
+        activeVariantCount: 2,
+        totalCycles: 7,
+        totalCreated: 11,
+        totalReused: 4,
+        reuseRate: 26.7,
+        positionContext: { continuous: 3 },
       },
       connectionStageOverview: { base: { total: 99 } },
       metadata: { lastUpdate: "1700000000000", phase: "prehistoric_data", progress: 46 },
@@ -87,11 +110,12 @@ describe("volatile progression stats overlay", () => {
     expect(result).toMatchObject({
       historic: {
         symbolsProcessed: 0,
-        progressPercent: 46,
+        progressPercent: 0,
         configWork: {
           completed: 147,
           total: 320,
           failed: 2,
+          progressPercent: 46,
           currentSymbol: "BTCUSDT",
           currentStage: "strategies",
           lastActivityAt: "2026-08-21T12:00:00.000Z",
@@ -99,6 +123,37 @@ describe("volatile progression stats overlay", () => {
       },
       realtime: { cycleCounters: { livePositions: 9 } },
       metadata: { lastUpdate: "2026-08-21T12:00:00.000Z" },
+    })
+  })
+
+  it("keeps historic symbol progress independent from config-work progress", () => {
+    const result = overlayVolatileProgressionStats({
+      historic: {
+        symbolsProcessed: 0,
+        symbolsTotal: 32,
+        configWork: { completed: 0, total: 0, failed: 0 },
+      },
+      realtime: { cycleCounters: {} },
+      metadata: {},
+    }, {
+      progression: {
+        prehistoric_config_work_units_completed: "275",
+        prehistoric_config_work_units_total: "320",
+      },
+      prehistoric: {
+        symbols_processed: "27",
+        symbol_selection_epoch: "active",
+      },
+      realtime: {},
+      engineState: { symbol_selection_epoch: "active" },
+    })
+
+    expect(result).toMatchObject({
+      historic: {
+        symbolsProcessed: 27,
+        progressPercent: 84,
+        configWork: { progressPercent: 86 },
+      },
     })
   })
 

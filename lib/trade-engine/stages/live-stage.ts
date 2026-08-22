@@ -123,6 +123,11 @@ import {
   type SignalExecutionLane,
   type TrailingProfile,
 } from "@/lib/signal-trailing"
+import {
+  normalizePositionCostPercent,
+  stopLossPositionCostRatioToPercent,
+  takeProfitPositionCostRatioToPercent,
+} from "@/lib/position-cost"
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
@@ -5778,6 +5783,26 @@ async function fetchLiveOrderIdSet(connector: any): Promise<LiveOrderIdSet | nul
  * leg when the corresponding percentage is non-positive (i.e. SL/TP is
  * disabled for that side). Pure function — does NOT touch the exchange.
  */
+/**
+ * A trailing stop may be propagated by several asynchronous hot-path calls.
+ * Reject a delayed update that would loosen the already persisted exchange
+ * protection: long stops can only rise; short stops can only fall. This check
+ * is repeated inside the lock-owning recalculation path below, where it is the
+ * final authority against out-of-order network completion.
+ */
+function isTrailingStopTightening(
+  pos: Pick<LivePosition, "direction" | "side" | "trailingStopPrice">,
+  candidateValue: unknown,
+): boolean {
+  const candidate = Number(candidateValue)
+  if (!Number.isFinite(candidate) || candidate <= 0) return true
+  const existing = Number(pos.trailingStopPrice)
+  if (!Number.isFinite(existing) || existing <= 0) return true
+  const direction = resolveLivePositionDirection(pos as LivePosition)
+  if (!direction) return false
+  return direction === "long" ? candidate >= existing : candidate <= existing
+}
+
 function computeDesiredProtectionPrices(pos: LivePosition): {
   desiredSl: number
   desiredTp: number
@@ -6466,6 +6491,30 @@ async function updateProtectionOrders(
     (armedQty <= 0 ||
       Math.abs(pos.executedQuantity - armedQty) / Math.max(armedQty, 1e-12) > 0.0025)
 
+  // A replacement is a two-step exchange operation: cancel first, then place.
+  // Evaluate the cooldown *before* either cancellation starts. Previously the
+  // cancellation promises ignored the cooldown while the placement branches
+  // honoured it, which could remove a freshly armed trailing stop and then
+  // decline to replace it for up to 200 ms. The durable record still pointed at
+  // the cancelled order during that gap, so the next no-op sync could also miss
+  // the repair. Both legs share this single predicate to keep venue protection
+  // continuous while a ratchet is rate-limited.
+  const rearmCooldownMs = pos.trailingActive ? TRAILING_REARM_MS : MIN_REARM_MS
+  const needsStopLossReplacement = Boolean(
+    desiredSl > 0 &&
+    !pendingSlBlocksPlacement &&
+    pos.stopLossOrderId &&
+    (priceDrifted(pos.stopLossPrice, desiredSl, priceDriftTolerance) || qtyDrifted) &&
+    Date.now() - (pos.stopLossLastArmedAt ?? 0) >= rearmCooldownMs,
+  )
+  const needsTakeProfitReplacement = Boolean(
+    desiredTp > 0 &&
+    !pendingTpBlocksPlacement &&
+    pos.takeProfitOrderId &&
+    (priceDrifted(pos.takeProfitPrice, desiredTp, priceDriftTolerance) || qtyDrifted) &&
+    Date.now() - (pos.takeProfitLastArmedAt ?? 0) >= rearmCooldownMs,
+  )
+
   // ── Stop-Loss + Take-Profit legs: parallelised cancels, then parallel places ──
   //
   // Latency contract: control orders MUST arm "instantly" — the operator
@@ -6482,8 +6531,7 @@ async function updateProtectionOrders(
   
   // First, collect cancellation promises for both legs (if needed)
   const slCancelPromise = (async () => {
-    if (desiredSl > 0 && pos.stopLossOrderId && 
-        (priceDrifted(pos.stopLossPrice, desiredSl, priceDriftTolerance) || qtyDrifted)) {
+    if (needsStopLossReplacement) {
       // Need to re-arm SL — cancel the old one first
       return await cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss", pos.connectionId)
         .catch((err) => {
@@ -6499,8 +6547,7 @@ async function updateProtectionOrders(
   })()
 
   const tpCancelPromise = (async () => {
-    if (desiredTp > 0 && pos.takeProfitOrderId && 
-        (priceDrifted(pos.takeProfitPrice, desiredTp, priceDriftTolerance) || qtyDrifted)) {
+    if (needsTakeProfitReplacement) {
       // Need to re-arm TP — cancel the old one first
       return await cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit", pos.connectionId)
         .catch((err) => {
@@ -6558,12 +6605,7 @@ async function updateProtectionOrders(
       (
         !pos.stopLossOrderId
           ? true  // no order at all → arm immediately regardless of cooldown
-          : (priceDrifted(pos.stopLossPrice, desiredSl, priceDriftTolerance) || qtyDrifted) &&
-            // Trailing ratchets use a shorter cooldown so exchange orders track
-            // the ratcheted level within one strategy cycle (~5 s). Static price
-            // drift uses the full 30 s cooldown to absorb oscillation noise.
-            Date.now() - (pos.stopLossLastArmedAt ?? 0) >=
-              (pos.trailingActive ? TRAILING_REARM_MS : MIN_REARM_MS)
+          : needsStopLossReplacement
       )
     ) {
       // Cancel-then-replace race: if a cancel fails we must NOT place
@@ -6575,72 +6617,77 @@ async function updateProtectionOrders(
       // tick, retry next tick" so reconcile can re-evaluate.
       // NOTE: SL and TP cancellations are parallelized at the top of this
       // block to overlap RTTs. Both cancel promises resolve before we place either leg.
-      let oldGone = true
-      if (pos.stopLossOrderId) {
+      const replacingExistingStop = needsStopLossReplacement && Boolean(pos.stopLossOrderId)
+      if (replacingExistingStop && !slCancelOk) {
         // Use the pre-computed slCancelOk result from parallel cancels above
-        oldGone = slCancelOk
-        if (!oldGone) {
-          console.warn(
-            `${LOG_PREFIX} StopLoss cancel failed for ${pos.symbol} — deferring re-place to avoid duplicate reduceOnly`,
-          )
-        }
+        // and retain the currently recorded order. It is still the safest
+        // available protection until the venue confirms cancellation.
+        console.warn(
+          `${LOG_PREFIX} StopLoss cancel failed for ${pos.symbol} — deferring re-place to avoid duplicate reduceOnly`,
+        )
+        return
       }
-      if (oldGone) {
+      if (replacingExistingStop) {
         const replacedOrderId = pos.stopLossOrderId
         if (replacedOrderId) capacityBudget?.noteCancellation(replacedOrderId)
-        const reservation = reserveProtectionCapacity(capacityBudget, pos, "stop_loss")
-        if (!reservation.allowed) {
-          result.changed = true
-          return
-        }
-        const protectionClientOrderId = await prepareProtectionSubmission(
-          pos,
-          "stopLoss",
-          desiredSl,
-          effectiveQty,
-        )
-        const id = await placeProtectionOrder(
-          connector,
-          pos.symbol,
-          closeSide,
-          effectiveQty,
-          desiredSl,
-          "StopLoss",
-          pos.direction!,
-          protectionClientOrderId,
-        )
-        // Only treat the leg as "armed at desiredSl" when we actually
-        // have a confirmed numeric order id (not the "PRICE_CROSSED" sentinel
-        // which means market already blew past the SL and a force-close should
-        // happen on the next reconcile checkAndForceCloseOnSltpCross pass).
-        const slIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted" && id !== "QUOTA_EXCEEDED"
-        if (id === "QUOTA_EXCEEDED") {
-          // Account quota exhausted — suspend all protection placement for this
-          // connection for PROTECTION_QUOTA_BACKOFF_MS. Do NOT clear orderId/price
-          // so existing armed orders (if any) remain tracked.
-          markProtectionQuotaExhausted(pos.connectionId)
-          capacityBudget?.markExhausted()
-          releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
-          pos.protectionMode = "system_close_fallback"
-          setSystemProtectionLeg(pos, "stop_loss", true)
-          if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
-          result.changed = true
-          pushStep(pos, "protection_quota_system_fallback", true, "SL quota exhausted; using system-side trigger handling")
-          // Leave existing stopLossOrderId / stopLossPrice unchanged.
-        } else if (slIdOk) {
-          pos.stopLossOrderId = id!
-          pos.stopLossPrice = desiredSl
-          pos.stopLossLastArmedAt = Date.now()
-          result.changed = true
-          result.slPlaced = true
-          setSystemProtectionLeg(pos, "stop_loss", false)
-          if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
-          if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
-        } else {
-          releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
-          pos.stopLossOrderId = undefined
-          pos.stopLossPrice = 0
-        }
+        // The venue confirmed this old order is gone. Clear the durable
+        // reference before attempting the replacement so a quota/timeout
+        // failure cannot leave a phantom "armed" stop in Redis.
+        pos.stopLossOrderId = undefined
+        pos.stopLossPrice = 0
+        result.changed = true
+      }
+      const reservation = reserveProtectionCapacity(capacityBudget, pos, "stop_loss")
+      if (!reservation.allowed) {
+        result.changed = true
+        return
+      }
+      const protectionClientOrderId = await prepareProtectionSubmission(
+        pos,
+        "stopLoss",
+        desiredSl,
+        effectiveQty,
+      )
+      const id = await placeProtectionOrder(
+        connector,
+        pos.symbol,
+        closeSide,
+        effectiveQty,
+        desiredSl,
+        "StopLoss",
+        pos.direction!,
+        protectionClientOrderId,
+      )
+      // Only treat the leg as "armed at desiredSl" when we actually
+      // have a confirmed numeric order id (not the "PRICE_CROSSED" sentinel
+      // which means market already blew past the SL and a force-close should
+      // happen on the next reconcile checkAndForceCloseOnSltpCross pass).
+      const slIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted" && id !== "QUOTA_EXCEEDED"
+      if (id === "QUOTA_EXCEEDED") {
+        // Account quota exhausted — the old stop was either absent or has just
+        // been confirmed cancelled, so persist the system-close fallback rather
+        // than retaining a stale exchange order id.
+        markProtectionQuotaExhausted(pos.connectionId)
+        capacityBudget?.markExhausted()
+        releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
+        pos.protectionMode = "system_close_fallback"
+        setSystemProtectionLeg(pos, "stop_loss", true)
+        if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
+        result.changed = true
+        pushStep(pos, "protection_quota_system_fallback", true, "SL quota exhausted; using system-side trigger handling")
+      } else if (slIdOk) {
+        pos.stopLossOrderId = id!
+        pos.stopLossPrice = desiredSl
+        pos.stopLossLastArmedAt = Date.now()
+        result.changed = true
+        result.slPlaced = true
+        setSystemProtectionLeg(pos, "stop_loss", false)
+        if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
+        if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
+      } else {
+        releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
+        pos.stopLossOrderId = undefined
+        pos.stopLossPrice = 0
       }
     }
   })()
@@ -6667,70 +6714,72 @@ async function updateProtectionOrders(
       (
         !pos.takeProfitOrderId
           ? true  // no order at all → arm immediately
-          : (priceDrifted(pos.takeProfitPrice, desiredTp, priceDriftTolerance) || qtyDrifted) &&
-            Date.now() - (pos.takeProfitLastArmedAt ?? 0) >=
-              (pos.trailingActive ? TRAILING_REARM_MS : MIN_REARM_MS)
+          : needsTakeProfitReplacement
       )
     ) {
-      let oldGone = true
-      if (pos.takeProfitOrderId) {
+      const replacingExistingTakeProfit = needsTakeProfitReplacement && Boolean(pos.takeProfitOrderId)
+      if (replacingExistingTakeProfit && !tpCancelOk) {
         // Use the pre-computed tpCancelOk result from parallel cancels above
-        oldGone = tpCancelOk
-        if (!oldGone) {
-          console.warn(
-            `${LOG_PREFIX} TakeProfit cancel failed for ${pos.symbol} — deferring re-place to avoid duplicate reduceOnly`,
-          )
-        }
+        // and retain the currently recorded order until the venue confirms
+        // it has been removed.
+        console.warn(
+          `${LOG_PREFIX} TakeProfit cancel failed for ${pos.symbol} — deferring re-place to avoid duplicate reduceOnly`,
+        )
+        return
       }
-      if (oldGone) {
+      if (replacingExistingTakeProfit) {
         const replacedOrderId = pos.takeProfitOrderId
         if (replacedOrderId) capacityBudget?.noteCancellation(replacedOrderId)
-        const reservation = reserveProtectionCapacity(capacityBudget, pos, "take_profit")
-        if (!reservation.allowed) {
-          result.changed = true
-          return
-        }
-        const protectionClientOrderId = await prepareProtectionSubmission(
-          pos,
-          "takeProfit",
-          desiredTp,
-          effectiveQty,
-        )
-        const id = await placeProtectionOrder(
-          connector,
-          pos.symbol,
-          closeSide,
-          effectiveQty,
-          desiredTp,
-          "TakeProfit",
-          pos.direction!,
-          protectionClientOrderId,
-        )
-        const tpIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted" && id !== "QUOTA_EXCEEDED"
-        if (id === "QUOTA_EXCEEDED") {
-          // Mirror of the SL leg: suspend placement, preserve existing order data.
-          markProtectionQuotaExhausted(pos.connectionId)
-          capacityBudget?.markExhausted()
-          releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
-          pos.protectionMode = "system_close_fallback"
-          setSystemProtectionLeg(pos, "take_profit", true)
-          if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.takeProfit
-          result.changed = true
-          pushStep(pos, "protection_quota_system_fallback", true, "TP quota exhausted; using system-side trigger handling")
-        } else if (tpIdOk) {
-          pos.takeProfitOrderId = id!
-          pos.takeProfitPrice = desiredTp
-          pos.takeProfitLastArmedAt = Date.now()
-          result.changed = true
-          result.tpPlaced = true
-          setSystemProtectionLeg(pos, "take_profit", false)
-          if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
-          if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.takeProfit
-        } else {
-          releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
-          pos.takeProfitOrderId = undefined
-          pos.takeProfitPrice = 0
-        }
+        pos.takeProfitOrderId = undefined
+        pos.takeProfitPrice = 0
+        result.changed = true
+      }
+      const reservation = reserveProtectionCapacity(capacityBudget, pos, "take_profit")
+      if (!reservation.allowed) {
+        result.changed = true
+        return
+      }
+      const protectionClientOrderId = await prepareProtectionSubmission(
+        pos,
+        "takeProfit",
+        desiredTp,
+        effectiveQty,
+      )
+      const id = await placeProtectionOrder(
+        connector,
+        pos.symbol,
+        closeSide,
+        effectiveQty,
+        desiredTp,
+        "TakeProfit",
+        pos.direction!,
+        protectionClientOrderId,
+      )
+      const tpIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted" && id !== "QUOTA_EXCEEDED"
+      if (id === "QUOTA_EXCEEDED") {
+        // Mirror of the SL leg: preserve the fact that the venue order is
+        // absent and enable the durable system-close fallback.
+        markProtectionQuotaExhausted(pos.connectionId)
+        capacityBudget?.markExhausted()
+        releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
+        pos.protectionMode = "system_close_fallback"
+        setSystemProtectionLeg(pos, "take_profit", true)
+        if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.takeProfit
+        result.changed = true
+        pushStep(pos, "protection_quota_system_fallback", true, "TP quota exhausted; using system-side trigger handling")
+      } else if (tpIdOk) {
+        pos.takeProfitOrderId = id!
+        pos.takeProfitPrice = desiredTp
+        pos.takeProfitLastArmedAt = Date.now()
+        result.changed = true
+        result.tpPlaced = true
+        setSystemProtectionLeg(pos, "take_profit", false)
+        if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
+        if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.takeProfit
+      } else {
+        releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
+        pos.takeProfitOrderId = undefined
+        pos.takeProfitPrice = 0
       }
     }
   })()
@@ -12958,6 +13007,20 @@ export async function recalculateAndApplySLTP(
       return position
     }
 
+    // `syncLiveFromPseudo` is intentionally fire-and-forget so it never
+    // blocks the realtime tick. Two ratchets can therefore reach this locked
+    // read-modify-write path out of order. Reject an older absolute level here
+    // (after rereading Redis under the lock) rather than allowing it to loosen
+    // an already tightened long/short stop on the exchange.
+    const isAutomatedTrailingSync =
+      !overrides?.manualProtection &&
+      !overrides?.clearManualProtection &&
+      overrides?.trailingActive === true &&
+      Object.prototype.hasOwnProperty.call(overrides || {}, "trailingStopPrice")
+    if (isAutomatedTrailingSync && !isTrailingStopTightening(position, overrides?.trailingStopPrice)) {
+      return position
+    }
+
     // Capture pre-override values so we can audit the diff in progression.
     // Note: we deliberately do NOT touch `assignedStopLoss` /
     // `assignedTakeProfit` — those are the immutable strategy-contract
@@ -13092,6 +13155,62 @@ export async function recalculateAndApplySLTP(
 }
 
 /**
+ * Decode a pseudo-position protection contract into market-price percents.
+ *
+ * Current pseudo positions persist explicit `*_pct` fields alongside the
+ * legacy factor/ratio fields. Those explicit values are authoritative even
+ * below one percent: a 0.8% Signal stop must never be misread as the decimal
+ * ratio 0.8 (= 80%). Older rows without explicit fields retain the documented
+ * ratio-or-percent compatibility fallback.
+ */
+function resolvePseudoProtectionPercents(pseudoPos: any): {
+  slPct: number | undefined
+  tpPct: number | undefined
+} {
+  const explicitSlPct = Number(pseudoPos?.stoploss_pct ?? pseudoPos?.stopLossPct)
+  const explicitTpPct = Number(pseudoPos?.takeprofit_pct ?? pseudoPos?.takeProfitPct)
+  const rawSL = Number(pseudoPos?.stoploss_ratio ?? pseudoPos?.stopLoss ?? NaN)
+  const rawTP = Number(pseudoPos?.takeprofit_factor ?? pseudoPos?.takeProfit ?? NaN)
+  const coordinate = String(
+    pseudoPos?.protection_coordinate ?? pseudoPos?.takeprofit_coordinate ?? "",
+  ).trim().toLowerCase()
+  const asNonNegativePct = (value: number): number | undefined =>
+    Number.isFinite(value) ? Math.max(0, value) : undefined
+
+  if (Number.isFinite(explicitSlPct) || Number.isFinite(explicitTpPct)) {
+    return {
+      slPct: asNonNegativePct(explicitSlPct),
+      tpPct: asNonNegativePct(explicitTpPct),
+    }
+  }
+
+  if (coordinate === "position_cost_ratio") {
+    const positionCostPct = normalizePositionCostPercent(
+      pseudoPos?.position_cost_pct ?? pseudoPos?.positionCostPct,
+    )
+    return {
+      slPct: asNonNegativePct(
+        stopLossPositionCostRatioToPercent(positionCostPct, rawTP, rawSL),
+      ),
+      tpPct: asNonNegativePct(
+        takeProfitPositionCostRatioToPercent(positionCostPct, rawTP),
+      ),
+    }
+  }
+
+  const legacyPercent = (value: number): number | undefined => {
+    if (!Number.isFinite(value)) return undefined
+    // Legacy ratio form used `0.02` for 2%; literal percent values were
+    // stored as 1, 2, … . Prefer the explicit fields above whenever present.
+    return Math.max(0, Math.abs(value) < 1 ? value * 100 : value)
+  }
+  return {
+    slPct: legacyPercent(rawSL),
+    tpPct: legacyPercent(rawTP),
+  }
+}
+
+/**
  * ── syncLiveFromPseudo (spec §6) ───────────────────────────────���─────
  *
  * Copy SL/TP percentages from a pseudo (strategy-side virtual) position
@@ -13109,11 +13228,10 @@ export async function recalculateAndApplySLTP(
  * Inputs:
  *   - `pseudoPos.symbol` (string, required) and `pseudoPos.side`
  *     ("long" | "short") — match key against live positions.
- *   - `pseudoPos.stoploss_ratio` / `pseudoPos.takeprofit_factor`
- *     (ratio form, e.g. 0.02 = 2%) OR `pseudoPos.stopLoss` /
- *     `pseudoPos.takeProfit` (percent form). Auto-detected by
- *     magnitude — anything < 1 is treated as ratio and multiplied by
- *     100, anything ≥ 1 is treated as already-percent.
+ *   - Current pseudo rows use `stoploss_pct` / `takeprofit_pct` as the
+ *     unambiguous market-price percentage contract (including values below
+ *     one percent). Legacy factor/ratio rows are decoded only when those
+ *     explicit fields are absent.
  *
  * Idempotent: if percentages unchanged `recalculateAndApplySLTP`
  * no-ops on the diff. Per-position errors are swallowed.
@@ -13140,13 +13258,8 @@ export async function syncLiveFromPseudo(
     const side = normalizeLiveTradeDirection(pseudoPos?.direction, pseudoPos?.side)
     if (!symbol || !side) return
 
-    const rawSL = Number(pseudoPos?.stoploss_ratio ?? pseudoPos?.stopLoss ?? NaN)
-    const rawTP = Number(pseudoPos?.takeprofit_factor ?? pseudoPos?.takeProfit ?? NaN)
-    if (!Number.isFinite(rawSL) && !Number.isFinite(rawTP)) return
-
-    // Ratio (< 1) → percent; already-percent (≥ 1) → keep as-is.
-    let slPct = Number.isFinite(rawSL) ? (Math.abs(rawSL) < 1 ? rawSL * 100 : rawSL) : undefined
-    const tpPct = Number.isFinite(rawTP) ? (Math.abs(rawTP) < 1 ? rawTP * 100 : rawTP) : undefined
+    const { slPct, tpPct } = resolvePseudoProtectionPercents(pseudoPos)
+    if (slPct === undefined && tpPct === undefined) return
 
     // ── Trailing-aware SL pull-through ���───────���─────────────────────
     // When the pseudo's trailing-stop machine is ARMED (multi-step
@@ -13264,6 +13377,15 @@ export async function syncLiveFromPseudo(
           // updateProtectionOrders owns its absolute SL/TP and trailing ratchet
           // until the operator explicitly restores strategy defaults.
           if (livePos.manualProtectionOverride) continue
+          // Fast-path stale guard. The locked recalculation path performs the
+          // same check again against a fresh Redis read; this early skip avoids
+          // unnecessary venue work when an older fire-and-forget ratchet
+          // arrives after a tighter one has already been persisted.
+          if (
+            trailingActive &&
+            trailingStopPrice > 0 &&
+            !isTrailingStopTightening(livePos, trailingStopPrice)
+          ) continue
           let effectiveSlPct = slPct
           // CRITICAL: Guard trailing stop calculation against NaN and division errors
           if (trailingActive && Number.isFinite(trailingStopPrice) && trailingStopPrice > 0) {
@@ -13398,6 +13520,8 @@ export const __liveStageTest = {
   physicalAccumulationCount,
   sweepOrphanProtectionOrders,
   updateProtectionOrders,
+  resolvePseudoProtectionPercents,
+  isTrailingStopTightening,
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)
   },

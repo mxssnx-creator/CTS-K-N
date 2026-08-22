@@ -117,6 +117,17 @@ export class RealtimeProcessor {
   private _perSymbolLocks = new Map<string, boolean>()
   private static readonly HEARTBEAT_INTERVAL_MS = 1000
 
+  // A trailing price may ratchet several times while an exchange request for
+  // the same pseudo position is still in flight. Keep at most one running
+  // request and one latest snapshot per position, then replay that latest
+  // state once the request completes. This avoids an unbounded tail of
+  // fire-and-forget promises / connector instances during a fast market while
+  // preserving the newest (and therefore tightest) stop update.
+  private pendingPseudoLiveSyncs = new Map<string, {
+    latest: any | null
+    inFlight: Promise<void>
+  }>()
+
   // ── Live-position exchange sync throttle ───────────────────────────────
   // `syncWithExchange` from live-stage refreshes mark prices, places /
   // heals SL/TP protection ("control") orders, detects SL/TP crosses and
@@ -1013,7 +1024,9 @@ export class RealtimeProcessor {
         const safeStepRatio = Math.max(stepRatio, minStepRatio)
         const stepDistance = anchorStored * safeStepRatio
         if (side === "long") {
-          if (currentPrice <= anchorStored + stepDistance) return
+          // A configured step is inclusive: exactly one full favourable step
+          // must ratchet immediately, not wait for a further market tick.
+          if (currentPrice < anchorStored + stepDistance) return
           const newAnchor = currentPrice
           const newStop = newAnchor * (1 - stopRatio)
           // Ratchet — never relax the stop downward for longs
@@ -1035,11 +1048,19 @@ export class RealtimeProcessor {
           })
           position.trailing_anchor = String(newAnchor)
           position.trailing_stop_price = String(newStop)
+          void trackTrailingStopMetrics(
+            this.connectionId,
+            position.symbol,
+            "ratcheted",
+            stopRatio,
+            gainRatio,
+            newStop,
+          ).catch(() => {})
           // Spec §6: re-arm matching live position's exchange SL/TP.
           void this.fireSyncLiveFromPseudo(position).catch(() => {})
         } else {
           // SHORT: ratchet when price drops below anchor - step distance
-          if (currentPrice >= anchorStored - stepDistance) return
+          if (currentPrice > anchorStored - stepDistance) return
           const newAnchor = currentPrice
           const newStop = newAnchor * (1 + stopRatio)
           if (currentTrailingStop > 0 && newStop >= currentTrailingStop) {
@@ -1057,6 +1078,14 @@ export class RealtimeProcessor {
           })
           position.trailing_anchor = String(newAnchor)
           position.trailing_stop_price = String(newStop)
+          void trackTrailingStopMetrics(
+            this.connectionId,
+            position.symbol,
+            "ratcheted",
+            stopRatio,
+            gainRatio,
+            newStop,
+          ).catch(() => {})
           // Spec §6: re-arm matching live position's exchange SL/TP.
           void this.fireSyncLiveFromPseudo(position).catch(() => {})
         }
@@ -1082,15 +1111,21 @@ export class RealtimeProcessor {
         updated_at: new Date().toISOString(),
       })
 
+      // Keep the object that initiated this tick in sync with Redis before
+      // handing it to the fire-and-forget live synchroniser.  Without this
+      // assignment the legacy path would publish the *previous* (or zero)
+      // trailing price, so the exchange-side stop could lag one processing
+      // cycle behind the pseudo ratchet.  The fixed and signal-dynamic paths
+      // already make this in-place update; legacy positions need the same
+      // immediate protection contract.
+      position.trailing_stop_price = String(newTrailingStop)
+
       // ── Pseudo → Live sync hook (spec §6) ─────────────────────────
       //
       // Single-step path tail. Call the sync helper so any matching
-      // live position re-arms its exchange-side SL/TP at the new
-      // trailing stop. We intentionally use the percent form
-      // (`stoploss_ratio`) rather than the absolute trailing price —
-      // `recalculateAndApplySLTP` re-derives the trigger from the
-      // percent + live entry price, which is correct even when the
-      // live entry differs from the pseudo entry by fees / slippage.
+      // live position re-arms its exchange-side SL/TP at the new absolute
+      // trailing stop. `syncLiveFromPseudo` preserves that absolute price,
+      // rather than deriving a stale percentage from the live entry.
       //
       // Fire-and-forget: `syncLiveFromPseudo` returns Promise<void>
       // and swallows every error. Never await on the hot path.
@@ -1106,7 +1141,7 @@ export class RealtimeProcessor {
    * multi-step and single-step trailing branches without duplicating
    * the connector boilerplate. Best-effort; logs and swallows errors.
    */
-  private async fireSyncLiveFromPseudo(position: any): Promise<void> {
+  private async syncLiveFromPseudoNow(position: any): Promise<void> {
     try {
       const getConnection = await __ensureConnModule()
       const connection = await getConnection(this.connectionId)
@@ -1127,8 +1162,60 @@ export class RealtimeProcessor {
       const { syncLiveFromPseudo } = await __ensureLiveStageModule()
       await syncLiveFromPseudo(this.connectionId, position, connector)
     } catch (err) {
-      console.warn(`[v0] fireSyncLiveFromPseudo error for ${position?.id}:`, err instanceof Error ? err.message : String(err))
+      console.warn(`[v0] syncLiveFromPseudoNow error for ${position?.id}:`, err instanceof Error ? err.message : String(err))
     }
+  }
+
+  /**
+   * Coalesce asynchronous pseudo → live trailing synchronisation per
+   * position. `updateTrailingStop` deliberately does not await exchange work
+   * on its hot path, but a volatile symbol can otherwise enqueue every
+   * intermediate ratchet behind a slow venue. The first snapshot is sent
+   * immediately; while it runs, newer snapshots replace a single pending
+   * slot. Once the first request completes, only the most recent state is
+   * replayed. The live-stage's monotonic guard remains the final authority.
+   */
+  private async fireSyncLiveFromPseudo(position: any): Promise<void> {
+    const positionId = String(position?.id || "").trim()
+    if (!positionId) {
+      await this.syncLiveFromPseudoNow(position)
+      return
+    }
+
+    const key = `${this.connectionId}:${positionId}`
+    // Redis hash reads return plain values. A shallow snapshot is enough to
+    // make the protection fields stable for this queued exchange request;
+    // avoiding a deep clone keeps the hot path cheap.
+    const snapshot = { ...position }
+    const active = this.pendingPseudoLiveSyncs.get(key)
+    if (active) {
+      active.latest = snapshot
+      return active.inFlight
+    }
+
+    const entry = {
+      latest: null as any | null,
+      inFlight: Promise.resolve(),
+    }
+    const drain = async (): Promise<void> => {
+      let next: any | null = snapshot
+      try {
+        while (next) {
+          await this.syncLiveFromPseudoNow(next)
+          next = entry.latest
+          entry.latest = null
+        }
+      } finally {
+        // Only delete our own entry. This protects a newly scheduled run in
+        // the unlikely event a caller reaches this point during cleanup.
+        if (this.pendingPseudoLiveSyncs.get(key) === entry) {
+          this.pendingPseudoLiveSyncs.delete(key)
+        }
+      }
+    }
+    entry.inFlight = drain()
+    this.pendingPseudoLiveSyncs.set(key, entry)
+    return entry.inFlight
   }
 
   /**

@@ -34,9 +34,10 @@ return acceptedIndexes
 
 const INCREMENT_HISTORIC_AGGREGATE_LUA = `
 -- One Set per generation replaces one Redis key per config/symbol marker.
--- Honour a legacy scalar marker during rolling upgrades so an interrupted
--- pre-compaction generation can never be counted twice.
-if redis.call('GET', KEYS[3]) then
+-- Honour both a legacy scalar marker and the previous full-key Set member
+-- during rolling upgrades so an interrupted pre-compaction generation can
+-- never be counted twice when the compact member representation is enabled.
+if redis.call('GET', KEYS[3]) or redis.call('SISMEMBER', KEYS[1], KEYS[3]) == 1 then
   redis.call('SADD', KEYS[1], ARGV[2])
   redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
   return 0
@@ -60,7 +61,7 @@ local accepted = 0
 for i = 1, markerCount do
   local member = ARGV[2 + i]
   local legacyKey = KEYS[2 + i]
-  if redis.call('GET', legacyKey) then
+  if redis.call('GET', legacyKey) or redis.call('SISMEMBER', KEYS[1], legacyKey) == 1 then
     redis.call('SADD', KEYS[1], member)
   elseif redis.call('SADD', KEYS[1], member) == 1 then
     accepted = accepted + 1
@@ -84,6 +85,7 @@ type RedisListClient = {
   get?: (key: string) => Promise<string | null>
   sadd?: (key: string, ...members: string[]) => Promise<number>
   srem?: (key: string, ...members: string[]) => Promise<number>
+  sismember?: (key: string, member: string) => Promise<number>
   lrange: (key: string, start: number, stop: number) => Promise<string[]>
   multi: () => {
     [key: string]: any
@@ -287,15 +289,17 @@ export async function incrementHistoricAggregateOnce(
   aggregateKey: string,
   increments: readonly HistoricAggregateIncrement[],
   ttlSeconds: number,
+  markerMember = markerKey,
 ): Promise<boolean> {
   const boundedTtl = Math.max(60, Math.floor(ttlSeconds))
   const markerCollectionKey = historicAggregateMarkerCollectionKey(aggregateKey)
+  const normalizedMember = String(markerMember || markerKey)
   const normalized = increments.filter((item) =>
     item && typeof item.field === "string" && item.field.length > 0 && Number.isFinite(item.value),
   )
 
   if (typeof client.eval === "function") {
-    const args = [String(boundedTtl), markerKey]
+    const args = [String(boundedTtl), normalizedMember]
     for (const item of normalized) args.push(item.field, String(item.value))
     const result = await client.eval(INCREMENT_HISTORIC_AGGREGATE_LUA, {
       keys: [markerCollectionKey, aggregateKey, markerKey],
@@ -308,8 +312,11 @@ export async function incrementHistoricAggregateOnce(
     const legacyMarker = typeof client.get === "function"
       ? await client.get(markerKey).catch(() => null)
       : null
-    if (legacyMarker) {
-      await client.sadd?.(markerCollectionKey, markerKey)
+    const legacyCollectionMember = typeof client.sismember === "function"
+      ? Number(await client.sismember(markerCollectionKey, markerKey).catch(() => 0)) === 1
+      : false
+    if (legacyMarker || legacyCollectionMember) {
+      await client.sadd?.(markerCollectionKey, normalizedMember)
       const legacyPipeline = client.multi()
       legacyPipeline.expire(markerCollectionKey, boundedTtl)
       await legacyPipeline.exec()
@@ -318,7 +325,7 @@ export async function incrementHistoricAggregateOnce(
     if (typeof client.sadd !== "function") {
       throw new Error("Historic aggregate marker compaction requires Redis SADD")
     }
-    const markerAdded = Number(await client.sadd(markerCollectionKey, markerKey)) === 1
+    const markerAdded = Number(await client.sadd(markerCollectionKey, normalizedMember)) === 1
     if (!markerAdded) return false
     const pipeline = client.multi()
     for (const item of normalized) pipeline.hincrbyfloat(aggregateKey, item.field, item.value)
@@ -335,7 +342,7 @@ export async function incrementHistoricAggregateOnce(
     } catch (error) {
       // Keep a failed local transaction retryable. Real Redis executes the Lua
       // path above as one server-side operation.
-      await client.srem?.(markerCollectionKey, markerKey).catch(() => 0)
+      await client.srem?.(markerCollectionKey, normalizedMember).catch(() => 0)
       throw error
     }
     return true
@@ -353,16 +360,21 @@ export async function incrementHistoricAggregatesOnce(
   aggregateKey: string,
   increments: readonly HistoricAggregateIncrement[],
   ttlSeconds: number,
+  markerMembers?: readonly string[],
 ): Promise<number> {
   if (markerKeys.length === 0) return 0
   const boundedTtl = Math.max(60, Math.floor(ttlSeconds))
   const markerCollectionKey = historicAggregateMarkerCollectionKey(aggregateKey)
+  const normalizedMarkerMembers = markerKeys.map((markerKey, index) => {
+    const candidate = markerMembers?.[index]
+    return typeof candidate === "string" && candidate.length > 0 ? candidate : markerKey
+  })
   const normalized = increments.filter((item) =>
     item && typeof item.field === "string" && item.field.length > 0 && Number.isFinite(item.value),
   )
 
   if (typeof client.eval === "function") {
-    const args = [String(boundedTtl), String(markerKeys.length), ...markerKeys]
+    const args = [String(boundedTtl), String(markerKeys.length), ...normalizedMarkerMembers]
     for (const item of normalized) args.push(item.field, String(item.value))
     const result = await client.eval(INCREMENT_HISTORIC_AGGREGATES_LUA, {
       keys: [markerCollectionKey, aggregateKey, ...markerKeys],
@@ -372,13 +384,15 @@ export async function incrementHistoricAggregatesOnce(
   }
 
   let accepted = 0
-  for (const markerKey of markerKeys) {
+  for (let index = 0; index < markerKeys.length; index++) {
+    const markerKey = markerKeys[index]
     if (await incrementHistoricAggregateOnce(
       client,
       markerKey,
       aggregateKey,
       normalized,
       boundedTtl,
+      normalizedMarkerMembers[index],
     )) accepted++
   }
   return accepted

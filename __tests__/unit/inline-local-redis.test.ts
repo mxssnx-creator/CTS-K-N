@@ -163,6 +163,47 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     ]))
   })
 
+  it("finishes a marker cleanup-sized scan after more than two thousand examined keys", async () => {
+    const redis = new InlineLocalRedis()
+    for (let index = 0; index < 2_400; index++) {
+      await redis.set(`historic:aggregate-marker:large:${index}`, "1")
+      await redis.hset(`unrelated:large:${index}`, { value: String(index) })
+    }
+
+    const collected: string[] = []
+    let cursor = "0"
+    let pages = 0
+    do {
+      const [next, keys] = await redis.scan(
+        cursor,
+        "MATCH",
+        "historic:aggregate-marker:large:*",
+        "COUNT",
+        100,
+      )
+      cursor = next
+      collected.push(...keys)
+      pages++
+    } while (cursor !== "0" && pages < 100)
+
+    expect(cursor).toBe("0")
+    expect(pages).toBeGreaterThan(20)
+    expect(collected).toHaveLength(2_400)
+    expect(new Set(collected).size).toBe(2_400)
+  })
+
+  it("never evicts durable all-indicator configuration records under advisory pressure", async () => {
+    const redis = new InlineLocalRedis()
+    for (let index = 0; index < 150; index++) {
+      await redis.set(`indication:connection:config:cfg-${index}`, JSON.stringify({ id: index }))
+    }
+
+    ;(redis as any).evictOldRecords()
+
+    await expect(redis.get("indication:connection:config:cfg-0")).resolves.toContain('"id":0')
+    await expect(redis.get("indication:connection:config:cfg-149")).resolves.toContain('"id":149')
+  })
+
   it("reclaims expired TTL keys in bounded engine-safe slices", async () => {
     jest.useFakeTimers()
     jest.setSystemTime(new Date("2026-08-11T00:00:00.000Z"))
@@ -276,6 +317,13 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       await writer.rpush("list:persist", "first", "second")
       await writer.zadd("z:persist", 10, "member")
       await writer.expire("string:persist", 60)
+      // Exhaustive indication snapshots and Main fingerprints are deterministic
+      // cache/projection products. They must not bloat restart snapshots; the
+      // engine recreates them from durable config, market and outcome state.
+      await writer.set("indications_snapshot:conn:BTCUSDT", "derived")
+      await writer.sadd("indications_snapshot:index:conn", "BTCUSDT")
+      await writer.hset("strategies:conn:BTCUSDT:main:fp:v3", { fp: "derived" })
+      await writer.expire("indications_snapshot:conn:BTCUSDT", 60)
 
       await expect(writer.saveToDisk()).resolves.toBe(true)
       const snapshot = await readFile(snapshotPath, "utf8")
@@ -283,6 +331,9 @@ describe("InlineLocalRedis compatibility and persistence", () => {
         v: 2,
         mutationVersion: expect.any(Number),
       })
+      expect(snapshot).not.toContain("indications_snapshot:conn:BTCUSDT")
+      expect(snapshot).not.toContain("indications_snapshot:index:conn")
+      expect(snapshot).not.toContain("strategies:conn:BTCUSDT:main:fp:v3")
 
       resetInlineGlobals()
       const reader = new InlineLocalRedis()
@@ -294,6 +345,9 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       await expect(reader.lrange("list:persist", 0, -1)).resolves.toEqual(["first", "second"])
       await expect(reader.zscore("z:persist", "member")).resolves.toBe("10")
       await expect(reader.ttl("string:persist")).resolves.toBeGreaterThan(0)
+      await expect(reader.get("indications_snapshot:conn:BTCUSDT")).resolves.toBeNull()
+      await expect(reader.smembers("indications_snapshot:index:conn")).resolves.toEqual([])
+      await expect(reader.hgetall("strategies:conn:BTCUSDT:main:fp:v3")).resolves.toEqual({})
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

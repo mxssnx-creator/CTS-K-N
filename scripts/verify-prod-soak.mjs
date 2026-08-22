@@ -10,6 +10,15 @@ const SIGNAL_OBSERVATION_INTERVAL_MS = Math.max(
   30_000,
   Number(process.env.SIGNAL_OBSERVATION_INTERVAL_MS || 30_000),
 )
+// Startup is intentionally excluded from the measured soak window. A cold
+// 32-symbol historic graph may need minutes to publish its first productive
+// Main cycle on a constrained Linux host; treating that bounded bootstrap as
+// a 0-cycle regression made the verifier fail while the engine was still
+// correctly gated. Operators can shorten this only for focused diagnostics.
+const BOOTSTRAP_READY_TIMEOUT_MS = Math.max(
+  120_000,
+  Number(process.env.SOAK_BOOTSTRAP_READY_TIMEOUT_MS || 10 * 60_000),
+)
 const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.SYMBOL_COUNT || 12)))
 const START_SIMULATED_ENGINE = process.env.START_SIMULATED_ENGINE === "1"
 const VERIFY_SIGNAL_ENGINE = process.env.VERIFY_SIGNAL_ENGINE === "1"
@@ -362,7 +371,9 @@ function signalRuntimeSample(
     ? Object.entries(settings.sources)
     : []
   const connectionStatus = Array.isArray(statusPayload?.connections)
-    ? statusPayload.connections.find((item) => String(item?.id) === String(connectionId)) || {}
+    ? statusPayload.connections.find((item) =>
+      String(item?.connectionId ?? item?.id) === String(connectionId),
+    ) || {}
     : {}
   const sourceHealth = Array.isArray(connectionStatus?.sourceHealth)
     ? connectionStatus.sourceHealth
@@ -655,17 +666,12 @@ async function main() {
       throw new Error("Safe soak unexpectedly enabled live exchange trading")
     }
 
-    // Race the idempotent start lock deliberately; only one owner may attach.
-    await Promise.all(Array.from({ length: 4 }, () => request("/api/trade-engine/start-all", {
-      method: "POST",
-      timeoutMs: 120_000,
-    })))
-
-    // QuickStart commits settings before its intentionally asynchronous engine
-    // boot has necessarily published the new runtime inventory. A network
-    // Redis cold install makes that hand-off visible for a few seconds; do not
-    // treat the prior migration basket as the first soak sample. Wait for the
-    // exact configured basket while still failing on a stalled start.
+    // QuickStart already performs the one targeted start for `connectionId`.
+    // Do not call start-all here: it starts unrelated assigned engines and
+    // then force-takes over this very engine, resetting its historic/main
+    // hand-off while the verifier is about to measure it. This fixture must
+    // validate the requested connection, not mutate global fleet ownership.
+    // Wait until that targeted engine publishes the exact configured basket.
     const inventoryDeadline = Date.now() + 120_000
     let lastInventory = ""
     while (Date.now() < inventoryDeadline) {
@@ -863,6 +869,57 @@ async function main() {
     () => `/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`,
     () => `/api/trade-engine/detailed-logs?connectionId=${encodeURIComponent(connectionId)}`,
   ]
+
+  // Settings writes above can legitimately schedule a historic recoordination.
+  // Begin the measured soak only once the *targeted* engine has published its
+  // first real Main cycle for the exact basket. This distinguishes a bounded
+  // cold-start from a stuck engine and prevents unrelated global starts from
+  // being mistaken for a Main-cycle regression.
+  const bootstrapWaitStartedAt = Date.now()
+  const bootstrapReadyDeadline = bootstrapWaitStartedAt + BOOTSTRAP_READY_TIMEOUT_MS
+  let bootstrapReady = !START_SIMULATED_ENGINE
+  let bootstrapDiagnostic = "not required"
+  while (!bootstrapReady && Date.now() < bootstrapReadyDeadline) {
+    const [statusResponse, statsResponse] = await Promise.all([
+      requestWithRetry("/api/trade-engine/status-all", { timeoutMs: 120_000 }),
+      requestWithRetry(
+        `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
+        { timeoutMs: 120_000 },
+      ),
+    ])
+    const engine = Array.isArray(statusResponse.json?.engines)
+      ? statusResponse.json.engines.find((entry) => String(entry?.connectionId) === connectionId)
+      : null
+    const activeSymbols = Array.isArray(engine?.engineStatus?.symbols)
+      ? engine.engineStatus.symbols.map(String)
+      : []
+    const main = strategyRuntimeSample(statsResponse.json)
+    const historic = progressionSample(statsResponse.json)
+    const exactBasket =
+      activeSymbols.length === SYMBOLS.length &&
+      activeSymbols.every((symbol, index) => symbol === SYMBOLS[index])
+    const historicComplete =
+      historic.historicSymbols === SYMBOLS.length &&
+      historic.historicTotal === SYMBOLS.length
+    bootstrapDiagnostic = JSON.stringify({
+      running: engine?.isEngineRunning === true,
+      exactBasket,
+      activeSymbols: activeSymbols.length,
+      historic: `${historic.historicSymbols}/${historic.historicTotal}`,
+      mainCycles: main.mainCycles,
+      mainCreated: main.mainCreated,
+      mainReused: main.mainReused,
+      phase: statsResponse.json?.phase || statsResponse.json?.metadata?.phase || "",
+    })
+    bootstrapReady = engine?.isEngineRunning === true && exactBasket && historicComplete && main.mainCycles >= 1
+    if (!bootstrapReady) await sleep(1_000)
+  }
+  if (!bootstrapReady) {
+    throw new Error(
+      `Targeted Main engine did not become productive within ${BOOTSTRAP_READY_TIMEOUT_MS}ms: ${bootstrapDiagnostic}`,
+    )
+  }
+  const bootstrapReadyWaitMs = Date.now() - bootstrapWaitStartedAt
 
   const startedAt = Date.now()
   const progression = []
@@ -1733,6 +1790,7 @@ async function main() {
     validationScope: SIGNAL_FOCUSED_SOAK ? "signal-engine" : "full-system",
     orderRequests: 0,
     durationMs: Date.now() - startedAt,
+    bootstrapReadyWaitMs,
     configuredDurationMs: DURATION_MS,
     productiveCompletionGraceMs: PRODUCTIVE_COMPLETION_GRACE_MS,
     symbols: SYMBOLS.length,

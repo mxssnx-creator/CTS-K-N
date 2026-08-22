@@ -303,6 +303,56 @@ describe("BingX Prod-VST connector contract", () => {
     expect(requests.filter((request) => request.pathname === "/openApi/swap/v2/trade/openOrders")).toHaveLength(2)
   })
 
+  test("invalidates the aggregate open-order snapshot after a VST protection order is armed", async () => {
+    let stopOpen = false
+    const requests: Array<{ pathname: string; method: string }> = []
+    global.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      const method = String(init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase()
+      requests.push({ pathname: url.pathname, method })
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/openOrders") {
+        return Response.json({
+          code: 0,
+          data: { orders: stopOpen ? [{ orderId: "vst-stop-2", symbol: "BTC-USDT" }] : [] },
+        })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/order" && method === "POST") {
+        stopOpen = true
+        return Response.json({ code: 0, data: { order: { orderId: "vst-stop-2" } } })
+      }
+      throw new Error(`Unexpected request: ${method} ${url.pathname}`)
+    }) as typeof fetch
+
+    const connector = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+    ;(connector as any).getSdkTradeService = jest.fn(async () => null)
+
+    // Populate the aggregate cache before a protection mutation. Before this
+    // regression fix, the subsequent live-stage liveness sweep reused this
+    // empty snapshot and unnecessarily cancelled/recreated an unchanged TP.
+    await expect(connector.getOpenOrders()).resolves.toEqual([])
+    await expect(connector.placeStopOrder("BTCUSDT", "sell", 0.001, 59000, "stop_loss", {
+      positionSide: "LONG",
+      hedgeMode: true,
+      reduceOnly: true,
+      clientOrderId: "cts-vst-stop-cache-2",
+    })).resolves.toMatchObject({ success: true, orderId: "vst-stop-2" })
+    await expect(connector.getOpenOrders()).resolves.toEqual([
+      expect.objectContaining({ orderId: "vst-stop-2" }),
+    ])
+
+    expect(requests.filter((request) => request.pathname === "/openApi/swap/v2/trade/openOrders")).toHaveLength(2)
+  })
+
   test("pins every authenticated Prod-VST request to an explicit official .pro origin", async () => {
     process.env.BINGX_VST_ORIGIN = BINGX_PROD_VST_FALLBACK_ORIGIN
     const seen: URL[] = []

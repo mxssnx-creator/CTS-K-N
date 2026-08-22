@@ -237,6 +237,25 @@ function historicAggregateMarkerKey(
   return `historic:aggregate-marker:${connectionId}:${kind}:${configId}:${scope.replace(/[^A-Za-z0-9._:-]/g, "_")}`
 }
 
+/**
+ * The aggregate key already scopes a marker to one connection, kind and
+ * historic generation.  Store only the exact config/symbol identity inside
+ * its idempotency Set instead of repeating the complete Redis key hundreds of
+ * thousands of times during a full 32-symbol indication bootstrap.
+ *
+ * JSON makes the pair unambiguous even for imported/custom config IDs.  The
+ * full marker key is still supplied to the aggregate helper for rolling-upgrade
+ * compatibility with scalar and older full-key marker members.
+ */
+function historicAggregateMarkerMember(configId: string, scope: string): string {
+  const normalizedScope = String(scope || "")
+  const separator = normalizedScope.lastIndexOf(":")
+  const symbol = separator >= 0
+    ? normalizedScope.slice(separator + 1)
+    : normalizedScope
+  return JSON.stringify([String(configId || ""), symbol])
+}
+
 export interface ProcessingResult {
   indicationConfigs: number
   indicationResults: number
@@ -1538,14 +1557,18 @@ export class ConfigSetProcessor {
               // One atomic script replaces one awaited EVAL per alias. Config
               // identities remain separate Set members and retry-safe, while the
               // aggregate receives the exact accepted-alias multiplier.
+              const aggregateMarkerKeys = calculationConfigs.map((config) => historicAggregateMarkerKey(
+                this.connectionId,
+                "indication",
+                config.id,
+                dedupeScope,
+              ))
+              const aggregateMarkerMembers = calculationConfigs.map((config) =>
+                historicAggregateMarkerMember(config.id, dedupeScope),
+              )
               const acceptedAliases = await incrementHistoricAggregatesOnce(
                 client as any,
-                calculationConfigs.map((config) => historicAggregateMarkerKey(
-                  this.connectionId,
-                  "indication",
-                  config.id,
-                  dedupeScope,
-                )),
+                aggregateMarkerKeys,
                 aggregateKey,
                 [
                   { field: "result_count", value: results.length },
@@ -1554,6 +1577,7 @@ export class ConfigSetProcessor {
                   { field: "neutral_count", value: neutralCount },
                 ],
                 7 * 24 * 60 * 60,
+                aggregateMarkerMembers,
               )
               return acceptedAliases * results.length
             },
@@ -1879,6 +1903,7 @@ export class ConfigSetProcessor {
                         { field: "pnl_sum", value: grossProfit - grossLoss },
                       ],
                       7 * 24 * 60 * 60,
+                      historicAggregateMarkerMember(config.id, dedupeScope),
                     )
                   }
 

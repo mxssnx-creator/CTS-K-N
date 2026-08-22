@@ -1564,15 +1564,24 @@ describe("requested regression guardrails", () => {
     expect(configCounts).toContain("serveExpiredImmediately: true")
   })
 
-  test("detailed lifecycle monitoring requires both heartbeat and runtime progress to be stale", () => {
+  test("detailed lifecycle monitoring separates delayed historic work from a lost bootstrap worker", () => {
     const source = read("app/api/trade-engine/detailed-logs/route.ts")
+    const engine = read("lib/trade-engine/engine-manager.ts")
 
     expect(source).toContain("const historicProgressAt = Math.max(")
     expect(source).toContain("const runtimeActivityAt = Math.max(")
     expect(source).toContain("toEpochMs(progHash.last_strategy_tick_at)")
+    expect(source).toContain("toEpochMs(prehistoricHash.config_work_last_activity_at)")
+    expect(source).toContain("const bootstrapHeartbeatAt = Math.max(")
+    expect(source).toContain("const historicProgressDelayed =")
+    expect(source).toContain("const bootstrapLivenessAt = Math.max(bootstrapHeartbeatAt, heartbeatAt)")
     expect(source).toContain("heartbeatAgeMs > HEARTBEAT_STALE_MS) &&")
     expect(source).toContain("runtimeActivityAgeMs > PROCESSING_STALE_MS")
     expect(source).toContain("historicProgressAgeMs > PROCESSING_STALE_MS")
+    expect(source).toContain("bootstrapLivenessAgeMs > HEARTBEAT_STALE_MS")
+    expect(engine).toContain("private async refreshPrehistoricBootstrapHeartbeat(): Promise<void>")
+    expect(engine).toContain("prehistoric_bootstrap_heartbeat_at")
+    expect(engine).toContain("await this.refreshPrehistoricBootstrapHeartbeat().catch(() => undefined)")
   })
 
   test("connection enable paths keep global coordinator intent stable when engines can run", () => {

@@ -134,12 +134,17 @@ export function overlayVolatileProgressionStats(
   const configWorkPercent = configWorkTotal > 0
     ? Math.min(100, Math.round((configWorkCompleted / configWorkTotal) * 100))
     : 0
-  historic.progressPercent = Math.max(symbolProgressPercent, configWorkPercent)
+  // Symbol progress owns the historic phase bar. Config work can advance
+  // several calculation groups inside one symbol, so it must be displayed as
+  // a separate sub-progress rather than making the symbol counter appear to
+  // jump ahead of the actual completed-symbol numerator.
+  historic.progressPercent = symbolProgressPercent
   historic.configWork = {
     ...configWork,
     completed: configWorkCompleted,
     total: configWorkTotal,
     failed: configWorkFailed,
+    progressPercent: configWorkPercent,
     currentSymbol: firstText([
       [prehistoric, "config_work_current_symbol"],
       [progression, "prehistoric_config_work_current_symbol"],
@@ -202,6 +207,78 @@ export function overlayVolatileProgressionStats(
     indicationChurnCycles: indication,
     strategyChurnCycles: strategy,
   }
+
+  // The heavy stats projection deliberately permits a bounded stale window
+  // while a large Strategy graph is materialised. Main coordination counters
+  // are worker-owned atomics, just like the realtime cycle counters above;
+  // leaving this nested block frozen made a healthy Main engine appear to run
+  // zero cycles for the whole stale window.
+  const mainCoordination = record(next.mainCoordination)
+  const mainContext = record(mainCoordination.positionContext)
+  const mainVariants = firstText([
+    [progression, "strategies_main_active_variants"],
+    [engineState, "strategies_main_active_variants"],
+  ])
+  if (mainVariants) {
+    mainCoordination.activeVariants = mainVariants
+      .split(",")
+      .map((variant) => variant.trim())
+      .filter(Boolean)
+  }
+  mainCoordination.activeVariantCount = firstKnown([
+    [progression, "strategies_main_active_variant_count"],
+    [engineState, "strategies_main_active_variant_count"],
+  ], number(mainCoordination.activeVariantCount))
+  mainCoordination.lastCreated = firstKnown([
+    [progression, "strategies_main_last_created"],
+    [engineState, "strategies_main_last_created"],
+  ], number(mainCoordination.lastCreated))
+  mainCoordination.lastReused = firstKnown([
+    [progression, "strategies_main_last_reused"],
+    [engineState, "strategies_main_last_reused"],
+  ], number(mainCoordination.lastReused))
+  mainCoordination.totalCreated = firstKnown([
+    [progression, "strategies_main_related_created"],
+    [engineState, "strategies_main_related_created"],
+  ], number(mainCoordination.totalCreated))
+  mainCoordination.totalReused = firstKnown([
+    [progression, "strategies_main_related_reused"],
+    [engineState, "strategies_main_related_reused"],
+  ], number(mainCoordination.totalReused))
+  mainCoordination.totalCycles = firstKnown([
+    [progression, "strategies_main_cycles"],
+    [engineState, "strategies_main_cycles"],
+  ], number(mainCoordination.totalCycles))
+  const totalMainCoordinationWork = number(mainCoordination.totalCreated) + number(mainCoordination.totalReused)
+  mainCoordination.reuseRate = totalMainCoordinationWork > 0
+    ? Math.round((number(mainCoordination.totalReused) / totalMainCoordinationWork) * 1000) / 10
+    : 0
+  mainContext.continuous = firstKnown([
+    [progression, "strategies_main_ctx_continuous"],
+    [engineState, "strategies_main_ctx_continuous"],
+  ], number(mainContext.continuous))
+  mainContext.lastWins = firstKnown([
+    [progression, "strategies_main_ctx_last_wins"],
+    [engineState, "strategies_main_ctx_last_wins"],
+  ], number(mainContext.lastWins))
+  mainContext.lastLosses = firstKnown([
+    [progression, "strategies_main_ctx_last_losses"],
+    [engineState, "strategies_main_ctx_last_losses"],
+  ], number(mainContext.lastLosses))
+  mainContext.prevLosses = firstKnown([
+    [progression, "strategies_main_ctx_prev_losses"],
+    [engineState, "strategies_main_ctx_prev_losses"],
+  ], number(mainContext.prevLosses))
+  mainContext.prevTotal = firstKnown([
+    [progression, "strategies_main_ctx_prev_total"],
+    [engineState, "strategies_main_ctx_prev_total"],
+  ], number(mainContext.prevTotal))
+  mainContext.updatedAt = firstKnown([
+    [progression, "strategies_main_ctx_updated_at"],
+    [engineState, "strategies_main_ctx_updated_at"],
+  ], number(mainContext.updatedAt))
+  mainCoordination.positionContext = mainContext
+  next.mainCoordination = mainCoordination
 
   const lastUpdate = firstText([
     [engineProgression, "updated_at"],
