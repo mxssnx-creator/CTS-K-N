@@ -59,6 +59,7 @@ import { processQueuedEngineRefreshRequests } from "./engine-refresh-queue"
 import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
 import { hasExplicitServerlessForegroundOptIn, isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "./deployment-runtime"
 import { isTruthyFlag } from "./connection-state-utils"
+import { resolveDistributedEngineRuntime } from "./distributed-engine-runtime"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
 export { TradeEngine, type TradeEngineConfig, TRADE_SERVICE_NAME } from "./trade-engine/trade-engine"
@@ -1488,6 +1489,39 @@ export class GlobalTradeEngineCoordinator {
         stateSnapshot[connectionId] = manager.isEngineRunning
       }
 
+      // Route bundles can observe a healthy owner through Redis while their
+      // local coordinator map is empty. Preserve that *actual* remote/startup
+      // liveness in the pause snapshot; otherwise Resume sees an authoritative
+      // empty map, starts no engine, and the UI remains "running" with zero
+      // cycles after a pause/resume round-trip.
+      const activeConnections = await getActiveConnectionsForEngine().catch(() => [] as any[])
+      const prePauseGlobalState = {
+        ...currentGlobalState,
+        status: previousStatus,
+        desired_status: previousStatus,
+        operator_intent: previousStatus,
+        operator_stopped: "0",
+      }
+      const remoteRuntimeEntries = await Promise.all(activeConnections.map(async (connection) => {
+        const connectionId = String(connection?.id || "")
+        if (!connectionId || stateSnapshot[connectionId] === true) return null
+        const [runningHint, rawState, settingsState] = await Promise.all([
+          client.get(`engine_is_running:${connectionId}`).catch(() => null),
+          client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+          client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+        ])
+        const runtime = resolveDistributedEngineRuntime({
+          runningHint,
+          states: [rawState, settingsState],
+          globalState: prePauseGlobalState,
+          connectionEnabled: true,
+        })
+        return runtime.running ? connectionId : null
+      }))
+      for (const connectionId of remoteRuntimeEntries) {
+        if (connectionId) stateSnapshot[connectionId] = true
+      }
+
       await client.hset("trade_engine:global", {
         status: "paused",
         operator_intent: "paused",
@@ -1501,7 +1535,6 @@ export class GlobalTradeEngineCoordinator {
 
       const remoteConnectionIds = new Set<string>(Array.from(this.engineManagers.keys()))
       try {
-        const activeConnections = await getActiveConnectionsForEngine()
         for (const connection of activeConnections) remoteConnectionIds.add(connection.id)
       } catch { /* best-effort remote pause fanout */ }
 

@@ -1499,16 +1499,19 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("isServerlessWorker && !explicitForegroundAllowed && !forceLocalTakeover")
   })
 
-  test("production status poll runs awaited healing before reporting no runtime", () => {
+  test("production status poll queues healing without blocking the read path", () => {
     const source = read("app/api/trade-engine/status/route.ts")
 
     expect(source).toContain("runTradeEngineHealingSweep({ isStartup: false })")
-    expect(source).toContain("Long-lived Node owners can self-heal during a status read")
+    expect(source).toContain("function scheduleProductionHealingSweep(): void")
+    expect(source).toContain("statusHealingSweepInFlight")
+    expect(source).toContain("status polling must never race an explicit Start")
+    expect(source).toContain("STATUS_HEALING_START_GRACE_MS")
+    expect(source).toContain("startupRecoveryGraceExpired")
     expect(source).toContain("const coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0")
     expect(source).toContain("let effectiveCoordinatorEngineCount = coordinatorEngineCount")
-    expect(source.indexOf("await runTradeEngineHealingSweep({ isStartup: false })")).toBeLessThan(
-      source.indexOf("const hasLocalEngineRuntime = effectiveCoordinatorEngineCount > 0"),
-    )
+    expect(source).toContain("scheduleProductionHealingSweep()")
+    expect(source).not.toContain("await runTradeEngineHealingSweep({ isStartup: false })")
   })
 
   test("status-all derives running state from process-independent Redis runtime evidence", () => {
@@ -2189,6 +2192,9 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('this.canonicalPipelineAdmission.tryAcquire("bootstrap")')
     expect(source).toContain('this.canonicalPipelineAdmission.release("bootstrap")')
     expect(source).toContain("prehistoric_bootstrap_admission_wait_ms")
+    expect(source).toContain("this.globalHistoricBootstrapAdmission.tryAcquire(this.connectionId)")
+    expect(source).toContain("Historic bootstrap queued")
+    expect(source).toContain("prehistoric_bootstrap_global_admission_wait_ms")
   })
 
   test("continuous historic replay reports slow cycles without detaching live workers", () => {
@@ -3002,6 +3008,19 @@ describe("requested regression guardrails", () => {
     expect(recoordinator).toContain("runSerializedForConnection")
     expect(recoordinator).toContain("destructiveProgressionChange")
     expect(recoordinator).toContain("settings_recoordination_pending")
+  })
+
+  test("volume saves stay explicit and do not start an immediate historic pass", () => {
+    const volumeRoute = read("app/api/settings/connections/[id]/volume/route.ts")
+    const engineManager = read("lib/trade-engine/engine-manager.ts")
+    const fields = read("lib/trade-engine/settings-change-fields.ts")
+
+    expect(volumeRoute).toContain("changedFieldsOverride: Array.from(new Set([...Object.keys(patch), ...Object.keys(settingsPatch)]))")
+    expect(volumeRoute).not.toContain('...Object.keys(settingsPatch), "connection_settings"')
+    expect(fields).toContain("export function isLiveSizingOnlyChange")
+    expect(engineManager).toContain("const immediateStrategyReevaluationRequired =")
+    expect(engineManager).toContain("!isLiveSizingOnlyChange(changedFields)")
+    expect(engineManager).toContain("if (immediateStrategyReevaluationRequired)")
   })
 
   test("trailing range settings drive recoordination, Set accounting, and control-order variant labels", () => {

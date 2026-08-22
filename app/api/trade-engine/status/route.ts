@@ -11,6 +11,37 @@ export const revalidate = 0
 export const fetchCache = "force-no-store"
 
 const STATUS_CACHE_TTL_MS = Number(process.env.TRADE_ENGINE_STATUS_CACHE_MS || 1_500)
+const STATUS_HEALING_SWEEP_MIN_INTERVAL_MS = 10_000
+const STATUS_HEALING_START_GRACE_MS = Math.max(
+  30_000,
+  Number(process.env.TRADE_ENGINE_STATUS_HEALING_START_GRACE_MS || 120_000),
+)
+
+// A status request is a read path.  Next route bundles can have an empty
+// coordinator map while another bundle owns healthy engines, so we still need
+// to request a healing sweep in that case.  It must never be awaited here:
+// starting a 32-symbol Historic worker is CPU-heavy and previously made the
+// very endpoint that drives the dashboard time out during global Start.
+let statusHealingSweepInFlight: Promise<void> | null = null
+let nextStatusHealingSweepAt = 0
+
+function scheduleProductionHealingSweep(): void {
+  const now = Date.now()
+  if (statusHealingSweepInFlight || now < nextStatusHealingSweepAt) return
+  nextStatusHealingSweepAt = now + STATUS_HEALING_SWEEP_MIN_INTERVAL_MS
+  statusHealingSweepInFlight = import("@/lib/trade-engine-auto-start")
+    .then(({ runTradeEngineHealingSweep }) => runTradeEngineHealingSweep({ isStartup: false }))
+    .then(() => undefined)
+    .catch((healErr) => {
+      console.warn(
+        "[v0] [StatusAPI] production runtime healing sweep failed:",
+        healErr instanceof Error ? healErr.message : String(healErr),
+      )
+    })
+    .finally(() => {
+      statusHealingSweepInFlight = null
+    })
+}
 
 // RUNTIME FIX: Patch IndicationProcessor cache on every API call
 // This fixes the "Cannot read properties of undefined (reading 'get')" error
@@ -74,6 +105,11 @@ export async function GET() {
     const globalHeartbeatAt = workerHeartbeat.lastHeartbeatAt || 0
     const hasFreshGlobalHeartbeat = workerHeartbeat.fresh
     const workerDiagnostic = buildMissingTradeEngineWorkerDiagnostic(engineHash)
+    const lastExplicitStartAt = Date.parse(
+      engineHash.last_start_requested_at || engineHash.started_at || "",
+    )
+    const startupRecoveryGraceExpired =
+      !Number.isFinite(lastExplicitStartAt) || now - lastExplicitStartAt >= STATUS_HEALING_START_GRACE_MS
 
     
     // Also check in-memory coordinator state
@@ -114,25 +150,20 @@ export async function GET() {
     const coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0
     let effectiveCoordinatorEngineCount = coordinatorEngineCount
 
-    // Long-lived Node owners can self-heal during a status read. Serverless
-    // request workers stay queued-only; pretending to attach an engine here
-    // creates a short-lived timer that disappears after the response.
+    // Long-lived Node owners can recover a genuinely missing worker, but a
+    // status polling must never race an explicit Start. A new Start has already
+    // attached its own managers; launching another healing sweep here used to
+    // build a second Historic bootstrap in the same event loop and made the
+    // first status request time out. Let the explicit startup settle first;
+    // the continuity worker still heals an actually missing runtime later.
     if (
       !isServerlessDeploymentRuntime() &&
       isGloballyRunning &&
       !isGloballyPaused &&
-      effectiveCoordinatorEngineCount === 0
+      effectiveCoordinatorEngineCount === 0 &&
+      startupRecoveryGraceExpired
     ) {
-      try {
-        const { runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
-        await runTradeEngineHealingSweep({ isStartup: false })
-        effectiveCoordinatorEngineCount = coordinator?.getActiveEngineCount() || 0
-      } catch (healErr) {
-        console.warn(
-          "[v0] [StatusAPI] production runtime healing sweep failed:",
-          healErr instanceof Error ? healErr.message : String(healErr),
-        )
-      }
+      scheduleProductionHealingSweep()
     }
 
     const hasLocalEngineRuntime = effectiveCoordinatorEngineCount > 0

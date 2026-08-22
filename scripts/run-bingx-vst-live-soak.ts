@@ -1403,7 +1403,16 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((error) => {
-  console.error(`[bingx-vst-soak] fatal: ${errorText(error)}`)
-  process.exitCode = 1
-})
+// Keep the executable's asynchronous lifecycle referenced.  An unobserved
+// `void` promise does not keep Node's event loop alive between bootstrap
+// phases, so the process could finish after the Redis module initialised and
+// before its first venue call or report write.  This short referenced timer is
+// cleared on every completion path and is only a process-lifecycle guard; it
+// neither produces telemetry nor affects order timing.
+const executionKeepAlive = setInterval(() => undefined, 1_000)
+void main()
+  .catch((error) => {
+    console.error(`[bingx-vst-soak] fatal: ${errorText(error)}`)
+    process.exitCode = 1
+  })
+  .finally(() => clearInterval(executionKeepAlive))

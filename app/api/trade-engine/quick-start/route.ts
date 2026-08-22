@@ -1101,6 +1101,10 @@ async function handlePost(request: Request) {
       settingsVersion: updated.updated_at,
       stateSwitchVersion,
       sharedPersistenceLeaseHeld: true,
+      // QuickStart commits the global operator intent and performs one
+      // targeted start below. Do not let its settings persistence path start a
+      // competing bootstrap before that ordered transition is complete.
+      deferEngineStart: true,
     })
     if (!stateTransitionApplied) {
       return NextResponse.json(

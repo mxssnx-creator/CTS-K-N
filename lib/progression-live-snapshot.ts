@@ -51,6 +51,8 @@ export interface ProgressionVolatileOverlayInput {
   prehistoric: Hash
   realtime: Hash
   engineState: Hash
+  /** The worker-owned phase projection has priority over route-level markers. */
+  engineProgression?: Hash
   now?: number
 }
 
@@ -70,7 +72,14 @@ export function overlayVolatileProgressionStats(
   const counters = record(realtime.cycleCounters)
   const metadata = record(next.metadata)
   const processing = record(historic.processing)
-  const { progression, prehistoric, realtime: realtimeHash, engineState } = input
+  const configWork = record(historic.configWork)
+  const {
+    progression,
+    prehistoric,
+    realtime: realtimeHash,
+    engineState,
+    engineProgression = {},
+  } = input
 
   const activeEpoch = String(
     engineState.symbol_selection_epoch || engineState.quickstart_symbol_generation || "",
@@ -101,9 +110,50 @@ export function overlayVolatileProgressionStats(
     [engineState, "config_set_symbols_processed"],
   ], number(historic.cyclesCompleted))
   historic.isComplete = historicTotal > 0 && historicProcessed >= historicTotal
-  historic.progressPercent = historicTotal > 0
+  const symbolProgressPercent = historicTotal > 0
     ? Math.min(100, Math.round((historicProcessed / historicTotal) * 100))
     : 0
+  // The exhaustive historic grid can spend minutes in the first symbol. Keep
+  // its actual calculation-group counter live even when the expensive full
+  // stats projection is served from the bounded stale cache.
+  const configWorkTotal = firstKnown([
+    [prehistoric, "config_work_units_total"],
+    [progression, "prehistoric_config_work_units_total"],
+  ], number(configWork.total))
+  const rawConfigWorkCompleted = firstKnown([
+    [prehistoric, "config_work_units_completed"],
+    [progression, "prehistoric_config_work_units_completed"],
+  ], number(configWork.completed))
+  const configWorkCompleted = configWorkTotal > 0
+    ? Math.min(rawConfigWorkCompleted, configWorkTotal)
+    : rawConfigWorkCompleted
+  const configWorkFailed = firstKnown([
+    [prehistoric, "config_work_failed_units"],
+    [progression, "prehistoric_config_work_failed_units"],
+  ], number(configWork.failed))
+  const configWorkPercent = configWorkTotal > 0
+    ? Math.min(100, Math.round((configWorkCompleted / configWorkTotal) * 100))
+    : 0
+  historic.progressPercent = Math.max(symbolProgressPercent, configWorkPercent)
+  historic.configWork = {
+    ...configWork,
+    completed: configWorkCompleted,
+    total: configWorkTotal,
+    failed: configWorkFailed,
+    currentSymbol: firstText([
+      [prehistoric, "config_work_current_symbol"],
+      [progression, "prehistoric_config_work_current_symbol"],
+      [prehistoric, "current_symbol"],
+    ]) || String(configWork.currentSymbol || ""),
+    currentStage: firstText([
+      [prehistoric, "config_work_current_stage"],
+      [progression, "prehistoric_config_work_current_stage"],
+    ]) || String(configWork.currentStage || ""),
+    lastActivityAt: firstText([
+      [prehistoric, "config_work_last_activity_at"],
+      [progression, "prehistoric_config_work_last_activity_at"],
+    ]) || String(configWork.lastActivityAt || ""),
+  }
 
   const indication = firstKnown([
     [progression, "indication_cycle_count"],
@@ -128,6 +178,10 @@ export function overlayVolatileProgressionStats(
   const realtimeLive = firstKnown([
     [progression, "realtime_live_cycle_count"],
   ], number(counters.realtimeLive))
+  const livePositions = firstKnown([
+    [progression, "live_positions_cycle_count"],
+    [engineState, "live_positions_cycle_count"],
+  ], number(counters.livePositions))
 
   counters.indication = indication
   counters.strategy = strategy
@@ -135,6 +189,7 @@ export function overlayVolatileProgressionStats(
   counters.indicationLive = indicationLive
   counters.strategyLive = strategyLive
   counters.realtimeLive = realtimeLive
+  counters.livePositions = livePositions
   realtime.cycleCounters = counters
   realtime.indicationCycles = indicationLive || indication
   realtime.strategyCycles = strategyLive || strategy
@@ -149,12 +204,35 @@ export function overlayVolatileProgressionStats(
   }
 
   const lastUpdate = firstText([
+    [engineProgression, "updated_at"],
     [progression, "last_update"],
     [progression, "last_activity_at"],
+    [prehistoric, "config_work_last_activity_at"],
+    [progression, "prehistoric_config_work_last_activity_at"],
     [realtimeHash, "last_cycle_at"],
     [engineState, "last_processor_heartbeat"],
   ])
   if (lastUpdate) metadata.lastUpdate = lastUpdate
+  // The full projection can be deliberately stale while a large graph is
+  // being materialised. Phase/progress are worker-owned volatile fields, so
+  // surface their current values alongside the counters instead of leaving a
+  // card visually parked on an old "idle" or "prehistoric" phase.
+  const phase = firstText([
+    [engineProgression, "phase"],
+    [progression, "phase"],
+    [engineState, "phase"],
+  ])
+  const progress = firstKnown([
+    [engineProgression, "progress"],
+    [progression, "progress"],
+    [engineState, "progress"],
+  ], number(metadata.progress))
+  if (phase) {
+    metadata.phase = phase
+    next.phase = phase
+  }
+  metadata.progress = progress
+  next.progress = progress
   metadata.volatileProgression = {
     source: "direct-redis-overlay",
     refreshedAt: input.now ?? Date.now(),

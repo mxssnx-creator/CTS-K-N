@@ -303,6 +303,16 @@ export interface MainConnectionSettingsChangeOptions extends RecoordinateOptions
   stateSwitchVersion?: string | number
   /** The caller already owns Kilo's cross-worker snapshot lease. */
   sharedPersistenceLeaseHeld?: boolean
+  /**
+   * Persist and queue the change without claiming engine startup ownership.
+   *
+   * A composed operation such as QuickStart has a later, explicit targeted
+   * start step. Starting here as well can create a short-lived bootstrap that
+   * is immediately superseded by that owner. Configuration imports use the
+   * same mode: importing settings must never turn a stopped engine on merely
+   * because a connection happens to be enabled in the backup.
+   */
+  deferEngineStart?: boolean
 }
 
 export interface SettingsCommitDurability {
@@ -589,6 +599,7 @@ export async function applyMainConnectionSettingsChange(
       logTag: opts.logTag,
       settingsVersion: opts.settingsVersion,
       changedFieldsOverride,
+      deferEngineStart: opts.deferEngineStart,
     })
     // InlineLocalRedis is process-local; a settings response is not durable
     // until its snapshot has crossed the disk barrier. Without this awaited
@@ -655,6 +666,12 @@ export interface RecoordinateOptions {
    */
   logTag: string
   settingsVersion?: string
+  /**
+   * The caller owns a later explicit start transition. Durable settings
+   * notifications and local hot-reload still run, but this helper must not
+   * independently start a stopped engine in between those two transitions.
+   */
+  deferEngineStart?: boolean
 }
 
 /**
@@ -1276,6 +1293,20 @@ export async function recoordinateAfterSettingsChange(
     const isRunning = coordinator.isEngineRunning(id)
 
     if (shouldRun && !isRunning) {
+      if (opts.deferEngineStart) {
+        console.log(
+          `[v0] [${opts.logTag}] Recoordinate: deferring start for ${id} to the composed operation owner`,
+        )
+        return makeCompletion({
+          progressRecoordinationRequired: requiresProgressRecoordination,
+          progressionChanged,
+          progressionReason,
+          refreshQueued: refreshIsDurablyPending(),
+          refreshStatus,
+          appliedLocally,
+          queuedForOwner: true,
+        })
+      }
       // Should run, doesn't — START, but ONLY if the operator has the
       // global engine running. AUTO-START GUARD: without this gate,
       // saving ANY setting while the operator had explicitly stopped the

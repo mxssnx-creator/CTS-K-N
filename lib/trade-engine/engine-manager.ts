@@ -1,13 +1,34 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
 // Diagnostics must never synchronously write to disk from the engine hot path.
-const __DBG = (_message: string): void => {}
+// An operator can enable this narrow timing trace while investigating a
+// production bootstrap; it writes only to stdout and stays completely off in
+// normal operation.
+const ENGINE_DEBUG_TIMING_ENV_KEY = ["CTS", "ENGINE", "DEBUG", "TIMING"].join("_")
+const __DBG = (message: string): void => {
+  // Keep the opt-in check runtime-resolved. Next replaces direct
+  // `process.env.MY_KEY` reads at build time, which previously stripped this
+  // diagnostic from the production artifact even when the operator enabled it
+  // for a running service.
+  if (process.env[ENGINE_DEBUG_TIMING_ENV_KEY] === "1") {
+    // Production strips console.log for hot-path cost control. `warn` is
+    // retained, and this branch is an explicit, temporary operator diagnostic.
+    console.warn(`[v0] [EngineTiming] ${message}`)
+  }
+}
 import {
   getCanonicalPipelineAdmission,
+  getGlobalHistoricBootstrapAdmission,
   type CanonicalPipelineAdmission,
+  type GlobalHistoricBootstrapAdmission,
 } from "@/lib/canonical-pipeline-admission"
 import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
-import { hasStrategyAffectingChange, hasSymbolAffectingChange, isGenericConnectionSettingsReload } from "@/lib/trade-engine/settings-change-fields"
+import {
+  hasStrategyAffectingChange,
+  hasSymbolAffectingChange,
+  isGenericConnectionSettingsReload,
+  isLiveSizingOnlyChange,
+} from "@/lib/trade-engine/settings-change-fields"
 import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
 import {
   parseSignalCandidateRanks,
@@ -840,6 +861,11 @@ export class TradeEngineManager {
   /** Process-wide single-flight guard shared with historic and cron owners. */
   private readonly canonicalPipelineAdmission: CanonicalPipelineAdmission
   /**
+   * One cold Historic matrix per Node process. This keeps global Start from
+   * starting several memory-heavy matrices on the same event loop.
+   */
+  private readonly globalHistoricBootstrapAdmission: GlobalHistoricBootstrapAdmission
+  /**
    * Coalesced settings pass waiting for the cold historic writer to finish.
    * Running Base→Main→Real while that writer owns the Set graph duplicates
    * work and can starve position protection on multi-symbol production boots.
@@ -855,6 +881,7 @@ export class TradeEngineManager {
   constructor(config: EngineConfig) {
     this.connectionId = config.connectionId
     this.canonicalPipelineAdmission = getCanonicalPipelineAdmission(config.connectionId)
+    this.globalHistoricBootstrapAdmission = getGlobalHistoricBootstrapAdmission()
     this.indicationProcessor = new IndicationProcessor(config.connectionId)
     this.strategyProcessor = new StrategyProcessor(config.connectionId)
     this.pseudoPositionManager = new PseudoPositionManager(config.connectionId)
@@ -1181,6 +1208,7 @@ export class TradeEngineManager {
       // A realtime tail can be created before the cold-history loader finishes.
       // Requiring the history marker prevents that one-candle tail from making
       // the remaining startup path believe a symbol is fully bootstrapped.
+      __DBG(`START_before_market_load ${this.connectionId} symbols=${symbols.length}`)
       const loaded = await loadMarketDataForEngine(symbols, {
         requireHistory: true,
         minimumHistoryCandles: ENGINE_STAGE_HISTORY_CANDLES,
@@ -1189,6 +1217,7 @@ export class TradeEngineManager {
       if (loaded === 0) {
         console.warn(`[v0] [Engine] No market data loaded for symbols: ${symbols.join(", ")}`)
       }
+      __DBG(`START_after_market_load ${this.connectionId} loaded=${loaded}`)
 
       // Phase 2: Load prehistoric data (NON-BLOCKING)
       const prehistoricCacheKey = `prehistoric_loaded:${this.connectionId}`
@@ -1384,6 +1413,7 @@ export class TradeEngineManager {
         // of restarting), and `armLiveProgressions` arms the realtime loops
         // only after that full run publishes its authoritative completion.
         await this.updateProgressionPhase("prehistoric_data", 15, "Loading historical data (background)...")
+        __DBG(`START_queue_historic_bootstrap ${this.connectionId}`)
         this.loadPrehistoricDataInBackground(prehistoricCacheKey, redisClient)
       }
 
@@ -2058,6 +2088,7 @@ export class TradeEngineManager {
     const bootstrapGeneration = ++this.prehistoricBootstrapGeneration
     let succeeded = false
     let ownsBootstrapAdmission = false
+    let ownsGlobalHistoricBootstrapAdmission = false
     const bootstrapStartedAt = new Date(this.prehistoricBootstrapStartedAt).toISOString()
 
     const shouldContinue = () =>
@@ -2120,6 +2151,55 @@ export class TradeEngineManager {
         await setSettings(`trade_engine_state:${this.connectionId}`, {
           prehistoric_bootstrap_admission_wait_ms: Date.now() - admissionWaitStartedAt,
           prehistoric_bootstrap_admission_owner: "bootstrap",
+          updated_at: new Date().toISOString(),
+        })
+
+        // Starting all enabled connections at once must not let each cold
+        // bootstrap build a full Historic matrix concurrently. The individual
+        // canonical admission above protects one connection; this global
+        // permit preserves the server's control-plane responsiveness and RSS
+        // headroom across the entire Node process. Queue cooperatively so a
+        // stop or newer generation can still take effect immediately.
+        const globalAdmissionWaitStartedAt = Date.now()
+        let globalAdmissionQueued = false
+        let lastGlobalAdmissionWarningAt = 0
+        while (shouldContinue() && !this.globalHistoricBootstrapAdmission.tryAcquire(this.connectionId)) {
+          const now = Date.now()
+          if (!globalAdmissionQueued) {
+            globalAdmissionQueued = true
+            const activeConnectionId = this.globalHistoricBootstrapAdmission.activeConnectionId || "another connection"
+            await setSettings(`trade_engine_state:${this.connectionId}`, {
+              prehistoric_bootstrap_status: "queued",
+              prehistoric_bootstrap_global_admission_wait_ms: now - globalAdmissionWaitStartedAt,
+              prehistoric_bootstrap_global_admission_owner: activeConnectionId,
+              entry_processors_gated: true,
+              updated_at: new Date(now).toISOString(),
+            })
+            await this.updateProgressionPhase(
+              "prehistoric_data",
+              15,
+              `Historic bootstrap queued — waiting for ${activeConnectionId}`,
+            )
+          }
+          if (now - lastGlobalAdmissionWarningAt >= 30_000) {
+            lastGlobalAdmissionWarningAt = now
+            console.warn(
+              `[v0] [Engine ${this.connectionId}] Historic bootstrap waiting for global ` +
+                `owner=${this.globalHistoricBootstrapAdmission.activeConnectionId || "unknown"} ` +
+                `age=${this.globalHistoricBootstrapAdmission.ageMs(now)}ms`,
+            )
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+        if (!shouldContinue()) {
+          throw new PrehistoricRunSupersededError(this.connectionId, bootstrapGeneration)
+        }
+        ownsGlobalHistoricBootstrapAdmission = true
+        await setSettings(`trade_engine_state:${this.connectionId}`, {
+          prehistoric_bootstrap_status: "running",
+          prehistoric_bootstrap_global_admission_wait_ms: Date.now() - globalAdmissionWaitStartedAt,
+          prehistoric_bootstrap_global_admission_owner: this.connectionId,
+          entry_processors_gated: true,
           updated_at: new Date().toISOString(),
         })
         __DBG(`LB_BEFORE_LOAD ${this.connectionId}`)
@@ -2233,6 +2313,10 @@ export class TradeEngineManager {
           },
         ).catch(() => {})
       } finally {
+        if (ownsGlobalHistoricBootstrapAdmission) {
+          this.globalHistoricBootstrapAdmission.release(this.connectionId)
+          ownsGlobalHistoricBootstrapAdmission = false
+        }
         if (ownsBootstrapAdmission) {
           this.canonicalPipelineAdmission.release("bootstrap")
           ownsBootstrapAdmission = false
@@ -2397,6 +2481,7 @@ export class TradeEngineManager {
 
       // Initialize config sets and process prehistoric data through them
       const configProcessor = new ConfigSetProcessor(this.connectionId, this.epoch)
+      __DBG(`LD_before_initconfig ${this.connectionId}`)
       const configInitResult = await configProcessor.initializeConfigSets()
       assertCurrentRun()
       __DBG(`LD_after_initconfig ${this.connectionId}`)
@@ -2406,6 +2491,7 @@ export class TradeEngineManager {
       })
 
       // Process prehistoric data: only missing ranges, step by timeframe interval
+      __DBG(`LD_before_processPrehistoric ${this.connectionId}`)
       const processingResult = await configProcessor.processPrehistoricData(
         symbols,
         prehistoricStart,
@@ -5757,9 +5843,33 @@ export class TradeEngineManager {
       this.unsubscribeSettingsWatcher()
       this.unsubscribeSettingsWatcher = undefined
     }
-    // Seed the counter so we don't immediately re-apply a change that
-    // happened BEFORE the engine started.
-    void this.seedSettingsCounter(watcherGeneration)
+    // Seed the counter, then drain a durable event that raced engine startup.
+    // A save can complete after QuickStart queues the owner but before this
+    // watcher subscribes. Treating that event as already seen left its
+    // reconciliation marker pending forever and made progress cards look
+    // frozen although the engine had started successfully.
+    void this.seedSettingsCounter(watcherGeneration).then(() => {
+      const startupCatchupTimer = setTimeout(() => {
+        unregisterEngineTimer(startupCatchupTimer)
+        if (!this.isRunning || watcherGeneration !== this.settingsWatcherGeneration) return
+        void (async () => {
+          await this.applyPendingSettingsChangeNow()
+          // The notifier historically emitted the durable event immediately
+          // before the route wrote its visible progression marker. A manager
+          // could therefore consume the event correctly yet find no marker to
+          // ACK. If no event remains, the fresh startup is already using the
+          // persisted connection snapshot, so close that narrowly-scoped
+          // acknowledgement gap instead of leaving the UI pending forever.
+          await this.acknowledgeStartupSettingsMarker()
+        })().catch((err) => {
+          console.warn(
+            `[v0] [Engine ${this.connectionId}] startup settings catch-up failed:`,
+            err instanceof Error ? err.message : String(err),
+          )
+        })
+      }, 250)
+      registerEngineTimer(startupCatchupTimer)
+    }).catch(() => undefined)
     void import("@/lib/settings-coordinator").then(({ onSettingsChanged }) => {
       if (!this.isRunning || watcherGeneration !== this.settingsWatcherGeneration) return
       const unsubscribe = onSettingsChanged(this.connectionId, async (event) => {
@@ -5801,6 +5911,73 @@ export class TradeEngineManager {
       if (watcherGeneration === this.settingsWatcherGeneration) this.lastSettingsCounter = counter
     } catch {
       if (watcherGeneration === this.settingsWatcherGeneration) this.lastSettingsCounter = 0
+    }
+  }
+
+  /**
+   * Close the one startup-specific ordering gap between the durable settings
+   * envelope and its UI acknowledgement marker. This intentionally runs only
+   * when the envelope has already been consumed; if one remains,
+   * `applyPendingSettingsChangeNow()` above is the authoritative path.
+   */
+  private async acknowledgeStartupSettingsMarker(): Promise<void> {
+    try {
+      const { getPendingChanges } = await import("@/lib/settings-coordinator")
+      if (await getPendingChanges(this.connectionId)) return
+
+      const client = getRedisClient()
+      const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
+      const [scoped, legacy] = await Promise.all([
+        client.hgetall(scope.progressionKey).catch(() => ({} as Record<string, string>)),
+        client.hgetall(scope.legacyProgressionKey).catch(() => ({} as Record<string, string>)),
+      ])
+      const isPending = (hash: Record<string, string>) =>
+        hash.settings_recoordination_pending === "1" || hash.settings_recoordination_pending === "true"
+      const marker = isPending(scoped) ? scoped : isPending(legacy) ? legacy : null
+      const requestedVersion = String(marker?.settings_recoordination_requested_version || "")
+      if (!marker || !requestedVersion) return
+
+      let fields: string[] = []
+      try {
+        const parsed = JSON.parse(marker.settings_recoordination_fields || "[]")
+        fields = Array.isArray(parsed) ? parsed.map(String) : []
+      } catch { /* keep acknowledgement valid with an empty field list */ }
+      const completedAt = new Date().toISOString()
+      const eventId = String(marker.settings_recoordination_requested_event_id || requestedVersion)
+      const acknowledgements = await Promise.all([
+        acknowledgeAppliedSettingsGeneration(
+          client,
+          scope.progressionKey,
+          requestedVersion,
+          eventId,
+          fields,
+          completedAt,
+        ),
+        acknowledgeAppliedSettingsGeneration(
+          client,
+          scope.legacyProgressionKey,
+          requestedVersion,
+          eventId,
+          fields,
+          completedAt,
+        ),
+      ])
+      if (acknowledgements.some(Boolean)) {
+        await logProgressionEvent(
+          this.connectionId,
+          "settings_recoordination_startup_ack",
+          "info",
+          "Startup acknowledged a settings generation already consumed before its UI marker was written",
+          { requestedVersion, eventId, fields },
+        )
+      }
+    } catch (error) {
+      // Best effort only: a pending durable event will still be handled by the
+      // normal watcher, and a failed startup acknowledgement must not stop it.
+      console.warn(
+        `[v0] [Engine ${this.connectionId}] startup settings-marker acknowledgement failed:`,
+        error instanceof Error ? error.message : String(error),
+      )
     }
   }
 
@@ -5991,6 +6168,13 @@ export class TradeEngineManager {
       const genericConnectionSettingsReload = isGenericConnectionSettingsReload(changedFields)
       const symbolAffectingChange = hasSymbolAffectingChange(changedFields)
       const strategyAffectingChange = genericConnectionSettingsReload || hasStrategyAffectingChange(changedFields)
+      // A volume-factor/step save is consumed by the live sizing path and
+      // needs cache invalidation, not a synchronous full ind+strat pass.  In
+      // a dense historic bootstrap that pass can otherwise monopolise this
+      // process long enough for the settings API response to time out.
+      const immediateStrategyReevaluationRequired =
+        (strategyAffectingChange || symbolAffectingChange) &&
+        !isLiveSizingOnlyChange(changedFields)
       const signalAffectingChange =
         genericConnectionSettingsReload ||
         changedFields.includes("signal_indication") ||
@@ -6190,12 +6374,15 @@ export class TradeEngineManager {
             strategyAffectingChange,
             signalAffectingChange,
             genericConnectionSettingsReload,
+            immediateStrategyReevaluationRequired,
             coordinatorReloadGeneration,
           },
         )
       } catch { /* best-effort */ }
 
-      this.triggerImmediateStrategyReevaluation("settings-hot-reload")
+      if (immediateStrategyReevaluationRequired) {
+        this.triggerImmediateStrategyReevaluation("settings-hot-reload")
+      }
     } catch (err) {
       console.warn(
         `[v0] [Engine ${this.connectionId}] applyHotReload failed:`,

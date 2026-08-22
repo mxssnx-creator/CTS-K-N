@@ -389,6 +389,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       currentSymbol: "",
       duration: 0,
       percentComplete: 0,
+      configWork: {
+        completed: 0,
+        total: 0,
+        failed: 0,
+        currentSymbol: "",
+        currentStage: "",
+        lastActivityAt: null as string | null,
+      },
     }
     
     try {
@@ -433,6 +441,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           prehistoricProgress.duration = Number(
             prehistoricData.total_duration_ms || prehistoricData.duration || 0,
           )
+          prehistoricProgress.configWork = {
+            completed: Number(
+              prehistoricData.config_work_units_completed || progHash.prehistoric_config_work_units_completed || 0,
+            ),
+            total: Number(
+              prehistoricData.config_work_units_total || progHash.prehistoric_config_work_units_total || 0,
+            ),
+            failed: Number(
+              prehistoricData.config_work_failed_units || progHash.prehistoric_config_work_failed_units || 0,
+            ),
+            currentSymbol: prehistoricData.config_work_current_symbol || progHash.prehistoric_config_work_current_symbol || "",
+            currentStage: prehistoricData.config_work_current_stage || progHash.prehistoric_config_work_current_stage || "",
+            lastActivityAt: prehistoricData.config_work_last_activity_at || progHash.prehistoric_config_work_last_activity_at || null,
+          }
 
           // Use the largest known total. Redis hashes can briefly contain stale
           // legacy values (for example 1) while a background engine start resets

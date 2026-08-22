@@ -2144,6 +2144,9 @@ export class IndicationSetsProcessor {
         for (const lastPartRatio of lastPartRatios) {
           for (const factorMultiplier of factorMultipliers) {
             evaluated++
+            if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+              await yieldIndicationScheduler()
+            }
             const indication = this.calculateDirectionIndication(marketData, {
               range,
               drawdownRatio,
@@ -2242,6 +2245,9 @@ export class IndicationSetsProcessor {
         for (const lastPartRatio of lastPartRatios) {
           for (const factorMultiplier of factorMultipliers) {
             evaluated++
+            if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+              await yieldIndicationScheduler()
+            }
             const indication = this.calculateMoveIndication(marketData, {
               range,
               drawdownRatio,
@@ -2326,6 +2332,7 @@ export class IndicationSetsProcessor {
     let qualified = 0
     let total = 0
     let evaluated = 0
+    let scheduledEvaluations = 0
     const candidates: IndicationCandidate[] = []
 
     for (const outbreakRange of outbreakRanges) {
@@ -2334,6 +2341,10 @@ export class IndicationSetsProcessor {
           for (const activeTimeRatio of activeTimeRatios) {
             for (const lastPartRatio of lastPartRatios) {
               for (const factorMultiplier of factorMultipliers) {
+                scheduledEvaluations++
+                if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+                  await yieldIndicationScheduler()
+                }
                 try {
                   const indication = this.calculateActiveIndication(marketData, {
                     outbreakRange,
@@ -2491,10 +2502,15 @@ export class IndicationSetsProcessor {
     let qualified = 0
     let total = 0
     let evaluated = 0
+    let scheduledEvaluations = 0
     const candidates: IndicationCandidate[] = []
 
     for (const activityRatio of activityRatios) {
       for (const factorMultiplier of factorMultipliers) {
+        scheduledEvaluations++
+        if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+          await yieldIndicationScheduler()
+        }
         evaluated++
         const config = { activityRatio, minPositions, continuationRatio, factorMultiplier }
         const indication = this.calculateActiveAdvancedIndication(marketData, config)
@@ -2636,6 +2652,7 @@ export class IndicationSetsProcessor {
     const candidates: IndicationCandidate[] = []
     let total = 0
     let evaluatedPerDirection = 0
+    let scheduledEvaluations = 0
     const settingsFingerprint = [
       `a${settings.minimumAgreement.toFixed(3)}`,
       `mc${settings.minimumMarketChangePct.toFixed(4)}`,
@@ -2734,6 +2751,10 @@ export class IndicationSetsProcessor {
           if (series.closes.length < range + 1) continue
           evaluatedPerDirection++
           for (const direction of ["long", "short"] as const) {
+            scheduledEvaluations++
+            if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+              await yieldIndicationScheduler()
+            }
             const indication = evaluateSpecialIndication(
               series.closes,
               direction,
@@ -2751,6 +2772,10 @@ export class IndicationSetsProcessor {
 
       if (settings.combinedTimeframesEnabled && timedObservations.length > 0) {
         evaluatedPerDirection++
+        scheduledEvaluations++
+        if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+          await yieldIndicationScheduler()
+        }
         const coordination = evaluateSpecialMultiTimeframeCoordination({
           observations: timedObservations,
           prebuiltSeries: timeframeSeries,
@@ -2774,6 +2799,10 @@ export class IndicationSetsProcessor {
       if (timeframeSeries.length === 0 && timedObservations.length === 0) {
         evaluatedPerDirection++
         for (const direction of ["long", "short"] as const) {
+          scheduledEvaluations++
+          if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+            await yieldIndicationScheduler()
+          }
           const indication = evaluateSpecialIndication(prices, direction, range, settings, activity)
           if (indication) addCandidate(indication, range, "tfnative", "native")
         }
@@ -2800,6 +2829,9 @@ export class IndicationSetsProcessor {
     for (const range of keyRanges) {
       for (const factorMultiplier of factorMultipliers) {
         evaluated++
+        if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+          await yieldIndicationScheduler()
+        }
         const indication = this.calculateOptimalIndication(marketData, range, factorMultiplier)
         if (!indication) continue
         
@@ -2949,6 +2981,9 @@ export class IndicationSetsProcessor {
         for (const lastSituationRatio of this.trendLastSituationRatios) {
           for (const activeSituationRatio of this.trendActiveSituationRatios) {
             evaluated++
+            if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+              await yieldIndicationScheduler()
+            }
             const signal = calculateTrendSignal(prices, {
               timeframeMinutes,
               drawdownFactor,

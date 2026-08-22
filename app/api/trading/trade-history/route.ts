@@ -29,10 +29,21 @@ const CONNECTOR_START_TIMEOUT_MS = 3_000
 const GLOBAL_HISTORY_TIMEOUT_MS = 6_000
 const SYMBOL_HISTORY_BUDGET_MS = 12_000
 const FIRST_RESPONSE_EXCHANGE_BUDGET_MS = 8_000
+// BingX's account-wide allOrders page is useful as a fast broad snapshot, but
+// it is a bounded page and can omit recently closed orders on a busy account.
+// Reconcile a small, rotating symbol lane in the background instead of making
+// a dashboard refresh compete with the live order lane for 32 private calls.
+const HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH = 4
+const HISTORY_RECONCILIATION_SYMBOL_LIMIT = 200
+const HISTORY_RECONCILIATION_INTERVAL_MS = 90_000
 
 type CachedExchangeHistory = {
   fetchedAt: number
   rows: TradeHistoryRow[]
+  symbolCursor?: number
+  symbolRefreshedAt?: Record<string, number>
+  lastReconciledSymbols?: string[]
+  symbolCandidateCount?: number
 }
 
 type OrderHistorySnapshot = {
@@ -87,6 +98,92 @@ function hasPrivateExchangeCredentials(connection: Record<string, any>): boolean
   return apiKey.length > 0 && apiSecret.length > 0
 }
 
+function sanitizeSymbolRefreshTimes(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const result: Record<string, number> = {}
+  for (const [symbol, value] of Object.entries(raw as Record<string, unknown>)) {
+    const normalized = String(symbol || "").trim().toUpperCase().replace(/[-_]/g, "")
+    const timestamp = Number(value)
+    if (normalized && Number.isFinite(timestamp) && timestamp > 0) result[normalized] = timestamp
+  }
+  return result
+}
+
+function exchangeRowIdentity(row: TradeHistoryRow): string {
+  return row.closeOrderId || row.id
+}
+
+function mergeExchangeSnapshotRows(
+  previous: readonly TradeHistoryRow[],
+  rawOrders: readonly any[],
+): TradeHistoryRow[] {
+  const byId = new Map<string, TradeHistoryRow>()
+  // Closed venue orders are immutable. Retaining an older per-symbol result
+  // is therefore safe when the next account-wide page happens not to include
+  // it; newer observations of the same close ID overwrite it below.
+  for (const row of previous) byId.set(exchangeRowIdentity(row), row)
+  for (const order of rawOrders) {
+    const row = normalizeBingXClosedOrder(order)
+    if (row) byId.set(exchangeRowIdentity(row), row)
+  }
+  return [...byId.values()]
+    .sort((left, right) => right.closedAt - left.closedAt)
+    .slice(0, TRADE_HISTORY_PAGE_SIZE)
+}
+
+function historySymbolCandidates(
+  connection: Record<string, any>,
+  symbolHints: readonly string[],
+  previous: CachedExchangeHistory | null,
+): string[] {
+  const settings = parseConnectionSettings(connection.connection_settings)
+  return parseSymbols(
+    symbolHints,
+    connection.active_symbols,
+    connection.force_symbols,
+    connection.symbols,
+    settings.active_symbols,
+    settings.force_symbols,
+    settings.symbols,
+    previous?.rows.map((row) => row.symbol) || [],
+  ).slice(0, 32)
+}
+
+function selectHistoryReconciliationSymbols(input: {
+  candidates: readonly string[]
+  priority: readonly string[]
+  refreshedAt: Record<string, number>
+  cursor: number
+  now: number
+  force: boolean
+}): { symbols: string[]; nextCursor: number } {
+  const candidates = [...input.candidates]
+  if (candidates.length === 0) return { symbols: [], nextCursor: 0 }
+  const priority = new Set(parseSymbols(input.priority))
+  const isDue = (symbol: string) => input.force ||
+    input.now - (input.refreshedAt[symbol] || 0) >= HISTORY_RECONCILIATION_INTERVAL_MS
+  const symbols: string[] = []
+  const add = (symbol: string) => {
+    if (symbols.length >= HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH) return
+    if (isDue(symbol) && !symbols.includes(symbol)) symbols.push(symbol)
+  }
+  // An app-managed close is the most important record to reconcile. Give its
+  // own symbol priority over the rotating configured-symbol sweep.
+  for (const symbol of candidates) {
+    if (priority.has(symbol)) add(symbol)
+  }
+  const start = Math.max(0, Math.floor(input.cursor || 0)) % candidates.length
+  let scanned = 0
+  while (scanned < candidates.length && symbols.length < HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH) {
+    add(candidates[(start + scanned) % candidates.length])
+    scanned++
+  }
+  return {
+    symbols,
+    nextCursor: (start + Math.max(scanned, 1)) % candidates.length,
+  }
+}
+
 async function readCachedExchangeHistory(client: any, connectionId: string): Promise<CachedExchangeHistory | null> {
   const raw = await client.get(`trade_history:exchange:${connectionId}`).catch(() => null)
   if (!raw) return null
@@ -96,6 +193,10 @@ async function readCachedExchangeHistory(client: any, connectionId: string): Pro
     return {
       fetchedAt: Number(parsed.fetchedAt) || 0,
       rows: parsed.rows.slice(0, TRADE_HISTORY_PAGE_SIZE),
+      symbolCursor: Math.max(0, Math.floor(Number(parsed.symbolCursor) || 0)),
+      symbolRefreshedAt: sanitizeSymbolRefreshTimes(parsed.symbolRefreshedAt),
+      lastReconciledSymbols: parseSymbols(parsed.lastReconciledSymbols),
+      symbolCandidateCount: Math.max(0, Math.floor(Number(parsed.symbolCandidateCount) || 0)),
     }
   } catch {
     return null
@@ -106,6 +207,7 @@ async function fetchExchangeHistory(
   connectionId: string,
   connection: Record<string, any>,
   previous: CachedExchangeHistory | null,
+  options: { symbolHints?: readonly string[]; force?: boolean } = {},
 ): Promise<CachedExchangeHistory | null> {
   const existing = inFlightByConnection.get(connectionId)
   if (existing) return existing
@@ -125,7 +227,7 @@ async function fetchExchangeHistory(
     ).catch(() => null)
     if (!connector || typeof connector.getOrderHistory !== "function") return previous
 
-    let rawOrders: any[] = []
+    const rawOrders: any[] = []
     let authoritative = false
 
     const fetchSnapshot = async (symbol: string | undefined, limit: number): Promise<OrderHistorySnapshot> => {
@@ -145,66 +247,67 @@ async function fetchExchangeHistory(
     }
 
     // BingX accepts an account-wide allOrders request on the native path. It is
-    // the cheapest source (one signed call for all 12 symbols).
-    let globalRequestTimedOut = false
+    // the cheapest broad source, but a successful bounded page is not proof
+    // that it contains the latest close for every configured symbol.
     const globalSnapshot = await withTimeout(
       fetchSnapshot(undefined, TRADE_HISTORY_PAGE_SIZE),
       GLOBAL_HISTORY_TIMEOUT_MS,
       `trade-history global ${connectionId}`,
     ).catch(() => {
-      globalRequestTimedOut = true
       return { ok: false, rows: [] } satisfies OrderHistorySnapshot
     })
-    rawOrders = globalSnapshot.rows
+    rawOrders.push(...globalSnapshot.rows)
     authoritative = globalSnapshot.ok
-    // A timed-out account-wide call is not evidence that a symbol is required;
-    // retry on the next dashboard poll instead of launching twelve more calls.
-    if (globalRequestTimedOut) return previous
 
-    // Some BingX account/API variants require `symbol`. Fall back only when the
-    // account-wide call was rejected. Cover the complete operator-supported
-    // 32-symbol basket in small bounded batches; the first dashboard response
-    // may use local/cache data while this in-flight refresh finishes.
-    if (!authoritative) {
-      const settings = parseConnectionSettings(connection.connection_settings)
-      const symbols = parseSymbols(
-        connection.active_symbols,
-        connection.force_symbols,
-        settings.active_symbols,
-        settings.force_symbols,
-        settings.symbols,
-      ).slice(0, 32)
-      const perSymbolRows: any[] = []
-      let anySuccessfulSnapshot = false
-      const fallbackDeadline = Date.now() + SYMBOL_HISTORY_BUDGET_MS
-      for (let index = 0; index < symbols.length; index += 4) {
-        const remainingMs = fallbackDeadline - Date.now()
-        if (remainingMs <= 250) break
-        const batch = symbols.slice(index, index + 4)
-        const batchSnapshots = await Promise.all(
-          batch.map((symbol) => withTimeout(
-            fetchSnapshot(symbol, 100),
-            Math.max(250, Math.min(4_000, remainingMs)),
-            `trade-history ${connectionId} ${symbol}`,
-          ).catch(() => ({ ok: false, rows: [] } satisfies OrderHistorySnapshot))),
-        )
-        for (const snapshot of batchSnapshots) {
-          if (snapshot.ok) anySuccessfulSnapshot = true
-          perSymbolRows.push(...snapshot.rows)
-        }
-      }
-      rawOrders = perSymbolRows
-      authoritative = anySuccessfulSnapshot
+    // Always reconcile a limited, rotating symbol batch. The real VST probe
+    // showed a global page with 500 rows but none of 80 freshly closed orders,
+    // while the corresponding symbol pages returned every one. Only treating
+    // symbol reads as a fallback therefore made an apparently authoritative
+    // dashboard history wrong on busy accounts.
+    const now = Date.now()
+    const candidates = historySymbolCandidates(connection, options.symbolHints || [], previous)
+    const refreshTimes = {
+      ...sanitizeSymbolRefreshTimes(previous?.symbolRefreshedAt),
+    }
+    const reconciliation = selectHistoryReconciliationSymbols({
+      candidates,
+      priority: options.symbolHints || [],
+      refreshedAt: refreshTimes,
+      cursor: previous?.symbolCursor || 0,
+      now,
+      force: options.force === true,
+    })
+    const fallbackDeadline = Date.now() + SYMBOL_HISTORY_BUDGET_MS
+    const reconciledSymbols: string[] = []
+    for (const symbol of reconciliation.symbols) {
+      const remainingMs = fallbackDeadline - Date.now()
+      if (remainingMs <= 250) break
+      // Calls are deliberately sequential. The connector itself shares this
+      // FIFO with order placement; queuing a Promise.all batch would only hide
+      // the same work behind that lane and can delay a live close.
+      const snapshot = await withTimeout(
+        fetchSnapshot(symbol, HISTORY_RECONCILIATION_SYMBOL_LIMIT),
+        Math.max(250, Math.min(4_000, remainingMs)),
+        `trade-history ${connectionId} ${symbol}`,
+      ).catch(() => ({ ok: false, rows: [] } satisfies OrderHistorySnapshot))
+      if (!snapshot.ok) continue
+      authoritative = true
+      rawOrders.push(...snapshot.rows)
+      refreshTimes[symbol] = Date.now()
+      reconciledSymbols.push(symbol)
     }
 
     if (!authoritative) return previous
 
-    const rows = rawOrders
-      .map((order) => normalizeBingXClosedOrder(order))
-      .filter((row): row is TradeHistoryRow => !!row)
-      .sort((a, b) => b.closedAt - a.closedAt)
-      .slice(0, TRADE_HISTORY_PAGE_SIZE)
-    const snapshot = { fetchedAt: Date.now(), rows }
+    const rows = mergeExchangeSnapshotRows(previous?.rows || [], rawOrders)
+    const snapshot: CachedExchangeHistory = {
+      fetchedAt: Date.now(),
+      rows,
+      symbolCursor: reconciliation.nextCursor,
+      symbolRefreshedAt: refreshTimes,
+      lastReconciledSymbols: reconciledSymbols,
+      symbolCandidateCount: candidates.length,
+    }
     const client = getRedisClient()
     await client
       .setex(`trade_history:exchange:${connectionId}`, EXCHANGE_CACHE_TTL_SECONDS, JSON.stringify(snapshot))
@@ -279,7 +382,13 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       Date.now() - cached.fetchedAt < EXCHANGE_CACHE_FRESH_MS
     let exchangeSnapshot = cached
     if (mode === "exchange" && offset === 0 && !cacheIsFresh) {
-      const refresh = fetchExchangeHistory(connectionId, connection as Record<string, any>, cached)
+      const refresh = fetchExchangeHistory(connectionId, connection as Record<string, any>, cached, {
+        // Local closes identify the symbols where the application most needs
+        // exact venue PnL/fees. They are reconciled ahead of the background
+        // round-robin basket without leaking credentials into the request.
+        symbolHints: localRows.map((row) => row.symbol),
+        force,
+      })
       if (cached && !force) {
         // Stale-while-revalidate: the table remains instant and never blanks
         // while a private exchange request refreshes the five-minute cache.
@@ -366,6 +475,11 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         local: localRows.length,
         fetchedAt: exchangeSnapshot?.fetchedAt || null,
         stale: !!exchangeSnapshot && Date.now() - exchangeSnapshot.fetchedAt >= EXCHANGE_CACHE_FRESH_MS,
+        exchangeReconciliation: {
+          lastSymbols: exchangeSnapshot?.lastReconciledSymbols || [],
+          candidateSymbols: exchangeSnapshot?.symbolCandidateCount || 0,
+          refreshedAt: exchangeSnapshot?.symbolRefreshedAt || {},
+        },
       },
     })
   } catch (error) {

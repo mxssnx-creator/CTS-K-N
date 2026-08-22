@@ -212,6 +212,152 @@ export interface RecordPosClosedInput {
 }
 
 /**
+ * Batched form of `recordPosClosed` for a completed Historic strategy pass.
+ *
+ * Historic replay can produce hundreds of closed pseudo positions for one
+ * strategy configuration. Queuing the single-position writer for each row
+ * expands that into thousands of individual pipeline commands (two history
+ * hashes plus two rolling lists per row). On the in-process Redis adapter all
+ * of those commands execute on the same JavaScript event loop, which can
+ * starve status/progression requests for many seconds. This input preserves
+ * the same per-position rounding and rolling records, but aggregates the
+ * commutative counters once per bucket and appends each ring in one operation.
+ */
+export interface RecordPosClosedBatchInput {
+  connectionId: string
+  entries: Array<Omit<RecordPosClosedInput, "connectionId" | "pipeline">>
+  pipeline?: ReturnType<ReturnType<typeof getRedisClient>["multi"]>
+}
+
+interface PosHistoryBatchAggregate {
+  hash: string
+  ring: string
+  count: number
+  wins: number
+  losses: number
+  grossProfitX1000: number
+  grossLossX1000: number
+  ddtX10: number
+  ringRecords: string[]
+}
+
+function createPosHistoryBatchAggregate(hash: string, ring: string): PosHistoryBatchAggregate {
+  return {
+    hash,
+    ring,
+    count: 0,
+    wins: 0,
+    losses: 0,
+    grossProfitX1000: 0,
+    grossLossX1000: 0,
+    ddtX10: 0,
+    ringRecords: [],
+  }
+}
+
+function addClosedPositionToAggregate(
+  aggregate: PosHistoryBatchAggregate,
+  input: Omit<RecordPosClosedInput, "connectionId" | "pipeline">,
+): void {
+  const pnl = input.pnl
+  const ddt = Math.max(0, input.drawdownMinutes ?? 0)
+  const grossProfitX1000 = Math.round(Math.max(0, pnl) * 1000)
+  const grossLossX1000 = Math.round(Math.max(0, -pnl) * 1000)
+  const ddtX10 = Math.round(ddt * 10)
+  const canonicalPnlPct = Number(input.pnlPct)
+  const canonicalPositionCostPct = Number(input.positionCostPct)
+  const hasCanonicalRatio =
+    Number.isFinite(canonicalPnlPct) &&
+    Number.isFinite(canonicalPositionCostPct) &&
+    canonicalPositionCostPct > 0
+
+  aggregate.count++
+  if (pnl > 0) aggregate.wins++
+  else aggregate.losses++
+  if (grossProfitX1000 > 0) aggregate.grossProfitX1000 += grossProfitX1000
+  if (grossLossX1000 > 0) aggregate.grossLossX1000 += grossLossX1000
+  if (ddtX10 > 0) aggregate.ddtX10 += ddtX10
+  // This is byte-for-byte the ring payload emitted by recordPosClosed().
+  // A single LPUSH with entries in original order has the same newest-first
+  // list ordering as invoking LPUSH once for every position in that order.
+  aggregate.ringRecords.push([
+    pnl.toFixed(6),
+    "0",
+    ddt.toFixed(3),
+    hasCanonicalRatio ? canonicalPnlPct.toFixed(8) : "",
+    hasCanonicalRatio ? canonicalPositionCostPct.toFixed(8) : "",
+  ].join("|"))
+}
+
+function queuePosHistoryBatchAggregate(
+  pipeline: ReturnType<ReturnType<typeof getRedisClient>["multi"]>,
+  aggregate: PosHistoryBatchAggregate,
+): void {
+  if (aggregate.count === 0) return
+  pipeline.hincrby(aggregate.hash, "count", aggregate.count)
+  if (aggregate.wins > 0) pipeline.hincrby(aggregate.hash, "wins", aggregate.wins)
+  if (aggregate.losses > 0) pipeline.hincrby(aggregate.hash, "losses", aggregate.losses)
+  if (aggregate.grossProfitX1000 > 0) {
+    pipeline.hincrby(aggregate.hash, "pf_num_x1000", aggregate.grossProfitX1000)
+  }
+  if (aggregate.grossLossX1000 > 0) {
+    pipeline.hincrby(aggregate.hash, "pf_den_x1000", aggregate.grossLossX1000)
+  }
+  if (aggregate.ddtX10 > 0) {
+    pipeline.hincrby(aggregate.hash, "ddt_num_x10", aggregate.ddtX10)
+  }
+  pipeline.expire(aggregate.hash, TTL_SECONDS)
+  pipeline.lpush(aggregate.ring, ...aggregate.ringRecords)
+  pipeline.ltrim(aggregate.ring, 0, RING_CAP - 1)
+  pipeline.expire(aggregate.ring, TTL_SECONDS)
+}
+
+/**
+ * Record many CLOSED positions with the exact same counter and rolling-window
+ * semantics as `recordPosClosed`, while keeping the Redis command count
+ * bounded by the distinct (symbol × type × direction) buckets.
+ */
+export function recordPosClosedBatch(input: RecordPosClosedBatchInput): void {
+  const { connectionId, entries, pipeline: externalPipeline } = input
+  if (!connectionId || !entries?.length) return
+
+  const client = externalPipeline ?? getRedisClient().multi()
+  const owned = !externalPipeline
+  const perBucket = new Map<string, PosHistoryBatchAggregate>()
+  const overall = createPosHistoryBatchAggregate(
+    overallKey(connectionId),
+    listKey(connectionId, OVERALL_BUCKET, OVERALL_BUCKET, OVERALL_BUCKET),
+  )
+
+  for (const entry of entries) {
+    const cleanDir = normalizeTradeDirection(entry.direction)
+    if (!cleanDir) continue
+    const cleanSymbol = entry.symbol || "unknown"
+    const cleanType = entry.indicationType || "unknown"
+    const bucketKey = `${cleanSymbol}\u0000${cleanType}\u0000${cleanDir}`
+    let bucket = perBucket.get(bucketKey)
+    if (!bucket) {
+      bucket = createPosHistoryBatchAggregate(
+        hashKey(connectionId, cleanSymbol, cleanType, cleanDir),
+        listKey(connectionId, cleanSymbol, cleanType, cleanDir),
+      )
+      perBucket.set(bucketKey, bucket)
+    }
+    addClosedPositionToAggregate(bucket, entry)
+    addClosedPositionToAggregate(overall, entry)
+  }
+
+  for (const aggregate of perBucket.values()) {
+    queuePosHistoryBatchAggregate(client, aggregate)
+  }
+  queuePosHistoryBatchAggregate(client, overall)
+
+  if (owned) {
+    ;(client as any).exec().catch(() => {})
+  }
+}
+
+/**
  * Record one CLOSED position into Pos history.
  *
  * Caller contract:

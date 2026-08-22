@@ -64,6 +64,10 @@ export interface StrategyStats {
 
 const MAX_POSITIONS = 250
 
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve))
+}
+
 export class StrategyConfigManager {
   private connectionId: string
 
@@ -114,6 +118,7 @@ export class StrategyConfigManager {
       cursor = String(result[0] ?? "0")
       const batch = (result[1] || []).filter((k: string) => !k.endsWith(":positions"))
       keys.push(...batch)
+      if (cursor !== "0") await yieldToEventLoop()
     } while (cursor !== "0")
     return keys
   }
@@ -160,13 +165,22 @@ export class StrategyConfigManager {
     }
     if (keys.length === 0) return []
 
-    const values = await Promise.all(keys.map((key: string) => client.get(key).catch(() => null)))
     const configs: StrategyConfig[] = []
-    for (const data of values) {
-      if (!data) continue
-      try {
-        configs.push(JSON.parse(typeof data === "string" ? data : JSON.stringify(data)))
-      } catch { /* skip malformed */ }
+    // Avoid a single Promise.all over a legacy, unindexed configuration
+    // corpus. It holds every decoded row at once and keeps an inline Redis
+    // process in a microtask-only turn, starving dashboard/status requests.
+    for (let offset = 0; offset < keys.length; offset += 500) {
+      const pipeline = client.multi()
+      for (const key of keys.slice(offset, offset + 500)) pipeline.get(key)
+      const values = await pipeline.exec()
+      for (const raw of values || []) {
+        const data = Array.isArray(raw) ? raw[1] : raw
+        if (!data) continue
+        try {
+          configs.push(JSON.parse(typeof data === "string" ? data : JSON.stringify(data)))
+        } catch { /* skip malformed */ }
+      }
+      await yieldToEventLoop()
     }
 
     return configs

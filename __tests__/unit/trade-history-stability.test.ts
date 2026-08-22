@@ -440,13 +440,15 @@ describe("live-order stranded-position guards", () => {
     expect(systemInitialize).toContain('process.env.DISABLE_IN_PROCESS_CONTINUITY !== "1"')
   })
 
-  test("trade-history UI falls back quickly when private BingX data is unavailable", () => {
+  test("trade-history remains fast while reconciling incomplete global BingX pages", () => {
     expect(historyRoute).toContain("hasPrivateExchangeCredentials")
     expect(historyRoute).toContain("FIRST_RESPONSE_EXCHANGE_BUDGET_MS")
     expect(historyRoute).toContain("Stale-while-revalidate")
-    expect(historyRoute).toContain("globalRequestTimedOut")
+    expect(historyRoute).toContain("HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH = 4")
+    expect(historyRoute).toContain("selectHistoryReconciliationSymbols")
+    expect(historyRoute).toContain("mergeExchangeSnapshotRows(previous?.rows || [], rawOrders)")
+    expect(historyRoute).toContain("symbolHints: localRows.map((row) => row.symbol)")
     expect(historyRoute).toContain(").slice(0, 32)")
-    expect(historyRoute).toContain("index += 4")
     expect(historyRoute).toContain("getOrderHistorySnapshot")
     expect(bingx).toContain("lastOrderHistorySnapshotStatus")
     expect(bingx).toContain("getOrderHistorySnapshot")

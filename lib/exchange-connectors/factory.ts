@@ -8,10 +8,22 @@ export { createExchangeConnector }
 export type { ExchangeCredentials } from "./base-connector"
 export { BaseExchangeConnector } from "./base-connector"
 
+// A production worker can call getOrCreateConnector from several high-rate
+// loops (market-data, live-position recovery, and order-history refresh).
+// Retrying an impossible connector construction on every tick allocates SDK
+// state and floods stderr, which in turn makes the Linux process appear to
+// leak memory/CPU. Keep the failure local and short-lived; a credential or
+// mode update changes the fingerprint and bypasses this backoff immediately.
+const FAILED_CONNECTOR_BACKOFF_MS = Math.max(
+  5_000,
+  Math.min(300_000, Number(process.env.CTS_CONNECTOR_FAILURE_BACKOFF_MS || 30_000)),
+)
+
 export class ExchangeConnectorFactory {
   private static instance: ExchangeConnectorFactory
   private connectors: Map<string, BaseExchangeConnector> = new Map()
   private connectorFingerprints: Map<string, string> = new Map()
+  private unavailableConnectorFingerprints: Map<string, { fingerprint: string; retryAt: number }> = new Map()
   
   private constructor() {}
   
@@ -81,9 +93,19 @@ export class ExchangeConnectorFactory {
         })
         this.connectors.set(connection.id, connector)
         this.connectorFingerprints.set(connection.id, fingerprint)
+        this.unavailableConnectorFingerprints.delete(connection.id)
         return connector
       } catch (err) {
-        console.error(`[ExchangeConnectorFactory] createExchangeConnector failed for ${connection.id}:`, err)
+        const priorFailure = this.unavailableConnectorFingerprints.get(connection.id)
+        const retryAt = Date.now() + FAILED_CONNECTOR_BACKOFF_MS
+        this.unavailableConnectorFingerprints.set(connection.id, { fingerprint, retryAt })
+        if (!priorFailure || priorFailure.fingerprint !== fingerprint || priorFailure.retryAt <= Date.now()) {
+          console.warn(
+            `[ExchangeConnectorFactory] createExchangeConnector unavailable for ${connection.id}; ` +
+            `backing off retries for ${FAILED_CONNECTOR_BACKOFF_MS}ms:`,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
         // Fallback for dev/test only: use simulated connector so the live pipeline
         // can be exercised locally. Production must fail closed instead of
         // silently turning a live exchange request into paper/sim mode.
@@ -93,6 +115,7 @@ export class ExchangeConnectorFactory {
             const sim = new SimulatedConnector(credentials, "simulated")
             this.connectors.set(connection.id, sim)
             this.connectorFingerprints.set(connection.id, fingerprint)
+            this.unavailableConnectorFingerprints.delete(connection.id)
             console.log(`[ExchangeConnectorFactory] Fallback to SimulatedConnector for ${connection.id}`)
             return sim
           } catch (err2) {
@@ -125,6 +148,12 @@ export class ExchangeConnectorFactory {
       return existing
     }
 
+    const unavailable = this.unavailableConnectorFingerprints.get(connectionId)
+    if (unavailable && unavailable.fingerprint === fingerprint && unavailable.retryAt > Date.now()) {
+      return null
+    }
+    if (unavailable) this.unavailableConnectorFingerprints.delete(connectionId)
+
     if (existing) {
       this.removeConnector(connectionId)
     }
@@ -135,11 +164,13 @@ export class ExchangeConnectorFactory {
   removeConnector(connectionId: string): void {
     this.connectors.delete(connectionId)
     this.connectorFingerprints.delete(connectionId)
+    this.unavailableConnectorFingerprints.delete(connectionId)
   }
   
   clearAll(): void {
     this.connectors.clear()
     this.connectorFingerprints.clear()
+    this.unavailableConnectorFingerprints.clear()
   }
   
   hasConnector(connectionId: string): boolean {

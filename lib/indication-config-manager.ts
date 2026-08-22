@@ -33,6 +33,14 @@ export interface IndicationResult {
 
 const MAX_RESULTS = 250
 
+// Inline Redis completes a resolved Promise in the current microtask turn.
+// A legacy recovery scan or a full default-config write can therefore run for
+// many pages without giving HTTP requests a chance to enter the event loop.
+// Keep each storage batch intact, then yield between batches/pages.
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve))
+}
+
 export class IndicationConfigManager {
   private connectionId: string
 
@@ -87,6 +95,7 @@ export class IndicationConfigManager {
       cursor = String(result[0] ?? "0")
       const batch = (result[1] || []).filter((k: string) => !k.includes(":results"))
       keys.push(...batch)
+      if (cursor !== "0") await yieldToEventLoop()
     } while (cursor !== "0")
     return keys
   }
@@ -147,6 +156,7 @@ export class IndicationConfigManager {
           configs.push(JSON.parse(typeof data === "string" ? data : JSON.stringify(data)))
         } catch { /* skip malformed */ }
       }
+      await yieldToEventLoop()
     }
     return configs
   }
@@ -297,6 +307,7 @@ export class IndicationConfigManager {
         pipeline.del(this.getResultsKey(configId))
       }
       await pipeline.exec()
+      await yieldToEventLoop()
     }
   }
 
@@ -360,6 +371,10 @@ export class IndicationConfigManager {
     const configs: IndicationConfig[] = pending.map((cfg) => {
       return { ...cfg, connectionId: this.connectionId, createdAt: now }
     })
+    // Hand the current HTTP/control turn back before the first large Redis
+    // pipeline. This makes a cold production bootstrap observable instead of
+    // making the dashboard's first status read wait behind config creation.
+    await yieldToEventLoop()
     for (let offset = 0; offset < configs.length; offset += 500) {
       const batch = configs.slice(offset, offset + 500)
       const pipeline = client.multi()
@@ -369,6 +384,7 @@ export class IndicationConfigManager {
         pipeline.sadd(this.getConfigIndexKey(), key)
       }
       await pipeline.exec()
+      await yieldToEventLoop()
     }
 
     return configs
@@ -386,6 +402,7 @@ export class IndicationConfigManager {
         pipeline.del(this.getResultsReferenceKey(config.id))
       }
       await pipeline.exec()
+      await yieldToEventLoop()
     }
 
     console.log(`[v0] [IndicationConfigManager] Cleared all results for ${this.connectionId}`)

@@ -44,7 +44,11 @@ async function request(pathname, { method = "GET", body, timeoutMs = 20_000, par
       signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (error) {
-    throw new Error(`${method} ${pathname} failed within ${timeoutMs}ms: ${error instanceof Error ? error.message : String(error)}`)
+    const message = error instanceof Error ? error.message : String(error)
+    const cause = error instanceof Error && error.cause
+      ? `; cause=${error.cause instanceof Error ? error.cause.message : String(error.cause)}`
+      : ""
+    throw new Error(`${method} ${pathname} failed within ${timeoutMs}ms: ${message}${cause}`)
   }
   const text = await response.text()
   if (!response.ok) {
@@ -78,6 +82,22 @@ function cycleTotal(stats) {
     .map((value) => Number(value || 0))
     .filter(Number.isFinite)
     .reduce((sum, value) => sum + value, 0)
+}
+
+function livePositionCycleTotal(stats) {
+  return Number(stats?.realtime?.cycleCounters?.livePositions || 0) || 0
+}
+
+function historicWorkSnapshot(stats) {
+  const work = stats?.historic?.configWork || {}
+  return {
+    completed: Number(work.completed || 0) || 0,
+    total: Number(work.total || 0) || 0,
+    failed: Number(work.failed || 0) || 0,
+    stage: String(work.currentStage || ""),
+    symbol: String(work.currentSymbol || ""),
+    isComplete: stats?.historic?.isComplete === true,
+  }
 }
 
 function assertBoundedPercentage(label, value) {
@@ -381,6 +401,8 @@ async function main() {
       { timeoutMs: 30_000 },
     )).data
     const beforeCycles = cycleTotal(beforeStats)
+    const beforeLivePositionCycles = livePositionCycleTotal(beforeStats)
+    const beforeHistoricWork = historicWorkSnapshot(beforeStats)
 
     // Keep this body in lock-step with components/dashboard/quickstart-section.tsx.
     const enabled = await request("/api/trade-engine/quick-start", {
@@ -408,8 +430,14 @@ async function main() {
     }
 
     let observedCycles = beforeCycles
+    let observedLivePositionCycles = beforeLivePositionCycles
+    let observedHistoricWork = beforeHistoricWork
     let previousCycleSample = null
+    let previousLivePositionCycleSample = null
+    let previousHistoricWorkSample = null
     let cycleAdvanced = false
+    let livePositionCycleAdvanced = false
+    let historicWorkAdvanced = false
     let cycleResetObserved = false
     let coordinatedSymbols = []
     const deadline = Date.now() + PROGRESSION_TIMEOUT_MS
@@ -422,23 +450,47 @@ async function main() {
       const engine = engineFor(status, connectionId)
       coordinatedSymbols = activeSymbols(engine)
       observedCycles = cycleTotal(statsResponse.data)
+      observedLivePositionCycles = livePositionCycleTotal(statsResponse.data)
+      observedHistoricWork = historicWorkSnapshot(statsResponse.data)
       if (previousCycleSample !== null) {
         if (observedCycles > previousCycleSample) cycleAdvanced = true
         if (observedCycles < previousCycleSample) cycleResetObserved = true
       }
+      if (previousLivePositionCycleSample !== null && observedLivePositionCycles > previousLivePositionCycleSample) {
+        livePositionCycleAdvanced = true
+      }
+      if (previousHistoricWorkSample !== null && observedHistoricWork.completed > previousHistoricWorkSample.completed) {
+        historicWorkAdvanced = true
+      }
       previousCycleSample = observedCycles
+      previousLivePositionCycleSample = observedLivePositionCycles
+      previousHistoricWorkSample = observedHistoricWork
       // QuickStart may intentionally start a new progression epoch. Its
       // cumulative counters then reset even though the engine is healthy, so
       // prove forward movement within the currently observed epoch instead of
       // requiring the new total to exceed a previous run's total.
-      if (coordinatedSymbols.length === UI_MAX_SYMBOLS && cycleAdvanced && observedCycles > 0) break
+      // Cold starts must not be judged by entry cycles alone: those cycles are
+      // correctly gated until historic Sets are authoritative. Instead prove
+      // two independent live signals while bootstrapping: real historic config
+      // group completion and the exit/adoption/protection loop. Once history
+      // is complete, require normal entry-cycle movement as well.
+      const bootstrapLiveness = historicWorkAdvanced && livePositionCycleAdvanced
+      const readyLiveness = observedHistoricWork.isComplete && cycleAdvanced
+      if (coordinatedSymbols.length === UI_MAX_SYMBOLS && (bootstrapLiveness || readyLiveness)) break
       await sleep(1_000)
     }
     if (coordinatedSymbols.length !== UI_MAX_SYMBOLS) {
       throw new Error(`Engine coordinated ${coordinatedSymbols.length}/${UI_MAX_SYMBOLS} UI symbols`)
     }
-    if (!cycleAdvanced) {
-      throw new Error(`Production engine cycles did not advance within the active epoch (${beforeCycles} → ${observedCycles})`)
+    if (!(historicWorkAdvanced && livePositionCycleAdvanced) && !(observedHistoricWork.isComplete && cycleAdvanced)) {
+      throw new Error(
+        `Production bootstrap made no verified forward progress: entry cycles ${beforeCycles} → ${observedCycles}; ` +
+        `live-position cycles ${beforeLivePositionCycles} → ${observedLivePositionCycles}; ` +
+        `historic config work ${beforeHistoricWork.completed}/${beforeHistoricWork.total} → ` +
+        `${observedHistoricWork.completed}/${observedHistoricWork.total} ` +
+        `(failed=${observedHistoricWork.failed}, stage=${observedHistoricWork.stage || "unknown"}, ` +
+        `symbol=${observedHistoricWork.symbol || "unknown"})`,
+      )
     }
 
     const scopedStatus = (await request("/api/trade-engine/status-all", { timeoutMs: 30_000 })).data
@@ -647,9 +699,12 @@ async function main() {
       (status) => status?.paused === true && status?.actualRuntimeStatus === "paused",
     )
 
-    const beforeResumeCycles = cycleTotal((await request(
+    const beforeResumeStats = (await request(
       `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
-    )).data)
+    )).data
+    const beforeResumeCycles = cycleTotal(beforeResumeStats)
+    const beforeResumeLivePositionCycles = livePositionCycleTotal(beforeResumeStats)
+    const beforeResumeHistoricWork = historicWorkSnapshot(beforeResumeStats)
     await request("/api/trade-engine/resume", { method: "POST", timeoutMs: 30_000 })
     await waitFor(
       "global resume status",
@@ -657,22 +712,39 @@ async function main() {
       (status) => status?.paused === false && status?.actualRuntimeStatus === "running",
     )
     let previousResumeCycles = beforeResumeCycles
+    let previousResumeLivePositionCycles = beforeResumeLivePositionCycles
+    let previousResumeHistoricWork = beforeResumeHistoricWork
     let resumeCycleResetObserved = false
     let resumeCycleAdvanced = false
+    let resumeLivePositionCycleAdvanced = false
+    let resumeHistoricWorkAdvanced = false
     await waitFor(
       "cycles after resume",
       async () => (await request(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats`)).data,
       (stats) => {
         const current = cycleTotal(stats)
+        const currentLivePositionCycles = livePositionCycleTotal(stats)
+        const currentHistoricWork = historicWorkSnapshot(stats)
         if (current < previousResumeCycles) resumeCycleResetObserved = true
         if (current > previousResumeCycles) resumeCycleAdvanced = true
+        if (currentLivePositionCycles > previousResumeLivePositionCycles) resumeLivePositionCycleAdvanced = true
+        if (currentHistoricWork.completed > previousResumeHistoricWork.completed) resumeHistoricWorkAdvanced = true
         previousResumeCycles = current
+        previousResumeLivePositionCycles = currentLivePositionCycles
+        previousResumeHistoricWork = currentHistoricWork
         // pause()/resume() detaches the stopped manager and starts a fresh
         // progression generation. Accept either monotonic continuation or a
         // proven reset followed by forward movement inside that new epoch.
-        return current > beforeResumeCycles || (
+        // During historic bootstrap, entry cycles remain correctly gated; in
+        // that state require both authoritative historic work and the live
+        // position/protection loop to advance instead of treating zero entry
+        // cycles as a stalled resume.
+        const entryLiveness = current > beforeResumeCycles || (
           resumeCycleResetObserved && resumeCycleAdvanced && current > 0
         )
+        const bootstrapLiveness = resumeHistoricWorkAdvanced && resumeLivePositionCycleAdvanced
+        const readyLiveness = currentHistoricWork.isComplete && resumeCycleAdvanced
+        return entryLiveness || bootstrapLiveness || readyLiveness
       },
       30_000,
     )

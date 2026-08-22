@@ -135,6 +135,10 @@ async function handlePost(request: NextRequest) {
       desired_status: "running",
       operator_intent: "running",
       started_at: existingGlobalState.started_at || new Date().toISOString(),
+      // The status endpoint uses this fresh request marker to avoid starting
+      // a competing recovery sweep while this explicit global Start is still
+      // attaching managers and warming Historic data.
+      last_start_requested_at: new Date().toISOString(),
       coordinator_ready: "true",
       operator_stopped: "0",
       operator_stopped_at: "",

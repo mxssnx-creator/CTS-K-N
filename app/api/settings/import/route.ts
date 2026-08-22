@@ -61,6 +61,11 @@ export async function POST(request: NextRequest) {
           connectionPatch: { ...patch, updated_at: new Date().toISOString() },
           changedFieldsOverride: Object.keys(patch),
           logTag: "settings import",
+          // Importing a backup is configuration recovery, not an operator
+          // command to start trading. Existing running engines still receive
+          // their durable refresh; stopped engines remain stopped until an
+          // explicit Start/QuickStart action owns the transition.
+          deferEngineStart: true,
         })
         connectionsUpdated++
       }

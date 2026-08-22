@@ -113,6 +113,45 @@ export interface RecoordinateProgressionResult {
   newEpoch?: number
 }
 
+/**
+ * A settings save may be durably queued while a new engine session is being
+ * constructed.  Session archival deliberately clears cycle counters, but it
+ * must not discard the still-unacknowledged settings generation: the newly
+ * started owner is the process that has to consume and acknowledge it.
+ */
+function pendingRecoordinationMarkerPatch(
+  preferred: Record<string, string> | null | undefined,
+  fallback: Record<string, string> | null | undefined,
+): Record<string, string> {
+  const choosePending = (source: Record<string, string> | null | undefined, field: string) =>
+    source?.[field] === "1" || source?.[field] === "true"
+  const preferredPending =
+    choosePending(preferred, "settings_recoordination_pending") ||
+    choosePending(preferred, "stats_recalculation_requested")
+  const fallbackPending =
+    choosePending(fallback, "settings_recoordination_pending") ||
+    choosePending(fallback, "stats_recalculation_requested")
+  const source = preferredPending ? preferred : fallbackPending ? fallback : null
+  if (!source) return {}
+
+  const patch: Record<string, string> = {}
+  const preserveSettings = choosePending(source, "settings_recoordination_pending")
+  const preserveStats = choosePending(source, "stats_recalculation_requested")
+  for (const [field, value] of Object.entries(source)) {
+    if (
+      (preserveSettings && (
+        field === "settings_changed_at" ||
+        field === "strategy_recompute_requested" ||
+        field.startsWith("settings_recoordination_")
+      )) ||
+      (preserveStats && field.startsWith("stats_recalculation_"))
+    ) {
+      patch[field] = String(value)
+    }
+  }
+  return patch
+}
+
 export interface ProgressionState {
   connectionId: string
   // Session identity — increments each time a new progression starts
@@ -922,7 +961,11 @@ export class ProgressionStateManager {
     const now = Date.now()
 
     try {
-      const existing = await client.hgetall(key).catch(() => null)
+      const [existing, legacy] = await Promise.all([
+        client.hgetall(key).catch(() => null),
+        client.hgetall(scope.legacyProgressionKey).catch(() => null),
+      ])
+      const pendingRecoordination = pendingRecoordinationMarkerPatch(existing, legacy)
 
       let sessionNumber = 1
 
@@ -1030,6 +1073,10 @@ export class ProgressionStateManager {
         active_symbols_hash: "",
         started_for_settings_version: "",
         progress_settings_snapshot: "{}",
+        // Preserve only pending generation acknowledgements. All old cycle
+        // counters remain reset for the new session, while a settings write
+        // that raced the boot cannot disappear from the dashboard or owner.
+        ...pendingRecoordination,
       })
 
       console.log(
@@ -1312,6 +1359,40 @@ export class ProgressionStateManager {
         storedSymbols.every((symbol) => currentSymbols.includes(symbol)) &&
         missingPrehistoricSymbols.length === liveSymbolCount - storedSymbols.length
       const mismatch = symbolMismatch || settingsMismatch
+
+      // A completed Historic cache belongs to a concrete symbol generation,
+      // not to every mutable runtime control.  Sizing, protection, PF/axis,
+      // and strategy hot-reload settings are intentionally applied in place by
+      // ConnectionReconciler/EngineManager; treating their fingerprint delta as
+      // a destructive Historic mismatch made a normal pause/resume or Linux
+      // process restart erase an otherwise verified 32-symbol bootstrap. The
+      // result was a dashboard that looked "running" while entry cycles stayed
+      // at zero behind a second full historic pass.
+      //
+      // Preserve the Historic gates when the basket is unchanged, but record
+      // the current runtime fingerprint on the active progression. A truly
+      // missing progression still follows the stricter completed-cache proof
+      // below, and every symbol-basket mismatch remains destructive.
+      if (!initializedMissingProgression && !symbolMismatch && settingsMismatch) {
+        const nowIso = new Date().toISOString()
+        await client.hset(key, {
+          symbol_count: String(liveSymbolCount),
+          active_symbols_hash: liveSymbolsHash,
+          progress_settings_snapshot: JSON.stringify(liveSnapshot),
+          runtime_settings_reconciled_at: nowIso,
+          runtime_settings_reconciliation: "hot-reload-preserved-historic-cache",
+          last_update: nowIso,
+        }).catch(() => {})
+        console.log(
+          `[v0] [Progression] Runtime settings changed for ${connectionId}; ` +
+          "preserved verified Historic cache because the symbol basket is unchanged.",
+        )
+        return {
+          changed: false,
+          reason: "runtime settings changed — Historic cache retained",
+          newEpoch: Number(existing.epoch || "0") || undefined,
+        }
+      }
 
       if (initializedMissingProgression) {
         // A clean process stop can remove the active progression hash while

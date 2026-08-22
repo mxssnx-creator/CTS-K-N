@@ -89,6 +89,14 @@ interface ProgressionData {
     currentSymbol: string
     duration: number
     percentComplete: number
+    configWork?: {
+      completed: number
+      total: number
+      failed: number
+      currentSymbol: string
+      currentStage: string
+      lastActivityAt: string | null
+    }
   }
   error: string | null
 }
@@ -844,6 +852,14 @@ export function ActiveConnectionCard({
                   currentSymbol:       String(h.currentSymbol || ""),
                   duration:            Number(h.duration)            || 0,
                   percentComplete:     Number(h.progressPercent)     || 0,
+                  configWork: {
+                    completed: Number(h.configWork?.completed) || 0,
+                    total: Number(h.configWork?.total) || 0,
+                    failed: Number(h.configWork?.failed) || 0,
+                    currentSymbol: String(h.configWork?.currentSymbol || ""),
+                    currentStage: String(h.configWork?.currentStage || ""),
+                    lastActivityAt: h.configWork?.lastActivityAt ? String(h.configWork.lastActivityAt) : null,
+                  },
                 }
               : undefined,
           }
@@ -2732,13 +2748,18 @@ export function ActiveConnectionCard({
                       const indicatorsCalculated = pp?.indicatorsCalculated ?? (prehistoricStats?.isComplete ? 0 : 0)
                       const intervalsProcessed = prehistoricStats?.intervalsProcessed ?? 0
                       const missingIntervals = prehistoricStats?.missingIntervalsLoaded ?? 0
-                      const currentSymbol = pp?.currentSymbol || prehistoricStats?.currentSymbol || ""
+                      const configWork = pp?.configWork
+                      const configWorkCompleted = configWork?.completed ?? 0
+                      const configWorkTotal = configWork?.total ?? 0
+                      const configWorkFailed = configWork?.failed ?? 0
+                      const currentSymbol = pp?.currentSymbol || configWork?.currentSymbol || prehistoricStats?.currentSymbol || ""
                       const hasData =
                         Boolean(pp) ||
                         symbolsProcessed > 0 ||
                         candlesLoaded > 0 ||
                         intervalsProcessed > 0 ||
-                        indicatorsCalculated > 0
+                        indicatorsCalculated > 0 ||
+                        configWorkTotal > 0
 
                       if (!hasData) return null
 
@@ -2769,6 +2790,22 @@ export function ActiveConnectionCard({
                               <span className="font-medium tabular-nums">
                                 {formatK(indicatorsCalculated)}
                               </span>
+                            </div>
+                          )}
+                          {configWorkTotal > 0 && (
+                            <div
+                              className="flex items-center gap-1"
+                              title={`Actual completed historic calculation groups${configWork?.currentStage ? ` (${configWork.currentStage})` : ""}.`}
+                            >
+                              <span className="text-muted-foreground">Config work</span>
+                              <span className="font-medium tabular-nums">
+                                {formatK(configWorkCompleted)}/{formatK(configWorkTotal)}
+                              </span>
+                              {configWorkFailed > 0 && (
+                                <span className="text-destructive tabular-nums" title="Calculation groups that completed with an error; historic entry processing stays gated.">
+                                  ({formatK(configWorkFailed)} failed)
+                                </span>
+                              )}
                             </div>
                           )}
                           {intervalsProcessed > 0 && (
