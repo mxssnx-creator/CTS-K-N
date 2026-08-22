@@ -86,4 +86,38 @@ describe("ExchangeConnectorFactory.getOrCreateConnector", () => {
     expect(createExchangeConnectorMock.mock.calls[0]?.[1]).toMatchObject({ apiSecret: "old-secret" })
     expect(createExchangeConnectorMock.mock.calls[1]?.[1]).toMatchObject({ apiSecret: "new-secret" })
   })
+
+  it("backs off repeated production connector failures until credentials change", async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    const previousAllowProdSimulated = process.env.ALLOW_PROD_SIMULATED
+    process.env.NODE_ENV = "production"
+    delete process.env.ALLOW_PROD_SIMULATED
+    const firstConnection = buildConnection(false, {
+      id: "conn-failure-backoff",
+      api_secret: "first-secret",
+    })
+    const rotatedConnection = buildConnection(false, {
+      id: "conn-failure-backoff",
+      api_secret: "rotated-secret",
+    })
+    createExchangeConnectorMock.mockRejectedValue(new Error("credentials unavailable"))
+    getConnectionMock
+      .mockResolvedValueOnce(firstConnection)
+      .mockResolvedValueOnce(firstConnection)
+      .mockResolvedValueOnce(rotatedConnection)
+
+    try {
+      const factory = ExchangeConnectorFactory.getInstance()
+      await expect(factory.getOrCreateConnector(firstConnection.id)).resolves.toBeNull()
+      await expect(factory.getOrCreateConnector(firstConnection.id)).resolves.toBeNull()
+      expect(createExchangeConnectorMock).toHaveBeenCalledTimes(1)
+
+      await expect(factory.getOrCreateConnector(rotatedConnection.id)).resolves.toBeNull()
+      expect(createExchangeConnectorMock).toHaveBeenCalledTimes(2)
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv
+      if (previousAllowProdSimulated === undefined) delete process.env.ALLOW_PROD_SIMULATED
+      else process.env.ALLOW_PROD_SIMULATED = previousAllowProdSimulated
+    }
+  })
 })

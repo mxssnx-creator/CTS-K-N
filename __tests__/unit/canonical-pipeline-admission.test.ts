@@ -1,6 +1,8 @@
 import {
   CanonicalPipelineAdmission,
   getCanonicalPipelineAdmission,
+  GlobalHistoricBootstrapAdmission,
+  getGlobalHistoricBootstrapAdmission,
 } from "@/lib/canonical-pipeline-admission"
 
 describe("CanonicalPipelineAdmission", () => {
@@ -59,5 +61,29 @@ describe("CanonicalPipelineAdmission", () => {
     expect(managerAdmission.release("scheduled")).toBe(true)
     expect(cronAdmission.tryAcquire("cron", 4_200)).toBe(true)
     expect(cronAdmission.release("cron")).toBe(true)
+  })
+
+  test("serializes cold Historic bootstraps across different connections", () => {
+    const admission = new GlobalHistoricBootstrapAdmission()
+
+    expect(admission.tryAcquire("bingx-x01", 5_000)).toBe(true)
+    expect(admission.tryAcquire("bingx-x02", 5_100)).toBe(false)
+    expect(admission.activeConnectionId).toBe("bingx-x01")
+    expect(admission.ageMs(5_250)).toBe(250)
+    expect(admission.release("bingx-x02")).toBe(false)
+    expect(admission.release("bingx-x01")).toBe(true)
+    expect(admission.tryAcquire("bingx-x02", 5_300)).toBe(true)
+  })
+
+  test("shares the global Historic permit across independently evaluated bundles", () => {
+    const admission = getGlobalHistoricBootstrapAdmission()
+    admission.reset()
+    try {
+      expect(getGlobalHistoricBootstrapAdmission()).toBe(admission)
+      expect(admission.tryAcquire("global-admission-test", 6_000)).toBe(true)
+      expect(admission.activeConnectionId).toBe("global-admission-test")
+    } finally {
+      admission.reset()
+    }
   })
 })

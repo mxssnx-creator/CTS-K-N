@@ -285,4 +285,34 @@ describe("connection recoordinator serialization", () => {
       settings_recoordination_requested_event_id: "settings-change:event",
     })
   })
+
+  test("defers a stopped eligible engine to the composed operation owner", async () => {
+    const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
+    const { isConnectionMainProcessing } = await import("@/lib/connection-state-utils")
+    const startMissingEngines = jest.fn(async () => undefined)
+
+    ;(getGlobalTradeEngineCoordinator as jest.Mock).mockReturnValueOnce({
+      getEngineManager: jest.fn(() => null),
+      applyPendingChangesNow: jest.fn(async () => undefined),
+      isEngineRunning: jest.fn(() => false),
+      startMissingEngines,
+    })
+    ;(isConnectionMainProcessing as jest.Mock).mockReturnValueOnce(true)
+
+    const { recoordinateAfterSettingsChange } = await import("@/lib/connection-recoordinator")
+    const completion = await recoordinateAfterSettingsChange(
+      "conn-deferred-start",
+      { id: "conn-deferred-start", name: "before" },
+      { id: "conn-deferred-start", name: "after", is_predefined: "1" },
+      {
+        logTag: "composed-start",
+        changedFieldsOverride: ["name"],
+        deferEngineStart: true,
+      },
+    )
+
+    expect(startMissingEngines).not.toHaveBeenCalled()
+    expect(completion.queuedForOwner).toBe(true)
+    expect(completion.appliedLocally).toBe(false)
+  })
 })

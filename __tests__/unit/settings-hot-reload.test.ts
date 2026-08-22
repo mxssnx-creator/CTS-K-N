@@ -2,6 +2,7 @@ import { classifyChange } from "@/lib/settings-coordinator"
 import {
   hasStrategyAffectingChange,
   isGenericConnectionSettingsReload,
+  isLiveSizingOnlyChange,
 } from "@/lib/trade-engine/settings-change-fields"
 import {
   getStrategyCoordinator,
@@ -19,6 +20,13 @@ describe("instant settings hot reload", () => {
 
   test("system settings force a generic engine/strategy refresh", () => {
     expect(isGenericConnectionSettingsReload(["system_settings"])).toBe(true)
+  })
+
+  test("volume-only changes skip a synchronous historic strategy pass", () => {
+    expect(isLiveSizingOnlyChange(["live_volume_factor", "volume_factor_live", "volume_step_ratio"])).toBe(true)
+    expect(isLiveSizingOnlyChange(["connection_settings.preset_volume_factor"])).toBe(true)
+    expect(isLiveSizingOnlyChange(["live_volume_factor", "profitFactorMin"])).toBe(false)
+    expect(isLiveSizingOnlyChange(["connection_settings"])).toBe(false)
   })
 
   test("forceNextSettingsReload invalidates stored inputs and derived Set graphs", () => {

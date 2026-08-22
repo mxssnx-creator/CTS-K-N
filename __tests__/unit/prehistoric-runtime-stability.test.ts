@@ -74,6 +74,29 @@ describe("historic runtime generation stability", () => {
     ])
   })
 
+  test("counts a clean zero-position strategy calculation as completed work", () => {
+    const processor = source("lib/trade-engine/config-set-processor.ts")
+    const strategyProcessor = processor.slice(processor.indexOf("private async processStrategyConfigs("))
+
+    expect(strategyProcessor).toMatch(
+      /if \(positions\.length === 0\) \{\s*succeeded = true\s*return 0\s*\}/,
+    )
+  })
+
+  test("engine startup closes a marker-only settings acknowledgement gap", () => {
+    const manager = source("lib/trade-engine/engine-manager.ts")
+    expect(manager).toContain("await this.acknowledgeStartupSettingsMarker()")
+    expect(manager).toContain("private async acknowledgeStartupSettingsMarker(): Promise<void>")
+    expect(manager).toContain("if (await getPendingChanges(this.connectionId)) return")
+  })
+
+  test("global pause snapshots Redis-proven owners for a targeted resume", () => {
+    const coordinator = source("lib/trade-engine.ts")
+    expect(coordinator).toContain("resolveDistributedEngineRuntime")
+    expect(coordinator).toContain("const remoteRuntimeEntries = await Promise.all(activeConnections.map")
+    expect(coordinator).toContain("if (connectionId) stateSnapshot[connectionId] = true")
+  })
+
   test("canonical symbols fall back across every persisted runtime alias", async () => {
     const connectionId = `selection-fallback-${Date.now()}`
     const client = getRedisClient()
@@ -194,6 +217,51 @@ describe("historic runtime generation stability", () => {
       const progression = await client.hgetall(scope.progressionKey)
       expect(progression.prehistoric_cycles_completed).toBe("1")
       await expect(client.scard(`${scope.prehistoricKey}:symbols`)).resolves.toBe(1)
+    } finally {
+      await client.del(...keys)
+    }
+  })
+
+  test("new sessions preserve a pending settings-generation acknowledgement", async () => {
+    const connectionId = `pending-recoordination-${Date.now()}`
+    const client = getRedisClient()
+    const scope = buildProgressionScope(connectionId)
+    const version = `settings-${Date.now()}`
+    const keys = [
+      scope.progressionKey,
+      scope.legacyProgressionKey,
+      `${scope.progressionKey}:history:1`,
+    ]
+    try {
+      await client.del(...keys)
+      await Promise.all([
+        client.hset(scope.progressionKey, {
+          session_number: "1",
+          epoch: "1",
+          settings_recoordination_pending: "1",
+          settings_recoordination_requested_version: version,
+          settings_recoordination_requested_event_id: "event-1",
+          settings_recoordination_fields: JSON.stringify(["minimal_step_count"]),
+          stats_recalculation_requested: "1",
+          stats_recalculation_requested_version: version,
+        }),
+        client.hset(scope.legacyProgressionKey, {
+          settings_recoordination_pending: "1",
+          settings_recoordination_requested_version: version,
+          settings_recoordination_requested_event_id: "event-1",
+          settings_recoordination_fields: JSON.stringify(["minimal_step_count"]),
+          stats_recalculation_requested: "1",
+          stats_recalculation_requested_version: version,
+        }),
+      ])
+
+      await ProgressionStateManager.archiveAndStartNewProgression(connectionId, Date.now(), "main")
+
+      const next = await client.hgetall(scope.progressionKey)
+      expect(next.settings_recoordination_pending).toBe("1")
+      expect(next.settings_recoordination_requested_version).toBe(version)
+      expect(next.stats_recalculation_requested).toBe("1")
+      expect(next.cycles_completed).toBe("0")
     } finally {
       await client.del(...keys)
     }
@@ -358,6 +426,115 @@ describe("historic runtime generation stability", () => {
       await expect(client.get(scope.prehistoricLoadedKey)).resolves.toBeNull()
       await expect(client.get(doneKeys.scoped)).resolves.toBeNull()
       await expect(client.get(`realtime:${connectionId}`)).resolves.toBeNull()
+    } finally {
+      await client.del(...keys)
+    }
+  })
+
+  test("runtime settings changes retain an active same-basket Historic cache", async () => {
+    const connectionId = `historic-runtime-settings-${Date.now()}`
+    const client = getRedisClient()
+    const scope = buildProgressionScope(connectionId)
+    const doneKeys = buildPrehistoricGateKeys(connectionId, "main", "done")
+    const firstPassKeys = buildPrehistoricGateKeys(connectionId, "main", "firstpass:done")
+    const symbols = ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"]
+    const symbolsHash = symbols.slice().sort().join("|")
+    const selectionEpoch = `runtime-settings-${Date.now()}`
+    const connectionKey = `connection:${connectionId}`
+    const keys = [
+      connectionKey,
+      scope.progressionKey,
+      scope.prehistoricKey,
+      `${scope.prehistoricKey}:symbols`,
+      scope.prehistoricLoadedKey,
+      `prehistoric_loaded:${connectionId}`,
+      doneKeys.scoped,
+      doneKeys.legacy,
+      firstPassKeys.scoped,
+      firstPassKeys.legacy,
+      scope.tradeEngineStateKey,
+      `trade_engine_state:${connectionId}`,
+      `settings:trade_engine_state:${connectionId}`,
+      `connection_settings:${connectionId}`,
+      `settings:connection_settings:${connectionId}`,
+      `realtime:${connectionId}`,
+    ]
+    try {
+      await client.del(...keys)
+      const connection = {
+        force_symbols: JSON.stringify(symbols),
+        selected_symbols: JSON.stringify(symbols),
+        is_live_trade: "0",
+        is_testnet: "1",
+      }
+      const initialState = {
+        force_symbols: JSON.stringify(symbols),
+        selected_symbols: JSON.stringify(symbols),
+        symbol_selection_epoch: selectionEpoch,
+        live_volume_factor: "1",
+        config_set_symbols_total: String(symbols.length),
+      }
+      const initialFingerprint = buildProgressionFingerprint({
+        connectionId,
+        engineType: "main",
+        connData: connection,
+        tradeEngineState: initialState,
+        connectionSettings: {},
+      })
+      await Promise.all([
+        client.hset(connectionKey, connection),
+        client.hset(scope.tradeEngineStateKey, initialState),
+        client.hset(scope.progressionKey, {
+          connection_id: connectionId,
+          engine_started: "true",
+          epoch: String(Date.now()),
+          symbol_count: String(symbols.length),
+          active_symbols_hash: symbolsHash,
+          progress_settings_snapshot: JSON.stringify({ progression_fingerprint: initialFingerprint }),
+        }),
+        client.hset(scope.prehistoricKey, {
+          is_complete: "1",
+          historic_avg_profit_factor: "1.25",
+          symbols_processed: String(symbols.length),
+          symbols_total: String(symbols.length),
+          symbol_selection_epoch: selectionEpoch,
+          completed_progression_fingerprint: initialFingerprint,
+          completed_symbols_hash: symbolsHash,
+        }),
+        client.sadd(`${scope.prehistoricKey}:symbols`, ...symbols),
+        client.set(doneKeys.scoped, "1", { EX: 86400 }),
+        client.set(firstPassKeys.scoped, "1", { EX: 86400 }),
+        client.set(scope.prehistoricLoadedKey, "1", { EX: 86400 }),
+        client.set(`prehistoric_loaded:${connectionId}`, "1", { EX: 86400 }),
+        client.set(`realtime:${connectionId}`, "current-session-telemetry", { EX: 86400 }),
+      ])
+
+      const currentState = { ...initialState, live_volume_factor: "1.2" }
+      await client.hset(scope.tradeEngineStateKey, currentState)
+      const currentFingerprint = buildProgressionFingerprint({
+        connectionId,
+        engineType: "main",
+        connData: connection,
+        tradeEngineState: currentState,
+        connectionSettings: {},
+      })
+
+      await expect(
+        ProgressionStateManager.recoordinateForActualOne(connectionId, "main"),
+      ).resolves.toEqual(expect.objectContaining({
+        changed: false,
+        reason: "runtime settings changed — Historic cache retained",
+      }))
+
+      const progression = await client.hgetall(scope.progressionKey)
+      const refreshed = JSON.parse(progression.progress_settings_snapshot || "{}")
+      expect(refreshed.progression_fingerprint).toBe(currentFingerprint)
+      expect(progression.runtime_settings_reconciliation).toBe("hot-reload-preserved-historic-cache")
+      await expect(client.get(doneKeys.scoped)).resolves.toBe("1")
+      await expect(client.get(firstPassKeys.scoped)).resolves.toBe("1")
+      await expect(client.get(scope.prehistoricLoadedKey)).resolves.toBe("1")
+      await expect(client.get(`prehistoric_loaded:${connectionId}`)).resolves.toBe("1")
+      await expect(client.get(`realtime:${connectionId}`)).resolves.toBe("current-session-telemetry")
     } finally {
       await client.del(...keys)
     }

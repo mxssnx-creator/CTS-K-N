@@ -18,7 +18,28 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 const port = Math.max(1024, Math.min(65535, Number(process.env.PROD_INLINE_AUDIT_PORT || 3112)))
 const baseUrl = `http://127.0.0.1:${port}`
-const snapshotPath = `/tmp/cts-production-inline-ui-audit-${process.pid}.json`
+// The command runners used in CI can give each invocation a low PID such as
+// 4. Include a timestamp so an interrupted audit can never make a later run
+// accidentally reuse its InlineLocalRedis state.
+const snapshotPath = `/tmp/cts-production-inline-ui-audit-${process.pid}-${Date.now()}.json`
+const deepUiAuditRequested = process.env.PROD_INLINE_AUDIT_DEEP === "1"
+const streamServerLogs = process.env.PROD_INLINE_AUDIT_STREAM_SERVER_LOGS === "1"
+const auditHeapMb = Math.max(
+  2048,
+  Math.min(12288, Number(process.env.PROD_INLINE_AUDIT_HEAP_MB || (deepUiAuditRequested ? 8192 : 4096))),
+)
+const auditMemoryLimitMb = Math.max(
+  auditHeapMb,
+  Number(process.env.PROD_INLINE_AUDIT_MEMORY_LIMIT_MB || (deepUiAuditRequested ? 10240 : 6144)),
+)
+const auditRssSoftLimitMb = Math.max(
+  1024,
+  Math.min(auditMemoryLimitMb, Number(process.env.PROD_INLINE_AUDIT_RSS_SOFT_LIMIT_MB || (deepUiAuditRequested ? 6400 : 4096))),
+)
+const auditRssHardLimitMb = Math.max(
+  auditRssSoftLimitMb,
+  Math.min(auditMemoryLimitMb, Number(process.env.PROD_INLINE_AUDIT_RSS_HARD_LIMIT_MB || (deepUiAuditRequested ? 8192 : 5120))),
+)
 const symbols = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
   "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
@@ -105,6 +126,26 @@ async function pageCheck(pathname) {
   assert(html.includes("/_next/static/"), `${pathname} did not render Next client assets`)
 }
 
+async function runDeepUiVerifier() {
+  await new Promise((resolve, reject) => {
+    const verifier = spawn(process.execPath, ["scripts/verify-prod-ui-max.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        BASE_URL: baseUrl,
+        PORT: String(port),
+        PROD_UI_PROGRESSION_TIMEOUT_MS: process.env.PROD_INLINE_AUDIT_PROGRESS_TIMEOUT_MS || "90000",
+      },
+      stdio: "inherit",
+    })
+    verifier.once("error", reject)
+    verifier.once("exit", (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(`Deep production UI verifier exited code=${code} signal=${signal || "none"}`))
+    })
+  })
+}
+
 async function main() {
   const child = spawn(process.execPath, ["scripts/start-production.mjs"], {
     cwd: process.cwd(),
@@ -138,23 +179,27 @@ async function main() {
       PREHISTORIC_CONFIG_CONCURRENCY: "2",
       PREHISTORIC_CONFIG_TYPE_CONCURRENCY: "1",
       PREHISTORIC_RANGE_HOURS: "1",
-      CTS_NODE_HEAP_MB: process.env.PROD_INLINE_AUDIT_HEAP_MB || "4096",
-      CTS_MEMORY_LIMIT_MB: "6144",
-      CTS_RSS_SOFT_LIMIT_MB: "4096",
-      CTS_RSS_HARD_LIMIT_MB: "5120",
-      NODE_OPTIONS: "--max-old-space-size=4096 --max-semi-space-size=128 --expose-gc",
+      CTS_NODE_HEAP_MB: String(auditHeapMb),
+      CTS_MEMORY_LIMIT_MB: String(auditMemoryLimitMb),
+      CTS_RSS_SOFT_LIMIT_MB: String(auditRssSoftLimitMb),
+      CTS_RSS_HARD_LIMIT_MB: String(auditRssHardLimitMb),
+      NODE_OPTIONS: `--max-old-space-size=${auditHeapMb} --max-semi-space-size=128 --expose-gc`,
       BINGX_API_KEY: "",
       BINGX_API_SECRET: "",
-      BINGX_X02_API_KEY: "",
-      BINGX_X02_API_SECRET: "",
+      // Non-secret sentinels exercise the X02 masked credential UI contract.
+      // FORCE_SIMULATED and ALLOW_LIVE_ORDER_PLACEMENT=0 keep this audit
+      // incapable of submitting an exchange order.
+      BINGX_X02_API_KEY: "test_x02_audit_key",
+      BINGX_X02_API_SECRET: "test_x02_audit_secret",
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: streamServerLogs ? "inherit" : ["ignore", "pipe", "pipe"],
   })
-  child.stdout.on("data", appendOutput)
-  child.stderr.on("data", appendOutput)
+  child.stdout?.on("data", appendOutput)
+  child.stderr?.on("data", appendOutput)
 
   try {
     await waitForReady(child)
+    if (deepUiAuditRequested) await runDeepUiVerifier()
     const connectionsResponse = await request("/api/connections")
     assert(connectionsResponse.status === 200, "Could not load production connections")
     const connections = Array.isArray(connectionsResponse.data?.connections)

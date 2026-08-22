@@ -136,7 +136,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { connection: effectiveConnection, completion: recoordination } = await applyMainConnectionSettingsChange(id, conn, {
       connectionPatch: patch,
       settingsPatch,
-      changedFieldsOverride: Array.from(new Set([...Object.keys(patch), ...Object.keys(settingsPatch), "connection_settings"])),
+      // These are concrete flat sizing fields, not a partial opaque
+      // `connection_settings` envelope.  Advertising a generic envelope
+      // reload makes the engine assume every strategy/symbol setting changed
+      // and can schedule a heavyweight historic pass for a slider move.
+      changedFieldsOverride: Array.from(new Set([...Object.keys(patch), ...Object.keys(settingsPatch)])),
       settingsVersion,
       logTag: "POST /settings/volume",
     })

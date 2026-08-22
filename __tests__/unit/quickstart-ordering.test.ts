@@ -149,6 +149,9 @@ describe("QuickStart route ordering", () => {
       connectionPatch: expect.objectContaining({ live_volume_factor: "1" }),
       settingsPatch: expect.objectContaining({ live_volume_factor: "1", volume_factor_live: "1" }),
       changedFieldsOverride: expect.arrayContaining(["live_volume_factor", "connection_settings.live_volume_factor"]),
+      // The persistence/recoordination phase must not race the explicit
+      // targeted start below.
+      deferEngineStart: true,
     }))
     expect(callOrder.indexOf("applyMainConnectionSettingsChange")).toBeGreaterThanOrEqual(0)
     expect(callOrder.indexOf("applyMainConnectionSettingsChange")).toBeLessThan(callOrder.findIndex((entry) => entry.startsWith("startEngine:")))

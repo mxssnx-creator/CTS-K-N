@@ -13,7 +13,6 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
-import { normalizeTradeDirection } from "@/lib/trade-direction"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import {
@@ -24,7 +23,19 @@ import {
 } from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
 // Diagnostics must never synchronously write to disk during strategy preparation.
-const __DBGC = (_message: string): void => {}
+// Kept opt-in so an operator can isolate a slow Historic phase without adding
+// a hot-path allocation or persistent log volume in ordinary production.
+const HISTORIC_DEBUG_TIMING_ENV_KEY = ["CTS", "ENGINE", "DEBUG", "TIMING"].join("_")
+const __DBGC = (message: string): void => {
+  // Resolve the name dynamically so this remains an operator-controlled
+  // production diagnostic instead of being removed by Next's build-time env
+  // substitution.
+  if (process.env[HISTORIC_DEBUG_TIMING_ENV_KEY] === "1") {
+    // Production strips console.log; this explicit diagnostic stays visible
+    // through the retained warning channel only when the operator enables it.
+    console.warn(`[v0] [HistoricTiming] ${message}`)
+  }
+}
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 import {
   clearHistoricAggregateMarkers,
@@ -38,6 +49,17 @@ import {
 } from "@/lib/runtime-concurrency-profile"
 
 type HistoricCalculationRunner = <T>(task: () => Promise<T>) => Promise<T>
+
+/**
+ * A complete historic grid can spend minutes inside the first symbol. Symbol
+ * completion is consequently too coarse to prove liveness. These bounded
+ * calculation-group updates let the UI show real work without declaring a
+ * partially processed symbol complete.
+ */
+type HistoricWorkReporter = (
+  stage: "indications" | "strategies",
+  success: boolean,
+) => void
 
 interface HistoricIndicationWindowSeries {
   directions: Int8Array
@@ -69,6 +91,24 @@ function groupConfigsByType<T extends { type?: string }>(configs: T[]): Array<[s
     else grouped.set(type, [config])
   }
   return Array.from(grouped.entries())
+}
+
+function historicStrategyCalculationUnitCount(configs: readonly StrategyConfig[]): number {
+  let count = 0
+  for (const [, typeConfigs] of groupConfigsByType([...configs])) {
+    const fingerprints = new Set<string>()
+    for (const config of typeConfigs) {
+      fingerprints.add([
+        config.type,
+        Number(config.position_cost_step),
+        Number(config.takeprofit),
+        Number(config.stoploss),
+        Boolean(config.trailing),
+      ].join("|"))
+    }
+    count += fingerprints.size
+  }
+  return count
 }
 
 /**
@@ -249,15 +289,20 @@ export class ConfigSetProcessor {
   async initializeConfigSets(): Promise<{ indications: number; strategies: number }> {
     console.log(`[v0] [ConfigSetProcessor] Initializing config sets for ${this.connectionId}`)
 
+    __DBGC(`INIT_before_existing_indications ${this.connectionId}`)
     const existingIndications = await this.indicationManager.getAllConfigs()
+    __DBGC(`INIT_after_existing_indications ${this.connectionId} count=${existingIndications.length}`)
     const existingStrategies = await this.strategyManager.getAllConfigs()
+    __DBGC(`INIT_after_existing_strategies ${this.connectionId} count=${existingStrategies.length}`)
 
     let newIndications = 0
     let newStrategies = 0
 
     if (existingIndications.length === 0) {
       console.log(`[v0] [ConfigSetProcessor] Creating default indication configs...`)
+      __DBGC(`INIT_before_generate_indications ${this.connectionId}`)
       const indicationConfigs = await this.indicationManager.generateDefaultConfigs()
+      __DBGC(`INIT_after_generate_indications ${this.connectionId} count=${indicationConfigs.length}`)
       newIndications = indicationConfigs.length
       console.log(`[v0] [ConfigSetProcessor] Created ${newIndications} indication configs`)
     } else {
@@ -266,7 +311,9 @@ export class ConfigSetProcessor {
 
     if (existingStrategies.length === 0) {
       console.log(`[v0] [ConfigSetProcessor] Creating default strategy configs...`)
+      __DBGC(`INIT_before_generate_strategies ${this.connectionId}`)
       const strategyConfigs = await this.strategyManager.generateDefaultConfigs()
+      __DBGC(`INIT_after_generate_strategies ${this.connectionId} count=${strategyConfigs.length}`)
       newStrategies = strategyConfigs.length
       console.log(`[v0] [ConfigSetProcessor] Created ${newStrategies} strategy configs`)
     } else {
@@ -467,6 +514,121 @@ export class ConfigSetProcessor {
       `${indicationCalculationGroups.length} unique indication calculations (in ${tConfigsMs}ms)`
     )
 
+    // A first symbol can legitimately take a while: the configured exhaustive
+    // grid has many exact groups and every result still has to be persisted.
+    // Publish group-level work units so a healthy cold bootstrap is visibly
+    // advancing before its first whole symbol completes. These are actual
+    // calculation groups, never timers or synthetic heartbeats.
+    const indicationWorkUnitsPerSymbol = groupHistoricIndicationCalculationGroupsByGeometry(
+      indicationCalculationGroups,
+    ).length
+    const strategyWorkUnitsPerSymbol = historicStrategyCalculationUnitCount(strategyConfigs)
+    const configWorkUnitsPerSymbol = Math.max(
+      1,
+      indicationWorkUnitsPerSymbol + strategyWorkUnitsPerSymbol,
+    )
+    const configWorkUnitsTotal = Math.max(
+      1,
+      canonicalSymbolsTotal * configWorkUnitsPerSymbol,
+    )
+    const initialConfigWorkUnits = Math.min(
+      configWorkUnitsTotal,
+      Math.max(0, alreadyProcessedSymbols) * configWorkUnitsPerSymbol,
+    )
+    let pendingConfigWorkUnits = 0
+    let pendingConfigWorkFailures = 0
+    let configWorkFlush: Promise<void> | null = null
+    let configWorkCurrentSymbol = ""
+    let configWorkCurrentStage = "initializing"
+    let configWorkLastEngineProgressAt = 0
+
+    const flushConfigWorkProgress = (): Promise<void> => {
+      if (configWorkFlush) return configWorkFlush
+      configWorkFlush = (async () => {
+        while (pendingConfigWorkUnits > 0) {
+          const units = pendingConfigWorkUnits
+          const failures = pendingConfigWorkFailures
+          pendingConfigWorkUnits = 0
+          pendingConfigWorkFailures = 0
+          try {
+            await assertCurrentSelection()
+            const completed = Math.min(
+              configWorkUnitsTotal,
+              Number(await client.hincrby(prehistoricKey, "config_work_units_completed", units)) || 0,
+            )
+            const now = Date.now()
+            const activityAt = new Date(now).toISOString()
+            await client.hset(prehistoricKey, {
+              config_work_units_total: String(configWorkUnitsTotal),
+              config_work_current_symbol: configWorkCurrentSymbol,
+              config_work_current_stage: configWorkCurrentStage,
+              config_work_last_activity_at: activityAt,
+              config_work_last_activity_ms: String(now),
+              ...(failures > 0 ? {
+                config_work_failed_units: String(
+                  Math.max(0, Number(await client.hincrby(prehistoricKey, "config_work_failed_units", failures)) || 0),
+                ),
+              } : {}),
+            })
+            await mirrorProgressHash({
+              prehistoric_config_work_units_completed: completed,
+              prehistoric_config_work_units_total: configWorkUnitsTotal,
+              prehistoric_config_work_failed_units: Math.max(
+                0,
+                Number(await client.hget(prehistoricKey, "config_work_failed_units").catch(() => 0)) || 0,
+              ),
+              prehistoric_config_work_current_symbol: configWorkCurrentSymbol,
+              prehistoric_config_work_current_stage: configWorkCurrentStage,
+              prehistoric_config_work_last_activity_at: activityAt,
+            })
+            // Progression writes are deliberately throttled. The unit counter
+            // itself is atomic and exact; this more expensive UI projection
+            // only needs human-scale updates.
+            if (
+              completed >= configWorkUnitsTotal ||
+              now - configWorkLastEngineProgressAt >= 750
+            ) {
+              configWorkLastEngineProgressAt = now
+              const percent = Math.min(
+                95,
+                15 + Math.round((completed / configWorkUnitsTotal) * 80),
+              )
+              await setEngineProgress({
+                phase: "prehistoric_data",
+                progress: percent,
+                detail: `Prehistoric calc ${configWorkCurrentStage} — ${configWorkCurrentSymbol || "preparing"}; ` +
+                  `${completed}/${configWorkUnitsTotal} configuration groups`,
+                sub_current: Math.min(canonicalSymbolsTotal, Math.floor(completed / configWorkUnitsPerSymbol)),
+                sub_total: canonicalSymbolsTotal,
+                sub_item: configWorkCurrentSymbol || "configuration groups",
+                updated_at: activityAt,
+              })
+            }
+          } catch (error) {
+            // A superseded generation must not write its remaining work into a
+            // new selection's progress hash. The succeeding owner publishes its
+            // own units; ordinary telemetry failures remain non-fatal.
+            if (error instanceof PrehistoricProcessingCancelledError) {
+              pendingConfigWorkUnits = 0
+              pendingConfigWorkFailures = 0
+              return
+            }
+          }
+        }
+      })().finally(() => {
+        configWorkFlush = null
+        if (pendingConfigWorkUnits > 0) void flushConfigWorkProgress()
+      })
+      return configWorkFlush
+    }
+
+    const reportConfigWork: HistoricWorkReporter = (stage, success) => {
+      configWorkCurrentStage = stage
+      pendingConfigWorkUnits++
+      if (!success) pendingConfigWorkFailures++
+      void flushConfigWorkProgress()
+    }
+
     // Store range/concurrency metadata for dashboard. One write is enough;
     // the previous duplicate Promise.all issued the exact same HSET twice.
     try {
@@ -487,6 +649,12 @@ export class ConfigSetProcessor {
         indication_calculation_groups: String(indicationCalculationGroups.length),
         strategy_configs: String(strategyConfigs.length),
         strategy_configs_available: String(allStrategyConfigs.length),
+        config_work_units_total: String(configWorkUnitsTotal),
+        config_work_units_completed: String(initialConfigWorkUnits),
+        config_work_failed_units: "0",
+        config_work_current_stage: "preparing",
+        config_work_current_symbol: "",
+        config_work_last_activity_at: new Date().toISOString(),
         config_concurrency: String(CONFIG_CONCURRENCY),
         candles_loaded: "0",
         intervals_processed: "0",
@@ -505,9 +673,43 @@ export class ConfigSetProcessor {
     // are fired with Promise.all where possible to minimise the await chain.
     const processOneSymbol = async (symbol: string): Promise<void> => {
       const tSymStart = Date.now()
+      let symbolWorkReported = 0
+      const reportSymbolWork: HistoricWorkReporter = (stage, success) => {
+        symbolWorkReported++
+        reportConfigWork(stage, success)
+      }
+      const finishUnreportedSymbolWork = (success: boolean) => {
+        const remaining = Math.max(0, configWorkUnitsPerSymbol - symbolWorkReported)
+        if (remaining === 0) return
+        const indicationRemaining = Math.min(
+          remaining,
+          Math.max(0, indicationWorkUnitsPerSymbol - symbolWorkReported),
+        )
+        for (let index = 0; index < indicationRemaining; index++) {
+          reportSymbolWork("indications", success)
+        }
+        for (let index = indicationRemaining; index < remaining; index++) {
+          reportSymbolWork("strategies", success)
+        }
+      }
       try {
         __DBGC(`PS_sym_start ${symbol}`)
         await assertCurrentSelection()
+        configWorkCurrentSymbol = symbol
+        configWorkCurrentStage = "loading"
+        const symbolStartedAt = new Date().toISOString()
+        await client.hset(prehistoricKey, {
+          current_symbol: symbol,
+          config_work_current_symbol: symbol,
+          config_work_current_stage: "loading",
+          config_work_last_activity_at: symbolStartedAt,
+        }).catch(() => 0)
+        await mirrorProgressHash({
+          prehistoric_current_symbol: symbol,
+          prehistoric_config_work_current_symbol: symbol,
+          prehistoric_config_work_current_stage: "loading",
+          prehistoric_config_work_last_activity_at: symbolStartedAt,
+        })
         // --- Load all available candles for this symbol ---
         let candles: any[] = []
 
@@ -597,6 +799,10 @@ export class ConfigSetProcessor {
             symbol,
             stage: "prehistoric",
           })
+          // No calculation group is skipped silently: this symbol's work was
+          // conclusively evaluated as data-less, so mark its planned units as
+          // complete while keeping the no-data warning visible.
+          finishUnreportedSymbolWork(true)
           return
         }
 
@@ -724,10 +930,11 @@ export class ConfigSetProcessor {
                 PERSIST_CONCURRENCY,
                 assertRunActive,
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
-                historicSeries,
-                historicGeneration,
-                runCalculation,
-              )
+              historicSeries,
+              historicGeneration,
+              runCalculation,
+              reportSymbolWork,
+            )
             : Promise.resolve(0),
           combinedCandles.length > 0
             ? this.processStrategyConfigs(
@@ -739,10 +946,11 @@ export class ConfigSetProcessor {
                 PERSIST_CONCURRENCY,
                 assertRunActive,
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
-                historicSeries,
-                historicGeneration,
-                runCalculation,
-              )
+              historicSeries,
+              historicGeneration,
+              runCalculation,
+              reportSymbolWork,
+            )
             : Promise.resolve(0),
         ])
         __DBGC(`PS_sym_after_calc ${symbol} ind=${indicationResults} strat=${strategyPositions}`)
@@ -892,6 +1100,10 @@ export class ConfigSetProcessor {
           symbol,
           error: error instanceof Error ? error.message : String(error),
         })
+        // Keep the work meter honest after an isolated symbol failure. The
+        // red failed-unit count distinguishes attempted/error work from a
+        // healthy completed calculation; it never opens the historic gate.
+        finishUnreportedSymbolWork(false)
       }
     }
 
@@ -904,6 +1116,10 @@ export class ConfigSetProcessor {
         getRuntimeCapabilityConcurrency("mixed", symbols.length),
       ),
     })
+    // Drain the throttled work-meter queue before publishing the final
+    // prehistoric result. Otherwise a fast final symbol could flip the gate
+    // while the UI still sees a stale in-flight configuration count.
+    await flushConfigWorkProgress()
     await assertCurrentSelection()
 
     const duration = Date.now() - startTime
@@ -1248,6 +1464,7 @@ export class ConfigSetProcessor {
     historicSeries?: HistoricPriceSeries,
     historicGeneration = "",
     runCalculation: HistoricCalculationRunner = (task) => task(),
+    reportWork?: HistoricWorkReporter,
   ): Promise<number> {
     if (calculationGroups.length === 0) return 0
 
@@ -1270,6 +1487,7 @@ export class ConfigSetProcessor {
       geometryGroups,
       concurrency,
       async (geometryCalculationGroups) => {
+        let succeeded = false
         try {
           assertRunActive()
           await yieldToEventLoop()
@@ -1341,6 +1559,7 @@ export class ConfigSetProcessor {
             },
             { yieldEvery: 1 },
           )
+          succeeded = true
           return persisted.reduce((sum, value) => sum + value, 0)
         } catch (error) {
           if (error instanceof PrehistoricProcessingCancelledError) throw error
@@ -1349,6 +1568,8 @@ export class ConfigSetProcessor {
             error instanceof Error ? error.message : String(error),
           )
           return 0
+        } finally {
+          reportWork?.("indications", succeeded)
         }
       },
       {
@@ -1526,6 +1747,7 @@ export class ConfigSetProcessor {
     historicSeries?: HistoricPriceSeries,
     historicGeneration = "",
     runCalculation: HistoricCalculationRunner = (task) => task(),
+    reportWork?: HistoricWorkReporter,
   ): Promise<number> {
     if (configs.length === 0) return 0
 
@@ -1540,14 +1762,14 @@ export class ConfigSetProcessor {
     // recordPosClosed() is what populates pos_history. It was previously
     // only called by the live close path (pseudo-position-manager.ts).
     // We now mirror every closed prehistoric position into pos_history
-    // through the same primitive, batched into one Redis pipeline per
-    // symbol-config so the round-trip cost stays bounded even when
-    // a single config produces hundreds of historic closes.
+    // through the same semantic writer, batched into one Redis pipeline per
+    // symbol-config so the command count stays bounded even when a single
+    // config produces hundreds of historic closes.
     //
     // Spec: "Make sure prehistoric progress works completely correct
     //   with created sets data and then start realtime progress, AFTER
     //   prehistoric has finished, fix systemwide."
-    const { recordPosClosed } = await import("@/lib/pos-history")
+    const { recordPosClosedBatch } = await import("@/lib/pos-history")
     const piClient = getRedisClient()
     const appSettings = (await getAppSettings().catch(() => null)) || {}
     const configuredPositionCostPct = Number(
@@ -1593,6 +1815,7 @@ export class ConfigSetProcessor {
           [...calculationGroups.values()],
           perTypeConcurrency,
           async (calculationConfigs) => {
+            let succeeded = false
             try {
               assertRunActive()
               await yieldToEventLoop()
@@ -1604,7 +1827,14 @@ export class ConfigSetProcessor {
                 historicSeries,
                 positionCostPct,
               ))
-              if (positions.length === 0) return 0
+              // A clean calculation with no qualifying pseudo-position is a
+              // valid outcome, not a failed strategy group. Previously this
+              // early return left `succeeded` false, causing every zero-result
+              // group to inflate the production UI's failed-work counter.
+              if (positions.length === 0) {
+                succeeded = true
+                return 0
+              }
               const persistedCounts = await mapWithConcurrency(
                 calculationConfigs,
                 perTypePersistenceConcurrency,
@@ -1660,48 +1890,45 @@ export class ConfigSetProcessor {
                   if (acceptedClosed.length > 0) {
                     try {
                       const pipeline = piClient.multi()
-                      for (const p of acceptedClosed) {
-                        const direction = normalizeTradeDirection(p.direction)
-                        if (!direction) continue
-                        const indicationType = p.indication_type || config.type || "unknown"
-                        const resultPct = Number(p.result) || 0
-                    // Per-position drawdown TIME = how long the trade was held
-                    // (entry → exit), in minutes. Both fields are either epoch-ms
-                    // numbers or ISO strings (see the prices[].time origin), so we
-                    // normalise to ms before differencing. Previously this was
-                    // hardcoded to 0, which made the downstream DDT gate a dead
-                    // no-op (Set.avgDrawdownTime was always 0). The realised
-                    // duration is the correct signal: a Set that sits in trades
-                    // for hours has materially worse drawdown-time risk than one
-                    // that resolves in minutes, and the Main/Real gate is meant
-                    // to reject the former.
-                    const toMs = (t: unknown): number => {
-                      if (typeof t === "number") return t
-                      if (typeof t === "string") {
-                        const n = Number(t)
-                        if (Number.isFinite(n) && n > 0) return n
-                        const parsed = Date.parse(t)
-                        return Number.isFinite(parsed) ? parsed : 0
+                      const toMs = (t: unknown): number => {
+                        if (typeof t === "number") return t
+                        if (typeof t === "string") {
+                          const n = Number(t)
+                          if (Number.isFinite(n) && n > 0) return n
+                          const parsed = Date.parse(t)
+                          return Number.isFinite(parsed) ? parsed : 0
+                        }
+                        return 0
                       }
-                      return 0
-                    }
-                    const entryMs = toMs(p.entry_time)
-                    const exitMs = toMs(p.exit_time)
-                    const drawdownMinutes =
-                      entryMs > 0 && exitMs > entryMs ? (exitMs - entryMs) / 60000 : 0
-                        recordPosClosed({
-                          connectionId: this.connectionId,
-                          symbol: p.symbol || symbol,
-                          indicationType,
-                          direction,
-                          pnl: resultPct,
-                          pnlPct: resultPct,
-                          positionCostPct,
-                          drawdownMinutes,
-                          entryPrice: p.entry_price,
-                          pipeline,
-                        })
-                      }
+                      // Per-position drawdown time is still calculated from
+                      // the exact entry/exit pair. The batch writer only
+                      // combines commutative counters and the equivalent
+                      // rolling-list append; it never samples or drops rows.
+                      recordPosClosedBatch({
+                        connectionId: this.connectionId,
+                        entries: acceptedClosed
+                          .filter((p): p is PseudoPosition & { direction: "long" | "short" } =>
+                            p.direction === "long" || p.direction === "short",
+                          )
+                          .map((p) => {
+                          const entryMs = toMs(p.entry_time)
+                          const exitMs = toMs(p.exit_time)
+                          const drawdownMinutes =
+                            entryMs > 0 && exitMs > entryMs ? (exitMs - entryMs) / 60000 : 0
+                          const resultPct = Number(p.result) || 0
+                          return {
+                            symbol: p.symbol || symbol,
+                            indicationType: p.indication_type || config.type || "unknown",
+                            direction: p.direction,
+                            pnl: resultPct,
+                            pnlPct: resultPct,
+                            positionCostPct,
+                            drawdownMinutes,
+                            entryPrice: p.entry_price,
+                          }
+                          }),
+                        pipeline,
+                      })
                       await (pipeline as any).exec()
                     } catch (piErr) {
                       console.warn(
@@ -1715,6 +1942,7 @@ export class ConfigSetProcessor {
                 },
                 { yieldEvery: 1 },
               )
+              succeeded = true
               return persistedCounts.reduce((sum, count) => sum + count, 0)
             } catch (error) {
               if (error instanceof PrehistoricProcessingCancelledError) throw error
@@ -1723,6 +1951,8 @@ export class ConfigSetProcessor {
                 error instanceof Error ? error.message : String(error),
               )
               return 0
+            } finally {
+              reportWork?.("strategies", succeeded)
             }
           },
           {

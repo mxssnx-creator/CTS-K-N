@@ -4,6 +4,40 @@
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current Linux production remediation checkpoint (2026-08-22)
+
+- The reported Linux production symptoms were reproduced locally with the
+  single-worker production artifact: status reads could wait behind startup
+  work, Historic configuration scans could monopolise the event loop, and a
+  volume-only save advertised itself as a generic settings reload and therefore
+  scheduled a heavyweight immediate Historic/Main pass. Status healing is now
+  scheduled rather than awaited, Historic scans/pipeline reads yield between
+  bounded batches, cold bootstraps have one process-wide admission permit, and
+  sizing-only hot reloads invalidate runtime caches without starting that full
+  pass. Progress, stats and settings acknowledgements remain durable and
+  observable while work is queued.
+- Exchange trade history now reconciles BingX VST per symbol when the account
+  wide history page omits a recently created order. Exact order-detail data is
+  retained as the authoritative correctness source; the VST soak report keeps
+  a separate non-failing list-page omission diagnostic.
+- Current validation on this exact worktree: TypeScript and ESLint; 194/194
+  unit suites (1,243 tests); 4/4 integration suites (54 tests); secret scan
+  (1,455 files, zero findings); trace-valid Next production build (347 trace
+  files); 32-symbol Direct-Trade simulated 24 h grid (960,512 evaluated sets,
+  chunked into 97 chunks) plus physical crash/restart recovery; and the
+  production UI audit. The final quick 32-symbol artifact audit had API p95
+  12.5 ms and 424.8 MiB RSS. The prior deep audit verified 47 UI surfaces,
+  settings/volume readback, Progress/Stats, Start/Stop/Pause/Resume and zero
+  real exchange orders.
+- BingX X02 authenticated Prod-VST read-only preflight passed again on
+  2026-08-22 (account, positions/orders and four market tickers). No order was
+  submitted in this checkpoint; X01/mainnet remains fail-closed. Do not persist
+  supplied credentials in source, reports or snapshots.
+- Remote Linux/Tailscale deployment remains intentionally unchanged until the
+  operator confirms the Google/Tailnet login from an authorized machine. The
+  present sandbox cannot reach the Tailnet; do not infer a successful SSH or
+  server deployment from the local production audit.
+
 ## Current audited release checkpoint (2026-08-21)
 
 - Continue from `/workspace/CTS-K-N-v3.7` and preserve the persistent

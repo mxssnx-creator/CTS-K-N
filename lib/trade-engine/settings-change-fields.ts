@@ -125,6 +125,37 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "system_settings",
 ])
 
+// These fields alter how a future exchange order is sized or protected, but
+// they do not change the historic indication/strategy graph.  A hot reload
+// must still invalidate the relevant caches immediately; scheduling a whole
+// ind+strat pass while that graph is bootstrapping, however, can monopolise a
+// single-process production server and make a simple volume-slider save look
+// stuck.  Keep the classification deliberately narrow: mixed changes retain
+// the normal immediate strategy re-evaluation path.
+const LIVE_SIZING_ONLY_SETTING_FIELDS = new Set([
+  "volume_factor",
+  "live_volume_factor",
+  "preset_volume_factor",
+  "signal_volume_factor",
+  "volume_factor_live",
+  "volume_factor_preset",
+  "volume_factor_signal",
+  "mainTradeVolumeFactor",
+  "main_trade_volume_factor",
+  "presetTradeVolumeFactor",
+  "preset_trade_volume_factor",
+  "signalTradeVolumeFactor",
+  "signal_trade_volume_factor",
+  "signalVolumeFactor",
+  "volume_step_ratio",
+])
+
+function normalizeNestedConnectionSettingField(field: string): string {
+  return field.startsWith("connection_settings.")
+    ? field.slice("connection_settings.".length)
+    : field
+}
+
 export function isGenericConnectionSettingsReload(fields: readonly string[]): boolean {
   return fields.length === 0 || fields.some((field) => field === "connection_settings" || field === "system_settings")
 }
@@ -150,4 +181,16 @@ export function hasStrategyAffectingChange(fields: readonly string[]): boolean {
     }
     return false
   })
+}
+
+/**
+ * True only when every changed field is an execution-sizing value.  This is
+ * intentionally separate from `hasStrategyAffectingChange`: sizing is a
+ * strategy input, but it is not a reason to run a heavyweight immediate
+ * historic/Main re-evaluation before the normal next cycle.
+ */
+export function isLiveSizingOnlyChange(fields: readonly string[]): boolean {
+  return fields.length > 0 && fields.every((field) =>
+    LIVE_SIZING_ONLY_SETTING_FIELDS.has(normalizeNestedConnectionSettingField(field)),
+  )
 }

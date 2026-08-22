@@ -99,7 +99,16 @@ async function responseFromVolatileStatsSnapshot(
     ) || "main"
     const scope = buildProgressionScope(connectionId, engineType)
     const progressionKeys = Array.from(new Set(progressionReadKeys(scope)))
-    const [progressionHashes, prehistoricRaw, realtimeRaw, legacyState, settingsState, scopedState, scopedSettings] = await Promise.all([
+    const [
+      progressionHashes,
+      prehistoricRaw,
+      realtimeRaw,
+      legacyState,
+      settingsState,
+      scopedState,
+      scopedSettings,
+      engineProgression,
+    ] = await Promise.all([
       Promise.all(progressionKeys.map((key) => client.hgetall(key).catch(() => ({} as Record<string, string>)))),
       client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
       client.hgetall(`realtime:${connectionId}`).catch(() => ({} as Record<string, string>)),
@@ -107,8 +116,22 @@ async function responseFromVolatileStatsSnapshot(
       client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
       client.hgetall(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({} as Record<string, string>)),
       client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+      getSettings(scope.engineProgressionKey)
+        .then((scopedProgression) => scopedProgression && Object.keys(scopedProgression).length > 0
+          ? scopedProgression
+          : getSettings(`engine_progression:${connectionId}`).catch(() => ({} as Record<string, string>)),
+        )
+        .catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({} as Record<string, string>))),
     ])
-    const progression = progressionHashes.find((hash) => Object.keys(hash || {}).length > 0) || {}
+    // `progressionReadKeys` is ordered by runtime authority.  Do not select
+    // the first non-empty hash wholesale: a rolling migration can leave that
+    // hash with only an old phase while the compatibility hash contains the
+    // freshly written settings acknowledgement.  Merge field-by-field while
+    // keeping the higher-authority (earlier) key as the winner.
+    const progression = progressionHashes.reduce<Record<string, string>>(
+      (merged, hash) => ({ ...(hash || {}), ...merged }),
+      {},
+    )
     const body = JSON.parse(snapshot.body)
     const overlaid = overlayVolatileProgressionStats(body, {
       progression,
@@ -120,8 +143,17 @@ async function responseFromVolatileStatsSnapshot(
         ...(scopedState || {}),
         ...(scopedSettings || {}),
       },
+      engineProgression: (engineProgression || {}) as Record<string, string>,
     })
     if (!overlaid) return responseFromStatsSnapshot(snapshot)
+    // These acknowledgement objects are written by the settings/engine owner
+    // and must not remain frozen at the last heavy-projection snapshot. A
+    // stale `idle` object made a successfully queued or applied settings
+    // change look lost for up to five minutes while a full 32-symbol graph was
+    // rebuilding. Recompute them from the same direct progression hash used
+    // for the numeric counter overlay above.
+    overlaid.settingsRecoordination = buildSettingsRecoordinationState(progression)
+    overlaid.statsRecalculation = buildStatsRecalculationState(progression)
     return new Response(JSON.stringify(overlaid), {
       headers: snapshot.headers,
       status: snapshot.status,
@@ -597,7 +629,8 @@ function aggregateOrdersBySymbol(
  *               cycleCounters: {                            // per-processor cumulative
  *                 indication, indicationLive,               // (every tick / live only)
  *                 strategy, strategyLive,
- *                 realtime, realtimeLive
+ *                 realtime, realtimeLive,
+ *                 livePositions
  *               },
  *               framesProcessed                              // cross-processor tick total
  *                                                            // — independent of 250 cap }
@@ -618,7 +651,13 @@ export async function GET(
   const { id: connectionId } = await params
   const responseCacheKey = statsResponseCacheKey(request, connectionId)
   const cached = statsResponseCache.get(responseCacheKey)
-  if (cached && cached.expiresAt > Date.now()) return responseFromStatsSnapshot(cached.snapshot)
+  // The heavy graph projection is cacheable, but worker progression and
+  // settings acknowledgements are not.  Even a fresh projection can have
+  // been created milliseconds before a QuickStart or settings reconciliation
+  // writes its marker; overlay those small Redis hashes on every cache hit.
+  if (cached && cached.expiresAt > Date.now()) {
+    return responseFromVolatileStatsSnapshot(cached.snapshot, request, connectionId)
+  }
   const staleSnapshot = cached && cached.staleUntil > Date.now()
     ? cached.snapshot
     : null
@@ -3169,6 +3208,12 @@ export async function GET(
       intervalsProcessed:      n(prehistoricHash.intervals_processed) || n(progHash.prehistoric_intervals_processed),
       missingIntervalsLoaded:  n(prehistoricHash.missing_intervals)   || n(progHash.prehistoric_missing_loaded),
       currentSymbol:           prehistoricHash.current_symbol         || progHash.prehistoric_current_symbol || "",
+      configWorkUnitsCompleted: n(prehistoricHash.config_work_units_completed) || n(progHash.prehistoric_config_work_units_completed),
+      configWorkUnitsTotal:     n(prehistoricHash.config_work_units_total) || n(progHash.prehistoric_config_work_units_total),
+      configWorkFailedUnits:    n(prehistoricHash.config_work_failed_units) || n(progHash.prehistoric_config_work_failed_units),
+      configWorkCurrentSymbol:  prehistoricHash.config_work_current_symbol || progHash.prehistoric_config_work_current_symbol || "",
+      configWorkCurrentStage:   prehistoricHash.config_work_current_stage || progHash.prehistoric_config_work_current_stage || "",
+      configWorkLastActivityAt: prehistoricHash.config_work_last_activity_at || progHash.prehistoric_config_work_last_activity_at || null,
       isComplete:              historicIsComplete,
       // Aggregate profit factor across every closed prehistoric position
       // — written by `ConfigSetProcessor` after each prehistoric run
@@ -3511,6 +3556,14 @@ export async function GET(
         framesProcessed:        n(prehistoricMeta.intervalsProcessed),
         framesMissingLoaded:    n(prehistoricMeta.missingIntervalsLoaded),
         timeframeSeconds:       n(prehistoricMeta.timeframeSeconds) || 1,
+        configWork: {
+          completed: n(prehistoricMeta.configWorkUnitsCompleted),
+          total: n(prehistoricMeta.configWorkUnitsTotal),
+          failed: n(prehistoricMeta.configWorkFailedUnits),
+          currentSymbol: prehistoricMeta.configWorkCurrentSymbol || "",
+          currentStage: prehistoricMeta.configWorkCurrentStage || "",
+          lastActivityAt: prehistoricMeta.configWorkLastActivityAt || null,
+        },
 
         // ── Historic profit factor + executed positions ────────────────
         // Two operator-requested overview metrics that previously lived
@@ -3561,6 +3614,10 @@ export async function GET(
           strategyLive:     liveStrategyCycles,
           realtime:         realtimeCycles,
           realtimeLive:     liveRealtimeCycles,
+          // Exchange adoption/protection stays active during a cold historic
+          // bootstrap. Keep it distinct from entry evaluation cycles so the
+          // dashboard can prove the live safety loop is running honestly.
+          livePositions:    n(progHash.live_positions_cycle_count),
         },
         // ── Pseudo-position mark-to-market visibility ────────────────
         // Cumulative counters written by RealtimeProcessor.processRealtimeUpdates
