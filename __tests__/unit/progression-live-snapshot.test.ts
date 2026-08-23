@@ -157,6 +157,85 @@ describe("volatile progression stats overlay", () => {
     })
   })
 
+  it("keeps current stage rows and the card overview live during a stale heavy projection", () => {
+    const now = 1_700_000_000_000
+    const result = overlayVolatileProgressionStats({
+      historic: { symbolsProcessed: 0, symbolsTotal: 1 },
+      realtime: { cycleCounters: {} },
+      strategyRows: {
+        base: { total: 0, valid: 0, totalOpen: 0, validOpen: 0 },
+        main: { valid: 0, overall: 0, validOpen: 0, overallOpen: 0, breakdown: {} },
+        real: { valid: 0, evaluated: 0, active: 0, activeExactRows: 0 },
+        live: { total: 0, mirrored: 0, active: 0 },
+      },
+      stageEvalPercent: { base: 0, main: 0, real: 0, live: 0 },
+      connectionStageOverview: {
+        base: { total: 0, valid: 0, pfMinimum: 1.1, validPercent: 0 },
+        main: { valid: 0, overall: 0, additional: 0, expansionPercent: 0, breakdown: {} },
+        real: { valid: 0, active: 0, activeExactSets: 0, activePercent: 0 },
+        live: { total: 0, long: 0, short: 0, symbols: 0, orders: { placed: 0, running: 0 } },
+        integrity: { valid: true, errors: [] },
+      },
+    }, {
+      progression: {},
+      prehistoric: {},
+      realtime: {},
+      engineState: { active_symbols: '["BTCUSDT"]' },
+      strategyDetails: {
+        base: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_total": "4",
+          "s:BTCUSDT:row_valid": "3",
+          "s:BTCUSDT:row_total_open": "2",
+          "s:BTCUSDT:row_valid_open": "1",
+          // A removed symbol must not inflate the current basket.
+          "s:ETHUSDT:ts": String(now - 1_000),
+          "s:ETHUSDT:row_total": "99",
+          "s:ETHUSDT:row_valid": "99",
+        },
+        main: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_valid": "1",
+          "s:BTCUSDT:row_overall": "2",
+          "s:BTCUSDT:row_valid_open": "1",
+          "s:BTCUSDT:row_overall_open": "2",
+          "s:BTCUSDT:row_overall_open_standard": "1",
+          "s:BTCUSDT:row_overall_open_trailing": "1",
+        },
+        real: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_valid": "1",
+          "s:BTCUSDT:row_real_evaluated": "2",
+          "s:BTCUSDT:row_active": "1",
+          "s:BTCUSDT:row_active_exact": "1",
+        },
+        live: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_total": "1",
+          "s:BTCUSDT:row_mirrored": "1",
+          "s:BTCUSDT:row_active": "1",
+        },
+      },
+      now,
+    })
+
+    expect(result).toMatchObject({
+      strategyRows: {
+        base: { total: 4, valid: 3, totalOpen: 2, validOpen: 1 },
+        main: { valid: 1, overall: 2, validOpen: 1, overallOpen: 2 },
+        real: { valid: 1, evaluated: 2, active: 1, activeExactRows: 1 },
+        live: { total: 1, mirrored: 1, active: 1 },
+      },
+      stageEvalPercent: { base: 75, main: 25, real: 50, live: 100 },
+      connectionStageOverview: {
+        base: { total: 2, valid: 1 },
+        main: { valid: 1, overall: 2, additional: 1 },
+        real: { valid: 1, active: 1, activeExactSets: 1 },
+        integrity: { valid: true, errors: [] },
+      },
+    })
+  })
+
   it("prefers the current worker phase over a stale QuickStart recoordination marker", () => {
     const result = overlayVolatileProgressionStats({
       historic: { symbolsProcessed: 0, symbolsTotal: 32 },
@@ -194,5 +273,14 @@ describe("volatile progression stats overlay", () => {
     expect(statsRoute).toContain("overlaid.statsRecalculation = buildStatsRecalculationState(progression)")
     expect(statsRoute).toContain("progressionHashes.reduce<Record<string, string>>")
     expect(statsRoute).toContain("return responseFromVolatileStatsSnapshot(cached.snapshot, request, connectionId)")
+  })
+
+  it("keeps the Live funnel numerator independent from the Real-stage numerator", () => {
+    const statsRoute = readFileSync(
+      join(process.cwd(), "app/api/connections/progression/[id]/stats/route.ts"),
+      "utf8",
+    )
+    expect(statsRoute).toContain('suffix === "live:evaluated"')
+    expect(statsRoute).toContain("stratEvaluated.live / real")
   })
 })

@@ -7,6 +7,43 @@ Total output lines: 1636
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current unified Linux/Main Trade audit checkpoint (2026-08-23)
+
+- Fresh Linux installations now make the immutable BingX X02 **Prod-VST**
+  connection operational as soon as valid configured VST credentials are
+  injected: the state transition is versioned, X02 is assigned and enabled,
+  and a durable `start` request is queued for the Main Trade engine. Mainnet
+  venues retain their operator-selected dashboard state; X02 remains virtual
+  funds only and must not be rewritten to a mainnet environment.
+- Auto-start queue coordination now executes an accepted queued start exactly
+  once before broad engine healing. A queued stop is handled once and excluded
+  from that same sweep's start candidates, preventing a control-order
+  stop→restart race and avoiding duplicate full-matrix coordinator work.
+- The Main Connection card, Main Trade display and API use one canonical
+  connection-scoped progression `/stats` snapshot. During bounded full-stats
+  projection staleness, compact worker-owned Base/Main/Real/Live rows refresh
+  the same snapshot; live evaluation uses its own counter. This preserves
+  current Stage Overview, cards, percentages, IDs and row relations instead
+  of mixing historical/configuration progress or flashing the prior selected
+  connection's data.
+- Current verified evidence on this exact worktree: TypeScript; 198/198 unit
+  suites (1,267 tests); 4/4 integration suites (54 tests); zero-finding
+  1,459-file secret scan; a trace-valid 42-page Next production build (347
+  trace files); a 32-symbol/48-hour Direct-Trade matrix (960,512 evaluated
+  sets, 884 valid, 45.5 s); native isolated-Redis Dev paper smoke; Linux
+  installer preflight; and a fresh 32-symbol Shared-Redis production audit.
+  The production audit exercised stage/card/UI/API data relations, 47 surfaces,
+  pause/resume/stop/start, X02 UI selection, 35 Signal sources, settings and
+  backup round trips, tracking/order relations, Redis restart and crash
+  recovery. It produced 4,466,752 strategy sets, 231 simulated position
+  lifecycles, API p95 404 ms, RSS peak 1.87 GiB under the 6.5 GiB hard budget,
+  and a post-warmup heap decrease. No real exchange order was submitted.
+- This sandbox has a portable native Redis 8.10.1 binary at
+  `/workspace/.network-clients/...` used for isolated Linux harnesses. The
+  system partition is read-only, so no host-wide package/service installation
+  is claimed here. Remote Tailnet/NetBird/ZeroTier routes remain unavailable;
+  local verification is not a claim that the remote Linux host was modified.
+
 ## Current trailing / production validation checkpoint (2026-08-23)
 
 - The complete pseudo-position → live-position trailing path was audited and

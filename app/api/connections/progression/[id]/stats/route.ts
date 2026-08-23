@@ -108,6 +108,10 @@ async function responseFromVolatileStatsSnapshot(
       scopedState,
       scopedSettings,
       engineProgression,
+      strategyDetailBase,
+      strategyDetailMain,
+      strategyDetailReal,
+      strategyDetailLive,
     ] = await Promise.all([
       Promise.all(progressionKeys.map((key) => client.hgetall(key).catch(() => ({} as Record<string, string>)))),
       client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
@@ -122,6 +126,13 @@ async function responseFromVolatileStatsSnapshot(
           : getSettings(`engine_progression:${connectionId}`).catch(() => ({} as Record<string, string>)),
         )
         .catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({} as Record<string, string>))),
+      // During a bounded stale full projection, refresh only these compact
+      // worker-owned row hashes.  They let the card retain current Main/Real/
+      // Live coordination without rebuilding the whole strategy graph.
+      client.hgetall(`strategy_detail:${connectionId}:base`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`strategy_detail:${connectionId}:main`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`strategy_detail:${connectionId}:real`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`strategy_detail:${connectionId}:live`).catch(() => ({} as Record<string, string>)),
     ])
     // `progressionReadKeys` is ordered by runtime authority.  Do not select
     // the first non-empty hash wholesale: a rolling migration can leave that
@@ -144,6 +155,12 @@ async function responseFromVolatileStatsSnapshot(
         ...(scopedSettings || {}),
       },
       engineProgression: (engineProgression || {}) as Record<string, string>,
+      strategyDetails: {
+        base: (strategyDetailBase || {}) as Record<string, string>,
+        main: (strategyDetailMain || {}) as Record<string, string>,
+        real: (strategyDetailReal || {}) as Record<string, string>,
+        live: (strategyDetailLive || {}) as Record<string, string>,
+      },
     })
     if (!overlaid) return responseFromStatsSnapshot(snapshot)
     // These acknowledgement objects are written by the settings/engine owner
@@ -1667,7 +1684,7 @@ export async function GET(
     // the STATS-VALIDATION "baseEvaluated > base" false positives that
     // occurred when a single-symbol standalone key was compared against
     // the cross-symbol active sum.
-    const activeStratEvaluated: Record<string, number> = { base: 0, main: 0, real: 0 }
+    const activeStratEvaluated: Record<string, number> = { base: 0, main: 0, real: 0, live: 0 }
     // Presence is separate from value. A stage can be authoritatively zero
     // when its current symbol snapshot has no running rows; treating zero as
     // "missing" falls back to the last-symbol standalone key and mixes two
@@ -1730,8 +1747,13 @@ export async function GET(
           // Fields ending in ":evaluated" are written by the engine to give cross-symbol
           // evaluated counts in the same scope as the stage counts. Aggregate them into
           // stratEvaluated so the STATS-VALIDATION check compares apples to apples.
-          if (suffix === "base:evaluated" || suffix === "main:evaluated" || suffix === "real:evaluated") {
-            const stage = suffix.replace(":evaluated", "") as "base" | "main" | "real"
+          if (
+            suffix === "base:evaluated" ||
+            suffix === "main:evaluated" ||
+            suffix === "real:evaluated" ||
+            suffix === "live:evaluated"
+          ) {
+            const stage = suffix.replace(":evaluated", "") as "base" | "main" | "real" | "live"
             activeStratEvaluated[stage] = (activeStratEvaluated[stage] ?? 0) + numVal
             continue
           }
@@ -2437,7 +2459,7 @@ export async function GET(
           evalPct = Math.min(100, Math.round(raw * 10) / 10)
         } else if (stage === "live") {
           const real = stratCounts.real || 1
-          const raw = real > 0 ? (stratEvaluated.real / real) * 100 : 0
+          const raw = real > 0 ? (stratEvaluated.live / real) * 100 : 0
           evalPct = Math.min(100, Math.round(raw * 10) / 10)
         }
         const pct = (num: number, den: number): number => den > 0

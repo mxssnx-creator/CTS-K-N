@@ -400,6 +400,19 @@ async function main() {
       `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
       { timeoutMs: 30_000 },
     )).data
+    // The production preview combines a long-running engine soak with this
+    // targeted QuickStart check.  A sibling which was already running before
+    // the operator action is not evidence that this QuickStart fanned out;
+    // retain that baseline and reject only newly-started siblings below.
+    const beforeEngineStatus = (await request("/api/trade-engine/status-all", { timeoutMs: 30_000 })).data
+    const runningConnectionIdsBeforeQuickStart = new Set(
+      Array.isArray(beforeEngineStatus?.engines)
+        ? beforeEngineStatus.engines
+          .filter((entry) => entry?.isEngineRunning === true)
+          .map((entry) => String(entry?.connectionId || ""))
+          .filter(Boolean)
+        : [],
+    )
     const beforeCycles = cycleTotal(beforeStats)
     const beforeLivePositionCycles = livePositionCycleTotal(beforeStats)
     const beforeHistoricWork = historicWorkSnapshot(beforeStats)
@@ -500,8 +513,11 @@ async function main() {
         .map((entry) => String(entry?.connectionId || ""))
         .filter(Boolean)
       : []
-    if (runningConnectionIds.some((id) => id !== connectionId)) {
-      throw new Error(`Targeted QuickStart launched sibling engines: ${runningConnectionIds.join(", ")}`)
+    const newlyStartedSiblingEngineIds = runningConnectionIds.filter(
+      (id) => id !== connectionId && !runningConnectionIdsBeforeQuickStart.has(id),
+    )
+    if (newlyStartedSiblingEngineIds.length > 0) {
+      throw new Error(`Targeted QuickStart launched sibling engines: ${newlyStartedSiblingEngineIds.join(", ")}`)
     }
 
     // Main Connection status must agree across the exact endpoints consumed by

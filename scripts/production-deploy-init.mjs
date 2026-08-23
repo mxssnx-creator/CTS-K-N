@@ -125,6 +125,36 @@ async function verifyDirectTradeProcessor(maxAttempts = 20) {
   throw new Error(`Direct-Trade processor did not publish a fresh leased heartbeat: ${JSON.stringify(last?.processor || null)}`)
 }
 
+async function verifyProdVstMainEngine(liveTrade, maxAttempts = 45) {
+  // X02 is the installer-default execution target because it is explicitly
+  // BingX Prod-VST.  Readiness alone proves that credentials *could* place an
+  // order; this verifies that the queued, durable Main Trade owner actually
+  // consumed the start request and began publishing a runtime heartbeat.
+  if (!liveTrade?.connectionIds?.includes("bingx-x02")) {
+    return { verified: false, skipped: "BingX X02 Prod-VST credentials are not configured" }
+  }
+
+  let last = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    last = await request("/api/connections/bingx-x02/engine-states", { timeoutMs: 30_000 })
+    const main = last?.modes?.mainTrade
+    if (
+      last?.success === true &&
+      last?.enabled?.flag === true &&
+      main?.effective === true &&
+      last?.engineRunning === true &&
+      last?.runtimeEvidence?.heartbeatFresh === true
+    ) {
+      console.log("[Prod Init] BingX X02 Prod-VST Main Trade owner is running with a fresh heartbeat")
+      return { verified: true, connectionId: "bingx-x02", heartbeatAt: last.runtimeEvidence.heartbeatAt }
+    }
+    if (attempt < maxAttempts) await sleep(1_000)
+  }
+  throw new Error(
+    `BingX X02 Prod-VST Main Trade engine did not start after credential injection: ${JSON.stringify(last)}`,
+  )
+}
+
 async function waitForReadiness(maxAttempts = 45) {
   let last = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -172,6 +202,7 @@ async function main() {
   const core = await verifyCoreApis()
   const liveTrade = await verifyLiveTradeReadiness()
   const directTradeProcessor = await verifyDirectTradeProcessor()
+  const vstMainEngine = await verifyProdVstMainEngine(liveTrade)
   if (Number(core.database?.schemaVersion) !== Number(readiness.migrations.current_version)) {
     throw new Error(`Database schema version mismatch: ${core.database?.schemaVersion} != ${readiness.migrations.current_version}`)
   }
@@ -185,6 +216,7 @@ async function main() {
     sharedRedis: core.database.isSharedConfigured,
     liveOrderCoordinationReady: core.database.liveOrderCoordinationReady === true,
     liveTradeReady: liveTrade.connectionIds,
+    vstMainEngine,
     directTradeProcessor,
     connectionCount: core.connectionCount,
     durationMs: Date.now() - startedAt,

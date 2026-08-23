@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server"
-import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getRedisClient, updateConnectionState } from "@/lib/redis-db"
 import { BASE_CONNECTION_CREDENTIALS } from "@/lib/base-connection-credentials"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
+import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 
 export const dynamic = "force-dynamic"
 
@@ -38,17 +39,27 @@ export async function POST(request: Request) {
       const banned = /PLACEHOLDER|00998877|^test|^replace_me|^[•*]+$/i
       const credentialsSafe = hasValidCredentials && !banned.test(effectiveKey) && !banned.test(effectiveSecret)
       const dashboardEnabled = existing?.is_enabled_dashboard === "1" || existing?.is_enabled_dashboard === "true"
-      await client.hset(`connection:${connectionId}`, {
+      // A fresh Linux install must be immediately useful, but must never
+      // silently start a mainnet venue just because its credentials exist.
+      // BingX X02 is the explicit Prod-VST connection: it is therefore the
+      // one safe default to assign, enable and enqueue for Main Trade.
+      // Other connections retain their operator-selected dashboard state.
+      const autoStartVst = connectionId === "bingx-x02" && credentialsSafe
+      const updatedAt = new Date().toISOString()
+      const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, existing)
+      const transition = await updateConnectionState(connectionId, {
         api_key: effectiveKey,
         api_secret: effectiveSecret,
         // Preserve the operator-selected exchange environment. Forcing BingX
         // to testnet here made production credential injection silently route
         // later live orders away from the intended mainnet account.
         is_testnet: connectionId === "bingx-x02" ? "1" : (existing?.is_testnet as string) || "0",
-        is_active_inserted: (existing?.is_active_inserted as string) || "0",
+        is_assigned: autoStartVst ? "1" : (existing?.is_assigned as string) || "0",
+        is_active_inserted: autoStartVst ? "1" : (existing?.is_active_inserted as string) || "0",
+        is_dashboard_inserted: autoStartVst ? "1" : (existing?.is_dashboard_inserted as string) || "0",
         is_enabled: (existing?.is_enabled as string) || "1",
-        is_enabled_dashboard: credentialsSafe ? "1" : (existing?.is_enabled_dashboard as string) || "0",
-        is_active: credentialsSafe ? "1" : (dashboardEnabled ? "1" : "0"),
+        is_enabled_dashboard: autoStartVst ? "1" : (dashboardEnabled ? "1" : "0"),
+        is_active: autoStartVst ? "1" : (dashboardEnabled ? "1" : "0"),
         connection_method: "library",
         connection_library: "sdk",
         ...(credentialsSafe
@@ -60,17 +71,33 @@ export async function POST(request: Request) {
               live_trade_block_code: "",
             }
           : {}),
-        updated_at: new Date().toISOString(),
-      })
+        state_switch_action: autoStartVst ? "production_vst_credential_injection" : "credential_injection",
+        updated_at: updatedAt,
+      }, stateSwitchVersion)
+      if (!transition.applied) {
+        results[connectionId] = "Skipped: credential injection was superseded by a newer connection state"
+        return
+      }
       await client.sadd("connections", connectionId)
       await client.sadd("connections:main:enabled", connectionId)
       await client.hset(`settings:connection:${connectionId}`, {
         api_key: effectiveKey,
         api_secret: effectiveSecret,
-        updated_at: new Date().toISOString(),
+        updated_at: updatedAt,
       })
+      if (autoStartVst) {
+        await queueEngineRefreshRequest({
+          connectionId,
+          action: "start",
+          state_switch_version: stateSwitchVersion,
+          reason: "production_vst_credential_injection",
+          timestamp: updatedAt,
+        })
+      }
       results[connectionId] = credentialsSafe
-        ? "Credentials injected and live trade enabled"
+        ? autoStartVst
+          ? "Credentials injected, Prod-VST live trade enabled and Main Trade engine queued"
+          : "Credentials injected and live trade enabled (dashboard state preserved)"
         : "Credentials injected (live trade remains disabled: placeholder/invalid credentials)"
     }
 
