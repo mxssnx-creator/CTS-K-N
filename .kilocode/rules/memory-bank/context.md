@@ -7,6 +7,59 @@ Total output lines: 1636
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current production isolation and long-soak checkpoint (2026-08-23)
+
+- Binding persistent checkout for the current release is
+  `/workspace/scratch/fba10f5c97ed/persistent/CTS-K-N`. Continue from its
+  published GitHub `main` successor; do not reconstruct work from older
+  `/workspace/CTS-*` directories. Complete-history Git bundles are stored in
+  `/workspace/backups/CTS-K-N` and mirrored under this task workspace. Never
+  put `.env`, exchange credentials, SSH material, Redis snapshots or raw
+  account reports in Git or source bundles.
+- Live accounting is venue-authoritative: realized PnL, fees, quantities and
+  completion are derived from exact exchange order fills/details by order ID.
+  An unresolved settlement remains incomplete and must never fall back to a
+  theoretical mark-price result. Default and Trailing maintain independent
+  ledgers and UI statistics.
+- Direct Trade, Main Trade, Connection Cards, control orders, workers, leases,
+  settings, stage/progress snapshots, position IDs and Redis indexes are scoped
+  by exchange connection. Switching connections must not silently borrow the
+  selected connection, and enabled connections can process independently in
+  parallel. Schema v100 migrates legacy Direct state into connection scopes;
+  reset preserves credentials, settings, open/opening positions and order
+  recovery state while clearing rebuildable calculation/runtime statistics.
+  The protected Reset DB route accepts the same admin authentication contract
+  as the rest of the administration UI.
+- Profit-factor/configuration defaults below 1 use `1.1` in Quickstart and
+  equivalent setup surfaces. This does not rewrite measured statistics or the
+  separate Block sizing ratio. Main Trade and Connection Cards use one
+  canonical connection-scoped stage/statistics projection.
+- Shared-Redis production topology is explicitly bounded. Monitoring exposes
+  connection scope count plus indexed Set/outcome/non-indexed key families;
+  long-run validation scales Set bounds by symbols and connection scopes while
+  enforcing a separate 34,720-key non-indexed cap at 32 symbols. A normal
+  simulated close no longer produces a false missing-live-lock warning.
+- Exact release evidence: 204 unit suites / 1,309 tests, 4 integration suites /
+  55 tests, TypeScript, a clean trace-valid 42-page Next production build with
+  347 trace files, 32-symbol/48-hour Direct matrix (960,512 evaluated sets),
+  Direct physical crash recovery, X01/X02 Shared-Redis isolation and a complete
+  20-minute 32-symbol production soak. The soak completed 1,489 engine cycles,
+  819,858 Main and Real evaluations, all 35 signal sources, 216 observed
+  position lifecycles, API p95 411 ms, stable final Redis growth, 2.04 GiB peak
+  RSS below the 6.5 GiB cap and only 21 MiB post-warmup heap growth. Default,
+  Trailing and Block statistics remained distinct. The recovery/UI harness
+  verified 47 surfaces, schema v100, hot reload, backup round-trip,
+  pause/resume/stop/start and physical production restart. These safety runs
+  submitted zero exchange orders.
+- Redis 8.10.1 for local Linux-equivalent tests is available at
+  `/workspace/.network-clients/redis-8.10.1/bin/redis-server`; use
+  `CTS_REDIS_SERVER_BIN` with the production harness. Remote installation must
+  preserve the server's existing `.env`, credentials and data, make a server
+  backup first, identify exact services/PIDs before replacement, and validate
+  the newly merged GitHub `main`. BingX X02 may be exercised with minimum-size
+  Prod-VST orders only after authenticated preflight; X01/mainnet and Bybit
+  remain read-only unless separately and immediately authorized.
+
 ## Current unified Linux/Main Trade audit checkpoint (2026-08-23)
 
 - Fresh Linux installations now make the immutable BingX X02 **Prod-VST**
