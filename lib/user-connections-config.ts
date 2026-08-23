@@ -45,7 +45,7 @@ export const USER_CONNECTIONS: UserConnectionConfig[] = [
     name: "X03",
     exchange: "bybit",
     displayName: "Bybit X03 (Unified)",
-    apiType: "unified_trading",
+    apiType: "unified",
     connectionType: "Unified",
     apiKey: bybitCredentials.apiKey,
     apiSecret: bybitCredentials.apiSecret,

@@ -205,12 +205,11 @@ export class BybitConnector extends BaseExchangeConnector {
    */
   private toQueryString(query?: Record<string, any>): string {
     if (!query) return ""
-    const parts: string[] = []
-    for (const [key, value] of Object.entries(query)) {
-      if (value === undefined || value === null || value === "") continue
-      parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
-    }
-    return parts.join("&")
+    return Object.entries(query)
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+      .join("&")
   }
 
   /** Single V5-authenticated request helper used by every private method below. */
@@ -224,30 +223,42 @@ export class BybitConnector extends BaseExchangeConnector {
     // Always sync before signing so the timestamp is fresh.
     await this.syncServerTime()
 
-    const timestamp = String(this.getTimestamp())
-    const recvWindow = String(this.recvWindowMs)
     const baseUrl = this.getBaseUrl()
-
     const queryString = method === "GET" ? this.toQueryString(query) : ""
     const rawBody = method === "POST" && body ? JSON.stringify(body) : ""
-    const payloadSuffix = method === "GET" ? queryString : rawBody
-    const signature = this.signV5(timestamp, recvWindow, payloadSuffix)
-
-    const url = queryString ? `${baseUrl}${path}?${queryString}` : `${baseUrl}${path}`
-    const headers: Record<string, string> = {
-      "X-BAPI-API-KEY":    this.credentials.apiKey,
-      "X-BAPI-SIGN":       signature,
-      "X-BAPI-SIGN-TYPE":  "2",
-      "X-BAPI-TIMESTAMP":  timestamp,
-      "X-BAPI-RECV-WINDOW": recvWindow,
+    let prepared: { url: string; init: RequestInit } | null = null
+    const prepareAtDispatch = () => {
+      // Build the timestamp and signature only after the shared rate limiter
+      // grants a dispatch slot. A pre-built signature can sit behind 32-symbol
+      // production traffic long enough to fall outside Bybit's recvWindow even
+      // though it always succeeds in a lightly loaded local process.
+      const timestamp = String(this.getTimestamp())
+      const recvWindow = String(this.recvWindowMs)
+      const payloadSuffix = method === "GET" ? queryString : rawBody
+      const signature = this.signV5(timestamp, recvWindow, payloadSuffix)
+      const url = queryString ? `${baseUrl}${path}?${queryString}` : `${baseUrl}${path}`
+      const headers: Record<string, string> = {
+        "X-BAPI-API-KEY": this.credentials.apiKey,
+        "X-BAPI-SIGN": signature,
+        "X-BAPI-SIGN-TYPE": "2",
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": recvWindow,
+      }
+      const init: RequestInit = { method, headers }
+      if (method === "POST") {
+        headers["Content-Type"] = "application/json"
+        init.body = rawBody
+      }
+      return { url, init }
     }
-    const init: RequestInit = { method, headers }
-    if (method === "POST") {
-      headers["Content-Type"] = "application/json"
-      ;(init as any).body = rawBody
-    }
 
-    const response = await this.rateLimitedFetch(url, init)
+    const response = await this.rateLimitedFetch(
+      () => {
+        prepared = prepareAtDispatch()
+        return prepared.url
+      },
+      () => (prepared || prepareAtDispatch()).init,
+    )
     const data = (await this.safeJson(response)) as T
     return { ok: response.ok, data, status: response.status }
   }
@@ -262,10 +273,23 @@ export class BybitConnector extends BaseExchangeConnector {
     query?: Record<string, any>
     body?: Record<string, any>
   }): Promise<{ ok: boolean; data: T; status: number }> {
-    this.lastTimeSync = 0
-    this.syncPromise = null
-    await this.syncServerTime()
+    // resyncOnTimestampError() already performed the forced synchronization.
+    // Repeating it here doubled public time requests during venue errors and
+    // amplified a busy production queue without improving timestamp accuracy.
     return this.signedRequestV5<T>(opts)
+  }
+
+  private async signedRequestV5WithTimestampRetry<T = any>(opts: {
+    method: "GET" | "POST"
+    path: string
+    query?: Record<string, any>
+    body?: Record<string, any>
+  }): Promise<{ ok: boolean; data: T; status: number }> {
+    let response = await this.signedRequestV5<T>(opts)
+    if ((response.data as any)?.retCode !== 0 && await this.resyncOnTimestampError(response.data)) {
+      response = await this.retryAfterResync<T>(opts)
+    }
+    return response
   }
 
   // ── Big-number safe JSON ───────────────────────────────────────────────────
@@ -556,6 +580,7 @@ export class BybitConnector extends BaseExchangeConnector {
         // LastPrice matches Bybit's UI default and avoids mark-vs-last drift.
         triggerBy: "LastPrice",
         reduceOnly: true,
+        closeOnTrigger: true,
         positionIdx: hedgeMode ? (isLong ? 1 : 2) : 0,
       }
       if (options.clientOrderId) body.orderLinkId = options.clientOrderId
@@ -626,10 +651,10 @@ export class BybitConnector extends BaseExchangeConnector {
       }
 
       if (data?.retCode !== 0) {
-        // retCode 110001 = "order not exist or too late to cancel"
-        // Treat as non-fatal: the order was already filled/cancelled.
-        if (String(data?.retCode) === "110001") {
-          this.log(`Order ${orderId} already gone (110001) — treating as cancelled`)
+        // Cancellation is an idempotent reconciliation operation. These codes
+        // all mean the order is already terminal/gone for derivatives or spot.
+        if (["110001", "110008", "110010", "170190", "170213"].includes(String(data?.retCode))) {
+          this.log(`Order ${orderId} already terminal (${data?.retCode}) — treating as cancelled`)
           return { success: true }
         }
         throw new Error(`Bybit cancel error (code=${data?.retCode}): ${data?.retMsg || "Unknown error"}`)
@@ -647,15 +672,25 @@ export class BybitConnector extends BaseExchangeConnector {
 
   async getOrder(symbol: string, orderId: string): Promise<ExchangeOrder | null> {
     try {
-      const { data } = await this.signedRequestV5<any>({
+      const request = {
         method: "GET",
         path: "/v5/order/realtime",
         query: { category: this.getTradingCategory(), symbol, orderId },
+      } as const
+      const realtime = await this.signedRequestV5WithTimestampRetry<any>(request)
+      const raw = realtime.data?.retCode === 0 ? realtime.data.result?.list?.[0] : null
+      if (raw) return this.normalizeOrder(raw)
+
+      // Bybit explicitly moves terminal orders out of the realtime endpoint
+      // after a service restart. Fall back by authoritative orderId so filled
+      // control orders remain reconcilable instead of looking nonexistent.
+      const history = await this.signedRequestV5WithTimestampRetry<any>({
+        method: "GET",
+        path: "/v5/order/history",
+        query: { category: this.getTradingCategory(), symbol, orderId, limit: 1 },
       })
-      if (data?.retCode !== 0) return null
-      const raw = data.result?.list?.[0]
-      if (!raw) return null
-      return this.normalizeOrder(raw)
+      const historical = history.data?.retCode === 0 ? history.data.result?.list?.[0] : null
+      return historical ? this.normalizeOrder(historical) : null
     } catch {
       return null
     }
@@ -686,7 +721,10 @@ export class BybitConnector extends BaseExchangeConnector {
       quantity:    parseFloat(String(raw.qty         ?? "0")),
       price:       parseFloat(String(raw.price       ?? raw.avgPrice ?? "0")),
       status:      normalizedStatus as ExchangeOrder["status"],
-      filledQty:   parseFloat(String(raw.cumExecQty  ?? raw.leavesQty ?? "0")),
+      // leavesQty is the UNFILLED remainder and must never be reported as a
+      // venue execution. Doing so could promote a pending control order to a
+      // filled position in the local ledger.
+      filledQty:   parseFloat(String(raw.cumExecQty  ?? raw.execQty ?? "0")),
       filledPrice: parseFloat(String(raw.avgPrice    ?? raw.execPrice ?? "0")),
       timestamp:   Number(raw.createdTime ?? Date.now()),
       updateTime:  Number(raw.updatedTime ?? raw.createdTime ?? Date.now()),
@@ -698,13 +736,17 @@ export class BybitConnector extends BaseExchangeConnector {
   async getOpenOrders(symbol?: string): Promise<ExchangeOrder[]> {
     try {
       this.log(`Fetching open orders${symbol ? ` for ${symbol}` : ""}`)
-      const { data } = await this.signedRequestV5<any>({
+      const category = this.getTradingCategory()
+      const { data } = await this.signedRequestV5WithTimestampRetry<any>({
         method: "GET",
         path: "/v5/order/realtime",
         query: {
-          category: this.getTradingCategory(),
-          openOnly: 1,
-          ...(symbol ? { symbol } : { settleCoin: "USDT" }),
+          category,
+          // Bybit V5: 0 = open New/PartiallyFilled orders, 1 = recent
+          // terminal orders. Using 1 here made already-filled control orders
+          // reappear as active in connection cards and reconciliation.
+          openOnly: 0,
+          ...(symbol ? { symbol } : category === "linear" ? { settleCoin: "USDT" } : {}),
         },
       })
       if (data?.retCode !== 0) return []
@@ -720,13 +762,14 @@ export class BybitConnector extends BaseExchangeConnector {
   async getOrderHistory(symbol?: string, limit: number = 50): Promise<ExchangeOrder[]> {
     try {
       this.log(`Fetching order history${symbol ? ` for ${symbol}` : ""} (limit: ${limit})`)
-      const { data } = await this.signedRequestV5<any>({
+      const category = this.getTradingCategory()
+      const { data } = await this.signedRequestV5WithTimestampRetry<any>({
         method: "GET",
         path: "/v5/order/history",
         query: {
-          category: this.getTradingCategory(),
+          category,
           limit,
-          ...(symbol ? { symbol } : { settleCoin: "USDT" }),
+          ...(symbol ? { symbol } : category === "linear" ? { settleCoin: "USDT" } : {}),
         },
       })
       if (data?.retCode !== 0) return []
@@ -746,7 +789,7 @@ export class BybitConnector extends BaseExchangeConnector {
     }
     try {
       this.log(`Fetching positions${symbol ? ` for ${symbol}` : ""}`)
-      const { data } = await this.signedRequestV5<any>({
+      const { data } = await this.signedRequestV5WithTimestampRetry<any>({
         method: "GET",
         path: "/v5/position/list",
         query: {

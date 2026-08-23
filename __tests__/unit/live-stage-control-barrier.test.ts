@@ -58,6 +58,31 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("finalizes only zero-fill pre-entry rows that have no exchange handle", () => {
+    for (const status of ["placed", "pending_fill", "placed_unconfirmed"] as const) {
+      expect(__liveStageTest.isPreFillWithoutExchangeHandle(
+        { executedQuantity: 0 },
+        status,
+        false,
+      )).toBe(true)
+    }
+    expect(__liveStageTest.isPreFillWithoutExchangeHandle(
+      { executedQuantity: 0.01 },
+      "placed_unconfirmed",
+      false,
+    )).toBe(false)
+    expect(__liveStageTest.isPreFillWithoutExchangeHandle(
+      { executedQuantity: 0 },
+      "placed_unconfirmed",
+      true,
+    )).toBe(false)
+    expect(__liveStageTest.isPreFillWithoutExchangeHandle(
+      { executedQuantity: 0 },
+      "open",
+      false,
+    )).toBe(false)
+  })
+
   test("books confirmed positions under their actual Real-stage variant", () => {
     expect(__liveStageTest.resolveConfirmedStrategyVariant({
       setVariant: "trailing",

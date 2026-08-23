@@ -233,7 +233,7 @@ export abstract class BaseExchangeConnector {
     if (apiType === "unified") {
       return "UNIFIED"
     }
-    if (apiType === "perpetual_futures" || apiType === "futures") {
+    if (apiType === "perpetual_futures" || apiType === "futures" || apiType === "contract") {
       return "CONTRACT"
     }
     if (apiType === "spot") {

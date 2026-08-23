@@ -11,6 +11,13 @@ import { hasUsableLiveCredentials, isForcedSimulation } from "@/lib/real-trade-g
 // Perpetual-type equivalents - these all mean the same thing across exchanges
 const PERP_TYPES = new Set(["perpetual", "perpetual_futures", "perp", "swap", "futures"])
 
+const API_TYPE_ALIASES: Record<string, string> = {
+  unified_trading: "unified",
+  unifiedtrading: "unified",
+  uta: "unified",
+  derivatives: "contract",
+}
+
 /**
  * Convert API type to what the exchange actually accepts.
  * bingx needs "perpetual_futures", bybit needs "contract" or "unified",
@@ -18,6 +25,7 @@ const PERP_TYPES = new Set(["perpetual", "perpetual_futures", "perp", "swap", "f
  */
 function convertApiType(apiType: string | undefined, exchangeSupported: string[] | undefined): string | undefined {
   if (!apiType || !exchangeSupported) return apiType
+  apiType = API_TYPE_ALIASES[String(apiType).trim().toLowerCase()] || String(apiType).trim().toLowerCase()
   if (exchangeSupported.includes(apiType)) return apiType
   
   // If this is a perpetual-variant, find the one this exchange uses
@@ -44,6 +52,7 @@ export async function createExchangeConnector(
   // connection after the display label; falling through to the default branch
   // could otherwise create a simulated connector in non-prod or fail in prod.
   if (normalizedExchange.includes("bingx")) normalizedExchange = "bingx"
+  else if (normalizedExchange.includes("bybit")) normalizedExchange = "bybit"
   const supported = EXCHANGE_API_TYPES[normalizedExchange]
   
   // Convert API type to what this exchange accepts
