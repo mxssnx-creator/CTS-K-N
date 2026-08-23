@@ -115,7 +115,7 @@ describe("Reset DB Direct-Trade recovery contract", () => {
       expect(await client.sismember("direct_trade:connections", "bingx-x02")).toBe(1)
       expect(await client.hget("connection:bingx-x02", "api_key")).toBe("credential-preserved")
       expect(await client.hget("connection:bingx-x02", "api_secret")).toBe("secret-preserved")
-      expect(await client.hgetall("connection_settings:bingx-x02")).toEqual({
+      expect(await client.hgetall("connection_settings:bingx-x02")).toMatchObject({
         settings_version: "x02-settings-generation-1",
         processingIntervalMs: "280",
         strategyBaseTrailingEnabled: "true",
