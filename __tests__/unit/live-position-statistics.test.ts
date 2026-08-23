@@ -206,4 +206,29 @@ describe("complete live position/order/statistics relations", () => {
       expect.stringContaining("open execution has no authoritative average price"),
     ]))
   })
+
+  test("counts venue-authoritative quantity adjustments without fabricating fills", () => {
+    const stats = calculateLivePositionStatistics([{
+      id: "exchange-adjusted",
+      symbol: "BTCUSDT",
+      direction: "long",
+      status: "open",
+      executionMode: "live",
+      executedQuantity: 2,
+      totalExecutedQuantity: 2,
+      averageExecutionPrice: 100,
+      fills: [{ quantity: 1, price: 100 }],
+      exchangeQuantityAdjustments: [{
+        id: "exchange-adjusted:ledger:1",
+        source: "exchange_reconcile",
+        quantity: 1,
+        price: 101,
+        timestamp: 1,
+      }],
+    }])
+
+    expect(stats.relationIntegrity).toMatchObject({ success: true, mismatchCount: 0 })
+    expect(stats.lifetimeQuantity).toBe(2)
+    expect(stats.lifetimeVolumeUsd).toBe(201)
+  })
 })
