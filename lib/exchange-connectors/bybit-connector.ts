@@ -7,6 +7,8 @@ import {
   type ExchangeCredentials,
   type ExchangeConnectorResult,
   type ExchangeOrder,
+  type ExchangeOrderSettlement,
+  type ExchangeOrderSettlementOptions,
   type PlaceOrderOptions,
 } from "./base-connector"
 import { aggregateTradesTo1sOHLCV } from "./aggregate-1s"
@@ -777,6 +779,134 @@ export class BybitConnector extends BaseExchangeConnector {
       return list.map((o: any) => this.normalizeOrder(o))
     } catch {
       return []
+    }
+  }
+
+  /**
+   * Resolve one Bybit order to venue-authoritative fills and realised PnL.
+   * Closed-PnL is preferred because its `closedPnl` includes the apportioned
+   * opening and closing fees.  Execution history is the exact-order fallback
+   * for entries and for the short propagation window before closed-PnL lands.
+   */
+  async getOrderSettlement(
+    symbol: string,
+    orderId: string,
+    options: ExchangeOrderSettlementOptions = {},
+  ): Promise<ExchangeOrderSettlement | null> {
+    const normalizedOrderId = String(orderId || "").trim()
+    const normalizedSymbol = String(symbol || "").trim().toUpperCase()
+    if (!normalizedOrderId || !normalizedSymbol) return null
+    const category = this.getTradingCategory()
+    const now = Date.now()
+    const endTime = Number.isFinite(Number(options.endTime)) ? Number(options.endTime) : now
+    const requestedStart = Number.isFinite(Number(options.startTime))
+      ? Number(options.startTime)
+      : endTime - 7 * 24 * 60 * 60 * 1000
+    const startTime = Math.max(0, Math.max(requestedStart, endTime - 7 * 24 * 60 * 60 * 1000))
+
+    if (category === "linear") {
+      const closed = await this.signedRequestV5WithTimestampRetry<any>({
+        method: "GET",
+        path: "/v5/position/closed-pnl",
+        query: {
+          category,
+          symbol: normalizedSymbol,
+          startTime,
+          endTime,
+          limit: 100,
+        },
+      }).catch(() => null)
+      const closedRows = closed?.data?.retCode === 0 && Array.isArray(closed.data.result?.list)
+        ? closed.data.result.list
+        : []
+      const row = closedRows.find((candidate: any) =>
+        String(candidate?.orderId ?? candidate?.orderID ?? "") === normalizedOrderId,
+      )
+      if (row) {
+        const quantity = Math.abs(Number(row.closedSize ?? row.qty ?? 0))
+        const averageFillPrice = Number(row.avgExitPrice ?? row.orderPrice ?? 0)
+        const netRealizedPnl = Number(row.closedPnl ?? 0)
+        const openFee = Math.max(0, Number(row.openFee ?? 0) || 0)
+        const closeFee = Math.max(0, Number(row.closeFee ?? 0) || 0)
+        const tradingFee = openFee + closeFee
+        const grossRealizedPnl = Number.isFinite(netRealizedPnl)
+          ? netRealizedPnl + tradingFee
+          : 0
+        if (quantity > 0 && averageFillPrice > 0 && Number.isFinite(netRealizedPnl)) {
+          const settledAt = Number(row.updatedTime ?? row.createdTime ?? now) || now
+          return {
+            orderId: normalizedOrderId,
+            symbol: normalizedSymbol,
+            filledQuantity: Number(quantity.toFixed(12)),
+            averageFillPrice,
+            grossRealizedPnl: Number(grossRealizedPnl.toFixed(12)),
+            tradingFee: Number(tradingFee.toFixed(12)),
+            netRealizedPnl: Number(netRealizedPnl.toFixed(12)),
+            netIncludesEntryFee: true,
+            source: "bybit_closed_pnl",
+            settledAt,
+            fills: [{
+              tradeId: normalizedOrderId,
+              price: averageFillPrice,
+              quantity: Number(quantity.toFixed(12)),
+              realizedPnl: Number(grossRealizedPnl.toFixed(12)),
+              fee: Number((-tradingFee).toFixed(12)),
+              feeCost: Number(tradingFee.toFixed(12)),
+              timestamp: settledAt,
+            }],
+          }
+        }
+      }
+    }
+
+    const executions = await this.signedRequestV5WithTimestampRetry<any>({
+      method: "GET",
+      path: "/v5/execution/list",
+      query: {
+        category,
+        orderId: normalizedOrderId,
+        limit: 100,
+      },
+    }).catch(() => null)
+    const rows = executions?.data?.retCode === 0 && Array.isArray(executions.data.result?.list)
+      ? executions.data.result.list
+      : []
+    const fills = rows
+      .filter((row: any) => String(row?.orderId ?? row?.orderID ?? "") === normalizedOrderId)
+      .map((row: any) => {
+        const quantity = Math.abs(Number(row?.execQty ?? row?.qty ?? 0))
+        const price = Number(row?.execPrice ?? row?.price ?? 0)
+        const realizedPnl = Number(row?.execPnl ?? row?.closedPnl ?? 0)
+        const rawFee = Number(row?.execFee ?? row?.fee ?? 0)
+        const feeCost = Number.isFinite(rawFee) ? Math.max(0, rawFee) : 0
+        return {
+          tradeId: String(row?.execId ?? row?.tradeId ?? ""),
+          price: Number.isFinite(price) && price > 0 ? price : 0,
+          quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 0,
+          realizedPnl: Number.isFinite(realizedPnl) ? realizedPnl : 0,
+          fee: -feeCost,
+          feeCost,
+          timestamp: Number(row?.execTime ?? row?.updatedTime ?? now) || now,
+        }
+      })
+      .filter((fill: any) => fill.quantity > 0 && fill.price > 0)
+    if (fills.length === 0) return null
+    const filledQuantity = fills.reduce((sum: number, fill: any) => sum + fill.quantity, 0)
+    const weightedPrice = fills.reduce((sum: number, fill: any) => sum + fill.price * fill.quantity, 0)
+    const grossRealizedPnl = fills.reduce((sum: number, fill: any) => sum + fill.realizedPnl, 0)
+    const tradingFee = fills.reduce((sum: number, fill: any) => sum + fill.feeCost, 0)
+    return {
+      orderId: normalizedOrderId,
+      symbol: normalizedSymbol,
+      filledQuantity: Number(filledQuantity.toFixed(12)),
+      averageFillPrice: filledQuantity > 0 ? weightedPrice / filledQuantity : 0,
+      grossRealizedPnl: Number(grossRealizedPnl.toFixed(12)),
+      tradingFee: Number(tradingFee.toFixed(12)),
+      netRealizedPnl: Number((grossRealizedPnl - tradingFee).toFixed(12)),
+      netIncludesEntryFee: false,
+      source: "bybit_execution_history",
+      settledAt: Math.max(...fills.map((fill: any) => fill.timestamp)),
+      fills,
     }
   }
 

@@ -1096,6 +1096,120 @@ export interface StrategyPositionCloseOutcome {
   positionCostPct?: number
   /** Position drawdown/hold duration in minutes. */
   drawdownMinutes?: number
+  /** Exact Real strategy category for independent Default/Trailing/Block/DCA outcomes. */
+  strategyVariant?: RealStrategyVariant
+  /** Audit source; live callers use venue settlement/fill classifications. */
+  accountingSource?: string
+}
+
+export interface StrategyVariantOutcomeStats {
+  sampleCount: number
+  grossProfit: number
+  grossLoss: number
+  netPnl: number
+  averageDrawdownTime: number
+  profitFactor: number
+  updatedAt: number
+}
+
+export function strategyVariantOutcomeKey(
+  connectionId: string,
+  variant: RealStrategyVariant,
+): string {
+  return `strategy_variant_outcomes:${connectionId}:${variant}`
+}
+
+const RECORD_STRATEGY_VARIANT_OUTCOME_LUA = `
+  if redis.call('SADD', KEYS[1], ARGV[1]) == 0 then return 0 end
+  redis.call('HINCRBY', KEYS[2], 'sample_count', 1)
+  redis.call('HINCRBYFLOAT', KEYS[2], 'gross_profit', ARGV[2])
+  redis.call('HINCRBYFLOAT', KEYS[2], 'gross_loss', ARGV[3])
+  redis.call('HINCRBYFLOAT', KEYS[2], 'net_pnl', ARGV[4])
+  redis.call('HINCRBYFLOAT', KEYS[2], 'sum_ddt', ARGV[5])
+  redis.call('HSET', KEYS[2], 'updated_at', ARGV[6])
+  redis.call('EXPIRE', KEYS[1], ARGV[7])
+  redis.call('EXPIRE', KEYS[2], ARGV[7])
+  return 1
+`
+
+async function recordStrategyVariantOutcome(
+  client: ReturnType<typeof getRedisClient>,
+  connectionId: string,
+  positionId: string,
+  memberships: string[],
+  outcome?: StrategyPositionCloseOutcome,
+): Promise<void> {
+  if (!outcome || !Number.isFinite(Number(outcome.pnl))) return
+  const variant = outcome.strategyVariant
+    || inferRealStrategyVariant(memberships[0] || "")
+  const pnl = Number(outcome.pnl)
+  const grossProfit = Math.max(0, pnl)
+  const grossLoss = Math.max(0, -pnl)
+  const ddt = Math.max(0, Number(outcome.drawdownMinutes) || 0)
+  const idsKey = `strategy_variant_outcome_ids:${connectionId}`
+  const outcomeKey = strategyVariantOutcomeKey(connectionId, variant)
+  const dedupeId = `${positionId}|${variant}`
+  const args = [
+    dedupeId,
+    String(grossProfit),
+    String(grossLoss),
+    String(pnl),
+    String(ddt),
+    String(Date.now()),
+    String(TTL_SECONDS),
+  ]
+  if (typeof client.eval === "function") {
+    try {
+      await client.eval(RECORD_STRATEGY_VARIANT_OUTCOME_LUA, {
+        keys: [idsKey, outcomeKey],
+        arguments: args,
+      })
+      return
+    } catch {
+      // Inline/test adapters use the idempotent SADD + transaction fallback.
+    }
+  }
+  if (Number(await client.sadd(idsKey, dedupeId)) !== 1) return
+  const pipeline = client.multi()
+  pipeline.hincrby(outcomeKey, "sample_count", 1)
+  if (typeof (pipeline as any).hincrbyfloat === "function") {
+    ;(pipeline as any).hincrbyfloat(outcomeKey, "gross_profit", grossProfit)
+    ;(pipeline as any).hincrbyfloat(outcomeKey, "gross_loss", grossLoss)
+    ;(pipeline as any).hincrbyfloat(outcomeKey, "net_pnl", pnl)
+    ;(pipeline as any).hincrbyfloat(outcomeKey, "sum_ddt", ddt)
+  } else {
+    // The built-in Inline Redis supports HINCRBYFLOAT on the client even when
+    // a minimal test transaction does not. Preserve exact values there.
+    await (client as any).hincrbyfloat?.(outcomeKey, "gross_profit", grossProfit)
+    await (client as any).hincrbyfloat?.(outcomeKey, "gross_loss", grossLoss)
+    await (client as any).hincrbyfloat?.(outcomeKey, "net_pnl", pnl)
+    await (client as any).hincrbyfloat?.(outcomeKey, "sum_ddt", ddt)
+  }
+  pipeline.hset(outcomeKey, "updated_at", String(Date.now()))
+  pipeline.expire(idsKey, TTL_SECONDS)
+  pipeline.expire(outcomeKey, TTL_SECONDS)
+  await pipeline.exec()
+}
+
+export async function getStrategyVariantOutcomeStats(
+  connectionId: string,
+  variant: RealStrategyVariant,
+): Promise<StrategyVariantOutcomeStats> {
+  const hash = await getRedisClient()
+    .hgetall(strategyVariantOutcomeKey(connectionId, variant))
+    .catch(() => ({} as Record<string, string>)) as Record<string, string>
+  const sampleCount = Math.max(0, Number(hash?.sample_count) || 0)
+  const grossProfit = Math.max(0, Number(hash?.gross_profit) || 0)
+  const grossLoss = Math.max(0, Number(hash?.gross_loss) || 0)
+  return {
+    sampleCount,
+    grossProfit,
+    grossLoss,
+    netPnl: Number(hash?.net_pnl) || 0,
+    averageDrawdownTime: sampleCount > 0 ? (Number(hash?.sum_ddt) || 0) / sampleCount : 0,
+    profitFactor: grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0,
+    updatedAt: Number(hash?.updated_at) || 0,
+  }
 }
 
 const DEACTIVATE_STRATEGY_POSITION_LUA = `
@@ -1257,6 +1371,7 @@ export async function markStrategyPositionInactive(
     // can still discover the membership and finish deactivation without ever
     // losing the realised PF/DDT sample.
     await recordStrategyCloseOutcomes(client, connectionId, positionId, memberships, outcome)
+    await recordStrategyVariantOutcome(client, connectionId, positionId, memberships, outcome)
     const keys = [
       VALID_POS_ACTIVE_V2_KEY(connectionId),
       membershipKey,

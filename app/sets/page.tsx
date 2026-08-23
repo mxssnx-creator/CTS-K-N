@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Plus, Edit, Trash2, Save, X, Settings, Info } from "lucide-react"
 import { toast } from "@/lib/simple-toast"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import type { PresetConfigurationSet } from "@/lib/types-preset-coordination"
 import {
   INDICATOR_DEFAULTS,
@@ -51,7 +52,7 @@ export default function SetsPage() {
     trail_stops: [0.2, 0.4, 0.6],
     range_days: 7,
     trades_per_48h_min: 5,
-    profit_factor_min: 0.5,
+    profit_factor_min: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
     drawdown_time_max: 12,
     evaluation_positions_count1: 25,
     evaluation_positions_count2: 50,
@@ -104,7 +105,7 @@ export default function SetsPage() {
       trail_stops: [0.2, 0.4, 0.6],
       range_days: 7,
       trades_per_48h_min: 5,
-      profit_factor_min: 0.5,
+      profit_factor_min: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
       drawdown_time_max: 12,
       evaluation_positions_count1: 25,
       evaluation_positions_count2: 50,
@@ -715,7 +716,7 @@ export default function SetsPage() {
                     min={0.5}
                     max={5.0}
                     step={0.1}
-                    value={[formData.profit_factor_min || 0.5]}
+                    value={[formData.profit_factor_min ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT]}
                     onValueChange={([value]) => updateFormData("profit_factor_min", value)}
                   />
                 </div>

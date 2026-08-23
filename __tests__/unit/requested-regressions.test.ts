@@ -37,7 +37,7 @@ describe("requested regression guardrails", () => {
 
     expect(statsRoute).toContain("const strategyRows = {")
     expect(statsRoute).toContain("overallToValidRatio: ratio(mainRowOverall, mainRowValid, false)")
-    expect(statsRoute).toContain('semantics: "current-open-row-snapshot"')
+    expect(statsRoute).toContain('semantics: "latest-cycle-and-current-open-row-snapshot"')
     expect(statsRoute).not.toContain("stratCounts.real = stratCounts.main")
     expect(statsRoute).toContain("Do not clamp stage snapshots against each other")
     expect(statsRoute).not.toContain("stratCounts.live = stratCounts.real")
@@ -348,7 +348,7 @@ describe("requested regression guardrails", () => {
     expect(page).toContain("await loadOverview(true, controller.signal)")
     expect(optimizer).toContain("historyDays: 14")
     expect(optimizer).toContain("presetsPerSymbol: 4")
-    expect(optimizer).toContain("minProfitFactor: 0.7")
+    expect(optimizer).toContain("minProfitFactor: REALIZED_PROFIT_FACTOR_MIN_DEFAULT")
     expect(optimizer).toContain("maxDrawdownHours: 5")
     expect(optimizer).toContain("blockMaxStack: 12")
     expect(optimizer).toContain("blockVolumeRatio: 1")
@@ -699,10 +699,11 @@ describe("requested regression guardrails", () => {
     expect(livePreflight).toContain("sourceMetadataSnapshots")
     expect(livePreflight).toContain("process.kill(-child.pid, 0)")
     expect(livePreflight.match(/rmSync\(preflightDistDir/g)?.length).toBeGreaterThanOrEqual(3)
-    expect(livePreflight).toContain("listeningProcessIds(port)")
-    expect(livePreflight).toContain("nextServerProcessIds()")
-    expect(livePreflight).toContain("preflightProcessIds()")
-    expect(livePreflight).toContain("NEXT_DIST_DIR=${preflightDistDir}")
+    expect(livePreflight).toContain("Signal only that exact group")
+    expect(livePreflight).not.toContain("function listeningProcessIds")
+    expect(livePreflight).not.toContain("function nextServerProcessIds")
+    expect(livePreflight).not.toContain("function preflightProcessIds")
+    expect(livePreflight).toContain("NEXT_DIST_DIR: preflightDistDir")
   })
 
   test("standard, axis and trailing sets are ordered before adjust variants", () => {
@@ -1190,6 +1191,9 @@ describe("requested regression guardrails", () => {
     expect(pkg.scripts.postbuild).toContain("node scripts/prepare-standalone-assets.mjs")
     expect(pkg.scripts["postvercel-build"]).toBe("node scripts/normalize-next-env.mjs")
     expect(read("scripts/normalize-next-env.mjs")).toContain('./.next/types/routes.d.ts')
+    expect(read("scripts/normalize-next-env.mjs")).toContain(
+      'next/navigation-types/compat/navigation',
+    )
     const previewRunner = read("scripts/run-prod-preview-check.mjs")
     expect(previewRunner).toContain('process.env.NEXT_DIST_DIR || ".next-prod"')
     expect(previewRunner).toContain("NEXT_DIST_DIR: distDir")
@@ -1262,7 +1266,16 @@ describe("requested regression guardrails", () => {
     expect(soak).toContain("finalSignal.sourcePerformanceLookback !== 12")
     expect(soak).toContain("finalSignal.lanePerformanceLookback !== 10")
     expect(soak).toContain('lastByPath.get("/api/indications/config-counts")')
-    expect(soak).toContain("totalPossibleSets * 4 + SYMBOLS.length * 500")
+    expect(soak).toContain("totalPossibleSets * SYMBOLS.length * inventoryConnectionScopes")
+    expect(soak).toContain("indicationOutcomeAuxiliaryCapacity = indicationSetInventoryCapacity * 3")
+    expect(soak).toContain("databaseNonInventoryKeysEnd > databaseNonInventoryAbsoluteLimit")
+    expect(soak).toContain("NON_INVENTORY_KEYS_PER_SYMBOL_BUDGET = 1_000")
+    expect(soak).not.toContain("!SIGNAL_FOCUSED_SOAK && !databasePlateauWithinBudget")
+    expect(soak).not.toContain("!SIGNAL_FOCUSED_SOAK && !heapWithinBudget")
+    expect(soak).not.toContain("!SIGNAL_FOCUSED_SOAK && !rssWithinAbsoluteBudget")
+    expect(read("lib/trade-engine/stages/live-stage.ts")).toContain(
+      'else if (originalStatus !== "simulated")',
+    )
     expect(soak).toContain("openPositions?.pseudo?.runningSets")
     expect(soak).toContain("strategyDetail?.real?.positionStats")
     expect(soak).toContain('RUNTIME_MODE === "production" && process.env.ALLOW_PROD_INLINE_REDIS === "1"')
@@ -1996,7 +2009,7 @@ describe("requested regression guardrails", () => {
     expect(globalReadyBlock).toContain("migrationsRan = false")
     expect(source).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(source).toContain('import("@/lib/redis-migrations")')
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 99")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 100")
     expect(source).toContain('client.get("_schema_version").catch(() => null)')
   })
 
@@ -3354,7 +3367,7 @@ describe("requested regression guardrails", () => {
 
     for (const marker of [
       'Exchange connector not available or missing placeOrder',
-      '`No current price available for ${realPosition.symbol}`',
+      '`No authoritative exchange ticker available for ${realPosition.symbol}`',
       '`Exchange circuit breaker active for ${realPosition.symbol} — retrying in <5min`',
       'Entry order rejected for ${realPosition.symbol}',
       '`Live pipeline unhandled error for ${realPosition.symbol}`',
@@ -3792,7 +3805,7 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain("RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS")
     expect(migrations).toContain("await releaseOwnedRedisLock(client, keys.baseLock, token)")
     expect(migrations).toContain("__v0_devBootGuardDone = false")
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 99")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 100")
     expect(redisDb).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(redisDb).toContain("ensureSharedVolatileStartupCleanup")
     expect(redisDb).toContain("markSharedRuntimeReady")

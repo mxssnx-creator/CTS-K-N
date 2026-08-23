@@ -159,6 +159,10 @@ interface RealVariantDetailStats {
   withoutStrategyPositions?: number
   withStrategyPositions?: number
   positionCountSource?: "confirmed-ledger" | "evaluation-fallback"
+  performanceSamples?: number
+  performanceSource?: "confirmed-outcome-ledger" | "awaiting-confirmed-outcomes"
+  evaluationAvgProfitFactor?: number
+  evaluationAvgDrawdownTime?: number
 }
 
 interface RealStagePositionDetailStats {
@@ -3279,8 +3283,9 @@ export function ActiveConnectionCard({
                                         </span>
                                       </div>
                                       <div className="mt-0.5 flex flex-wrap gap-x-2 text-muted-foreground">
-                                        <span>PF <strong className="text-foreground">{nonNegativeMetric(value.avgProfitFactor) > 0 ? nonNegativeMetric(value.avgProfitFactor).toFixed(2) : "—"}</strong></span>
-                                        <span>DDT <strong className="text-foreground">{nonNegativeMetric(value.avgDrawdownTime) > 0 ? `${nonNegativeMetric(value.avgDrawdownTime).toFixed(0)}m` : "—"}</strong></span>
+                                        <span title="PF from this variant's independent confirmed close-outcome ledger">PF <strong className="text-foreground">{nonNegativeMetric(value.avgProfitFactor) > 0 ? nonNegativeMetric(value.avgProfitFactor).toFixed(2) : "—"}</strong></span>
+                                        <span title="DDT from this variant's independent confirmed close-outcome ledger">DDT <strong className="text-foreground">{nonNegativeMetric(value.avgDrawdownTime) > 0 ? `${nonNegativeMetric(value.avgDrawdownTime).toFixed(0)}m` : "—"}</strong></span>
+                                        <span title="Confirmed outcome samples; evaluation PF/DDT is kept separate">n={nonNegativeMetric(value.performanceSamples).toLocaleString()}</span>
                                       </div>
                                       {adjust && (
                                         <div className="mt-0.5 text-muted-foreground" title="Additional positions versus Default + Trailing, banded in 0.2 ratio steps.">

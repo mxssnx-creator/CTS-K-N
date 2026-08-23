@@ -29,6 +29,7 @@ import {
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 } from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
 import {
@@ -307,7 +308,7 @@ function getDefaultSettings(): Record<string, any> {
     defaultCoordinationMinimumSignals: 3,
     defaultCoordinationShortDifferenceRatio: 0.1,
     directionPostChangeOnly: true,
-    profitFactorMinPreset: 0.7,
+    profitFactorMinPreset: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
     drawdownTimePreset: 5,
     presetHistoryDays: 14,
     presetCountPerSymbol: 4,

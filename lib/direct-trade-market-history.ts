@@ -2,6 +2,7 @@ import { fetchBingXPublic } from "@/lib/bingx-public-api"
 import type { DirectTradeCandle } from "@/lib/direct-trade-coordination"
 
 const BINGX_KLINE_PAGE_SIZE = 1_440
+const BYBIT_KLINE_PAGE_SIZE = 1_000
 
 function deterministicSyntheticMinuteHistory(symbol: string, historyHours: number): DirectTradeCandle[] {
   const minutes = Math.max(1, Math.floor(historyHours * 60))
@@ -84,4 +85,70 @@ export async function fetchBingXMinuteHistory(symbol: string, historyHours: numb
     cursorEnd = oldest - 1
   }
   return [...byTime.values()].sort((left, right) => left.time - right.time)
+}
+
+export async function fetchBybitMinuteHistory(symbol: string, historyHours: number): Promise<DirectTradeCandle[]> {
+  if (process.env.DIRECT_TRADE_SYNTHETIC_MARKET_DATA === "1") {
+    return deterministicSyntheticMinuteHistory(symbol, historyHours)
+  }
+  const endTime = Date.now()
+  const startTime = endTime - Math.max(1, historyHours) * 60 * 60 * 1_000
+  const byTime = new Map<number, DirectTradeCandle>()
+  let cursorEnd = endTime
+  let oldestSeen = Number.POSITIVE_INFINITY
+
+  while (cursorEnd > startTime) {
+    const url = new URL("https://api.bybit.com/v5/market/kline")
+    url.searchParams.set("category", "linear")
+    url.searchParams.set("symbol", symbol.replace(/-/g, ""))
+    url.searchParams.set("interval", "1")
+    url.searchParams.set("start", String(startTime))
+    url.searchParams.set("end", String(cursorEnd))
+    url.searchParams.set("limit", String(BYBIT_KLINE_PAGE_SIZE))
+    let rows: unknown[][] = []
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(8_000),
+      })
+      if (!response.ok) break
+      const payload = await response.json()
+      if (Number(payload?.retCode) !== 0) break
+      rows = Array.isArray(payload?.result?.list) ? payload.result.list : []
+    } catch {
+      break
+    }
+    if (rows.length === 0) break
+    const page = rows.map((row) => normaliseCandle({
+      time: row?.[0],
+      open: row?.[1],
+      high: row?.[2],
+      low: row?.[3],
+      close: row?.[4],
+      volume: row?.[5],
+    })).filter((value): value is DirectTradeCandle => value !== null)
+    for (const candle of page) {
+      if (candle.time >= startTime && candle.time <= endTime) byTime.set(candle.time, candle)
+    }
+    const oldest = Math.min(...page.map((candle) => candle.time))
+    if (!Number.isFinite(oldest) || oldest >= oldestSeen || oldest <= startTime) break
+    oldestSeen = oldest
+    cursorEnd = oldest - 1
+  }
+  return [...byTime.values()].sort((left, right) => left.time - right.time)
+}
+
+/**
+ * Venue-bound Direct-Trade history. Refusing an unsupported exchange is
+ * safer than silently evaluating Bybit orders against a BingX market graph.
+ */
+export async function fetchDirectTradeMinuteHistory(
+  exchange: string,
+  symbol: string,
+  historyHours: number,
+): Promise<DirectTradeCandle[]> {
+  const normalized = String(exchange || "").trim().toLowerCase()
+  if (normalized === "bingx") return fetchBingXMinuteHistory(symbol, historyHours)
+  if (normalized === "bybit") return fetchBybitMinuteHistory(symbol, historyHours)
+  throw new Error(`Direct-Trade market history is not supported for exchange ${normalized || "unknown"}`)
 }

@@ -305,6 +305,18 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   // while Vercel and other Corepack-enabled providers keep the pinned
   // `pnpm@10.28.1` contract unchanged.
   function resolveBuildCommand() {
+    // A fully installed Linux node may deliberately run without outbound
+    // package-registry access.  In that case Corepack must not try to resolve
+    // pnpm again: execute the already installed, lockfile-produced Next
+    // binary while retaining this wrapper's source-drift, trace and
+    // standalone validation.  The opt-in flag keeps CI/Vercel on the pinned
+    // Corepack path by default.
+    if (process.env.CTS_USE_LOCAL_NEXT_BUILD === "1") {
+      return {
+        command: process.execPath,
+        args: ["node_modules/next/dist/bin/next", "build"],
+      }
+    }
     if (process.env.COREPACK_BIN) {
       return { command: process.env.COREPACK_BIN, args: ["pnpm@10.28.1", "run", "build:next"] }
     }

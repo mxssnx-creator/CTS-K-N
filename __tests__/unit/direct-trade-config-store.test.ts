@@ -40,4 +40,33 @@ describe("Direct-Trade chunked configuration store", () => {
     await deleteDirectTradeConfigGeneration(redis, prepared.manifest)
     await redis.del(DIRECT_TRADE_CONFIG_MANIFEST_KEY)
   })
+
+  test("keeps chunk manifests and rows independent between connections", async () => {
+    const [{ getRedisClient }, { directTradeKeyspace }] = await Promise.all([
+      import("@/lib/redis-db"),
+      import("@/lib/direct-trade-keyspace"),
+    ])
+    const redis = getRedisClient()
+    const leftId = "bingx-x01"
+    const rightId = "bingx-x02"
+    const leftConfigs = Array.from({ length: 10_001 }, (_, index) => ({ setKey: `left-${index}` }))
+    const rightConfigs = Array.from({ length: 10_001 }, (_, index) => ({ setKey: `right-${index}` }))
+    const [left, right] = await Promise.all([
+      prepareDirectTradeConfigStore(redis, leftConfigs, leftId),
+      prepareDirectTradeConfigStore(redis, rightConfigs, rightId),
+    ])
+    const leftKeys = directTradeKeyspace(leftId)
+    const rightKeys = directTradeKeyspace(rightId)
+    await Promise.all([
+      redis.set(leftKeys.configManifest, JSON.stringify(left.manifest)),
+      redis.set(rightKeys.configManifest, JSON.stringify(right.manifest)),
+    ])
+    await expect(readDirectTradeConfigsAtIndexes(redis, [10_000], leftId)).resolves.toEqual([leftConfigs[10_000]])
+    await expect(readDirectTradeConfigsAtIndexes(redis, [10_000], rightId)).resolves.toEqual([rightConfigs[10_000]])
+    await Promise.all([
+      deleteDirectTradeConfigGeneration(redis, left.manifest, leftId),
+      deleteDirectTradeConfigGeneration(redis, right.manifest, rightId),
+    ])
+    await redis.del(leftKeys.configManifest, rightKeys.configManifest)
+  })
 })

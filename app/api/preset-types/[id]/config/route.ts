@@ -3,6 +3,7 @@ import {
   normalizeIdentityVolumeFactor,
 } from "@/lib/constants"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -24,7 +25,7 @@ function bounded(raw: unknown, fallback: number, min: number, max: number): numb
 function serializeConfig(stored: Record<string, unknown>) {
   return {
     volume_factor: normalizeIdentityVolumeFactor(stored.volume_factor),
-    profit_factor_min: bounded(stored.profit_factor_min, 0.6, 0.1, 5),
+    profit_factor_min: bounded(stored.profit_factor_min, REALIZED_PROFIT_FACTOR_MIN_DEFAULT, 0.1, 5),
     max_drawdown_time: bounded(stored.max_drawdown_time, 12, 1, 168),
     trailing_enabled: bool(stored.trailing_enabled, true),
     block_enabled: bool(stored.block_enabled, true),

@@ -556,7 +556,27 @@ export class GlobalTradeEngineCoordinator {
       // extend/release the slot and stamp the epoch.
       await manager.start(config, lockHandle)
       if (!manager.isEngineRunning) {
+        if (!(await this.isGlobalCoordinatorEnabled(`startEngine(${connectionId}) post-start cancellation`))) {
+          if (this.engineManagers.get(connectionId) === manager) {
+            this.engineManagers.delete(connectionId)
+          }
+          // EngineStartupCancelledError cleanup released this exact token.
+          // Do not force-break a newer owner that may already be resuming.
+          lockHandle = undefined
+          return false
+        }
         throw new Error(`TradeEngine manager for ${connectionId} did not reach running state`)
+      }
+      // Pause can arrive while manager.start() is completing its final durable
+      // logs. Re-read the authoritative global intent before publishing local
+      // success; a paused coordinator must never be resurrected by that race.
+      if (!(await this.isGlobalCoordinatorEnabled(`startEngine(${connectionId}) final intent check`))) {
+        await manager.stop().catch(() => undefined)
+        if (this.engineManagers.get(connectionId) === manager) {
+          this.engineManagers.delete(connectionId)
+        }
+        lockHandle = undefined
+        return false
       }
       // Manager now owns the lock; clear our local reference so the
       // finally-block doesn't try to break it on success.
@@ -1568,7 +1588,7 @@ export class GlobalTradeEngineCoordinator {
     for (const connectionId of allConnectionIds) {
       try {
         const manager = this.engineManagers.get(connectionId)
-        if (manager?.isEngineRunning) {
+        if (manager) {
           await manager.stop()
           // A stopped manager may still have an asynchronous prehistoric
           // promise unwinding. Never leave that completed generation in the
@@ -1577,9 +1597,6 @@ export class GlobalTradeEngineCoordinator {
             this.engineManagers.delete(connectionId)
           }
           console.log(`[v0] [Coordinator] ✓ Stopped and detached local engine for connection: ${connectionId}`)
-        } else if (manager && this.engineManagers.get(connectionId) === manager) {
-          this.engineManagers.delete(connectionId)
-          console.log(`[v0] [Coordinator] ✓ Detached inactive local engine for connection: ${connectionId}`)
         }
       } catch (error) {
         console.error(`[v0] [Coordinator] Failed to stop engine for connection ${connectionId}:`, error)

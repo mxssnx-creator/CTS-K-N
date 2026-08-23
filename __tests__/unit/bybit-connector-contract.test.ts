@@ -141,4 +141,42 @@ describe("Bybit V5 connector contract", () => {
     await new BybitConnector(credentials("contract")).getBalance()
     expect(requestedUrl).toContain("accountType=CONTRACT")
   })
+
+  test("uses exact closed-PnL rows so net PnL includes actual entry and close fees", async () => {
+    const requests: string[] = []
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      requests.push(url)
+      if (url.includes("/v5/position/closed-pnl")) {
+        return bybitResponse({ list: [{
+          orderId: "close-42",
+          symbol: "BTCUSDT",
+          closedSize: "0.01",
+          avgEntryPrice: "60000",
+          avgExitPrice: "61000",
+          closedPnl: "9.4",
+          openFee: "0.3",
+          closeFee: "0.3",
+          updatedTime: "1800000000100",
+        }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    }) as typeof fetch
+
+    await expect(new BybitConnector(credentials()).getOrderSettlement("BTCUSDT", "close-42"))
+      .resolves.toMatchObject({
+        orderId: "close-42",
+        symbol: "BTCUSDT",
+        filledQuantity: 0.01,
+        averageFillPrice: 61000,
+        grossRealizedPnl: 10,
+        tradingFee: 0.6,
+        netRealizedPnl: 9.4,
+        netIncludesEntryFee: true,
+        source: "bybit_closed_pnl",
+      })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toContain("/v5/position/closed-pnl")
+    expect(requests[0]).toContain("symbol=BTCUSDT")
+  })
 })

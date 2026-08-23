@@ -160,6 +160,15 @@ describe("production installation and Kilo deployment contract", () => {
     // install.sh persists the npm fallback as its node_modules directory;
     // the service must resolve that layout after a host restart.
     expect(installer).toContain('CTS_NPM_REDIS_ROOT "$npm_redis_root/node_modules"')
+    expect(installer).toContain("scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs")
+    expect(installer).toContain('upsert_env CTS_DIRECT_TRADE_MAX_CONNECTION_WORKERS "$direct_trade_worker_count"')
+    expect(installer).toContain('upsert_env CTS_DIRECT_TRADE_WORKER_HEAP_MB "$direct_trade_worker_heap_mb"')
+    expect(installer).toContain("scripts/direct-trade-supervisor.mjs --port")
+    const directSupervisor = await readFile(path.join(process.cwd(), "scripts", "direct-trade-supervisor.mjs"), "utf8")
+    expect(directSupervisor).toContain("children.get(connectionId) === entry")
+    expect(directSupervisor).toContain("Every scope with non-terminal positions gets a")
+    expect(directSupervisor).toContain('entry.child.kill("SIGKILL")')
+    expect(directSupervisor).toContain("CTS_DIRECT_TRADE_WORKER_HEAP_MB")
     const npmRedisService = await readFile(path.join(process.cwd(), "scripts", "npm-redis-service.mjs"), "utf8")
     expect(npmRedisService).toContain('path.basename(path.resolve(packageRoot)) === "node_modules"')
     expect(npmRedisService).toContain('path.dirname(path.resolve(packageRoot))')
@@ -204,6 +213,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(nextFsRmCompat).toContain("await nativeRename(temporary, resolved)")
     expect(nextFsRmCompat).toContain("fsPromises.writeFile = writeFileWithAtomicNextJsonPublish")
     const buildWrapper = await readFile(path.join(process.cwd(), "scripts", "build-next-with-trace-retry.mjs"), "utf8")
+    expect(buildWrapper).toContain('process.env.CTS_USE_LOCAL_NEXT_BUILD === "1"')
+    expect(buildWrapper).toContain('["node_modules/next/dist/bin/next", "build"]')
     expect(buildWrapper).toContain('"run", "build:next"')
     expect(buildWrapper).toContain("function listArchiveSourceFiles")
     expect(buildWrapper).toContain("listArchiveSourceFiles()")
@@ -567,7 +578,7 @@ describe("production installation and Kilo deployment contract", () => {
       encoding: "utf8",
     })
     expect(output).toContain('"success":true')
-    expect(output).toContain('"schemaVersion":99')
+    expect(output).toContain('"schemaVersion":100')
   })
 
   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {

@@ -67,8 +67,8 @@ describe("Direct-Trade leased control-order route", () => {
       import("@/lib/redis-db"),
     ])
     const redis = getRedisClient()
-    await redis.set("direct_trade:processor:lease", instanceId)
-    await redis.set("direct_trade:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
+    await redis.set("direct_trade:connection:bingx-x01:processor:lease", instanceId)
+    await redis.set("direct_trade:connection:bingx-x01:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
 
     const opened = await POST(request({
       kind: "open",
@@ -116,8 +116,8 @@ describe("Direct-Trade leased control-order route", () => {
       import("@/lib/redis-db"),
     ])
     const redis = getRedisClient()
-    await redis.set("direct_trade:processor:lease", instanceId)
-    await redis.set("direct_trade:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
+    await redis.set("direct_trade:connection:bingx-x01:processor:lease", instanceId)
+    await redis.set("direct_trade:connection:bingx-x01:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
     placeLiveOrderMock.mockResolvedValueOnce({
       success: true,
       mode: "live",
@@ -191,8 +191,8 @@ describe("Direct-Trade leased control-order route", () => {
     ])
     const redis = getRedisClient()
     const control = "dtopen_persisted_1"
-    await redis.set("direct_trade:processor:lease", instanceId)
-    await redis.set("direct_trade:state", JSON.stringify({ enabled: false, liveMode: false, connectionId: "bingx-x01" }))
+    await redis.set("direct_trade:connection:bingx-x01:processor:lease", instanceId)
+    await redis.set("direct_trade:connection:bingx-x01:state", JSON.stringify({ enabled: false, liveMode: false, connectionId: "bingx-x01" }))
     await redis.set(
       `live:direct_order_control:${encodeURIComponent("bingx-x01")}:${encodeURIComponent(control)}`,
       JSON.stringify({ version: 1, state: "acknowledged" }),
@@ -225,5 +225,31 @@ describe("Direct-Trade leased control-order route", () => {
     }) as any)
     expect(fresh.status).toBe(409)
     expect(placeLiveOrderMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("never lets a legacy global lease override a different scoped owner", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/order/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.set("direct_trade:processor:lease", instanceId)
+    await redis.set("direct_trade:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
+    await redis.set("direct_trade:connection:bingx-x01:processor:lease", "scoped-owner")
+    await redis.set("direct_trade:connection:bingx-x01:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
+
+    const response = await POST(request({
+      kind: "open",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_legacy",
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      positionDirection: "long",
+      quantity: 0.25,
+      price: 100,
+    }) as any)
+
+    expect(response.status).toBe(409)
+    expect(placeLiveOrderMock).not.toHaveBeenCalled()
   })
 })

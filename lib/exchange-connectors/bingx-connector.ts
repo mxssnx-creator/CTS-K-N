@@ -11,6 +11,8 @@ import {
   type ExchangeCredentials,
   type ExchangeConnectorResult,
   type ExchangeOrder,
+  type ExchangeOrderSettlement,
+  type ExchangeOrderSettlementOptions,
   type PlaceOrderOptions,
 } from "./base-connector"
 import { safeParseResponse } from "@/lib/safe-response-parser"
@@ -4053,34 +4055,46 @@ export class BingXConnector extends BaseExchangeConnector {
     currency?: string
   ): Promise<{ success: boolean; trades?: any[]; error?: string }> {
     try {
-      const params: Record<string, any> = {
-        tradingUnit,
-        startTs,
-        endTs,
-        timestamp: this.getTimestamp(),
-      }
-      
-      if (orderId) params.orderId = orderId
-      if (currency) params.currency = currency
-      
-      const { signature, queryString: signedQs } = this.signParams(params)
-      const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/allFillOrders?${signedQs}&signature=${signature}`
-      
-      const response = await this.rateLimitedFetch(url, {
-        method: "GET",
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+      return await this.bingxRateLimitedCall("getTradeHistory", async () => {
+        await this.syncServerTime()
+        const stableParams: Record<string, any> = {
+          tradingUnit,
+          startTs,
+          endTs,
+        }
+        if (orderId) stableParams.orderId = orderId
+        if (currency) stableParams.currency = currency
+
+        // Timestamp/signature are created only after the generic rate limiter
+        // grants its dispatch slot.  A busy 32-symbol production queue must
+        // not turn an accounting read into a stale-signature failure.
+        const response = await this.rateLimitedFetch(
+          () => {
+            const { signature, queryString: signedQs } = this.signParams({
+              ...stableParams,
+              timestamp: this.getTimestamp(),
+            })
+            return `${this.getBaseUrl()}/openApi/swap/v2/trade/allFillOrders?${signedQs}&signature=${signature}`
+          },
+          () => ({
+            method: "GET",
+            headers: { "X-BX-APIKEY": this.credentials.apiKey },
+          }),
+        )
+
+        const data = await this.safeJson(response)
+        if (!this.isBingXSuccess(data.code)) {
+          throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
+        }
+        const rows = Array.isArray(data.data)
+          ? data.data
+          : Array.isArray(data.data?.fills)
+            ? data.data.fills
+            : Array.isArray(data.data?.orders)
+              ? data.data.orders
+              : []
+        return { success: true, trades: rows }
       })
-      
-      const data = await this.safeJson(response)
-      
-      if (!this.isBingXSuccess(data.code)) {
-        throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
-      }
-      
-      return {
-        success: true,
-        trades: Array.isArray(data.data) ? data.data : [],
-      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
       this.logError(`✗ Failed to get trade history: ${errorMsg}`)
@@ -4088,6 +4102,76 @@ export class BingXConnector extends BaseExchangeConnector {
         success: false,
         error: errorMsg,
       }
+    }
+  }
+
+  /**
+   * Exact BingX USDT-M order settlement from actual fill rows.
+   *
+   * BingX documents `fee` as a signed value (negative means paid).  The
+   * normalized object exposes a positive fee cost and net PnL, while retaining
+   * every signed fill for audit/recovery.
+   */
+  async getOrderSettlement(
+    symbol: string,
+    orderId: string,
+    options: ExchangeOrderSettlementOptions = {},
+  ): Promise<ExchangeOrderSettlement | null> {
+    const normalizedOrderId = String(orderId || "").trim()
+    if (!normalizedOrderId || this.credentials.apiType === "spot") return null
+    const now = Date.now()
+    const endTime = Number.isFinite(Number(options.endTime))
+      ? Number(options.endTime)
+      : now
+    const startTime = Number.isFinite(Number(options.startTime))
+      ? Number(options.startTime)
+      : endTime - 7 * 24 * 60 * 60 * 1000
+    const history = await this.getTradeHistory(
+      "COIN",
+      Math.max(0, Math.min(startTime, endTime)),
+      Math.max(startTime, endTime),
+      normalizedOrderId,
+      "USDT",
+    )
+    if (!history.success) return null
+
+    const fills = (history.trades || [])
+      .filter((row: any) => String(row?.orderId ?? row?.orderID ?? "") === normalizedOrderId)
+      .map((row: any) => {
+        const quantity = Math.abs(Number(row?.qty ?? row?.quantity ?? row?.volume ?? 0))
+        const price = Number(row?.price ?? row?.tradePrice ?? 0)
+        const realizedPnl = Number(row?.realizedPnl ?? row?.realizedPNL ?? 0)
+        const fee = Number(row?.fee ?? row?.commission ?? 0)
+        return {
+          tradeId: String(row?.tradeId ?? row?.tradeID ?? ""),
+          price: Number.isFinite(price) && price > 0 ? price : 0,
+          quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 0,
+          realizedPnl: Number.isFinite(realizedPnl) ? realizedPnl : 0,
+          fee: Number.isFinite(fee) ? fee : 0,
+          feeCost: Number.isFinite(fee) ? Math.max(0, -fee) : 0,
+          timestamp: Number(row?.time ?? row?.tradeTime ?? now) || now,
+        }
+      })
+      .filter((fill) => fill.quantity > 0 && fill.price > 0)
+    if (fills.length === 0) return null
+
+    const filledQuantity = fills.reduce((sum, fill) => sum + fill.quantity, 0)
+    const weightedPrice = fills.reduce((sum, fill) => sum + fill.price * fill.quantity, 0)
+    const grossRealizedPnl = fills.reduce((sum, fill) => sum + fill.realizedPnl, 0)
+    const signedFeeTotal = fills.reduce((sum, fill) => sum + fill.fee, 0)
+    const tradingFee = fills.reduce((sum, fill) => sum + fill.feeCost, 0)
+    return {
+      orderId: normalizedOrderId,
+      symbol: this.toBingXSymbol(symbol),
+      filledQuantity: Number(filledQuantity.toFixed(12)),
+      averageFillPrice: filledQuantity > 0 ? weightedPrice / filledQuantity : 0,
+      grossRealizedPnl: Number(grossRealizedPnl.toFixed(12)),
+      tradingFee: Number(tradingFee.toFixed(12)),
+      netRealizedPnl: Number((grossRealizedPnl + signedFeeTotal).toFixed(12)),
+      netIncludesEntryFee: false,
+      source: "bingx_fill_history",
+      settledAt: Math.max(...fills.map((fill) => fill.timestamp)),
+      fills,
     }
   }
 

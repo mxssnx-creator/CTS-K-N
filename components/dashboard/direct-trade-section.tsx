@@ -218,7 +218,7 @@ export function DirectTradeSection() {
   const [localMaxSl, setLocalMaxSl] = useState(0.75)
   const [localInverseMaxSl, setLocalInverseMaxSl] = useState(1.25)
   const [localMinPF, setLocalMinPF] = useState(DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT)
-  const [localMinRecentPF, setLocalMinRecentPF] = useState(10)
+  const [localMinRecentPF, setLocalMinRecentPF] = useState(DIRECT_TRADE_RECENT_PF_DEFAULT)
   const [localRecentEvaluationPositions, setLocalRecentEvaluationPositions] = useState(12)
   const [localMaxDDT, setLocalMaxDDT] = useState(10)
   const [localSymbolCount, setLocalSymbolCount] = useState(8)
@@ -296,7 +296,10 @@ export function DirectTradeSection() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/trade-engine/direct-trade/status", { cache: "no-store" })
+      const query = selectedConnectionId
+        ? `?connectionId=${encodeURIComponent(selectedConnectionId)}`
+        : ""
+      const res = await fetch(`/api/trade-engine/direct-trade/status${query}`, { cache: "no-store" })
       if (!res.ok) return
       const data = await res.json()
       if (data.state) {
@@ -311,7 +314,21 @@ export function DirectTradeSection() {
       setCalculationProgress(data.calculationProgress && typeof data.calculationProgress === "object" ? data.calculationProgress : null)
       if (data.processor) setProcessorHealthy(data.processor.isHealthy || false)
     } catch {}
-  }, [applyRemoteState])
+  }, [applyRemoteState, selectedConnectionId])
+
+  useEffect(() => {
+    // Do not render one exchange connection's Direct-Trade state while the
+    // newly selected independent Redis scope is loading.
+    setState({ ...DEFAULT_STATE, connectionId: selectedConnectionId })
+    setStats(DEFAULT_STATS)
+    setOverview48h(null)
+    setActiveConfigs(0)
+    setOpenPositions(0)
+    setClosedPositions(0)
+    setDisabledConfigs(0)
+    setCalculationProgress(null)
+    setProcessorHealthy(false)
+  }, [selectedConnectionId])
 
   useEffect(() => {
     fetchStatus()
@@ -420,6 +437,7 @@ export function DirectTradeSection() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          connectionId: selectedConnectionId ?? state.connectionId,
           symbolCount: localSymbolCount,
           symbolOrder: localSymbolOrder,
           minVolFactor: localVolFactor,

@@ -23,6 +23,7 @@ import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
 import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot"
+import { strategyVariantOutcomeKey } from "@/lib/pos-history"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -1908,7 +1909,7 @@ export async function GET(
     // an axis/window accumulation (`axisWindows.pause`), not in
     // `strategyVariants`.
     const variantKeys = ["default", "trailing", "block", "dca"] as const
-    const variantDetail: Record<string, Record<string, number>> = {}
+    const variantDetail: Record<string, Record<string, any>> = {}
     const hasConfirmedVariantCounts = hasCompleteRealVariantPositionLedger(validPositionsHash)
     await Promise.all(
       variantKeys.map(async (variant) => {
@@ -1922,7 +1923,12 @@ export async function GET(
         // pass; we still fall back to computing them from the raw summed
         // fields (entries_count / sum_pf_x1000 / sum_ddt_x10 / created_sets)
         // in case that recompute pass was skipped on a given cycle.
-        const h = ((await client.hgetall(`strategy_variant_real:${connectionId}:${variant}`).catch(() => null)) || {}) as Record<string, string>
+        const [hRaw, outcomeRaw] = await Promise.all([
+          client.hgetall(`strategy_variant_real:${connectionId}:${variant}`).catch(() => null),
+          client.hgetall(strategyVariantOutcomeKey(connectionId, variant)).catch(() => null),
+        ])
+        const h = (hRaw || {}) as Record<string, string>
+        const outcome = (outcomeRaw || {}) as Record<string, string>
         const createdSets      = n(h.created_sets)
         const passedSets       = n(h.passed_sets)
         const entriesCount     = n(h.entries_count)
@@ -1931,14 +1937,23 @@ export async function GET(
         // Prefer the pre-derived field; fall back to raw-sum math when absent/0.
         let avgPosPerSet       = parseFloat(h.avg_pos_per_set   || "0")
         if (!(avgPosPerSet > 0) && createdSets > 0)  avgPosPerSet    = entriesCount / createdSets
-        let avgProfitFactor    = parseFloat(h.avg_profit_factor || "0")
+        let evaluationAvgProfitFactor = parseFloat(h.avg_profit_factor || "0")
         // sumPfX1000 / sumDdtX10 are entry-weighted at the Real writer.
         // Divide by entriesCount, matching the writer's own recompute pass.
         // The old createdSets denominator inflated PF/DDT whenever a Set
         // contained multiple confirmed position slots.
-        if (!(avgProfitFactor > 0) && entriesCount > 0) avgProfitFactor = (sumPfX1000 / 1000) / entriesCount
-        let avgDrawdownTime    = parseFloat(h.avg_drawdown_time || "0")
-        if (!(avgDrawdownTime > 0) && entriesCount > 0) avgDrawdownTime = (sumDdtX10 / 10) / entriesCount
+        if (!(evaluationAvgProfitFactor > 0) && entriesCount > 0) evaluationAvgProfitFactor = (sumPfX1000 / 1000) / entriesCount
+        let evaluationAvgDrawdownTime = parseFloat(h.avg_drawdown_time || "0")
+        if (!(evaluationAvgDrawdownTime > 0) && entriesCount > 0) evaluationAvgDrawdownTime = (sumDdtX10 / 10) / entriesCount
+        const performanceSamples = n(outcome.sample_count)
+        const grossProfit = Math.max(0, Number(outcome.gross_profit) || 0)
+        const grossLoss = Math.max(0, Number(outcome.gross_loss) || 0)
+        const avgProfitFactor = performanceSamples > 0
+          ? grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0
+          : 0
+        const avgDrawdownTime = performanceSamples > 0
+          ? (Number(outcome.sum_ddt) || 0) / performanceSamples
+          : 0
         const passRateRaw      = parseFloat(h.pass_rate         || "0")
         variantDetail[variant] = {
           createdSets,
@@ -1952,6 +1967,16 @@ export async function GET(
           avgPosPerSet:     isFinite(avgPosPerSet)    ? Math.round(avgPosPerSet * 100) / 100      : 0,
           avgProfitFactor:  isFinite(avgProfitFactor) ? Math.round(avgProfitFactor * 1000) / 1000 : 0,
           avgDrawdownTime:  isFinite(avgDrawdownTime) ? Math.round(avgDrawdownTime * 10) / 10     : 0,
+          evaluationAvgProfitFactor: isFinite(evaluationAvgProfitFactor)
+            ? Math.round(evaluationAvgProfitFactor * 1000) / 1000
+            : 0,
+          evaluationAvgDrawdownTime: isFinite(evaluationAvgDrawdownTime)
+            ? Math.round(evaluationAvgDrawdownTime * 10) / 10
+            : 0,
+          performanceSamples,
+          performanceSource: performanceSamples > 0
+            ? "confirmed-outcome-ledger"
+            : "awaiting-confirmed-outcomes",
           passRate:         passRateRaw > 0
             ? Math.round(passRateRaw * 1000) / 10
             : createdSets > 0
@@ -1967,7 +1992,7 @@ export async function GET(
         acc.passedSets      += variantDetail[v].passedSets
         acc.entriesCount    += variantDetail[v].entriesCount
         // Weighted averages across variants using createdSets as the weight
-        const w = variantDetail[v].createdSets
+        const w = variantDetail[v].performanceSamples
         if (w > 0) {
           acc.weightedPF  += variantDetail[v].avgProfitFactor * w
           acc.weightedDDT += variantDetail[v].avgDrawdownTime * w
@@ -1982,6 +2007,10 @@ export async function GET(
       passedSets:     variantTotals.passedSets,
       entriesCount:   variantTotals.entriesCount,
       positionsCount: variantKeys.reduce((sum, variant) => sum + variantDetail[variant].positionsCount, 0),
+      performanceSamples: variantTotals.weightSum,
+      performanceSource: variantTotals.weightSum > 0
+        ? "confirmed-outcome-ledger"
+        : "awaiting-confirmed-outcomes",
       avgProfitFactor: variantTotals.weightSum > 0
         ? Math.round((variantTotals.weightedPF / variantTotals.weightSum) * 1000) / 1000
         : 0,

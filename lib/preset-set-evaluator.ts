@@ -4,6 +4,7 @@
  */
 
 import { initRedis, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 
 interface SetEvaluationMetrics {
   setId: string
@@ -65,7 +66,7 @@ export class PresetSetEvaluator {
   private async evaluateSet(set: any): Promise<SetEvaluationMetrics> {
     const setId = set.id
     const evaluationCount = set.evaluation_positions_count1 || 25
-    const minProfitFactor = set.profit_factor_min || 0.5
+    const minProfitFactor = Number(set.profit_factor_min ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT)
 
     await initRedis()
     const client = getRedisClient()

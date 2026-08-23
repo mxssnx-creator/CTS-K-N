@@ -1,3 +1,5 @@
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
+
 export const PRESET_INDICATOR_TYPES = [
   "ma",
   "rsi",
@@ -61,7 +63,7 @@ export interface PresetOptimizerSettings {
 export const DEFAULT_PRESET_OPTIMIZER_SETTINGS: PresetOptimizerSettings = {
   historyDays: 14,
   presetsPerSymbol: 4,
-  minProfitFactor: 0.7,
+  minProfitFactor: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
   maxDrawdownHours: 5,
   // Fresh preset grids begin at the systemwide five-step floor. The
   // normalizer still accepts an explicit legacy three-step range so existing

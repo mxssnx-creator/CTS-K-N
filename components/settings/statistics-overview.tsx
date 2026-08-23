@@ -8,6 +8,7 @@ import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 } from "@/lib/main-trade-profit-factor"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 
 interface StatisticsOverviewProps {
   settings: any
@@ -44,7 +45,7 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
       main: Number(settings.mainProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
       real: Number(settings.realProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
       live: Number(settings.liveProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
-      preset: Number(settings.profitFactorMinPreset ?? settings.presetProfitFactor ?? 0.7),
+      preset: Number(settings.profitFactorMinPreset ?? settings.presetProfitFactor ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT),
     }
   }
 

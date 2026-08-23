@@ -65,6 +65,7 @@
     "test:direct-trade:dev-soak": "node scripts/test-direct-trade-dev-soak.mjs",
     "test:direct-trade:dev-paper": "node scripts/run-direct-trade-dev-soak.mjs",
     "test:direct-trade:recovery": "node scripts/run-direct-trade-recovery-soak.mjs",
+    "test:direct-trade:shared-isolation": "node scripts/run-direct-trade-shared-isolation.mjs",
     "test:signal-sources": "node --import tsx scripts/verify-signal-sources.ts",
     "test:prod-preview": "node scripts/run-prod-preview-check.mjs",
     "test:prod-preview:max": "node scripts/run-prod-preview-check.mjs --max-symbols",
@@ -80,7 +81,10 @@
     "docs:recreation": "node scripts/generate-recreation-manifests.mjs",
     "docs:recreation:verify": "node scripts/verify-recreation-manifests.mjs",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node scripts/run-managed-db-migrate.mjs"
+    "db:migrate": "node scripts/run-managed-db-migrate.mjs",
+    "redis:local:start": "bash scripts/local-redis.sh start",
+    "redis:local:status": "bash scripts/local-redis.sh status",
+    "redis:local:stop": "bash scripts/local-redis.sh stop"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

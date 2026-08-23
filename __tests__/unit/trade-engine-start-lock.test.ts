@@ -18,6 +18,28 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
     expect(extenderBlock).toContain("!this.isRunning && !this.isStarting")
   })
 
+  test("manager startup is generation-cancellable and pause stops starting managers", () => {
+    const managerSource = read("lib/trade-engine/engine-manager.ts")
+    const coordinatorSource = read("lib/trade-engine.ts")
+    const startOffset = managerSource.indexOf("async start(config: EngineConfig")
+    const startBlock = managerSource.slice(startOffset, managerSource.indexOf("private setupErrorRecovery", startOffset))
+    const stopOffset = managerSource.indexOf("async stop(): Promise<void>")
+    const stopBlock = managerSource.slice(stopOffset, managerSource.indexOf("private async", stopOffset))
+    const pauseOffset = coordinatorSource.indexOf("async pause(): Promise<void>")
+    const pauseBlock = coordinatorSource.slice(pauseOffset, coordinatorSource.indexOf("async resume(options:", pauseOffset))
+
+    expect(managerSource).toContain("class EngineStartupCancelledError extends Error")
+    expect(managerSource).toContain("private lifecycleGeneration = 0")
+    expect(startBlock).toContain("const startupGeneration = ++this.lifecycleGeneration")
+    expect(startBlock).toContain("const assertStartupCurrent = () =>")
+    expect(startBlock).toContain("startupGeneration !== this.lifecycleGeneration")
+    expect(startBlock).toContain("Startup cancelled cleanly")
+    expect(stopBlock).toContain("this.lifecycleGeneration++")
+    expect(stopBlock).toContain("this.isStarting = false")
+    expect(pauseBlock).toContain("if (manager) {")
+    expect(pauseBlock).not.toContain("if (manager?.isEngineRunning)")
+  })
+
   test("fresh owner heartbeat leaves duplicate start untouched", () => {
     const source = read("lib/trade-engine.ts")
     const failedAcquireBranch = source.slice(

@@ -14,7 +14,7 @@ import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } 
  *                              orders are emitted from the Live stage)
  *
  *   • Profit-Factor Mins     — 4 sliders (Base / Main / Real / Live)
- *                              0.5 – 1.5 step 0.1 default 0.9
+ *                              0.5 – 1.5 step 0.1 default 1.1
  *                              persists into
  *                              `connection_settings.profitFactorMin.{stage}`
  *                              via PATCH /settings (merged, not replaced)
@@ -72,6 +72,7 @@ import {
 } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 
 // ── stage labels ────────────────────────────────────────────────────────
 //
@@ -100,10 +101,10 @@ interface ProfitFactorMin {
 const toBooleanFlag = (value: unknown): boolean =>
   value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
 const DEFAULT_PF_MIN: ProfitFactorMin = {
-  base: 0.9,
-  main: 0.9,
-  real: 0.9,
-  live: 0.9,
+  base: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
+  main: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
+  real: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
+  live: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
 }
 
 // Slider configuration — kept here so the UI and the engine-side clamp
@@ -116,7 +117,7 @@ const PF_STEP = 0.1
 
 function clampPfMin(raw: unknown): number {
   const n = Number(raw)
-  if (!Number.isFinite(n)) return 0.9
+  if (!Number.isFinite(n)) return REALIZED_PROFIT_FACTOR_MIN_DEFAULT
   return Math.max(PF_MIN, Math.min(PF_MAX, Math.round(n * 10) / 10))
 }
 
