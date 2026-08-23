@@ -71,6 +71,11 @@ export const dynamic = "force-dynamic"
 
 const PROTECTED_PREFIXES = [
   "connection:",          // Exchange credentials & per-connection config
+  // The flat per-connection settings hash is the coordinator's durable
+  // settings mirror. It must survive a progression reset; deleting it makes
+  // production readiness degrade and can strand an enabled engine after the
+  // next coordinator restart.
+  "connection_settings:",
   "connections:tombstoned", // Operator delete decisions (must outlive reset)
   "settings:",            // Operator settings
   "app_settings",         // Canonical settings hash
