@@ -79,6 +79,32 @@ export class BingXConnector extends BaseExchangeConnector {
   private static bingxCooldownWait: Promise<void> | null = null
   private static bingxCallTail: Promise<void> = Promise.resolve()
   private static lastCooldownLogAt = 0
+
+  // ── 109421 "order does not exist" handling ─────────────────────────────
+  // 109421 is a routine business response (order filled/cancelled/never
+  // existed), NOT a rate-limit signal. BingX's actual rule is: more than
+  // 20 not-found responses inside a 480 s rolling window makes them return
+  // 109429 (the real lockout). The previous implementation treated every
+  // single 109421 as a rate-limit event and slammed a 510 s global
+  // cooldown — one missing SL/TP poll then locked out ALL private order
+  // calls (balance, positions, placements) for 8.5 minutes, and the queued
+  // poll re-tripped it on expiry: a permanent livelock with stats vanishing
+  // from the UI.
+  //
+  // New behaviour:
+  //  a) a single 109421 NEVER engages the global cooldown;
+  //  b) not-found responses are counted in a rolling 480 s window — at
+  //     >12 we pre-emptively brake with a short 90 s cooldown so we stay
+  //     under BingX's 20/480 s threshold;
+  //  c) not-found order IDs are negative-cached for 3 minutes so the same
+  //     missing order isn't re-polled every sync cycle. Placement clears
+  //     the cache entry for its clientOrderId.
+  private static bingxNotFoundTimestamps: number[] = []
+  private static bingxNotFoundCache = new Map<string, number>()
+  private static readonly NOT_FOUND_CACHE_TTL_MS = 180_000
+  private static readonly NOT_FOUND_WINDOW_MS = 480_000
+  private static readonly NOT_FOUND_SOFT_LIMIT = 12
+  private static readonly NOT_FOUND_SOFT_COOLDOWN_MS = 90_000
   private static readonly openOrdersSnapshotTtlMs = 15_000
   private static readonly openOrdersSnapshotCache = new Map<string, { orders: any[]; at: number }>()
 
@@ -162,7 +188,7 @@ export class BingXConnector extends BaseExchangeConnector {
   private static lastSdkFallbackLogTs: number = 0
 
   // Instance accessors delegate to the static shared state so the rest of
-  // the class can use `this.timeOffset` / `this.lastTimeSync` / etc. without
+  // the class can use `this.timeOffset` / `this.lastTimeSync` / `etc.` without
   // knowing about the static indirection.
   private get  timeOffset(): number               { return BingXConnector.sharedTimeOffset }
   private set  timeOffset(v: number)              { BingXConnector.sharedTimeOffset = v }
@@ -1043,6 +1069,10 @@ export class BingXConnector extends BaseExchangeConnector {
     // read paths were already honouring. Join the same lane here.
     const release = await this.acquireBingxSlot("placeOrder")
     try {
+      // Placing an order invalidates any negative-cache entry for its
+      // clientOrderId — after placement the order exists (or is about to),
+      // so stale "not found" entries would mislead recovery queries.
+      BingXConnector.clearNotFoundCache(symbol, options?.clientOrderId)
       // Validate and canonicalise before either transport sees the order. The
       // SDK used to run before this guard, allowing invalid/sub-step amounts
       // to reach BingX while only the REST path rejected them.
@@ -1147,7 +1177,7 @@ export class BingXConnector extends BaseExchangeConnector {
       // many cases responds with its generic "this api is not exist" error
       // instead of a precise reason. Normalise the quantity to a reasonable
       // precision and refuse obviously-doomed amounts before signing.
-      // ── Symbol formatting ────��───────────────────────────────────────────
+      // ── Symbol formatting ────────────────────────────────────────────
       // BingX perpetual futures require the hyphenated form "BTC-USDT". Spot
       // accepts either. Passing "BTCUSDT" to a perp trade endpoint is the
       // single biggest cause of "this api is not exist" errors in the wild.
@@ -1377,6 +1407,8 @@ export class BingXConnector extends BaseExchangeConnector {
     // never fire into an active rate-limit lockout window either.
     const release = await this.acquireBingxSlot("placeStopOrder")
     try {
+      // See placeOrder: placement invalidates stale not-found cache entries.
+      BingXConnector.clearNotFoundCache(symbol, options?.clientOrderId)
       // Sync server time before any signed request
       await this.syncServerTime()
 
@@ -1667,7 +1699,7 @@ export class BingXConnector extends BaseExchangeConnector {
 
       let data = await this.safeJson(response)
 
-      // ── Timestamp-mismatch retry (code 100421 / 109400-timestamp) ────�����─
+      // ── Timestamp-mismatch retry (code 100421 / 109400-timestamp) ─────────
       // The serial stuck-placed loop can span 20-30s; by the time the 3rd+
       // position calls cancelOrder the cached offset may have drifted just
       // past BingX's ±1000ms window and produces code 100421.  Re-sync once
@@ -1784,9 +1816,11 @@ export class BingXConnector extends BaseExchangeConnector {
    * block) escalates the same global lockout instead of only some of them.
    */
   private recordBingxRateLimitIfMatched(operation: string, errorMsg: string): void {
+    // NOTE: 109421 ("order does not exist") is deliberately NOT matched
+    // here — it is a business response, not a rate limit. It is counted
+    // separately via recordBingxOrderNotFound().
     const isRateLimit =
       errorMsg.includes("109429") ||
-      errorMsg.includes("109421") ||
       errorMsg.toLowerCase().includes("rate limit")
     if (!isRateLimit) return
 
@@ -1808,6 +1842,65 @@ export class BingXConnector extends BaseExchangeConnector {
     )
   }
 
+  /**
+   * Record a 109421 "order does not exist" response. Never engages the
+   * global cooldown directly — but when not-found responses accumulate
+   * faster than BingX's >20-per-480 s lockout rule, applies a short
+   * pre-emptive brake so the shared lane slows down BEFORE BingX slams
+   * a real 109429. Also negative-caches the order ID so repeated polls
+   * of the same missing order don't count against the window at all.
+   */
+  private recordBingxOrderNotFound(operation: string, symbol?: string, orderId?: string, clientOrderId?: string): void {
+    const now = Date.now()
+    if (symbol && (orderId || clientOrderId)) {
+      if (orderId) BingXConnector.bingxNotFoundCache.set(`${symbol}:oid:${orderId}`, now + BingXConnector.NOT_FOUND_CACHE_TTL_MS)
+      if (clientOrderId) BingXConnector.bingxNotFoundCache.set(`${symbol}:coid:${clientOrderId}`, now + BingXConnector.NOT_FOUND_CACHE_TTL_MS)
+    }
+    const cutoff = now - BingXConnector.NOT_FOUND_WINDOW_MS
+    BingXConnector.bingxNotFoundTimestamps = BingXConnector.bingxNotFoundTimestamps.filter((t) => t > cutoff)
+    BingXConnector.bingxNotFoundTimestamps.push(now)
+    if (BingXConnector.bingxNotFoundTimestamps.length > BingXConnector.NOT_FOUND_SOFT_LIMIT) {
+      const until = now + BingXConnector.NOT_FOUND_SOFT_COOLDOWN_MS
+      if (until > BingXConnector.bingxRateLimitUntil) {
+        BingXConnector.bingxRateLimitUntil = until
+        console.warn(
+          `[v0] [BingXConnector] ${operation}: ${BingXConnector.bingxNotFoundTimestamps.length} order-not-found responses ` +
+          `within ${BingXConnector.NOT_FOUND_WINDOW_MS / 1000}s — pre-emptive ${BingXConnector.NOT_FOUND_SOFT_COOLDOWN_MS / 1000}s brake ` +
+          `to stay under BingX's 109429 threshold`,
+        )
+      }
+    }
+  }
+
+  /**
+   * Returns true when this exact order query recently returned 109421 and
+   * is still inside the negative-cache TTL — the caller should short-circuit
+   * instead of re-polling BingX for an order we know is gone.
+   */
+  private static isNotFoundCached(symbol: string, orderId?: string, clientOrderId?: string): boolean {
+    const now = Date.now()
+    const keys: string[] = []
+    if (orderId) keys.push(`${symbol}:oid:${orderId}`)
+    if (clientOrderId) keys.push(`${symbol}:coid:${clientOrderId}`)
+    for (const key of keys) {
+      const until = BingXConnector.bingxNotFoundCache.get(key)
+      if (until === undefined) continue
+      if (until > now) return true
+      BingXConnector.bingxNotFoundCache.delete(key)
+    }
+    return false
+  }
+
+  /**
+   * Placement invalidates any negative-cache entry for its clientOrderId:
+   * after a successful place the order EXISTS, so stale "not found" entries
+   * would mislead recovery queries into placing a duplicate.
+   */
+  private static clearNotFoundCache(symbol: string | undefined, clientOrderId?: string): void {
+    if (!symbol || !clientOrderId) return
+    BingXConnector.bingxNotFoundCache.delete(`${symbol}:coid:${clientOrderId}`)
+  }
+
   private async bingxRateLimitedCall<T>(
     operation: string,
     call: () => Promise<T>,
@@ -1825,6 +1918,7 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   async getOrder(symbol: string, orderId: string): Promise<any> {
+    if (BingXConnector.isNotFoundCached(symbol, orderId)) return null
     return this.bingxRateLimitedCall("getOrder", async () => {
       // Sync server time before any signed request
       await this.syncServerTime()
@@ -1854,11 +1948,16 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
-        // Rate-limit codes must throw so the shared cooldown engages.
-        if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+        // Only a real 109429 lockout throws so the shared cooldown engages.
+        if (data.code === "109429" || data.code === 109429) {
           throw new Error(
             `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
           )
+        }
+        // 109421 "order does not exist" is a business response: count it,
+        // negative-cache it, and return null like any other miss.
+        if (data.code === "109421" || data.code === 109421) {
+          this.recordBingxOrderNotFound("getOrder", symbol, orderId)
         }
         return null
       }
@@ -1953,11 +2052,14 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
-        // Rate-limit codes must throw so the shared cooldown engages.
-        if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+        // Only a real 109429 lockout throws so the shared cooldown engages.
+        if (data.code === "109429" || data.code === 109429) {
           throw new Error(
             `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
           )
+        }
+        if (data.code === "109421" || data.code === 109421) {
+          this.recordBingxOrderNotFound("getOpenOrders")
         }
         this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: `${data.code}:${data.msg || "exchange_error"}` }
         return []
@@ -2021,11 +2123,14 @@ export class BingXConnector extends BaseExchangeConnector {
         const data = await this.safeJson(response)
 
         if (!this.isBingXSuccess(data.code)) {
-          // Rate-limit codes must throw so the shared cooldown engages.
-          if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+          // Only a real 109429 lockout throws so the shared cooldown engages.
+          if (data.code === "109429" || data.code === 109429) {
             throw new Error(
               `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
             )
+          }
+          if (data.code === "109421" || data.code === 109421) {
+            this.recordBingxOrderNotFound("getOrderHistory")
           }
           const error = `${data.code}:${data.msg || "exchange_error"}`
           this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error }
@@ -2372,7 +2477,7 @@ export class BingXConnector extends BaseExchangeConnector {
       return Array.isArray(data.data) ? data.data : []
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
-      this.logError(`�� Failed to fetch transfer history: ${errorMsg}`)
+      this.logError(` Failed to fetch transfer history: ${errorMsg}`)
       return []
     }
   }
@@ -2957,7 +3062,7 @@ export class BingXConnector extends BaseExchangeConnector {
    * ─────────────────────────────────────────────────────────────────
    * BINGX API SKILLS - Official implementation
    * Source: https://github.com/BingX-API/api-ai-skills
-   * ──���──────────────────────────────────────────────────────────────
+   * ────────────────────────────────────────────────────────────────
    */
 
   /**
@@ -3478,7 +3583,7 @@ export class BingXConnector extends BaseExchangeConnector {
       const succeeded = data.data?.success || []
       const failed = data.data?.failed || []
       
-      this.log(`�� Cancelled all orders: ${succeeded.length} cancelled, ${failed.length} failed`)
+      this.log(` Cancelled all orders: ${succeeded.length} cancelled, ${failed.length} failed`)
       return {
         success: true,
         successful: succeeded,
@@ -3692,6 +3797,9 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId?: string,
     clientOrderId?: string
   ): Promise<{ success: boolean; order?: any; error?: string }> {
+    if (BingXConnector.isNotFoundCached(symbol, orderId, clientOrderId)) {
+      return { success: false, error: "BingX API error (code=109421): order does not exist (negative cache)" }
+    }
     try {
       const result = await this.bingxRateLimitedCall("getOpenOrder", async () => {
         const params: Record<string, any> = {
@@ -3713,11 +3821,17 @@ export class BingXConnector extends BaseExchangeConnector {
         const data = await this.safeJson(response)
 
         if (!this.isBingXSuccess(data.code)) {
-          // Rate-limit codes must throw so the shared cooldown engages.
-          if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+          // Only a real 109429 lockout throws so the shared cooldown engages.
+          if (data.code === "109429" || data.code === 109429) {
             throw new Error(
               `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
             )
+          }
+          // 109421 "order does not exist": count + negative-cache, return a
+          // plain miss WITHOUT engaging the global cooldown.
+          if (data.code === "109421" || data.code === 109421) {
+            this.recordBingxOrderNotFound("getOpenOrder", symbol, orderId, clientOrderId)
+            return { success: false, error: `BingX API error (code=109421): ${data.msg || "order does not exist"}` }
           }
           throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
         }
@@ -3764,6 +3878,9 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId?: string,
     clientOrderId?: string
   ): Promise<{ success: boolean; order?: any; error?: string }> {
+    if (BingXConnector.isNotFoundCached(symbol, orderId, clientOrderId)) {
+      return { success: false, error: "BingX API error (code=109421): order does not exist (negative cache)" }
+    }
     const now = Date.now()
     if (BingXConnector.bingxRateLimitUntil > now) {
       return {
@@ -3793,11 +3910,17 @@ export class BingXConnector extends BaseExchangeConnector {
         const data = await this.safeJson(response)
 
         if (!this.isBingXSuccess(data.code)) {
-          // Rate-limit codes must throw so the shared cooldown engages.
-          if (data.code === "109429" || data.code === 109429 || data.code === "109421" || data.code === 109421) {
+          // Only a real 109429 lockout throws so the shared cooldown engages.
+          if (data.code === "109429" || data.code === 109429) {
             throw new Error(
               `BingX API error (code=${data.code}): ${data.msg || "rate limited"},can retry after time: ${data.retryAfter || Date.now() + 480000}`,
             )
+          }
+          // 109421 "order does not exist": count + negative-cache, return a
+          // plain miss WITHOUT engaging the global cooldown.
+          if (data.code === "109421" || data.code === 109421) {
+            this.recordBingxOrderNotFound("getOrderDetails", symbol, orderId, clientOrderId)
+            return { success: false, error: `BingX API error (code=109421): ${data.msg || "order does not exist"}` }
           }
           throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
         }
