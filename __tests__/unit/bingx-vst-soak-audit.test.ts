@@ -2,9 +2,41 @@ import {
   auditVstSoakExecutionRelations,
   auditVstSoakCounters,
   normalizeVstSoakCounterSnapshot,
+  rankVstSoakSymbolLiquidity,
 } from "@/lib/bingx-vst-soak-audit"
 
 describe("BingX Prod-VST soak accounting audit", () => {
+  test("selects currently executable VST books instead of assuming mainnet liquidity", () => {
+    const ranked = rankVstSoakSymbolLiquidity([
+      { symbol: "BTC-USDT", bid: 99.9, ask: 100.1, last: 100 },
+      { symbol: "ETHUSDT", bid: 98, ask: 102, last: 100 },
+      { symbol: "SOLUSDT", bid: 49.98, ask: 50.02, last: 50 },
+      { symbol: "BCHUSDT", bid: 199.5, ask: 200.5, last: 200 },
+      { symbol: "XRPUSDT", bid: 0.999, ask: 1.001, last: 1 },
+    ], 75)
+
+    expect(ranked.filter((row) => row.eligible).map((row) => row.symbol)).toEqual([
+      "SOLUSDT",
+      "BTCUSDT",
+      "XRPUSDT",
+      "BCHUSDT",
+    ])
+    expect(ranked.find((row) => row.symbol === "ETHUSDT")).toMatchObject({ eligible: false })
+    expect(ranked.every((row) => Number.isFinite(row.spreadBps))).toBe(true)
+  })
+
+  test("fails closed when a VST ticker has no authoritative two-sided book", () => {
+    const ranked = rankVstSoakSymbolLiquidity([
+      { symbol: "BTCUSDT", bid: 100, last: 100 },
+      { symbol: "SOLUSDT", bid: 0, ask: 10, last: 10 },
+    ])
+
+    expect(ranked).toEqual(expect.arrayContaining([
+      expect.objectContaining({ symbol: "BTCUSDT", eligible: false, spreadBps: Number.POSITIVE_INFINITY }),
+      expect.objectContaining({ symbol: "SOLUSDT", eligible: false, spreadBps: Number.POSITIVE_INFINITY }),
+    ]))
+  })
+
   test("reconciles exact count, per-symbol, and fill-volume deltas", () => {
     const before = normalizeVstSoakCounterSnapshot({
       progression: {

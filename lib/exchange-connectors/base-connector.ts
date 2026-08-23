@@ -114,7 +114,7 @@ export interface ExchangeOrderSettlement {
   netRealizedPnl: number
   /** True when netRealizedPnl also incorporates the apportioned entry fee. */
   netIncludesEntryFee: boolean
-  source: "bingx_fill_history" | "bybit_closed_pnl" | "bybit_execution_history"
+  source: "bingx_fill_history" | "bingx_order_detail" | "bybit_closed_pnl" | "bybit_execution_history"
   settledAt: number
   fills: ExchangeOrderSettlementFill[]
 }

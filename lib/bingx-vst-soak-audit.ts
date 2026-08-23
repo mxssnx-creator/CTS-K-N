@@ -79,6 +79,51 @@ export interface VstSoakExecutionAudit {
   }
 }
 
+export interface VstSoakSymbolLiquidity {
+  symbol: string
+  bid: number
+  ask: number
+  last: number
+  spreadBps: number
+  eligible: boolean
+}
+
+/**
+ * Rank demo symbols by the currently executable bid/ask spread.
+ *
+ * Prod-VST has an independent, occasionally thin matching book.  Mainnet
+ * reputation is therefore not a safe proxy for a demo market order: a symbol
+ * such as ETH can be liquid on mainnet while the VST book is outside BingX's
+ * market-order price band.  Screening the live book before a destructive
+ * smoke cycle avoids a guaranteed venue rejection without retrying an order
+ * or weakening the exchange's own price protection.
+ */
+export function rankVstSoakSymbolLiquidity(
+  rows: Array<{ symbol: unknown; bid?: unknown; ask?: unknown; last?: unknown }>,
+  maxSpreadBps = 75,
+): VstSoakSymbolLiquidity[] {
+  const spreadLimit = Number.isFinite(maxSpreadBps) && maxSpreadBps >= 0
+    ? maxSpreadBps
+    : 75
+  return rows
+    .map((row, originalIndex) => {
+      const symbol = String(row.symbol || "").trim().toUpperCase().replace(/[-/_:]/g, "")
+      const bid = finiteNumber(row.bid)
+      const ask = finiteNumber(row.ask)
+      const last = finiteNumber(row.last)
+      const midpoint = bid > 0 && ask >= bid ? (bid + ask) / 2 : 0
+      const spreadBps = midpoint > 0 ? ((ask - bid) / midpoint) * 10_000 : Number.POSITIVE_INFINITY
+      const eligible = Boolean(symbol) && last > 0 && Number.isFinite(spreadBps) && spreadBps <= spreadLimit
+      return { symbol, bid, ask, last, spreadBps, eligible, originalIndex }
+    })
+    .sort((left, right) => {
+      if (left.eligible !== right.eligible) return left.eligible ? -1 : 1
+      if (left.spreadBps !== right.spreadBps) return left.spreadBps - right.spreadBps
+      return left.originalIndex - right.originalIndex
+    })
+    .map(({ originalIndex: _originalIndex, ...row }) => row)
+}
+
 function finiteNumber(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0

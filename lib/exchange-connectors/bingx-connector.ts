@@ -4068,21 +4068,31 @@ export class BingXConnector extends BaseExchangeConnector {
         // Timestamp/signature are created only after the generic rate limiter
         // grants its dispatch slot.  A busy 32-symbol production queue must
         // not turn an accounting read into a stale-signature failure.
-        const response = await this.rateLimitedFetch(
-          () => {
-            const { signature, queryString: signedQs } = this.signParams({
-              ...stableParams,
-              timestamp: this.getTimestamp(),
-            })
-            return `${this.getBaseUrl()}/openApi/swap/v2/trade/allFillOrders?${signedQs}&signature=${signature}`
-          },
-          () => ({
-            method: "GET",
-            headers: { "X-BX-APIKEY": this.credentials.apiKey },
-          }),
-        )
+        const fetchFillHistory = async () => {
+          const response = await this.rateLimitedFetch(
+            () => {
+              const { signature, queryString: signedQs } = this.signParams({
+                ...stableParams,
+                timestamp: this.getTimestamp(),
+              })
+              return `${this.getBaseUrl()}/openApi/swap/v2/trade/allFillOrders?${signedQs}&signature=${signature}`
+            },
+            () => ({
+              method: "GET",
+              headers: { "X-BX-APIKEY": this.credentials.apiKey },
+            }),
+          )
+          return this.safeJson(response)
+        }
 
-        const data = await this.safeJson(response)
+        let data = await fetchFillHistory()
+        // Use the same proven timestamp recovery contract as account/order
+        // writes.  Prod-VST can invalidate an otherwise fresh history
+        // signature after a slow queue/time sample; rebuilding the signature
+        // after a forced sync is read-only and therefore safe to retry once.
+        if (!this.isBingXSuccess(data.code) && await this.resyncOnTimestampError(data)) {
+          data = await fetchFillHistory()
+        }
         if (!this.isBingXSuccess(data.code)) {
           throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
         }
@@ -4126,6 +4136,47 @@ export class BingXConnector extends BaseExchangeConnector {
     const startTime = Number.isFinite(Number(options.startTime))
       ? Number(options.startTime)
       : endTime - 7 * 24 * 60 * 60 * 1000
+    const settlementFromExactOrderDetail = async (): Promise<ExchangeOrderSettlement | null> => {
+      const detail = await this.getOrderDetails(symbol, normalizedOrderId)
+      const order = detail?.order
+      const detailOrderId = String(order?.orderId ?? order?.orderID ?? "").trim()
+      const status = String(order?.status ?? order?.orderStatus ?? "").toLowerCase().replace(/[^a-z]/g, "")
+      const filledQuantity = Math.abs(Number(order?.executedQty ?? order?.filledQty ?? order?.cumQty ?? 0))
+      const averageFillPrice = Number(order?.avgPrice ?? order?.filledPrice ?? order?.price ?? 0)
+      if (
+        detail?.success !== true
+        || detailOrderId !== normalizedOrderId
+        || !status.includes("filled")
+        || !(filledQuantity > 0)
+        || !(averageFillPrice > 0)
+      ) return null
+      const grossRealizedPnl = Number(order?.profit ?? order?.realizedPnl ?? order?.realizedPNL ?? 0)
+      const signedFee = Number(order?.commission ?? order?.fee ?? 0)
+      const safeGross = Number.isFinite(grossRealizedPnl) ? grossRealizedPnl : 0
+      const safeSignedFee = Number.isFinite(signedFee) ? signedFee : 0
+      return {
+        orderId: normalizedOrderId,
+        symbol: this.toBingXSymbol(symbol),
+        filledQuantity: Number(filledQuantity.toFixed(12)),
+        averageFillPrice,
+        grossRealizedPnl: Number(safeGross.toFixed(12)),
+        tradingFee: Number(Math.max(0, -safeSignedFee).toFixed(12)),
+        netRealizedPnl: Number((safeGross + safeSignedFee).toFixed(12)),
+        netIncludesEntryFee: false,
+        source: "bingx_order_detail",
+        settledAt: Number(order?.updateTime ?? order?.time ?? now) || now,
+        fills: [],
+      }
+    }
+    // The Prod-VST allFillOrders endpoint was observed returning an empty
+    // array for every one of 48 known-filled market orders. Its exact order
+    // endpoint returned execution price, quantity, realised profit and fee
+    // for those same IDs. Prefer that cheaper exact read in VST; mainnet keeps
+    // the granular fill-history path and uses detail only as a fallback.
+    if (this.credentials.isTestnet) {
+      const exactDetail = await settlementFromExactOrderDetail()
+      if (exactDetail) return exactDetail
+    }
     const history = await this.getTradeHistory(
       "COIN",
       Math.max(0, Math.min(startTime, endTime)),
@@ -4133,9 +4184,7 @@ export class BingXConnector extends BaseExchangeConnector {
       normalizedOrderId,
       "USDT",
     )
-    if (!history.success) return null
-
-    const fills = (history.trades || [])
+    const fills = (history.success ? history.trades || [] : [])
       .filter((row: any) => String(row?.orderId ?? row?.orderID ?? "") === normalizedOrderId)
       .map((row: any) => {
         const quantity = Math.abs(Number(row?.qty ?? row?.quantity ?? row?.volume ?? 0))
@@ -4153,7 +4202,15 @@ export class BingXConnector extends BaseExchangeConnector {
         }
       })
       .filter((fill) => fill.quantity > 0 && fill.price > 0)
-    if (fills.length === 0) return null
+    if (fills.length === 0) {
+      // Prod-VST can return an empty allFillOrders result even though the
+      // exact terminal order is visible. Its exact order-detail response
+      // carries venue-produced `executedQty`, `avgPrice`, `profit` and
+      // `commission`; those are authoritative execution/accounting fields,
+      // unlike a ticker/request/trigger fallback. Use them only when the
+      // returned order id matches exactly and the order is terminal.
+      return settlementFromExactOrderDetail()
+    }
 
     const filledQuantity = fills.reduce((sum, fill) => sum + fill.quantity, 0)
     const weightedPrice = fills.reduce((sum, fill) => sum + fill.price * fill.quantity, 0)

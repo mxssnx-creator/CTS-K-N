@@ -7,6 +7,69 @@ Total output lines: 1636
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current exact-settlement / Shared-Redis release checkpoint (2026-08-23)
+
+- Continue only from the persistent checkout
+  `/workspace/scratch/fba10f5c97ed/persistent/CTS-K-N`. The last merged
+  baseline is GitHub PR `#208` (`main@7891bce556034cd5a155a82242a739ae8ffc024d`).
+  Complete-history Git bundles belong in `/workspace/backups/CTS-K-N`.
+  Never commit exchange credentials, SSH/Chisel material, Redis data, raw
+  account reports, `.agent-logs`, dependencies or build output.
+- BingX realized PnL is now venue-authoritative by exact order ID. Prod-VST
+  first consumes terminal order detail (`executedQty`, `avgPrice`, `profit`,
+  `commission`) because its global `allFillOrders` response can omit known
+  fills; mainnet retains granular fill history and uses exact terminal detail
+  only when fill history has no matching row. Timestamp error `100421` causes
+  one read-only clock resync and a newly signed retry. No ticker, requested,
+  trigger or theoretical-price fallback is permitted.
+- A complete authenticated 20-minute X02 Prod-VST run passed 16/16 cycles:
+  Direct/Main/Preset/Signal, four cycles each, both directions, entry,
+  accumulation, Default/Trailing/Block/DCA coverage, SL/TP cancel/replace and
+  reduce-only close. It submitted 48 minimum-volume market orders, reconciled
+  every exact order ID, proved all 16 trailing updates, restored the account
+  baseline and left zero positions/open orders. Two real STOP acknowledgements
+  arrived after the initial eight-second deadline (about 9.9 s and 9.5 s) and
+  were recovered as the same client order without resubmission. A separate
+  48/48 settlement audit measured gross PnL `-0.550300 VST`, venue fees
+  `0.201814 VST` and exact net PnL `-0.752114 VST`; theoretical fallback was
+  false. Credentials and raw reports remain outside Git.
+- Protection placement now has a bounded late-acknowledgement reconciliation
+  window and exact client-order-ID recovery after an ambiguous response. It
+  never blindly submits a second SL/TP. Prod-VST test symbols are chosen from
+  the four tightest unoccupied two-sided books within 75 bps, rather than
+  assuming mainnet liquidity.
+- Redis Open Source `8.10.1` is installed persistently at
+  `/workspace/.network-clients/redis-8.10.1/bin`; the source archive matched
+  the official SHA-256
+  `60166c95ab7aedaa9dfe516de685be0a4dd87be95ded59ba429df14c13f1b663`.
+  Local Linux-equivalent validation uses loopback protected mode, AOF
+  `everysec`, RDB snapshots and `noeviction`. This tool sandbox isolates
+  background process namespaces, so Redis and the audit were supervised in
+  one session; a normal Linux service/daemon remains the server deployment
+  model.
+- The final shared-Redis production artifact passed schema v100, protected
+  cron, persistence/restart, 47 UI surfaces, 32 symbols, settings hot reload,
+  backup/credential round-trip, start/pause/resume/stop, two independent
+  connection IDs and crash recovery (204 recovered positions). The four-minute
+  production-paper soak completed 383 engine cycles and 3,742,282 distinct
+  Strategy sets with one connection scope, API p95 412 ms, 1.80 GiB peak RSS,
+  post-warmup heap growth `-150850 KiB`, and stable Redis growth 210 keys under
+  the 1,600-key limit. Default, Trailing and Block counters were independent;
+  no exchange order was submitted by this paper/UI audit.
+- Exact release gate on this source state: TypeScript; 204 unit suites / 1,316
+  tests; 4 integration suites / 55 tests; zero-finding 1,472-file secret scan;
+  trace-valid 42-page Next production build with 347 complete trace units;
+  shared-Redis Production/UI/DB/restart audit; and the authenticated X02
+  20-minute lifecycle above. X01/mainnet and Bybit were not order-tested
+  because no separate credentials/authorization were available in this
+  checkpoint.
+- The remote Linux server at `152.53.114.112` was not modified or verified from
+  this sandbox: direct SSH, SSLH, Chisel and browser proxy paths were previously
+  unreachable or returned an HTTPS/HSTS gateway mismatch. Preserve the
+  server's existing production environment, credentials and Redis data; make a
+  server backup before replacing processes, then deploy only a merged GitHub
+  `main` and rerun the production readiness/Shared-Redis gates on-host.
+
 ## Current production isolation and long-soak checkpoint (2026-08-23)
 
 - Binding persistent checkout for the current release is

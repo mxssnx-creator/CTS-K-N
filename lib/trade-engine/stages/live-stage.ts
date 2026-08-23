@@ -448,10 +448,12 @@ async function isLiveTradeEnabledForConnection(connectionId: string): Promise<bo
 // These timeouts bound per-call worst case so the pool never hangs.
 // Each value is calibrated to a ~2×p99 RTT of a typical BingX API call
 // SDK-backed BingX order/control calls normally complete in sub-second to a
-// few seconds. Fail fast so a hung venue call does not leave the control-order
-// queue blocked; the next reconcile tick retries any missed SL/TP leg.
+// few seconds. Bound the first acknowledgement window, but keep observing the
+// same delivery-ambiguous write long enough to cover connector queueing and
+// time synchronization; returning early cannot cancel a POST already in flight.
 const EXCHANGE_TIMEOUT_CANCEL_ORDER_MS  = 8_000   // cancel; retried next tick on failure
-const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // SL/TP placement; fast-fail + retry next tick
+const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // initial response deadline; ambiguous writes are reconciled below
+const EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS = 30_000  // same in-flight write; includes connector queue + time sync
 const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption + sync prefetch
 const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via next sync tick on miss
 
@@ -2702,6 +2704,66 @@ async function recoverEntryOrderByClientId(
     } catch { /* authoritative sync will retry */ }
   }
   return null
+}
+
+function isAmbiguousControlOrderDelivery(error: unknown): boolean {
+  return /timeout|timed out|aborted|socket|network|fetch failed|econnreset|ack_without_order_id|ambiguous/i.test(
+    String(error || ""),
+  )
+}
+
+/**
+ * A control-order POST can reach the venue even when its acknowledgement
+ * crosses the local response deadline. Keep observing the exact same promise
+ * for a short grace window, then reconcile by the already-persisted client ID.
+ * This function never submits another order.
+ */
+async function reconcileAmbiguousProtectionWrite(input: {
+  connector: any
+  symbol: string
+  clientOrderId?: string
+  placementPromise: Promise<any>
+  initialError: unknown
+  graceMs?: number
+}): Promise<any | null> {
+  const clientOrderId = String(input.clientOrderId || "").trim()
+  if (!clientOrderId || !isAmbiguousControlOrderDelivery(input.initialError)) return null
+
+  try {
+    const lateResult = await withTimeout(
+      input.placementPromise,
+      Math.max(1, input.graceMs ?? EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS),
+      `awaitAmbiguousProtectionWrite(${input.symbol})`,
+    )
+    const lateOrderId = lateResult?.orderId ?? lateResult?.id
+    if (lateResult?.success && lateOrderId != null && String(lateOrderId).length > 0) {
+      return {
+        ...lateResult,
+        orderId: String(lateOrderId),
+        recoveredFromAmbiguousWrite: "late_acknowledgement",
+      }
+    }
+  } catch {
+    // The original write is still delivery-ambiguous. Resolve it by the exact
+    // client ID below; do not replay the POST.
+  }
+
+  const recovered = await recoverEntryOrderByClientId(
+    input.connector,
+    input.symbol,
+    clientOrderId,
+  )
+  const recoveredOrderId = recovered?.orderId ?? recovered?.id
+  if (recoveredOrderId == null || String(recoveredOrderId).length === 0) return null
+  const status = String(recovered?.status || "").trim().toLowerCase()
+  if (["cancelled", "canceled", "rejected", "expired"].includes(status)) return null
+  return {
+    ...recovered,
+    success: true,
+    orderId: String(recoveredOrderId),
+    clientOrderId,
+    recoveredFromAmbiguousWrite: "client_order_id",
+  }
 }
 
 async function prepareProtectionSubmission(
@@ -5738,10 +5800,10 @@ async function placeProtectionOrder(
     // hedge→one-way case). Letting the connector default to hedge-mode +
     // auto-retry covers both account types correctly.
     // Bounded — a hanging placeStopOrder would block the per-position sync
-    // loop and stall every other position's heal/close work behind it. On
-    // timeout we return null; the next sync tick will retry, and meanwhile
-    // `checkAndForceCloseOnSltpCross` provides the safety net (it triggers
-    // on price independent of whether the protection order is armed).
+    // loop and stall every other position's heal/close work behind it. A
+    // timeout is delivery-ambiguous, however: retain the exact promise and
+    // durable client ID for acknowledgement/reconciliation instead of
+    // classifying it as a venue rejection or submitting a duplicate.
     // ── Normalize connector throws to result objects ──────────────────────
     // The BingX connector (and others) throw on venue rejection rather than
     // returning { success: false }.  The 109420 / 110424 retry blocks below
@@ -5751,28 +5813,52 @@ async function placeProtectionOrder(
     // well-shaped result object.
     const placeStop = async (qty: number): Promise<any> => {
       // Acquire the global semaphore before calling the exchange.
-      // EXCHANGE_TIMEOUT_PLACE_STOP_MS is applied via the rate-limiter's
-      // executeTimeoutMs (starts from dispatch time, not enqueue time) so the
-      // timeout only covers actual HTTP time — not queue-wait time. This prevents
-      // "Aborted while queued" errors from killing requests before they start.
+      // The connector owns its queue and HTTP abort deadlines. This outer
+      // deadline can still expire while the connector is synchronizing time or
+      // waiting in that queue, so the ambiguous-write branch below must retain
+      // the same promise rather than interpreting the deadline as rejection.
       await acquireStopSem()
       try {
-        return await withTimeout(
-          connector.placeStopOrder(
+        const placementPromise = connector.placeStopOrder(
+          symbol,
+          closeSide,
+          qty,
+          triggerPrice,
+          kind,
+          {
+            reduceOnly: true,
+            positionSide: positionDirection === "long" ? "LONG" : "SHORT",
+            ...(clientOrderId ? { clientOrderId } : {}),
+          },
+        ) as Promise<any>
+        let result: any
+        try {
+          result = await withTimeout(
+            placementPromise,
+            EXCHANGE_TIMEOUT_PLACE_STOP_MS,
+            `placeStopOrder(${orderLabel} ${symbol})`,
+          )
+        } catch (error) {
+          result = { success: false, error: String((error as any)?.message || error) }
+        }
+
+        if (!result?.success && clientOrderId && isAmbiguousControlOrderDelivery(result?.error)) {
+          const recovered = await reconcileAmbiguousProtectionWrite({
+            connector,
             symbol,
-            closeSide,
-            qty,
-            triggerPrice,
-            kind,
-            {
-              reduceOnly: true,
-              positionSide: positionDirection === "long" ? "LONG" : "SHORT",
-              ...(clientOrderId ? { clientOrderId } : {}),
-            },
-          ) as Promise<any>,
-          EXCHANGE_TIMEOUT_PLACE_STOP_MS,
-          `placeStopOrder(${orderLabel} ${symbol})`,
-        )
+            clientOrderId,
+            placementPromise,
+            initialError: result.error,
+          })
+          if (recovered?.success) {
+            console.warn(
+              `${tag} ambiguous acknowledgement recovered without resubmission: ` +
+              `orderId=${recovered.orderId} via=${recovered.recoveredFromAmbiguousWrite}`,
+            )
+            return recovered
+          }
+        }
+        return result
       } catch (e: any) {
         return { success: false, error: String(e?.message || e) }
       } finally {
@@ -14022,6 +14108,8 @@ export const __liveStageTest = {
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)
   },
+  isAmbiguousControlOrderDelivery,
+  reconcileAmbiguousProtectionWrite,
   detectSltpCross(pos: LivePosition, price: number, stopLossPrice?: number, takeProfitPrice?: number): "sl_hit" | "tp_hit" | null {
     if (pos.direction === "short") {
       if (stopLossPrice && price >= stopLossPrice) return "sl_hit"
