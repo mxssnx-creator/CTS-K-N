@@ -11,6 +11,7 @@
  */
 
 import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { resolve } from "node:path"
 import process from "node:process"
@@ -18,6 +19,8 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 const port = Math.max(1024, Math.min(65535, Number(process.env.PROD_INLINE_AUDIT_PORT || 3112)))
 const baseUrl = `http://127.0.0.1:${port}`
+const auditDistDir = process.env.PROD_INLINE_AUDIT_DIST_DIR ||
+  (existsSync(".next-prod/BUILD_ID") ? ".next-prod" : ".next")
 // The command runners used in CI can give each invocation a low PID such as
 // 4. Include a timestamp so an interrupted audit can never make a later run
 // accidentally reuse its InlineLocalRedis state.
@@ -153,7 +156,7 @@ async function main() {
     env: {
       ...process.env,
       NODE_ENV: "production",
-      NEXT_DIST_DIR: ".next-prod",
+      NEXT_DIST_DIR: auditDistDir,
       PORT: String(port),
       HOST: "127.0.0.1",
       V0_REDIS_SNAPSHOT_PATH: snapshotPath,

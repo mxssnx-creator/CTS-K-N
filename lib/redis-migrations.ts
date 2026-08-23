@@ -46,6 +46,11 @@ import {
 import { BINGX_PROD_VST_ORIGIN, configuredBingXEnvironment } from "./bingx-environment"
 import { resolveRedisRuntimeRoot } from "./redis-runtime-root"
 import {
+  DIRECT_TRADE_CONNECTION_INDEX_KEY,
+  directTradeKeyspace,
+  normalizeDirectTradeConnectionId,
+} from "./direct-trade-keyspace"
+import {
   getRuntimeBootstrapKeys,
   LATEST_REDIS_SCHEMA_VERSION,
   RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS,
@@ -7032,6 +7037,174 @@ const migrations: Migration[] = [
       // The net PositionCost semantics and non-destructive default upgrade
       // remain safe on rollback; only the schema cursor moves back.
       await client.set("_schema_version", "98")
+    },
+  },
+  {
+    version: 100,
+    name: "100-direct-trade-connection-scopes-and-operational-pf-defaults",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      let adoptedLegacyScope = 0
+      let indexedScopes = 0
+      let profitFactorFieldsUpdated = 0
+
+      // Direct-Trade used one process-global namespace before schema v100.
+      // Adopt that snapshot only when it identifies an exact connection and
+      // only into absent scoped keys. Open/opening positions, fill accounting
+      // and operator state survive; the historic calculation is intentionally
+      // rebuilt against the selected venue instead of copying a potentially
+      // BingX-derived graph into a Bybit scope.
+      const legacyKeys = directTradeKeyspace()
+      const legacyStateRaw = await client.get(legacyKeys.state).catch(() => null)
+      if (typeof legacyStateRaw === "string" && legacyStateRaw.trim().startsWith("{")) {
+        try {
+          const legacyState = JSON.parse(legacyStateRaw) as Record<string, any>
+          const connectionId = normalizeDirectTradeConnectionId(legacyState.connectionId)
+          if (connectionId) {
+            const scoped = directTradeKeyspace(connectionId)
+            await client.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, connectionId)
+            indexedScopes++
+            if (!(await client.exists(scoped.state))) {
+              await client.set(scoped.state, JSON.stringify({
+                ...legacyState,
+                connectionId,
+                lastRecalcAt: null,
+                connectionScopeMigrationVersion: 100,
+                connectionScopeMigratedAt: now,
+              }))
+              for (const field of [
+                "positions",
+                "stats",
+                "configStatus",
+                "configPerformance",
+                "openPositionStage",
+              ] as const) {
+                const payload = await client.get(legacyKeys[field]).catch(() => null)
+                if (payload != null && !(await client.exists(scoped[field]))) {
+                  await client.set(scoped[field], payload)
+                }
+              }
+              await client.set(scoped.calculationProgress, JSON.stringify({
+                status: "rebuild-required",
+                reason: "connection-scope-migration",
+                connectionId,
+                requestedAt: now,
+              }))
+              adoptedLegacyScope++
+            }
+          }
+        } catch {
+          // Direct-Trade route recovery retains responsibility for malformed
+          // legacy JSON; a schema migration must never destroy that evidence.
+        }
+      }
+
+      // Repair the supervisor index for scopes written by a newer application
+      // before this migration cursor was committed (rolling deployment case).
+      for (const key of await scanRedisKeys(client, "direct_trade:connection:*:state")) {
+        const encoded = String(key)
+          .replace(/^direct_trade:connection:/, "")
+          .replace(/:state$/, "")
+        try {
+          const connectionId = normalizeDirectTradeConnectionId(decodeURIComponent(encoded))
+          if (connectionId) {
+            await client.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, connectionId)
+            indexedScopes++
+          }
+        } catch {
+          // Invalid historical namespace stays untouched and is not scheduled.
+        }
+      }
+
+      // Upgrade only operational PF admission thresholds in settings storage.
+      // Measured statistics and Block PF multipliers are deliberately excluded.
+      // The version marker makes the one-time shipped-default repair idempotent.
+      const thresholdField = (field: string, parent = ""): boolean => {
+        if (/block.*profit.*factor/i.test(field) || /block.*profit.*factor/i.test(parent)) return false
+        if (/^(base|main|real|live)$/.test(field) && /profit.?factor.?min/i.test(parent)) return true
+        return /profit.?factor.*(min|threshold|preset)/i.test(field)
+          || /(min|threshold).*profit.?factor/i.test(field)
+          || /^(base|main|real|live)ProfitFactor$/.test(field)
+          || field === "presetProfitFactor"
+      }
+      const upgradeDocument = (document: Record<string, any>, parent = ""): boolean => {
+        let changed = false
+        for (const [field, value] of Object.entries(document)) {
+          if (value && typeof value === "object" && !Array.isArray(value)) {
+            if (upgradeDocument(value as Record<string, any>, field)) changed = true
+            continue
+          }
+          const parsed = Number(value)
+          if (thresholdField(field, parent) && Number.isFinite(parsed) && parsed < 1) {
+            document[field] = 1.1
+            profitFactorFieldsUpdated++
+            changed = true
+          }
+        }
+        return changed
+      }
+      const upgradeHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0 || values.realizedProfitFactorDefaultsVersion === "1") return
+        const patch: Record<string, string> = { realizedProfitFactorDefaultsVersion: "1" }
+        for (const [field, value] of Object.entries(values)) {
+          const parsed = Number(value)
+          if (thresholdField(field) && Number.isFinite(parsed) && parsed < 1) {
+            patch[field] = "1.1"
+            profitFactorFieldsUpdated++
+            continue
+          }
+          if (typeof value !== "string" || !value.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(value) as Record<string, any>
+            if (upgradeDocument(document, field)) patch[field] = JSON.stringify(document)
+          } catch {
+            // Preserve malformed recovery documents; flat settings remain safe.
+          }
+        }
+        await client.hset(key, patch)
+      }
+
+      const connectionIds = new Set<string>()
+      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
+        const connectionId = normalizeDirectTradeConnectionId(connection?.id)
+        if (connectionId) connectionIds.add(connectionId)
+      }
+      for (const connectionId of await client.smembers("connections").catch(() => [])) {
+        const normalized = normalizeDirectTradeConnectionId(connectionId)
+        if (normalized) connectionIds.add(normalized)
+      }
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await upgradeHash(key)
+      }
+      for (const connectionId of connectionIds) {
+        for (const key of [
+          `connection:${connectionId}`,
+          `settings:connection:${connectionId}`,
+          `connection_settings:${connectionId}`,
+          `settings:connection_settings:${connectionId}`,
+          `trade_engine_state:${connectionId}`,
+          `settings:trade_engine_state:${connectionId}`,
+        ]) {
+          await upgradeHash(key)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        direct_trade_connection_scope_schema: "v1",
+        direct_trade_legacy_scopes_adopted: String(adoptedLegacyScope),
+        direct_trade_scopes_indexed: String(indexedScopes),
+        operational_profit_factor_default: "1.1",
+        operational_profit_factor_fields_updated: String(profitFactorFieldsUpdated),
+        schema_version: "100",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // Scoped state and upgraded risk thresholds are retained on rollback.
+      // Removing live recovery state or weakening an admission threshold would
+      // be destructive; only the migration cursor is moved back.
+      await client.set("_schema_version", "99")
     },
   },
 ]

@@ -22,6 +22,7 @@ import {
   MAIN_TRADE_PF_RATIO_MIN,
   MAIN_TRADE_PF_RATIO_STEP,
 } from "@/lib/main-trade-profit-factor"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import {
   POS_COUNT_VOLUME_RATIO_DEFAULT,
   POS_COUNT_VOLUME_RATIO_MAX,
@@ -598,12 +599,12 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       min={0.4}
                       max={3.0}
                       step={0.1}
-                      value={[settings.profitFactorMinPreset ?? 0.7]}
+                      value={[settings.profitFactorMinPreset ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT]}
                       onValueChange={([value]) => handleSettingChange("profitFactorMinPreset", value)}
                       className="flex-1"
                     />
                     <span className="text-sm font-medium w-10 text-right">
-                      {(settings.profitFactorMinPreset ?? 0.7).toFixed(1)}
+                      {(settings.profitFactorMinPreset ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT).toFixed(1)}
                     </span>
                   </div>
                 </div>

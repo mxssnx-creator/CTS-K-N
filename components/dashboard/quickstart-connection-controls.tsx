@@ -268,6 +268,7 @@ export function QuickstartConnectionControls() {
     try {
       const res = await fetch("/api/admin/clear-progressions", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
       })
       const data = await res.json().catch(() => ({}))

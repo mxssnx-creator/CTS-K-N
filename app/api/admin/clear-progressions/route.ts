@@ -3,7 +3,13 @@ import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
-import { authorizeAdminBearer } from "@/lib/admin-auth"
+import { authorizeAdminRequest } from "@/lib/admin-auth"
+import {
+  DIRECT_TRADE_CONNECTION_INDEX_KEY,
+  directTradeKeyspace,
+  normalizeDirectTradeConnectionId,
+} from "@/lib/direct-trade-keyspace"
+import { buildDirectTradeOpenPositionStage } from "@/lib/direct-trade-position-stage"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -131,7 +137,7 @@ function bucketOf(key: string): string {
 }
 
 export async function POST(request: Request) {
-  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  const authorization = await authorizeAdminRequest(request)
   if (!authorization.ok) {
     return NextResponse.json(
       { success: false, error: authorization.error },
@@ -144,6 +150,68 @@ export async function POST(request: Request) {
     console.log("[v0] [ClearProgressions] === starting targeted runtime clear ===")
     await initRedis()
     const client = getRedisClient()
+
+    // Capture only Direct-Trade recovery-critical state before the broad
+    // runtime clear. Closed paper/history rows, calculations, indexes, leases
+    // and statistics are reset; open/opening positions retain their exact
+    // venue order IDs and control-order state. Every captured worker is marked
+    // disabled first so its supervisor cannot reopen processing during reset.
+    const scopedStateKeys = await client.keys("direct_trade:connection:*:state").catch(() => [] as string[])
+    const legacyStateExists = await client.exists(directTradeKeyspace().state).catch(() => 0)
+    const directStateKeys = [
+      ...(legacyStateExists ? [directTradeKeyspace().state] : []),
+      ...scopedStateKeys,
+    ]
+    const directRecoveryScopes: Array<{
+      connectionId: string | null
+      keys: ReturnType<typeof directTradeKeyspace>
+      state: Record<string, any>
+      positions: any[]
+    }> = []
+    for (const stateKey of directStateKeys) {
+      const encodedConnectionId = stateKey === directTradeKeyspace().state
+        ? null
+        : stateKey.replace(/^direct_trade:connection:/, "").replace(/:state$/, "")
+      let namespaceConnectionId: string | null = null
+      try {
+        namespaceConnectionId = encodedConnectionId == null
+          ? null
+          : normalizeDirectTradeConnectionId(decodeURIComponent(encodedConnectionId))
+      } catch {
+        continue
+      }
+      const keys = directTradeKeyspace(namespaceConnectionId)
+      const [stateRaw, positionsRaw] = await Promise.all([
+        client.get(keys.state).catch(() => null),
+        client.get(keys.positions).catch(() => null),
+      ])
+      if (typeof stateRaw !== "string") continue
+      try {
+        const state = JSON.parse(stateRaw) as Record<string, any>
+        const positions = typeof positionsRaw === "string"
+          ? JSON.parse(positionsRaw)
+          : []
+        const recoveryPositions = Array.isArray(positions)
+          ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening")
+          : []
+        const stoppedState = {
+          ...state,
+          enabled: false,
+          resetRecoveryPending: recoveryPositions.length > 0,
+          resetAt: new Date().toISOString(),
+        }
+        await client.set(keys.state, JSON.stringify(stoppedState))
+        directRecoveryScopes.push({
+          connectionId: namespaceConnectionId || normalizeDirectTradeConnectionId(state.connectionId),
+          keys,
+          state: stoppedState,
+          positions: recoveryPositions,
+        })
+      } catch {
+        // Do not transform malformed recovery data. It remains visible in the
+        // pre-reset backup/snapshot and will not be mistaken for a safe state.
+      }
+    }
 
     // ── 1. Stop every running engine first ──────────────────────────────
     // We do this BEFORE deleting keys so a tick mid-flight cannot re-
@@ -232,6 +300,21 @@ export async function POST(request: Request) {
       `[v0] [ClearProgressions] After deletion: deleted=${totalDeleted} starting=${startingKeyCount} ending=${endingKeyCountBeforeStep3} protected=${protectedSkippedCount}`,
     )
 
+    // Restore the stopped Direct-Trade scopes and only their non-terminal
+    // exchange positions. The next explicit Start causes venue reconciliation
+    // before new entries; calculations and performance histories stay cleared.
+    for (const recovery of directRecoveryScopes) {
+      await client.set(recovery.keys.state, JSON.stringify(recovery.state))
+      await client.set(recovery.keys.positions, JSON.stringify(recovery.positions))
+      await client.set(
+        recovery.keys.openPositionStage,
+        JSON.stringify(buildDirectTradeOpenPositionStage(recovery.positions, new Date().toISOString())),
+      )
+      if (recovery.connectionId) {
+        await client.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, recovery.connectionId)
+      }
+    }
+
     // ── 3. Reset per-connection runtime flags on connection records ───
     // The connection row itself is preserved (protected prefix), but ALL
     // transient flags (paused-by-global, dashboard-active, live-trade,
@@ -318,6 +401,11 @@ export async function POST(request: Request) {
       startingKeyCount,
       endingKeyCount,
       engineStopError,
+      directTradeRecoveryScopes: directRecoveryScopes.length,
+      directTradeOpenPositionsPreserved: directRecoveryScopes.reduce(
+        (total, scope) => total + scope.positions.length,
+        0,
+      ),
       durationMs: Date.now() - startedAt,
     })
   } catch (error) {

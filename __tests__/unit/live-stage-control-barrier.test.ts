@@ -46,6 +46,7 @@ function livePosition(overrides: Record<string, unknown> = {}) {
 
 function connector(overrides: Record<string, unknown> = {}) {
   return {
+    getTicker: jest.fn(async () => ({ bid: 99.9, ask: 100.1, last: 100 })),
     getOrder: jest.fn(async () => ({ orderId: "sl-1", status: "open", filledQty: 0 })),
     getPosition: jest.fn(async () => ({ quantity: 1 })),
     getLastPositionsSnapshotStatus: jest.fn(() => ({ ok: true })),
@@ -58,6 +59,100 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("selects side-aware authoritative venue ticker prices", () => {
+    const ticker = __liveStageTest.normalizeVenueTicker({
+      bidPrice: "0.0099",
+      askPrice: "0.0101",
+      lastPrice: "0.01",
+    })
+    expect(ticker).toEqual({ bid: 0.0099, ask: 0.0101, last: 0.01 })
+    expect(__liveStageTest.selectVenueTickerPrice(ticker, "long")).toBe(0.0101)
+    expect(__liveStageTest.selectVenueTickerPrice(ticker, "short")).toBe(0.0099)
+    expect(__liveStageTest.selectVenueTickerPrice({ bid: 0, ask: 0, last: 0.01 }, "long")).toBe(0.01)
+  })
+
+  test("projects pseudo trailing stops into the live fill price domain", () => {
+    expect(__liveStageTest.translatePseudoTrailingStopPrice(98, 100, 0.01)).toBeCloseTo(0.0098, 12)
+    expect(__liveStageTest.translatePseudoTrailingStopPrice(0.0098, 0, 0.01)).toBeCloseTo(0.0098, 12)
+    expect(__liveStageTest.translatePseudoTrailingStopPrice(98, 0, 0.01)).toBeUndefined()
+    expect(__liveStageTest.translatePseudoTrailingStopPrice(1_500, 100, 0.01)).toBeUndefined()
+  })
+
+  test("repairs unmistakable historic/live price-domain corruption and rebases automatic trailing", () => {
+    const position = livePosition({
+      entryPrice: 100,
+      averageExecutionPrice: 0.01,
+      initialEntryPrice: 0.01,
+      trailingActive: true,
+      trailingStopPrice: 98,
+    })
+    expect(__liveStageTest.repairLiveEntryPriceDomain(position, 0.01)).toBe(true)
+    expect(position.entryPrice).toBe(0.01)
+    expect(position.averageExecutionPrice).toBe(0.01)
+    expect(position.initialEntryPrice).toBe(0.01)
+    expect(position.trailingStopPrice).toBeCloseTo(0.0098, 12)
+  })
+
+  test("preserves explicit operator protection while repairing only the corrupted entry domain", () => {
+    const position = livePosition({
+      entryPrice: 100,
+      averageExecutionPrice: 0.01,
+      initialEntryPrice: 0.01,
+      trailingActive: true,
+      trailingStopPrice: 98,
+      manualProtectionOverride: {
+        stopLossPrice: 95,
+        takeProfitPrice: 105,
+        updatedAt: 1,
+        source: "operator",
+      },
+    })
+    expect(__liveStageTest.repairLiveEntryPriceDomain(position, 0.01)).toBe(true)
+    expect(position.entryPrice).toBe(0.01)
+    expect(position.trailingStopPrice).toBe(98)
+    expect(position.manualProtectionOverride).toMatchObject({ stopLossPrice: 95, takeProfitPrice: 105 })
+  })
+
+  test("does not misclassify a legitimate DCA average as cross-domain corruption", () => {
+    const position = livePosition({
+      entryPrice: 100,
+      initialEntryPrice: 100,
+      averageExecutionPrice: 60,
+      trailingActive: true,
+      trailingStopPrice: 98,
+    })
+    expect(__liveStageTest.repairLiveEntryPriceDomain(position, 60)).toBe(false)
+    expect(position.entryPrice).toBe(100)
+    expect(position.initialEntryPrice).toBe(100)
+    expect(position.averageExecutionPrice).toBe(60)
+    expect(position.trailingStopPrice).toBe(98)
+  })
+
+  test("finalizes only zero-fill pre-entry rows that have no exchange handle", () => {
+    for (const status of ["placed", "pending_fill", "placed_unconfirmed"] as const) {
+      expect(__liveStageTest.isPreFillWithoutExchangeHandle(
+        { executedQuantity: 0 },
+        status,
+        false,
+      )).toBe(true)
+    }
+    expect(__liveStageTest.isPreFillWithoutExchangeHandle(
+      { executedQuantity: 0.01 },
+      "placed_unconfirmed",
+      false,
+    )).toBe(false)
+    expect(__liveStageTest.isPreFillWithoutExchangeHandle(
+      { executedQuantity: 0 },
+      "placed_unconfirmed",
+      true,
+    )).toBe(false)
+    expect(__liveStageTest.isPreFillWithoutExchangeHandle(
+      { executedQuantity: 0 },
+      "open",
+      false,
+    )).toBe(false)
+  })
+
   test("books confirmed positions under their actual Real-stage variant", () => {
     expect(__liveStageTest.resolveConfirmedStrategyVariant({
       setVariant: "trailing",

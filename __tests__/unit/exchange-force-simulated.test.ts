@@ -57,4 +57,24 @@ describe("exchange simulation safety override", () => {
       isTestnet: false,
     })).rejects.toThrow("Valid bingx credentials are required")
   })
+
+  test("normalizes legacy Bybit labels and unified_trading before connector selection", async () => {
+    Object.defineProperty(process.env, "NODE_ENV", {
+      value: "production",
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    })
+    process.env.FORCE_SIMULATED = "1"
+
+    const connector = await createExchangeConnector("Bybit X03", {
+      apiKey: "real-looking-bybit-key",
+      apiSecret: "real-looking-bybit-secret",
+      apiType: "unified_trading",
+      isTestnet: false,
+    })
+
+    expect(connector).toBeInstanceOf(SimulatedConnector)
+    expect((connector as any).credentials.apiType).toBe("unified")
+  })
 })

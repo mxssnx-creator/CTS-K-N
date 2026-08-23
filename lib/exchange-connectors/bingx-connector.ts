@@ -11,6 +11,8 @@ import {
   type ExchangeCredentials,
   type ExchangeConnectorResult,
   type ExchangeOrder,
+  type ExchangeOrderSettlement,
+  type ExchangeOrderSettlementOptions,
   type PlaceOrderOptions,
 } from "./base-connector"
 import { safeParseResponse } from "@/lib/safe-response-parser"
@@ -101,7 +103,11 @@ export class BingXConnector extends BaseExchangeConnector {
   //     the cache entry for its clientOrderId.
   private static bingxNotFoundTimestamps: number[] = []
   private static bingxNotFoundCache = new Map<string, number>()
-  private static readonly NOT_FOUND_CACHE_TTL_MS = 180_000
+  // Keep an authoritative absence cached beyond BingX's complete rolling
+  // error window. Re-querying the same retired control id after three minutes
+  // (while it was still inside the 480-second venue window) recreated the
+  // 109400/109429 lockout on long-running servers.
+  private static readonly NOT_FOUND_CACHE_TTL_MS = 600_000
   private static readonly NOT_FOUND_WINDOW_MS = 480_000
   private static readonly NOT_FOUND_SOFT_LIMIT = 12
   private static readonly NOT_FOUND_SOFT_COOLDOWN_MS = 90_000
@@ -677,11 +683,15 @@ export class BingXConnector extends BaseExchangeConnector {
 
   private isOrderAlreadyGone(data: any): boolean {
     const code = String(data?.code ?? "")
-    const message = String(data?.msg ?? data?.message ?? "").toLowerCase()
+    const message = String(data?.msg ?? data?.message ?? data?.error ?? "").toLowerCase()
     return (
       message.includes("order does not exist") ||
       message.includes("order not exist") ||
-      (code === "109400" && message.includes("not exist"))
+      message.includes("order not found") ||
+      message.includes("order already cancelled") ||
+      message.includes("order already canceled") ||
+      ((code === "109400" || code === "109421" || code === "101500") &&
+        (message.includes("not exist") || message.includes("not found")))
     )
   }
 
@@ -1648,6 +1658,14 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId: string,
   ): Promise<{ success: boolean; error?: string }> {
     try {
+      // A preceding authoritative lookup may already have proved that this
+      // exact venue order is absent. Cancellation is idempotent, so do not
+      // spend another BingX not-found response on the same retired control id.
+      if (BingXConnector.isNotFoundCached(symbol, orderId)) {
+        this.markOperationTransport("cancelOrder", "signed-rest-fallback", "order already absent (negative cache)")
+        this.invalidateOpenOrdersSnapshot(symbol)
+        return { success: true }
+      }
       this.log(`Cancelling order ${orderId} for ${symbol}`)
 
       const isSpot = this.credentials.apiType === "spot"
@@ -1666,6 +1684,17 @@ export class BingXConnector extends BaseExchangeConnector {
           }
           throw new Error(`${sdkData?.code ?? "unknown"}: ${sdkData?.msg || "Library cancel rejected"}`)
         } catch (sdkError) {
+          // bingx-api throws rejected business responses instead of returning
+          // them on some versions. An already-absent order is an idempotent
+          // cancellation success; falling through to REST would spend a second
+          // not-found request and rapidly trip BingX's 20/480s lockout.
+          if (this.isOrderAlreadyGone(sdkError)) {
+            this.sdkLastError = ""
+            this.markOperationTransport("cancelOrder", "bingx-api", "order already absent")
+            this.invalidateOpenOrdersSnapshot(symbol)
+            this.log(`Order ${orderId} already gone via bingx-api — treating as cancelled`)
+            return { success: true }
+          }
           this.recordSdkFallback("cancelOrder", sdkError)
         }
       }
@@ -1956,7 +1985,7 @@ export class BingXConnector extends BaseExchangeConnector {
         }
         // 109421 "order does not exist" is a business response: count it,
         // negative-cache it, and return null like any other miss.
-        if (data.code === "109421" || data.code === 109421) {
+        if (this.isOrderAlreadyGone(data)) {
           this.recordBingxOrderNotFound("getOrder", symbol, orderId)
         }
         return null
@@ -3829,9 +3858,9 @@ export class BingXConnector extends BaseExchangeConnector {
           }
           // 109421 "order does not exist": count + negative-cache, return a
           // plain miss WITHOUT engaging the global cooldown.
-          if (data.code === "109421" || data.code === 109421) {
+          if (this.isOrderAlreadyGone(data)) {
             this.recordBingxOrderNotFound("getOpenOrder", symbol, orderId, clientOrderId)
-            return { success: false, error: `BingX API error (code=109421): ${data.msg || "order does not exist"}` }
+            return { success: false, error: `BingX API error (code=${data.code}): ${data.msg || "order does not exist"}` }
           }
           throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
         }
@@ -3853,6 +3882,7 @@ export class BingXConnector extends BaseExchangeConnector {
         errorMsg.includes("order does not exist") ||
         errorMsg.includes("order not exist") ||
         errorMsg.includes("code=109421") ||
+        (errorMsg.includes("code=109400") && errorMsg.toLowerCase().includes("not exist")) ||
         errorMsg.includes("code=100421") ||
         errorMsg.includes("timestamp")
 
@@ -3918,9 +3948,9 @@ export class BingXConnector extends BaseExchangeConnector {
           }
           // 109421 "order does not exist": count + negative-cache, return a
           // plain miss WITHOUT engaging the global cooldown.
-          if (data.code === "109421" || data.code === 109421) {
+          if (this.isOrderAlreadyGone(data)) {
             this.recordBingxOrderNotFound("getOrderDetails", symbol, orderId, clientOrderId)
-            return { success: false, error: `BingX API error (code=109421): ${data.msg || "order does not exist"}` }
+            return { success: false, error: `BingX API error (code=${data.code}): ${data.msg || "order does not exist"}` }
           }
           throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
         }
@@ -3942,6 +3972,7 @@ export class BingXConnector extends BaseExchangeConnector {
         errorMsg.includes("order does not exist") ||
         errorMsg.includes("order not exist") ||
         errorMsg.includes("code=109421") ||
+        (errorMsg.includes("code=109400") && errorMsg.toLowerCase().includes("not exist")) ||
         errorMsg.includes("code=100421") ||
         errorMsg.includes("timestamp")
 
@@ -4024,34 +4055,46 @@ export class BingXConnector extends BaseExchangeConnector {
     currency?: string
   ): Promise<{ success: boolean; trades?: any[]; error?: string }> {
     try {
-      const params: Record<string, any> = {
-        tradingUnit,
-        startTs,
-        endTs,
-        timestamp: this.getTimestamp(),
-      }
-      
-      if (orderId) params.orderId = orderId
-      if (currency) params.currency = currency
-      
-      const { signature, queryString: signedQs } = this.signParams(params)
-      const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/allFillOrders?${signedQs}&signature=${signature}`
-      
-      const response = await this.rateLimitedFetch(url, {
-        method: "GET",
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+      return await this.bingxRateLimitedCall("getTradeHistory", async () => {
+        await this.syncServerTime()
+        const stableParams: Record<string, any> = {
+          tradingUnit,
+          startTs,
+          endTs,
+        }
+        if (orderId) stableParams.orderId = orderId
+        if (currency) stableParams.currency = currency
+
+        // Timestamp/signature are created only after the generic rate limiter
+        // grants its dispatch slot.  A busy 32-symbol production queue must
+        // not turn an accounting read into a stale-signature failure.
+        const response = await this.rateLimitedFetch(
+          () => {
+            const { signature, queryString: signedQs } = this.signParams({
+              ...stableParams,
+              timestamp: this.getTimestamp(),
+            })
+            return `${this.getBaseUrl()}/openApi/swap/v2/trade/allFillOrders?${signedQs}&signature=${signature}`
+          },
+          () => ({
+            method: "GET",
+            headers: { "X-BX-APIKEY": this.credentials.apiKey },
+          }),
+        )
+
+        const data = await this.safeJson(response)
+        if (!this.isBingXSuccess(data.code)) {
+          throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
+        }
+        const rows = Array.isArray(data.data)
+          ? data.data
+          : Array.isArray(data.data?.fills)
+            ? data.data.fills
+            : Array.isArray(data.data?.orders)
+              ? data.data.orders
+              : []
+        return { success: true, trades: rows }
       })
-      
-      const data = await this.safeJson(response)
-      
-      if (!this.isBingXSuccess(data.code)) {
-        throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
-      }
-      
-      return {
-        success: true,
-        trades: Array.isArray(data.data) ? data.data : [],
-      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
       this.logError(`✗ Failed to get trade history: ${errorMsg}`)
@@ -4059,6 +4102,76 @@ export class BingXConnector extends BaseExchangeConnector {
         success: false,
         error: errorMsg,
       }
+    }
+  }
+
+  /**
+   * Exact BingX USDT-M order settlement from actual fill rows.
+   *
+   * BingX documents `fee` as a signed value (negative means paid).  The
+   * normalized object exposes a positive fee cost and net PnL, while retaining
+   * every signed fill for audit/recovery.
+   */
+  async getOrderSettlement(
+    symbol: string,
+    orderId: string,
+    options: ExchangeOrderSettlementOptions = {},
+  ): Promise<ExchangeOrderSettlement | null> {
+    const normalizedOrderId = String(orderId || "").trim()
+    if (!normalizedOrderId || this.credentials.apiType === "spot") return null
+    const now = Date.now()
+    const endTime = Number.isFinite(Number(options.endTime))
+      ? Number(options.endTime)
+      : now
+    const startTime = Number.isFinite(Number(options.startTime))
+      ? Number(options.startTime)
+      : endTime - 7 * 24 * 60 * 60 * 1000
+    const history = await this.getTradeHistory(
+      "COIN",
+      Math.max(0, Math.min(startTime, endTime)),
+      Math.max(startTime, endTime),
+      normalizedOrderId,
+      "USDT",
+    )
+    if (!history.success) return null
+
+    const fills = (history.trades || [])
+      .filter((row: any) => String(row?.orderId ?? row?.orderID ?? "") === normalizedOrderId)
+      .map((row: any) => {
+        const quantity = Math.abs(Number(row?.qty ?? row?.quantity ?? row?.volume ?? 0))
+        const price = Number(row?.price ?? row?.tradePrice ?? 0)
+        const realizedPnl = Number(row?.realizedPnl ?? row?.realizedPNL ?? 0)
+        const fee = Number(row?.fee ?? row?.commission ?? 0)
+        return {
+          tradeId: String(row?.tradeId ?? row?.tradeID ?? ""),
+          price: Number.isFinite(price) && price > 0 ? price : 0,
+          quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 0,
+          realizedPnl: Number.isFinite(realizedPnl) ? realizedPnl : 0,
+          fee: Number.isFinite(fee) ? fee : 0,
+          feeCost: Number.isFinite(fee) ? Math.max(0, -fee) : 0,
+          timestamp: Number(row?.time ?? row?.tradeTime ?? now) || now,
+        }
+      })
+      .filter((fill) => fill.quantity > 0 && fill.price > 0)
+    if (fills.length === 0) return null
+
+    const filledQuantity = fills.reduce((sum, fill) => sum + fill.quantity, 0)
+    const weightedPrice = fills.reduce((sum, fill) => sum + fill.price * fill.quantity, 0)
+    const grossRealizedPnl = fills.reduce((sum, fill) => sum + fill.realizedPnl, 0)
+    const signedFeeTotal = fills.reduce((sum, fill) => sum + fill.fee, 0)
+    const tradingFee = fills.reduce((sum, fill) => sum + fill.feeCost, 0)
+    return {
+      orderId: normalizedOrderId,
+      symbol: this.toBingXSymbol(symbol),
+      filledQuantity: Number(filledQuantity.toFixed(12)),
+      averageFillPrice: filledQuantity > 0 ? weightedPrice / filledQuantity : 0,
+      grossRealizedPnl: Number(grossRealizedPnl.toFixed(12)),
+      tradingFee: Number(tradingFee.toFixed(12)),
+      netRealizedPnl: Number((grossRealizedPnl + signedFeeTotal).toFixed(12)),
+      netIncludesEntryFee: false,
+      source: "bingx_fill_history",
+      settledAt: Math.max(...fills.map((fill) => fill.timestamp)),
+      fills,
     }
   }
 

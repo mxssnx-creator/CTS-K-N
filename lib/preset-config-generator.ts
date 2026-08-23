@@ -11,6 +11,7 @@ import {
   normalizePositionCostPercent,
 } from "@/lib/position-cost"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 
 export interface PresetConfiguration {
   id: string
@@ -190,7 +191,7 @@ export class PresetConfigGenerator {
   static filterValidConfigurations(
     configurations: PresetConfiguration[],
     results: Map<string, { profitFactor: number; drawdownHours: number }>,
-    minProfitFactor = 0.6,
+    minProfitFactor = REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
     maxDrawdownHours = 12,
   ): PresetConfiguration[] {
     return configurations.filter((config) => {

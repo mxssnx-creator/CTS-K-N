@@ -531,7 +531,7 @@ run_preflight() {
     fi
   fi
 
-  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
+  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
     [[ -f "$PROJECT_ROOT/$file" ]] || fatal "Required install artifact is missing: $file"
   done
   bash -n "$PROJECT_ROOT/scripts/install.sh"
@@ -781,7 +781,7 @@ configure_memory_watchdog() {
   # work. The remaining budget is intentionally based on *available* memory,
   # so a server that is already busy never receives the old fixed 5.6 GiB Node
   # heap or a restart threshold it cannot sustain.
-  local total_kb available_kb total_mb available_mb reserve_mb process_budget_mb runtime_max_mb runtime_high_mb runtime_soft_mb app_heap_mb scheduler_max_mb scheduler_heap_mb direct_trade_max_mb direct_trade_heap_mb
+  local total_kb available_kb total_mb available_mb reserve_mb process_budget_mb runtime_max_mb runtime_high_mb runtime_soft_mb app_heap_mb scheduler_max_mb scheduler_heap_mb direct_trade_max_mb direct_trade_heap_mb direct_trade_worker_count direct_trade_worker_heap_mb
   read -r total_kb available_kb < <(effective_memory_limits_kb)
   total_mb=$(( total_kb / 1024 ))
   available_mb=$(( available_kb / 1024 ))
@@ -811,6 +811,15 @@ configure_memory_watchdog() {
   direct_trade_heap_mb=$(( direct_trade_max_mb * 70 / 100 ))
   (( direct_trade_heap_mb < 192 )) && direct_trade_heap_mb=192
   (( direct_trade_heap_mb > 1024 )) && direct_trade_heap_mb=1024
+  # One supervisor coordinates independent per-connection processors inside
+  # the aggregate Direct-Trade service cgroup. Divide its budget instead of
+  # granting every child the complete service heap ceiling.
+  direct_trade_worker_count=$(( direct_trade_max_mb / 256 ))
+  (( direct_trade_worker_count < 1 )) && direct_trade_worker_count=1
+  (( direct_trade_worker_count > 8 )) && direct_trade_worker_count=8
+  direct_trade_worker_heap_mb=$(( (direct_trade_max_mb - 96) * 70 / 100 / direct_trade_worker_count ))
+  (( direct_trade_worker_heap_mb < 128 )) && direct_trade_worker_heap_mb=128
+  (( direct_trade_worker_heap_mb > 1024 )) && direct_trade_worker_heap_mb=1024
 
   upsert_env CTS_EFFECTIVE_MEMORY_MB "$total_mb"
   upsert_env CTS_AVAILABLE_MEMORY_MB "$available_mb"
@@ -823,11 +832,13 @@ configure_memory_watchdog() {
   upsert_env CTS_NODE_HEAP_MB "$app_heap_mb"
   upsert_env CTS_SCHEDULER_NODE_HEAP_MB "$scheduler_heap_mb"
   upsert_env CTS_DIRECT_TRADE_NODE_HEAP_MB "$direct_trade_heap_mb"
+  upsert_env CTS_DIRECT_TRADE_MAX_CONNECTION_WORKERS "$direct_trade_worker_count"
+  upsert_env CTS_DIRECT_TRADE_WORKER_HEAP_MB "$direct_trade_worker_heap_mb"
   upsert_env CTS_RUNTIME_MEMORY_HIGH_MB "$runtime_high_mb"
   upsert_env CTS_RUNTIME_MEMORY_MAX_MB "$runtime_max_mb"
   upsert_env CTS_SCHEDULER_MEMORY_MAX_MB "$scheduler_max_mb"
   upsert_env CTS_DIRECT_TRADE_MEMORY_MAX_MB "$direct_trade_max_mb"
-  ok "Memory watchdog: ${available_mb} MiB available → app ${runtime_max_mb} MiB, scheduler ${scheduler_max_mb} MiB, Direct-Trade ${direct_trade_max_mb} MiB"
+  ok "Memory watchdog: ${available_mb} MiB available → app ${runtime_max_mb} MiB, scheduler ${scheduler_max_mb} MiB, Direct-Trade ${direct_trade_max_mb} MiB (${direct_trade_worker_count} workers × ${direct_trade_worker_heap_mb} MiB heap)"
 }
 
 merge_seed_env() {
@@ -1225,7 +1236,7 @@ EOF
   cat > "$RUNTIME_DIR/start-direct-trade.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec env NODE_OPTIONS="--max-old-space-size=$direct_trade_heap_mb --max-semi-space-size=64" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/direct-trade-processor.mjs --port ${APP_PORT@Q}
+exec env NODE_OPTIONS="--max-old-space-size=128 --max-semi-space-size=32" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/direct-trade-supervisor.mjs --port ${APP_PORT@Q}
 EOF
   cat > "$RUNTIME_DIR/start-recovery.sh" <<EOF
 #!/usr/bin/env bash

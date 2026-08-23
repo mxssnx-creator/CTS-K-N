@@ -363,7 +363,7 @@ export interface SystemSettings {
 
   // Historical Preset optimizer. These keys are persisted in app settings and
   // consumed by the Presets page, optimizer worker, and live Preset execution.
-  profitFactorMinPreset?: number // default 0.7; range 0.4-3.0
+  profitFactorMinPreset?: number // default 1.1; range 0.4-3.0
   drawdownTimePreset?: number // hours; default 5
   presetHistoryDays?: number // default 14; range 1-14
   presetCountPerSymbol?: number // per symbol and indication type; default 4

@@ -2,11 +2,9 @@ import { timingSafeEqual } from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { directOrderControlKey, placeLiveOrder, type LiveOrderDirection } from "@/lib/live-order-service"
+import { directTradeKeyspace } from "@/lib/direct-trade-keyspace"
 
 export const dynamic = "force-dynamic"
-
-const STATE_KEY = "direct_trade:state"
-const PROCESSOR_LEASE_KEY = "direct_trade:processor:lease"
 
 function sameSecret(received: string | null, expected: string): boolean {
   if (!received || !expected) return false
@@ -69,10 +67,27 @@ export async function POST(request: NextRequest) {
 
     await initRedis()
     const client = getRedisClient() as any
-    const [leaseOwner, stateRaw] = await Promise.all([
-      client.get(PROCESSOR_LEASE_KEY),
-      client.get(STATE_KEY),
+    const keys = directTradeKeyspace(connectionId)
+    let [leaseOwner, stateRaw] = await Promise.all([
+      client.get(keys.processorLease),
+      client.get(keys.state),
     ])
+    // Compatibility for the exact pre-keyspace worker during a rolling
+    // upgrade. It is accepted only when the legacy state's selected
+    // connection matches this order; once scoped state exists no fallback is
+    // possible, preventing two lease domains from authorising one order.
+    if (!stateRaw) {
+      const legacy = directTradeKeyspace()
+      const [legacyLeaseOwner, legacyStateRaw] = await Promise.all([
+        client.get(legacy.processorLease),
+        client.get(legacy.state),
+      ])
+      const legacyState = legacyStateRaw ? JSON.parse(legacyStateRaw) : null
+      if (legacyState?.connectionId === connectionId) {
+        leaseOwner = legacyLeaseOwner
+        stateRaw = legacyStateRaw
+      }
+    }
     if (leaseOwner !== instanceId) {
       return NextResponse.json({ success: false, error: "Direct-Trade processor lease is not held" }, { status: 409 })
     }

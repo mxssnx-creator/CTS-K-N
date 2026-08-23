@@ -73,6 +73,73 @@ describe("Direct-Trade continuity cron", () => {
     }
   })
 
+  test("does not restart a disabled worker solely because terminal history remains", async () => {
+    const [{ GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/cron/direct-trade-continuity/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    const bucket = Math.floor(Date.now() / 60_000)
+    await redis.del(...KEYS, "direct_trade:positions", `cron:direct-trade-continuity:minute:${bucket}`)
+    try {
+      await redis.set("direct_trade:state", JSON.stringify({ enabled: false }))
+      await redis.set("direct_trade:positions", JSON.stringify([{ id: "closed-1", status: "closed" }]))
+      await redis.set("direct_trade:processor", JSON.stringify({
+        lastTick: new Date(Date.now() - 30_000).toISOString(),
+        positionCount: 1,
+      }))
+
+      const payload = await (await GET(new Request("http://localhost/api/cron/direct-trade-continuity") as any)).json()
+
+      expect(payload).toMatchObject({ success: true, required: false, healthy: true, recoveryRequested: false })
+      expect(payload.connections[0]).toMatchObject({ openPositions: 0, required: false })
+    } finally {
+      await redis.del(...KEYS, "direct_trade:positions", `cron:direct-trade-continuity:minute:${bucket}`)
+    }
+  })
+
+  test("ignores retained legacy evidence after the same connection has a healthy scoped worker", async () => {
+    const [{ GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/cron/direct-trade-continuity/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    const bucket = Math.floor(Date.now() / 60_000)
+    const scopedPrefix = "direct_trade:connection:bingx-x02"
+    await redis.del(
+      ...KEYS,
+      "direct_trade:connections",
+      `${scopedPrefix}:state`,
+      `${scopedPrefix}:positions`,
+      `${scopedPrefix}:processor`,
+      `cron:direct-trade-continuity:minute:${bucket}`,
+    )
+    try {
+      await redis.sadd("direct_trade:connections", "bingx-x02")
+      await redis.set(`${scopedPrefix}:state`, JSON.stringify({ enabled: true, connectionId: "bingx-x02" }))
+      await redis.set(`${scopedPrefix}:positions`, "[]")
+      await redis.set(`${scopedPrefix}:processor`, JSON.stringify({ lastTick: new Date().toISOString() }))
+      await redis.set("direct_trade:state", JSON.stringify({ enabled: true, connectionId: "bingx-x02" }))
+      await redis.set("direct_trade:processor", JSON.stringify({ lastTick: new Date(Date.now() - 30_000).toISOString() }))
+
+      const payload = await (await GET(new Request("http://localhost/api/cron/direct-trade-continuity") as any)).json()
+
+      expect(payload).toMatchObject({ success: true, required: true, healthy: true, recoveryRequested: false })
+      expect(payload.connections).toEqual([
+        expect.objectContaining({ connectionId: "bingx-x02", healthy: true }),
+      ])
+    } finally {
+      await redis.del(
+        ...KEYS,
+        "direct_trade:connections",
+        `${scopedPrefix}:state`,
+        `${scopedPrefix}:positions`,
+        `${scopedPrefix}:processor`,
+        `cron:direct-trade-continuity:minute:${bucket}`,
+      )
+    }
+  })
+
   test("coordinates host recovery with maintenance, lock, and cooldown guards", async () => {
     const [recovery, scheduler, serviceControl] = await Promise.all([
       readFile(path.join(process.cwd(), "scripts/runtime-recovery.sh"), "utf8"),

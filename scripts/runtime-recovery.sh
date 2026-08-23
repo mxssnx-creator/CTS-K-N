@@ -162,7 +162,7 @@ if ! service_active "$direct_service"; then
   exit 0
 fi
 
-status="$(curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/api/trade-engine/direct-trade/status" || true)"
+status="$(curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/api/trade-engine/direct-trade/status?aggregate=1" || true)"
 [[ -n "$status" ]] || { restart_service "$direct_service" "Direct-Trade status unavailable"; exit 0; }
 
 read -r direct_required direct_healthy < <(

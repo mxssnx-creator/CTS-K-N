@@ -19,6 +19,8 @@ export interface DirectTradeOverviewRow {
   category: DirectTradeOverviewCategory
   open: number
   closed: number
+  /** Closed exchange rows still waiting for authoritative venue settlement. */
+  accountingPending: number
   /** Gross profit divided by absolute gross loss across all rows in the bucket. */
   profitFactor: number | null
   profitFactorInfinite: boolean
@@ -148,12 +150,20 @@ export function directTradeOverviewCategory(
 }
 
 function canonicalUsdtPnl(position: UnknownPosition): number | null {
+  if (overviewMode(position) === "exchange" && position.pnlAccountingComplete === false) {
+    return null
+  }
   const explicit = finite(
     position.realizedPnlUsdt ??
     position.realizedPnLUsdt ??
     position.realized_pnl_usdt,
   )
   if (explicit !== null) return explicit
+
+  // Exchange accounting is authoritative only when it came from venue fills
+  // or closed-PnL settlement. Never reconstruct live money from a configured
+  // percentage/notional pair.
+  if (overviewMode(position) === "exchange") return null
 
   const pnlPercent = finite(position.pnl ?? position.pnlPercent)
   const baseNotional = finite(
@@ -211,20 +221,23 @@ function calculateDrawdownDurations(
 }
 
 function buildRow(
+  mode: DirectTradeOverviewMode,
   category: DirectTradeOverviewCategory,
   openPositions: UnknownPosition[],
   closedPositions: UnknownPosition[],
   now: number,
 ): DirectTradeOverviewRow {
-  // Never mix currency and percentage values in one PF. If even one legacy
-  // close lacks reconstructable USDT PnL, the complete bucket consistently
-  // falls back to its realised percentage values.
-  const useUsdt = closedPositions.length > 0 &&
-    closedPositions.every((position) => canonicalUsdtPnl(position) !== null)
+  const accountedClosedPositions = mode === "exchange"
+    ? closedPositions.filter((position) => canonicalUsdtPnl(position) !== null)
+    : closedPositions
+  // Never mix currency and percentage values in one PF. Exchange rows always
+  // use actual USDT settlement and unresolved rows remain visibly pending.
+  const useUsdt = mode === "exchange" || (accountedClosedPositions.length > 0 &&
+    accountedClosedPositions.every((position) => canonicalUsdtPnl(position) !== null))
   const value = (position: UnknownPosition) => useUsdt
     ? canonicalUsdtPnl(position) ?? 0
     : percentPnl(position)
-  const chronological = closedPositions
+  const chronological = accountedClosedPositions
     .map((position) => ({ at: closedAt(position), pnl: value(position) }))
     .filter((event): event is { at: number; pnl: number } => event.at !== null)
     .sort((left, right) => left.at - right.at)
@@ -245,6 +258,7 @@ function buildRow(
     category,
     open: openPositions.length,
     closed: chronological.length,
+    accountingPending: closedPositions.length - accountedClosedPositions.length,
     profitFactor: profitFactor === null ? null : Number(profitFactor.toFixed(3)),
     profitFactorInfinite,
     pnlBasis: useUsdt ? "usdt" : "percent",
@@ -289,6 +303,7 @@ export function buildDirectTradeOverview48h(
       return {
         mode,
         rows: CATEGORY_ORDER.map((category) => buildRow(
+          mode,
           category,
           openPositions.filter(
             (position) => directTradeOverviewCategory(position) === category,

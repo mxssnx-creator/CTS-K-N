@@ -32,6 +32,12 @@ const SIGNAL_POSITION_STORAGE_KEYS_PER_ROW = 6
 const SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET = VERIFY_SIGNAL_ENGINE
   ? SIGNAL_MAX_POSITIONS_TOTAL * SIGNAL_POSITION_STORAGE_KEYS_PER_ROW
   : 0
+// Outside the separately indexed Set/outcome inventory, each symbol owns a
+// finite collection of market-cache, stage/progression, position/history and
+// tracking keys. The exhaustive 32-symbol Shared-Redis run stabilizes below
+// 830 keys/symbol; keep explicit headroom for all enabled strategy variants
+// while the independent low-water plateau check still rejects per-cycle growth.
+const NON_INVENTORY_KEYS_PER_SYMBOL_BUDGET = 1_000
 const MIN_PRODUCTIVE_CYCLES = Math.max(1, Number(process.env.SOAK_MIN_PRODUCTIVE_CYCLES || 3))
 // A maximum-symbol cold Historic build can legitimately finish at the end of
 // the fixed observation window. Optional grace keeps polling only until the
@@ -1307,6 +1313,10 @@ async function main() {
         monitoring?.database?.indicationOutcomeAuxiliaryKeys,
         "monitoring.database.indicationOutcomeAuxiliaryKeys",
       ),
+      indicationSetInventoryConnections: finiteNonNegative(
+        monitoring?.database?.indicationSetInventoryConnections,
+        "monitoring.database.indicationSetInventoryConnections",
+      ),
       engineCycles: Math.max(
         finiteNonNegative(monitoring?.engines?.indications?.cycleCount, "monitoring.indicationCycles"),
         finiteNonNegative(monitoring?.engines?.strategies?.cycleCount, "monitoring.strategyCycles"),
@@ -1318,7 +1328,9 @@ async function main() {
       const latestMemory = memory.at(-1)
       console.error(
         `[prod-soak] round=${rounds} rss=${latestMemory.rssKb}KiB heap=${latestMemory.heapUsedKb}KiB ` +
-        `keys=${latestMemory.databaseKeys} cycles=${latestMemory.engineCycles} score=${progression.at(-1)?.score || 0} ` +
+        `keys=${latestMemory.databaseKeys} inventory=${latestMemory.indicationSetInventoryKeys}` +
+        `+${latestMemory.indicationOutcomeAuxiliaryKeys} scopes=${latestMemory.indicationSetInventoryConnections} ` +
+        `cycles=${latestMemory.engineCycles} score=${progression.at(-1)?.score || 0} ` +
         `signal=${signalSample.signalIndicationsTotal} sources=${signalSample.sourcesExercised}/` +
         `${signalSample.registeredSources} signalPos=${signalSample.signalPositions} ` +
         `trailingPos=${signalSample.signalTrailingPositions}`,
@@ -1638,13 +1650,18 @@ async function main() {
     ? Math.max(...databaseStableOutcomeAuxiliarySeries) - Math.min(...databaseStableOutcomeAuxiliarySeries)
     : 0
   // Exhaustive Default/Additional/Common/Signal grids deliberately replaced
-  // the old sampled topology. Size the absolute key budget from that canonical
-  // configuration count instead of reintroducing the retired 500-key/symbol
-  // assumption. Each logical configuration owns at most four materialized
-  // rows across the coordinated indication/Base/Main/Real/Live representation;
-  // the rows are fixed identity views, not per-cycle records. The plateau
-  // check below remains the guard against leakage, while this absolute bound
-  // covers that four-row topology plus bounded symbol runtime overhead.
+  // the old sampled topology. `totalPossibleSets` is the per-symbol Long/Short
+  // capacity, while the monitoring counters are summed across every materialized
+  // connection scope. Keep those dimensions explicit: the old `sets * 4`
+  // formula omitted both symbol and connection identity and failed a healthy
+  // 32-symbol run once its lazy inventory passed that undersized estimate.
+  //
+  // Each materialized Set owns one indexed primary key and at most three
+  // indexed outcome auxiliaries (`:outcomes`, `:outcome_stats`, dedupe ids).
+  // Bound both indexes independently by the canonical grid, then subtract
+  // them from DBSIZE and apply a strict absolute/plateau budget to every other
+  // key. This accepts finite lazy materialization without masking an unindexed
+  // per-cycle writer.
   const configurationCounts = lastByPath.get("/api/indications/config-counts") || {}
   const totalPossibleSets = finiteNonNegative(
     configurationCounts?.totalPossibleSets,
@@ -1653,13 +1670,40 @@ async function main() {
   if (totalPossibleSets < 1) {
     throw new Error("Indication configuration topology is empty during soak")
   }
-  const databaseAbsoluteLimit = Math.max(
-    5_000,
-    SYMBOLS.length * 500,
-    totalPossibleSets * 4 + SYMBOLS.length * 500,
+  const inventoryConnectionScopes = Math.max(
+    1,
+    memory.at(-1)?.indicationSetInventoryConnections || 0,
   )
+  const indicationSetInventoryCapacity =
+    totalPossibleSets * SYMBOLS.length * inventoryConnectionScopes
+  const indicationOutcomeAuxiliaryCapacity = indicationSetInventoryCapacity * 3
+  const indicationSetInventoryKeysEnd = memory.at(-1)?.indicationSetInventoryKeys || 0
+  const indicationOutcomeAuxiliaryKeysEnd = memory.at(-1)?.indicationOutcomeAuxiliaryKeys || 0
+  if (indicationSetInventoryKeysEnd > indicationSetInventoryCapacity) {
+    throw new Error(
+      `Indication Set inventory exceeds canonical topology: ` +
+      `${indicationSetInventoryKeysEnd} > ${indicationSetInventoryCapacity}`,
+    )
+  }
+  if (indicationOutcomeAuxiliaryKeysEnd > indicationOutcomeAuxiliaryCapacity) {
+    throw new Error(
+      `Indication outcome auxiliaries exceed canonical topology: ` +
+      `${indicationOutcomeAuxiliaryKeysEnd} > ${indicationOutcomeAuxiliaryCapacity}`,
+    )
+  }
+  const databaseNonInventoryAbsoluteLimit = Math.max(
+    5_000,
+    SYMBOLS.length * NON_INVENTORY_KEYS_PER_SYMBOL_BUDGET +
+      inventoryConnectionScopes * 2_000 +
+      SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET,
+  )
+  const databaseNonInventoryKeysEnd = databaseNonInventoryKeySeries.at(-1) || 0
+  const databaseAbsoluteLimit =
+    indicationSetInventoryKeysEnd +
+    indicationOutcomeAuxiliaryKeysEnd +
+    databaseNonInventoryAbsoluteLimit
   const databasePlateauWithinBudget = databaseStableGrowth <= databaseStableGrowthLimit
-  if (!SIGNAL_FOCUSED_SOAK && !databasePlateauWithinBudget) {
+  if (!databasePlateauWithinBudget) {
     throw new Error(
       `Database keys did not plateau after bootstrap: growth=${databaseStableGrowth} ` +
       `limit=${databaseStableGrowthLimit} totalGrowth=${databaseStableTotalGrowth} ` +
@@ -1668,10 +1712,12 @@ async function main() {
       `boundedOutcomeAuxiliaryGrowth=${databaseStableOutcomeAuxiliaryGrowth}`,
     )
   }
-  if ((databaseKeySeries.at(-1) || 0) > databaseAbsoluteLimit) {
+  if (databaseNonInventoryKeysEnd > databaseNonInventoryAbsoluteLimit) {
     throw new Error(
-      `Database key count exceeds bounded ${SYMBOLS.length}-symbol budget: ` +
-      `${databaseKeySeries.at(-1)} > ${databaseAbsoluteLimit}`,
+      `Unindexed database key count exceeds bounded ${SYMBOLS.length}-symbol budget: ` +
+      `${databaseNonInventoryKeysEnd} > ${databaseNonInventoryAbsoluteLimit} ` +
+      `(total=${databaseKeySeries.at(-1) || 0}, indexedSets=${indicationSetInventoryKeysEnd}, ` +
+      `indexedOutcomes=${indicationOutcomeAuxiliaryKeysEnd})`,
     )
   }
 
@@ -1715,7 +1761,7 @@ async function main() {
     // V8 may retain already-committed pages after a successful GC, so RSS is
     // not a reliable JS liveness measure. Heap low-water detects retained
     // objects; the independent absolute RSS cap below still guards OOM risk.
-    if (!SIGNAL_FOCUSED_SOAK && !heapWithinBudget) {
+    if (!heapWithinBudget) {
       throw new Error(
         `Post-warmup JS heap kept growing: baseline=${warmBaseline}KiB final=${finalHeap}KiB ` +
         `peak=${Math.max(...heapSeries)}KiB limit=${HEAP_GROWTH_LIMIT_KB}KiB`,
@@ -1724,7 +1770,7 @@ async function main() {
   }
   const rssPeakKb = rssSeries.length ? Math.max(...rssSeries) : 0
   const rssWithinAbsoluteBudget = rssPeakKb <= RSS_PEAK_LIMIT_KB
-  if (!SIGNAL_FOCUSED_SOAK && !rssWithinAbsoluteBudget) {
+  if (!rssWithinAbsoluteBudget) {
     throw new Error(
       `Process RSS exceeded absolute safety cap: peak=${rssPeakKb}KiB ` +
       `limit=${RSS_PEAK_LIMIT_KB}KiB configuredHeap=${CONFIGURED_NODE_HEAP_MB}MiB`,
@@ -1826,8 +1872,14 @@ async function main() {
     databaseStableTotalGrowth,
     databaseStableSetInventoryGrowth,
     databaseStableOutcomeAuxiliaryGrowth,
-    indicationSetInventoryKeysEnd: memory.at(-1)?.indicationSetInventoryKeys || 0,
-    indicationOutcomeAuxiliaryKeysEnd: memory.at(-1)?.indicationOutcomeAuxiliaryKeys || 0,
+    indicationSetInventoryKeysEnd,
+    indicationOutcomeAuxiliaryKeysEnd,
+    indicationSetInventoryConnections: inventoryConnectionScopes,
+    indicationSetInventoryCapacity,
+    indicationOutcomeAuxiliaryCapacity,
+    databaseNonInventoryKeysEnd,
+    databaseNonInventoryAbsoluteLimit,
+    nonInventoryKeysPerSymbolBudget: NON_INVENTORY_KEYS_PER_SYMBOL_BUDGET,
     databaseStableGrowthLimit,
     signalPositionTopologyKeyBudget: SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET,
     databasePlateauWithinBudget,

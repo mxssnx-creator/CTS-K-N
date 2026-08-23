@@ -64,5 +64,6 @@ describe("system monitoring route", () => {
     expect(body.database.requestsPerSecond).toBeGreaterThan(0)
     expect(body.database.indicationSetInventoryKeys).toBeGreaterThanOrEqual(2)
     expect(body.database.indicationOutcomeAuxiliaryKeys).toBeGreaterThanOrEqual(2)
+    expect(body.database.indicationSetInventoryConnections).toBeGreaterThanOrEqual(1)
   })
 })

@@ -256,7 +256,7 @@ function RealVariantStatsCard({
         <p className="text-sm font-semibold">{label}</p>
         <Badge variant={adjust ? "secondary" : "outline"}>{adjust ? "Adjust" : "Strategy"}</Badge>
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-4 gap-2">
         <div>
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Positions</p>
           <p className="mt-0.5 font-semibold tabular-nums">{formatNumber(stats.positions, 0)}</p>
@@ -269,7 +269,16 @@ function RealVariantStatsCard({
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">DDT</p>
           <p className="mt-0.5 font-semibold tabular-nums">{asNumber(stats.avgDrawdownTime) > 0 ? `${formatNumber(stats.avgDrawdownTime, 1)} min` : "—"}</p>
         </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Outcomes</p>
+          <p className="mt-0.5 font-semibold tabular-nums">{formatNumber(stats.performanceSamples, 0)}</p>
+        </div>
       </div>
+      {asText(stats.performanceSource) === "awaiting-confirmed-outcomes" && (
+        <p className="mt-2 text-[10px] text-muted-foreground">
+          PF/DDT awaits this variant&apos;s confirmed closes; evaluation averages remain separate.
+        </p>
+      )}
       {asText(stats.positionCountSource) === "evaluation-fallback" && (
         <p className="mt-2 text-[10px] text-amber-700 dark:text-amber-300">
           Position count uses the pre-ledger evaluation fallback for this running history.

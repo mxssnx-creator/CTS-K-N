@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import { getAllConnections, getRedisClient, verifyRedisHealth } from "@/lib/redis-db"
 import { healthCheckService, HealthStatus } from "@/lib/health-check"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+import { isConnectionMainProcessing } from "@/lib/connection-state-utils"
 
 export const dynamic = "force-dynamic"
 
@@ -10,6 +12,8 @@ type HealthMetrics = {
   totalPositions: number
   totalConnections: number
   enabledConnections: number
+  expectedRunningEngines: number
+  runtimeDeficit: number
 }
 
 const HEALTH_DIAGNOSTIC_BUDGET_MS = 1_000
@@ -19,6 +23,8 @@ const EMPTY_METRICS: HealthMetrics = {
   totalPositions: 0,
   totalConnections: 0,
   enabledConnections: 0,
+  expectedRunningEngines: 0,
+  runtimeDeficit: 0,
 }
 let lastMetrics: HealthMetrics = { ...EMPTY_METRICS }
 
@@ -55,6 +61,8 @@ function readCachedMetrics(raw: string | null): HealthMetrics | null {
       parsed?.totalPositions,
       parsed?.totalConnections,
       parsed?.enabledConnections,
+      parsed?.expectedRunningEngines ?? 0,
+      parsed?.runtimeDeficit ?? 0,
     ].map(Number)
     if (values.some((value) => !Number.isFinite(value) || value < 0)) return null
     return {
@@ -63,6 +71,8 @@ function readCachedMetrics(raw: string | null): HealthMetrics | null {
       totalPositions: values[2],
       totalConnections: values[3],
       enabledConnections: values[4],
+      expectedRunningEngines: values[5],
+      runtimeDeficit: values[6],
     }
   } catch {
     return null
@@ -81,18 +91,38 @@ async function collectMetrics(): Promise<{ metrics: HealthMetrics; fresh: boolea
   const connections = await withinHealthBudget(getAllConnections(), null)
   if (!connections) return { metrics: lastMetrics, fresh: false }
 
+  const globalState = await withinHealthBudget(
+    client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
+    {} as Record<string, string>,
+    250,
+  )
+  const globalIntent = String(
+    globalState.operator_intent || globalState.desired_status || globalState.status || "",
+  ).trim().toLowerCase()
+  const operatorWantsRunning = globalIntent === "running"
+
   const rows = await withinHealthBudget(
     Promise.all(connections.map(async (connection) => {
       const id = String(connection?.id || "")
-      const [running, trades, positions] = await Promise.all([
+      const [runningHint, runtimeState, settingsState, trades, positions] = await Promise.all([
         client.get(`engine_is_running:${id}`).catch(() => null),
-        client.smembers(`trades:${id}`).catch(() => [] as string[]),
-        client.smembers(`positions:${id}`).catch(() => [] as string[]),
+        client.hgetall(`trade_engine_state:${id}`).catch(() => ({} as Record<string, string>)),
+        client.hgetall(`settings:trade_engine_state:${id}`).catch(() => ({} as Record<string, string>)),
+        client.scard(`trades:${id}`).catch(() => 0),
+        client.scard(`positions:${id}`).catch(() => 0),
       ])
+      const enabled = isConnectionMainProcessing(connection)
+      const runtime = resolveDistributedEngineRuntime({
+        runningHint,
+        states: [runtimeState, settingsState],
+        globalState,
+        connectionEnabled: enabled,
+      })
       return {
-        running: running === "1" || running === "true",
-        trades: trades.length,
-        positions: positions.length,
+        running: runtime.running,
+        expected: operatorWantsRunning && enabled,
+        trades: Math.max(0, Number(trades) || 0),
+        positions: Math.max(0, Number(positions) || 0),
       }
     })),
     null,
@@ -104,7 +134,9 @@ async function collectMetrics(): Promise<{ metrics: HealthMetrics; fresh: boolea
     totalTrades: rows.reduce((sum, row) => sum + row.trades, 0),
     totalPositions: rows.reduce((sum, row) => sum + row.positions, 0),
     totalConnections: connections.length,
-    enabledConnections: connections.filter((connection) => connection?.is_enabled).length,
+    enabledConnections: connections.filter((connection) => isConnectionMainProcessing(connection)).length,
+    expectedRunningEngines: rows.filter((row) => row.expected).length,
+    runtimeDeficit: rows.filter((row) => row.expected && !row.running).length,
   }
   lastMetrics = metrics
   void client.setex(cacheKey, 5, JSON.stringify(metrics)).catch(() => undefined)
@@ -126,7 +158,8 @@ export async function GET() {
   ])
 
   const diagnosticsComplete = collected.fresh && redisHealth.healthy
-  const status = diagnosticsComplete && report.status !== HealthStatus.UNHEALTHY
+  const runtimeHealthy = collected.metrics.runtimeDeficit === 0
+  const status = diagnosticsComplete && runtimeHealthy && report.status !== HealthStatus.UNHEALTHY
     ? report.status
     : HealthStatus.DEGRADED
 
@@ -143,11 +176,15 @@ export async function GET() {
     diagnostics: {
       complete: diagnosticsComplete,
       budgetMs: HEALTH_DIAGNOSTIC_BUDGET_MS,
+      runtimeHealthy,
+      runtimeDeficit: collected.metrics.runtimeDeficit,
     },
     system: {
       totalConnections: collected.metrics.totalConnections,
       enabledConnections: collected.metrics.enabledConnections,
+      expectedRunningEngines: collected.metrics.expectedRunningEngines,
       runningEngines: collected.metrics.runningEngines,
+      runtimeDeficit: collected.metrics.runtimeDeficit,
       totalTrades: collected.metrics.totalTrades,
       totalOpenPositions: collected.metrics.totalPositions,
     },

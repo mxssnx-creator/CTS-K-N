@@ -12,7 +12,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs"
+import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import process from "node:process"
 
 const port = Math.max(1024, Math.floor(Number(process.env.DIRECT_TRADE_PREFLIGHT_PORT) || 3117))
@@ -30,73 +30,6 @@ const symbolCount = Math.max(1, Math.min(4, Math.floor(Number(process.env.DIRECT
 let server
 let worker
 let outputTail = ""
-
-function nextServerProcessIds() {
-  if (process.platform === "win32") return []
-  let entries = []
-  try { entries = readdirSync("/proc", { withFileTypes: true }) } catch { return [] }
-  const pids = []
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue
-    try {
-      if (readFileSync(`/proc/${entry.name}/comm`, "utf8").trim().startsWith("next-server")) {
-        pids.push(Number(entry.name))
-      }
-    } catch { /* process exited during inspection */ }
-  }
-  return pids
-}
-
-function listeningProcessIds(targetPort) {
-  if (process.platform === "win32") return []
-  const portHex = Number(targetPort).toString(16).toUpperCase().padStart(4, "0")
-  const socketInodes = new Set()
-  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
-    let contents = ""
-    try { contents = readFileSync(table, "utf8") } catch { continue }
-    for (const line of contents.split("\n").slice(1)) {
-      const fields = line.trim().split(/\s+/)
-      if (fields.length >= 10 && fields[3] === "0A" && String(fields[1] || "").endsWith(`:${portHex}`)) {
-        socketInodes.add(fields[9])
-      }
-    }
-  }
-  if (socketInodes.size === 0) return []
-  let entries = []
-  try { entries = readdirSync("/proc", { withFileTypes: true }) } catch { return [] }
-  const pids = []
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue
-    let descriptors = []
-    try { descriptors = readdirSync(`/proc/${entry.name}/fd`) } catch { continue }
-    for (const descriptor of descriptors) {
-      try {
-        const match = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/${entry.name}/fd/${descriptor}`))
-        if (match && socketInodes.has(match[1])) {
-          pids.push(Number(entry.name))
-          break
-        }
-      } catch { /* descriptor exited during inspection */ }
-    }
-  }
-  return pids
-}
-
-function preflightProcessIds() {
-  if (process.platform === "win32") return []
-  let entries = []
-  try { entries = readdirSync("/proc", { withFileTypes: true }) } catch { return [] }
-  const marker = `NEXT_DIST_DIR=${preflightDistDir}`
-  const pids = []
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue
-    try {
-      const environment = readFileSync(`/proc/${entry.name}/environ`, "utf8").split("\0")
-      if (environment.includes(marker)) pids.push(Number(entry.name))
-    } catch { /* process exited or hides its environment */ }
-  }
-  return pids
-}
 
 function appendTail(chunk) {
   outputTail = `${outputTail}${String(chunk)}`.slice(-24_000)
@@ -159,9 +92,10 @@ async function stopChild(child) {
     new Promise((resolve) => child.once("exit", resolve)),
     sleep(5_000),
   ])
-  // Next can replace its compiler/server child while the wrapper is exiting.
-  // Re-signal the private process group for a bounded interval so no late
-  // child can recreate the isolated dist directory after cleanup.
+  // The child was spawned detached and therefore owns a private process group.
+  // Signal only that exact group. Scanning /proc for every new next-server or
+  // listener on the port can kill unrelated workspaces and is never safe in a
+  // shared persistent runner.
   for (let attempt = 0; attempt < 10; attempt++) {
     try { process.kill(-child.pid, "SIGKILL") } catch { /* group already stopped */ }
     await sleep(100)
@@ -171,39 +105,11 @@ async function stopChild(child) {
       break
     }
   }
-  if (child.nextServerBefore || child.listeningBefore) {
-    let quietPasses = 0
-    for (let pass = 0; pass < 30 && quietPasses < 5; pass++) {
-      const lateNextServers = nextServerProcessIds()
-        .filter((pid) => !(child.nextServerBefore || new Set()).has(pid))
-      const latePortProcesses = listeningProcessIds(port)
-        .filter((pid) => !(child.listeningBefore || new Set()).has(pid))
-      // Compiler children do not listen and can use `node` rather than the
-      // `next-server` comm name. The unique dist env marker is therefore the
-      // exact final ownership check for every process allowed to write here.
-      const lateOwned = [...new Set([
-        ...lateNextServers,
-        ...latePortProcesses,
-        ...preflightProcessIds(),
-      ])]
-      if (lateOwned.length === 0) {
-        quietPasses++
-      } else {
-        quietPasses = 0
-        for (const pid of lateOwned) {
-          try { process.kill(pid, "SIGKILL") } catch { /* process exited during inspection */ }
-        }
-      }
-      await sleep(100)
-    }
-  }
 }
 
 async function main() {
   rmSync(snapshotPath, { force: true })
   rmSync(preflightDistDir, { recursive: true, force: true })
-  const nextServerBefore = new Set(nextServerProcessIds())
-  const listeningBefore = new Set(listeningProcessIds(port))
   server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "-H", "127.0.0.1", "-p", String(port)], {
     cwd: process.cwd(),
     detached: process.platform !== "win32",
@@ -226,8 +132,6 @@ async function main() {
     },
     stdio: ["ignore", "pipe", "pipe"],
   })
-  server.nextServerBefore = nextServerBefore
-  server.listeningBefore = listeningBefore
   server.stdout.on("data", appendTail)
   server.stderr.on("data", appendTail)
 

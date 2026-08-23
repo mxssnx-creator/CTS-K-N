@@ -158,8 +158,12 @@ function assertStatsRelationships(stats) {
   const overview = stats?.connectionStageOverview
   if (
     !overview ||
-    overview?.schemaVersion !== 1 ||
+    overview?.schemaVersion !== 2 ||
+    overview?.semantics !== "latest-cycle-and-current-open-stage-relations" ||
     overview?.pfComparison?.window !== 50 ||
+    !overview?.snapshot ||
+    !overview?.snapshot?.coverage ||
+    !overview?.latestCycle ||
     !Array.isArray(overview?.integrity?.errors)
   ) {
     throw new Error("Connection Stage Overview is missing its exact 50-position integrity contract")
@@ -174,7 +178,16 @@ function assertStatsRelationships(stats) {
     liveTotal: overview?.live?.total,
     liveOrdersPlaced: overview?.live?.orders?.placed,
     liveOrdersRunning: overview?.live?.orders?.running,
+    coverageProcessed: overview?.snapshot?.coverage?.processed,
+    coverageTotal: overview?.snapshot?.coverage?.total,
+    latestCycleBaseTotal: overview?.latestCycle?.base?.total,
+    latestCycleMainOverall: overview?.latestCycle?.main?.overall,
+    latestCycleRealValid: overview?.latestCycle?.real?.valid,
+    latestCycleLiveTotal: overview?.latestCycle?.live?.total,
   })) finiteNonNegative(value, `connectionStageOverview.${label}`)
+  if (Number(overview.snapshot.coverage.processed) > Number(overview.snapshot.coverage.total)) {
+    throw new Error("Connection Stage Overview snapshot coverage exceeds total")
+  }
   if (Number(overview.base.valid) > Number(overview.base.total)) {
     throw new Error("Connection Stage Overview Base Valid exceeds Total")
   }

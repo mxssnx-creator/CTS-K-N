@@ -3,6 +3,7 @@ import {
   getStrategySetClosedResultKeys,
   getStrategySetLedgerSnapshot,
   getStrategySetWindowBatch,
+  getStrategyVariantOutcomeStats,
   getValidPositions,
   markStrategyPositionInactive,
   recordStrategyPositionEntry,
@@ -28,6 +29,8 @@ describe("confirmed strategy-position entry ledger", () => {
     `axis_pos_acc:${connectionId}`,
     `hedge_pos_acc:${connectionId}`,
     `valid_positions:${connectionId}`,
+    `strategy_variant_outcome_ids:${connectionId}`,
+    `strategy_variant_outcomes:${connectionId}:default`,
   ]
 
   afterAll(async () => {
@@ -113,6 +116,14 @@ describe("confirmed strategy-position entry ledger", () => {
       active_memberships: "0",
       exact_closed: "1",
     })
+    await expect(getStrategyVariantOutcomeStats(connectionId, "default")).resolves.toMatchObject({
+      sampleCount: 1,
+      grossProfit: 2.5,
+      grossLoss: 0,
+      netPnl: 2.5,
+      averageDrawdownTime: 7,
+      profitFactor: 99,
+    })
 
     // A delayed exchange/order reconciliation retry after terminal close must
     // remain a no-op. It may not resurrect the position's active Set ownership.
@@ -140,6 +151,60 @@ describe("confirmed strategy-position entry ledger", () => {
     await client.hset(`strategy_set_closed_counts:${connectionId}`, "legacy-unindexed-set", "1")
     await expect(getStrategySetClosedResultKeys(connectionId)).resolves.toBeNull()
     await client.hdel(`strategy_set_closed_counts:${connectionId}`, "legacy-unindexed-set")
+  })
+
+  test("keeps Default and Trailing realised PF/DDT in independent outcome ledgers", async () => {
+    const variantConnectionId = `${connectionId}-variants`
+    const rows = [
+      {
+        positionId: "default-position",
+        setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u1",
+        variant: "default" as const,
+        pnl: 4,
+        ddt: 5,
+      },
+      {
+        positionId: "trailing-position",
+        setKey: "BTCUSDT:direction:long:t30-10#axis:p4_l1_c1_opos_dlong_u1",
+        variant: "trailing" as const,
+        pnl: -2,
+        ddt: 19,
+      },
+    ]
+    for (const row of rows) {
+      await recordStrategyPositionEntry({
+        connectionId: variantConnectionId,
+        positionId: row.positionId,
+        entryId: `${row.positionId}:initial`,
+        setKey: row.setKey,
+        parentSetKey: "BTCUSDT:direction:long",
+        symbol: "BTCUSDT",
+        indicationType: "direction",
+        direction: "long",
+        strategyVariant: row.variant,
+      })
+      await markStrategyPositionInactive(variantConnectionId, row.positionId, {
+        pnl: row.pnl,
+        drawdownMinutes: row.ddt,
+        strategyVariant: row.variant,
+        accountingSource: "exchange_settlement",
+      })
+    }
+
+    await expect(getStrategyVariantOutcomeStats(variantConnectionId, "default")).resolves.toMatchObject({
+      sampleCount: 1,
+      grossProfit: 4,
+      grossLoss: 0,
+      averageDrawdownTime: 5,
+      profitFactor: 99,
+    })
+    await expect(getStrategyVariantOutcomeStats(variantConnectionId, "trailing")).resolves.toMatchObject({
+      sampleCount: 1,
+      grossProfit: 0,
+      grossLoss: 2,
+      averageDrawdownTime: 19,
+      profitFactor: 0,
+    })
   })
 
   test("active position and exact Set memberships have no clock and remain identical across long cycle reads", async () => {

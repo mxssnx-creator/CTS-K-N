@@ -24,6 +24,7 @@ import { toast } from "sonner"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import type { ExchangeConnection } from "@/lib/types"
 import { normalizeIdentityVolumeFactor } from "@/lib/constants"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
@@ -105,7 +106,7 @@ export function ConnectionCard({
   const [showActivateTradeDialog, setShowActivateTradeDialog] = useState(false)
   const [presetConfig, setPresetConfig] = useState({
     volumeFactor: 1,
-    profitFactorMin: 0.6,
+    profitFactorMin: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
     maxDrawdownTime: 12,
     trailingEnabled: true,
     blockEnabled: true,
@@ -294,7 +295,7 @@ export function ConnectionCard({
           const data = await response.json()
           setPresetConfig({
             volumeFactor: normalizeIdentityVolumeFactor(data.volume_factor),
-            profitFactorMin: data.profit_factor_min || 0.6,
+            profitFactorMin: Number(data.profit_factor_min ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT),
             maxDrawdownTime: data.max_drawdown_time || 12,
             trailingEnabled: data.trailing_enabled !== false,
             blockEnabled: data.block_enabled !== false,

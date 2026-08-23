@@ -28,6 +28,7 @@ import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { useExchange } from "@/lib/exchange-context"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import {
   PRESET_INDICATOR_TYPES,
   type PresetIndicatorType,
@@ -684,7 +685,7 @@ export default function PresetsPage() {
 
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
         <StatCard icon={Database} label="Presets" value={String(overview?.summary.total || 0)} detail={`${overview?.summary.symbols || 0} symbols · ${overview?.summary.indicatorTypes || 0} types`} />
-        <StatCard icon={ShieldCheck} label="Eligible" value={String(overview?.summary.eligible || 0)} detail={`PF ≥ ${formatNumber(overview?.settings.minProfitFactor || 0.7, 1)}`} tone="text-emerald-500" />
+        <StatCard icon={ShieldCheck} label="Eligible" value={String(overview?.summary.eligible || 0)} detail={`PF ≥ ${formatNumber(overview?.settings.minProfitFactor ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT, 1)}`} tone="text-emerald-500" />
         <StatCard icon={Check} label="Selected" value={String(overview?.summary.selected || 0)} detail="Best per symbol and indication" tone="text-blue-500" />
         <StatCard icon={TrendingUp} label="Average PF" value={formatProfitFactor(overview?.summary.averageProfitFactor || 0)} detail="Position-cost normalized" tone="text-emerald-500" />
         <StatCard icon={Target} label="Win rate" value={`${formatNumber(overview?.summary.averageWinRate || 0, 1)}%`} detail={`Net ${formatNumber(overview?.summary.netR || 0)}R`} />
@@ -704,7 +705,7 @@ export default function PresetsPage() {
                 <div key={`${row.day}-${row.date}`} className="group flex min-w-0 flex-1 flex-col items-center justify-end gap-1">
                   <div className="hidden text-[9px] tabular-nums text-muted-foreground sm:block">{formatProfitFactor(row.profitFactor)}</div>
                   <div
-                    className={`w-full max-w-10 rounded-t transition-colors ${row.profitFactor >= (overview?.settings.minProfitFactor || 0.7) ? "bg-emerald-500/75 group-hover:bg-emerald-500" : "bg-amber-500/60 group-hover:bg-amber-500"}`}
+                    className={`w-full max-w-10 rounded-t transition-colors ${row.profitFactor >= (overview?.settings.minProfitFactor ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT) ? "bg-emerald-500/75 group-hover:bg-emerald-500" : "bg-amber-500/60 group-hover:bg-amber-500"}`}
                     style={{ height: `${height}%` }}
                     title={`${row.date}: PF ${formatProfitFactor(row.profitFactor)}, ${row.positions} positions, ${formatNumber(row.netR)}R`}
                   />
@@ -786,7 +787,7 @@ export default function PresetsPage() {
 
                 <PresetDailyDiagram
                   rows={preset.metrics.daily}
-                  minimumProfitFactor={overview?.settings.minProfitFactor || 0.7}
+                  minimumProfitFactor={overview?.settings.minProfitFactor ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT}
                 />
 
                 <Button

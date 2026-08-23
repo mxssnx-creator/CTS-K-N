@@ -62,9 +62,39 @@ describe("connection stage overview", () => {
         ],
         ordersPlaced: 25,
       },
+      cycle: {
+        base: { total: 100, valid: 80 },
+        main: { valid: 80, overall: 140 },
+        real: { valid: 70, active: 4, activeExactSets: 11 },
+        live: { total: 9, mirrored: 6, executable: 5 },
+      },
+      snapshot: {
+        updatedAt: Date.now() - 1_000,
+        engineRunning: true,
+        coverage: { processed: 12, total: 12, complete: true },
+        stages: {
+          base: { covered: 12, total: 12, fresh: true, complete: true },
+          main: { covered: 12, total: 12, fresh: true, complete: true },
+          real: { covered: 12, total: 12, fresh: true, complete: true },
+        },
+      },
       closedPositions: [],
     })
 
+    expect(overview.schemaVersion).toBe(2)
+    expect(overview.semantics).toBe("latest-cycle-and-current-open-stage-relations")
+    expect(overview.snapshot).toMatchObject({
+      fresh: true,
+      complete: true,
+      engineRunning: true,
+      coverage: { processed: 12, total: 12, percent: 100, complete: true },
+    })
+    expect(overview.latestCycle).toMatchObject({
+      base: { total: 100, valid: 80 },
+      main: { valid: 80, overall: 140 },
+      real: { valid: 70, active: 4, activeExactSets: 11 },
+      live: { total: 9, mirrored: 6, executable: 5 },
+    })
     expect(overview.base).toMatchObject({ total: 10, valid: 8, pfMinimum: 0.8, validPercent: 80 })
     expect(overview.main).toMatchObject({ valid: 8, overall: 14, additional: 6, breakdownComplete: true })
     expect(overview.real).toMatchObject({ valid: 7, active: 4, activeExactSets: 11 })
@@ -88,5 +118,29 @@ describe("connection stage overview", () => {
     expect(overview.main.breakdownComplete).toBe(false)
     expect(overview.integrity.valid).toBe(false)
     expect(overview.integrity.errors).toContain("Main breakdown 0 does not equal Overall 2")
+  })
+
+  test("keeps partial/stopped snapshot coverage explicit without changing cycle counts", () => {
+    const overview = buildConnectionStageOverview({
+      base: { totalOpen: 0, validOpen: 0, pfMinimum: 1.1 },
+      main: { validOpen: 0, overallOpen: 0 },
+      real: { valid: 7, active: 0 },
+      live: {},
+      cycle: { base: { total: 20, valid: 11 } },
+      snapshot: {
+        updatedAt: Date.now() - 10 * 60_000,
+        engineRunning: false,
+        coverage: { processed: 11, total: 12, complete: false },
+      },
+    })
+
+    expect(overview.snapshot).toMatchObject({
+      fresh: false,
+      complete: false,
+      engineRunning: false,
+      coverage: { processed: 11, total: 12, percent: 91.7, complete: false },
+    })
+    expect(overview.latestCycle.base).toEqual({ total: 20, valid: 11 })
+    expect(overview.base.total).toBe(0)
   })
 })

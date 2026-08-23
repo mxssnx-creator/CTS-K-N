@@ -1,11 +1,12 @@
 import { timingSafeEqual } from "node:crypto"
+import type { User } from "@/lib/auth"
 
 export type AdminAuthorizationResult =
   | { ok: true }
   | {
       ok: false
-      status: 401 | 503
-      error: "Unauthorized" | "Admin authentication is not configured"
+      status: 401 | 403 | 503
+      error: "Unauthorized" | "Forbidden" | "Admin authentication is not configured"
     }
 
 const UNCONFIGURED_ADMIN_SECRET = /^(?:replace[_-]?me|change[_-]?me|your[_-]?admin)/i
@@ -47,4 +48,55 @@ export function authorizeAdminBearer(
   }
 
   return { ok: true }
+}
+
+type SessionVerifier = (request: Request) => Promise<{
+  authenticated: boolean
+  user: User | null
+}>
+
+const verifyConfiguredSession: SessionVerifier = async (request) => {
+  // Keep the JOSE/browser-session dependency out of bearer-only route module
+  // evaluation. This matters for scripts/tests and still loads the exact same
+  // verifier on the first Admin UI request.
+  const { verifyAuth } = await import("@/lib/auth")
+  return verifyAuth(request)
+}
+
+function isSameOriginBrowserMutation(request: Request): boolean {
+  const fetchSite = String(request.headers.get("sec-fetch-site") || "").toLowerCase()
+  if (fetchSite && fetchSite !== "same-origin") return false
+  const origin = request.headers.get("origin")
+  if (!origin) return true
+  try {
+    const forwardedHost = request.headers.get("x-forwarded-host")
+      || request.headers.get("host")
+      || new URL(request.url).host
+    return new URL(origin).host === forwardedHost
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Authorize an administrative mutation from either a server-to-server bearer
+ * or the product's authenticated same-origin admin session. This keeps the
+ * bearer-only contract for automation while allowing the built-in Admin UI to
+ * work without exposing ADMIN_SECRET to browser JavaScript.
+ */
+export async function authorizeAdminRequest(
+  request: Request,
+  configuredSecret = process.env.ADMIN_SECRET,
+  verifySession: SessionVerifier = verifyConfiguredSession,
+): Promise<AdminAuthorizationResult> {
+  const header = request.headers.get("authorization")
+  if (header) return authorizeAdminBearer(header, configuredSecret)
+  if (!isSameOriginBrowserMutation(request)) {
+    return { ok: false, status: 403, error: "Forbidden" }
+  }
+  const session = await verifySession(request).catch(() => ({ authenticated: false, user: null }))
+  if (session.authenticated && String(session.user?.role || "").toLowerCase() === "admin") {
+    return { ok: true }
+  }
+  return { ok: false, status: 401, error: "Unauthorized" }
 }

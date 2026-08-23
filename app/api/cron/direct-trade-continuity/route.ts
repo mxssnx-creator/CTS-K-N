@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server"
 import { getRedisClient, initRedis, withSharedPersistenceLease } from "@/lib/redis-db"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
+import {
+  DIRECT_TRADE_CONNECTION_INDEX_KEY,
+  directTradeKeyspace,
+  normalizeDirectTradeConnectionId,
+} from "@/lib/direct-trade-keyspace"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
 export const fetchCache = "force-no-store"
 
-const STATE_KEY = "direct_trade:state"
-const PROCESSOR_KEY = "direct_trade:processor"
-const RECOVERY_REQUEST_KEY = "direct_trade:processor:recovery-request"
 const LOCK_KEY = "cron:direct-trade-continuity:lock"
 const MINUTE_DEDUP_PREFIX = "cron:direct-trade-continuity:minute"
 const DIAGNOSTIC_KEY = "system:coordination:direct-trade-continuity"
@@ -53,27 +55,83 @@ export async function GET(request: Request) {
     }
 
     try {
-      const [stateRaw, processorRaw] = await Promise.all([
-        client.get(STATE_KEY),
-        client.get(PROCESSOR_KEY),
+      const indexedIds = await client.smembers(DIRECT_TRADE_CONNECTION_INDEX_KEY).catch(() => [])
+      const legacyKeys = directTradeKeyspace()
+      const [legacyStateRaw, legacyProcessorRaw, legacyPositionsRaw] = await Promise.all([
+        client.get(legacyKeys.state),
+        client.get(legacyKeys.processor),
+        client.get(legacyKeys.positions),
       ])
-      const state = stateRaw ? JSON.parse(stateRaw) : {}
-      const processor = processorRaw ? JSON.parse(processorRaw) : null
-      const lastTickMs = Date.parse(String(processor?.lastTick || ""))
-      const hasOpenPositions = Math.max(0, Number(processor?.positionCount) || 0) > 0
-      const required = state?.enabled === true || hasOpenPositions
-      const healthy = !required || (Number.isFinite(lastTickMs) && startedAt - lastTickMs < PROCESSOR_STALE_MS)
-      const recoveryRequested = required && !healthy
-
-      if (recoveryRequested) {
-        // SET-NX keeps retry requests coalesced while a service manager is
-        // already restarting a worker. It never changes the processor lease.
-        await client.set(RECOVERY_REQUEST_KEY, JSON.stringify({
-          requestedAt: new Date(startedAt).toISOString(),
-          reason: processor ? "stale-heartbeat" : "missing-heartbeat",
-          source: source(request),
-        }), { NX: true, EX: 120 }).catch(() => null)
+      const indexedScopes = [
+        ...new Set(indexedIds
+          .map(normalizeDirectTradeConnectionId)
+          .filter((id): id is string => Boolean(id))),
+      ]
+      let legacyConnectionId: string | null = null
+      try {
+        legacyConnectionId = normalizeDirectTradeConnectionId(
+          legacyStateRaw ? JSON.parse(legacyStateRaw)?.connectionId : null,
+        )
+      } catch {
+        // A malformed legacy state remains isolated from modern scopes.
       }
+      // Migration v100 deliberately retains legacy recovery evidence. Once
+      // the same connection has a scoped worker, do not supervise that old
+      // namespace as a second logical engine or restart the service forever
+      // because of its intentionally stale heartbeat.
+      const includeLegacy = Boolean(legacyStateRaw || legacyProcessorRaw)
+        && (!legacyConnectionId || !indexedScopes.includes(legacyConnectionId))
+      const scopes: Array<string | null> = [
+        ...indexedScopes,
+        ...(includeLegacy ? [null] : []),
+      ]
+      const scopeResults = await Promise.all(scopes.map(async (connectionId) => {
+        const keys = directTradeKeyspace(connectionId)
+        const [stateRaw, processorRaw, positionsRaw] = connectionId === null
+          ? [legacyStateRaw, legacyProcessorRaw, legacyPositionsRaw]
+          : await Promise.all([client.get(keys.state), client.get(keys.processor), client.get(keys.positions)])
+        const state = stateRaw ? JSON.parse(stateRaw) : {}
+        const processor = processorRaw ? JSON.parse(processorRaw) : null
+        const positions = positionsRaw ? JSON.parse(positionsRaw) : null
+        const lastTickMs = Date.parse(String(processor?.lastTick || ""))
+        const exactNonTerminalPositions = Array.isArray(positions)
+          ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
+          : null
+        const reportedOpenPositions = Number(processor?.openPositionCount)
+        const reportedOpeningPositions = Number(processor?.openingPositionCount)
+        const hasOpenPositions = exactNonTerminalPositions != null
+          ? exactNonTerminalPositions > 0
+          : Number.isFinite(reportedOpenPositions) || Number.isFinite(reportedOpeningPositions)
+            ? Math.max(0, reportedOpenPositions || 0) + Math.max(0, reportedOpeningPositions || 0) > 0
+            // Rolling-upgrade fallback only. New workers publish exact open
+            // counters and a persisted positions list, so terminal history no
+            // longer causes permanent, unnecessary service restarts.
+            : Math.max(0, Number(processor?.positionCount) || 0) > 0
+        const required = state?.enabled === true || hasOpenPositions
+        const healthy = !required || (Number.isFinite(lastTickMs) && startedAt - lastTickMs < PROCESSOR_STALE_MS)
+        const recoveryRequested = required && !healthy
+        if (recoveryRequested) {
+          // SET-NX keeps retry requests coalesced while a service manager is
+          // already restarting a worker. It never changes a processor lease.
+          await client.set(keys.recoveryRequest, JSON.stringify({
+            connectionId,
+            requestedAt: new Date(startedAt).toISOString(),
+            reason: processor ? "stale-heartbeat" : "missing-heartbeat",
+            source: source(request),
+          }), { NX: true, EX: 120 }).catch(() => null)
+        }
+        return {
+          connectionId,
+          required,
+          healthy,
+          recoveryRequested,
+          openPositions: exactNonTerminalPositions ?? Math.max(0, reportedOpenPositions || 0),
+          lastTick: processor?.lastTick || null,
+        }
+      }))
+      const required = scopeResults.some((entry) => entry.required)
+      const healthy = scopeResults.every((entry) => entry.healthy)
+      const recoveryRequested = scopeResults.some((entry) => entry.recoveryRequested)
 
       const finishedAt = Date.now()
       await client.hset(DIAGNOSTIC_KEY, {
@@ -93,7 +151,8 @@ export async function GET(request: Request) {
         required,
         healthy,
         recoveryRequested,
-        lastTick: processor?.lastTick || null,
+        lastTick: scopeResults.map((entry) => entry.lastTick).filter(Boolean).sort().at(-1) || null,
+        connections: scopeResults,
         durationMs: finishedAt - startedAt,
       })
     } catch (error) {

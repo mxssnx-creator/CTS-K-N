@@ -35,6 +35,8 @@ function upwardHistory() {
 }
 
 describe("Direct-Trade historical calculation route", () => {
+  const originalFetch = global.fetch
+
   beforeEach(() => {
     jest.resetModules()
     jest.clearAllMocks()
@@ -44,7 +46,76 @@ describe("Direct-Trade historical calculation route", () => {
     fetchBingXPublicMock.mockResolvedValue({ ok: true, json: async () => ({ data: history }) })
   })
 
-  afterEach(() => resetInlineRedisGlobals())
+  afterEach(() => {
+    global.fetch = originalFetch
+    resetInlineRedisGlobals()
+  })
+
+  test("binds a scoped calculation to the selected Bybit connection without touching BingX history", async () => {
+    const [{ POST }, { getRedisClient, initRedis }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/calculate/route"),
+      import("@/lib/redis-db"),
+    ])
+    await initRedis()
+    const redis = getRedisClient()
+    await redis.hset("connection:bybit-x01", { id: "bybit-x01", exchange: "bybit" })
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        retCode: 0,
+        result: {
+          list: upwardHistory().map((candle) => [
+            String(candle.time),
+            String(candle.open),
+            String(candle.high),
+            String(candle.low),
+            String(candle.close),
+            String(candle.volume),
+          ]).reverse(),
+        },
+      }),
+    }) as any
+
+    const response = await POST(new Request("http://localhost/api/trade-engine/direct-trade/calculate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        connectionId: "bybit-x01",
+        symbolCount: 1,
+        historyHours: 1,
+        timeframes: ["5m"],
+        strategyTypes: ["standard"],
+        entryTactics: ["breakout"],
+        exitTactics: ["bracket"],
+        trailingEnabled: false,
+        activityVolumeRatio: 0,
+      }),
+    }) as any)
+    const payload = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(payload).toMatchObject({ success: true, connectionId: "bybit-x01", exchange: "bybit" })
+    expect(fetchTopSymbolsMock).toHaveBeenCalledWith("bybit", 4, "volatility_1h")
+    expect(fetchBingXPublicMock).not.toHaveBeenCalled()
+    expect(global.fetch).toHaveBeenCalled()
+    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain("api.bybit.com/v5/market/kline")
+    expect(await redis.get("direct_trade:connection:bybit-x01:calculation")).not.toBeNull()
+    expect(await redis.get("direct_trade:calculation")).toBeNull()
+  })
+
+  test("refuses a connection id that is not present instead of falling back to BingX", async () => {
+    const { POST } = await import("@/app/api/trade-engine/direct-trade/calculate/route")
+    const response = await POST(new Request("http://localhost/api/trade-engine/direct-trade/calculate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ connectionId: "missing-connection", symbolCount: 1 }),
+    }) as any)
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining("was not found") })
+    expect(fetchTopSymbolsMock).not.toHaveBeenCalled()
+    expect(fetchBingXPublicMock).not.toHaveBeenCalled()
+  })
 
   test("evaluates every requested TP/SL/trailing configuration as an independent 60h set", async () => {
     const [{ POST }, { getRedisClient }] = await Promise.all([
