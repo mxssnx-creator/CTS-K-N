@@ -194,7 +194,7 @@ describe("executing Live-stage control barriers", () => {
   })
 
   test("finalizes only zero-fill pre-entry rows that have no exchange handle", () => {
-    for (const status of ["placed", "pending_fill", "placed_unconfirmed"] as const) {
+    for (const status of ["placed", "pending", "pending_fill", "placed_unconfirmed"] as const) {
       expect(__liveStageTest.isPreFillWithoutExchangeHandle(
         { executedQuantity: 0 },
         status,

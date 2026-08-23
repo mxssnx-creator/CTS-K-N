@@ -4156,7 +4156,7 @@ async function accumulateIntoLivePosition(
 }
 
 function isActiveLiveStatus(position: LivePosition): boolean {
-  return ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed", "simulated"]
+  return ["open", "filled", "partially_filled", "placed", "pending", "pending_fill", "placed_unconfirmed", "simulated"]
     .includes(String(position.status || ""))
 }
 
@@ -10878,6 +10878,7 @@ function isPreFillWithoutExchangeHandle(
   return !hasSystemOrderId &&
     Number(position.executedQuantity || 0) <= 0 &&
     (originalStatus === "placed" ||
+      originalStatus === "pending" ||
       originalStatus === "pending_fill" ||
       originalStatus === "placed_unconfirmed")
 }
@@ -11470,6 +11471,7 @@ export async function reconcileLivePositions(
         p.status === "filled" ||
         p.status === "partially_filled" ||
         p.status === "placed" ||
+        p.status === "pending" ||
         p.status === "pending_fill" ||
         p.status === "placed_unconfirmed" ||
         p.status === "closing" ||
@@ -12518,7 +12520,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     }
 
     const openPositions = allOpen.filter(
-      (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "closing" || p.status === "closing_partial",
+      (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "closing" || p.status === "closing_partial",
     )
 
     // ── Batch pre-loop fetches in parallel ─────────────────────────────��─
@@ -12585,7 +12587,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       acc[s] = (acc[s] || 0) + 1
       return acc
     }, {})
-    const placedCount = (statusBreakdown.placed || 0) + (statusBreakdown.pending_fill || 0) + (statusBreakdown.placed_unconfirmed || 0)
+    const placedCount = (statusBreakdown.placed || 0) + (statusBreakdown.pending || 0) + (statusBreakdown.pending_fill || 0) + (statusBreakdown.placed_unconfirmed || 0)
     const simCount = statusBreakdown.simulated || 0
     const totalLive = openPositions.filter((p) => p.status !== "placed" && p.status !== "pending_fill" && p.status !== "placed_unconfirmed").length
     console.log(
