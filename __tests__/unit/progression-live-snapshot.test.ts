@@ -180,7 +180,12 @@ describe("volatile progression stats overlay", () => {
       progression: {},
       prehistoric: {},
       realtime: {},
-      engineState: { active_symbols: '["BTCUSDT"]' },
+      engineState: {
+        active_symbols: '["BTCUSDT"]',
+        status: "running",
+        last_processor_heartbeat: String(now - 1_000),
+      },
+      runningHint: "1",
       strategyDetails: {
         base: {
           "s:BTCUSDT:ts": String(now - 1_000),
@@ -232,6 +237,74 @@ describe("volatile progression stats overlay", () => {
         main: { valid: 1, overall: 2, additional: 1 },
         real: { valid: 1, active: 1, activeExactSets: 1 },
         integrity: { valid: true, errors: [] },
+      },
+    })
+  })
+
+  it("clears cached current-open rows when Redis no longer proves runtime liveness", () => {
+    const now = 1_700_000_000_000
+    const result = overlayVolatileProgressionStats({
+      historic: { symbolsProcessed: 1, symbolsTotal: 1, isComplete: true },
+      realtime: { cycleCounters: {} },
+      strategyRows: {},
+      connectionStageOverview: {
+        base: { total: 8, valid: 5 },
+        main: { valid: 5, overall: 7, breakdown: {} },
+        real: { valid: 4, active: 3, activeExactSets: 3 },
+        integrity: { valid: true, errors: [] },
+      },
+    }, {
+      progression: {},
+      prehistoric: { symbols_processed: "1" },
+      realtime: {},
+      engineState: {
+        active_symbols: '["BTCUSDT"]',
+        status: "stopped",
+        last_processor_heartbeat: String(now - 10 * 60_000),
+      },
+      runningHint: "0",
+      strategyDetails: {
+        base: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_total": "8",
+          "s:BTCUSDT:row_valid": "5",
+          "s:BTCUSDT:row_total_open": "8",
+          "s:BTCUSDT:row_valid_open": "5",
+        },
+        main: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_valid": "5",
+          "s:BTCUSDT:row_overall": "7",
+          "s:BTCUSDT:row_valid_open": "5",
+          "s:BTCUSDT:row_overall_open": "7",
+        },
+        real: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_valid": "4",
+          "s:BTCUSDT:row_active": "3",
+          "s:BTCUSDT:row_active_exact": "3",
+        },
+      },
+      now,
+    })
+
+    expect(result).toMatchObject({
+      strategyRows: {
+        base: { total: 8, valid: 5, totalOpen: 0, validOpen: 0 },
+        main: { valid: 5, overall: 7, validOpen: 0, overallOpen: 0 },
+        real: { valid: 4, active: 0, activeExactRows: 0 },
+        snapshot: { engineRunning: false },
+      },
+      connectionStageOverview: {
+        snapshot: { engineRunning: false, fresh: false },
+        latestCycle: {
+          base: { total: 8, valid: 5 },
+          main: { valid: 5, overall: 7 },
+          real: { valid: 4, active: 3, activeExactSets: 3 },
+        },
+        base: { total: 0, valid: 0 },
+        main: { valid: 0, overall: 0 },
+        real: { valid: 4, active: 0, activeExactSets: 0 },
       },
     })
   })

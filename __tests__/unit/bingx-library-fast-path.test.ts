@@ -127,4 +127,47 @@ describe("installed bingx-api package fast path", () => {
     expect(cancelOrder).toHaveBeenCalledWith("sdk-order-1", "BTC-USDT", expect.anything())
     expect(connector.getLastOperationTransport("cancelOrder")).toMatchObject({ transport: "bingx-api" })
   })
+
+  test("treats an SDK-thrown already-absent cancellation as success without a REST retry", async () => {
+    const fetchMock = mockServerTimeFetch()
+    const cancelOrder = jest.fn(async () => {
+      throw new Error("109400: order does not exist")
+    })
+    const connector = await connectorWithTradeService({ cancelOrder })
+    const requestsBeforeCancel = fetchMock.mock.calls.length
+
+    await expect(connector.cancelOrder("BTCUSDT", "retired-control-1")).resolves.toEqual({ success: true })
+    expect(cancelOrder).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeCancel)
+    expect(connector.getLastOperationTransport("cancelOrder")).toMatchObject({
+      transport: "bingx-api",
+      fallbackReason: "order already absent",
+    })
+  })
+
+  test("reuses an authoritative missing-order observation instead of cancelling the same id", async () => {
+    const requests: string[] = []
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      requests.push(url.pathname)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/openOrder") {
+        return Response.json({ code: 109400, msg: "order does not exist" })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+    const cancelOrder = jest.fn()
+    const connector = await connectorWithTradeService({ cancelOrder })
+
+    await expect(connector.getOpenOrder("BTCUSDT", "retired-control-2")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("109400"),
+    })
+    await expect(connector.cancelOrder("BTCUSDT", "retired-control-2")).resolves.toEqual({ success: true })
+
+    expect(cancelOrder).not.toHaveBeenCalled()
+    expect(requests.filter((path) => path === "/openApi/swap/v2/trade/openOrder")).toHaveLength(1)
+  })
 })

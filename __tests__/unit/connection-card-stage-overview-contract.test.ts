@@ -4,7 +4,7 @@ import path from "node:path"
 const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), "utf8")
 
 describe("connection card stage overview contract", () => {
-  test("the stats route builds one coordinated current-open overview", () => {
+  test("the stats route builds one coordinated cycle/open overview with real coverage", () => {
     const route = read("app/api/connections/progression/[id]/stats/route.ts")
     expect(route).toContain("buildConnectionStageOverview")
     expect(route).toContain("connectionStageOverview,")
@@ -14,6 +14,10 @@ describe("connection card stage overview contract", () => {
     expect(route).toContain("bySymbol: liveBySymbol")
     expect(route).toContain("positions: liveOrderRelations")
     expect(route).toContain("closedPositions: sharedClosedParsed")
+    expect(route).toContain("summarizeStageRowCoverage")
+    expect(route).toContain("engineRunning: !engineIsStopped")
+    expect(route).toContain('semantics: "latest-cycle-and-current-open-row-snapshot"')
+    expect(route).not.toContain("updatedAt: Date.now(),")
   })
 
   test("the card consumes the canonical stats snapshot once and clears prior connection state", () => {
@@ -52,6 +56,8 @@ describe("connection card stage overview contract", () => {
     expect(liveStage).toContain("realProfitFactorAtEntry")
     expect(card).toContain('data-testid="connection-stage-overview"')
     expect(card).toContain("Stage Overview")
+    expect(card).toContain("Latest completed cycle")
+    expect(card).toContain("stageSnapshot.coverage.processed")
     expect(card).toContain("PF ≥")
     expect(card).toContain("placed/running")
     expect(card).toContain("Real ↔ Live PF")

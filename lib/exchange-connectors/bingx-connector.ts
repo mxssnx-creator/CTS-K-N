@@ -101,7 +101,11 @@ export class BingXConnector extends BaseExchangeConnector {
   //     the cache entry for its clientOrderId.
   private static bingxNotFoundTimestamps: number[] = []
   private static bingxNotFoundCache = new Map<string, number>()
-  private static readonly NOT_FOUND_CACHE_TTL_MS = 180_000
+  // Keep an authoritative absence cached beyond BingX's complete rolling
+  // error window. Re-querying the same retired control id after three minutes
+  // (while it was still inside the 480-second venue window) recreated the
+  // 109400/109429 lockout on long-running servers.
+  private static readonly NOT_FOUND_CACHE_TTL_MS = 600_000
   private static readonly NOT_FOUND_WINDOW_MS = 480_000
   private static readonly NOT_FOUND_SOFT_LIMIT = 12
   private static readonly NOT_FOUND_SOFT_COOLDOWN_MS = 90_000
@@ -677,11 +681,15 @@ export class BingXConnector extends BaseExchangeConnector {
 
   private isOrderAlreadyGone(data: any): boolean {
     const code = String(data?.code ?? "")
-    const message = String(data?.msg ?? data?.message ?? "").toLowerCase()
+    const message = String(data?.msg ?? data?.message ?? data?.error ?? "").toLowerCase()
     return (
       message.includes("order does not exist") ||
       message.includes("order not exist") ||
-      (code === "109400" && message.includes("not exist"))
+      message.includes("order not found") ||
+      message.includes("order already cancelled") ||
+      message.includes("order already canceled") ||
+      ((code === "109400" || code === "109421" || code === "101500") &&
+        (message.includes("not exist") || message.includes("not found")))
     )
   }
 
@@ -1648,6 +1656,14 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId: string,
   ): Promise<{ success: boolean; error?: string }> {
     try {
+      // A preceding authoritative lookup may already have proved that this
+      // exact venue order is absent. Cancellation is idempotent, so do not
+      // spend another BingX not-found response on the same retired control id.
+      if (BingXConnector.isNotFoundCached(symbol, orderId)) {
+        this.markOperationTransport("cancelOrder", "signed-rest-fallback", "order already absent (negative cache)")
+        this.invalidateOpenOrdersSnapshot(symbol)
+        return { success: true }
+      }
       this.log(`Cancelling order ${orderId} for ${symbol}`)
 
       const isSpot = this.credentials.apiType === "spot"
@@ -1666,6 +1682,17 @@ export class BingXConnector extends BaseExchangeConnector {
           }
           throw new Error(`${sdkData?.code ?? "unknown"}: ${sdkData?.msg || "Library cancel rejected"}`)
         } catch (sdkError) {
+          // bingx-api throws rejected business responses instead of returning
+          // them on some versions. An already-absent order is an idempotent
+          // cancellation success; falling through to REST would spend a second
+          // not-found request and rapidly trip BingX's 20/480s lockout.
+          if (this.isOrderAlreadyGone(sdkError)) {
+            this.sdkLastError = ""
+            this.markOperationTransport("cancelOrder", "bingx-api", "order already absent")
+            this.invalidateOpenOrdersSnapshot(symbol)
+            this.log(`Order ${orderId} already gone via bingx-api — treating as cancelled`)
+            return { success: true }
+          }
           this.recordSdkFallback("cancelOrder", sdkError)
         }
       }
@@ -1956,7 +1983,7 @@ export class BingXConnector extends BaseExchangeConnector {
         }
         // 109421 "order does not exist" is a business response: count it,
         // negative-cache it, and return null like any other miss.
-        if (data.code === "109421" || data.code === 109421) {
+        if (this.isOrderAlreadyGone(data)) {
           this.recordBingxOrderNotFound("getOrder", symbol, orderId)
         }
         return null
@@ -3829,9 +3856,9 @@ export class BingXConnector extends BaseExchangeConnector {
           }
           // 109421 "order does not exist": count + negative-cache, return a
           // plain miss WITHOUT engaging the global cooldown.
-          if (data.code === "109421" || data.code === 109421) {
+          if (this.isOrderAlreadyGone(data)) {
             this.recordBingxOrderNotFound("getOpenOrder", symbol, orderId, clientOrderId)
-            return { success: false, error: `BingX API error (code=109421): ${data.msg || "order does not exist"}` }
+            return { success: false, error: `BingX API error (code=${data.code}): ${data.msg || "order does not exist"}` }
           }
           throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
         }
@@ -3853,6 +3880,7 @@ export class BingXConnector extends BaseExchangeConnector {
         errorMsg.includes("order does not exist") ||
         errorMsg.includes("order not exist") ||
         errorMsg.includes("code=109421") ||
+        (errorMsg.includes("code=109400") && errorMsg.toLowerCase().includes("not exist")) ||
         errorMsg.includes("code=100421") ||
         errorMsg.includes("timestamp")
 
@@ -3918,9 +3946,9 @@ export class BingXConnector extends BaseExchangeConnector {
           }
           // 109421 "order does not exist": count + negative-cache, return a
           // plain miss WITHOUT engaging the global cooldown.
-          if (data.code === "109421" || data.code === 109421) {
+          if (this.isOrderAlreadyGone(data)) {
             this.recordBingxOrderNotFound("getOrderDetails", symbol, orderId, clientOrderId)
-            return { success: false, error: `BingX API error (code=109421): ${data.msg || "order does not exist"}` }
+            return { success: false, error: `BingX API error (code=${data.code}): ${data.msg || "order does not exist"}` }
           }
           throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
         }
@@ -3942,6 +3970,7 @@ export class BingXConnector extends BaseExchangeConnector {
         errorMsg.includes("order does not exist") ||
         errorMsg.includes("order not exist") ||
         errorMsg.includes("code=109421") ||
+        (errorMsg.includes("code=109400") && errorMsg.toLowerCase().includes("not exist")) ||
         errorMsg.includes("code=100421") ||
         errorMsg.includes("timestamp")
 

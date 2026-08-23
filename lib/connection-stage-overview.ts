@@ -215,10 +215,34 @@ export interface StageOverviewInput {
     }>
     ordersPlaced?: number
   }
+  cycle?: {
+    base?: { total?: number; valid?: number }
+    main?: { valid?: number; overall?: number }
+    real?: { valid?: number; active?: number; activeExactSets?: number }
+    live?: { total?: number; mirrored?: number; executable?: number }
+  }
+  snapshot?: {
+    updatedAt?: number
+    engineRunning?: boolean
+    coverage?: {
+      processed?: number
+      total?: number
+      complete?: boolean
+    }
+    stages?: Record<string, {
+      covered?: number
+      total?: number
+      oldestUpdatedAt?: number
+      latestUpdatedAt?: number
+      fresh?: boolean
+      complete?: boolean
+    }>
+  }
   closedPositions?: ClosedStagePosition[]
 }
 
 export function buildConnectionStageOverview(input: StageOverviewInput) {
+  const now = Date.now()
   const baseTotal = nonNegative(input.base?.totalOpen)
   const baseValid = nonNegative(input.base?.validOpen)
   const mainValid = nonNegative(input.main?.validOpen)
@@ -260,6 +284,24 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
   }
   const runningOrderIds = new Set([...pendingEntryIds, ...controlOrderIds])
 
+  const snapshotUpdatedAt = Math.max(0, finite(input.snapshot?.updatedAt))
+  const snapshotAgeMs = snapshotUpdatedAt > 0 ? Math.max(0, now - snapshotUpdatedAt) : null
+  const coverageTotal = nonNegative(input.snapshot?.coverage?.total)
+  const coverageProcessed = Math.min(
+    nonNegative(input.snapshot?.coverage?.processed),
+    coverageTotal || Number.MAX_SAFE_INTEGER,
+  )
+  const stageSnapshots = Object.fromEntries(
+    Object.entries(input.snapshot?.stages || {}).map(([stage, value]) => [stage, {
+      covered: nonNegative(value?.covered),
+      total: nonNegative(value?.total),
+      oldestUpdatedAt: Math.max(0, finite(value?.oldestUpdatedAt)),
+      latestUpdatedAt: Math.max(0, finite(value?.latestUpdatedAt)),
+      fresh: value?.fresh === true,
+      complete: value?.complete === true,
+    }]),
+  )
+
   const errors: string[] = []
   if (baseValid > baseTotal) errors.push(`Base Valid ${baseValid} exceeds Base Total ${baseTotal}`)
   if (mainOverall < mainValid) errors.push(`Main Overall ${mainOverall} is below Main Valid ${mainValid}`)
@@ -272,8 +314,42 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
   }
 
   return {
-    schemaVersion: 1,
-    semantics: "current-open-stage-relations",
+    schemaVersion: 2,
+    semantics: "latest-cycle-and-current-open-stage-relations",
+    snapshot: {
+      updatedAt: snapshotUpdatedAt,
+      ageMs: snapshotAgeMs,
+      fresh: input.snapshot?.engineRunning === true && snapshotAgeMs !== null && snapshotAgeMs <= 5 * 60_000,
+      complete: input.snapshot?.coverage?.complete === true,
+      engineRunning: input.snapshot?.engineRunning === true,
+      coverage: {
+        processed: coverageProcessed,
+        total: coverageTotal,
+        percent: coverageTotal > 0 ? rounded((coverageProcessed / coverageTotal) * 100, 1) : 0,
+        complete: input.snapshot?.coverage?.complete === true,
+      },
+      stages: stageSnapshots,
+    },
+    latestCycle: {
+      base: {
+        total: nonNegative(input.cycle?.base?.total),
+        valid: nonNegative(input.cycle?.base?.valid),
+      },
+      main: {
+        valid: nonNegative(input.cycle?.main?.valid),
+        overall: nonNegative(input.cycle?.main?.overall),
+      },
+      real: {
+        valid: nonNegative(input.cycle?.real?.valid),
+        active: nonNegative(input.cycle?.real?.active),
+        activeExactSets: nonNegative(input.cycle?.real?.activeExactSets),
+      },
+      live: {
+        total: nonNegative(input.cycle?.live?.total),
+        mirrored: nonNegative(input.cycle?.live?.mirrored),
+        executable: nonNegative(input.cycle?.live?.executable),
+      },
+    },
     base: {
       total: baseTotal,
       valid: baseValid,

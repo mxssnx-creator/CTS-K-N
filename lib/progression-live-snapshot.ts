@@ -1,3 +1,5 @@
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+
 /**
  * Overlay the volatile, worker-owned progression fields onto a cached full
  * stats projection. The complete projection can be expensive for a large
@@ -102,10 +104,51 @@ function aggregateFreshRowField(
   return samples > 0 ? total : number(hash[field] ?? hash[legacyField])
 }
 
+type StageRowCoverage = {
+  covered: number
+  total: number
+  oldestUpdatedAt: number
+  latestUpdatedAt: number
+  fresh: boolean
+  complete: boolean
+}
+
+function summarizeStageRowCoverage(
+  hash: Hash,
+  activeSymbols: Set<string>,
+  expectedSymbols: number,
+  now: number,
+): StageRowCoverage {
+  const timestamps: number[] = []
+  const knownSymbols = new Set<string>()
+  for (const key of Object.keys(hash)) {
+    if (!key.startsWith("s:") || !key.endsWith(":ts")) continue
+    const symbol = key.slice(2, -3).toUpperCase()
+    if (activeSymbols.size > 0 && !activeSymbols.has(symbol)) continue
+    knownSymbols.add(symbol)
+    const timestamp = number(hash[key])
+    if (!(timestamp > 0) || now - timestamp > 5 * 60_000) continue
+    timestamps.push(timestamp)
+  }
+  const total = Math.max(activeSymbols.size, expectedSymbols, knownSymbols.size)
+  const covered = timestamps.length
+  const oldestUpdatedAt = covered > 0 ? Math.min(...timestamps) : 0
+  const latestUpdatedAt = covered > 0 ? Math.max(...timestamps) : 0
+  return {
+    covered,
+    total,
+    oldestUpdatedAt,
+    latestUpdatedAt,
+    fresh: covered > 0 && now - oldestUpdatedAt <= 5 * 60_000,
+    complete: total > 0 && covered >= total,
+  }
+}
+
 function overlayCurrentStrategyRows(
   next: JsonRecord,
   strategyDetails: NonNullable<ProgressionVolatileOverlayInput["strategyDetails"]>,
   engineState: Hash,
+  engineRunning: boolean,
   now: number,
 ): void {
   const activeSymbols = activeSymbolFilter(engineState)
@@ -122,6 +165,13 @@ function overlayCurrentStrategyRows(
   // truthful view until a current snapshot exists.
   if (!hasBaseRows && !hasMainRows && !hasRealRows && !hasLiveRows) return
 
+  const expectedSymbols = number(record(next.historic).symbolsTotal)
+  const baseCoverage = summarizeStageRowCoverage(baseHash, activeSymbols, expectedSymbols, now)
+  const mainCoverage = summarizeStageRowCoverage(mainHash, activeSymbols, expectedSymbols, now)
+  const realCoverage = summarizeStageRowCoverage(realHash, activeSymbols, expectedSymbols, now)
+  const liveCoverage = summarizeStageRowCoverage(liveHash, activeSymbols, expectedSymbols, now)
+  const openValue = (value: number): number => engineRunning ? value : 0
+
   const rows = record(next.strategyRows)
   const base = record(rows.base)
   const main = record(rows.main)
@@ -135,7 +185,7 @@ function overlayCurrentStrategyRows(
   const mainOverall = aggregateFreshRowField(mainHash, "row_overall", "created_sets", activeSymbols, now)
   const realValid = aggregateFreshRowField(realHash, "row_valid", "created_sets", activeSymbols, now)
   const realEvaluated = aggregateFreshRowField(realHash, "row_real_evaluated", "evaluated", activeSymbols, now)
-  const realActive = aggregateFreshRowField(realHash, "row_active", "sets_running_now", activeSymbols, now)
+  const realActiveCycle = aggregateFreshRowField(realHash, "row_active", "sets_running_now", activeSymbols, now)
   const liveTotal = aggregateFreshRowField(liveHash, "row_total", "evaluated", activeSymbols, now)
   const liveMirrored = aggregateFreshRowField(liveHash, "row_mirrored", "created_sets", activeSymbols, now)
   const baseTotalOpen = aggregateFreshRowField(baseHash, "row_total_open", "sets_running_now", activeSymbols, now)
@@ -157,20 +207,22 @@ function overlayCurrentStrategyRows(
       ...base,
       total: baseTotal,
       valid: baseValid,
-      totalOpen: baseTotalOpen,
-      validOpen: baseValidOpen,
+      totalOpen: openValue(baseTotalOpen),
+      validOpen: openValue(baseValidOpen),
       validRatio: percentage(baseValid, baseTotal),
     } : base,
     main: hasMainRows ? {
       ...main,
       valid: mainValid,
       overall: mainOverall,
-      validOpen: mainValidOpen,
-      overallOpen: mainOverallOpen,
+      validOpen: openValue(mainValidOpen),
+      overallOpen: openValue(mainOverallOpen),
       overallToValidRatio: percentage(mainOverall, mainValid, false),
       breakdown: {
         ...cachedMainBreakdown,
-        ...mainOpenBreakdown,
+        ...Object.fromEntries(
+          Object.entries(mainOpenBreakdown).map(([field, value]) => [field, openValue(value)]),
+        ),
       },
     } : main,
     real: hasRealRows ? {
@@ -178,16 +230,16 @@ function overlayCurrentStrategyRows(
       valid: realValid,
       evaluated: realEvaluated,
       rejected: aggregateFreshRowField(realHash, "row_real_rejected", "row_real_rejected", activeSymbols, now),
-      active: realActive,
-      activeExactRows: realActiveExact,
+      active: openValue(realActiveCycle),
+      activeExactRows: openValue(realActiveExact),
       validRatio: percentage(realValid, realEvaluated),
-      activeRatio: percentage(realActive, realValid),
+      activeRatio: percentage(openValue(realActiveCycle), realValid),
     } : real,
     live: hasLiveRows ? {
       ...live,
       total: liveTotal,
       mirrored: liveMirrored,
-      active: aggregateFreshRowField(liveHash, "row_active", "sets_running_now", activeSymbols, now),
+      active: openValue(aggregateFreshRowField(liveHash, "row_active", "sets_running_now", activeSymbols, now)),
       blockCreated: aggregateFreshRowField(liveHash, "row_live_block_created", "row_live_block_created", activeSymbols, now),
       blockValid: aggregateFreshRowField(liveHash, "row_live_block_valid", "row_live_block_valid", activeSymbols, now),
       executable: aggregateFreshRowField(liveHash, "row_live_executable", "created_sets", activeSymbols, now),
@@ -198,8 +250,31 @@ function overlayCurrentStrategyRows(
         false,
       ),
     } : live,
-    updatedAt: now,
-    semantics: "current-open-row-snapshot",
+    updatedAt: [baseCoverage, mainCoverage, realCoverage].every((stage) => stage.oldestUpdatedAt > 0)
+      ? Math.min(baseCoverage.oldestUpdatedAt, mainCoverage.oldestUpdatedAt, realCoverage.oldestUpdatedAt)
+      : 0,
+    semantics: "latest-cycle-and-current-open-row-snapshot",
+    snapshot: {
+      engineRunning,
+      coverage: {
+        processed: Math.min(
+          number(record(next.historic).symbolsProcessed),
+          baseCoverage.covered,
+          mainCoverage.covered,
+          realCoverage.covered,
+        ),
+        total: Math.max(
+          activeSymbols.size,
+          expectedSymbols,
+          baseCoverage.total,
+          mainCoverage.total,
+          realCoverage.total,
+        ),
+        complete: record(next.historic).isComplete === true &&
+          [baseCoverage, mainCoverage, realCoverage].every((stage) => stage.complete),
+      },
+      stages: { base: baseCoverage, main: mainCoverage, real: realCoverage, live: liveCoverage },
+    },
   }
   next.stageEvalPercent = {
     ...record(next.stageEvalPercent),
@@ -214,6 +289,11 @@ function overlayCurrentStrategyRows(
   // so Main coordination cannot read current while the adjacent card says 0.
   const overview = record(next.connectionStageOverview)
   if (Object.keys(overview).length > 0) {
+    const rowSnapshot = record(record(next.strategyRows).snapshot)
+    const rowCoverage = record(rowSnapshot.coverage)
+    const rowUpdatedAt = number(record(next.strategyRows).updatedAt)
+    const rowCoverageProcessed = number(rowCoverage.processed)
+    const rowCoverageTotal = number(rowCoverage.total)
     const overviewBase = record(overview.base)
     const overviewMain = record(overview.main)
     const overviewReal = record(overview.real)
@@ -221,28 +301,33 @@ function overlayCurrentStrategyRows(
     const effectiveBase = hasBaseRows
       ? {
           ...overviewBase,
-          total: baseTotalOpen,
-          valid: baseValidOpen,
-          validPercent: percentage(baseValidOpen, baseTotalOpen),
+          total: openValue(baseTotalOpen),
+          valid: openValue(baseValidOpen),
+          validPercent: percentage(openValue(baseValidOpen), openValue(baseTotalOpen)),
         }
       : overviewBase
     const effectiveMain = hasMainRows
       ? {
           ...overviewMain,
-          valid: mainValidOpen,
-          overall: mainOverallOpen,
-          additional: Math.max(0, mainOverallOpen - mainValidOpen),
-          expansionPercent: percentage(mainOverallOpen, mainValidOpen, false),
-          breakdown: { ...overviewBreakdown, ...mainOpenBreakdown },
+          valid: openValue(mainValidOpen),
+          overall: openValue(mainOverallOpen),
+          additional: Math.max(0, openValue(mainOverallOpen) - openValue(mainValidOpen)),
+          expansionPercent: percentage(openValue(mainOverallOpen), openValue(mainValidOpen), false),
+          breakdown: {
+            ...overviewBreakdown,
+            ...Object.fromEntries(
+              Object.entries(mainOpenBreakdown).map(([field, value]) => [field, openValue(value)]),
+            ),
+          },
         }
       : overviewMain
     const effectiveReal = hasRealRows
       ? {
           ...overviewReal,
           valid: realValid,
-          active: realActive,
-          activeExactSets: realActiveExact,
-          activePercent: percentage(realActive, realValid),
+          active: openValue(realActiveCycle),
+          activeExactSets: openValue(realActiveExact),
+          activePercent: percentage(openValue(realActiveCycle), realValid),
         }
       : overviewReal
     const effectiveBreakdown = record(effectiveMain.breakdown)
@@ -269,6 +354,35 @@ function overlayCurrentStrategyRows(
     }
     next.connectionStageOverview = {
       ...overview,
+      schemaVersion: 2,
+      semantics: "latest-cycle-and-current-open-stage-relations",
+      snapshot: {
+        updatedAt: rowUpdatedAt,
+        ageMs: rowUpdatedAt > 0
+          ? Math.max(0, now - rowUpdatedAt)
+          : null,
+        fresh: engineRunning && rowUpdatedAt > 0 && now - rowUpdatedAt <= 5 * 60_000,
+        complete: rowCoverage.complete === true,
+        engineRunning,
+        coverage: {
+          ...rowCoverage,
+          processed: rowCoverageProcessed,
+          total: rowCoverageTotal,
+          percent: percentage(rowCoverageProcessed, rowCoverageTotal),
+          complete: rowCoverage.complete === true,
+        },
+        stages: record(rowSnapshot.stages),
+      },
+      latestCycle: {
+        base: { total: baseTotal, valid: baseValid },
+        main: { valid: mainValid, overall: mainOverall },
+        real: { valid: realValid, active: realActiveCycle, activeExactSets: realActiveExact },
+        live: {
+          total: liveTotal,
+          mirrored: liveMirrored,
+          executable: aggregateFreshRowField(liveHash, "row_live_executable", "created_sets", activeSymbols, now),
+        },
+      },
       base: effectiveBase,
       main: { ...effectiveMain, breakdownComplete },
       real: effectiveReal,
@@ -284,6 +398,9 @@ export interface ProgressionVolatileOverlayInput {
   engineState: Hash
   /** The worker-owned phase projection has priority over route-level markers. */
   engineProgression?: Hash
+  runningHint?: unknown
+  globalEngineState?: Hash
+  connectionEnabled?: boolean
   /** Current per-symbol strategy rows; fetched only for a stale full snapshot. */
   strategyDetails?: { base?: Hash; main?: Hash; real?: Hash; live?: Hash }
   now?: number
@@ -314,6 +431,14 @@ export function overlayVolatileProgressionStats(
     engineProgression = {},
     strategyDetails,
   } = input
+  const now = input.now ?? Date.now()
+  const engineRuntime = resolveDistributedEngineRuntime({
+    runningHint: input.runningHint,
+    states: [engineState, engineProgression],
+    globalState: input.globalEngineState,
+    connectionEnabled: input.connectionEnabled,
+    now,
+  })
 
   const activeEpoch = String(
     engineState.symbol_selection_epoch || engineState.quickstart_symbol_generation || "",
@@ -514,7 +639,7 @@ export function overlayVolatileProgressionStats(
   mainCoordination.positionContext = mainContext
   next.mainCoordination = mainCoordination
   if (strategyDetails) {
-    overlayCurrentStrategyRows(next, strategyDetails, engineState, input.now ?? Date.now())
+    overlayCurrentStrategyRows(next, strategyDetails, engineState, engineRuntime.running, now)
   }
 
   const lastUpdate = firstText([
@@ -549,7 +674,7 @@ export function overlayVolatileProgressionStats(
   next.progress = progress
   metadata.volatileProgression = {
     source: "direct-redis-overlay",
-    refreshedAt: input.now ?? Date.now(),
+    refreshedAt: now,
   }
 
   next.historic = historic

@@ -67,6 +67,36 @@ const MINIMUM_SECOND_HISTORY_DENSITY = 0.95
 // is not a valid prehistoric cache and must never make the Main/Real stages
 // skip their bootstrap history.
 const DEFAULT_MINIMUM_HISTORY_CANDLES = 90
+const DEFAULT_MARKET_DATA_FETCH_DEADLINE_MS = 15_000
+
+export function resolveMarketDataFetchDeadlineMs(value: unknown = process.env.MARKET_DATA_FETCH_DEADLINE_MS): number {
+  const parsed = Number(value)
+  const candidate = Number.isFinite(parsed) ? Math.floor(parsed) : DEFAULT_MARKET_DATA_FETCH_DEADLINE_MS
+  return Math.max(1_000, Math.min(60_000, candidate))
+}
+
+/**
+ * Bound both connector construction and the venue read. A connector factory
+ * can perform SDK initialization/time synchronization before `getOHLCV`, so
+ * guarding only the final fetch still allowed Quickstart to wait forever.
+ */
+export async function withMarketDataFetchDeadline<T>(
+  operation: () => Promise<T>,
+  label: string,
+  timeoutMs = resolveMarketDataFetchDeadlineMs(),
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 // Main/Real coordinates are calculated on one-minute closes even though the
 // engine's canonical market-data feed is 1s.  Keep one authoritative minimum
@@ -326,12 +356,13 @@ async function fetchRealMarketData(
     // saved connection ID, and rebuilds when its persisted fingerprint changes.
     for (const conn of candidates) {
       try {
-        const connector = await exchangeConnectorFactory.getOrCreateConnector(String(conn.id))
-        if (!connector) continue
+        const candles = await withMarketDataFetchDeadline(async () => {
+          const connector = await exchangeConnectorFactory.getOrCreateConnector(String(conn.id))
+          if (!connector) return []
 
-        console.log(`[v0] [MarketData] Fetching ${symbol} via stored ${conn.exchange} connection ${conn.id}...`)
-        
-        const candles = await connector.getOHLCV(symbol, timeframe, limit)
+          console.log(`[v0] [MarketData] Fetching ${symbol} via stored ${conn.exchange} connection ${conn.id}...`)
+          return connector.getOHLCV(symbol, timeframe, limit)
+        }, `Market data ${conn.exchange}:${conn.id}:${symbol}`)
         
         if (candles && candles.length > 0) {
           console.log(`[v0] [MarketData] ✓ Fetched ${candles.length} real candles from ${conn.exchange}`)

@@ -1040,6 +1040,13 @@ export class TradeEngineManager {
     this.lockHandle = lockCtx
     this.epoch = lockCtx?.epoch ?? Date.now()
 
+    // Renew the distributed lease for the *entire* start transaction. A
+    // max-symbol historic restore or exchange reconciliation can legitimately
+    // outlive the lease TTL. Starting this ticker only after those awaits let
+    // the lease expire while the manager remained `isStarting`, leaving
+    // Quickstart and continuity stuck behind a duplicate owner.
+    this.startLockExtender()
+
     // Cache config for the watchdog's in-place re-arm path. We do this
     // BEFORE any await so a fast-fail in startup still leaves a usable
     // record of intended intervals.
@@ -1571,7 +1578,6 @@ export class TradeEngineManager {
       // partition or we missed too many beats). This is the only
       // place that gracefully tears down the engine because we
       // discovered we no longer own it.
-      this.startLockExtender()
       // ── Live settings-reload watcher ───���─────────────────────────
       // Picks up operator edits to connection settings and applies
       // them WITHOUT requiring a manual restart. See `applyPendingSettingsChange`.
@@ -5752,7 +5758,9 @@ export class TradeEngineManager {
     }
     this.extendFailuresInARow = 0
     this.lockExtendTimer = setInterval(async () => {
-      if (!this.isRunning) {
+      // Startup is part of the owned transaction; do not tear down the lease
+      // extender while the asynchronous start pipeline is still active.
+      if (!this.isRunning && !this.isStarting) {
         if (this.lockExtendTimer) {
           clearInterval(this.lockExtendTimer)
           this.lockExtendTimer = undefined
