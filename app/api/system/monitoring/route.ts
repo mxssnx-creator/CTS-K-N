@@ -190,6 +190,7 @@ async function buildMonitoringResponse() {
     let indexedConnectionIds: string[] = []
     let indicationSetInventoryKeys = 0
     let indicationOutcomeAuxiliaryKeys = 0
+    let indicationSetInventoryConnections = 0
     try {
       indexedConnectionIds = client ? await collectConnectionIds(client, allKeys) : []
       if (client && indexedConnectionIds.length > 0) {
@@ -210,11 +211,17 @@ async function buildMonitoringResponse() {
           (sum, value) => sum + Math.max(0, Number(value.outcomeAuxiliaries) || 0),
           0,
         )
+        indicationSetInventoryConnections = counts.filter(
+          (value) =>
+            Math.max(0, Number(value.sets) || 0) > 0 ||
+            Math.max(0, Number(value.outcomeAuxiliaries) || 0) > 0,
+        ).length
       }
     } catch {
       indexedConnectionIds = []
       indicationSetInventoryKeys = 0
       indicationOutcomeAuxiliaryKeys = 0
+      indicationSetInventoryConnections = 0
     }
 
     let estimatedDbBytes = 0
@@ -374,6 +381,7 @@ async function buildMonitoringResponse() {
         keys,
         indicationSetInventoryKeys,
         indicationOutcomeAuxiliaryKeys,
+        indicationSetInventoryConnections,
         sets,
         positions1h: positionKeys,
         entries1h: indicationKeys + strategyKeys,
@@ -427,6 +435,7 @@ async function buildMonitoringResponse() {
           keys: 0,
           indicationSetInventoryKeys: 0,
           indicationOutcomeAuxiliaryKeys: 0,
+          indicationSetInventoryConnections: 0,
           sets: 0,
           positions1h: 0,
           entries1h: 0,

@@ -13,6 +13,12 @@ export interface RealVariantPositionStats {
   avgDrawdownTime: number
   passRate: number
   positionCountSource: "confirmed-ledger" | "evaluation-fallback"
+  /** Independent closed-position outcome ledger; never copied from Set evaluation. */
+  performanceSamples?: number
+  performanceSource?: "confirmed-outcome-ledger" | "awaiting-confirmed-outcomes"
+  /** Evaluation-only context kept separate from realised outcome PF/DDT. */
+  evaluationAvgProfitFactor?: number
+  evaluationAvgDrawdownTime?: number
 }
 
 export interface RealAdjustPositionStats extends RealVariantPositionStats {
@@ -283,6 +289,9 @@ function buildVariantStats(
   hasConfirmedVariantCounts: boolean,
 ): RealVariantPositionStats {
   const confirmedPositions = count(validPositionsHash[`by_variant:${variant}`])
+  const performanceSource = metrics.performanceSource === "confirmed-outcome-ledger"
+    ? "confirmed-outcome-ledger"
+    : "awaiting-confirmed-outcomes"
   return {
     positions: hasConfirmedVariantCounts
       ? confirmedPositions
@@ -294,6 +303,10 @@ function buildVariantStats(
     positionCountSource: hasConfirmedVariantCounts
       ? "confirmed-ledger"
       : "evaluation-fallback",
+    performanceSamples: count(metrics.performanceSamples),
+    performanceSource,
+    evaluationAvgProfitFactor: rounded(count(metrics.evaluationAvgProfitFactor), 3),
+    evaluationAvgDrawdownTime: rounded(count(metrics.evaluationAvgDrawdownTime), 1),
   }
 }
 

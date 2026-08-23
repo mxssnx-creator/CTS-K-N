@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 
 export default function RealStrategySettings({
   settings,
@@ -157,13 +158,13 @@ export default function RealStrategySettings({
                   min="0"
                   max="2"
                   step="0.1"
-                  value={settings.strategyRealMinProfitFactor || 0.6}
+                  value={settings.strategyRealMinProfitFactor ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT}
                   onChange={(e) =>
                     handleSettingChange("strategyRealMinProfitFactor", Number.parseFloat(e.target.value))
                   }
                 />
                 <p className="text-xs text-muted-foreground">
-                  Minimum profit factor for real strategy execution (default: 0.6)
+                  Minimum profit factor for real strategy execution (default: 1.1)
                 </p>
               </div>
 

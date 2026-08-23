@@ -1,17 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import { clampDirectTradeSymbolCount } from "@/lib/direct-trade-limits"
 import { fetchTopSymbols, type SortKey } from "@/lib/top-symbols"
 import {
-  DIRECT_TRADE_CONFIGS_KEY,
-  DIRECT_TRADE_CONFIG_MANIFEST_KEY,
-  DIRECT_TRADE_ACTIVE_SIGNAL_KEYS_KEY,
-  DIRECT_TRADE_EXECUTION_INDEX_KEY,
-  DIRECT_TRADE_EXECUTION_SIGNAL_INDEX_KEY,
   deleteDirectTradeConfigGeneration,
   createDirectTradeConfigStoreWriter,
 } from "@/lib/direct-trade-config-store"
-import { fetchBingXMinuteHistory } from "@/lib/direct-trade-market-history"
+import { fetchDirectTradeMinuteHistory } from "@/lib/direct-trade-market-history"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
 import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
 import { CANONICAL_FORCED_SYMBOLS, withCanonicalForcedSymbols } from "@/lib/forced-symbols"
@@ -41,6 +36,11 @@ import {
   type DirectTradeTrailOption,
 } from "@/lib/direct-trade-coordination"
 import directTradeHistoryPolicy from "@/lib/direct-trade-history-policy.cjs"
+import {
+  DIRECT_TRADE_CONNECTION_INDEX_KEY,
+  directTradeKeyspace,
+  normalizeDirectTradeConnectionId,
+} from "@/lib/direct-trade-keyspace"
 
 const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
@@ -50,10 +50,6 @@ export const dynamic = "force-dynamic"
 // exchange without silently truncating the requested independent evaluation.
 export const maxDuration = 300
 
-const DIRECT_TRADE_CALCULATION_KEY = "direct_trade:calculation"
-const DIRECT_TRADE_CALCULATION_PROGRESS_KEY = "direct_trade:calculation-progress"
-const DIRECT_TRADE_STATISTICS_INDEX_KEY = "direct_trade:statistics-index"
-const DIRECT_TRADE_CALCULATION_LEASE_KEY = "direct_trade:calculation:lease"
 const DIRECT_TRADE_CALCULATION_LEASE_SECONDS = 330
 const DIRECT_STOP_LOSS_RATIO_MIN = 0.25
 const DIRECT_STOP_LOSS_RATIO_MAX = 0.75
@@ -61,6 +57,7 @@ const DIRECT_INVERSE_STOP_LOSS_RATIO_MAX = 1.25
 const DIRECT_STOP_LOSS_RATIO_STEP = 0.25
 
 interface CalculationRequest {
+  connectionId?: string
   symbolCount?: number
   symbolOrder?: SortKey
   minVolFactor?: number
@@ -558,8 +555,12 @@ export async function POST(request: NextRequest) {
   let calculationLease: { client: ReturnType<typeof getRedisClient>; token: string } | null = null
   let calculationLeaseHeld = false
   let leaseRenewalTimer: ReturnType<typeof setInterval> | undefined
+  let calculationConnectionId: string | null = null
   try {
     const body: CalculationRequest = await request.json().catch(() => ({}))
+    const connectionId = normalizeDirectTradeConnectionId(body.connectionId)
+    calculationConnectionId = connectionId
+    const keys = directTradeKeyspace(connectionId)
     const symbolCount = Math.max(
       CANONICAL_FORCED_SYMBOLS.length,
       clampDirectTradeSymbolCount(body.symbolCount),
@@ -618,8 +619,21 @@ export async function POST(request: NextRequest) {
     // to start after a short, stale TTL.
     await initRedis()
     const client = getRedisClient()
+    const connection = connectionId ? await getConnection(connectionId) : null
+    if (connectionId && !connection) {
+      return NextResponse.json({ error: `Direct-Trade connection ${connectionId} was not found` }, { status: 404 })
+    }
+    const exchange = String(connection?.exchange || connection?.exchange_name || (connectionId ? "" : "bingx"))
+      .trim()
+      .toLowerCase()
+    if (exchange !== "bingx" && exchange !== "bybit") {
+      return NextResponse.json({
+        error: `Direct-Trade historical processing is not supported for exchange ${exchange || "unknown"}`,
+      }, { status: 409 })
+    }
+    if (connectionId) await client.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, connectionId)
     const token = createRedisLockToken("direct-trade-calculation")
-    const acquired = await client.set(DIRECT_TRADE_CALCULATION_LEASE_KEY, token, {
+    const acquired = await client.set(keys.calculationLease, token, {
       NX: true,
       EX: DIRECT_TRADE_CALCULATION_LEASE_SECONDS,
     })
@@ -637,7 +651,7 @@ export async function POST(request: NextRequest) {
       renewalInFlight = true
       void renewOwnedRedisLock(
         calculationLease.client,
-        DIRECT_TRADE_CALCULATION_LEASE_KEY,
+        keys.calculationLease,
         calculationLease.token,
         DIRECT_TRADE_CALCULATION_LEASE_SECONDS,
       ).then((renewed) => {
@@ -649,7 +663,7 @@ export async function POST(request: NextRequest) {
       })
     }, 15_000)
 
-    const top = await fetchTopSymbols("bingx", symbolCount, symbolOrder)
+    const top = await fetchTopSymbols(exchange, symbolCount, symbolOrder)
     const symbols = withCanonicalForcedSymbols(
       top.symbols.slice(0, symbolCount).map((ticker) => ticker.symbol),
       symbolCount,
@@ -661,7 +675,7 @@ export async function POST(request: NextRequest) {
     // This compact progress record is the only object written during a long
     // calculation. The complete config grid is published atomically at the
     // end, so consumers never deserialize or observe a half-built list.
-    await client.set(DIRECT_TRADE_CALCULATION_PROGRESS_KEY, JSON.stringify({
+    await client.set(keys.calculationProgress, JSON.stringify({
       status: "running",
       startedAt: calculationStartedAt,
       completedSymbols,
@@ -714,7 +728,7 @@ export async function POST(request: NextRequest) {
       dcaProfile,
     })
     const statisticsAccumulator = createStatisticsIndexAccumulator()
-    const configStoreWriter = await createDirectTradeConfigStoreWriter(client)
+    const configStoreWriter = await createDirectTradeConfigStoreWriter(client, connectionId)
     // Global indexes stay compact (integer references plus signal buckets),
     // while the associated rich config rows stream straight to storage.
     const executionCandidates: Array<{ index: number; score: number; signalKey: string | null }> = []
@@ -747,7 +761,7 @@ export async function POST(request: NextRequest) {
     await mapWithConcurrency(symbols, 1, async (symbol) => {
       let symbolEvaluated = 0
       try {
-        const minuteCandles = await fetchBingXMinuteHistory(symbol, historyHours)
+        const minuteCandles = await fetchDirectTradeMinuteHistory(exchange, symbol, historyHours)
         if (minuteCandles.length >= 30) {
           const candlesByTimeframe = {
             "5m": resampleCandles(minuteCandles, 5),
@@ -864,7 +878,7 @@ export async function POST(request: NextRequest) {
       } finally {
         completedSymbols++
         evaluatedSets += symbolEvaluated
-        await client.set(DIRECT_TRADE_CALCULATION_PROGRESS_KEY, JSON.stringify({
+        await client.set(keys.calculationProgress, JSON.stringify({
           status: "running",
           startedAt: calculationStartedAt,
           completedSymbols,
@@ -897,21 +911,21 @@ export async function POST(request: NextRequest) {
     const preparedConfigStore = await configStoreWriter.finish()
     const transaction = client.multi()
     if (preparedConfigStore.manifest) {
-      transaction.set(DIRECT_TRADE_CONFIG_MANIFEST_KEY, JSON.stringify(preparedConfigStore.manifest))
-      transaction.del(DIRECT_TRADE_CONFIGS_KEY)
+      transaction.set(keys.configManifest, JSON.stringify(preparedConfigStore.manifest))
+      transaction.del(keys.configs)
     } else {
-      transaction.set(DIRECT_TRADE_CONFIGS_KEY, preparedConfigStore.legacyJson || "[]")
-      transaction.del(DIRECT_TRADE_CONFIG_MANIFEST_KEY)
+      transaction.set(keys.configs, preparedConfigStore.legacyJson || "[]")
+      transaction.del(keys.configManifest)
     }
-    transaction.set(DIRECT_TRADE_EXECUTION_INDEX_KEY, JSON.stringify(executionIndexes))
-    transaction.set(DIRECT_TRADE_EXECUTION_SIGNAL_INDEX_KEY, JSON.stringify(executionSignalIndex))
+    transaction.set(keys.executionIndex, JSON.stringify(executionIndexes))
+    transaction.set(keys.executionSignalIndex, JSON.stringify(executionSignalIndex))
     // A previous pulse describes the old generation. Do not let a worker pair
     // it with this freshly published grid: the next pulse builds a matching
     // causal selection before any eligible config is processed.
-    transaction.del(DIRECT_TRADE_ACTIVE_SIGNAL_KEYS_KEY)
-    transaction.set(DIRECT_TRADE_CALCULATION_KEY, JSON.stringify(summary))
-    transaction.set(DIRECT_TRADE_STATISTICS_INDEX_KEY, JSON.stringify(statsIndex))
-    transaction.set(DIRECT_TRADE_CALCULATION_PROGRESS_KEY, JSON.stringify({
+    transaction.del(keys.activeSignals)
+    transaction.set(keys.calculation, JSON.stringify(summary))
+    transaction.set(keys.statisticsIndex, JSON.stringify(statsIndex))
+    transaction.set(keys.calculationProgress, JSON.stringify({
       status: "ready",
       startedAt: calculationStartedAt,
       completedAt: summary.calculatedAt,
@@ -923,7 +937,7 @@ export async function POST(request: NextRequest) {
     // Old generations are no longer reachable once the manifest transaction
     // has committed. Cleanup is batched and cannot affect the current keys.
     if (preparedConfigStore.previousManifest) {
-      void deleteDirectTradeConfigGeneration(client, preparedConfigStore.previousManifest)
+      void deleteDirectTradeConfigGeneration(client, preparedConfigStore.previousManifest, connectionId)
     }
 
     // The processor receives only eligible execution candidates. The complete
@@ -931,6 +945,8 @@ export async function POST(request: NextRequest) {
     // a very large response that could stall the production event loop.
     return NextResponse.json({
       success: true,
+      connectionId,
+      exchange,
       timestamp: summary.calculatedAt,
       symbols,
       symbolCount: symbols.length,
@@ -944,7 +960,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("[Direct-Trade] Calculate error:", error)
     if (calculationLease?.client) {
-      await calculationLease.client.set(DIRECT_TRADE_CALCULATION_PROGRESS_KEY, JSON.stringify({
+      await calculationLease.client.set(directTradeKeyspace(calculationConnectionId).calculationProgress, JSON.stringify({
         status: "error",
         completedSymbols: 0,
         totalSymbols: 0,
@@ -959,7 +975,7 @@ export async function POST(request: NextRequest) {
     if (calculationLease) {
       await releaseOwnedRedisLock(
         calculationLease.client,
-        DIRECT_TRADE_CALCULATION_LEASE_KEY,
+        directTradeKeyspace(calculationConnectionId).calculationLease,
         calculationLease.token,
       ).catch(() => undefined)
     }

@@ -44,6 +44,9 @@ export class ExchangeConnectorFactory {
     if (compact.includes("bingx") || String(connection.id || "").toLowerCase().startsWith("bingx")) {
       return "bingx"
     }
+    if (compact.includes("bybit") || String(connection.id || "").toLowerCase().startsWith("bybit")) {
+      return "bybit"
+    }
     return raw
   }
 

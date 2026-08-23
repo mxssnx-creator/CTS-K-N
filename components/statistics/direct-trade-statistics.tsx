@@ -6,6 +6,7 @@ import { Activity, BarChart3, Clock3, Filter, RefreshCw, ShieldCheck, Target } f
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { useExchange } from "@/lib/exchange-context"
 import {
   Select,
   SelectContent,
@@ -180,6 +181,7 @@ function formatPnl(value: number | undefined): string {
 }
 
 export function DirectTradeStatistics() {
+  const { selectedConnectionId } = useExchange()
   const [status, setStatus] = useState<Status>({})
   const [configs, setConfigs] = useState<DirectConfig[]>([])
   const [matched, setMatched] = useState(0)
@@ -201,8 +203,12 @@ export function DirectTradeStatistics() {
         state: stateFilter,
         strategyType,
       })
+      if (selectedConnectionId) selection.set("connectionId", selectedConnectionId)
+      const statusSelection = selectedConnectionId
+        ? `?connectionId=${encodeURIComponent(selectedConnectionId)}`
+        : ""
       const [statusResponse, configResponse] = await Promise.all([
-        fetch("/api/trade-engine/direct-trade/status", { cache: "no-store" }),
+        fetch(`/api/trade-engine/direct-trade/status${statusSelection}`, { cache: "no-store" }),
         fetch(`/api/trade-engine/direct-trade?${selection.toString()}`, { cache: "no-store" }),
       ])
       if (!statusResponse.ok || !configResponse.ok) throw new Error("Direct-Trade statistics are unavailable")
@@ -215,7 +221,7 @@ export function DirectTradeStatistics() {
     } finally {
       setLoading(false)
     }
-  }, [direction, stateFilter, strategyType, timeframe])
+  }, [direction, selectedConnectionId, stateFilter, strategyType, timeframe])
 
   useEffect(() => {
     void load()

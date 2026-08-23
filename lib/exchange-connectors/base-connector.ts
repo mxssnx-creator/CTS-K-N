@@ -76,6 +76,54 @@ export interface ExchangeOrder {
   updateTime: number
 }
 
+/**
+ * One venue-confirmed execution belonging to an order settlement.
+ *
+ * `fee` keeps the venue sign (a negative value means a cost on BingX), while
+ * `feeCost` is always a positive accounting expense.  Keeping both prevents a
+ * connector-specific sign convention from leaking into the engines.
+ */
+export interface ExchangeOrderSettlementFill {
+  tradeId: string
+  price: number
+  quantity: number
+  realizedPnl: number
+  fee: number
+  feeCost: number
+  timestamp: number
+}
+
+/**
+ * Authoritative per-order accounting normalized across venues.
+ *
+ * Live engines must use this object (or confirmed execution price/quantity
+ * fields when a venue has no settlement endpoint) for realised accounting.
+ * A ticker, trigger price, requested price or configured fee percentage is
+ * never an acceptable live-PnL source.
+ */
+export interface ExchangeOrderSettlement {
+  orderId: string
+  symbol: string
+  filledQuantity: number
+  averageFillPrice: number
+  /** Realised PnL before the positive `tradingFee` cost. */
+  grossRealizedPnl: number
+  /** Positive trading-fee expense represented by this settlement. */
+  tradingFee: number
+  /** Venue-authoritative result after represented fees. */
+  netRealizedPnl: number
+  /** True when netRealizedPnl also incorporates the apportioned entry fee. */
+  netIncludesEntryFee: boolean
+  source: "bingx_fill_history" | "bingx_order_detail" | "bybit_closed_pnl" | "bybit_execution_history"
+  settledAt: number
+  fills: ExchangeOrderSettlementFill[]
+}
+
+export interface ExchangeOrderSettlementOptions {
+  startTime?: number
+  endTime?: number
+}
+
 export interface ExchangeConnectorResult {
   success: boolean
   balance: number // USDT balance
@@ -233,7 +281,7 @@ export abstract class BaseExchangeConnector {
     if (apiType === "unified") {
       return "UNIFIED"
     }
-    if (apiType === "perpetual_futures" || apiType === "futures") {
+    if (apiType === "perpetual_futures" || apiType === "futures" || apiType === "contract") {
       return "CONTRACT"
     }
     if (apiType === "spot") {
@@ -356,6 +404,21 @@ export abstract class BaseExchangeConnector {
   abstract getOpenOrders(symbol?: string): Promise<ExchangeOrder[]>
 
   abstract getOrderHistory(symbol?: string, limit?: number): Promise<ExchangeOrder[]>
+
+  /**
+   * Return venue-confirmed fills/PnL/fees for one exact order id.
+   *
+   * Connectors without a settlement endpoint deliberately return null.  This
+   * optional default keeps those connectors source-compatible while allowing
+   * Main/Direct Trade to distinguish "not settled yet" from a zero-PnL trade.
+   */
+  async getOrderSettlement(
+    _symbol: string,
+    _orderId: string,
+    _options: ExchangeOrderSettlementOptions = {},
+  ): Promise<ExchangeOrderSettlement | null> {
+    return null
+  }
 
   // Position Methods (Perpetual/Futures Only)
   abstract getPositions(symbol?: string): Promise<ExchangePosition[]>

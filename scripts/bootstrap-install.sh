@@ -245,8 +245,13 @@ stop_existing_installation() {
   local runtime="${EXISTING_RUNTIME:-$RUNTIME}"
   local user="${EXISTING_SERVICE_USER:-$SERVICE_USER}"
   if [[ "$runtime" == "systemd" || "$runtime" == "auto" ]] && command -v systemctl >/dev/null 2>&1; then
-    as_root systemctl stop "$name-scheduler" "$name" "$name-redis" 2>/dev/null || true
-    for unit in "$name-scheduler" "$name" "$name-redis"; do
+    # Stop every CTS owner before replacing its checkout. Leaving the leased
+    # Direct-Trade worker or recovery timer alive lets an old binary continue
+    # writing to shared Redis while the new schema/build is installed.
+    as_root systemctl stop "$name-recovery.timer" "$name-recovery" \
+      "$name-direct-trade" "$name-scheduler" "$name" "$name-redis" 2>/dev/null || true
+    for unit in "$name-recovery.timer" "$name-recovery" "$name-direct-trade" \
+      "$name-scheduler" "$name" "$name-redis"; do
       if systemctl is-active --quiet "$unit" 2>/dev/null; then
         echo "Refusing to remove $INSTALL_DIR while service $unit is still active" >&2
         exit 1
@@ -260,8 +265,8 @@ stop_existing_installation() {
     home="$(awk -F: -v wanted="$user" '$1 == wanted { print $6; exit }' /etc/passwd 2>/dev/null || true)"
     [[ -n "$home" && "$home" != "/" ]] || home="/var/lib/$name"
     as_service_user "$user" env HOME="$home" PM2_HOME="$home/.pm2" \
-      pm2 stop "$name-scheduler" "$name" "$name-redis" >/dev/null 2>&1 || true
-    for pm2_name in "$name-scheduler" "$name" "$name-redis"; do
+      pm2 stop "$name-recovery" "$name-direct-trade" "$name-scheduler" "$name" "$name-redis" >/dev/null 2>&1 || true
+    for pm2_name in "$name-recovery" "$name-direct-trade" "$name-scheduler" "$name" "$name-redis"; do
       pm2_pid="$(as_service_user "$user" env HOME="$home" PM2_HOME="$home/.pm2" \
         pm2 pid "$pm2_name" 2>/dev/null || true)"
       # PM2 may print status/log text containing digits even when its daemon
@@ -446,8 +451,14 @@ remove_runtime_identity() {
   valid_name "$name" || return 0
   if [[ "$runtime" == "systemd" || "$runtime" == "auto" ]] \
     && command -v systemctl >/dev/null 2>&1; then
-    as_root systemctl disable --now "$name" "$name-scheduler" "$name-redis" 2>/dev/null || true
-    as_root rm -f -- "/etc/systemd/system/$name.service" "/etc/systemd/system/$name-scheduler.service" "/etc/systemd/system/$name-redis.service"
+    as_root systemctl disable --now "$name-recovery.timer" "$name-recovery" \
+      "$name-direct-trade" "$name-scheduler" "$name" "$name-redis" 2>/dev/null || true
+    as_root rm -f -- "/etc/systemd/system/$name.service" \
+      "/etc/systemd/system/$name-scheduler.service" \
+      "/etc/systemd/system/$name-direct-trade.service" \
+      "/etc/systemd/system/$name-recovery.service" \
+      "/etc/systemd/system/$name-recovery.timer" \
+      "/etc/systemd/system/$name-redis.service"
     as_root systemctl daemon-reload 2>/dev/null || true
   fi
   if [[ "$runtime" == "pm2" || "$runtime" == "auto" ]] \
@@ -456,7 +467,7 @@ remove_runtime_identity() {
     home="$(awk -F: -v wanted="$user" '$1 == wanted { print $6; exit }' /etc/passwd 2>/dev/null || true)"
     [[ -n "$home" && "$home" != "/" ]] || home="/var/lib/$name"
     as_service_user "$user" env HOME="$home" PM2_HOME="$home/.pm2" \
-      pm2 delete "$name" "$name-scheduler" "$name-redis" >/dev/null 2>&1 || true
+      pm2 delete "$name" "$name-scheduler" "$name-direct-trade" "$name-recovery" "$name-redis" >/dev/null 2>&1 || true
   fi
 }
 

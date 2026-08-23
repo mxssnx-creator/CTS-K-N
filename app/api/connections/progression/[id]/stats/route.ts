@@ -23,6 +23,7 @@ import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
 import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot"
+import { strategyVariantOutcomeKey } from "@/lib/pos-history"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -112,6 +113,8 @@ async function responseFromVolatileStatsSnapshot(
       strategyDetailMain,
       strategyDetailReal,
       strategyDetailLive,
+      globalEngineState,
+      runningHint,
     ] = await Promise.all([
       Promise.all(progressionKeys.map((key) => client.hgetall(key).catch(() => ({} as Record<string, string>)))),
       client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
@@ -133,6 +136,8 @@ async function responseFromVolatileStatsSnapshot(
       client.hgetall(`strategy_detail:${connectionId}:main`).catch(() => ({} as Record<string, string>)),
       client.hgetall(`strategy_detail:${connectionId}:real`).catch(() => ({} as Record<string, string>)),
       client.hgetall(`strategy_detail:${connectionId}:live`).catch(() => ({} as Record<string, string>)),
+      client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
+      client.get(`engine_is_running:${connectionId}`).catch(() => null),
     ])
     // `progressionReadKeys` is ordered by runtime authority.  Do not select
     // the first non-empty hash wholesale: a rolling migration can leave that
@@ -155,6 +160,11 @@ async function responseFromVolatileStatsSnapshot(
         ...(scopedSettings || {}),
       },
       engineProgression: (engineProgression || {}) as Record<string, string>,
+      runningHint,
+      globalEngineState: (globalEngineState || {}) as Record<string, string>,
+      connectionEnabled: connection && Object.prototype.hasOwnProperty.call(connection, "is_enabled_dashboard")
+        ? [true, 1, "1", "true"].includes((connection as any).is_enabled_dashboard)
+        : undefined,
       strategyDetails: {
         base: (strategyDetailBase || {}) as Record<string, string>,
         main: (strategyDetailMain || {}) as Record<string, string>,
@@ -1899,7 +1909,7 @@ export async function GET(
     // an axis/window accumulation (`axisWindows.pause`), not in
     // `strategyVariants`.
     const variantKeys = ["default", "trailing", "block", "dca"] as const
-    const variantDetail: Record<string, Record<string, number>> = {}
+    const variantDetail: Record<string, Record<string, any>> = {}
     const hasConfirmedVariantCounts = hasCompleteRealVariantPositionLedger(validPositionsHash)
     await Promise.all(
       variantKeys.map(async (variant) => {
@@ -1913,7 +1923,12 @@ export async function GET(
         // pass; we still fall back to computing them from the raw summed
         // fields (entries_count / sum_pf_x1000 / sum_ddt_x10 / created_sets)
         // in case that recompute pass was skipped on a given cycle.
-        const h = ((await client.hgetall(`strategy_variant_real:${connectionId}:${variant}`).catch(() => null)) || {}) as Record<string, string>
+        const [hRaw, outcomeRaw] = await Promise.all([
+          client.hgetall(`strategy_variant_real:${connectionId}:${variant}`).catch(() => null),
+          client.hgetall(strategyVariantOutcomeKey(connectionId, variant)).catch(() => null),
+        ])
+        const h = (hRaw || {}) as Record<string, string>
+        const outcome = (outcomeRaw || {}) as Record<string, string>
         const createdSets      = n(h.created_sets)
         const passedSets       = n(h.passed_sets)
         const entriesCount     = n(h.entries_count)
@@ -1922,14 +1937,23 @@ export async function GET(
         // Prefer the pre-derived field; fall back to raw-sum math when absent/0.
         let avgPosPerSet       = parseFloat(h.avg_pos_per_set   || "0")
         if (!(avgPosPerSet > 0) && createdSets > 0)  avgPosPerSet    = entriesCount / createdSets
-        let avgProfitFactor    = parseFloat(h.avg_profit_factor || "0")
+        let evaluationAvgProfitFactor = parseFloat(h.avg_profit_factor || "0")
         // sumPfX1000 / sumDdtX10 are entry-weighted at the Real writer.
         // Divide by entriesCount, matching the writer's own recompute pass.
         // The old createdSets denominator inflated PF/DDT whenever a Set
         // contained multiple confirmed position slots.
-        if (!(avgProfitFactor > 0) && entriesCount > 0) avgProfitFactor = (sumPfX1000 / 1000) / entriesCount
-        let avgDrawdownTime    = parseFloat(h.avg_drawdown_time || "0")
-        if (!(avgDrawdownTime > 0) && entriesCount > 0) avgDrawdownTime = (sumDdtX10 / 10) / entriesCount
+        if (!(evaluationAvgProfitFactor > 0) && entriesCount > 0) evaluationAvgProfitFactor = (sumPfX1000 / 1000) / entriesCount
+        let evaluationAvgDrawdownTime = parseFloat(h.avg_drawdown_time || "0")
+        if (!(evaluationAvgDrawdownTime > 0) && entriesCount > 0) evaluationAvgDrawdownTime = (sumDdtX10 / 10) / entriesCount
+        const performanceSamples = n(outcome.sample_count)
+        const grossProfit = Math.max(0, Number(outcome.gross_profit) || 0)
+        const grossLoss = Math.max(0, Number(outcome.gross_loss) || 0)
+        const avgProfitFactor = performanceSamples > 0
+          ? grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0
+          : 0
+        const avgDrawdownTime = performanceSamples > 0
+          ? (Number(outcome.sum_ddt) || 0) / performanceSamples
+          : 0
         const passRateRaw      = parseFloat(h.pass_rate         || "0")
         variantDetail[variant] = {
           createdSets,
@@ -1943,6 +1967,16 @@ export async function GET(
           avgPosPerSet:     isFinite(avgPosPerSet)    ? Math.round(avgPosPerSet * 100) / 100      : 0,
           avgProfitFactor:  isFinite(avgProfitFactor) ? Math.round(avgProfitFactor * 1000) / 1000 : 0,
           avgDrawdownTime:  isFinite(avgDrawdownTime) ? Math.round(avgDrawdownTime * 10) / 10     : 0,
+          evaluationAvgProfitFactor: isFinite(evaluationAvgProfitFactor)
+            ? Math.round(evaluationAvgProfitFactor * 1000) / 1000
+            : 0,
+          evaluationAvgDrawdownTime: isFinite(evaluationAvgDrawdownTime)
+            ? Math.round(evaluationAvgDrawdownTime * 10) / 10
+            : 0,
+          performanceSamples,
+          performanceSource: performanceSamples > 0
+            ? "confirmed-outcome-ledger"
+            : "awaiting-confirmed-outcomes",
           passRate:         passRateRaw > 0
             ? Math.round(passRateRaw * 1000) / 10
             : createdSets > 0
@@ -1958,7 +1992,7 @@ export async function GET(
         acc.passedSets      += variantDetail[v].passedSets
         acc.entriesCount    += variantDetail[v].entriesCount
         // Weighted averages across variants using createdSets as the weight
-        const w = variantDetail[v].createdSets
+        const w = variantDetail[v].performanceSamples
         if (w > 0) {
           acc.weightedPF  += variantDetail[v].avgProfitFactor * w
           acc.weightedDDT += variantDetail[v].avgDrawdownTime * w
@@ -1973,6 +2007,10 @@ export async function GET(
       passedSets:     variantTotals.passedSets,
       entriesCount:   variantTotals.entriesCount,
       positionsCount: variantKeys.reduce((sum, variant) => sum + variantDetail[variant].positionsCount, 0),
+      performanceSamples: variantTotals.weightSum,
+      performanceSource: variantTotals.weightSum > 0
+        ? "confirmed-outcome-ledger"
+        : "awaiting-confirmed-outcomes",
       avgProfitFactor: variantTotals.weightSum > 0
         ? Math.round((variantTotals.weightedPF / variantTotals.weightSum) * 1000) / 1000
         : 0,
@@ -2838,6 +2876,44 @@ export async function GET(
     // coordinator. They deliberately do not fall back to lifetime HINCRBY
     // totals or the global pseudo-position count: both would mix unrelated
     // stages and inflate active percentages after long runs.
+    const ROW_SNAPSHOT_FRESH_MS = 5 * 60_000
+    type StageRowCoverage = {
+      covered: number
+      total: number
+      oldestUpdatedAt: number
+      latestUpdatedAt: number
+      fresh: boolean
+      complete: boolean
+    }
+    const summarizeStageRowCoverage = (
+      hash: Record<string, string>,
+    ): StageRowCoverage => {
+      const nowMs = Date.now()
+      const timestamps: number[] = []
+      const knownSymbols = new Set<string>()
+      for (const key of Object.keys(hash)) {
+        if (!key.startsWith("s:") || !key.endsWith(":ts")) continue
+        const symbol = key.slice(2, -3).toUpperCase()
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+        knownSymbols.add(symbol)
+        const timestamp = Number(hash[key] || 0)
+        if (!(timestamp > 0) || nowMs - timestamp > ROW_SNAPSHOT_FRESH_MS) continue
+        timestamps.push(timestamp)
+      }
+      const total = Math.max(activeStatsSymbolFilter.size, historicSymbolsTotal, knownSymbols.size)
+      const covered = timestamps.length
+      const oldestUpdatedAt = covered > 0 ? Math.min(...timestamps) : 0
+      const latestUpdatedAt = covered > 0 ? Math.max(...timestamps) : 0
+      const complete = total > 0 && covered >= total
+      return {
+        covered,
+        total,
+        oldestUpdatedAt,
+        latestUpdatedAt,
+        fresh: covered > 0 && nowMs - oldestUpdatedAt <= ROW_SNAPSHOT_FRESH_MS,
+        complete,
+      }
+    }
     const aggregateFreshRowField = (
       hash: Record<string, string>,
       field: string,
@@ -2851,12 +2927,21 @@ export async function GET(
         const symbol = key.slice(2, -3)
         if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
         const timestamp = Number(hash[key] || 0)
-        if (!(timestamp > 0) || nowMs - timestamp > 5 * 60_000) continue
+        if (!(timestamp > 0) || nowMs - timestamp > ROW_SNAPSHOT_FRESH_MS) continue
         total += n(hash[`s:${symbol}:${field}`])
         samples++
       }
       return samples > 0 ? total : n(hash[field] ?? hash[legacyField])
     }
+    const baseRowCoverage = summarizeStageRowCoverage(strategyDetailBaseHash)
+    const mainRowCoverage = summarizeStageRowCoverage(strategyDetailMainHash)
+    const realRowCoverage = summarizeStageRowCoverage(strategyDetailRealHash)
+    const liveRowCoverage = summarizeStageRowCoverage(strategyDetailLiveHash)
+    const currentOpenRowField = (
+      hash: Record<string, string>,
+      field: string,
+      legacyField: string,
+    ): number => engineIsStopped ? 0 : aggregateFreshRowField(hash, field, legacyField)
     const ratio = (numerator: number, denominator: number, cap = true): number => {
       if (!(denominator > 0)) return 0
       const value = Math.round((numerator / denominator) * 1000) / 10
@@ -2902,22 +2987,22 @@ export async function GET(
       base: {
         total: baseRowTotal,
         valid: baseRowValid,
-        totalOpen: aggregateFreshRowField(strategyDetailBaseHash, "row_total_open", "sets_running_now"),
-        validOpen: aggregateFreshRowField(strategyDetailBaseHash, "row_valid_open", "sets_running_now"),
+        totalOpen: currentOpenRowField(strategyDetailBaseHash, "row_total_open", "sets_running_now"),
+        validOpen: currentOpenRowField(strategyDetailBaseHash, "row_valid_open", "sets_running_now"),
         validRatio: ratio(baseRowValid, baseRowTotal),
       },
       main: {
         valid: mainRowValid,
         overall: mainRowOverall,
-        validOpen: aggregateFreshRowField(strategyDetailMainHash, "row_valid_open", "sets_running_now"),
-        overallOpen: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open", "sets_running_now"),
+        validOpen: currentOpenRowField(strategyDetailMainHash, "row_valid_open", "sets_running_now"),
+        overallOpen: currentOpenRowField(strategyDetailMainHash, "row_overall_open", "sets_running_now"),
         overallToValidRatio: ratio(mainRowOverall, mainRowValid, false),
         breakdown: {
-          standard: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_standard", "row_overall_open_standard"),
-          trailing: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_trailing", "row_overall_open_trailing"),
-          positionCount: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_position_count", "row_overall_open_position_count"),
-          block: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_block", "row_overall_open_block"),
-          dca: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open_dca", "row_overall_open_dca"),
+          standard: currentOpenRowField(strategyDetailMainHash, "row_overall_open_standard", "row_overall_open_standard"),
+          trailing: currentOpenRowField(strategyDetailMainHash, "row_overall_open_trailing", "row_overall_open_trailing"),
+          positionCount: currentOpenRowField(strategyDetailMainHash, "row_overall_open_position_count", "row_overall_open_position_count"),
+          block: currentOpenRowField(strategyDetailMainHash, "row_overall_open_block", "row_overall_open_block"),
+          dca: currentOpenRowField(strategyDetailMainHash, "row_overall_open_dca", "row_overall_open_dca"),
         },
       },
       real: {
@@ -2950,23 +3035,56 @@ export async function GET(
           "materialization_families_preserved",
           "materialization_families_preserved",
         ),
-        active: realRowActive,
-        activeExactRows: aggregateFreshRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
+        active: engineIsStopped ? 0 : realRowActive,
+        activeExactRows: currentOpenRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
         activeRatio: ratio(realRowActive, realRowValid),
         blockWork,
       },
       live: {
         total: liveRowTotal,
         mirrored: liveRowMirrored,
-        active: aggregateFreshRowField(strategyDetailLiveHash, "row_active", "sets_running_now"),
+        active: currentOpenRowField(strategyDetailLiveHash, "row_active", "sets_running_now"),
         blockCreated: liveRowBlockCreated,
         blockValid: liveRowBlockValid,
         executable: liveRowExecutable,
         mirroredRatio: ratio(liveRowMirrored, liveRowTotal),
         executablePerRow: ratio(liveRowExecutable, liveRowTotal, false),
       },
-      updatedAt: Date.now(),
-      semantics: "current-open-row-snapshot",
+      updatedAt: [baseRowCoverage, mainRowCoverage, realRowCoverage]
+        .every((stage) => stage.oldestUpdatedAt > 0)
+        ? Math.min(
+            baseRowCoverage.oldestUpdatedAt,
+            mainRowCoverage.oldestUpdatedAt,
+            realRowCoverage.oldestUpdatedAt,
+          )
+        : 0,
+      semantics: "latest-cycle-and-current-open-row-snapshot",
+      snapshot: {
+        engineRunning: !engineIsStopped,
+        coverage: {
+          processed: Math.min(
+            historicSymbolsProcessed,
+            baseRowCoverage.covered,
+            mainRowCoverage.covered,
+            realRowCoverage.covered,
+          ),
+          total: Math.max(
+            activeStatsSymbolFilter.size,
+            historicSymbolsTotal,
+            baseRowCoverage.total,
+            mainRowCoverage.total,
+            realRowCoverage.total,
+          ),
+          complete: historicIsComplete && [baseRowCoverage, mainRowCoverage, realRowCoverage]
+            .every((stage) => stage.complete),
+        },
+        stages: {
+          base: baseRowCoverage,
+          main: mainRowCoverage,
+          real: realRowCoverage,
+          live: liveRowCoverage,
+        },
+      },
     }
 
     // ── SPEC PERFORMANCE HISTORY ───────────────────────────────────────────────
@@ -3555,6 +3673,30 @@ export async function GET(
         bySymbol: liveBySymbol,
         positions: liveOrderRelations,
         ordersPlaced: n(progHash.live_orders_placed_count),
+      },
+      cycle: {
+        base: { total: strategyRows.base.total, valid: strategyRows.base.valid },
+        main: { valid: strategyRows.main.valid, overall: strategyRows.main.overall },
+        real: {
+          valid: realRowValid,
+          active: realRowActive,
+          activeExactSets: aggregateFreshRowField(
+            strategyDetailRealHash,
+            "row_active_exact",
+            "sets_running_now",
+          ),
+        },
+        live: {
+          total: strategyRows.live.total,
+          mirrored: strategyRows.live.mirrored,
+          executable: strategyRows.live.executable,
+        },
+      },
+      snapshot: {
+        updatedAt: strategyRows.updatedAt,
+        engineRunning: strategyRows.snapshot.engineRunning,
+        coverage: strategyRows.snapshot.coverage,
+        stages: strategyRows.snapshot.stages,
       },
       closedPositions: sharedClosedParsed,
     })

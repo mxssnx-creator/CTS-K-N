@@ -381,4 +381,153 @@ describe("BingX Prod-VST connector contract", () => {
     expect(seen.length).toBeGreaterThan(0)
     expect(seen.every((url) => url.origin === BINGX_PROD_VST_FALLBACK_ORIGIN)).toBe(true)
   })
+
+  test("normalizes exact-order VST fills into authoritative net PnL and fees", async () => {
+    const seen: URL[] = []
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      seen.push(url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/allFillOrders") {
+        return Response.json({
+          code: 0,
+          data: [
+            { tradeId: "fill-1", orderId: "close-1", price: "61000", qty: "0.001", realizedPnl: "1.2", fee: "-0.1", time: 100 },
+            { tradeId: "fill-2", orderId: "close-1", price: "61100", qty: "0.002", realizedPnl: "0.8", fee: "-0.05", time: 200 },
+            { tradeId: "other", orderId: "close-2", price: "1", qty: "99", realizedPnl: "99", fee: "-9", time: 300 },
+          ],
+        })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+    const connector = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: false,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+
+    await expect(connector.getOrderSettlement("BTCUSDT", "close-1")).resolves.toMatchObject({
+      orderId: "close-1",
+      symbol: "BTC-USDT",
+      filledQuantity: 0.003,
+      averageFillPrice: expect.closeTo(61066.6666666667, 8),
+      grossRealizedPnl: 2,
+      tradingFee: 0.15,
+      netRealizedPnl: 1.85,
+      netIncludesEntryFee: false,
+      source: "bingx_fill_history",
+      settledAt: 200,
+    })
+    const request = seen.find((url) => url.pathname === "/openApi/swap/v2/trade/allFillOrders")!
+    expect(request.searchParams.get("orderId")).toBe("close-1")
+    expect(request.searchParams.get("tradingUnit")).toBe("COIN")
+    expect(request.searchParams.get("currency")).toBe("USDT")
+  })
+
+  test("resyncs and re-signs an exact-fill history read once after BingX 100421", async () => {
+    const fillRequests: URL[] = []
+    let serverTimeReads = 0
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        serverTimeReads++
+        return Response.json({ code: 0, data: { serverTime: Date.now() - serverTimeReads * 10 } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/allFillOrders") {
+        fillRequests.push(url)
+        if (fillRequests.length === 1) {
+          return Response.json({ code: 100421, msg: "Null timestamp or timestamp mismatch" })
+        }
+        return Response.json({
+          code: 0,
+          data: [{
+            tradeId: "fill-recovered",
+            orderId: "close-recovered",
+            price: "101",
+            qty: "2",
+            realizedPnl: "3",
+            fee: "-0.2",
+            time: 300,
+          }],
+        })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+    const connector = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: false,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+
+    await expect(connector.getOrderSettlement("BTCUSDT", "close-recovered")).resolves.toMatchObject({
+      orderId: "close-recovered",
+      grossRealizedPnl: 3,
+      tradingFee: 0.2,
+      netRealizedPnl: 2.8,
+    })
+    expect(fillRequests).toHaveLength(2)
+    expect(serverTimeReads).toBeGreaterThanOrEqual(2)
+    expect(Number(fillRequests[1].searchParams.get("timestamp"))).not.toBe(
+      Number(fillRequests[0].searchParams.get("timestamp")),
+    )
+  })
+
+  test("uses exact terminal order accounting when Prod-VST fill history is empty", async () => {
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/allFillOrders") {
+        return Response.json({ code: 0, data: [] })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/order") {
+        return Response.json({
+          code: 0,
+          data: {
+            order: {
+              orderId: "vst-detail-close",
+              symbol: "SOL-USDT",
+              status: "FILLED",
+              executedQty: "0.12",
+              avgPrice: "95.125",
+              profit: "-0.0133",
+              commission: "-0.0057",
+              updateTime: 400,
+            },
+          },
+        })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+    const connector = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+
+    await expect(connector.getOrderSettlement("SOLUSDT", "vst-detail-close")).resolves.toMatchObject({
+      orderId: "vst-detail-close",
+      symbol: "SOL-USDT",
+      filledQuantity: 0.12,
+      averageFillPrice: 95.125,
+      grossRealizedPnl: -0.0133,
+      tradingFee: 0.0057,
+      netRealizedPnl: -0.019,
+      source: "bingx_order_detail",
+      settledAt: 400,
+      fills: [],
+    })
+  })
 })

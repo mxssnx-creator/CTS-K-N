@@ -12,6 +12,7 @@ import {
 } from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -672,18 +673,18 @@ const initialSettings: Settings = {
   indication_time_interval: 1,
   indication_range_min: 2,
   indication_range_max: 30,
-  indication_min_profit_factor: 0.7,
+  indication_min_profit_factor: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
 
   // Strategy
   strategy_time_interval: 1,
-  strategy_min_profit_factor: 0.5,
+  strategy_min_profit_factor: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
   stepRelationMinRatio: 0.2, // Moved to strategy section
   stepRelationMaxRatio: 1.0, // Moved to strategy section
 
   // Preset optimizer / execution defaults. These are duplicated in the
   // optimizer normalizer intentionally so first paint, Settings hydration,
   // API reads, and live execution all agree before any persisted override.
-  profitFactorMinPreset: 0.7,
+  profitFactorMinPreset: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
   drawdownTimePreset: 5,
   presetHistoryDays: 14,
   presetCountPerSymbol: 4,
@@ -1002,7 +1003,7 @@ export default function SettingsPage() {
     mainTrailingStrategy: initialSettings.mainTrailingStrategy ?? true,
     mainBlockStrategy: initialSettings.mainBlockStrategy ?? false,
     mainDcaStrategy: initialSettings.mainDcaStrategy ?? false,
-    profitFactorMinPreset: initialSettings.profitFactorMinPreset ?? 0.7,
+    profitFactorMinPreset: initialSettings.profitFactorMinPreset ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
     drawdownTimePreset: initialSettings.drawdownTimePreset ?? 5,
     presetHistoryDays: initialSettings.presetHistoryDays ?? 14,
     presetCountPerSymbol: initialSettings.presetCountPerSymbol ?? 4,

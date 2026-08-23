@@ -1,4 +1,8 @@
 import type { RedisClientLike } from "@/lib/redis-db"
+import {
+  directTradeConfigChunkKeyForScope,
+  directTradeKeyspace,
+} from "@/lib/direct-trade-keyspace"
 
 // The legacy single-value key remains readable for small installations. A
 // maximum-symbol/long-history grid can exceed V8's largest string, so large
@@ -47,14 +51,19 @@ function safeManifest(raw: string | null): DirectTradeConfigManifest | null {
   return null
 }
 
-export function directTradeConfigChunkKey(generation: string, index: number): string {
-  return `direct_trade:configs:chunk:${generation}:${index}`
+export function directTradeConfigChunkKey(
+  generation: string,
+  index: number,
+  connectionId?: string | null,
+): string {
+  return directTradeConfigChunkKeyForScope(generation, index, connectionId)
 }
 
 export async function getDirectTradeConfigManifest(
   client: Pick<RedisClientLike, "get">,
+  connectionId?: string | null,
 ): Promise<DirectTradeConfigManifest | null> {
-  return safeManifest(await client.get(DIRECT_TRADE_CONFIG_MANIFEST_KEY).catch(() => null))
+  return safeManifest(await client.get(directTradeKeyspace(connectionId).configManifest).catch(() => null))
 }
 
 /**
@@ -66,8 +75,9 @@ export async function getDirectTradeConfigManifest(
 export async function prepareDirectTradeConfigStore(
   client: RedisClientLike,
   configs: unknown[],
+  connectionId?: string | null,
 ): Promise<PreparedDirectTradeConfigStore> {
-  const writer = await createDirectTradeConfigStoreWriter(client)
+  const writer = await createDirectTradeConfigStoreWriter(client, connectionId)
   await writer.append(configs)
   return writer.finish()
 }
@@ -79,8 +89,9 @@ export async function prepareDirectTradeConfigStore(
  */
 export async function createDirectTradeConfigStoreWriter(
   client: RedisClientLike,
+  connectionId?: string | null,
 ): Promise<DirectTradeConfigStoreWriter> {
-  const previousManifest = await getDirectTradeConfigManifest(client)
+  const previousManifest = await getDirectTradeConfigManifest(client, connectionId)
   const generation = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   const pending: unknown[] = []
   let chunks = 0
@@ -89,7 +100,7 @@ export async function createDirectTradeConfigStoreWriter(
 
   const flush = async () => {
     const rows = pending.splice(0, DIRECT_TRADE_CONFIG_CHUNK_SIZE)
-    await client.set(directTradeConfigChunkKey(generation, chunks), JSON.stringify(rows))
+    await client.set(directTradeConfigChunkKey(generation, chunks, connectionId), JSON.stringify(rows))
     chunks++
   }
 
@@ -130,13 +141,14 @@ export async function createDirectTradeConfigStoreWriter(
 export async function deleteDirectTradeConfigGeneration(
   client: Pick<RedisClientLike, "del">,
   manifest: DirectTradeConfigManifest | null,
+  connectionId?: string | null,
 ): Promise<void> {
   if (!manifest || manifest.chunks <= 0) return
   const batchSize = 100
   for (let start = 0; start < manifest.chunks; start += batchSize) {
     const keys = Array.from(
       { length: Math.min(batchSize, manifest.chunks - start) },
-      (_, offset) => directTradeConfigChunkKey(manifest.generation, start + offset),
+      (_, offset) => directTradeConfigChunkKey(manifest.generation, start + offset, connectionId),
     )
     await client.del(...keys).catch(() => 0)
   }
@@ -145,12 +157,14 @@ export async function deleteDirectTradeConfigGeneration(
 export async function readDirectTradeConfigsAtIndexes(
   client: Pick<RedisClientLike, "get" | "mget">,
   indexes: number[],
+  connectionId?: string | null,
 ): Promise<any[]> {
   const uniqueIndexes = [...new Set(indexes.filter((index) => Number.isInteger(index) && index >= 0))]
   if (uniqueIndexes.length === 0) return []
-  const manifest = await getDirectTradeConfigManifest(client)
+  const keys = directTradeKeyspace(connectionId)
+  const manifest = await getDirectTradeConfigManifest(client, connectionId)
   if (!manifest) {
-    const raw = await client.get(DIRECT_TRADE_CONFIGS_KEY).catch(() => null)
+    const raw = await client.get(keys.configs).catch(() => null)
     if (!raw) return []
     try {
       const configs = JSON.parse(raw)
@@ -174,7 +188,7 @@ export async function readDirectTradeConfigsAtIndexes(
   const chunkIndexes = [...byChunk.keys()]
   for (let start = 0; start < chunkIndexes.length; start += 32) {
     const batch = chunkIndexes.slice(start, start + 32)
-    const values = await client.mget(...batch.map((chunkIndex) => directTradeConfigChunkKey(manifest.generation, chunkIndex)))
+    const values = await client.mget(...batch.map((chunkIndex) => directTradeConfigChunkKey(manifest.generation, chunkIndex, connectionId)))
     for (let offset = 0; offset < batch.length; offset++) {
       try {
         const parsed = values[offset] ? JSON.parse(values[offset] as string) : []

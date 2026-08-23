@@ -3,6 +3,7 @@ const hashes = new Map<string, Record<string, any>>()
 const lists = new Map<string, string[]>()
 const sets = new Map<string, Set<string>>()
 const mockRecordLiveOrderProgression = jest.fn(async () => true)
+const mockReadOrderSettlement = jest.fn(async () => null as any)
 const mockCalculateVolumeForConnection = jest.fn(async () => ({
   finalVolume: 0.01,
   volume: 0.01,
@@ -166,6 +167,7 @@ const applySelectedPresetToRealPosition = jest.fn(async (_connectionId: string, 
 }))
 
 const recordingConnector = {
+  getTicker: jest.fn(async () => ({ bid: 99.9, ask: 100, last: 100 })),
   placeOrder,
   placeStopOrder,
   cancelOrder: jest.fn(async () => ({ success: true })),
@@ -256,6 +258,12 @@ jest.mock("@/lib/trade-engine/progression-writes", () => ({
 jest.mock("@/lib/live-order-service", () => ({
   recordPerSymbolOrderCounter: jest.fn(async () => undefined),
   recordLiveOrderProgression: (...args: any[]) => mockRecordLiveOrderProgression(...args),
+  // The production live stage now asks the shared order service for the
+  // authoritative venue settlement after an inline/polled fill.  Most tests
+  // in this suite intentionally exercise the older connector shape without
+  // an order-history endpoint, so model that valid "not available yet"
+  // result instead of removing the export entirely from the module mock.
+  readOrderSettlement: (...args: any[]) => mockReadOrderSettlement(...args),
   setupLiveOrderMarginAndLeverage: jest.fn(async (
     connector: any,
     symbol: string,
@@ -287,12 +295,13 @@ describe("Main Trade Engine Real → Live dispatch", () => {
   const originalRedisUrl = process.env.REDIS_URL
   const originalInline = process.env.ALLOW_INLINE_REDIS_LIVE_TRADING
 
-  beforeEach(() => {
+  beforeEach(async () => {
     strings.clear()
     hashes.clear()
     lists.clear()
     sets.clear()
     jest.clearAllMocks()
+    mockReadOrderSettlement.mockResolvedValue(null)
     mockCalculateVolumeForConnection.mockImplementation(async () => ({
       finalVolume: 0.01,
       volume: 0.01,
@@ -315,6 +324,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       protectionRequestTimes.push(performance.now())
       return { success: true, orderId: `bingx-${kind}-${symbol}` }
     })
+    recordingConnector.getTicker.mockImplementation(async () => ({ bid: 99.9, ask: 100, last: 100 }))
     recordingConnector.getPosition.mockImplementation(async () => ({
       positionAmt: 0.01,
       entryPrice: 100,
@@ -329,6 +339,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     connection.live_trade_blocked_reason = ""
     process.env.REDIS_URL = "redis://shared-recording"
     delete process.env.ALLOW_INLINE_REDIS_LIVE_TRADING
+    const { __liveStageTest } = await import("@/lib/trade-engine/stages/live-stage")
+    __liveStageTest.clearLiveTickerCache()
   })
 
   afterAll(() => {
@@ -678,6 +690,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       executeLivePosition,
     } = await import("@/lib/trade-engine/stages/live-stage")
     let venueQuantity = 0
+    const settlements = new Map<string, Record<string, any>>()
+    mockReadOrderSettlement.mockImplementation(async (_connector, _symbol, orderId) => (
+      settlements.get(String(orderId)) || null
+    ))
     placeOrder.mockImplementation(async (
       symbol: string,
       _side: string,
@@ -691,12 +707,28 @@ describe("Main Trade Engine Real → Live dispatch", () => {
           ? Math.max(0, venueQuantity - quantity)
           : venueQuantity + quantity
       }
+      const orderId = `signal-block-${symbol}-${placeOrder.mock.calls.length}`
+      const filledPrice = options.reduceOnly === true ? 102 : 100
+      const grossRealizedPnl = options.reduceOnly === true ? quantity * 2 : 0
+      settlements.set(orderId, {
+        orderId,
+        symbol,
+        filledQuantity: quantity,
+        averageFillPrice: filledPrice,
+        grossRealizedPnl,
+        tradingFee: 0,
+        netRealizedPnl: grossRealizedPnl,
+        netIncludesEntryFee: true,
+        source: "bingx_fill_history",
+        settledAt: Date.now(),
+        fills: [],
+      })
       return {
         success: true,
-        orderId: `signal-block-${symbol}-${placeOrder.mock.calls.length}`,
+        orderId,
         status: "filled",
         filledQty: quantity,
-        filledPrice: 100,
+        filledPrice,
       }
     })
     recordingConnector.getPosition.mockImplementation(async () => ({
@@ -849,7 +881,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       connection.id,
       position.id,
       102,
-      undefined,
+      recordingConnector,
       "exchange_reconciliation",
     )
     expect(closed).toMatchObject({
@@ -895,6 +927,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       getLivePositions,
     } = await import("@/lib/trade-engine/stages/live-stage")
     let venueQuantity = 0
+    const settlements = new Map<string, Record<string, any>>()
+    mockReadOrderSettlement.mockImplementation(async (_connector, _symbol, orderId) => (
+      settlements.get(String(orderId)) || null
+    ))
     placeOrder.mockImplementation(async (
       symbol: string,
       _side: string,
@@ -908,12 +944,28 @@ describe("Main Trade Engine Real → Live dispatch", () => {
           ? Math.max(0, venueQuantity - quantity)
           : venueQuantity + quantity
       }
+      const orderId = `mixed-signal-${symbol}-${placeOrder.mock.calls.length}`
+      const filledPrice = options.reduceOnly === true ? 102 : 100
+      const grossRealizedPnl = options.reduceOnly === true ? quantity * 2 : 0
+      settlements.set(orderId, {
+        orderId,
+        symbol,
+        filledQuantity: quantity,
+        averageFillPrice: filledPrice,
+        grossRealizedPnl,
+        tradingFee: 0,
+        netRealizedPnl: grossRealizedPnl,
+        netIncludesEntryFee: true,
+        source: "bingx_fill_history",
+        settledAt: Date.now(),
+        fills: [],
+      })
       return {
         success: true,
-        orderId: `mixed-signal-${symbol}-${placeOrder.mock.calls.length}`,
+        orderId,
         status: "filled",
         filledQty: quantity,
-        filledPrice: 100,
+        filledPrice,
       }
     })
     recordingConnector.getPosition.mockImplementation(async () => ({
@@ -1073,7 +1125,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
   })
 
   test("attaches independent Block counts and sequential DCA steps to one confirmed parent", async () => {
-    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const { executeLivePosition, __liveStageTest } = await import("@/lib/trade-engine/stages/live-stage")
     const baseSetKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
     const common = {
       connectionId: connection.id,
@@ -1141,6 +1193,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       breakevenProfitPct: 0.2,
       cooldownSeconds: 0,
     }
+    recordingConnector.getTicker.mockResolvedValue({ bid: 98.9, ask: 99, last: 99 })
+    __liveStageTest.clearLiveTickerCache()
     const afterDcaOne = await executeLivePosition(connection.id, {
       ...common,
       id: "real-adjust-dca-1",
@@ -1159,6 +1213,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       }),
     ])
 
+    recordingConnector.getTicker.mockResolvedValue({ bid: 97.9, ask: 98, last: 98 })
+    __liveStageTest.clearLiveTickerCache()
     const afterDcaTwo = await executeLivePosition(connection.id, {
       ...common,
       id: "real-adjust-dca-2",
@@ -2258,7 +2314,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
   })
 
   test("applies persisted DCA setting changes to the very next independent step", async () => {
-    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const { executeLivePosition, __liveStageTest } = await import("@/lib/trade-engine/stages/live-stage")
     const baseSetKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
     const dcaSetKey = `${baseSetKey}#dca`
     const common = {
@@ -2289,6 +2345,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       dcaStepDistancesPct: JSON.stringify([0.5, 1, 1.5, 2]),
       dcaCooldownSeconds: "0",
     })
+    recordingConnector.getTicker.mockResolvedValue({ bid: 98.9, ask: 99, last: 99 })
+    __liveStageTest.clearLiveTickerCache()
     const afterStepOne = await executeLivePosition(connection.id, {
       ...common,
       id: "real-settings-dca-1",
@@ -2314,6 +2372,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       dcaStepDistancesPct: JSON.stringify([0.5, 1, 1.5, 2]),
       dcaCooldownSeconds: "0",
     })
+    recordingConnector.getTicker.mockResolvedValue({ bid: 97.9, ask: 98, last: 98 })
+    __liveStageTest.clearLiveTickerCache()
     const afterStepTwo = await executeLivePosition(connection.id, {
       ...common,
       id: "real-settings-dca-2",

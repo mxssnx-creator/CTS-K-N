@@ -280,6 +280,65 @@ describe("live-order-service integration accounting", () => {
     })
   })
 
+  test("Direct-Trade completes delayed exact-order settlement on idempotent replay", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({
+        success: true,
+        orderId: "settlement-lag-1",
+        status: "filled",
+        filledQty: 1,
+        filledPrice: 110,
+      })),
+      getOrderSettlement: jest.fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          orderId: "settlement-lag-1",
+          symbol: "BTCUSDT",
+          filledQuantity: 1,
+          averageFillPrice: 110,
+          grossRealizedPnl: 10,
+          tradingFee: 0.2,
+          netRealizedPnl: 9.8,
+          netIncludesEntryFee: true,
+          source: "bybit_closed_pnl",
+          settledAt: Date.now(),
+          fills: [],
+        }),
+    }
+    const input = {
+      connectionId: "conn-direct-settlement-lag",
+      symbol: "BTCUSDT",
+      side: "sell" as const,
+      positionDirection: "long" as const,
+      quantity: 1,
+      price: 109,
+      reduceOnly: true,
+      connector,
+      connection: { id: "conn-direct-settlement-lag", position_mode: "one_way" },
+      clientOrderId: "dtclose_settlement_lag_1",
+      source: "direct-trade-close",
+      persistPosition: false,
+      updateCounters: false,
+    }
+
+    const first = await placeLiveOrder(input)
+    const replay = await placeLiveOrder(input)
+    expect(first).toMatchObject({ controlState: "completed", settlement: null })
+    expect(replay).toMatchObject({
+      controlState: "completed",
+      idempotentReplay: true,
+      settlement: {
+        orderId: "settlement-lag-1",
+        netRealizedPnl: 9.8,
+        tradingFee: 0.2,
+      },
+    })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(connector.getOrderSettlement).toHaveBeenCalledTimes(2)
+  })
+
   test("Direct-Trade reconciles a pending control id to its final fill without resubmission", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {

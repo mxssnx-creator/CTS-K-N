@@ -53,7 +53,7 @@ describe("Direct-Trade entry pulse", () => {
     }))
     await redis.set("direct_trade:calculation", JSON.stringify({ symbols: ["BTCUSDT"] }))
 
-    const response = await GET()
+    const response = await GET(new Request("http://localhost/api/trade-engine/direct-trade/pulse"))
     const payload = await response.json()
 
     expect(payload.success).toBe(true)

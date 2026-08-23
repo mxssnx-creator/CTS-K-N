@@ -98,6 +98,37 @@ describe("Direct-Trade 48-hour overview", () => {
     expect(general.profitFactor).toBe(2)
   })
 
+  test("never reconstructs exchange PnL from theoretical percentages", () => {
+    const positions = [
+      {
+        status: "closed",
+        mode: "live",
+        closedAt: atHoursAgo(2),
+        pnl: 900,
+        baseEntryNotionalUsdt: 1_000,
+        pnlAccountingComplete: false,
+      },
+      {
+        status: "closed",
+        mode: "live",
+        closedAt: atHoursAgo(1),
+        pnl: -900,
+        realizedPnlUsdt: -2,
+        pnlAccountingComplete: true,
+      },
+    ]
+
+    const general = row(buildDirectTradeOverview48h(positions, NOW), "exchange", "general")
+    expect(general).toMatchObject({
+      closed: 1,
+      accountingPending: 1,
+      pnlBasis: "usdt",
+      grossProfit: 0,
+      grossLoss: 2,
+      netPnl: -2,
+    })
+  })
+
   test("represents all-win PF as explicit infinity and empty PF as unavailable", () => {
     const overview = buildDirectTradeOverview48h([
       { status: "closed", mode: "live", closedAt: atHoursAgo(1), strategyType: "dca", pnl: 1, realizedPnlUsdt: 1 },

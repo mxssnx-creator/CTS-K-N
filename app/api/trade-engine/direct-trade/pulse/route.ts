@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
-import { getRedisClient, initRedis } from "@/lib/redis-db"
-import { fetchBingXMinuteHistory } from "@/lib/direct-trade-market-history"
+import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
+import { fetchDirectTradeMinuteHistory } from "@/lib/direct-trade-market-history"
 import {
   buildTimeframeCombinations,
   evaluateDirectTradeEntrySignals,
@@ -10,13 +10,10 @@ import {
   resampleCandles,
   type DirectTradeEntryTiming,
 } from "@/lib/direct-trade-coordination"
-import { DIRECT_TRADE_ACTIVE_SIGNAL_KEYS_KEY } from "@/lib/direct-trade-config-store"
+import { directTradeKeyspace, normalizeDirectTradeConnectionId } from "@/lib/direct-trade-keyspace"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
-
-const DIRECT_TRADE_STATE_KEY = "direct_trade:state"
-const DIRECT_TRADE_CALCULATION_KEY = "direct_trade:calculation"
 
 async function mapWithConcurrency<T, R>(values: T[], concurrency: number, mapper: (value: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(values.length)
@@ -36,13 +33,29 @@ async function mapWithConcurrency<T, R>(values: T[], concurrency: number, mapper
  * already-evaluated independent sets without repeating the 48h TP/SL/trailing
  * backtest or transferring its complete result grid to a worker/browser.
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const connectionId = normalizeDirectTradeConnectionId(new URL(
+      request.url,
+    ).searchParams.get("connectionId"))
+    const keys = directTradeKeyspace(connectionId)
     await initRedis()
     const client = getRedisClient()
+    const connection = connectionId ? await getConnection(connectionId) : null
+    if (connectionId && !connection) {
+      return NextResponse.json({ error: `Direct-Trade connection ${connectionId} was not found` }, { status: 404 })
+    }
+    const exchange = String(connection?.exchange || connection?.exchange_name || (connectionId ? "" : "bingx"))
+      .trim()
+      .toLowerCase()
+    if (exchange !== "bingx" && exchange !== "bybit") {
+      return NextResponse.json({
+        error: `Direct-Trade signal processing is not supported for exchange ${exchange || "unknown"}`,
+      }, { status: 409 })
+    }
     const [stateRaw, calculationRaw] = await Promise.all([
-      client.get(DIRECT_TRADE_STATE_KEY),
-      client.get(DIRECT_TRADE_CALCULATION_KEY),
+      client.get(keys.state),
+      client.get(keys.calculation),
     ])
     const state = stateRaw ? JSON.parse(stateRaw) : {}
     const calculation = calculationRaw ? JSON.parse(calculationRaw) : {}
@@ -64,7 +77,7 @@ export async function GET() {
     // context plus an alignment margin while historical evaluation stays at its
     // operator-selected range (48h default).
     const groups = await mapWithConcurrency(symbols, 4, async (symbol) => {
-      const minutes = await fetchBingXMinuteHistory(symbol, 8)
+      const minutes = await fetchDirectTradeMinuteHistory(exchange, symbol, 8)
       const candlesByTimeframe = {
         "5m": resampleCandles(minutes, 5),
         "15m": resampleCandles(minutes, 15),
@@ -82,12 +95,14 @@ export async function GET() {
     })
     const signals = groups.flat()
     const activeSignalKeys = signals.filter((signal) => signal.active).map((signal) => signal.key)
-    await client.set(DIRECT_TRADE_ACTIVE_SIGNAL_KEYS_KEY, JSON.stringify({
+    await client.set(keys.activeSignals, JSON.stringify({
       keys: activeSignalKeys,
       asOf: new Date().toISOString(),
     }))
     return NextResponse.json({
       success: true,
+      connectionId,
+      exchange,
       activeSignalKeys,
       signalsEvaluated: signals.length,
       asOf: new Date().toISOString(),

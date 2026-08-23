@@ -61,7 +61,7 @@ describe("preset optimizer", () => {
     expect(DEFAULT_PRESET_OPTIMIZER_SETTINGS.presetsPerSymbol).toBe(4)
     expect(DEFAULT_PRESET_OPTIMIZER_SETTINGS).toMatchObject({
       historyDays: 14,
-      minProfitFactor: 0.7,
+      minProfitFactor: 1.1,
       maxDrawdownHours: 5,
       takeProfit: { min: 5, max: 30, step: 1 },
       stopLossRatio: { min: 0.25, max: 2, step: 0.25 },

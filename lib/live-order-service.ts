@@ -15,6 +15,7 @@ import {
 import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import type { ExchangeConnection } from "@/lib/types"
 import { resolveExecutableQuantity } from "@/lib/order-quantity"
+import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
 
 export const LIVE_ORDER_REDIS_KEYS = {
   orderIntent: "settings:orders (via getSettings/setSettings('orders'))",
@@ -457,6 +458,33 @@ async function boundedConnectorRead(read: () => unknown, timeoutMs = 2_500): Pro
         resolve(null)
       })
   })
+}
+
+/**
+ * Read one exact venue settlement without letting accounting history block a
+ * hot engine loop.  The exact-id check is intentional: global order-history
+ * pages may be incomplete or eventually consistent and must never be used to
+ * attribute another order's fills/PnL to this control generation.
+ */
+export async function readOrderSettlement(
+  connector: any,
+  symbol: string,
+  orderId: string,
+  timeoutMs = 3_500,
+): Promise<ExchangeOrderSettlement | null> {
+  const exactOrderId = String(orderId || "").trim()
+  if (!exactOrderId || exactOrderId === "N/A" || typeof connector?.getOrderSettlement !== "function") {
+    return null
+  }
+  const value = await boundedConnectorRead(
+    () => connector.getOrderSettlement(symbol, exactOrderId),
+    timeoutMs,
+  ) as ExchangeOrderSettlement | null
+  if (!value || String(value.orderId || "").trim() !== exactOrderId) return null
+  const filledQuantity = Number(value.filledQuantity)
+  const averageFillPrice = Number(value.averageFillPrice)
+  if (!(filledQuantity > 0) || !(averageFillPrice > 0)) return null
+  return value
 }
 
 function orderRows(value: any): any[] {
@@ -1072,6 +1100,29 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
 
   if (directControl && !ownsDirectControl) {
     if ((directControl.state === "completed" || directControl.state === "failed") && directControl.response) {
+      // Fill-history propagation can lag the terminal order response. A replay
+      // of the same durable control id is the safe opportunity to complete
+      // fee/PnL accounting without ever resubmitting the order.
+      if (
+        directControl.state === "completed"
+        && willUseRealExchange
+        && !directControl.response.settlement
+        && directControl.orderId
+      ) {
+        const settlement = await readOrderSettlement(
+          connector,
+          directControl.symbol,
+          directControl.orderId,
+        )
+        if (settlement) {
+          directControl = {
+            ...directControl,
+            response: { ...directControl.response, settlement },
+            updatedAt: Date.now(),
+          }
+          await writeDirectOrderControlRecord(directControl)
+        }
+      }
       return { ...directControl.response, idempotentReplay: true }
     }
     const reconciled = await reconcileDirectOrderControl(connector, directControl)
@@ -1099,6 +1150,9 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
       ? parseOrderFill(reconciled, 0, 0)
       : parseOrderFill(reconciled, directControl.quantity, input.price || 0)
     const terminal = isTerminalLiveOrderResult(reconciled, directControl.quantity)
+    const settlement = terminal && willUseRealExchange
+      ? await readOrderSettlement(connector, directControl.symbol, reconciledOrderId)
+      : null
     const response = {
       success: true,
       mode,
@@ -1115,6 +1169,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
       fill,
       position: directControl.response?.position || null,
       details: reconciled,
+      settlement,
       pendingReconciliation: !terminal,
       controlState: terminal ? "completed" : "acknowledged",
       idempotentReplay: true,
@@ -1258,6 +1313,9 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     ? parseOrderFill(result, 0, 0)
     : parseOrderFill(result, submitted.quantity, input.price || 0)
   const terminal = !willUseRealExchange || isTerminalLiveOrderResult(result, submitted.quantity)
+  const settlement = terminal && willUseRealExchange
+    ? await readOrderSettlement(connector, symbol, orderId)
+    : null
   let position: any = null
   if (!willUseRealExchange) {
     if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, marginType: configuredMarginType, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
@@ -1296,6 +1354,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     fill,
     position,
     details: result,
+    settlement,
     pendingReconciliation: directControl ? !terminal : undefined,
     controlState: directControl ? terminal ? "completed" : "acknowledged" : undefined,
     idempotentReplay: directControl ? false : undefined,

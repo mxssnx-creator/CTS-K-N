@@ -7,6 +7,7 @@ import {
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 } from "@/lib/main-trade-profit-factor"
 import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 
 export const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
   bybit: 500,
@@ -175,11 +176,11 @@ export const initialSettings: Settings = {
   indication_time_interval: 1,
   indication_range_min: 2,
   indication_range_max: 30,
-  indication_min_profit_factor: 0.7,
+  indication_min_profit_factor: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
 
   // Strategy
   strategy_time_interval: 1,
-  strategy_min_profit_factor: 0.5,
+  strategy_min_profit_factor: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
   stepRelationMinRatio: 0.2, // Moved to strategy section
   stepRelationMaxRatio: 1.0, // Moved to strategy section
 

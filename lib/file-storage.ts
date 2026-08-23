@@ -2,6 +2,7 @@ import fs from "fs"
 import path from "path"
 import { DEFAULT_MAIN_INDICATION_SETTINGS } from "@/lib/main-indication-settings"
 import { DEFAULT_COMMON_INDICATION_SETTINGS } from "@/lib/common-indicator-config"
+import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
 
 const DATA_DIR =
@@ -635,11 +636,11 @@ function getDefaultSettings(): Settings {
     indication_time_interval: 1,
     indication_range_min: 3,
     indication_range_max: 30,
-    indication_min_profit_factor: 0.7,
+    indication_min_profit_factor: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
 
     // Strategy
     strategy_time_interval: 1,
-    strategy_min_profit_factor: 0.5,
+    strategy_min_profit_factor: REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
     trailing_enabled: true,
     dca_enabled: false,
 

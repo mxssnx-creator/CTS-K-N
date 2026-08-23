@@ -742,10 +742,19 @@ export interface ComponentHealth {
   cycleCount: number
 }
 
+class EngineStartupCancelledError extends Error {
+  constructor(connectionId: string) {
+    super(`Trade engine startup cancelled for ${connectionId}`)
+    this.name = "EngineStartupCancelledError"
+  }
+}
+
 export class TradeEngineManager {
   private connectionId: string
   private isRunning = false
   private isStarting = false // Guard against concurrent start() calls
+  /** Invalidates every asynchronous start transaction when stop/pause wins. */
+  private lifecycleGeneration = 0
   private indicationTimer?: NodeJS.Timeout
   private strategyTimer?: NodeJS.Timeout
   private realtimeTimer?: NodeJS.Timeout
@@ -1030,6 +1039,12 @@ export class TradeEngineManager {
       return
     }
     this.isStarting = true
+    const startupGeneration = ++this.lifecycleGeneration
+    const assertStartupCurrent = () => {
+      if (startupGeneration !== this.lifecycleGeneration) {
+        throw new EngineStartupCancelledError(this.connectionId)
+      }
+    }
 
     // ── Stamp generation token BEFORE anything writes to Redis ──────
     // Even if startup later fails, downstream readers will see a
@@ -1039,6 +1054,13 @@ export class TradeEngineManager {
     this.currentEngineType = config.engine_type || "main"
     this.lockHandle = lockCtx
     this.epoch = lockCtx?.epoch ?? Date.now()
+
+    // Renew the distributed lease for the *entire* start transaction. A
+    // max-symbol historic restore or exchange reconciliation can legitimately
+    // outlive the lease TTL. Starting this ticker only after those awaits let
+    // the lease expire while the manager remained `isStarting`, leaving
+    // Quickstart and continuity stuck behind a duplicate owner.
+    this.startLockExtender()
 
     // Cache config for the watchdog's in-place re-arm path. We do this
     // BEFORE any await so a fast-fail in startup still leaves a usable
@@ -1063,6 +1085,7 @@ export class TradeEngineManager {
     try {
       // Ensure Redis is initialized before using it
       await initRedis()
+      assertStartupCurrent()
 
       // ── RE-COORDINATE FOR ACTUAL LIVE STATE (prevents stalling to old/different settings+symbols) ──
       // Before starting anything, check if the existing progression (if any) was born for
@@ -1074,6 +1097,7 @@ export class TradeEngineManager {
       } catch (recoordErr) {
         console.warn("[v0] [Engine] Re-coordination check failed (continuing):", recoordErr)
       }
+      assertStartupCurrent()
 
       // ── ENSURE JUST UNIQUE PROGRESSION (per connection, solid, one at a time) ──
       // Guarantees exactly one unique solid progression per connection.
@@ -1102,17 +1126,21 @@ export class TradeEngineManager {
           { field: "last_update", value: new Date().toISOString(), operation: "set" },
         ], { connectionId: this.connectionId, epoch: this.epoch, engineType: config.engine_type || "main" }).catch(() => {})
       }
+      assertStartupCurrent()
 
       // Initialize engine state
       await this.updateProgressionPhase("initializing", 5, "Starting engine components")
       await logProgressionEvent(this.connectionId, "initializing", "info", "Engine initialization started")
       await this.updateEngineState("running")
       await this.setRunningFlag(true)
+      assertStartupCurrent()
 
       // Load market data for all symbols
       await this.updateProgressionPhase("market_data", 8, "Loading market data...")
       const symbols = await this.getSymbols()
+      assertStartupCurrent()
       const ownsCurrentSelectionAtStart = await ownsCanonicalSymbolSelection(this.connectionId, symbols)
+      assertStartupCurrent()
       await setSettings(`trade_engine_state:${this.connectionId}`, {
         // Store as JSON so readers can JSON.parse reliably. Storing a raw array
         // here let the Redis emulator coerce it to a comma-joined string, which
@@ -1129,6 +1157,7 @@ export class TradeEngineManager {
         } : {}),
         updated_at: new Date().toISOString(),
       })
+      assertStartupCurrent()
 
       // ── SOLIDIFY THIS PROGRESSION WITH CURRENT ACTUAL STATE ─────────
       // Immediately after starting a new progression, capture the *exact* live
@@ -1237,6 +1266,7 @@ export class TradeEngineManager {
         minimumHistoryCandles: ENGINE_STAGE_HISTORY_CANDLES,
         connectionId: this.connectionId,
       })
+      assertStartupCurrent()
       if (loaded === 0) {
         console.warn(`[v0] [Engine] No market data loaded for symbols: ${symbols.join(", ")}`)
       }
@@ -1398,6 +1428,8 @@ export class TradeEngineManager {
         }
       }
 
+      assertStartupCurrent()
+
       // Crash/restart safety: start the exit-only LivePositions progression
       // before historic bootstrap. It can adopt and protect already-open
       // exchange exposure while indication/strategy entry processing remains
@@ -1418,8 +1450,10 @@ export class TradeEngineManager {
         engine_ready: cacheHit,
         updated_at: new Date().toISOString(),
       })
+      assertStartupCurrent()
 
       if (!cacheHit) {
+        assertStartupCurrent()
         // PRODUCTION FAST-PATH REMOVED (data-integrity directive).
         // The previous code force-stamped `prehistoric:{id}:done`,
         // `firstpass:done` and `is_complete=1` WITHOUT any real prehistoric
@@ -1447,6 +1481,7 @@ export class TradeEngineManager {
       // processors immediately. When false (or forced), the background load
       // performs the real calculation and arms them only after completion.
       if (cacheHit) {
+        assertStartupCurrent()
         console.log(
           `[v0] [Engine ${this.connectionId}] Cache hit �� arming live processors immediately (prehistoric data already complete)`,
         )
@@ -1494,6 +1529,7 @@ export class TradeEngineManager {
         // can wait a few seconds without affecting entry correctness.
         this.schedulePrehistoricProgressionAfterRealtimeWarmup()
       }
+      assertStartupCurrent()
 
       // Phase stays at `prehistoric_data` while the historical calculator
       // is filling sets. `loadPrehistoricData` updates the phase percent
@@ -1524,6 +1560,7 @@ export class TradeEngineManager {
       // either the full bootstrap promise or the continuous replay timer must
       // be active; live timers get their own confirmation when the gate opens.
       const startupVerificationEpoch = this.epoch
+      assertStartupCurrent()
       const startupVerificationTimer = setTimeout(async () => {
         unregisterEngineTimer(startupVerificationTimer)
         if (!this.isCurrentGeneration(startupVerificationEpoch)) return
@@ -1571,7 +1608,6 @@ export class TradeEngineManager {
       // partition or we missed too many beats). This is the only
       // place that gracefully tears down the engine because we
       // discovered we no longer own it.
-      this.startLockExtender()
       // ── Live settings-reload watcher ───���─────────────────────────
       // Picks up operator edits to connection settings and applies
       // them WITHOUT requiring a manual restart. See `applyPendingSettingsChange`.
@@ -1585,6 +1621,7 @@ export class TradeEngineManager {
       // Do NOT unconditionally overwrite the phase here — that would
       // backfill a fake 100% over the real prehistoric percent the user
       // sees on the progress bar.
+      assertStartupCurrent()
       this.isStarting = false
       this.startTime = new Date()
 
@@ -1615,10 +1652,21 @@ export class TradeEngineManager {
         config,
       })
     } catch (error) {
+      const startupCancelled =
+        error instanceof EngineStartupCancelledError ||
+        startupGeneration !== this.lifecycleGeneration
+      // A newer start on this same manager owns the fields below. The normal
+      // coordinator path creates a fresh manager after stop, but this guard
+      // keeps direct callers safe as well.
+      if (startupCancelled && this.isStarting && startupGeneration !== this.lifecycleGeneration) {
+        return
+      }
       const errorMsg = error instanceof Error ? error.message : String(error)
-      console.error(`[v0] [EngineManager] ✗ FAILED to start trade engine:`, errorMsg)
-      if (error instanceof Error) {
-        console.error(`[v0] [EngineManager] Stack:`, error.stack)
+      if (!startupCancelled) {
+        console.error(`[v0] [EngineManager] ✗ FAILED to start trade engine:`, errorMsg)
+        if (error instanceof Error) {
+          console.error(`[v0] [EngineManager] Stack:`, error.stack)
+        }
       }
       // Cancel every startup-owned resource before publishing failure. A
       // partially started manager must not retain a retry timer, lock extender,
@@ -1660,6 +1708,17 @@ export class TradeEngineManager {
       this.entryProcessingGeneration++
       this.settingsWatcherGeneration++
       if (this.unsubscribeSettingsWatcher) { this.unsubscribeSettingsWatcher(); this.unsubscribeSettingsWatcher = undefined }
+
+      if (startupCancelled) {
+        if (this.lockHandle) {
+          await releaseProgressionLock(this.connectionId, this.lockHandle).catch(() => {})
+          this.lockHandle = undefined
+        }
+        this.epoch = 0
+        this.isStarting = false
+        console.info(`[v0] [EngineManager] Startup cancelled cleanly for ${this.connectionId}`)
+        return
+      }
 
       await Promise.allSettled([
         this.updateProgressionPhase("error", 0, errorMsg),
@@ -1863,6 +1922,12 @@ export class TradeEngineManager {
   }
 
   async stop(): Promise<void> {
+    // Pause/stop must win even while start() is inside a long Redis, market
+    // data or historic await. Every later startup checkpoint observes this
+    // generation change and exits without re-arming timers or publishing an
+    // erroneous startup failure.
+    this.lifecycleGeneration++
+    this.isStarting = false
     console.log("[v0] Stopping trade engine for connection:", this.connectionId)
 
     // Clear all timers. Processor loops are setTimeout-based; health/heartbeat
@@ -5752,7 +5817,9 @@ export class TradeEngineManager {
     }
     this.extendFailuresInARow = 0
     this.lockExtendTimer = setInterval(async () => {
-      if (!this.isRunning) {
+      // Startup is part of the owned transaction; do not tear down the lease
+      // extender while the asynchronous start pipeline is still active.
+      if (!this.isRunning && !this.isStarting) {
         if (this.lockExtendTimer) {
           clearInterval(this.lockExtendTimer)
           this.lockExtendTimer = undefined

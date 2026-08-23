@@ -47,7 +47,8 @@ import {
   logLiveOrderFinal,
   type LiveOrderTrace,
 } from "@/lib/live-order-logger"
-import { setupLiveOrderMarginAndLeverage } from "@/lib/live-order-service"
+import { readOrderSettlement, setupLiveOrderMarginAndLeverage } from "@/lib/live-order-service"
+import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
 import {
   isConnectionLiveTradeEnabled,
   isConnectionPresetTradeEnabled,
@@ -196,6 +197,94 @@ const POSITION_CACHE_TTL_MS = 500
 const POSITION_CACHE_MAX_SIZE = 50  // Prevent unbounded growth with many connections
 const EXCHANGE_ABSENCE_CONFIRM_MS = 2_000
 const exchangeAbsenceFirstSeenAt = new Map<string, number>()
+
+type VenueTickerSnapshot = { bid: number; ask: number; last: number }
+type VenueTickerCacheEntry = {
+  expiresAt: number
+  ticker?: VenueTickerSnapshot
+  pending?: Promise<VenueTickerSnapshot | null>
+}
+
+// Live execution must size and protect orders in the venue's own price domain.
+// Historic/pseudo rows intentionally use normalized prices and must never be
+// accepted as the reference for a real exchange mutation. A short, bounded
+// single-flight cache avoids multiplying ticker requests when many Sets for the
+// same symbol reach Live in one engine cycle.
+const liveTickerCache = new Map<string, VenueTickerCacheEntry>()
+const LIVE_TICKER_CACHE_TTL_MS = 1_000
+const LIVE_TICKER_CACHE_MAX_SIZE = 256
+const LIVE_TICKER_DEADLINE_MS = 8_000
+
+function finitePositive(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function normalizeVenueTicker(value: any): VenueTickerSnapshot | null {
+  if (!value || typeof value !== "object") return null
+  const bid = finitePositive(value.bid ?? value.bidPrice ?? value.bestBid)
+  const ask = finitePositive(value.ask ?? value.askPrice ?? value.bestAsk)
+  const last = finitePositive(value.last ?? value.lastPrice ?? value.price ?? value.close)
+  if (!(bid > 0 || ask > 0 || last > 0)) return null
+  return { bid, ask, last }
+}
+
+function selectVenueTickerPrice(
+  ticker: VenueTickerSnapshot | null | undefined,
+  direction: "long" | "short",
+): number {
+  if (!ticker) return 0
+  return direction === "long"
+    ? finitePositive(ticker.ask) || finitePositive(ticker.last) || finitePositive(ticker.bid)
+    : finitePositive(ticker.bid) || finitePositive(ticker.last) || finitePositive(ticker.ask)
+}
+
+async function resolveAuthoritativeLiveReferencePrice(
+  connectionId: string,
+  symbol: string,
+  direction: "long" | "short",
+  connector: any,
+): Promise<number> {
+  if (!connector || typeof connector.getTicker !== "function") return 0
+  const normalizedSymbol = String(symbol || "").trim().toUpperCase()
+  if (!normalizedSymbol) return 0
+  const key = `${connectionId}:${normalizedSymbol}`
+  const now = Date.now()
+  const cached = liveTickerCache.get(key)
+  if (cached?.ticker && cached.expiresAt > now) {
+    return selectVenueTickerPrice(cached.ticker, direction)
+  }
+
+  let pending = cached?.pending
+  if (!pending) {
+    pending = withTimeout(
+      Promise.resolve(connector.getTicker(normalizedSymbol)),
+      LIVE_TICKER_DEADLINE_MS,
+      `getTicker(${normalizedSymbol})`,
+    )
+      .then(normalizeVenueTicker)
+      .catch(() => null)
+    liveTickerCache.set(key, { expiresAt: 0, pending })
+    if (liveTickerCache.size > LIVE_TICKER_CACHE_MAX_SIZE) {
+      const firstKey = liveTickerCache.keys().next().value
+      if (firstKey && firstKey !== key) liveTickerCache.delete(firstKey)
+    }
+  }
+
+  const ticker = await pending
+  const current = liveTickerCache.get(key)
+  if (current?.pending === pending) {
+    if (ticker) {
+      liveTickerCache.set(key, {
+        ticker,
+        expiresAt: Date.now() + LIVE_TICKER_CACHE_TTL_MS,
+      })
+    } else {
+      liveTickerCache.delete(key)
+    }
+  }
+  return selectVenueTickerPrice(ticker, direction)
+}
 
 function recordExchangeAbsence(position: Pick<LivePosition, "connectionId" | "id">): boolean {
   const key = `${position.connectionId}:${position.id}`
@@ -359,10 +448,12 @@ async function isLiveTradeEnabledForConnection(connectionId: string): Promise<bo
 // These timeouts bound per-call worst case so the pool never hangs.
 // Each value is calibrated to a ~2×p99 RTT of a typical BingX API call
 // SDK-backed BingX order/control calls normally complete in sub-second to a
-// few seconds. Fail fast so a hung venue call does not leave the control-order
-// queue blocked; the next reconcile tick retries any missed SL/TP leg.
+// few seconds. Bound the first acknowledgement window, but keep observing the
+// same delivery-ambiguous write long enough to cover connector queueing and
+// time synchronization; returning early cannot cancel a POST already in flight.
 const EXCHANGE_TIMEOUT_CANCEL_ORDER_MS  = 8_000   // cancel; retried next tick on failure
-const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // SL/TP placement; fast-fail + retry next tick
+const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // initial response deadline; ambiguous writes are reconciled below
+const EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS = 30_000  // same in-flight write; includes connector queue + time sync
 const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption + sync prefetch
 const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via next sync tick on miss
 
@@ -417,6 +508,16 @@ interface LivePosition {
   markPrice?: number
   liquidationPrice?: number
   realizedPnL?: number
+  /** Venue-confirmed live PnL/fee ledger. Incomplete means no estimate was substituted. */
+  realizedPnlGross?: number
+  tradingFees?: number
+  entryTradingFee?: number
+  entryTradingFeeAllocated?: number
+  entryAccountingComplete?: boolean
+  entrySettlementOrderIds?: string[]
+  realizedPnlComplete?: boolean
+  realizedPnlSource?: "exchange_settlement" | "exchange_fills_incomplete_fees" | "exchange_unresolved" | "simulation_model"
+  settledOrderIds?: string[]
   /** PositionCost percentage captured at entry for canonical PF-ratio history. */
   positionCostPct?: number
   /** Immutable upstream Real-stage PF snapshot used for Real↔Live comparison. */
@@ -909,6 +1010,8 @@ function isExchangeLifecyclePosition(position: Partial<LivePosition> | any, conn
 
 interface FillRecord {
   id?: string
+  orderId?: string
+  settlementSource?: string
   price: number
   quantity: number
   timestamp?: number
@@ -966,6 +1069,7 @@ function applyReductionObservation(
     previouslyAppliedQuantity?: number
     authoritativeQuantity?: number | null
     price?: number
+    settlement?: ExchangeOrderSettlement | null
     orderId?: string
     clientOrderId?: string
     setKeys?: string[]
@@ -993,15 +1097,62 @@ function applyReductionObservation(
   position.remainingQuantity = 0
   position.volumeUsd = result.nextQuantity * Number(position.averageExecutionPrice || position.entryPrice || 0)
 
-  const executionPrice = Number(input.price || position.markPrice || position.averageExecutionPrice || position.entryPrice || 0)
+  const settlement = input.settlement && String(input.settlement.orderId || "") === String(input.orderId || input.settlement.orderId || "")
+    ? input.settlement
+    : null
+  const executionPrice = Number(settlement?.averageFillPrice || input.price || 0)
   const entryPrice = Number(position.averageExecutionPrice || position.entryPrice || 0)
-  if (executionPrice > 0 && entryPrice > 0) {
+  const isSimulation = position.status === "simulated" || position.executionMode === "simulation"
+  const previouslyComplete = position.realizedPnlComplete !== false
+  if (settlement) {
+    const representedQuantity = Math.max(0, Number(settlement.filledQuantity) || 0)
+    const settlementRatio = representedQuantity > 0
+      ? Math.min(1, result.deltaApplied / representedQuantity)
+      : 0
+    const grossDelta = (Number(settlement.grossRealizedPnl) || 0) * settlementRatio
+    let netDelta = (Number(settlement.netRealizedPnl) || 0) * settlementRatio
+    let allocatedEntryFee = 0
+    if (!settlement.netIncludesEntryFee) {
+      const remainingEntryFee = Math.max(
+        0,
+        (Number(position.entryTradingFee) || 0) - (Number(position.entryTradingFeeAllocated) || 0),
+      )
+      allocatedEntryFee = before > 0
+        ? remainingEntryFee * Math.min(1, result.deltaApplied / before)
+        : remainingEntryFee
+      netDelta -= allocatedEntryFee
+      position.entryTradingFeeAllocated = Number(((Number(position.entryTradingFeeAllocated) || 0) + allocatedEntryFee).toFixed(12))
+    }
+    position.realizedPnlGross = Number(((Number(position.realizedPnlGross) || 0) + grossDelta).toFixed(12))
+    position.tradingFees = Number(((Number(position.tradingFees) || 0)
+      + Math.max(0, Number(settlement.tradingFee) || 0) * settlementRatio
+      + allocatedEntryFee).toFixed(12))
+    position.realizedPnL = Number(((Number(position.realizedPnL) || 0) + netDelta).toFixed(12))
+    position.settledOrderIds = Array.from(new Set([
+      ...(position.settledOrderIds || []),
+      settlement.orderId,
+    ])).slice(-64)
+    const complete = settlement.netIncludesEntryFee || position.entryAccountingComplete === true
+    position.realizedPnlComplete = previouslyComplete && complete
+    position.realizedPnlSource = position.realizedPnlComplete
+      ? "exchange_settlement"
+      : "exchange_fills_incomplete_fees"
+  } else if (executionPrice > 0 && entryPrice > 0) {
     const realizedDelta = result.deltaApplied * (
       position.direction === "short"
         ? entryPrice - executionPrice
         : executionPrice - entryPrice
     )
     position.realizedPnL = Number((Number(position.realizedPnL || 0) + realizedDelta).toFixed(8))
+    position.realizedPnlGross = Number((Number(position.realizedPnlGross || 0) + realizedDelta).toFixed(8))
+    position.realizedPnlComplete = isSimulation ? previouslyComplete : false
+    position.realizedPnlSource = isSimulation ? "simulation_model" : "exchange_fills_incomplete_fees"
+  } else {
+    // An authoritative quantity delta proves execution, but not its price or
+    // fees. Preserve the quantity ledger and explicitly leave PnL unresolved;
+    // a mark/trigger/requested price is never substituted for a real fill.
+    position.realizedPnlComplete = false
+    position.realizedPnlSource = "exchange_unresolved"
   }
 
   const setKeys = Array.from(new Set(
@@ -1060,6 +1211,37 @@ function applyReductionObservation(
       `-${result.deltaApplied} open=${result.nextQuantity}`,
   )
   return result
+}
+
+async function refreshEntryOrderAccounting(
+  connector: any,
+  position: LivePosition,
+): Promise<boolean> {
+  if (!connector) return false
+  const entryOrderIds = Array.from(new Set([
+    String(position.orderId || ""),
+    ...(position.fills || []).map((fill) => String(fill.orderId || "")),
+  ].filter(Boolean)))
+  if (entryOrderIds.length === 0) {
+    position.entryAccountingComplete = false
+    return false
+  }
+  const entrySettlements = (await Promise.all(
+    entryOrderIds.map((orderId) => readOrderSettlement(connector, position.symbol, orderId)),
+  )).filter((value): value is ExchangeOrderSettlement => Boolean(value))
+  const byOrderId = new Map(entrySettlements.map((settlement) => [settlement.orderId, settlement]))
+  position.entryTradingFee = Number(entrySettlements
+    .reduce((sum, settlement) => sum + Math.max(0, Number(settlement.tradingFee) || 0), 0)
+    .toFixed(12))
+  position.entrySettlementOrderIds = [...byOrderId.keys()]
+  position.entryAccountingComplete = entryOrderIds.every((orderId) => byOrderId.has(orderId))
+  position.fills = (position.fills || []).map((fill) => {
+    const settlement = fill.orderId ? byOrderId.get(String(fill.orderId)) : null
+    return settlement
+      ? { ...fill, fee: settlement.tradingFee, settlementSource: settlement.source }
+      : fill
+  })
+  return position.entryAccountingComplete
 }
 
 function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjusted: boolean; reason?: string } {
@@ -2250,20 +2432,26 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
         ? Number(position.positionCostPct)
         : 0.1
       const grossPnlPct = notional > 0 ? (realizedPnl / notional) * 100 : 0
+      const verifiedOutcome = position.realizedPnlComplete === true
+      const simulatedOutcome = position.realizedPnlSource === "simulation_model"
       await markStrategyPositionInactive(
         position.connectionId,
         position.id,
-        String(position.status).toLowerCase() === "closed"
+        String(position.status).toLowerCase() === "closed" && verifiedOutcome
           ? {
               pnl: realizedPnl,
-              // Strategy-set history uses the canonical net percentage. The
-              // raw exchange PnL above is intentionally preserved for API/UI
-              // reporting and accounting.
-              pnlPct: netMovePctAfterPositionCost(grossPnlPct, positionCostPct),
+              // Live PnL is already venue-net and must not receive a second
+              // configured-cost deduction. Simulation retains its explicit
+              // deterministic PositionCost model.
+              pnlPct: simulatedOutcome
+                ? netMovePctAfterPositionCost(grossPnlPct, positionCostPct)
+                : grossPnlPct,
               positionCostPct,
               drawdownMinutes: openedAt > 0 && closedAt > openedAt
                 ? (closedAt - openedAt) / 60_000
                 : 0,
+              strategyVariant: inferRealStrategyVariant(position.setKey || "", position.setVariant),
+              accountingSource: position.realizedPnlSource,
             }
           : undefined,
       )
@@ -2516,6 +2704,66 @@ async function recoverEntryOrderByClientId(
     } catch { /* authoritative sync will retry */ }
   }
   return null
+}
+
+function isAmbiguousControlOrderDelivery(error: unknown): boolean {
+  return /timeout|timed out|aborted|socket|network|fetch failed|econnreset|ack_without_order_id|ambiguous/i.test(
+    String(error || ""),
+  )
+}
+
+/**
+ * A control-order POST can reach the venue even when its acknowledgement
+ * crosses the local response deadline. Keep observing the exact same promise
+ * for a short grace window, then reconcile by the already-persisted client ID.
+ * This function never submits another order.
+ */
+async function reconcileAmbiguousProtectionWrite(input: {
+  connector: any
+  symbol: string
+  clientOrderId?: string
+  placementPromise: Promise<any>
+  initialError: unknown
+  graceMs?: number
+}): Promise<any | null> {
+  const clientOrderId = String(input.clientOrderId || "").trim()
+  if (!clientOrderId || !isAmbiguousControlOrderDelivery(input.initialError)) return null
+
+  try {
+    const lateResult = await withTimeout(
+      input.placementPromise,
+      Math.max(1, input.graceMs ?? EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS),
+      `awaitAmbiguousProtectionWrite(${input.symbol})`,
+    )
+    const lateOrderId = lateResult?.orderId ?? lateResult?.id
+    if (lateResult?.success && lateOrderId != null && String(lateOrderId).length > 0) {
+      return {
+        ...lateResult,
+        orderId: String(lateOrderId),
+        recoveredFromAmbiguousWrite: "late_acknowledgement",
+      }
+    }
+  } catch {
+    // The original write is still delivery-ambiguous. Resolve it by the exact
+    // client ID below; do not replay the POST.
+  }
+
+  const recovered = await recoverEntryOrderByClientId(
+    input.connector,
+    input.symbol,
+    clientOrderId,
+  )
+  const recoveredOrderId = recovered?.orderId ?? recovered?.id
+  if (recoveredOrderId == null || String(recoveredOrderId).length === 0) return null
+  const status = String(recovered?.status || "").trim().toLowerCase()
+  if (["cancelled", "canceled", "rejected", "expired"].includes(status)) return null
+  return {
+    ...recovered,
+    success: true,
+    orderId: String(recoveredOrderId),
+    clientOrderId,
+    recoveredFromAmbiguousWrite: "client_order_id",
+  }
 }
 
 async function prepareProtectionSubmission(
@@ -3438,6 +3686,25 @@ async function accumulateIntoLivePosition(
       return existing
     }
 
+    const authoritativeAdjustmentPrice = await resolveAuthoritativeLiveReferencePrice(
+      connId,
+      String(real?.symbol || existing.symbol || ""),
+      storedDirection,
+      connector,
+    )
+    if (!(authoritativeAdjustmentPrice > 0)) {
+      pushStep(
+        existing,
+        "accumulate_skip",
+        false,
+        `No authoritative exchange ticker available for ${String(real?.symbol || existing.symbol || "unknown")}`,
+      )
+      await savePosition(existing)
+      return existing
+    }
+    price = authoritativeAdjustmentPrice
+    repairLiveEntryPriceDomain(existing, authoritativeAdjustmentPrice)
+
     // Admission checks run only after a durable pending order was recovered
     // or conclusively cleared. Every exact Set membership remains eligible;
     // exchange/API rate limits are enforced by the dispatch queue and position
@@ -3665,7 +3932,7 @@ async function accumulateIntoLivePosition(
 
     let fillStatus = String(orderRes.status ?? orderRes.orderStatus ?? "").toLowerCase().trim()
     let filledQty = parseFloat(String(orderRes.filledQty ?? orderRes.executedQty ?? orderRes.cumQty ?? "0")) || 0
-    let filledPrice = parseFloat(String(orderRes.filledPrice ?? orderRes.avgPrice ?? orderRes.price ?? "0")) || 0
+    let filledPrice = parseFloat(String(orderRes.filledPrice ?? orderRes.avgPrice ?? "0")) || 0
     if (filledQty <= 0) {
       const fill = await pollOrderFill(connector, symbol, String(orderId), 5_000)
       fillStatus = String(fill.status || fillStatus).toLowerCase().trim()
@@ -3674,13 +3941,18 @@ async function accumulateIntoLivePosition(
         filledPrice = fill.filledPrice
       }
     }
-    if (filledQty <= 0) {
+    const entrySettlement = await readOrderSettlement(connector, symbol, String(orderId))
+    if (entrySettlement) {
+      filledQty = entrySettlement.filledQuantity
+      filledPrice = entrySettlement.averageFillPrice
+      fillStatus = "filled_via_settlement"
+    }
+    if (filledQty <= 0 || !(filledPrice > 0)) {
       pushStep(existing, "accumulate_fill_pending", true, `orderId=${orderId}; exact fill deferred to reconciliation`)
       await savePosition(existing)
       await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_fill_pending")
       return existing
     }
-    if (!(filledPrice > 0)) filledPrice = price
 
     const prevExec = Number(existing.executedQuantity || 0)
     const prevAvg = Number(existing.averageExecutionPrice || existing.entryPrice || filledPrice)
@@ -3711,7 +3983,24 @@ async function accumulateIntoLivePosition(
         Number(draft.totalExecutedQuantity || 0),
         newExec + Number(draft.closedQuantity || 0),
       )
-      draft.fills = [...(draft.fills || []), { timestamp: Date.now(), quantity: filledQty, price: filledPrice, fee: 0, feeAsset: "USDT" }]
+      draft.fills = [...(draft.fills || []), {
+        orderId: String(orderId),
+        settlementSource: entrySettlement?.source,
+        timestamp: Date.now(),
+        quantity: filledQty,
+        price: filledPrice,
+        fee: Math.max(0, Number(entrySettlement?.tradingFee) || 0),
+        feeAsset: "USDT",
+      }]
+      draft.entryTradingFee = Number(((Number(draft.entryTradingFee) || 0)
+        + Math.max(0, Number(entrySettlement?.tradingFee) || 0)).toFixed(12))
+      draft.entryAccountingComplete = draft.entryAccountingComplete === true && Boolean(entrySettlement)
+      if (entrySettlement) {
+        draft.entrySettlementOrderIds = Array.from(new Set([
+          ...(draft.entrySettlementOrderIds || []),
+          entrySettlement.orderId,
+        ])).slice(-64)
+      }
       draft.accumulatedSetKeys = real?.combinedPosCounts
         ? Array.from(new Set<string>((Array.isArray(real.accumulatedSetKeys) ? real.accumulatedSetKeys : []).map((value: unknown) => String(value)).filter(Boolean)))
         : plan.variant === "block" && !blockTargetSatisfied
@@ -3938,6 +4227,9 @@ async function reconcilePendingReductionAndRearm(
     if (authoritative.ok) {
       const tolerance = Math.max(1e-12, pending.targetQuantity * 1e-8)
       const targetReached = authoritative.quantity <= pending.targetQuantity + tolerance
+      const settlement = pending.orderId
+        ? await readOrderSettlement(connector, position.symbol, pending.orderId)
+        : null
       const applied = applyReductionObservation(position, {
         executionId: `${position.id}:poscounts:${pending.clientOrderId}`,
         source: "poscounts_reduce",
@@ -3946,14 +4238,8 @@ async function reconcilePendingReductionAndRearm(
         reportedFilledQuantity: 0,
         previouslyAppliedQuantity: pending.appliedFilledQuantity,
         authoritativeQuantity: authoritative.quantity,
-        price: Number(
-          authoritative.position?.markPrice ??
-          authoritative.position?.entryPrice ??
-          position.markPrice ??
-          position.averageExecutionPrice ??
-          position.entryPrice ??
-          0,
-        ),
+        price: settlement?.averageFillPrice,
+        settlement,
         orderId: pending.orderId,
         clientOrderId: pending.clientOrderId,
         setKeys: pending.targetMemberKeys,
@@ -4101,6 +4387,9 @@ async function reduceCombinedPosCountPosition(
       const status = String(observed?.status || "pending").toLowerCase()
       const reportedFilled = Number(observed?.filledQty ?? observed?.executedQty ?? observed?.cumQty ?? 0) || 0
       const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+      const settlement = pending.orderId
+        ? await readOrderSettlement(connector, position.symbol, pending.orderId)
+        : null
       const applied = applyReductionObservation(position, {
         executionId: `${position.id}:poscounts:${pending.clientOrderId}`,
         source: "poscounts_reduce",
@@ -4109,7 +4398,8 @@ async function reduceCombinedPosCountPosition(
         reportedFilledQuantity: reportedFilled,
         previouslyAppliedQuantity: pending.appliedFilledQuantity,
         authoritativeQuantity: authoritative.ok ? authoritative.quantity : null,
-        price: Number(observed?.filledPrice ?? observed?.avgPrice ?? price),
+        price: Number(observed?.filledPrice ?? observed?.avgPrice ?? 0) || undefined,
+        settlement,
         orderId: pending.orderId,
         clientOrderId: pending.clientOrderId,
         setKeys: pending.targetMemberKeys,
@@ -4246,7 +4536,7 @@ async function reduceCombinedPosCountPosition(
     }
 
     let filledQuantity = Number(response.filledQty ?? response.executedQty ?? response.cumQty ?? 0) || 0
-    let filledPrice = Number(response.filledPrice ?? response.avgPrice ?? response.price ?? price) || price
+    let filledPrice = Number(response.filledPrice ?? response.avgPrice ?? 0) || 0
     let fillStatus = String(response.status || "pending").toLowerCase()
     if (!(filledQuantity > 0)) {
       const fill = await pollOrderFill(connector, position.symbol, String(orderId), 5_000)
@@ -4256,6 +4546,7 @@ async function reduceCombinedPosCountPosition(
     }
     const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
     const pending = position.pendingReduction!
+    const settlement = await readOrderSettlement(connector, position.symbol, String(orderId))
     const applied = applyReductionObservation(position, {
       executionId: `${position.id}:poscounts:${pending.clientOrderId}`,
       source: "poscounts_reduce",
@@ -4265,6 +4556,7 @@ async function reduceCombinedPosCountPosition(
       previouslyAppliedQuantity: pending.appliedFilledQuantity,
       authoritativeQuantity: authoritative.ok ? authoritative.quantity : null,
       price: filledPrice,
+      settlement,
       orderId: String(orderId),
       clientOrderId: pending.clientOrderId,
       setKeys: pending.targetMemberKeys,
@@ -4523,6 +4815,7 @@ async function reconcileAuthoritativeExchangeQuantity(
   exchangeEntryPrice: number,
 ): Promise<boolean> {
   if (!Number.isFinite(exchangeQuantity) || exchangeQuantity < 0) return false
+  const repairedPriceDomain = repairLiveEntryPriceDomain(position, exchangeEntryPrice)
   const direction = resolveLivePositionDirection(position)
   if (!direction) {
     pushStep(position, "exchange_quantity_direction_guard", false, "Authoritative quantity ignored: direction is invalid")
@@ -4530,7 +4823,7 @@ async function reconcileAuthoritativeExchangeQuantity(
   }
   const before = Number(position.executedQuantity || 0)
   const tolerance = Math.max(1e-12, Math.max(before, exchangeQuantity) * 1e-8)
-  if (Math.abs(before - exchangeQuantity) <= tolerance) return false
+  if (Math.abs(before - exchangeQuantity) <= tolerance) return repairedPriceDomain
 
   if (exchangeQuantity < before) {
     applyReductionObservation(position, {
@@ -4540,7 +4833,6 @@ async function reconcileAuthoritativeExchangeQuantity(
       requestedQuantity: before,
       reportedFilledQuantity: before - exchangeQuantity,
       authoritativeQuantity: exchangeQuantity,
-      price: exchangeEntryPrice || position.markPrice || position.averageExecutionPrice,
       setKeys: position.accumulatedSetKeys,
     })
     position.submissionState = "confirmed"
@@ -5508,10 +5800,10 @@ async function placeProtectionOrder(
     // hedge→one-way case). Letting the connector default to hedge-mode +
     // auto-retry covers both account types correctly.
     // Bounded — a hanging placeStopOrder would block the per-position sync
-    // loop and stall every other position's heal/close work behind it. On
-    // timeout we return null; the next sync tick will retry, and meanwhile
-    // `checkAndForceCloseOnSltpCross` provides the safety net (it triggers
-    // on price independent of whether the protection order is armed).
+    // loop and stall every other position's heal/close work behind it. A
+    // timeout is delivery-ambiguous, however: retain the exact promise and
+    // durable client ID for acknowledgement/reconciliation instead of
+    // classifying it as a venue rejection or submitting a duplicate.
     // ── Normalize connector throws to result objects ──────────────────────
     // The BingX connector (and others) throw on venue rejection rather than
     // returning { success: false }.  The 109420 / 110424 retry blocks below
@@ -5521,28 +5813,52 @@ async function placeProtectionOrder(
     // well-shaped result object.
     const placeStop = async (qty: number): Promise<any> => {
       // Acquire the global semaphore before calling the exchange.
-      // EXCHANGE_TIMEOUT_PLACE_STOP_MS is applied via the rate-limiter's
-      // executeTimeoutMs (starts from dispatch time, not enqueue time) so the
-      // timeout only covers actual HTTP time — not queue-wait time. This prevents
-      // "Aborted while queued" errors from killing requests before they start.
+      // The connector owns its queue and HTTP abort deadlines. This outer
+      // deadline can still expire while the connector is synchronizing time or
+      // waiting in that queue, so the ambiguous-write branch below must retain
+      // the same promise rather than interpreting the deadline as rejection.
       await acquireStopSem()
       try {
-        return await withTimeout(
-          connector.placeStopOrder(
+        const placementPromise = connector.placeStopOrder(
+          symbol,
+          closeSide,
+          qty,
+          triggerPrice,
+          kind,
+          {
+            reduceOnly: true,
+            positionSide: positionDirection === "long" ? "LONG" : "SHORT",
+            ...(clientOrderId ? { clientOrderId } : {}),
+          },
+        ) as Promise<any>
+        let result: any
+        try {
+          result = await withTimeout(
+            placementPromise,
+            EXCHANGE_TIMEOUT_PLACE_STOP_MS,
+            `placeStopOrder(${orderLabel} ${symbol})`,
+          )
+        } catch (error) {
+          result = { success: false, error: String((error as any)?.message || error) }
+        }
+
+        if (!result?.success && clientOrderId && isAmbiguousControlOrderDelivery(result?.error)) {
+          const recovered = await reconcileAmbiguousProtectionWrite({
+            connector,
             symbol,
-            closeSide,
-            qty,
-            triggerPrice,
-            kind,
-            {
-              reduceOnly: true,
-              positionSide: positionDirection === "long" ? "LONG" : "SHORT",
-              ...(clientOrderId ? { clientOrderId } : {}),
-            },
-          ) as Promise<any>,
-          EXCHANGE_TIMEOUT_PLACE_STOP_MS,
-          `placeStopOrder(${orderLabel} ${symbol})`,
-        )
+            clientOrderId,
+            placementPromise,
+            initialError: result.error,
+          })
+          if (recovered?.success) {
+            console.warn(
+              `${tag} ambiguous acknowledgement recovered without resubmission: ` +
+              `orderId=${recovered.orderId} via=${recovered.recoveredFromAmbiguousWrite}`,
+            )
+            return recovered
+          }
+        }
+        return result
       } catch (e: any) {
         return { success: false, error: String(e?.message || e) }
       } finally {
@@ -5790,6 +6106,100 @@ async function fetchLiveOrderIdSet(connector: any): Promise<LiveOrderIdSet | nul
  * is repeated inside the lock-owning recalculation path below, where it is the
  * final authority against out-of-order network completion.
  */
+function translatePseudoTrailingStopPrice(
+  pseudoStopValue: unknown,
+  pseudoEntryValue: unknown,
+  liveFillValue: unknown,
+): number | undefined {
+  const pseudoStop = finitePositive(pseudoStopValue)
+  const pseudoEntry = finitePositive(pseudoEntryValue)
+  const liveFill = finitePositive(liveFillValue)
+  if (!(pseudoStop > 0) || !(liveFill > 0)) return undefined
+
+  if (pseudoEntry > 0) {
+    const ratio = pseudoStop / pseudoEntry
+    // A stop more than one order of magnitude away from its own entry is not
+    // a usable protection coordinate. Refuse it instead of projecting corrupt
+    // historic state into a venue order.
+    if (!(ratio > 0.1 && ratio < 10)) return undefined
+    const translated = liveFill * ratio
+    return finitePositive(translated) || undefined
+  }
+
+  // Legacy pseudo rows can omit entry_price. Accept their absolute value only
+  // when it is already plausibly in the live venue's price domain.
+  const legacyRatio = pseudoStop / liveFill
+  return legacyRatio > 0.1 && legacyRatio < 10 ? pseudoStop : undefined
+}
+
+function priceDomainDistance(leftValue: unknown, rightValue: unknown): number {
+  const left = finitePositive(leftValue)
+  const right = finitePositive(rightValue)
+  if (!(left > 0) || !(right > 0)) return Number.POSITIVE_INFINITY
+  return Math.max(left / right, right / left)
+}
+
+/**
+ * Repair legacy positions that mixed the normalized historic (~100) domain
+ * with the venue fill domain. Ordinary DCA averages are intentionally left
+ * untouched: we repair only an unmistakable >=10x mismatch, or a stale entry
+ * that disagrees with an initial entry already matching the authoritative
+ * venue snapshot.
+ */
+function repairLiveEntryPriceDomain(
+  position: LivePosition,
+  authoritativeEntryValue: unknown,
+): boolean {
+  const authoritativeEntry = finitePositive(authoritativeEntryValue)
+  if (!(authoritativeEntry > 0)) return false
+
+  const previousEntry = finitePositive(position.entryPrice)
+  const previousInitialEntry = finitePositive(position.initialEntryPrice)
+  if (!(previousEntry > 0)) {
+    position.entryPrice = authoritativeEntry
+    if (!(previousInitialEntry > 0)) position.initialEntryPrice = authoritativeEntry
+    return true
+  }
+
+  const entryToAuthorityRatio = priceDomainDistance(previousEntry, authoritativeEntry)
+  const initialToAuthorityRatio = priceDomainDistance(previousInitialEntry, authoritativeEntry)
+  const entryToInitialRatio = priceDomainDistance(previousEntry, previousInitialEntry)
+  const unmistakableCrossDomain = entryToAuthorityRatio >= 10
+  const initialMatchesAuthority = previousInitialEntry > 0 && initialToAuthorityRatio < 1.25
+  const staleEntryAgainstInitial = initialMatchesAuthority && entryToInitialRatio >= 1.25
+  if (!unmistakableCrossDomain && !staleEntryAgainstInitial) return false
+
+  const repairedEntry = initialMatchesAuthority ? previousInitialEntry : authoritativeEntry
+  position.entryPrice = repairedEntry
+  if (!(previousInitialEntry > 0)) position.initialEntryPrice = repairedEntry
+
+  const previousAverage = finitePositive(position.averageExecutionPrice)
+  if (
+    !(previousAverage > 0) ||
+    priceDomainDistance(previousAverage, authoritativeEntry) >= 10 ||
+    (initialMatchesAuthority && priceDomainDistance(previousAverage, previousInitialEntry) >= 1.25)
+  ) {
+    position.averageExecutionPrice = repairedEntry
+  }
+
+  // Only automatic trailing state is rebased. Absolute operator overrides are
+  // explicit venue-price contracts and must never be silently rewritten.
+  const previousTrailing = finitePositive(position.trailingStopPrice)
+  if (!position.manualProtectionOverride && previousTrailing > 0) {
+    const trailingToOldEntry = previousTrailing / previousEntry
+    const trailingToAuthority = previousTrailing / authoritativeEntry
+    if (
+      trailingToOldEntry > 0.1 &&
+      trailingToOldEntry < 10 &&
+      (trailingToAuthority <= 0.1 || trailingToAuthority >= 10)
+    ) {
+      position.trailingStopPrice = repairedEntry * trailingToOldEntry
+    }
+  }
+
+  return true
+}
+
 function isTrailingStopTightening(
   pos: Pick<LivePosition, "direction" | "side" | "trailingStopPrice">,
   candidateValue: unknown,
@@ -7859,19 +8269,26 @@ export async function executeLivePosition(
       return livePosition
     }
 
-    // ── Step 2: Fetch current market price ──────�����������──────────────────────────
-    let currentPrice = realPosition.entryPrice
-    if (!currentPrice || currentPrice <= 0) {
-      currentPrice = await fetchCurrentPrice(realPosition.symbol)
-    }
+    // ── Step 2: Fetch the authoritative venue price ─────────────────────
+    // Historical strategy rows can use a normalized price domain (for
+    // example ~100) while the actual venue instrument trades at a fraction of
+    // that value. Using the pseudo price here corrupts quantity sizing and
+    // trailing/control-order prices. Real exchange mutations therefore fail
+    // closed unless the connector itself supplies a current ticker.
+    const currentPrice = await resolveAuthoritativeLiveReferencePrice(
+      connectionId,
+      realPosition.symbol,
+      realPosition.direction,
+      exchangeConnector,
+    )
     if (!currentPrice || currentPrice <= 0) {
       livePosition.status = "error"
-      livePosition.statusReason = `No current price available for ${realPosition.symbol}`
+      livePosition.statusReason = `No authoritative exchange ticker available for ${realPosition.symbol}`
       pushStep(livePosition, "price_fetch", false, livePosition.statusReason)
       await savePosition(livePosition)
       await incrementMetric(connectionId, "live_orders_failed_count")
       await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
-      await logProgressionEvent(connectionId, "live_trading", "error", "Live order failed — no market price", {
+      await logProgressionEvent(connectionId, "live_trading", "error", "Live order failed — no authoritative venue ticker", {
         symbol: realPosition.symbol,
       })
       // Release the dedup lock — a missing market price is a transient
@@ -8701,7 +9118,7 @@ export async function executeLivePosition(
     // protection order itself being "reduce-only" ensures it can't add new
     // risk; the reconcile cycle will correct the stored qty on next tick.
     const inlineFillQty   = parseFloat(String(orderResult.filledQty  ?? orderResult.executedQty ?? orderResult.cumQty   ?? "0")) || 0
-    const inlineFillPrice = parseFloat(String(orderResult.filledPrice ?? orderResult.avgPrice   ?? orderResult.price    ?? "0")) || 0
+    const inlineFillPrice = parseFloat(String(orderResult.filledPrice ?? orderResult.avgPrice ?? "0")) || 0
     const inlineStatus    = String(orderResult.status ?? "").toLowerCase()
     const inlineFilled    = (inlineStatus === "filled" || inlineFillQty >= computedVolume * 0.99) && inlineFillQty > 0
 
@@ -8746,12 +9163,12 @@ export async function executeLivePosition(
             // also exposes `contracts` and `size` aliases (set in getPositions).
             const exSize = parseFloat(String(exPos?.positionAmt ?? exPos?.contracts ?? exPos?.size ?? exPos?.quantity ?? "0")) || 0
             const exEntry = parseFloat(String(exPos?.entryPrice ?? exPos?.avgPrice ?? exPos?.averagePrice ?? "0")) || 0
-            if (Math.abs(exSize) > 0) {
+            if (Math.abs(exSize) > 0 && exEntry > 0) {
               console.log(`${LOG_PREFIX} getPosition() fallback fill for ${realPosition.symbol}: size=${exSize} entry=${exEntry} (attempt=${attempt + 1})`)
               fill = {
                 filled: true,
                 filledQty: Math.abs(exSize),
-                filledPrice: exEntry || currentPrice,
+                filledPrice: exEntry,
                 status: "filled_via_position",
               }
               break
@@ -8766,10 +9183,24 @@ export async function executeLivePosition(
       }
     }
 
-    if (fill.filled && fill.filledQty > 0) {
+    const entrySettlement = livePosition.orderId
+      ? await readOrderSettlement(exchangeConnector, realPosition.symbol, livePosition.orderId)
+      : null
+    if (entrySettlement) {
+      fill = {
+        filled: true,
+        filledQty: entrySettlement.filledQuantity,
+        filledPrice: entrySettlement.averageFillPrice,
+        status: "filled_via_settlement",
+      }
+    }
+
+    if (fill.filled && fill.filledQty > 0 && fill.filledPrice > 0) {
+      const authoritativeFillPrice = finitePositive(fill.filledPrice)
       livePosition.executedQuantity = fill.filledQty
       livePosition.remainingQuantity = Math.max(0, computedVolume - fill.filledQty)
-      livePosition.averageExecutionPrice = fill.filledPrice || currentPrice
+      livePosition.entryPrice = authoritativeFillPrice
+      livePosition.averageExecutionPrice = authoritativeFillPrice
       livePosition.initialExecutedQuantity ??= fill.filledQty
       if (specialPositionPlan) {
         livePosition.specialBaseQuantity = fill.filledQty / specialPositionPlan.totalVolumeRatio
@@ -8779,7 +9210,7 @@ export async function executeLivePosition(
         Number(livePosition.totalExecutedQuantity || 0),
         fill.filledQty,
       )
-      livePosition.initialEntryPrice ??= fill.filledPrice || currentPrice
+      livePosition.initialEntryPrice ??= authoritativeFillPrice
       livePosition.blockBaseQuantity ??= fill.filledQty
       initializeBlockOnlySeed(
         livePosition,
@@ -8796,15 +9227,25 @@ export async function executeLivePosition(
         )
       }
       livePosition.fills!.push({
+        orderId: livePosition.orderId,
+        settlementSource: entrySettlement?.source,
         timestamp: Date.now(),
         quantity: fill.filledQty,
-        price: fill.filledPrice || currentPrice,
-        fee: 0,
+        price: authoritativeFillPrice,
+        fee: Math.max(0, Number(entrySettlement?.tradingFee) || 0),
         feeAsset: "USDT",
       })
+      livePosition.entryTradingFee = Math.max(0, Number(entrySettlement?.tradingFee) || 0)
+      livePosition.entryTradingFeeAllocated = 0
+      livePosition.entryAccountingComplete = Boolean(entrySettlement)
+      livePosition.entrySettlementOrderIds = entrySettlement ? [entrySettlement.orderId] : []
+      livePosition.realizedPnlComplete = true
+      livePosition.realizedPnlSource = entrySettlement
+        ? "exchange_settlement"
+        : "exchange_fills_incomplete_fees"
       livePosition.status = livePosition.remainingQuantity <= 0.000001 ? "filled" : "partially_filled"
       livePosition.statusReason = fill.status === "filled_via_position"
-        ? `confirmed_position_fallback: exchange position size=${fill.filledQty} avg=${fill.filledPrice || currentPrice}`
+        ? `confirmed_position_fallback: exchange position size=${fill.filledQty} avg=${authoritativeFillPrice}`
         : `confirmed_fill: order fill status=${fill.status} qty=${fill.filledQty}`
       pushStep(livePosition, "poll_fill", true, `filled=${fill.filledQty} @ ${fill.filledPrice} via=${fill.status} reason=${livePosition.statusReason}`)
       await recordFillCountersOnce(connectionId, livePosition, realPosition.symbol, realPosition.direction)
@@ -8818,7 +9259,7 @@ export async function executeLivePosition(
         status: "filled",
         livePositionId: livePosition.id,
         executedQuantity: fill.filledQty,
-        averagePrice: fill.filledPrice || currentPrice,
+        averagePrice: authoritativeFillPrice,
         reason: `fill via=${fill.status}`,
         extra: { orderId: livePosition.orderId, attempts: placeAttempt },
       })
@@ -9307,9 +9748,9 @@ function controlOrderFilledQuantity(order: any): number {
   return Number.isFinite(value) && value > 0 ? value : 0
 }
 
-function controlOrderFillPrice(order: any, fallback: number): number {
-  const value = Number(order?.filledPrice ?? order?.avgPrice ?? order?.averagePrice ?? order?.price ?? fallback)
-  return Number.isFinite(value) && value > 0 ? value : fallback
+function controlOrderFillPrice(order: any): number {
+  const value = Number(order?.filledPrice ?? order?.avgPrice ?? order?.averagePrice ?? 0)
+  return Number.isFinite(value) && value > 0 ? value : 0
 }
 
 /**
@@ -9325,7 +9766,7 @@ async function settleControlOrdersBeforeSystemClose(
   connector: any,
   position: LivePosition,
   closeReason: string,
-  fallbackPrice: number,
+  _fallbackPrice: number,
 ): Promise<ControlBarrierOutcome> {
   const action = position.pendingSystemAction || {
     token: `system-close:${position.id}:${nanoid(8)}`,
@@ -9419,6 +9860,9 @@ async function settleControlOrdersBeforeSystemClose(
       : `${position.id}:control-authority:${action.token}`
     const existing = position.partialOrderExecutions?.find((entry) => entry.id === executionId)
     const observedOrder = filledObservation?.order
+    const settlement = filledObservation?.id
+      ? await readOrderSettlement(connector, position.symbol, filledObservation.id)
+      : null
     const applied = applyReductionObservation(position, {
       executionId,
       source: filledObservation?.source || "control_order",
@@ -9429,7 +9873,8 @@ async function settleControlOrdersBeforeSystemClose(
       reportedFilledQuantity: controlOrderFilledQuantity(observedOrder),
       previouslyAppliedQuantity: Number(existing?.cumulativeFilledQuantity || action.appliedFilledQuantity || 0),
       authoritativeQuantity: authoritative.ok ? authoritative.quantity : null,
-      price: controlOrderFillPrice(observedOrder, fallbackPrice),
+      price: controlOrderFillPrice(observedOrder),
+      settlement,
       orderId: filledObservation?.id,
       clientOrderId: filledObservation?.source === "system_close" ? action.clientOrderId : undefined,
     })
@@ -9669,7 +10114,6 @@ async function settleControlOrdersBeforeQuantityMutation(
       reportedFilledQuantity: 0,
       previouslyAppliedQuantity: Number(existing?.cumulativeFilledQuantity || 0),
       authoritativeQuantity: authoritative.quantity,
-      price: Number(position.markPrice || position.averageExecutionPrice || position.entryPrice || 0),
     })
   } else if (authoritative.quantity > localQuantity + tolerance) {
     const added = authoritative.quantity - localQuantity
@@ -9800,6 +10244,14 @@ export async function closeLivePosition(
 
     const hadSlId = !!position.stopLossOrderId
     const hadTpId = !!position.takeProfitOrderId
+
+    // Refresh every known entry order before the first reduction is applied.
+    // This repairs restarts and the normal fill-history propagation delay, and
+    // gives BingX (whose close settlement excludes entry fees) the exact fee
+    // amount needed for net PnL. Unknown entry fees stay explicitly incomplete.
+    if (exchangeConnector && originalStatus !== "simulated") {
+      await refreshEntryOrderAccounting(exchangeConnector, position)
+    }
 
     // Settle control orders before a system action. This is intentionally
     // sequential: an exchange SL/TP or partial coordination always gets an
@@ -9986,10 +10438,9 @@ export async function closeLivePosition(
           // ── Already-closed reconciliation ─��─���─────────────────────────
           // If the venue says the position is gone, we treat the close as
           // successful and stop retrying. The DB-side terminal-state
-          // pipeline below still runs (PnL is computed from `closePrice`,
-          // which the caller passed as the trigger/mark price — which is
-          // close enough to the actual SL/TP fill that the operator's
-          // reported PnL is within a tick of reality).
+          // pipeline below still runs, but live accounting remains unresolved
+          // until the exact control/system order fill is available. The
+          // caller's trigger/mark price is never accepted as realised PnL.
           if (isAlreadyClosedError(lastErrorMsg)) {
             exchangeCloseSuccess = true
             exchangeCloseReason = "already_closed"
@@ -10040,6 +10491,16 @@ export async function closeLivePosition(
         const action = position.pendingSystemAction
         const executionId = `${position.id}:system-close:${action?.clientOrderId || action?.orderId || action?.token || "unknown"}`
         const existing = position.partialOrderExecutions?.find((entry) => entry.id === executionId)
+        const settlement = action?.orderId
+          ? await readOrderSettlement(exchangeConnector, position.symbol, action.orderId)
+          : null
+        const orderDetail = action?.orderId && typeof exchangeConnector.getOrder === "function"
+          ? await withTimeout(
+              exchangeConnector.getOrder(position.symbol, action.orderId) as Promise<any>,
+              EXCHANGE_TIMEOUT_GET_ORDER_MS,
+              `getOrder(system-close-accounting ${action.orderId})`,
+            ).catch(() => null)
+          : null
         const observed = applyReductionObservation(position, {
           executionId,
           source: "system_close",
@@ -10048,7 +10509,8 @@ export async function closeLivePosition(
           reportedFilledQuantity: 0,
           previouslyAppliedQuantity: Number(existing?.cumulativeFilledQuantity || action?.appliedFilledQuantity || 0),
           authoritativeQuantity: authoritative.quantity,
-          price: closePrice,
+          price: controlOrderFillPrice(orderDetail),
+          settlement,
           orderId: action?.orderId,
           clientOrderId: action?.clientOrderId,
         })
@@ -10096,11 +10558,24 @@ export async function closeLivePosition(
       }
     }
 
+    // A pre-fill row without any venue handle represents only a reserved
+    // local slot. There is no exchange order or filled quantity that could be
+    // closed authoritatively, so keeping it in the open ledger creates a
+    // permanent placed_unconfirmed zombie. The stuck-placement sweeper calls
+    // this path without a connector after it has proven that no venue handle
+    // exists; every row with an order/position handle still remains subject to
+    // the normal exchange-confirmation barrier above.
+    const preFillWithoutExchangeHandle = isPreFillWithoutExchangeHandle(
+      position,
+      originalStatus,
+      hasSystemOrderId,
+    )
     const localOnlyCloseAllowed =
       originalStatus === "simulated" ||
       closeReason === "exchange_externally_closed" ||
       closeReason === "exchange_reconciliation" ||
-      closeReason === "duplicate_slot_pruned"
+      closeReason === "duplicate_slot_pruned" ||
+      preFillWithoutExchangeHandle
     const mayFinalizeClose = exchangeCloseSuccess || (!exchangeConnector && localOnlyCloseAllowed)
     if (!mayFinalizeClose) {
       const rollbackStatus: LivePosition["status"] = originalStatus && originalStatus !== "closing"
@@ -10180,8 +10655,9 @@ export async function closeLivePosition(
       remainingQty,
     )
     const avgEntry = position.averageExecutionPrice || position.entryPrice || 0
+    const isSimulationClose = originalStatus === "simulated"
     const finalLegPnl =
-      remainingQty > 0 && avgEntry > 0 && closePrice > 0
+      isSimulationClose && remainingQty > 0 && avgEntry > 0 && closePrice > 0
         ? remainingQty *
           (position.direction === "long"
             ? closePrice - avgEntry
@@ -10192,6 +10668,17 @@ export async function closeLivePosition(
     const notional = avgEntry * qty
     const margin = notional > 0 ? notional / lev : 0
     const roi = margin > 0 ? (pnl / margin) * 100 : 0
+    const accountedClosedQuantity = Math.max(0, Number(position.closedQuantity || 0))
+    const accountingQuantityComplete = qty <= 1e-12
+      || accountedClosedQuantity >= qty - Math.max(1e-12, qty * 1e-8)
+    position.realizedPnlComplete = isSimulationClose
+      ? true
+      : position.realizedPnlComplete !== false && accountingQuantityComplete
+    position.realizedPnlSource = isSimulationClose
+      ? "simulation_model"
+      : position.realizedPnlComplete
+        ? "exchange_settlement"
+        : position.realizedPnlSource || "exchange_unresolved"
 
     // ── 4. Persist with terminal state ────────────────────────────────
     position.status = "closed"
@@ -10217,7 +10704,12 @@ export async function closeLivePosition(
     // table can show the real close price without needing to back-derive
     // it from realizedPnL. This is the definitive source of truth for
     // the "Exit" column in trade history.
-    if (closePrice > 0) position.closePrice = Math.round(closePrice * 1e8) / 1e8
+    const lastActualExecutionPrice = [...(position.partialOrderExecutions || [])]
+      .reverse()
+      .map((execution) => Number(execution.price) || 0)
+      .find((price) => price > 0) || 0
+    const accountedClosePrice = isSimulationClose ? closePrice : lastActualExecutionPrice
+    if (accountedClosePrice > 0) position.closePrice = Math.round(accountedClosePrice * 1e8) / 1e8
     
     // Step annotation distinguishes the three real outcomes:
     //   • ok            → connector returned success
@@ -10236,7 +10728,7 @@ export async function closeLivePosition(
       position,
       "close",
       true,
-      `close @ ${closePrice} pnl=${pnl.toFixed(2)} roi=${roi.toFixed(2)}% reason=${closeReason}${exchangeNote}`,
+      `close @ ${accountedClosePrice > 0 ? accountedClosePrice : "unresolved"} pnl=${pnl.toFixed(2)} roi=${roi.toFixed(2)}% accounting=${position.realizedPnlSource}/${position.realizedPnlComplete ? "complete" : "incomplete"} reason=${closeReason}${exchangeNote}`,
     )
     // savePosition() handles index move + idempotent archival.
     // CHECK the moved-marker BEFORE savePosition() runs so we know
@@ -10269,11 +10761,12 @@ export async function closeLivePosition(
     mutationLockHeld = false
     if (position.liveLockToken) {
       await releaseLock(connectionId, position.symbol, liveLockDirection(position), position.liveLockToken)
-    } else {
+    } else if (originalStatus !== "simulated") {
       // Simulated/recovered rows can legitimately predate a live admission
-      // lock. Releasing a lock we do not own would be unsafe, but emitting one
-      // warning per close can serialize stdout long enough to starve health
-      // requests under a busy Paper soak. Keep the diagnostic once per lane.
+      // lock. Paper rows never acquire that lock at all, so warning for every
+      // normal simulated close is false-positive noise. For a real/recovered
+      // venue row, releasing a lock we do not own would still be unsafe; retain
+      // the rate-limited diagnostic for that actual recovery anomaly.
       logRuntimeWarning(
         `live-lock-release-missing:${connectionId}:${position.symbol}:${position.direction}`,
         30_000,
@@ -10282,12 +10775,12 @@ export async function closeLivePosition(
     }
     if (!wasAlreadyClosed) {
       await incrementMetric(connectionId, "live_positions_closed_count")
-      if (pnl > 0) await incrementMetric(connectionId, "live_wins_count")
+      if (position.realizedPnlComplete && pnl > 0) await incrementMetric(connectionId, "live_wins_count")
       const closedDirection = resolveLivePositionDirection(position)
       // A Signal/default or Signal/Block leg may have joined a position whose
       // primary owner is another indication type. Attribution follows the
       // durable Signal risk/source lineage, not the first leg's label.
-      if (closedDirection && position.signalRisk?.sourceIds?.length) {
+      if (position.realizedPnlComplete && closedDirection && position.signalRisk?.sourceIds?.length) {
         const signalAppSettings = await getAppSettings().catch(() => ({} as any))
         const positionCostPct = Math.max(
           0.000001,
@@ -10341,7 +10834,9 @@ export async function closeLivePosition(
       signalTakeProfitPct: position.signalRisk?.takeProfitPct,
       pnl,
       roi,
-      closePrice,
+      closePrice: accountedClosePrice || null,
+      pnlAccountingComplete: position.realizedPnlComplete,
+      pnlAccountingSource: position.realizedPnlSource,
       closeReason,
       executedQuantity: qty,
       averageEntry: avgEntry,
@@ -10373,6 +10868,18 @@ export async function closeLivePosition(
   } finally {
     stopPositionLockLeaseRefresh?.()
   }
+}
+
+function isPreFillWithoutExchangeHandle(
+  position: Pick<LivePosition, "executedQuantity">,
+  originalStatus: LivePosition["status"] | undefined,
+  hasSystemOrderId: boolean,
+): boolean {
+  return !hasSystemOrderId &&
+    Number(position.executedQuantity || 0) <= 0 &&
+    (originalStatus === "placed" ||
+      originalStatus === "pending_fill" ||
+      originalStatus === "placed_unconfirmed")
 }
 
 /**
@@ -11198,6 +11705,8 @@ export async function reconcileLivePositions(
           const authoritativeSize = Math.abs(parseFloat(String(exPos.size ?? exPos.positionAmt ?? exPos.quantity ?? "0"))) || 0
           const authoritativeEntry = parseFloat(String(exPos.entryPrice ?? exPos.avgPrice ?? "0")) || 0
 
+          repairLiveEntryPriceDomain(pos, authoritativeEntry)
+
           pos.exchangeData = {
             ...pos.exchangeData,
             markPrice: markPrice && markPrice > 0 ? markPrice : pos.exchangeData?.markPrice,
@@ -11227,12 +11736,12 @@ export async function reconcileLivePositions(
           let justFilled = false
           if (pos.status === "placed" || pos.status === "pending_fill" || pos.status === "placed_unconfirmed") {
             const exSize  = Math.abs(parseFloat(String(exPos.size ?? exPos.positionAmt ?? exPos.quantity ?? "0"))) || 0
-            const exEntry = parseFloat(String(exPos.entryPrice ?? exPos.avgPrice ?? exPos.markPrice ?? "0")) || 0
-            if (exSize > 0 && !parallelExecutionLanes) {
+            const exEntry = parseFloat(String(exPos.entryPrice ?? exPos.avgPrice ?? "0")) || 0
+            if (exSize > 0 && exEntry > 0 && !parallelExecutionLanes) {
               if (pos.executedQuantity <= 0) {
                 pos.executedQuantity = exSize
                 pos.remainingQuantity = 0
-                pos.averageExecutionPrice = exEntry || pos.entryPrice
+                pos.averageExecutionPrice = exEntry
               }
               pos.status = "open"
               pos.statusReason = `confirmed_position_fallback: reconcile saw exchange position size=${exSize} avg=${pos.averageExecutionPrice}`
@@ -11247,11 +11756,12 @@ export async function reconcileLivePositions(
                 const order = await exchangeConnector.getOrder(pos.symbol, pos.orderId)
                 const statusLower = String(order?.status ?? "").toLowerCase()
                 const orderFilledQty = parseFloat(String(order?.filledQty ?? order?.executedQty ?? "0")) || 0
-                if (order && (statusLower === "filled" || statusLower === "partially_filled" || orderFilledQty > 0)) {
+                const orderFilledPrice = parseFloat(String(order?.filledPrice ?? order?.avgPrice ?? "0")) || 0
+                if (order && orderFilledQty > 0 && orderFilledPrice > 0 && (statusLower === "filled" || statusLower === "partially_filled" || orderFilledQty > 0)) {
                   if (orderFilledQty > 0) {
                     pos.executedQuantity = orderFilledQty
                     pos.remainingQuantity = Math.max(0, pos.quantity - pos.executedQuantity)
-                    pos.averageExecutionPrice = parseFloat(String(order.filledPrice ?? order.avgPrice ?? "0")) || pos.averageExecutionPrice || pos.entryPrice
+                    pos.averageExecutionPrice = orderFilledPrice
                   }
                   pos.status = "open"
                   pos.statusReason = `confirmed_fill: reconcile order status=${statusLower} qty=${pos.executedQuantity}`
@@ -11412,26 +11922,64 @@ export async function reconcileLivePositions(
             delta.updated++
             return delta
           }
-          // Position closed externally — compute PnL, move to archive.
-          let exitPrice: number = Number(pos.exchangeData?.markPrice) || pos.averageExecutionPrice || 0
-          if (exitPrice <= 0) {
-            try {
-              const mdHash = await client.hgetall(`market_data:${pos.symbol}`)
-              const mdPrice = parseFloat(
-                String(mdHash?.lastPrice ?? mdHash?.price ?? mdHash?.close ?? "0")
-              )
-              if (mdPrice > 0) exitPrice = mdPrice
-            } catch { /* ignore — fall through to entryPrice */ }
+          // Position closed externally. Resolve the exact system control order
+          // that flattened it; a mark/ticker/entry fallback is not a fill and
+          // must never become realised PnL.
+          await refreshEntryOrderAccounting(exchangeConnector, pos)
+          const qty = Math.max(0, Number(pos.executedQuantity || pos.quantity || 0))
+          const closeOrderIds = Array.from(new Set([
+            String(pos.stopLossOrderId || ""),
+            String(pos.takeProfitOrderId || ""),
+            String(pos.pendingSystemAction?.orderId || ""),
+            String(pos.pendingReduction?.orderId || ""),
+          ].filter(Boolean)))
+          const settlements = (await Promise.all(
+            closeOrderIds.map((orderId) => readOrderSettlement(exchangeConnector, pos.symbol, orderId)),
+          )).filter((value): value is ExchangeOrderSettlement => Boolean(value))
+          const bestSettlement = settlements
+            .sort((a, b) => b.filledQuantity - a.filledQuantity)[0] || null
+          let actualOrder: any = null
+          if (!bestSettlement && typeof exchangeConnector.getOrder === "function") {
+            const orders = await Promise.all(closeOrderIds.map((orderId) => withTimeout(
+              exchangeConnector.getOrder(pos.symbol, orderId) as Promise<any>,
+              EXCHANGE_TIMEOUT_GET_ORDER_MS,
+              `getOrder(external-close ${orderId})`,
+            ).catch(() => null)))
+            actualOrder = orders.find((order) =>
+              controlOrderFilledQuantity(order) > 0 && controlOrderFillPrice(order) > 0,
+            ) || null
           }
-          if (exitPrice <= 0) exitPrice = pos.entryPrice || 0
-          const qty      = pos.executedQuantity || pos.quantity || 0
-          const avgEntry = pos.averageExecutionPrice || pos.entryPrice || 0
-
-          let realizedPnl = 0
-          if (exitPrice > 0 && avgEntry > 0 && qty > 0) {
-            realizedPnl = qty *
-              (pos.direction === "long" ? exitPrice - avgEntry : avgEntry - exitPrice)
+          const actualOrderId = bestSettlement?.orderId
+            || String(actualOrder?.orderId ?? actualOrder?.id ?? "")
+          const actualFilledQuantity = bestSettlement?.filledQuantity
+            || controlOrderFilledQuantity(actualOrder)
+          const actualFillPrice = bestSettlement?.averageFillPrice
+            || controlOrderFillPrice(actualOrder)
+          if (actualOrderId && actualFilledQuantity > 0) {
+            const executionId = `${pos.id}:exchange-external:${actualOrderId}`
+            const existingExecution = pos.partialOrderExecutions?.find((entry) => entry.id === executionId)
+            applyReductionObservation(pos, {
+              executionId,
+              source: "exchange_reconcile",
+              status: "filled",
+              requestedQuantity: qty,
+              reportedFilledQuantity: actualFilledQuantity,
+              previouslyAppliedQuantity: Number(existingExecution?.cumulativeFilledQuantity || 0),
+              authoritativeQuantity: 0,
+              price: actualFillPrice,
+              settlement: bestSettlement,
+              orderId: actualOrderId,
+            })
+            if (actualFilledQuantity < qty - Math.max(1e-12, qty * 1e-8)) {
+              pos.realizedPnlComplete = false
+              pos.realizedPnlSource = "exchange_unresolved"
+            }
+          } else {
+            pos.realizedPnlComplete = false
+            pos.realizedPnlSource = "exchange_unresolved"
           }
+          const exitPrice = actualFillPrice > 0 ? actualFillPrice : 0
+          const realizedPnl = Number(pos.realizedPnL || 0)
 
           if (pos.stopLossOrderId || pos.takeProfitOrderId) {
             const cancellations: Promise<boolean>[] = []
@@ -11462,13 +12010,14 @@ export async function reconcileLivePositions(
           // no exchange action is required or safe.
           pos.status = "closed"
           pos.closedAt = Date.now()
-          pos.realizedPnL = Math.round(realizedPnl * 100) / 100
+          pos.realizedPnL = Math.round(realizedPnl * 1e8) / 1e8
+          if (exitPrice > 0) pos.closePrice = Math.round(exitPrice * 1e8) / 1e8
           pos.closeReason = pos.closeReason || "exchange_reconciliation"
           pos.progression!.push({
             step: "close",
             timestamp: Date.now(),
             success: true,
-            details: `Reconciled @ ${exitPrice.toFixed(8)} PnL=${realizedPnl.toFixed(4)}`,
+            details: `Reconciled @ ${exitPrice > 0 ? exitPrice.toFixed(8) : "unresolved"} PnL=${realizedPnl.toFixed(4)} accounting=${pos.realizedPnlSource}/${pos.realizedPnlComplete ? "complete" : "incomplete"}`,
           })
           pos.updatedAt = Date.now()
 
@@ -11502,7 +12051,7 @@ export async function reconcileLivePositions(
             writes.push(
               client.hincrby(progKey, "live_positions_closed_count", 1).catch(() => {}),
             )
-            if (realizedPnl > 0) {
+            if (pos.realizedPnlComplete && realizedPnl > 0) {
               writes.push(client.hincrby(progKey, "live_wins_count", 1).catch(() => {}))
             }
           }
@@ -12441,6 +12990,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           const authoritativeSize = Math.abs(parseFloat(String(
             exchangePos.size ?? (exchangePos as any).positionAmt ?? exchangePos.quantity ?? "0",
           ))) || 0
+          repairLiveEntryPriceDomain(position, exEntry)
           if (exEntry > 0) {
             if (!(position.averageExecutionPrice > 0)) position.averageExecutionPrice = exEntry
             if (!(position.entryPrice > 0)) position.entryPrice = exEntry
@@ -13280,6 +13830,12 @@ export async function syncLiveFromPseudo(
         return Number.isFinite(ts) && ts > 0
       })()
     const trailingStopPrice = parseFloat(String(pseudoPos?.trailing_stop_price || "0"))
+    const pseudoEntryPrice = finitePositive(
+      pseudoPos?.entry_price ??
+      pseudoPos?.entryPrice ??
+      pseudoPos?.average_entry_price ??
+      pseudoPos?.averageEntryPrice,
+    )
 
     // ── Set-scoped match (BUG 6) ───────────���──────────────────────────
     // Identify the Real Set that owns THIS pseudo position. Several pseudo
@@ -13377,19 +13933,36 @@ export async function syncLiveFromPseudo(
           // updateProtectionOrders owns its absolute SL/TP and trailing ratchet
           // until the operator explicitly restores strategy defaults.
           if (livePos.manualProtectionOverride) continue
+          const localAuthoritativeEntry =
+            finitePositive(livePos.initialEntryPrice) ||
+            finitePositive(livePos.averageExecutionPrice) ||
+            finitePositive(livePos.entryPrice)
+          repairLiveEntryPriceDomain(livePos, localAuthoritativeEntry)
+          const fill =
+            finitePositive(livePos.averageExecutionPrice) ||
+            finitePositive(livePos.initialEntryPrice) ||
+            finitePositive(livePos.entryPrice)
+          const translatedTrailingStopPrice = trailingActive
+            ? translatePseudoTrailingStopPrice(trailingStopPrice, pseudoEntryPrice, fill)
+            : undefined
+          // Never copy an absolute pseudo/historic price directly into a live
+          // venue position. If it cannot be projected through the pseudo entry
+          // ratio, leave the currently armed live protection untouched.
+          if (trailingActive && trailingStopPrice > 0 && !(translatedTrailingStopPrice && translatedTrailingStopPrice > 0)) {
+            continue
+          }
           // Fast-path stale guard. The locked recalculation path performs the
           // same check again against a fresh Redis read; this early skip avoids
           // unnecessary venue work when an older fire-and-forget ratchet
           // arrives after a tighter one has already been persisted.
           if (
             trailingActive &&
-            trailingStopPrice > 0 &&
-            !isTrailingStopTightening(livePos, trailingStopPrice)
+            !!translatedTrailingStopPrice &&
+            !isTrailingStopTightening(livePos, translatedTrailingStopPrice)
           ) continue
           let effectiveSlPct = slPct
           // CRITICAL: Guard trailing stop calculation against NaN and division errors
-          if (trailingActive && Number.isFinite(trailingStopPrice) && trailingStopPrice > 0) {
-            const fill = Number(livePos.averageExecutionPrice || livePos.entryPrice || 0)
+          if (trailingActive && Number.isFinite(Number(translatedTrailingStopPrice)) && Number(translatedTrailingStopPrice) > 0) {
             // Ensure fill price is valid and positive before using in division
             if (Number.isFinite(fill) && fill > 0) {
               const liveSide = resolveLivePositionDirection(livePos)
@@ -13400,9 +13973,9 @@ export async function syncLiveFromPseudo(
               // is below fill for longs and above fill for shorts).
               let distPct: number
               if (liveSide === "long") {
-                distPct = ((fill - trailingStopPrice) / fill) * 100
+                distPct = ((fill - Number(translatedTrailingStopPrice)) / fill) * 100
               } else {
-                distPct = ((trailingStopPrice - fill) / fill) * 100
+                distPct = ((Number(translatedTrailingStopPrice) - fill) / fill) * 100
               }
               // Guard against NaN from division or calculation errors, and
               // ensure distPct is positive (should always be for valid trailing levels)
@@ -13411,7 +13984,7 @@ export async function syncLiveFromPseudo(
               } else if (!Number.isFinite(distPct)) {
                 // If distPct is NaN or Infinity, log it but keep current SL percentage
                 console.warn(
-                  `${LOG_PREFIX} distPct is ${distPct} for ${livePos.symbol} (fill=${fill}, trailing=${trailingStopPrice}, side=${liveSide})`
+                  `${LOG_PREFIX} distPct is ${distPct} for ${livePos.symbol} (fill=${fill}, trailing=${translatedTrailingStopPrice}, side=${liveSide})`
                 )
               }
             }
@@ -13427,7 +14000,9 @@ export async function syncLiveFromPseudo(
           const prevTrailingActive = livePos.trailingActive
           const prevTrailingStopPrice = livePos.trailingStopPrice
           const nextTrailingStopPrice =
-            trailingActive && trailingStopPrice > 0 ? trailingStopPrice : undefined
+            trailingActive && Number(translatedTrailingStopPrice) > 0
+              ? Number(translatedTrailingStopPrice)
+              : undefined
           const trailingStateChanged =
             prevTrailingActive !== trailingActive ||
             prevTrailingStopPrice !== nextTrailingStopPrice
@@ -13477,7 +14052,7 @@ export async function syncLiveFromPseudo(
           // skip the no-op guard if the trailing stop price itself changed.
           const trailingPriceAdvanced =
             trailingStateChanged ||
-            (trailingActive && trailingStopPrice > 0 && prevTrailingStopPrice !== trailingStopPrice)
+            (trailingActive && Number(translatedTrailingStopPrice) > 0 && prevTrailingStopPrice !== translatedTrailingStopPrice)
           const nothingChanged =
             !ordersMissing && slDeltaPct < 0.0025 && tpDeltaPct < 0.0025 && !trailingPriceAdvanced
           if (nothingChanged) continue
@@ -13506,6 +14081,13 @@ export async function syncLiveFromPseudo(
 export const __liveStageTest = {
   liveExecutionSlot,
   resolveConfirmedStrategyVariant,
+  clearLiveTickerCache() {
+    liveTickerCache.clear()
+  },
+  normalizeVenueTicker,
+  selectVenueTickerPrice,
+  translatePseudoTrailingStopPrice,
+  repairLiveEntryPriceDomain,
   async refreshLockTTLWithClient(client: any, key: string, token: string, ttlMs: number) {
     return (await evalLockLua(client, REFRESH_LOCK_TTL_LUA, key, [token, String(ttlMs)])) === 1
   },
@@ -13522,9 +14104,12 @@ export const __liveStageTest = {
   updateProtectionOrders,
   resolvePseudoProtectionPercents,
   isTrailingStopTightening,
+  isPreFillWithoutExchangeHandle,
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)
   },
+  isAmbiguousControlOrderDelivery,
+  reconcileAmbiguousProtectionWrite,
   detectSltpCross(pos: LivePosition, price: number, stopLossPrice?: number, takeProfitPrice?: number): "sl_hit" | "tp_hit" | null {
     if (pos.direction === "short") {
       if (stopLossPrice && price >= stopLossPrice) return "sl_hit"

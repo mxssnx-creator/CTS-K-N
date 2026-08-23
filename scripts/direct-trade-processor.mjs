@@ -7,7 +7,7 @@
  * range (48h by default) every 2h, manages
  * multiple positions per symbol/direction/timeframe independently.
  *
- * Usage: node scripts/direct-trade-processor.mjs [--port 3002]
+ * Usage: node scripts/direct-trade-processor.mjs [--port 3002] [--connection-id ID]
  *
  * Features:
  * - 280ms processing interval
@@ -45,6 +45,12 @@ const PORT = process.env.PORT ?? (
 )
 const BASE = `http://localhost:${PORT}`
 const PROCESSOR_TOKEN = process.env.DIRECT_TRADE_PROCESSOR_TOKEN || ""
+const connectionArgIndex = process.argv.indexOf("--connection-id")
+const PROCESS_CONNECTION_ID = String(
+  process.env.DIRECT_TRADE_CONNECTION_ID
+    || (connectionArgIndex >= 0 ? process.argv[connectionArgIndex + 1] : "")
+    || "",
+).trim()
 // Live Direct-Trade must prove an exact historic warmup before the realtime
 // pulse/order loop is allowed to run. This is intentionally independent from
 // the operator's paper/backtest range.
@@ -245,6 +251,10 @@ function log(level, msg, data) {
 }
 
 async function apiCall(path, method = "GET", body = null, timeoutMs = 30_000) {
+  const url = new URL(path, BASE)
+  if (PROCESS_CONNECTION_ID && url.pathname.startsWith("/api/trade-engine/direct-trade")) {
+    url.searchParams.set("connectionId", PROCESS_CONNECTION_ID)
+  }
   const opts = {
     method,
     headers: {
@@ -253,8 +263,13 @@ async function apiCall(path, method = "GET", body = null, timeoutMs = 30_000) {
     },
     signal: AbortSignal.timeout(timeoutMs),
   }
-  if (body) opts.body = JSON.stringify(body)
-  const res = await fetch(`${BASE}${path}`, opts)
+  if (body) {
+    const scopedBody = PROCESS_CONNECTION_ID && typeof body === "object" && !Array.isArray(body)
+      ? { ...body, connectionId: PROCESS_CONNECTION_ID }
+      : body
+    opts.body = JSON.stringify(scopedBody)
+  }
+  const res = await fetch(url, opts)
   if (!res.ok) {
     const text = await res.text().catch(() => "")
     throw new Error(`API ${method} ${path} → ${res.status}: ${text.slice(0, 200)}`)
@@ -346,7 +361,7 @@ let tickCount = 0
 let errorsLast5min = 0
 let errorTimestamps = []
 const rateLimiter = new RateLimiter(8)
-const processorInstanceId = `dtp_${process.pid}_${Math.random().toString(36).slice(2, 12)}`
+const processorInstanceId = `dtp_${process.pid}_${Math.random().toString(36).slice(2, 12)}${PROCESS_CONNECTION_ID ? `_${PROCESS_CONNECTION_ID.slice(0, 24)}` : ""}`
 let processorLeaseHeld = false
 let lastProcessorSyncAt = 0
 let lastPersistAt = 0
@@ -354,6 +369,7 @@ let lastStateRefreshAt = 0
 let lastStandbyWarningAt = 0
 let stateDirty = false
 let tickInFlight = false
+let connectionExchange = "bingx"
 
 const BINGX_PUBLIC_HOSTS = new Set([
   "open-api.bingx.com",
@@ -380,6 +396,25 @@ function syntheticDirectTradePrice(symbol) {
 async function readDirectTradeTicker(symbol) {
   if (process.env.DIRECT_TRADE_SYNTHETIC_MARKET_DATA === "1") {
     return syntheticDirectTradePrice(symbol)
+  }
+
+  if (connectionExchange === "bybit") {
+    const url = new URL("https://api.bybit.com/v5/market/tickers")
+    url.searchParams.set("category", "linear")
+    url.searchParams.set("symbol", String(symbol).replace(/-/g, ""))
+    await rateLimiter.acquire()
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(3_000),
+    })
+    if (response.status === 429) rateLimiter.backoff(2_000)
+    if (!response.ok) return 0
+    const payload = await response.json()
+    if (Number(payload?.retCode) !== 0) return 0
+    return Number(payload?.result?.list?.[0]?.lastPrice || 0) || 0
+  }
+  if (connectionExchange !== "bingx") {
+    throw new Error(`Direct-Trade ticker is not supported for exchange ${connectionExchange || "unknown"}`)
   }
 
   const origin = String(process.env.BINGX_PUBLIC_ORIGIN || "https://open-api.bingx.com")
@@ -783,6 +818,23 @@ function markOpeningFailed(position, reason) {
   log("warn", `Opening ${position.direction} ${position.symbol} ended without a position`, position.openFailureReason)
 }
 
+function applyEntryOrderSettlement(position, orderResult, orderId = null) {
+  const settlement = orderResult?.settlement
+  const exactOrderId = String(settlement?.orderId || orderId || "").trim()
+  const knownIds = Array.isArray(position.entrySettlementOrderIds)
+    ? position.entrySettlementOrderIds.map(String)
+    : []
+  if (!settlement || !exactOrderId || knownIds.includes(exactOrderId)) return 0
+  const fee = Math.max(0, Number(settlement.tradingFee) || 0)
+  position.entryTradingFeeUsdt = Number(((Number(position.entryTradingFeeUsdt) || 0) + fee).toFixed(12))
+  position.entrySettlementOrderIds = [...knownIds, exactOrderId].slice(-32)
+  position.entrySettlementSources = Array.from(new Set([
+    ...(Array.isArray(position.entrySettlementSources) ? position.entrySettlementSources : []),
+    String(settlement.source || "exchange_settlement"),
+  ])).slice(-8)
+  return fee
+}
+
 function finalizeOpenedPosition(position, filledPrice, filledQuantity, orderId = null) {
   const entryPrice = Number(filledPrice)
   const quantity = Number(filledQuantity)
@@ -889,6 +941,12 @@ async function submitOrReconcileOpening(position, reconcileOnly = false) {
       return false
     }
     const finalized = finalizeOpenedPosition(position, exchangeEntryPrice, exchangeFilledQuantity, orderResult.orderId)
+    if (finalized) {
+      const entryFee = applyEntryOrderSettlement(position, orderResult, orderResult.orderId)
+      position.entryAccountingComplete = Boolean(orderResult.settlement)
+      if (position.blockLegs?.[0]) position.blockLegs[0].tradingFeeUsdt = entryFee
+      if (position.positionLegs?.[0]) position.positionLegs[0].tradingFeeUsdt = entryFee
+    }
     await persistState()
     return finalized
   } catch (err) {
@@ -984,6 +1042,14 @@ async function openPosition(config) {
     partialCloseQuantity: 0,
     partialEntryNotionalUsdt: 0,
     partialGrossPnlUsdt: 0,
+    partialRealizedPnlUsdt: 0,
+    partialTradingFeeUsdt: 0,
+    entryTradingFeeUsdt: 0,
+    entryTradingFeeAllocatedUsdt: 0,
+    entrySettlementOrderIds: [],
+    entrySettlementSources: [],
+    entryAccountingComplete: !state.liveMode,
+    closeAccountingComplete: !state.liveMode,
     closeGeneration: 0,
     closeControlId: null,
     closeState: null,
@@ -1090,6 +1156,7 @@ async function addDirectTradeBlockLeg(position, config) {
   let filledPrice = marketPrice
   let filledQuantity = requestedQuantity
   let orderId = null
+  let entrySettlement = null
   if (position.mode === "live") {
     try {
       if (!(position.connectionId || state.connectionId) || !PROCESSOR_TOKEN) {
@@ -1149,6 +1216,7 @@ async function addDirectTradeBlockLeg(position, config) {
       filledPrice = Number(orderResult.fill?.filledPrice || orderResult.details?.avgPrice)
       filledQuantity = Number(orderResult.fill?.filledQty || orderResult.details?.filledQty)
       orderId = orderResult.orderId || null
+      entrySettlement = orderResult.settlement || null
       if (!(filledPrice > 0) || !(filledQuantity > 0)) {
         position.blockControlGeneration = controlGeneration + 1
         position.blockPendingCount = 0
@@ -1210,10 +1278,15 @@ async function addDirectTradeBlockLeg(position, config) {
       volumeMultiplier: 1 + nextCount * volumeRatio,
       targetBlockQuantity: baseQuantity * (1 + nextCount * volumeRatio),
       orderId,
+      tradingFeeUsdt: Math.max(0, Number(entrySettlement?.tradingFee) || 0),
       addedAt: Date.now(),
     },
   ]
   position.blockLegs = [...position.positionLegs]
+  if (position.mode === "live") {
+    applyEntryOrderSettlement(position, { settlement: entrySettlement }, orderId)
+    position.entryAccountingComplete = Boolean(position.entryAccountingComplete && entrySettlement)
+  }
   stats.totalOrders++
   stats.totalFilled++
   stateDirty = true
@@ -1299,6 +1372,7 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
   let filledPrice = hasPendingControl ? Number(position.dcaPendingRequestedPrice) : Number(currentPrice)
   let filledQuantity = requestedQuantity
   let orderId = null
+  let entrySettlement = null
   try {
     if (position.mode === "live") {
       const connectionId = position.connectionId || state.connectionId
@@ -1363,6 +1437,7 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
       filledPrice = Number(orderResult.fill?.filledPrice || orderResult.details?.avgPrice)
       filledQuantity = Number(orderResult.fill?.filledQty || orderResult.details?.filledQty)
       orderId = orderResult.orderId || null
+      entrySettlement = orderResult.settlement || null
       if (!(filledPrice > 0) || !(filledQuantity > 0)) {
         position.dcaControlGeneration = controlGeneration + 1
         position.dcaPendingControlStep = 0
@@ -1399,6 +1474,7 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
       triggerDistancePct,
       adverseMovePct: adverseMove,
       orderId,
+      tradingFeeUsdt: Math.max(0, Number(entrySettlement?.tradingFee) || 0),
       filledAt: Date.now(),
     }
     position.positionLegs = [...currentLegs, leg]
@@ -1419,6 +1495,10 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
     position.entryPrice = position.averageEntryPrice
     position.dcaRealizedVolumeMultiplier = Number((nextQuantity / baseQuantity).toFixed(6))
     position.dcaTakeProfitPrice = directDcaTakeProfitPrice(position)
+    if (position.mode === "live") {
+      applyEntryOrderSettlement(position, { settlement: entrySettlement }, orderId)
+      position.entryAccountingComplete = Boolean(position.entryAccountingComplete && entrySettlement)
+    }
     stats.totalOrders++
     stats.totalFilled++
     stateDirty = true
@@ -1662,6 +1742,7 @@ async function closePosition(pos, exitPrice, reason) {
   if (Date.now() < Number(pos.closeRetryAfter || 0)) return false
   let realizedExitPrice = Number(exitPrice)
   let realizedQuantity = Math.abs(Number(pos.quantity) || 0)
+  let finalSettlement = null
 
   // A live close is authoritative only after the exchange accepts it. Keep
   // the local row open on failure so the next leased tick retries instead of
@@ -1731,6 +1812,22 @@ async function closePosition(pos, exitPrice, reason) {
         await persistState()
         return false
       }
+      finalSettlement = closeResult?.settlement || null
+      if (!finalSettlement) {
+        const waitStartedAt = Number(pos.closeSettlementWaitStartedAt) || Date.now()
+        pos.closeSettlementWaitStartedAt = waitStartedAt
+        // Venue fill-history commonly trails the terminal order response by a
+        // few seconds. Re-read the same completed control generation so the
+        // gateway can attach exact PnL/fees; this never resubmits an order.
+        if (Date.now() - waitStartedAt < 15_000) {
+          pos.closeState = "closing_settlement_pending"
+          stateDirty = true
+          await persistState()
+          return false
+        }
+      } else {
+        pos.closeSettlementWaitStartedAt = 0
+      }
       const exchangePrice = Number(closeResult.fill?.filledPrice || closeResult.details?.avgPrice || closeResult.avgPrice)
       const exchangeQuantity = Number(closeResult.fill?.filledQty || closeResult.details?.filledQty)
       // A successful live close must carry an exchange-confirmed execution
@@ -1786,6 +1883,28 @@ async function closePosition(pos, exitPrice, reason) {
         pos.partialCloseQuantity = (Number(pos.partialCloseQuantity) || 0) + filledQuantity
         pos.partialEntryNotionalUsdt = (Number(pos.partialEntryNotionalUsdt) || 0) + partialEntryNotionalUsdt
         pos.partialGrossPnlUsdt = (Number(pos.partialGrossPnlUsdt) || 0) + partialGrossPnlUsdt
+        const remainingKnownEntryFee = Math.max(
+          0,
+          (Number(pos.entryTradingFeeUsdt) || 0) - (Number(pos.entryTradingFeeAllocatedUsdt) || 0),
+        )
+        const entryFeeAllocation = remainingKnownEntryFee * closeFraction
+        const settlementNet = Number(finalSettlement?.netRealizedPnl)
+        const partialRealizedPnlUsdt = Number.isFinite(settlementNet)
+          ? settlementNet - (finalSettlement?.netIncludesEntryFee ? 0 : entryFeeAllocation)
+          : partialGrossPnlUsdt - entryFeeAllocation
+        const partialTradingFeeUsdt = Math.max(0, Number(finalSettlement?.tradingFee) || 0)
+          + (finalSettlement?.netIncludesEntryFee ? 0 : entryFeeAllocation)
+        const hadPriorPartial = Number(pos.partialCloseCount || 0) > 0
+        pos.partialCloseCount = Number(pos.partialCloseCount || 0) + 1
+        pos.partialRealizedPnlUsdt = Number(((Number(pos.partialRealizedPnlUsdt) || 0) + partialRealizedPnlUsdt).toFixed(12))
+        pos.partialTradingFeeUsdt = Number(((Number(pos.partialTradingFeeUsdt) || 0) + partialTradingFeeUsdt).toFixed(12))
+        pos.entryTradingFeeAllocatedUsdt = Number(((Number(pos.entryTradingFeeAllocatedUsdt) || 0) + entryFeeAllocation).toFixed(12))
+        pos.closeAccountingComplete = (hadPriorPartial ? pos.closeAccountingComplete !== false : true)
+          && Boolean(finalSettlement)
+          && Boolean(finalSettlement?.netIncludesEntryFee || pos.entryAccountingComplete)
+        pos.pnlAccountingSource = pos.closeAccountingComplete
+          ? "exchange_settlement"
+          : "exchange_fills_incomplete_fees"
         pos.lastPartialClosePrice = realizedExitPrice
         pos.lastPartialCloseAt = new Date().toISOString()
         pos.closeState = "closing_partial"
@@ -1855,11 +1974,25 @@ async function closePosition(pos, exitPrice, reason) {
   // notional. This keeps staged Block PnL/PF on the same ratio basis as the
   // historical simulation instead of charging one cost to a multi-leg book.
   const positionCostPercent = Math.max(0.02, Math.min(1, Number(pos.positionCostPercent) || Number(state.positionCostPercent) || 0.1))
-  const positionCostUsdt = totalEntryNotionalUsdt * (positionCostPercent / 100)
-  const realizedPnlUsdt = totalGrossPnlUsdt - positionCostUsdt
+  const positionCostUsdt = pos.mode === "simulated"
+    ? totalEntryNotionalUsdt * (positionCostPercent / 100)
+    : 0
+  const remainingKnownEntryFee = Math.max(
+    0,
+    (Number(pos.entryTradingFeeUsdt) || 0) - (Number(pos.entryTradingFeeAllocatedUsdt) || 0),
+  )
+  const finalSettlementNet = Number(finalSettlement?.netRealizedPnl)
+  const finalRealizedPnlUsdt = pos.mode === "live"
+    ? Number.isFinite(finalSettlementNet)
+      ? finalSettlementNet - (finalSettlement?.netIncludesEntryFee ? 0 : remainingKnownEntryFee)
+      : grossPnlUsdtFromLegs - remainingKnownEntryFee
+    : grossPnlUsdtFromLegs - positionCostUsdt
+  const realizedPnlUsdt = pos.mode === "live"
+    ? (Number(pos.partialRealizedPnlUsdt) || 0) + finalRealizedPnlUsdt
+    : totalGrossPnlUsdt - positionCostUsdt
   const pnl = baseEntryNotionalUsdt > 0
     ? (realizedPnlUsdt / baseEntryNotionalUsdt) * 100
-    : grossPnl - positionCostPercent
+    : pos.mode === "live" ? grossPnl : grossPnl - positionCostPercent
 
   pos.status = "closed"
   pos.closeState = "closed"
@@ -1878,6 +2011,26 @@ async function closePosition(pos, exitPrice, reason) {
   pos.entryNotionalUsdt = Number(totalEntryNotionalUsdt.toFixed(8))
   pos.grossPnlUsdt = Number(totalGrossPnlUsdt.toFixed(8))
   pos.realizedPnlUsdt = Number(realizedPnlUsdt.toFixed(8))
+  if (pos.mode === "live") {
+    const finalTradingFeeUsdt = Math.max(0, Number(finalSettlement?.tradingFee) || 0)
+      + (finalSettlement?.netIncludesEntryFee ? 0 : remainingKnownEntryFee)
+    pos.entryTradingFeeAllocatedUsdt = Number((Number(pos.entryTradingFeeUsdt) || 0).toFixed(12))
+    pos.tradingFeeUsdt = Number(((Number(pos.partialTradingFeeUsdt) || 0) + finalTradingFeeUsdt).toFixed(12))
+    const previousCloseAccountingComplete = Number(pos.partialCloseCount || 0) > 0
+      ? pos.closeAccountingComplete !== false
+      : true
+    pos.closeAccountingComplete = previousCloseAccountingComplete
+      && Boolean(finalSettlement)
+      && Boolean(finalSettlement?.netIncludesEntryFee || pos.entryAccountingComplete)
+    pos.pnlAccountingComplete = pos.closeAccountingComplete
+    pos.pnlAccountingSource = pos.pnlAccountingComplete
+      ? "exchange_settlement"
+      : "exchange_fills_incomplete_fees"
+    pos.closeSettlementSource = finalSettlement?.source || null
+  } else {
+    pos.pnlAccountingComplete = true
+    pos.pnlAccountingSource = "simulation_model"
+  }
   pos.blockRealizedVolumeMultiplier = Number(pos.blockBaseQuantity) > 0
     ? Number(totalPositionVolumeMultiplier.toFixed(6))
     : 1
@@ -2083,6 +2236,12 @@ async function loadState(includeExecution = false) {
     lastStateRefreshAt = Date.now()
     if (result?.state) {
       applyRemoteState(result.state, "load")
+    }
+    const remoteExchange = String(result?.exchange || "").trim().toLowerCase()
+    if (remoteExchange === "bingx" || remoteExchange === "bybit") {
+      connectionExchange = remoteExchange
+    } else if (PROCESS_CONNECTION_ID) {
+      throw new Error(`Selected Direct-Trade connection has unsupported exchange ${remoteExchange || "unknown"}`)
     }
     const remoteCalculationVersion = result?.calculation?.calculatedAt || null
     const remoteCalculationHistoryHours = Number(result?.calculation?.historyHours)
@@ -2326,7 +2485,7 @@ async function waitForServer(timeoutMs = 60000) {
 }
 
 async function start() {
-  log("info", `Direct-Trade Processor v1.0 | Target: ${BASE}`)
+  log("info", `Direct-Trade Processor v1.0 | Target: ${BASE} | Connection: ${PROCESS_CONNECTION_ID || "legacy"}`)
   log("info", "Waiting for server...")
 
   const serverReady = await waitForServer()

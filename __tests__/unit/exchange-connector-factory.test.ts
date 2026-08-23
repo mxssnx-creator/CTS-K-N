@@ -45,6 +45,19 @@ describe("ExchangeConnectorFactory.createConnector", () => {
       isTestnet: expected,
     })
   })
+
+  test("normalizes a display-labelled Bybit connection before factory dispatch", async () => {
+    await ExchangeConnectorFactory.getInstance().createConnector(buildConnection(false, {
+      id: "bybit-x03-custom",
+      exchange: "Bybit X03",
+      api_type: "unified",
+    }))
+
+    expect(createExchangeConnectorMock).toHaveBeenCalledWith(
+      "bybit",
+      expect.objectContaining({ apiType: "unified" }),
+    )
+  })
 })
 
 describe("ExchangeConnectorFactory.getOrCreateConnector", () => {

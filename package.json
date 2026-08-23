@@ -56,6 +56,7 @@
     "test:direct-trade:live-preflight": "node scripts/test-direct-trade-live-preflight.mjs",
     "test:bingx:vst:soak": "node --env-file-if-exists=.env --import tsx scripts/run-bingx-vst-live-soak.ts",
     "test:bingx:vst:preflight": "BINGX_VST_SOAK_PREFLIGHT_ONLY=1 node --env-file-if-exists=.env --import tsx scripts/run-bingx-vst-live-soak.ts",
+    "test:bingx:vst:settlements": "node --env-file-if-exists=.env --import tsx scripts/audit-bingx-vst-soak-settlements.ts",
     "test:special:vst:5d": "NODE_OPTIONS='--expose-gc --max-old-space-size=1536' node --import tsx scripts/run-special-vst-5d-validation.ts",
     "test:special:vst:7d": "SPECIAL_VST_DAYS=7 SPECIAL_VST_TARGET_SYMBOLS=8 NODE_OPTIONS='--expose-gc --max-old-space-size=3072' node --import tsx scripts/run-special-vst-5d-validation.ts",
     "test:direct-trade:80h": "DIRECT_TRADE_MATRIX_HOURS=80 NODE_OPTIONS='--max-old-space-size=2048' node --import tsx scripts/test-direct-trade-matrix.cjs",
@@ -65,6 +66,7 @@
     "test:direct-trade:dev-soak": "node scripts/test-direct-trade-dev-soak.mjs",
     "test:direct-trade:dev-paper": "node scripts/run-direct-trade-dev-soak.mjs",
     "test:direct-trade:recovery": "node scripts/run-direct-trade-recovery-soak.mjs",
+    "test:direct-trade:shared-isolation": "node scripts/run-direct-trade-shared-isolation.mjs",
     "test:signal-sources": "node --import tsx scripts/verify-signal-sources.ts",
     "test:prod-preview": "node scripts/run-prod-preview-check.mjs",
     "test:prod-preview:max": "node scripts/run-prod-preview-check.mjs --max-symbols",
@@ -80,7 +82,10 @@
     "docs:recreation": "node scripts/generate-recreation-manifests.mjs",
     "docs:recreation:verify": "node scripts/verify-recreation-manifests.mjs",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node scripts/run-managed-db-migrate.mjs"
+    "db:migrate": "node scripts/run-managed-db-migrate.mjs",
+    "redis:local:start": "bash scripts/local-redis.sh start",
+    "redis:local:status": "bash scripts/local-redis.sh status",
+    "redis:local:stop": "bash scripts/local-redis.sh stop"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

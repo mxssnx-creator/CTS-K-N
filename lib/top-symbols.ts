@@ -218,29 +218,7 @@ async function fetchTopSymbolsUncached(
           headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (compatible; TradingBot/1.0)" },
           signal: AbortSignal.timeout(5000),
         })
-        if (!res.ok) {
-          const binanceRes = await fetch("https://api.binance.com/api/v3/ticker/24hr", {
-            headers: { Accept: "application/json" },
-            signal: AbortSignal.timeout(5000),
-          })
-          if (binanceRes.ok) {
-            const binanceData: any[] = await binanceRes.json()
-            tickers = binanceData
-              .filter(
-                (t) =>
-                  t.symbol.endsWith("USDT") &&
-                  !t.symbol.includes("DOWN") &&
-                  !t.symbol.includes("UP") &&
-                  !["USDCUSDT", "BUSDUSDT", "TUSDUSDT", "FDUSDUSDT"].includes(t.symbol) &&
-                  Number.parseFloat(t.quoteVolume) > 5_000_000,
-              )
-              .map((t) => ({
-                symbol: t.symbol,
-                priceChangePercent: Math.abs(Number.parseFloat(t.priceChangePercent)),
-                volume: Number.parseFloat(t.quoteVolume) || 0,
-              }))
-          }
-        } else {
+        if (res.ok) {
           const data = await res.json()
           tickers = (data?.result?.list || [])
             .filter((t: any) => t.symbol.endsWith("USDT") && Number.parseFloat(t.turnover24h) > 1_000_000)
@@ -249,7 +227,7 @@ async function fetchTopSymbolsUncached(
               priceChangePercent: Math.abs(Number.parseFloat(t.price24hPcnt || "0") * 100),
               volume: Number.parseFloat(t.turnover24h) || 0,
             }))
-        }
+        } else throw new Error(`Bybit ticker HTTP ${res.status}`)
       } catch (bybitErr) {
         console.warn("[TopSymbols] Bybit API error, using default:", bybitErr instanceof Error ? bybitErr.message : bybitErr)
       }

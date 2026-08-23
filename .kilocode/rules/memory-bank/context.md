@@ -7,6 +7,127 @@ Total output lines: 1636
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Current exact-settlement / Shared-Redis release checkpoint (2026-08-23)
+
+- Continue only from the persistent checkout
+  `/workspace/scratch/fba10f5c97ed/persistent/CTS-K-N`. The latest merged
+  release is GitHub PR `#209`
+  (`main@2618ad68518df717e1b06d69fa94792fc7ebdb3a`), built on the PR `#208`
+  production/runtime baseline.
+  Complete-history Git bundles belong in `/workspace/backups/CTS-K-N`.
+  Never commit exchange credentials, SSH/Chisel material, Redis data, raw
+  account reports, `.agent-logs`, dependencies or build output.
+- BingX realized PnL is now venue-authoritative by exact order ID. Prod-VST
+  first consumes terminal order detail (`executedQty`, `avgPrice`, `profit`,
+  `commission`) because its global `allFillOrders` response can omit known
+  fills; mainnet retains granular fill history and uses exact terminal detail
+  only when fill history has no matching row. Timestamp error `100421` causes
+  one read-only clock resync and a newly signed retry. No ticker, requested,
+  trigger or theoretical-price fallback is permitted.
+- A complete authenticated 20-minute X02 Prod-VST run passed 16/16 cycles:
+  Direct/Main/Preset/Signal, four cycles each, both directions, entry,
+  accumulation, Default/Trailing/Block/DCA coverage, SL/TP cancel/replace and
+  reduce-only close. It submitted 48 minimum-volume market orders, reconciled
+  every exact order ID, proved all 16 trailing updates, restored the account
+  baseline and left zero positions/open orders. Two real STOP acknowledgements
+  arrived after the initial eight-second deadline (about 9.9 s and 9.5 s) and
+  were recovered as the same client order without resubmission. A separate
+  48/48 settlement audit measured gross PnL `-0.550300 VST`, venue fees
+  `0.201814 VST` and exact net PnL `-0.752114 VST`; theoretical fallback was
+  false. Credentials and raw reports remain outside Git.
+- Protection placement now has a bounded late-acknowledgement reconciliation
+  window and exact client-order-ID recovery after an ambiguous response. It
+  never blindly submits a second SL/TP. Prod-VST test symbols are chosen from
+  the four tightest unoccupied two-sided books within 75 bps, rather than
+  assuming mainnet liquidity.
+- Redis Open Source `8.10.1` is installed persistently at
+  `/workspace/.network-clients/redis-8.10.1/bin`; the source archive matched
+  the official SHA-256
+  `60166c95ab7aedaa9dfe516de685be0a4dd87be95ded59ba429df14c13f1b663`.
+  Local Linux-equivalent validation uses loopback protected mode, AOF
+  `everysec`, RDB snapshots and `noeviction`. This tool sandbox isolates
+  background process namespaces, so Redis and the audit were supervised in
+  one session; a normal Linux service/daemon remains the server deployment
+  model.
+- The final shared-Redis production artifact passed schema v100, protected
+  cron, persistence/restart, 47 UI surfaces, 32 symbols, settings hot reload,
+  backup/credential round-trip, start/pause/resume/stop, two independent
+  connection IDs and crash recovery (204 recovered positions). The four-minute
+  production-paper soak completed 383 engine cycles and 3,742,282 distinct
+  Strategy sets with one connection scope, API p95 412 ms, 1.80 GiB peak RSS,
+  post-warmup heap growth `-150850 KiB`, and stable Redis growth 210 keys under
+  the 1,600-key limit. Default, Trailing and Block counters were independent;
+  no exchange order was submitted by this paper/UI audit.
+- Exact release gate on this source state: TypeScript; 204 unit suites / 1,316
+  tests; 4 integration suites / 55 tests; zero-finding 1,472-file secret scan;
+  trace-valid 42-page Next production build with 347 complete trace units;
+  shared-Redis Production/UI/DB/restart audit; and the authenticated X02
+  20-minute lifecycle above. X01/mainnet and Bybit were not order-tested
+  because no separate credentials/authorization were available in this
+  checkpoint.
+- The remote Linux server at `152.53.114.112` was not modified or verified from
+  this sandbox. The post-reinstall recheck still returned `Network is
+  unreachable` before SSH authentication on ports 22/443 and on the Chisel
+  8090 upstream. The Cloud Browser HSTS-upgraded port 3002 to HTTPS and reported
+  that the remote server does not speak TLS; port 4200 exposed a self-signed
+  certificate which must not be bypassed. Preserve the
+  server's existing production environment, credentials and Redis data; make a
+  server backup before replacing processes, then deploy only a merged GitHub
+  `main` and rerun the production readiness/Shared-Redis gates on-host.
+
+## Current production isolation and long-soak checkpoint (2026-08-23)
+
+- Binding persistent checkout for the current release is
+  `/workspace/scratch/fba10f5c97ed/persistent/CTS-K-N`. Continue from its
+  published GitHub `main` successor; do not reconstruct work from older
+  `/workspace/CTS-*` directories. Complete-history Git bundles are stored in
+  `/workspace/backups/CTS-K-N` and mirrored under this task workspace. Never
+  put `.env`, exchange credentials, SSH material, Redis snapshots or raw
+  account reports in Git or source bundles.
+- Live accounting is venue-authoritative: realized PnL, fees, quantities and
+  completion are derived from exact exchange order fills/details by order ID.
+  An unresolved settlement remains incomplete and must never fall back to a
+  theoretical mark-price result. Default and Trailing maintain independent
+  ledgers and UI statistics.
+- Direct Trade, Main Trade, Connection Cards, control orders, workers, leases,
+  settings, stage/progress snapshots, position IDs and Redis indexes are scoped
+  by exchange connection. Switching connections must not silently borrow the
+  selected connection, and enabled connections can process independently in
+  parallel. Schema v100 migrates legacy Direct state into connection scopes;
+  reset preserves credentials, settings, open/opening positions and order
+  recovery state while clearing rebuildable calculation/runtime statistics.
+  The protected Reset DB route accepts the same admin authentication contract
+  as the rest of the administration UI.
+- Profit-factor/configuration defaults below 1 use `1.1` in Quickstart and
+  equivalent setup surfaces. This does not rewrite measured statistics or the
+  separate Block sizing ratio. Main Trade and Connection Cards use one
+  canonical connection-scoped stage/statistics projection.
+- Shared-Redis production topology is explicitly bounded. Monitoring exposes
+  connection scope count plus indexed Set/outcome/non-indexed key families;
+  long-run validation scales Set bounds by symbols and connection scopes while
+  enforcing a separate 34,720-key non-indexed cap at 32 symbols. A normal
+  simulated close no longer produces a false missing-live-lock warning.
+- Exact release evidence: 204 unit suites / 1,309 tests, 4 integration suites /
+  55 tests, TypeScript, a clean trace-valid 42-page Next production build with
+  347 trace files, 32-symbol/48-hour Direct matrix (960,512 evaluated sets),
+  Direct physical crash recovery, X01/X02 Shared-Redis isolation and a complete
+  20-minute 32-symbol production soak. The soak completed 1,489 engine cycles,
+  819,858 Main and Real evaluations, all 35 signal sources, 216 observed
+  position lifecycles, API p95 411 ms, stable final Redis growth, 2.04 GiB peak
+  RSS below the 6.5 GiB cap and only 21 MiB post-warmup heap growth. Default,
+  Trailing and Block statistics remained distinct. The recovery/UI harness
+  verified 47 surfaces, schema v100, hot reload, backup round-trip,
+  pause/resume/stop/start and physical production restart. These safety runs
+  submitted zero exchange orders.
+- Redis 8.10.1 for local Linux-equivalent tests is available at
+  `/workspace/.network-clients/redis-8.10.1/bin/redis-server`; use
+  `CTS_REDIS_SERVER_BIN` with the production harness. Remote installation must
+  preserve the server's existing `.env`, credentials and data, make a server
+  backup first, identify exact services/PIDs before replacement, and validate
+  the newly merged GitHub `main`. BingX X02 may be exercised with minimum-size
+  Prod-VST orders only after authenticated preflight; X01/mainnet and Bybit
+  remain read-only unless separately and immediately authorized.
+
 ## Current unified Linux/Main Trade audit checkpoint (2026-08-23)
 
 - Fresh Linux installations now make the immutable BingX X02 **Prod-VST**

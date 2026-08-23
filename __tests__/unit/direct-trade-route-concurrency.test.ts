@@ -230,6 +230,61 @@ describe("Direct-Trade API state and processor lease", () => {
     }
   })
 
+  test("isolates state, positions, statistics and processor leases per exchange connection", async () => {
+    const [{ POST, GET }, { getRedisClient }, { directTradeKeyspace, DIRECT_TRADE_CONNECTION_INDEX_KEY }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+      import("@/lib/direct-trade-keyspace"),
+    ])
+    const redis = getRedisClient()
+    const left = directTradeKeyspace("bingx-x01")
+    const right = directTradeKeyspace("bingx-x02")
+    const scopedKeys = [
+      DIRECT_TRADE_CONNECTION_INDEX_KEY,
+      ...Object.values(left).filter((value): value is string => typeof value === "string" && value.startsWith("direct_trade:")),
+      ...Object.values(right).filter((value): value is string => typeof value === "string" && value.startsWith("direct_trade:")),
+    ]
+    await redis.del(...scopedKeys)
+    try {
+      await POST(post({ action: "start", connectionId: "bingx-x01", symbolCount: 4, liveMode: false }) as any)
+      await POST(post({ action: "start", connectionId: "bingx-x02", symbolCount: 12, liveMode: false }) as any)
+
+      const [leftSync, rightSync] = await Promise.all([
+        POST(post({
+          action: "processor-sync",
+          connectionId: "bingx-x01",
+          instanceId: "worker-left",
+          positions: [{ id: "left-position", status: "open" }],
+          stats: { totalOrders: 1, totalPnl: 2 },
+        }) as any),
+        POST(post({
+          action: "processor-sync",
+          connectionId: "bingx-x02",
+          instanceId: "worker-right",
+          positions: [{ id: "right-position", status: "open" }],
+          stats: { totalOrders: 3, totalPnl: 7 },
+        }) as any),
+      ])
+      expect((await leftSync.json()).leaseHeld).toBe(true)
+      expect((await rightSync.json()).leaseHeld).toBe(true)
+
+      const [leftRead, rightRead] = await Promise.all([
+        GET(new Request("http://localhost/api/trade-engine/direct-trade?connectionId=bingx-x01") as any).then((response) => response.json()),
+        GET(new Request("http://localhost/api/trade-engine/direct-trade?connectionId=bingx-x02") as any).then((response) => response.json()),
+      ])
+      expect(leftRead.state).toMatchObject({ connectionId: "bingx-x01", symbolCount: 4 })
+      expect(leftRead.positions).toEqual([{ id: "left-position", status: "open" }])
+      expect(leftRead.stats).toMatchObject({ totalOrders: 1, totalPnl: 2 })
+      expect(rightRead.state).toMatchObject({ connectionId: "bingx-x02", symbolCount: 12 })
+      expect(rightRead.positions).toEqual([{ id: "right-position", status: "open" }])
+      expect(rightRead.stats).toMatchObject({ totalOrders: 3, totalPnl: 7 })
+      expect(await redis.get(left.processorLease)).toBe("worker-left")
+      expect(await redis.get(right.processorLease)).toBe("worker-right")
+    } finally {
+      await redis.del(...scopedKeys)
+    }
+  })
+
   test("statistics reads a compact precomputed selection instead of the full configuration grid", async () => {
     const [{ GET }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/route"),

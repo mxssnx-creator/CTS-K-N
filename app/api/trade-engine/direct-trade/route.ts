@@ -6,6 +6,7 @@ import {
   getRedisClient,
   initRedis,
   persistNow,
+  getConnection,
 } from "@/lib/redis-db"
 import {
   clampDirectTradeSymbolCount,
@@ -45,21 +46,16 @@ import {
   DIRECT_TRADE_OPEN_POSITION_STAGE_KEY,
 } from "@/lib/direct-trade-position-stage"
 import directTradeHistoryPolicy from "@/lib/direct-trade-history-policy.cjs"
+import {
+  DIRECT_TRADE_CONNECTION_INDEX_KEY,
+  directTradeKeyspace,
+  normalizeDirectTradeConnectionId,
+} from "@/lib/direct-trade-keyspace"
 
 const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
 export const dynamic = "force-dynamic"
 
-const DIRECT_TRADE_STATE_KEY = "direct_trade:state"
-const DIRECT_TRADE_EXECUTION_CONFIGS_KEY = "direct_trade:execution-configs"
-const DIRECT_TRADE_STATS_KEY = "direct_trade:stats"
-const DIRECT_TRADE_POSITIONS_KEY = "direct_trade:positions"
-const DIRECT_TRADE_PROCESSOR_KEY = "direct_trade:processor"
-const DIRECT_TRADE_PROCESSOR_LEASE_KEY = "direct_trade:processor:lease"
-const DIRECT_TRADE_CONFIG_STATUS_KEY = "direct_trade:config-status"
-const DIRECT_TRADE_CONFIG_PERFORMANCE_KEY = "direct_trade:config-performance"
-const DIRECT_TRADE_CALCULATION_KEY = "direct_trade:calculation"
-const DIRECT_TRADE_STATISTICS_INDEX_KEY = "direct_trade:statistics-index"
 const DIRECT_TRADE_PROCESSOR_LEASE_MS = 6_000
 // The processor reads only compact active-signal slices. A 280 ms loop keeps
 // coordinated entries and control-order reconciliation responsive without
@@ -240,10 +236,57 @@ async function persistDirectTradeSnapshot(context: string): Promise<void> {
   }
 }
 
-async function getState(): Promise<DirectTradeState> {
+async function ensureConnectionScope(connectionId: string | null): Promise<void> {
+  if (!connectionId) return
+  const client = await getClient()
+  const scoped = directTradeKeyspace(connectionId)
+  await client.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, connectionId)
+  if (await client.get(scoped.state)) return
+
+  // One-time, non-destructive adoption of the former global Direct-Trade
+  // state. Open positions and their exact order controls must survive the
+  // namespace upgrade; historic calculation grids are deliberately rebuilt
+  // inside the new connection scope.
+  const migrationLock = `${scoped.namespace}:migration:legacy`
+  const locked = await client.set(migrationLock, "1", { NX: true, EX: 30 }).catch(() => null)
+  if (locked !== "OK") return
   try {
+    if (await client.get(scoped.state)) return
+    const legacy = directTradeKeyspace()
+    const legacyStateRaw = await client.get(legacy.state)
+    if (!legacyStateRaw) return
+    const legacyState = JSON.parse(legacyStateRaw)
+    if (normaliseConnectionId(legacyState?.connectionId) !== connectionId) return
+    const copyPairs: Array<[string, string]> = [
+      [legacy.stats, scoped.stats],
+      [legacy.positions, scoped.positions],
+      [legacy.configStatus, scoped.configStatus],
+      [legacy.configPerformance, scoped.configPerformance],
+      [legacy.openPositionStage, scoped.openPositionStage],
+    ]
+    const values = await Promise.all(copyPairs.map(([source]) => client.get(source)))
+    const write = client.multi()
+    write.set(scoped.state, JSON.stringify({
+      ...legacyState,
+      connectionId,
+      lastRecalcAt: null,
+      migratedFromLegacyAt: new Date().toISOString(),
+    }))
+    copyPairs.forEach(([, target], index) => {
+      if (values[index] !== null) write.set(target, values[index] as string)
+    })
+    await write.exec()
+    await persistDirectTradeSnapshot(`legacy scope migration for ${connectionId}`)
+  } finally {
+    await client.del(migrationLock).catch(() => 0)
+  }
+}
+
+async function getState(connectionId: string | null = null): Promise<DirectTradeState> {
+  try {
+    await ensureConnectionScope(connectionId)
     const client = await getClient()
-    const raw = await client.get(DIRECT_TRADE_STATE_KEY)
+    const raw = await client.get(directTradeKeyspace(connectionId).state)
     if (raw) {
       const persisted = JSON.parse(raw)
       // Upgrade only the exact former default pair. Any mixed values remain
@@ -355,9 +398,12 @@ async function getState(): Promise<DirectTradeState> {
   return { ...DEFAULT_STATE }
 }
 
-async function setState(state: DirectTradeState): Promise<void> {
+async function setState(state: DirectTradeState, connectionId: string | null = state.connectionId): Promise<void> {
+  const scope = connectionId || state.connectionId
+  if (scope) await ensureConnectionScope(scope)
   const client = await getClient()
-  await client.set(DIRECT_TRADE_STATE_KEY, JSON.stringify(state))
+  if (scope) await client.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, scope)
+  await client.set(directTradeKeyspace(scope).state, JSON.stringify({ ...state, connectionId: scope }))
   await persistDirectTradeSnapshot("state")
 }
 
@@ -390,8 +436,8 @@ function clampProcessingInterval(value: unknown, fallback = DIRECT_TRADE_PROCESS
 }
 
 function normaliseConnectionId(value: unknown): string | null {
-  const id = typeof value === "string" ? value.trim() : ""
-  return /^[A-Za-z0-9._:-]{1,160}$/.test(id) ? id : null
+  const id = normalizeDirectTradeConnectionId(value)
+  return id && /^[A-Za-z0-9._:-]{1,160}$/.test(id) ? id : null
 }
 
 function normaliseSymbolOrder(value: unknown): DirectTradeState["symbolOrder"] {
@@ -442,9 +488,14 @@ function processorLeaseMs(): number {
   return DIRECT_TRADE_PROCESSOR_LEASE_MS
 }
 
-async function acquireProcessorLease(client: any, instanceId: string): Promise<boolean> {
+async function acquireProcessorLease(
+  client: any,
+  instanceId: string,
+  connectionId: string | null,
+): Promise<boolean> {
   if (!instanceId || instanceId.length > 160) return false
-  const created = await client.set(DIRECT_TRADE_PROCESSOR_LEASE_KEY, instanceId, {
+  const leaseKey = directTradeKeyspace(connectionId).processorLease
+  const created = await client.set(leaseKey, instanceId, {
     NX: true,
     PX: processorLeaseMs(),
   }).catch(() => null)
@@ -453,32 +504,36 @@ async function acquireProcessorLease(client: any, instanceId: string): Promise<b
   // A current lease may only be renewed by its exact owner. This gives one
   // processor authority over simulated or live positions and prevents a
   // second script from duplicating entries after a reload.
-  const owner = await client.get(DIRECT_TRADE_PROCESSOR_LEASE_KEY).catch(() => null)
+  const owner = await client.get(leaseKey).catch(() => null)
   if (owner !== instanceId) return false
-  const renewed = await client.set(DIRECT_TRADE_PROCESSOR_LEASE_KEY, instanceId, {
+  const renewed = await client.set(leaseKey, instanceId, {
     XX: true,
     PX: processorLeaseMs(),
   }).catch(() => null)
   return renewed === "OK" || renewed === true
 }
 
-async function getStats(): Promise<DirectTradeStats> {
+async function getStats(connectionId: string | null = null): Promise<DirectTradeStats> {
   try {
     const client = await getClient()
-    const raw = await client.get(DIRECT_TRADE_STATS_KEY)
+    const raw = await client.get(directTradeKeyspace(connectionId).stats)
     if (raw) return { ...DEFAULT_STATS, ...JSON.parse(raw) }
   } catch {}
   return { ...DEFAULT_STATS }
 }
 
-async function getExecutionConfigs(options: { activeOnly?: boolean; signalKeys?: string[] } = {}): Promise<any[]> {
+async function getExecutionConfigs(
+  options: { activeOnly?: boolean; signalKeys?: string[] } = {},
+  connectionId: string | null = null,
+): Promise<any[]> {
   try {
     const client = await getClient()
+    const keys = directTradeKeyspace(connectionId)
     const [indexRaw, signalIndexRaw, activeSignalRaw, manifest] = await Promise.all([
-      client.get(DIRECT_TRADE_EXECUTION_INDEX_KEY),
-      client.get(DIRECT_TRADE_EXECUTION_SIGNAL_INDEX_KEY),
-      options.activeOnly ? client.get(DIRECT_TRADE_ACTIVE_SIGNAL_KEYS_KEY) : Promise.resolve(null),
-      getDirectTradeConfigManifest(client),
+      client.get(keys.executionIndex),
+      client.get(keys.executionSignalIndex),
+      options.activeOnly ? client.get(keys.activeSignals) : Promise.resolve(null),
+      getDirectTradeConfigManifest(client, connectionId),
     ])
     const indexes = indexRaw ? JSON.parse(indexRaw) : []
     if (indexRaw && Array.isArray(indexes)) {
@@ -497,7 +552,7 @@ async function getExecutionConfigs(options: { activeOnly?: boolean; signalKeys?:
         try {
           const signalIndex = JSON.parse(signalIndexRaw)
           const selected = signalKeys.flatMap((key) => Array.isArray(signalIndex?.[key]) ? signalIndex[key] : [])
-          return (await readDirectTradeConfigsAtIndexes(client, selected.map(Number)))
+          return (await readDirectTradeConfigsAtIndexes(client, selected.map(Number), connectionId))
             .sort((left, right) => Number(right?.score || 0) - Number(left?.score || 0))
         } catch {}
       }
@@ -505,12 +560,12 @@ async function getExecutionConfigs(options: { activeOnly?: boolean; signalKeys?:
       // giant JSON response when no causal signal selection was supplied;
       // the processor asks with `activeOnly=1` after each pulse instead.
       if (manifest) return []
-      return (await readDirectTradeConfigsAtIndexes(client, indexes.map(Number)))
+      return (await readDirectTradeConfigsAtIndexes(client, indexes.map(Number), connectionId))
         .sort((left, right) => Number(right?.score || 0) - Number(left?.score || 0))
     }
   } catch {}
   // Compatibility for existing installations until their next calculation.
-  return getJsonArray(DIRECT_TRADE_EXECUTION_CONFIGS_KEY)
+  return getJsonArray(directTradeKeyspace(connectionId).executionConfigs)
 }
 
 async function getJsonArray(key: string): Promise<any[]> {
@@ -537,8 +592,8 @@ async function getJsonObject(key: string): Promise<Record<string, unknown>> {
   return {}
 }
 
-async function getCalculation(): Promise<Record<string, unknown>> {
-  return getJsonObject(DIRECT_TRADE_CALCULATION_KEY)
+async function getCalculation(connectionId: string | null = null): Promise<Record<string, unknown>> {
+  return getJsonObject(directTradeKeyspace(connectionId).calculation)
 }
 
 function statisticsFilterKey(timeframe: string, direction: string, state: string, strategyType = "all"): string {
@@ -558,10 +613,45 @@ export async function GET(request: NextRequest) {
       request?.url || "http://localhost/api/trade-engine/direct-trade",
     ).searchParams
     const view = searchParams.get("view") || "runtime"
+    const connectionId = normaliseConnectionId(searchParams.get("connectionId"))
+    if (view === "connections") {
+      const client = await getClient()
+      const indexed = await client.smembers(DIRECT_TRADE_CONNECTION_INDEX_KEY).catch(() => [])
+      const legacyRaw = await client.get(directTradeKeyspace().state).catch(() => null)
+      const legacy = legacyRaw ? JSON.parse(legacyRaw) : null
+      const legacyId = normaliseConnectionId(legacy?.connectionId)
+      const ids = [...new Set([
+        ...indexed.map(String).map(normaliseConnectionId).filter((id): id is string => Boolean(id)),
+        ...(legacyId ? [legacyId] : []),
+      ])].sort()
+      const connections = await Promise.all(ids.map(async (id) => {
+        await ensureConnectionScope(id)
+        const keys = directTradeKeyspace(id)
+        const [stateRaw, positionsRaw, processorRaw] = await Promise.all([
+          client.get(keys.state),
+          client.get(keys.positions),
+          client.get(keys.processor),
+        ])
+        const state = stateRaw ? JSON.parse(stateRaw) : { ...DEFAULT_STATE, connectionId: id }
+        const positions = positionsRaw ? JSON.parse(positionsRaw) : []
+        const processor = processorRaw ? JSON.parse(processorRaw) : null
+        const openPositions = Array.isArray(positions)
+          ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
+          : 0
+        return {
+          connectionId: id,
+          enabled: state?.enabled === true,
+          liveMode: state?.liveMode === true,
+          openPositions,
+          processor,
+        }
+      }))
+      return NextResponse.json({ success: true, connections })
+    }
     if (view === "statistics") {
       const [calculation, index] = await Promise.all([
-        getCalculation(),
-        getJsonObject(DIRECT_TRADE_STATISTICS_INDEX_KEY),
+        getCalculation(connectionId),
+        getJsonObject(directTradeKeyspace(connectionId).statisticsIndex),
       ])
       const timeframe = safeStatisticsSelection(
         searchParams.get("timeframe"),
@@ -603,18 +693,25 @@ export async function GET(request: NextRequest) {
     const includeExecution = searchParams.get("includeExecution") === "1"
     const activeOnly = searchParams.get("activeOnly") === "1"
     const signalKeys = searchParams.getAll("signalKey")
-    const [state, stats, executionConfigs, positions, openPositionStage, configStatus, configPerformance, calculation] = await Promise.all([
-      getState(),
-      getStats(),
-      includeExecution ? getExecutionConfigs({ activeOnly, signalKeys }) : Promise.resolve([]),
-      getJsonArray(DIRECT_TRADE_POSITIONS_KEY),
-      getJsonObject(DIRECT_TRADE_OPEN_POSITION_STAGE_KEY),
-      getJsonObject(DIRECT_TRADE_CONFIG_STATUS_KEY),
-      getJsonObject(DIRECT_TRADE_CONFIG_PERFORMANCE_KEY),
-      getCalculation(),
+    const keys = directTradeKeyspace(connectionId)
+    const [state, stats, executionConfigs, positions, openPositionStage, configStatus, configPerformance, calculation, connection] = await Promise.all([
+      getState(connectionId),
+      getStats(connectionId),
+      includeExecution ? getExecutionConfigs({ activeOnly, signalKeys }, connectionId) : Promise.resolve([]),
+      getJsonArray(keys.positions),
+      getJsonObject(keys.openPositionStage),
+      getJsonObject(keys.configStatus),
+      getJsonObject(keys.configPerformance),
+      getCalculation(connectionId),
+      connectionId ? getConnection(connectionId) : Promise.resolve(null),
     ])
+    const exchange = String((connection as any)?.exchange || (connection as any)?.exchange_name || (connectionId ? "" : "bingx"))
+      .trim()
+      .toLowerCase()
     return NextResponse.json({
       success: true,
+      connectionId,
+      exchange: exchange || null,
       state,
       stats,
       // The full historic grid is deliberately not returned here. Its compact
@@ -642,7 +739,9 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const currentState = await getState()
+    const requestedConnectionId = normaliseConnectionId(body?.connectionId)
+    const currentState = await getState(requestedConnectionId)
+    const scopeConnectionId = requestedConnectionId || currentState.connectionId
 
     // Handle actions
     if (body.action === "start") {
@@ -683,7 +782,7 @@ export async function POST(request: NextRequest) {
         ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.max(3, Number(body.keepEnabledPosCount) || 3) } : {}),
         ...(body.deactivatePosCount !== undefined ? { deactivatePosCount: Math.max(3, Number(body.deactivatePosCount) || 3) } : {}),
         ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
-        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || 0.8) } : {}),
+        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
         ...(body.recentEvaluationPositions !== undefined ? { recentEvaluationPositions: Math.max(3, Math.floor(Number(body.recentEvaluationPositions) || 3)) } : {}),
         ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Number(body.maxDrawdownTimeMin) || 1) } : {}),
         ...(body.prevPosWindow !== undefined ? { prevPosWindow: Math.max(5, Number(body.prevPosWindow) || 5) } : {}),
@@ -695,13 +794,13 @@ export async function POST(request: NextRequest) {
       if (newState.liveMode && !newState.connectionId) {
         return NextResponse.json({ error: "Select a live exchange connection before starting Direct-Trade live execution" }, { status: 409 })
       }
-      await setState(newState)
+      await setState(newState, scopeConnectionId || newState.connectionId)
       return NextResponse.json({ success: true, state: newState, message: "Direct-Trade started" })
     }
 
     if (body.action === "stop") {
       const newState: DirectTradeState = { ...currentState, enabled: false }
-      await setState(newState)
+      await setState(newState, scopeConnectionId)
       return NextResponse.json({ success: true, state: newState, message: "Direct-Trade stopped" })
     }
 
@@ -718,7 +817,7 @@ export async function POST(request: NextRequest) {
         liveMode,
         ...(connectionId !== undefined ? { connectionId } : {}),
       }
-      await setState(newState)
+      await setState(newState, scopeConnectionId || newState.connectionId)
       return NextResponse.json({ success: true, state: newState, message: `Live mode ${newState.liveMode ? "enabled" : "disabled"}` })
     }
 
@@ -755,7 +854,7 @@ export async function POST(request: NextRequest) {
         ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.max(3, Number(body.keepEnabledPosCount) || 3) } : {}),
         ...(body.deactivatePosCount !== undefined ? { deactivatePosCount: Math.max(3, Number(body.deactivatePosCount) || 3) } : {}),
         ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
-        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || 0.8) } : {}),
+        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
         ...(body.recentEvaluationPositions !== undefined ? { recentEvaluationPositions: Math.max(3, Math.floor(Number(body.recentEvaluationPositions) || 3)) } : {}),
         ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Number(body.maxDrawdownTimeMin) || 1) } : {}),
         ...(body.prevPosWindow !== undefined ? { prevPosWindow: Math.max(5, Number(body.prevPosWindow) || 5) } : {}),
@@ -765,13 +864,13 @@ export async function POST(request: NextRequest) {
         ...(body.dcaProfile !== undefined ? { dcaProfile: normalizeDcaProfile(body.dcaProfile) } : {}),
         ...(body.lastRecalcAt !== undefined && typeof body.lastRecalcAt === "string" ? { lastRecalcAt: body.lastRecalcAt } : {}),
       }
-      await setState(newState)
+      await setState(newState, scopeConnectionId || newState.connectionId)
       return NextResponse.json({ success: true, state: newState, message: "Config updated" })
     }
 
     if (body.action === "reset-stats") {
       const client = await getClient()
-      await client.set(DIRECT_TRADE_STATS_KEY, JSON.stringify(DEFAULT_STATS))
+      await client.set(directTradeKeyspace(scopeConnectionId).stats, JSON.stringify(DEFAULT_STATS))
       await persistDirectTradeSnapshot("statistics reset")
       return NextResponse.json({ success: true, message: "Stats reset" })
     }
@@ -779,7 +878,7 @@ export async function POST(request: NextRequest) {
     if (body.action === "processor-sync") {
       const instanceId = typeof body.instanceId === "string" ? body.instanceId : ""
       const client = await getClient()
-      const leaseHeld = await acquireProcessorLease(client, instanceId)
+      const leaseHeld = await acquireProcessorLease(client, instanceId, scopeConnectionId)
       if (!leaseHeld) {
         return NextResponse.json({ success: true, leaseHeld: false })
       }
@@ -801,18 +900,21 @@ export async function POST(request: NextRequest) {
         errorsLast5min: Math.max(0, Math.floor(Number(body.errorsLast5min) || 0)),
         lastRecalcAt: typeof body.lastRecalcAt === "number" ? body.lastRecalcAt : null,
         positionCount: positions.length,
+        openPositionCount: positions.filter((position: any) => position?.status === "open").length,
+        openingPositionCount: positions.filter((position: any) => position?.status === "opening").length,
         configCount: Math.max(0, Math.floor(Number(body.configCount) || 0)),
         historyPolicy: body.historyPolicy && typeof body.historyPolicy === "object"
           ? body.historyPolicy
           : null,
       }
+      const keys = directTradeKeyspace(scopeConnectionId)
       const write = client.multi()
-      write.set(DIRECT_TRADE_POSITIONS_KEY, JSON.stringify(positions))
-      write.set(DIRECT_TRADE_OPEN_POSITION_STAGE_KEY, JSON.stringify(openPositionStage))
-      write.set(DIRECT_TRADE_STATS_KEY, JSON.stringify(stats))
-      write.set(DIRECT_TRADE_CONFIG_STATUS_KEY, JSON.stringify(configStatus))
-      write.set(DIRECT_TRADE_CONFIG_PERFORMANCE_KEY, JSON.stringify(configPerformance))
-      write.set(DIRECT_TRADE_PROCESSOR_KEY, JSON.stringify(processor))
+      write.set(keys.positions, JSON.stringify(positions))
+      write.set(keys.openPositionStage, JSON.stringify(openPositionStage))
+      write.set(keys.stats, JSON.stringify(stats))
+      write.set(keys.configStatus, JSON.stringify(configStatus))
+      write.set(keys.configPerformance, JSON.stringify(configPerformance))
+      write.set(keys.processor, JSON.stringify(processor))
       await write.exec()
       await persistDirectTradeSnapshot("processor position sync")
       // The owner receives the compact, normalized settings acknowledgement
@@ -823,7 +925,7 @@ export async function POST(request: NextRequest) {
         success: true,
         leaseHeld: true,
         processor,
-        state: await getState(),
+        state: await getState(scopeConnectionId),
       })
     }
 

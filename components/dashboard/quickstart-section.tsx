@@ -69,6 +69,7 @@ interface VariantDetail {
   avgProfitFactor: number
   avgDrawdownTime: number
   passRate: number
+  performanceSamples: number
 }
 
 // Indication configuration Set-count snapshot — how many DISTINCT Sets the
@@ -311,7 +312,7 @@ const EMPTY_STAGE: StageDetail = {
 }
 const EMPTY_VARIANT: VariantDetail = {
   createdSets: 0, passedSets: 0, entriesCount: 0, avgPosPerSet: 0,
-  avgProfitFactor: 0, avgDrawdownTime: 0, passRate: 0,
+  avgProfitFactor: 0, avgDrawdownTime: 0, passRate: 0, performanceSamples: 0,
 }
 const EMPTY_MAIN_COORD: MainCoordination = {
   activeVariants: ["default"], activeVariantCount: 1,
@@ -539,6 +540,7 @@ export function QuickstartSection() {
         avgProfitFactor: Number(d?.avgProfitFactor ?? 0) || 0,
         avgDrawdownTime: Number(d?.avgDrawdownTime ?? 0) || 0,
         passRate:        Number(d?.passRate        ?? 0) || 0,
+        performanceSamples: Number(d?.performanceSamples ?? 0) || 0,
       })
       // Main-stage coordination snapshot (position context, cache reuse).
       // Nullish-safe: the /stats endpoint only added this block in a later
@@ -2310,6 +2312,7 @@ export function QuickstartSection() {
                       <th className="text-right py-1 px-1 font-medium" title="Average entries per Set for this variant">Pos/Set</th>
                       <th className="text-right py-1 px-1 font-medium">PF</th>
                       <th className="text-right py-1 pl-1 font-medium">DDT m</th>
+                      <th className="text-right py-1 pl-1 font-medium" title="Independent confirmed close outcomes">n</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2326,6 +2329,7 @@ export function QuickstartSection() {
                         <td className="text-right py-1 px-1">{d.avgPosPerSet > 0 ? d.avgPosPerSet.toFixed(1) : "—"}</td>
                         <td className="text-right py-1 px-1">{d.avgProfitFactor > 0 ? d.avgProfitFactor.toFixed(2) : "—"}</td>
                         <td className="text-right py-1 pl-1">{d.avgDrawdownTime > 0 ? Math.round(d.avgDrawdownTime) : "—"}</td>
+                        <td className="text-right py-1 pl-1">{fmt(d.performanceSamples)}</td>
                       </tr>
                     ))}
                     <tr className="border-t-2 border-border/40 font-semibold">
@@ -2339,6 +2343,7 @@ export function QuickstartSection() {
                       </td>
                       <td className="text-right py-1 px-1">{stats.variantOverall.avgProfitFactor > 0 ? stats.variantOverall.avgProfitFactor.toFixed(2) : "—"}</td>
                       <td className="text-right py-1 pl-1">{stats.variantOverall.avgDrawdownTime > 0 ? Math.round(stats.variantOverall.avgDrawdownTime) : "—"}</td>
+                      <td className="text-right py-1 pl-1">{fmt(stats.variantOverall.performanceSamples)}</td>
                     </tr>
                   </tbody>
                 </table>
