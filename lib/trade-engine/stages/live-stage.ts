@@ -760,6 +760,12 @@ interface LivePosition {
   closedQuantity?: number
   /** Bounded, idempotent partial-order audit/quantity ledger. */
   partialOrderExecutions?: PartialOrderExecution[]
+  /**
+   * Quantity observed from an authoritative venue position that is not
+   * represented by an individual local fill row. This remains separate from
+   * `fills` so an unverified order/fee settlement is never fabricated.
+   */
+  exchangeQuantityAdjustments?: ExchangeQuantityAdjustment[]
   protectionMode?: "exchange_control" | "hybrid_control_system" | "system_close" | "system_close_fallback"
   /** Missing venue legs that remain protected by the engine-side price cross. */
   systemProtectionLegs?: ProtectionOrderLeg[]
@@ -1017,6 +1023,15 @@ interface FillRecord {
   timestamp?: number
   fee?: number
   feeAsset?: string
+}
+
+interface ExchangeQuantityAdjustment {
+  id: string
+  source: "exchange_reconcile" | "legacy_reconciliation"
+  orderId?: string
+  quantity: number
+  price: number
+  timestamp: number
 }
 
 // ── Helper function stubs (defined in adjacent modules) ──────────────
@@ -1657,6 +1672,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     partialOrderExecutions: Array.isArray(hash.partialOrderExecutions)
       ? hash.partialOrderExecutions
       : safeJsonParse<PartialOrderExecution[]>(hash.partialOrderExecutions, []),
+    exchangeQuantityAdjustments: Array.isArray(hash.exchangeQuantityAdjustments)
+      ? hash.exchangeQuantityAdjustments
+      : safeJsonParse<ExchangeQuantityAdjustment[]>(hash.exchangeQuantityAdjustments, []),
   } as Record<string, any>
 
   // node-redis returns every hash scalar as a string. Keep the canonical hash
@@ -4809,6 +4827,55 @@ async function reconcilePendingAccumulationAndRearm(
   await savePosition(position)
 }
 
+function reconcileExchangeQuantityLedger(
+  position: LivePosition,
+  targetQuantity: number,
+  entryPrice: number,
+  source: ExchangeQuantityAdjustment["source"] = "exchange_reconcile",
+): boolean {
+  const target = Math.max(0, Number(targetQuantity) || 0)
+  const price = Math.max(0, Number(entryPrice) || 0)
+  if (!(target > 0) || !(price > 0)) return false
+
+  const fills = Array.isArray(position.fills) ? position.fills : []
+  const adjustments = Array.isArray(position.exchangeQuantityAdjustments)
+    ? position.exchangeQuantityAdjustments
+    : []
+  const fillQuantity = fills.reduce((sum, fill) => sum + Math.max(0, Number(fill.quantity) || 0), 0)
+  const adjustmentQuantity = adjustments.reduce(
+    (sum, adjustment) => sum + Math.max(0, Number(adjustment.quantity) || 0),
+    0,
+  )
+  const tolerance = Math.max(1e-12, target * 1e-8)
+  const missing = target - fillQuantity - adjustmentQuantity
+  if (!(missing > tolerance)) return false
+
+  const adjustmentId = `${position.id}:exchange-quantity:${target.toFixed(12)}`
+  if (adjustments.some((adjustment) => adjustment.id === adjustmentId)) return false
+  position.exchangeQuantityAdjustments = [
+    ...adjustments,
+    {
+      id: adjustmentId,
+      source,
+      orderId: position.orderId,
+      quantity: Number(missing.toFixed(12)),
+      price,
+      timestamp: Date.now(),
+    },
+  ].slice(-64)
+  // The quantity is venue-authoritative, but the adjustment has no proven
+  // order-level fee settlement. Keep PnL/history consumers from presenting it
+  // as a fully settled entry until the venue ledger supplies that evidence.
+  position.entryAccountingComplete = false
+  pushStep(
+    position,
+    "exchange_quantity_ledger_reconciled",
+    true,
+    `recorded ${missing} venue quantity at ${price} without synthetic fill/order settlement`,
+  )
+  return true
+}
+
 async function reconcileAuthoritativeExchangeQuantity(
   position: LivePosition,
   exchangeQuantity: number,
@@ -4823,7 +4890,19 @@ async function reconcileAuthoritativeExchangeQuantity(
   }
   const before = Number(position.executedQuantity || 0)
   const tolerance = Math.max(1e-12, Math.max(before, exchangeQuantity) * 1e-8)
-  if (Math.abs(before - exchangeQuantity) <= tolerance) return repairedPriceDomain
+  const ledgerTarget = Math.max(
+    exchangeQuantity + Math.max(0, Number(position.closedQuantity || 0)),
+    Number(position.totalExecutedQuantity || 0),
+    exchangeQuantity,
+  )
+  const ledgerRepaired = reconcileExchangeQuantityLedger(
+    position,
+    ledgerTarget,
+    exchangeEntryPrice || Number(position.averageExecutionPrice || position.entryPrice || 0),
+  )
+  if (Math.abs(before - exchangeQuantity) <= tolerance) {
+    return repairedPriceDomain || ledgerRepaired
+  }
 
   if (exchangeQuantity < before) {
     applyReductionObservation(position, {
@@ -12010,8 +12089,28 @@ export async function reconcileLivePositions(
           // manually that the system did not create. We must not touch
           // those. The Redis record is closed locally by the code below;
           // no exchange action is required or safe.
+          const remainingQuantityAtClose = Math.max(
+            0,
+            Number(pos.executedQuantity || pos.quantity || 0),
+          )
+          const lifetimeQuantityAtClose = Math.max(
+            Number(pos.totalExecutedQuantity || 0),
+            Math.max(0, Number(pos.closedQuantity || 0)) + remainingQuantityAtClose,
+            Number(pos.initialExecutedQuantity || 0),
+            remainingQuantityAtClose,
+          )
+          reconcileExchangeQuantityLedger(
+            pos,
+            lifetimeQuantityAtClose,
+            Number(pos.averageExecutionPrice || pos.entryPrice || 0),
+          )
           pos.status = "closed"
           pos.closedAt = Date.now()
+          pos.totalExecutedQuantity = lifetimeQuantityAtClose
+          pos.closedQuantity = lifetimeQuantityAtClose
+          pos.executedQuantity = lifetimeQuantityAtClose
+          pos.quantity = lifetimeQuantityAtClose
+          pos.remainingQuantity = 0
           pos.realizedPnL = Math.round(realizedPnl * 1e8) / 1e8
           if (exitPrice > 0) pos.closePrice = Math.round(exitPrice * 1e8) / 1e8
           pos.closeReason = pos.closeReason || "exchange_reconciliation"

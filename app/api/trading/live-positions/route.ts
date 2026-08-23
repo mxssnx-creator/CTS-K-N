@@ -96,6 +96,7 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     currentPrice: pos.currentPrice ?? pos.current_price,
     executedQuantity: pos.executedQuantity,
     totalExecutedQuantity: pos.totalExecutedQuantity,
+    closedQuantity: pos.closedQuantity,
     remainingQuantity: pos.remainingQuantity,
     quantity: pos.quantity,
     leverage: pos.leverage,
@@ -106,6 +107,18 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     fundingFee: pos.fundingFee ?? pos.fundingFees ?? pos.funding,
     unrealizedPnL: pos.unrealizedPnL,
     realizedPnL: pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl,
+    entryAccountingComplete: pos.entryAccountingComplete,
+    realizedPnlComplete: pos.realizedPnlComplete,
+    realizedPnlSource: pos.realizedPnlSource,
+    exchangeQuantityAdjustmentCount: Array.isArray(pos.exchangeQuantityAdjustments)
+      ? pos.exchangeQuantityAdjustments.length
+      : 0,
+    exchangeQuantityAdjustmentQuantity: Array.isArray(pos.exchangeQuantityAdjustments)
+      ? pos.exchangeQuantityAdjustments.reduce(
+        (sum: number, adjustment: any) => sum + Math.max(0, Number(adjustment?.quantity) || 0),
+        0,
+      )
+      : 0,
     unrealizedRoi: pos.unrealizedRoi,
     liquidationPrice: pos.liquidationPrice,
     stopLoss: pos.stopLoss,

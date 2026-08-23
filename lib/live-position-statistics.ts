@@ -111,11 +111,29 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
   )
   const entryPrice = Math.max(0, finite(position.averageExecutionPrice ?? position.entryPrice))
   const fills = Array.isArray(position.fills) ? position.fills : []
+  const exchangeQuantityAdjustments = Array.isArray(position.exchangeQuantityAdjustments)
+    ? position.exchangeQuantityAdjustments
+    : []
   const fillVolume = fills.reduce(
     (sum: number, fill: any) => sum + Math.max(0, finite(fill?.quantity)) * Math.max(0, finite(fill?.price)),
     0,
   )
-  const lifetimeVolumeUsd = fillVolume > 0 ? fillVolume : totalExecuted * entryPrice
+  const adjustmentQuantity = exchangeQuantityAdjustments.reduce(
+    (sum: number, adjustment: any) => sum + Math.max(0, finite(adjustment?.quantity)),
+    0,
+  )
+  const adjustmentVolume = exchangeQuantityAdjustments.reduce(
+    (sum: number, adjustment: any) => sum + Math.max(0, finite(adjustment?.quantity)) * Math.max(0, finite(adjustment?.price)),
+    0,
+  )
+  const accountedQuantity = fills.reduce(
+    (sum: number, fill: any) => sum + Math.max(0, finite(fill?.quantity)),
+    0,
+  ) + adjustmentQuantity
+  const quantityTolerance = Math.max(1e-10, Math.abs(finite(position.quantityStep)) / 2)
+  const lifetimeVolumeUsd = accountedQuantity > 0 && Math.abs(accountedQuantity - totalExecuted) <= quantityTolerance
+    ? fillVolume + adjustmentVolume
+    : totalExecuted * entryPrice
   const openQuantity = isOpen ? executed : 0
   const openVolumeUsd = openQuantity * entryPrice
   return {
@@ -232,8 +250,25 @@ function positionRelationMismatches(position: Record<string, any>, index: number
   }
   const fillQuantity = (Array.isArray(position.fills) ? position.fills : [])
     .reduce((sum: number, fill: any) => sum + Math.max(0, finite(fill?.quantity)), 0)
-  if (fillQuantity > 0 && total > 0 && Math.abs(fillQuantity - total) > tolerance) {
-    mismatches.push(`${label}: fill quantity ${fillQuantity} != lifetime ${total}`)
+  const adjustmentQuantity = (Array.isArray(position.exchangeQuantityAdjustments)
+    ? position.exchangeQuantityAdjustments
+    : [])
+    .reduce((sum: number, adjustment: any) => sum + Math.max(0, finite(adjustment?.quantity)), 0)
+  const accountedQuantity = fillQuantity + adjustmentQuantity
+  if (total > 0 && Math.abs(accountedQuantity - total) > tolerance) {
+    mismatches.push(
+      `${label}: fill quantity ${fillQuantity} + exchange adjustment ${adjustmentQuantity} != lifetime ${total}`,
+    )
+  }
+  const terminalWithoutFillLedger = new Set(["error", "rejected", "cancelled", "canceled"])
+  const simulated = usesSimulatedSystemLifecycle(position)
+  if (
+    total > tolerance &&
+    accountedQuantity <= tolerance &&
+    !simulated &&
+    !terminalWithoutFillLedger.has(status)
+  ) {
+    mismatches.push(`${label}: entry quantity has no fill or exchange adjustment ledger`)
   }
   if (position.combinedPosCounts === true) {
     const allocation = (Object.values(position.posCountsSetQuantities || {}) as unknown[])
