@@ -166,6 +166,7 @@ interface RealStagePositionDetailStats {
     sets: number
     positions: number
     orders: number
+    positionCountSource?: "confirmed-ledger" | "evaluation-fallback"
   }
   openPositions: {
     positions: number
@@ -274,6 +275,10 @@ export function ActiveConnectionCard({
   globalEngineQueued = false,
 }: ActiveConnectionCardProps) {
   const [progression, setProgression] = useState<ProgressionData | null>(null)
+  // One canonical `/stats` snapshot per card drives both the compact header
+  // and detailed stage panels. Keeping the object by reference avoids a
+  // second route/materialisation request for the same 15-second UI refresh.
+  const [statsSnapshot, setStatsSnapshot] = useState<Record<string, any> | null>(null)
   // Lightweight Real-stage averages + stage eval percentages, fetched on the
   // same poll cadence as progression (no extra timer).
   const [realAverages, setRealAverages] = useState<{
@@ -804,6 +809,67 @@ export function ActiveConnectionCard({
         const data = await res.json()
         if (requestSeq !== progressionFetchSeqRef.current) return
         if (res.ok) {
+          setStatsSnapshot(data)
+          // This is the canonical, connection-scoped read model used by Main
+          // Trade as well as the card.  Hydrate stage rows and the coordinated
+          // overview here even when the card itself is not toggled active;
+          // selecting X02 must not turn a valid persisted overview into zeroes.
+          setConnectionStageOverview(
+            data?.connectionStageOverview && typeof data.connectionStageOverview === "object"
+              ? data.connectionStageOverview as ConnectionStageOverview
+              : null,
+          )
+          if (data?.strategyRows && typeof data.strategyRows === "object") {
+            setStrategyRows(data.strategyRows)
+          }
+          if (data?.realAverages && typeof data.realAverages === "object") {
+            setRealAverages({
+              activeSets: nonNegativeMetric(data.realAverages.activeSets),
+              posPerSet: nonNegativeMetric(data.realAverages.posPerSet),
+              posOpen: nonNegativeMetric(data.realAverages.posOpen),
+            })
+          }
+          if (data?.stageEvalPercent && typeof data.stageEvalPercent === "object") {
+            setStageEvalPercent({
+              base: boundedPercentage(data.stageEvalPercent.base),
+              main: boundedPercentage(data.stageEvalPercent.main),
+              real: boundedPercentage(data.stageEvalPercent.real),
+              live: boundedPercentage(data.stageEvalPercent.live),
+            })
+          }
+          const cycleCounters = data?.realtime?.cycleCounters || {}
+          setLiveStats({
+            indicationCycles: firstFiniteMetric(
+              cycleCounters.indication,
+              data?.realtime?.indicationCycles,
+              data?.indicationCycleCount,
+            ),
+            strategyCycles: firstFiniteMetric(
+              cycleCounters.strategy,
+              data?.realtime?.strategyCycles,
+              data?.strategyCycleCount,
+            ),
+            indications: firstFiniteMetric(
+              data?.activeProgressing?.indications?.total?.sets,
+              data?.activeCounts?.indications?.total,
+              data?.realtime?.indicationsTotal,
+              data?.totalIndicationsCount,
+              data?.breakdown?.indications?.total,
+            ),
+            strategies: firstFiniteMetric(
+              data?.activeProgressing?.strategies?.total?.sets,
+              data?.activeCounts?.strategies?.total,
+              data?.realtime?.strategiesTotal,
+              data?.totalStrategyCount,
+              data?.breakdown?.strategies?.total,
+            ),
+            positions: (() => {
+              const pseudo = data?.openPositions?.pseudo?.open ?? 0
+              const live = data?.openPositions?.live?.open ?? 0
+              const realtimePositions = data?.realtime?.positionsOpen ?? 0
+              return live > 0 ? live : pseudo > 0 ? pseudo : realtimePositions
+            })(),
+          })
           // The /stats payload exposes prehistoric data under `historic`, not
           // `prehistoricProgress` (the shape the legacy /progression endpoint
           // used). Map it explicitly — otherwise every consumer of
@@ -882,73 +948,6 @@ export function ActiveConnectionCard({
     } catch {
       // Non-critical polling — swallow silently
     }
-    // Real-stage averaged counts + stage eval %. Folded into the same poll so
-    // we don't spin up a second interval. Failures are non-fatal.
-    try {
-      const tRes = await fetch(`/api/connections/progression/${connection.connectionId}/tracking/strategies`, {
-        cache: "no-store",
-        headers: { "Cache-Control": "no-cache, no-store, must-revalidate" },
-      })
-      if (tRes.ok) {
-        const tData = await tRes.json()
-        if (requestSeq !== progressionFetchSeqRef.current) return
-        const tracking = tData?.tracking ?? tData
-        if (tracking?.real?.averages) {
-          setRealAverages({
-            activeSets: nonNegativeMetric(tracking.real.averages.activeSets),
-            posPerSet: nonNegativeMetric(tracking.real.averages.posPerSet),
-            posOpen: nonNegativeMetric(tracking.real.averages.posOpen),
-          })
-        }
-        if (tracking?.stageEvalPercent) {
-          setStageEvalPercent({
-            base: boundedPercentage(tracking.stageEvalPercent.base),
-            main: boundedPercentage(tracking.stageEvalPercent.main),
-            real: boundedPercentage(tracking.stageEvalPercent.real),
-            live: boundedPercentage(tracking.stageEvalPercent.live),
-          })
-        }
-        if (tracking?.rows) {
-          setStrategyRows({
-            base: {
-              total: nonNegativeMetric(tracking.rows.base?.total),
-              valid: nonNegativeMetric(tracking.rows.base?.valid),
-              totalOpen: nonNegativeMetric(tracking.rows.base?.totalOpen),
-              validOpen: nonNegativeMetric(tracking.rows.base?.validOpen),
-              validRatio: boundedPercentage(tracking.rows.base?.validRatio),
-            },
-            main: {
-              valid: nonNegativeMetric(tracking.rows.main?.valid),
-              overall: nonNegativeMetric(tracking.rows.main?.overall),
-              validOpen: nonNegativeMetric(tracking.rows.main?.validOpen),
-              overallOpen: nonNegativeMetric(tracking.rows.main?.overallOpen),
-              overallToValidRatio: nonNegativeMetric(tracking.rows.main?.overallToValidRatio),
-              breakdown: {
-                standard: nonNegativeMetric(tracking.rows.main?.breakdown?.standard),
-                trailing: nonNegativeMetric(tracking.rows.main?.breakdown?.trailing),
-                positionCount: nonNegativeMetric(tracking.rows.main?.breakdown?.positionCount),
-                block: nonNegativeMetric(tracking.rows.main?.breakdown?.block),
-                dca: nonNegativeMetric(tracking.rows.main?.breakdown?.dca),
-              },
-            },
-            real: {
-              valid: nonNegativeMetric(tracking.rows.real?.valid),
-              active: nonNegativeMetric(tracking.rows.real?.active),
-              activeExactRows: nonNegativeMetric(tracking.rows.real?.activeExactRows),
-              activeRatio: boundedPercentage(tracking.rows.real?.activeRatio),
-            },
-            live: {
-              total: nonNegativeMetric(tracking.rows.live?.total),
-              mirrored: nonNegativeMetric(tracking.rows.live?.mirrored),
-              active: nonNegativeMetric(tracking.rows.live?.active),
-              mirroredRatio: boundedPercentage(tracking.rows.live?.mirroredRatio),
-            },
-          })
-        }
-      }
-    } catch {
-      // Non-critical polling — swallow silently
-    }
   }, [connection.connectionId])
 
 
@@ -972,6 +971,24 @@ export function ActiveConnectionCard({
   useEffect(() => {
     phaseRef.current = progression?.phase || "idle"
   }, [progression?.phase])
+
+  // A card can be re-used by React while the selected connection changes.
+  // Never let a completed response for the prior connection flash its stage
+  // or live-order relations under the newly selected connection. Advancing the
+  // sequence invalidates any in-flight old request; the normal poll effect
+  // below immediately hydrates the new canonical snapshot.
+  useEffect(() => {
+    progressionFetchSeqRef.current++
+    liveStatsFetchSeqRef.current++
+    setStatsSnapshot(null)
+    setConnectionStageOverview(null)
+    setStrategyRows(null)
+    setRealAverages(null)
+    setStageEvalPercent(null)
+    setPrehistoricStats(null)
+    setSignalOverview(null)
+    setPresetOverview(null)
+  }, [connection.connectionId])
 
   // Restore last-known progression from durable browser storage on mount so
   // reloads and reopened tabs show continuity while the fresh poll completes.
@@ -1104,20 +1121,21 @@ export function ActiveConnectionCard({
   // proxy buffering or a cross-worker stream gap.
   useEffect(() => {
     if (!connection.isActive && !globalEngineRunning) {
-      setLiveStats(null)
-      setConnectionStageOverview(null)
+      setSignalOverview(null)
+      setPresetOverview(null)
       return
     }
+    // Main Trade's unified stage/card read model is already hydrated by the
+    // single canonical `/stats` poll. Only optional Signal/Preset panels need
+    // their own compact endpoints.
+    if (!signalMode && !presetMode) return
 
     const fetchLiveStats = async () => {
       const requestSeq = ++liveStatsFetchSeqRef.current
       try {
-        // Use canonical stats endpoint — same source as progression info, per-connection
-        const [res, signalRes, presetRes] = await Promise.all([
-          fetch(
-            `/api/connections/progression/${connection.connectionId}/stats`,
-            { cache: "no-store" },
-          ),
+        // These are the only optional compact read models. Shared Main/Direct
+        // engine metrics continue to come from the canonical stats snapshot.
+        const [signalRes, presetRes] = await Promise.all([
           signalMode
             ? fetch(
                 `/api/statistics/indications?connectionId=${encodeURIComponent(connection.connectionId)}`,
@@ -1131,21 +1149,11 @@ export function ActiveConnectionCard({
               )
             : Promise.resolve(null),
         ])
-        if (!res.ok) return
-        const [data, signalData, presetData] = await Promise.all([
-          res.json(),
+        const [signalData, presetData] = await Promise.all([
           signalRes?.ok ? signalRes.json() : Promise.resolve(null),
           presetRes?.ok ? presetRes.json() : Promise.resolve(null),
         ])
         if (requestSeq !== liveStatsFetchSeqRef.current) return
-        setConnectionStageOverview(
-          data?.connectionStageOverview && typeof data.connectionStageOverview === "object"
-            ? data.connectionStageOverview as ConnectionStageOverview
-            : null,
-        )
-        if (data?.strategyRows && typeof data.strategyRows === "object") {
-          setStrategyRows(data.strategyRows)
-        }
         if (signalData?.success && signalData?.signal) {
           const positions12 = signalData.signal.windows?.positions12 || {}
           setSignalOverview({
@@ -1222,75 +1230,37 @@ export function ActiveConnectionCard({
         } else if (presetMode) {
           setPresetOverview(null)
         }
-        // Cycles label in the header should report the real interval-
-        // frame count — every loop tick the indication processor fired
-        // since the engine started — NOT the "live cycle" subset that
-        // only counts ticks which actually generated indications. The
-        // user reported "showing very Low number or Just '1'" which is
-        // exactly what `indicationCycles` (= live || churn) does on a
-        // freshly started engine that has not yet produced any indication
-        // (e.g. during prehistoric warmup). We now read the explicit
-        // churn counter from `cycleCounters.indication`, falling through
-        // to the older shapes for backwards compat with the previous
-        // payload.
-        const cc = data.realtime?.cycleCounters || {}
-        setLiveStats({
-          indicationCycles:
-            firstFiniteMetric(
-              cc.indication,
-              data.realtime?.indicationCycles,
-              data.indicationCycleCount,
-            ),
-          strategyCycles:
-            firstFiniteMetric(
-              cc.strategy,
-              data.realtime?.strategyCycles,
-              data.strategyCycleCount,
-            ),
-          // ── Indications / Strategies — actively processing Sets ───────
-          // Operators want the "Ind." / "Strat." counters on the live
-          // card to reflect what's processing RIGHT NOW (Sets currently
-          // producing qualified entries on the latest cycle), not the
-          // cumulative `indicationsTotal` / `strategiesTotal` which
-          // only ever grew. Source = `activeProgressing.{indications|
-          // strategies}.total.sets`. Falls back to the legacy
-          // cumulative counters when the new field is absent (older
-          // API revs).
-          // Presence-based fallback is essential: an authoritative active
-          // value of zero means no Set is qualifying this cycle and must not
-          // be replaced by a stale cumulative total from an older API shape.
-          indications: (() => {
-            return firstFiniteMetric(
-              data.activeProgressing?.indications?.total?.sets,
-              data.activeCounts?.indications?.total,
-              data.realtime?.indicationsTotal,
-              data.totalIndicationsCount,
-              data.breakdown?.indications?.total,
-            )
-          })(),
-          strategies: (() => {
-            return firstFiniteMetric(
-              data.activeProgressing?.strategies?.total?.sets,
-              data.activeCounts?.strategies?.total,
-              data.realtime?.strategiesTotal,
-              data.totalStrategyCount,
-              data.breakdown?.strategies?.total,
-            )
-          })(),
-          // Positions: prefer pseudo open (evaluation pipeline) because live
-          // exchange positions are 0 unless an order filled. This way the
-          // tile shows "5" (pseudo evaluation positions) when evaluating.
-          positions: (() => {
-            const pseudo = data.openPositions?.pseudo?.open ?? 0
-            const live   = data.openPositions?.live?.open   ?? 0
-            const rt     = data.realtime?.positionsOpen     ?? 0
-            return live > 0 ? live : pseudo > 0 ? pseudo : rt
-          })(),
-        })
+        // Signal/Preset have their own compact read models.  All shared
+        // engine/stage counters come exclusively from fetchProgression above.
+      } catch { /* non-critical */ }
+    }
 
-        // Also populate prehistoric stats from the same response
+    fetchLiveStats()
+    const liveStatsPollInterval = window.setInterval(() => {
+      fetchLiveStats()
+    }, 15_000)
+
+    return () => {
+      window.clearInterval(liveStatsPollInterval)
+    }
+  }, [
+    globalEngineRunning,
+    connection.connectionId,
+    connection.isActive,
+    dashboardEventRefreshKey,
+    signalMode,
+    presetMode,
+  ])
+
+  // Hydrate the historical/detail area from the same canonical stats schema.
+  // This consumes the response already fetched by fetchProgression; it must
+  // never initiate a competing full graph/materialisation request.
+  useEffect(() => {
+    if (!statsSnapshot) return
+        const data = statsSnapshot
         const bd = data.breakdown || {}
         const sd = data.strategyDetail || {}
+        const rows = data.strategyRows || {}
         const pm = data.prehistoricMeta || {}
         const ind = bd.indications || {}
         const strat = bd.strategies || {}
@@ -1309,12 +1279,17 @@ export function ActiveConnectionCard({
           stratMainAxisNetted: strat.mainAxisNetted || 0,
           stratReal:  strat.real || 0,
           stratLive:  strat.live || 0,
-          baseTotal:  nonNegativeMetric(sd.base?.row_total) || nonNegativeMetric(strat.base),
-          baseValidOpen: nonNegativeMetric(sd.base?.row_valid_open),
-          mainValid:  nonNegativeMetric(sd.main?.row_valid),
-          mainOverall: nonNegativeMetric(sd.main?.row_overall),
-          realValid:  nonNegativeMetric(sd.real?.row_valid),
-          realActive: nonNegativeMetric(sd.real?.row_active),
+          // `strategyRows` is the canonical current, cross-symbol aggregate.
+          // strategyDetail intentionally does not duplicate these row fields;
+          // reading only `sd.*.row_*` rendered healthy Main/Real stages as 0.
+          // Nullish fallbacks preserve an authoritative zero instead of
+          // replacing it with a historical cumulative count.
+          baseTotal: nonNegativeMetric(rows.base?.total ?? sd.base?.row_total ?? strat.base),
+          baseValidOpen: nonNegativeMetric(rows.base?.validOpen ?? sd.base?.row_valid_open),
+          mainValid: nonNegativeMetric(rows.main?.valid ?? sd.main?.row_valid),
+          mainOverall: nonNegativeMetric(rows.main?.overall ?? sd.main?.row_overall),
+          realValid: nonNegativeMetric(rows.real?.valid ?? sd.real?.row_valid),
+          realActive: nonNegativeMetric(rows.real?.active ?? sd.real?.row_active),
           continuousRealCreated: nonNegativeMetric(sd.real?.continuousRealCreated),
           basePassRatio:       boundedPercentage(sd.base?.passRatio),
           mainPassRatio:       boundedPercentage(sd.main?.passRatio),
@@ -1423,25 +1398,7 @@ export function ActiveConnectionCard({
           currentSymbol:           pm.currentSymbol           || "",
           isComplete:              pm.isComplete              || false,
         })
-      } catch { /* non-critical */ }
-    }
-
-    fetchLiveStats()
-    const liveStatsPollInterval = window.setInterval(() => {
-      fetchLiveStats()
-    }, 15_000)
-
-    return () => {
-      window.clearInterval(liveStatsPollInterval)
-    }
-  }, [
-    globalEngineRunning,
-    connection.connectionId,
-    connection.isActive,
-    dashboardEventRefreshKey,
-    signalMode,
-    presetMode,
-  ])
+  }, [statsSnapshot])
 
   // Handle Live Trade toggle ��� no longer gated on connection.isActive:
   // the /live-trade route auto-starts the engine when Live is turned on,
@@ -3239,14 +3196,20 @@ export function ActiveConnectionCard({
                             <div className="mt-1.5 space-y-2 rounded-lg border border-emerald-300/60 bg-emerald-50/55 p-2 dark:border-emerald-800/60 dark:bg-emerald-950/20">
                               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
                                 <span className="font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-300">Real position detail</span>
-                                <span className="text-muted-foreground">
-                                  Overall Sets <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.sets).toLocaleString()}</strong>
+                                <span
+                                  className="text-muted-foreground"
+                                  title="Lifetime Real-stage promotions. This is historical throughput, not the number of currently open positions."
+                                >
+                                  Processed Sets <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.sets).toLocaleString()}</strong>
+                                </span>
+                                <span
+                                  className="text-muted-foreground"
+                                  title={overall.positionCountSource === "evaluation-fallback" ? "Evaluation projection before the idempotent position ledger is available" : "Idempotent confirmed position ledger"}
+                                >
+                                  {overall.positionCountSource === "evaluation-fallback" ? "Eval Pos*" : "Confirmed Pos"} <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.positions).toLocaleString()}</strong>
                                 </span>
                                 <span className="text-muted-foreground">
-                                  Pos <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.positions).toLocaleString()}</strong>
-                                </span>
-                                <span className="text-muted-foreground">
-                                  Orders <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.orders).toLocaleString()}</strong>
+                                  Orders placed <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.orders).toLocaleString()}</strong>
                                 </span>
                                 <span className="ml-auto text-muted-foreground">
                                   {openSource} open <strong className="text-foreground tabular-nums">{nonNegativeMetric(openPositions.positions).toLocaleString()}</strong>
@@ -3260,7 +3223,7 @@ export function ActiveConnectionCard({
                                   {" / "}S <strong className="text-rose-700 dark:text-rose-300 tabular-nums">{nonNegativeMetric(openPositions.shortPositions)}</strong>
                                 </span>
                                 <span>{nonNegativeMetric(openPositions.longSymbolCount)} Long symbols · {nonNegativeMetric(openPositions.shortSymbolCount)} Short symbols</span>
-                                <span className="ml-auto" title="Related-Base hedge history is informational and never reduces Overall Sets, positions or orders.">
+                                <span className="ml-auto" title="Related-Base hedge history is informational and never reduces processed sets, positions or orders.">
                                   Hedge extra: <strong className="text-foreground tabular-nums">{nonNegativeMetric(hedge.hedgedPairs)} pairs</strong>
                                   {" · "}{nonNegativeMetric(hedge.offsetPositionLegs)} legs / {nonNegativeMetric(hedge.hedgeOffsetPercent).toFixed(1)}%
                                 </span>
@@ -3696,7 +3659,7 @@ export function ActiveConnectionCard({
             </CardContent>
           )}
 
-          {connection.isActive && connectionStageOverview && (
+          {connectionStageOverview && (
             <CardContent
               className="pt-0 pb-3 px-4"
               data-testid="connection-stage-overview"

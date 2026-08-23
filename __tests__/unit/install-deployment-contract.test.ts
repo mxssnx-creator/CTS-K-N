@@ -86,7 +86,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).not.toContain("chpasswd")
     expect(installer).toContain("CTS_INSTALLED_REPOSITORY=$repository")
     expect(installer).toContain("CTS_INSTALLED_BRANCH=$branch")
-    expect(installer).toContain('for runtime_path in node_modules .next scripts package.json')
+    expect(installer).toContain('for runtime_path in node_modules .next scripts lib package.json')
+    expect(installer).toContain('run_root chmod -R g+rX "$PROJECT_ROOT/$runtime_path"')
     expect(installer).toContain('scripts/run-with-env.mjs" "$ENV_FILE" --')
     expect(installer).toContain(
       'REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)"',
@@ -170,6 +171,9 @@ describe("production installation and Kilo deployment contract", () => {
     expect(credentialRoute).toContain('"bybit-x03": BASE_CONNECTION_CREDENTIALS["bybit-x03"]')
     expect(productionInit).toContain("async function verifyLiveTradeReadiness()")
     expect(productionInit).toContain("async function verifyDirectTradeProcessor")
+    expect(productionInit).toContain("async function verifyProdVstMainEngine")
+    expect(productionInit).toContain("BingX X02 Prod-VST Main Trade owner is running with a fresh heartbeat")
+    expect(productionInit).toContain("const vstMainEngine = await verifyProdVstMainEngine(liveTrade)")
     expect(productionInit).toContain("Direct-Trade processor did not publish a fresh leased heartbeat")
     expect(productionInit).toContain("CTS_REQUIRE_LIVE_TRADE_READY === \"1\"")
     expect(productionInit).toContain("/api/connections/${encodeURIComponent(connectionId)}/engine-states")

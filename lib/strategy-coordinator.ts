@@ -816,6 +816,43 @@ export interface StrategySet {
   }
 }
 
+/**
+ * MAIN uses `setKey` as the full configuration identity.  A duplicate key is
+ * therefore never an additional independent strategy: it is a retry/clone of
+ * the same Base lane.  Collapse those inputs before variant and axis fan-out
+ * so a stale retry cannot multiply CPU work, Redis snapshots, or downstream
+ * control-order coordination.
+ *
+ * Keep the first row deterministically.  The canonical Base producer already
+ * groups all entries for a configuration into that row; selecting a later
+ * clone based on a mutable score could make an idempotent retry change trade
+ * selection.  Unkeyed rows are retained so an upstream validation error stays
+ * observable instead of being silently hidden by this guard.
+ */
+export function dedupeCanonicalStrategySets<T extends { setKey?: unknown }>(
+  sets: readonly T[],
+): { sets: T[]; collapsed: number } {
+  const seen = new Set<string>()
+  const unique: T[] = []
+  let collapsed = 0
+
+  for (const set of sets) {
+    const key = String(set?.setKey ?? "").trim()
+    if (!key) {
+      unique.push(set)
+      continue
+    }
+    if (seen.has(key)) {
+      collapsed++
+      continue
+    }
+    seen.add(key)
+    unique.push(set)
+  }
+
+  return { sets: unique, collapsed }
+}
+
 export interface StrategySetEntry {
   id: string
   sizeMultiplier: number
@@ -4577,22 +4614,48 @@ export class StrategyCoordinator {
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[] }> {
     // Prefer in-memory input (hot-path pipelined from createBaseSets). Fall
     // back to Redis only when called standalone (tests / diagnostics).
-    let baseSets: StrategySet[]
+    let loadedBaseSets: StrategySet[]
     if (inputSets) {
-      baseSets = inputSets
+      loadedBaseSets = inputSets
     } else {
       const baseKey = `strategies:${this.connectionId}:${symbol}:base:sets`
       const stored = await getSettings(baseKey)
       // A runtime projection intentionally cannot reconstruct a fresh entry
       // graph after restart. Fail closed until the next canonical indication
       // pass rebuilds it; exits/open positions are handled independently.
-      baseSets = stored?.runtimeProjection ? [] : (stored?.sets || [])
+      loadedBaseSets = stored?.runtimeProjection ? [] : (stored?.sets || [])
     }
+    // The canonical Base creator is already unique by complete config key,
+    // but runtime recovery/retries can provide the same Base row more than
+    // once.  Deduplicate *before* constructing variant tasks so an accidental
+    // clone cannot fan out into an entire duplicate Main/axis graph.
+    const {
+      sets: baseSets,
+      collapsed: collapsedBaseInputSets,
+    } = dedupeCanonicalStrategySets(loadedBaseSets)
 
     const metricsBase = this.METRICS.base
     const metricsMain = this.METRICS.main
     const ctx = posCtx ?? this.neutralPositionContext()
     const mainSets: StrategySet[] = []
+    const emittedMainSetKeys = new Set<string>()
+    let collapsedMainOutputSets = 0
+    const appendMainSet = (set: StrategySet): boolean => {
+      const key = String(set?.setKey ?? "").trim()
+      // A missing key remains visible to the caller rather than being silently
+      // discarded; the existing validation/telemetry path can then surface it.
+      if (!key) {
+        mainSets.push(set)
+        return true
+      }
+      if (emittedMainSetKeys.has(key)) {
+        collapsedMainOutputSets++
+        return false
+      }
+      emittedMainSetKeys.add(key)
+      mainSets.push(set)
+      return true
+    }
 
     // Live enablement never changes Strategy validation. Fresh Signal
     // positions use their explicit direct-execution policy; Main always
@@ -4891,7 +4954,7 @@ export class StrategyCoordinator {
       const set = cachedSet || built
       if (!set) continue
 
-      mainSets.push(set)
+      if (!appendMainSet(set)) continue
       if (profile.name === "default") defaultByBaseKey.set(baseSet.setKey, set)
       if (cachedSet) reused++
 
@@ -4999,7 +5062,7 @@ export class StrategyCoordinator {
           metrics,
         )
         for (const axisSet of expandedWithLedger) {
-          mainSets.push(axisSet)
+          if (!appendMainSet(axisSet)) continue
           axisSetsAdded++
 
           // Axis sets carry a synthetic entry but their quality data lives on
@@ -5260,6 +5323,8 @@ export class StrategyCoordinator {
           avg_pos_per_set:   String(mainAvgPosPerSet.toFixed(2)),
           entries_total:     String(mainEntriesTotal),
           entries_count:     String(mainEntriesTotal),
+          input_clone_sets_collapsed: String(collapsedBaseInputSets),
+          output_clone_sets_collapsed: String(collapsedMainOutputSets),
           axis_sets:         String(axisSetsAdded),
           evaluated:         String(mainLogicalEvaluated),
           passed_sets:       String(mainPassedParentCount),
@@ -5291,6 +5356,8 @@ export class StrategyCoordinator {
           updated_at:        String(Date.now()),
           [`s:${symbol}:created`]:    String(mainSets.length),
           [`s:${symbol}:entries`]:    String(mainEntriesTotal),
+          [`s:${symbol}:input_clone_sets_collapsed`]: String(collapsedBaseInputSets),
+          [`s:${symbol}:output_clone_sets_collapsed`]: String(collapsedMainOutputSets),
           [`s:${symbol}:running`]:    String(mainRunningNow),
           [`s:${symbol}:progressing`]: String(mainProgressing),
           [`s:${symbol}:passed`]:     String(mainPassedParentCount),
@@ -5378,6 +5445,8 @@ export class StrategyCoordinator {
           strategies_main_active_variant_count: String(activeVariantNames.length),
           strategies_main_last_reused:          String(reused),
           strategies_main_last_created:         String(relatedCreated),
+          strategies_main_last_input_clone_sets_collapsed: String(collapsedBaseInputSets),
+          strategies_main_last_output_clone_sets_collapsed: String(collapsedMainOutputSets),
           strategies_main_ctx_continuous:       String(ctx.continuousCount),
           strategies_main_ctx_last_wins:        String(ctx.lastWins),
           strategies_main_ctx_last_losses:      String(ctx.lastLosses),

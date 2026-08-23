@@ -19,9 +19,14 @@ describe("production base-connection credential injection", () => {
       NODE_ENV: "test",
       BINGX_API_KEY: "bingx-live-key-1234567890",
       BINGX_API_SECRET: "bingx-live-secret-1234567890",
+      BINGX_X02_API_KEY: "bingx-vst-key-1234567890",
+      BINGX_X02_API_SECRET: "bingx-vst-secret-1234567890",
       BYBIT_API_KEY: "bybit-live-key-1234567890",
       BYBIT_API_SECRET: "bybit-live-secret-1234567890",
       ADMIN_SECRET: "inject-test-admin-secret-1234567890",
+      // Queue persistence is what this route owns.  Keep the unit test out of
+      // the in-process engine owner so it cannot start a background worker.
+      NEXT_RUNTIME: "edge",
     }
   })
 
@@ -44,9 +49,10 @@ describe("production base-connection credential injection", () => {
     expect(injected.success).toBe(true)
     expect(injected.results["bingx-x01"]).toContain("live trade enabled")
     expect(injected.results["bybit-x03"]).toContain("live trade enabled")
+    expect(injected.results["bingx-x02"]).toContain("Main Trade engine queued")
 
     const status = await (await GET(request)).json()
-    expect(status.liveTradeReady).toEqual(expect.arrayContaining(["bingx-x01", "bybit-x03"]))
+    expect(status.liveTradeReady).toEqual(expect.arrayContaining(["bingx-x01", "bingx-x02", "bybit-x03"]))
     expect(status.database["bingx-x01"]).toMatchObject({ hasCredentials: true, liveTradeEnabled: true })
     expect(status.database["bybit-x03"]).toMatchObject({ hasCredentials: true, liveTradeEnabled: true })
 
@@ -57,6 +63,19 @@ describe("production base-connection credential injection", () => {
       live_trade_requested: "1",
       connection_method: "library",
       connection_library: "sdk",
+    })
+    await expect(redis.hgetall("connection:bingx-x02")).resolves.toMatchObject({
+      is_assigned: "1",
+      is_active_inserted: "1",
+      is_dashboard_inserted: "1",
+      is_enabled_dashboard: "1",
+      is_live_trade: "1",
+      live_trade_enabled: "1",
+    })
+    await expect(redis.hgetall("settings:engine_coordinator:refresh_requested:bingx-x02")).resolves.toMatchObject({
+      connectionId: "bingx-x02",
+      action: "start",
+      reason: "production_vst_credential_injection",
     })
   })
 

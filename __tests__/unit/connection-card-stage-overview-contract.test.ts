@@ -16,6 +16,18 @@ describe("connection card stage overview contract", () => {
     expect(route).toContain("closedPositions: sharedClosedParsed")
   })
 
+  test("the card consumes the canonical stats snapshot once and clears prior connection state", () => {
+    const card = read("components/dashboard/active-connection-card.tsx")
+
+    expect(card).toContain("const [statsSnapshot, setStatsSnapshot]")
+    expect(card).toContain("setStatsSnapshot(data)")
+    expect(card).toContain("const rows = data.strategyRows || {}")
+    expect(card).toContain("rows.base?.total ?? sd.base?.row_total")
+    expect(card).toContain("progressionFetchSeqRef.current++")
+    expect(card).toContain("setConnectionStageOverview(null)")
+    expect(card).not.toContain('fetch(`/api/connections/progression/${connection.connectionId}/tracking/strategies`')
+  })
+
   test("Main writer persists mutually exclusive open-lineage buckets", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     for (const field of [

@@ -66,7 +66,10 @@ async function getQueuedRefreshRequestList() {
   return getQueuedEngineRefreshRequests().catch(() => [] as Awaited<ReturnType<typeof getQueuedEngineRefreshRequests>>)
 }
 
-async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnType<typeof loadTradeEngineCoordinator>>): Promise<number> {
+async function processQueuedEngineRefreshRequests(
+  coordinator: Awaited<ReturnType<typeof loadTradeEngineCoordinator>>,
+  alreadyStoppedConnectionIds: ReadonlySet<string> = new Set(),
+): Promise<number> {
   const refreshQueue = await import("./engine-refresh-queue")
   const { getConnection } = await loadRedisDb()
   // Guardrail: shared TTL handling uses ENGINE_REFRESH_REQUEST_TTL_MS, requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS,
@@ -79,7 +82,13 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
       try {
         const connection = await getConnection(request.connectionId)
         if (request.action === "stop") {
-          await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+          // Stop controls are acted on immediately by the sweep before this
+          // durable request is consumed.  Do not send the same control order
+          // a second time just to clear its queue record; a failed immediate
+          // stop is intentionally retried here instead.
+          if (!alreadyStoppedConnectionIds.has(request.connectionId)) {
+            await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+          }
         } else if (request.action === "start") {
           if (!coordinator.isEngineRunning?.(request.connectionId)) await coordinator.startMissingEngines([connection])
         } else if (request.action === "restart") {
@@ -104,7 +113,9 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
     getConnection,
     act: async (request, connection) => {
       if (request.action === "stop") {
-        await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+        if (!alreadyStoppedConnectionIds.has(request.connectionId)) {
+          await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+        }
         return "processed"
       }
 
@@ -341,13 +352,18 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
     const coordinator = await loadTradeEngineCoordinator()
     const queuedRefreshRequests = await getQueuedRefreshRequestList()
     const stopRequests = queuedRefreshRequests.filter(({ request }) => request.action === "stop")
+    const queuedStopConnectionIds = new Set(stopRequests.map(({ request }) => request.connectionId))
+    const immediatelyStoppedConnectionIds = new Set<string>()
     for (const { request } of stopRequests) {
-      await coordinator.stopEngine(request.connectionId, { operatorRequested: true }).catch((stopErr: unknown) => {
+      try {
+        await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+        immediatelyStoppedConnectionIds.add(request.connectionId)
+      } catch (stopErr) {
         console.warn(
           `[v0] [AutoStart] Immediate stop failed for ${request.connectionId}:`,
           stopErr instanceof Error ? stopErr.message : String(stopErr),
         )
-      })
+      }
     }
 
     const eligibleConnections = await getAssignedAndEnabledConnections()
@@ -366,8 +382,23 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
     // Best-effort warm load. Engines still read Redis settings while ticking.
     await loadSettingsAsync().catch(() => {})
 
-    const queuedRefreshProcessedCount = (await processQueuedEngineRefreshRequests(coordinator)) ?? 0
-    const startedCount = await coordinator.startMissingEngines(eligibleConnections)
+    const queuedRefreshProcessedCount =
+      (await processQueuedEngineRefreshRequests(coordinator, immediatelyStoppedConnectionIds)) ?? 0
+    // A queued start is executed by the durable queue consumer above.  Starting
+    // it again in the broad healing pass creates a redundant coordinator call
+    // (and was expensive with a full 32-symbol matrix).  Conversely, a queued
+    // stop must never be reintroduced by that same pass.  If a queued start
+    // failed, it remains a normal candidate here for safe self-healing.
+    const queuedStartConnectionIds = new Set(
+      queuedRefreshRequests
+        .filter(({ request }) => request.action === "start")
+        .map(({ request }) => request.connectionId),
+    )
+    const startCandidates = eligibleConnections.filter((connection: any) => {
+      if (queuedStopConnectionIds.has(connection.id)) return false
+      return !queuedStartConnectionIds.has(connection.id) || !coordinator.isEngineRunning?.(connection.id)
+    })
+    const startedCount = await coordinator.startMissingEngines(startCandidates)
 
     if (startedCount > 0 && !isStartup) {
       const { recordRuntimeRecoveryEvent } = await import("./runtime-startup-state")
