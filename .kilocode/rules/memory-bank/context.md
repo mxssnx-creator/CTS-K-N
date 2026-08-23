@@ -10,8 +10,10 @@ Total output lines: 1636
 ## Current exact-settlement / Shared-Redis release checkpoint (2026-08-23)
 
 - Continue only from the persistent checkout
-  `/workspace/scratch/fba10f5c97ed/persistent/CTS-K-N`. The last merged
-  baseline is GitHub PR `#208` (`main@7891bce556034cd5a155a82242a739ae8ffc024d`).
+  `/workspace/scratch/fba10f5c97ed/persistent/CTS-K-N`. The latest merged
+  release is GitHub PR `#209`
+  (`main@2618ad68518df717e1b06d69fa94792fc7ebdb3a`), built on the PR `#208`
+  production/runtime baseline.
   Complete-history Git bundles belong in `/workspace/backups/CTS-K-N`.
   Never commit exchange credentials, SSH/Chisel material, Redis data, raw
   account reports, `.agent-logs`, dependencies or build output.
@@ -64,8 +66,11 @@ Total output lines: 1636
   because no separate credentials/authorization were available in this
   checkpoint.
 - The remote Linux server at `152.53.114.112` was not modified or verified from
-  this sandbox: direct SSH, SSLH, Chisel and browser proxy paths were previously
-  unreachable or returned an HTTPS/HSTS gateway mismatch. Preserve the
+  this sandbox. The post-reinstall recheck still returned `Network is
+  unreachable` before SSH authentication on ports 22/443 and on the Chisel
+  8090 upstream. The Cloud Browser HSTS-upgraded port 3002 to HTTPS and reported
+  that the remote server does not speak TLS; port 4200 exposed a self-signed
+  certificate which must not be bypassed. Preserve the
   server's existing production environment, credentials and Redis data; make a
   server backup before replacing processes, then deploy only a merged GitHub
   `main` and rerun the production readiness/Shared-Redis gates on-host.
