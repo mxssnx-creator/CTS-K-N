@@ -1,0 +1,48 @@
+From 69d07a2855f8a8a2885328f55d539b7d2b7f8372 Mon Sep 17 00:00:00 2001
+From: mxssnx-creator <mxssnx@gmail.com>
+Date: Sat, 22 Aug 2026 23:25:42 +0000
+Subject: [PATCH] fix: finalize pre-fill positions that have no exchange handle
+
+Pre-fill positions (placed/pending_fill/placed_unconfirmed) with no orderId /
+exchangePositionId and zero executedQuantity can never receive exchange close
+confirmation, so closeLivePosition rolled them back forever and the
+stuck-placed sweeper retried them every sync cycle: a warn storm and dozens of
+zombie 'pending' rows polluting Live Trading stats. Allow a local-only
+finalize for exactly that case; every other path still requires authoritative
+exchange confirmation.
+---
+ lib/trade-engine/stages/live-stage.ts | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/lib/trade-engine/stages/live-stage.ts b/lib/trade-engine/stages/live-stage.ts
+index 142b4e7..afcf8ec 100644
+--- a/lib/trade-engine/stages/live-stage.ts
++++ b/lib/trade-engine/stages/live-stage.ts
+@@ -10096,11 +10096,23 @@ export async function closeLivePosition(
+       }
+     }
+ 
++    // Pre-fill positions that never got an exchange order handle (no orderId /
++    // exchangePositionId and nothing executed) can never be confirmed by the
++    // exchange — there is nothing on the exchange to close. Refusing to
++    // finalize them leaves zombies in placed/pending_fill/placed_unconfirmed
++    // that the stuck-placed sweeper retries every sync cycle forever.
++    const preFillWithoutExchangeHandle =
++      !hasSystemOrderId &&
++      Number(position.executedQuantity || 0) <= 0 &&
++      (originalStatus === "placed" ||
++        originalStatus === "pending_fill" ||
++        originalStatus === "placed_unconfirmed")
+     const localOnlyCloseAllowed =
+       originalStatus === "simulated" ||
+       closeReason === "exchange_externally_closed" ||
+       closeReason === "exchange_reconciliation" ||
+-      closeReason === "duplicate_slot_pruned"
++      closeReason === "duplicate_slot_pruned" ||
++      preFillWithoutExchangeHandle
+     const mayFinalizeClose = exchangeCloseSuccess || (!exchangeConnector && localOnlyCloseAllowed)
+     if (!mayFinalizeClose) {
+       const rollbackStatus: LivePosition["status"] = originalStatus && originalStatus !== "closing"
+-- 
+2.39.5
+
