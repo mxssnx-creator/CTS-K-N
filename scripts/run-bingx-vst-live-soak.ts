@@ -34,6 +34,7 @@ const MIN_LIVE_CYCLE_WINDOW_MS = 60_000
 // BingX documents a two-request-per-second IP limit for the exact order query.
 // Keep this below that cap even when the final audit has many completed cycles.
 const ORDER_DETAIL_AUDIT_SPACING_MS = 600
+const MAX_VST_SOAK_SPREAD_BPS = 75
 const SYMBOL_CANDIDATES = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT",
 ] as const
@@ -251,7 +252,7 @@ async function main(): Promise<void> {
   const verifyEngineTrailingUpdate = process.env.BINGX_VST_SOAK_ENGINE_TRAILING_UPDATE === "1"
 
   const report: any = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     runId,
     environment: "prod-vst",
     baseUrl: VST_ORIGIN,
@@ -270,6 +271,7 @@ async function main(): Promise<void> {
     monitoring: [] as any[],
     counters: {},
     venueHistory: {},
+    venueAccounting: {},
     account: {},
     differences: {},
     network: {
@@ -644,24 +646,56 @@ async function main(): Promise<void> {
       ...initialAccount.positions.map((row: any) => normalizeSymbol(row?.symbol)),
       ...initialAccount.orders.map((row: any) => normalizeSymbol(row?.symbol)),
     ])
-    soakSymbols = SYMBOL_CANDIDATES
-      .filter((symbol) => !occupiedSymbols.has(symbol))
+    const candidateTickers = new Map<SoakSymbol, any>()
+    const candidateErrors = new Map<SoakSymbol, string>()
+    const unoccupiedCandidates = SYMBOL_CANDIDATES.filter((symbol) => !occupiedSymbols.has(symbol))
+    const liquidityRows: Array<{ symbol: SoakSymbol; bid: number; ask: number; last: number }> = []
+    for (const symbol of unoccupiedCandidates) {
+      try {
+        const ticker = await connector.getTicker(symbol)
+        candidateTickers.set(symbol, ticker)
+        liquidityRows.push({
+          symbol,
+          bid: finite(ticker?.bid),
+          ask: finite(ticker?.ask),
+          last: finite(ticker?.last),
+        })
+      } catch (error) {
+        candidateErrors.set(symbol, errorText(error))
+        liquidityRows.push({ symbol, bid: 0, ask: 0, last: 0 })
+      }
+    }
+    const rankedLiquidity = auditModule.rankVstSoakSymbolLiquidity(
+      liquidityRows,
+      MAX_VST_SOAK_SPREAD_BPS,
+    )
+    soakSymbols = rankedLiquidity
+      .filter((row: { eligible: boolean }) => row.eligible)
       .slice(0, TRADE_PATHS.length)
+      .map((row: { symbol: string }) => row.symbol as SoakSymbol)
     report.symbols = [...soakSymbols]
     report.preflight.symbolSelection = {
-      strategy: "first four liquid candidates without baseline positions or open orders",
+      strategy: "four tightest current Prod-VST books without baseline positions or open orders",
+      maxSpreadBps: MAX_VST_SOAK_SPREAD_BPS,
       occupiedSymbols: [...occupiedSymbols].filter(Boolean).sort(),
       selectedSymbols: [...soakSymbols],
+      candidateLiquidity: rankedLiquidity.map((row: any) => ({
+        ...row,
+        ...(candidateErrors.has(row.symbol) ? { error: candidateErrors.get(row.symbol) } : {}),
+      })),
       baselinePreserved: true,
     }
     if (soakSymbols.length !== TRADE_PATHS.length) {
-      throw new Error(`Not enough unoccupied Prod-VST symbols for all trade paths (${soakSymbols.length}/${TRADE_PATHS.length})`)
+      throw new Error(
+        `Not enough executable Prod-VST books for all trade paths ` +
+        `(${soakSymbols.length}/${TRADE_PATHS.length}, maxSpread=${MAX_VST_SOAK_SPREAD_BPS}bps)`,
+      )
     }
 
     const rulesBySymbol = new Map<SoakSymbol, any>()
     for (const symbol of soakSymbols) {
       const rules = await rulesModule.fetchBingXInstrumentRules(symbol, fetch, VST_ORIGIN)
-      const ticker = await connector.getTicker(symbol)
+      const ticker = candidateTickers.get(symbol) || await connector.getTicker(symbol)
       const marketPrice = finite(ticker?.last || ticker?.ask || ticker?.bid)
       if (!(marketPrice > 0)) throw new Error(`No Prod-VST price for ${symbol}`)
       rulesBySymbol.set(symbol, rules)
@@ -1621,6 +1655,95 @@ async function main(): Promise<void> {
       throw new Error(`Authoritative order detail is missing created order IDs: ${missingDetailIds.join(", ")}`)
     }
 
+    // PnL is authoritative only when it comes from the venue's exact fill
+    // settlement for every executed market order.  Requested/ticker/trigger
+    // prices are deliberately excluded.  Summing entry, accumulation and
+    // close settlements includes all represented entry/exit fees; BingX puts
+    // the realised result itself on the closing fill rows.
+    const executionOrders = report.cycles.flatMap((cycle: CycleReport) => ([
+      { cycle, stage: "entry", order: cycle.entry },
+      { cycle, stage: "accumulation", order: cycle.accumulation },
+      { cycle, stage: "close", order: cycle.close },
+    ]))
+    const settlementRows: any[] = []
+    const settlementMissingOrderIds: string[] = []
+    const settlementMismatches: string[] = []
+    for (const execution of executionOrders) {
+      const orderId = String(execution.order?.orderId || "")
+      let settlement: any = null
+      for (let attempt = 0; attempt < 4 && !settlement; attempt++) {
+        if (attempt > 0) await sleep(1_500)
+        settlement = await connector.getOrderSettlement(execution.cycle.symbol, orderId)
+      }
+      if (!settlement || String(settlement.orderId || "") !== orderId) {
+        settlementMissingOrderIds.push(orderId)
+        continue
+      }
+      const quantityDifference = finite(settlement.filledQuantity) - finite(execution.order?.filledQuantity)
+      const priceDifference = finite(settlement.averageFillPrice) - finite(execution.order?.filledPrice)
+      const quantityTolerance = Math.max(finite(execution.cycle.quantityStep) / 2, 1e-12)
+      const priceTolerance = Math.max(1e-8, Math.abs(finite(execution.order?.filledPrice)) * 1e-6)
+      if (Math.abs(quantityDifference) > quantityTolerance) {
+        settlementMismatches.push(`${orderId}: settlement quantity differs by ${quantityDifference}`)
+      }
+      if (Math.abs(priceDifference) > priceTolerance) {
+        settlementMismatches.push(`${orderId}: settlement price differs by ${priceDifference}`)
+      }
+      settlementRows.push({
+        cycle: execution.cycle.index,
+        tradePath: execution.cycle.tradePath,
+        symbol: execution.cycle.symbol,
+        direction: execution.cycle.direction,
+        stage: execution.stage,
+        orderId,
+        filledQuantity: finite(settlement.filledQuantity),
+        averageFillPrice: finite(settlement.averageFillPrice),
+        grossRealizedPnl: finite(settlement.grossRealizedPnl),
+        tradingFee: finite(settlement.tradingFee),
+        netRealizedPnl: finite(settlement.netRealizedPnl),
+        netIncludesEntryFee: settlement.netIncludesEntryFee === true,
+        source: String(settlement.source || ""),
+        fillCount: Array.isArray(settlement.fills) ? settlement.fills.length : 0,
+        quantityDifference,
+        priceDifference,
+      })
+    }
+    const settlementTotals = settlementRows.reduce((totals, row) => ({
+      grossRealizedPnl: totals.grossRealizedPnl + row.grossRealizedPnl,
+      tradingFee: totals.tradingFee + row.tradingFee,
+      netRealizedPnl: totals.netRealizedPnl + row.netRealizedPnl,
+    }), { grossRealizedPnl: 0, tradingFee: 0, netRealizedPnl: 0 })
+    const cycleAccounting = report.cycles.map((cycle: CycleReport) => {
+      const rows = settlementRows.filter((row) => row.cycle === cycle.index)
+      return {
+        cycle: cycle.index,
+        tradePath: cycle.tradePath,
+        symbol: cycle.symbol,
+        grossRealizedPnl: rows.reduce((sum, row) => sum + row.grossRealizedPnl, 0),
+        tradingFee: rows.reduce((sum, row) => sum + row.tradingFee, 0),
+        netRealizedPnl: rows.reduce((sum, row) => sum + row.netRealizedPnl, 0),
+        settledOrders: rows.length,
+      }
+    })
+    report.venueAccounting = {
+      success: settlementMissingOrderIds.length === 0 && settlementMismatches.length === 0,
+      source: "exact_per_order_exchange_fill_settlement",
+      theoreticalPriceFallbackUsed: false,
+      expectedMarketOrders: executionOrders.length,
+      settledMarketOrders: settlementRows.length,
+      missingOrderIds: settlementMissingOrderIds,
+      mismatches: settlementMismatches,
+      totals: settlementTotals,
+      cycles: cycleAccounting,
+      orders: settlementRows,
+    }
+    if (!report.venueAccounting.success) {
+      throw new Error(
+        `Venue settlement accounting is incomplete: missing=${settlementMissingOrderIds.length}, ` +
+        `mismatches=${settlementMismatches.length}`,
+      )
+    }
+
     report.differences = {
       requestedVsFilledQuantity: report.cycles.flatMap((cycle: CycleReport) => [
         {
@@ -1646,6 +1769,7 @@ async function main(): Promise<void> {
       account: report.account.difference,
       listMissingOrderIds,
       missingHistoryIds: missingDetailIds,
+      venueSettlement: settlementMismatches,
     }
     report.cleanupComplete = true
     report.success = network.every((row) => !row.blocked) && report.errors.length === 0

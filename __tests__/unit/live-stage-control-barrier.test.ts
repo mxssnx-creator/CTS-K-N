@@ -59,6 +59,71 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("keeps observing the same timed-out protection write and accepts its late acknowledgement", async () => {
+    const placementPromise = new Promise((resolve) => {
+      setTimeout(() => resolve({ success: true, orderId: 123456 }), 10)
+    })
+    const exchange = connector({
+      getOrderDetails: jest.fn(async () => null),
+      getOpenOrder: jest.fn(async () => null),
+    })
+
+    await expect(__liveStageTest.reconcileAmbiguousProtectionWrite({
+      connector: exchange,
+      symbol: "BTCUSDT",
+      clientOrderId: "cts-sl-late-ack",
+      placementPromise,
+      initialError: "Timeout after 8000ms",
+      graceMs: 100,
+    })).resolves.toMatchObject({
+      success: true,
+      orderId: "123456",
+      recoveredFromAmbiguousWrite: "late_acknowledgement",
+    })
+    expect(exchange.getOrderDetails).not.toHaveBeenCalled()
+  })
+
+  test("recovers a response-lost protection write by client ID without resubmission", async () => {
+    const getOrderDetails = jest.fn(async (_symbol: string, _orderId: string | undefined, clientOrderId: string) => ({
+      orderId: "venue-stop-1",
+      clientOrderId,
+      status: "open",
+    }))
+    const exchange = connector({ getOrderDetails })
+
+    await expect(__liveStageTest.reconcileAmbiguousProtectionWrite({
+      connector: exchange,
+      symbol: "BTCUSDT",
+      clientOrderId: "cts-sl-response-lost",
+      placementPromise: Promise.resolve({ success: false, error: "socket reset" }),
+      initialError: "socket reset",
+      graceMs: 1,
+    })).resolves.toMatchObject({
+      success: true,
+      orderId: "venue-stop-1",
+      clientOrderId: "cts-sl-response-lost",
+      recoveredFromAmbiguousWrite: "client_order_id",
+    })
+    expect(getOrderDetails).toHaveBeenCalledWith(
+      "BTCUSDT",
+      undefined,
+      "cts-sl-response-lost",
+    )
+  })
+
+  test("does not reconcile a definite venue rejection as an ambiguous write", async () => {
+    const exchange = connector({ getOrderDetails: jest.fn(async () => null) })
+    await expect(__liveStageTest.reconcileAmbiguousProtectionWrite({
+      connector: exchange,
+      symbol: "BTCUSDT",
+      clientOrderId: "cts-sl-rejected",
+      placementPromise: Promise.resolve({ success: false, error: "invalid quantity" }),
+      initialError: "BingX stop order error (code=100400): invalid quantity",
+      graceMs: 1,
+    })).resolves.toBeNull()
+    expect(exchange.getOrderDetails).not.toHaveBeenCalled()
+  })
+
   test("selects side-aware authoritative venue ticker prices", () => {
     const ticker = __liveStageTest.normalizeVenueTicker({
       bidPrice: "0.0099",
