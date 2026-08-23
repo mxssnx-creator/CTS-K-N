@@ -7,6 +7,34 @@ Total output lines: 1636
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Continuity: Chisel Work-mode Connection Solution (2026-08-23/24)
+
+- The confirmed remote path is Chisel 1.11.8 through
+  http://152.53.114.112:8090, using the fixed server fingerprint recorded
+  in docs/REMOTE-CHISEL-WORKMODE.md, with the local forward
+  127.0.0.1:2222 -> 127.0.0.1:22.
+- Work-mode assigns a fresh dynamic egress proxy port per command process.
+  Never reuse a proxy port observed in another command. Always pass the
+  inherited HTTP_PROXY directly to Chisel in the same process that starts
+  the tunnel, then run SSH in that same process namespace.
+- Use the credential-free helper
+  scripts/connect-remote-chisel.sh. Supply the persistent Chisel auth
+  through CTS_CHISEL_AUTH or an owner-only CTS_CHISEL_AUTH_FILE; supply the
+  SSH private key and strict known-hosts file through CTS_SSH_KEY and
+  CTS_SSH_KNOWN_HOSTS. No token, private key, exchange credential, Redis
+  snapshot, or raw account report belongs in Git.
+- On 2026-08-23 the route was verified end-to-end: Chisel fingerprint matched,
+  connection latency was about 180-286 ms, SSH host-key verification passed,
+  and root@127.0.0.1 -p 2222 returned id -u=0. The direct remote address
+  on port 2222 is not the tunnel target.
+- The remote server was inventoried before maintenance: /opt/cts-kn was
+  clean at merged main@9355a57, CTS services/NGINX/Redis/Chisel were active,
+  the app answered on port 3002, and a protected source/environment/Redis
+  backup was created under /var/backups/cts-kn/20260823T213831Z.
+- This checkpoint supersedes older notes that called the remote route
+  unavailable. Continue from the persistent checkout and this procedure in
+  new chats.
+
 ## Current exact-settlement / Shared-Redis release checkpoint (2026-08-23)
 
 - Continue only from the persistent checkout
