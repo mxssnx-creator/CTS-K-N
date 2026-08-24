@@ -7401,6 +7401,66 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "100")
     },
   },
+  {
+    version: 102,
+    name: "102-credential-injection-live-safety-and-index-repair",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const operatorDisabled = (value: unknown) => !(
+        value === true || value === 1 || value === "1" || value === "true"
+      )
+      let autoLiveStatesDisabled = 0
+
+      // Releases through schema 101 marked canonical credentials as live when
+      // the credentials were injected, even if the operator had never enabled
+      // that connection's dashboard. The state_switch_action distinguishes
+      // those automatic writes from an explicit live-trade toggle. Normalize
+      // only the automatic, inactive rows; X02 Prod-VST remains the sole safe
+      // auto-live target and explicit operator choices remain untouched.
+      for (const connectionId of ["bingx-x01", "bybit-x03", "pionex-x01", "orangex-x01"]) {
+        const key = `connection:${connectionId}`
+        const connection = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const transitionSource = String(connection.state_switch_action || "")
+        const legacyAutoState = transitionSource === ""
+        const injectedInactiveState = transitionSource === "credential_injection"
+          && operatorDisabled(connection.is_enabled_dashboard)
+        if (
+          Object.keys(connection).length === 0 ||
+          (!legacyAutoState && !injectedInactiveState)
+        ) continue
+        const patch = {
+          is_live_trade: "0",
+          live_trade_requested: "0",
+          live_trade_enabled: "0",
+          ...(legacyAutoState ? {
+            is_enabled_dashboard: "0",
+            is_active: "0",
+          } : {}),
+          state_switch_action: "credential_injection_safety_normalized",
+          updated_at: now,
+        }
+        await Promise.all([
+          client.hset(key, patch),
+          client.hset(`settings:connection:${connectionId}`, patch),
+        ])
+        autoLiveStatesDisabled++
+      }
+
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const indexes = await rebuildConnectionSecondaryIndexes(client, connections)
+      await client.hset("system:database:coordination:performance", {
+        credential_injection_auto_live_policy: "prod-vst-only-preserve-operator-v1",
+        credential_injection_auto_live_states_disabled: String(autoLiveStatesDisabled),
+        credential_injection_indexes_rebuilt: String(indexes.memberships),
+        schema_version: "102",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // Never re-enable a venue on rollback. Only move the migration cursor.
+      await client.set("_schema_version", "101")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {
@@ -7656,9 +7716,10 @@ if (!hasExisting) {
         created_at: now,
         updated_at: now,
       }
-      // For the primary autoActive BingX connection seed is_live_trade + the
-      // volatility-selection config so live-trade testing works immediately
-      // after a dev restart without requiring the operator to re-configure.
+      // Auto-active BingX rows receive the volatility-selection defaults.
+      // Only the explicit Prod-VST connection receives an automatic live
+      // selection; a credentialed mainnet connection stays live-off until the
+      // operator enables it.
       //
       // NOTE: we intentionally do NOT seed a static active_symbols list. The
       // new system default (migration 055) is dynamic top-N selection by 1h
@@ -7667,13 +7728,17 @@ if (!hasExisting) {
       // here would short-circuit that branch. symbol_count controls N
       // (6 in prod, capped to 2 in dev for OOM survival).
       if (cfg.autoActive && cfg.exchange === "bingx") {
-        seedData["is_live_trade"]     = "1"
         seedData["symbol_count"]      = DEFAULT_SYMBOL_COUNT
         seedData["symbol_order"]      = "volatility_1h"
         seedData["live_volume_factor"] = "1"
         seedData["volume_factor_live"] = "1"
         seedData["signal_volume_factor"] = "1"
         seedData["position_mode"]     = "hedge"
+      }
+      if (cfg.environment === "prod-vst") {
+        seedData["is_live_trade"] = "1"
+        seedData["live_trade_requested"] = "1"
+        seedData["live_trade_enabled"] = "1"
       }
       await client.hset(`connection:${cfg.id}`, seedData)
       await client.sadd("connections", cfg.id)

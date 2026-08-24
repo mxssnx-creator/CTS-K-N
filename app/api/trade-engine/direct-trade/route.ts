@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto"
 import { type NextRequest, NextResponse } from "next/server"
 import {
   getSettings,
@@ -66,6 +67,13 @@ const DIRECT_TRADE_PROCESSOR_LEASE_MS = 6_000
 // coordinated entries and control-order reconciliation responsive without
 // polling the complete historical matrix.
 const DIRECT_TRADE_PROCESSING_INTERVAL_DEFAULT_MS = 280
+
+function sameProcessorSecret(received: string | null, expected: string): boolean {
+  if (!received || !expected) return false
+  const left = Buffer.from(received)
+  const right = Buffer.from(expected)
+  return left.length === right.length && timingSafeEqual(left, right)
+}
 
 export interface DirectTradeState {
   enabled: boolean
@@ -553,6 +561,22 @@ async function acquireProcessorLease(
   return renewed === "OK" || renewed === true
 }
 
+async function renewOwnedProcessorLease(
+  client: any,
+  instanceId: string,
+  connectionId: string | null,
+): Promise<boolean> {
+  if (!instanceId || instanceId.length > 160) return false
+  const leaseKey = directTradeKeyspace(connectionId).processorLease
+  const owner = await client.get(leaseKey).catch(() => null)
+  if (owner !== instanceId) return false
+  const renewed = await client.set(leaseKey, instanceId, {
+    XX: true,
+    PX: processorLeaseMs(),
+  }).catch(() => null)
+  return renewed === "OK" || renewed === true
+}
+
 async function getStats(connectionId: string | null = null): Promise<DirectTradeStats> {
   try {
     const client = await getClient()
@@ -921,6 +945,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, message: "Stats reset" })
     }
 
+    if (body.action === "processor-heartbeat") {
+      const processorToken = String(process.env.DIRECT_TRADE_PROCESSOR_TOKEN || "")
+      if (processorToken.length < 24) {
+        return NextResponse.json({ success: false, error: "Direct-Trade worker token is not configured" }, { status: 503 })
+      }
+      if (!sameProcessorSecret(request.headers.get("x-direct-trade-processor-token"), processorToken)) {
+        return NextResponse.json({ success: false, error: "Direct-Trade worker authentication failed" }, { status: 401 })
+      }
+      const instanceId = typeof body.instanceId === "string" ? body.instanceId : ""
+      const client = await getClient()
+      const leaseHeld = await renewOwnedProcessorLease(client, instanceId, scopeConnectionId)
+      if (!leaseHeld) {
+        return NextResponse.json({ success: true, leaseHeld: false })
+      }
+
+      const keys = directTradeKeyspace(scopeConnectionId)
+      await client.set(keys.processorHeartbeat, new Date().toISOString(), { PX: 20_000 })
+      return NextResponse.json({ success: true, leaseHeld: true })
+    }
+
     if (body.action === "processor-sync") {
       const instanceId = typeof body.instanceId === "string" ? body.instanceId : ""
       const client = await getClient()
@@ -961,6 +1005,7 @@ export async function POST(request: NextRequest) {
       write.set(keys.configStatus, JSON.stringify(configStatus))
       write.set(keys.configPerformance, JSON.stringify(configPerformance))
       write.set(keys.processor, JSON.stringify(processor))
+      write.set(keys.processorHeartbeat, now, { PX: 20_000 })
       await write.exec()
       await persistDirectTradeSnapshot("processor position sync")
       // The owner receives the compact, normalized settings acknowledgement

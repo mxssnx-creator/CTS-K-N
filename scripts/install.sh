@@ -1548,22 +1548,26 @@ verify_and_restart() {
   wait_for_health 90 || return 1
 
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
-    env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" DEPLOYMENT_URL="$base_url" node "$PROJECT_ROOT/scripts/production-deploy-init.mjs"
+    env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" DEPLOYMENT_URL="$base_url" node "$PROJECT_ROOT/scripts/production-deploy-init.mjs" \
+    || return 1
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
     env NODE_ENV=production SCHEDULER_BASE_URL="$base_url" \
-    node "$PROJECT_ROOT/scripts/run-minute-scheduler.mjs" --once
-  before_id="$(site_instance_id)"
+    node "$PROJECT_ROOT/scripts/run-minute-scheduler.mjs" --once \
+    || return 1
+  before_id="$(site_instance_id)" || return 1
 
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
     env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" REQUIRE_FRESH_CONTINUITY=1 DEPLOYMENT_URL="$base_url" \
-    bash "$PROJECT_ROOT/scripts/post-deploy-verify.sh"
+    bash "$PROJECT_ROOT/scripts/post-deploy-verify.sh" \
+    || return 1
 
-  start_runtime
+  start_runtime || return 1
   wait_for_health 90 || return 1
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
     env NODE_ENV=production SCHEDULER_BASE_URL="$base_url" \
-    node "$PROJECT_ROOT/scripts/run-minute-scheduler.mjs" --once
-  after_id="$(site_instance_id)"
+    node "$PROJECT_ROOT/scripts/run-minute-scheduler.mjs" --once \
+    || return 1
+  after_id="$(site_instance_id)" || return 1
   if [[ -n "$before_id" && "$before_id" == "$after_id" ]]; then
     ok "Durable site identity survived restart"
   else
@@ -1572,7 +1576,8 @@ verify_and_restart() {
   fi
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
     env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" REQUIRE_FRESH_CONTINUITY=1 DEPLOYMENT_URL="$base_url" \
-    bash "$PROJECT_ROOT/scripts/post-deploy-verify.sh"
+    bash "$PROJECT_ROOT/scripts/post-deploy-verify.sh" \
+    || return 1
 
   if [[ "$RUNTIME" == "systemd" ]]; then
     run_root systemctl is-active --quiet "$APP_NAME" && run_root systemctl is-active --quiet "$APP_NAME-scheduler" \

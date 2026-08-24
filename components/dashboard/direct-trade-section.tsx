@@ -211,6 +211,7 @@ export function DirectTradeSection() {
   const [activeConfigs, setActiveConfigs] = useState(0)
   const [openPositions, setOpenPositions] = useState(0)
   const [closedPositions, setClosedPositions] = useState(0)
+  const [accountingPending, setAccountingPending] = useState(0)
   const [disabledConfigs, setDisabledConfigs] = useState(0)
   const [calculationProgress, setCalculationProgress] = useState<{ status?: string; completedSymbols?: number; totalSymbols?: number; evaluatedSets?: number } | null>(null)
   const [processorHealthy, setProcessorHealthy] = useState(false)
@@ -323,6 +324,7 @@ export function DirectTradeSection() {
       if (data.activeConfigs !== undefined) setActiveConfigs(data.activeConfigs)
       if (data.openPositions !== undefined) setOpenPositions(data.openPositions)
       if (data.closedPositions !== undefined) setClosedPositions(data.closedPositions)
+      if (data.accountingPending !== undefined) setAccountingPending(data.accountingPending)
       if (data.disabledConfigs !== undefined) setDisabledConfigs(data.disabledConfigs)
       setCalculationProgress(data.calculationProgress && typeof data.calculationProgress === "object" ? data.calculationProgress : null)
       if (data.processor) setProcessorHealthy(data.processor.isHealthy || false)
@@ -338,6 +340,7 @@ export function DirectTradeSection() {
     setActiveConfigs(0)
     setOpenPositions(0)
     setClosedPositions(0)
+    setAccountingPending(0)
     setDisabledConfigs(0)
     setCalculationProgress(null)
     setProcessorHealthy(false)
@@ -660,7 +663,7 @@ export function DirectTradeSection() {
 
             {/* Quick Stats */}
             <div className="flex items-center gap-3 ml-auto text-xs">
-              <span className="text-muted-foreground">Configs: <strong>{activeConfigs}</strong></span>
+              <span className="text-muted-foreground" title="Evaluated parameter lineages, not physical positions">Variants: <strong>{activeConfigs}</strong></span>
               <span className="text-muted-foreground">Open: <strong>{openPositions}</strong></span>
               <span
                 className="text-muted-foreground"
@@ -670,7 +673,12 @@ export function DirectTradeSection() {
               </span>
               <span className="text-muted-foreground">Closed: <strong>{closedPositions}</strong></span>
               <span className="text-muted-foreground">Disabled: <strong>{disabledConfigs}</strong></span>
-              <span className={pnlColor(stats.totalPnl)}>PnL: <strong>{formatPnl(stats.totalPnl)}</strong></span>
+              <span className={pnlColor(state.liveMode ? Number(stats.totalPnlUsdt || 0) : stats.totalPnl)}>
+                {state.liveMode ? "Exchange PnL" : "Paper PnL"}: <strong>{state.liveMode
+                  ? `${Number(stats.totalPnlUsdt || 0) >= 0 ? "+" : ""}${Number(stats.totalPnlUsdt || 0).toFixed(4)} USDT`
+                  : formatPnl(stats.totalPnl)}</strong>
+              </span>
+              {accountingPending > 0 && <span className="text-amber-600">Accounting pending: <strong>{accountingPending}</strong></span>}
             </div>
           </div>
 
@@ -696,10 +704,10 @@ export function DirectTradeSection() {
                     {calculationProgress.completedSymbols || 0}/{calculationProgress.totalSymbols || 0}
                   </span> symbols · <span className="font-mono text-foreground">
                     {(calculationProgress.evaluatedSets || 0).toLocaleString()}
-                  </span> sets indexed
+                  </span> configuration variants indexed
                 </span>
               ) : calculationProgress?.status === "ready" ? (
-                <span>Direct-Trade calculation ready · {(calculationProgress.evaluatedSets || 0).toLocaleString()} sets indexed</span>
+                <span>Direct-Trade calculation ready · {(calculationProgress.evaluatedSets || 0).toLocaleString()} configuration variants indexed</span>
               ) : (
                 <span>Direct-Trade calculation status: {calculationProgress?.status || "queued"}</span>
               )}
@@ -1390,11 +1398,13 @@ export function DirectTradeSection() {
             {/* Overall Stats */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
               <div className="bg-muted/40 rounded p-2">
-                <div className="text-muted-foreground">Total PnL</div>
-                <div className={`font-mono font-bold ${pnlColor(stats.totalPnl)}`}>
-                  {formatPnl(stats.totalPnl)}
+                <div className="text-muted-foreground">{state.liveMode ? "Realized exchange PnL" : "Simulated PnL"}</div>
+                <div className={`font-mono font-bold ${pnlColor(state.liveMode ? Number(stats.totalPnlUsdt || 0) : stats.totalPnl)}`}>
+                  {state.liveMode
+                    ? `${Number(stats.totalPnlUsdt || 0) >= 0 ? "+" : ""}${Number(stats.totalPnlUsdt || 0).toFixed(4)} USDT`
+                    : formatPnl(stats.totalPnl)}
                 </div>
-                <div className="text-[10px] text-muted-foreground">{stats.totalPnlUsdt != null ? `${Number(stats.totalPnlUsdt).toFixed(4)} USDT` : "percentage basis"}</div>
+                <div className="text-[10px] text-muted-foreground">{state.liveMode ? `${accountingPending} settlement(s) pending` : "percentage basis"}</div>
               </div>
               <div className="bg-muted/40 rounded p-2">
                 <div className="text-muted-foreground">Profit Factor</div>

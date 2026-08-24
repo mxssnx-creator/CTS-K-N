@@ -28,23 +28,36 @@ const DIRECT_KEYS = [
   "direct_trade:config-performance",
 ]
 
-function post(body: Record<string, unknown>): Request {
+const PROCESSOR_TOKEN = "direct-trade-heartbeat-token-0123456789"
+
+function post(body: Record<string, unknown>, processorToken?: string): Request {
   return new Request("http://localhost/api/trade-engine/direct-trade", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(processorToken ? { "x-direct-trade-processor-token": processorToken } : {}),
+    },
     body: JSON.stringify(body),
   })
 }
 
 describe("Direct-Trade API state and processor lease", () => {
+  const priorProcessorToken = process.env.DIRECT_TRADE_PROCESSOR_TOKEN
+
   beforeEach(() => {
     jest.resetModules()
     resetInlineRedisGlobals()
     process.env.NODE_ENV = "test"
+    process.env.DIRECT_TRADE_PROCESSOR_TOKEN = PROCESSOR_TOKEN
   })
 
   afterEach(() => {
     resetInlineRedisGlobals()
+  })
+
+  afterAll(() => {
+    if (priorProcessorToken === undefined) delete process.env.DIRECT_TRADE_PROCESSOR_TOKEN
+    else process.env.DIRECT_TRADE_PROCESSOR_TOKEN = priorProcessorToken
   })
 
   test("start preserves unrestricted evaluation windows while enforcing minimum PF and SL safety", async () => {
@@ -274,6 +287,73 @@ describe("Direct-Trade API state and processor lease", () => {
       expect(state.configPerformance).toEqual({ "BTCUSDT|long|1m|tp1|sl0.25|trail1": { pf: 1.4, ddt: 4 } })
     } finally {
       await redis.del(...DIRECT_KEYS)
+    }
+  })
+
+  test("authenticated heartbeats renew only the exact owner without replacing position snapshots", async () => {
+    const [{ POST }, { getRedisClient, persistNow }, { directTradeKeyspace }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+      import("@/lib/direct-trade-keyspace"),
+    ])
+    const redis = getRedisClient()
+    const keys = directTradeKeyspace("bingx-x02")
+    const scopedKeys = Object.values(keys)
+      .filter((value): value is string => typeof value === "string" && value.startsWith("direct_trade:"))
+    await redis.del(...scopedKeys)
+
+    try {
+      const snapshot = [{ id: "x02-open", status: "open" }]
+      const initial = await POST(post({
+        action: "processor-sync",
+        connectionId: "bingx-x02",
+        instanceId: "worker-x02",
+        tickCount: 7,
+        positions: snapshot,
+        stats: { totalOrders: 1 },
+      }) as any)
+      expect((await initial.json()).leaseHeld).toBe(true)
+
+      const denied = await POST(post({
+        action: "processor-heartbeat",
+        connectionId: "bingx-x02",
+        instanceId: "worker-x02",
+      }, "wrong-token") as any)
+      expect(denied.status).toBe(401)
+
+      const standby = await POST(post({
+        action: "processor-heartbeat",
+        connectionId: "bingx-x02",
+        instanceId: "standby-x02",
+      }, PROCESSOR_TOKEN) as any)
+      await expect(standby.json()).resolves.toMatchObject({ success: true, leaseHeld: false })
+
+      const heartbeat = await POST(post({
+        action: "processor-heartbeat",
+        connectionId: "bingx-x02",
+        instanceId: "worker-x02",
+        tickCount: 8,
+        errorsLast5min: 2,
+      }, PROCESSOR_TOKEN) as any)
+      await expect(heartbeat.json()).resolves.toMatchObject({ success: true, leaseHeld: true })
+      expect(JSON.parse(await redis.get(keys.positions) as string)).toEqual(snapshot)
+      expect(JSON.parse(await redis.get(keys.processor) as string)).toMatchObject({
+        instanceId: "worker-x02",
+        tickCount: 7,
+      })
+      expect(Date.parse(String(await redis.get(keys.processorHeartbeat)))).toBeGreaterThan(0)
+
+      await redis.del(keys.processorLease)
+      const missing = await POST(post({
+        action: "processor-heartbeat",
+        connectionId: "bingx-x02",
+        instanceId: "worker-x02",
+      }, PROCESSOR_TOKEN) as any)
+      await expect(missing.json()).resolves.toMatchObject({ success: true, leaseHeld: false })
+      expect(await redis.get(keys.processorLease)).toBeNull()
+    } finally {
+      await redis.del(...scopedKeys)
+      await persistNow()
     }
   })
 

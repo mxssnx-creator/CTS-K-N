@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import process from "node:process"
 
-const REQUIRED_SCHEMA_VERSION = 101
+const REQUIRED_SCHEMA_VERSION = 102
 const failures = []
 const checks = []
 

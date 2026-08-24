@@ -154,6 +154,10 @@ export async function POST(request: NextRequest) {
       quantity: result.quantity,
       fill: result.fill,
       details: result.details,
+      // The worker must receive the exact venue PnL/fee settlement already
+      // resolved by live-order-service. Omitting it made real fills look
+      // complete while every accounting row remained provisional.
+      settlement: result.settlement,
       controlId: clientOrderId,
       controlState: result.controlState,
       pendingReconciliation: result.pendingReconciliation === true,

@@ -110,6 +110,56 @@ describe("Direct-Trade leased control-order route", () => {
     }))
   })
 
+  test("forwards the authoritative exchange settlement to the processor", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/order/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    const settlement = {
+      orderId: "venue-close-1",
+      symbol: "BTCUSDT",
+      filledQuantity: 0.25,
+      averageFillPrice: 101,
+      grossRealizedPnl: 0.25,
+      tradingFee: 0.01,
+      netRealizedPnl: 0.24,
+      netIncludesEntryFee: false,
+      source: "exchange_order_detail",
+      settledAt: Date.now(),
+      fills: [],
+    }
+    await redis.set("direct_trade:connection:bingx-x02:processor:lease", instanceId)
+    await redis.set("direct_trade:connection:bingx-x02:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x02" }))
+    placeLiveOrderMock.mockResolvedValueOnce({
+      success: true,
+      mode: "live",
+      orderId: settlement.orderId,
+      quantity: 0.25,
+      fill: { filled: true, filledQty: 0.25, filledPrice: 101, status: "filled" },
+      details: { status: "filled" },
+      settlement,
+      controlState: "completed",
+      pendingReconciliation: false,
+    })
+
+    const response = await POST(request({
+      kind: "close",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_settlement",
+      connectionId: "bingx-x02",
+      symbol: "BTCUSDT",
+      positionDirection: "long",
+      quantity: 0.25,
+    }) as any)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      settlement,
+    })
+  })
+
   test("canonicalizes legacy timeframe-combination control IDs for recovery", async () => {
     const [{ POST }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/order/route"),

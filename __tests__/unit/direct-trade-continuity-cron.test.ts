@@ -14,6 +14,7 @@ function resetInlineRedisGlobals() {
 const KEYS = [
   "direct_trade:state",
   "direct_trade:processor",
+  "direct_trade:processor:heartbeat",
   "direct_trade:processor:recovery-request",
   "cron:direct-trade-continuity:lock",
   "system:coordination:direct-trade-continuity",
@@ -67,6 +68,32 @@ describe("Direct-Trade continuity cron", () => {
       await redis.set("direct_trade:state", JSON.stringify({ enabled: false }))
       const result = await (await GET(new Request("http://localhost/api/cron/direct-trade-continuity") as any)).json()
       expect(result).toMatchObject({ success: true, required: false, healthy: true, recoveryRequested: false })
+      expect(await redis.get("direct_trade:processor:recovery-request")).toBeNull()
+    } finally {
+      await redis.del(...KEYS, `cron:direct-trade-continuity:minute:${bucket}`)
+    }
+  })
+
+  test("uses the lightweight lease heartbeat while a long exchange call is in flight", async () => {
+    const [{ GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/cron/direct-trade-continuity/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    const bucket = Math.floor(Date.now() / 60_000)
+    await redis.del(...KEYS, `cron:direct-trade-continuity:minute:${bucket}`)
+    try {
+      await redis.set("direct_trade:state", JSON.stringify({ enabled: true }))
+      await redis.set("direct_trade:processor", JSON.stringify({
+        instanceId: "busy-worker",
+        lastTick: new Date(Date.now() - 30_000).toISOString(),
+        positionCount: 1,
+      }))
+      await redis.set("direct_trade:processor:heartbeat", new Date().toISOString())
+
+      const payload = await (await GET(new Request("http://localhost/api/cron/direct-trade-continuity") as any)).json()
+
+      expect(payload).toMatchObject({ success: true, required: true, healthy: true, recoveryRequested: false })
       expect(await redis.get("direct_trade:processor:recovery-request")).toBeNull()
     } finally {
       await redis.del(...KEYS, `cron:direct-trade-continuity:minute:${bucket}`)

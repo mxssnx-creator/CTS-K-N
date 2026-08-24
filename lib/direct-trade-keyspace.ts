@@ -21,6 +21,7 @@ export interface DirectTradeKeyspace {
   stats: string
   positions: string
   processor: string
+  processorHeartbeat: string
   processorLease: string
   configStatus: string
   configPerformance: string
@@ -53,6 +54,7 @@ export function directTradeKeyspace(connectionId?: string | null): DirectTradeKe
     stats: `${prefix}:stats`,
     positions: `${prefix}:positions`,
     processor: `${prefix}:processor`,
+    processorHeartbeat: `${prefix}:processor:heartbeat`,
     processorLease: `${prefix}:processor:lease`,
     configStatus: `${prefix}:config-status`,
     configPerformance: `${prefix}:config-performance`,

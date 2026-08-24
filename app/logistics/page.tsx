@@ -124,6 +124,7 @@ interface DirectTradeSnapshot {
   openPositions?: number
   openingPositions?: number
   closedPositions?: number
+  accountingPending?: number
   processor?: { isHealthy?: boolean; lastTick?: string; errorsLast5min?: number } | null
   calculationProgress?: {
     completedSymbols?: number
@@ -562,8 +563,9 @@ function MainSystemTab({
             <Row label="Processor" value={directTrade?.processor?.isHealthy ? "healthy" : "idle / stale"} />
             <Row label="Orders / filled" value={`${fmt(directTrade?.stats?.totalOrders ?? 0)} / ${fmt(directTrade?.stats?.totalFilled ?? 0)}`} />
             <Row label="Open / opening / closed" value={`${fmt(directTrade?.openPositions ?? 0)} / ${fmt(directTrade?.openingPositions ?? 0)} / ${fmt(directTrade?.closedPositions ?? 0)}`} />
+            <Row label="Exchange accounting pending" value={fmt(directTrade?.accountingPending ?? 0)} />
             <Row label="Realized PnL / PF" value={`${Number(directTrade?.stats?.totalPnlUsdt ?? 0).toFixed(4)} USDT / ${directTrade?.stats?.profitFactor == null ? "—" : Number(directTrade?.stats?.profitFactor).toFixed(2)}`} />
-            <Row label="Calculation coverage" value={`${directTrade?.calculationProgress?.completedSymbols ?? 0}/${directTrade?.calculationProgress?.totalSymbols ?? 0} symbols · ${fmt(directTrade?.calculationProgress?.evaluatedSets ?? 0)} sets`} />
+            <Row label="Calculation coverage" value={`${directTrade?.calculationProgress?.completedSymbols ?? 0}/${directTrade?.calculationProgress?.totalSymbols ?? 0} symbols · ${fmt(directTrade?.calculationProgress?.evaluatedSets ?? 0)} configuration variants`} />
           </Block>
         </div>
       </div>

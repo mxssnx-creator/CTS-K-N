@@ -75,7 +75,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 101 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 102 })
 
       const prefix = "direct_trade:connection:bingx-custom-v100"
       expect(JSON.parse(String(await client.get(`${prefix}:state`)))).toMatchObject({
@@ -157,7 +157,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 101 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 102 })
 
       expect(JSON.parse(String(await client.get("direct_trade:connection:bounded:state"))))
         .toMatchObject({
@@ -175,7 +175,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
           processingIntervalMs: 333,
           directTradeExecutionDefaultsVersion: 1,
         })
-      expect(await client.hget("system:database:coordination:performance", "schema_version")).toBe("101")
+      expect(await client.hget("system:database:coordination:performance", "schema_version")).toBe("102")
       expect(await client.hget("system:database:coordination:performance", "direct_trade_effective_volume_ratio")).toBe("0.2")
       expect(await client.hget("app_settings", "baseProfitFactor")).toBe("1.02")
       expect(await client.hget("app_settings", "mainProfitFactor")).toBe("1.12")
@@ -188,6 +188,85 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
         })
       expect(await client.hget("system:database:coordination:performance", "main_trade_pf_selection_range"))
         .toBe("1.02-2.30")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("schema 102 disables only inactive auto-injected mainnet live state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-102-credential-live-safety-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+    }
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      await client.sadd("connections", "bingx-x01", "bingx-x02", "operator-live")
+      await client.sadd("connections:main:enabled", "bingx-x01", "bingx-x02", "operator-live")
+      await client.hset("connection:bingx-x01", {
+        id: "bingx-x01",
+        name: "BingX X01",
+        exchange: "bingx",
+        is_assigned: "1",
+        is_enabled_dashboard: "0",
+        is_live_trade: "1",
+        live_trade_requested: "1",
+        live_trade_enabled: "1",
+        state_switch_action: "credential_injection",
+      })
+      await client.hset("connection:bingx-x02", {
+        id: "bingx-x02",
+        name: "BingX X02",
+        exchange: "bingx",
+        is_testnet: "1",
+        is_assigned: "1",
+        is_enabled_dashboard: "1",
+        is_live_trade: "1",
+        live_trade_requested: "1",
+        live_trade_enabled: "1",
+        state_switch_action: "production_vst_credential_injection",
+      })
+      await client.hset("connection:operator-live", {
+        id: "operator-live",
+        name: "Operator Live",
+        exchange: "bingx",
+        is_assigned: "1",
+        is_enabled_dashboard: "0",
+        is_live_trade: "1",
+        live_trade_requested: "1",
+        live_trade_enabled: "1",
+        state_switch_action: "live_trade_enable",
+      })
+      await client.set("_schema_version", "101")
+      await client.set("_migrations_run", "true")
+
+      const migrations = await import("@/lib/redis-migrations")
+      migrations.resetMigrationRunState()
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 102 })
+
+      await expect(client.hgetall("connection:bingx-x01")).resolves.toMatchObject({
+        is_live_trade: "0",
+        live_trade_requested: "0",
+        live_trade_enabled: "0",
+        state_switch_action: "credential_injection_safety_normalized",
+      })
+      await expect(client.hgetall("connection:bingx-x02")).resolves.toMatchObject({
+        is_live_trade: "1",
+        live_trade_requested: "1",
+        live_trade_enabled: "1",
+      })
+      await expect(client.hgetall("connection:operator-live")).resolves.toMatchObject({
+        is_live_trade: "1",
+        state_switch_action: "live_trade_enable",
+      })
+      await expect(client.smembers("connections:main:enabled")).resolves.toEqual(["bingx-x02"])
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
