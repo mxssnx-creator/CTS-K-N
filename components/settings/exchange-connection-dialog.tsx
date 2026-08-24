@@ -539,11 +539,9 @@ export function ExchangeConnectionDialog({
           
           // Strategy toggles from global settings
           trailingWithTrailing: strategySettings?.trailing_enabled ?? true,
-          trailingOnly: false,
           blockEnabled: strategySettings?.block_enabled ?? true,
-          blockOnly: true,
           dcaEnabled: strategySettings?.dca_enabled ?? false,
-          dcaOnly: false,
+          normalEnabled: true,
           presetTradeBlockEnabled: true,
           presetTradeDcaEnabled: false,
           

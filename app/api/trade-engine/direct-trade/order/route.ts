@@ -23,7 +23,13 @@ function direction(value: unknown): LiveOrderDirection | null {
 }
 
 function controlId(value: unknown, kind: string, positionId: string): string | null {
-  const candidate = safeText(value || `dt-${kind}-${positionId}`, 48)
+  // Timeframe-combination position IDs can contain `+` (for example
+  // `5m+15m`). Canonicalize those legacy IDs instead of rejecting a durable
+  // retry at the validation boundary; the current worker generates the same
+  // canonical form for new orders.
+  const candidate = safeText(value || `dt-${kind}-${positionId}`, 160)
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .slice(0, 48)
   return /^[A-Za-z0-9_-]{3,48}$/.test(candidate) ? candidate : null
 }
 

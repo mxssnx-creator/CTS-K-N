@@ -3,6 +3,7 @@
 import {
   DEFAULT_VOLUME_STEP_RATIO,
   normalizeIdentityVolumeFactor,
+  SYSTEM_VOLUME_FACTOR_MULTIPLIER,
 } from "@/lib/constants"
 
 // Settings Overall Tab - manages main configuration, connections, install, logs
@@ -176,6 +177,12 @@ export function OverallTab({
                   factors as a notional multiplier — Main, Signal and Preset
                   channels are scaled independently.
                 </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                  <Badge variant="outline">System execution ratio {SYSTEM_VOLUME_FACTOR_MULTIPLIER.toFixed(1)}×</Badge>
+                  <span className="text-muted-foreground">
+                    Applied explicitly after Main/Signal/Preset and strategy ratios. The exchange minimum quantity/notional remains the executable floor and is reported as an adjustment.
+                  </span>
+                </div>
 
                 <div className="grid md:grid-cols-2 gap-6">
                   {/*

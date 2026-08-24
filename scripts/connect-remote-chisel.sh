@@ -191,6 +191,7 @@ trap cleanup EXIT INT TERM
 
 "$CHISEL_BIN" client \
   --proxy "$PROXY" \
+  --keepalive 25s \
   --fingerprint "$FINGERPRINT" \
   --auth "$AUTH" \
   "$SERVER_URL" \
@@ -212,6 +213,10 @@ done
 
 if (( connected != 1 )); then
   sed -E 's/(--auth)(=| +)[^ ]+/\1 <redacted>/g' "$log_file" >&2 || true
+  if grep -q 'Authentication failed' "$log_file"; then
+    echo "Endpoint and fingerprint were reached, but chisel-server rejected the supplied auth value." >&2
+    echo "Confirm the active server-unit auth; do not disable fingerprint verification." >&2
+  fi
   echo "Chisel did not establish the tunnel in this process context." >&2
   exit 1
 fi

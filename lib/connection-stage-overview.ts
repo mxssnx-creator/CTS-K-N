@@ -198,7 +198,8 @@ export interface StageOverviewInput {
       block?: number
       dca?: number
     }
-    blockOnly?: boolean
+    /** Whether the Normal/default execution family is enabled. */
+    normalEnabled?: boolean
   }
   real: {
     valid: number
@@ -363,7 +364,7 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
       expansionPercent: mainValid > 0 ? rounded((mainOverall / mainValid) * 100, 1) : 0,
       breakdown,
       breakdownComplete,
-      blockOnly: input.main?.blockOnly === true,
+      normalEnabled: input.main?.normalEnabled !== false,
     },
     real: {
       valid: nonNegative(input.real?.valid),

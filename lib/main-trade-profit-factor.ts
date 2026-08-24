@@ -10,7 +10,9 @@
  * Inputs are cost-adjusted first: one PositionCost is subtracted from a gross
  * price move. The neutral value is therefore 1.00: gross move = one
  * PositionCost, net result = 0. Each 0.10 adds one further PositionCost, so
- * 1.10 means gross = 2× cost, 1.20 = 3× cost, and 1.30 = 4× cost.
+ * 1.10 means gross = 2× cost and net = 1× PositionCost. Operator selections
+ * use a finer 0.02 grid from 1.02 through 2.30; measured coordinates remain
+ * continuous and are never rounded into a gate.
  * Realised Profit Factor remains available separately from `lib/profit-factor.ts`.
  *
  * This coordinate is deliberately not an accounting sign.  Code which needs
@@ -18,12 +20,13 @@
  * naked `profitFactor < 1` comparison from a mixed legacy payload.
  */
 
-export const MAIN_TRADE_PF_RATIO_MIN = 1.0
-export const MAIN_TRADE_PF_RATIO_MAX = 2.2
-// One tenth of the operator ratio is exactly one additional PositionCost.
-// Keeping the control on that grid prevents half-cost thresholds such as 1.05
-// from being rendered as a misleading "double cost" setting.
-export const MAIN_TRADE_PF_RATIO_STEP = 0.1
+// Neutral 1.00 remains part of the calculation domain, but selectable stage
+// admission thresholds start slightly positive at 1.02. The 0.02 grid gives
+// operators one-fifth-PositionCost resolution while retaining the invariant
+// that 1.10 is exactly +1 PositionCost after costs.
+export const MAIN_TRADE_PF_RATIO_MIN = 1.02
+export const MAIN_TRADE_PF_RATIO_MAX = 2.3
+export const MAIN_TRADE_PF_RATIO_STEP = 0.02
 export const MAIN_TRADE_PF_RATIO_BASE = 1.0
 export const MAIN_TRADE_PF_RATIO_MOVE_SCALE = 0.1
 /**
@@ -39,7 +42,7 @@ export const PREVIOUS_POSITION_MIN_PF_RATIO = 1.1
 // the neutral domain: 1.00 means no result remains after one PositionCost.
 // Positive gate tuning is an explicit operator setting, not an implicit
 // stricter floor on hot reload.
-export const MAIN_TRADE_BASE_PF_RATIO_MIN = 1.0
+export const MAIN_TRADE_BASE_PF_RATIO_MIN = MAIN_TRADE_PF_RATIO_MIN
 export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.1
 export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.1
 
@@ -63,7 +66,9 @@ function round(value: number, decimals = 8): number {
 }
 
 /**
- * Clamp and snap a stage ratio onto the exact 1.00 + n×0.10 grid.
+ * Clamp and snap a selectable stage threshold onto the exact
+ * 1.02 + n×0.02 grid. Calculation-only ratio 1.00 remains neutral and is
+ * intentionally handled by the pure conversion helpers below.
  */
 export function normalizeMainTradePfRatio(
   value: unknown,
@@ -78,7 +83,7 @@ export function normalizeMainTradePfRatio(
     Math.min(MAIN_TRADE_PF_RATIO_MAX, finite(value, safeFallback)),
   )
   // Decimal binary representation can place an exact operator midpoint such
-  // as 1.15 infinitesimally below 1.5. Use a tiny unit-free epsilon so the
+  // as 1.09 infinitesimally below 3.5. Use a tiny unit-free epsilon so the
   // documented half-up grid is stable without changing genuine values below
   // a grid midpoint.
   const steps = Math.round(

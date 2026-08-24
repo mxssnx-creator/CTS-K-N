@@ -22,6 +22,9 @@ describe("Live-stage PositionCost ratio contract", () => {
 
   test("never turns a legacy signed 0.x result into a negative live target", () => {
     expect(sanitizeLiveProfitFactor(0.6)).toBe(1)
+    expect(sanitizeLiveProfitFactor(1.0)).toBe(1)
+    expect(sanitizeLiveProfitFactor(1.01)).toBeCloseTo(1.01, 12)
+    expect(sanitizeLiveProfitFactor(2.35)).toBe(2.3)
     expect(deriveProtectionFromProfitFactor(0.6, 0.1, 1, venueCosts).takeProfitPct).toBeGreaterThanOrEqual(0.2)
   })
 })

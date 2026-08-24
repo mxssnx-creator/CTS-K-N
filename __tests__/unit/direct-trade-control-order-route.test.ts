@@ -110,6 +110,33 @@ describe("Direct-Trade leased control-order route", () => {
     }))
   })
 
+  test("canonicalizes legacy timeframe-combination control IDs for recovery", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/order/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.set("direct_trade:connection:bingx-x02:processor:lease", instanceId)
+    await redis.set("direct_trade:connection:bingx-x02:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x02" }))
+
+    const response = await POST(request({
+      kind: "open",
+      instanceId,
+      positionId: "dt_XRPUSDT_short_5m+15m_1234",
+      controlId: "dtopen_dt_XRPUSDT_short_5m+15m_1234",
+      connectionId: "bingx-x02",
+      symbol: "XRPUSDT",
+      positionDirection: "short",
+      quantity: 0.05,
+      price: 1.5,
+    }) as any)
+
+    expect(response.status).toBe(200)
+    expect(placeLiveOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      clientOrderId: "dtopen_dt_XRPUSDT_short_5m_15m_1234",
+    }))
+  })
+
   test("classifies Block and DCA orders as accumulation and forwards reconciliation state", async () => {
     const [{ POST }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/order/route"),

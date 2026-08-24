@@ -10,10 +10,13 @@ import {
 } from "@/lib/redis-db"
 import {
   clampDirectTradeSymbolCount,
+  clampDirectTradeVolumeFactor,
   DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
   DIRECT_TRADE_MAX_TOTAL_POSITIONS,
+  DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
 } from "@/lib/direct-trade-limits"
 import {
   normaliseDirectTradeTimeframes,
@@ -22,10 +25,12 @@ import {
   normaliseExitTactics,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
+  normaliseDirectTradeTrailingMinTakeProfitRatio,
   DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
+  DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   type DirectTradeEntryTiming,
   type DirectTradeEntryTactic,
   type DirectTradeExitTactic,
@@ -74,6 +79,8 @@ export interface DirectTradeState {
   symbolCount: number
   symbolOrder: "volatility_1h" | "volume" | "volatility"
   minVolFactor: number
+  volumeFactorEffectiveRatio?: number
+  volumeFactorDefaultsVersion?: number
   positionCostPercent: number
   maxSlRatio: number
   slRatioStep: number
@@ -95,6 +102,9 @@ export interface DirectTradeState {
   // The selected range uses unit handles; this is the sparse Set-generation
   // stride, kept separate so a 32-symbol matrix remains bounded.
   takeProfitRatioStep: number
+  // Trailing variants are evaluated/opened only when their TP target is at
+  // least this many PositionCost steps away. Non-trailing lanes remain intact.
+  trailingMinTakeProfitRatio: number
   // Allows the previous shipped TP defaults to move to the 5× contract once
   // without repeatedly rewriting later operator choices.
   takeProfitDefaultsVersion?: number
@@ -162,7 +172,9 @@ const DEFAULT_STATE: DirectTradeState = {
   recalcIntervalMs: 2 * 60 * 60 * 1000, // 2 hours
   symbolCount: 8,
   symbolOrder: "volatility_1h",
-  minVolFactor: 0.1,
+  minVolFactor: DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+  volumeFactorEffectiveRatio: DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
+  volumeFactorDefaultsVersion: 1,
   positionCostPercent: POSITION_COST_PERCENT_DEFAULT,
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
@@ -177,6 +189,7 @@ const DEFAULT_STATE: DirectTradeState = {
   maxHoldMinutes: 120,
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+  trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   takeProfitDefaultsVersion: 2,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
@@ -289,6 +302,13 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
     const raw = await client.get(directTradeKeyspace(connectionId).state)
     if (raw) {
       const persisted = JSON.parse(raw)
+      const persistedVolumeFactor = persisted?.volumeFactor ?? persisted?.minVolFactor
+      // The former unversioned install used 10 as its shipped Direct-Trade
+      // factor. Treat that exact legacy default as the new minimal default;
+      // once versioned, an explicitly selected value up to 10 is preserved.
+      const hasLegacyVolumeFactorDefault =
+        (Number(persisted?.volumeFactorDefaultsVersion) || 0) < 1
+        && Number(persistedVolumeFactor) === 10
       // Upgrade only the exact former default pair. Any mixed values remain
       // deliberate operator capacity choices.
       const hasLegacyCapacityDefaults = Number(persisted?.maxPositionsPerSymbol) === 3
@@ -315,6 +335,12 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
         liveMode: persisted?.liveMode === true,
         connectionId: normaliseConnectionId(persisted?.connectionId),
         symbolOrder: normaliseSymbolOrder(persisted?.symbolOrder),
+        minVolFactor: clampDirectTradeVolumeFactor(
+          hasLegacyVolumeFactorDefault ? DIRECT_TRADE_VOLUME_FACTOR_DEFAULT : persistedVolumeFactor,
+          DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+        ),
+        volumeFactorEffectiveRatio: DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
+        volumeFactorDefaultsVersion: 1,
         // Migrate the former 1m/10m/15m defaults to the optimized exact
         // 5m/15m/30m coordination set.
         timeframes: normaliseDirectTradeTimeframes(persisted?.timeframes),
@@ -346,6 +372,10 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
             persisted?.takeProfitRatioStep,
             DEFAULT_STATE.takeProfitRatioStep,
           ),
+        trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(
+          persisted?.trailingMinTakeProfitRatio ?? persisted?.trailingMinStep,
+          DEFAULT_STATE.trailingMinTakeProfitRatio,
+        ),
         takeProfitDefaultsVersion: 2,
         // Upgrade exactly the former shipped 300-position default once. A
         // different persisted limit is an explicit operator choice.
@@ -384,6 +414,7 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
         blockRange: normaliseBlockRange(persisted?.blockRange, DEFAULT_STATE.blockRange),
         blockVolumeRatio: clampBlockVolumeRatio(persisted?.blockVolumeRatio, DEFAULT_STATE.blockVolumeRatio),
         blockProfitFactorRatio: clampBlockProfitFactorRatio(persisted?.blockProfitFactorRatio, DEFAULT_STATE.blockProfitFactorRatio),
+        maxSlRatio: clampStopLossRatio(persisted?.maxSlRatio, DEFAULT_STATE.maxSlRatio),
         maxPositionsPerSymbol: hasLegacyCapacityDefaults
           ? DEFAULT_STATE.maxPositionsPerSymbol
           : Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerSymbol) || DEFAULT_STATE.maxPositionsPerSymbol))),
@@ -409,13 +440,13 @@ async function setState(state: DirectTradeState, connectionId: string | null = s
 
 function clampStopLossRatio(value: unknown, fallback = 0.75): number {
   const raw = Number(value)
-  const clamped = Math.max(0.25, Math.min(0.75, Number.isFinite(raw) ? raw : fallback))
+  const clamped = Math.max(0.25, Math.min(1.5, Number.isFinite(raw) ? raw : fallback))
   return Number((Math.round(clamped / 0.25) * 0.25).toFixed(2))
 }
 
 function clampInverseStopLossRatio(value: unknown, fallback = 1.25): number {
   const raw = Number(value)
-  const clamped = Math.max(0.25, Math.min(1.25, Number.isFinite(raw) ? raw : fallback))
+  const clamped = Math.max(0.25, Math.min(1.5, Number.isFinite(raw) ? raw : fallback))
   return Number((Math.round(clamped / 0.25) * 0.25).toFixed(2))
 }
 
@@ -433,6 +464,15 @@ function clampOpenPositionLimit(value: unknown, fallback = DIRECT_TRADE_DEFAULT_
 function clampProcessingInterval(value: unknown, fallback = DIRECT_TRADE_PROCESSING_INTERVAL_DEFAULT_MS): number {
   const raw = Number(value)
   return Math.max(100, Math.min(5_000, Math.round(Number.isFinite(raw) ? raw : fallback)))
+}
+
+function requestedDirectTradeVolumeFactor(body: any, fallback: unknown): number {
+  const requested = body?.volumeFactor !== undefined
+    ? body.volumeFactor
+    : body?.minVolFactor !== undefined
+      ? body.minVolFactor
+      : fallback
+  return clampDirectTradeVolumeFactor(requested, clampDirectTradeVolumeFactor(fallback))
 }
 
 function normaliseConnectionId(value: unknown): string | null {
@@ -753,7 +793,9 @@ export async function POST(request: NextRequest) {
         ...(body.connectionId !== undefined ? { connectionId: normaliseConnectionId(body.connectionId) } : {}),
         ...(body.symbolCount !== undefined ? { symbolCount: clampDirectTradeSymbolCount(body.symbolCount) } : {}),
         ...(body.symbolOrder !== undefined ? { symbolOrder: normaliseSymbolOrder(body.symbolOrder) } : {}),
-        ...(body.minVolFactor !== undefined ? { minVolFactor: Math.max(0.1, Number(body.minVolFactor) || 0.1) } : {}),
+        ...((body.minVolFactor !== undefined || body.volumeFactor !== undefined)
+          ? { minVolFactor: requestedDirectTradeVolumeFactor(body, currentState.minVolFactor) }
+          : {}),
         ...(body.positionCostPercent !== undefined ? { positionCostPercent: normalizePositionCostPercent(body.positionCostPercent) } : {}),
         ...(body.maxSlRatio !== undefined ? { maxSlRatio: clampStopLossRatio(body.maxSlRatio) } : {}),
         ...(body.slRatioStep !== undefined ? { slRatioStep: clampStopLossRatioStep(body.slRatioStep) } : {}),
@@ -769,6 +811,7 @@ export async function POST(request: NextRequest) {
         ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
         ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
         ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
+        ...(body.trailingMinTakeProfitRatio !== undefined ? { trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(body.trailingMinTakeProfitRatio, currentState.trailingMinTakeProfitRatio) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
         ...(body.blockProfitFactorRatio !== undefined ? { blockProfitFactorRatio: clampBlockProfitFactorRatio(body.blockProfitFactorRatio, currentState.blockProfitFactorRatio) } : {}),
@@ -827,7 +870,9 @@ export async function POST(request: NextRequest) {
         ...(body.connectionId !== undefined ? { connectionId: normaliseConnectionId(body.connectionId) } : {}),
         ...(body.symbolCount !== undefined ? { symbolCount: clampDirectTradeSymbolCount(body.symbolCount) } : {}),
         ...(body.symbolOrder !== undefined ? { symbolOrder: normaliseSymbolOrder(body.symbolOrder) } : {}),
-        ...(body.minVolFactor !== undefined ? { minVolFactor: Math.max(0.1, Number(body.minVolFactor) || 0.1) } : {}),
+        ...((body.minVolFactor !== undefined || body.volumeFactor !== undefined)
+          ? { minVolFactor: requestedDirectTradeVolumeFactor(body, currentState.minVolFactor) }
+          : {}),
         ...(body.positionCostPercent !== undefined ? { positionCostPercent: normalizePositionCostPercent(body.positionCostPercent) } : {}),
         ...(body.maxSlRatio !== undefined ? { maxSlRatio: clampStopLossRatio(body.maxSlRatio) } : {}),
         ...(body.slRatioStep !== undefined ? { slRatioStep: clampStopLossRatioStep(body.slRatioStep) } : {}),
@@ -843,6 +888,7 @@ export async function POST(request: NextRequest) {
         ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
         ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
         ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
+        ...(body.trailingMinTakeProfitRatio !== undefined ? { trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(body.trailingMinTakeProfitRatio, currentState.trailingMinTakeProfitRatio) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
         ...(body.blockProfitFactorRatio !== undefined ? { blockProfitFactorRatio: clampBlockProfitFactorRatio(body.blockProfitFactorRatio, currentState.blockProfitFactorRatio) } : {}),

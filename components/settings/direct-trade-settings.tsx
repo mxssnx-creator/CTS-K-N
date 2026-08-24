@@ -11,10 +11,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import {
+  clampDirectTradeVolumeFactor,
   DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
   DIRECT_TRADE_MAX_SYMBOLS,
+  DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+  DIRECT_TRADE_VOLUME_FACTOR_MAX,
+  DIRECT_TRADE_VOLUME_FACTOR_MIN,
 } from "@/lib/direct-trade-limits"
 import {
   DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
@@ -23,6 +28,7 @@ import {
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+  DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
 } from "@/lib/direct-trade-coordination"
 import {
   DEFAULT_DCA_PROFILE,
@@ -55,6 +61,7 @@ type DirectTradeState = {
   maxHoldMinutes: number
   takeProfitRatioRange: [number, number]
   takeProfitRatioStep: number
+  trailingMinTakeProfitRatio: number
   blockRange: [number, number]
   blockVolumeRatio: number
   blockProfitFactorRatio: number
@@ -82,7 +89,7 @@ const DEFAULT_STATE: DirectTradeState = {
   recalcIntervalMs: 2 * 60 * 60 * 1000,
   symbolCount: 8,
   symbolOrder: "volatility_1h",
-  minVolFactor: 0.1,
+  minVolFactor: DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
   positionCostPercent: 0.1,
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
@@ -97,6 +104,7 @@ const DEFAULT_STATE: DirectTradeState = {
   maxHoldMinutes: 120,
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+  trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 0.8,
@@ -369,7 +377,21 @@ export function DirectTradeSettings() {
           </div></section>
 
           <section className="space-y-4"><div><h3 className="font-semibold">Sizing, protection and blocks</h3><p className="text-xs text-muted-foreground">TP handles span 2–22× PositionCost; fresh Sets use the 5–10× default with a 5× creation stride. Explicit legacy grids remain readable. PositionCost is deducted once after an actual close. Block targets use Base + valid blocks × Base × Block ratio.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            <Range label="Minimum volume factor" value={state.minVolFactor} min={0.1} max={3} step={0.1} onChange={(value) => update("minVolFactor", value)} />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-xs">Direct-Trade volume factor</Label>
+                <span className="font-mono text-xs tabular-nums text-muted-foreground">{clampDirectTradeVolumeFactor(state.minVolFactor).toFixed(1)}×</span>
+              </div>
+              <Slider
+                aria-label="Direct-Trade volume factor"
+                value={[clampDirectTradeVolumeFactor(state.minVolFactor)]}
+                min={DIRECT_TRADE_VOLUME_FACTOR_MIN}
+                max={DIRECT_TRADE_VOLUME_FACTOR_MAX}
+                step={0.1}
+                onValueChange={([value]) => update("minVolFactor", clampDirectTradeVolumeFactor(value))}
+              />
+              <p className="text-[11px] text-muted-foreground">0.1–10, default 0.1. Effective request = factor × {DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO}; live execution rounds up only when exchange quantity/notional rules require it.</p>
+            </div>
             <Range label="PositionCost" value={state.positionCostPercent} min={0.02} max={1} step={0.02} suffix=" %" onChange={(value) => update("positionCostPercent", value)} />
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -391,6 +413,22 @@ export function DirectTradeSettings() {
               />
             </div>
             <Range label="TP Set-creation step · × PositionCost" value={state.takeProfitRatioStep} min={1} max={20} step={1} onChange={(value) => update("takeProfitRatioStep", value)} />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-xs">Trailing from TP step · × PositionCost</Label>
+                <span className="font-mono text-xs tabular-nums text-muted-foreground">{state.trailingMinTakeProfitRatio}</span>
+              </div>
+              <Slider
+                aria-label="Direct-Trade trailing minimum take-profit PositionCost ratio"
+                value={[state.trailingMinTakeProfitRatio]}
+                min={DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN}
+                max={DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX}
+                step={1}
+                disabled={!state.trailingEnabled}
+                onValueChange={([value]) => update("trailingMinTakeProfitRatio", value)}
+              />
+              <p className="text-xs text-muted-foreground">Only trailed variants at or above this TP multiple are materialised. Normal, DCA and non-trailing combination lanes below it remain available.</p>
+            </div>
             <Range label="Normal SL maximum / TP" value={state.maxSlRatio} min={0.25} max={0.75} step={0.25} onChange={(value) => update("maxSlRatio", value)} />
             <Range label="Inverse SL maximum / TP" value={state.inverseMaxSlRatio} min={0.25} max={1.25} step={0.25} onChange={(value) => update("inverseMaxSlRatio", value)} />
             <Range label="SL ratio step" value={state.slRatioStep} min={0.25} max={0.75} step={0.25} onChange={(value) => update("slRatioStep", value)} />

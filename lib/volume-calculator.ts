@@ -133,7 +133,7 @@ interface VolumeCalculationResult {
   volumeStepRatio?: number
   volumeBalanceAnchor?: number
   volumeBalanceEffective?: number
-  /** Global post-factor execution scalar; canonical identity is 1.0. */
+  /** Explicit global post-factor execution ratio, surfaced to UI/statistics. */
   systemVolumeFactor?: number
   quantityStep?: number
   quantityPrecision?: number
@@ -292,7 +292,7 @@ export class VolumeCalculator {
     //
     // RATIO-BASED SYSTEM:
     //   - Default channel ratio = 1.0
-    //   - Live orders = base_notional * channel factor * variant
+    //   - Live orders = base_notional * channel factor * variant * system ratio
     //   - Strategy calcs retain channel identity and use the same ratio basis
     //
     // Only applied when the CALLER explicitly identifies as a Live trade
@@ -395,7 +395,8 @@ export class VolumeCalculator {
       // larger aggregate; that preserves every valid Set without allowing a
       // malformed standalone configuration to inflate an exchange order.
       // Applied after liveEngineFactor so both multipliers compose:
-      //   notional = balance × positionCost × liveEngineFactor × variantMult / posAvg
+      //   notional = balance × positionCost × liveEngineFactor × variantMult
+      //              × systemVolumeFactor / posAvg
       const clampVariant = (raw: number | undefined): number => {
         const n = Number(raw)
         if (!Number.isFinite(n) || n <= 0) return 1

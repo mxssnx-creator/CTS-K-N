@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process"
 import { existsSync, rmSync } from "node:fs"
+import net from "node:net"
 import { availableParallelism } from "node:os"
 import process from "node:process"
 import { startPreviewRedisHarness } from "./preview-redis-harness.mjs"
@@ -286,6 +287,26 @@ function signalServerProcessGroup(child, signal) {
   }
 }
 
+async function waitForLoopbackPortRelease(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const available = await new Promise((resolve, reject) => {
+      const probe = net.createServer()
+      probe.unref()
+      probe.once("error", (error) => {
+        if (error?.code === "EADDRINUSE") resolve(false)
+        else reject(error)
+      })
+      probe.listen(port, "127.0.0.1", () => {
+        probe.close((error) => error ? reject(error) : resolve(true))
+      })
+    })
+    if (available) return
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error(`Production preview port ${port} remained occupied after server termination`)
+}
+
 async function stopServer(child) {
   if (!child?.pid) return
   signalServerProcessGroup(child, "SIGTERM")
@@ -299,6 +320,7 @@ async function stopServer(child) {
   // isolated process group after the graceful window so no descendant can
   // keep the harness, port, or Redis snapshot alive after a successful run.
   signalServerProcessGroup(child, "SIGKILL")
+  await waitForLoopbackPortRelease()
 }
 
 async function crashServer(child) {
@@ -315,6 +337,11 @@ async function crashServer(child) {
   if (child.exitCode == null && child.signalCode == null) {
     throw new Error("Production engine did not terminate during crash-recovery verification")
   }
+  // SIGKILL is delivered asynchronously to every member of the detached
+  // process group. The wrapper can report its own exit before the standalone
+  // grandchild closes the listener; never race the replacement server against
+  // that stale socket.
+  await waitForLoopbackPortRelease()
 }
 
 function activePositionSnapshot(payload) {

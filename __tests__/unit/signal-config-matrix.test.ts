@@ -6,9 +6,9 @@ import {
 describe("Signal configuration matrix", () => {
   it("materialises every standard and trailing TP/SL tuple without sampling", () => {
     const configurations = buildSignalTradeConfigurations()
-    // 9 TP × 6 SL relations × (1 standard + 5 trailing stops)
-    expect(configurations).toHaveLength(324)
-    expect(new Set(configurations.map((config) => config.id)).size).toBe(324)
+    // 9 TP × 3 bounded SL relations × (1 standard + 5 trailing stops)
+    expect(configurations).toHaveLength(162)
+    expect(new Set(configurations.map((config) => config.id)).size).toBe(162)
     expect(configurations[0]).toMatchObject({
       takeProfitPct: 1,
       stopLossToTakeProfitRatio: 0.5,
@@ -17,11 +17,12 @@ describe("Signal configuration matrix", () => {
     })
     expect(configurations.at(-1)).toMatchObject({
       takeProfitPct: 5,
-      stopLossToTakeProfitRatio: 3,
-      stopLossPct: 15,
+      stopLossToTakeProfitRatio: 1.5,
+      stopLossPct: 7.5,
       trailingStopPct: 2.4,
       trailing: true,
     })
+    expect(Math.max(...configurations.map((config) => config.stopLossToTakeProfitRatio))).toBeLessThanOrEqual(1.5)
   })
 
   it("creates the canonical dynamic trailing profile per trailing Set", () => {

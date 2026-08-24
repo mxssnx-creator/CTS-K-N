@@ -75,7 +75,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 100 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 101 })
 
       const prefix = "direct_trade:connection:bingx-custom-v100"
       expect(JSON.parse(String(await client.get(`${prefix}:state`)))).toMatchObject({
@@ -84,6 +84,10 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
         connectionId: "bingx-custom-v100",
         lastRecalcAt: null,
         connectionScopeMigrationVersion: 100,
+        minVolFactor: 0.1,
+        trailingMinTakeProfitRatio: 5,
+        processingIntervalMs: 280,
+        directTradeExecutionDefaultsVersion: 1,
       })
       expect(JSON.parse(String(await client.get(`${prefix}:positions`)))).toEqual([
         expect.objectContaining({ id: "dt-open-1", exchangeOrderId: "venue-order-1" }),
@@ -108,6 +112,82 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
         profitFactorMin: { base: 1.1, main: 1.1, real: 1.1, live: 1.1 },
         measured: { profitFactor: 0.5 },
       })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("schema 101 upgrades only bounded execution defaults and keeps explicit cadence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-101-direct-defaults-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+    }
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      await client.set("direct_trade:connection:bounded:state", JSON.stringify({
+        enabled: true,
+        minVolFactor: 99,
+        trailingMinStep: 4.6,
+        processingIntervalMs: 500,
+      }))
+      await client.set("direct_trade:connection:custom-cadence:state", JSON.stringify({
+        enabled: false,
+        minVolFactor: 0,
+        processingIntervalMs: 333,
+      }))
+      await client.hset("app_settings", {
+        baseProfitFactor: "1",
+        mainProfitFactor: "1.111",
+        profitFactorMinPreset: "0.7",
+        connection_settings: JSON.stringify({
+          profitFactorMin: { base: 1.01, main: 1.13, real: 2.8, live: 1.1 },
+          measured: { profitFactor: 0.5 },
+        }),
+      })
+      await client.set("_schema_version", "100")
+      await client.set("_migrations_run", "true")
+
+      const migrations = await import("@/lib/redis-migrations")
+      migrations.resetMigrationRunState()
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 101 })
+
+      expect(JSON.parse(String(await client.get("direct_trade:connection:bounded:state"))))
+        .toMatchObject({
+          enabled: true,
+          minVolFactor: 10,
+          trailingMinTakeProfitRatio: 5,
+          processingIntervalMs: 280,
+          directTradeExecutionDefaultsVersion: 1,
+        })
+      expect(JSON.parse(String(await client.get("direct_trade:connection:custom-cadence:state"))))
+        .toMatchObject({
+          enabled: false,
+          minVolFactor: 0.1,
+          trailingMinTakeProfitRatio: 5,
+          processingIntervalMs: 333,
+          directTradeExecutionDefaultsVersion: 1,
+        })
+      expect(await client.hget("system:database:coordination:performance", "schema_version")).toBe("101")
+      expect(await client.hget("system:database:coordination:performance", "direct_trade_effective_volume_ratio")).toBe("0.2")
+      expect(await client.hget("app_settings", "baseProfitFactor")).toBe("1.02")
+      expect(await client.hget("app_settings", "mainProfitFactor")).toBe("1.12")
+      // Classic realised PF is intentionally outside the stage-coordinate grid.
+      expect(await client.hget("app_settings", "profitFactorMinPreset")).toBe("0.7")
+      expect(JSON.parse(String(await client.hget("app_settings", "connection_settings"))))
+        .toEqual({
+          profitFactorMin: { base: 1.02, main: 1.14, real: 2.3, live: 1.1 },
+          measured: { profitFactor: 0.5 },
+        })
+      expect(await client.hget("system:database:coordination:performance", "main_trade_pf_selection_range"))
+        .toBe("1.02-2.30")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

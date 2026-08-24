@@ -3,6 +3,7 @@
 import { MIN_VOLUME_FACTOR, normalizeIdentityVolumeFactor } from "@/lib/constants"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_BASE_PF_RATIO_MIN,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
   MAIN_TRADE_PF_RATIO_MAX,
   MAIN_TRADE_PF_RATIO_MIN,
@@ -39,11 +40,9 @@ interface ConnectionSettings {
   presetTradeBlockEnabled: boolean
   presetTradeDcaEnabled: boolean
   trailingWithTrailing: boolean
-  trailingOnly: boolean
   blockEnabled: boolean
-  blockOnly: boolean
   dcaEnabled: boolean
-  dcaOnly: boolean
+  normalEnabled: boolean
   useMainSymbols: boolean
   arrangementType: string
   arrangementCount: number
@@ -89,11 +88,9 @@ export function ExchangeConnectionSettingsDialog({
     presetTradeBlockEnabled: true,
     presetTradeDcaEnabled: false,
     trailingWithTrailing: true,
-    trailingOnly: false,
     blockEnabled: true,
-    blockOnly: true,
     dcaEnabled: false,
-    dcaOnly: false,
+    normalEnabled: true,
     useMainSymbols: false,
     arrangementType: "market_cap_24h",
     arrangementCount: 10,
@@ -160,6 +157,7 @@ export function ExchangeConnectionSettingsDialog({
         trailingWithTrailing: loadedSettings.trailingWithTrailing ?? strategySettings?.trailing_enabled ?? true,
         blockEnabled: loadedSettings.blockEnabled ?? strategySettings?.block_enabled ?? true,
         dcaEnabled: loadedSettings.dcaEnabled ?? strategySettings?.dca_enabled ?? false,
+        normalEnabled: loadedSettings.normalEnabled ?? true,
         targetPositions: loadedSettings.targetPositions ?? globalSettings?.positions_average ?? 300,
         liveTradeProfitFactorMinBase: normalizeMainTradeStagePfRatio(
           "base",
@@ -221,6 +219,7 @@ export function ExchangeConnectionSettingsDialog({
     try {
       const normalizedSettings = {
         ...settings,
+        normalEnabled: settings.normalEnabled,
         baseVolumeFactor: MIN_VOLUME_FACTOR,
         baseVolumeFactorLive: normalizeIdentityVolumeFactor(settings.baseVolumeFactorLive),
         baseVolumeFactorPreset: normalizeIdentityVolumeFactor(settings.baseVolumeFactorPreset),
@@ -488,8 +487,8 @@ export function ExchangeConnectionSettingsDialog({
               <div className="space-y-4 p-4 border rounded-lg">
                 <h4 className="font-semibold text-base">Live Trade Limits</h4>
                 <p className="text-xs text-muted-foreground">
-                  PositionCost-relative stage ratios. 1.00 is neutral after one PositionCost; 1.10 requires two PositionCosts gross and 1.20 three.
-                  Every stage uses the canonical 1.00–2.20 grid with 0.10 steps.
+                  PositionCost-relative stage ratios. 1.00 is neutral after one PositionCost; 1.10 is +1× PositionCost net.
+                  Every selectable stage threshold uses the canonical 1.02–2.30 grid with 0.02 steps.
                 </p>
 
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -499,7 +498,7 @@ export function ExchangeConnectionSettingsDialog({
                       id="live-profit-base"
                       type="number"
                       step={MAIN_TRADE_PF_RATIO_STEP}
-                      min={MAIN_TRADE_BASE_PF_RATIO_DEFAULT}
+                      min={MAIN_TRADE_BASE_PF_RATIO_MIN}
                       max={MAIN_TRADE_PF_RATIO_MAX}
                       value={settings.liveTradeProfitFactorMinBase}
                       onChange={(e) => updateSetting(
@@ -588,7 +587,7 @@ export function ExchangeConnectionSettingsDialog({
                       id="preset-profit-base"
                       type="number"
                       step={MAIN_TRADE_PF_RATIO_STEP}
-                      min={MAIN_TRADE_BASE_PF_RATIO_DEFAULT}
+                      min={MAIN_TRADE_BASE_PF_RATIO_MIN}
                       max={MAIN_TRADE_PF_RATIO_MAX}
                       value={settings.presetTradeProfitFactorMinBase}
                       onChange={(e) =>
@@ -697,18 +696,6 @@ export function ExchangeConnectionSettingsDialog({
                       />
                     </div>
 
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <Label htmlFor="trailing-only">Trailing Only</Label>
-                        <p className="text-sm text-muted-foreground">Use only trailing (no fixed TP/SL)</p>
-                      </div>
-                      <Switch
-                        id="trailing-only"
-                        checked={settings.trailingOnly}
-                        onCheckedChange={(checked) => updateSetting("trailingOnly", checked)}
-                        disabled={!settings.trailingWithTrailing}
-                      />
-                    </div>
                   </div>
 
                   <div className="space-y-4 p-4 border rounded-lg">
@@ -725,18 +712,6 @@ export function ExchangeConnectionSettingsDialog({
                       />
                     </div>
 
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <Label htmlFor="block-only">Block Only</Label>
-                        <p className="text-sm text-muted-foreground">Use only block adjustment for this strategy</p>
-                      </div>
-                      <Switch
-                        id="block-only"
-                        checked={settings.blockOnly}
-                        onCheckedChange={(checked) => updateSetting("blockOnly", checked)}
-                        disabled={!settings.blockEnabled}
-                      />
-                    </div>
                   </div>
 
                   <div className="space-y-4 p-4 border rounded-lg">
@@ -753,16 +728,17 @@ export function ExchangeConnectionSettingsDialog({
                       />
                     </div>
 
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between rounded-md border border-primary/25 bg-primary/5 p-3">
                       <div>
-                        <Label htmlFor="dca-only">DCA Only</Label>
-                        <p className="text-sm text-muted-foreground">Use only DCA adjustment for this strategy</p>
+                        <Label htmlFor="normal-enabled">Normal strategy</Label>
+                        <p className="text-sm text-muted-foreground">
+                          Execute default strategy Sets independently of Trailing, Block and DCA. Off only gates orders; validation remains active.
+                        </p>
                       </div>
                       <Switch
-                        id="dca-only"
-                        checked={settings.dcaOnly}
-                        onCheckedChange={(checked) => updateSetting("dcaOnly", checked)}
-                        disabled={!settings.dcaEnabled}
+                        id="normal-enabled"
+                        checked={settings.normalEnabled}
+                        onCheckedChange={(checked) => updateSetting("normalEnabled", checked)}
                       />
                     </div>
                   </div>

@@ -9,7 +9,7 @@ export const runtime = "nodejs"
 const MONITORING_KEY_SAMPLE_LIMIT = 20_000
 const MONITORING_KEY_SAMPLE_TTL_MS = 5_000
 let keyInventoryCache: { at: number; keys: string[] } | null = null
-const MONITORING_RESPONSE_TTL_MS = 5_000
+const MONITORING_RESPONSE_TTL_MS = 3_000
 const MONITORING_RESPONSE_MAX_STALE_MS = 30_000
 type MonitoringResponseSnapshot = {
   body: string

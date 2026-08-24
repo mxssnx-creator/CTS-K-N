@@ -51,6 +51,12 @@ import {
   normalizeDirectTradeConnectionId,
 } from "./direct-trade-keyspace"
 import {
+  DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
+  DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+  normaliseDirectTradeTrailingMinTakeProfitRatio,
+  normaliseDirectTradeVolumeFactor,
+} from "./direct-trade-coordination"
+import {
   getRuntimeBootstrapKeys,
   LATEST_REDIS_SCHEMA_VERSION,
   RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS,
@@ -5490,6 +5496,14 @@ const migrations: Migration[] = [
       let signalSettingsUpdated = 0
       let basePfFieldsRepaired = 0
       let basePfDocumentsRepaired = 0
+      const normalizeLegacyBasePf = (value: unknown): number => {
+        const parsed = Number(value)
+        if (Number.isFinite(parsed) && Math.abs(parsed - 0.8) < 1e-9) {
+          return MAIN_TRADE_STAGE_PF_DEFAULTS.base
+        }
+        if (Number.isFinite(parsed) && parsed <= 1) return 1
+        return normalizeMainTradeStagePfRatio("base", value)
+      }
       if (typeof rawSignal === "string" && rawSignal.trim().startsWith("{")) {
         try {
           const signal = JSON.parse(rawSignal) as Record<string, any>
@@ -5534,9 +5548,7 @@ const migrations: Migration[] = [
         let changed = false
         for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
           if (document[alias] == null) continue
-          const normalized = Number(document[alias]) === 0.8
-            ? MAIN_TRADE_STAGE_PF_DEFAULTS.base
-            : normalizeMainTradeStagePfRatio("base", document[alias])
+          const normalized = normalizeLegacyBasePf(document[alias])
           if (Number(document[alias]) !== normalized) {
             document[alias] = normalized
             changed = true
@@ -5550,7 +5562,7 @@ const migrations: Migration[] = [
           for (const channelName of ["main", "preset"]) {
             const row = container?.[channelName]?.base
             if (!row || typeof row !== "object") continue
-            const normalized = normalizeMainTradeStagePfRatio("base", row.min_profit_factor)
+            const normalized = normalizeLegacyBasePf(row.min_profit_factor)
             if (Number(row.min_profit_factor) !== normalized) {
               row.min_profit_factor = normalized
               changed = true
@@ -5564,7 +5576,7 @@ const migrations: Migration[] = [
         const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
         if (Object.keys(values).length === 0) return
         const current = values.baseProfitFactor ?? values.base_min_profit_factor
-        const normalized = normalizeMainTradeStagePfRatio("base", current)
+        const normalized = normalizeLegacyBasePf(current)
         const patch: Record<string, string> = {}
         for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
           if (Number(values[alias]) !== normalized) {
@@ -5641,11 +5653,19 @@ const migrations: Migration[] = [
 
       let baseValuesRepaired = 0
       let stageFlagsRepaired = 0
+      const normalizeLegacyBasePf = (value: unknown): number => {
+        const parsed = Number(value)
+        if (Number.isFinite(parsed) && Math.abs(parsed - 0.8) < 1e-9) {
+          return MAIN_TRADE_STAGE_PF_DEFAULTS.base
+        }
+        if (Number.isFinite(parsed) && parsed <= 1) return 1
+        return normalizeMainTradeStagePfRatio("base", value)
+      }
       const repairBaseValueInDocument = (document: Record<string, any>): boolean => {
         let changed = false
         for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
           if (document[alias] == null) continue
-          const normalized = normalizeMainTradeStagePfRatio("base", document[alias])
+          const normalized = normalizeLegacyBasePf(document[alias])
           if (Number(document[alias]) !== normalized) {
             document[alias] = normalized
             changed = true
@@ -5668,9 +5688,7 @@ const migrations: Migration[] = [
             }
             const baseRow = channel.base
             if (!baseRow || typeof baseRow !== "object") continue
-            const normalized = Number(baseRow.min_profit_factor) === 0.8
-              ? MAIN_TRADE_STAGE_PF_DEFAULTS.base
-              : normalizeMainTradeStagePfRatio("base", baseRow.min_profit_factor)
+            const normalized = normalizeLegacyBasePf(baseRow.min_profit_factor)
             if (Number(baseRow.min_profit_factor) !== normalized) {
               baseRow.min_profit_factor = normalized
               changed = true
@@ -5686,9 +5704,7 @@ const migrations: Migration[] = [
         const patch: Record<string, string> = {}
         for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
           if (values[alias] == null) continue
-          const normalized = Number(values[alias]) === 0.8
-            ? MAIN_TRADE_STAGE_PF_DEFAULTS.base
-            : normalizeMainTradeStagePfRatio("base", values[alias])
+          const normalized = normalizeLegacyBasePf(values[alias])
           if (Number(values[alias]) !== normalized) {
             patch[alias] = String(normalized)
             baseValuesRepaired++
@@ -6182,6 +6198,17 @@ const migrations: Migration[] = [
         if (!Number.isFinite(parsed) || parsed <= 0) return 15
         return Math.min(55, Math.max(5, Math.round(parsed / 5) * 5))
       }
+      const normalizeStoredStagePf = (
+        stage: keyof typeof stageAliases,
+        value: unknown,
+      ): number => {
+        const parsed = Number(value)
+        // Preserve the exact neutral coordinate for legacy values at or below
+        // 1.00.  The operator selector starts at 1.02, but migration must not
+        // turn a measured neutral value into a positive gate.
+        if (Number.isFinite(parsed) && parsed <= 1) return 1
+        return normalizeMainTradeStagePfRatio(stage, value)
+      }
       const normalizeDocument = (document: Record<string, any>): boolean => {
         let changed = false
         const normalizeStages = (target: Record<string, any>) => {
@@ -6190,7 +6217,7 @@ const migrations: Migration[] = [
           >) {
             for (const alias of aliases) {
               if (target[alias] == null) continue
-              const next = normalizeMainTradeStagePfRatio(stage, target[alias])
+              const next = normalizeStoredStagePf(stage, target[alias])
               if (Number(target[alias]) !== next) {
                 target[alias] = next
                 stagePfValuesUpdated++
@@ -6208,7 +6235,7 @@ const migrations: Migration[] = [
             for (const stage of ["base", "main", "real", "live"] as const) {
               const row = channel[stage]
               if (!row || typeof row !== "object" || row.min_profit_factor == null) continue
-              const next = normalizeMainTradeStagePfRatio(stage, row.min_profit_factor)
+              const next = normalizeStoredStagePf(stage, row.min_profit_factor)
               if (Number(row.min_profit_factor) !== next) {
                 row.min_profit_factor = next
                 stagePfValuesUpdated++
@@ -6251,7 +6278,7 @@ const migrations: Migration[] = [
         >) {
           const current = aliases.map((alias) => values[alias]).find((value) => value != null && value !== "")
           if (current == null) continue
-          const next = normalizeMainTradeStagePfRatio(stage, current)
+          const next = normalizeStoredStagePf(stage, current)
           for (const alias of aliases) {
             if (Number(values[alias]) !== next) {
               patch[alias] = String(next)
@@ -6860,6 +6887,7 @@ const migrations: Migration[] = [
       ): number => {
         const parsed = Number(value)
         if (!Number.isFinite(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
+        if (parsed <= 1) return 1
         if (Math.abs(parsed - 1.15) < 1e-9) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
         return normalizeMainTradeStagePfRatio(stage, parsed)
       }
@@ -7205,6 +7233,172 @@ const migrations: Migration[] = [
       // Removing live recovery state or weakening an admission threshold would
       // be destructive; only the migration cursor is moved back.
       await client.set("_schema_version", "99")
+    },
+  },
+  {
+    version: 101,
+    name: "101-direct-execution-and-main-pf-selection-grid",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      let mainTradePfFieldsUpdated = 0
+
+      // Stage thresholds use the PositionCost-relative Main coordinate. Keep
+      // classic realised gross-profit/gross-loss PF settings (including the
+      // legacy overall Preset minimum) separate: they do not share the 1.00
+      // neutral coordinate and must never be rewritten by this migration.
+      const stageThreshold = (field: string, parent = ""): "base" | "main" | "real" | "live" | null => {
+        const compactField = field.toLowerCase().replace(/[^a-z0-9]/g, "")
+        const compactParent = parent.toLowerCase().replace(/[^a-z0-9]/g, "")
+        if (compactField.includes("block") || compactParent.includes("block")) return null
+        for (const stage of ["base", "main", "real", "live"] as const) {
+          if (compactField === stage && compactParent.includes("profitfactormin")) return stage
+          if (compactParent === stage && compactField === "minprofitfactor") return stage
+          if ([
+            `${stage}profitfactor`,
+            `${stage}minprofitfactor`,
+            `${stage}profitfactormin`,
+          ].includes(compactField)) return stage
+          if (compactField.endsWith(`profitfactormin${stage}`)) return stage
+        }
+        return null
+      }
+      const normalizeStageDocument = (document: Record<string, any>, parent = ""): boolean => {
+        let changed = false
+        for (const [field, value] of Object.entries(document)) {
+          if (value && typeof value === "object" && !Array.isArray(value)) {
+            if (normalizeStageDocument(value as Record<string, any>, field)) changed = true
+            continue
+          }
+          const stage = stageThreshold(field, parent)
+          const parsed = Number(value)
+          if (!stage || !Number.isFinite(parsed)) continue
+          const normalized = normalizeMainTradeStagePfRatio(stage, parsed)
+          if (normalized === parsed) continue
+          document[field] = normalized
+          mainTradePfFieldsUpdated++
+          changed = true
+        }
+        return changed
+      }
+      const normalizeStageHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0 || values.mainTradePfSelectionGridVersion === "2") return
+        const patch: Record<string, string> = { mainTradePfSelectionGridVersion: "2" }
+        for (const [field, value] of Object.entries(values)) {
+          const stage = stageThreshold(field)
+          const parsed = Number(value)
+          if (stage && Number.isFinite(parsed)) {
+            const normalized = normalizeMainTradeStagePfRatio(stage, parsed)
+            if (normalized !== parsed) {
+              patch[field] = String(normalized)
+              mainTradePfFieldsUpdated++
+            }
+            continue
+          }
+          if (typeof value !== "string" || !value.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(value) as Record<string, any>
+            if (normalizeStageDocument(document, field)) patch[field] = JSON.stringify(document)
+          } catch {
+            // Malformed recovery documents remain untouched.
+          }
+        }
+        await client.hset(key, patch)
+      }
+
+      const connectionIds = new Set<string>()
+      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
+        const connectionId = normalizeDirectTradeConnectionId(connection?.id)
+        if (connectionId) connectionIds.add(connectionId)
+      }
+      for (const connectionId of await client.smembers("connections").catch(() => [])) {
+        const normalized = normalizeDirectTradeConnectionId(connectionId)
+        if (normalized) connectionIds.add(normalized)
+      }
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeStageHash(key)
+      }
+      for (const connectionId of connectionIds) {
+        for (const key of [
+          `connection:${connectionId}`,
+          `settings:connection:${connectionId}`,
+          `connection_settings:${connectionId}`,
+          `settings:connection_settings:${connectionId}`,
+          `trade_engine_state:${connectionId}`,
+          `settings:trade_engine_state:${connectionId}`,
+        ]) {
+          await normalizeStageHash(key)
+        }
+      }
+
+      const stateKeys = new Set<string>([directTradeKeyspace().state])
+      for (const key of await scanRedisKeys(client, "direct_trade:connection:*:state")) {
+        stateKeys.add(String(key))
+      }
+
+      let statesScanned = 0
+      let statesUpdated = 0
+      for (const key of stateKeys) {
+        const raw = await client.get(key).catch(() => null)
+        if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+        statesScanned++
+        try {
+          const state = JSON.parse(raw) as Record<string, any>
+          const nextVolumeFactor = normaliseDirectTradeVolumeFactor(
+            state.minVolFactor,
+            DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+          )
+          const nextTrailingMinimum = normaliseDirectTradeTrailingMinTakeProfitRatio(
+            state.trailingMinTakeProfitRatio ?? state.trailingMinStep,
+            DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
+          )
+          // Migrate only the exact former shipped interval. Explicit operator
+          // values remain valid; a missing value receives the 280 ms default.
+          const nextProcessingInterval = state.processingIntervalMs == null
+            || Number(state.processingIntervalMs) === 500
+            ? 280
+            : Math.max(100, Math.min(5_000, Math.round(Number(state.processingIntervalMs) || 280)))
+          const changed = Number(state.minVolFactor) !== nextVolumeFactor
+            || Number(state.trailingMinTakeProfitRatio) !== nextTrailingMinimum
+            || Number(state.processingIntervalMs) !== nextProcessingInterval
+            || Number(state.directTradeExecutionDefaultsVersion) !== 1
+          if (!changed) continue
+          await client.set(key, JSON.stringify({
+            ...state,
+            minVolFactor: nextVolumeFactor,
+            trailingMinTakeProfitRatio: nextTrailingMinimum,
+            processingIntervalMs: nextProcessingInterval,
+            directTradeExecutionDefaultsVersion: 1,
+            directTradeExecutionDefaultsUpdatedAt: now,
+          }))
+          statesUpdated++
+        } catch {
+          // Preserve malformed recovery evidence. The route remains the
+          // fail-safe owner of default reconstruction for invalid JSON.
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        direct_trade_processing_interval_ms: "280",
+        direct_trade_volume_factor_range: "0.1-10",
+        direct_trade_volume_factor_default: String(DIRECT_TRADE_VOLUME_FACTOR_DEFAULT),
+        direct_trade_effective_volume_ratio: "0.2",
+        direct_trade_trailing_min_tp_ratio_default: String(DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT),
+        direct_trade_execution_states_scanned: String(statesScanned),
+        direct_trade_execution_states_updated: String(statesUpdated),
+        main_trade_pf_selection_range: "1.02-2.30",
+        main_trade_pf_selection_step: "0.02",
+        main_trade_pf_selection_default: "1.10",
+        main_trade_pf_neutral_coordinate: "1.00",
+        main_trade_pf_fields_updated: String(mainTradePfFieldsUpdated),
+        schema_version: "101",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // The bounded values are safe and operator-visible, so rollback never
+      // reintroduces oversized volume or low-distance trailing entries.
+      await client.set("_schema_version", "100")
     },
   },
 ]

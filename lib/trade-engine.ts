@@ -365,6 +365,14 @@ export class GlobalTradeEngineCoordinator {
     }
     this.startingEngines.add(connectionId)
 
+    // The local startup guard must cover *every* await and early-return path
+    // below, including the healthy cross-worker-owner branch. Previously the
+    // outer guard began only at progression-lock acquisition, so returning
+    // after detecting a fresh remote heartbeat leaked `startingEngines`
+    // forever. Every later continuity/start request was then rejected as an
+    // in-process duplicate even though no local startup remained in flight.
+    try {
+
     // A stopped manager is a completed engine generation, not a reusable
     // runtime shell. In particular, pause can stop a manager while its
     // non-blocking prehistoric bootstrap is still unwinding. Reusing that
@@ -617,6 +625,7 @@ export class GlobalTradeEngineCoordinator {
         }
       }
       throw err
+    }
     } finally {
       // Step 6: Remove from lock set (always, even on error)
       this.startingEngines.delete(connectionId)
@@ -1886,12 +1895,70 @@ export class GlobalTradeEngineCoordinator {
       const STALL_THRESHOLD_MS = Number.isFinite(configuredStallThresholdMs)
         ? Math.max(180_000, configuredStallThresholdMs)
         : 180_000
+      // A canonical pipeline can legitimately outlive one ordinary health
+      // interval, but it must not hold the scheduler forever.  The old
+      // watchdog only looked at the generic heartbeat, which is refreshed by
+      // the 10-second manager heartbeat even when the indication timer is
+      // suspended inside one exhaustive symbol pass.  That left
+      // `hasFreshDistributedHeartbeat=true` while no scheduled cycle ever
+      // completed.  Give one exhaustive pass a generous four-minute window;
+      // after three consecutive watchdog observations, restart the same
+      // connection generation through the normal serialized coordinator path.
+      // stop() invalidates the generation guard, so an abandoned pass cannot
+      // publish stale rows or overlap the replacement pipeline.
+      const configuredPipelineStallMs = Number(
+        process.env.ENGINE_CANONICAL_PIPELINE_STALL_THRESHOLD_MS,
+      )
+      const CANONICAL_PIPELINE_STALL_THRESHOLD_MS = Number.isFinite(configuredPipelineStallMs)
+        ? Math.max(180_000, configuredPipelineStallMs)
+        : 300_000
       const managers = connectionId
         ? Array.from(this.engineManagers.entries()).filter(([id]) => id === connectionId)
         : Array.from(this.engineManagers.entries())
       for (const [id, manager] of managers) {
         if (!manager.isEngineRunning) continue
         const lastHb = await getFreshestProcessorHeartbeat(id)
+        const canonicalPipelineAgeMs = manager.canonicalPipelineAgeMs
+        const canonicalPipelineOverdue =
+          manager.isCanonicalPipelineInFlight &&
+          canonicalPipelineAgeMs > CANONICAL_PIPELINE_STALL_THRESHOLD_MS
+
+        if (canonicalPipelineOverdue) {
+          const consecutiveStalls = (this.stallEscalation.get(id) ?? 0) + 1
+          this.stallEscalation.set(id, consecutiveStalls)
+          await publishEngineEvent("engine.heartbeat.missed", {
+            connectionId: id,
+            lastHeartbeatAt: lastHb ?? undefined,
+            ageMs: canonicalPipelineAgeMs,
+            reason: "canonical-pipeline-overdue",
+          }).catch(() => undefined)
+
+          if (consecutiveStalls >= 3) {
+            console.warn(
+              `[v0] [Watchdog] Engine ${id} canonical pipeline exceeded ` +
+                `${CANONICAL_PIPELINE_STALL_THRESHOLD_MS}ms for ${consecutiveStalls} checks; ` +
+                "requesting serialized generation restart",
+            )
+            await this.restartEngine(id).catch((error: unknown) => {
+              console.error(
+                `[v0] [Watchdog] canonical pipeline restart failed for ${id}:`,
+                error instanceof Error ? error.message : String(error),
+              )
+            })
+            this.stallEscalation.delete(id)
+          } else {
+            // Keep the owner visibly alive while the restart threshold is
+            // being confirmed. This does not mark a cycle complete.
+            await manager.refreshCanonicalPipelineHeartbeat().catch((error: unknown) => {
+              console.warn(
+                `[v0] [Watchdog] overdue-pipeline heartbeat refresh failed for ${id}:`,
+                error instanceof Error ? error.message : String(error),
+              )
+            })
+          }
+          continue
+        }
+
         if (!lastHb) continue
         const age = now - lastHb
         if (age > STALL_THRESHOLD_MS) {

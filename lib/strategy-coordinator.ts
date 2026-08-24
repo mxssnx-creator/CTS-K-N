@@ -71,6 +71,12 @@ import {
   signalConfigurationTrailingProfile,
 } from "@/lib/signal-config-matrix"
 import {
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  normalizeProtectionPercentages,
+} from "@/lib/trade-protection-contract"
+import {
+  MAIN_TRADE_PF_RATIO_BASE,
+  MAIN_TRADE_PF_RATIO_MAX,
   MAIN_TRADE_STAGE_PF_DEFAULTS,
   PREVIOUS_POSITION_MIN_PF_RATIO,
   mainTradePfRatioToGrossMovePct,
@@ -122,6 +128,12 @@ import {
   accountMainStage,
   accountRealStageInputs,
 } from "@/lib/strategy-stage-accounting"
+import {
+  classifyStrategyExecutionFamily,
+  hasAnyStrategyExecutionVariantEnabled,
+  isStrategyExecutionFamilyEnabled,
+  type StrategyExecutionPolicy,
+} from "@/lib/strategy-execution-policy"
 
 /**
  * Runtime stage snapshots must not duplicate the canonical, verbose Set key
@@ -1086,21 +1098,39 @@ export function collectActivePositionCountsBySymbol(
  */
 export function selectLiveDispatchCandidates(
   candidates: StrategySet[],
-  options: { blockEnabled?: boolean; blockOnly?: boolean } = {},
+  options: {
+    normalEnabled?: boolean
+    trailingEnabled?: boolean
+    blockEnabled?: boolean
+    dcaEnabled?: boolean
+    /** @deprecated retained for callers during the settings migration; ignored. */
+    blockOnly?: boolean
+  } = {},
 ): StrategySet[] {
   const selected: StrategySet[] = []
   const seenKeys = new Set<string>()
   const seenSignalSlots = new Set<string>()
   const seenSignalBlockSlots = new Set<string>()
-  const blockOnly = options.blockEnabled !== false && options.blockOnly === true
+  const policy: StrategyExecutionPolicy = {
+    normalEnabled: options.normalEnabled !== false,
+    trailingEnabled: options.trailingEnabled !== false,
+    blockEnabled: options.blockEnabled !== false,
+    // Direct unit/integration callers historically pass only the Block
+    // switch and expect every supplied candidate family to be considered.
+    // The coordinator always passes its explicit persisted DCA toggle.
+    dcaEnabled: options.dcaEnabled !== false,
+  }
   const seen = {
-    long: { standard: false, block: false, dca: false },
-    short: { standard: false, block: false, dca: false },
+    long: { normal: false, trailing: false, block: false, dca: false },
+    short: { normal: false, trailing: false, block: false, dca: false },
   }
 
   for (const candidate of candidates) {
     const direction = normalizeStrategyDirection(candidate?.direction)
     if (!direction || !candidate?.setKey || seenKeys.has(candidate.setKey)) continue
+    const family = classifyStrategyExecutionFamily(candidate)
+    // Signal is a separate admission family in the policy classifier, so use
+    // the structural variant here to retain its distinct Signal-Block lane.
     const isBlock = candidate.variant === "block"
     const isDca = candidate.variant === "dca"
     const isSignal =
@@ -1108,21 +1138,21 @@ export function selectLiveDispatchCandidates(
       Boolean(candidate.signalRisk?.sourceId || candidate.signalRisk?.sourceIds?.length)
     const isAxis = Boolean(candidate.axisWindows?.direction && (candidate.posCountsVolumeRatio ?? 0) > 0)
 
-    // Position-count rows are an independent execution family. Block-only
-    // controls Standard-vs-Block adjustment processing; it must not erase the
-    // already evaluated per-Base Pos-Count target from the Real/Live row.
+    // Position-count rows are an independent execution family. They remain
+    // dispatchable whenever at least one main family is enabled, but the
+    // all-off guard in createLiveSets prevents them from bypassing the global
+    // execution switch when Normal/Trailing/Block/DCA are all disabled.
     if (isAxis) {
       selected.push(candidate)
       seenKeys.add(candidate.setKey)
       continue
     }
     // Signal is an independently enabled engine with its own direct-execution,
-    // source/lane performance, and 120-position admission contracts. Main
-    // Block-only must not suppress its normal and trailing execution slots.
-    if (blockOnly && !isBlock && !isSignal) continue
-    if (isBlock) {
-      if ((candidate as any)._hasLivePositions === true) continue
-      if (isSignal) {
+    // source/lane performance, and admission contracts. Main variant switches
+    // must not suppress its normal and trailing execution slots.
+    if (isSignal) {
+      if (isBlock) {
+        if ((candidate as any)._hasLivePositions === true) continue
         const signalBlockSlot = resolveSignalExecutionSlot({
           indicationType: candidate.indicationType,
           trailingProfile: candidate.trailingProfile,
@@ -1133,30 +1163,35 @@ export function selectLiveDispatchCandidates(
         if (seenSignalBlockSlots.has(signalBlockSlot)) continue
         seenSignalBlockSlots.add(signalBlockSlot)
       } else {
-        if (seen[direction].block) continue
-        seen[direction].block = true
+        const signalSlot = resolveSignalExecutionSlot({
+          indicationType: candidate.indicationType,
+          trailingProfile: candidate.trailingProfile,
+          signalRisk: candidate.signalRisk,
+          setKey: candidate.setKey,
+          parentSetKey: candidate.parentSetKey,
+        })
+        if (seenSignalSlots.has(signalSlot)) continue
+        seenSignalSlots.add(signalSlot)
       }
+      selected.push(candidate)
+      seenKeys.add(candidate.setKey)
+      continue
+    }
+
+    if (!isStrategyExecutionFamilyEnabled(family, policy)) continue
+    if (isBlock) {
+      if ((candidate as any)._hasLivePositions === true) continue
+      if (seen[direction].block) continue
+      seen[direction].block = true
     } else if (isDca) {
       if (seen[direction].dca) continue
       seen[direction].dca = true
-    } else if (isSignal) {
-      // Signal source/config rows are physical execution lanes, not ranking
-      // alternatives for one generic symbol+direction slot. Keep one candidate
-      // per exact source × TP/SL/trailing configuration while the
-      // connection-wide atomic 120-position admission lease remains the sole
-      // overall capacity boundary.
-      const signalSlot = resolveSignalExecutionSlot({
-        indicationType: candidate.indicationType,
-        trailingProfile: candidate.trailingProfile,
-        signalRisk: candidate.signalRisk,
-        setKey: candidate.setKey,
-        parentSetKey: candidate.parentSetKey,
-      })
-      if (seenSignalSlots.has(signalSlot)) continue
-      seenSignalSlots.add(signalSlot)
+    } else if (family === "trailing") {
+      if (seen[direction].trailing) continue
+      seen[direction].trailing = true
     } else {
-      if (seen[direction].standard) continue
-      seen[direction].standard = true
+      if (seen[direction].normal) continue
+      seen[direction].normal = true
     }
     selected.push(candidate)
     seenKeys.add(candidate.setKey)
@@ -1209,6 +1244,7 @@ export function limitLiveDispatchCandidatesFairly(
         ? "signal_trailing"
         : "signal_standard"
     }
+    if (candidate.variant === "trailing" || candidate.trailingProfile) return "main_trailing"
     return "main_standard"
   }
 
@@ -2032,17 +2068,20 @@ function resolveProtectionCostModel(exchange: string, settings: Record<string, u
 }
 export function sanitizeLiveProfitFactor(profitFactor: unknown, fallback = 1): number {
   // A Live Set carries the Main-stage PositionCost coordinate, not a classic
-  // gross-profit/gross-loss PF. Normalize before a value can influence a price
-  // target; a stale 0.x signed Result-R must not become a negative target or a
-  // reward/risk multiplier.
-  const fb = normalizeMainTradeStagePfRatio(
-    "live",
-    Number.isFinite(Number(fallback)) ? fallback : 1,
-  )
-  return normalizeMainTradeStagePfRatio(
-    "live",
-    Number.isFinite(Number(profitFactor)) ? profitFactor : fb,
-  )
+  // gross-profit/gross-loss PF. This is a measurement sanitizer, not a
+  // settings clamp: the exact 1.00 coordinate is neutral and must stay 1.00
+  // even though operator-selected stage gates start at 1.02. Legacy 0.x
+  // signed Result-R payloads are treated as neutral rather than turned into a
+  // positive target or a negative reward/risk multiplier.
+  const raw = Number(profitFactor)
+  const fallbackValue = Number(fallback)
+  const coordinate = Number.isFinite(raw)
+    ? raw
+    : Number.isFinite(fallbackValue)
+      ? fallbackValue
+      : MAIN_TRADE_PF_RATIO_BASE
+  if (coordinate < MAIN_TRADE_PF_RATIO_BASE) return MAIN_TRADE_PF_RATIO_BASE
+  return Math.min(MAIN_TRADE_PF_RATIO_MAX, coordinate)
 }
 
 const LIVE_PROTECTION_FEE_BUFFER_PCT = 0.12
@@ -2115,18 +2154,27 @@ export function deriveProtectionFromProfitFactor(
   const grossTakeProfitPct = mainTradePfRatioToGrossMovePct(pf, baseRiskPct)
   const adjustedTakeProfitPct = grossTakeProfitPct
   const takeProfitPct = clampNumber(adjustedTakeProfitPct, MIN_LIVE_TAKE_PROFIT_PCT, MAX_LIVE_TAKE_PROFIT_PCT)
-  const effectiveTpPct = Math.max(0, takeProfitPct - baseRiskPct)
-  return {
+  const protection = normalizeProtectionPercentages({
     takeProfitPct,
     stopLossPct,
-    effectiveProfitFactor: takeProfitPct / stopLossPct,
-    grossPF: takeProfitPct / stopLossPct,
-    netPF: effectiveTpPct / stopLossPct,
+    minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
+    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  const effectiveTakeProfitPct = protection.takeProfitPct
+  const effectiveStopLossPct = protection.stopLossPct
+  const effectiveTpPct = Math.max(0, effectiveTakeProfitPct - baseRiskPct)
+  return {
+    takeProfitPct: effectiveTakeProfitPct,
+    stopLossPct: effectiveStopLossPct,
+    effectiveProfitFactor: effectiveTakeProfitPct / effectiveStopLossPct,
+    grossPF: effectiveTakeProfitPct / effectiveStopLossPct,
+    netPF: effectiveTpPct / effectiveStopLossPct,
     costBufferPct,
-    netEffectivePF: effectiveTpPct / stopLossPct,
+    netEffectivePF: effectiveTpPct / effectiveStopLossPct,
     adjustedTakeProfitPct,
     effectiveTpPct,
-    effectiveSlPct: stopLossPct,
+    effectiveSlPct: effectiveStopLossPct,
   }
 }
 
@@ -2162,18 +2210,27 @@ export function deriveProtectionFromSignalRisk(
     MIN_LIVE_TAKE_PROFIT_PCT,
     MAX_LIVE_TAKE_PROFIT_PCT,
   )
-  const effectiveTpPct = Math.max(0, takeProfitPct - costBufferPct)
-  return {
+  const protection = normalizeProtectionPercentages({
     takeProfitPct,
     stopLossPct,
-    effectiveProfitFactor: takeProfitPct / stopLossPct,
-    grossPF: takeProfitPct / stopLossPct,
-    netPF: effectiveTpPct / stopLossPct,
+    minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
+    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  const effectiveTakeProfitPct = protection.takeProfitPct
+  const effectiveStopLossPct = protection.stopLossPct
+  const effectiveTpPct = Math.max(0, effectiveTakeProfitPct - costBufferPct)
+  return {
+    takeProfitPct: effectiveTakeProfitPct,
+    stopLossPct: effectiveStopLossPct,
+    effectiveProfitFactor: effectiveTakeProfitPct / effectiveStopLossPct,
+    grossPF: effectiveTakeProfitPct / effectiveStopLossPct,
+    netPF: effectiveTpPct / effectiveStopLossPct,
     costBufferPct,
-    netEffectivePF: effectiveTpPct / stopLossPct,
+    netEffectivePF: effectiveTpPct / effectiveStopLossPct,
     adjustedTakeProfitPct,
     effectiveTpPct,
-    effectiveSlPct: stopLossPct,
+    effectiveSlPct: effectiveStopLossPct,
   }
 }
 
@@ -2194,7 +2251,14 @@ export function deriveProtectionFromActiveOutbreak(
     !Number.isFinite(requestedStopLossPct) || requestedStopLossPct <= 0 ||
     !Number.isFinite(requestedTakeProfitPct) || requestedTakeProfitPct <= 0
   ) return null
-  const stopLossPct = clampNumber(requestedStopLossPct, MIN_LIVE_STOP_LOSS_PCT, 5)
+  const requestedProtection = normalizeProtectionPercentages({
+    takeProfitPct: requestedTakeProfitPct,
+    stopLossPct: requestedStopLossPct,
+    minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
+    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  const stopLossPct = requestedProtection.stopLossPct
   const costBufferPct = (
     (costModel.takerFeeBpsPerSide * 2) +
     costModel.estimatedSpreadBps +
@@ -2210,18 +2274,27 @@ export function deriveProtectionFromActiveOutbreak(
     MIN_LIVE_TAKE_PROFIT_PCT,
     MAX_LIVE_TAKE_PROFIT_PCT,
   )
-  const effectiveTpPct = Math.max(0, takeProfitPct - costBufferPct)
-  return {
+  const protection = normalizeProtectionPercentages({
     takeProfitPct,
     stopLossPct,
-    effectiveProfitFactor: takeProfitPct / stopLossPct,
-    grossPF: takeProfitPct / stopLossPct,
-    netPF: effectiveTpPct / stopLossPct,
+    minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
+    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  const effectiveTakeProfitPct = protection.takeProfitPct
+  const effectiveStopLossPct = protection.stopLossPct
+  const effectiveTpPct = Math.max(0, effectiveTakeProfitPct - costBufferPct)
+  return {
+    takeProfitPct: effectiveTakeProfitPct,
+    stopLossPct: effectiveStopLossPct,
+    effectiveProfitFactor: effectiveTakeProfitPct / effectiveStopLossPct,
+    grossPF: effectiveTakeProfitPct / effectiveStopLossPct,
+    netPF: effectiveTpPct / effectiveStopLossPct,
     costBufferPct,
-    netEffectivePF: effectiveTpPct / stopLossPct,
+    netEffectivePF: effectiveTpPct / effectiveStopLossPct,
     adjustedTakeProfitPct,
     effectiveTpPct,
-    effectiveSlPct: stopLossPct,
+    effectiveSlPct: effectiveStopLossPct,
   }
 }
 
@@ -2263,18 +2336,27 @@ export function deriveProtectionFromSpecial(
     MIN_LIVE_TAKE_PROFIT_PCT,
     MAX_LIVE_TAKE_PROFIT_PCT,
   )
-  const effectiveTpPct = Math.max(0, takeProfitPct - costBufferPct)
-  return {
+  const protection = normalizeProtectionPercentages({
     takeProfitPct,
-    stopLossPct: Math.min(stopLossPct, takeProfitPct * SPECIAL_MAX_SL_TO_TP_RATIO),
-    effectiveProfitFactor: takeProfitPct / stopLossPct,
-    grossPF: takeProfitPct / stopLossPct,
-    netPF: effectiveTpPct / stopLossPct,
+    stopLossPct,
+    minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
+    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  const effectiveTakeProfitPct = protection.takeProfitPct
+  const effectiveStopLossPct = protection.stopLossPct
+  const effectiveTpPct = Math.max(0, effectiveTakeProfitPct - costBufferPct)
+  return {
+    takeProfitPct: effectiveTakeProfitPct,
+    stopLossPct: effectiveStopLossPct,
+    effectiveProfitFactor: effectiveTakeProfitPct / effectiveStopLossPct,
+    grossPF: effectiveTakeProfitPct / effectiveStopLossPct,
+    netPF: effectiveTpPct / effectiveStopLossPct,
     costBufferPct,
-    netEffectivePF: effectiveTpPct / stopLossPct,
+    netEffectivePF: effectiveTpPct / effectiveStopLossPct,
     adjustedTakeProfitPct,
     effectiveTpPct,
-    effectiveSlPct: stopLossPct,
+    effectiveSlPct: effectiveStopLossPct,
   }
 }
 
@@ -2539,6 +2621,9 @@ export class StrategyCoordinator {
     blockRowLiveProfitFactorRatio: number
     blockRowLiveMaxStack: number
     blockRowLivePauseCountRatio: number
+    /** Normal/default execution family; evaluation is always retained. */
+    normalEnabled: boolean
+    /** @deprecated legacy persisted field; never controls dispatch. */
     blockOnly: boolean
     /**
      * Position-Count coordination ratio — normalized on the 0.1..10 operator
@@ -2575,7 +2660,10 @@ export class StrategyCoordinator {
     blockRowLiveProfitFactorRatio: 0.8,
     blockRowLiveMaxStack: 12,
     blockRowLivePauseCountRatio: 1.0,
-    blockOnly: true,
+    normalEnabled: true,
+    // Kept only so old in-memory callers can be read during migration. The
+    // execution policy deliberately ignores this legacy value.
+    blockOnly: false,
     /**
      * Operator coordination ratio. Default 3.0; conversion to direct physical
      * volume happens once during exhaustive axis materialisation.
@@ -2869,9 +2957,9 @@ export class StrategyCoordinator {
 
   // ── Profit factor thresholds per stage (system-wide defaults) ──────
   //
-  // Spec: "Change at Main Trade PF for Base, Main, Real, Live to
-  // 0.9 1.0 1.0 1.0 System Overall. Add to Settings Dialog at
-  // Strategies with Sliders. Ensure it works systemwide completely."
+  // Spec: use the PositionCost-relative Main Trade coordinate systemwide for
+  // Base, Main, Real and Live. 1.00 is neutral, 1.10 is one net PositionCost;
+  // operator gates use the shared 1.02–2.30 / 0.02 slider contract.
   //
   // These are NOT `readonly` because `loadAppPFThresholds()` overrides
   // them from the operator's settings (`baseProfitFactor`,
@@ -2972,7 +3060,8 @@ export class StrategyCoordinator {
    *   - `METRICS.{base|main|real|live}.minProfitFactor` (Set-average
    *      gate consumed at lines 695/1117/1468)
    *
-   * Every value is normalized to the canonical 1.00..2.20 grid (step 0.10).
+   * Every selectable value is normalized to the canonical 1.02..2.30 grid
+   * (step 0.02); the calculation-only 1.00 coordinate remains neutral.
    * Defaults are Base/Main/Real/Live 1.10. NaN, negative and
    * out-of-range legacy values are repaired by the same helper used by the
    * settings APIs and migrations.
@@ -3186,10 +3275,13 @@ export class StrategyCoordinator {
       this._coordinationSettings.variants.dca      = bool(s.variantDcaEnabled,      false)
       this._coordinationSettings.indicationVariants =
         normalizeStrategyIndicationVariantPolicy(s)
-      this._coordinationSettings.blockOnly = bool(
-        s.blockOnly ?? s.variantBlockOnly ?? s.block_only,
+      this._coordinationSettings.normalEnabled = bool(
+        s.normalEnabled ?? s.normal_enabled ?? s.strategyNormalEnabled,
         true,
       )
+      // `blockOnly`/`variantBlockOnly` are intentionally not read here. They
+      // remain in old Redis hashes only as migration data and no longer
+      // suppress Normal/Trailing or change Block parent semantics.
 
       // ── Block-strategy tuning (previously never read from settings) ─────
       // blockVolumeRatio, blockMaxStack, blockPauseCountRatio, and
@@ -8512,6 +8604,16 @@ export class StrategyCoordinator {
 
     const isLiveTradeEnabled = await this.isLiveTradingEnabledForConnection()
     if (!isCurrent()) return cancelled()
+    const executionPolicy: StrategyExecutionPolicy = {
+      normalEnabled: this._coordinationSettings.normalEnabled !== false,
+      trailingEnabled: this._coordinationSettings.variants.trailing !== false,
+      blockEnabled: this._coordinationSettings.variants.block === true,
+      dcaEnabled: this._coordinationSettings.variants.dca === true,
+    }
+    // The stage still evaluates and persists every qualifying row when this
+    // is false. It only closes the physical-dispatch gate, so an operator can
+    // turn every family off without losing historic validation coverage.
+    const anyExecutionFamilyEnabled = hasAnyStrategyExecutionVariantEnabled(executionPolicy)
     const activeStrategyKeys = new Set<string>()
     const cachedActive = this._activeKeysCache.get(symbol)
     if (cachedActive && Date.now() - cachedActive.cycleAt < 30_000) {
@@ -8898,10 +9000,9 @@ export class StrategyCoordinator {
             // per direction per cycle. Confirmed counts are skipped, so the
             // next cycle selects the next eligible count instead of starving
             // behind the same already-accumulated top-ranked Set.
-            const dispatchSets = selectLiveDispatchCandidates(dispatchCandidates, {
-              blockEnabled: this._coordinationSettings.variants.block,
-              blockOnly: this._coordinationSettings.blockOnly,
-            })
+            const dispatchSets = anyExecutionFamilyEnabled
+              ? selectLiveDispatchCandidates(dispatchCandidates, executionPolicy)
+              : []
 
             // Evaluation remains complete above; only physical exchange/paper
             // execution is bounded. This keeps every indication/strategy
@@ -9132,15 +9233,9 @@ export class StrategyCoordinator {
                     blockLaneKind: set.blockLaneKind,
                     blockLaneKey: set.blockLaneKey,
                     blockSourceId: set.blockSourceId,
-                    // Block-only removes the Standard row for every lane,
-                    // including exact Signal source/config lanes. Therefore
-                    // the first Block row must be allowed to seed that lane's
-                    // physical parent; otherwise a Signal Block waits forever
-                    // for a Standard parent that this mode intentionally never
-                    // dispatches. With Block-only disabled, source Blocks keep
-                    // adjusting their exact execution lane in parallel with
-                    // the Standard row.
-                    blockOnly: this._coordinationSettings.blockOnly === true,
+                    // Block is an independent execution family. LiveStage
+                    // may seed its own authoritative parent when Normal is
+                    // disabled; no legacy "Block-only" flag is needed.
                     blockVolumeIncrementRatio: set.blockVolumeIncrementRatio,
                     blockCalculatedVolumeMultiplier: set.blockCalculatedVolumeMultiplier,
                     // Scoped Block Sets keep their physical identity first and
@@ -9354,7 +9449,13 @@ export class StrategyCoordinator {
     // Prehistoric/backfill mode intentionally skips LiveStage dispatch. It may
     // still materialise non-adjustment pseudo candidates for historical
     // evaluation, but Block/DCA can never exist without a confirmed parent.
-    if (qualifying.length > 0 && !isLiveTradeEnabled && skipLiveDispatch && isCurrent()) {
+    if (
+      qualifying.length > 0 &&
+      anyExecutionFamilyEnabled &&
+      !isLiveTradeEnabled &&
+      skipLiveDispatch &&
+      isCurrent()
+    ) {
       try {
         const posManager = new PseudoPositionManager(this.connectionId)
 

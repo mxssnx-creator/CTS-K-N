@@ -14,7 +14,7 @@ import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } 
  *                              orders are emitted from the Live stage)
  *
  *   • Profit-Factor Mins     — 4 sliders (Base / Main / Real / Live)
- *                              0.5 – 1.5 step 0.1 default 1.1
+ *                              1.02 – 2.30 step 0.02 default 1.10
  *                              persists into
  *                              `connection_settings.profitFactorMin.{stage}`
  *                              via PATCH /settings (merged, not replaced)
@@ -73,6 +73,12 @@ import {
 import { useExchange } from "@/lib/exchange-context"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
+import {
+  MAIN_TRADE_PF_RATIO_MAX,
+  MAIN_TRADE_PF_RATIO_MIN,
+  MAIN_TRADE_PF_RATIO_STEP,
+  normalizeMainTradeStagePfRatio,
+} from "@/lib/main-trade-profit-factor"
 
 // ── stage labels ────────────────────────────────────────────────────────
 //
@@ -111,14 +117,16 @@ const DEFAULT_PF_MIN: ProfitFactorMin = {
 // can drift independently if the spec ever widens the band. The clamp
 // inside `clampPfMin` re-applies the same band defensively in case a
 // future code path bypasses the slider step.
-const PF_MIN = 0.5
-const PF_MAX = 1.5
-const PF_STEP = 0.1
+const PF_MIN = MAIN_TRADE_PF_RATIO_MIN
+const PF_MAX = MAIN_TRADE_PF_RATIO_MAX
+const PF_STEP = MAIN_TRADE_PF_RATIO_STEP
 
-function clampPfMin(raw: unknown): number {
+function clampPfMin(stage: Stage, raw: unknown): number {
   const n = Number(raw)
-  if (!Number.isFinite(n)) return REALIZED_PROFIT_FACTOR_MIN_DEFAULT
-  return Math.max(PF_MIN, Math.min(PF_MAX, Math.round(n * 10) / 10))
+  return normalizeMainTradeStagePfRatio(
+    stage,
+    Number.isFinite(n) ? n : REALIZED_PROFIT_FACTOR_MIN_DEFAULT,
+  )
 }
 
 // Volume factor — ratio 1 is the legal exchange-minimum baseline.
@@ -373,10 +381,10 @@ export function QuickstartOptionsBar() {
           settings.profit_factor_min ||
           {}
         const hydratedPfMin = {
-          base: clampPfMin(raw.base ?? settings.profitFactorMinBase ?? DEFAULT_PF_MIN.base),
-          main: clampPfMin(raw.main ?? settings.profitFactorMinMain ?? DEFAULT_PF_MIN.main),
-          real: clampPfMin(raw.real ?? settings.profitFactorMinReal ?? DEFAULT_PF_MIN.real),
-          live: clampPfMin(raw.live ?? settings.profitFactorMinLive ?? DEFAULT_PF_MIN.live),
+          base: clampPfMin("base", raw.base ?? settings.profitFactorMinBase ?? DEFAULT_PF_MIN.base),
+          main: clampPfMin("main", raw.main ?? settings.profitFactorMinMain ?? DEFAULT_PF_MIN.main),
+          real: clampPfMin("real", raw.real ?? settings.profitFactorMinReal ?? DEFAULT_PF_MIN.real),
+          live: clampPfMin("live", raw.live ?? settings.profitFactorMinLive ?? DEFAULT_PF_MIN.live),
         }
         pfMinRef.current = hydratedPfMin
         persistedPfMinRef.current = hydratedPfMin
@@ -468,10 +476,10 @@ export function QuickstartOptionsBar() {
         ? rawPf as Record<string, unknown>
         : {}
       const next: ProfitFactorMin = {
-        base: clampPfMin(source.base ?? settings.profitFactorMinBase ?? pfMinRef.current.base),
-        main: clampPfMin(source.main ?? settings.profitFactorMinMain ?? pfMinRef.current.main),
-        real: clampPfMin(source.real ?? settings.profitFactorMinReal ?? pfMinRef.current.real),
-        live: clampPfMin(source.live ?? settings.profitFactorMinLive ?? pfMinRef.current.live),
+        base: clampPfMin("base", source.base ?? settings.profitFactorMinBase ?? pfMinRef.current.base),
+        main: clampPfMin("main", source.main ?? settings.profitFactorMinMain ?? pfMinRef.current.main),
+        real: clampPfMin("real", source.real ?? settings.profitFactorMinReal ?? pfMinRef.current.real),
+        live: clampPfMin("live", source.live ?? settings.profitFactorMinLive ?? pfMinRef.current.live),
       }
       pfMinRef.current = next
       persistedPfMinRef.current = next
@@ -815,7 +823,7 @@ export function QuickstartOptionsBar() {
   // ── handlers ─────────────────────────────────────────────────────────
   const handlePfChange = useCallback(
     (stage: Stage, raw: number) => {
-      const v = clampPfMin(raw)
+      const v = clampPfMin(stage, raw)
       settingsDraftGenerationRef.current++
       // Keep the latest draft in a ref so rapid changes to different stages
       // merge deterministically before React commits the next render. Never
@@ -1217,7 +1225,7 @@ export function QuickstartOptionsBar() {
                   Profit Factor Min
                 </span>
                 <span className="text-[9px] text-muted-foreground">
-                  per stage · 0.5 – 1.5 · step 0.1
+                  per stage · 1.02 – 2.30 · step 0.02 · 1.00 neutral
                 </span>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -1233,7 +1241,7 @@ export function QuickstartOptionsBar() {
                           {s.label}
                         </span>
                         <span className="text-[11px] font-bold tabular-nums text-foreground">
-                          {v.toFixed(1)}
+                          {v.toFixed(2)}
                         </span>
                       </div>
                       <Slider

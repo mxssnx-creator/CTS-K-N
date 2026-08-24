@@ -259,10 +259,13 @@ function getDefaultSettings(): Record<string, any> {
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     strategyBaseTrailingEnabled: true,
     strategyBaseTrailingVariants: DEFAULT_TRAILING_VARIANTS,
+    normalEnabled: true,
     blockAdjustment: true,
     variantBlockEnabled: true,
-    blockOnly: true,
-    variantBlockOnly: true,
+    // Legacy only fields are retained only for old hash readers and are
+    // deliberately false; Normal/Trailing/Block/DCA are independent now.
+    blockOnly: false,
+    variantBlockOnly: false,
     blockVolumeRatio: 1,
     blockProfitFactorRatio: 0.8,
     presetBlockProfitFactorRatio: 0.8,

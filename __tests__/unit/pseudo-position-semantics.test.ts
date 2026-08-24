@@ -22,6 +22,17 @@ describe("mixed pseudo-position profit-factor semantics", () => {
     expect(resolvePseudoPositionNetPnl(position)).toBeCloseTo(50, 12)
   })
 
+  test("keeps an explicitly tagged neutral 1.00 coordinate neutral", () => {
+    const position = {
+      profit_factor: 1.0,
+      profit_factor_kind: "main_trade_pf_ratio",
+      position_cost: 50,
+    }
+
+    expect(resolvePseudoPositionSignedResultR(position)).toBe(0)
+    expect(resolvePseudoPositionNetPnl(position)).toBe(0)
+  })
+
   test("treats an impossible tagged 0.x stage coordinate as neutral", () => {
     const position = {
       profit_factor: 0.6,

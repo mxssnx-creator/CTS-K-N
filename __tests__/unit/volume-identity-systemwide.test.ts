@@ -34,7 +34,7 @@ const positions = Array.from({ length: 25 }, (_, index) => ({
   updated_at: new Date(1_700_000_000_500 + index * 1_000).toISOString(),
 }))
 
-describe("system-wide Base volume identity", () => {
+describe("system-wide Base identity with explicit execution ratio", () => {
   test("normalizes every legacy Base value to exactly one", () => {
     expect(normalizeBaseVolumeFactor(undefined)).toBe(1)
     expect(normalizeBaseVolumeFactor(0.05)).toBe(1)
@@ -82,19 +82,18 @@ describe("system-wide Base volume identity", () => {
     })
   })
 
-  test("legacy TradingEngine retains Base identity without a hidden execution scalar", () => {
+  test("legacy TradingEngine retains Base identity and reports the explicit system ratio", () => {
     const engine = new TradingEngine()
     engine.setBaseVolumeFactor(7)
     expect(engine.calculateVolume(2)).toEqual({
       base: 2,
-      adjusted: 2,
-      factor: 1,
+      adjusted: 0.4,
+      factor: 0.2,
     })
-    expect(engine.calculateVolume(2, 1.5)).toEqual({
-      base: 2,
-      adjusted: 3,
-      factor: 1.5,
-    })
+    const composed = engine.calculateVolume(2, 1.5)
+    expect(composed.base).toBe(2)
+    expect(composed.adjusted).toBeCloseTo(0.6, 12)
+    expect(composed.factor).toBeCloseTo(0.3, 12)
   })
 
   test("demo StrategyEngine keeps normal Base at 1 and starts Block immediately", () => {

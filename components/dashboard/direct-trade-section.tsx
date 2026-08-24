@@ -17,9 +17,14 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
 import {
+  clampDirectTradeVolumeFactor,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
   DIRECT_TRADE_MAX_SYMBOLS,
+  DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+  DIRECT_TRADE_VOLUME_FACTOR_MAX,
+  DIRECT_TRADE_VOLUME_FACTOR_MIN,
 } from "@/lib/direct-trade-limits"
 import { mergePendingDirectTradeConfig } from "@/lib/direct-trade-settings-sync"
 import type {
@@ -34,6 +39,7 @@ import {
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+  DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
 } from "@/lib/direct-trade-coordination"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -85,6 +91,7 @@ interface DirectTradeState {
   maxHoldMinutes: number
   takeProfitRatioRange: [number, number]
   takeProfitRatioStep: number
+  trailingMinTakeProfitRatio: number
   blockRange: [number, number]
   blockVolumeRatio: number
   blockProfitFactorRatio: number
@@ -141,7 +148,7 @@ const DEFAULT_STATE: DirectTradeState = {
   processingIntervalMs: 280,
   symbolCount: 8,
   symbolOrder: "volatility_1h",
-  minVolFactor: 0.1,
+  minVolFactor: DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
   positionCostPercent: 0.1,
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
@@ -156,6 +163,7 @@ const DEFAULT_STATE: DirectTradeState = {
   maxHoldMinutes: 120,
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+  trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 0.8,
@@ -213,7 +221,7 @@ export function DirectTradeSection() {
   const [optionsExpanded, setOptionsExpanded] = useState(false)
 
   // Local config state for sliders (debounced save)
-  const [localVolFactor, setLocalVolFactor] = useState(0.1)
+  const [localVolFactor, setLocalVolFactor] = useState(DIRECT_TRADE_VOLUME_FACTOR_DEFAULT)
   const [localPositionCost, setLocalPositionCost] = useState(0.1)
   const [localMaxSl, setLocalMaxSl] = useState(0.75)
   const [localInverseMaxSl, setLocalInverseMaxSl] = useState(1.25)
@@ -237,6 +245,7 @@ export function DirectTradeSection() {
   const [localMaxHoldMinutes, setLocalMaxHoldMinutes] = useState(120)
   const [localTakeProfitRatioRange, setLocalTakeProfitRatioRange] = useState<[number, number]>(DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE)
   const [localTakeProfitRatioStep, setLocalTakeProfitRatioStep] = useState(DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT)
+  const [localTrailingMinTakeProfitRatio, setLocalTrailingMinTakeProfitRatio] = useState(DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT)
   const [localSymbolOrder, setLocalSymbolOrder] = useState<string>("volatility_1h")
   // Pos Count evaluation windows (for PF/DDT historic coordination calculations)
   const [localPrevPosWindow, setLocalPrevPosWindow] = useState(25)
@@ -247,7 +256,10 @@ export function DirectTradeSection() {
   const [localDeactivatePosCount, setLocalDeactivatePosCount] = useState(16)
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingConfigRef = useRef<Record<string, unknown>>({})
+  const pendingConfigRef = useRef(new Map<string, {
+    connectionId: string | null
+    updates: Record<string, unknown>
+  }>())
   const pendingConfigKeysRef = useRef(new Set<string>())
   const configSaveInFlightRef = useRef(false)
   const flushConfigRef = useRef<(() => Promise<void>) | null>(null)
@@ -258,7 +270,7 @@ export function DirectTradeSection() {
     const pendingKeys = pendingConfigKeysRef.current
     const isPending = (key: string) => pendingKeys.has(key)
     setState((current) => mergePendingDirectTradeConfig(remoteState, current, pendingKeys))
-    if (!isPending("minVolFactor")) setLocalVolFactor(remoteState.minVolFactor ?? 0.1)
+    if (!isPending("minVolFactor")) setLocalVolFactor(clampDirectTradeVolumeFactor(remoteState.minVolFactor))
     if (!isPending("positionCostPercent")) setLocalPositionCost(remoteState.positionCostPercent ?? 0.1)
     if (!isPending("maxSlRatio")) setLocalMaxSl(remoteState.maxSlRatio ?? 0.75)
     if (!isPending("inverseMaxSlRatio")) setLocalInverseMaxSl(remoteState.inverseMaxSlRatio ?? 1.25)
@@ -275,6 +287,7 @@ export function DirectTradeSection() {
     if (!isPending("maxHoldMinutes")) setLocalMaxHoldMinutes(remoteState.maxHoldMinutes ?? 120)
     if (!isPending("takeProfitRatioRange")) setLocalTakeProfitRatioRange(remoteState.takeProfitRatioRange ?? DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE)
     if (!isPending("takeProfitRatioStep")) setLocalTakeProfitRatioStep(remoteState.takeProfitRatioStep ?? DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT)
+    if (!isPending("trailingMinTakeProfitRatio")) setLocalTrailingMinTakeProfitRatio(remoteState.trailingMinTakeProfitRatio ?? DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT)
     if (!isPending("symbolOrder")) setLocalSymbolOrder(remoteState.symbolOrder || "volatility_1h")
     if (!isPending("blockRange")) {
       setLocalBlock(remoteState.blockRange?.[1] > 0)
@@ -384,6 +397,7 @@ export function DirectTradeSection() {
           maxHoldMinutes: localMaxHoldMinutes,
           takeProfitRatioRange: localTakeProfitRatioRange,
           takeProfitRatioStep: localTakeProfitRatioStep,
+          trailingMinTakeProfitRatio: localTrailingMinTakeProfitRatio,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
           blockVolumeRatio: state.blockVolumeRatio,
           blockProfitFactorRatio: state.blockProfitFactorRatio,
@@ -454,6 +468,7 @@ export function DirectTradeSection() {
           maxHoldMinutes: localMaxHoldMinutes,
           takeProfitRatioRange: localTakeProfitRatioRange,
           takeProfitRatioStep: localTakeProfitRatioStep,
+          trailingMinTakeProfitRatio: localTrailingMinTakeProfitRatio,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
           blockVolumeRatio: state.blockVolumeRatio,
           blockProfitFactorRatio: state.blockProfitFactorRatio,
@@ -481,24 +496,40 @@ export function DirectTradeSection() {
 
   const flushConfig = useCallback(async () => {
     if (configSaveInFlightRef.current) return
-    const updates = pendingConfigRef.current
+    const nextBatch = pendingConfigRef.current.entries().next().value as
+      | [string, { connectionId: string | null; updates: Record<string, unknown> }]
+      | undefined
+    if (!nextBatch) return
+    const [batchKey, batch] = nextBatch
+    pendingConfigRef.current.delete(batchKey)
+    const updates = batch.updates
     const updateKeys = Object.keys(updates)
     if (updateKeys.length === 0) return
-    pendingConfigRef.current = {}
+    // Bind this exact debounced batch to the card/connection on which it was
+    // created. A connection switch while the request is in flight must never
+    // redirect X01 settings into X02 (or into the legacy global scope).
+    const updateScopeConnectionId = batch.connectionId
     configSaveInFlightRef.current = true
     setSavingConfig(true)
     try {
       const response = await fetch("/api/trade-engine/direct-trade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "update-config", ...updates }),
+        body: JSON.stringify({
+          action: "update-config",
+          ...updates,
+          ...(updateScopeConnectionId ? { connectionId: updateScopeConnectionId } : {}),
+        }),
       })
       const payload = await response.json().catch(() => null)
       if (!response.ok || payload?.success !== true || !payload?.state) {
         throw new Error(payload?.error || "Direct-Trade settings were not accepted")
       }
       for (const key of updateKeys) {
-        if (!Object.prototype.hasOwnProperty.call(pendingConfigRef.current, key)) {
+        const hasNewerPendingValue = [...pendingConfigRef.current.values()].some((pending) =>
+          Object.prototype.hasOwnProperty.call(pending.updates, key),
+        )
+        if (!hasNewerPendingValue) {
           pendingConfigKeysRef.current.delete(key)
         }
       }
@@ -506,7 +537,10 @@ export function DirectTradeSection() {
       setConfigSaveError(null)
     } catch (error) {
       for (const key of updateKeys) {
-        if (!Object.prototype.hasOwnProperty.call(pendingConfigRef.current, key)) {
+        const hasNewerPendingValue = [...pendingConfigRef.current.values()].some((pending) =>
+          Object.prototype.hasOwnProperty.call(pending.updates, key),
+        )
+        if (!hasNewerPendingValue) {
           pendingConfigKeysRef.current.delete(key)
         }
       }
@@ -515,7 +549,7 @@ export function DirectTradeSection() {
     } finally {
       configSaveInFlightRef.current = false
       setSavingConfig(false)
-      if (Object.keys(pendingConfigRef.current).length > 0) {
+      if (pendingConfigRef.current.size > 0) {
         void flushConfigRef.current?.()
       }
     }
@@ -524,13 +558,19 @@ export function DirectTradeSection() {
   flushConfigRef.current = flushConfig
 
   const saveConfig = useCallback((updates: Record<string, unknown>) => {
-    Object.assign(pendingConfigRef.current, updates)
+    const scopeConnectionId = selectedConnectionId ?? state.connectionId ?? null
+    const scopeKey = scopeConnectionId || "__global__"
+    const pending = pendingConfigRef.current.get(scopeKey)
+    pendingConfigRef.current.set(scopeKey, {
+      connectionId: scopeConnectionId,
+      updates: { ...(pending?.updates || {}), ...updates },
+    })
     for (const key of Object.keys(updates)) pendingConfigKeysRef.current.add(key)
     setState((current) => ({ ...current, ...(updates as Partial<DirectTradeState>) }))
     setConfigSaveError(null)
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     saveTimeoutRef.current = setTimeout(() => void flushConfig(), 350)
-  }, [flushConfig])
+  }, [flushConfig, selectedConnectionId, state.connectionId])
 
   useEffect(() => () => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
@@ -622,6 +662,12 @@ export function DirectTradeSection() {
             <div className="flex items-center gap-3 ml-auto text-xs">
               <span className="text-muted-foreground">Configs: <strong>{activeConfigs}</strong></span>
               <span className="text-muted-foreground">Open: <strong>{openPositions}</strong></span>
+              <span
+                className="text-muted-foreground"
+                title="Confirmed Direct-Trade entry, Block and DCA order fills in this connection scope"
+              >
+                Orders: <strong data-testid="direct-trade-orders-count">{stats.totalOrders.toLocaleString()}</strong>
+              </span>
               <span className="text-muted-foreground">Closed: <strong>{closedPositions}</strong></span>
               <span className="text-muted-foreground">Disabled: <strong>{disabledConfigs}</strong></span>
               <span className={pnlColor(stats.totalPnl)}>PnL: <strong>{formatPnl(stats.totalPnl)}</strong></span>
@@ -678,22 +724,22 @@ export function DirectTradeSection() {
               {/* Volume Factor */}
               <div className="space-y-1">
                 <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Volume Factor (minimum)</span>
-                  <span className="font-mono font-medium">{localVolFactor.toFixed(1)}</span>
+                  <span className="text-muted-foreground">Direct-Trade volume factor</span>
+                  <span className="font-mono font-medium">{clampDirectTradeVolumeFactor(localVolFactor).toFixed(1)}×</span>
                 </div>
-                <input
+                <Slider
                   aria-label="Direct-Trade volume factor"
-                  className="h-8 w-full rounded border bg-background px-2 font-mono text-xs"
-                  type="number"
-                  min={0.1}
+                  value={[clampDirectTradeVolumeFactor(localVolFactor)]}
+                  min={DIRECT_TRADE_VOLUME_FACTOR_MIN}
+                  max={DIRECT_TRADE_VOLUME_FACTOR_MAX}
                   step={0.1}
-                  value={localVolFactor}
-                  onChange={(event) => {
-                    const v = Math.max(0.1, Number(event.target.value) || 0.1)
+                  onValueChange={([value]) => {
+                    const v = clampDirectTradeVolumeFactor(value)
                     setLocalVolFactor(v)
                     saveConfig({ minVolFactor: v })
                   }}
                 />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">0.1–10, default 0.1. Effective request is factor × {DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO}; the connector raises it only to the smallest executable exchange lot when required.</p>
               </div>
 
               <div className="space-y-1">
@@ -746,6 +792,26 @@ export function DirectTradeSection() {
                   }}
                 />
                 <p className="text-[10px] text-muted-foreground/70 leading-tight">The two handles accept every 2–22× ratio. Only every configured Set step plus the upper handle is materialised, preserving the selected boundary without multiplying the grid unnecessarily.</p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Trailing from TP step</span>
+                  <span className="font-mono font-medium">{localTrailingMinTakeProfitRatio}× PositionCost</span>
+                </div>
+                <Slider
+                  aria-label="Direct-Trade trailing minimum take-profit PositionCost ratio"
+                  value={[localTrailingMinTakeProfitRatio]}
+                  min={DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN}
+                  max={DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX}
+                  step={1}
+                  disabled={!localTrailing}
+                  onValueChange={([value]) => {
+                    setLocalTrailingMinTakeProfitRatio(value)
+                    saveConfig({ trailingMinTakeProfitRatio: value })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Only trailed variants at or above this TP multiple are calculated/opened. Normal, DCA and non-trailing combination lanes below it remain independent.</p>
               </div>
 
               {/* Symbol Count */}

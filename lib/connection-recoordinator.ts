@@ -153,6 +153,7 @@ const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
   "mainProfitFactor",
   "realProfitFactor",
   "liveProfitFactor",
+  "normalEnabled",
   "variantTrailingEnabled",
   "variantBlockEnabled",
   "variantBlockOnly",

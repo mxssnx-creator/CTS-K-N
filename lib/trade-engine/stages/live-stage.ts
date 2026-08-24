@@ -129,6 +129,10 @@ import {
   stopLossPositionCostRatioToPercent,
   takeProfitPositionCostRatioToPercent,
 } from "@/lib/position-cost"
+import {
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  normalizeProtectionPercentages,
+} from "@/lib/trade-protection-contract"
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
@@ -413,7 +417,9 @@ function computeSetAwareSL(
   derivedSl: number,
   setVariant: LivePosition["setVariant"],
   trailingProfile: LivePosition["trailingProfile"] | undefined,
+  takeProfitPct?: unknown,
 ): number {
+  let candidateSl: number
   if (setVariant === "trailing" && trailingProfile && trailingProfile.stopRatio > 0) {
     // For trailing-variant positions the initial exchange SL is placed at the
     // trailing stop distance from entry. The trailing machine then ratchets this
@@ -423,12 +429,21 @@ function computeSetAwareSL(
     const trailingSl = isSignalDynamicTrailingProfile(trailingProfile)
       ? Math.max(0.8, (trailingProfile.minStopRatio ?? trailingProfile.stopRatio) * 100)
       : trailingProfile.stopRatio * 100
-    return Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, trailingSl)
+    candidateSl = Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, trailingSl)
+  } else {
+    // For all other variants (default, block, dca, pause) the PF-derived value
+    // is already variant-adjusted (block: scaled up by sizeMultiplier, dca: 0.5×).
+    // Enforce the minimum floor in all cases.
+    candidateSl = Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, derivedSl)
   }
-  // For all other variants (default, block, dca, pause) the PF-derived value
-  // is already variant-adjusted (block: scaled up by sizeMultiplier, dca: 0.5×).
-  // Enforce the minimum floor in all cases.
-  return Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, derivedSl)
+  return normalizeProtectionPercentages({
+    takeProfitPct,
+    fallbackTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    stopLossPct: candidateSl,
+    minimumTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    minimumStopLossPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  }).stopLossPct
 }
 
 
@@ -501,6 +516,15 @@ interface LivePosition {
   remainingQuantity: number
   averageExecutionPrice: number
   volumeUsd?: number
+  /** Pre-venue requested quantity before quantity/notional floors. */
+  requestedVolume?: number
+  intendedNotionalUsd?: number
+  exchangeMinNotionalUsd?: number
+  systemVolumeFactor?: number
+  liveEngineFactor?: number
+  signalVolumeFactor?: number
+  volumeAdjusted?: boolean
+  volumeAdjustmentReason?: string
   leverage: number
   marginType: "cross" | "isolated"
   unrealized_pnl?: number
@@ -706,7 +730,7 @@ interface LivePosition {
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
-  /** Persisted dispatch mode so Block-only restarts retain parent semantics. */
+  /** @deprecated persisted compatibility field; Block parent semantics are independent. */
   blockOnly?: boolean
   blockLegs?: BlockLegState[]
   dcaProfile?: DcaProfile
@@ -1278,6 +1302,33 @@ function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjust
   return { value: n, adjusted: false }
 }
 
+/**
+ * Normalize the durable percentage pair immediately before an exchange or
+ * paper protection calculation.  This is the last common boundary shared by
+ * initial placement, accumulation, restart recovery and operator re-arm, so
+ * an imported/stale position cannot reintroduce a missing stop or widen SL
+ * beyond the systemwide 1.5×TP contract.
+ */
+function normalizeLivePositionProtection(
+  position: Pick<LivePosition, "takeProfit" | "stopLoss">,
+): { takeProfitPct: number; stopLossPct: number } {
+  const protection = normalizeProtectionPercentages({
+    takeProfitPct: position.takeProfit,
+    fallbackTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    stopLossPct: position.stopLoss,
+    fallbackStopLossPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    minimumTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    minimumStopLossPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  position.takeProfit = protection.takeProfitPct
+  position.stopLoss = protection.stopLossPct
+  return {
+    takeProfitPct: protection.takeProfitPct,
+    stopLossPct: protection.stopLossPct,
+  }
+}
+
 // Short crash-recovery TTL plus token-owned lease renewal: healthy long venue
 // calls keep exclusivity, while a SIGKILL releases a stranded mutation slot in
 // at most ten seconds instead of the previous ninety-second blind interval.
@@ -1636,6 +1687,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     ...(parseRedisBoolean(hash.trailingActive) !== undefined && {
       trailingActive: parseRedisBoolean(hash.trailingActive),
     }),
+    ...(parseRedisBoolean(hash.volumeAdjusted) !== undefined && {
+      volumeAdjusted: parseRedisBoolean(hash.volumeAdjusted),
+    }),
     accumulatedSetKeys: Array.isArray(hash.accumulatedSetKeys)
       ? hash.accumulatedSetKeys
       : safeJsonParse<string[]>(hash.accumulatedSetKeys, []),
@@ -1690,6 +1744,12 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "averageExecutionPrice",
     "quantity",
     "volumeUsd",
+    "requestedVolume",
+    "intendedNotionalUsd",
+    "exchangeMinNotionalUsd",
+    "systemVolumeFactor",
+    "liveEngineFactor",
+    "signalVolumeFactor",
     "leverage",
     "unrealized_pnl",
     "unrealized_pnl_percent",
@@ -2880,18 +2940,18 @@ function liveLockDirection(
   return `${position.direction}${laneSuffix}${variantSuffix}`
 }
 
-function initializeBlockOnlySeed(
+function initializeIndependentBlockSeed(
   position: LivePosition,
   source: RealPosition,
   filledQuantity: number,
   clientOrderId?: string,
   orderId?: string,
 ): void {
-  if (
-    source.setVariant !== "block" ||
-    source.blockOnly !== true ||
-    !(filledQuantity > 0)
-  ) return
+  // Block is an independent execution family. It can be the first physical
+  // row when Normal is disabled, but it must also retain its exact additional
+  // quantity when a Normal parent already exists. The old blockOnly flag was
+  // a dispatch-mode switch and is deliberately ignored here.
+  if (source.setVariant !== "block" || !(filledQuantity > 0)) return
   const multiplier = Math.max(
     1,
     Number(
@@ -3338,6 +3398,7 @@ function applyAccumulatedSignalRisk(
   )
   if (stopLoss !== undefined) position.stopLoss = stopLoss
   if (takeProfit !== undefined) position.takeProfit = takeProfit
+  normalizeLivePositionProtection(position)
 }
 
 function isVirtualBlockLaneKey(setKey: unknown): boolean {
@@ -6301,6 +6362,8 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
   // that would cause NaN or Infinity propagation in SL/TP calculations.
   if (!Number.isFinite(fillPrice) || fillPrice <= 0) return { desiredSl: 0, desiredTp: 0 }
 
+  normalizeLivePositionProtection(pos)
+
   // ── Trailing stop: use the ratcheted absolute price directly ────────────────
   // When trailing is active syncLiveFromPseudo stamps pos.trailingStopPrice
   // with the latest ratcheted absolute stop level. Using that absolute price
@@ -7602,6 +7665,7 @@ export async function executeLivePosition(
       normalizeStopLossPercent(realPosition.stopLoss).value,
       realPosition.setVariant,
       realPosition.trailingProfile,
+      realPosition.takeProfit,
     ),
     takeProfit: realPosition.takeProfit,
     // Immutable assignment snapshot — preserved across overrides so the
@@ -7675,7 +7739,9 @@ export async function executeLivePosition(
     presetProfitFactor: realPosition.presetProfitFactor,
     executionIntent,
   }
+  normalizeLivePositionProtection(livePosition)
   if (specialPositionPlan) applySpecialPlanToPosition(livePosition, specialPositionPlan)
+  normalizeLivePositionProtection(livePosition)
 
   const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss)
   if (normalizedInitialSl.adjusted) {
@@ -7844,9 +7910,10 @@ export async function executeLivePosition(
     // the try block) so the catch handler can also release the correct key.
     const isBlockVariant = realPosition.setVariant === "block"
 
-    // DCA and ordinary Block rows attach to an already confirmed parent.
-    // Block-only has no Standard row by design, so its first adjusted row
-    // seeds the physical parent and later counts reconcile into that parent.
+    // DCA attaches to an already confirmed parent. Block is independent: it
+    // normally accumulates into the authoritative Normal lane, but when no
+    // Normal parent exists it seeds its own physical parent and later counts
+    // reconcile into that parent.
     const isAdjustmentVariant = isBlockVariant || realPosition.setVariant === "dca"
     if (isAdjustmentVariant) {
       if (await abortSuperseded()) return livePosition
@@ -7856,24 +7923,24 @@ export async function executeLivePosition(
         realPosition.direction,
         !isLiveTradeEnabled,
         executionSlot,
-        isBlockVariant && realPosition.blockOnly === true,
-        // Source-specific Signal Blocks retain their own bookkeeping lane. In
-        // parallel Standard+Block mode they may fall back to the ordinary
-        // Direction parent; Block-only lanes instead seed their exact physical
-        // parent below because no Standard row can exist in that mode.
-        isBlockVariant && realPosition.blockOnly !== true && executionSlot !== "default"
+        isBlockVariant,
+        // Source-specific Signal Blocks retain their own bookkeeping lane. If
+        // no exact source parent exists, they may fall back to the ordinary
+        // direction parent; otherwise the independent Block seed below owns
+        // the lane.
+        isBlockVariant && executionSlot !== "default"
           ? "default"
           : undefined,
       )
       if (!existing) {
-        if (isBlockVariant && realPosition.blockOnly === true) {
-          // A fresh Block-only lane has no Standard parent by definition.
-          // Continue into the ordinary entry pipeline with the already
-          // calculated absolute Block multiplier; the persisted Block
-          // position becomes the authoritative parent for later counts.
+        if (isBlockVariant) {
+          // A fresh independent Block lane has no confirmed parent. Continue
+          // into the ordinary entry pipeline with the already calculated
+          // absolute Block multiplier; the persisted Block position becomes
+          // the authoritative parent for later counts.
           pushStep(
             livePosition,
-            "block_only_parent_seed",
+            "block_independent_parent_seed",
             true,
             `opening adjusted Block parent for ${realPosition.setKey || "unknown"}`,
           )
@@ -8273,7 +8340,7 @@ export async function executeLivePosition(
       livePosition.totalExecutedQuantity = simQty
       livePosition.initialEntryPrice = simEntryPrice
       livePosition.blockBaseQuantity = simQty
-      initializeBlockOnlySeed(livePosition, realPosition, simQty)
+      initializeIndependentBlockSeed(livePosition, realPosition, simQty)
       if (livePosition.combinedPosCounts) {
         livePosition.posCountsSetQuantities = allocatePositionSetQuantities(
           livePosition,
@@ -8493,6 +8560,15 @@ export async function executeLivePosition(
     livePosition.remainingQuantity = computedVolume
     livePosition.volumeUsd = computedVolume * currentPrice
     livePosition.leverage = volumeResult?.leverage || livePosition.leverage
+    livePosition.requestedVolume = Number(volumeResult?.calculatedVolume) || 0
+    livePosition.intendedNotionalUsd = Number(volumeResult?.intendedNotionalUsd) || 0
+    livePosition.exchangeMinNotionalUsd = Number(volumeResult?.exchangeMinNotionalUsd) || 0
+    livePosition.systemVolumeFactor = Number(volumeResult?.systemVolumeFactor) || 1
+    livePosition.liveEngineFactor = Number(volumeResult?.liveEngineFactor) || 1
+    livePosition.signalVolumeFactor = Number(volumeResult?.signalVolumeFactor) || 1
+    livePosition.sizeMultiplier = Number(volumeResult?.sizeMultiplier) || 1
+    livePosition.volumeAdjusted = volumeResult?.volumeAdjusted === true
+    livePosition.volumeAdjustmentReason = volumeResult?.adjustmentReason || undefined
 
     // If the volume calculator clamped the quantity UP to the exchange
     // minimum (or we synthesized a fallback above), surface that in the
@@ -9291,7 +9367,7 @@ export async function executeLivePosition(
       )
       livePosition.initialEntryPrice ??= authoritativeFillPrice
       livePosition.blockBaseQuantity ??= fill.filledQty
-      initializeBlockOnlySeed(
+      initializeIndependentBlockSeed(
         livePosition,
         realPosition,
         fill.filledQty,
@@ -13727,6 +13803,8 @@ export async function recalculateAndApplySLTP(
         ? nextTrailingStop
         : undefined
     }
+
+    normalizeLivePositionProtection(position)
 
     const slChanged = position.stopLoss !== prevStopLossPct
     const tpChanged = position.takeProfit !== prevTakeProfitPct

@@ -249,7 +249,7 @@ interface ConnectionStageOverview {
       dca: number
     }
     breakdownComplete: boolean
-    blockOnly: boolean
+    normalEnabled: boolean
   }
   real: {
     valid: number
@@ -1300,11 +1300,19 @@ export function ActiveConnectionCard({
           indicationsSignal:    ind.signal    || 0,
           indicationsTrend:     ind.trend     || 0,
           indicationsTotal:     ind.total     || 0,
-          stratBase:  strat.base || 0,
-          stratMain:  strat.main || 0,
+          // The prominent stage count must use the same logical, current
+          // snapshot as the detailed row fields below. `breakdown.strategies`
+          // contains physical/materialized fan-out diagnostics and can be
+          // orders of magnitude larger than the number of independent rows.
+          // Showing that value as "validated sets" made X01/X02 look
+          // inconsistent even though both engines shared the same pipeline.
+          stratBase:  nonNegativeMetric(rows.base?.total ?? strat.base),
+          stratMain:  nonNegativeMetric(rows.main?.overall ?? strat.main),
           stratMainAxisNetted: strat.mainAxisNetted || 0,
-          stratReal:  strat.real || 0,
-          stratLive:  strat.live || 0,
+          stratReal:  nonNegativeMetric(rows.real?.valid ?? strat.real),
+          stratLive:  nonNegativeMetric(
+            rows.live?.executable ?? rows.live?.mirrored ?? rows.live?.total ?? strat.live,
+          ),
           // `strategyRows` is the canonical current, cross-symbol aggregate.
           // strategyDetail intentionally does not duplicate these row fields;
           // reading only `sd.*.row_*` rendered healthy Main/Real stages as 0.
@@ -2939,7 +2947,7 @@ export function ActiveConnectionCard({
                     ) && (
                       <div className="space-y-1">
                         <div className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
-                          Strategy Sets with Open Positions
+                          Current Logical Stage Rows &amp; Open Positions
                         </div>
                         {/* Stage rows: Base → Main → Real → Live (exchange-side outcomes) */}
                         {[
@@ -3017,11 +3025,16 @@ export function ActiveConnectionCard({
                           // historic PF aggregation block).
                           (count > 0 || evaluated > 0 || avgPF > 0 || (label === "Real" && (prehistoricStats.realOpen > 0 || prehistoricStats.liveOpenPositions > 0)) || (label === "Base" && total > 0) || (label === "Main" && (valid > 0 || overall > 0)) || (label === "Real" && (valid > 0 || active > 0))) && (
                             <div key={label} className="space-y-0.5">
-                              {/* Main row: label, sets/positions count, pass/fill ratio, PF */}
+                              {/* Main row: logical rows/positions count, pass/fill ratio, PF */}
                               <div className="flex items-center gap-2 text-[10px]">
                                 <span className={`font-semibold w-7 shrink-0 ${color}`}>{label}</span>
-                                 <span className="font-semibold tabular-nums">
-                                   {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "sets"}
+                                 <span
+                                   className="font-semibold tabular-nums"
+                                   title={isLive
+                                     ? "Current exchange execution positions"
+                                     : "Current independent logical stage rows; physical Cartesian/materialized fan-out is excluded"}
+                                 >
+                                   {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "rows"}
                                  </span>
                                  {label === "Base" && total > 0 && (
                                    <span className="text-muted-foreground">
@@ -3744,7 +3757,9 @@ export function ActiveConnectionCard({
                   <div className="rounded-lg border border-violet-200/70 bg-violet-50/70 p-2.5 dark:border-violet-900/70 dark:bg-violet-950/25">
                     <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
                       Main
-                      {connectionStageOverview.main.blockOnly && <Badge variant="outline" className="h-4 px-1 text-[8px]">Block-only</Badge>}
+                      <Badge variant="outline" className="h-4 px-1 text-[8px]">
+                        Normal {connectionStageOverview.main.normalEnabled ? "on" : "off"}
+                      </Badge>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div><div className="text-[9px] text-muted-foreground">Open valid</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.main.valid.toLocaleString()}</div></div>

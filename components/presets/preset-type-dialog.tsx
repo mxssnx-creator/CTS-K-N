@@ -49,9 +49,8 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
   const [trailingEnabled, setTrailingEnabled] = useState(true)
 
   const [blockEnabled, setBlockEnabled] = useState(true)
-  const [blockOnly, setBlockOnly] = useState(true)
   const [dcaEnabled, setDcaEnabled] = useState(false)
-  const [dcaOnly, setDcaOnly] = useState(false)
+  const [normalEnabled, setNormalEnabled] = useState(true)
 
   const [baseSettings, setBaseSettings] = useState<BaseSettings>({
     trailingEnabled: true,
@@ -100,9 +99,8 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       // the dialog UI agrees with the engine-side default.
       setTrailingEnabled(presetType.trailing_enabled ?? true)
       setBlockEnabled(presetType.block_enabled ?? true)
-      setBlockOnly(presetType.block_only ?? true)
       setDcaEnabled(presetType.dca_enabled ?? false)
-      setDcaOnly(presetType.dca_only ?? false)
+      setNormalEnabled((presetType as PresetType & { normal_enabled?: boolean }).normal_enabled ?? true)
     } else {
       // Reset to defaults for new preset type
       setName("")
@@ -115,9 +113,8 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       setTimeoutAfterPosition(300)
       setTrailingEnabled(true)
       setBlockEnabled(true)
-      setBlockOnly(true)
       setDcaEnabled(false)
-      setDcaOnly(false)
+      setNormalEnabled(true)
     }
   }, [presetType, open])
 
@@ -135,10 +132,11 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       timeout_per_indication: timeoutPerIndication,
       timeout_after_position: timeoutAfterPosition,
       trailing_enabled: trailingEnabled && baseSettings.trailingEnabled,
+      trailing_only: false,
       block_enabled: blockEnabled && baseSettings.blockEnabled,
-      block_only: blockOnly,
       dca_enabled: dcaEnabled && baseSettings.dcaEnabled,
-      dca_only: dcaOnly,
+      dca_only: false,
+      normal_enabled: normalEnabled,
     }
 
     onSave(presetTypeData)
@@ -333,18 +331,12 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
                 />
               </div>
 
-              <div
-                className={`flex items-center justify-between pl-4 ${!baseSettings.blockEnabled || !blockEnabled ? "opacity-50" : ""}`}
-              >
+              <div className="flex items-center justify-between rounded-md border border-primary/25 bg-primary/5 p-3">
                 <div className="space-y-0.5">
-                  <Label>Block Only</Label>
-                  <p className="text-sm text-muted-foreground">Use only block strategy (no regular trades)</p>
+                  <Label>Normal strategy</Label>
+                  <p className="text-sm text-muted-foreground">Keep the default strategy family executable alongside enabled add-ons. Off preserves validation but gates orders.</p>
                 </div>
-                <Switch
-                  checked={blockOnly}
-                  onCheckedChange={setBlockOnly}
-                  disabled={!baseSettings.blockEnabled || !blockEnabled}
-                />
+                <Switch checked={normalEnabled} onCheckedChange={setNormalEnabled} />
               </div>
 
               {/* DCA Strategy */}
@@ -364,19 +356,6 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
                 <Switch checked={dcaEnabled} onCheckedChange={setDcaEnabled} disabled={!baseSettings.dcaEnabled} />
               </div>
 
-              <div
-                className={`flex items-center justify-between pl-4 ${!baseSettings.dcaEnabled || !dcaEnabled ? "opacity-50" : ""}`}
-              >
-                <div className="space-y-0.5">
-                  <Label>DCA Only</Label>
-                  <p className="text-sm text-muted-foreground">Use only DCA strategy (no regular trades)</p>
-                </div>
-                <Switch
-                  checked={dcaOnly}
-                  onCheckedChange={setDcaOnly}
-                  disabled={!baseSettings.dcaEnabled || !dcaEnabled}
-                />
-              </div>
             </div>
           </div>
         </div>

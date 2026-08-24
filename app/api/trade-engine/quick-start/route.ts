@@ -839,11 +839,11 @@ async function handlePost(request: Request) {
        ["variantBlockEnabled", "variant_block"],
        "true",
      ))
-     const resolvedBlockOnly = stringifySettingValue(resolveQuickStartValue(
+     const resolvedNormal = stringifySettingValue(resolveQuickStartValue(
        body,
        existingQuickStartSettings,
-       ["blockOnly", "variantBlockOnly", "block_only"],
-       ["blockOnly", "variantBlockOnly", "block_only"],
+       ["normalEnabled", "normal_enabled"],
+       ["normalEnabled", "normal_enabled"],
        "true",
      ))
      const resolvedVariantDca = stringifySettingValue(resolveQuickStartValue(
@@ -999,11 +999,14 @@ async function handlePost(request: Request) {
       real_min_profit_factor: resolvedRealProfitFactor,
       live_min_profit_factor: resolvedLiveProfitFactor,
       // Variant toggles
+      normalEnabled: resolvedNormal,
       variantTrailingEnabled: resolvedVariantTrailing,
       variantBlockEnabled: resolvedVariantBlock,
-      blockOnly: resolvedBlockOnly,
-      variantBlockOnly: resolvedBlockOnly,
-      block_only: resolvedBlockOnly,
+      // Write legacy only fields as false during migration; the coordinator
+      // ignores them, but old readers must not suppress Normal execution.
+      blockOnly: "false",
+      variantBlockOnly: "false",
+      block_only: "false",
       variantDcaEnabled: resolvedVariantDca,
       variant_trailing: effectiveVariantTrailing,
       variant_block: effectiveVariantBlock,

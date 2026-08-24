@@ -104,7 +104,8 @@ export interface CoordinationSettings {
   blockRowLiveProfitFactorRatio: number
   blockRowLiveMaxStack: number
   blockRowLivePauseCountRatio: number
-  blockOnly: boolean // dispatch only Block rows while Block is enabled
+  /** Normal/default strategy family; all evaluation remains available when off. */
+  normalEnabled: boolean
 
   // Per-connection trailing matrix. Values use the canonical "start:stop"
   // encoding and are validated again by the engine before Base fan-out.
@@ -231,7 +232,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockRowLiveProfitFactorRatio: 0.8,
   blockRowLiveMaxStack: 12,
   blockRowLivePauseCountRatio: 1.0,
-  blockOnly: true,
+  normalEnabled: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
   dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
@@ -791,19 +792,32 @@ export function StrategyCoordinationSection({
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between gap-2">
             <div>
-              <CardTitle className="text-sm">Variant Profiles</CardTitle>
+              <CardTitle className="text-sm">Execution Families</CardTitle>
               <CardDescription className="text-xs">
-                Categorical Set variants evaluated alongside the axes above.
-                Block and DCA are evaluated <em>independently</em> of the
-                position-count axes per spec.
+                Normal, Trailing, Block and DCA are evaluated together and
+                dispatched independently. Turning a family off only suppresses
+                physical orders; its historical calculations remain available.
               </CardDescription>
             </div>
             <Badge variant="secondary" className="text-[10px]">
-              3 variants
+              4 families
             </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-primary/25 bg-primary/5 p-3">
+            <div className="flex-1 min-w-0">
+              <Label className="text-sm font-semibold">Normal strategy</Label>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Default strategy Sets without an additional strategy type. On by
+                default; turning it off does not remove validation or statistics.
+              </p>
+            </div>
+            <Switch
+              checked={value.normalEnabled}
+              onCheckedChange={(checked) => onChange({ ...value, normalEnabled: checked })}
+            />
+          </div>
           {VARIANTS.map((variant) => {
             const enabled = value.variants[variant.key]
             return (
@@ -872,22 +886,11 @@ export function StrategyCoordinationSection({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold">Block-Only execution</Label>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Enabled systemwide by default. With Block active, only evaluated
-                  Block Rows reach exchange dispatch. Disable this to run the
-                  Standard and Block strategies concurrently. If Block itself is
-                  disabled, Standard execution remains available.
-                </p>
-              </div>
-              <Switch
-                checked={value.blockOnly}
-                onCheckedChange={(checked) => onChange({ ...value, blockOnly: checked })}
-                disabled={!value.variants.block}
-              />
-            </div>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Block is always an independent add-on family. It may accumulate
+              into a Normal parent or seed its own protected parent when Normal
+              is disabled; there is no system-wide “Block Only” mode.
+            </p>
           </div>
           {/* Volume ratio */}
           <div className="rounded-lg border border-border/60 p-3 space-y-2">

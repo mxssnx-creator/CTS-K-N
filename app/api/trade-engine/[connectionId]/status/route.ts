@@ -55,6 +55,11 @@ export async function GET(
     const portableCycleAt = portableCycleRaw ? Date.parse(portableCycleRaw) : 0
     const hasFreshScheduledCycle =
       Number.isFinite(portableCycleAt) && portableCycleAt > 0 && Date.now() - portableCycleAt < 90_000
+    const localManager = coordinator?.getEngineManager?.(connectionId) ?? null
+    const canonicalPipelineInFlight = Boolean(localManager?.isCanonicalPipelineInFlight)
+    const canonicalPipelineAgeMs = canonicalPipelineInFlight
+      ? Math.max(0, Number(localManager?.canonicalPipelineAgeMs) || 0)
+      : 0
 
     const hasLocalEngine = (coordinator?.getActiveEngineCount() || 0) > 0
     const connectionRunning =
@@ -94,6 +99,8 @@ export async function GET(
       isRunning: connectionRunning,
       hasFreshDistributedHeartbeat,
       hasFreshScheduledCycle,
+      canonicalPipelineInFlight,
+      canonicalPipelineAgeMs,
       lastProcessorHeartbeat: processorHeartbeat || null,
       lastScheduledCycleAt: portableCycleAt || null,
       indication_cycle_count: indCycles,

@@ -15,6 +15,7 @@ import {
 import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import type { ExchangeConnection } from "@/lib/types"
 import { resolveExecutableQuantity } from "@/lib/order-quantity"
+import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
 
 export const LIVE_ORDER_REDIS_KEYS = {
@@ -199,7 +200,11 @@ async function claimDirectOrderControl(record: DirectOrderControlRecord): Promis
   return { owned: false, record: existing }
 }
 
-async function resolveSubmittedQuantity(input: PlaceLiveOrderInput, symbol: string): Promise<{
+async function resolveSubmittedQuantity(
+  input: PlaceLiveOrderInput,
+  symbol: string,
+  connection?: ExchangeConnection | any,
+): Promise<{
   quantity: number
   requestedQuantity: number
   adjusted: boolean
@@ -218,19 +223,47 @@ async function resolveSubmittedQuantity(input: PlaceLiveOrderInput, symbol: stri
   } catch {
     pair = null
   }
+  const exchange = String(connection?.exchange || connection?.exchange_name || connection?.id || "")
+    .trim()
+    .toLowerCase()
+  const isBingX = exchange.includes("bingx")
+  const quantityRules: Record<string, unknown> = { ...(pair || {}) }
+  if (isBingX) {
+    // Direct-Trade can start before the optional trading-pair cache has been
+    // warmed. Keep the request minimal but never below the known BingX base
+    // quantity floor. Once exact venue metadata is present, it is authoritative
+    // and must not be inflated by a conservative static fallback.
+    const persistedMinimum = Number(
+      quantityRules.minQuantity
+      ?? quantityRules.min_order_size
+      ?? quantityRules.min_quantity,
+    )
+    const staticMinimum = getVenueMinQty(symbol)
+    if (!(persistedMinimum > 0)) quantityRules.minQuantity = staticMinimum
+    else quantityRules.minQuantity = persistedMinimum
+  }
+
   let marketPrice = Number(input.price) || 0
   if (!(marketPrice > 0) && input.reduceOnly !== true) {
     const market = await getMarketData(symbol, "1m").catch(() => null as any)
     const latest = market && (market.latest || (Array.isArray(market) ? market[market.length - 1] : null))
     marketPrice = Number(latest?.close ?? latest?.[4] ?? latest?.price ?? 0) || 0
   }
+  const hasVenueNotionalMinimum = [
+    quantityRules.minNotionalUsdt,
+    quantityRules.minNotional,
+    quantityRules.min_notional_usdt,
+  ].some((value) => Number(value) > 0)
   return resolveExecutableQuantity(
     input.quantity,
     marketPrice,
-    pair,
+    quantityRules,
     {
       reduceOnly: input.reduceOnly === true,
-      universalMinNotionalUsdt: input.reduceOnly === true ? 0 : 5,
+      // Use the venue's own notional floor when present. The $5 fallback is
+      // only for a cold/missing metadata cache and is never added on top of
+      // an exchange-provided minimum.
+      universalMinNotionalUsdt: input.reduceOnly === true || hasVenueNotionalMinimum ? 0 : 5,
     },
   )
 }
@@ -952,7 +985,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const connection = input.connection || await loadLiveOrderConnection(input.connectionId)
   const symbol = normalizeOrderSymbol(input.symbol)
   const direction = normalizeDirection(input.side)
-  const submitted = await resolveSubmittedQuantity(input, symbol)
+  const submitted = await resolveSubmittedQuantity(input, symbol, connection)
   if (!(submitted.quantity > 0)) {
     throw new Error(`Could not resolve an executable quantity for ${symbol}: ${input.quantity}`)
   }

@@ -9,6 +9,7 @@ import { Slider } from "@/components/ui/slider"
 import { ChevronDown, ChevronRight, TrendingUp, TrendingDown, Activity, Target, BarChart3 } from 'lucide-react'
 import { cn } from "@/lib/utils"
 import type { StrategyResult } from "@/lib/strategies"
+import { MAIN_TRADE_PF_RATIO_MAX } from "@/lib/main-trade-profit-factor"
 
 interface StrategyBarProps {
   strategy: StrategyResult
@@ -117,7 +118,7 @@ export function StrategyBar({ strategy, onToggle, onVolumeFactorChange, minimalP
               <div className="w-full bg-gray-200 rounded-full h-1">
                 <div
                   className={`h-1 rounded-full ${barColor} transition-all duration-300`}
-                  style={{ width: `${Math.min(Math.max(strategy.avg_profit_factor / 2.2, 0), 1) * 100}%` }}
+                  style={{ width: `${Math.min(Math.max(strategy.avg_profit_factor / MAIN_TRADE_PF_RATIO_MAX, 0), 1) * 100}%` }}
                 />
               </div>
             </div>

@@ -86,7 +86,7 @@ export interface Settings {
 
   // ── Main Trade PF thresholds per stage (Base/Main/Real/Live) ─────
   // Operator-tunable via Settings → Strategy → Main → Profit Factor
-  // PositionCost-relative thresholds on the canonical 1.00..2.20/0.10
+  // PositionCost-relative thresholds on the canonical 1.02..2.30/0.02
   // grid. Defaults: Base/Main/Real/Live 1.10. These are deliberately
   // distinct from realised PF (gross profit / gross loss).
   baseProfitFactor: number

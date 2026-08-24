@@ -15,6 +15,10 @@ import {
   SIGNAL_TRAILING_MIN_STOP_PCT_FLOOR,
 } from "@/lib/signal-trailing"
 import {
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  normalizeProtectionPercentages,
+} from "@/lib/trade-protection-contract"
+import {
   SIGNAL_MAX_POSITIONS_DEFAULT,
   SIGNAL_POSITION_SELECTION_MODE,
   calculateSignalCandidateQuality,
@@ -1748,21 +1752,25 @@ export function normalizeSignalRisk(value: unknown): SignalRisk | undefined {
   const sourceIds = Array.isArray(raw.sourceIds)
     ? [...new Set(raw.sourceIds.map((item: unknown) => safePart(String(item))).filter(Boolean))]
     : []
-  const stopLossPct = Number(raw.stopLossPct)
-  const takeProfitPct = Number(raw.takeProfitPct)
-  if (
-    sourceIds.length === 0 ||
-    !Number.isFinite(stopLossPct) ||
-    !Number.isFinite(takeProfitPct) ||
-    stopLossPct <= 0 ||
-    takeProfitPct <= 0
-  ) {
-    return undefined
-  }
+  if (sourceIds.length === 0) return undefined
+  const protection = normalizeProtectionPercentages({
+    takeProfitPct: raw.takeProfitPct,
+    fallbackTakeProfitPct: 0.1,
+    stopLossPct: raw.stopLossPct,
+    fallbackStopLossPct: raw.takeProfitPct,
+    minimumTakeProfitPct: 0.01,
+    minimumStopLossPct: 0.01,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  const stopLossPct = protection.stopLossPct
+  const takeProfitPct = protection.takeProfitPct
   return {
     stopLossPct,
     takeProfitPct,
-    rewardRisk: Number(raw.rewardRisk) > 0 ? Number(raw.rewardRisk) : takeProfitPct / stopLossPct,
+    // The persisted field can be stale or computed from an uncapped legacy
+    // pair.  Keep the normalized TP/SL pair authoritative so downstream
+    // live protection cannot widen the stop through a mismatched rewardRisk.
+    rewardRisk: takeProfitPct / stopLossPct,
     sourceIds,
     ...(raw.sourceId && { sourceId: safePart(String(raw.sourceId)) }),
     ...(raw.configId && { configId: String(raw.configId) }),

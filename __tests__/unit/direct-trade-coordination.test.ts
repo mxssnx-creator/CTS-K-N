@@ -7,8 +7,10 @@ import {
   evaluateDirectTradeSets,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
+  normaliseDirectTradeTrailingMinTakeProfitRatio,
   normaliseDirectTradeStrategyTypes,
   normaliseDirectTradeTimeframes,
+  normaliseDirectTradeVolumeFactor,
   resampleCandles,
   type DirectTradeCandle,
 } from "@/lib/direct-trade-coordination"
@@ -28,6 +30,17 @@ function upwardMinuteSeries(size = 80): DirectTradeCandle[] {
 }
 
 describe("Direct-Trade independent historical coordination", () => {
+  test("bounds the independent volume and trailing-distance controls", () => {
+    expect(normaliseDirectTradeVolumeFactor(undefined)).toBe(0.1)
+    expect(normaliseDirectTradeVolumeFactor(0)).toBe(0.1)
+    expect(normaliseDirectTradeVolumeFactor(0.14)).toBe(0.1)
+    expect(normaliseDirectTradeVolumeFactor(0.16)).toBe(0.2)
+    expect(normaliseDirectTradeVolumeFactor(10.2)).toBe(10)
+    expect(normaliseDirectTradeTrailingMinTakeProfitRatio(undefined)).toBe(5)
+    expect(normaliseDirectTradeTrailingMinTakeProfitRatio(1)).toBe(2)
+    expect(normaliseDirectTradeTrailingMinTakeProfitRatio(35)).toBe(22)
+  })
+
   test("uses the 2–22 PositionCost TP contract with the fresh 5–10 default and 5× stride", () => {
     expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([5, 10])
     expect(normaliseDirectTradeTakeProfitRatioRange([0, 99])).toEqual([2, 22])
@@ -110,6 +123,41 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(sets.every((set) => set.valid || set.deactivationReason !== null)).toBe(true)
   })
 
+  test("omits only trailing Sets below the configured TP distance", () => {
+    const candles = upwardMinuteSeries(180)
+    const sets = evaluateDirectTradeSets({
+      symbol: "BTCUSDT",
+      direction: "long",
+      candlesByTimeframe: { "5m": resampleCandles(candles, 5) },
+      timeframeSet: ["5m"],
+      historyHours: 60,
+      volumeRatio: 0.1,
+      positionCostPercent: 0.1,
+      tpRange: [0.2, 0.5, 1],
+      takeProfitPositionCostRatios: [2, 5, 10],
+      trailingMinTakeProfitRatio: 5,
+      slRatios: [0.75],
+      trailOptions: [
+        { trailing: false, trailStart: 0, trailStop: 0 },
+        { trailing: true, trailStart: 0.3, trailStop: 0.2 },
+      ],
+      entryTactics: ["breakout"],
+      exitTactics: ["bracket"],
+      entryTiming: "current",
+      activityVolumeRatio: 0,
+      maxHoldMinutes: 20,
+      blockRange: [1, 12],
+      minProfitFactor: 0.8,
+      maxDrawdownTimeMin: 60,
+    })
+
+    expect(sets).toHaveLength(5)
+    expect(sets.filter((set) => set.trailing).map((set) => set.takeProfitPositionCostRatio))
+      .toEqual([5, 10])
+    expect(sets.filter((set) => !set.trailing).map((set) => set.takeProfitPositionCostRatio))
+      .toEqual([2, 5, 10])
+  })
+
   test("keeps Auto Trailing, Combination, inverse, high-protection and DCA as independent order lineages", () => {
     const candles = upwardMinuteSeries(180)
     const common = {
@@ -184,14 +232,15 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(new Set(combination.map((set) => set.trailingMode))).toEqual(new Set(["none", "fixed", "auto"]))
     expect(inverse).toHaveLength(1)
     expect(inverse[0]).toMatchObject({ direction: "long", signalDirection: "short", strategyType: "inverse", stoploss: 1.25 })
-    expect(inverse[0].stoploss).toBeLessThanOrEqual(inverse[0].takeprofit * 1.25)
+    expect(inverse[0].stoploss).toBeGreaterThan(0)
+    expect(inverse[0].stoploss).toBeLessThanOrEqual(inverse[0].takeprofit * 1.5)
     expect(highProtection).toHaveLength(1)
     expect(highProtection[0]).toMatchObject({ strategyType: "high_protection", takeprofit: 4, stoploss: 3 })
     expect(dca).toHaveLength(1)
     expect(dca[0]).toMatchObject({
       strategyType: "dca",
       takeprofit: 0.6,
-      stoploss: 1.95,
+      stoploss: 0.9,
       blockCount: 0,
       dcaRealizedVolumeMultiplier: expect.any(Number),
       dcaProfile: {
@@ -204,6 +253,9 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(relativeCombination).toHaveLength(1)
     expect(relativeCombination[0]).toMatchObject({ strategyType: "combination", entryTactic: "relative", exitTactic: "relative" })
     expect(new Set([...auto, ...combination, ...inverse, ...highProtection, ...dca, ...relativeCombination].map((set) => set.setKey)).size).toBe(8)
+    expect([...auto, ...combination, ...inverse, ...highProtection, ...dca, ...relativeCombination]
+      .every((set) => set.stoploss > 0 && set.stoploss / set.takeprofit <= 1.5 + 1e-9))
+      .toBe(true)
   })
 
   test("requires a finite high-PF recent closed-position window for a new eligible config", () => {

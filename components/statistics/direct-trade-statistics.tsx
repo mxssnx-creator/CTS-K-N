@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { Activity, BarChart3, Clock3, Filter, RefreshCw, ShieldCheck, Target } from "lucide-react"
+import { Activity, BarChart3, Clock3, Filter, RefreshCw, ShieldCheck, Target, Zap } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -83,7 +83,17 @@ type CalculationAxisBucket = {
 }
 
 type Status = {
+  state?: {
+    enabled?: boolean
+    liveMode?: boolean
+    processingIntervalMs?: number
+  } | null
+  openPositions?: number
+  openingPositions?: number
+  closedPositions?: number
   stats?: {
+    totalOrders?: number
+    totalFilled?: number
     totalPnl?: number
     totalPnlUsdt?: number
     profitFactor?: number
@@ -263,6 +273,13 @@ export function DirectTradeStatistics() {
           <Metric label="TF combinations" value={String(calculation.combinations || 0)} icon={<Activity className="h-4 w-4" />} />
           <Metric label="Simulated PnL" value={formatPnl(stats.totalPnl)} emphasis={Number(stats.totalPnl) >= 0} icon={<Target className="h-4 w-4" />} />
         </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          <Metric label="Orders / filled" value={`${stats.totalOrders || 0} / ${stats.totalFilled || 0}`} icon={<Activity className="h-4 w-4" />} />
+          <Metric label="Open / opening" value={`${status.openPositions || 0} / ${status.openingPositions || 0}`} icon={<Clock3 className="h-4 w-4" />} />
+          <Metric label="Closed positions" value={String(status.closedPositions || 0)} icon={<ShieldCheck className="h-4 w-4" />} />
+          <Metric label="Execution interval" value={`${status.state?.processingIntervalMs || 280}ms`} icon={<Zap className="h-4 w-4" />} />
+          <Metric label="Mode" value={status.state?.liveMode ? "Live exchange" : "Demo / paper"} icon={<Target className="h-4 w-4" />} />
+        </div>
       </Card>
 
       <Card className="overflow-hidden p-4">
@@ -360,6 +377,7 @@ export function DirectTradeStatistics() {
             <ResultRow label="Realized PnL (exchange notional)" value={stats.totalPnlUsdt != null ? `${Number(stats.totalPnlUsdt).toFixed(4)} USDT` : "—"} />
             <ResultRow label="PF basis" value={stats.statsPnlBasis === "usdt" ? "exchange notional" : "percentage fallback"} />
             <ResultRow label="Win / loss" value={`${stats.winCount || 0} / ${stats.lossCount || 0}`} />
+            <ResultRow label="Orders / filled / closed" value={`${stats.totalOrders || 0} / ${stats.totalFilled || 0} / ${status.closedPositions || 0}`} />
             <ResultRow label="Last 12 positions" value={`PF ${stats.last12Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last12Pos?.ddt?.toFixed(1) || "0.0"}m`} />
             <ResultRow label="Last 25 positions" value={`PF ${stats.last25Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last25Pos?.ddt?.toFixed(1) || "0.0"}m`} />
             <ResultRow label="Last 50 positions" value={`PF ${stats.last50Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last50Pos?.ddt?.toFixed(1) || "0.0"}m`} />

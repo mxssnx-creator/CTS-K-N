@@ -647,11 +647,11 @@ export function ConnectionSettingsDialog({
             blockRowLiveProfitFactorRatio: typeof coord.blockRowLiveProfitFactorRatio === "number" ? coord.blockRowLiveProfitFactorRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLiveProfitFactorRatio,
             blockRowLiveMaxStack: typeof coord.blockRowLiveMaxStack === "number" ? coord.blockRowLiveMaxStack : DEFAULT_COORDINATION_SETTINGS.blockRowLiveMaxStack,
             blockRowLivePauseCountRatio: typeof coord.blockRowLivePauseCountRatio === "number" ? coord.blockRowLivePauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLivePauseCountRatio,
-            blockOnly: typeof coord.blockOnly === "boolean"
-              ? coord.blockOnly
-              : typeof settings.blockOnly === "boolean"
-                ? settings.blockOnly
-                : DEFAULT_COORDINATION_SETTINGS.blockOnly,
+            normalEnabled: typeof coord.normalEnabled === "boolean"
+              ? coord.normalEnabled
+              : typeof (settings as Record<string, unknown>).normalEnabled === "boolean"
+                ? Boolean((settings as Record<string, unknown>).normalEnabled)
+                : DEFAULT_COORDINATION_SETTINGS.normalEnabled,
             posCountsVolumeRatio: normalizePosCountVolumeRatio(
               coord.posCountsVolumeRatio,
               DEFAULT_COORDINATION_SETTINGS.posCountsVolumeRatio,
@@ -784,6 +784,7 @@ export function ConnectionSettingsDialog({
         // and never reached the engine's connection_settings hash reader.
         coordination_settings: coordination,
         coordinationSettings:  coordination, // legacy alias
+        normalEnabled: coordination.normalEnabled,
         // Persist both indication channels in the same ordered transaction as
         // the rest of the dialog. This produces one coherent hot reload and
         // prevents the engine from seeing new strategies with old indications.

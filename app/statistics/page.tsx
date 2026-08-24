@@ -588,6 +588,38 @@ export default function StatisticsPage() {
     initialize()
   }, [selectedExchange, selectedConnectionId, reloadGeneration])
 
+  // Runtime resource/latency values are intentionally independent from the
+  // heavier statistics rebuild. Keep the visible Overview card fresh every
+  // three seconds without replacing positions, history or PF rows mid-render.
+  useEffect(() => {
+    if (!selectedConnectionId) return
+    let cancelled = false
+    let inFlight = false
+    const refreshRuntime = async () => {
+      if (cancelled || inFlight) return
+      inFlight = true
+      try {
+        const response = await fetch(
+          `/api/connections/progression/${encodeURIComponent(selectedConnectionId)}/stats`,
+          { cache: "no-store" },
+        )
+        if (!response.ok) return
+        const payload = await response.json().catch(() => null)
+        if (!cancelled) setRuntimeTelemetry((payload?.runtime as RuntimeTelemetry | undefined) || null)
+      } catch {
+        // A telemetry miss must not clear the last good Overview sample.
+      } finally {
+        inFlight = false
+      }
+    }
+    void refreshRuntime()
+    const interval = window.setInterval(() => void refreshRuntime(), 3_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [selectedConnectionId])
+
   const updateAnalytics = (engine: AnalyticsEngine, currentFilter: AnalyticsFilter) => {
     const strategies = engine.generateStrategyAnalytics(currentFilter)
     const symbols = engine.generateSymbolAnalytics(currentFilter)

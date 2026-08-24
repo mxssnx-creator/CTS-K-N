@@ -107,6 +107,32 @@ interface StrategyRows {
 
 type SettingsSnapshot = Record<string, unknown>
 
+interface DirectTradeSnapshot {
+  state?: {
+    enabled?: boolean
+    liveMode?: boolean
+    processingIntervalMs?: number
+    symbolCount?: number
+  } | null
+  stats?: {
+    totalOrders?: number
+    totalFilled?: number
+    totalPnl?: number
+    totalPnlUsdt?: number
+    profitFactor?: number | null
+  } | null
+  openPositions?: number
+  openingPositions?: number
+  closedPositions?: number
+  processor?: { isHealthy?: boolean; lastTick?: string; errorsLast5min?: number } | null
+  calculationProgress?: {
+    completedSymbols?: number
+    totalSymbols?: number
+    evaluatedSets?: number
+    status?: string
+  } | null
+}
+
 interface LivePosition {
   id: string
   symbol: string
@@ -286,10 +312,12 @@ function MainSystemTab({
   stats,
   settings,
   rows,
+  directTrade,
 }: {
   stats: EngineStats | null
   settings: SettingsSnapshot
   rows: StrategyRows | null
+  directTrade: DirectTradeSnapshot | null
 }) {
   const s = stats
   const byType = s?.indicationsByType || {}
@@ -331,8 +359,11 @@ function MainSystemTab({
   const baseCooldownMs = settingNumber("positionCooldownMs", 3_000)
   const minBaseStep = settingNumber("minStep", 2)
   const posCountsRatio = settingNumber("posCountsVolumeRatio", 3)
-  const blockOnly = settingBool("blockOnly", settingBool("variantBlockOnly", true))
   const blockEnabled = settingBool("variantBlockEnabled", settingBool("blockAdjustment", true))
+  const normalEnabled = settingBool("normalEnabled", true)
+  const trailingEnabled = settingBool("variantTrailingEnabled", settingBool("strategyBaseTrailingEnabled", true))
+  const dcaEnabled = settingBool("variantDcaEnabled", false)
+  const directIntervalMs = Number(directTrade?.state?.processingIntervalMs) || 280
   const maxIndicationCount = Math.max(...Object.values(byType).map(Number), 1)
   const indicationFamilies = [
     { k: "direction", label: "Direction", desc: `Default · post-change direction · exhaustive ${minBaseStep}–30` },
@@ -353,7 +384,7 @@ function MainSystemTab({
         <KPI label="Ind Cycles" value={indCycles}  color="blue" />
         <KPI label="Indications" value={indTotal}  color="blue" />
         <KPI label="Str Cycles"  value={strCycles} color="purple" />
-        <KPI label="Strategies"  value={strTotal}  color="purple" />
+        <KPI label="Physical Evals" value={strTotal} color="purple" />
         <KPI label="Positions"   value={s?.positionsCount || 0} color="green" />
         <KPI label="Cycle Rate"  value={indCycles > 0 ? `${(indTotal / indCycles).toFixed(1)}/c` : "—"} />
       </div>
@@ -403,8 +434,8 @@ function MainSystemTab({
       {/* Phase 2 */}
       <div className="rounded-md border bg-card">
         <div className="border-b px-3 py-1.5 flex items-center justify-between">
-          <SectionHeader num={2} label="Trade Loop" sub="1 s non-overlapping · indication → strategy → position" color="purple" />
-          <Tag color="purple">≈{strCycles > 0 ? (strTotal / strCycles).toFixed(0) : "—"} sets/cycle</Tag>
+          <SectionHeader num={2} label="Trade Loop" sub="non-overlapping · indication → strategy → position" color="purple" />
+          <Tag color="purple">≈{strCycles > 0 ? (strTotal / strCycles).toFixed(0) : "—"} physical evals/cycle</Tag>
         </div>
         <div className="px-3 py-1.5 space-y-0.5">
 
@@ -451,7 +482,8 @@ function MainSystemTab({
             <Row label="PF ratio gate" value={`${mainPf.toFixed(2)} × PositionCost`} />
             <Row label="Evaluation lookback" value={`Latest ${mainLookback} closed positions per Set`} />
             <Row label="Pos-Count volume ratio" value={posCountsRatio.toFixed(1)} />
-            <Row label="Block mode" value={`${blockEnabled ? "enabled" : "disabled"} · Block-only ${blockOnly ? "enabled" : "disabled"}`} />
+            <Row label="Execution families" value={`Normal ${normalEnabled ? "on" : "off"} · Trailing ${trailingEnabled ? "on" : "off"} · Block ${blockEnabled ? "on" : "off"} · DCA ${dcaEnabled ? "on" : "off"}`} />
+            <Row label="Disabled-family semantics" value="Validation/statistics remain active; only physical dispatch is gated" />
             <Row label="Storage" mono value={`strategy_detail:{connId}:main`} />
           </Block>
 
@@ -506,7 +538,7 @@ function MainSystemTab({
       {/* Phase 3 */}
       <div className="rounded-md border bg-card">
         <div className="border-b px-3 py-1.5">
-          <SectionHeader num={3} label="Position Management" sub="real orders · 0.3 s monitor · feedback loop" color="green" />
+          <SectionHeader num={3} label="Position Management" sub="real orders · continuous protection · feedback loop" color="green" />
         </div>
         <div className="px-3 py-1.5 space-y-0.5">
           <Block icon={TrendingUp} title="Promote to Live" sub="Row-Real → Row-Live → exchange dispatcher" accent="green">
@@ -515,7 +547,7 @@ function MainSystemTab({
             <Row label="Order type" value="Market order at fill price" />
             <Row label="Risk" value="Minimal qty + exchange-level TP/SL" />
           </Block>
-          <Block icon={Activity} title="Position Monitor (0.3 s)" sub="TP/SL hit · trailing adjust · P&L update" accent="green">
+          <Block icon={Activity} title="Position Monitor" sub="TP/SL hit · trailing adjust · P&L update" accent="green">
             <Row label="Price source" value="Market data stream (no REST call)" />
             <Row label="Trailing update" value="Re-priced on favorable tick" />
             <Row label="Live Row capacity" value="Unlimited" />
@@ -525,6 +557,13 @@ function MainSystemTab({
             <Row label="Metric" value="Gross-profit/gross-loss plus PositionCost-relative ratio" />
             <Row label="Windows" value={`Main ${mainLookback} · Real ${realLookback} completed positions`} />
             <Row label="Effect" value="Continuous independent Row state is refreshed without full-history rescans" />
+          </Block>
+          <Block icon={Zap} title="Direct Trade" sub={`${directIntervalMs} ms non-overlapping execution loop`} accent="orange">
+            <Row label="Processor" value={directTrade?.processor?.isHealthy ? "healthy" : "idle / stale"} />
+            <Row label="Orders / filled" value={`${fmt(directTrade?.stats?.totalOrders ?? 0)} / ${fmt(directTrade?.stats?.totalFilled ?? 0)}`} />
+            <Row label="Open / opening / closed" value={`${fmt(directTrade?.openPositions ?? 0)} / ${fmt(directTrade?.openingPositions ?? 0)} / ${fmt(directTrade?.closedPositions ?? 0)}`} />
+            <Row label="Realized PnL / PF" value={`${Number(directTrade?.stats?.totalPnlUsdt ?? 0).toFixed(4)} USDT / ${directTrade?.stats?.profitFactor == null ? "—" : Number(directTrade?.stats?.profitFactor).toFixed(2)}`} />
+            <Row label="Calculation coverage" value={`${directTrade?.calculationProgress?.completedSymbols ?? 0}/${directTrade?.calculationProgress?.totalSymbols ?? 0} symbols · ${fmt(directTrade?.calculationProgress?.evaluatedSets ?? 0)} sets`} />
           </Block>
         </div>
       </div>
@@ -888,6 +927,7 @@ function LogisticsContent() {
   const [settings,     setSettings]     = useState<SettingsSnapshot>({})
   const [strategyRows, setStrategyRows] = useState<StrategyRows | null>(null)
   const [queueData,    setQueueData]    = useState<QueueData | null>(null)
+  const [directTrade,  setDirectTrade] = useState<DirectTradeSnapshot | null>(null)
   const [livePos,      setLivePos]      = useState<LivePosition[]>([])
   const [lastRefresh,  setLastRefresh]  = useState<Date | null>(null)
   const [refreshing,   setRefreshing]   = useState(false)
@@ -902,13 +942,14 @@ function LogisticsContent() {
       setQueueData(null)
       setStrategyRows(null)
       setLivePos([])
+      setDirectTrade(null)
       setLastRefresh(null)
       setRefreshing(false)
       return
     }
     if (!silent) setRefreshing(true)
     try {
-      const [statsRes, queueRes, livePosRes, settingsRes, progressionRes] = await Promise.allSettled([
+      const [statsRes, queueRes, livePosRes, settingsRes, progressionRes, directTradeRes] = await Promise.allSettled([
         fetch(`/api/trading/engine-stats?connection_id=${connId}`, { cache: "no-store" }),
         // Forward the connectionId so the queue card focuses on the same
         // exchange connection the sidebar exchange selector has chosen.
@@ -916,13 +957,15 @@ function LogisticsContent() {
         fetch(`/api/trading/live-positions?connection_id=${connId}`, { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
         fetch(`/api/connections/progression/${encodeURIComponent(connId)}/stats`, { cache: "no-store" }),
+        fetch(`/api/trade-engine/direct-trade/status?connectionId=${encodeURIComponent(connId)}`, { cache: "no-store" }),
       ])
-      const [nextStats, nextQueue, nextPositions, nextSettings, nextProgression] = await Promise.all([
+      const [nextStats, nextQueue, nextPositions, nextSettings, nextProgression, nextDirectTrade] = await Promise.all([
         statsRes.status === "fulfilled" && statsRes.value.ok ? statsRes.value.json() : null,
         queueRes.status === "fulfilled" && queueRes.value.ok ? queueRes.value.json() : null,
         livePosRes.status === "fulfilled" && livePosRes.value.ok ? livePosRes.value.json() : null,
         settingsRes.status === "fulfilled" && settingsRes.value.ok ? settingsRes.value.json() : null,
         progressionRes.status === "fulfilled" && progressionRes.value.ok ? progressionRes.value.json() : null,
+        directTradeRes.status === "fulfilled" && directTradeRes.value.ok ? directTradeRes.value.json() : null,
       ])
       if (sequence !== loadSequenceRef.current) return
       if (nextStats) setStats(nextStats)
@@ -933,6 +976,7 @@ function LogisticsContent() {
       if (nextProgression?.strategyRows) {
         setStrategyRows(nextProgression.strategyRows)
       }
+      if (nextDirectTrade && typeof nextDirectTrade === "object") setDirectTrade(nextDirectTrade)
       if (livePosRes.status === "fulfilled" && livePosRes.value.ok) {
         setLivePos(Array.isArray(nextPositions) ? nextPositions : (nextPositions?.positions || []))
       }
@@ -1004,7 +1048,7 @@ function LogisticsContent() {
         <LivePositionsSection positions={livePos} />
 
         {/* Tab content */}
-        {tab === "main"   && <MainSystemTab stats={stats} settings={settings} rows={strategyRows} />}
+        {tab === "main"   && <MainSystemTab stats={stats} settings={settings} rows={strategyRows} directTrade={directTrade} />}
         {tab === "preset" && <PresetModeTab />}
         {tab === "bots"   && <BotsTab />}
       </div>

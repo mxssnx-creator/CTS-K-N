@@ -70,6 +70,28 @@ const DIRECT_TRADE_ADAPTIVE_HISTORY_MAX_HOURS = Math.max(
 )
 const MAX_DIRECT_DCA_POSITION_VOLUME_RATIO = 5
 const MIN_DIRECT_DCA_POSITION_VOLUME_RATIO = 1.4
+const DIRECT_TRADE_VOLUME_FACTOR_MIN = 0.1
+const DIRECT_TRADE_VOLUME_FACTOR_MAX = 10
+const DIRECT_TRADE_VOLUME_FACTOR_DEFAULT = 0.1
+const DIRECT_TRADE_BASE_NOTIONAL_PER_FACTOR_USDT = 5
+const DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO = 0.2
+const DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT = 5
+const DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN = 2
+const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 22
+
+function normalizeDirectTradeVolumeFactor(value, fallback = DIRECT_TRADE_VOLUME_FACTOR_DEFAULT) {
+  const parsed = Number(value)
+  const requested = Number.isFinite(parsed) ? parsed : fallback
+  const clamped = Math.max(DIRECT_TRADE_VOLUME_FACTOR_MIN, Math.min(DIRECT_TRADE_VOLUME_FACTOR_MAX, requested))
+  return Number((Math.round(clamped * 10) / 10).toFixed(1))
+}
+
+function normalizeDirectTradeTrailingMinTakeProfitRatio(value, fallback = DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT) {
+  const parsed = Number(value)
+  const requested = Math.round(Number.isFinite(parsed) ? parsed : fallback)
+  return Math.max(DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN, Math.min(DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX, requested))
+}
+
 const DEFAULT_DIRECT_DCA_PROFILE = Object.freeze({
   maxSteps: 4,
   stepVolumeMultipliers: Object.freeze([1, 1, 1, 1]),
@@ -79,6 +101,90 @@ const DEFAULT_DIRECT_DCA_PROFILE = Object.freeze({
   cooldownSeconds: 30,
   maxPositionVolumeRatio: MAX_DIRECT_DCA_POSITION_VOLUME_RATIO,
 })
+
+const DIRECT_TRADE_MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO = 1.5
+const DIRECT_TRADE_MIN_PROTECTION_PERCENT = 0.01
+
+function normalizeDirectTradeProtection(takeProfitValue, stopLossValue, fallbackTakeProfit = 0.1) {
+  const requestedTakeProfit = Number(takeProfitValue)
+  const fallback = Number(fallbackTakeProfit)
+  const takeprofit = Math.max(
+    DIRECT_TRADE_MIN_PROTECTION_PERCENT,
+    Number.isFinite(requestedTakeProfit) && requestedTakeProfit > 0
+      ? requestedTakeProfit
+      : Number.isFinite(fallback) && fallback > 0
+        ? fallback
+        : 0.1,
+  )
+  const requestedStopLoss = Number(stopLossValue)
+  const stoploss = Math.max(
+    DIRECT_TRADE_MIN_PROTECTION_PERCENT,
+    Math.min(
+      takeprofit * DIRECT_TRADE_MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+      Number.isFinite(requestedStopLoss) && requestedStopLoss > 0 ? requestedStopLoss : takeprofit,
+    ),
+  )
+  return { takeprofit, stoploss }
+}
+
+function normalizeDirectTradeConfig(config) {
+  if (!config || typeof config !== "object") return config
+  const protection = normalizeDirectTradeProtection(
+    config.takeprofit,
+    config.stoploss,
+    Number(config.positionCostPercent) || Number(state.positionCostPercent) || 0.1,
+  )
+  return {
+    ...config,
+    takeprofit: protection.takeprofit,
+    stoploss: protection.stoploss,
+  }
+}
+
+function normalizeLoadedDirectTradePosition(position) {
+  if (!position || typeof position !== "object" || position.status === "closed") return position
+  const protection = normalizeDirectTradeProtection(
+    position.takeprofit,
+    position.stoploss,
+    Number(position.positionCostPercent) || Number(state.positionCostPercent) || 0.1,
+  )
+  const changed = Number(position.takeprofit) !== protection.takeprofit ||
+    Number(position.stoploss) !== protection.stoploss
+  if (!changed) return position
+  const next = { ...position, takeprofit: protection.takeprofit, stoploss: protection.stoploss }
+  const entry = Number(next.entryPrice)
+  if (entry > 0 && next.trailingArmed !== true) {
+    next.currentSlPrice = next.direction === "short"
+      ? entry * (1 + protection.stoploss / 100)
+      : entry * (1 - protection.stoploss / 100)
+  }
+  log("warn", `Normalized Direct-Trade protection for ${next.symbol || "unknown"}`, {
+    takeprofit: protection.takeprofit,
+    stoploss: protection.stoploss,
+    ratio: protection.stoploss / protection.takeprofit,
+  })
+  return next
+}
+
+function normalizeDirectTradeControlId(value, fallback = "dt-control") {
+  const raw = String(value || fallback)
+  const normalized = raw
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+  if (normalized.length < 3) return fallback
+  if (normalized === raw && normalized.length <= 48) return normalized
+
+  // Keep the identifier bounded for the venue while retaining a deterministic
+  // collision-resistant suffix when sanitizing/truncating legacy IDs. This is
+  // important for multi-timeframe rows and for two positions with the same
+  // visible prefix but different durable timestamps.
+  let hash = 0x811c9dc5
+  for (let index = 0; index < raw.length; index++) {
+    hash ^= raw.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  const suffix = `_${(hash >>> 0).toString(36).padStart(7, "0")}`
+  return `${normalized.slice(0, Math.max(3, 48 - suffix.length))}${suffix}`.slice(0, 48)
+}
 
 // ─── Rate Limiter ─────────────────────────────────────────────────────────────
 
@@ -285,7 +391,7 @@ let state = {
   connectionId: null,
   symbolCount: 8,
   symbolOrder: "volatility_1h",
-  minVolFactor: 0.1,
+  minVolFactor: DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
   positionCostPercent: 0.1,
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
@@ -300,6 +406,7 @@ let state = {
   maxHoldMinutes: 120,
   takeProfitRatioRange: [5, 10],
   takeProfitRatioStep: 5,
+  trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 0.8,
@@ -640,6 +747,7 @@ function calculationInputsSignature(input = state, historyHoursOverride = null) 
     positionCostPercent: input.positionCostPercent,
     takeProfitRatioRange: input.takeProfitRatioRange,
     takeProfitRatioStep: input.takeProfitRatioStep,
+    trailingMinTakeProfitRatio: input.trailingMinTakeProfitRatio,
     maxSlRatio: input.maxSlRatio,
     slRatioStep: input.slRatioStep,
     inverseMaxSlRatio: input.inverseMaxSlRatio,
@@ -691,6 +799,7 @@ async function recalculateConfigs() {
       strategyTypes: state.strategyTypes,
       takeProfitRatioRange: state.takeProfitRatioRange,
       takeProfitRatioStep: state.takeProfitRatioStep,
+      trailingMinTakeProfitRatio: state.trailingMinTakeProfitRatio,
       blockRange: state.blockRange,
       blockVolumeRatio: state.blockVolumeRatio,
       blockProfitFactorRatio: state.blockProfitFactorRatio,
@@ -897,6 +1006,13 @@ async function submitOrReconcileOpening(position, reconcileOnly = false) {
   }
 
   try {
+    // Older persisted IDs can contain timeframe separators such as `5m+15m`.
+    // Canonicalize before retrying so recovery does not remain stuck at the
+    // gateway's identifier validation boundary.
+    position.openControlId = normalizeDirectTradeControlId(
+      position.openControlId,
+      `dtopen_${position.id}`,
+    )
     await rateLimiter.acquire()
     position.openAttemptedAt = position.openAttemptedAt || new Date().toISOString()
     const orderResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
@@ -993,13 +1109,19 @@ function canOpenPosition(config) {
 }
 
 async function openPosition(config) {
+  config = normalizeDirectTradeConfig(config)
   const posId = `dt_${config.symbol}_${config.direction}_${config.timeframe}_${Date.now()}`
   const isDca = (config.strategyType || "standard") === "dca"
   const dcaProfile = normalizeDirectDcaProfile(config.dcaProfile || state.dcaProfile)
   const finalDcaDistance = dcaProfile.stepDistancesPct[Math.max(0, dcaProfile.maxSteps - 1)]
-  const effectiveStoploss = isDca
+  const requestedStoploss = isDca
     ? Math.max(Number(config.stoploss) || 0, finalDcaDistance + 0.35)
     : Number(config.stoploss) || 0
+  const protection = normalizeDirectTradeProtection(
+    config.takeprofit,
+    requestedStoploss,
+    Number(state.positionCostPercent) || 0.1,
+  )
 
   const position = {
     id: posId,
@@ -1011,8 +1133,8 @@ async function openPosition(config) {
     entryPrice: 0,
     exitPrice: 0,
     quantity: 0,
-    takeprofit: config.takeprofit,
-    stoploss: effectiveStoploss,
+    takeprofit: protection.takeprofit,
+    stoploss: protection.stoploss,
     trailing: Boolean(config.trailing && state.trailingEnabled),
     trailingMode: config.trailingMode || (config.trailing ? "fixed" : "none"),
     trailStart: config.trailStart,
@@ -1079,7 +1201,14 @@ async function openPosition(config) {
     log("warn", `Ticker read blocked for ${config.symbol}`, error?.message || error)
   }
   if (!marketPrice) return null
-  const baseQuantity = (state.minVolFactor * 5 * 0.5) / marketPrice // 50% system safety factor
+  // Factor 1 requests one fifth of the $5 Direct baseline. The connector is
+  // still authoritative for quantity precision and the smallest executable
+  // venue notional, so factor 0.1 stays minimal without creating invalid lots.
+  const baseQuantity = (
+    normalizeDirectTradeVolumeFactor(state.minVolFactor)
+    * DIRECT_TRADE_BASE_NOTIONAL_PER_FACTOR_USDT
+    * DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO
+  ) / marketPrice
   const blockSizing = resolveBlockSizing(config, baseQuantity)
   // Direct-Trade Block uses one base fill followed by causal, one-ratio add-on
   // fills. The historical simulator follows the same path. Keeping the full
@@ -1091,7 +1220,7 @@ async function openPosition(config) {
   position.blockAddedQuantity = blockSizing.blockAddedQuantity
   position.targetBlockQuantity = blockSizing.targetBlockQuantity
   position.quantity = blockSizing.blockBaseQuantity
-  position.openControlId = `dtopen_${posId}`.slice(0, 48)
+  position.openControlId = normalizeDirectTradeControlId(`dtopen_${posId}`)
   position.openRequestedQuantity = blockSizing.blockBaseQuantity
   position.openRequestedPrice = marketPrice
 
@@ -1164,9 +1293,12 @@ async function addDirectTradeBlockLeg(position, config) {
         return false
       }
       const controlGeneration = Math.max(0, Math.floor(Number(position.blockControlGeneration) || 0))
-      const stableControlId = hasPendingControl
-        ? position.blockPendingControlId
-        : `dtblk_${String(position.id).slice(-25)}_${nextCount}_${controlGeneration}`.slice(0, 48)
+      const stableControlId = normalizeDirectTradeControlId(
+        hasPendingControl
+          ? position.blockPendingControlId
+          : `dtblk_${String(position.id).slice(-25)}_${nextCount}_${controlGeneration}`,
+        `dtblk_${String(position.id).slice(-25)}_${nextCount}_${controlGeneration}`,
+      )
       if (!hasPendingControl) {
         position.blockPendingCount = nextCount
         position.blockPendingControlId = stableControlId
@@ -1382,9 +1514,12 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
       }
       await rateLimiter.acquire()
       const controlGeneration = Math.max(0, Math.floor(Number(position.dcaControlGeneration) || 0))
-      const stableControlId = hasPendingControl
-        ? position.dcaPendingControlId
-        : `dtdca_${String(position.id).slice(-24)}_${nextStep}_${controlGeneration}`.slice(0, 48)
+      const stableControlId = normalizeDirectTradeControlId(
+        hasPendingControl
+          ? position.dcaPendingControlId
+          : `dtdca_${String(position.id).slice(-24)}_${nextStep}_${controlGeneration}`,
+        `dtdca_${String(position.id).slice(-24)}_${nextStep}_${controlGeneration}`,
+      )
       if (!hasPendingControl) {
         position.dcaPendingControlStep = nextStep
         position.dcaPendingControlId = stableControlId
@@ -1752,7 +1887,7 @@ async function closePosition(pos, exitPrice, reason) {
       if (pos.closeControlId && Date.now() - Date.parse(pos.closeLastCheckedAt || "") < 1_000) return false
       const generation = Math.max(0, Math.floor(Number(pos.closeGeneration) || 0))
       if (!pos.closeControlId) {
-        pos.closeControlId = `dtclose_${pos.id}_${generation}`.slice(0, 48)
+        pos.closeControlId = normalizeDirectTradeControlId(`dtclose_${pos.id}_${generation}`)
         pos.closeRequestedQuantity = realizedQuantity
         pos.closeRequestedPrice = realizedExitPrice
         pos.closeReason = reason
@@ -2144,6 +2279,13 @@ function applyRemoteState(nextState, source = "load") {
   state = {
     ...state,
     ...nextState,
+    minVolFactor: normalizeDirectTradeVolumeFactor(
+      nextState.minVolFactor ?? nextState.volumeFactor ?? state.minVolFactor,
+      state.minVolFactor,
+    ),
+    trailingMinTakeProfitRatio: normalizeDirectTradeTrailingMinTakeProfitRatio(
+      nextState.trailingMinTakeProfitRatio ?? nextState.trailingMinStep ?? state.trailingMinTakeProfitRatio,
+    ),
     dcaProfile: normalizeDirectDcaProfile(nextState.dcaProfile || state.dcaProfile),
   }
   const persistedRecalcAt = Date.parse(nextState.lastRecalcAt || "")
@@ -2168,60 +2310,62 @@ function applyRemoteState(nextState, source = "load") {
   // A persisted acknowledgement is an event from the state owner. Compare
   // only calculation inputs: UI-only status updates never cause a rebuild.
   const evaluationInputsChanged = JSON.stringify({
-        minVolFactor: prev.minVolFactor,
-        positionCostPercent: prev.positionCostPercent,
-        keepEnabledPosCount: prev.keepEnabledPosCount,
-        minProfitFactor: prev.minProfitFactor,
-        minRecentProfitFactor: prev.minRecentProfitFactor,
-        recentEvaluationPositions: prev.recentEvaluationPositions,
-        maxDrawdownTimeMin: prev.maxDrawdownTimeMin,
-        timeframes: prev.timeframes,
-        historyHours: prev.historyHours,
-        entryTactics: prev.entryTactics,
-        exitTactics: prev.exitTactics,
-        entryTiming: prev.entryTiming,
-        activityVolumeRatio: prev.activityVolumeRatio,
-        maxHoldMinutes: prev.maxHoldMinutes,
-        takeProfitRatioRange: prev.takeProfitRatioRange,
-        takeProfitRatioStep: prev.takeProfitRatioStep,
-        blockVolumeRatio: prev.blockVolumeRatio,
-        blockProfitFactorRatio: prev.blockProfitFactorRatio,
-        maxSlRatio: prev.maxSlRatio,
-        slRatioStep: prev.slRatioStep,
-        inverseMaxSlRatio: prev.inverseMaxSlRatio,
-        strategyTypes: prev.strategyTypes,
-        deactivatePosCount: prev.deactivatePosCount,
-        trailingEnabled: prev.trailingEnabled,
-        dcaProfile: normalizeDirectDcaProfile(prev.dcaProfile),
-      }) !== JSON.stringify({
-        minVolFactor: state.minVolFactor,
-        positionCostPercent: state.positionCostPercent,
-        keepEnabledPosCount: state.keepEnabledPosCount,
-        minProfitFactor: state.minProfitFactor,
-        minRecentProfitFactor: state.minRecentProfitFactor,
-        recentEvaluationPositions: state.recentEvaluationPositions,
-        maxDrawdownTimeMin: state.maxDrawdownTimeMin,
-        timeframes: state.timeframes,
-        historyHours: state.historyHours,
-        entryTactics: state.entryTactics,
-        exitTactics: state.exitTactics,
-        entryTiming: state.entryTiming,
-        activityVolumeRatio: state.activityVolumeRatio,
-        maxHoldMinutes: state.maxHoldMinutes,
-        takeProfitRatioRange: state.takeProfitRatioRange,
-        takeProfitRatioStep: state.takeProfitRatioStep,
-        blockVolumeRatio: state.blockVolumeRatio,
-        blockProfitFactorRatio: state.blockProfitFactorRatio,
-        maxSlRatio: state.maxSlRatio,
-        slRatioStep: state.slRatioStep,
-        inverseMaxSlRatio: state.inverseMaxSlRatio,
-        strategyTypes: state.strategyTypes,
-        deactivatePosCount: state.deactivatePosCount,
-        trailingEnabled: state.trailingEnabled,
-        dcaProfile: normalizeDirectDcaProfile(state.dcaProfile),
-      })
+    minVolFactor: normalizeDirectTradeVolumeFactor(prev.minVolFactor),
+    positionCostPercent: prev.positionCostPercent,
+    keepEnabledPosCount: prev.keepEnabledPosCount,
+    minProfitFactor: prev.minProfitFactor,
+    minRecentProfitFactor: prev.minRecentProfitFactor,
+    recentEvaluationPositions: prev.recentEvaluationPositions,
+    maxDrawdownTimeMin: prev.maxDrawdownTimeMin,
+    timeframes: prev.timeframes,
+    historyHours: prev.historyHours,
+    entryTactics: prev.entryTactics,
+    exitTactics: prev.exitTactics,
+    entryTiming: prev.entryTiming,
+    activityVolumeRatio: prev.activityVolumeRatio,
+    maxHoldMinutes: prev.maxHoldMinutes,
+    takeProfitRatioRange: prev.takeProfitRatioRange,
+    takeProfitRatioStep: prev.takeProfitRatioStep,
+    trailingMinTakeProfitRatio: normalizeDirectTradeTrailingMinTakeProfitRatio(prev.trailingMinTakeProfitRatio),
+    blockVolumeRatio: prev.blockVolumeRatio,
+    blockProfitFactorRatio: prev.blockProfitFactorRatio,
+    maxSlRatio: prev.maxSlRatio,
+    slRatioStep: prev.slRatioStep,
+    inverseMaxSlRatio: prev.inverseMaxSlRatio,
+    strategyTypes: prev.strategyTypes,
+    deactivatePosCount: prev.deactivatePosCount,
+    trailingEnabled: prev.trailingEnabled,
+    dcaProfile: normalizeDirectDcaProfile(prev.dcaProfile),
+  }) !== JSON.stringify({
+    minVolFactor: normalizeDirectTradeVolumeFactor(state.minVolFactor),
+    positionCostPercent: state.positionCostPercent,
+    keepEnabledPosCount: state.keepEnabledPosCount,
+    minProfitFactor: state.minProfitFactor,
+    minRecentProfitFactor: state.minRecentProfitFactor,
+    recentEvaluationPositions: state.recentEvaluationPositions,
+    maxDrawdownTimeMin: state.maxDrawdownTimeMin,
+    timeframes: state.timeframes,
+    historyHours: state.historyHours,
+    entryTactics: state.entryTactics,
+    exitTactics: state.exitTactics,
+    entryTiming: state.entryTiming,
+    activityVolumeRatio: state.activityVolumeRatio,
+    maxHoldMinutes: state.maxHoldMinutes,
+    takeProfitRatioRange: state.takeProfitRatioRange,
+    takeProfitRatioStep: state.takeProfitRatioStep,
+    trailingMinTakeProfitRatio: normalizeDirectTradeTrailingMinTakeProfitRatio(state.trailingMinTakeProfitRatio),
+    blockVolumeRatio: state.blockVolumeRatio,
+    blockProfitFactorRatio: state.blockProfitFactorRatio,
+    maxSlRatio: state.maxSlRatio,
+    slRatioStep: state.slRatioStep,
+    inverseMaxSlRatio: state.inverseMaxSlRatio,
+    strategyTypes: state.strategyTypes,
+    deactivatePosCount: state.deactivatePosCount,
+    trailingEnabled: state.trailingEnabled,
+    dcaProfile: normalizeDirectDcaProfile(state.dcaProfile),
+  })
   if (evaluationInputsChanged) {
-    log("info", `Config change detected by ${source}: volFactor=${state.minVolFactor}, tp=${state.takeProfitRatioRange.join("-")}×cost step=${state.takeProfitRatioStep}, blockRatio=${state.blockVolumeRatio}, minPF=${state.minProfitFactor}`)
+    log("info", `Config change detected by ${source}: volFactor=${normalizeDirectTradeVolumeFactor(state.minVolFactor)}, tp=${state.takeProfitRatioRange.join("-")}×cost step=${state.takeProfitRatioStep}, blockRatio=${state.blockVolumeRatio}, minPF=${state.minProfitFactor}`)
     // Settings are authoritative immediately. Rebuild the entire historic
     // grid on the next owned tick instead of trading stale configurations.
     resetAdaptiveHistory(`calculation inputs changed by ${source}`)
@@ -2261,13 +2405,13 @@ async function loadState(includeExecution = false) {
       return
     }
     if (Array.isArray(result?.executionConfigs)) {
-      configs = result.executionConfigs
+      configs = result.executionConfigs.map(normalizeDirectTradeConfig)
       executionConfigs = configs.filter((config) => config?.valid !== false)
       indexExecutionConfigs()
       refreshActiveExecutionConfigs()
     }
     if (result?.stats && typeof result.stats === "object") stats = { ...stats, ...result.stats }
-    if (Array.isArray(result?.positions)) positions = result.positions
+    if (Array.isArray(result?.positions)) positions = result.positions.map(normalizeLoadedDirectTradePosition)
     rebuildRealizedNotionalStats()
     if (result?.configPerformance && typeof result.configPerformance === "object") {
       configPerformance = new Map(Object.entries(result.configPerformance))
@@ -2298,6 +2442,16 @@ function shouldEnterNow(config) {
   if (!canOpenPosition(config)) return false
 
   if (!state.trailingEnabled && config.trailing) return false
+  // A stale pre-change execution slice must not bypass the newly persisted
+  // trailing-distance floor. Existing positions are deliberately unaffected:
+  // this gate controls only creation of a new entry.
+  if (config.trailing) {
+    const takeProfitPositionCostRatio = Number(config.takeProfitPositionCostRatio)
+    if (
+      !Number.isFinite(takeProfitPositionCostRatio)
+      || takeProfitPositionCostRatio < normalizeDirectTradeTrailingMinTakeProfitRatio(state.trailingMinTakeProfitRatio)
+    ) return false
+  }
 
   const candidateKey = configKey(config)
   // Check if we already have a position with the same full config. A new

@@ -7,6 +7,45 @@ Total output lines: 1636
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Authoritative maintenance checkpoint (2026-08-24)
+
+- This section supersedes older workspace/availability statements below it.
+  The persistent integration checkout is `/workspace/CTS-K-N-integration` on
+  branch `feature/remote-direct-pf-v101`. Its base is the clean recovered
+  remote commit `cc46330ed7dbba3bdceb9ef267b53736e7902c68`, which descends
+  from GitHub `main@d9cc80b00c567b8954cc86c021eb963d1fb96139`. The isolated
+  local-change checkpoint is `f7b6157`; `/workspace/CTS-K-N-current-main` and
+  `/workspace/CTS-K-N-active` are recovery inputs and must not be deployed over
+  the integration branch.
+- The current maintenance scope keeps the Direct-Trade scheduler at 280 ms,
+  adds an independently persisted minimum TP/PositionCost ratio for Trailing,
+  bounds the Direct volume control to 0.1–10 with a 0.1 default, verifies the
+  explicit system sizing ratio, and hardens production-preview restart port
+  ownership. These active defaults are migrated by Redis schema v101. No claim
+  of profitability is a release gate; exchange accounting,
+  ownership, protection, and deterministic correctness are.
+- Source, docs, and tests may be changed locally only on top of this verified
+  tree. Before publish: run unit/integration/type/lint/build, migration,
+  install/preflight, restart/recovery, UI, and connection-isolation gates;
+  then create a GitHub branch/PR and merge only the checked head.
+- The remote route is verified end-to-end through Chisel 1.11.8 with the
+  same-process inherited `HTTP_PROXY`: expected fingerprint, approximately
+  180–213 ms latency, strict SSH host-key verification, and root access to
+  `/opt/cts-kn`. The earlier authentication failure was traced to an obsolete
+  local auth file and disappeared after it was updated to the active persistent
+  server auth. The auth value itself remains outside Git. NetBird/Teleport are
+  optional fallbacks only. See `docs/REMOTE-CHISEL-WORKMODE.md`.
+- Remote `/opt/cts-kn` was clean at `cc46330e` before integration. A verified
+  Git/source/environment/systemd/Redis checkpoint exists at
+  `/var/backups/cts-kn/20260824T051626Z-pre-direct-pf-v101`. `.env` data,
+  exchange credentials, Redis state, and independent exchange positions/orders
+  remain server-side; only CTS-owned records and unique client IDs for the
+  selected connection may be reset or controlled.
+- Never commit or print Chisel auth, SSH private keys, exchange credentials,
+  Redis snapshots, raw account reports, or full credential-bearing service
+  command lines. Supply secrets only from owner-only files/environment at the
+  execution boundary.
+
 ## Continuity: Chisel Work-mode Connection Solution (2026-08-23/24)
 
 - The confirmed remote path is Chisel 1.11.8 through
@@ -31,9 +70,9 @@ Total output lines: 1636
   clean at merged main@9355a57, CTS services/NGINX/Redis/Chisel were active,
   the app answered on port 3002, and a protected source/environment/Redis
   backup was created under /var/backups/cts-kn/20260823T213831Z.
-- This checkpoint supersedes older notes that called the remote route
-  unavailable. Continue from the persistent checkout and this procedure in
-  new chats.
+- The route was reverified on 2026-08-24 with the current persistent auth and
+  used successfully for inventory, backup and source synchronization. Use the
+  authoritative checkpoint above and the updated remote guide.
 
 ## Current exact-settlement / Shared-Redis release checkpoint (2026-08-23)
 

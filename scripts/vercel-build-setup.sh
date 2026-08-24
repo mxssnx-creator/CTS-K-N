@@ -43,10 +43,10 @@ NODE
 )"
 LATEST_MIGRATION="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).latest))' "$MIGRATION_REPORT")"
 SEQUENTIAL="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sequential))' "$MIGRATION_REPORT")"
-[[ "$LATEST_MIGRATION" == "100" && "$SEQUENTIAL" == "true" ]] \
-  || fatal "Migration bundle is not the expected sequential schema v100: $MIGRATION_REPORT"
+[[ "$LATEST_MIGRATION" == "101" && "$SEQUENTIAL" == "true" ]] \
+  || fatal "Migration bundle is not the expected sequential schema v101: $MIGRATION_REPORT"
 
-log "Sequential schema v100 migration bundle verified"
+log "Sequential schema v101 migration bundle verified"
 pnpm run vercel-build
 [[ -f .next/BUILD_ID ]] || fatal "Next.js production build did not create .next/BUILD_ID"
 date -u +'%Y-%m-%dT%H:%M:%SZ' > .next/deployment-timestamp.txt

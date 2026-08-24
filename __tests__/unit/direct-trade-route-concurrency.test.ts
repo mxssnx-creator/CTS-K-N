@@ -69,6 +69,8 @@ describe("Direct-Trade API state and processor lease", () => {
         maxPositionsPerSymbol: 999,
         maxPositionsPerDirection: 999,
         blockProfitFactorRatio: 99,
+        minVolFactor: 99,
+        trailingMinTakeProfitRatio: 1,
       }) as any)
       const payload = await response.json()
 
@@ -77,7 +79,7 @@ describe("Direct-Trade API state and processor lease", () => {
         enabled: true,
         liveMode: false,
         maxSlRatio: 0.25,
-        inverseMaxSlRatio: 1.25,
+        inverseMaxSlRatio: 1.5,
         minProfitFactor: 0.8,
         maxDrawdownTimeMin: 99,
         trailingEnabled: false,
@@ -86,6 +88,9 @@ describe("Direct-Trade API state and processor lease", () => {
         maxPositionsPerSymbol: 300,
         maxPositionsPerDirection: 300,
         blockProfitFactorRatio: 5,
+        minVolFactor: 10,
+        trailingMinTakeProfitRatio: 2,
+        processingIntervalMs: 280,
         takeProfitRatioRange: [5, 10],
         takeProfitRatioStep: 5,
         strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
@@ -93,6 +98,17 @@ describe("Direct-Trade API state and processor lease", () => {
 
       const persisted = await (await GET()).json()
       expect(persisted.state).toMatchObject(payload.state)
+
+      const minimums = await POST(post({
+        action: "update-config",
+        minVolFactor: 0,
+        trailingMinTakeProfitRatio: 99,
+      }) as any)
+      expect((await minimums.json()).state).toMatchObject({
+        minVolFactor: 0.1,
+        trailingMinTakeProfitRatio: 22,
+        processingIntervalMs: 280,
+      })
     } finally {
       await redis.del(...DIRECT_KEYS)
     }
@@ -118,6 +134,37 @@ describe("Direct-Trade API state and processor lease", () => {
 
       const totalCap = await POST(post({ action: "update-config", maxTotalPositions: 999 }) as any)
       expect((await totalCap.json()).state.maxTotalPositions).toBe(300)
+    } finally {
+      await redis.del(...DIRECT_KEYS)
+    }
+  })
+
+  test("keeps the Direct-Trade volume factor at 0.1 by default and within 0.1–10", async () => {
+    const [{ POST, GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.del(...DIRECT_KEYS)
+
+    try {
+      const started = await POST(post({ action: "start", minVolFactor: 99 }) as any)
+      expect((await started.json()).state.minVolFactor).toBe(10)
+
+      const minimum = await POST(post({ action: "update-config", minVolFactor: 0 }) as any)
+      expect((await minimum.json()).state.minVolFactor).toBe(0.1)
+
+      const alias = await POST(post({ action: "update-config", volumeFactor: 2.4 }) as any)
+      expect((await alias.json()).state.minVolFactor).toBe(2.4)
+
+      await redis.set("direct_trade:state", JSON.stringify({ minVolFactor: 10 }))
+      const legacy = await (await GET()).json()
+      expect(legacy.state.minVolFactor).toBe(0.1)
+      expect(legacy.state.volumeFactorDefaultsVersion).toBe(1)
+
+      await redis.set("direct_trade:state", JSON.stringify({ minVolFactor: 10, volumeFactorDefaultsVersion: 1 }))
+      const explicit = await (await GET()).json()
+      expect(explicit.state.minVolFactor).toBe(10)
     } finally {
       await redis.del(...DIRECT_KEYS)
     }

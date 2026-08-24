@@ -16,6 +16,13 @@ import {
   type DcaProfile,
 } from "./dca-strategy"
 import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "./position-cost"
+import {
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  normalizeProtectionPercentages,
+} from "./trade-protection-contract"
+
+export const DIRECT_TRADE_MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO =
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO
 
 // Kept free of Next/runtime aliases so the deterministic CLI matrix can load
 // this module through tsx. These values mirror the canonical
@@ -48,6 +55,18 @@ export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [
 // fresh-install TP Set stride; an explicit operator value can still choose a
 // denser grid when its capacity budget permits it.
 export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 5
+// Direct-Trade owns an independent low-notional sizing control. Unlike the
+// Main/Preset channel factors, its documented range intentionally starts
+// below one; live connectors still round up to the venue minimum quantity and
+// notional when the requested value cannot be placed exactly.
+export const DIRECT_TRADE_VOLUME_FACTOR_MIN = 0.1
+export const DIRECT_TRADE_VOLUME_FACTOR_MAX = 10
+export const DIRECT_TRADE_VOLUME_FACTOR_DEFAULT = 0.1
+// Trailing needs enough target distance to arm before ordinary market noise
+// reaches the protection range. The setting remains independent from the TP
+// grid: lower normal/DCA Sets are still evaluated, while only actually
+// trailed variants below this PositionCost multiple are omitted.
+export const DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT = 5
 // Full-history admission must show a materially positive gross-profit/loss
 // ratio before the much stricter latest-position gate is even considered.
 // Runtime defaults and migrations mirror this value; operators may still
@@ -300,6 +319,9 @@ export interface DirectTradeEvaluationInput {
   // Parallel to tpRange when the caller owns the PositionCost-ratio grid.
   // Older callers may provide fixed percentages; their ratio is derived.
   takeProfitPositionCostRatios?: number[]
+  // Minimum PositionCost TP multiple that may materialise a trailing Set.
+  // Non-trailing variants remain eligible below this threshold.
+  trailingMinTakeProfitRatio?: number
   slRatios: number[]
   trailOptions: DirectTradeTrailOption[]
   entryTactics: DirectTradeEntryTactic[]
@@ -366,6 +388,29 @@ export function normaliseDirectTradeTakeProfitRatioStep(
 ): number {
   const requested = Math.round(finite(value, fallback))
   return Math.max(1, Math.min(20, requested))
+}
+
+export function normaliseDirectTradeVolumeFactor(
+  value: unknown,
+  fallback = DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+): number {
+  const requested = finite(value, fallback)
+  const clamped = Math.max(
+    DIRECT_TRADE_VOLUME_FACTOR_MIN,
+    Math.min(DIRECT_TRADE_VOLUME_FACTOR_MAX, requested),
+  )
+  return Number((Math.round(clamped * 10) / 10).toFixed(1))
+}
+
+export function normaliseDirectTradeTrailingMinTakeProfitRatio(
+  value: unknown,
+  fallback = DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
+): number {
+  const requested = Math.round(finite(value, fallback))
+  return Math.max(
+    DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
+    Math.min(DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX, requested),
+  )
 }
 
 export function buildDirectTradeTakeProfitPositionCostRatios(
@@ -1139,6 +1184,13 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
   )
   const minRecentProfitFactor = Math.max(0.8, finite(input.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
   const positionCostPercent = normalizeDirectTradePositionCostPercent(input.positionCostPercent ?? DIRECT_TRADE_POSITION_COST_PERCENT_DEFAULT)
+  // Keep the low-level evaluator backwards compatible for callers that do not
+  // own application state. The API/processor always pass the persisted fresh
+  // default, while an omitted field here only enforces the absolute 2x floor.
+  const trailingMinTakeProfitRatio = normaliseDirectTradeTrailingMinTakeProfitRatio(
+    input.trailingMinTakeProfitRatio,
+    DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
+  )
   const blockVolumeRatio = Math.max(0.1, Math.min(10, positiveRatio(input.blockVolumeRatio, positiveRatio(input.volumeRatio, 1))))
   const result: DirectTradeSet[] = []
   const timeframe = input.timeframeSet.join("+")
@@ -1162,17 +1214,34 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
     for (const exitTactic of input.exitTactics) {
       for (const [takeProfitIndex, takeprofit] of input.tpRange.entries()) {
         const requestedRatio = Number(input.takeProfitPositionCostRatios?.[takeProfitIndex])
-        const takeProfitPositionCostRatio = Number.isFinite(requestedRatio) && requestedRatio > 0
-          ? requestedRatio
-          : takeprofit / positionCostPercent
         for (const slRatio of input.slRatios) {
-          const stoploss = dcaProfile
+          const requestedStoploss = dcaProfile
             ? Math.max(
                 takeprofit * slRatio,
                 dcaProfile.stepDistancesPct[Math.max(0, dcaProfile.maxSteps - 1)] + 0.35,
               )
             : takeprofit * slRatio
+          // Every generated Set has one positive, executable stop.  The
+          // normalizer also protects DCA's adverse ladder and old/custom SL
+          // grids from widening beyond the systemwide 1.5×TP relation.
+          const protection = normalizeProtectionPercentages({
+            takeProfitPct: takeprofit,
+            fallbackTakeProfitPct: positionCostPercent,
+            stopLossPct: requestedStoploss,
+            fallbackStopLossPct: takeprofit,
+            minimumTakeProfitPct: 0.01,
+            minimumStopLossPct: 0.01,
+            maxStopLossToTakeProfitRatio: DIRECT_TRADE_MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+          })
+          const effectiveTakeprofit = protection.takeProfitPct
+          const takeProfitPositionCostRatio = protection.takeProfitPct !== takeprofit
+            ? effectiveTakeprofit / positionCostPercent
+            : Number.isFinite(requestedRatio) && requestedRatio > 0
+              ? requestedRatio
+              : effectiveTakeprofit / positionCostPercent
+          const stoploss = protection.stopLossPct
           for (const trail of input.trailOptions) {
+            if (trail.trailing && takeProfitPositionCostRatio < trailingMinTakeProfitRatio) continue
             const blockProfitFactorRatio = Math.max(
               0.2,
               Math.min(5, finite(input.blockProfitFactorRatio, 0.8)),
@@ -1191,7 +1260,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               composed.candles,
               composed.signals,
               input.direction,
-              takeprofit,
+              effectiveTakeprofit,
               stoploss,
               trail.trailing,
               trail.mode || (trail.trailing ? "fixed" : "none"),
@@ -1377,7 +1446,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               exitTactic,
               entryTiming: input.entryTiming,
               activityVolumeRatio: input.activityVolumeRatio,
-              takeprofit: round(takeprofit),
+              takeprofit: round(effectiveTakeprofit),
               takeProfitPositionCostRatio: round(takeProfitPositionCostRatio),
               stoploss: round(stoploss),
               trailing: trail.trailing,

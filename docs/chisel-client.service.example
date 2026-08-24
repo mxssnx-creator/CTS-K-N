@@ -1,0 +1,18 @@
+[Unit]
+Description=CTS-K-N Chisel SSH tunnel client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/chisel/client.env
+ExecStart=/usr/local/bin/chisel client --keepalive 25s --fingerprint Q0MxL4WHKwM2JbRy6/6fAUee3600R7pPo1CKov8/EPc= --auth ${CTS_CHISEL_AUTH} http://152.53.114.112:8090 127.0.0.1:2222:127.0.0.1:22
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
