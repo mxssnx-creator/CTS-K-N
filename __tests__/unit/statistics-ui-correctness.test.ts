@@ -252,6 +252,43 @@ describe("statistics UI correctness", () => {
     })).toMatchObject({ disposition: "unresolved_trade", reason: "missing_entry_price" })
   })
 
+  test("quarantines implausible live accounting until the venue close reconciles it", () => {
+    const snapshot = {
+      id: "legacy-minimum-retry",
+      status: "closed",
+      symbol: "EYEUSDT",
+      direction: "short",
+      executionMode: "live",
+      executedQuantity: 2_278,
+      averageExecutionPrice: 100.42420596734958,
+      closePrice: 0.000962,
+      realizedPnL: 228_764.15,
+      createdAt: Date.parse("2026-08-23T13:56:06.000Z"),
+      closedAt: Date.parse("2026-08-23T13:57:46.000Z"),
+      partialOrderExecutions: JSON.stringify([{
+        source: "system_close",
+        orderId: "venue-close-1",
+        positionQuantityAfter: 0,
+        updatedAt: Date.parse("2026-08-23T13:57:45.000Z"),
+      }]),
+    }
+
+    expect(classifyLocalTradeHistorySnapshot(snapshot)).toMatchObject({
+      disposition: "unresolved_trade",
+      reason: "venue_accounting_required",
+      row: {
+        closeOrderId: "venue-close-1",
+        accountingQuality: "exchange_required",
+      },
+    })
+    expect(normalizeLocalTradeHistoryRow(snapshot)).toBeNull()
+    expect(classifyLocalTradeHistorySnapshot({
+      ...snapshot,
+      environment: "simulated",
+      executionMode: "simulation",
+    })).toMatchObject({ disposition: "normalized_trade", reason: "normalized" })
+  })
+
   test("uses the canonical PF coordinate and lightweight runtime polling contracts", () => {
     const page = read("app/statistics/page.tsx")
     const route = read("app/api/connections/progression/[id]/stats/route.ts")

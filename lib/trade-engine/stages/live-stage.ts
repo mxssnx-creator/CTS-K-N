@@ -9602,11 +9602,34 @@ export async function executeLivePosition(
       ? await readOrderSettlement(exchangeConnector, realPosition.symbol, livePosition.orderId)
       : null
     if (entrySettlement) {
+      const settlementPrice = finitePositive(entrySettlement.averageFillPrice)
+      const observedFillPrice = finitePositive(fill.filledPrice)
+      const marketReferencePrice = finitePositive(currentPrice)
+      const contemporaneousPrice =
+        observedFillPrice > 0 &&
+        marketReferencePrice > 0 &&
+        priceDomainDistance(observedFillPrice, marketReferencePrice) >= 1.25
+          ? marketReferencePrice
+          : observedFillPrice || marketReferencePrice
+      const settlementPriceRejected =
+        contemporaneousPrice > 0 &&
+        (!(settlementPrice > 0) || priceDomainDistance(settlementPrice, contemporaneousPrice) >= 1.25)
+      const acceptedSettlementPrice = settlementPriceRejected
+        ? contemporaneousPrice
+        : settlementPrice
+      if (settlementPriceRejected) {
+        console.warn(
+          `${LOG_PREFIX} Rejected cross-domain entry settlement price for ${realPosition.symbol}: ` +
+          `settlement=${settlementPrice} reference=${contemporaneousPrice}`,
+        )
+      }
       fill = {
         filled: true,
         filledQty: entrySettlement.filledQuantity,
-        filledPrice: entrySettlement.averageFillPrice,
-        status: "filled_via_settlement",
+        filledPrice: acceptedSettlementPrice,
+        status: settlementPriceRejected
+          ? "filled_via_settlement_price_guard"
+          : "filled_via_settlement",
       }
     }
 

@@ -397,6 +397,47 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
   })
 
+  test("rejects a quote-domain settlement price before it can corrupt protection and PnL", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    mockReadOrderSettlement.mockResolvedValue({
+      orderId: "bingx-entry-EYEUSDT",
+      symbol: "EYE-USDT",
+      filledQuantity: 0.01,
+      averageFillPrice: 10_042.420596734958,
+      grossRealizedPnl: 0,
+      tradingFee: 0,
+      netRealizedPnl: 0,
+      netIncludesEntryFee: false,
+      source: "bingx_fill_history",
+      settledAt: Date.now(),
+      fills: [],
+    })
+
+    const result = await executeLivePosition(connection.id, {
+      id: "real-entry-price-domain-guard",
+      connectionId: connection.id,
+      symbol: "EYEUSDT",
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)
+
+    expect(result).toMatchObject({
+      status: "open",
+      executedQuantity: 0.01,
+      entryPrice: 100,
+      averageExecutionPrice: 100,
+    })
+    expect(result.statusReason).toContain("filled_via_settlement_price_guard")
+    expect(placeStopOrder).toHaveBeenCalledTimes(2)
+    expect(placeStopOrder.mock.calls.every((call) => Number(call[3]) < 200)).toBe(true)
+  })
+
   test("keeps the exact Real row Set in non-combined Live lineage", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
     const { calculateLivePositionStatistics } = await import("@/lib/live-position-statistics")

@@ -2,11 +2,13 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 import {
+  classifyLocalTradeHistorySnapshot,
   loadClosedPositionSnapshotArchive,
   loadClosedPositionSnapshots,
   mergeTradeHistory,
   normalizeBingXClosedOrder,
   normalizeLocalTradeHistoryRow,
+  selectHistoryReconciliationSymbols,
   summarizeTradeHistory,
 } from "@/lib/trade-history"
 
@@ -79,7 +81,9 @@ describe("BingX-backed trade history", () => {
   test("applies the requested page limit after merging exchange and local rows", () => {
     const route = readFileSync(join(process.cwd(), "app/api/trading/trade-history/route.ts"), "utf8")
 
-    expect(route).toContain("mergeTradeHistory(exchangeRows, localRows, limit)")
+    expect(route).toContain("[...localRows, ...localReconciliationCandidates]")
+    expect(route).toContain(".filter((row) => row.accountingQuality !== \"exchange_required\")")
+    expect(route).toContain(".slice(0, limit)")
     expect(route).toContain("maximum: MAX_TRADE_HISTORY_PAGE_SIZE")
   })
 
@@ -307,6 +311,83 @@ describe("BingX-backed trade history", () => {
     expect(rows.find((row) => row.id === "wrong-slot")?.source).toBe("local")
   })
 
+  test("reconciles quarantined accounting by terminal close ID and replaces its bad notional", () => {
+    const classification = classifyLocalTradeHistorySnapshot({
+      id: "legacy-minimum-retry",
+      status: "closed",
+      symbol: "EYEUSDT",
+      direction: "short",
+      executionMode: "live",
+      executedQuantity: 2_000,
+      averageExecutionPrice: 100.42420596734958,
+      closePrice: 0.000962,
+      realizedPnL: 228_764.15,
+      closeOrderId: "",
+      exchangeData: { closeOrderId: "venue-close-1" },
+      createdAt: 1_700_000_000_000,
+      closedAt: 1_700_000_060_000,
+      partialOrderExecutions: [{
+        source: "system_close",
+        orderId: "venue-close-1",
+        positionQuantityAfter: 0,
+      }],
+    })
+    const exchange = normalizeBingXClosedOrder({
+      symbol: "EYEUSDT",
+      orderId: "venue-close-1",
+      side: "BUY",
+      positionSide: "SHORT",
+      status: "FILLED",
+      executedQty: "2278",
+      avgPrice: "0.000962",
+      profit: "0.12",
+      commission: "0.01",
+      updateTime: 1_700_000_060_000,
+    })!
+
+    expect(classification.row).not.toBeNull()
+    const rows = mergeTradeHistory([exchange], [classification.row!], 500)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      id: "legacy-minimum-retry",
+      closeOrderId: "venue-close-1",
+      entryPrice: exchange.entryPrice,
+      exitPrice: exchange.exitPrice,
+      quantity: exchange.quantity,
+      volumeUsd: exchange.volumeUsd,
+      realizedPnl: exchange.realizedPnl,
+      source: "exchange",
+      accountingQuality: "local",
+    })
+  })
+
+  test("rotates forced priority reconciliation instead of starving later symbols", () => {
+    const candidates = ["A", "B", "C", "D", "E", "F", "G", "H"]
+    const first = selectHistoryReconciliationSymbols({
+      candidates,
+      priority: candidates,
+      refreshedAt: {},
+      cursor: 0,
+      now: 10_000,
+      force: true,
+      limit: 4,
+      intervalMs: 90_000,
+    })
+    expect(first.symbols).toEqual(["A", "B", "C", "D"])
+
+    const second = selectHistoryReconciliationSymbols({
+      candidates,
+      priority: candidates,
+      refreshedAt: Object.fromEntries(first.symbols.map((symbol) => [symbol, 10_000])),
+      cursor: first.nextCursor,
+      now: 10_001,
+      force: true,
+      limit: 4,
+      intervalMs: 90_000,
+    })
+    expect(second.symbols).toEqual(["E", "F", "G", "H"])
+  })
+
   test("does not trust a reused venue position id outside the close-time window", () => {
     const exchange = normalizeBingXClosedOrder({
       symbol: "ETHUSDT",
@@ -471,8 +552,11 @@ describe("live-order stranded-position guards", () => {
     expect(historyRoute).toContain("Stale-while-revalidate")
     expect(historyRoute).toContain("HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH = 4")
     expect(historyRoute).toContain("selectHistoryReconciliationSymbols")
+    expect(historyRoute).toContain("offset === 0 &&\n      !force &&")
     expect(historyRoute).toContain("mergeExchangeSnapshotRows(previous?.rows || [], rawOrders)")
-    expect(historyRoute).toContain("symbolHints: localRows.map((row) => row.symbol)")
+    expect(historyRoute).toContain(".slice(0, MAX_TRADE_HISTORY_PAGE_SIZE)")
+    expect(historyRoute).toContain("rows: parsed.rows.slice(0, MAX_TRADE_HISTORY_PAGE_SIZE)")
+    expect(historyRoute).toContain("symbolHints: [...localRows, ...localReconciliationCandidates].map((row) => row.symbol)")
     expect(historyRoute).toContain(").slice(0, 32)")
     expect(historyRoute).toContain("getOrderHistorySnapshot")
     expect(bingx).toContain("lastOrderHistorySnapshotStatus")

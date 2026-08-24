@@ -10,7 +10,7 @@ import {
   loadClosedPositionSnapshotPage,
   mergeTradeHistory,
   normalizeBingXClosedOrder,
-  normalizeLocalTradeHistoryRow,
+  selectHistoryReconciliationSymbols,
   summarizeTradeHistory,
   toStatisticsHistoryTuple,
   type TradeHistoryRow,
@@ -131,7 +131,11 @@ function mergeExchangeSnapshotRows(
   }
   return [...byId.values()]
     .sort((left, right) => right.closedAt - left.closedAt)
-    .slice(0, TRADE_HISTORY_PAGE_SIZE)
+    // Keep the table response bounded separately below. The reconciliation
+    // overlay must be able to retain a complete 500-row global page *plus*
+    // older exact per-symbol closes; otherwise adding a legacy correction can
+    // evict another correction before the full archive is normalized.
+    .slice(0, MAX_TRADE_HISTORY_PAGE_SIZE)
 }
 
 function historySymbolCandidates(
@@ -152,41 +156,6 @@ function historySymbolCandidates(
   ).slice(0, 32)
 }
 
-function selectHistoryReconciliationSymbols(input: {
-  candidates: readonly string[]
-  priority: readonly string[]
-  refreshedAt: Record<string, number>
-  cursor: number
-  now: number
-  force: boolean
-}): { symbols: string[]; nextCursor: number } {
-  const candidates = [...input.candidates]
-  if (candidates.length === 0) return { symbols: [], nextCursor: 0 }
-  const priority = new Set(parseSymbols(input.priority))
-  const isDue = (symbol: string) => input.force ||
-    input.now - (input.refreshedAt[symbol] || 0) >= HISTORY_RECONCILIATION_INTERVAL_MS
-  const symbols: string[] = []
-  const add = (symbol: string) => {
-    if (symbols.length >= HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH) return
-    if (isDue(symbol) && !symbols.includes(symbol)) symbols.push(symbol)
-  }
-  // An app-managed close is the most important record to reconcile. Give its
-  // own symbol priority over the rotating configured-symbol sweep.
-  for (const symbol of candidates) {
-    if (priority.has(symbol)) add(symbol)
-  }
-  const start = Math.max(0, Math.floor(input.cursor || 0)) % candidates.length
-  let scanned = 0
-  while (scanned < candidates.length && symbols.length < HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH) {
-    add(candidates[(start + scanned) % candidates.length])
-    scanned++
-  }
-  return {
-    symbols,
-    nextCursor: (start + Math.max(scanned, 1)) % candidates.length,
-  }
-}
-
 async function readCachedExchangeHistory(client: any, connectionId: string): Promise<CachedExchangeHistory | null> {
   const raw = await client.get(`trade_history:exchange:${connectionId}`).catch(() => null)
   if (!raw) return null
@@ -195,7 +164,7 @@ async function readCachedExchangeHistory(client: any, connectionId: string): Pro
     if (!parsed || !Array.isArray(parsed.rows)) return null
     return {
       fetchedAt: Number(parsed.fetchedAt) || 0,
-      rows: parsed.rows.slice(0, TRADE_HISTORY_PAGE_SIZE),
+      rows: parsed.rows.slice(0, MAX_TRADE_HISTORY_PAGE_SIZE),
       symbolCursor: Math.max(0, Math.floor(Number(parsed.symbolCursor) || 0)),
       symbolRefreshedAt: sanitizeSymbolRefreshTimes(parsed.symbolRefreshedAt),
       lastReconciledSymbols: parseSymbols(parsed.lastReconciledSymbols),
@@ -279,6 +248,8 @@ async function fetchExchangeHistory(
       cursor: previous?.symbolCursor || 0,
       now,
       force: options.force === true,
+      limit: HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH,
+      intervalMs: HISTORY_RECONCILIATION_INTERVAL_MS,
     })
     const fallbackDeadline = Date.now() + SYMBOL_HISTORY_BUDGET_MS
     const reconciledSymbols: string[] = []
@@ -361,23 +332,50 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
 
       const classifiedSnapshots = archive.snapshots.map(classifyLocalTradeHistorySnapshot)
       const normalizedSnapshotRows = classifiedSnapshots.flatMap((classification) =>
-        classification.row ? [classification.row] : [],
+        classification.disposition === "normalized_trade" && classification.row
+          ? [classification.row]
+          : [],
+      )
+      const unresolvedSnapshotRows = classifiedSnapshots.flatMap((classification) =>
+        classification.disposition === "unresolved_trade" && classification.row
+          ? [classification.row]
+          : [],
       )
       const excludedNonTradeSnapshots = classifiedSnapshots.filter((classification) =>
         classification.disposition === "excluded_non_trade",
       ).length
-      const unresolvedTradeSnapshots = classifiedSnapshots.filter((classification) =>
+      const structurallyUnresolvedTradeSnapshots = classifiedSnapshots.filter((classification) =>
         classification.disposition === "unresolved_trade",
       ).length
-      const eligibleSnapshots = normalizedSnapshotRows.length + unresolvedTradeSnapshots
+      const eligibleSnapshots = normalizedSnapshotRows.length + structurallyUnresolvedTradeSnapshots
       const localRows = normalizedSnapshotRows.filter((row) => row.environment === mode)
+      const reconciliationCandidates = unresolvedSnapshotRows.filter((row) => row.environment === mode)
       // This view never opens a private connector. The durable archive is the
       // complete lineage source; a previously reconciled venue snapshot only
       // overlays authoritative PnL/fees onto matching recent rows.
       const exchangeRows = mode === "exchange"
         ? (cached?.rows || []).filter((row) => row.environment === "exchange")
         : []
-      const rows = mergeTradeHistory(exchangeRows, localRows)
+      const mergedRows = mergeTradeHistory(
+        exchangeRows,
+        [...localRows, ...reconciliationCandidates],
+      )
+      const reconciledCandidateIds = new Set(
+        mergedRows
+          .filter((row) => row.source === "exchange" && row.accountingQuality !== "exchange_required")
+          .map((row) => row.id),
+      )
+      const reconciledSnapshots = unresolvedSnapshotRows.filter((row) =>
+        reconciledCandidateIds.has(row.id),
+      ).length
+      const reconciledLocalRows = reconciliationCandidates.filter((row) =>
+        reconciledCandidateIds.has(row.id),
+      ).length
+      const unresolvedTradeSnapshots = Math.max(
+        0,
+        structurallyUnresolvedTradeSnapshots - reconciledSnapshots,
+      )
+      const rows = mergedRows.filter((row) => row.accountingQuality !== "exchange_required")
       return NextResponse.json({
         success: true,
         connectionId,
@@ -390,10 +388,10 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
           uniqueIds: archive.uniqueIds,
           resolvedSnapshots: archive.snapshots.length,
           eligibleSnapshots,
-          normalizedSnapshots: normalizedSnapshotRows.length,
+          normalizedSnapshots: normalizedSnapshotRows.length + reconciledSnapshots,
           excludedNonTradeSnapshots,
           unresolvedTradeSnapshots,
-          normalizedLocalRows: localRows.length,
+          normalizedLocalRows: localRows.length + reconciledLocalRows,
           exchangeOverlays: exchangeRows.length,
           returned: rows.length,
           complete:
@@ -436,14 +434,26 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     if (!connection) {
       return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
     }
-    const localRows = localPage.snapshots
-      .map((position) => normalizeLocalTradeHistoryRow(position))
-      .filter((row): row is TradeHistoryRow => !!row)
+    const localClassifications = localPage.snapshots.map(classifyLocalTradeHistorySnapshot)
+    const localRows = localClassifications
+      .flatMap((classification) =>
+        classification.disposition === "normalized_trade" && classification.row
+          ? [classification.row]
+          : [],
+      )
+      .filter((row) => row.environment === mode)
+    const localReconciliationCandidates = localClassifications
+      .flatMap((classification) =>
+        classification.disposition === "unresolved_trade" && classification.row
+          ? [classification.row]
+          : [],
+      )
       .filter((row) => row.environment === mode)
 
     const cacheIsFresh =
       mode === "exchange" &&
       offset === 0 &&
+      !force &&
       !!cached &&
       Date.now() - cached.fetchedAt < EXCHANGE_CACHE_FRESH_MS
     let exchangeSnapshot = cached
@@ -452,7 +462,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         // Local closes identify the symbols where the application most needs
         // exact venue PnL/fees. They are reconciled ahead of the background
         // round-robin basket without leaking credentials into the request.
-        symbolHints: localRows.map((row) => row.symbol),
+        symbolHints: [...localRows, ...localReconciliationCandidates].map((row) => row.symbol),
         force,
       })
       if (cached && !force) {
@@ -480,35 +490,24 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     // result so a 500-row request can never expand to 500 local rows plus the
     // exchange cache. The archive itself remains unbounded; only this response
     // page is capped.
-    const rows = mergeTradeHistory(exchangeRows, localRows, limit)
+    const rows = mergeTradeHistory(
+      exchangeRows,
+      [...localRows, ...localReconciliationCandidates],
+    )
+      .filter((row) => row.accountingQuality !== "exchange_required")
+      .slice(0, limit)
     const summary = summarizeTradeHistory(rows)
     // Table paging and analytics are deliberately independent. The durable
     // close index has no row ceiling; the compact time index supplies the
     // complete PF 4/12/48h, PF last 12/25/75 and DDT 3d windows.
     const analyticsById = new Map<string, TradingAnalyticsRow>()
     for (const position of analyticsSnapshots) {
-      const analyticsEnvironment =
-        String(position.environment || "").toLowerCase() === "simulated" ||
-        String(position.executionMode || "").toLowerCase() === "simulation" ||
-        position.simulated === true ||
-        position.simulated === "1"
-          ? "simulated"
-          : "exchange"
-      if (analyticsEnvironment !== mode) continue
-      const id = String(position.id || "").trim()
-      const closedAt = Number(position.closedAt ?? position.updatedAt)
-      const realizedPnl = Number(
-        position.realizedPnL ??
-        position.realized_pnl ??
-        position.pnl,
-      )
-      if (!id || !Number.isFinite(closedAt) || !Number.isFinite(realizedPnl)) continue
-      analyticsById.set(`id:${id}`, {
-        id,
-        closedAt,
-        realizedPnl,
-        volumeUsd: Number(position.volumeUsd) || 0,
-      })
+      const classification = classifyLocalTradeHistorySnapshot(position)
+      const analyticsRow = classification.disposition === "normalized_trade"
+        ? classification.row
+        : null
+      if (!analyticsRow || analyticsRow.environment !== mode) continue
+      analyticsById.set(`id:${analyticsRow.id}`, analyticsRow)
     }
     for (const row of rows.filter((row) => row.environment === mode)) {
       analyticsById.set(`id:${row.id}`, row)
