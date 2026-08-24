@@ -40,6 +40,14 @@ export interface TradeHistoryRow {
   dcaStep?: number
   executionMode?: string
   closeReason?: string
+  /**
+   * A structurally complete legacy row can still contain locally-derived
+   * accounting which is contradicted by its own short holding period and
+   * entry/exit prices. Keep that row only as a venue-reconciliation candidate;
+   * it must never contribute to operator statistics until a matching exchange
+   * close supplies authoritative PnL and price data.
+   */
+  accountingQuality?: "local" | "exchange_required"
 }
 
 /**
@@ -272,7 +280,17 @@ export function normalizeBingXClosedOrder(order: Record<string, any>): TradeHist
 function parseStoredValue(key: string, value: unknown): unknown {
   if (typeof value !== "string") return value
   const trimmed = value.trim()
-  if (["fills", "exchangeData", "blockLegs", "dcaLegs", "progression", "accumulatedSetKeys", "manualProtectionOverride"].includes(key)) {
+  if ([
+    "fills",
+    "exchangeData",
+    "blockLegs",
+    "dcaLegs",
+    "progression",
+    "accumulatedSetKeys",
+    "manualProtectionOverride",
+    "partialOrderExecutions",
+    "systemProtectionLegs",
+  ].includes(key)) {
     try { return JSON.parse(trimmed) } catch { return key.endsWith("Legs") || key === "fills" ? [] : value }
   }
   return value
@@ -297,6 +315,7 @@ export interface LocalTradeHistorySnapshotClassification {
     | "missing_identity"
     | "missing_entry_price"
     | "missing_exit_and_pnl"
+    | "venue_accounting_required"
   row: TradeHistoryRow | null
 }
 
@@ -308,6 +327,51 @@ function totalFillQuantity(fills: unknown): number {
       positive(fill?.qty) ||
       positive(fill?.executedQty)
     ), 0)
+}
+
+function closeOrderIdFromSnapshot(position: Record<string, any>): string {
+  const direct = [position.closeOrderId, position.exchangeData?.closeOrderId]
+    .map((value) => String(value || "").trim())
+    .find(Boolean) || ""
+  if (direct) return direct
+
+  const executions = Array.isArray(position.partialOrderExecutions)
+    ? [...position.partialOrderExecutions]
+    : []
+  executions.sort((left, right) =>
+    finite(right?.updatedAt ?? right?.timestamp) - finite(left?.updatedAt ?? left?.timestamp),
+  )
+  const terminal = executions.find((execution) => {
+    if (!execution || !String(execution.orderId || "").trim()) return false
+    const source = String(execution.source || "").toLowerCase()
+    const quantityAfter = Number(execution.positionQuantityAfter)
+    return quantityAfter === 0 || /close|stop|take.?profit/.test(source)
+  })
+  return String(terminal?.orderId || "").trim()
+}
+
+function requiresVenueAccounting(input: {
+  environment: "exchange" | "simulated"
+  entryPrice: number
+  exitPrice: number
+  openedAt: number
+  closedAt: number
+}): boolean {
+  if (input.environment !== "exchange") return false
+  if (!(input.entryPrice > 0) || !(input.exitPrice > 0)) return false
+  if (!(input.openedAt > 0) || input.closedAt < input.openedAt) return false
+
+  // A >=50% entry/exit displacement inside one day is not discarded as an
+  // impossible market event. It is deliberately treated as requiring venue
+  // accounting because legacy BingX minimum-size retries sometimes persisted
+  // quote/notional-like values as fill prices. Those rows produced fictitious
+  // six-figure PnL despite venue notionals near a few USDT. A matching close
+  // order resolves the row exactly; until then the dashboard reports partial
+  // coverage instead of presenting invented accounting.
+  const priceRatio = Math.max(input.entryPrice, input.exitPrice) /
+    Math.max(Math.min(input.entryPrice, input.exitPrice), Number.EPSILON)
+  const holdingMs = input.closedAt - input.openedAt
+  return priceRatio >= 1.5 && holdingMs <= 24 * 60 * 60 * 1000
 }
 
 /**
@@ -398,6 +462,7 @@ export function classifyLocalTradeHistorySnapshot(
   ).trim()
   const executionMode = String(position.executionMode || "").trim().toLowerCase()
   const environment: "exchange" | "simulated" =
+    String(position.environment || "").trim().toLowerCase() === "simulated" ||
     executionMode === "simulation" ||
     position.simulated === true ||
     position.simulated === "1" ||
@@ -406,6 +471,7 @@ export function classifyLocalTradeHistorySnapshot(
     )
       ? "simulated"
       : "exchange"
+  const closeOrderId = closeOrderIdFromSnapshot(position)
   const rawIntent = String(position.executionIntent || "").trim().toLowerCase()
   const executionIntent =
     rawIntent === "main" || rawIntent === "preset" || rawIntent === "signal"
@@ -431,7 +497,7 @@ export function classifyLocalTradeHistorySnapshot(
     environment,
     executionIntent,
     orderId: String(position.orderId ?? exchangeData.orderId ?? "") || undefined,
-    closeOrderId: String(position.closeOrderId ?? exchangeData.closeOrderId ?? "") || undefined,
+    closeOrderId: closeOrderId || undefined,
     positionId: positionId || undefined,
     setKey: position.setKey,
     parentSetKey: position.parentSetKey,
@@ -453,11 +519,20 @@ export function classifyLocalTradeHistorySnapshot(
     executionMode: String(position.executionMode || "") || undefined,
     closeReason: closeReason || undefined,
   }
+  if (requiresVenueAccounting({ environment, entryPrice, exitPrice, openedAt, closedAt })) {
+    row.accountingQuality = "exchange_required"
+    return {
+      disposition: "unresolved_trade",
+      reason: "venue_accounting_required",
+      row,
+    }
+  }
   return { disposition: "normalized_trade", reason: "normalized", row }
 }
 
 export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHistoryRow | null {
-  return classifyLocalTradeHistorySnapshot(raw).row
+  const classification = classifyLocalTradeHistorySnapshot(raw)
+  return classification.disposition === "normalized_trade" ? classification.row : null
 }
 
 function rowMatchScore(exchange: TradeHistoryRow, local: TradeHistoryRow): number {
@@ -507,18 +582,35 @@ export function mergeTradeHistory(
       continue
     }
     const local = remainingLocal.splice(index, 1)[0]
+    const venueAccountingRequired = local.accountingQuality === "exchange_required"
+    const accountingVolumeUsd = venueAccountingRequired
+      ? exchange.volumeUsd
+      : local.volumeUsd
+    const accountingQuantity = venueAccountingRequired
+      ? exchange.quantity
+      : local.quantity
+    const reconciledClosedAt = Math.max(exchange.closedAt, local.closedAt)
     merged.push({
       ...local,
+      entryPrice: venueAccountingRequired ? exchange.entryPrice : local.entryPrice,
+      quantity: accountingQuantity,
       grossPnl: exchange.grossPnl,
       fees: exchange.fees,
       realizedPnl: exchange.realizedPnl,
-      pnlPct: local.volumeUsd > 0 ? (exchange.realizedPnl / local.volumeUsd) * 100 : exchange.pnlPct,
+      volumeUsd: accountingVolumeUsd,
+      pnlPct: accountingVolumeUsd > 0
+        ? (exchange.realizedPnl / accountingVolumeUsd) * 100
+        : exchange.pnlPct,
       exitPrice: exchange.exitPrice || local.exitPrice,
-      closedAt: Math.max(exchange.closedAt, local.closedAt),
+      closedAt: reconciledClosedAt,
+      holdMinutes: local.openedAt > 0 && reconciledClosedAt >= local.openedAt
+        ? (reconciledClosedAt - local.openedAt) / 60_000
+        : local.holdMinutes,
       closeOrderId: exchange.closeOrderId || local.closeOrderId,
       positionId: exchange.positionId || local.positionId,
       source: "exchange",
       environment: "exchange",
+      accountingQuality: "local",
     })
   }
   merged.push(...remainingLocal)
@@ -533,6 +625,51 @@ export function mergeTradeHistory(
     .sort((left, right) => right.closedAt - left.closedAt)
   const requested = Math.floor(Number(limit) || 0)
   return requested > 0 ? ordered.slice(0, requested) : ordered
+}
+
+export function selectHistoryReconciliationSymbols(input: {
+  candidates: readonly string[]
+  priority: readonly string[]
+  refreshedAt: Record<string, number>
+  cursor: number
+  now: number
+  force: boolean
+  limit?: number
+  intervalMs?: number
+}): { symbols: string[]; nextCursor: number } {
+  const candidates = [...new Set(input.candidates.map(String).filter(Boolean))]
+  if (candidates.length === 0) return { symbols: [], nextCursor: 0 }
+
+  const limit = Math.max(1, Math.floor(Number(input.limit) || 4))
+  const intervalMs = Math.max(0, Number(input.intervalMs) || 0)
+  const priority = new Set(input.priority.map(String).filter(Boolean))
+  const start = Math.max(0, Math.floor(input.cursor || 0)) % candidates.length
+  const rank = (symbol: string) => {
+    const index = candidates.indexOf(symbol)
+    return (index - start + candidates.length) % candidates.length
+  }
+  const isDue = (symbol: string) => input.force ||
+    input.now - (Number(input.refreshedAt[symbol]) || 0) >= intervalMs
+
+  // Oldest priority symbols are selected first. This preserves prompt
+  // reconciliation for app-managed closes while preventing the first four
+  // symbols from starving every other candidate when every local row is a
+  // priority hint. The round-robin rank makes equal timestamps deterministic.
+  const duePriority = candidates
+    .filter((symbol) => priority.has(symbol) && isDue(symbol))
+    .sort((left, right) =>
+      (Number(input.refreshedAt[left]) || 0) - (Number(input.refreshedAt[right]) || 0) ||
+      rank(left) - rank(right),
+    )
+  const dueRegular = candidates
+    .filter((symbol) => !priority.has(symbol) && isDue(symbol))
+    .sort((left, right) => rank(left) - rank(right))
+  const symbols = [...duePriority, ...dueRegular].slice(0, limit)
+  const lastRank = symbols.reduce((maximum, symbol) => Math.max(maximum, rank(symbol)), -1)
+  return {
+    symbols,
+    nextCursor: (start + Math.max(lastRank + 1, 1)) % candidates.length,
+  }
 }
 
 export function summarizeTradeHistory(rows: TradeHistoryRow[]) {
