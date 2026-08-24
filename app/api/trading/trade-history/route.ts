@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server"
+import { createHash } from "node:crypto"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import { withTimeout } from "@/lib/async-safety"
@@ -28,7 +29,6 @@ export const revalidate = 0
 export const maxDuration = 30
 
 const EXCHANGE_CACHE_FRESH_MS = 20_000
-const EXCHANGE_CACHE_TTL_SECONDS = 5 * 60
 const CONNECTOR_START_TIMEOUT_MS = 3_000
 const GLOBAL_HISTORY_TIMEOUT_MS = 6_000
 const SYMBOL_HISTORY_BUDGET_MS = 12_000
@@ -51,6 +51,7 @@ type ExactOrderReconciliationHint = Pick<
 type CachedExchangeHistory = {
   fetchedAt: number
   rows: TradeHistoryRow[]
+  connectionFingerprint?: string
   symbolCursor?: number
   symbolRefreshedAt?: Record<string, number>
   lastReconciledSymbols?: string[]
@@ -110,6 +111,36 @@ function hasPrivateExchangeCredentials(connection: Record<string, any>): boolean
   const apiKey = String(connection.api_key ?? connection.apiKey ?? "").trim()
   const apiSecret = String(connection.api_secret ?? connection.apiSecret ?? "").trim()
   return apiKey.length > 0 && apiSecret.length > 0
+}
+
+function exchangeHistoryConnectionFingerprint(connection: Record<string, any>): string {
+  // The authoritative close overlay is durable because filled venue orders are
+  // immutable. Bind it to the effective account/configuration so repointing a
+  // connection can never carry accounting rows into a different account.
+  return createHash("sha256")
+    .update(JSON.stringify({
+      exchange: String(connection.exchange || "").toLowerCase(),
+      apiKey: String(connection.api_key ?? connection.apiKey ?? ""),
+      apiSecret: String(connection.api_secret ?? connection.apiSecret ?? ""),
+      isTestnet: String(connection.is_testnet ?? connection.isTestnet ?? ""),
+      apiType: String(connection.api_type ?? connection.apiType ?? ""),
+      contractType: String(connection.contract_type ?? connection.contractType ?? ""),
+    }))
+    .digest("hex")
+}
+
+function compatibleExchangeHistory(
+  cached: CachedExchangeHistory | null,
+  connection: Record<string, any>,
+): CachedExchangeHistory | null {
+  if (!cached) return null
+  // One release of legacy cache data has no fingerprint. Accept it once so a
+  // deployment does not discard already-reconciled closes; the next refresh
+  // rewrites the same bounded snapshot with an account-bound fingerprint.
+  if (!cached.connectionFingerprint) return cached
+  return cached.connectionFingerprint === exchangeHistoryConnectionFingerprint(connection)
+    ? cached
+    : null
 }
 
 function sanitizeSymbolRefreshTimes(raw: unknown): Record<string, number> {
@@ -208,6 +239,9 @@ async function readCachedExchangeHistory(client: any, connectionId: string): Pro
     return {
       fetchedAt: Number(parsed.fetchedAt) || 0,
       rows: parsed.rows.slice(0, MAX_TRADE_HISTORY_PAGE_SIZE),
+      connectionFingerprint: typeof parsed.connectionFingerprint === "string"
+        ? parsed.connectionFingerprint
+        : undefined,
       symbolCursor: Math.max(0, Math.floor(Number(parsed.symbolCursor) || 0)),
       symbolRefreshedAt: sanitizeSymbolRefreshTimes(parsed.symbolRefreshedAt),
       lastReconciledSymbols: parseSymbols(parsed.lastReconciledSymbols),
@@ -383,6 +417,7 @@ async function fetchExchangeHistory(
     const snapshot: CachedExchangeHistory = {
       fetchedAt: Date.now(),
       rows,
+      connectionFingerprint: exchangeHistoryConnectionFingerprint(connection),
       symbolCursor: reconciliation.nextCursor,
       symbolRefreshedAt: refreshTimes,
       lastReconciledSymbols: reconciledSymbols,
@@ -392,8 +427,12 @@ async function fetchExchangeHistory(
       exactOrderCandidateCount: exactOrderHints.length,
     }
     const client = getRedisClient()
+    // Do not expire authoritative closed-order accounting after five minutes.
+    // `fetchedAt` still drives refresh freshness; the bounded, account-bound
+    // rows remain available across idle periods and service restarts so old
+    // repaired PnL cannot oscillate back into quarantine.
     await client
-      .setex(`trade_history:exchange:${connectionId}`, EXCHANGE_CACHE_TTL_SECONDS, JSON.stringify(snapshot))
+      .set(`trade_history:exchange:${connectionId}`, JSON.stringify(snapshot))
       .catch(() => undefined)
     return snapshot
   })().finally(() => {
@@ -428,7 +467,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     if (view === "statistics") {
       await initRedis()
       const client = getRedisClient()
-      const [connection, archive, cached] = await Promise.all([
+      const [connection, archive, rawCached] = await Promise.all([
         getConnection(connectionId),
         loadClosedPositionSnapshotArchive(client, connectionId),
         mode === "exchange"
@@ -438,6 +477,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       if (!connection) {
         return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
       }
+      const cached = compatibleExchangeHistory(rawCached, connection as Record<string, any>)
 
       const classifiedSnapshots = archive.snapshots.map(classifyLocalTradeHistorySnapshot)
       const normalizedSnapshotRows = classifiedSnapshots.flatMap((classification) =>
@@ -531,7 +571,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     // polling cannot serially queue waits behind a CPU-heavy progression. A
     // forced operator refresh additionally scans the complete durable archive
     // for old terminal close IDs; routine dashboard polling remains paged.
-    const [connection, localPage, analyticsSnapshots, cached, forceArchive] = await Promise.all([
+    const [connection, localPage, analyticsSnapshots, rawCached, forceArchive] = await Promise.all([
       getConnection(connectionId),
       loadClosedPositionSnapshotPage(client, connectionId, { offset, limit }),
       getClosedLivePositionReadModels(connectionId, {
@@ -548,6 +588,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     if (!connection) {
       return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
     }
+    const cached = compatibleExchangeHistory(rawCached, connection as Record<string, any>)
     const localClassifications = localPage.snapshots.map(classifyLocalTradeHistorySnapshot)
     const localRows = localClassifications
       .flatMap((classification) =>
@@ -592,7 +633,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       })
       if (cached && !force) {
         // Stale-while-revalidate: the table remains instant and never blanks
-        // while a private exchange request refreshes the five-minute cache.
+        // while a private exchange request refreshes the durable overlay.
         void refresh.catch(() => null)
       } else {
         exchangeSnapshot = await withTimeout(
