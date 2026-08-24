@@ -528,8 +528,10 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     const analyticsNow = Date.now()
     // The connection row, durable position snapshots and exchange cache are
     // independent. Resolve them in one Redis turn so high-frequency dashboard
-    // polling cannot serially queue four waits behind a CPU-heavy progression.
-    const [connection, localPage, analyticsSnapshots, cached] = await Promise.all([
+    // polling cannot serially queue waits behind a CPU-heavy progression. A
+    // forced operator refresh additionally scans the complete durable archive
+    // for old terminal close IDs; routine dashboard polling remains paged.
+    const [connection, localPage, analyticsSnapshots, cached, forceArchive] = await Promise.all([
       getConnection(connectionId),
       loadClosedPositionSnapshotPage(client, connectionId, { offset, limit }),
       getClosedLivePositionReadModels(connectionId, {
@@ -538,6 +540,9 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       }),
       mode === "exchange" && offset === 0
         ? readCachedExchangeHistory(client, connectionId)
+        : Promise.resolve(null),
+      force && mode === "exchange" && offset === 0
+        ? loadClosedPositionSnapshotArchive(client, connectionId)
         : Promise.resolve(null),
     ])
     if (!connection) {
@@ -558,6 +563,16 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
           : [],
       )
       .filter((row) => row.environment === mode)
+    const forceArchiveReconciliationCandidates = forceArchive
+      ? forceArchive.snapshots
+        .map(classifyLocalTradeHistorySnapshot)
+        .flatMap((classification) =>
+          classification.disposition === "unresolved_trade" && classification.row
+            ? [classification.row]
+            : [],
+        )
+        .filter((row) => row.environment === "exchange")
+      : localReconciliationCandidates
 
     const cacheIsFresh =
       mode === "exchange" &&
@@ -572,7 +587,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         // exact venue PnL/fees. They are reconciled ahead of the background
         // round-robin basket without leaking credentials into the request.
         symbolHints: [...localRows, ...localReconciliationCandidates].map((row) => row.symbol),
-        exactOrderHints: localReconciliationCandidates,
+        exactOrderHints: forceArchiveReconciliationCandidates,
         force,
       })
       if (cached && !force) {
