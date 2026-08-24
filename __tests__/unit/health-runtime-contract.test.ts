@@ -2,6 +2,16 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 describe("health runtime contract", () => {
+  test("readiness uses canonical distributed runtime evidence", () => {
+    const source = readFileSync(path.resolve(process.cwd(), "lib/startup-validation.ts"), "utf8")
+
+    expect(source).toContain('import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"')
+    expect(source).toContain('client.hgetall("trade_engine:global")')
+    expect(source).toContain("states: [legacyState, globalState]")
+    expect(source).toContain("checks.engineState = runtime.running ? \"running\" : \"stopped\"")
+    expect(source).not.toContain('const state = await getSettings("engine_state")')
+  })
+
   test("uses distributed heartbeat evidence and O(1) cardinality reads", () => {
     const source = readFileSync(path.resolve(process.cwd(), "app/api/health/route.ts"), "utf8")
 

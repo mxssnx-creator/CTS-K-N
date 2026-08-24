@@ -240,6 +240,7 @@ __tests__/unit/special-strategy.test.ts
 __tests__/unit/special-vst-validator-contract.test.ts
 __tests__/unit/startup-coordinator-cleanup.test.ts
 __tests__/unit/startup-global-liveness.test.ts
+__tests__/unit/startup-validation-runtime-health.test.ts
 __tests__/unit/state-switch-coordination.test.ts
 __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/statistics-ui-correctness.test.ts

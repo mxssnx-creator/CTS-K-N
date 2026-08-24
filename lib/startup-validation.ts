@@ -1,4 +1,5 @@
 import { isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { hasKiloDatabaseBackend } from "@/lib/kilo-database-client"
 
 /**
@@ -281,12 +282,25 @@ export async function runtimeHealthCheck(): Promise<Record<string, any>> {
 
   // Check engine state
   try {
-    const { initRedis, getSettings } = await import("@/lib/redis-db")
+    const { initRedis, getRedisClient, getSettings } = await import("@/lib/redis-db")
     await initRedis()
-    const state = await getSettings("engine_state")
-    checks.engineState = state?.running ? "running" : "stopped"
+    const client = getRedisClient()
+    const [legacyState, globalState] = await Promise.all([
+      getSettings("engine_state"),
+      client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
+    ])
+    const runtime = resolveDistributedEngineRuntime({
+      runningHint: globalState.actual_status || globalState.status || legacyState?.running,
+      states: [legacyState, globalState],
+      globalState,
+    })
+    checks.engineState = runtime.running ? "running" : "stopped"
+    checks.engineReason = runtime.reason
+    checks.engineHeartbeatAgeMs = runtime.heartbeatAgeMs
   } catch {
     checks.engineState = "error"
+    checks.engineReason = "runtime-check-error"
+    checks.engineHeartbeatAgeMs = null
   }
 
   // System info

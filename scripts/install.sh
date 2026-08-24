@@ -1447,7 +1447,10 @@ EOF
 Description=CTS-K-N minute recovery timer
 
 [Timer]
-OnBootSec=2min
+# Deployment and installer lifecycles can restart this timer long after the
+# host booted. OnBootSec is already elapsed in that case and leaves an active
+# timer with no next trigger; OnActiveSec always arms the first recovery pass.
+OnActiveSec=2min
 OnUnitActiveSec=60s
 Persistent=true
 Unit=$APP_NAME-recovery.service

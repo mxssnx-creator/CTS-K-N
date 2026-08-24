@@ -325,9 +325,25 @@ async function buildStatusAllResponse() {
           if (resolvedSymbols.length === 0 && effectiveSymbols.length > 0) {
             console.warn(`[v0] Engine symbol read timed out for ${conn.id}; serving the last complete status snapshot`)
           }
+          const canonicalStatus = isRunning
+            ? "running"
+            : runtime.globalIntent === "paused"
+              ? "paused"
+              : "stopped"
+          const canonicalLiveTrade = isEnabledFlag(conn.is_live_trade)
           const rawEngineStatus = {
             ...redisStatus,
-            status: runtime.status || (isRunning ? "running" : "stopped"),
+            // Persisted engine hashes can retain pre-restart aliases such as
+            // `engine_running=0` or `status=running`. Every status field in the
+            // public payload must describe the same resolved runtime snapshot.
+            status: canonicalStatus,
+            actual_status: canonicalStatus,
+            running: isRunning,
+            engine_running: isRunning ? "1" : "0",
+            engineRunning: isRunning,
+            isEngineRunning: isRunning,
+            is_live_trade: canonicalLiveTrade ? "1" : "0",
+            live_trade_enabled: canonicalLiveTrade ? "1" : "0",
             runtime_reason: runtime.reason,
             heartbeat_fresh: runtime.heartbeatFresh,
             heartbeat_age_ms: runtime.heartbeatAgeMs,
