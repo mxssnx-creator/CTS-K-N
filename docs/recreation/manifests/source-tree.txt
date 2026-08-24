@@ -139,6 +139,7 @@ __tests__/unit/health-route-liveness-budget.test.ts
 __tests__/unit/health-runtime-contract.test.ts
 __tests__/unit/historic-candle-window.test.ts
 __tests__/unit/historic-four-hour-stats.test.ts
+__tests__/unit/historic-profit-factor.test.ts
 __tests__/unit/historic-progression-generation.test.ts
 __tests__/unit/historic-replay-policy.test.ts
 __tests__/unit/indication-configuration-counts.test.ts
@@ -1117,6 +1118,7 @@ lib/forced-symbols.ts
 lib/global-rate-limiter.ts
 lib/health-check.ts
 lib/historic-four-hour-stats.ts
+lib/historic-profit-factor.ts
 lib/html-response-parser.ts
 lib/index.ts
 lib/indication-calculator.ts

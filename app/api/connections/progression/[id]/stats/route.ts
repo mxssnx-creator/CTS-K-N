@@ -25,6 +25,7 @@ import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtim
 import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot"
 import { strategyVariantOutcomeKey } from "@/lib/pos-history"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
+import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -3531,6 +3532,7 @@ export async function GET(
     }
 
     // --- Prehistoric metadata (range, timeframe, interval progress) ---
+    const historicProfitFactor = resolveHistoricProfitFactor(prehistoricHash)
     const prehistoricMeta = {
       rangeStart:              prehistoricHash.range_start          || null,
       rangeEnd:                prehistoricHash.range_end            || null,
@@ -3546,29 +3548,16 @@ export async function GET(
       configWorkCurrentStage:   prehistoricHash.config_work_current_stage || progHash.prehistoric_config_work_current_stage || "",
       configWorkLastActivityAt: prehistoricHash.config_work_last_activity_at || progHash.prehistoric_config_work_last_activity_at || null,
       isComplete:              historicIsComplete,
-      // Aggregate profit factor across every closed prehistoric position
-      // — written by `ConfigSetProcessor` after each prehistoric run
-      // (`historic_avg_profit_factor` field on the `prehistoric:{id}`
-      // hash). Surfaced here so the dashboard tile + Overall Summary can
-      // render it without computing PF client-side. 0 when no closed
-      // positions yet, so the UI can render "—" for empty states.
-      // Prefer the dedicated prehistoric PF field. If it is 0 (written only by the
-      // ConfigSetProcessor after a full prehistoric run — absent when reusing a snapshot),
-      // fall back to the Real-stage average PF from the strategy-detail hash which IS
-      // continuously updated by the coordinator on every cycle.
-      historicAvgProfitFactor: (() => {
-        const fromPrehistoric = parseFloat(prehistoricHash.historic_avg_profit_factor || "0") || 0
-        if (fromPrehistoric > 0) return fromPrehistoric
-        // Real-stage avg_profit_factor from strategy_detail:real:{id} hash
-        const fromRealDetail = parseFloat(strategyDetailRealHash.avg_profit_factor || "0") || 0
-        if (fromRealDetail > 0) return fromRealDetail
-        // Last resort: cumulative sum / count from the Real coordinator hash
-        const sumPf = n(strategyDetailRealHash.sum_pf_x1000)
-        const cnt   = n(strategyDetailRealHash.created_sets)
-        return sumPf > 0 && cnt > 0 ? Math.round((sumPf / 1000 / cnt) * 1000) / 1000 : 0
-      })(),
-      historicAvgProfitFactorCount: n(prehistoricHash.historic_avg_profit_factor_count) ||
-        n(strategyDetailRealHash.created_sets),
+      // Classic realised PF across every closed prehistoric result. The
+      // dedicated prehistoric aggregate is the sole authority: a current
+      // Real-stage coordination PF is a different population and must not
+      // replace PF 0 from an all-loss historic run. Availability is driven by
+      // the exact closed-result count, so 0/n>0 and unavailable/n=0 remain
+      // distinguishable all the way to the UI.
+      historicAvgProfitFactor: historicProfitFactor.value,
+      historicAvgProfitFactorCount: historicProfitFactor.count,
+      historicAvgProfitFactorAvailable: historicProfitFactor.available,
+      historicAvgProfitFactorSource: historicProfitFactor.source,
     }
     const historicConfigWorkProgressPercent = prehistoricMeta.configWorkUnitsTotal > 0
       ? Math.min(100, Math.round(
@@ -3951,7 +3940,7 @@ export async function GET(
         //
         //   * `avgProfitFactor` — historic-wide PF (all closed
         //     prehistoric positions, sum(+pct) / |sum(-pct)|, capped at
-        //     9.999). 0 ⇒ no closed positions yet.
+        //     9.999). PF 0 is valid when every closed result is a loss.
         //   * `avgProfitFactorCount` — sample count behind the average.
         //   * `executedPositions` — cumulative live exchange positions
         //     created since engine start (`live_positions_created_count`).
@@ -3960,6 +3949,8 @@ export async function GET(
         //     actual exchange order.
         avgProfitFactor:        Math.round(prehistoricMeta.historicAvgProfitFactor * 1000) / 1000,
         avgProfitFactorCount:   prehistoricMeta.historicAvgProfitFactorCount,
+        avgProfitFactorAvailable: prehistoricMeta.historicAvgProfitFactorAvailable,
+        avgProfitFactorSource:  prehistoricMeta.historicAvgProfitFactorSource,
         executedPositions:      n(progHash.live_positions_created_count),
 
         // Prehistoric-processing churn counters — tick every time the engine spins
