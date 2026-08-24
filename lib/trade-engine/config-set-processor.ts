@@ -38,6 +38,7 @@ const __DBGC = (message: string): void => {
 }
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 import {
+  clearHistoricCalculationState,
   clearHistoricAggregateMarkers,
   clearHistoricListCompletionMarkers,
   incrementHistoricAggregateOnce,
@@ -232,6 +233,27 @@ function buildHistoricPriceSeries(candles: readonly any[]): HistoricPriceSeries 
   }
 }
 
+export const HISTORIC_STRATEGY_ENTRY_THRESHOLD_MIN = 0.00005
+export const HISTORIC_STRATEGY_ENTRY_THRESHOLD_MAX = 0.002
+
+/**
+ * Resolve the strategy replay entry threshold from the actual bar cadence.
+ *
+ * The legacy fixed 0.20% threshold was written for minute candles. After the
+ * canonical feed moved to one-second bars, even a complete 90-minute fixture
+ * typically moves only ~0.004% per bar and could never open a pseudo-position.
+ * The adaptive threshold preserves the legacy 0.20% ceiling on volatile data,
+ * while keeping a 0.005% noise floor for flat/synthetic second histories.
+ */
+export function resolveHistoricStrategyEntryThreshold(averageBarVolatility: unknown): number {
+  const volatility = Number(averageBarVolatility)
+  const safeVolatility = Number.isFinite(volatility) && volatility > 0 ? volatility : 0
+  return Math.min(
+    HISTORIC_STRATEGY_ENTRY_THRESHOLD_MAX,
+    Math.max(HISTORIC_STRATEGY_ENTRY_THRESHOLD_MIN, safeVolatility * 1.5),
+  )
+}
+
 function historicGenerationFromScope(scope: string): string {
   const separator = scope.lastIndexOf(":")
   return (separator > 0 ? scope.slice(0, separator) : scope).replace(/[^A-Za-z0-9._-]/g, "_")
@@ -243,6 +265,16 @@ function historicAggregateKey(connectionId: string, kind: "indications" | "strat
 
 export function historicFourHourAggregateKey(connectionId: string, generation: string): string {
   return `historic:aggregate:${connectionId}:four-hour:${generation}`
+}
+
+export function historicProcessedIntervalsKey(
+  connectionId: string,
+  symbol: string,
+  generation: string,
+): string {
+  const normalizedSymbol = String(symbol || "unknown").replace(/[^A-Za-z0-9._-]/g, "_")
+  const normalizedGeneration = String(generation || "legacy").replace(/[^A-Za-z0-9._-]/g, "_")
+  return `prehistoric:${connectionId}:${normalizedSymbol}:processed_intervals:${normalizedGeneration}`
 }
 
 function historicAggregateMarkerKey(
@@ -476,7 +508,34 @@ export class ConfigSetProcessor {
     const progressionScope = buildProgressionScope(this.connectionId, "main")
     const prehistoricKey = progressionScope.prehistoricKey
     const prehistoricSymbolsKey = `${prehistoricKey}:symbols`
-    const alreadyProcessedSymbols = Number(await client.scard(prehistoricSymbolsKey).catch(() => 0)) || 0
+    let alreadyProcessedSymbols = Number(await client.scard(prehistoricSymbolsKey).catch(() => 0)) || 0
+    const previousFourHourAggregate = await client
+      .hgetall(fourHourAggregateKey)
+      .catch(() => ({} as Record<string, string>))
+    const previousGenerationComplete =
+      previousFourHourAggregate.complete === "1" ||
+      previousFourHourAggregate.complete === "true"
+    const startsFreshCompletedGeneration =
+      previousGenerationComplete &&
+      (alreadyProcessedSymbols === 0 || alreadyProcessedSymbols >= canonicalSymbolsTotal)
+
+    // A completed projection is immutable. If its canonical symbol SET was
+    // cleared/expired, or a full owner explicitly starts it again, this is a
+    // fresh calculation cycle. Delete the HASH values together with their
+    // markers and interval checkpoints; clearing only markers is precisely
+    // what caused repeated config/symbol rows to accumulate in production.
+    if (startsFreshCompletedGeneration) {
+      await Promise.all([
+        clearHistoricCalculationState(client, this.connectionId),
+        clearHistoricListCompletionMarkers(client, this.connectionId),
+        client.del(prehistoricSymbolsKey),
+      ])
+      alreadyProcessedSymbols = 0
+      console.warn(
+        `[v0] [ConfigSetProcessor] Reset completed historic aggregate before fresh generation ` +
+        `${historicGeneration}`,
+      )
+    }
     const engineProgressionKey = progressionScope.engineProgressionKey
     const legacyEngineProgressionKey = `engine_progression:${this.connectionId}`
     const mirrorProgressHash = async (patch: Record<string, any>) => {
@@ -685,10 +744,14 @@ export class ConfigSetProcessor {
         neutral_pf: String(HISTORIC_FOUR_HOUR_PF_NEUTRAL),
         minimum_pf: String(HISTORIC_FOUR_HOUR_PF_MINIMUM),
         generation: historicGeneration,
+        run_started_at_ms: String(fourHourStartedAtMs),
         complete: "0",
         range_start_ms: String(effectiveStart.getTime()),
         range_end_ms: String(effectiveEnd.getTime()),
         symbols_expected: String(canonicalSymbolsTotal),
+        symbols_processed: String(alreadyProcessedSymbols),
+        indication_configs: String(indicationConfigs.length),
+        strategy_configs: String(strategyConfigs.length),
         updated_at_ms: String(fourHourStartedAtMs),
       }),
       client.expire(fourHourAggregateKey, 7 * 24 * 60 * 60),
@@ -876,7 +939,11 @@ export class ConfigSetProcessor {
         }
 
         // --- Determine which time intervals are already processed ---
-        const processedKey = `prehistoric:${this.connectionId}:${symbol}:processed_intervals`
+        const processedKey = historicProcessedIntervalsKey(
+          this.connectionId,
+          symbol,
+          historicGeneration,
+        )
         let processedIntervals: Set<number> = new Set()
         try {
           const processedRaw = await client.get(processedKey)
@@ -1254,8 +1321,12 @@ export class ConfigSetProcessor {
         minimum_pf: String(HISTORIC_FOUR_HOUR_PF_MINIMUM),
         generation: historicGeneration,
         complete: fourHourComplete ? "1" : "0",
+        range_start_ms: String(effectiveStart.getTime()),
+        range_end_ms: String(effectiveEnd.getTime()),
         symbols_expected: String(canonicalSymbolsTotal),
         symbols_processed: String(finalDistinctProcessed),
+        indication_configs: String(indicationConfigs.length),
+        strategy_configs: String(strategyConfigs.length),
         symbols_without_data: String(symbolsWithoutData),
         failed_config_work_units: String(failedConfigWorkUnits),
         updated_at_ms: String(fourHourCompletedAtMs),
@@ -2155,10 +2226,13 @@ export class ConfigSetProcessor {
       return positions
     }
 
-    const prices = (historicSeries ?? buildHistoricPriceSeries(candles)).points.map((point) => ({
+    const series = historicSeries ?? buildHistoricPriceSeries(candles)
+    if (series.points.length < position_cost_step * 2) return positions
+    const prices = series.points.map((point) => ({
       price: point.price,
       time: point.timestamp,
     }))
+    const entryThreshold = resolveHistoricStrategyEntryThreshold(series.averageBarVolatility)
 
     let inPosition = false
     let entryPrice = 0
@@ -2178,7 +2252,7 @@ export class ConfigSetProcessor {
       if (!inPosition) {
         const priceDiff = (currentPrice - avgPrice) / avgPrice
         
-        if (Math.abs(priceDiff) > 0.002) {
+        if (Math.abs(priceDiff) > entryThreshold) {
           inPosition = true
           entryPrice = currentPrice
           entryTime = currentTime

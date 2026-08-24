@@ -5,7 +5,7 @@ export const HISTORIC_FOUR_HOUR_BUCKET_MS =
   HISTORIC_FOUR_HOUR_BUCKET_HOURS * 60 * 60 * 1000
 export const HISTORIC_FOUR_HOUR_PF_NEUTRAL = 1
 export const HISTORIC_FOUR_HOUR_PF_MINIMUM = 1.1
-export const HISTORIC_FOUR_HOUR_SCHEMA_VERSION = 1
+export const HISTORIC_FOUR_HOUR_SCHEMA_VERSION = 2
 
 const REDIS_BUCKET_PREFIX = "b"
 const FLOAT_TOLERANCE = 1e-10
@@ -94,6 +94,14 @@ export interface HistoricFourHourStats {
   minimumPf: 1.1
   generation: string | null
   complete: boolean
+  symbolsExpected: number | null
+  symbolsProcessed: number | null
+  indicationConfigs: number | null
+  strategyConfigs: number | null
+  rangeStart: string | null
+  rangeEnd: string | null
+  integrityValid: boolean
+  integrityIssues: string[]
   updatedAt: string | null
   bucketCount: number
   summary: HistoricFourHourMetrics
@@ -139,6 +147,17 @@ function rounded(value: number, decimals = 10): number {
   if (!Number.isFinite(value)) return 0
   const factor = 10 ** decimals
   return Math.round((value + Number.EPSILON) * factor) / factor
+}
+
+function optionalNonNegativeInteger(value: unknown): number | null {
+  if (value === null || value === undefined || String(value).trim() === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null
+}
+
+function isoTimestamp(value: unknown): string | null {
+  const epochMs = historicEpochMs(value)
+  return epochMs === null ? null : new Date(epochMs).toISOString()
 }
 
 function emptyBucket(): MutableHistoricFourHourBucket {
@@ -431,6 +450,70 @@ export function parseHistoricFourHourAggregate(
     1,
     Math.floor(finite(hash.schema_version, HISTORIC_FOUR_HOUR_SCHEMA_VERSION)),
   )
+  const symbolsExpected = optionalNonNegativeInteger(hash.symbols_expected)
+  const symbolsProcessed = optionalNonNegativeInteger(hash.symbols_processed)
+  const indicationConfigs = optionalNonNegativeInteger(hash.indication_configs)
+  const strategyConfigs = optionalNonNegativeInteger(hash.strategy_configs)
+  const rangeStart = isoTimestamp(hash.range_start_ms || hash.range_start)
+  const rangeEnd = isoTimestamp(hash.range_end_ms || hash.range_end)
+  const declaredComplete = hash.complete === "1" || hash.complete === "true"
+  const integrityIssues: string[] = []
+
+  if (
+    declaredComplete &&
+    symbolsExpected !== null &&
+    symbolsProcessed !== null &&
+    symbolsProcessed < symbolsExpected
+  ) {
+    integrityIssues.push(
+      `Completed coverage is ${symbolsProcessed}/${symbolsExpected} symbols.`,
+    )
+  }
+
+  for (const bucket of parsedBuckets) {
+    const windowLabel = bucket.bucketStart.slice(0, 16)
+    if (symbolsExpected !== null && bucket.symbols > symbolsExpected) {
+      integrityIssues.push(
+        `${windowLabel} contains ${bucket.symbols} symbol evaluations, above the ${symbolsExpected}-symbol generation.`,
+      )
+    }
+    if (
+      indicationConfigs !== null &&
+      bucket.indicationConfigs !== bucket.symbols * indicationConfigs
+    ) {
+      integrityIssues.push(`${windowLabel} indication-config coverage is inconsistent.`)
+    }
+    if (
+      strategyConfigs !== null &&
+      bucket.strategyConfigs !== bucket.symbols * strategyConfigs
+    ) {
+      integrityIssues.push(`${windowLabel} strategy-config coverage is inconsistent.`)
+    }
+    if (
+      bucket.indications.total !==
+      bucket.indications.buy + bucket.indications.sell + bucket.indications.neutral
+    ) {
+      integrityIssues.push(`${windowLabel} indication direction totals are inconsistent.`)
+    }
+    if (bucket.setResults.total !== bucket.setResults.closed + bucket.setResults.open) {
+      integrityIssues.push(`${windowLabel} closed/open set-result totals are inconsistent.`)
+    }
+    if (
+      bucket.setResults.closed !==
+      bucket.performance.wins + bucket.performance.losses + bucket.performance.breakeven
+    ) {
+      integrityIssues.push(`${windowLabel} realised outcome totals are inconsistent.`)
+    }
+    if (
+      rangeStart !== null &&
+      rangeEnd !== null &&
+      (bucket.bucketEndMs <= Date.parse(rangeStart) || bucket.bucketStartMs > Date.parse(rangeEnd))
+    ) {
+      integrityIssues.push(`${windowLabel} lies outside the declared calculation range.`)
+    }
+  }
+
+  const uniqueIntegrityIssues = [...new Set(integrityIssues)]
 
   return {
     schemaVersion,
@@ -438,7 +521,15 @@ export function parseHistoricFourHourAggregate(
     neutralPf: HISTORIC_FOUR_HOUR_PF_NEUTRAL,
     minimumPf: HISTORIC_FOUR_HOUR_PF_MINIMUM,
     generation: String(hash.generation || "").trim() || null,
-    complete: hash.complete === "1" || hash.complete === "true",
+    complete: declaredComplete && uniqueIntegrityIssues.length === 0,
+    symbolsExpected,
+    symbolsProcessed,
+    indicationConfigs,
+    strategyConfigs,
+    rangeStart,
+    rangeEnd,
+    integrityValid: uniqueIntegrityIssues.length === 0,
+    integrityIssues: uniqueIntegrityIssues,
     updatedAt: updatedAtMs === null ? null : new Date(updatedAtMs).toISOString(),
     bucketCount: parsedBuckets.length,
     summary: metricsFromBucket(summaryBucket),

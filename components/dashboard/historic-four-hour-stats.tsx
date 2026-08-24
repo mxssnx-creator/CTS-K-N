@@ -36,6 +36,14 @@ function formatUtcWindow(bucket: HistoricFourHourBucketStats): string {
   return `${utcWindowFormatter.format(bucket.bucketStartMs)}–${utcWindowFormatter.format(bucket.bucketEndMs)} UTC`
 }
 
+function formatHistoricRange(stats: HistoricFourHourStats): string | null {
+  if (!stats.rangeStart || !stats.rangeEnd) return null
+  const start = Date.parse(stats.rangeStart)
+  const end = Date.parse(stats.rangeEnd)
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+  return `${utcWindowFormatter.format(start)}–${utcWindowFormatter.format(end)} UTC`
+}
+
 function formatRealizedPf(metrics: HistoricFourHourMetrics): string {
   if (metrics.performance.realizedProfitFactorInfinite) return "∞"
   return formatMetric(metrics.performance.realizedProfitFactor)
@@ -80,6 +88,13 @@ export const HistoricFourHourStatsPanel = memo(function HistoricFourHourStatsPan
 }) {
   const summary = stats?.summary
   const titleId = useId()
+  const historicRange = stats ? formatHistoricRange(stats) : null
+  const integrityInvalid = Boolean(stats && !stats.integrityValid)
+  const statusLabel = integrityInvalid
+    ? "invalid · recalculation required"
+    : stats?.complete
+      ? "complete"
+      : "calculating"
 
   return (
     <section
@@ -100,14 +115,31 @@ export const HistoricFourHourStatsPanel = memo(function HistoricFourHourStatsPan
             +1× average PositionCost. Classic realised PF is shown separately.
           </p>
         </div>
-        <Badge variant={stats?.complete ? "default" : "secondary"} className="text-[9px]">
-          {stats?.complete ? "complete" : "calculating"}
+        <Badge
+          variant={integrityInvalid ? "destructive" : stats?.complete ? "default" : "secondary"}
+          className="text-[9px]"
+        >
+          {statusLabel}
         </Badge>
       </div>
 
+      {integrityInvalid && (
+        <div
+          role="alert"
+          className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-[10px] text-destructive"
+        >
+          Historic aggregate integrity check failed: {stats?.integrityIssues.slice(0, 3).join(" ")}
+        </div>
+      )}
+
       {summary && (
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          <SummaryMetric label="4h windows">{formatCount(stats?.bucketCount ?? 0)}</SummaryMetric>
+          <SummaryMetric label="Coverage / 4h windows">
+            {stats?.symbolsProcessed === null || stats?.symbolsExpected === null
+              ? "—"
+              : `${formatCount(stats.symbolsProcessed)}/${formatCount(stats.symbolsExpected)}`}
+            {` · ${formatCount(stats?.bucketCount ?? 0)}`}
+          </SummaryMetric>
           <SummaryMetric label="Config evals I / S">
             {formatCount(summary.indicationConfigs)} / {formatCount(summary.strategyConfigs)}
           </SummaryMetric>
@@ -193,6 +225,7 @@ export const HistoricFourHourStatsPanel = memo(function HistoricFourHourStatsPan
       )}
 
       <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-muted-foreground">
+        {historicRange && <span>Calculated range: {historicRange}</span>}
         <span>I/S = indication/strategy config evaluations per symbol-window</span>
         <span>C/O = closed/open set results</span>
         <span>BE = breakeven</span>

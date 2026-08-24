@@ -487,6 +487,7 @@ import { ConfigSetProcessor } from "./config-set-processor"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
 import { prefetchMarketDataBatch, getHistoricCandleWindow } from "./market-data-cache"
 import {
+  clearHistoricCalculationState,
   clearHistoricAggregateMarkers,
   clearHistoricListCompletionMarkers,
 } from "@/lib/redis-idempotent-list"
@@ -1389,7 +1390,7 @@ export class TradeEngineManager {
               })
               .catch(() => {})
             await Promise.all([
-              clearHistoricAggregateMarkers(redisClient, this.connectionId).catch(() => 0),
+              clearHistoricCalculationState(redisClient, this.connectionId).catch(() => 0),
               clearHistoricListCompletionMarkers(redisClient, this.connectionId).catch(() => 0),
             ])
             cacheHit = false
@@ -2143,7 +2144,7 @@ export class TradeEngineManager {
     const replacementDone = buildPrehistoricGateKeys(this.connectionId, this.currentEngineType, "done")
     const replacementFirstPass = buildPrehistoricGateKeys(this.connectionId, this.currentEngineType, "firstpass:done")
     await Promise.all([
-      clearHistoricAggregateMarkers(replacementClient, this.connectionId).catch(() => 0),
+      clearHistoricCalculationState(replacementClient, this.connectionId).catch(() => 0),
       clearHistoricListCompletionMarkers(replacementClient, this.connectionId).catch(() => 0),
     ])
     await Promise.allSettled([
