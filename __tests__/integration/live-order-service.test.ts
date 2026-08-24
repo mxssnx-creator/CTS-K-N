@@ -744,26 +744,21 @@ describe("live-order-service integration accounting", () => {
     })
   })
 
-  test("simulated progression folds into placed and filled counters", async () => {
+  test("keeps simulated progression separate from real exchange counters", async () => {
     const { recordLiveOrderProgression } = await import("@/lib/live-order-service")
 
     await recordLiveOrderProgression("conn-sim", "solusdt", "short", "simulated")
 
     expect(hashStore.get("progression:conn-sim")).toMatchObject({
       live_orders_simulated_count: "1",
-      live_orders_placed_count: "1",
-      live_orders_filled_count: "1",
-      live_positions_created_count: "1",
+      live_simulated_positions_created_count: "1",
     })
-    expect(hashStore.get("live_orders_by_symbol_v2:conn-sim")).toEqual({
-      "SOLUSDT:short:placed": "1",
-      "SOLUSDT:short:filled": "1",
-    })
+    expect(hashStore.get("progression:conn-sim")?.live_orders_placed_count).toBeUndefined()
+    expect(hashStore.get("progression:conn-sim")?.live_orders_filled_count).toBeUndefined()
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-sim")).toBeUndefined()
     expect(hashStore.get("live_orders_by_source_v1:conn-sim")).toMatchObject({
       "other:simulated": "1",
-      "other:placed": "1",
-      "other:filled": "1",
-      "other:position_created": "1",
+      "other:simulated_position_created": "1",
     })
   })
 
@@ -836,18 +831,19 @@ describe("live-order-service integration accounting", () => {
     )
 
     expect(hashStore.get("progression:conn-adjustments")).toMatchObject({
-      live_orders_placed_count: "2",
-      live_orders_filled_count: "2",
+      live_orders_attempted_count: "1",
+      live_orders_placed_count: "1",
+      live_orders_filled_count: "1",
       live_orders_simulated_count: "1",
-      live_orders_accumulated_count: "2",
-      live_volume_usd_total: "165",
+      live_orders_accumulated_count: "1",
+      live_simulated_orders_accumulated_count: "1",
+      live_volume_usd_total: "125",
+      live_simulated_volume_usd_total: "40",
     })
     expect(hashStore.get("progression:conn-adjustments")?.live_positions_created_count).toBeUndefined()
     expect(hashStore.get("live_orders_by_symbol_v2:conn-adjustments")).toEqual({
       "BTCUSDT:long:placed": "1",
       "BTCUSDT:long:filled": "1",
-      "BTCUSDT:short:placed": "1",
-      "BTCUSDT:short:filled": "1",
     })
     expect(hashStore.get("live_orders_by_source_v1:conn-adjustments")).toMatchObject({
       "main-trade:placed": "1",
@@ -855,10 +851,8 @@ describe("live-order-service integration accounting", () => {
       "main-trade:accumulated": "1",
       "main-trade:volume_usd": "125",
       "direct-trade:simulated": "1",
-      "direct-trade:placed": "1",
-      "direct-trade:filled": "1",
-      "direct-trade:accumulated": "1",
-      "direct-trade:volume_usd": "40",
+      "direct-trade:simulated_accumulated": "1",
+      "direct-trade:simulated_volume_usd": "40",
     })
   })
 

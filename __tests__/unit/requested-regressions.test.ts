@@ -2681,7 +2681,7 @@ describe("requested regression guardrails", () => {
     expect(targetedStart).not.toContain("runTradeEngineHealingSweep")
   })
 
-  test("simulated live-stage orders use the idempotent fill/entry counter path", () => {
+  test("simulated live-stage orders use the idempotent ledger path without polluting real counters", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const simStart = liveStage.indexOf("if (!isLiveTradeEnabled) {")
     const simEnd = liveStage.indexOf("if (!exchangeConnector || typeof exchangeConnector.placeOrder !== \"function\")", simStart)
@@ -2689,20 +2689,22 @@ describe("requested regression guardrails", () => {
 
     expect(simBlock).toContain("await savePosition(livePosition)")
     expect(simBlock).toContain("await recordFillCountersOnce(")
-    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_placed_count")')
-    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_simulated_count")')
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_simulated_positions_created_count")')
+    expect(simBlock).not.toContain('incrementMetric(connectionId, "live_orders_placed_count")')
+    expect(simBlock).not.toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
     expect(liveStage).toContain('await incrementMetric(connectionId, "live_orders_filled_count")')
     expect(liveStage).toContain('await incrementOrdersBySymbol(connectionId, symbol, direction, "filled")')
     expect(liveStage).toContain("await recordConfirmedStrategyEntry(connectionId, position")
     const liveOrderService = read("lib/live-order-service.ts")
     expect(liveOrderService).toContain('if (event === "simulated")')
-    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_placed_count", 1)')
-    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_filled_count", 1)')
-    expect(liveOrderService).toContain('await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, "filled")')
+    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_simulated_count", 1)')
+    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_simulated_positions_created_count", 1)')
+    expect(liveOrderService).toContain('if (event !== "simulated") await recordPerSymbolOrderCounter')
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
     expect(statsRoute).toContain("ordersSimulated remains an audit-only subset counter")
     expect(simBlock.indexOf("await savePosition(livePosition)")).toBeLessThan(
-      simBlock.indexOf('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")'),
+      simBlock.indexOf('incrementMetric(connectionId, "live_orders_simulated_count")'),
     )
   })
 
@@ -3863,19 +3865,34 @@ describe("requested regression guardrails", () => {
     }
   })
 
-  test("SL/TP sizing is based on confirmed fills and cannot exceed an explicit reduction override", () => {
+  test("SL/TP sizing is fill-bounded except for an ownership-verified aggregate override", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
 
     expect(liveStage).toContain(
       "const rawEffectiveQty = pos.executedQuantity > 0 ? pos.executedQuantity : (pos.quantity ?? 0)",
     )
-    expect(liveStage).toContain("? Math.min(rawEffectiveQty, requestedOverride)")
+    expect(liveStage).toContain("options.allowQuantityOverrideAbovePosition === true")
+    expect(liveStage).toContain("? requestedOverride")
+    expect(liveStage).toContain(": Math.min(rawEffectiveQty, requestedOverride)")
     expect(liveStage).toContain(
       'await prepareProtectionSubmission(livePosition, "stopLoss", slPrice, livePosition.executedQuantity)',
     )
     expect(liveStage).toContain(
       'await prepareProtectionSubmission(livePosition, "takeProfit", tpPrice, livePosition.executedQuantity)',
     )
+  })
+
+  test("aggregate venue controls settle before any member changes physical quantity", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(liveStage).toContain("async function requestAggregateProtectionSlotMutation(")
+    expect(liveStage).toContain("aggregateProtectionMutationRequestedAt = Date.now()")
+    expect(liveStage).toContain("if (!await requestAggregateProtectionSlotMutation(connector, position, reason)) return false")
+    expect(liveStage).toContain("const aggregateReady = await requestAggregateProtectionSlotMutation(")
+    expect(liveStage).toContain("const mutationRequested = members.some((member) =>")
+    expect(liveStage).toContain("aggregate pair paused for a CTS quantity mutation")
+    expect(liveStage).toContain("CTS controls removed and independent venue quantity preserved")
+    expect(liveStage).toContain("await rearmProtectionAfterQuantityMutation(")
   })
 
 })

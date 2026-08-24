@@ -216,6 +216,10 @@ async function buildStatusAllResponse() {
             filled: Number(progression.live_orders_filled_count || 0),
             failed: Number(progression.live_orders_failed_count || 0),
             simulated: Number(progression.live_orders_simulated_count || 0),
+            simulatedPositionsCreated: Number(progression.live_simulated_positions_created_count || 0),
+            simulatedPositionsClosed: Number(progression.live_simulated_positions_closed_count || 0),
+            simulatedVolumeUsd: Number(progression.live_simulated_volume_usd_total || 0)
+              || Number(progression.live_simulated_volume_microusd_total || 0) / 1_000_000,
             openPositionsCreated: Number(progression.live_positions_created_count || 0),
             openPositionsClosed: Number(progression.live_positions_closed_count || 0),
             volumeUsd: Number(progression.live_volume_usd_total || 0),

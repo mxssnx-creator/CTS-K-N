@@ -56,6 +56,7 @@ interface PnLStats {
   // Last N profit factors
   profit_factor_last_12: number
   profit_factor_last_25: number
+  profit_factor_last_50: number
   profit_factor_last_75: number
   
   // Time metrics
@@ -65,6 +66,9 @@ interface PnLStats {
   last_25_positions: PositionPnL[]
   last_25_pnl: number
   last_25_win_rate: number
+  last_50_positions: PositionPnL[]
+  last_50_pnl: number
+  last_50_win_rate: number
   source: "live_position_ledger"
   history_limit: number
 }
@@ -76,7 +80,10 @@ interface PnLStatsSuccessResponse {
   duration: number
 }
 
-const CLOSED_HISTORY_LIMIT = 1000
+// Operator contract: live PnL/PF is based only on the latest 50 real exchange
+// positions. Older rows remain in Redis for audit/history but cannot distort
+// the operational dashboard.
+const CLOSED_HISTORY_LIMIT = 50
 
 function firstFinite(...values: unknown[]): number {
   for (const value of values) {
@@ -97,6 +104,19 @@ function closedAtOf(position: any): string {
 
 function openedAtOf(position: any): string {
   return String(position?.createdAt || position?.openedAt || position?.opened_at || position?.created_at || "")
+}
+
+function isRealExchangePosition(position: any): boolean {
+  if (String(position?.status || "").toLowerCase() === "simulated") return false
+  if (String(position?.executionMode || "").toLowerCase() === "simulation") return false
+  const exchange = position?.exchangeData || {}
+  return Boolean(
+    position?.orderId
+    || position?.exchangeOrderId
+    || exchange?.orderId
+    || exchange?.exchangeOrderId
+    || exchange?.exchangePositionId,
+  )
 }
 
 function toPositionPnl(
@@ -151,11 +171,15 @@ function emptyStats(): PnLStats {
     expectancy: 0,
     profit_factor_last_12: 0,
     profit_factor_last_25: 0,
+    profit_factor_last_50: 0,
     profit_factor_last_75: 0,
     avg_holding_time_min: 0,
     last_25_positions: [],
     last_25_pnl: 0,
     last_25_win_rate: 0,
+    last_50_positions: [],
+    last_50_pnl: 0,
+    last_50_win_rate: 0,
     source: "live_position_ledger",
     history_limit: CLOSED_HISTORY_LIMIT,
   }
@@ -197,7 +221,7 @@ export async function GET(request: NextRequest) {
       if (id) byId.set(id, position)
     }
 
-    const positions = [...byId.values()]
+    const positions = [...byId.values()].filter(isRealExchangePosition)
     if (positions.length === 0) {
       const response: PnLStatsSuccessResponse = {
         success: true,
@@ -230,6 +254,10 @@ export async function GET(request: NextRequest) {
     let last25Wins = 0
     let last25GrossProfit = 0
     let last25GrossLoss = 0
+    let last50PnL = 0
+    let last50Wins = 0
+    let last50GrossProfit = 0
+    let last50GrossLoss = 0
     
     let last12GrossProfit = 0
     let last12GrossLoss = 0
@@ -275,9 +303,13 @@ export async function GET(request: NextRequest) {
       if (i < 25) {
         if (pnl > 0) { last25Wins++; last25GrossProfit += pnl }
         else if (pnl < 0) last25GrossLoss += Math.abs(pnl)
-        const row = toPositionPnl(pos, pnl, pnlPercent, holdingTimeMin)
-        closedRows.push(row)
         last25PnL += pnl
+      }
+      if (i < 50) {
+        if (pnl > 0) { last50Wins++; last50GrossProfit += pnl }
+        else if (pnl < 0) last50GrossLoss += Math.abs(pnl)
+        closedRows.push(toPositionPnl(pos, pnl, pnlPercent, holdingTimeMin))
+        last50PnL += pnl
       }
       if (i < 75) {
         if (pnl > 0) last75GrossProfit += pnl
@@ -294,12 +326,15 @@ export async function GET(request: NextRequest) {
 
     const totalTrades = wins + losses + breakEven
     const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0
-    const last25WinRate = closedRows.length > 0 ? (last25Wins / closedRows.length) * 100 : 0
+    const last25Count = Math.min(25, closedRows.length)
+    const last25WinRate = last25Count > 0 ? (last25Wins / last25Count) * 100 : 0
+    const last50WinRate = closedRows.length > 0 ? (last50Wins / closedRows.length) * 100 : 0
     const avgWin = wins > 0 ? totalWinPnL / wins : 0
     const avgLoss = losses > 0 ? totalLossPnL / losses : 0
     const profitFactor = finiteProfitFactor(totalWinPnL, totalLossPnL)
     const profitFactorLast12 = finiteProfitFactor(last12GrossProfit, last12GrossLoss)
     const profitFactorLast25 = finiteProfitFactor(last25GrossProfit, last25GrossLoss)
+    const profitFactorLast50 = finiteProfitFactor(last50GrossProfit, last50GrossLoss)
     const profitFactorLast75 = finiteProfitFactor(last75GrossProfit, last75GrossLoss)
     const effectivePnl = realizedPnl + unrealizedPnl
     const expectancy = totalTrades > 0 ? realizedPnl / totalTrades : 0
@@ -326,11 +361,15 @@ export async function GET(request: NextRequest) {
       expectancy: parseFloat(expectancy.toFixed(8)),
       profit_factor_last_12: parseFloat(profitFactorLast12.toFixed(2)),
       profit_factor_last_25: parseFloat(profitFactorLast25.toFixed(2)),
+      profit_factor_last_50: parseFloat(profitFactorLast50.toFixed(2)),
       profit_factor_last_75: parseFloat(profitFactorLast75.toFixed(2)),
       avg_holding_time_min: avgHoldingTime,
-      last_25_positions: closedRows,
+      last_25_positions: closedRows.slice(0, 25),
       last_25_pnl: parseFloat(last25PnL.toFixed(8)),
       last_25_win_rate: parseFloat(last25WinRate.toFixed(2)),
+      last_50_positions: closedRows,
+      last_50_pnl: parseFloat(last50PnL.toFixed(8)),
+      last_50_win_rate: parseFloat(last50WinRate.toFixed(2)),
       source: "live_position_ledger",
       history_limit: CLOSED_HISTORY_LIMIT,
     }

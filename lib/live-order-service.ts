@@ -853,11 +853,16 @@ async function recordLiveOrderSourceCounter(
   const increment = async (metric: string) => client.hincrby(key, `${lane}:${metric}`, 1)
   if (event === "placed") await increment("placed")
   if (event === "failed") await increment("failed")
-  if (event === "filled" || event === "simulated") {
-    if (event === "simulated") {
-      await increment("simulated")
-      await increment("placed")
+  if (event === "simulated") {
+    await increment("simulated")
+    if (options.countPositionCreated !== false) await increment("simulated_position_created")
+    if (options.countAccumulated === true) await increment("simulated_accumulated")
+    if (volumeUsd) {
+      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(key, `${lane}:simulated_volume_usd`, volumeUsd)
+      else await client.hincrby(key, `${lane}:simulated_volume_usd`, Math.round(volumeUsd))
     }
+  }
+  if (event === "filled") {
     await increment("filled")
     if (options.countPositionCreated !== false) await increment("position_created")
     if (options.countAccumulated === true) await increment("accumulated")
@@ -902,7 +907,10 @@ export async function recordLiveOrderProgression(
   const directionKey = normalizeDirection(direction)
   if (!(await claimLiveOrderProgressionEvent(connectionId, eventKey))) return false
   await recordLiveOrderSourceCounter(connectionId, options.source, event, volumeUsd, options)
-  if (event === "placed") await client.hincrby(progKey, "live_orders_placed_count", 1)
+  if (event === "placed") {
+    await client.hincrby(progKey, "live_orders_attempted_count", 1)
+    await client.hincrby(progKey, "live_orders_placed_count", 1)
+  }
   if (event === "filled") {
     await client.hincrby(progKey, "live_orders_filled_count", 1)
     if (options.countPositionCreated !== false) {
@@ -916,32 +924,26 @@ export async function recordLiveOrderProgression(
       else await client.hincrby(progKey, "live_volume_usd_total", Math.round(volumeUsd))
     }
   }
-  if (event === "failed") await client.hincrby(progKey, "live_orders_failed_count", 1)
+  if (event === "failed") {
+    await client.hincrby(progKey, "live_orders_attempted_count", 1)
+    await client.hincrby(progKey, "live_orders_failed_count", 1)
+  }
   if (event === "simulated") {
-    // Canonical paper execution: simulated orders immediately create/open an
-    // executable position, so expose them in the same placed+filled counters
-    // dashboards and accounting code already consume while retaining the
-    // simulated-specific audit counter.
+    // Paper execution has its own counters. Never mix it into real venue
+    // attempted/placed/filled/position-created metrics.
     await client.hincrby(progKey, "live_orders_simulated_count", 1)
-    await client.hincrby(progKey, "live_orders_placed_count", 1)
-    await client.hincrby(progKey, "live_orders_filled_count", 1)
     if (options.countPositionCreated !== false) {
-      await client.hincrby(progKey, "live_positions_created_count", 1)
+      await client.hincrby(progKey, "live_simulated_positions_created_count", 1)
     }
     if (options.countAccumulated === true) {
-      await client.hincrby(progKey, "live_orders_accumulated_count", 1)
+      await client.hincrby(progKey, "live_simulated_orders_accumulated_count", 1)
     }
     if (volumeUsd) {
-      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_volume_usd_total", volumeUsd)
-      else await client.hincrby(progKey, "live_volume_usd_total", Math.round(volumeUsd))
+      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_simulated_volume_usd_total", volumeUsd)
+      else await client.hincrby(progKey, "live_simulated_volume_usd_total", Math.round(volumeUsd))
     }
   }
-  if (event !== "simulated") {
-    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, event)
-  } else {
-    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, "placed")
-    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, "filled")
-  }
+  if (event !== "simulated") await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, event)
   return true
 }
 

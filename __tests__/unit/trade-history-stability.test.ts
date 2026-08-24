@@ -523,7 +523,7 @@ describe("live-order stranded-position guards", () => {
   test("rolls back an unconfirmed exchange close and keeps the live lock", () => {
     expect(liveStage).toContain("const mayFinalizeClose = exchangeCloseSuccess || (!exchangeConnector && localOnlyCloseAllowed)")
     expect(liveStage).toContain("close_failed_exchange_unconfirmed")
-    expect(liveStage).toContain("await updateProtectionOrders(exchangeConnector, position, \"close_failed_rearm\", null)")
+    expect(liveStage).toContain("await rearmProtectionAfterQuantityMutation(exchangeConnector, position, \"close_failed_rearm\")")
     expect(liveStage).toContain("position kept open")
     expect(bingx).not.toContain("double 100421 after resync")
   })

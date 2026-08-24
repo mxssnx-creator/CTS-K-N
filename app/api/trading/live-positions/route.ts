@@ -296,6 +296,8 @@ async function buildLivePositionsResponse(request: Request) {
     // hydration and amplified heap churn under the 280 ms Paper lifecycle.
     const allStats = computeStats(all)
     const completeStatistics = calculateLivePositionStatistics(all)
+    const realExchangeStatistics = calculateLivePositionStatistics(realPositions)
+    const simulatedStatistics = calculateLivePositionStatistics(simulatedPositions)
     const legacyStats = {
       totalFilled: all.filter((p) => p.status === "filled").length,
       totalOpen: allStats.open,
@@ -340,6 +342,8 @@ async function buildLivePositionsResponse(request: Request) {
         real: computeStats(realPositions),
         simulated: computeStats(simulatedPositions),
         complete: completeStatistics,
+        realComplete: realExchangeStatistics,
+        simulatedComplete: simulatedStatistics,
       },
       partialLegacyScan,
       dataIntegrity: {
@@ -350,7 +354,7 @@ async function buildLivePositionsResponse(request: Request) {
         liveExecutionMode: liveReadiness.executionMode,
         credentialsValid: liveReadiness.credentialsValid,
         durableCoordinationReady: liveReadiness.durableCoordinationReady,
-        positionOrderRelationIntegrity: completeStatistics.relationIntegrity,
+        positionOrderRelationIntegrity: realExchangeStatistics.relationIntegrity,
         realExchangeDataComplete: realPositions.length > 0 || !liveTradeEnabled,
         message: liveTradeEnabled
           ? "Real exchange positions are separated from simulated/paper positions and use exchange-synced order/position identifiers when available."
