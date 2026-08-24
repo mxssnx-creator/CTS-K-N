@@ -129,6 +129,51 @@ export async function clearHistoricAggregateMarkers(
 }
 
 /**
+ * Remove every derived aggregate and interval checkpoint belonging to a
+ * connection before a genuinely fresh historic calculation generation.
+ *
+ * Aggregate marker Sets alone are not sufficient reset state: deleting the
+ * markers while retaining their HASH values makes the next exhaustive pass
+ * add the same config/symbol rows a second time. Likewise, retaining the
+ * interval checkpoints makes a settings recoordination calculate only the
+ * seconds which arrived after the previous pass. Both cases produce a
+ * superficially "complete" but mathematically mixed historic projection.
+ *
+ * Bounded config result LISTs are intentionally not removed here. Their own
+ * exact-entry dedupe and retention contract remains independent from this
+ * rebuildable aggregate projection.
+ */
+export async function clearHistoricCalculationState(
+  client: {
+    scan?: (cursor: string | number, ...args: any[]) => Promise<any>
+    keys?: (pattern: string) => Promise<string[]>
+    del: (...keys: string[]) => Promise<number>
+  },
+  connectionId: string,
+): Promise<number> {
+  const [aggregateKeys, legacyMarkerKeys, intervalCheckpointKeys] = await Promise.all([
+    scanRedisKeys(client, `historic:aggregate:${connectionId}:*`, { count: 500 }),
+    scanRedisKeys(client, `historic:aggregate-marker:${connectionId}:*`, { count: 500 }),
+    scanRedisKeys(client, `prehistoric:${connectionId}:*:processed_intervals*`, { count: 500 }),
+  ])
+  const keys = [...new Set([
+    ...aggregateKeys,
+    ...legacyMarkerKeys,
+    ...intervalCheckpointKeys,
+  ])]
+  let deleted = 0
+  for (let offset = 0; offset < keys.length; offset += 500) {
+    deleted += Number(await client.del(...keys.slice(offset, offset + 500))) || 0
+    if (typeof setImmediate === "function") {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    } else {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+  }
+  return deleted
+}
+
+/**
  * Remove per-list completion guards after a historic generation is complete.
  *
  * These scalar keys deliberately use a long TTL while work is in flight so a

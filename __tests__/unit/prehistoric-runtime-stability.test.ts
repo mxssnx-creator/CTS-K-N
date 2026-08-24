@@ -10,14 +10,18 @@ import { StrategyConfigManager } from "@/lib/strategy-config-manager"
 import { getCanonicalSymbolSelection } from "@/lib/trade-engine/symbol-selection-ownership"
 import { runIndStratCycle } from "@/lib/trade-engine/shared-ind-strat-pipeline"
 import {
+  clearHistoricCalculationState,
   clearHistoricListCompletionMarkers,
   historicAggregateMarkerCollectionKey,
   incrementHistoricAggregateOnce,
   incrementHistoricAggregatesOnce,
 } from "@/lib/redis-idempotent-list"
 import {
+  ConfigSetProcessor,
   groupHistoricIndicationCalculationConfigs,
   groupHistoricIndicationCalculationGroupsByGeometry,
+  historicProcessedIntervalsKey,
+  resolveHistoricStrategyEntryThreshold,
 } from "@/lib/trade-engine/config-set-processor"
 
 function source(path: string): string {
@@ -25,6 +29,54 @@ function source(path: string): string {
 }
 
 describe("historic runtime generation stability", () => {
+  test("adapts strategy entries to one-second volatility without relaxing the legacy ceiling", async () => {
+    expect(resolveHistoricStrategyEntryThreshold(0)).toBe(0.00005)
+    expect(resolveHistoricStrategyEntryThreshold(0.00004)).toBeCloseTo(0.00006, 12)
+    expect(resolveHistoricStrategyEntryThreshold(0.01)).toBe(0.002)
+
+    const startedAt = Date.parse("2026-08-24T00:00:00.000Z")
+    const candles = Array.from({ length: 2_400 }, (_, index) => {
+      const close = 100 * (1 + 0.006 * Math.sin(index / 40))
+      return {
+        timestamp: startedAt + index * 1_000,
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: 1,
+      }
+    })
+    const processor = new ConfigSetProcessor("adaptive-strategy-test", 1)
+    const positions = await (processor as any).calculateStrategyPositions(
+      "BTCUSDT",
+      candles,
+      {
+        id: "adaptive-strategy",
+        connectionId: "adaptive-strategy-test",
+        position_cost_step: 15,
+        takeprofit: 0.01,
+        stoploss: 0.005,
+        trailing: false,
+        type: "MA_Cross",
+        enabled: true,
+        createdAt: new Date(startedAt).toISOString(),
+      },
+    )
+
+    expect(positions.length).toBeGreaterThan(0)
+    expect(positions.some((position: { status: string }) => position.status === "closed")).toBe(true)
+    expect(positions.every((position: { position_cost_pct?: number }) => position.position_cost_pct === 0.1)).toBe(true)
+  })
+
+  test("scopes processed intervals to the exact historic generation", () => {
+    expect(historicProcessedIntervalsKey("connection", "BTC/USDT", "epoch:one")).toBe(
+      "prehistoric:connection:BTC_USDT:processed_intervals:epoch_one",
+    )
+    expect(historicProcessedIntervalsKey("connection", "BTC/USDT", "epoch:two")).not.toBe(
+      historicProcessedIntervalsKey("connection", "BTC/USDT", "epoch:one"),
+    )
+  })
+
   test("groups mathematically identical indication calculations across type labels", () => {
     const base = {
       connectionId: "grouping-test",
@@ -1013,6 +1065,41 @@ describe("historic runtime generation stability", () => {
       await expect(client.smembers(markerCollectionKey)).resolves.toEqual([markerKey])
     } finally {
       await client.del(markerKey, markerCollectionKey, aggregateKey)
+    }
+  })
+
+  test("a fresh historic generation clears aggregates and interval checkpoints together", async () => {
+    const connectionId = `historic-reset-${Date.now()}`
+    const aggregateKey = `historic:aggregate:${connectionId}:four-hour:generation-a`
+    const markerKey = `${aggregateKey}:markers`
+    const legacyMarkerKey = `historic:aggregate-marker:${connectionId}:strategy:cfg:generation-a:BTCUSDT`
+    const legacyIntervalsKey = `prehistoric:${connectionId}:BTCUSDT:processed_intervals`
+    const scopedIntervalsKey = historicProcessedIntervalsKey(connectionId, "BTCUSDT", "generation-a")
+    const unrelatedKey = `strategy:${connectionId}:config:cfg:positions`
+    const client = getRedisClient()
+    try {
+      await client.hset(aggregateKey, { complete: "1", position_count: "99" })
+      await client.sadd(markerKey, "cfg")
+      await client.set(legacyMarkerKey, "1")
+      await client.set(legacyIntervalsKey, "[]")
+      await client.set(scopedIntervalsKey, "[]")
+      await client.lpush(unrelatedKey, "durable-position")
+
+      await expect(clearHistoricCalculationState(client, connectionId)).resolves.toBeGreaterThanOrEqual(5)
+      await expect(client.hgetall(aggregateKey)).resolves.toEqual({})
+      await expect(client.get(legacyMarkerKey)).resolves.toBeNull()
+      await expect(client.get(legacyIntervalsKey)).resolves.toBeNull()
+      await expect(client.get(scopedIntervalsKey)).resolves.toBeNull()
+      await expect(client.lrange(unrelatedKey, 0, -1)).resolves.toEqual(["durable-position"])
+    } finally {
+      await client.del(
+        aggregateKey,
+        markerKey,
+        legacyMarkerKey,
+        legacyIntervalsKey,
+        scopedIntervalsKey,
+        unrelatedKey,
+      )
     }
   })
 

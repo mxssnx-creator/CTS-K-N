@@ -203,11 +203,22 @@ describe("historic four-hour config/set/indication statistics", () => {
       schema_version: "1",
       generation: "epoch-42",
       complete: "1",
+      symbols_expected: "1",
+      symbols_processed: "1",
+      indication_configs: "2",
+      strategy_configs: "3",
+      range_start_ms: String(Date.parse("2026-08-24T00:00:00Z")),
+      range_end_ms: String(Date.parse("2026-08-24T12:00:00Z")),
       updated_at_ms: String(Date.parse("2026-08-24T12:00:00Z")),
     }))
 
     expect(stats.complete).toBe(true)
+    expect(stats.integrityValid).toBe(true)
     expect(stats.generation).toBe("epoch-42")
+    expect(stats.symbolsExpected).toBe(1)
+    expect(stats.symbolsProcessed).toBe(1)
+    expect(stats.rangeStart).toBe("2026-08-24T00:00:00.000Z")
+    expect(stats.rangeEnd).toBe("2026-08-24T12:00:00.000Z")
     expect(stats.updatedAt).toBe("2026-08-24T12:00:00.000Z")
     expect(stats.bucketCount).toBe(3)
     expect(stats.buckets.map((bucket) => bucket.bucketStart)).toEqual([
@@ -218,6 +229,34 @@ describe("historic four-hour config/set/indication statistics", () => {
     expect(stats.summary.symbols).toBe(3)
     expect(stats.summary.indicationConfigs).toBe(6)
     expect(stats.summary.strategyConfigs).toBe(9)
+  })
+
+  test("rejects an inflated aggregate instead of presenting it as complete", () => {
+    const accumulator = createHistoricFourHourAccumulator()
+    markHistoricFourHourCoverage(accumulator, [Date.parse("2026-08-24T00:00:00Z")], {
+      indicationConfigs: 8,
+      strategyConfigs: 4,
+    })
+    // Simulate four identical replays accumulated into a two-symbol generation.
+    const increments = historicFourHourRedisIncrements(accumulator)
+    const inflated = Object.fromEntries(
+      increments.map(({ field, value }) => [field, String(value * 8)]),
+    )
+    const stats = parseHistoricFourHourAggregate({
+      ...inflated,
+      complete: "1",
+      symbols_expected: "2",
+      symbols_processed: "2",
+      indication_configs: "8",
+      strategy_configs: "4",
+      range_start_ms: String(Date.parse("2026-08-24T00:00:00Z")),
+      range_end_ms: String(Date.parse("2026-08-24T04:00:00Z")),
+    })
+
+    expect(stats.buckets[0].symbols).toBe(8)
+    expect(stats.integrityValid).toBe(false)
+    expect(stats.complete).toBe(false)
+    expect(stats.integrityIssues.join(" ")).toContain("above the 2-symbol generation")
   })
 
   test("wires the exhaustive stats through the API and the final card detail panel", () => {
@@ -235,5 +274,6 @@ describe("historic four-hour config/set/indication statistics", () => {
     expect(panel).toContain("1.00 is neutral")
     expect(panel).toContain("1.10 is")
     expect(panel).toContain("Classic realised PF is shown separately")
+    expect(panel).toContain("Historic aggregate integrity check failed")
   })
 })
