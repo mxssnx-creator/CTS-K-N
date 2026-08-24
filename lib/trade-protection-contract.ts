@@ -81,4 +81,3 @@ export function normalizeProtectionPercentages(input: {
     takeProfitDefaulted,
   }
 }
-

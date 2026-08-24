@@ -40,4 +40,3 @@ describe("strategy execution family policy", () => {
     expect(isStrategyExecutionFamilyEnabled("signal", policy)).toBe(true)
   })
 })
-
