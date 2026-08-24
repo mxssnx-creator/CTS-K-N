@@ -46,6 +46,7 @@ import {
   readDirectTradeConfigsAtIndexes,
 } from "@/lib/direct-trade-config-store"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { normalizeMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
 import {
   buildDirectTradeOpenPositionStage,
@@ -132,8 +133,8 @@ export interface DirectTradeState {
   keepEnabledPosCount: number     // Per symbol/direction/config: last N pos to check keep-enabled
   deactivatePosCount: number      // Negative last-N average permanently disables this exact config lineage
   minProfitFactor: number         // Min PF to keep config enabled
-  // Marks state written after the shipped full-history PF default changed to
-  // 4. This lets an explicit new 0.8 operator override survive later reads.
+  // Marks state written after Direct admission moved from classic realised PF
+  // to the canonical PositionCost-relative selection coordinate.
   fullHistoryPfDefaultsVersion?: number
   // Allows the former shipped 300-position default to move to the calibrated
   // 100-position target without repeatedly rewriting later operator choices.
@@ -210,7 +211,7 @@ const DEFAULT_STATE: DirectTradeState = {
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
   minProfitFactor: DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
-  fullHistoryPfDefaultsVersion: 1,
+  fullHistoryPfDefaultsVersion: 2,
   positionCapacityDefaultsVersion: 1,
   minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
@@ -393,23 +394,20 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
           : clampOpenPositionLimit(persisted?.maxTotalPositions, DEFAULT_STATE.maxTotalPositions),
         positionCapacityDefaultsVersion: 1,
         slRatioStep: clampStopLossRatioStep(persisted?.slRatioStep, DEFAULT_STATE.slRatioStep),
-        // Upgrade the former shipped 0.8 default only for legacy state. Once
-        // versioned, an explicit operator value (including 0.8) is preserved.
-        minProfitFactor: Math.max(
-          0.8,
-          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 1
-            && Number(persisted?.minProfitFactor) === 0.8
+        minProfitFactor: normalizeMainTradePfRatio(
+          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 2
+            && [0.8, 4].includes(Number(persisted?.minProfitFactor))
             ? DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT
-            : Number(persisted?.minProfitFactor) || DEFAULT_STATE.minProfitFactor,
+            : persisted?.minProfitFactor,
+          DEFAULT_STATE.minProfitFactor,
         ),
-        fullHistoryPfDefaultsVersion: 1,
-        // 10 was the former shipped default. Migrate exactly that value to
-        // the new stricter default, while preserving custom choices.
-        minRecentProfitFactor: Math.max(
-          0.8,
-          Number(persisted?.minRecentProfitFactor) === 10
+        fullHistoryPfDefaultsVersion: 2,
+        minRecentProfitFactor: normalizeMainTradePfRatio(
+          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 2
+            && [10, 25].includes(Number(persisted?.minRecentProfitFactor))
             ? DIRECT_TRADE_RECENT_PF_DEFAULT
-            : Number(persisted?.minRecentProfitFactor) || DEFAULT_STATE.minRecentProfitFactor,
+            : persisted?.minRecentProfitFactor,
+          DEFAULT_STATE.minRecentProfitFactor,
         ),
         recentEvaluationPositions: Math.max(3, Math.floor(Number(persisted?.recentEvaluationPositions) || DEFAULT_STATE.recentEvaluationPositions)),
         // Migrate the former hard-coded 500 ms default while preserving an
@@ -856,8 +854,8 @@ export async function POST(request: NextRequest) {
         // stale PF/DDT/trailing limits until a later debounced config update.
         ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.max(3, Number(body.keepEnabledPosCount) || 3) } : {}),
         ...(body.deactivatePosCount !== undefined ? { deactivatePosCount: Math.max(3, Number(body.deactivatePosCount) || 3) } : {}),
-        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
-        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
+        ...(body.minProfitFactor !== undefined ? { minProfitFactor: normalizeMainTradePfRatio(body.minProfitFactor, DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
+        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: normalizeMainTradePfRatio(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
         ...(body.recentEvaluationPositions !== undefined ? { recentEvaluationPositions: Math.max(3, Math.floor(Number(body.recentEvaluationPositions) || 3)) } : {}),
         ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Number(body.maxDrawdownTimeMin) || 1) } : {}),
         ...(body.prevPosWindow !== undefined ? { prevPosWindow: Math.max(5, Number(body.prevPosWindow) || 5) } : {}),
@@ -931,8 +929,8 @@ export async function POST(request: NextRequest) {
         // Evaluation settings (instant effect on processor via loadState sync)
         ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.max(3, Number(body.keepEnabledPosCount) || 3) } : {}),
         ...(body.deactivatePosCount !== undefined ? { deactivatePosCount: Math.max(3, Number(body.deactivatePosCount) || 3) } : {}),
-        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
-        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
+        ...(body.minProfitFactor !== undefined ? { minProfitFactor: normalizeMainTradePfRatio(body.minProfitFactor, DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
+        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: normalizeMainTradePfRatio(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
         ...(body.recentEvaluationPositions !== undefined ? { recentEvaluationPositions: Math.max(3, Math.floor(Number(body.recentEvaluationPositions) || 3)) } : {}),
         ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Number(body.maxDrawdownTimeMin) || 1) } : {}),
         ...(body.prevPosWindow !== undefined ? { prevPosWindow: Math.max(5, Number(body.prevPosWindow) || 5) } : {}),

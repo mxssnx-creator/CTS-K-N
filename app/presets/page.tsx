@@ -266,7 +266,7 @@ function PresetDailyDiagram({
   return (
     <div
       className="rounded-md border bg-muted/20 px-2 py-1.5"
-      aria-label={`Daily ProfitFactor diagram for ${rows.length} days`}
+      aria-label={`Daily PositionCost coordinate diagram for ${rows.length} days`}
     >
       <div className="flex h-8 items-end gap-px">
         {rows.map((row) => {
@@ -283,7 +283,7 @@ function PresetDailyDiagram({
         })}
       </div>
       <div className="mt-1 flex justify-between text-[8px] uppercase tracking-wide text-muted-foreground">
-        <span>D1</span><span>{rows.length || 0}-day PF</span><span>D{rows.length || 0}</span>
+        <span>D1</span><span>Realised PF · {rows.length || 0}-day PositionCost coordinate</span><span>D{rows.length || 0}</span>
       </div>
     </div>
   )
@@ -694,7 +694,7 @@ export default function PresetsPage() {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2 text-sm"><BarChart3 className="h-4 w-4 text-primary" /> Daily average ProfitFactor</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-sm"><BarChart3 className="h-4 w-4 text-primary" /> Daily PositionCost coordinate · Realised PF</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex h-28 items-end gap-1.5">

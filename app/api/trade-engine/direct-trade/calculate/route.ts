@@ -12,6 +12,7 @@ import {
 } from "@/lib/direct-trade-config-store"
 import { fetchDirectTradeMinuteHistory } from "@/lib/direct-trade-market-history"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { normalizeMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
 import { CANONICAL_FORCED_SYMBOLS, withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 import {
@@ -596,14 +597,17 @@ export async function POST(request: NextRequest) {
       : [1, 12]
     blockRange.sort((left, right) => left - right)
     const trailingEnabled = body.trailingEnabled !== false
-    const minProfitFactor = Math.max(
-      0.8,
-      numberOr(body.minProfitFactor, DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT),
+    const minProfitFactor = normalizeMainTradePfRatio(
+      body.minProfitFactor,
+      DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
     )
     // A 12-position recent window avoids accepting a historical PF that is
     // already contradicted by the latest closed positions. The shared strict
     // default is checked by the deterministic full-matrix paper test.
-    const minRecentProfitFactor = Math.max(0.8, numberOr(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
+    const minRecentProfitFactor = normalizeMainTradePfRatio(
+      body.minRecentProfitFactor,
+      DIRECT_TRADE_RECENT_PF_DEFAULT,
+    )
     const recentEvaluationPositions = Math.max(3, Math.floor(numberOr(body.recentEvaluationPositions, 12)))
     const maxDrawdownTimeMin = Math.max(1, numberOr(body.maxDrawdownTimeMin, 10))
     const historyHours = clampDirectTradeHistoryHours(body.historyHours, 48)

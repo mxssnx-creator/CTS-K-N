@@ -199,6 +199,9 @@ export class BingXConnector extends BaseExchangeConnector {
   private static sharedTimeOffset: number = 0
   private static sharedLastSync:   number = 0
   private static sharedSyncPromise: Promise<void> | null = null
+  private static sharedTimestampCandidate: number = Number.NaN
+  private static sharedTimestampSequence: number = 0
+  private static sharedLastIssuedTimestamp: number = Number.NaN
   private static lastSyncFailLogTs: number = 0
   private static lastTransportFailLogTs: number = 0
   private static lastSdkFallbackLogTs: number = 0
@@ -562,7 +565,24 @@ export class BingXConnector extends BaseExchangeConnector {
     // timestamp and rejects any decimal value as code 100421 "timestamp
     // mismatch" — this was the true cause of the persistent failures, not the
     // clock offset itself.
-    return Math.floor(Date.now() + offset - this.timestampLagMs)
+    const candidate = Math.floor(Date.now() + offset - this.timestampLagMs)
+
+    // A 100421 recovery can complete inside the same millisecond and produce
+    // exactly the timestamp/signature pair that BingX just rejected. Keep
+    // same-candidate requests unique by moving only toward the safe (older)
+    // side of the venue clock. The 60s recvWindow easily absorbs this bounded
+    // sub-millisecond-burst sequence, while we never risk future-dating a
+    // request merely to make a retry distinct.
+    if (candidate === BingXConnector.sharedTimestampCandidate) {
+      BingXConnector.sharedTimestampSequence += 1
+    } else {
+      BingXConnector.sharedTimestampCandidate = candidate
+      BingXConnector.sharedTimestampSequence = 0
+    }
+    let timestamp = candidate - BingXConnector.sharedTimestampSequence
+    if (timestamp === BingXConnector.sharedLastIssuedTimestamp) timestamp -= 1
+    BingXConnector.sharedLastIssuedTimestamp = timestamp
+    return timestamp
   }
 
   /**

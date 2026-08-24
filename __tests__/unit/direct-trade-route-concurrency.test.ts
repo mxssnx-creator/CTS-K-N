@@ -93,7 +93,7 @@ describe("Direct-Trade API state and processor lease", () => {
         liveMode: false,
         maxSlRatio: 0.25,
         inverseMaxSlRatio: 1.5,
-        minProfitFactor: 0.8,
+        minProfitFactor: 1.02,
         maxDrawdownTimeMin: 99,
         trailingEnabled: false,
         keepEnabledPosCount: 99,
@@ -208,7 +208,7 @@ describe("Direct-Trade API state and processor lease", () => {
         maxPositionsPerSymbol: 12,
         maxPositionsPerDirection: 6,
         maxTotalPositions: 100,
-        minProfitFactor: 4,
+        minProfitFactor: 1.1,
       })
 
       await redis.set("direct_trade:state", JSON.stringify({

@@ -12,6 +12,10 @@ describe("exhaustive realtime cycle coordination", () => {
 
     expect(manager).toContain("function withCycleDiagnostic")
     expect(manager).toContain("continuing exhaustive work without retry")
+    expect(manager).toContain("REALTIME_CANONICAL_CYCLE_BUDGET_MS")
+    expect(manager).toContain("!cycleBudgetExceeded")
+    expect(manager).toContain("canonical_cycle_budget_exceeded_count")
+    expect(manager).toContain("The admission lease is intentionally")
 
     const realtimeStart = manager.indexOf("const pipelineResults = await withCycleDiagnostic(")
     expect(realtimeStart).toBeGreaterThan(-1)

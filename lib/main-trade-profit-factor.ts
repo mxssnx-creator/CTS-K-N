@@ -175,6 +175,26 @@ export function signedResultRToMainTradePfRatio(signedResultR: unknown): number 
 }
 
 /**
+ * Apply a quality/tuning factor without moving the neutral coordinate.
+ *
+ * Direct multiplication is invalid for this scale because 1.00 is neutral:
+ * `1.00 * 0.8` would invent a -2 PositionCost result. Scaling only the
+ * signed distance from 1.00 preserves neutral and keeps positive/negative
+ * Result-R values symmetric.
+ */
+export function scaleMainTradePfCoordinate(
+  ratio: unknown,
+  factor: unknown,
+): number {
+  const coordinate = finite(ratio, MAIN_TRADE_PF_RATIO_BASE)
+  const safeFactor = Math.max(0, finite(factor, 1))
+  return round(
+    MAIN_TRADE_PF_RATIO_BASE +
+      (coordinate - MAIN_TRADE_PF_RATIO_BASE) * safeFactor,
+  )
+}
+
+/**
  * Convert a signed percentage result back to the operator ratio scale.
  * Zero move is neutral at 1.00; every PositionCost adds 0.10 PF.
  */

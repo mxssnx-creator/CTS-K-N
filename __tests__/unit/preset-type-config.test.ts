@@ -31,7 +31,7 @@ describe("preset type runtime config", () => {
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({
       volume_factor: 1,
-      profit_factor_min: 0.7,
+      profit_factor_min: 1.02,
       max_drawdown_time: 18,
       trailing_enabled: true,
       block_enabled: true,
@@ -59,7 +59,7 @@ describe("preset type runtime config", () => {
     await expect(response.json()).resolves.toEqual(expect.objectContaining({
       success: true,
       volume_factor: 1,
-      profit_factor_min: 1.25,
+      profit_factor_min: 1.26,
       max_drawdown_time: 24,
       trailing_enabled: false,
       block_enabled: true,

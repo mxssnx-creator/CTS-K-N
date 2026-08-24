@@ -82,6 +82,7 @@ import {
   mainTradePfRatioToGrossMovePct,
   movePctToMainTradePfRatio,
   normalizeMainTradeStagePfRatio,
+  scaleMainTradePfCoordinate,
 } from "@/lib/main-trade-profit-factor"
 import {
   normalizePosCountVolumeRatio,
@@ -5999,7 +6000,9 @@ export class StrategyCoordinator {
         defaultMinimumProfitFactor: metrics.minProfitFactor,
         configuredMinimumProfitFactor: blockConfiguredMinimumProfitFactor,
         normalProfitFactor: blockNormalProfitFactor,
-        observedProfitFactor: ownWindow?.profitFactor,
+        observedProfitFactor: ownWindow && ownWindow.positionCostRatioCount > 0
+          ? ownWindow.positionCostRatio
+          : ownWindow?.profitFactor,
         sampleCount: Number(ownWindow?.count || 0),
         minimumSampleCount,
       })
@@ -6391,7 +6394,9 @@ export class StrategyCoordinator {
           defaultMinimumProfitFactor: metrics.minProfitFactor,
           configuredMinimumProfitFactor: blockConfiguredMinimumProfitFactor,
           normalProfitFactor: blockNormalProfitFactor,
-          observedProfitFactor: ownWindow?.profitFactor,
+          observedProfitFactor: ownWindow && ownWindow.positionCostRatioCount > 0
+            ? ownWindow.positionCostRatio
+            : ownWindow?.profitFactor,
           sampleCount: Number(ownWindow?.count || 0),
           minimumSampleCount,
         })
@@ -6876,7 +6881,9 @@ export class StrategyCoordinator {
         defaultMinimumProfitFactor: metrics.minProfitFactor,
         configuredMinimumProfitFactor: blockConfiguredMinimumProfitFactor,
         normalProfitFactor: blockNormalProfitFactor,
-        observedProfitFactor: laneWindow?.profitFactor,
+        observedProfitFactor: laneWindow && laneWindow.positionCostRatioCount > 0
+          ? laneWindow.positionCostRatio
+          : laneWindow?.profitFactor,
         sampleCount: Number(laneWindow?.count || 0),
         minimumSampleCount,
       })
@@ -7715,9 +7722,13 @@ export class StrategyCoordinator {
             leverageDelta = pfBias < 1.0 ? pfBias - 1 : undefined
           }
 
-          // tunedAvgPF: apply combined bias to the current avgPF
-          // (avoids re-summing the now-unmodified entries array each cycle).
-          const tunedAvgPF = Math.max(0.5, (s.avgProfitFactor ?? 1) * combined)
+          // Tune only the signed distance from the neutral 1.00 coordinate.
+          // Multiplying the coordinate itself would turn neutral into a loss
+          // and overstate every positive variant.
+          const tunedAvgPF = scaleMainTradePfCoordinate(
+            s.avgProfitFactor ?? MAIN_TRADE_PF_RATIO_BASE,
+            combined,
+          )
 
           if (coordIndex) {
             const coordRec = coordIndex.byCoordKey.get(s.setKey)
@@ -10533,7 +10544,7 @@ export class StrategyCoordinator {
     // compaction is a persistence concern and never truncates this calculation.
     for (const baseEntry of baseSet.entries) {
       for (const cfg of profile.configs) {
-        const pf      = Math.max(metrics.minProfitFactor, baseEntry.profitFactor * cfg.pfBias)
+        const pf = scaleMainTradePfCoordinate(baseEntry.profitFactor, cfg.pfBias)
         const baseDDT = baseEntry.drawdownTime > 0 ? baseEntry.drawdownTime : baseDDTFallback
         const ddt     = baseDDT + cfg.ddtBias
         if (ddt > metrics.maxDrawdownTime) continue
@@ -10550,6 +10561,9 @@ export class StrategyCoordinator {
     if (count === 0) return null
 
     const avgPF  = sumPF  / count
+    // Do not manufacture a valid variant by clamping every constituent to the
+    // configured gate. The measured coordinate must clear the gate itself.
+    if (avgPF < metrics.minProfitFactor) return null
     const avgDDT = sumDDT / count
     const avgCnf = sumCnf / count
 

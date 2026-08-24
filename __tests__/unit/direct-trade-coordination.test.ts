@@ -3,6 +3,7 @@ import {
   buildDirectTradeTakeProfitPositionCostRatios,
   directTradeTakeProfitPercent,
   calculateDirectTradeProfitFactor,
+  calculateDirectTradePositionCostRatio,
   averageDirectTradeTakeProfitRatio,
   evaluateDirectTradeSets,
   normaliseDirectTradeTakeProfitRatioRange,
@@ -30,6 +31,13 @@ function upwardMinuteSeries(size = 80): DirectTradeCandle[] {
 }
 
 describe("Direct-Trade independent historical coordination", () => {
+  test("keeps classic realised PF separate from the PositionCost admission coordinate", () => {
+    expect(calculateDirectTradeProfitFactor(3, 1)).toMatchObject({ profitFactor: 3 })
+    expect(calculateDirectTradePositionCostRatio(0, 0.1, 1)).toBe(1)
+    expect(calculateDirectTradePositionCostRatio(0.1, 0.1, 1)).toBe(1.1)
+    expect(calculateDirectTradePositionCostRatio(0.2, 0.1, 2)).toBe(1.1)
+    expect(calculateDirectTradePositionCostRatio(-0.1, 0.1, 1)).toBe(0.9)
+  })
   test("bounds the independent volume and trailing-distance controls", () => {
     expect(normaliseDirectTradeVolumeFactor(undefined)).toBe(0.1)
     expect(normaliseDirectTradeVolumeFactor(0)).toBe(0.1)
@@ -387,7 +395,7 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(withBlock.blockEvaluations.every((entry) => entry.blockSetKey.endsWith(`#block:${entry.blockCount}`))).toBe(true)
     expect(withBlock.blockEvaluations.map((entry) => entry.blockVolumeIncrementRatio)).toEqual([0.5, 1, 1.5])
     expect(withBlock.blockEvaluations.map((entry) => entry.blockCalculatedVolumeMultiplier)).toEqual([1.5, 2, 2.5])
-    expect(withBlock.blockEvaluations.map((entry) => entry.blockConfiguredMinimumProfitFactor)).toEqual([0.32, 0.64, 0.96])
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockConfiguredMinimumProfitFactor)).toEqual([1.008, 1.016, 1.024])
     expect(withBlock.blockEvaluations.every((entry) => entry.blockProfitFactorWindow === 3)).toBe(true)
     expect(withBlock.blockCount).toBe(3)
     expect(withBlock.blockTotalPnl).not.toBeCloseTo(withBlock.totalPnl * 2.5, 3)

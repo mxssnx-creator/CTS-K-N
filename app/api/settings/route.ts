@@ -27,6 +27,7 @@ import { normalizeTrendTimeframesMinutes } from "@/lib/trend-indication"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  normalizeMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
@@ -123,6 +124,12 @@ const CHANNEL_VOLUME_FACTOR_KEYS = [
   "signalVolumeFactor",
 ] as const
 const BLOCK_STACK_KEYS = ["blockMaxStack", "blockRowLiveMaxStack", "presetBlockMaxStack"] as const
+const POSITION_COST_PF_SELECTION_KEYS = [
+  "profitFactorMinPreset",
+  "strategyRealMinProfitFactor",
+  "indication_min_profit_factor",
+  "strategy_min_profit_factor",
+] as const
 
 function flattenSpecialSettings(settings: object): Record<string, unknown> {
   return Object.fromEntries(Object.entries(settings).map(([key, value]) => [
@@ -167,6 +174,10 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
     normalized[key] = Number.isFinite(value)
       ? Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(value)))
       : BLOCK_COUNT_MAX
+  }
+  for (const key of POSITION_COST_PF_SELECTION_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    normalized[key] = normalizeMainTradePfRatio(normalized[key])
   }
   if (normalized.trendTimeframesMinutes !== undefined) {
     normalized.trendTimeframesMinutes = normalizeTrendTimeframesMinutes(

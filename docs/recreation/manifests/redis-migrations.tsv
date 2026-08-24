@@ -98,3 +98,7 @@ version	name	source
 97	097-enforce-canonical-mandatory-symbol-basket	lib/redis-migrations.ts
 98	098-predefine-bingx-x02-prod-vst	lib/redis-migrations.ts
 99	099-position-cost-net-ratio-and-tp-set-defaults	lib/redis-migrations.ts
+100	100-direct-trade-connection-scopes-and-operational-pf-defaults	lib/redis-migrations.ts
+101	101-direct-execution-and-main-pf-selection-grid	lib/redis-migrations.ts
+102	102-credential-injection-live-safety-and-index-repair	lib/redis-migrations.ts
+103	103-systemwide-position-cost-pf-selection-coordinate	lib/redis-migrations.ts

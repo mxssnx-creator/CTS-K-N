@@ -20,6 +20,7 @@ import {
 } from "./symbol-selection-defaults"
 import {
   MAIN_TRADE_STAGE_PF_DEFAULTS,
+  normalizeMainTradePfRatio,
   normalizeMainTradeStagePfRatio,
 } from "./main-trade-profit-factor"
 import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "./position-cost"
@@ -7459,6 +7460,111 @@ const migrations: Migration[] = [
     down: async (client: any) => {
       // Never re-enable a venue on rollback. Only move the migration cursor.
       await client.set("_schema_version", "101")
+    },
+  },
+  {
+    version: 103,
+    name: "103-systemwide-position-cost-pf-selection-coordinate",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      let directStatesUpdated = 0
+      let settingFieldsUpdated = 0
+
+      // Direct Trade previously stored classic realised-PF defaults (4/25)
+      // in fields that are now operator admission coordinates. Preserve every
+      // state document and execution ledger; only normalize the two selectors.
+      const directStateKeys = new Set<string>([directTradeKeyspace().state])
+      for (const key of await scanRedisKeys(client, "direct_trade:connection:*:state")) {
+        directStateKeys.add(String(key))
+      }
+      for (const key of directStateKeys) {
+        const raw = await client.get(key).catch(() => null)
+        if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+        try {
+          const state = JSON.parse(raw) as Record<string, any>
+          const previousVersion = Number(state.fullHistoryPfDefaultsVersion) || 0
+          const fullRaw = Number(state.minProfitFactor)
+          const recentRaw = Number(state.minRecentProfitFactor)
+          const minProfitFactor = normalizeMainTradePfRatio(
+            previousVersion < 2 && [0.8, 4].includes(fullRaw) ? 1.1 : state.minProfitFactor,
+            1.1,
+          )
+          const minRecentProfitFactor = normalizeMainTradePfRatio(
+            previousVersion < 2 && [10, 25].includes(recentRaw) ? 1.1 : state.minRecentProfitFactor,
+            1.1,
+          )
+          if (
+            minProfitFactor === fullRaw &&
+            minRecentProfitFactor === recentRaw &&
+            previousVersion === 2
+          ) continue
+          await client.set(key, JSON.stringify({
+            ...state,
+            minProfitFactor,
+            minRecentProfitFactor,
+            fullHistoryPfDefaultsVersion: 2,
+            directTradePfSelectionCoordinateVersion: 1,
+            directTradePfSelectionCoordinateUpdatedAt: now,
+          }))
+          directStatesUpdated++
+        } catch {
+          // Keep malformed recovery evidence untouched; route hydration remains
+          // the safe fallback and never deletes credentials or positions.
+        }
+      }
+
+      const selectorFields = [
+        "profitFactorMinPreset",
+        "strategyRealMinProfitFactor",
+        "indication_min_profit_factor",
+        "strategy_min_profit_factor",
+      ] as const
+      const settingHashes = new Set<string>([
+        "app_settings",
+        "settings:app_settings",
+        "settings:all_settings",
+      ])
+      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
+        const connectionId = normalizeDirectTradeConnectionId(connection?.id)
+        if (!connectionId) continue
+        settingHashes.add(`connection_settings:${connectionId}`)
+        settingHashes.add(`settings:connection_settings:${connectionId}`)
+        settingHashes.add(`settings:connection:${connectionId}`)
+      }
+      for (const key of settingHashes) {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0) continue
+        const patch: Record<string, string> = {
+          pfSelectionCoordinateVersion: "1",
+        }
+        for (const field of selectorFields) {
+          if (values[field] == null || values[field] === "") continue
+          const normalized = normalizeMainTradePfRatio(values[field], 1.1)
+          if (Number(values[field]) === normalized) continue
+          patch[field] = String(normalized)
+          settingFieldsUpdated++
+        }
+        await client.hset(key, patch)
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        systemwide_pf_selection_range: "1.02-2.30",
+        systemwide_pf_selection_step: "0.02",
+        systemwide_pf_selection_default: "1.10",
+        systemwide_pf_neutral_coordinate: "1.00",
+        systemwide_pf_selection_semantics: "net-position-cost-ratio-v1",
+        independent_block_profit_factor: "neutral-distance-x-ratio-x-volume-increment-v2",
+        independent_block_profit_factor_formula: "1+((default-1)*ratio*volume-increment)",
+        classic_realized_profit_factor_semantics: "gross-profit-divided-by-gross-loss",
+        direct_trade_pf_states_updated: String(directStatesUpdated),
+        systemwide_pf_setting_fields_updated: String(settingFieldsUpdated),
+        schema_version: "103",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // Never restore incompatible classic-PF defaults into selection fields.
+      await client.set("_schema_version", "102")
     },
   },
 ]

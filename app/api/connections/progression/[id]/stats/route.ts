@@ -24,6 +24,7 @@ import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pn
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot"
 import { strategyVariantOutcomeKey } from "@/lib/pos-history"
+import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -139,6 +140,13 @@ async function responseFromVolatileStatsSnapshot(
       client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
       client.get(`engine_is_running:${connectionId}`).catch(() => null),
     ])
+    const historicFourHourKey = historicFourHourKeyFromPrehistoric(
+      (prehistoricRaw || {}) as Record<string, string>,
+      connectionId,
+    )
+    const historicFourHourRaw = historicFourHourKey
+      ? ((await client.hgetall(historicFourHourKey).catch(() => null)) || {}) as Record<string, string>
+      : null
     // `progressionReadKeys` is ordered by runtime authority.  Do not select
     // the first non-empty hash wholesale: a rolling migration can leave that
     // hash with only an old phase while the compatibility hash contains the
@@ -181,6 +189,9 @@ async function responseFromVolatileStatsSnapshot(
     // for the numeric counter overlay above.
     overlaid.settingsRecoordination = buildSettingsRecoordinationState(progression)
     overlaid.statsRecalculation = buildStatsRecalculationState(progression)
+    if (historicFourHourRaw) {
+      overlaid.historicFourHour = parseHistoricFourHourAggregate(historicFourHourRaw)
+    }
     return new Response(JSON.stringify(overlaid), {
       headers: snapshot.headers,
       status: snapshot.status,
@@ -448,9 +459,13 @@ function aggregateOrdersBySymbol(
     allowedSymbols?: ReadonlySet<string>,
   ): {
     counts: Record<string, number>
+    evaluated: Record<string, number>
     activeSets: Record<string, number>
   } {
     const counts: Record<string, number> = {
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
+    }
+    const evaluated: Record<string, number> = {
       direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const activeSets: Record<string, number> = {
@@ -468,29 +483,53 @@ function aggregateOrdersBySymbol(
       direction: false, move: false, active: false, active_advanced: false, special: false, optimal: false, auto: false, common: false, signal: false, trend: false,
     }
     for (const field of Object.keys(fields)) {
-      const idx = field.lastIndexOf(":")
-      if (idx <= 0) continue
-      const symbol = field.slice(0, idx).toUpperCase()
+      const firstColon = field.indexOf(":")
+      if (firstColon <= 0) continue
+      const symbol = field.slice(0, firstColon).toUpperCase()
       if (allowedSymbols && allowedSymbols.size > 0 && !allowedSymbols.has(symbol)) continue
-      const type = field.slice(idx + 1)
-      if (type in hasScopedField) hasScopedField[type] = true
+      const suffix = field.slice(firstColon + 1)
+      const metricColon = suffix.indexOf(":")
+      const type = metricColon > 0 ? suffix.slice(0, metricColon) : suffix
+      // Only the canonical "{symbol}:{type}" field marks the scoped
+      // qualified value as present. Metric suffixes such as :evaluated,
+      // :long and :short must not suppress a legacy qualified fallback.
+      if (metricColon < 0 && type in hasScopedField) hasScopedField[type] = true
     }
 
     for (const [field, raw] of Object.entries(fields)) {
-      const idx = field.lastIndexOf(":")
-      if (idx > 0) {
-        const symbol = field.slice(0, idx).toUpperCase()
+      const firstColon = field.indexOf(":")
+      let type = field
+      let metric = ""
+      if (firstColon > 0) {
+        const symbol = field.slice(0, firstColon).toUpperCase()
         if (allowedSymbols && allowedSymbols.size > 0 && !allowedSymbols.has(symbol)) continue
+        const suffix = field.slice(firstColon + 1)
+        const metricColon = suffix.indexOf(":")
+        type = metricColon > 0 ? suffix.slice(0, metricColon) : suffix
+        metric = metricColon > 0 ? suffix.slice(metricColon + 1) : ""
       }
-      const type = idx > 0 ? field.slice(idx + 1) : field
       if (!(type in counts)) continue
-      if (idx <= 0 && hasScopedField[type]) continue
+      if (firstColon <= 0 && hasScopedField[type]) continue
       const value = n(raw)
+      if (metric === "evaluated") {
+        evaluated[type] += value
+        continue
+      }
+      // Directional and any future diagnostic suffixes are orthogonal to the
+      // qualified/evaluated headline dimensions.
+      if (metric) continue
       counts[type] += value
       if (value > 0) activeSets[type] += 1
     }
 
-    return { counts, activeSets }
+    // A qualified row necessarily was evaluated. This compatibility floor
+    // also makes mixed/old deployments truthful until the first new writer
+    // cycle publishes explicit :evaluated fields.
+    for (const type of INDICATION_TYPES) {
+      evaluated[type] = Math.max(evaluated[type], counts[type])
+    }
+
+    return { counts, evaluated, activeSets }
   }
 
   /**
@@ -533,6 +572,17 @@ function aggregateOrdersBySymbol(
   function stableString(v: unknown): string {
     if (v === undefined || v === null) return ""
     return String(v).trim()
+  }
+
+  function historicFourHourKeyFromPrehistoric(
+    prehistoric: Record<string, string>,
+    connectionId: string,
+  ): string {
+    const prefix = `historic:aggregate:${connectionId}:four-hour:`
+    const pointer = stableString(prehistoric.historic_four_hour_key)
+    if (pointer.startsWith(prefix)) return pointer
+    const generation = stableString(prehistoric.historic_four_hour_generation)
+    return generation ? `${prefix}${generation}` : ""
   }
 
   function progressionSettingsVersion(hash: Record<string, any> | null | undefined): string {
@@ -859,6 +909,17 @@ export async function GET(
     const unscopedProgressionUsable = activeProgressionKey === scope.legacyProgressionKey || fallbackMatchesActive(progHash, legacyProgHash)
     const prehistoricHash: Record<string, string> = prehistoricHashRaw || {}
     const realtimeHash: Record<string, string>   = realtimeHashRaw   || {}
+    // Constrain the engine-owned pointer to this connection's namespace so a
+    // malformed/imported hash cannot turn the endpoint into an arbitrary-key
+    // reader. The generation field is a rolling-upgrade fallback.
+    const historicFourHourKey = historicFourHourKeyFromPrehistoric(
+      prehistoricHash,
+      connectionId,
+    )
+    const historicFourHourHash = historicFourHourKey
+      ? ((await client.hgetall(historicFourHourKey).catch(() => null)) || {}) as Record<string, string>
+      : {}
+    const historicFourHour = parseHistoricFourHourAggregate(historicFourHourHash)
     const axisWindowsHash: Record<string, string> = (axisWindowsHashRaw as unknown as Record<string, string>) || {}
     const ordersBySymbolHash: Record<string, string> = (ordersBySymbolRaw as unknown as Record<string, string>) || {}
     const hedgePosAccHash: Record<string, string> = (hedgePosAccHashRaw as unknown as Record<string, string>) || {}
@@ -1666,6 +1727,9 @@ export async function GET(
     const activeIndByType: Record<string, number> = {
       direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
+    const activeIndEvaluatedByType: Record<string, number> = {
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
+    }
     const activeStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
     }
@@ -1721,22 +1785,40 @@ export async function GET(
     // Hoisted so the raw hash is accessible in the return block for `strategiesActive`.
     let stratActiveHash: Record<string, string> | null = null
     try {
-      const [indActiveHash, _stratActiveHash] = await Promise.all([
+      const [indActiveHash, indSetActiveHash, _stratActiveHash] = await Promise.all([
         client.hgetall(`indications_active:${connectionId}`).catch(() => null),
+        client.hgetall(`indication_sets_active:${connectionId}`).catch(() => null),
         client.hgetall(`strategies_active:${connectionId}`).catch(() => null),
       ])
       // Persist for outer-scope access (strategiesActive in return object).
       stratActiveHash = (_stratActiveHash && typeof _stratActiveHash === "object")
         ? (_stratActiveHash as Record<string, string>)
         : null
-      if (indActiveHash && typeof indActiveHash === "object") {
-        const snapshot = aggregateIndicationSnapshot(
-          indActiveHash as Record<string, string>,
+      if (
+        (indActiveHash && typeof indActiveHash === "object") ||
+        (indSetActiveHash && typeof indSetActiveHash === "object")
+      ) {
+        const rawSnapshot = aggregateIndicationSnapshot(
+          indActiveHash as Record<string, string> | null,
+          activeStatsSymbolFilter,
+        )
+        const setSnapshot = aggregateIndicationSnapshot(
+          indSetActiveHash as Record<string, string> | null,
           activeStatsSymbolFilter,
         )
         for (const type of INDICATION_TYPES) {
-          activeIndByType[type] = snapshot.counts[type] || 0
-          activeSetsIndByType[type] = snapshot.activeSets[type] || 0
+          activeIndByType[type] = Math.max(
+            rawSnapshot.counts[type] || 0,
+            setSnapshot.counts[type] || 0,
+          )
+          activeIndEvaluatedByType[type] = Math.max(
+            activeIndByType[type],
+            setSnapshot.evaluated[type] || 0,
+          )
+          activeSetsIndByType[type] = Math.max(
+            rawSnapshot.activeSets[type] || 0,
+            setSnapshot.activeSets[type] || 0,
+          )
         }
       }
       if (stratActiveHash && typeof stratActiveHash === "object") {
@@ -1825,6 +1907,7 @@ export async function GET(
       }
     } catch { /* non-critical: dashboard falls back to cumulative */ }
     const activeIndTotal = Object.values(activeIndByType).reduce((s, v) => s + v, 0)
+    const activeIndEvaluatedTotal = Object.values(activeIndEvaluatedByType).reduce((s, v) => s + v, 0)
     // Pipeline-aware total: use REAL final output, not the sum of parent and
     // derived stage populations.
     let activeStratTotal = activeStratByStage.real || strategiesTotal
@@ -3787,6 +3870,10 @@ export async function GET(
         },
       },
 
+      // Exhaustive historic calculation rows in fixed UTC four-hour windows.
+      // The PositionCost coordinate and classic realised PF are separate.
+      historicFourHour,
+
 
       realtime: {
         indicationCycles: realtimeIndicationCycles,
@@ -3962,6 +4049,19 @@ export async function GET(
           signal:         activeIndByType.signal           || 0,
           trend:          activeIndByType.trend            || 0,
           total:          activeIndTotal,
+        },
+        indicationsEvaluated: {
+          direction:      activeIndEvaluatedByType.direction        || 0,
+          move:           activeIndEvaluatedByType.move             || 0,
+          active:         activeIndEvaluatedByType.active           || 0,
+          activeAdvanced: activeIndEvaluatedByType.active_advanced  || 0,
+          special:        activeIndEvaluatedByType.special          || 0,
+          optimal:        activeIndEvaluatedByType.optimal          || 0,
+          auto:           activeIndEvaluatedByType.auto             || 0,
+          common:         activeIndEvaluatedByType.common           || 0,
+          signal:         activeIndEvaluatedByType.signal           || 0,
+          trend:          activeIndEvaluatedByType.trend            || 0,
+          total:          activeIndEvaluatedTotal,
         },
         strategies: {
           base:  activeStratByStage.base  || 0,

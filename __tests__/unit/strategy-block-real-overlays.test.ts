@@ -1178,7 +1178,7 @@ describe("Real-stage Block overlays", () => {
       "BTCUSDT", [strongSource], metrics, undefined, new Set(),
     ) as StrategySet[]
     expect(before.map((set) => set.blockVolumeIncrementRatio)).toEqual([0.5, 1])
-    expect(before.map((set) => Number(set.blockConfiguredMinimumProfitFactor))).toEqual([0.48, 0.96])
+    expect(before.map((set) => Number(set.blockConfiguredMinimumProfitFactor))).toEqual([1.08, 1.16])
     expect(before.map((set) => Number(set.blockMinimumProfitFactor))).toEqual([100, 100])
 
     coordinator._coordinationSettings.blockVolumeRatio = 1.5
@@ -1187,8 +1187,8 @@ describe("Real-stage Block overlays", () => {
       "BTCUSDT", [strongSource], metrics, undefined, new Set(),
     ) as StrategySet[]
     expect(after.map((set) => set.blockVolumeIncrementRatio)).toEqual([1.5, 3])
-    expect(after[0].blockConfiguredMinimumProfitFactor).toBeCloseTo(2.16, 10)
-    expect(after[1].blockConfiguredMinimumProfitFactor).toBeCloseTo(4.32, 10)
+    expect(after[0].blockConfiguredMinimumProfitFactor).toBeCloseTo(1.36, 10)
+    expect(after[1].blockConfiguredMinimumProfitFactor).toBeCloseTo(1.72, 10)
     expect(after[0].blockMinimumProfitFactor).toBe(100)
     expect(after[1].blockMinimumProfitFactor).toBe(100)
     expect(after[0].variantSizeMultiplier).toBeCloseTo(2.5, 10)

@@ -4,7 +4,7 @@ import path from "node:path"
 const root = process.cwd()
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8")
 
-describe("coherent strategy snapshots and schema v102", () => {
+describe("coherent strategy snapshots and schema v103", () => {
   test("uses symbol-local active lineage under parallel symbol processing", () => {
     const source = read("lib/strategy-coordinator.ts")
     expect(source).toContain("private _activeKeysCache = new Map<string")
@@ -50,7 +50,7 @@ describe("coherent strategy snapshots and schema v102", () => {
   test("migrations are sequential through the coherent schema", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
-    expect(versions.at(-1)).toBe(102)
+    expect(versions.at(-1)).toBe(103)
     expect(versions.every((version, index) => version === index + 1)).toBe(true)
     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
     expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')
@@ -72,9 +72,10 @@ describe("coherent strategy snapshots and schema v102", () => {
     expect(source).toContain('name: "095-active-outbreak-ranges-and-market-protection-profiles"')
     expect(source).toContain('name: "097-enforce-canonical-mandatory-symbol-basket"')
     expect(source).toContain('name: "102-credential-injection-live-safety-and-index-repair"')
+    expect(source).toContain('name: "103-systemwide-position-cost-pf-selection-coordinate"')
     expect(source).toContain('strategy_set_listing_indexes: "lifetime-active-closed"')
     expect(source).toContain('inline_snapshot_interval_ms: "60000"')
-    expect(source).toContain('independent_block_profit_factor: "default-pf-x-ratio-x-volume-increment-v1"')
+    expect(source).toContain('independent_block_profit_factor: "neutral-distance-x-ratio-x-volume-increment-v2"')
     expect(source).toContain('block_profit_factor_ratio_default: "0.8"')
     expect(source).toContain('high_frequency_statistics_storage: "bounded-hourly-rollups-v2"')
     expect(source).toContain('name: "076-dynamic-symbol-selection-default-one"')
@@ -89,5 +90,8 @@ describe("coherent strategy snapshots and schema v102", () => {
     expect(source).toContain("activeStatsSymbolFilter")
     expect(source).toContain("!activeStatsSymbolFilter.has(fieldSymbol)")
     expect(source).toContain("aggregateIndicationSnapshot(")
+    expect(source).toContain("indication_sets_active:${connectionId}")
+    expect(source).toContain("indicationsEvaluated:")
+    expect(source).toContain('metric === "evaluated"')
   })
 })

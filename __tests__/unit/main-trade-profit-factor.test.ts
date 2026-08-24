@@ -12,6 +12,7 @@ import {
   netMovePctAfterPositionCost,
   normalizeMainTradePfRatio,
   normalizeMainTradeStagePfRatio,
+  scaleMainTradePfCoordinate,
   signedResultRToMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import { derivePosWindowStats } from "@/lib/pos-history"
@@ -89,6 +90,13 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
         expect(movePctToMainTradePfRatio(netMove, positionCostPct)).toBeCloseTo(coordinate, 8)
       }
     }
+  })
+
+  test("scales tuning around neutral instead of multiplying the coordinate", () => {
+    expect(scaleMainTradePfCoordinate(1, 0.6)).toBe(1)
+    expect(scaleMainTradePfCoordinate(1.2, 0.5)).toBe(1.1)
+    expect(scaleMainTradePfCoordinate(0.8, 0.5)).toBe(0.9)
+    expect(scaleMainTradePfCoordinate(1.2, 1.5)).toBe(1.3)
   })
 
   test("does not let a selectable threshold round measured results into a pass", () => {

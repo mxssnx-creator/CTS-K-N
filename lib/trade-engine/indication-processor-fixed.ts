@@ -123,6 +123,7 @@ import {
   type ActiveMarketExitSituation,
 } from "@/lib/active-outbreak-indication"
 import { evaluateIndependentDirections } from "@/lib/directional-evaluation"
+import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 // Pre-import modules at module load time (not per-call)
 import { initRedis, getRedisClient, getMarketData, saveIndication, getSettings, getAppSettings, storeIndications } from "@/lib/redis-db"
@@ -304,6 +305,107 @@ function moduleSettingsCacheSet(
   }
   MODULE_SETTINGS_CACHE.delete(connectionId)
   MODULE_SETTINGS_CACHE.set(connectionId, value)
+}
+
+function finiteStrategyScore(value: unknown): number {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+function logicalStrategyIndicationSubtype(indication: any): string {
+  const type = String(indication?.type || indication?.indication_type || "unknown").toLowerCase()
+  const config = indication?.config || {}
+  const metadata = indication?.metadata || {}
+  if (type === "common") {
+    return [
+      metadata.commonIndicatorType || config.indicatorType || "common",
+      `tf${metadata.timeframeMinutes || config.timeframeMinutes || "default"}`,
+    ].join(":")
+  }
+  if (type === "trend") {
+    return metadata.combined || config.combined
+      ? "combined"
+      : `tf${metadata.timeframeMinutes || config.timeframeMinutes || "default"}`
+  }
+  if (type === "active") {
+    const protection = metadata.activeProtection || {}
+    return String(
+      protection.id || protection.profileId || protection.marketExitSituation || metadata.mode || "active",
+    )
+  }
+  if (type === "special") {
+    const plan = metadata.specialPositionPlan || metadata.special?.positionPlan || {}
+    return String(plan.id || plan.exitVariant || metadata.mode || "special")
+  }
+  return String(metadata.mode || config.mode || type)
+}
+
+/**
+ * Collapse exact parameter tuples into executable Strategy decisions.
+ *
+ * Every tuple has already been calculated, graded, persisted and counted by
+ * IndicationSetsProcessor. Strategy/Base must consume logical market decisions
+ * rather than treating 20k parameter combinations that currently say the same
+ * thing as 20k independent orders. Common keeps indicator × timeframe lanes;
+ * Trend keeps each timeframe/combined lane; protection-specific Active and
+ * Special rows remain independent. Within one lane the best realized row wins
+ * deterministically and reports how many qualified configurations it represents.
+ */
+export function selectStrategyIndicationRepresentatives(
+  exactIndications: readonly any[],
+  fallbackIndications: readonly any[] = [],
+): any[] {
+  const groups = new Map<string, { winner: any; count: number }>()
+
+  const rank = (indication: any): [number, number, number, number, string] => {
+    const source = String(indication?.metadata?.profitFactorSource || "")
+    const evidence = source.includes("realized") || source === "historical_forward_window" ? 1 : 0
+    return [
+      evidence,
+      finiteStrategyScore(indication?.metadata?.positionCostRatio ?? indication?.profitFactor),
+      finiteStrategyScore(indication?.confidence),
+      finiteStrategyScore(indication?.signalScore ?? indication?.rawSignalStrength),
+      String(indication?.setKey || indication?.set_key || ""),
+    ]
+  }
+  const isBetter = (candidate: any, current: any): boolean => {
+    const left = rank(candidate)
+    const right = rank(current)
+    for (let index = 0; index < left.length - 1; index++) {
+      if (left[index] !== right[index]) return Number(left[index]) > Number(right[index])
+    }
+    return String(left[4]).localeCompare(String(right[4])) < 0
+  }
+
+  for (const indication of exactIndications) {
+    const type = String(indication?.type || indication?.indication_type || "unknown").toLowerCase()
+    const direction = resolveConsistentTradeDirection(
+      indication?.direction,
+      indication?.metadata?.direction,
+    )
+    if (!direction) continue
+    const key = `${type}|${direction}|${logicalStrategyIndicationSubtype(indication)}`
+    const existing = groups.get(key)
+    if (!existing) {
+      groups.set(key, { winner: indication, count: 1 })
+    } else {
+      existing.count++
+      if (isBetter(indication, existing.winner)) existing.winner = indication
+    }
+  }
+
+  const representatives = Array.from(groups.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([logicalLane, group]) => ({
+      ...group.winner,
+      metadata: {
+        ...(group.winner?.metadata || {}),
+        strategyRepresentative: true,
+        strategyLogicalLane: logicalLane,
+        qualifiedConfigurationCount: group.count,
+      },
+    }))
+  return representatives.concat(fallbackIndications)
 }
 
 /**
@@ -1055,6 +1157,13 @@ export class IndicationProcessor {
         }
       }
 
+      // Preserve the complete loaded series solely for offline forward
+      // grading. The live calculation below still receives the causal slice
+      // ending at asOfMs; only IndicationSetsProcessor's historical outcome
+      // validator may inspect the explicit future window, and historic mode
+      // never dispatches an exchange order.
+      const completeCandleSeries = [...candles]
+
       // In replay mode (asOfMs set), slice to <= asOfMs so
       // the "current" candle is the one at the simulated point in time.
       // Sub-ms duplicate timestamps are tolerated — the slice keeps every
@@ -1078,6 +1187,19 @@ export class IndicationProcessor {
           candles = candles.slice(0, 1)
         }
       }
+
+      const historicalForwardCandles = isHistorical
+        ? completeCandleSeries
+            .filter((candle: any) => {
+              const rawTimestamp = candle?.timestamp ?? candle?.time ?? candle?.t
+              const numeric = Number(rawTimestamp)
+              const timestamp = Number.isFinite(numeric)
+                ? (numeric < 10_000_000_000 ? numeric * 1_000 : numeric)
+                : new Date(String(rawTimestamp || "")).getTime()
+              return Number.isFinite(timestamp) && timestamp >= Number(asOfMs)
+            })
+            .slice(0, 64)
+        : undefined
 
       const pricesOldestFirst = oneMinuteClosesOldestFirst(candles)
       // Stage coordination is defined on one-minute closes. A 1s tail with
@@ -1671,6 +1793,12 @@ export class IndicationProcessor {
         })
       }
 
+      // Keep the reduced calculation outputs as a controlled cold-start
+      // fallback. Exact configuration rows replace their matching families
+      // only after at least one row has real forward-performance evidence.
+      const directStrategyIndications = [...indications]
+      let strategyIndications = directStrategyIndications
+
       // Materialise every qualified parameter tuple in realtime and replay,
       // then hand those exact rows directly to Strategy/Base. Reconstructing
       // the current cycle through a capped Redis read was the hidden boundary
@@ -1683,6 +1811,7 @@ export class IndicationProcessor {
           __indicationSnapshotMode: isHistorical ? "historical" : "realtime",
           __indicationSnapshotAsOfMs: isHistorical ? asOfMs : undefined,
           candles,
+          ...(historicalForwardCandles && { forwardCandles: historicalForwardCandles }),
           prices: pricesOldestFirst,
           priceOrder: "oldest-first",
           executionPrice: currentClose,
@@ -1711,6 +1840,15 @@ export class IndicationProcessor {
             !exactTypes.has(String(indication?.type || "")),
           ),
         ]
+        const directFallback = directStrategyIndications.filter((indication) =>
+          indication?.type === "signal" ||
+          indication?.type === "auto" ||
+          !exactTypes.has(String(indication?.type || "")),
+        )
+        strategyIndications = selectStrategyIndicationRepresentatives(
+          exactSetIndications,
+          directFallback,
+        )
       }
 
       // A generation can change while market/signal data is in flight. Drop
@@ -1797,7 +1935,7 @@ export class IndicationProcessor {
         } catch { /* non-critical — falls back to cumulative indCounts */ }
       }
 
-      return isCurrent() ? indications : []
+      return isCurrent() ? strategyIndications : []
     } catch (error) {
       console.error(`[v0] [IndicationProcessor] Error in processIndication for ${symbol}:`, error)
       return []

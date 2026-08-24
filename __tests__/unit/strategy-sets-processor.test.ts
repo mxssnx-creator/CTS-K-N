@@ -110,7 +110,7 @@ describe("StrategySetsProcessor", () => {
 
     expect(baseEntries).toHaveLength(300)
     expect(mainEntries).toHaveLength(301)
-    expect(Math.min(...baseEntries.map((entry: any) => entry.profitFactor))).toBeCloseTo(1.9)
+    expect(Math.min(...baseEntries.map((entry: any) => entry.profitFactor))).toBeCloseTo(1.95)
     expect(Math.min(...mainEntries.map((entry: any) => entry.profitFactor))).toBeCloseTo(1.99)
   })
 

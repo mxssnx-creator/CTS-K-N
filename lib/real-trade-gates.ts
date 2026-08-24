@@ -173,9 +173,16 @@ export function hasRealTradeBlock(settings: Record<string, any>): boolean {
  * reporting "live" while the engine independently routes the same signal to
  * simulation.
  */
+export type RealTradeIntent = "main" | "preset" | "signal"
+
+export function normalizeRealTradeIntent(value: unknown): RealTradeIntent {
+  const normalized = String(value || "main").trim().toLowerCase()
+  return normalized === "preset" || normalized === "signal" ? normalized : "main"
+}
+
 export function evaluateRealTradeReadiness(
   settings: Record<string, any>,
-  intent: "main" | "preset" | "signal" = "main",
+  intent: RealTradeIntent = "main",
 ): RealTradeReadiness {
   const isPreset = intent === "preset"
   const isSignal = intent === "signal"

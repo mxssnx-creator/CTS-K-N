@@ -3,6 +3,66 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
+## Binding continuation checkpoint (2026-08-24, current)
+
+- This section supersedes every older checkout/path statement below it. The
+  canonical persistent checkout is `/workspace/CTS-K-N`, branch
+  `feature/remote-direct-pf-v101`, based on
+  `c7d820c96190155c210ba52828e907c67303acf3`. The pruned
+  `/workspace/CTS-K-N-integration` path must not be used. Exact recovery inputs
+  are retained under `/workspace/backups/CTS-K-N/recovery-20260824T143009Z`.
+- The restored systemwide stability work is present in the canonical tree.
+  The current complete local gates pass 214 unit suites / 1,375 tests, 4
+  integration suites / 55 tests, repository-wide ESLint, TypeScript, a
+  zero-finding 1,497-file secret scan, Kilo 37/37 and Linux installer
+  preflights, and a trace-valid 42-page Next build with 347 complete trace
+  files. Redis schema and Kilo preflight expectations are v103. Do not discard the current
+  worktree: it contains the recovered source, tests, status scopes, PF policy,
+  BingX VST migration, coordination, and install/deployment contracts that
+  still need to be committed together after the full release gates.
+- A new exhaustive historic four-hour projection is being completed. It
+  counts every enabled indication/strategy config evaluation per symbol/window,
+  every indication alias, and every open/closed strategy result. Closed net
+  results use the canonical PositionCost coordinate
+  `1.00 + 0.10 × (Σ net PnL % / Σ PositionCost %)`: 1.00 is neutral and 1.10
+  is exactly +1 average PositionCost. PositionCost is not deducted again;
+  open positions never enter realised PnL/PF. Classic realised
+  gross-profit/gross-loss PF remains a separate field. The Connection Card
+  renders every fixed UTC four-hour row at the end of expanded details without
+  sampling. Nine direct feature tests plus the wider Historic/Redis suite pass,
+  and recreation manifests verify all 1,489 project files. The 32-symbol,
+  48-hour paper matrix evaluated 960,512 deterministic Direct-Trade Sets;
+  Block comparison evaluated 120,064 parent rows and 1,419,264 independent
+  Count rows. Async scheduling and supervisor recovery gates are also green.
+- Verified local checkpoints include
+  `/workspace/backups/CTS-K-N/20260824T-recovery-unit-green` and
+  `/workspace/backups/CTS-K-N/20260824T-before-four-hour-stats`. Each contains
+  a complete Git bundle, binary patch, untracked archive, HEAD/status and a
+  verified SHA-256 manifest. Continue making the same class of checkpoint
+  before commit/push/merge/deploy.
+- Local pinned tooling is activated by
+  `/workspace/.network-clients/activate-cts.sh`: Node 22.23.2, pnpm 10.28.1,
+  GitHub CLI 2.98.0, Chisel 1.12.0-rc2, Redis 8.10.1, agent-browser 0.34.0,
+  and Chrome for Testing 152.0.7977.54. Browser tooling has its own pinned
+  lockfile under `/workspace/.network-clients/agent-browser`; its archive and
+  binaries were integrity-checked. The local Work container denies the Unix
+  socket syscall Chrome/agent-browser needs, so the visual gate is scheduled
+  on the authorized Linux server after merged-main deployment. Dependencies were
+  restored with `pnpm install --frozen-lockfile` into the persistent store;
+  the lockfile was not changed.
+- The authorized server is `root@152.53.114.112`, production checkout
+  `/opt/cts-kn`. A verified pre-change backup exists at
+  `/var/backups/cts-kn/20260824T112655Z-pre-complete-software`. Chisel/SSH
+  material remains only in owner-protected local files and must never be
+  printed or committed. Chisel server/client and remote GitHub CLI are current;
+  the intentionally disabled broken git-sync timer must stay disabled.
+- Publish sequence remains mandatory: complete local gates; create a verified
+  pre-push backup; push the checked feature head; open PR; wait for all checks;
+  merge only the checked head; back up the server again; deploy merged `main`;
+  verify services/Redis/Chisel; then run only a minimum-volume virtual X02
+  Prod-VST lifecycle. X01/Mainnet and Bybit remain read-only. Restore X02's
+  pre-test baseline and retain sanitized evidence/rollback artifacts.
+
 ## Current State
 
 **Project Status**: ✅ Active production trading system with validated release branches

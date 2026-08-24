@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
+import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -14,7 +15,7 @@ export const fetchCache = "force-no-store"
  * and component health breakdown. Used by the monitoring Trade Engines tab.
  */
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ connectionId: string }> },
 ) {
   const { connectionId } = await params
@@ -35,16 +36,51 @@ export async function GET(
       (engineHash.operator_intent || engineHash.desired_status || engineHash.status || "stopped") === "running"
     const isGloballyPaused = (engineHash.operator_intent || engineHash.status || "") === "paused"
 
-    // Read connection-scoped state
-    const [rawEngineState, settingsEngineState, rawProgression, connHash] = await Promise.all([
+    const connHash = await client
+      .hgetall(`connection:${connectionId}`)
+      .catch(() => ({} as Record<string, string>))
+    const requestUrl = new URL(req.url)
+    const requestedEngineType =
+      requestUrl.searchParams.get("engineType") ||
+      requestUrl.searchParams.get("engine_type") ||
+      ""
+    const engineType = String(
+      requestedEngineType || connHash?.engine_type || connHash?.engineType || "main",
+    ).trim() || "main"
+    const scope = buildProgressionScope(connectionId, engineType)
+    const progressionKeys = Array.from(new Set(progressionReadKeys(scope)))
+
+    // Read every rolling-deploy surface, then merge it in runtime-authority
+    // order. Long-lived managers write engine-scoped hashes; scheduled owners
+    // may still publish to the legacy connection hash during a rolling deploy.
+    const [
+      rawEngineState,
+      settingsEngineState,
+      scopedRawEngineState,
+      scopedSettingsEngineState,
+      progressionHashes,
+    ] = await Promise.all([
       client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
       client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
-      client.hgetall(`progression:${connectionId}`).catch(() => ({} as Record<string, string>)),
-      client.hgetall(`connection:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+      Promise.all(
+        progressionKeys.map((key) =>
+          client.hgetall(key).catch(() => ({} as Record<string, string>)),
+        ),
+      ),
     ])
 
-    const engineState: Record<string, string> = { ...(rawEngineState ?? {}), ...(settingsEngineState ?? {}) }
-    const progression = rawProgression ?? {}
+    const engineState: Record<string, string> = {
+      ...(rawEngineState ?? {}),
+      ...(settingsEngineState ?? {}),
+      ...(scopedRawEngineState ?? {}),
+      ...(scopedSettingsEngineState ?? {}),
+    }
+    const progression = progressionHashes.reduce<Record<string, string>>(
+      (merged, hash) => ({ ...(hash || {}), ...merged }),
+      {},
+    )
     const connData = connHash ?? {}
 
     // Check heartbeats
@@ -61,16 +97,16 @@ export async function GET(
       ? Math.max(0, Number(localManager?.canonicalPipelineAgeMs) || 0)
       : 0
 
-    const hasLocalEngine = (coordinator?.getActiveEngineCount() || 0) > 0
+    const hasLocalConnectionRuntime = Boolean(localManager?.isEngineRunning)
     const connectionRunning =
       isGloballyRunning &&
       !isGloballyPaused &&
-      (hasLocalEngine || hasFreshDistributedHeartbeat || hasFreshScheduledCycle)
+      (hasLocalConnectionRuntime || hasFreshDistributedHeartbeat || hasFreshScheduledCycle)
 
     const status = connectionRunning ? "running" : isGloballyPaused ? "paused" : "stopped"
 
     // Cycle metrics from progression state
-    const progressionState = await ProgressionStateManager.getProgressionState(connectionId).catch(() => ({
+    const progressionState = await ProgressionStateManager.getProgressionState(connectionId, engineType).catch(() => ({
       cyclesCompleted: 0,
       successfulCycles: 0,
       failedCycles: 0,
@@ -79,7 +115,10 @@ export async function GET(
     const cyclesCompleted = Number(progression.cycles_completed || progressionState.cyclesCompleted || 0)
     const indCycles = Number(engineState.indication_cycle_count || engineState.ind_cycles || 0)
     const stratCycles = Number(engineState.strategy_cycle_count || engineState.strat_cycles || 0)
-    const realtimeCycles = Number(engineState.realtime_cycle_count || engineState.rt_cycles || cyclesCompleted)
+    const realtimeCycles = Number(progression.realtime_cycle_count || engineState.realtime_cycle_count || engineState.rt_cycles || cyclesCompleted)
+    const canonicalCycleBudgetExceededCount = Number(progression.canonical_cycle_budget_exceeded_count || 0)
+    const canonicalCycleBudgetLastAt = Number(progression.canonical_cycle_budget_last_at || 0)
+    const canonicalCycleBudgetMs = Number(progression.canonical_cycle_budget_ms || 0)
 
     // Avg durations
     const indAvg = Number(engineState.indication_avg_duration_ms || 0)
@@ -101,6 +140,10 @@ export async function GET(
       hasFreshScheduledCycle,
       canonicalPipelineInFlight,
       canonicalPipelineAgeMs,
+      canonicalCycleBudgetExceededCount,
+      canonicalCycleBudgetLastAt: canonicalCycleBudgetLastAt || null,
+      canonicalCycleBudgetMs: canonicalCycleBudgetMs || null,
+      workerAttached: hasLocalConnectionRuntime,
       lastProcessorHeartbeat: processorHeartbeat || null,
       lastScheduledCycleAt: portableCycleAt || null,
       indication_cycle_count: indCycles,

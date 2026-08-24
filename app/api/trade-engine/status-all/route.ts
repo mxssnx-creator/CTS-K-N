@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server"
 import { getActiveConnectionsForEngine, getRedisClient, initRedis } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
-import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { evaluateRealTradeReadiness, normalizeRealTradeIntent } from "@/lib/real-trade-gates"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
 
 function isEnabledFlag(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
@@ -106,6 +107,7 @@ async function getActiveConnectionsSnapshot(): Promise<any[]> {
 async function stripConsumedRuntimeFlags(
   client: ReturnType<typeof getRedisClient>,
   connectionId: string,
+  engineType: string,
   status: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const pending = (await withTimeout(
@@ -123,6 +125,7 @@ async function stripConsumedRuntimeFlags(
   delete cleaned.reload_fields
   delete cleaned.reload_requested_at
 
+  const scope = buildProgressionScope(connectionId, engineType)
   await withTimeout(Promise.all([
     client
       .hdel(
@@ -146,7 +149,29 @@ async function stripConsumedRuntimeFlags(
         "reload_requested_at",
       )
       .catch(() => 0),
-  ]), 750, [0, 0])
+    client
+      .hdel(
+        `trade_engine_state:${connectionId}:${engineType}`,
+        "restart_required",
+        "restart_reason",
+        "restart_requested_at",
+        "reload_required",
+        "reload_fields",
+        "reload_requested_at",
+      )
+      .catch(() => 0),
+    client
+      .hdel(
+        scope.tradeEngineStateKey,
+        "restart_required",
+        "restart_reason",
+        "restart_requested_at",
+        "reload_required",
+        "reload_fields",
+        "reload_requested_at",
+      )
+      .catch(() => 0),
+  ]), 750, [0, 0, 0, 0])
 
   return cleaned
 }
@@ -191,7 +216,17 @@ async function buildStatusAllResponse() {
     const engineStatuses = await Promise.all(
       activeConnections.map(async (conn) => {
         try {
-          const [runtimeState, settingsState, runningHint, progression] = await Promise.all([
+          const engineType = String(conn.engine_type || conn.engineType || "main").trim() || "main"
+          const scope = buildProgressionScope(conn.id, engineType)
+          const progressionKeys = Array.from(new Set(progressionReadKeys(scope)))
+          const [
+            runtimeState,
+            settingsState,
+            scopedRuntimeState,
+            scopedSettingsState,
+            runningHint,
+            progressionHashes,
+          ] = await Promise.all([
             withTimeout(
               client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
               750,
@@ -202,14 +237,30 @@ async function buildStatusAllResponse() {
               750,
               {} as Record<string, string>,
             ),
-            withTimeout(client.get(`engine_is_running:${conn.id}`).catch(() => null), 750, null),
             withTimeout(
-              client.hgetall(`progression:${conn.id}`).catch(() => ({} as Record<string, string>)),
+              client.hgetall(`trade_engine_state:${conn.id}:${engineType}`).catch(() => ({} as Record<string, string>)),
               750,
               {} as Record<string, string>,
             ),
+            withTimeout(
+              client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+              750,
+              {} as Record<string, string>,
+            ),
+            withTimeout(client.get(`engine_is_running:${conn.id}`).catch(() => null), 750, null),
+            Promise.all(
+              progressionKeys.map((key) => withTimeout(
+                client.hgetall(key).catch(() => ({} as Record<string, string>)),
+                750,
+                {} as Record<string, string>,
+              )),
+            ),
           ])
-          const liveOrderReadiness = evaluateRealTradeReadiness(conn, "main")
+          const progression = progressionHashes.reduce<Record<string, string>>(
+            (merged, hash) => ({ ...(hash || {}), ...merged }),
+            {},
+          )
+          const liveOrderReadiness = evaluateRealTradeReadiness(conn, normalizeRealTradeIntent(engineType))
           const orderMetrics = {
             attempted: Number(progression.live_orders_attempted_count || 0),
             placed: Number(progression.live_orders_placed_count || 0),
@@ -228,12 +279,14 @@ async function buildStatusAllResponse() {
           // graph. Process-independent Redis state remains authoritative across
           // route bundles and worker processes.
           const redisStatus = {
-            ...settingsState,
             ...runtimeState,
+            ...settingsState,
+            ...scopedRuntimeState,
+            ...scopedSettingsState,
           }
           const runtime = resolveDistributedEngineRuntime({
             runningHint,
-            states: [runtimeState, settingsState],
+            states: [runtimeState, settingsState, scopedRuntimeState, scopedSettingsState],
             globalState,
             connectionEnabled: true,
             heartbeatFreshMs: 120_000,
@@ -246,8 +299,16 @@ async function buildStatusAllResponse() {
           const settingsSymbols = parseSymbols(
             settingsState.force_symbols || settingsState.active_symbols || settingsState.symbols,
           )
+          const scopedRuntimeSymbols = parseSymbols(
+            scopedRuntimeState.force_symbols || scopedRuntimeState.active_symbols || scopedRuntimeState.symbols,
+          )
+          const scopedSettingsSymbols = parseSymbols(
+            scopedSettingsState.force_symbols || scopedSettingsState.active_symbols || scopedSettingsState.symbols,
+          )
           const resolvedSymbols =
             configuredSymbols.length > 0 ? configuredSymbols :
+              scopedRuntimeSymbols.length > 0 ? scopedRuntimeSymbols :
+                scopedSettingsSymbols.length > 0 ? scopedSettingsSymbols :
               runtimeSymbols.length > 0 ? runtimeSymbols :
                 settingsSymbols
           // Redis can briefly exceed the per-read timeout while the final
@@ -278,10 +339,11 @@ async function buildStatusAllResponse() {
                 }
               : {}),
           }
-          const engineStatus = await stripConsumedRuntimeFlags(client, conn.id, rawEngineStatus)
+          const engineStatus = await stripConsumedRuntimeFlags(client, conn.id, engineType, rawEngineStatus)
 
           return {
             connectionId: conn.id,
+            engineType,
             connectionName: conn.name,
             exchange: conn.exchange,
             assigned: isEnabledFlag(conn.is_active_inserted) || isEnabledFlag(conn.is_assigned) || isEnabledFlag(conn.is_dashboard_inserted),

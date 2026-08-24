@@ -1863,6 +1863,13 @@ async function persistSignalCycle(
   diagnostic: Record<string, unknown>,
 ): Promise<void> {
   const activeCount = indications.length
+  const selectedSourceCount = Array.isArray(diagnostic.selectedSources)
+    ? diagnostic.selectedSources.length
+    : Number(diagnostic.selectedSources) || 0
+  const successfulSourceCount = Array.isArray(diagnostic.successfulSources)
+    ? diagnostic.successfulSources.length
+    : Number(diagnostic.successfulSources) || 0
+  const evaluatedCount = Math.max(activeCount, selectedSourceCount, successfulSourceCount)
   const pipeline = client.multi()
   const activeKey = `indication_sets_active:${connectionId}`
   const activeRawKey = `indications_active:${connectionId}`
@@ -1873,6 +1880,10 @@ async function persistSignalCycle(
   for (const key of [activeKey, activeRawKey, setWindow5, setWindow60, rawWindow5, rawWindow60]) {
     pipeline.hset(key, `${symbol}:signal`, String(activeCount))
   }
+  // Signal does not use the exhaustive local parameter grid. Its evaluated
+  // dimension is the bounded source basket attempted in this cycle. Persist
+  // it beside qualified output so the shared stats contract stays truthful.
+  pipeline.hset(activeKey, `${symbol}:signal:evaluated`, String(evaluatedCount))
   const signalDirectionCounts = indications.reduce(
     (counts, indication) => {
       const direction = indication?.metadata?.direction

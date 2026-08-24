@@ -6,6 +6,7 @@
  */
 
 import { getRedisClient } from './redis-db'
+import { getSystemResourceMetrics } from './system-resource-metrics'
 
 export enum HealthStatus {
   HEALTHY = 'healthy',
@@ -170,15 +171,14 @@ export class HealthCheckService {
     const startTime = Date.now()
 
     try {
-      const memUsage = process.memoryUsage()
-      const heapUsedPercent = (memUsage.heapUsed / memUsage.heapTotal) * 100
+      const memory = getSystemResourceMetrics()
 
       let status = HealthStatus.HEALTHY
 
-      // Warn if heap usage is above 80%. A high V8 heap-used/heap-total
-      // percentage alone is not a liveness failure: production processes often
-      // sit above 90% right after a build/cold start and recover on the next GC.
-      if (heapUsedPercent > 80) {
+      // V8 grows heapTotal on demand, so heapUsed / heapTotal frequently exceeds
+      // 80% after a cold start even when the host has plenty of free memory.
+      // Report pressure against the effective cgroup/host limit using RSS instead.
+      if (memory.memoryPercent > 80) {
         status = HealthStatus.DEGRADED
       }
 
@@ -187,7 +187,7 @@ export class HealthCheckService {
         responseTime: Date.now() - startTime,
         lastCheck: new Date(),
         error: status !== HealthStatus.HEALTHY 
-          ? `High memory usage: ${heapUsedPercent.toFixed(1)}%`
+          ? `High memory usage: ${memory.memoryPercent.toFixed(1)}%`
           : undefined
       }
     } catch (error) {

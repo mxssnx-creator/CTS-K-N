@@ -39,6 +39,7 @@ unit	__tests__/unit/active-outbreak-indication.test.ts
 unit	__tests__/unit/active-outbreak-strategy-protection.test.ts
 unit	__tests__/unit/admin-auth.test.ts
 unit	__tests__/unit/advanced-config-exhaustive.test.ts
+unit	__tests__/unit/aggregate-protection-coordination.test.ts
 unit	__tests__/unit/auth-runtime-secret.test.ts
 unit	__tests__/unit/backtest-result-accounting.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
@@ -53,7 +54,9 @@ unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
 unit	__tests__/unit/block-count-state.test.ts
 unit	__tests__/unit/bounded-concurrency.test.ts
+unit	__tests__/unit/bybit-connector-contract.test.ts
 unit	__tests__/unit/canonical-pipeline-admission.test.ts
+unit	__tests__/unit/clear-progressions-recovery.test.ts
 unit	__tests__/unit/connection-card-stage-overview-contract.test.ts
 unit	__tests__/unit/connection-coordinator.test.ts
 unit	__tests__/unit/connection-rate-limiter-boundary.test.ts
@@ -76,12 +79,18 @@ unit	__tests__/unit/direct-trade-continuity-cron.test.ts
 unit	__tests__/unit/direct-trade-control-order-route.test.ts
 unit	__tests__/unit/direct-trade-coordination.test.ts
 unit	__tests__/unit/direct-trade-history-policy.test.ts
+unit	__tests__/unit/direct-trade-ledger-recovery.test.ts
+unit	__tests__/unit/direct-trade-market-history.test.ts
 unit	__tests__/unit/direct-trade-overview-stats.test.ts
 unit	__tests__/unit/direct-trade-position-capacity.test.ts
 unit	__tests__/unit/direct-trade-position-stage.test.ts
 unit	__tests__/unit/direct-trade-pulse-route.test.ts
 unit	__tests__/unit/direct-trade-route-concurrency.test.ts
+unit	__tests__/unit/direct-trade-schema-v100.test.ts
 unit	__tests__/unit/direct-trade-settings-sync.test.ts
+unit	__tests__/unit/direct-trade-stats-ui-contract.test.ts
+unit	__tests__/unit/direct-trade-status-accounting.test.ts
+unit	__tests__/unit/direct-trade-volume-factor.test.ts
 unit	__tests__/unit/direction-fail-closed.test.ts
 unit	__tests__/unit/directional-evaluation.test.ts
 unit	__tests__/unit/distributed-engine-runtime.test.ts
@@ -98,10 +107,14 @@ unit	__tests__/unit/exchange-account-performance.test.ts
 unit	__tests__/unit/exchange-connector-factory.test.ts
 unit	__tests__/unit/exchange-control-order-options.test.ts
 unit	__tests__/unit/exchange-force-simulated.test.ts
+unit	__tests__/unit/exchange-position-trailing.test.ts
+unit	__tests__/unit/exchange-quantity-ledger.test.ts
 unit	__tests__/unit/forced-symbols.test.ts
 unit	__tests__/unit/futures-connectors-contract.test.ts
 unit	__tests__/unit/health-route-liveness-budget.test.ts
+unit	__tests__/unit/health-runtime-contract.test.ts
 unit	__tests__/unit/historic-candle-window.test.ts
+unit	__tests__/unit/historic-four-hour-stats.test.ts
 unit	__tests__/unit/historic-progression-generation.test.ts
 unit	__tests__/unit/historic-replay-policy.test.ts
 unit	__tests__/unit/indication-configuration-counts.test.ts
@@ -133,6 +146,7 @@ unit	__tests__/unit/logistics-workflow.test.ts
 unit	__tests__/unit/main-indication-settings.test.ts
 unit	__tests__/unit/main-live-trade-readiness.test.ts
 unit	__tests__/unit/main-trade-profit-factor.test.ts
+unit	__tests__/unit/market-data-fetch-deadline.test.ts
 unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts
 unit	__tests__/unit/multi-range-coordination.test.ts
@@ -144,6 +158,7 @@ unit	__tests__/unit/orders-route-concurrency.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
+unit	__tests__/unit/pos-history-batch.test.ts
 unit	__tests__/unit/position-cost-net-results.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
 unit	__tests__/unit/prehistoric-bootstrap-handoff.test.ts
@@ -151,6 +166,7 @@ unit	__tests__/unit/prehistoric-progress-tracker.test.ts
 unit	__tests__/unit/prehistoric-runtime-stability.test.ts
 unit	__tests__/unit/preset-config-display-contract.test.ts
 unit	__tests__/unit/preset-optimizer.test.ts
+unit	__tests__/unit/preset-pseudo-trailing-resilience.test.ts
 unit	__tests__/unit/preset-type-config.test.ts
 unit	__tests__/unit/production-continuity.test.ts
 unit	__tests__/unit/progression-live-snapshot.test.ts
@@ -167,6 +183,7 @@ unit	__tests__/unit/quickstart-timeouts.test.ts
 unit	__tests__/unit/rate-limiter-queue.test.ts
 unit	__tests__/unit/real-position-durability.test.ts
 unit	__tests__/unit/realtime-cycle-diagnostic.test.ts
+unit	__tests__/unit/realtime-trailing-update.test.ts
 unit	__tests__/unit/redis-db-network-client.test.ts
 unit	__tests__/unit/redis-db-write-budget.test.ts
 unit	__tests__/unit/redis-memory-policy.test.ts
@@ -202,8 +219,11 @@ unit	__tests__/unit/state-switch-coordination.test.ts
 unit	__tests__/unit/statistics-rollups.test.ts
 unit	__tests__/unit/strategy-axis-coordination.test.ts
 unit	__tests__/unit/strategy-block-real-overlays.test.ts
+unit	__tests__/unit/strategy-execution-policy.test.ts
 unit	__tests__/unit/strategy-flow-log-throttle.test.ts
 unit	__tests__/unit/strategy-indication-policy.test.ts
+unit	__tests__/unit/strategy-indication-representatives.test.ts
+unit	__tests__/unit/strategy-main-set-deduplication.test.ts
 unit	__tests__/unit/strategy-memory-guard.test.ts
 unit	__tests__/unit/strategy-position-entry-ledger.test.ts
 unit	__tests__/unit/strategy-profit-factor-contract.test.ts
@@ -223,6 +243,7 @@ unit	__tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
 unit	__tests__/unit/trade-engine-start-all-accounting.test.ts
 unit	__tests__/unit/trade-engine-start-lock.test.ts
 unit	__tests__/unit/trade-history-stability.test.ts
+unit	__tests__/unit/trade-protection-contract.test.ts
 unit	__tests__/unit/trailing-dca-strategy.test.ts
 unit	__tests__/unit/trend-indication.test.ts
 unit	__tests__/unit/trend-wiring.test.ts

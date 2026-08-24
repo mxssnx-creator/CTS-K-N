@@ -28,6 +28,7 @@ import { SystemLogger } from "@/lib/system-logger"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
+import { buildProgressionScope } from "@/lib/progression-scope"
 
 export const runtime = "nodejs"
 export const maxDuration = 15
@@ -62,6 +63,14 @@ async function buildEngineStatesResponse(connectionId: string): Promise<Response
         { status: 404, headers }
       )
     }
+    const engineType = String(
+      (connection as any).engine_type || (connection as any).engineType || "main",
+    ).trim() || "main"
+    const scope = buildProgressionScope(connectionId, engineType)
+    const [scopedRuntimeState, scopedSettingsState] = await Promise.all([
+      client.hgetall(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+    ])
 
     // DB flags — the canonical source of truth for the slider `checked` state.
     // is_active_inserted / is_assigned are panel assignment only;
@@ -69,7 +78,7 @@ async function buildEngineStatesResponse(connectionId: string): Promise<Response
     const flagEnabled = toBoolean((connection as any).is_enabled_dashboard)
     const engineRuntime = resolveDistributedEngineRuntime({
       runningHint: runningHintRaw,
-      states: [runtimeState, settingsState],
+      states: [runtimeState, settingsState, scopedRuntimeState, scopedSettingsState],
       globalState,
       connectionEnabled: flagEnabled,
     })
@@ -148,6 +157,7 @@ async function buildEngineStatesResponse(connectionId: string): Promise<Response
       {
         success: true,
         connectionId,
+        engineType,
         engineRunning,
         runningHint,
         runtimeEvidence: {

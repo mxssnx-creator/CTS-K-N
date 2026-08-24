@@ -48,22 +48,24 @@ volumeIncrement(n) = n × blockVolumeRatio
 targetAddQty(n) = immutableGeneralQty × volumeIncrement(n)
 targetBlockQty(n) = immutableGeneralQty + targetAddQty(n)
 requestedAddQty(n) = max(0, targetAddQty(n) - confirmedBlockAddQty)
-blockMinPF(n) = defaultMinPF × blockProfitFactorRatio × volumeIncrement(n)
+blockMinPF(n) = 1 + ((defaultMinPF - 1) × blockProfitFactorRatio × volumeIncrement(n))
 ```
 
-`defaultMinPF` is the normal/default calculation's current Real-stage minimum.
-The Block does not multiply its volume increment by the legacy profile base
-multiplier. The profile multiplier remains metadata/coordination; actual add-on
-quantity and minimum PF use the same increment ratio.
+`defaultMinPF` is the normal/default calculation's current Real-stage
+PositionCost coordinate. The neutral base `1.00` is never scaled; only the
+positive distance above neutral is multiplied by the Block ratio and volume
+increment. The Block does not multiply its volume increment by the legacy
+profile base multiplier. The profile multiplier remains metadata/coordination;
+actual add-on quantity and minimum coordinate use the same increment ratio.
 
 Example: immutable general quantity `2`, ratio `0.5`, factor `0.8`, default
 minimum PF `1.2`:
 
 | Count | Increment | Target add | Target total | Minimum PF |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.5× | 1 | 3 | 0.48 |
-| 2 | 1.0× | 2 | 4 | 0.96 |
-| 3 | 1.5× | 3 | 5 | 1.44 |
+| 1 | 0.5× | 1 | 3 | 1.08 |
+| 2 | 1.0× | 2 | 4 | 1.16 |
+| 3 | 1.5× | 3 | 5 | 1.24 |
 
 If Count 1 fills before Count 3 is selected, Count 3 requests only `2`: its
 absolute add target is `3`, while `1` is already confirmed. Every Count Set
@@ -76,8 +78,9 @@ For every normal Base-derived source Set, Count1..CountN gets:
 
 - a distinct `#block:N` Set key;
 - its own last-N realized result ring;
-- the same window length and minimum-sample threshold as normal PF;
-- its own observed PF, DDT, minimum PF, active flag, pause flag, order outbox,
+- the same window length and minimum-sample threshold as the normal coordinate;
+- its own observed coordinate, classic realized PF, DDT, minimum coordinate,
+  active flag, pause flag, order outbox,
   confirmed quantity, and stats row;
 - an active-exposure exemption until terminal reconciliation.
 
@@ -88,11 +91,13 @@ then emits one direction-wide `#block:active:N` overlay from an eligible normal
 Base lineage. Thus Pos-Count activity contributes to `N` without recursively
 creating Block-on-Pos-Count Sets.
 
-Before the exact count has enough samples, observed PF inherits the matching
-normal rolling PF and the enabled Block is immediately eligible without a
-Block-only progression. Once the exact lane reaches the normal minimum-sample
-threshold, its own PF is used and must be at least the matching normal PF plus
-any stronger configured count floor. It never borrows another count's results.
+Before the exact count has enough samples, the observed PositionCost coordinate
+inherits the matching normal rolling coordinate and the enabled Block is
+immediately eligible without a Block-only progression. Once the exact lane
+reaches the normal minimum-sample threshold, its own coordinate is used and
+must be at least the matching normal coordinate plus any stronger configured
+count floor. It never borrows another count's results. Classic realized PF
+remains a separate gross-profit/gross-loss statistic.
 
 The Real scope graph adds independent Strategy lanes for
 `symbol × long|short|overall × count` and Signal lanes for

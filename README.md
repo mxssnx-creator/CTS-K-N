@@ -90,7 +90,7 @@ sudo bash -c 'cd /opt/cts-kn && bash scripts/install.sh --preflight-only --skip-
 The installer supports Debian/Ubuntu and RHEL/Fedora/Amazon Linux families,
 uses systemd when available or PM2 when selected, provisions one application
 owner plus one minute-scheduler owner, verifies Redis persistence and schema
-v101, tests/builds before cutover, checks restart recovery, and restores the
+v103, tests/builds before cutover, checks restart recovery, and restores the
 previous `.next` build on failure.
 
 It reuses already-installed packages and runtimes. When absent, Bun is installed
@@ -178,11 +178,27 @@ jobs. Both share the same durable Redis state.
   Redis so active/closed counts, PF, DDT, Block pauses, DCA steps, stats, and
   restart recovery use the same lineage.
 
-The Block minimum ProfitFactor for count `n` is:
+The Block minimum PositionCost coordinate for count `n` is:
 
 ```text
-blockMinPF(n) = defaultMinPF × blockProfitFactorRatio × (n × blockVolumeRatio)
+blockMinPF(n) = 1 + ((defaultMinPF - 1) × blockProfitFactorRatio × (n × blockVolumeRatio))
 ```
+
+The neutral `1.00` base is never scaled. Classic realized ProfitFactor remains
+the separate gross-profit/gross-loss statistic.
+
+Historic calculation diagnostics use fixed four-hour UTC windows and retain
+every enabled config×symbol evaluation, indication result, and strategy result
+without sampling. Closed strategy results use the same PositionCost coordinate:
+
+```text
+historicPF = 1.00 + (0.10 × (sum(netPnlPercent) / sum(positionCostPercent)))
+```
+
+`1.00` is neutral and `1.10` is exactly one average PositionCost of net result.
+Open results never enter realised PnL/PF, and PositionCost is not deducted a
+second time. The Connection Card shows this coordinate beside the independent
+classic realised PF for every four-hour row.
 
 The physical Block target uses the immutable general order volume and never
 compounds earlier Count fills:
@@ -213,7 +229,7 @@ The complete recreation kit begins at
 
 - system architecture, ownership, and complete directory map;
 - stage, Block, DCA, exchange, and settings propagation contracts;
-- Redis data model, schema v91 migrations, recovery, and backup rules;
+- Redis data model, schema v103 migrations, recovery, and backup rules;
 - complete environment/deployment/install procedures;
 - acceptance tests and a clean-room rebuild runbook;
 - generated API, page, environment, migration, test, source-tree, and SHA-256

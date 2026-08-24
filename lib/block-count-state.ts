@@ -89,11 +89,14 @@ export function resolveMirroredActiveBlockCount(input: {
 /**
  * Count-specific Block ProfitFactor floor.
  *
- * The operator-controlled ratio is proportional to the normal/default stage
- * ProfitFactor and the actual volume increment of this independent Block
- * count. Keeping this pure and unrounded prevents Count 1..N from sharing a
- * threshold or inheriting another count's result through presentation
- * rounding.
+ * The operator-controlled ratio scales only the positive distance above the
+ * neutral PositionCost coordinate (1.00), never the neutral base itself:
+ *
+ *   1 + ((default - 1) × Block PF ratio × volume increment)
+ *
+ * Thus a default 1.10 at ratio 0.8 and Count-1 volume increment 1 requires
+ * 1.08, while Count 2 requires 1.16. Multiplying the complete coordinate used
+ * to push small counts below neutral and mixed two incompatible PF semantics.
  */
 export function calculateBlockMinimumProfitFactor(
   defaultMinimumProfitFactor: number,
@@ -103,7 +106,8 @@ export function calculateBlockMinimumProfitFactor(
   if (![defaultMinimumProfitFactor, blockProfitFactorRatio, volumeIncrementFactor]
     .every((value) => Number.isFinite(value) && value > 0)) return 0
   const boundedRatio = Math.max(0.2, Math.min(5, blockProfitFactorRatio))
-  return defaultMinimumProfitFactor * boundedRatio * volumeIncrementFactor
+  const positiveDistance = Math.max(0, defaultMinimumProfitFactor - 1)
+  return 1 + positiveDistance * boundedRatio * volumeIncrementFactor
 }
 
 /**

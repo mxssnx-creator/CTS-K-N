@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { initRedis, getAllConnections, getRedisClient } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
 
 /**
  * GET /api/engine/system-status
@@ -44,10 +45,15 @@ export async function GET() {
     // the response stays correct on legacy data.
     // Fall back to any connection that has engine state if activeConnections
     // is still empty (e.g. snapshot restored without re-running quickstart).
-    const connectionId =
-      activeConnections[0]?.id ||
-      connections.find((c: any) => _isOn(c.is_enabled_dashboard) && (_isOn(c.is_assigned) || _isOn(c.is_active_inserted) || _isOn(c.is_dashboard_inserted)))?.id ||
-      "unknown"
+    const selectedConnection =
+      activeConnections[0] ||
+      connections.find((c: any) => _isOn(c.is_enabled_dashboard) && (_isOn(c.is_assigned) || _isOn(c.is_active_inserted) || _isOn(c.is_dashboard_inserted))) ||
+      null
+    const connectionId = selectedConnection?.id || "unknown"
+    const engineType = String(
+      (selectedConnection as any)?.engine_type || (selectedConnection as any)?.engineType || "main",
+    ).trim() || "main"
+    const scope = buildProgressionScope(connectionId, engineType)
 
     // Read counters from the authoritative Redis keys:
     //   progression:{id}      — atomic hincrby counters (ProgressionStateManager)
@@ -57,14 +63,30 @@ export async function GET() {
     // coordinator/progression failures when the live heartbeat is on the
     // canonical settings-prefixed hash.
     const client = getRedisClient()
-    const progression = (connectionId !== "unknown" ? await client.hgetall(`progression:${connectionId}`) : null) || {}
-    const [rawEngineState, settingsEngineState] = connectionId !== "unknown"
+    const progressionKeys = Array.from(new Set(progressionReadKeys(scope)))
+    const [progressionHashes, rawEngineState, settingsEngineState, scopedRawEngineState, scopedSettingsEngineState] = connectionId !== "unknown"
       ? await Promise.all([
+          Promise.all(
+            progressionKeys.map((key) =>
+              client.hgetall(key).catch(() => ({} as Record<string, string>)),
+            ),
+          ),
           client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
           client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+          client.hgetall(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({} as Record<string, string>)),
+          client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
         ])
-      : [{} as Record<string, string>, {} as Record<string, string>]
-    const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }
+      : [[], {} as Record<string, string>, {} as Record<string, string>, {} as Record<string, string>, {} as Record<string, string>]
+    const progression = progressionHashes.reduce<Record<string, string>>(
+      (merged, hash) => ({ ...(hash || {}), ...merged }),
+      {},
+    )
+    const engineState = {
+      ...(rawEngineState || {}),
+      ...(settingsEngineState || {}),
+      ...(scopedRawEngineState || {}),
+      ...(scopedSettingsEngineState || {}),
+    }
 
     const indicationCycles =
       Number((progression as any).indication_cycle_count) ||
@@ -86,6 +108,8 @@ export async function GET() {
 
     const status = {
       timestamp: new Date().toISOString(),
+      connectionId,
+      engineType,
       system: {
         totalConnections: connections.length,
         activeConnections: activeConnections.length,
