@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import type { PseudoPosition } from "@/lib/types"
 import {
@@ -38,10 +38,16 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
 
   // Load settings
   useEffect(() => {
-    fetch("/api/settings")
+    const controller = new AbortController()
+    fetch("/api/settings", { signal: controller.signal })
       .then((res) => res.json())
-      .then((data) => setSettings(data?.settings || data))
-      .catch((err) => console.error("Failed to load settings:", err))
+      .then((data) => {
+        if (!controller.signal.aborted) setSettings(data?.settings || data)
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) console.error("Failed to load settings:", err)
+      })
+    return () => controller.abort()
   }, [])
 
   // Calculate block strategy performance
@@ -55,9 +61,14 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
     const performances: BlockPerformance[] = []
 
     // Get the last N positions for comparison
+    const eventTime = (position: PseudoPosition) => {
+      const timestamp = new Date(position.updated_at || position.created_at).getTime()
+      return Number.isFinite(timestamp) ? timestamp : 0
+    }
     const recentPositions = [...positions]
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .sort((a, b) => eventTime(b) - eventTime(a) || b.id.localeCompare(a.id))
       .slice(0, comparisonWindow)
+      .reverse()
 
     blockSizes.forEach((blockSize) => {
       // Group positions into blocks
@@ -149,8 +160,14 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
     diff: perf.performanceDiff,
   }))
 
-  const totalWithBlock = blockPerformances.reduce((sum, p) => sum + p.withBlockStrategy.avgPnL, 0)
-  const totalWithoutBlock = blockPerformances.reduce((sum, p) => sum + p.withoutBlockStrategy.avgPnL, 0)
+  const postLossDiagnostics = blockPerformances.filter((row) => row.withBlockStrategy.positionCount > 0)
+  const baselineDiagnostics = blockPerformances.filter((row) => row.withoutBlockStrategy.positionCount > 0)
+  const meanPostLossPnl = postLossDiagnostics.length > 0
+    ? postLossDiagnostics.reduce((sum, row) => sum + row.withBlockStrategy.avgPnL, 0) / postLossDiagnostics.length
+    : 0
+  const meanBaselinePnl = baselineDiagnostics.length > 0
+    ? baselineDiagnostics.reduce((sum, row) => sum + row.withoutBlockStrategy.avgPnL, 0) / baselineDiagnostics.length
+    : 0
   const favorableCount = blockPerformances.filter((p) => p.favorable).length
   const belowBaselineCount = blockPerformances.filter(
     (p) => p.withBlockStrategy.positionCount >= 5 && !p.favorable,
@@ -165,8 +182,8 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
             <div className="flex items-center gap-2">
               <Activity className="h-5 w-5 text-blue-500" />
               <div>
-                <div className="text-2xl font-bold">{comparisonWindow}</div>
-                <div className="text-sm text-muted-foreground">Comparison Window</div>
+                <div className="text-2xl font-bold">{Math.min(comparisonWindow, positions.length)}</div>
+                <div className="text-sm text-muted-foreground">Closed-trade sample</div>
               </div>
             </div>
           </CardContent>
@@ -201,10 +218,10 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
             <div className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-green-500" />
               <div>
-                <div className={`text-xl font-bold ${totalWithBlock >= 0 ? "text-green-600" : "text-red-600"}`}>
-                  {formatCurrency(totalWithBlock)}
+                <div className={`text-xl font-bold ${meanPostLossPnl >= 0 ? "text-green-600" : "text-red-600"}`}>
+                  {formatCurrency(meanPostLossPnl)}
                 </div>
-                <div className="text-sm text-muted-foreground">Avg Post-Loss Window</div>
+                <div className="text-sm text-muted-foreground">Mean post-loss diagnostic</div>
               </div>
             </div>
           </CardContent>
@@ -215,10 +232,10 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
             <div className="flex items-center gap-2">
               <TrendingDown className="h-5 w-5 text-orange-500" />
               <div>
-                <div className={`text-xl font-bold ${totalWithoutBlock >= 0 ? "text-green-600" : "text-red-600"}`}>
-                  {formatCurrency(totalWithoutBlock)}
+                <div className={`text-xl font-bold ${meanBaselinePnl >= 0 ? "text-green-600" : "text-red-600"}`}>
+                  {formatCurrency(meanBaselinePnl)}
                 </div>
-                <div className="text-sm text-muted-foreground">Avg Baseline Window</div>
+                <div className="text-sm text-muted-foreground">Mean baseline diagnostic</div>
               </div>
             </div>
           </CardContent>
@@ -293,6 +310,9 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
       <Card>
         <CardHeader>
           <CardTitle>Observed Post-Loss vs Baseline Windows</CardTitle>
+          <CardDescription>
+            Chronological newest-{Math.min(comparisonWindow, positions.length)} diagnostic. The same closes are regrouped at block sizes 2/4/6/8; this does not claim an adjustment was executed.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={300}>

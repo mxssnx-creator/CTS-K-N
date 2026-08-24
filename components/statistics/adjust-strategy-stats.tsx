@@ -1,13 +1,16 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import type { PseudoPosition } from "@/lib/types"
 import {
   resolvePseudoPositionNetPnl,
   resolvePseudoPositionSignedResultR,
 } from "@/lib/profit-factor"
-import { signedResultRToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
+import {
+  PREVIOUS_POSITION_MIN_PF_RATIO,
+  signedResultRToMainTradePfRatio,
+} from "@/lib/main-trade-profit-factor"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts"
 import { TrendingUp, TrendingDown, Clock, Activity } from "lucide-react"
 
@@ -47,6 +50,11 @@ export function AdjustStrategyStats({
   timeIntervals = [4, 12, 24, 48],
   drawdownPositionCount = 80,
 }: AdjustStrategyStatsProps) {
+  const eventTime = (position: PseudoPosition): number => {
+    const timestamp = new Date(position.updated_at || position.created_at).getTime()
+    return Number.isFinite(timestamp) ? timestamp : 0
+  }
+
   // Calculate block statistics for different time intervals
   const calculateBlockStats = (blockSize: number, timeWindowHours: number): BlockStats[] => {
     const now = new Date()
@@ -55,8 +63,8 @@ export function AdjustStrategyStats({
 
     // Filter positions within time window and sort by time
     const recentPositions = [...positions]
-      .filter((p) => new Date(p.created_at) >= cutoffTime)
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      .filter((p) => eventTime(p) >= cutoffTime.getTime())
+      .sort((a, b) => eventTime(a) - eventTime(b) || a.id.localeCompare(b.id))
 
     const blocks: BlockStats[] = []
     for (let i = 0; i < recentPositions.length; i += blockSize) {
@@ -76,8 +84,8 @@ export function AdjustStrategyStats({
         profitFactor: avgProfitFactor,
         positionCount: blockPositions.length,
         avgProfit,
-        startTime: new Date(blockPositions[0].created_at),
-        endTime: new Date(blockPositions[blockPositions.length - 1].created_at),
+        startTime: new Date(eventTime(blockPositions[0])),
+        endTime: new Date(eventTime(blockPositions[blockPositions.length - 1])),
       })
     }
 
@@ -94,8 +102,10 @@ export function AdjustStrategyStats({
       allBlocks.push(...blocks)
     })
 
-    const avgProfitFactor =
-      allBlocks.length > 0 ? allBlocks.reduce((sum, b) => sum + b.profitFactor, 0) / allBlocks.length : 0
+    const weightedPositions = allBlocks.reduce((sum, block) => sum + block.positionCount, 0)
+    const avgProfitFactor = weightedPositions > 0
+      ? allBlocks.reduce((sum, block) => sum + block.profitFactor * block.positionCount, 0) / weightedPositions
+      : 0
 
     return {
       interval,
@@ -108,58 +118,51 @@ export function AdjustStrategyStats({
   // Calculate drawdown periods for last N positions
   const calculateDrawdownPeriods = (): DrawdownPeriod[] => {
     const recentPositions = [...positions]
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .sort((a, b) => eventTime(b) - eventTime(a) || b.id.localeCompare(a.id))
       .slice(0, drawdownPositionCount)
       .reverse()
 
     const drawdownPeriods: DrawdownPeriod[] = []
     let currentDrawdownStart = -1
-    let currentDrawdown = 0
+    let equity = 0
+    let peakEquity = 0
     let maxDrawdownInPeriod = 0
 
     for (let i = 0; i < recentPositions.length; i++) {
       const position = recentPositions[i]
       const profit = resolvePseudoPositionNetPnl(position)
+      equity += profit
 
-      if (profit < 0) {
-        if (currentDrawdownStart === -1) {
-          currentDrawdownStart = i
-          currentDrawdown = 0
-          maxDrawdownInPeriod = 0
-        }
-        currentDrawdown += Math.abs(profit)
-        maxDrawdownInPeriod = Math.max(maxDrawdownInPeriod, currentDrawdown)
-      } else {
+      if (equity >= peakEquity) {
+        peakEquity = equity
         if (currentDrawdownStart !== -1) {
-          // Drawdown period ended
-          const startTime = new Date(recentPositions[currentDrawdownStart].created_at)
-          const endTime = new Date(recentPositions[i - 1].created_at)
-          const durationHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60)
-
+          const startTime = eventTime(recentPositions[currentDrawdownStart])
+          const endTime = eventTime(position)
           drawdownPeriods.push({
             startIndex: currentDrawdownStart,
-            endIndex: i - 1,
-            duration: durationHours,
+            endIndex: i,
+            duration: Math.max(0, endTime - startTime) / 3_600_000,
             maxDrawdown: maxDrawdownInPeriod,
-            positionCount: i - currentDrawdownStart,
+            positionCount: i - currentDrawdownStart + 1,
           })
-
           currentDrawdownStart = -1
-          currentDrawdown = 0
+          maxDrawdownInPeriod = 0
         }
+      } else {
+        if (currentDrawdownStart === -1) currentDrawdownStart = i
+        maxDrawdownInPeriod = Math.max(maxDrawdownInPeriod, peakEquity - equity)
       }
     }
 
     // Handle ongoing drawdown
     if (currentDrawdownStart !== -1) {
-      const startTime = new Date(recentPositions[currentDrawdownStart].created_at)
-      const endTime = new Date(recentPositions[recentPositions.length - 1].created_at)
-      const durationHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60)
+      const startTime = eventTime(recentPositions[currentDrawdownStart])
+      const endTime = eventTime(recentPositions[recentPositions.length - 1])
 
       drawdownPeriods.push({
         startIndex: currentDrawdownStart,
         endIndex: recentPositions.length - 1,
-        duration: durationHours,
+        duration: Math.max(0, endTime - startTime) / 3_600_000,
         maxDrawdown: maxDrawdownInPeriod,
         positionCount: recentPositions.length - currentDrawdownStart,
       })
@@ -258,14 +261,21 @@ export function AdjustStrategyStats({
       {/* Block Profit Factor Analysis by Time Interval */}
       <Card>
         <CardHeader>
-          <CardTitle>Block Avg R by Time Interval</CardTitle>
+          <CardTitle>Block PF coordinate by Time Interval</CardTitle>
+          <CardDescription>
+            PositionCost coordinate: 1.00 is neutral; 1.10 is +1× PositionCost
+            and the minimum positive threshold.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {timeIntervalStats.map((stat) => {
               const blocksBySize = [2, 4, 6, 8].map((size) => {
                 const blocks = stat.blocks.filter((b) => b.blockSize === size)
-                const avgPF = blocks.length > 0 ? blocks.reduce((sum, b) => sum + b.profitFactor, 0) / blocks.length : 0
+                const positionsInBlocks = blocks.reduce((sum, block) => sum + block.positionCount, 0)
+                const avgPF = positionsInBlocks > 0
+                  ? blocks.reduce((sum, block) => sum + block.profitFactor * block.positionCount, 0) / positionsInBlocks
+                  : 0
                 return { size, avgPF, count: blocks.length }
               })
 
@@ -274,8 +284,8 @@ export function AdjustStrategyStats({
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-lg">{stat.interval} Hours</CardTitle>
-                      <Badge variant={stat.avgProfitFactor >= 1 ? "default" : "destructive"}>
-                        Avg R: {stat.blocks.length > 0 ? stat.avgProfitFactor.toFixed(2) : "—"}
+                      <Badge variant={stat.avgProfitFactor >= PREVIOUS_POSITION_MIN_PF_RATIO ? "default" : "secondary"}>
+                        PF coord: {stat.blocks.length > 0 ? stat.avgProfitFactor.toFixed(2) : "—"}
                       </Badge>
                     </div>
                   </CardHeader>
@@ -291,14 +301,14 @@ export function AdjustStrategyStats({
                           </div>
                           <div className="flex items-center gap-2">
                             <div
-                              className={`text-sm font-bold ${block.avgPF >= 1 ? "text-green-600" : "text-red-600"}`}
+                              className={`text-sm font-bold ${block.avgPF >= PREVIOUS_POSITION_MIN_PF_RATIO ? "text-green-600" : "text-muted-foreground"}`}
                             >
                               {block.count > 0 ? block.avgPF.toFixed(2) : "—"}
                             </div>
-                            {block.avgPF >= 1 ? (
+                            {block.avgPF >= PREVIOUS_POSITION_MIN_PF_RATIO ? (
                               <TrendingUp className="h-4 w-4 text-green-600" />
                             ) : (
-                              <TrendingDown className="h-4 w-4 text-red-600" />
+                              <Activity className="h-4 w-4 text-muted-foreground" />
                             )}
                           </div>
                         </div>
@@ -316,7 +326,7 @@ export function AdjustStrategyStats({
       {blockChartData.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Block Avg R Trend (Block Size 4)</CardTitle>
+            <CardTitle>Block PF coordinate trend (Block Size 4)</CardTitle>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
@@ -324,7 +334,7 @@ export function AdjustStrategyStats({
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="blockNumber" />
                 <YAxis />
-                <Tooltip formatter={(value: number) => [value.toFixed(2), "Avg R"]} />
+                <Tooltip formatter={(value: number) => [value.toFixed(2), "PF coordinate"]} />
                 <Bar dataKey="profitFactor" fill="#3b82f6" />
               </BarChart>
             </ResponsiveContainer>
@@ -336,10 +346,11 @@ export function AdjustStrategyStats({
       <Card>
         <CardHeader>
           <CardTitle>Drawdown Time Analysis (Last {drawdownPositionCount} Positions)</CardTitle>
+          <CardDescription>Peak-to-recovery episodes on chronological realised USD P&amp;L, using close timestamps.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-4 py-2 px-4 bg-muted rounded-lg">
+            <div className="grid grid-cols-1 gap-4 rounded-lg bg-muted px-4 py-2 sm:grid-cols-3">
               <div>
                 <div className="text-sm text-muted-foreground">Total Drawdown Time</div>
                 <div className="text-2xl font-bold">{totalDrawdownTime.toFixed(1)}h</div>
@@ -373,8 +384,8 @@ export function AdjustStrategyStats({
             )}
 
             {/* Drawdown Periods Table */}
-            <div className="border rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full min-w-[560px] text-sm">
                 <thead className="bg-muted">
                   <tr>
                     <th className="p-2 text-left">Period</th>

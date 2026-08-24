@@ -5,11 +5,13 @@ import { withTimeout } from "@/lib/async-safety"
 import {
   MAX_TRADE_HISTORY_PAGE_SIZE,
   TRADE_HISTORY_PAGE_SIZE,
+  loadClosedPositionSnapshotArchive,
   loadClosedPositionSnapshotPage,
   mergeTradeHistory,
   normalizeBingXClosedOrder,
   normalizeLocalTradeHistoryRow,
   summarizeTradeHistory,
+  toStatisticsHistoryTuple,
   type TradeHistoryRow,
 } from "@/lib/trade-history"
 import { buildLiveTradingAnalytics } from "@/lib/live-trading-analytics"
@@ -340,6 +342,58 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       return NextResponse.json({ success: false, error: "connection_id required" }, { status: 400 })
     }
     const mode = searchParams.get("mode") === "simulated" ? "simulated" : "exchange"
+    const view = searchParams.get("view")
+
+    if (view === "statistics") {
+      await initRedis()
+      const client = getRedisClient()
+      const [connection, archive, cached] = await Promise.all([
+        getConnection(connectionId),
+        loadClosedPositionSnapshotArchive(client, connectionId),
+        mode === "exchange"
+          ? readCachedExchangeHistory(client, connectionId)
+          : Promise.resolve(null),
+      ])
+      if (!connection) {
+        return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
+      }
+
+      const normalizedSnapshotRows = archive.snapshots
+        .map((position) => normalizeLocalTradeHistoryRow(position))
+        .filter((row): row is TradeHistoryRow => !!row)
+      const localRows = normalizedSnapshotRows.filter((row) => row.environment === mode)
+      // This view never opens a private connector. The durable archive is the
+      // complete lineage source; a previously reconciled venue snapshot only
+      // overlays authoritative PnL/fees onto matching recent rows.
+      const exchangeRows = mode === "exchange"
+        ? (cached?.rows || []).filter((row) => row.environment === "exchange")
+        : []
+      const rows = mergeTradeHistory(exchangeRows, localRows)
+      return NextResponse.json({
+        success: true,
+        connectionId,
+        mode,
+        view: "statistics",
+        tupleVersion: 1,
+        rows: rows.map(toStatisticsHistoryTuple),
+        archive: {
+          indexed: archive.indexed,
+          uniqueIds: archive.uniqueIds,
+          resolvedSnapshots: archive.snapshots.length,
+          normalizedSnapshots: normalizedSnapshotRows.length,
+          normalizedLocalRows: localRows.length,
+          exchangeOverlays: exchangeRows.length,
+          returned: rows.length,
+          complete:
+            archive.snapshots.length === archive.uniqueIds &&
+            normalizedSnapshotRows.length === archive.snapshots.length,
+          capturedAt: Date.now(),
+        },
+      }, {
+        headers: { "Cache-Control": "no-store, max-age=0" },
+      })
+    }
+
     const offset = Math.max(0, Math.floor(Number(searchParams.get("offset")) || 0))
     const limit = Math.max(
       1,

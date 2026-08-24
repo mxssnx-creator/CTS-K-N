@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -72,6 +72,7 @@ export function StrategyPerformanceTable({ strategies, onStrategyClick }: Strate
           <BarChart3 className="h-5 w-5" />
           Strategy Performance Analysis
         </CardTitle>
+        <CardDescription>Closed-trade gross-profit ÷ gross-loss PF; 1.00 is the classic break-even ratio.</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="rounded-md border">
@@ -94,7 +95,7 @@ export function StrategyPerformanceTable({ strategies, onStrategyClick }: Strate
                     onClick={() => handleSort("profit_factor")}
                     className="h-auto p-0 font-semibold"
                   >
-                    PF
+                    Classic PF
                     <SortIcon field="profit_factor" />
                   </Button>
                 </TableHead>
@@ -104,7 +105,7 @@ export function StrategyPerformanceTable({ strategies, onStrategyClick }: Strate
                     onClick={() => handleSort("profit_factor_last_50")}
                     className="h-auto p-0 font-semibold"
                   >
-                    PF (Last 50)
+                    Classic PF (latest 50)
                     <SortIcon field="profit_factor_last_50" />
                   </Button>
                 </TableHead>
@@ -177,10 +178,10 @@ export function StrategyPerformanceTable({ strategies, onStrategyClick }: Strate
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedStrategies.map((strategy, index) => (
+              {sortedStrategies.map((strategy) => (
                 <TableRow
-                  key={index}
-                  className={`cursor-pointer hover:bg-muted/50 ${onStrategyClick ? "cursor-pointer" : ""}`}
+                  key={strategy.strategy_name}
+                  className={onStrategyClick ? "cursor-pointer hover:bg-muted/50" : undefined}
                   onClick={() => onStrategyClick?.(strategy)}
                 >
                   <TableCell className="font-medium">

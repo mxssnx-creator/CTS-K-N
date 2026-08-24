@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 import {
+  loadClosedPositionSnapshotArchive,
   loadClosedPositionSnapshots,
   mergeTradeHistory,
   normalizeBingXClosedOrder,
@@ -334,7 +335,7 @@ describe("BingX-backed trade history", () => {
     expect(mergeTradeHistory([exchange], [oldLocal], 500)).toHaveLength(2)
   })
 
-  test("loads the closed LIST index with one MGET and hash fallback", async () => {
+  test("loads the closed LIST index with one MGET and only missing hash fallbacks", async () => {
     const client = {
       lrange: jest.fn().mockResolvedValue(["live:a", "live:b", "live:a"]),
       llen: jest.fn().mockResolvedValue(3),
@@ -352,7 +353,31 @@ describe("BingX-backed trade history", () => {
     expect(client.lrange).toHaveBeenCalledWith("live:positions:conn:closed", 0, 499)
     expect(client.llen).toHaveBeenCalledWith("live:positions:conn:closed")
     expect(client.mget).toHaveBeenCalledTimes(1)
-    expect(client.hgetall).toHaveBeenCalledTimes(2)
+    expect(client.hgetall).toHaveBeenCalledTimes(1)
+    expect(client.hgetall).toHaveBeenCalledWith("live_positions:conn:live:b")
+  })
+
+  test("captures the complete archive ID boundary before resolving unique snapshots", async () => {
+    const client = {
+      lrange: jest.fn().mockResolvedValue(["live:new", "live:old", "live:new"]),
+      mget: jest.fn().mockResolvedValue([
+        JSON.stringify({ id: "live:new", status: "closed" }),
+        JSON.stringify({ id: "live:old", status: "closed" }),
+      ]),
+      hgetall: jest.fn(),
+    }
+
+    await expect(loadClosedPositionSnapshotArchive(client, "conn")).resolves.toEqual({
+      snapshots: [
+        { id: "live:new", status: "closed" },
+        { id: "live:old", status: "closed" },
+      ],
+      indexed: 3,
+      uniqueIds: 2,
+    })
+    expect(client.lrange).toHaveBeenCalledWith("live:positions:conn:closed", 0, -1)
+    expect(client.mget).toHaveBeenCalledTimes(1)
+    expect(client.hgetall).not.toHaveBeenCalled()
   })
 
   test("terminal position indexes remain durable and are paged by consumers", () => {
