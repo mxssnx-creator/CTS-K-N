@@ -4530,6 +4530,9 @@ export class StrategyCoordinator {
           // from the `s:{symbol}:*` per-symbol fields below.
           created_sets:      String(baseSets.length),
           avg_profit_factor: String(baseAvgPF.toFixed(4)),
+          avg_profit_factor_source: "realtime_coordination",
+          avg_profit_factor_count: String(baseSets.length),
+          avg_profit_factor_calc_at: new Date().toISOString(),
           avg_drawdown_time: String(Math.round(baseAvgDDT)),
           avg_pos_per_set:   String(baseAvgPosPerSet.toFixed(2)),
           evaluated:         String(baseSets.length),
@@ -5412,6 +5415,9 @@ export class StrategyCoordinator {
         client.hset(mainDetailKey, {
           created_sets:      String(mainSets.length),
           avg_profit_factor: String(mainAvgPF.toFixed(4)),
+          avg_profit_factor_source: "realtime_coordination",
+          avg_profit_factor_count: String(mainSets.length),
+          avg_profit_factor_calc_at: new Date().toISOString(),
           avg_drawdown_time: String(Math.round(mainAvgDDT)),
           avg_pos_per_set:   String(mainAvgPosPerSet.toFixed(2)),
           entries_total:     String(mainEntriesTotal),
@@ -7909,6 +7915,9 @@ export class StrategyCoordinator {
           // for backwards compat; /stats prefers per-symbol sums below.
           created_sets:       String(realSets.length),
           avg_profit_factor:  String(realAvgPF.toFixed(4)),
+          avg_profit_factor_source: "realtime_coordination",
+          avg_profit_factor_count: String(realSets.length),
+          avg_profit_factor_calc_at: new Date().toISOString(),
           avg_drawdown_time:  String(Math.round(realAvgDDT)),
           avg_pos_eval_real:  String(realAvgPosEval.toFixed(4)),
           avg_pos_per_set:    String(realAvgPosPerSet.toFixed(2)),

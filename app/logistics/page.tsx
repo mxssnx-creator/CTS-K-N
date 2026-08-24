@@ -27,6 +27,8 @@ import { PageHeader } from "@/components/page-header"
 
 interface StageDetailStats {
   avgProfitFactor?: number
+  avgProfitFactorCount?: number
+  avgProfitFactorAvailable?: boolean
   avgPosPerSet?: number
 }
 
@@ -50,6 +52,8 @@ interface EngineStats {
   stageBase?: StageDetailStats
   stageReal?: StageDetailStats
   baseAvgProfitFactor?: number
+  baseAvgProfitFactorCount?: number
+  baseAvgProfitFactorAvailable?: boolean
   realActivePosAvg?: number
   openPositions?: {
     real?: {
@@ -171,6 +175,19 @@ function positiveNumber(...values: Array<number | string | null | undefined>): n
   for (const value of values) {
     const n = Number(value)
     if (Number.isFinite(n) && n > 0) return n
+  }
+  return null
+}
+
+function measuredStageProfitFactor(
+  ...details: Array<StageDetailStats | null | undefined>
+): number | null {
+  for (const detail of details) {
+    if (!detail) continue
+    const hasSamples = detail.avgProfitFactorAvailable === true ||
+      Number(detail.avgProfitFactorCount) > 0
+    const value = Number(detail.avgProfitFactor)
+    if (hasSamples && Number.isFinite(value) && value >= 0) return value
   }
   return null
 }
@@ -326,11 +343,16 @@ function MainSystemTab({
   const strCycles = s?.strategyCycleCount   || 0
   const indTotal  = s?.totalIndicationsCount || 0
   const strTotal  = s?.totalStrategyCount    || 0
-  const baseAvgProfitFactor = positiveNumber(
-    s?.strategyDetail?.base?.avgProfitFactor,
-    s?.stageBase?.avgProfitFactor,
-    s?.baseAvgProfitFactor,
-    s?.progression?.strategy_base_avg_profit_factor,
+  const baseAvgProfitFactor = measuredStageProfitFactor(
+    s?.strategyDetail?.base,
+    s?.stageBase,
+    s?.baseAvgProfitFactorAvailable === true || Number(s?.baseAvgProfitFactorCount) > 0
+      ? {
+          avgProfitFactor: s?.baseAvgProfitFactor,
+          avgProfitFactorCount: s?.baseAvgProfitFactorCount,
+          avgProfitFactorAvailable: s?.baseAvgProfitFactorAvailable,
+        }
+      : null,
   )
   const realAvgPositions = positiveNumber(
     s?.strategyDetail?.real?.avgPosPerSet,

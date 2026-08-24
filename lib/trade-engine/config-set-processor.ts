@@ -1515,8 +1515,8 @@ export class ConfigSetProcessor {
             avg_profit_factor: pfStr,
             // Mark provenance so anyone debugging the dashboard can tell
             // this PF was synthesised from prehistoric positions and not
-            // from realtime strategy-coordinator. Cleared on the first
-            // realtime write because that flow doesn't set this field.
+            // from realtime strategy-coordinator. The realtime writer
+            // replaces both provenance and sample count with its own values.
             avg_profit_factor_source: pfSource,
             avg_profit_factor_count: String(resultCount),
             avg_profit_factor_calc_at: new Date().toISOString(),

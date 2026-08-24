@@ -100,10 +100,16 @@ export async function GET(req: NextRequest) {
       return Number.isFinite(parsed) ? parsed : 0
     }
 
-    const stageDetail = (detail: Record<string, any>) => ({
-      avgProfitFactor: n(detail.avg_profit_factor),
-      avgPosPerSet: n(detail.avg_pos_per_set),
-    })
+    const stageDetail = (detail: Record<string, any>) => {
+      const avgProfitFactorCount = Math.max(0, Math.floor(n(detail.avg_profit_factor_count)))
+      return {
+        avgProfitFactor: n(detail.avg_profit_factor),
+        avgProfitFactorCount,
+        avgProfitFactorAvailable: avgProfitFactorCount > 0,
+        avgProfitFactorSource: String(detail.avg_profit_factor_source || "unavailable"),
+        avgPosPerSet: n(detail.avg_pos_per_set),
+      }
+    }
 
     // ── 4. Read active pseudo positions count ────────────────────────────────────
     // PseudoPositionManager stores positions at:
@@ -192,6 +198,8 @@ export async function GET(req: NextRequest) {
       stageBase: stageDetail(baseDetail),
       stageReal: stageDetail(realDetail),
       baseAvgProfitFactor: n(baseDetail.avg_profit_factor),
+      baseAvgProfitFactorCount: Math.max(0, Math.floor(n(baseDetail.avg_profit_factor_count))),
+      baseAvgProfitFactorAvailable: n(baseDetail.avg_profit_factor_count) > 0,
       realActivePosAvg: n(progHash.real_active_pos_avg),
       openPositions: {
         real: {
@@ -200,7 +208,13 @@ export async function GET(req: NextRequest) {
         },
       },
       progression: {
-        strategy_base_avg_profit_factor: progHash.strategy_base_avg_profit_factor || baseDetail.avg_profit_factor || "0",
+        // The detail hash is the current coordination snapshot. The
+        // progression field can retain a prehistoric compatibility mirror and
+        // is used only when the current writer has not produced a field yet.
+        strategy_base_avg_profit_factor:
+          Object.prototype.hasOwnProperty.call(baseDetail, "avg_profit_factor")
+            ? baseDetail.avg_profit_factor
+            : progHash.strategy_base_avg_profit_factor || "0",
       },
       totalProfit: 0, // calculated from closed positions if needed
       // Legacy nested shapes for backward compat

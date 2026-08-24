@@ -192,6 +192,7 @@ interface LiveStats {
   // "Executed Positions" metric across the whole engine lifetime.
   historicAvgProfitFactor: number
   historicAvgProfitFactorCount: number
+  historicAvgProfitFactorAvailable: boolean
   executedPositions: number
   // detailed prehistoric progress
   historicDetailsPercent?: { symbols: number; candles: number; indicators: number }
@@ -328,7 +329,7 @@ const EMPTY_STATS: LiveStats = {
   historicSymbols: 0, historicSymbolsTotal: 0, historicCycles: 0,
   historicComplete: false, historicProgress: 0, historicCandles: 0, historicIndicators: 0,
   historicFrames: 0, historicFramesMissing: 0, historicTimeframeSec: 1,
-  historicAvgProfitFactor: 0, historicAvgProfitFactorCount: 0, executedPositions: 0,
+  historicAvgProfitFactor: 0, historicAvgProfitFactorCount: 0, historicAvgProfitFactorAvailable: false, executedPositions: 0,
   indicationCycles: 0, strategyCycles: 0, realtimeCycles: 0, indicationsTotal: 0,
   strategiesTotal: 0, positionsOpen: 0, successRate: 0, avgCycleMs: 0, isActive: false,
   indDirection: 0, indMove: 0, indActive: 0, indActiveAdvanced: 0, indSpecial: 0, indOptimal: 0, indAuto: 0, indCommon: 0, indSignal: 0, indTrend: 0,
@@ -585,6 +586,9 @@ export function QuickstartSection() {
         // the QuickStart strip renders "—" instead of misleading zeros.
         historicAvgProfitFactor:      Number(s.historic?.avgProfitFactor)      || 0,
         historicAvgProfitFactorCount: Number(s.historic?.avgProfitFactorCount) || 0,
+        historicAvgProfitFactorAvailable:
+          s.historic?.avgProfitFactorAvailable === true ||
+          Number(s.historic?.avgProfitFactorCount) > 0,
         executedPositions:            Number(s.historic?.executedPositions)    || 0,
         indicationCycles:      indCycles,
         strategyCycles:        stratCycles,
@@ -1725,8 +1729,8 @@ export function QuickstartSection() {
                 )}
                 {/* ── Spec-mandated Historic overview tiles ─────────────���
                       • ExecPos �� cumulative live exchange positions created.
-                      • Base PF — overall Profit Factor across all closed
-                        Base pseudo positions in the prehistoric run
+                      • Historic PF — classic realised Profit Factor across all
+                        closed strategy results in the prehistoric run
                         (sum(+pct)/|sum(-pct)|). Sourced from
                         `historicAvgProfitFactor`, not the per-stage
                         Base aggregate.
@@ -1740,9 +1744,9 @@ export function QuickstartSection() {
                   sub={stats.livePositionsOpen > 0 ? `${fmt(stats.livePositionsOpen)} open` : undefined}
                 />
                 <MiniStat
-                  label="Base PF"
+                  label="Historic PF"
                   value={
-                    stats.historicAvgProfitFactor > 0
+                    stats.historicAvgProfitFactorAvailable
                       ? stats.historicAvgProfitFactor.toFixed(2)
                       : "—"
                   }

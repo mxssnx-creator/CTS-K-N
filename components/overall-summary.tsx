@@ -37,11 +37,13 @@ interface OverallSummaryProps {
     // dedicated tiles surface them in the metrics grid below.
     //   * executedPositions — cumulative live-exchange-position count
     //     since engine start (canonical "Executed Positions" metric).
-    //   * historicAvgProfitFactor — aggregate profit factor across every
-    //     closed prehistoric position (sum(+pct)/|sum(-pct)|, 0 ⇒ no
-    //     closed positions yet so the tile renders "—").
+    //   * historicAvgProfitFactor — classic realised PF across every closed
+    //     prehistoric position. Availability/count distinguishes an all-loss
+    //     PF 0 from a run with no closed positions.
     executedPositions?: number
     historicAvgProfitFactor?: number
+    historicAvgProfitFactorCount?: number
+    historicAvgProfitFactorAvailable?: boolean
   }
 }
 
@@ -111,11 +113,13 @@ export function OverallSummary({ data }: OverallSummaryProps) {
             <div className="text-center p-3 bg-emerald-50 dark:bg-emerald-950/20 rounded-lg">
               <Activity className="h-5 w-5 mx-auto mb-1 text-emerald-600" />
               <div className="text-2xl font-bold tabular-nums">
-                {typeof data.historicAvgProfitFactor === "number" && data.historicAvgProfitFactor > 0
+                {typeof data.historicAvgProfitFactor === "number" &&
+                  (data.historicAvgProfitFactorAvailable === true ||
+                    Number(data.historicAvgProfitFactorCount) > 0)
                   ? data.historicAvgProfitFactor.toFixed(2)
                   : "—"}
               </div>
-              <div className="text-xs text-muted-foreground">Avg R</div>
+              <div className="text-xs text-muted-foreground">Historic PF</div>
             </div>
           </div>
         )}
