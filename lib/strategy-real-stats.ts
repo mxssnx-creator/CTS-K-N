@@ -30,9 +30,9 @@ export interface RealAdjustPositionStats extends RealVariantPositionStats {
   ratioStep: number
   ratioLevel: number | null
   comparisonAvailable: boolean
-  /** Block-only operator factor; absent for DCA. */
+  /** Block operator factor; absent for DCA. */
   profitFactorRatio?: number
-  /** Block-only Default/Real PF baseline used by the proportional formula. */
+  /** Block Default/Real PF baseline used by the proportional formula. */
   defaultMinimumProfitFactor?: number
   /** Shared normal/Block last-N window and activation threshold. */
   profitFactorWindow?: number
@@ -65,7 +65,7 @@ export interface RealAdjustPositionStats extends RealVariantPositionStats {
     realEnabled: boolean
     liveEnabled: boolean
   }
-  /** Block-only independently evaluated Count 1..N results. */
+  /** Independently evaluated Block Count 1..N results. */
   countEvaluations?: RealBlockCountProfitFactorStats[]
   /**
    * Real-stage scope graph. Signal rows are independently dimensioned by

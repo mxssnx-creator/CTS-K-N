@@ -47,6 +47,19 @@ import {
   getRuntimeCapabilityConcurrency,
   getRuntimeConcurrencyProfile,
 } from "@/lib/runtime-concurrency-profile"
+import {
+  HISTORIC_FOUR_HOUR_BUCKET_HOURS,
+  HISTORIC_FOUR_HOUR_PF_MINIMUM,
+  HISTORIC_FOUR_HOUR_PF_NEUTRAL,
+  HISTORIC_FOUR_HOUR_SCHEMA_VERSION,
+  createHistoricFourHourAccumulator,
+  historicFourHourBucketStarts,
+  historicFourHourRedisIncrements,
+  markHistoricFourHourCoverage,
+  recordHistoricFourHourIndications,
+  recordHistoricFourHourPositions,
+  type HistoricFourHourAccumulator,
+} from "@/lib/historic-four-hour-stats"
 
 type HistoricCalculationRunner = <T>(task: () => Promise<T>) => Promise<T>
 
@@ -228,9 +241,13 @@ function historicAggregateKey(connectionId: string, kind: "indications" | "strat
   return `historic:aggregate:${connectionId}:${kind}:${generation}`
 }
 
+export function historicFourHourAggregateKey(connectionId: string, generation: string): string {
+  return `historic:aggregate:${connectionId}:four-hour:${generation}`
+}
+
 function historicAggregateMarkerKey(
   connectionId: string,
-  kind: "indication" | "strategy",
+  kind: "indication" | "strategy" | "four-hour",
   configId: string,
   scope: string,
 ): string {
@@ -426,6 +443,13 @@ export class ConfigSetProcessor {
     }
     const initialSelection = await getCanonicalSymbolSelection(this.connectionId)
     const writerSelectionEpoch = options.symbolSelectionEpoch ?? initialSelection?.epoch ?? ""
+    const historicGeneration = historicGenerationFromScope(
+      `${writerSelectionEpoch || this.epoch}:all`,
+    )
+    const fourHourAggregateKey = historicFourHourAggregateKey(
+      this.connectionId,
+      historicGeneration,
+    )
     const canonicalSymbolsTotal = await canonicalTotalForSymbols(this.connectionId, symbols)
     const ownsCurrentSelection = await ownsCanonicalSymbolSelectionEpoch(this.connectionId, symbols, writerSelectionEpoch)
     const stillOwnsCurrentSelection = () => ownsCanonicalSymbolSelectionEpoch(this.connectionId, symbols, writerSelectionEpoch)
@@ -647,6 +671,32 @@ export class ConfigSetProcessor {
       if (!success) pendingConfigWorkFailures++
       void flushConfigWorkProgress()
     }
+
+    // Publish the active generation before the first symbol starts. The
+    // dashboard can therefore distinguish an empty/in-progress exhaustive
+    // calculation from a missing statistic, and never falls back to an older
+    // generation while settings are being recoordinated.
+    await assertCurrentSelection()
+    const fourHourStartedAtMs = Date.now()
+    await Promise.all([
+      client.hset(fourHourAggregateKey, {
+        schema_version: String(HISTORIC_FOUR_HOUR_SCHEMA_VERSION),
+        bucket_hours: String(HISTORIC_FOUR_HOUR_BUCKET_HOURS),
+        neutral_pf: String(HISTORIC_FOUR_HOUR_PF_NEUTRAL),
+        minimum_pf: String(HISTORIC_FOUR_HOUR_PF_MINIMUM),
+        generation: historicGeneration,
+        complete: "0",
+        range_start_ms: String(effectiveStart.getTime()),
+        range_end_ms: String(effectiveEnd.getTime()),
+        symbols_expected: String(canonicalSymbolsTotal),
+        updated_at_ms: String(fourHourStartedAtMs),
+      }),
+      client.expire(fourHourAggregateKey, 7 * 24 * 60 * 60),
+      client.hset(prehistoricKey, {
+        historic_four_hour_generation: historicGeneration,
+        historic_four_hour_key: fourHourAggregateKey,
+      }),
+    ])
 
     // Store range/concurrency metadata for dashboard. One write is enough;
     // the previous duplicate Promise.all issued the exact same HSET twice.
@@ -935,8 +985,15 @@ export class ConfigSetProcessor {
         // --- Run indications + strategies in parallel for this symbol ---
         const tCalcStart = Date.now()
         const historicSeries = buildHistoricPriceSeries(combinedCandles)
-        const historicGeneration = historicGenerationFromScope(
-          `${writerSelectionEpoch || this.epoch}:${symbol}`,
+        const symbolHistoricScope = `${writerSelectionEpoch || this.epoch}:${symbol}`
+        const fourHourStats = createHistoricFourHourAccumulator()
+        markHistoricFourHourCoverage(
+          fourHourStats,
+          historicFourHourBucketStarts(historicSeries.points.map((point) => point.timestamp)),
+          {
+            indicationConfigs: indicationConfigs.length,
+            strategyConfigs: strategyConfigs.length,
+          },
         )
         __DBGC(`PS_sym_before_calc ${symbol} combinedCandles=${combinedCandles.length}`)
         const [indicationResults, strategyPositions] = await Promise.all([
@@ -948,12 +1005,13 @@ export class ConfigSetProcessor {
                 CONFIG_CONCURRENCY,
                 PERSIST_CONCURRENCY,
                 assertRunActive,
-                `${writerSelectionEpoch || this.epoch}:${symbol}`,
-              historicSeries,
-              historicGeneration,
-              runCalculation,
-              reportSymbolWork,
-            )
+                symbolHistoricScope,
+                historicSeries,
+                historicGeneration,
+                runCalculation,
+                reportSymbolWork,
+                fourHourStats,
+              )
             : Promise.resolve(0),
           combinedCandles.length > 0
             ? this.processStrategyConfigs(
@@ -964,17 +1022,49 @@ export class ConfigSetProcessor {
                 CONFIG_TYPE_CONCURRENCY,
                 PERSIST_CONCURRENCY,
                 assertRunActive,
-                `${writerSelectionEpoch || this.epoch}:${symbol}`,
-              historicSeries,
-              historicGeneration,
-              runCalculation,
-              reportSymbolWork,
-            )
+                symbolHistoricScope,
+                historicSeries,
+                historicGeneration,
+                runCalculation,
+                reportSymbolWork,
+                fourHourStats,
+              )
             : Promise.resolve(0),
         ])
         __DBGC(`PS_sym_after_calc ${symbol} ind=${indicationResults} strat=${strategyPositions}`)
         const tCalcMs = Date.now() - tCalcStart
         await assertCurrentSelection()
+
+        // Commit the complete symbol/window projection in one idempotent
+        // aggregate operation. A crash before the interval checkpoint can
+        // safely retry: the compact generation marker prevents double counts.
+        if (combinedCandles.length > 0) {
+          await incrementHistoricAggregateOnce(
+            client as any,
+            historicAggregateMarkerKey(
+              this.connectionId,
+              "four-hour",
+              "all-configs",
+              symbolHistoricScope,
+            ),
+            fourHourAggregateKey,
+            historicFourHourRedisIncrements(fourHourStats),
+            7 * 24 * 60 * 60,
+            historicAggregateMarkerMember("four-hour", symbolHistoricScope),
+          )
+          const fourHourUpdatedAtMs = Date.now()
+          await Promise.all([
+            client.hset(fourHourAggregateKey, {
+              updated_at_ms: String(fourHourUpdatedAtMs),
+              complete: "0",
+            }),
+            client.expire(fourHourAggregateKey, 7 * 24 * 60 * 60),
+            client.hset(prehistoricKey, {
+              historic_four_hour_generation: historicGeneration,
+              historic_four_hour_key: fourHourAggregateKey,
+            }),
+          ])
+        }
 
         // Checkpoint only after every Set write completed. A crash before this
         // point leaves the interval eligible for a correct retry instead of
@@ -1147,6 +1237,37 @@ export class ConfigSetProcessor {
       canonicalSymbolsTotal,
     )
     await assertCurrentSelection()
+    const failedConfigWorkUnits = Math.max(
+      0,
+      Number(await client.hget(prehistoricKey, "config_work_failed_units").catch(() => 0)) || 0,
+    )
+    const fourHourComplete =
+      finalDistinctProcessed >= canonicalSymbolsTotal &&
+      errors === 0 &&
+      failedConfigWorkUnits === 0
+    const fourHourCompletedAtMs = Date.now()
+    await Promise.all([
+      client.hset(fourHourAggregateKey, {
+        schema_version: String(HISTORIC_FOUR_HOUR_SCHEMA_VERSION),
+        bucket_hours: String(HISTORIC_FOUR_HOUR_BUCKET_HOURS),
+        neutral_pf: String(HISTORIC_FOUR_HOUR_PF_NEUTRAL),
+        minimum_pf: String(HISTORIC_FOUR_HOUR_PF_MINIMUM),
+        generation: historicGeneration,
+        complete: fourHourComplete ? "1" : "0",
+        symbols_expected: String(canonicalSymbolsTotal),
+        symbols_processed: String(finalDistinctProcessed),
+        symbols_without_data: String(symbolsWithoutData),
+        failed_config_work_units: String(failedConfigWorkUnits),
+        updated_at_ms: String(fourHourCompletedAtMs),
+      }),
+      client.expire(fourHourAggregateKey, 7 * 24 * 60 * 60),
+      client.hset(prehistoricKey, {
+        historic_four_hour_generation: historicGeneration,
+        historic_four_hour_key: fourHourAggregateKey,
+        historic_four_hour_complete: fourHourComplete ? "1" : "0",
+        historic_four_hour_updated_at_ms: String(fourHourCompletedAtMs),
+      }),
+    ])
     const result: ProcessingResult = {
       indicationConfigs: indicationConfigs.length,
       indicationResults: totalIndicationResults,
@@ -1216,11 +1337,8 @@ export class ConfigSetProcessor {
       // is not subject to the bounded 250-row diagnostic retention. Prefer it
       // for PF/counts; only old data created before the aggregate existed uses
       // the bounded-list compatibility scan below.
-      const aggregateGeneration = historicGenerationFromScope(
-        `${writerSelectionEpoch || this.epoch}:all`,
-      )
       const aggregateSnapshot = await client
-        .hgetall(historicAggregateKey(this.connectionId, "strategies", aggregateGeneration))
+        .hgetall(historicAggregateKey(this.connectionId, "strategies", historicGeneration))
         .catch(() => ({} as Record<string, string>))
       const hasCompleteAggregate = Object.prototype.hasOwnProperty.call(aggregateSnapshot, "closed_count")
 
@@ -1484,6 +1602,7 @@ export class ConfigSetProcessor {
     historicGeneration = "",
     runCalculation: HistoricCalculationRunner = (task) => task(),
     reportWork?: HistoricWorkReporter,
+    fourHourStats?: HistoricFourHourAccumulator,
   ): Promise<number> {
     if (calculationGroups.length === 0) return 0
 
@@ -1525,6 +1644,13 @@ export class ConfigSetProcessor {
             async (calculationConfigs) => {
               const referenceConfig = calculationConfigs[0]
               const results = resultsByConfig.get(String(referenceConfig.id)) || []
+              if (fourHourStats) {
+                recordHistoricFourHourIndications(
+                  fourHourStats,
+                  results,
+                  calculationConfigs.length,
+                )
+              }
               if (results.length === 0) return 0
               let buyCount = 0
               let sellCount = 0
@@ -1772,6 +1898,7 @@ export class ConfigSetProcessor {
     historicGeneration = "",
     runCalculation: HistoricCalculationRunner = (task) => task(),
     reportWork?: HistoricWorkReporter,
+    fourHourStats?: HistoricFourHourAccumulator,
   ): Promise<number> {
     if (configs.length === 0) return 0
 
@@ -1851,6 +1978,14 @@ export class ConfigSetProcessor {
                 historicSeries,
                 positionCostPct,
               ))
+              if (fourHourStats) {
+                recordHistoricFourHourPositions(
+                  fourHourStats,
+                  positions,
+                  calculationConfigs.length,
+                  positionCostPct,
+                )
+              }
               // A clean calculation with no qualifying pseudo-position is a
               // valid outcome, not a failed strategy group. Previously this
               // early return left `succeeded` false, causing every zero-result

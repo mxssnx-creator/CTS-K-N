@@ -28,23 +28,36 @@ const DIRECT_KEYS = [
   "direct_trade:config-performance",
 ]
 
-function post(body: Record<string, unknown>): Request {
+const PROCESSOR_TOKEN = "direct-trade-heartbeat-token-0123456789"
+
+function post(body: Record<string, unknown>, processorToken?: string): Request {
   return new Request("http://localhost/api/trade-engine/direct-trade", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(processorToken ? { "x-direct-trade-processor-token": processorToken } : {}),
+    },
     body: JSON.stringify(body),
   })
 }
 
 describe("Direct-Trade API state and processor lease", () => {
+  const priorProcessorToken = process.env.DIRECT_TRADE_PROCESSOR_TOKEN
+
   beforeEach(() => {
     jest.resetModules()
     resetInlineRedisGlobals()
     process.env.NODE_ENV = "test"
+    process.env.DIRECT_TRADE_PROCESSOR_TOKEN = PROCESSOR_TOKEN
   })
 
   afterEach(() => {
     resetInlineRedisGlobals()
+  })
+
+  afterAll(() => {
+    if (priorProcessorToken === undefined) delete process.env.DIRECT_TRADE_PROCESSOR_TOKEN
+    else process.env.DIRECT_TRADE_PROCESSOR_TOKEN = priorProcessorToken
   })
 
   test("start preserves unrestricted evaluation windows while enforcing minimum PF and SL safety", async () => {
@@ -69,6 +82,8 @@ describe("Direct-Trade API state and processor lease", () => {
         maxPositionsPerSymbol: 999,
         maxPositionsPerDirection: 999,
         blockProfitFactorRatio: 99,
+        minVolFactor: 99,
+        trailingMinTakeProfitRatio: 1,
       }) as any)
       const payload = await response.json()
 
@@ -77,8 +92,8 @@ describe("Direct-Trade API state and processor lease", () => {
         enabled: true,
         liveMode: false,
         maxSlRatio: 0.25,
-        inverseMaxSlRatio: 1.25,
-        minProfitFactor: 0.8,
+        inverseMaxSlRatio: 1.5,
+        minProfitFactor: 1.02,
         maxDrawdownTimeMin: 99,
         trailingEnabled: false,
         keepEnabledPosCount: 99,
@@ -86,6 +101,9 @@ describe("Direct-Trade API state and processor lease", () => {
         maxPositionsPerSymbol: 300,
         maxPositionsPerDirection: 300,
         blockProfitFactorRatio: 5,
+        minVolFactor: 10,
+        trailingMinTakeProfitRatio: 2,
+        processingIntervalMs: 280,
         takeProfitRatioRange: [5, 10],
         takeProfitRatioStep: 5,
         strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
@@ -93,6 +111,17 @@ describe("Direct-Trade API state and processor lease", () => {
 
       const persisted = await (await GET()).json()
       expect(persisted.state).toMatchObject(payload.state)
+
+      const minimums = await POST(post({
+        action: "update-config",
+        minVolFactor: 0,
+        trailingMinTakeProfitRatio: 99,
+      }) as any)
+      expect((await minimums.json()).state).toMatchObject({
+        minVolFactor: 0.1,
+        trailingMinTakeProfitRatio: 22,
+        processingIntervalMs: 280,
+      })
     } finally {
       await redis.del(...DIRECT_KEYS)
     }
@@ -123,6 +152,37 @@ describe("Direct-Trade API state and processor lease", () => {
     }
   })
 
+  test("keeps the Direct-Trade volume factor at 0.1 by default and within 0.1–10", async () => {
+    const [{ POST, GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.del(...DIRECT_KEYS)
+
+    try {
+      const started = await POST(post({ action: "start", minVolFactor: 99 }) as any)
+      expect((await started.json()).state.minVolFactor).toBe(10)
+
+      const minimum = await POST(post({ action: "update-config", minVolFactor: 0 }) as any)
+      expect((await minimum.json()).state.minVolFactor).toBe(0.1)
+
+      const alias = await POST(post({ action: "update-config", volumeFactor: 2.4 }) as any)
+      expect((await alias.json()).state.minVolFactor).toBe(2.4)
+
+      await redis.set("direct_trade:state", JSON.stringify({ minVolFactor: 10 }))
+      const legacy = await (await GET()).json()
+      expect(legacy.state.minVolFactor).toBe(0.1)
+      expect(legacy.state.volumeFactorDefaultsVersion).toBe(1)
+
+      await redis.set("direct_trade:state", JSON.stringify({ minVolFactor: 10, volumeFactorDefaultsVersion: 1 }))
+      const explicit = await (await GET()).json()
+      expect(explicit.state.minVolFactor).toBe(10)
+    } finally {
+      await redis.del(...DIRECT_KEYS)
+    }
+  })
+
   test("migrates only former Direct-Trade defaults to the 5× TP and capacity contract", async () => {
     const [{ GET }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/route"),
@@ -148,7 +208,7 @@ describe("Direct-Trade API state and processor lease", () => {
         maxPositionsPerSymbol: 12,
         maxPositionsPerDirection: 6,
         maxTotalPositions: 100,
-        minProfitFactor: 4,
+        minProfitFactor: 1.1,
       })
 
       await redis.set("direct_trade:state", JSON.stringify({
@@ -230,6 +290,73 @@ describe("Direct-Trade API state and processor lease", () => {
     }
   })
 
+  test("authenticated heartbeats renew only the exact owner without replacing position snapshots", async () => {
+    const [{ POST }, { getRedisClient, persistNow }, { directTradeKeyspace }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+      import("@/lib/direct-trade-keyspace"),
+    ])
+    const redis = getRedisClient()
+    const keys = directTradeKeyspace("bingx-x02")
+    const scopedKeys = Object.values(keys)
+      .filter((value): value is string => typeof value === "string" && value.startsWith("direct_trade:"))
+    await redis.del(...scopedKeys)
+
+    try {
+      const snapshot = [{ id: "x02-open", status: "open" }]
+      const initial = await POST(post({
+        action: "processor-sync",
+        connectionId: "bingx-x02",
+        instanceId: "worker-x02",
+        tickCount: 7,
+        positions: snapshot,
+        stats: { totalOrders: 1 },
+      }) as any)
+      expect((await initial.json()).leaseHeld).toBe(true)
+
+      const denied = await POST(post({
+        action: "processor-heartbeat",
+        connectionId: "bingx-x02",
+        instanceId: "worker-x02",
+      }, "wrong-token") as any)
+      expect(denied.status).toBe(401)
+
+      const standby = await POST(post({
+        action: "processor-heartbeat",
+        connectionId: "bingx-x02",
+        instanceId: "standby-x02",
+      }, PROCESSOR_TOKEN) as any)
+      await expect(standby.json()).resolves.toMatchObject({ success: true, leaseHeld: false })
+
+      const heartbeat = await POST(post({
+        action: "processor-heartbeat",
+        connectionId: "bingx-x02",
+        instanceId: "worker-x02",
+        tickCount: 8,
+        errorsLast5min: 2,
+      }, PROCESSOR_TOKEN) as any)
+      await expect(heartbeat.json()).resolves.toMatchObject({ success: true, leaseHeld: true })
+      expect(JSON.parse(await redis.get(keys.positions) as string)).toEqual(snapshot)
+      expect(JSON.parse(await redis.get(keys.processor) as string)).toMatchObject({
+        instanceId: "worker-x02",
+        tickCount: 7,
+      })
+      expect(Date.parse(String(await redis.get(keys.processorHeartbeat)))).toBeGreaterThan(0)
+
+      await redis.del(keys.processorLease)
+      const missing = await POST(post({
+        action: "processor-heartbeat",
+        connectionId: "bingx-x02",
+        instanceId: "worker-x02",
+      }, PROCESSOR_TOKEN) as any)
+      await expect(missing.json()).resolves.toMatchObject({ success: true, leaseHeld: false })
+      expect(await redis.get(keys.processorLease)).toBeNull()
+    } finally {
+      await redis.del(...scopedKeys)
+      await persistNow()
+    }
+  })
+
   test("isolates state, positions, statistics and processor leases per exchange connection", async () => {
     const [{ POST, GET }, { getRedisClient }, { directTradeKeyspace, DIRECT_TRADE_CONNECTION_INDEX_KEY }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/route"),
@@ -280,6 +407,49 @@ describe("Direct-Trade API state and processor lease", () => {
       expect(rightRead.stats).toMatchObject({ totalOrders: 3, totalPnl: 7 })
       expect(await redis.get(left.processorLease)).toBe("worker-left")
       expect(await redis.get(right.processorLease)).toBe("worker-right")
+    } finally {
+      await redis.del(...scopedKeys)
+    }
+  })
+
+  test("publishes closed live accounting work to the supervisor while the scope is disabled", async () => {
+    const [{ GET }, { getRedisClient }, { directTradeKeyspace, DIRECT_TRADE_CONNECTION_INDEX_KEY }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+      import("@/lib/direct-trade-keyspace"),
+    ])
+    const redis = getRedisClient()
+    const keys = directTradeKeyspace("bingx-x01")
+    const scopedKeys = [DIRECT_TRADE_CONNECTION_INDEX_KEY, ...Object.values(keys).filter(
+      (value): value is string => typeof value === "string" && value.startsWith("direct_trade:"),
+    )]
+    await redis.del(...scopedKeys)
+
+    try {
+      await redis.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, "bingx-x01")
+      await redis.set(keys.state, JSON.stringify({
+        connectionId: "bingx-x01",
+        enabled: false,
+        liveMode: true,
+      }))
+      await redis.set(keys.positions, JSON.stringify([
+        { id: "settled", status: "closed", mode: "live", pnlAccountingComplete: true },
+        { id: "pending", status: "closed", mode: "live", pnlAccountingComplete: false },
+        { id: "pseudo", status: "closed", mode: "pseudo", pnlAccountingComplete: false },
+      ]))
+
+      const payload = await GET(new Request(
+        "http://localhost/api/trade-engine/direct-trade?view=connections",
+      ) as any).then((response) => response.json())
+
+      expect(payload.connections).toEqual([
+        expect.objectContaining({
+          connectionId: "bingx-x01",
+          enabled: false,
+          openPositions: 0,
+          accountingPending: 1,
+        }),
+      ])
     } finally {
       await redis.del(...scopedKeys)
     }

@@ -241,6 +241,78 @@ describe("volatile progression stats overlay", () => {
     })
   })
 
+  it("withholds partial symbol rows from global stage totals", () => {
+    const now = 1_700_000_000_000
+    const result = overlayVolatileProgressionStats({
+      historic: { symbolsProcessed: 2, symbolsTotal: 2, isComplete: true },
+      realtime: { cycleCounters: {} },
+      strategyRows: {
+        base: { total: 400, valid: 400, totalOpen: 0, validOpen: 0 },
+        main: { valid: 400, overall: 800, validOpen: 0, overallOpen: 0, breakdown: {} },
+        real: { valid: 700, evaluated: 700, active: 0, activeExactRows: 0 },
+        live: { total: 700, mirrored: 700, active: 0 },
+      },
+      connectionStageOverview: {
+        base: { total: 0, valid: 0, pfMinimum: 1.1, validPercent: 0 },
+        main: { valid: 0, overall: 0, additional: 0, expansionPercent: 0, breakdown: {} },
+        real: { valid: 0, active: 0, activeExactSets: 0, activePercent: 0 },
+        live: { total: 0, long: 0, short: 0, symbols: 0, orders: { placed: 0, running: 0 } },
+        integrity: { valid: true, errors: [] },
+      },
+    }, {
+      progression: {},
+      prehistoric: {},
+      realtime: {},
+      engineState: {
+        active_symbols: '["BTCUSDT","ETHUSDT"]',
+        status: "running",
+      },
+      runningHint: "1",
+      strategyDetails: {
+        base: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_total": "400",
+          "s:BTCUSDT:row_valid": "400",
+        },
+        main: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_valid": "400",
+          "s:BTCUSDT:row_overall": "800",
+        },
+        real: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_valid": "700",
+          "s:BTCUSDT:row_real_evaluated": "700",
+        },
+        live: {
+          "s:BTCUSDT:ts": String(now - 1_000),
+          "s:BTCUSDT:row_total": "700",
+          "s:BTCUSDT:row_mirrored": "700",
+        },
+      },
+      now,
+    })
+
+    expect(result).toMatchObject({
+      strategyRows: {
+        base: { total: 0, valid: 0 },
+        main: { valid: 0, overall: 0 },
+        real: { valid: 0, evaluated: 0 },
+        live: { total: 0, mirrored: 0 },
+        snapshot: { coverage: { processed: 1, total: 2, complete: false } },
+      },
+      connectionStageOverview: {
+        snapshot: { coverage: { processed: 1, total: 2, complete: false } },
+        latestCycle: {
+          base: { total: 0, valid: 0 },
+          main: { valid: 0, overall: 0 },
+          real: { valid: 0, active: 0 },
+          live: { total: 0, mirrored: 0 },
+        },
+      },
+    })
+  })
+
   it("clears cached current-open rows when Redis no longer proves runtime liveness", () => {
     const now = 1_700_000_000_000
     const result = overlayVolatileProgressionStats({

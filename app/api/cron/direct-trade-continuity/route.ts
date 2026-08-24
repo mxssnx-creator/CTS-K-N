@@ -57,9 +57,10 @@ export async function GET(request: Request) {
     try {
       const indexedIds = await client.smembers(DIRECT_TRADE_CONNECTION_INDEX_KEY).catch(() => [])
       const legacyKeys = directTradeKeyspace()
-      const [legacyStateRaw, legacyProcessorRaw, legacyPositionsRaw] = await Promise.all([
+      const [legacyStateRaw, legacyProcessorRaw, legacyHeartbeatRaw, legacyPositionsRaw] = await Promise.all([
         client.get(legacyKeys.state),
         client.get(legacyKeys.processor),
+        client.get(legacyKeys.processorHeartbeat),
         client.get(legacyKeys.positions),
       ])
       const indexedScopes = [
@@ -87,27 +88,40 @@ export async function GET(request: Request) {
       ]
       const scopeResults = await Promise.all(scopes.map(async (connectionId) => {
         const keys = directTradeKeyspace(connectionId)
-        const [stateRaw, processorRaw, positionsRaw] = connectionId === null
-          ? [legacyStateRaw, legacyProcessorRaw, legacyPositionsRaw]
-          : await Promise.all([client.get(keys.state), client.get(keys.processor), client.get(keys.positions)])
+        const [stateRaw, processorRaw, heartbeatRaw, positionsRaw] = connectionId === null
+          ? [legacyStateRaw, legacyProcessorRaw, legacyHeartbeatRaw, legacyPositionsRaw]
+          : await Promise.all([
+              client.get(keys.state),
+              client.get(keys.processor),
+              client.get(keys.processorHeartbeat),
+              client.get(keys.positions),
+            ])
         const state = stateRaw ? JSON.parse(stateRaw) : {}
         const processor = processorRaw ? JSON.parse(processorRaw) : null
         const positions = positionsRaw ? JSON.parse(positionsRaw) : null
-        const lastTickMs = Date.parse(String(processor?.lastTick || ""))
+        const latestHeartbeat = heartbeatRaw || processor?.lastTick || null
+        const lastTickMs = Date.parse(String(latestHeartbeat || ""))
         const exactNonTerminalPositions = Array.isArray(positions)
           ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
           : null
+        const exactAccountingPending = Array.isArray(positions)
+          ? positions.filter((position: any) => (
+              position?.status === "closed"
+              && position?.mode === "live"
+              && position?.pnlAccountingComplete !== true
+            )).length
+          : null
         const reportedOpenPositions = Number(processor?.openPositionCount)
         const reportedOpeningPositions = Number(processor?.openingPositionCount)
-        const hasOpenPositions = exactNonTerminalPositions != null
-          ? exactNonTerminalPositions > 0
+        const hasManagedPositions = exactNonTerminalPositions != null
+          ? exactNonTerminalPositions > 0 || Number(exactAccountingPending) > 0
           : Number.isFinite(reportedOpenPositions) || Number.isFinite(reportedOpeningPositions)
             ? Math.max(0, reportedOpenPositions || 0) + Math.max(0, reportedOpeningPositions || 0) > 0
             // Rolling-upgrade fallback only. New workers publish exact open
             // counters and a persisted positions list, so terminal history no
             // longer causes permanent, unnecessary service restarts.
             : Math.max(0, Number(processor?.positionCount) || 0) > 0
-        const required = state?.enabled === true || hasOpenPositions
+        const required = state?.enabled === true || hasManagedPositions
         const healthy = !required || (Number.isFinite(lastTickMs) && startedAt - lastTickMs < PROCESSOR_STALE_MS)
         const recoveryRequested = required && !healthy
         if (recoveryRequested) {
@@ -126,7 +140,8 @@ export async function GET(request: Request) {
           healthy,
           recoveryRequested,
           openPositions: exactNonTerminalPositions ?? Math.max(0, reportedOpenPositions || 0),
-          lastTick: processor?.lastTick || null,
+          accountingPending: exactAccountingPending ?? 0,
+          lastTick: latestHeartbeat,
         }
       }))
       const required = scopeResults.some((entry) => entry.required)

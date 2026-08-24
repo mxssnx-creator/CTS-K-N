@@ -636,6 +636,19 @@ function parseCycleDeadlineMs(): number {
 // exchange work is repeatedly cancelled and appears stuck.
 const CYCLE_DEADLINE_MS = parseCycleDeadlineMs()
 
+function parseCanonicalRealtimeCycleBudgetMs(): number {
+  const raw = Number(process.env.REALTIME_CANONICAL_CYCLE_BUDGET_MS)
+  if (Number.isFinite(raw) && raw >= 5_000) return Math.floor(raw)
+  // One symbol owns one serial Indication→Strategy pass. Thirty seconds is
+  // long enough for the measured exhaustive indication grid, but short enough
+  // that one pathological symbol cannot prevent a 30-symbol basket from
+  // progressing for many minutes. Cancellation is cooperative and the owner
+  // remains awaited, so this budget can never admit overlapping work.
+  return process.env.NODE_ENV === "production" ? 30_000 : 60_000
+}
+
+const REALTIME_CANONICAL_CYCLE_BUDGET_MS = parseCanonicalRealtimeCycleBudgetMs()
+
 function parsePrehistoricBootstrapDeadlineMs(): number {
   const raw = Number(
     process.env.PREHISTORIC_BOOTSTRAP_DEADLINE_MS ??
@@ -705,11 +718,17 @@ function withCycleDeadline<T>(work: Promise<T>, label: string, ms: number = CYCL
  * for complete CPU-owned matrices so the original promise remains authoritative
  * until every candidate has finished.
  */
-function withCycleDiagnostic<T>(work: Promise<T>, label: string, ms: number = CYCLE_DEADLINE_MS): Promise<T> {
+function withCycleDiagnostic<T>(
+  work: Promise<T>,
+  label: string,
+  ms: number = CYCLE_DEADLINE_MS,
+  onSlowThreshold?: () => void,
+): Promise<T> {
   let warned = false
   const timer = setTimeout(() => {
     warned = true
     console.warn(`[v0] [CycleDiagnostic] ${label} exceeded ${ms}ms; continuing exhaustive work without retry`)
+    try { onSlowThreshold?.() } catch { /* diagnostics must never break work */ }
   }, ms)
   if (typeof (timer as any).unref === "function") {
     try { (timer as any).unref() } catch { /* non-Node runtime */ }
@@ -3052,6 +3071,11 @@ export class TradeEngineManager {
       // Productivity marker — tracks whether this cycle did meaningful work so
       // scheduleNext() can reset / grow the idle backoff.
       let producedIndications = false
+      // A soft, cooperative budget prevents one pathological symbol from
+      // monopolising the rotating basket. The admission lease is intentionally
+      // retained until the currently-running stage actually returns; no
+      // Promise.race and no second matrix can overlap the first.
+      let cycleBudgetExceeded = false
 
       // Refresh the prehistoric-done flag every 3s (non-blocking).
       if (startTime - prehistoricDoneCheckedAt > 3000) {
@@ -3234,7 +3258,8 @@ export class TradeEngineManager {
             this.isRunning &&
             this.liveProgressionsArmed &&
             entryGeneration === this.entryProcessingGeneration &&
-            cycleSettingsVersion === this.settingsVersion,
+            cycleSettingsVersion === this.settingsVersion &&
+            !cycleBudgetExceeded,
         }
         const pipelineResults = await withCycleDiagnostic(
           mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
@@ -3274,7 +3299,30 @@ export class TradeEngineManager {
             }),
           ),
           `Engine ${this.connectionId} realtime-progression`,
+          REALTIME_CANONICAL_CYCLE_BUDGET_MS,
+          () => { cycleBudgetExceeded = true },
         )
+        if (cycleBudgetExceeded) {
+          // The current stage has now returned and therefore cannot overlap
+          // the next tick. Record the incomplete pass explicitly, skip all
+          // success/current-row counters, then let finally rotate onward.
+          try {
+            const client = getRedisClient()
+            const progressionKey = buildProgressionScope(
+              this.connectionId,
+              this.currentEngineType,
+            ).progressionKey
+            await Promise.all([
+              client.hincrby(progressionKey, "canonical_cycle_budget_exceeded_count", 1),
+              client.hset(progressionKey, {
+                canonical_cycle_budget_last_at: String(Date.now()),
+                canonical_cycle_budget_ms: String(REALTIME_CANONICAL_CYCLE_BUDGET_MS),
+                canonical_cycle_budget_symbols: symbols.join(","),
+              }),
+            ])
+          } catch { /* best-effort telemetry */ }
+          return
+        }
         if (
           !this.liveProgressionsArmed ||
           entryGeneration !== this.entryProcessingGeneration

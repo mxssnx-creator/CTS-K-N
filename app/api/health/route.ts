@@ -3,6 +3,7 @@ import { getAllConnections, getRedisClient, verifyRedisHealth } from "@/lib/redi
 import { healthCheckService, HealthStatus } from "@/lib/health-check"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { isConnectionMainProcessing } from "@/lib/connection-state-utils"
+import { buildProgressionScope } from "@/lib/progression-scope"
 
 export const dynamic = "force-dynamic"
 
@@ -104,17 +105,31 @@ async function collectMetrics(): Promise<{ metrics: HealthMetrics; fresh: boolea
   const rows = await withinHealthBudget(
     Promise.all(connections.map(async (connection) => {
       const id = String(connection?.id || "")
-      const [runningHint, runtimeState, settingsState, trades, positions] = await Promise.all([
+      const engineType = String(
+        connection?.engine_type || connection?.engineType || "main",
+      ).trim() || "main"
+      const scope = buildProgressionScope(id, engineType)
+      const [
+        runningHint,
+        runtimeState,
+        settingsState,
+        scopedRuntimeState,
+        scopedSettingsState,
+        trades,
+        positions,
+      ] = await Promise.all([
         client.get(`engine_is_running:${id}`).catch(() => null),
         client.hgetall(`trade_engine_state:${id}`).catch(() => ({} as Record<string, string>)),
         client.hgetall(`settings:trade_engine_state:${id}`).catch(() => ({} as Record<string, string>)),
+        client.hgetall(`trade_engine_state:${id}:${engineType}`).catch(() => ({} as Record<string, string>)),
+        client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
         client.scard(`trades:${id}`).catch(() => 0),
         client.scard(`positions:${id}`).catch(() => 0),
       ])
       const enabled = isConnectionMainProcessing(connection)
       const runtime = resolveDistributedEngineRuntime({
         runningHint,
-        states: [runtimeState, settingsState],
+        states: [runtimeState, settingsState, scopedRuntimeState, scopedSettingsState],
         globalState,
         connectionEnabled: enabled,
       })

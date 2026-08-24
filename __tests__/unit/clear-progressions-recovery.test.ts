@@ -57,7 +57,7 @@ describe("Reset DB Direct-Trade recovery contract", () => {
       await redisDb.ensureCoreRedis()
       const client = redisDb.getRedisClient()
       await client.flushDb()
-      await client.set("_schema_version", "100")
+      await client.set("_schema_version", "102")
       await client.set("_migrations_run", "true")
       await client.sadd("connections", "bingx-x02")
       await client.hset("connection:bingx-x02", {

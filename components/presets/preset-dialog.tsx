@@ -468,7 +468,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
                       }
                     />
                     <p className="text-xs text-muted-foreground">
-                      1.00 is neutral after one PositionCost; each 0.10 adds one more PositionCost of required net result. Range 1.00–2.20.
+                      1.00 is calculation-neutral after one PositionCost; +0.10 equals +1× PositionCost net. Selectable range 1.02–2.30 in 0.02 steps.
                     </p>
                   </div>
 

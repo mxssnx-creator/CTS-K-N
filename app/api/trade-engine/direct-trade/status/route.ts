@@ -9,6 +9,18 @@ import {
 
 export const dynamic = "force-dynamic"
 
+function publicProcessorStatus(processor: any): Record<string, unknown> | null {
+  if (!processor || typeof processor !== "object") return null
+  return {
+    lastTick: typeof processor.lastTick === "string" ? processor.lastTick : null,
+    tickCount: Math.max(0, Math.floor(Number(processor.tickCount) || 0)),
+    errorsLast5min: Math.max(0, Math.floor(Number(processor.errorsLast5min) || 0)),
+    historyPolicy: processor.historyPolicy && typeof processor.historyPolicy === "object"
+      ? processor.historyPolicy
+      : null,
+  }
+}
+
 async function getClient() {
   await initRedis()
   return getRedisClient()
@@ -25,22 +37,41 @@ export async function GET(request: Request) {
         const connectionId = normalizeDirectTradeConnectionId(rawId)
         if (!connectionId) return null
         const scoped = directTradeKeyspace(connectionId)
-        const [stateRaw, positionsRaw, processorRaw] = await Promise.all([
+        const [stateRaw, positionsRaw, processorRaw, processorHeartbeatRaw] = await Promise.all([
           client.get(scoped.state),
           client.get(scoped.positions),
           client.get(scoped.processor),
+          client.get(scoped.processorHeartbeat),
         ])
         const state = stateRaw ? JSON.parse(stateRaw) : null
         const positions = positionsRaw ? JSON.parse(positionsRaw) : []
         const processor = processorRaw ? JSON.parse(processorRaw) : null
+        const latestProcessor = processor
+          ? { ...processor, lastTick: processorHeartbeatRaw || processor.lastTick || null }
+          : processorHeartbeatRaw ? { lastTick: processorHeartbeatRaw } : null
         const openPositions = Array.isArray(positions)
           ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
           : 0
-        const required = state?.enabled === true || openPositions > 0
+        const accountingPending = Array.isArray(positions)
+          ? positions.filter((position: any) => (
+              position?.status === "closed"
+              && position?.mode === "live"
+              && position?.pnlAccountingComplete !== true
+            )).length
+          : 0
+        const required = state?.enabled === true || openPositions > 0 || accountingPending > 0
         const healthy = !required || Boolean(
-          processor?.lastTick && now - Date.parse(String(processor.lastTick)) < 7_000,
+          latestProcessor?.lastTick && now - Date.parse(String(latestProcessor.lastTick)) < 7_000,
         )
-        return { connectionId, required, healthy, openPositions, state, processor }
+        return {
+          connectionId,
+          required,
+          healthy,
+          openPositions,
+          accountingPending,
+          state,
+          processor: publicProcessorStatus(latestProcessor),
+        }
       }))
       const scopedConnections = connections.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
       const required = scopedConnections.some((entry) => entry.required)
@@ -50,6 +81,7 @@ export async function GET(request: Request) {
         aggregate: true,
         state: { enabled: scopedConnections.some((entry) => entry.state?.enabled === true) },
         openPositions: scopedConnections.reduce((sum, entry) => sum + entry.openPositions, 0),
+        accountingPending: scopedConnections.reduce((sum, entry) => sum + entry.accountingPending, 0),
         processorRequired: required,
         processorHealthy: healthy,
         processor: { isHealthy: healthy },
@@ -58,12 +90,13 @@ export async function GET(request: Request) {
     }
     const connectionId = normalizeDirectTradeConnectionId(params.get("connectionId"))
     const keys = directTradeKeyspace(connectionId)
-    const [stateRaw, statsRaw, positionsRaw, openPositionStageRaw, processorRaw, configStatusRaw, calculationRaw, progressRaw, recoveryRequestRaw] = await Promise.all([
+    const [stateRaw, statsRaw, positionsRaw, openPositionStageRaw, processorRaw, processorHeartbeatRaw, configStatusRaw, calculationRaw, progressRaw, recoveryRequestRaw] = await Promise.all([
       client.get(keys.state),
       client.get(keys.stats),
       client.get(keys.positions),
       client.get(keys.openPositionStage),
       client.get(keys.processor),
+      client.get(keys.processorHeartbeat),
       client.get(keys.configStatus),
       client.get(keys.calculation),
       client.get(keys.calculationProgress),
@@ -82,6 +115,7 @@ export async function GET(request: Request) {
     const positions = positionsRaw ? JSON.parse(positionsRaw) : []
     const openPositionStage = openPositionStageRaw ? JSON.parse(openPositionStageRaw) : null
     const processor = processorRaw ? JSON.parse(processorRaw) : null
+    const processorLastTick = processorHeartbeatRaw || processor?.lastTick || null
     const configStatus = configStatusRaw ? JSON.parse(configStatusRaw) : {}
     if (!hasIndexedCounts) {
       const executionConfigsRaw = await client.get(keys.executionConfigs)
@@ -90,17 +124,27 @@ export async function GET(request: Request) {
 
     // Calculate rolling stats from positions
     const now = Date.now()
-    const closedPositions = positions
+    const allClosedPositions = positions
       .filter((p: any) => p.status === "closed")
       .sort((left: any, right: any) =>
         new Date(left.closedAt || left.exitTime || 0).getTime() -
         new Date(right.closedAt || right.exitTime || 0).getTime(),
       )
+    const selectedMode = state?.liveMode === true ? "live" : "simulated"
+    const closedPositions = allClosedPositions.filter((position: any) => (
+      (position?.mode === "live" ? "live" : "simulated") === selectedMode
+    ))
+    const accountingPending = allClosedPositions.filter((position: any) => (
+      position?.mode === "live" && position?.pnlAccountingComplete !== true
+    )).length
     const openPositions = positions.filter((p: any) => p.status === "open")
     const openingPositions = positions.filter((p: any) => p.status === "opening")
-    const processorRequired = state?.enabled === true || openPositions.length > 0 || openingPositions.length > 0
+    const processorRequired = state?.enabled === true
+      || openPositions.length > 0
+      || openingPositions.length > 0
+      || accountingPending > 0
     const processorHeartbeatHealthy = Boolean(
-      processor?.lastTick && (now - new Date(processor.lastTick).getTime()) < 7000,
+      processorLastTick && (now - new Date(processorLastTick).getTime()) < 7000,
     )
     const processorHealthy = !processorRequired || processorHeartbeatHealthy
 
@@ -139,6 +183,7 @@ export async function GET(request: Request) {
       openingPositions: openingPositions.length,
       openPositionStage,
       closedPositions: closedPositions.length,
+      accountingPending,
       processorRequired,
       processorHealthy,
       overview48h,
@@ -148,7 +193,7 @@ export async function GET(request: Request) {
       disabledConfigs: Object.values(configStatus as Record<string, any>)
         .filter((entry: any) => entry?.enabled === false).length,
       processor: processor ? {
-        lastTick: processor.lastTick,
+        lastTick: processorLastTick,
         tickCount: processor.tickCount,
         errorsLast5min: processor.errorsLast5min || 0,
         historyPolicy: processor.historyPolicy || null,

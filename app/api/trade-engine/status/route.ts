@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { getRedisClient, initRedis, getActiveConnectionsForEngine } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
+import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
 import { buildMissingTradeEngineWorkerDiagnostic, readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
 import { readTradeEngineStatusCache, writeTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
@@ -224,11 +225,14 @@ export async function GET() {
     }
 
     // Build connection status for ACTIVE connections only
-    const connectionStatuses = await Promise.all(
-      connections.map(async (conn: any) => {
-        try {
-          // Get progression state
-          const progressionState = await ProgressionStateManager.getProgressionState(conn.id)
+        const connectionStatuses = await Promise.all(
+          connections.map(async (conn: any) => {
+            try {
+              const engineType = String(conn.engine_type || conn.engineType || "main").trim() || "main"
+              const scope = buildProgressionScope(conn.id, engineType)
+              const progressionKeys = Array.from(new Set(progressionReadKeys(scope)))
+              // Get progression state
+              const progressionState = await ProgressionStateManager.getProgressionState(conn.id, engineType)
           
           // Get positions and trades counts
           const positionsKey = `positions:${conn.id}`
@@ -236,16 +240,37 @@ export async function GET() {
           
           const positionsCount = await client.scard(positionsKey)
           const tradesCount = await client.scard(tradesKey)
-          const [rawEngineState, settingsEngineState, rawProgression] = await Promise.all([
-            client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
-            client.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
-            client.hgetall(`progression:${conn.id}`).catch(() => ({} as Record<string, string>)),
-          ])
-          const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }
-          const processorHeartbeat = Number((engineState as any)?.last_processor_heartbeat || 0)
+              const [
+                rawEngineState,
+                settingsEngineState,
+                scopedRawEngineState,
+                scopedSettingsEngineState,
+                progressionHashes,
+              ] = await Promise.all([
+                client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+                client.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+                client.hgetall(`trade_engine_state:${conn.id}:${engineType}`).catch(() => ({} as Record<string, string>)),
+                client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+                Promise.all(
+                  progressionKeys.map((key) =>
+                    client.hgetall(key).catch(() => ({} as Record<string, string>)),
+                  ),
+                ),
+              ])
+              const engineState = {
+                ...(rawEngineState || {}),
+                ...(settingsEngineState || {}),
+                ...(scopedRawEngineState || {}),
+                ...(scopedSettingsEngineState || {}),
+              }
+              const progression = progressionHashes.reduce<Record<string, string>>(
+                (merged, hash) => ({ ...(hash || {}), ...merged }),
+                {},
+              )
+              const processorHeartbeat = Number((engineState as any)?.last_processor_heartbeat || 0)
           const hasFreshDistributedHeartbeat =
             Number.isFinite(processorHeartbeat) && processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
-          const portableCycleRaw = String((rawProgression as any)?.portable_cycle_completed_at || "")
+              const portableCycleRaw = String((progression as any)?.portable_cycle_completed_at || "")
           const portableCycleAt = portableCycleRaw ? Date.parse(portableCycleRaw) : 0
           const hasFreshScheduledCycle =
             Number.isFinite(portableCycleAt) && portableCycleAt > 0 && Date.now() - portableCycleAt < 90_000
@@ -256,16 +281,18 @@ export async function GET() {
           // operator intent; the heartbeat is the distributed proof of real
           // engine progress and avoids both false "running" and false "stopped"
           // in multi-worker/OpenNext deployments.
-          const connectionRunning =
-            isGloballyRunning && !isGloballyPaused &&
-            (hasLocalEngineRuntime || hasFreshDistributedHeartbeat || hasFreshScheduledCycle)
+              const localManager = coordinator?.getEngineManager?.(conn.id) ?? null
+              const hasLocalConnectionRuntime = Boolean(localManager?.isEngineRunning)
+              const connectionRunning =
+                isGloballyRunning && !isGloballyPaused &&
+                (hasLocalConnectionRuntime || hasFreshDistributedHeartbeat || hasFreshScheduledCycle)
 
           return {
             id: conn.id,
             name: conn.name,
             exchange: conn.exchange,
             status: connectionRunning ? "running" : "stopped",
-            workerAttached: hasLocalEngineRuntime,
+                workerAttached: hasLocalConnectionRuntime,
             distributedHeartbeatFresh: hasFreshDistributedHeartbeat,
             scheduledCycleFresh: hasFreshScheduledCycle,
             connectionHeartbeatFresh: hasFreshDistributedHeartbeat || hasFreshScheduledCycle,

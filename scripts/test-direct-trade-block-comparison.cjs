@@ -444,7 +444,7 @@ const result = {
     profitFactorRatio: blockProfitFactorRatio,
     countThresholds: blockCountThresholds,
     countFormula: "target = base + base × count × volumeRatio",
-    pfFormula: "minimum = defaultPF × blockPFRatio × (count × volumeRatio)",
+    pfFormula: "minimum = 1 + ((defaultPF - 1) × blockPFRatio × (count × volumeRatio))",
     independentCountPfDdtLedger: true,
     pfRatioAppliedToEligibility: true,
     note: "Direct-Trade stores one selected execution row plus independent Count-1..N PF/DDT ledger entries; the selected row uses the largest qualifying count.",
@@ -481,7 +481,7 @@ const result = {
     aggregatePFDifferenceSelectedVsBase: (withBlock.metrics.selectedBlockAggregatePF ?? 0)
       - (withoutBlock.metrics.baseAggregatePF ?? 0),
     identityMismatches,
-    note: "Per-set observed PF remains a causal reference and is scale-invariant; aggregate Block PF is calculated from summed ratio-weighted net positive/negative PnL, while the TP ratio range mean is diagnostic only and projected PnL/target volume use the non-compounding multiplier.",
+    note: "Per-set admission uses the PositionCost coordinate; aggregate Block PF remains the separate classic statistic calculated from summed ratio-weighted positive/negative PnL. The TP ratio range mean is diagnostic only and projected PnL/target volume use the non-compounding multiplier.",
   },
   generatedAt: new Date().toISOString(),
 }

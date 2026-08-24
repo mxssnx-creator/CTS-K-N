@@ -1,4 +1,8 @@
 import type { EffectiveTradeDirection } from "@/lib/directional-evaluation"
+import {
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  normalizeProtectionPercentages,
+} from "@/lib/trade-protection-contract"
 
 /**
  * Hard safety limits for the Special indication/strategy family.
@@ -6,13 +10,13 @@ import type { EffectiveTradeDirection } from "@/lib/directional-evaluation"
  * These limits intentionally live below the Settings/UI layer. Imported,
  * legacy, or connection-overridden values therefore cannot create more than
  * five logical legs per direction, exceed three times the Base volume, use a
- * calculation range below three observations, or place SL farther than three
+ * calculation range below three observations, or place SL farther than 1.5
  * TP distances from the coordinated entry.
  */
 export const SPECIAL_MIN_STEP = 3
 export const SPECIAL_MAX_POSITIONS_PER_DIRECTION = 5
 export const SPECIAL_MAX_VOLUME_RATIO = 3
-export const SPECIAL_MAX_SL_TO_TP_RATIO = 3
+export const SPECIAL_MAX_SL_TO_TP_RATIO = MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO
 export const SPECIAL_MAX_HOLDING_SECONDS = 90 * 60
 export const SPECIAL_TIMEFRAMES_SECONDS = [15, 60, 15 * 60, 30 * 60] as const
 export type SpecialExitVariant = "fixed" | "trailing"
@@ -1423,11 +1427,7 @@ export function sanitizeSpecialPositionPlan(
   const weightedEntryPrice = Number(source.weightedEntryPrice)
   const requestedTakeProfitPct = Number(source.protection?.takeProfitPct)
   const requestedStopLossPct = Number(source.protection?.stopLossPct)
-  if (
-    !Number.isFinite(weightedEntryPrice) || weightedEntryPrice <= 0 ||
-    !Number.isFinite(requestedTakeProfitPct) || requestedTakeProfitPct <= 0 ||
-    !Number.isFinite(requestedStopLossPct) || requestedStopLossPct <= 0
-  ) return null
+  if (!Number.isFinite(weightedEntryPrice) || weightedEntryPrice <= 0) return null
 
   const logicalPositionCount = Math.min(
     SPECIAL_MAX_POSITIONS_PER_DIRECTION,
@@ -1447,11 +1447,17 @@ export function sanitizeSpecialPositionPlan(
     totalVolumeRatio,
     SPECIAL_MAX_VOLUME_RATIO,
   )
-  const takeProfitPct = requestedTakeProfitPct
-  const stopLossPct = Math.min(
-    requestedStopLossPct,
-    takeProfitPct * SPECIAL_MAX_SL_TO_TP_RATIO,
-  )
+  const protection = normalizeProtectionPercentages({
+    takeProfitPct: requestedTakeProfitPct,
+    fallbackTakeProfitPct: 0.1,
+    stopLossPct: requestedStopLossPct,
+    fallbackStopLossPct: requestedTakeProfitPct,
+    minimumTakeProfitPct: 0.01,
+    minimumStopLossPct: 0.01,
+    maxStopLossToTakeProfitRatio: SPECIAL_MAX_SL_TO_TP_RATIO,
+  })
+  const takeProfitPct = protection.takeProfitPct
+  const stopLossPct = protection.stopLossPct
 
   const rawLegs = Array.isArray(source.legs) ? source.legs : []
   const legs: SpecialPositionLeg[] = []

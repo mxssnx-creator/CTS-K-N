@@ -111,18 +111,53 @@ async function verifyLiveTradeReadiness() {
 async function verifyDirectTradeProcessor(maxAttempts = 20) {
   let last = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    last = await request("/api/trade-engine/direct-trade/status", { timeoutMs: 10_000 })
-    if (last?.success === true && last?.processor?.isHealthy === true) {
-      console.log(`[Prod Init] Direct-Trade processor lease is healthy (tick ${Number(last.processor.tickCount) || 0})`)
+    // Direct Trade is connection-scoped. A request without a connection ID
+    // resolves the legacy/default X01 keyspace and can therefore report a null
+    // processor even while the explicitly enabled X02 worker owns a fresh
+    // lease. Verify every required scope through the aggregate endpoint.
+    last = await request("/api/trade-engine/direct-trade/status?aggregate=1", { timeoutMs: 10_000 })
+    const requiredConnections = Array.isArray(last?.connections)
+      ? last.connections.filter((entry) => entry?.required === true)
+      : []
+    if (
+      last?.success === true &&
+      last?.aggregate === true &&
+      last?.processorHealthy === true &&
+      requiredConnections.every((entry) => entry?.healthy === true)
+    ) {
+      const ticks = requiredConnections.map((entry) => ({
+        connectionId: String(entry.connectionId || "unknown"),
+        tickCount: Number(entry?.processor?.tickCount) || 0,
+      }))
+      if (last?.processorRequired === true) {
+        console.log(`[Prod Init] Direct-Trade processor leases are healthy: ${ticks.map((entry) => `${entry.connectionId}=${entry.tickCount}`).join(", ")}`)
+      } else {
+        console.log("[Prod Init] Direct-Trade processor lease is not currently required")
+      }
       return {
         healthy: true,
-        lastTick: last.processor.lastTick,
-        tickCount: Number(last.processor.tickCount) || 0,
+        required: last?.processorRequired === true,
+        connections: ticks,
       }
     }
     if (attempt < maxAttempts) await sleep(1_000)
   }
-  throw new Error(`Direct-Trade processor did not publish a fresh leased heartbeat: ${JSON.stringify(last?.processor || null)}`)
+  const compact = {
+    required: last?.processorRequired === true,
+    healthy: last?.processorHealthy === true,
+    connections: Array.isArray(last?.connections)
+      ? last.connections
+        .filter((entry) => entry?.required === true)
+        .map((entry) => ({
+          connectionId: String(entry?.connectionId || "unknown"),
+          healthy: entry?.healthy === true,
+          openPositions: Number(entry?.openPositions) || 0,
+          lastTick: entry?.processor?.lastTick || null,
+          tickCount: Number(entry?.processor?.tickCount) || 0,
+        }))
+      : [],
+  }
+  throw new Error(`Direct-Trade processor did not publish a fresh leased heartbeat: ${JSON.stringify(compact)}`)
 }
 
 async function verifyProdVstMainEngine(liveTrade, maxAttempts = 45) {

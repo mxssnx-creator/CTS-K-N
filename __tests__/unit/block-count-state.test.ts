@@ -142,11 +142,11 @@ describe("independent Block count lifecycle", () => {
       const volumeIncrement = calculateBlockVolumeIncrementRatio(count, 1)
       return calculateBlockMinimumProfitFactor(defaultPf, factor, volumeIncrement)
     })
-    expect(thresholds[0]).toBeCloseTo(0.96, 8)
-    expect(thresholds[9]).toBeCloseTo(9.6, 8)
+    expect(thresholds[0]).toBeCloseTo(1.16, 8)
+    expect(thresholds[9]).toBeCloseTo(2.6, 8)
     expect(new Set(thresholds).size).toBe(10)
-    expect(calculateBlockMinimumProfitFactor(defaultPf, 0.01, 1)).toBeCloseTo(0.24, 8)
-    expect(calculateBlockMinimumProfitFactor(defaultPf, 9, 1)).toBeCloseTo(6, 8)
+    expect(calculateBlockMinimumProfitFactor(defaultPf, 0.01, 1)).toBeCloseTo(1.04, 8)
+    expect(calculateBlockMinimumProfitFactor(defaultPf, 9, 1)).toBeCloseTo(2, 8)
   })
 
   test("never lets a mature Block lane replace a better normal rolling PF", () => {

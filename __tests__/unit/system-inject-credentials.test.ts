@@ -24,6 +24,7 @@ describe("production base-connection credential injection", () => {
       BYBIT_API_KEY: "bybit-live-key-1234567890",
       BYBIT_API_SECRET: "bybit-live-secret-1234567890",
       ADMIN_SECRET: "inject-test-admin-secret-1234567890",
+      V0_REDIS_SNAPSHOT_PATH: `/tmp/cts-system-inject-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
       // Queue persistence is what this route owns.  Keep the unit test out of
       // the in-process engine owner so it cannot start a background worker.
       NEXT_RUNTIME: "edge",
@@ -36,7 +37,7 @@ describe("production base-connection credential injection", () => {
     process.env = originalEnv
   })
 
-  it("injects both supported server venues and exposes their persisted live-ready state", async () => {
+  it("injects every supported credential but auto-enables only BingX Prod-VST", async () => {
     const [{ POST, GET }, { getRedisClient }] = await Promise.all([
       import("@/app/api/system/inject-credentials/route"),
       import("@/lib/redis-db"),
@@ -47,20 +48,24 @@ describe("production base-connection credential injection", () => {
     })
     const injected = await (await POST(request)).json()
     expect(injected.success).toBe(true)
-    expect(injected.results["bingx-x01"]).toContain("live trade enabled")
-    expect(injected.results["bybit-x03"]).toContain("live trade enabled")
+    expect(injected.results["bingx-x01"]).toContain("operator live/dashboard state preserved")
+    expect(injected.results["bybit-x03"]).toContain("operator live/dashboard state preserved")
     expect(injected.results["bingx-x02"]).toContain("Main Trade engine queued")
 
-    const status = await (await GET(request)).json()
-    expect(status.liveTradeReady).toEqual(expect.arrayContaining(["bingx-x01", "bingx-x02", "bybit-x03"]))
-    expect(status.database["bingx-x01"]).toMatchObject({ hasCredentials: true, liveTradeEnabled: true })
-    expect(status.database["bybit-x03"]).toMatchObject({ hasCredentials: true, liveTradeEnabled: true })
-
     const redis = getRedisClient()
+    await expect(redis.hgetall("connection:bingx-x01")).resolves.toMatchObject({
+      is_live_trade: "0",
+      live_trade_enabled: "0",
+      live_trade_requested: "0",
+      is_enabled_dashboard: "0",
+    })
+    const status = await (await GET(request)).json()
+    expect(status.database["bingx-x01"]).toMatchObject({ hasCredentials: true, liveTradeEnabled: false })
+    expect(status.database["bybit-x03"]).toMatchObject({ hasCredentials: true, liveTradeEnabled: false })
+    expect(status.liveTradeReady).toEqual(["bingx-x02"])
+
     await expect(redis.hgetall("connection:bybit-x03")).resolves.toMatchObject({
-      is_live_trade: "1",
-      live_trade_enabled: "1",
-      live_trade_requested: "1",
+      is_live_trade: "0",
       connection_method: "library",
       connection_library: "sdk",
     })
@@ -77,6 +82,39 @@ describe("production base-connection credential injection", () => {
       action: "start",
       reason: "production_vst_credential_injection",
     })
+    await expect(redis.smembers("connections:main:enabled")).resolves.not.toContain("bingx-x01")
+    await expect(redis.smembers("connections:main:enabled")).resolves.not.toContain("bybit-x03")
+  })
+
+  it("preserves an explicit operator live selection on a non-VST connection", async () => {
+    const [{ POST, GET }, { getRedisClient, initRedis }] = await Promise.all([
+      import("@/app/api/system/inject-credentials/route"),
+      import("@/lib/redis-db"),
+    ])
+    await initRedis()
+    const redis = getRedisClient()
+    await redis.hset("connection:bingx-x01", {
+      is_live_trade: "1",
+      live_trade_enabled: "1",
+      live_trade_requested: "1",
+      is_assigned: "1",
+      is_enabled_dashboard: "1",
+      state_switch_version: "0",
+    })
+
+    const request = new Request("http://localhost/api/system/inject-credentials", {
+      headers: { Authorization: "Bearer inject-test-admin-secret-1234567890" },
+    })
+    expect((await (await POST(request)).json()).success).toBe(true)
+    const status = await (await GET(request)).json()
+    expect(status.liveTradeReady).toEqual(expect.arrayContaining(["bingx-x01", "bingx-x02"]))
+    await expect(redis.hgetall("connection:bingx-x01")).resolves.toMatchObject({
+      is_live_trade: "1",
+      live_trade_enabled: "1",
+      live_trade_requested: "1",
+      is_enabled_dashboard: "1",
+    })
+    await expect(redis.smembers("connections:main:enabled")).resolves.toContain("bingx-x01")
   })
 
   it("rejects credential injection without the admin bearer token", async () => {

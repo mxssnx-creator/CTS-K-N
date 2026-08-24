@@ -31,7 +31,7 @@ case "$url" in
     # present. The supervisor must restart the scheduler, not the app.
     printf '%s' '{"system":{"continuity":{"last_tick_age_ms":200000,"last_tick_result":"ok","live_recovery":{"last_tick_age_ms":1000,"last_tick_result":"ok"},"direct_trade":{"last_tick_age_ms":1000,"recovery_requested":true}}}}'
     ;;
-  */api/trade-engine/direct-trade/status)
+  */api/trade-engine/direct-trade/status*)
     # An enabled worker with a stale heartbeat is restartable. The test proves
     # the recovery request changes only the reason, never the lease owner.
     printf '%s' '{"state":{"enabled":true},"openPositions":1,"processor":{"isHealthy":false}}'

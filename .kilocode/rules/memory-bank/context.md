@@ -3,9 +3,108 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
+## Binding continuation checkpoint (2026-08-24, current)
+
+- This section supersedes every older checkout/path statement below it. The
+  canonical persistent checkout is `/workspace/CTS-K-N`, branch
+  `feature/remote-direct-pf-v101`, based on
+  `c7d820c96190155c210ba52828e907c67303acf3`. The pruned
+  `/workspace/CTS-K-N-integration` path must not be used. Exact recovery inputs
+  are retained under `/workspace/backups/CTS-K-N/recovery-20260824T143009Z`.
+- The restored systemwide stability work is present in the canonical tree.
+  The current complete local gates pass 214 unit suites / 1,375 tests, 4
+  integration suites / 55 tests, repository-wide ESLint, TypeScript, a
+  zero-finding 1,497-file secret scan, Kilo 37/37 and Linux installer
+  preflights, and a trace-valid 42-page Next build with 347 complete trace
+  files. Redis schema and Kilo preflight expectations are v103. Do not discard the current
+  worktree: it contains the recovered source, tests, status scopes, PF policy,
+  BingX VST migration, coordination, and install/deployment contracts that
+  still need to be committed together after the full release gates.
+- A new exhaustive historic four-hour projection is being completed. It
+  counts every enabled indication/strategy config evaluation per symbol/window,
+  every indication alias, and every open/closed strategy result. Closed net
+  results use the canonical PositionCost coordinate
+  `1.00 + 0.10 × (Σ net PnL % / Σ PositionCost %)`: 1.00 is neutral and 1.10
+  is exactly +1 average PositionCost. PositionCost is not deducted again;
+  open positions never enter realised PnL/PF. Classic realised
+  gross-profit/gross-loss PF remains a separate field. The Connection Card
+  renders every fixed UTC four-hour row at the end of expanded details without
+  sampling. Nine direct feature tests plus the wider Historic/Redis suite pass,
+  and recreation manifests verify all 1,489 project files. The 32-symbol,
+  48-hour paper matrix evaluated 960,512 deterministic Direct-Trade Sets;
+  Block comparison evaluated 120,064 parent rows and 1,419,264 independent
+  Count rows. Async scheduling and supervisor recovery gates are also green.
+- Verified local checkpoints include
+  `/workspace/backups/CTS-K-N/20260824T-recovery-unit-green` and
+  `/workspace/backups/CTS-K-N/20260824T-before-four-hour-stats`. Each contains
+  a complete Git bundle, binary patch, untracked archive, HEAD/status and a
+  verified SHA-256 manifest. Continue making the same class of checkpoint
+  before commit/push/merge/deploy.
+- Local pinned tooling is activated by
+  `/workspace/.network-clients/activate-cts.sh`: Node 22.23.2, pnpm 10.28.1,
+  GitHub CLI 2.98.0, Chisel 1.12.0-rc2, Redis 8.10.1, agent-browser 0.34.0,
+  and Chrome for Testing 152.0.7977.54. Browser tooling has its own pinned
+  lockfile under `/workspace/.network-clients/agent-browser`; its archive and
+  binaries were integrity-checked. The local Work container denies the Unix
+  socket syscall Chrome/agent-browser needs, so the visual gate is scheduled
+  on the authorized Linux server after merged-main deployment. Dependencies were
+  restored with `pnpm install --frozen-lockfile` into the persistent store;
+  the lockfile was not changed.
+- The authorized server is `root@152.53.114.112`, production checkout
+  `/opt/cts-kn`. A verified pre-change backup exists at
+  `/var/backups/cts-kn/20260824T112655Z-pre-complete-software`. Chisel/SSH
+  material remains only in owner-protected local files and must never be
+  printed or committed. Chisel server/client and remote GitHub CLI are current;
+  the intentionally disabled broken git-sync timer must stay disabled.
+- Publish sequence remains mandatory: complete local gates; create a verified
+  pre-push backup; push the checked feature head; open PR; wait for all checks;
+  merge only the checked head; back up the server again; deploy merged `main`;
+  verify services/Redis/Chisel; then run only a minimum-volume virtual X02
+  Prod-VST lifecycle. X01/Mainnet and Bybit remain read-only. Restore X02's
+  pre-test baseline and retain sanitized evidence/rollback artifacts.
+
 ## Current State
 
 **Project Status**: ✅ Active production trading system with validated release branches
+
+## Authoritative maintenance checkpoint (2026-08-24)
+
+- This section supersedes older workspace/availability statements below it.
+  The persistent integration checkout is `/workspace/CTS-K-N-integration` on
+  branch `feature/remote-direct-pf-v101`. Its base is the clean recovered
+  remote commit `cc46330ed7dbba3bdceb9ef267b53736e7902c68`, which descends
+  from GitHub `main@d9cc80b00c567b8954cc86c021eb963d1fb96139`. The isolated
+  local-change checkpoint is `f7b6157`; `/workspace/CTS-K-N-current-main` and
+  `/workspace/CTS-K-N-active` are recovery inputs and must not be deployed over
+  the integration branch.
+- The current maintenance scope keeps the Direct-Trade scheduler at 280 ms,
+  adds an independently persisted minimum TP/PositionCost ratio for Trailing,
+  bounds the Direct volume control to 0.1–10 with a 0.1 default, verifies the
+  explicit system sizing ratio, and hardens production-preview restart port
+  ownership. These active defaults are migrated by Redis schema v101. No claim
+  of profitability is a release gate; exchange accounting,
+  ownership, protection, and deterministic correctness are.
+- Source, docs, and tests may be changed locally only on top of this verified
+  tree. Before publish: run unit/integration/type/lint/build, migration,
+  install/preflight, restart/recovery, UI, and connection-isolation gates;
+  then create a GitHub branch/PR and merge only the checked head.
+- The remote route is verified end-to-end through Chisel 1.11.8 with the
+  same-process inherited `HTTP_PROXY`: expected fingerprint, approximately
+  180–213 ms latency, strict SSH host-key verification, and root access to
+  `/opt/cts-kn`. The earlier authentication failure was traced to an obsolete
+  local auth file and disappeared after it was updated to the active persistent
+  server auth. The auth value itself remains outside Git. NetBird/Teleport are
+  optional fallbacks only. See `docs/REMOTE-CHISEL-WORKMODE.md`.
+- Remote `/opt/cts-kn` was clean at `cc46330e` before integration. A verified
+  Git/source/environment/systemd/Redis checkpoint exists at
+  `/var/backups/cts-kn/20260824T051626Z-pre-direct-pf-v101`. `.env` data,
+  exchange credentials, Redis state, and independent exchange positions/orders
+  remain server-side; only CTS-owned records and unique client IDs for the
+  selected connection may be reset or controlled.
+- Never commit or print Chisel auth, SSH private keys, exchange credentials,
+  Redis snapshots, raw account reports, or full credential-bearing service
+  command lines. Supply secrets only from owner-only files/environment at the
+  execution boundary.
 
 ## Continuity: Chisel Work-mode Connection Solution (2026-08-23/24)
 
@@ -31,9 +130,9 @@ Total output lines: 1636
   clean at merged main@9355a57, CTS services/NGINX/Redis/Chisel were active,
   the app answered on port 3002, and a protected source/environment/Redis
   backup was created under /var/backups/cts-kn/20260823T213831Z.
-- This checkpoint supersedes older notes that called the remote route
-  unavailable. Continue from the persistent checkout and this procedure in
-  new chats.
+- The route was reverified on 2026-08-24 with the current persistent auth and
+  used successfully for inventory, backup and source synchronization. Use the
+  authoritative checkpoint above and the updated remote guide.
 
 ## Current exact-settlement / Shared-Redis release checkpoint (2026-08-23)
 

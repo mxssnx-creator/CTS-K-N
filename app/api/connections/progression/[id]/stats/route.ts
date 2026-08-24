@@ -24,6 +24,7 @@ import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pn
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot"
 import { strategyVariantOutcomeKey } from "@/lib/pos-history"
+import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -139,6 +140,13 @@ async function responseFromVolatileStatsSnapshot(
       client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
       client.get(`engine_is_running:${connectionId}`).catch(() => null),
     ])
+    const historicFourHourKey = historicFourHourKeyFromPrehistoric(
+      (prehistoricRaw || {}) as Record<string, string>,
+      connectionId,
+    )
+    const historicFourHourRaw = historicFourHourKey
+      ? ((await client.hgetall(historicFourHourKey).catch(() => null)) || {}) as Record<string, string>
+      : null
     // `progressionReadKeys` is ordered by runtime authority.  Do not select
     // the first non-empty hash wholesale: a rolling migration can leave that
     // hash with only an old phase while the compatibility hash contains the
@@ -181,6 +189,9 @@ async function responseFromVolatileStatsSnapshot(
     // for the numeric counter overlay above.
     overlaid.settingsRecoordination = buildSettingsRecoordinationState(progression)
     overlaid.statsRecalculation = buildStatsRecalculationState(progression)
+    if (historicFourHourRaw) {
+      overlaid.historicFourHour = parseHistoricFourHourAggregate(historicFourHourRaw)
+    }
     return new Response(JSON.stringify(overlaid), {
       headers: snapshot.headers,
       status: snapshot.status,
@@ -448,9 +459,13 @@ function aggregateOrdersBySymbol(
     allowedSymbols?: ReadonlySet<string>,
   ): {
     counts: Record<string, number>
+    evaluated: Record<string, number>
     activeSets: Record<string, number>
   } {
     const counts: Record<string, number> = {
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
+    }
+    const evaluated: Record<string, number> = {
       direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const activeSets: Record<string, number> = {
@@ -468,29 +483,53 @@ function aggregateOrdersBySymbol(
       direction: false, move: false, active: false, active_advanced: false, special: false, optimal: false, auto: false, common: false, signal: false, trend: false,
     }
     for (const field of Object.keys(fields)) {
-      const idx = field.lastIndexOf(":")
-      if (idx <= 0) continue
-      const symbol = field.slice(0, idx).toUpperCase()
+      const firstColon = field.indexOf(":")
+      if (firstColon <= 0) continue
+      const symbol = field.slice(0, firstColon).toUpperCase()
       if (allowedSymbols && allowedSymbols.size > 0 && !allowedSymbols.has(symbol)) continue
-      const type = field.slice(idx + 1)
-      if (type in hasScopedField) hasScopedField[type] = true
+      const suffix = field.slice(firstColon + 1)
+      const metricColon = suffix.indexOf(":")
+      const type = metricColon > 0 ? suffix.slice(0, metricColon) : suffix
+      // Only the canonical "{symbol}:{type}" field marks the scoped
+      // qualified value as present. Metric suffixes such as :evaluated,
+      // :long and :short must not suppress a legacy qualified fallback.
+      if (metricColon < 0 && type in hasScopedField) hasScopedField[type] = true
     }
 
     for (const [field, raw] of Object.entries(fields)) {
-      const idx = field.lastIndexOf(":")
-      if (idx > 0) {
-        const symbol = field.slice(0, idx).toUpperCase()
+      const firstColon = field.indexOf(":")
+      let type = field
+      let metric = ""
+      if (firstColon > 0) {
+        const symbol = field.slice(0, firstColon).toUpperCase()
         if (allowedSymbols && allowedSymbols.size > 0 && !allowedSymbols.has(symbol)) continue
+        const suffix = field.slice(firstColon + 1)
+        const metricColon = suffix.indexOf(":")
+        type = metricColon > 0 ? suffix.slice(0, metricColon) : suffix
+        metric = metricColon > 0 ? suffix.slice(metricColon + 1) : ""
       }
-      const type = idx > 0 ? field.slice(idx + 1) : field
       if (!(type in counts)) continue
-      if (idx <= 0 && hasScopedField[type]) continue
+      if (firstColon <= 0 && hasScopedField[type]) continue
       const value = n(raw)
+      if (metric === "evaluated") {
+        evaluated[type] += value
+        continue
+      }
+      // Directional and any future diagnostic suffixes are orthogonal to the
+      // qualified/evaluated headline dimensions.
+      if (metric) continue
       counts[type] += value
       if (value > 0) activeSets[type] += 1
     }
 
-    return { counts, activeSets }
+    // A qualified row necessarily was evaluated. This compatibility floor
+    // also makes mixed/old deployments truthful until the first new writer
+    // cycle publishes explicit :evaluated fields.
+    for (const type of INDICATION_TYPES) {
+      evaluated[type] = Math.max(evaluated[type], counts[type])
+    }
+
+    return { counts, evaluated, activeSets }
   }
 
   /**
@@ -533,6 +572,17 @@ function aggregateOrdersBySymbol(
   function stableString(v: unknown): string {
     if (v === undefined || v === null) return ""
     return String(v).trim()
+  }
+
+  function historicFourHourKeyFromPrehistoric(
+    prehistoric: Record<string, string>,
+    connectionId: string,
+  ): string {
+    const prefix = `historic:aggregate:${connectionId}:four-hour:`
+    const pointer = stableString(prehistoric.historic_four_hour_key)
+    if (pointer.startsWith(prefix)) return pointer
+    const generation = stableString(prehistoric.historic_four_hour_generation)
+    return generation ? `${prefix}${generation}` : ""
   }
 
   function progressionSettingsVersion(hash: Record<string, any> | null | undefined): string {
@@ -859,6 +909,17 @@ export async function GET(
     const unscopedProgressionUsable = activeProgressionKey === scope.legacyProgressionKey || fallbackMatchesActive(progHash, legacyProgHash)
     const prehistoricHash: Record<string, string> = prehistoricHashRaw || {}
     const realtimeHash: Record<string, string>   = realtimeHashRaw   || {}
+    // Constrain the engine-owned pointer to this connection's namespace so a
+    // malformed/imported hash cannot turn the endpoint into an arbitrary-key
+    // reader. The generation field is a rolling-upgrade fallback.
+    const historicFourHourKey = historicFourHourKeyFromPrehistoric(
+      prehistoricHash,
+      connectionId,
+    )
+    const historicFourHourHash = historicFourHourKey
+      ? ((await client.hgetall(historicFourHourKey).catch(() => null)) || {}) as Record<string, string>
+      : {}
+    const historicFourHour = parseHistoricFourHourAggregate(historicFourHourHash)
     const axisWindowsHash: Record<string, string> = (axisWindowsHashRaw as unknown as Record<string, string>) || {}
     const ordersBySymbolHash: Record<string, string> = (ordersBySymbolRaw as unknown as Record<string, string>) || {}
     const hedgePosAccHash: Record<string, string> = (hedgePosAccHashRaw as unknown as Record<string, string>) || {}
@@ -1666,6 +1727,9 @@ export async function GET(
     const activeIndByType: Record<string, number> = {
       direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
+    const activeIndEvaluatedByType: Record<string, number> = {
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
+    }
     const activeStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
     }
@@ -1721,22 +1785,40 @@ export async function GET(
     // Hoisted so the raw hash is accessible in the return block for `strategiesActive`.
     let stratActiveHash: Record<string, string> | null = null
     try {
-      const [indActiveHash, _stratActiveHash] = await Promise.all([
+      const [indActiveHash, indSetActiveHash, _stratActiveHash] = await Promise.all([
         client.hgetall(`indications_active:${connectionId}`).catch(() => null),
+        client.hgetall(`indication_sets_active:${connectionId}`).catch(() => null),
         client.hgetall(`strategies_active:${connectionId}`).catch(() => null),
       ])
       // Persist for outer-scope access (strategiesActive in return object).
       stratActiveHash = (_stratActiveHash && typeof _stratActiveHash === "object")
         ? (_stratActiveHash as Record<string, string>)
         : null
-      if (indActiveHash && typeof indActiveHash === "object") {
-        const snapshot = aggregateIndicationSnapshot(
-          indActiveHash as Record<string, string>,
+      if (
+        (indActiveHash && typeof indActiveHash === "object") ||
+        (indSetActiveHash && typeof indSetActiveHash === "object")
+      ) {
+        const rawSnapshot = aggregateIndicationSnapshot(
+          indActiveHash as Record<string, string> | null,
+          activeStatsSymbolFilter,
+        )
+        const setSnapshot = aggregateIndicationSnapshot(
+          indSetActiveHash as Record<string, string> | null,
           activeStatsSymbolFilter,
         )
         for (const type of INDICATION_TYPES) {
-          activeIndByType[type] = snapshot.counts[type] || 0
-          activeSetsIndByType[type] = snapshot.activeSets[type] || 0
+          activeIndByType[type] = Math.max(
+            rawSnapshot.counts[type] || 0,
+            setSnapshot.counts[type] || 0,
+          )
+          activeIndEvaluatedByType[type] = Math.max(
+            activeIndByType[type],
+            setSnapshot.evaluated[type] || 0,
+          )
+          activeSetsIndByType[type] = Math.max(
+            rawSnapshot.activeSets[type] || 0,
+            setSnapshot.activeSets[type] || 0,
+          )
         }
       }
       if (stratActiveHash && typeof stratActiveHash === "object") {
@@ -1825,6 +1907,7 @@ export async function GET(
       }
     } catch { /* non-critical: dashboard falls back to cumulative */ }
     const activeIndTotal = Object.values(activeIndByType).reduce((s, v) => s + v, 0)
+    const activeIndEvaluatedTotal = Object.values(activeIndEvaluatedByType).reduce((s, v) => s + v, 0)
     // Pipeline-aware total: use REAL final output, not the sum of parent and
     // derived stage populations.
     let activeStratTotal = activeStratByStage.real || strategiesTotal
@@ -2381,6 +2464,14 @@ export async function GET(
     // Typed as Record<string, unknown> to allow the Real stage to include
     // the hedgePosAcc nested object alongside the flat number fields.
     const stratDetail: Record<string, Record<string, unknown>> = {}
+    // A per-symbol row is useful as a global stage snapshot only after every
+    // symbol in the current selection has reported the same cycle. Showing
+    // the one freshly completed symbol while the remaining symbols are still
+    // running makes its validated rows look like the complete total.
+    const expectedStageSymbolCount = Math.max(
+      activeStatsSymbolFilter.size,
+      historicSymbolsTotal,
+    )
 
     // Track stale-symbol fields for opportunistic pruning. Without this,
     // every symbol ever evaluated (incl. ones removed from the basket
@@ -2452,31 +2543,35 @@ export async function GET(
         }
         if (staleFields.length > 0) staleFieldsByKey.set(detailKey, staleFields)
 
-        // ── Field reads: prefer per-symbol cross-sum; fall back to legacy.
+        // ── Field reads: per-symbol cross-sum is the only current source.
         // The legacy fields (overwritten on every (symbol, cycle)) are
         // wrong when N>1 symbols are processed because the LAST symbol's
-        // values are what the dashboard sees. Per-symbol fields fix that.
-        const useCross = freshSymbols > 0
-        const createdSets       = useCross
-          ? symCreated
-          : n(dh.created_sets      || progHash[`strategy_${stage}_created_sets`])
+        // values are what the dashboard sees. They are retained for old
+        // exports, but must never be presented as a current stage snapshot
+        // when no fresh per-symbol row exists.
+        const useCross = freshSymbols > 0 && (
+          expectedStageSymbolCount <= 0 || freshSymbols >= expectedStageSymbolCount
+        )
+        const createdSets       = useCross ? symCreated : 0
         const avgPosPerSet      = useCross && weightSum > 0
           ? weightedPPS / weightSum
-          : parseFloat(dh.avg_pos_per_set      || progHash[`strategy_${stage}_avg_pos_per_set`]      || "0")
+          : 0
         const avgProfitFactor   = useCross && weightSum > 0
           ? weightedPF / weightSum
-          : parseFloat(dh.avg_profit_factor    || progHash[`strategy_${stage}_avg_profit_factor`]    || "0")
-        const avgProcessingMs   = parseFloat(dh.avg_processing_ms    || progHash[`strategy_${stage}_avg_processing_ms`]    || "0")
+          : 0
+        const avgProcessingMs   = useCross
+          ? parseFloat(dh.avg_processing_ms || progHash[`strategy_${stage}_avg_processing_ms`] || "0")
+          : 0
         // Average position evaluation score for Real stage (stored by strategy-coordinator)
         const avgPosEvalReal    = useCross && weightSum > 0
           ? weightedPER / weightSum
-          : parseFloat(dh.avg_pos_eval_real    || progHash[`strategy_${stage}_avg_pos_eval_real`]    || "0")
+          : 0
         // Count of positions that contributed to avgPosEvalReal (only meaningful for Real stage)
-        const countPosEval      = n(dh.count_pos_eval || progHash[`strategy_${stage}_count_pos_eval`])
+        const countPosEval      = useCross ? symEvaluated : 0
         // Drawdown time (avg minutes from strategy sets)
         const avgDrawdownTime   = useCross && weightSum > 0
           ? weightedDDT / weightSum
-          : parseFloat(dh.avg_drawdown_time    || progHash[`strategy_${stage}_avg_drawdown_time`]    || "0")
+          : 0
 
         // Eval percentage per stage:
         //   base:  100% — Base self-evaluates all its sets (no filter).
@@ -2484,9 +2579,10 @@ export async function GET(
         //   real:  evaluated/main, capped at 100 (filter: N main → M real).
         //   live:  evaluated/real, capped at 100 (filter: M real → K live).
         let evalPct = 0
-        if (stage === "base") {
-          // createdSets may be 0 if dh.created_sets absent; use stratCounts.base fallback
-          evalPct = (createdSets > 0 || (stratCounts.base || 0) > 0) ? 100 : 0
+        if (!useCross) {
+          evalPct = 0
+        } else if (stage === "base") {
+          evalPct = createdSets > 0 ? 100 : 0
         } else if (stage === "main") {
           const base = stratCounts.base || 1
           const raw = base > 0 ? (stratEvaluated.main / base) * 100 : 0
@@ -2505,29 +2601,15 @@ export async function GET(
           : 0
 
         // ── evaluated / passed / passRatio ───���────────────────────────
-        // Source priority:
-        //   1. Per-symbol cross-sum (symEvaluated / symPassed) when fresh.
-        //   2. Legacy dh.evaluated / dh.passed_sets — only trust when > 1
-        //      (value of "1" means stale single-symbol last-write).
-        //   3. Standalone Redis keys (stratEvaluated / stratCounts) written
-        //      every coordinator cycle with the correct semantics.
-        const stageEvaluatedRaw = useCross
-          ? symEvaluated
-          : n(dh.evaluated) > 1 ? n(dh.evaluated) : 0
-        const stageEvaluated = stageEvaluatedRaw
-          || stratEvaluated[stage]
-          || stratCounts[stage]
-          || 0
+        // Current stage totals must be complete per-symbol sums. A legacy
+        // aggregate is a last-symbol value and can make both X01 and X02
+        // display thousands of validated rows from a stale run.
+        const stageEvaluated = useCross ? symEvaluated : 0
 
         // passed = sets that advanced to the next stage.
         // Expansion stages (BASE/MAIN): all sets pass → fall back to stageEvaluated.
         // Filter stages (REAL): output count = stratCounts.real.
-        const stagePassedRaw = useCross
-          ? symPassed
-          : n(dh.passed_sets || progHash[`strategy_${stage}_passed`])
-        const stagePassedUnbounded = stagePassedRaw > 0
-          ? stagePassedRaw
-          : stratCounts[stage] || 0
+        const stagePassedUnbounded = useCross ? symPassed : 0
         const stagePassed = stageEvaluated > 0
           ? Math.min(stagePassedUnbounded, stageEvaluated)
           : 0
@@ -2536,7 +2618,7 @@ export async function GET(
         // but cross-validate it against the actual counted values.
         // If pass_rate * stageEvaluated diverges from stagePassed by more
         // than 10%, the hash is stale from a prior cycle — recompute.
-        const passRatioRaw = parseFloat(dh.pass_rate || "0")
+        const passRatioRaw = useCross ? parseFloat(dh.pass_rate || "0") : 0
         const passRatioFromRate = passRatioRaw > 0
           ? Math.min(100, Math.round(passRatioRaw * 1000) / 10)
           : 0
@@ -2564,18 +2646,17 @@ export async function GET(
         // (SCARD of active_config_keys) because that is the source the coordinator
         // writes from — the detail hash `sets_running_now` field is only written
         // periodically and may lag on a fresh boot.
-        const setsRunningNowRaw = n(dh.sets_running_now || dh.sets_with_open_positions)
-        const setsRunningNow = setsRunningNowRaw
+        const setsRunningNow = useCross ? symRunning : 0
         // setsProgressing: how many sets have entries/positions building up.
         // Fall back to setsRunningNow (sets with open pseudo-positions) NOT
         // createdSets (lifetime total) — createdSets inflates to 9000+ and is
         // not meaningful as a "currently progressing" metric.
-        const setsProgressing = n(dh.sets_progressing) || setsRunningNow
+        const setsProgressing = useCross ? symProgressing : 0
 
         stratDetail[stage] = {
           avgPosPerSet:        isFinite(avgPosPerSet)    ? Math.round(avgPosPerSet * 100) / 100      : 0,
           createdSets,
-          entriesCount:        n(dh.entries_total || dh.entries_count),
+          entriesCount:        useCross ? symEntries : 0,
           avgProfitFactor:     isFinite(avgProfitFactor) ? Math.round(avgProfitFactor * 1000) / 1000 : 0,
           avgProcessingTimeMs: isFinite(avgProcessingMs) ? Math.round(avgProcessingMs * 10) / 10     : 0,
           avgPosEvalReal:      isFinite(avgPosEvalReal)  ? Math.round(avgPosEvalReal * 1000) / 1000  : 0,
@@ -2931,35 +3012,48 @@ export async function GET(
         total += n(hash[`s:${symbol}:${field}`])
         samples++
       }
-      return samples > 0 ? total : n(hash[field] ?? hash[legacyField])
+      // Do not fall back to the last-symbol legacy field. That value is not a
+      // current cross-symbol snapshot and would make stale validation counts
+      // look authoritative on every exchange card.
+      return samples > 0 ? total : 0
     }
     const baseRowCoverage = summarizeStageRowCoverage(strategyDetailBaseHash)
     const mainRowCoverage = summarizeStageRowCoverage(strategyDetailMainHash)
     const realRowCoverage = summarizeStageRowCoverage(strategyDetailRealHash)
     const liveRowCoverage = summarizeStageRowCoverage(strategyDetailLiveHash)
+    const aggregateCompleteFreshRowField = (
+      hash: Record<string, string>,
+      field: string,
+      legacyField: string,
+    ): number => {
+      const coverage = summarizeStageRowCoverage(hash)
+      return coverage.complete
+        ? aggregateFreshRowField(hash, field, legacyField)
+        : 0
+    }
     const currentOpenRowField = (
       hash: Record<string, string>,
       field: string,
       legacyField: string,
-    ): number => engineIsStopped ? 0 : aggregateFreshRowField(hash, field, legacyField)
+    ): number => engineIsStopped ? 0 : aggregateCompleteFreshRowField(hash, field, legacyField)
     const ratio = (numerator: number, denominator: number, cap = true): number => {
       if (!(denominator > 0)) return 0
       const value = Math.round((numerator / denominator) * 1000) / 10
       return cap ? Math.min(100, value) : value
     }
-    const baseRowTotal = aggregateFreshRowField(strategyDetailBaseHash, "row_total", "created_sets")
-    const baseRowValid = aggregateFreshRowField(strategyDetailBaseHash, "row_valid", "passed_sets")
-    const mainRowValid = aggregateFreshRowField(strategyDetailMainHash, "row_valid", "parent_sets_passed")
-    const mainRowOverall = aggregateFreshRowField(strategyDetailMainHash, "row_overall", "created_sets")
-    const realRowValid = aggregateFreshRowField(strategyDetailRealHash, "row_valid", "created_sets")
-    const realRowActive = aggregateFreshRowField(strategyDetailRealHash, "row_active", "sets_running_now")
-    const realRowEvaluated = aggregateFreshRowField(strategyDetailRealHash, "row_real_evaluated", "evaluated")
-    const realRowRejected = aggregateFreshRowField(strategyDetailRealHash, "row_real_rejected", "row_real_rejected")
-    const liveRowTotal = aggregateFreshRowField(strategyDetailLiveHash, "row_total", "evaluated")
-    const liveRowMirrored = aggregateFreshRowField(strategyDetailLiveHash, "row_mirrored", "created_sets")
-    const liveRowBlockCreated = aggregateFreshRowField(strategyDetailLiveHash, "row_live_block_created", "row_live_block_created")
-    const liveRowBlockValid = aggregateFreshRowField(strategyDetailLiveHash, "row_live_block_valid", "row_live_block_valid")
-    const liveRowExecutable = aggregateFreshRowField(strategyDetailLiveHash, "row_live_executable", "created_sets")
+    const baseRowTotal = aggregateCompleteFreshRowField(strategyDetailBaseHash, "row_total", "created_sets")
+    const baseRowValid = aggregateCompleteFreshRowField(strategyDetailBaseHash, "row_valid", "passed_sets")
+    const mainRowValid = aggregateCompleteFreshRowField(strategyDetailMainHash, "row_valid", "parent_sets_passed")
+    const mainRowOverall = aggregateCompleteFreshRowField(strategyDetailMainHash, "row_overall", "created_sets")
+    const realRowValid = aggregateCompleteFreshRowField(strategyDetailRealHash, "row_valid", "created_sets")
+    const realRowActive = aggregateCompleteFreshRowField(strategyDetailRealHash, "row_active", "sets_running_now")
+    const realRowEvaluated = aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_evaluated", "evaluated")
+    const realRowRejected = aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_rejected", "row_real_rejected")
+    const liveRowTotal = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_total", "evaluated")
+    const liveRowMirrored = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_mirrored", "created_sets")
+    const liveRowBlockCreated = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_block_created", "row_live_block_created")
+    const liveRowBlockValid = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_block_valid", "row_live_block_valid")
+    const liveRowExecutable = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_executable", "created_sets")
     const blockWork = {
       logicalEmitted: 0,
       materialized: 0,
@@ -2983,6 +3077,12 @@ export async function GET(
       else blockWork.batchSize = Math.max(blockWork.batchSize, value)
     }
     blockWork.activeSymbols = blockWorkSymbols.size
+    if (!realRowCoverage.complete) {
+      blockWork.logicalEmitted = 0
+      blockWork.materialized = 0
+      blockWork.batchSize = 0
+      blockWork.activeSymbols = 0
+    }
     const strategyRows = {
       base: {
         total: baseRowTotal,
@@ -3010,27 +3110,27 @@ export async function GET(
         evaluated: realRowEvaluated,
         rejected: realRowRejected,
         validRatio: ratio(realRowValid, realRowEvaluated),
-        qualifiedBeforeMaterialization: aggregateFreshRowField(
+        qualifiedBeforeMaterialization: aggregateCompleteFreshRowField(
           strategyDetailRealHash,
           "qualified_before_materialization",
           "qualified_sets_before_materialization",
         ),
-        materializationCeiling: aggregateFreshRowField(
+        materializationCeiling: aggregateCompleteFreshRowField(
           strategyDetailRealHash,
           "materialization_ceiling",
           "materialization_ceiling",
         ),
-        materializationTruncated: aggregateFreshRowField(
+        materializationTruncated: aggregateCompleteFreshRowField(
           strategyDetailRealHash,
           "materialization_truncated",
           "materialization_truncated",
         ),
-        materializationActivePreserved: aggregateFreshRowField(
+        materializationActivePreserved: aggregateCompleteFreshRowField(
           strategyDetailRealHash,
           "materialization_active_preserved",
           "materialization_active_preserved",
         ),
-        materializationFamiliesPreserved: aggregateFreshRowField(
+        materializationFamiliesPreserved: aggregateCompleteFreshRowField(
           strategyDetailRealHash,
           "materialization_families_preserved",
           "materialization_families_preserved",
@@ -3051,7 +3151,7 @@ export async function GET(
         executablePerRow: ratio(liveRowExecutable, liveRowTotal, false),
       },
       updatedAt: [baseRowCoverage, mainRowCoverage, realRowCoverage]
-        .every((stage) => stage.oldestUpdatedAt > 0)
+        .every((stage) => stage.complete && stage.oldestUpdatedAt > 0)
         ? Math.min(
             baseRowCoverage.oldestUpdatedAt,
             mainRowCoverage.oldestUpdatedAt,
@@ -3104,6 +3204,7 @@ export async function GET(
     } => {
       const FRESH_MS = 5 * 60 * 1000
       const nowMs = Date.now()
+      const coverage = summarizeStageRowCoverage(dh)
       let symCreated = 0, symEntries = 0, symRunning = 0
       let weightedPF = 0, weightedDDT = 0, weightedPPS = 0, weightedPER = 0
       let weightSum = 0, totalRunning = 0
@@ -3122,6 +3223,7 @@ export async function GET(
         const sApps         = nf(dh[`s:${symbol}:apps`], 2)
         const sAper        = nf(dh[`s:${symbol}:aper`], 4)
         detail.push({ symbol, created: sCreated, entries: sEntries, running: sRunning, avgProfitFactor: sApf, avgDrawdownTime: sAddt, avgPosPerSet: sApps, avgPosEval: sAper, fresh })
+        if (!fresh) continue
         symCreated  += sCreated
         symEntries  += sEntries
         symRunning  += sRunning
@@ -3137,14 +3239,17 @@ export async function GET(
       detail.sort((a, b) => b.created - a.created)
       return {
         aggregated: {
-          symbolCount:       detail.length,
-          totalCreated:      symCreated,
-          totalEntries:      symEntries,
-          totalRunning:      totalRunning,
-          avgProfitFactor:   weightSum > 0 ? Math.round((weightedPF  / weightSum) * 1000) / 1000 : 0,
-          avgDrawdownTime:   weightSum > 0 ? Math.round((weightedDDT / weightSum) * 10)  / 10    : 0,
-          avgPosPerSet:      weightSum > 0 ? Math.round((weightedPPS / weightSum) * 100)  / 100   : 0,
-          avgPosEval:        weightSum > 0 ? Math.round((weightedPER / weightSum) * 10000) / 10000 : 0,
+          // A partial symbol set is diagnostic detail, not a global stage
+          // result. Keep the per-symbol rows available while withholding
+          // totals/PF until the current selection is fully covered.
+          symbolCount:       coverage.complete ? detail.length : 0,
+          totalCreated:      coverage.complete ? symCreated : 0,
+          totalEntries:      coverage.complete ? symEntries : 0,
+          totalRunning:      coverage.complete ? totalRunning : 0,
+          avgProfitFactor:   coverage.complete && weightSum > 0 ? Math.round((weightedPF  / weightSum) * 1000) / 1000 : 0,
+          avgDrawdownTime:   coverage.complete && weightSum > 0 ? Math.round((weightedDDT / weightSum) * 10)  / 10    : 0,
+          avgPosPerSet:      coverage.complete && weightSum > 0 ? Math.round((weightedPPS / weightSum) * 100)  / 100   : 0,
+          avgPosEval:        coverage.complete && weightSum > 0 ? Math.round((weightedPER / weightSum) * 10000) / 10000 : 0,
         },
         detail: detail.slice(0, 200), // cap at 200 rows for response size
       }
@@ -3618,7 +3723,7 @@ export async function GET(
           "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
           "leveragePercentage", "useMaximalLeverage",
           "is_live_trade", "is_preset_trade",
-          "baseProfitFactor", "blockOnly", "variantBlockOnly", "block_only",
+          "baseProfitFactor", "normalEnabled", "blockOnly", "variantBlockOnly", "block_only",
         ] as const
         for (const f of CONN_FIELDS) {
           const v = (vcConn as Record<string, unknown>)[f]
@@ -3647,9 +3752,8 @@ export async function GET(
       "base",
       stageOverviewSettings.baseProfitFactor ?? (connection as any)?.baseProfitFactor,
     )
-    const blockOnlyRaw = stageOverviewSettings.blockOnly ??
-      stageOverviewSettings.variantBlockOnly ??
-      stageOverviewSettings.block_only
+    const normalEnabledRaw = stageOverviewSettings.normalEnabled ??
+      stageOverviewSettings.normal_enabled
     const connectionStageOverview = buildConnectionStageOverview({
       base: {
         totalOpen: strategyRows.base.totalOpen,
@@ -3660,8 +3764,8 @@ export async function GET(
         validOpen: strategyRows.main.validOpen,
         overallOpen: strategyRows.main.overallOpen,
         breakdown: strategyRows.main.breakdown,
-        blockOnly: [true, 1, "1", "true", "yes", "on"].includes(
-          typeof blockOnlyRaw === "string" ? blockOnlyRaw.toLowerCase() : blockOnlyRaw as any,
+        normalEnabled: ![false, 0, "0", "false", "off", "no"].includes(
+          typeof normalEnabledRaw === "string" ? normalEnabledRaw.toLowerCase() : normalEnabledRaw as any,
         ),
       },
       real: {
@@ -3680,7 +3784,7 @@ export async function GET(
         real: {
           valid: realRowValid,
           active: realRowActive,
-          activeExactSets: aggregateFreshRowField(
+          activeExactSets: aggregateCompleteFreshRowField(
             strategyDetailRealHash,
             "row_active_exact",
             "sets_running_now",
@@ -3765,6 +3869,10 @@ export async function GET(
           strategyChurnCycles:   churnStrategyCycles,
         },
       },
+
+      // Exhaustive historic calculation rows in fixed UTC four-hour windows.
+      // The PositionCost coordinate and classic realised PF are separate.
+      historicFourHour,
 
 
       realtime: {
@@ -3941,6 +4049,19 @@ export async function GET(
           signal:         activeIndByType.signal           || 0,
           trend:          activeIndByType.trend            || 0,
           total:          activeIndTotal,
+        },
+        indicationsEvaluated: {
+          direction:      activeIndEvaluatedByType.direction        || 0,
+          move:           activeIndEvaluatedByType.move             || 0,
+          active:         activeIndEvaluatedByType.active           || 0,
+          activeAdvanced: activeIndEvaluatedByType.active_advanced  || 0,
+          special:        activeIndEvaluatedByType.special          || 0,
+          optimal:        activeIndEvaluatedByType.optimal          || 0,
+          auto:           activeIndEvaluatedByType.auto             || 0,
+          common:         activeIndEvaluatedByType.common           || 0,
+          signal:         activeIndEvaluatedByType.signal           || 0,
+          trend:          activeIndEvaluatedByType.trend            || 0,
+          total:          activeIndEvaluatedTotal,
         },
         strategies: {
           base:  activeStratByStage.base  || 0,

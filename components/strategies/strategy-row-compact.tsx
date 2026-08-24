@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { StrategyResult } from "@/lib/strategies"
+import { MAIN_TRADE_PF_RATIO_MAX } from "@/lib/main-trade-profit-factor"
 
 interface StrategyRowCompactProps {
   strategy: StrategyResult
@@ -16,7 +17,7 @@ interface StrategyRowCompactProps {
 }
 
 // Mini bar chart - renders horizontally in compact form
-function MiniBarChart({ factor, min = 0, max = 2.2 }: { factor: number; min?: number; max?: number }) {
+function MiniBarChart({ factor, min = 0, max = MAIN_TRADE_PF_RATIO_MAX }: { factor: number; min?: number; max?: number }) {
   const normalized = ((factor - min) / (max - min)) * 100
   // This UI field is the Main-stage PositionCost coordinate: 1.00 is
   // neutral.  It is not a signed PnL field, so a value below one is shown as

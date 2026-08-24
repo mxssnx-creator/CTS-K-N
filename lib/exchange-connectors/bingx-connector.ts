@@ -113,6 +113,12 @@ export class BingXConnector extends BaseExchangeConnector {
   private static readonly NOT_FOUND_SOFT_COOLDOWN_MS = 90_000
   private static readonly openOrdersSnapshotTtlMs = 15_000
   private static readonly openOrdersSnapshotCache = new Map<string, { orders: any[]; at: number }>()
+  /**
+   * Stable, non-secret namespace for private API caches. X01 and X02 run in
+   * the same process, so a cache keyed only by symbol lets one account's
+   * order snapshot leak into the other's reconciliation cycle.
+   */
+  private readonly accountCacheScope: string
 
   private lastOperationTransport = new Map<string, {
     transport: "bingx-api" | "signed-rest-fallback"
@@ -163,15 +169,19 @@ export class BingXConnector extends BaseExchangeConnector {
    * failure.
    */
   private invalidateOpenOrdersSnapshot(symbol?: string): void {
-    BingXConnector.openOrdersSnapshotCache.delete("__all__")
+    BingXConnector.openOrdersSnapshotCache.delete(this.openOrdersCacheKey())
     if (symbol) {
-      BingXConnector.openOrdersSnapshotCache.delete(this.toBingXSymbol(symbol))
+      BingXConnector.openOrdersSnapshotCache.delete(this.openOrdersCacheKey(symbol))
     }
     this.lastOpenOrdersSnapshotStatus = {
       ok: false,
       at: Date.now(),
       error: "invalidated_after_order_mutation",
     }
+  }
+
+  private openOrdersCacheKey(symbol?: string): string {
+    return `${this.accountCacheScope}:${symbol ? this.toBingXSymbol(symbol) : "__all__"}`
   }
   // ── Native bingx-api package client ───────────────────────────────────────
   // The library path is the default for supported mainnet-swap calls. The
@@ -189,6 +199,9 @@ export class BingXConnector extends BaseExchangeConnector {
   private static sharedTimeOffset: number = 0
   private static sharedLastSync:   number = 0
   private static sharedSyncPromise: Promise<void> | null = null
+  private static sharedTimestampCandidate: number = Number.NaN
+  private static sharedTimestampSequence: number = 0
+  private static sharedLastIssuedTimestamp: number = Number.NaN
   private static lastSyncFailLogTs: number = 0
   private static lastTransportFailLogTs: number = 0
   private static lastSdkFallbackLogTs: number = 0
@@ -228,6 +241,13 @@ export class BingXConnector extends BaseExchangeConnector {
 
   constructor(credentials: ExchangeCredentials, exchange: string = "bingx") {
     super(credentials, exchange)
+    const environment = bingXEnvironmentForTestnetFlag(credentials.isTestnet)
+    const accountDigest = crypto
+      .createHash("sha256")
+      .update(String(credentials.apiKey || "missing"))
+      .digest("hex")
+      .slice(0, 16)
+    this.accountCacheScope = `${environment}:${accountDigest}`
     
     // Initialize the native library client. The import remains dynamic so Edge
     // bundles never evaluate its Node/NestJS dependency tree.
@@ -545,7 +565,24 @@ export class BingXConnector extends BaseExchangeConnector {
     // timestamp and rejects any decimal value as code 100421 "timestamp
     // mismatch" — this was the true cause of the persistent failures, not the
     // clock offset itself.
-    return Math.floor(Date.now() + offset - this.timestampLagMs)
+    const candidate = Math.floor(Date.now() + offset - this.timestampLagMs)
+
+    // A 100421 recovery can complete inside the same millisecond and produce
+    // exactly the timestamp/signature pair that BingX just rejected. Keep
+    // same-candidate requests unique by moving only toward the safe (older)
+    // side of the venue clock. The 60s recvWindow easily absorbs this bounded
+    // sub-millisecond-burst sequence, while we never risk future-dating a
+    // request merely to make a retry distinct.
+    if (candidate === BingXConnector.sharedTimestampCandidate) {
+      BingXConnector.sharedTimestampSequence += 1
+    } else {
+      BingXConnector.sharedTimestampCandidate = candidate
+      BingXConnector.sharedTimestampSequence = 0
+    }
+    let timestamp = candidate - BingXConnector.sharedTimestampSequence
+    if (timestamp === BingXConnector.sharedLastIssuedTimestamp) timestamp -= 1
+    BingXConnector.sharedLastIssuedTimestamp = timestamp
+    return timestamp
   }
 
   /**
@@ -1082,7 +1119,7 @@ export class BingXConnector extends BaseExchangeConnector {
       // Placing an order invalidates any negative-cache entry for its
       // clientOrderId — after placement the order exists (or is about to),
       // so stale "not found" entries would mislead recovery queries.
-      BingXConnector.clearNotFoundCache(symbol, options?.clientOrderId)
+      this.clearNotFoundCache(symbol, options?.clientOrderId)
       // Validate and canonicalise before either transport sees the order. The
       // SDK used to run before this guard, allowing invalid/sub-step amounts
       // to reach BingX while only the REST path rejected them.
@@ -1418,7 +1455,7 @@ export class BingXConnector extends BaseExchangeConnector {
     const release = await this.acquireBingxSlot("placeStopOrder")
     try {
       // See placeOrder: placement invalidates stale not-found cache entries.
-      BingXConnector.clearNotFoundCache(symbol, options?.clientOrderId)
+      this.clearNotFoundCache(symbol, options?.clientOrderId)
       // Sync server time before any signed request
       await this.syncServerTime()
 
@@ -1661,7 +1698,7 @@ export class BingXConnector extends BaseExchangeConnector {
       // A preceding authoritative lookup may already have proved that this
       // exact venue order is absent. Cancellation is idempotent, so do not
       // spend another BingX not-found response on the same retired control id.
-      if (BingXConnector.isNotFoundCached(symbol, orderId)) {
+      if (this.isNotFoundCached(symbol, orderId)) {
         this.markOperationTransport("cancelOrder", "signed-rest-fallback", "order already absent (negative cache)")
         this.invalidateOpenOrdersSnapshot(symbol)
         return { success: true }
@@ -1882,8 +1919,8 @@ export class BingXConnector extends BaseExchangeConnector {
   private recordBingxOrderNotFound(operation: string, symbol?: string, orderId?: string, clientOrderId?: string): void {
     const now = Date.now()
     if (symbol && (orderId || clientOrderId)) {
-      if (orderId) BingXConnector.bingxNotFoundCache.set(`${symbol}:oid:${orderId}`, now + BingXConnector.NOT_FOUND_CACHE_TTL_MS)
-      if (clientOrderId) BingXConnector.bingxNotFoundCache.set(`${symbol}:coid:${clientOrderId}`, now + BingXConnector.NOT_FOUND_CACHE_TTL_MS)
+      if (orderId) BingXConnector.bingxNotFoundCache.set(this.notFoundCacheKey(symbol, "oid", orderId), now + BingXConnector.NOT_FOUND_CACHE_TTL_MS)
+      if (clientOrderId) BingXConnector.bingxNotFoundCache.set(this.notFoundCacheKey(symbol, "coid", clientOrderId), now + BingXConnector.NOT_FOUND_CACHE_TTL_MS)
     }
     const cutoff = now - BingXConnector.NOT_FOUND_WINDOW_MS
     BingXConnector.bingxNotFoundTimestamps = BingXConnector.bingxNotFoundTimestamps.filter((t) => t > cutoff)
@@ -1906,11 +1943,15 @@ export class BingXConnector extends BaseExchangeConnector {
    * is still inside the negative-cache TTL — the caller should short-circuit
    * instead of re-polling BingX for an order we know is gone.
    */
-  private static isNotFoundCached(symbol: string, orderId?: string, clientOrderId?: string): boolean {
+  private notFoundCacheKey(symbol: string, kind: "oid" | "coid", id: string): string {
+    return `${this.accountCacheScope}:${symbol}:${kind}:${id}`
+  }
+
+  private isNotFoundCached(symbol: string, orderId?: string, clientOrderId?: string): boolean {
     const now = Date.now()
     const keys: string[] = []
-    if (orderId) keys.push(`${symbol}:oid:${orderId}`)
-    if (clientOrderId) keys.push(`${symbol}:coid:${clientOrderId}`)
+    if (orderId) keys.push(this.notFoundCacheKey(symbol, "oid", orderId))
+    if (clientOrderId) keys.push(this.notFoundCacheKey(symbol, "coid", clientOrderId))
     for (const key of keys) {
       const until = BingXConnector.bingxNotFoundCache.get(key)
       if (until === undefined) continue
@@ -1925,9 +1966,9 @@ export class BingXConnector extends BaseExchangeConnector {
    * after a successful place the order EXISTS, so stale "not found" entries
    * would mislead recovery queries into placing a duplicate.
    */
-  private static clearNotFoundCache(symbol: string | undefined, clientOrderId?: string): void {
+  private clearNotFoundCache(symbol: string | undefined, clientOrderId?: string): void {
     if (!symbol || !clientOrderId) return
-    BingXConnector.bingxNotFoundCache.delete(`${symbol}:coid:${clientOrderId}`)
+    BingXConnector.bingxNotFoundCache.delete(this.notFoundCacheKey(symbol, "coid", clientOrderId))
   }
 
   private async bingxRateLimitedCall<T>(
@@ -1947,7 +1988,7 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   async getOrder(symbol: string, orderId: string): Promise<any> {
-    if (BingXConnector.isNotFoundCached(symbol, orderId)) return null
+    if (this.isNotFoundCached(symbol, orderId)) return null
     return this.bingxRateLimitedCall("getOrder", async () => {
       // Sync server time before any signed request
       await this.syncServerTime()
@@ -2037,7 +2078,7 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   async getOpenOrders(symbol?: string): Promise<any[]> {
-    const cacheKey = symbol ? this.toBingXSymbol(symbol) : "__all__"
+    const cacheKey = this.openOrdersCacheKey(symbol)
     const cached = BingXConnector.openOrdersSnapshotCache.get(cacheKey)
     const now = Date.now()
     if (cached && now - cached.at < BingXConnector.openOrdersSnapshotTtlMs) {
@@ -3529,7 +3570,10 @@ export class BingXConnector extends BaseExchangeConnector {
       const bingxSymbol = this.toBingXSymbol(symbol)
       const params: Record<string, any> = {
         symbol: bingxSymbol,
-        orderIdList: JSON.stringify(orderIds.map(id => Number(id))),
+        // BingX order IDs routinely exceed Number.MAX_SAFE_INTEGER. Keep the
+        // exact decimal strings or batch cleanup can target a rounded,
+        // unrelated ID while leaving the intended control order open.
+        orderIdList: JSON.stringify(orderIds.map(id => String(id))),
         timestamp: this.getTimestamp(),
       }
       
@@ -3826,7 +3870,7 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId?: string,
     clientOrderId?: string
   ): Promise<{ success: boolean; order?: any; error?: string }> {
-    if (BingXConnector.isNotFoundCached(symbol, orderId, clientOrderId)) {
+    if (this.isNotFoundCached(symbol, orderId, clientOrderId)) {
       return { success: false, error: "BingX API error (code=109421): order does not exist (negative cache)" }
     }
     try {
@@ -3908,7 +3952,7 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId?: string,
     clientOrderId?: string
   ): Promise<{ success: boolean; order?: any; error?: string }> {
-    if (BingXConnector.isNotFoundCached(symbol, orderId, clientOrderId)) {
+    if (this.isNotFoundCached(symbol, orderId, clientOrderId)) {
       return { success: false, error: "BingX API error (code=109421): order does not exist (negative cache)" }
     }
     const now = Date.now()

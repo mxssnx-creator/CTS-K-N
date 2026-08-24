@@ -74,10 +74,7 @@ const readPosition = async (id) => {
 
 const fillQuantity = (position) => (Array.isArray(position.fills) ? position.fills : [])
   .reduce((sum, fill) => sum + Math.max(0, finite(fill?.quantity)), 0)
-const adjustmentQuantity = (position) => (Array.isArray(position.exchangeQuantityAdjustments)
-  ? position.exchangeQuantityAdjustments
-  : [])
-  .reduce((sum, adjustment) => sum + Math.max(0, finite(adjustment?.quantity)), 0)
+const MANAGED_ADJUSTMENT_SOURCES = new Set(["exchange_reconcile", "legacy_reconciliation"])
 
 const changedByStatus = {}
 const result = {
@@ -87,6 +84,8 @@ const result = {
   changed: 0,
   closedQuantityRepaired: 0,
   adjustmentsAdded: 0,
+  adjustmentsResized: 0,
+  adjustmentsRemoved: 0,
   unresolvedWithoutPrice: 0,
   skippedNonExchange: 0,
 }
@@ -105,13 +104,23 @@ for (const id of uniqueIds) {
 
   const next = { ...position }
   let changed = false
-  const total = Math.max(
-    finite(next.totalExecutedQuantity),
-    finite(next.executedQuantity) + Math.max(0, finite(next.closedQuantity)),
-    finite(next.executedQuantity),
-  )
-  const tolerance = Math.max(1e-10, Math.abs(finite(next.quantityStep)) / 2, total * 1e-8)
   const closed = status === "closed"
+  // Closed rows retain the lifetime quantity in executedQuantity,
+  // closedQuantity, and totalExecutedQuantity. Adding executed+closed here
+  // doubles the position on every repair run. Only open rows use
+  // open+already-closed as the lifetime relationship.
+  const total = closed
+    ? Math.max(
+      finite(next.totalExecutedQuantity),
+      finite(next.executedQuantity),
+      finite(next.closedQuantity),
+    )
+    : Math.max(
+      finite(next.totalExecutedQuantity),
+      finite(next.executedQuantity) + Math.max(0, finite(next.closedQuantity)),
+      finite(next.executedQuantity),
+    )
+  const tolerance = Math.max(1e-10, Math.abs(finite(next.quantityStep)) / 2, total * 1e-8)
   const closeReason = String(next.closeReason || "").toLowerCase()
 
   if (closed && total > 0 && Math.abs(finite(next.closedQuantity) - total) > tolerance) {
@@ -124,33 +133,53 @@ for (const id of uniqueIds) {
     result.closedQuantityRepaired++
   }
 
-  const recorded = fillQuantity(next) + adjustmentQuantity(next)
-  const missing = total - recorded
-  const eligibleAdjustment = missing > tolerance && finite(next.averageExecutionPrice || next.entryPrice) > 0 && (
+  const fillsRecorded = fillQuantity(next)
+  const adjustments = Array.isArray(next.exchangeQuantityAdjustments)
+    ? next.exchangeQuantityAdjustments
+    : []
+  const managedAdjustments = adjustments.filter((adjustment) =>
+    MANAGED_ADJUSTMENT_SOURCES.has(String(adjustment?.source || "")))
+  const unmanagedAdjustments = adjustments.filter((adjustment) =>
+    !MANAGED_ADJUSTMENT_SOURCES.has(String(adjustment?.source || "")))
+  const managedQuantity = managedAdjustments.reduce(
+    (sum, adjustment) => sum + Math.max(0, finite(adjustment?.quantity)),
+    0,
+  )
+  const unmanagedQuantity = unmanagedAdjustments.reduce(
+    (sum, adjustment) => sum + Math.max(0, finite(adjustment?.quantity)),
+    0,
+  )
+  const expectedManagedQuantity = Math.max(0, total - fillsRecorded - unmanagedQuantity)
+  const ledgerMismatch = Math.abs(expectedManagedQuantity - managedQuantity) > tolerance
+  const eligibleAdjustment = expectedManagedQuantity > tolerance && finite(next.averageExecutionPrice || next.entryPrice) > 0 && (
     !closed || closeReason.includes("exchange") || next.realizedPnlComplete === false
   )
-  if (eligibleAdjustment) {
-    const adjustments = Array.isArray(next.exchangeQuantityAdjustments)
-      ? next.exchangeQuantityAdjustments
-      : []
+  const canReduceOrRemove = expectedManagedQuantity < managedQuantity - tolerance
+  if (ledgerMismatch && (eligibleAdjustment || canReduceOrRemove)) {
     const adjustmentId = `${next.id}:legacy-exchange-quantity:${total.toFixed(12)}`
-    if (!adjustments.some((adjustment) => adjustment.id === adjustmentId)) {
-      next.exchangeQuantityAdjustments = [
-        ...adjustments,
-        {
+    next.exchangeQuantityAdjustments = [
+      ...unmanagedAdjustments,
+      ...(expectedManagedQuantity > tolerance
+        ? [{
           id: adjustmentId,
           source: "legacy_reconciliation",
           orderId: next.orderId,
-          quantity: Number(missing.toFixed(12)),
+          quantity: Number(expectedManagedQuantity.toFixed(12)),
           price: finite(next.averageExecutionPrice || next.entryPrice),
           timestamp: Date.now(),
-        },
-      ].slice(-64)
-      next.entryAccountingComplete = false
-      changed = true
+        }]
+        : []),
+    ].slice(-64)
+    if (managedQuantity <= tolerance && expectedManagedQuantity > tolerance) {
       result.adjustmentsAdded++
+    } else if (expectedManagedQuantity <= tolerance) {
+      result.adjustmentsRemoved += managedAdjustments.length
+    } else {
+      result.adjustmentsResized++
     }
-  } else if (missing > tolerance && total > 0) {
+    if (expectedManagedQuantity > tolerance) next.entryAccountingComplete = false
+    changed = true
+  } else if (ledgerMismatch && expectedManagedQuantity > tolerance) {
     result.unresolvedWithoutPrice++
   }
 

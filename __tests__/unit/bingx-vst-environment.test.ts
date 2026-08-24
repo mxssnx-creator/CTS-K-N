@@ -303,6 +303,88 @@ describe("BingX Prod-VST connector contract", () => {
     expect(requests.filter((request) => request.pathname === "/openApi/swap/v2/trade/openOrders")).toHaveLength(2)
   })
 
+  test("isolates private open-order snapshots between X01 and X02 in one process", async () => {
+    const openOrderAccounts: string[] = []
+    global.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/openOrders") {
+        const headers = new Headers(init?.headers)
+        const apiKey = String(headers.get("X-BX-APIKEY") || "")
+        openOrderAccounts.push(apiKey)
+        return Response.json({
+          code: 0,
+          data: {
+            orders: [{
+              orderId: apiKey === "x01-account-key" ? "x01-stop" : "x02-stop",
+              clientOrderID: apiKey === "x01-account-key" ? "ctsx01stop" : "ctsx02stop",
+              symbol: "BTC-USDT",
+            }],
+          },
+        })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+
+    const x01 = new BingXConnector({
+      apiKey: "x01-account-key",
+      apiSecret: "x01-account-secret",
+      isTestnet: false,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+    const x02 = new BingXConnector({
+      apiKey: "x02-account-key",
+      apiSecret: "x02-account-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+
+    await expect(x01.getOpenOrders()).resolves.toEqual([
+      expect.objectContaining({ orderId: "x01-stop" }),
+    ])
+    await expect(x02.getOpenOrders()).resolves.toEqual([
+      expect.objectContaining({ orderId: "x02-stop" }),
+    ])
+    await expect(x01.getOpenOrders()).resolves.toEqual([
+      expect.objectContaining({ orderId: "x01-stop" }),
+    ])
+
+    expect(openOrderAccounts).toEqual(["x01-account-key", "x02-account-key"])
+  })
+
+  test("keeps large BingX order IDs exact in batch cancellation", async () => {
+    const largeOrderId = "1947046115834789888"
+    let encodedOrderIds = ""
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/batchOrders") {
+        encodedOrderIds = String(url.searchParams.get("orderIdList") || "")
+        return Response.json({ code: 0, data: { success: [largeOrderId], failed: [] } })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+    const connector = new BingXConnector({
+      apiKey: "demo-batch-key",
+      apiSecret: "demo-batch-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+
+    await expect(connector.batchCancelOrders("BTCUSDT", [largeOrderId])).resolves.toMatchObject({ success: true })
+    expect(JSON.parse(encodedOrderIds)).toEqual([largeOrderId])
+  })
+
   test("invalidates the aggregate open-order snapshot after a VST protection order is armed", async () => {
     let stopOpen = false
     const requests: Array<{ pathname: string; method: string }> = []

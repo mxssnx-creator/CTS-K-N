@@ -43,7 +43,7 @@ describe("preset optimizer", () => {
     expect(settings).toMatchObject({
       historyDays: 14,
       presetsPerSymbol: 1,
-      minProfitFactor: 0.7,
+      minProfitFactor: 1.02,
       maxDrawdownHours: 5,
       takeProfit: { min: 5, max: 30, step: 1 },
       stopLossRatio: { min: 0.25, max: 2, step: 0.25 },

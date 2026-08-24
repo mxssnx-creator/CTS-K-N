@@ -110,7 +110,7 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
       <Card>
         <CardHeader>
           <CardTitle>PositionCost-relative PF Ratios</CardTitle>
-          <CardDescription>Ratio 0.10 equals one PositionCost; these are not classic gross-profit/gross-loss PF labels</CardDescription>
+          <CardDescription>1.00 is neutral and 1.10 is one net PositionCost; these are not classic gross-profit/gross-loss PF labels</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4">

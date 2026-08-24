@@ -1,6 +1,5 @@
 "use client"
 
-import { useEffect, useState } from "react"
 import useSWR from "swr"
 
 interface PositionPnL {
@@ -40,6 +39,9 @@ interface PnLStats {
   last_25_positions: PositionPnL[]
   last_25_pnl: number
   last_25_win_rate: number
+  last_50_positions?: PositionPnL[]
+  last_50_pnl?: number
+  last_50_win_rate?: number
 }
 
 interface ApiResponse {
@@ -98,6 +100,9 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
     const mins = minutes % 60
     return `${hours}h ${mins}m`
   }
+  const recentPositions = stats.last_50_positions ?? stats.last_25_positions
+  const recentPnl = stats.last_50_pnl ?? stats.last_25_pnl
+  const recentWinRate = stats.last_50_win_rate ?? stats.last_25_win_rate
 
   return (
     <div className="w-full space-y-6">
@@ -169,16 +174,16 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
         </div>
       </div>
 
-      {/* Last 25 Positions Section */}
+      {/* Last 50 real exchange positions */}
       <div className="space-y-3">
         <div className="flex items-baseline justify-between">
-          <h3 className="text-lg font-semibold">Last 25 Positions</h3>
+          <h3 className="text-lg font-semibold">Last 50 Real Exchange Positions</h3>
           <div className="text-sm font-medium">
-            <span className={stats.last_25_pnl >= 0 ? "text-green-600" : "text-red-600"}>
-              {formatCurrency(stats.last_25_pnl)}
+            <span className={recentPnl >= 0 ? "text-green-600" : "text-red-600"}>
+              {formatCurrency(recentPnl)}
             </span>
             <span className="mx-2 text-muted-foreground">•</span>
-            <span className="text-blue-600">{stats.last_25_win_rate.toFixed(1)}% WR</span>
+            <span className="text-blue-600">{recentWinRate.toFixed(1)}% WR</span>
           </div>
         </div>
 
@@ -196,7 +201,7 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
               </tr>
             </thead>
             <tbody>
-              {stats.last_25_positions.map((pos, idx) => (
+              {recentPositions.map((pos, idx) => (
                 <tr key={pos.id} className={idx % 2 === 0 ? "bg-card" : "bg-muted/30"}>
                   <td className="px-3 py-2 font-medium">{pos.symbol}</td>
                   <td className={`px-3 py-2 font-semibold ${pos.direction === "long" ? "text-blue-600" : "text-red-600"}`}>
@@ -215,7 +220,7 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
                   </td>
                 </tr>
               ))}
-              {stats.last_25_positions.length === 0 && (
+              {recentPositions.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-3 py-4 text-center text-muted-foreground">
                     No positions closed yet

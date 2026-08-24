@@ -73,6 +73,23 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
     expect(staleOwnerBranch).toContain("await this.stopEngine(connectionId)")
     expect(staleOwnerBranch).toContain("await forceBreakProgressionLock(connectionId)")
   })
+
+  test("every early return after claiming the local startup guard releases it", () => {
+    const source = read("lib/trade-engine.ts")
+    const startOffset = source.indexOf("async startEngine(connectionId: string")
+    const endOffset = source.indexOf("async stopEngine(connectionId: string", startOffset)
+    const startEngine = source.slice(startOffset, endOffset)
+    const claimOffset = startEngine.indexOf("this.startingEngines.add(connectionId)")
+    const freshRemoteOwnerOffset = startEngine.indexOf("is owned by another worker with a fresh heartbeat")
+    const releaseOffset = startEngine.indexOf("this.startingEngines.delete(connectionId)")
+
+    expect(claimOffset).toBeGreaterThan(-1)
+    expect(freshRemoteOwnerOffset).toBeGreaterThan(claimOffset)
+    expect(releaseOffset).toBeGreaterThan(freshRemoteOwnerOffset)
+    expect((startEngine.match(/this\.startingEngines\.delete\(connectionId\)/g) || [])).toHaveLength(1)
+    expect(startEngine.slice(claimOffset, releaseOffset)).toContain("try {")
+    expect(startEngine.slice(releaseOffset - 180, releaseOffset)).toContain("finally")
+  })
   test("runtime gate allows explicit foreground starts only when safe", () => {
     const source = read("lib/trade-engine.ts")
     const startEngine = source.slice(

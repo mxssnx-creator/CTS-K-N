@@ -18,6 +18,7 @@ import {
   type CompactionConfig,
   type SetCompactionType,
 } from "@/lib/sets-compaction"
+import { scaleMainTradePfCoordinate } from "@/lib/main-trade-profit-factor"
 
 // Pre-cached client reference
 let cachedClient: any = null
@@ -233,10 +234,11 @@ export class StrategySetsProcessor {
           riskLevel,
           ...(sourceSetKey && { sourceSetKey }),
         })
-        if (confidence > 0.45 && profitFactor > 0.9 && profitFactor * 0.95 >= 1) {
+        const conservativeCoordinate = scaleMainTradePfCoordinate(profitFactor, 0.95)
+        if (confidence > 0.45 && profitFactor > 0.9 && conservativeCoordinate >= 1) {
           batches.base[direction].push({
             strategy: {
-              profitFactor: profitFactor * 0.95,
+              profitFactor: conservativeCoordinate,
               confidence,
               metadata: strategyMetadata("base", "low"),
             },
@@ -258,7 +260,7 @@ export class StrategySetsProcessor {
         if (confidence > 0.78 && profitFactor > 1.45) {
           batches.real[direction].push({
             strategy: {
-              profitFactor: profitFactor * 1.1,
+              profitFactor: scaleMainTradePfCoordinate(profitFactor, 1.1),
               confidence,
               metadata: strategyMetadata("real", "high"),
             },

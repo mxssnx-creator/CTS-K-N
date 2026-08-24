@@ -158,6 +158,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "control_orders",
   "variantTrailingEnabled",
   "variantBlockEnabled",
+  "normalEnabled",
   "blockOnly",
   "variantBlockOnly",
   "variantDcaEnabled",
@@ -366,6 +367,7 @@ export async function GET(
           "useSystemCloseOnly", "use_system_close_only",
           // Coordination variant toggles
           "variantTrailingEnabled", "variantBlockEnabled",
+          "normalEnabled",
           "blockOnly", "variantBlockOnly",
           "variantDcaEnabled",
           "blockActiveRealEnabled", "blockActiveLiveEnabled", "blockRowLiveEnabled",
@@ -468,6 +470,15 @@ export async function GET(
           connection.variant_dca,
         ), false),
       },
+      // Canonical main execution-family switch. Legacy blockOnly values are
+      // intentionally not used as a fallback because they no longer control
+      // dispatch.
+      normalEnabled: asBoolean(firstDefined(
+        storedCoord.normalEnabled,
+        storedCoord.normal_enabled,
+        settings.normalEnabled,
+        settings.normal_enabled,
+      ), true),
       blockVolumeRatio: asBoundedNumber(
         firstDefined(storedCoord.blockVolumeRatio, settings.blockVolumeRatio),
         1.0,
@@ -513,12 +524,6 @@ export async function GET(
       blockActiveLiveEnabled: asBoolean(firstDefined(
         storedCoord.blockActiveLiveEnabled,
         settings.blockActiveLiveEnabled,
-      ), true),
-      blockOnly: asBoolean(firstDefined(
-        storedCoord.blockOnly,
-        settings.blockOnly,
-        settings.variantBlockOnly,
-        settings.block_only,
       ), true),
       posCountsVolumeRatio: asBoundedNumber(
         firstDefined(storedCoord.posCountsVolumeRatio, settings.posCountsVolumeRatio),
@@ -1078,6 +1083,7 @@ export async function PATCH(
       if (typeof coord.blockActiveRealEnabled === "boolean") flatKnobs.blockActiveRealEnabled = String(coord.blockActiveRealEnabled)
       if (typeof coord.blockActiveLiveEnabled === "boolean") flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
       if (typeof coord.blockRowLiveEnabled === "boolean") flatKnobs.blockRowLiveEnabled = String(coord.blockRowLiveEnabled)
+      if (typeof coord.normalEnabled === "boolean") flatKnobs.normalEnabled = String(coord.normalEnabled)
       const rowLiveVolume = Number(coord.blockRowLiveVolumeRatio)
       if (Number.isFinite(rowLiveVolume) && rowLiveVolume > 0) flatKnobs.blockRowLiveVolumeRatio = String(Math.max(0.25, Math.min(3, rowLiveVolume)))
       const rowLivePf = Number(coord.blockRowLiveProfitFactorRatio)
@@ -1086,10 +1092,6 @@ export async function PATCH(
       if (Number.isFinite(rowLiveStack) && rowLiveStack >= 1) flatKnobs.blockRowLiveMaxStack = String(Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(rowLiveStack))))
       const rowLivePause = Number(coord.blockRowLivePauseCountRatio)
       if (Number.isFinite(rowLivePause) && rowLivePause > 0) flatKnobs.blockRowLivePauseCountRatio = String(Math.max(1, Math.min(4, Math.round(rowLivePause * 2) / 2)))
-      if (typeof coord.blockOnly === "boolean") {
-        flatKnobs.blockOnly = String(coord.blockOnly)
-        flatKnobs.variantBlockOnly = String(coord.blockOnly)
-      }
       const pvr = Number(coord.posCountsVolumeRatio)
       if (Number.isFinite(pvr) && pvr > 0) {
         flatKnobs.posCountsVolumeRatio = String(normalizePosCountVolumeRatio(pvr))

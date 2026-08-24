@@ -57,10 +57,10 @@ export class TradingEngine {
   /**
    * Compatibility setter retained for older callers.
    *
-   * Base → Main → Real always uses the immutable identity basis 1. Channel
+   * Base → Main → Real always uses the immutable configured basis 1. Channel
    * factors and explicit Position-count/DCA/Block adjustments are applied at
-   * their own boundaries; a generic Base setter must never create another
-   * hidden multiplier.
+   * their own boundaries; the separate system ratio is explicit and returned
+   * by calculateVolume rather than being writable through this legacy setter.
    */
   setBaseVolumeFactor(_factor: number): void {
     // Intentionally no-op.

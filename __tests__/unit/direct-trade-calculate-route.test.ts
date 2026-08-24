@@ -146,6 +146,8 @@ describe("Direct-Trade historical calculation route", () => {
     expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 208 })
     expect(payload.summary).toMatchObject({
       symbols: ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"],
+      minVolFactor: 0.1,
+      trailingMinTakeProfitRatio: 5,
       blockEnabled: true,
       blockEvaluatedSets: 48 * 12 * 4,
     })
@@ -244,6 +246,46 @@ describe("Direct-Trade historical calculation route", () => {
     expect(byType("trailing_auto").every((config: any) => config.trailingMode === "auto")).toBe(true)
     expect(new Set(byType("combination").map((config: any) => config.trailingMode))).toEqual(new Set(["none", "fixed", "auto"]))
     expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(1072)
+  })
+
+  test("keeps low-distance normal Sets while excluding only trailing variants below their minimum", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/calculate/route"),
+      import("@/lib/redis-db"),
+    ])
+    const response = await POST(new Request("http://localhost/api/trade-engine/direct-trade/calculate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbolCount: 1,
+        historyHours: 60,
+        timeframes: ["5m"],
+        strategyTypes: ["combination"],
+        entryTactics: ["breakout"],
+        exitTactics: ["bracket"],
+        trailingEnabled: true,
+        activityVolumeRatio: 0,
+        minVolFactor: 99,
+        positionCostPercent: 0.1,
+        takeProfitRatioRange: [2, 6],
+        takeProfitRatioStep: 1,
+        trailingMinTakeProfitRatio: 5,
+      }),
+    }) as any)
+    const payload = await response.json()
+    const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+
+    expect(response.status).toBe(200)
+    expect(payload.summary).toMatchObject({
+      minVolFactor: 10,
+      trailingMinTakeProfitRatio: 5,
+      takeProfitPositionCostRatios: [2, 3, 4, 5, 6],
+    })
+    expect(persisted.some((config: any) => !config.trailing && config.takeProfitPositionCostRatio === 2)).toBe(true)
+    expect(persisted.filter((config: any) => config.trailing).every((config: any) =>
+      config.takeProfitPositionCostRatio >= 5,
+    )).toBe(true)
+    expect(persisted.some((config: any) => config.trailing && config.takeProfitPositionCostRatio === 5)).toBe(true)
   })
 
   test("applies the configured SL ratio step without omitting the requested protection maximum", async () => {

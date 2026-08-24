@@ -55,7 +55,7 @@ export interface PseudoPositionConfig {
 }
 
 export interface StrategyEvaluationConfig {
-  // Main strategy: PositionCost-relative PF ratio (1.00-2.20, default: 1.10)
+  // Main strategy: selectable PositionCost-relative PF ratio (1.02-2.30, default: 1.10; 1.00 remains calculation-neutral)
   mainMinProfitFactor: { min: number; max: number; default: number; step: number }
   // Real strategy: PositionCost-relative PF ratio (default: 1.10)
   realMinProfitFactor: number

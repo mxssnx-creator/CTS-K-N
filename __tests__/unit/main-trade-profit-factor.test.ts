@@ -1,6 +1,7 @@
 import {
   MAIN_TRADE_PF_RATIO_MAX,
   MAIN_TRADE_PF_RATIO_MIN,
+  MAIN_TRADE_PF_RATIO_STEP,
   MAIN_TRADE_STAGE_PF_DEFAULTS,
   mainTradePfRatioToGrossMovePct,
   mainTradeStagePfMin,
@@ -11,6 +12,7 @@ import {
   netMovePctAfterPositionCost,
   normalizeMainTradePfRatio,
   normalizeMainTradeStagePfRatio,
+  scaleMainTradePfCoordinate,
   signedResultRToMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import { derivePosWindowStats } from "@/lib/pos-history"
@@ -19,30 +21,38 @@ import path from "node:path"
 
 describe("Main Trade PositionCost-relative PF ratios", () => {
   test("uses the exact systemwide range, grid, and stage defaults", () => {
-    expect(MAIN_TRADE_PF_RATIO_MIN).toBe(1)
-    expect(MAIN_TRADE_PF_RATIO_MAX).toBe(2.2)
+    expect(MAIN_TRADE_PF_RATIO_MIN).toBe(1.02)
+    expect(MAIN_TRADE_PF_RATIO_MAX).toBe(2.3)
+    expect(MAIN_TRADE_PF_RATIO_STEP).toBe(0.02)
     expect(MAIN_TRADE_STAGE_PF_DEFAULTS).toEqual({
       base: 1.1,
       main: 1.1,
       real: 1.1,
       live: 1.1,
     })
-    expect(normalizeMainTradePfRatio(0.079)).toBe(1)
-    expect(normalizeMainTradePfRatio(1.081)).toBe(1.1)
-    expect(normalizeMainTradePfRatio(1.15)).toBe(1.2)
-    expect(normalizeMainTradePfRatio(99)).toBe(2.2)
+    expect(normalizeMainTradePfRatio(0.079)).toBe(1.02)
+    expect(normalizeMainTradePfRatio(1.0)).toBe(1.02)
+    expect(normalizeMainTradePfRatio(1.019)).toBe(1.02)
+    expect(normalizeMainTradePfRatio(1.021)).toBe(1.02)
+    expect(normalizeMainTradePfRatio(1.081)).toBe(1.08)
+    expect(normalizeMainTradePfRatio(1.09)).toBe(1.1)
+    expect(normalizeMainTradePfRatio(1.1)).toBe(1.1)
+    expect(normalizeMainTradePfRatio(1.15)).toBe(1.16)
+    expect(normalizeMainTradePfRatio(99)).toBe(2.3)
   })
 
   test("enforces the systemwide PF stage floors", () => {
-    expect(mainTradeStagePfMin("base")).toBe(1)
-    expect(mainTradeStagePfMin("main")).toBe(1)
-    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(1)
-    expect(normalizeMainTradeStagePfRatio("base", 1.08)).toBe(1.1)
-    expect(normalizeMainTradeStagePfRatio("base", 1.12)).toBe(1.1)
-    expect(normalizeMainTradeStagePfRatio("main", 0.08)).toBe(1)
+    expect(mainTradeStagePfMin("base")).toBe(1.02)
+    expect(mainTradeStagePfMin("main")).toBe(1.02)
+    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(1.02)
+    expect(normalizeMainTradeStagePfRatio("base", 1.08)).toBe(1.08)
+    expect(normalizeMainTradeStagePfRatio("base", 1.12)).toBe(1.12)
+    expect(normalizeMainTradeStagePfRatio("main", 0.08)).toBe(1.02)
   })
 
   test("maps PF to PositionCost-relative positive move", () => {
+    // 1.00 is intentionally below the selectable gate minimum: it remains
+    // the neutral calculation coordinate.
     expect(mainTradePfRatioToMovePct(1.0, 0.1)).toBe(0)
     expect(mainTradePfRatioToMovePct(1.1, 0.1)).toBeCloseTo(0.1, 12)
     expect(mainTradePfRatioToMovePct(1.2, 0.1)).toBeCloseTo(0.2, 12)
@@ -66,6 +76,35 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     // gross, so the net result is one PositionCost.
     expect(netMovePctAfterPositionCost(0.1, 0.1)).toBe(0)
     expect(netMovePctAfterPositionCost(0.2, 0.1)).toBeCloseTo(0.1, 12)
+  })
+
+  test("keeps the neutral/PositionCost identity across the full operator grid", () => {
+    for (const positionCostPct of [0.02, 0.1, 0.25, 1]) {
+      for (const signedResultR of [-1, 0, 0.2, 1, 5, 12.8]) {
+        const coordinate = signedResultRToMainTradePfRatio(signedResultR)
+        const netMove = mainTradePfRatioToMovePct(coordinate, positionCostPct)
+        const grossMove = mainTradePfRatioToGrossMovePct(coordinate, positionCostPct)
+        expect(netMove).toBeCloseTo(positionCostPct * signedResultR, 8)
+        expect(grossMove).toBeCloseTo(positionCostPct * (signedResultR + 1), 8)
+        expect(netMovePctAfterPositionCost(grossMove, positionCostPct)).toBeCloseTo(netMove, 8)
+        expect(movePctToMainTradePfRatio(netMove, positionCostPct)).toBeCloseTo(coordinate, 8)
+      }
+    }
+  })
+
+  test("scales tuning around neutral instead of multiplying the coordinate", () => {
+    expect(scaleMainTradePfCoordinate(1, 0.6)).toBe(1)
+    expect(scaleMainTradePfCoordinate(1.2, 0.5)).toBe(1.1)
+    expect(scaleMainTradePfCoordinate(0.8, 0.5)).toBe(0.9)
+    expect(scaleMainTradePfCoordinate(1.2, 1.5)).toBe(1.3)
+  })
+
+  test("does not let a selectable threshold round measured results into a pass", () => {
+    expect(mainTradePfRatioPasses(0.019, 0.1, 1.02)).toBe(false)
+    expect(mainTradePfRatioPasses(0.02, 0.1, 1.02)).toBe(true)
+    expect(mainTradePfRatioPasses(0.099, 0.1, 1.1)).toBe(false)
+    expect(mainTradePfRatioPasses(0.1, 0.1, 1.1)).toBe(true)
+    expect(mainTradePfRatioPasses(0.101, 0.1, 1.1)).toBe(true)
   })
 
   test("keeps classic PF diagnostic separate from the stage ratio", () => {

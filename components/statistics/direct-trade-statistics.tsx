@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { Activity, BarChart3, Clock3, Filter, RefreshCw, ShieldCheck, Target } from "lucide-react"
+import { Activity, BarChart3, Clock3, Filter, RefreshCw, ShieldCheck, Target, Zap } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -83,7 +83,18 @@ type CalculationAxisBucket = {
 }
 
 type Status = {
+  state?: {
+    enabled?: boolean
+    liveMode?: boolean
+    processingIntervalMs?: number
+  } | null
+  openPositions?: number
+  openingPositions?: number
+  closedPositions?: number
+  accountingPending?: number
   stats?: {
+    totalOrders?: number
+    totalFilled?: number
     totalPnl?: number
     totalPnlUsdt?: number
     profitFactor?: number
@@ -250,7 +261,7 @@ export function DirectTradeStatistics() {
               <h1 className="text-xl font-semibold">Direct-Trade statistics</h1>
               <Badge variant={status.processor?.isHealthy ? "default" : "secondary"}>{status.processor?.isHealthy ? "Processor healthy" : "Processor idle"}</Badge>
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">Independent 5m / 15m / 30m sets, all selected combinations, and separate entry, exit, TP, SL, trailing and DCA evaluation lines.</p>
+            <p className="mt-1 text-sm text-muted-foreground">Independent 5m / 15m / 30m configuration variants across the selected combinations. These counts describe evaluated parameter lineages, not physical positions.</p>
           </div>
           <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
@@ -258,10 +269,24 @@ export function DirectTradeStatistics() {
         </div>
         <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <Metric label="Historic range" value={`${calculation.historyHours || 0}h`} icon={<Clock3 className="h-4 w-4" />} />
-          <Metric label="Evaluated sets" value={String(calculation.evaluatedSets || 0)} icon={<BarChart3 className="h-4 w-4" />} />
-          <Metric label="Valid / executable" value={`${calculation.validSets || 0} / ${calculation.evaluatedSets || 0}`} icon={<ShieldCheck className="h-4 w-4" />} />
+          <Metric label="Evaluated variants" value={String(calculation.evaluatedSets || 0)} icon={<BarChart3 className="h-4 w-4" />} />
+          <Metric label="Eligible / evaluated variants" value={`${calculation.validSets || 0} / ${calculation.evaluatedSets || 0}`} icon={<ShieldCheck className="h-4 w-4" />} />
           <Metric label="TF combinations" value={String(calculation.combinations || 0)} icon={<Activity className="h-4 w-4" />} />
-          <Metric label="Simulated PnL" value={formatPnl(stats.totalPnl)} emphasis={Number(stats.totalPnl) >= 0} icon={<Target className="h-4 w-4" />} />
+          <Metric
+            label={status.state?.liveMode ? "Realized exchange PnL" : "Simulated PnL"}
+            value={status.state?.liveMode
+              ? `${Number(stats.totalPnlUsdt || 0) >= 0 ? "+" : ""}${Number(stats.totalPnlUsdt || 0).toFixed(4)} USDT`
+              : formatPnl(stats.totalPnl)}
+            emphasis={Number(status.state?.liveMode ? stats.totalPnlUsdt : stats.totalPnl) >= 0}
+            icon={<Target className="h-4 w-4" />}
+          />
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          <Metric label="Orders / filled" value={`${stats.totalOrders || 0} / ${stats.totalFilled || 0}`} icon={<Activity className="h-4 w-4" />} />
+          <Metric label="Open / opening" value={`${status.openPositions || 0} / ${status.openingPositions || 0}`} icon={<Clock3 className="h-4 w-4" />} />
+          <Metric label="Closed / accounting pending" value={`${status.closedPositions || 0} / ${status.accountingPending || 0}`} icon={<ShieldCheck className="h-4 w-4" />} />
+          <Metric label="Execution interval" value={`${status.state?.processingIntervalMs || 280}ms`} icon={<Zap className="h-4 w-4" />} />
+          <Metric label="Mode" value={status.state?.liveMode ? "Live exchange" : "Demo / paper"} icon={<Target className="h-4 w-4" />} />
         </div>
       </Card>
 
@@ -344,7 +369,7 @@ export function DirectTradeStatistics() {
 
       <div className="grid gap-4 lg:grid-cols-[1.25fr_1fr]">
         <Card className="overflow-hidden p-4">
-          <div className="mb-3 flex items-center justify-between"><span className="text-sm font-medium">Independent sets</span><Badge variant="outline">stable lineage key</Badge></div>
+          <div className="mb-3 flex items-center justify-between"><span className="text-sm font-medium">Independent configuration variants</span><Badge variant="outline">stable lineage key</Badge></div>
           <div className="max-h-[520px] overflow-auto rounded-md border">
             <table className="w-full min-w-[1120px] text-xs">
               <thead className="sticky top-0 bg-muted/95 text-muted-foreground"><tr><th className="p-2 text-left">Symbol / frame</th><th className="p-2 text-left">Type / tactics</th><th className="p-2 text-right">TP / SL protection</th><th className="p-2 text-right">History PF</th><th className="p-2 text-right">Last 12 PF</th><th className="p-2 text-right">DDT</th><th className="p-2 text-right">Net PnL</th><th className="p-2 text-right">Cost</th><th className="p-2 text-right">Best exit*</th><th className="p-2 text-right">State</th></tr></thead>
@@ -356,10 +381,12 @@ export function DirectTradeStatistics() {
         <Card className="p-4">
           <h2 className="text-sm font-medium">Rolling execution result</h2>
           <div className="mt-3 space-y-2 text-sm">
-            <ResultRow label="All closed positions PF" value={stats.profitFactor != null ? Number(stats.profitFactor).toFixed(2) : "—"} />
+            <ResultRow label="Accounted closed positions PF" value={stats.profitFactor != null ? Number(stats.profitFactor).toFixed(2) : "—"} />
             <ResultRow label="Realized PnL (exchange notional)" value={stats.totalPnlUsdt != null ? `${Number(stats.totalPnlUsdt).toFixed(4)} USDT` : "—"} />
             <ResultRow label="PF basis" value={stats.statsPnlBasis === "usdt" ? "exchange notional" : "percentage fallback"} />
             <ResultRow label="Win / loss" value={`${stats.winCount || 0} / ${stats.lossCount || 0}`} />
+            <ResultRow label="Orders / filled / closed" value={`${stats.totalOrders || 0} / ${stats.totalFilled || 0} / ${status.closedPositions || 0}`} />
+            <ResultRow label="Exchange accounting pending" value={String(status.accountingPending || 0)} />
             <ResultRow label="Last 12 positions" value={`PF ${stats.last12Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last12Pos?.ddt?.toFixed(1) || "0.0"}m`} />
             <ResultRow label="Last 25 positions" value={`PF ${stats.last25Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last25Pos?.ddt?.toFixed(1) || "0.0"}m`} />
             <ResultRow label="Last 50 positions" value={`PF ${stats.last50Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last50Pos?.ddt?.toFixed(1) || "0.0"}m`} />

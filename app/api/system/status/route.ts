@@ -12,6 +12,7 @@ import { isConnectionReadyForEngine } from "@/lib/connection-state-helpers"
 import { buildMissingTradeEngineWorkerDiagnostic } from "@/lib/trade-engine-worker-heartbeat"
 import { getRuntimeBootId, getRuntimeStartedAt } from "@/lib/runtime-startup-state"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
+import { buildProgressionScope } from "@/lib/progression-scope"
 
 const HEARTBEAT_FRESH_MS = 90_000;
 
@@ -67,11 +68,28 @@ async function buildSystemStatusResponse(request: NextRequest) {
         client.get("site:unique_instance:id").catch(() => null),
         client.hgetall("site:unique_instance").catch(() => ({}) as Record<string, string>),
         ...allConnections.map(async (conn) => {
-          const [rawState, settingsState] = await Promise.all([
+          const engineType = String((conn as any).engine_type || (conn as any).engineType || "main").trim() || "main"
+          const scope = buildProgressionScope(conn.id, engineType)
+          const [rawState, settingsState, scopedRawState, scopedSettingsState] = await Promise.all([
             client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({}) as Record<string, string>),
             client.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({}) as Record<string, string>),
+            client.hgetall(`trade_engine_state:${conn.id}:${engineType}`).catch(() => ({}) as Record<string, string>),
+            client.hgetall(scope.tradeEngineStateKey).catch(() => ({}) as Record<string, string>),
           ])
-          return { ...(rawState || {}), ...(settingsState || {}) }
+          const merged = {
+            ...(rawState || {}),
+            ...(settingsState || {}),
+            ...(scopedRawState || {}),
+            ...(scopedSettingsState || {}),
+          }
+          const newestHeartbeat = Math.max(
+            toNumber(rawState?.last_processor_heartbeat),
+            toNumber(settingsState?.last_processor_heartbeat),
+            toNumber(scopedRawState?.last_processor_heartbeat),
+            toNumber(scopedSettingsState?.last_processor_heartbeat),
+          )
+          if (newestHeartbeat > 0) merged.last_processor_heartbeat = String(newestHeartbeat)
+          return merged
         }),
       ]);
       databaseInfo = {
@@ -182,6 +200,7 @@ async function buildSystemStatusResponse(request: NextRequest) {
 
       return {
         id: conn.id,
+        engineType: String((conn as any).engine_type || (conn as any).engineType || "main").trim() || "main",
         name: conn.name,
         exchange: conn.exchange,
         configured,

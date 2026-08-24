@@ -62,7 +62,7 @@ export async function POST(request: Request) {
         is_active: autoStartVst ? "1" : (dashboardEnabled ? "1" : "0"),
         connection_method: "library",
         connection_library: "sdk",
-        ...(credentialsSafe
+        ...(autoStartVst
           ? {
               is_live_trade: "1",
               live_trade_requested: "1",
@@ -79,7 +79,6 @@ export async function POST(request: Request) {
         return
       }
       await client.sadd("connections", connectionId)
-      await client.sadd("connections:main:enabled", connectionId)
       await client.hset(`settings:connection:${connectionId}`, {
         api_key: effectiveKey,
         api_secret: effectiveSecret,
@@ -97,7 +96,7 @@ export async function POST(request: Request) {
       results[connectionId] = credentialsSafe
         ? autoStartVst
           ? "Credentials injected, Prod-VST live trade enabled and Main Trade engine queued"
-          : "Credentials injected and live trade enabled (dashboard state preserved)"
+          : "Credentials injected (operator live/dashboard state preserved)"
         : "Credentials injected (live trade remains disabled: placeholder/invalid credentials)"
     }
 

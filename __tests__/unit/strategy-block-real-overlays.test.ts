@@ -391,12 +391,12 @@ describe("Real-stage Block overlays", () => {
       metadata: { direction: "long", signal: signalRisk },
     }])
 
-    expect(result.sets).toHaveLength(324)
+    expect(result.sets).toHaveLength(162)
     const standardSets = result.sets.filter((set) => !set.trailingProfile)
     const trailingSets = result.sets.filter((set) => set.trailingProfile?.mode === "signal_dynamic")
-    expect(standardSets).toHaveLength(54)
-    expect(trailingSets).toHaveLength(270)
-    expect(new Set(result.sets.map((set) => set.setKey)).size).toBe(324)
+    expect(standardSets).toHaveLength(27)
+    expect(trailingSets).toHaveLength(135)
+    expect(new Set(result.sets.map((set) => set.setKey)).size).toBe(162)
     const standard = standardSets.find((set) =>
       set.signalRisk?.configId === "tp1_00:slr0_50:standard")
     const trailing = trailingSets.find((set) =>
@@ -491,7 +491,7 @@ describe("Real-stage Block overlays", () => {
       invalidateSignalSettingsCache()
       const trailingOnly = await (new StrategyCoordinator(`${connectionId}-trailing-only`) as any)
         .createBaseSets("BTCUSDT", [indication])
-      expect(trailingOnly.sets).toHaveLength(270)
+      expect(trailingOnly.sets).toHaveLength(135)
       expect(trailingOnly.sets.every((set: StrategySet) =>
         set.trailingProfile?.mode === "signal_dynamic")).toBe(true)
 
@@ -503,7 +503,7 @@ describe("Real-stage Block overlays", () => {
       invalidateSignalSettingsCache()
       const standardOnly = await (new StrategyCoordinator(`${connectionId}-standard-only`) as any)
         .createBaseSets("BTCUSDT", [indication])
-      expect(standardOnly.sets).toHaveLength(54)
+      expect(standardOnly.sets).toHaveLength(27)
       expect(standardOnly.sets.every((set: StrategySet) =>
         !set.trailingProfile && set.signalRisk?.trailing === false)).toBe(true)
     } finally {
@@ -717,7 +717,7 @@ describe("Real-stage Block overlays", () => {
     ])
   })
 
-  test("enforces Block-Only while preserving concurrent Standard plus Block mode", () => {
+  test("keeps Normal, Block and DCA independent and ignores legacy Block-only", () => {
     const standardLong = {
       ...source("BTCUSDT:direction:long#standard", "long"),
       variant: "default" as const,
@@ -735,7 +735,11 @@ describe("Real-stage Block overlays", () => {
     expect(selectLiveDispatchCandidates(
       [standardLong, blockLong, dcaLong],
       { blockEnabled: true, blockOnly: true },
-    ).map((set) => set.setKey)).toEqual([blockLong.setKey])
+    ).map((set) => set.setKey)).toEqual([
+      standardLong.setKey,
+      blockLong.setKey,
+      dcaLong.setKey,
+    ])
 
     expect(selectLiveDispatchCandidates(
       [standardLong, blockLong, dcaLong],
@@ -748,8 +752,13 @@ describe("Real-stage Block overlays", () => {
 
     expect(selectLiveDispatchCandidates(
       [standardLong],
-      { blockEnabled: false, blockOnly: true },
+      { blockEnabled: false, dcaEnabled: false, blockOnly: true },
     ).map((set) => set.setKey)).toEqual([standardLong.setKey])
+
+    expect(selectLiveDispatchCandidates(
+      [standardLong, blockLong, dcaLong],
+      { normalEnabled: false, blockEnabled: true, dcaEnabled: true },
+    ).map((set) => set.setKey)).toEqual([blockLong.setKey, dcaLong.setKey])
   })
 
   test("dispatches one normal Signal and one Signal trailing candidate per direction", () => {
@@ -1169,7 +1178,7 @@ describe("Real-stage Block overlays", () => {
       "BTCUSDT", [strongSource], metrics, undefined, new Set(),
     ) as StrategySet[]
     expect(before.map((set) => set.blockVolumeIncrementRatio)).toEqual([0.5, 1])
-    expect(before.map((set) => Number(set.blockConfiguredMinimumProfitFactor))).toEqual([0.48, 0.96])
+    expect(before.map((set) => Number(set.blockConfiguredMinimumProfitFactor))).toEqual([1.08, 1.16])
     expect(before.map((set) => Number(set.blockMinimumProfitFactor))).toEqual([100, 100])
 
     coordinator._coordinationSettings.blockVolumeRatio = 1.5
@@ -1178,8 +1187,8 @@ describe("Real-stage Block overlays", () => {
       "BTCUSDT", [strongSource], metrics, undefined, new Set(),
     ) as StrategySet[]
     expect(after.map((set) => set.blockVolumeIncrementRatio)).toEqual([1.5, 3])
-    expect(after[0].blockConfiguredMinimumProfitFactor).toBeCloseTo(2.16, 10)
-    expect(after[1].blockConfiguredMinimumProfitFactor).toBeCloseTo(4.32, 10)
+    expect(after[0].blockConfiguredMinimumProfitFactor).toBeCloseTo(1.36, 10)
+    expect(after[1].blockConfiguredMinimumProfitFactor).toBeCloseTo(1.72, 10)
     expect(after[0].blockMinimumProfitFactor).toBe(100)
     expect(after[1].blockMinimumProfitFactor).toBe(100)
     expect(after[0].variantSizeMultiplier).toBeCloseTo(2.5, 10)

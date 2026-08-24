@@ -1,6 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
-import { clampDirectTradeSymbolCount } from "@/lib/direct-trade-limits"
+import {
+  clampDirectTradeSymbolCount,
+  clampDirectTradeVolumeFactor,
+  DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+} from "@/lib/direct-trade-limits"
 import { fetchTopSymbols, type SortKey } from "@/lib/top-symbols"
 import {
   deleteDirectTradeConfigGeneration,
@@ -8,6 +12,7 @@ import {
 } from "@/lib/direct-trade-config-store"
 import { fetchDirectTradeMinuteHistory } from "@/lib/direct-trade-market-history"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { normalizeMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
 import { CANONICAL_FORCED_SYMBOLS, withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 import {
@@ -29,6 +34,8 @@ import {
   averageDirectTradeTakeProfitRatio,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
+  normaliseDirectTradeTrailingMinTakeProfitRatio,
+  DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   type DirectTradeEntryTiming,
@@ -52,14 +59,17 @@ export const maxDuration = 300
 
 const DIRECT_TRADE_CALCULATION_LEASE_SECONDS = 330
 const DIRECT_STOP_LOSS_RATIO_MIN = 0.25
-const DIRECT_STOP_LOSS_RATIO_MAX = 0.75
-const DIRECT_INVERSE_STOP_LOSS_RATIO_MAX = 1.25
+const DIRECT_STOP_LOSS_RATIO_MAX = 1.5
+const DIRECT_INVERSE_STOP_LOSS_RATIO_MAX = 1.5
+const DIRECT_STOP_LOSS_RATIO_DEFAULT = 0.75
+const DIRECT_INVERSE_STOP_LOSS_RATIO_DEFAULT = 1.25
 const DIRECT_STOP_LOSS_RATIO_STEP = 0.25
 
 interface CalculationRequest {
   connectionId?: string
   symbolCount?: number
   symbolOrder?: SortKey
+  volumeFactor?: number
   minVolFactor?: number
   maxSlRatio?: number
   inverseMaxSlRatio?: number
@@ -82,6 +92,7 @@ interface CalculationRequest {
   positionCostPercent?: number
   takeProfitRatioRange?: [number, number]
   takeProfitRatioStep?: number
+  trailingMinTakeProfitRatio?: number
   blockVolumeRatio?: number
   blockProfitFactorRatio?: number
   dcaProfile?: unknown
@@ -103,7 +114,7 @@ function stopLossRatios(
     absoluteMaximum,
     Math.max(DIRECT_STOP_LOSS_RATIO_MIN, maxSlRatio),
   )
-  const step = Math.max(DIRECT_STOP_LOSS_RATIO_STEP, Math.min(0.75, requestedStep))
+  const step = Math.max(DIRECT_STOP_LOSS_RATIO_STEP, Math.min(DIRECT_STOP_LOSS_RATIO_MAX, requestedStep))
   for (let ratio = DIRECT_STOP_LOSS_RATIO_MIN; ratio <= safeMaximum + 0.00001; ratio += step) {
     ratios.push(Number(Math.min(ratio, safeMaximum).toFixed(2)))
   }
@@ -184,8 +195,10 @@ function createCalculationSummaryAccumulator(details: {
   minRecentProfitFactor: number
   recentEvaluationPositions: number
   positionCostPercent: number
+  minVolFactor: number
   takeProfitRatioRange: [number, number]
   takeProfitRatioStep: number
+  trailingMinTakeProfitRatio: number
   takeProfitPositionCostRatios: number[]
   activityVolumeRatio: number
   maxHoldMinutes: number
@@ -566,11 +579,15 @@ export async function POST(request: NextRequest) {
       clampDirectTradeSymbolCount(body.symbolCount),
     )
     const symbolOrder: SortKey = body.symbolOrder || "volatility_1h"
-    // 0.1 is the smallest supported Direct-Trade volume factor. This default
-    // intentionally applies to simulation and live execution alike.
-    const minVolFactor = Math.max(0.1, numberOr(body.minVolFactor, 0.1))
-    const maxSlRatio = numberOr(body.maxSlRatio, DIRECT_STOP_LOSS_RATIO_MAX)
-    const inverseMaxSlRatio = numberOr(body.inverseMaxSlRatio, DIRECT_INVERSE_STOP_LOSS_RATIO_MAX)
+    // The factor is a base-sizing input. Exchange minimums are enforced only
+    // at live order submission, so historical evaluation is not inflated by
+    // venue floors and the UI range remains identical to runtime sizing.
+    const minVolFactor = clampDirectTradeVolumeFactor(
+      body.volumeFactor ?? body.minVolFactor,
+      DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+    )
+    const maxSlRatio = numberOr(body.maxSlRatio, DIRECT_STOP_LOSS_RATIO_DEFAULT)
+    const inverseMaxSlRatio = numberOr(body.inverseMaxSlRatio, DIRECT_INVERSE_STOP_LOSS_RATIO_DEFAULT)
     const slRatioStep = Math.max(DIRECT_STOP_LOSS_RATIO_STEP, Math.min(0.75, numberOr(body.slRatioStep, DIRECT_STOP_LOSS_RATIO_STEP)))
     const timeframes = normaliseDirectTradeTimeframes(body.timeframes)
     const timeframeSets = buildTimeframeCombinations(timeframes)
@@ -580,14 +597,17 @@ export async function POST(request: NextRequest) {
       : [1, 12]
     blockRange.sort((left, right) => left - right)
     const trailingEnabled = body.trailingEnabled !== false
-    const minProfitFactor = Math.max(
-      0.8,
-      numberOr(body.minProfitFactor, DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT),
+    const minProfitFactor = normalizeMainTradePfRatio(
+      body.minProfitFactor,
+      DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
     )
     // A 12-position recent window avoids accepting a historical PF that is
     // already contradicted by the latest closed positions. The shared strict
     // default is checked by the deterministic full-matrix paper test.
-    const minRecentProfitFactor = Math.max(0.8, numberOr(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
+    const minRecentProfitFactor = normalizeMainTradePfRatio(
+      body.minRecentProfitFactor,
+      DIRECT_TRADE_RECENT_PF_DEFAULT,
+    )
     const recentEvaluationPositions = Math.max(3, Math.floor(numberOr(body.recentEvaluationPositions, 12)))
     const maxDrawdownTimeMin = Math.max(1, numberOr(body.maxDrawdownTimeMin, 10))
     const historyHours = clampDirectTradeHistoryHours(body.historyHours, 48)
@@ -604,6 +624,10 @@ export async function POST(request: NextRequest) {
     const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios(
       normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange),
       normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep),
+    )
+    const trailingMinTakeProfitRatio = normaliseDirectTradeTrailingMinTakeProfitRatio(
+      body.trailingMinTakeProfitRatio,
+      DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
     )
     const takeProfitRange = takeProfitPositionCostRatios.map((ratio) =>
       directTradeTakeProfitPercent(positionCostPercent, ratio),
@@ -717,8 +741,10 @@ export async function POST(request: NextRequest) {
       minRecentProfitFactor,
       recentEvaluationPositions,
       positionCostPercent,
+      minVolFactor,
       takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange),
       takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep),
+      trailingMinTakeProfitRatio,
       takeProfitPositionCostRatios,
       activityVolumeRatio,
       maxHoldMinutes,
@@ -852,6 +878,7 @@ export async function POST(request: NextRequest) {
                   blockVolumeRatio,
                   tpRange: plan.tpRange,
                   takeProfitPositionCostRatios,
+                  trailingMinTakeProfitRatio,
                   slRatios: plan.slRatios,
                   trailOptions: plan.trailOptions,
                   entryTactics,

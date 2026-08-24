@@ -347,10 +347,10 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
                 <div className="text-sm text-muted-foreground">Execution Mode</div>
                 <div className="text-lg font-bold">
                   {(settings.blockAdjustment ?? settings.variantBlockEnabled) !== false
-                    ? settings.blockOnly !== false
-                      ? "Block-only"
-                      : "Standard + Block"
-                    : "Standard only"}
+                    ? settings.normalEnabled === false
+                      ? "Block independent · Normal off"
+                      : "Normal + Block independent"
+                    : settings.normalEnabled === false ? "All main families off" : "Normal only"}
                 </div>
               </div>
               <div>

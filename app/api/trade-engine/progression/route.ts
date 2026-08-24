@@ -2,6 +2,8 @@ import { NextResponse } from "next/server"
 import { getActiveConnectionsForEngine, getConnectionTrades, getConnectionPositions, initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+import { buildProgressionScope } from "@/lib/progression-scope"
 
 export const dynamic = "force-dynamic"
 
@@ -87,27 +89,53 @@ export async function GET() {
     const progressionData = await Promise.allSettled(
       activeConnections.map(async (conn) => {
         try {
+          const engineType = String((conn as any).engine_type || (conn as any).engineType || "main").trim() || "main"
+          const scope = buildProgressionScope(conn.id, engineType)
           // OPTIMIZATION: Batch load all data in parallel per connection
-          const [trades, positions, progressionState, engineStatus, runtimeState, settingsRuntimeState, storedProgression] = await Promise.all([
+          const [
+            trades,
+            positions,
+            progressionState,
+            runtimeState,
+            settingsRuntimeState,
+            scopedRuntimeState,
+            scopedSettingsRuntimeState,
+            storedProgression,
+          ] = await Promise.all([
             getConnectionTrades(conn.id).catch(() => []),
             getConnectionPositions(conn.id).catch(() => []),
-            ProgressionStateManager.getProgressionState(conn.id).catch(() => ProgressionStateManager.getDefaultState(conn.id)),
-            coordinator.getEngineStatus(conn.id).catch(() => null),
+            ProgressionStateManager.getProgressionState(conn.id, engineType).catch(() => ProgressionStateManager.getDefaultState(conn.id)),
             redis.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
             redis.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
-            getSettings(`engine_progression:${conn.id}`).catch(() => ({})),
+            redis.hgetall(`trade_engine_state:${conn.id}:${engineType}`).catch(() => ({} as Record<string, string>)),
+            redis.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+            Promise.all([
+              getSettings(`engine_progression:${conn.id}`).catch(() => ({})),
+              getSettings(scope.engineProgressionKey).catch(() => ({})),
+            ]).then(([legacy, scoped]) => ({ ...(legacy || {}), ...(scoped || {}) })),
           ])
 
           const tradeCount = trades?.length || 0
           const pseudoCount = positions?.length || 0
-          const processorHeartbeat = Math.max(
-            Number((runtimeState as any)?.last_processor_heartbeat || 0),
-            Number((settingsRuntimeState as any)?.last_processor_heartbeat || 0),
-          )
-          const hasFreshHeartbeat =
-            Number.isFinite(processorHeartbeat) && processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
+          const localManagerRunning = coordinator.isEngineRunning(conn.id)
           const enabledForProcessing = conn.is_enabled_dashboard === true || conn.is_enabled_dashboard === "1"
-          const isEngineRunning = engineStatus !== null || (globalRunning && !globalPaused && hasFreshHeartbeat)
+          const distributedRuntime = resolveDistributedEngineRuntime({
+            runningHint: localManagerRunning ? true : null,
+            states: [
+              runtimeState,
+              settingsRuntimeState,
+              scopedRuntimeState,
+              scopedSettingsRuntimeState,
+            ],
+            globalState: globalEngineState,
+            connectionEnabled: enabledForProcessing,
+          })
+          // A manager object can outlive a stopped engine. `getEngineStatus()`
+          // returning any object is therefore not liveness proof; require this
+          // connection's running manager or a fresh distributed heartbeat.
+          const isEngineRunning =
+            globalRunning && !globalPaused &&
+            (localManagerRunning || distributedRuntime.running)
           const engineState = isEngineRunning
             ? "running"
             : globalPaused
@@ -132,6 +160,7 @@ export async function GET() {
 
           return {
             connectionId: conn.id,
+            engineType,
             connectionName: conn.name,
             exchange: conn.exchange,
             isEnabled: conn.is_enabled,
@@ -139,6 +168,9 @@ export async function GET() {
             isLiveTrading: conn.is_live_trade,
             isEngineRunning,
             engineState,
+            runtimeReason: distributedRuntime.reason,
+            heartbeatFresh: distributedRuntime.heartbeatFresh,
+            heartbeatAgeMs: distributedRuntime.heartbeatAgeMs,
             engineProgression: storedProgression || {},
             tradeCount,
             pseudoPositionCount: pseudoCount,

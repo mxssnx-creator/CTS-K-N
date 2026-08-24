@@ -38,6 +38,7 @@ describe("trade-engine PnL statistics", () => {
         closedAt: "2026-07-25T11:00:00.000Z",
         realizedPnL: 10,
         marginUsd: 50,
+        orderId: "entry-win",
       },
       {
         id: "loss",
@@ -51,6 +52,7 @@ describe("trade-engine PnL statistics", () => {
         closedAt: "2026-07-25T11:00:00.000Z",
         realizedPnL: -5,
         marginUsd: 50,
+        orderId: "entry-loss",
       },
     ])
     mockGetLivePositions.mockResolvedValue([
@@ -63,6 +65,7 @@ describe("trade-engine PnL statistics", () => {
         markPrice: 102,
         executedQuantity: 1,
         marginUsd: 25,
+        orderId: "entry-open",
       },
     ])
 
@@ -72,7 +75,7 @@ describe("trade-engine PnL statistics", () => {
     const stats = response.body.stats
 
     expect(mockGetLivePositions).toHaveBeenCalledWith("conn-stats")
-    expect(mockGetClosedLivePositions).toHaveBeenCalledWith("conn-stats", 1000)
+    expect(mockGetClosedLivePositions).toHaveBeenCalledWith("conn-stats", 50)
     expect(stats).toMatchObject({
       source: "live_position_ledger",
       total_positions: 3,
@@ -90,11 +93,46 @@ describe("trade-engine PnL statistics", () => {
       profit_factor: 2,
       profit_factor_last_12: 2,
       profit_factor_last_25: 2,
+      profit_factor_last_50: 2,
       profit_factor_last_75: 2,
       avg_holding_time_min: 30,
     })
     expect(stats.last_25_positions).toHaveLength(2)
+    expect(stats.last_50_positions).toHaveLength(2)
     expect(stats.last_25_positions[1].holding_time_min).toBe(0)
+  })
+
+  test("excludes paper positions from the last-50 exchange PnL", async () => {
+    mockGetClosedLivePositions.mockResolvedValue([{
+      id: "paper-close",
+      status: "simulated",
+      executionMode: "simulation",
+      symbol: "BTCUSDT",
+      direction: "long",
+      realizedPnL: 999,
+    }, {
+      id: "venue-close",
+      status: "closed",
+      executionMode: "live",
+      orderId: "venue-entry",
+      symbol: "BTCUSDT",
+      direction: "long",
+      realizedPnL: 2,
+      totalExecutedQuantity: 1,
+      entryPrice: 100,
+      closePrice: 102,
+    }])
+    mockGetLivePositions.mockResolvedValue([])
+
+    const response = await GET({
+      url: "http://localhost/api/trade-engine/pnl-stats?connection_id=conn-real-only",
+    })
+
+    expect(response.body.stats).toMatchObject({
+      closed_positions: 1,
+      realized_pnl: 2,
+      last_50_pnl: 2,
+    })
   })
 
   test("requires an explicit active connection instead of silently reading X01", async () => {

@@ -168,8 +168,10 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                     <h3 className="text-lg font-semibold">Main Trade PositionCost Ratios</h3>
                     <p className="text-xs text-muted-foreground">
                       Minimum cost-relative result required at each stage.
-                      Ratio 0.10 equals one PositionCost. This is separate
-                      from realised Profit Factor (gross profit ÷ gross loss).
+                      Ratio 1.00 is neutral after cost; a +0.10 ratio delta
+                      equals +1× PositionCost net. Selectable thresholds use
+                      1.02–2.30 in 0.02 steps. This is separate from realised
+                      Profit Factor (gross profit ÷ gross loss).
                     </p>
                   </div>
                   <div className="grid md:grid-cols-2 gap-4">

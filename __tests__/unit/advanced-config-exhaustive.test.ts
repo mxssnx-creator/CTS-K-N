@@ -41,10 +41,10 @@ function compactConfig(): AdvancedEngineConfig {
 describe("advanced compatibility configuration generator", () => {
   test("uses the canonical stage ratios and exact independent cooldowns", () => {
     expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.mainMinProfitFactor).toEqual({
-      min: 1,
-      max: 2.2,
+      min: 1.02,
+      max: 2.3,
       default: 1.1,
-      step: 0.1,
+      step: 0.02,
     })
     expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.realMinProfitFactor).toBe(1.1)
     expect(DEFAULT_ADVANCED_CONFIG.pseudoPosition.takeProfitSteps).toMatchObject({ min: 5, default: 5 })

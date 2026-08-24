@@ -49,6 +49,7 @@ import { ConnectionDetailedLogDialog } from "@/components/dashboard/connection-d
 import { EngineProcessingLogDialog }   from "@/components/dashboard/engine-processing-log-dialog"
 import { DetailedLoggingDialog }       from "@/components/dashboard/detailed-logging-dialog"
 import { VolumeConfigurationPanel } from "@/components/dashboard/volume-configuration-panel"
+import { HistoricFourHourStatsPanel } from "@/components/dashboard/historic-four-hour-stats"
 import {
   DEFAULT_VOLUME_STEP_RATIO,
   MIN_VOLUME_FACTOR,
@@ -135,6 +136,13 @@ const signalTradeUiFlag = (details: any): boolean =>
   toBoolean(details?.signal_trade_requested) ||
   toBoolean(details?.signal_trade_enabled) ||
   toBoolean(details?.is_signal_trade)
+
+const formatCompactCount = (value: number): string => {
+  const count = nonNegativeMetric(value)
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`
+  return String(count)
+}
 
 interface ActiveConnectionCardProps {
   connection: ActiveConnection & { details?: Connection }
@@ -249,7 +257,7 @@ interface ConnectionStageOverview {
       dca: number
     }
     breakdownComplete: boolean
-    blockOnly: boolean
+    normalEnabled: boolean
   }
   real: {
     valid: number
@@ -440,11 +448,27 @@ export function ActiveConnectionCard({
     indicationsMove: number
     indicationsActive: number
     indicationsActiveAdvanced: number
+    indicationsSpecial: number
     indicationsOptimal: number
     indicationsAuto: number
+    indicationsCommon: number
     indicationsSignal: number
     indicationsTrend: number
     indicationsTotal: number
+    // Complete parameter-grid calculations for the same current snapshot.
+    // Every visible indication cell renders qualified / calculated so a
+    // large grid can never masquerade as thousands of validated Sets.
+    indicationsCalculatedDirection: number
+    indicationsCalculatedMove: number
+    indicationsCalculatedActive: number
+    indicationsCalculatedActiveAdvanced: number
+    indicationsCalculatedSpecial: number
+    indicationsCalculatedOptimal: number
+    indicationsCalculatedAuto: number
+    indicationsCalculatedCommon: number
+    indicationsCalculatedSignal: number
+    indicationsCalculatedTrend: number
+    indicationsCalculatedTotal: number
     // Strategy stages
     stratBase: number
     stratMain: number
@@ -1289,22 +1313,47 @@ export function ActiveConnectionCard({
         const rows = data.strategyRows || {}
         const pm = data.prehistoricMeta || {}
         const ind = bd.indications || {}
+        const activeInd = data?.activeCounts?.indications || {}
+        const calculatedInd = data?.activeCounts?.indicationsEvaluated || {}
         const strat = bd.strategies || {}
         setPrehistoricStats({
-          indicationsDirection: ind.direction || 0,
-          indicationsMove:      ind.move      || 0,
-          indicationsActive:    ind.active    || 0,
-          indicationsActiveAdvanced: ind.activeAdvanced || 0,
-          indicationsOptimal:   ind.optimal   || 0,
-          indicationsAuto:      ind.auto      || 0,
-          indicationsSignal:    ind.signal    || 0,
-          indicationsTrend:     ind.trend     || 0,
-          indicationsTotal:     ind.total     || 0,
-          stratBase:  strat.base || 0,
-          stratMain:  strat.main || 0,
+          // Current, connection-scoped values take precedence over lifetime
+          // breakdown counters. Nullish fallbacks preserve authoritative 0s.
+          indicationsDirection: nonNegativeMetric(activeInd.direction ?? ind.direction),
+          indicationsMove:      nonNegativeMetric(activeInd.move ?? ind.move),
+          indicationsActive:    nonNegativeMetric(activeInd.active ?? ind.active),
+          indicationsActiveAdvanced: nonNegativeMetric(activeInd.activeAdvanced ?? ind.activeAdvanced),
+          indicationsSpecial:   nonNegativeMetric(activeInd.special ?? ind.special),
+          indicationsOptimal:   nonNegativeMetric(activeInd.optimal ?? ind.optimal),
+          indicationsAuto:      nonNegativeMetric(activeInd.auto ?? ind.auto),
+          indicationsCommon:    nonNegativeMetric(activeInd.common ?? ind.common),
+          indicationsSignal:    nonNegativeMetric(activeInd.signal ?? ind.signal),
+          indicationsTrend:     nonNegativeMetric(activeInd.trend ?? ind.trend),
+          indicationsTotal:     nonNegativeMetric(activeInd.total ?? ind.total),
+          indicationsCalculatedDirection: nonNegativeMetric(calculatedInd.direction ?? activeInd.direction ?? ind.direction),
+          indicationsCalculatedMove: nonNegativeMetric(calculatedInd.move ?? activeInd.move ?? ind.move),
+          indicationsCalculatedActive: nonNegativeMetric(calculatedInd.active ?? activeInd.active ?? ind.active),
+          indicationsCalculatedActiveAdvanced: nonNegativeMetric(calculatedInd.activeAdvanced ?? activeInd.activeAdvanced ?? ind.activeAdvanced),
+          indicationsCalculatedSpecial: nonNegativeMetric(calculatedInd.special ?? activeInd.special ?? ind.special),
+          indicationsCalculatedOptimal: nonNegativeMetric(calculatedInd.optimal ?? activeInd.optimal ?? ind.optimal),
+          indicationsCalculatedAuto: nonNegativeMetric(calculatedInd.auto ?? activeInd.auto ?? ind.auto),
+          indicationsCalculatedCommon: nonNegativeMetric(calculatedInd.common ?? activeInd.common ?? ind.common),
+          indicationsCalculatedSignal: nonNegativeMetric(calculatedInd.signal ?? activeInd.signal ?? ind.signal),
+          indicationsCalculatedTrend: nonNegativeMetric(calculatedInd.trend ?? activeInd.trend ?? ind.trend),
+          indicationsCalculatedTotal: nonNegativeMetric(calculatedInd.total ?? activeInd.total ?? ind.total),
+          // The prominent stage count must use the same logical, current
+          // snapshot as the detailed row fields below. `breakdown.strategies`
+          // contains physical/materialized fan-out diagnostics and can be
+          // orders of magnitude larger than the number of independent rows.
+          // Showing that value as "validated sets" made X01/X02 look
+          // inconsistent even though both engines shared the same pipeline.
+          stratBase:  nonNegativeMetric(rows.base?.total ?? strat.base),
+          stratMain:  nonNegativeMetric(rows.main?.overall ?? strat.main),
           stratMainAxisNetted: strat.mainAxisNetted || 0,
-          stratReal:  strat.real || 0,
-          stratLive:  strat.live || 0,
+          stratReal:  nonNegativeMetric(rows.real?.valid ?? strat.real),
+          stratLive:  nonNegativeMetric(
+            rows.live?.executable ?? rows.live?.mirrored ?? rows.live?.total ?? strat.live,
+          ),
           // `strategyRows` is the canonical current, cross-symbol aggregate.
           // strategyDetail intentionally does not duplicate these row fields;
           // reading only `sd.*.row_*` rendered healthy Main/Real stages as 0.
@@ -2893,26 +2942,34 @@ export function ActiveConnectionCard({
                     })()}
 
                     {/* Indications breakdown */}
-                    {prehistoricStats && prehistoricStats.indicationsTotal > 0 && (
+                    {prehistoricStats && (
+                      prehistoricStats.indicationsTotal > 0 ||
+                      prehistoricStats.indicationsCalculatedTotal > 0
+                    ) && (
                       <div className="space-y-0.5">
                         <div className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
-                          Indications Evaluated ({prehistoricStats.indicationsTotal.toLocaleString()})
+                          Current Indications · qualified / calculated ({prehistoricStats.indicationsTotal.toLocaleString()} / {prehistoricStats.indicationsCalculatedTotal.toLocaleString()})
                         </div>
-                        <div className="grid grid-cols-8 gap-1">
+                        <div className="grid grid-cols-5 gap-1 sm:grid-cols-10">
                           {[
-                            { label: "Dir", value: prehistoricStats.indicationsDirection },
-                            { label: "Move", value: prehistoricStats.indicationsMove },
-                            { label: "Act", value: prehistoricStats.indicationsActive },
-                            { label: "Adv", value: prehistoricStats.indicationsActiveAdvanced },
-                            { label: "Opt", value: prehistoricStats.indicationsOptimal },
-                            { label: "Auto", value: prehistoricStats.indicationsAuto },
-                            { label: "Signal", value: prehistoricStats.indicationsSignal },
-                            { label: "Trend", value: prehistoricStats.indicationsTrend },
-                          ].map(({ label, value }) => (
+                            { label: "Dir", value: prehistoricStats.indicationsDirection, calculated: prehistoricStats.indicationsCalculatedDirection },
+                            { label: "Move", value: prehistoricStats.indicationsMove, calculated: prehistoricStats.indicationsCalculatedMove },
+                            { label: "Act", value: prehistoricStats.indicationsActive, calculated: prehistoricStats.indicationsCalculatedActive },
+                            { label: "Adv", value: prehistoricStats.indicationsActiveAdvanced, calculated: prehistoricStats.indicationsCalculatedActiveAdvanced },
+                            { label: "Special", value: prehistoricStats.indicationsSpecial, calculated: prehistoricStats.indicationsCalculatedSpecial },
+                            { label: "Opt", value: prehistoricStats.indicationsOptimal, calculated: prehistoricStats.indicationsCalculatedOptimal },
+                            { label: "Auto", value: prehistoricStats.indicationsAuto, calculated: prehistoricStats.indicationsCalculatedAuto },
+                            { label: "Common", value: prehistoricStats.indicationsCommon, calculated: prehistoricStats.indicationsCalculatedCommon },
+                            { label: "Signal", value: prehistoricStats.indicationsSignal, calculated: prehistoricStats.indicationsCalculatedSignal },
+                            { label: "Trend", value: prehistoricStats.indicationsTrend, calculated: prehistoricStats.indicationsCalculatedTrend },
+                          ].map(({ label, value, calculated }) => (
                             <div key={label} className="text-center">
                               <div className="text-[8px] text-muted-foreground">{label}</div>
-                              <div className="text-[10px] font-semibold tabular-nums">
-                                {value >= 1000 ? `${(value / 1000).toFixed(1)}K` : value}
+                              <div
+                                className="text-[10px] font-semibold tabular-nums"
+                                title={`${value.toLocaleString()} qualified of ${calculated.toLocaleString()} calculated`}
+                              >
+                                {formatCompactCount(value)} / {formatCompactCount(calculated)}
                               </div>
                             </div>
                           ))}
@@ -2939,7 +2996,7 @@ export function ActiveConnectionCard({
                     ) && (
                       <div className="space-y-1">
                         <div className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
-                          Strategy Sets with Open Positions
+                          Current Logical Stage Rows &amp; Open Positions
                         </div>
                         {/* Stage rows: Base → Main → Real → Live (exchange-side outcomes) */}
                         {[
@@ -3017,11 +3074,16 @@ export function ActiveConnectionCard({
                           // historic PF aggregation block).
                           (count > 0 || evaluated > 0 || avgPF > 0 || (label === "Real" && (prehistoricStats.realOpen > 0 || prehistoricStats.liveOpenPositions > 0)) || (label === "Base" && total > 0) || (label === "Main" && (valid > 0 || overall > 0)) || (label === "Real" && (valid > 0 || active > 0))) && (
                             <div key={label} className="space-y-0.5">
-                              {/* Main row: label, sets/positions count, pass/fill ratio, PF */}
+                              {/* Main row: logical rows/positions count, pass/fill ratio, PF */}
                               <div className="flex items-center gap-2 text-[10px]">
                                 <span className={`font-semibold w-7 shrink-0 ${color}`}>{label}</span>
-                                 <span className="font-semibold tabular-nums">
-                                   {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "sets"}
+                                 <span
+                                   className="font-semibold tabular-nums"
+                                   title={isLive
+                                     ? "Current exchange execution positions"
+                                     : "Current independent logical stage rows; physical Cartesian/materialized fan-out is excluded"}
+                                 >
+                                   {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "rows"}
                                  </span>
                                  {label === "Base" && total > 0 && (
                                    <span className="text-muted-foreground">
@@ -3744,7 +3806,9 @@ export function ActiveConnectionCard({
                   <div className="rounded-lg border border-violet-200/70 bg-violet-50/70 p-2.5 dark:border-violet-900/70 dark:bg-violet-950/25">
                     <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
                       Main
-                      {connectionStageOverview.main.blockOnly && <Badge variant="outline" className="h-4 px-1 text-[8px]">Block-only</Badge>}
+                      <Badge variant="outline" className="h-4 px-1 text-[8px]">
+                        Normal {connectionStageOverview.main.normalEnabled ? "on" : "off"}
+                      </Badge>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div><div className="text-[9px] text-muted-foreground">Open valid</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.main.valid.toLocaleString()}</div></div>
@@ -3930,6 +3994,13 @@ export function ActiveConnectionCard({
                   <DetailedLoggingDialog />
                 </div>
               </div>
+
+              {/* Final exhaustive historic diagnostic: every fixed UTC
+                  four-hour window, with PositionCost-relative PF and classic
+                  realised PF kept as separate accounting coordinates. */}
+              <HistoricFourHourStatsPanel
+                stats={statsSnapshot?.historicFourHour ?? null}
+              />
             </CardContent>
           </CollapsibleContent>
         </Card>

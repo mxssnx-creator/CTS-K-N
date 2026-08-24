@@ -11,6 +11,32 @@ Redis, current schema migrations, explicit exchange credentials and operator
 intent, durable coordination, and the live-order safety gates. A normal build or
 installation never enables live trading automatically.
 
+## Project continuity and remote maintenance
+
+The authoritative 2026-08-24 integration base is the recovered clean remote
+commit `cc46330ed7dbba3bdceb9ef267b53736e7902c68`, which descends from GitHub
+`main@d9cc80b00c567b8954cc86c021eb963d1fb96139`. The persistent integration
+checkout is `/workspace/CTS-K-N-integration`; the isolated local-change
+checkpoint is `f7b6157`, and the pre-deploy remote backup is recorded in the
+Chisel guide. Older `/workspace/CTS-*` trees are checkpoints only and must not
+be deployed over this integration branch.
+
+Remote maintenance uses the credential-free procedure in
+[`docs/REMOTE-CHISEL-WORKMODE.md`](docs/REMOTE-CHISEL-WORKMODE.md) and
+[`scripts/connect-remote-chisel.sh`](scripts/connect-remote-chisel.sh). In
+Work-mode, Chisel and SSH must run in the same process and Chisel must receive
+that process's inherited `HTTP_PROXY`. The endpoint and pinned fingerprint are
+public project facts; Chisel auth, SSH keys, exchange credentials, `.env`
+files, Redis snapshots, and raw account reports must remain owner-only and
+outside Git.
+
+Before every remote reinstall or reset: create a timestamped backup under
+`/var/backups/cts-kn`, preserve the production environment and credentials,
+inventory systemd/PM2/NGINX/Redis state, and deploy only a verified merged
+GitHub revision. A DB reset never authorizes deleting exchange credentials or
+touching positions/orders that are not owned by the selected CTS connection
+and its unique client IDs.
+
 ## Quick start
 
 Requirements: Node.js 20 or newer and pnpm `10.28.1`.
@@ -64,7 +90,7 @@ sudo bash -c 'cd /opt/cts-kn && bash scripts/install.sh --preflight-only --skip-
 The installer supports Debian/Ubuntu and RHEL/Fedora/Amazon Linux families,
 uses systemd when available or PM2 when selected, provisions one application
 owner plus one minute-scheduler owner, verifies Redis persistence and schema
-v84, tests/builds before cutover, checks restart recovery, and restores the
+v103, tests/builds before cutover, checks restart recovery, and restores the
 previous `.next` build on failure.
 
 It reuses already-installed packages and runtimes. When absent, Bun is installed
@@ -152,11 +178,27 @@ jobs. Both share the same durable Redis state.
   Redis so active/closed counts, PF, DDT, Block pauses, DCA steps, stats, and
   restart recovery use the same lineage.
 
-The Block minimum ProfitFactor for count `n` is:
+The Block minimum PositionCost coordinate for count `n` is:
 
 ```text
-blockMinPF(n) = defaultMinPF × blockProfitFactorRatio × (n × blockVolumeRatio)
+blockMinPF(n) = 1 + ((defaultMinPF - 1) × blockProfitFactorRatio × (n × blockVolumeRatio))
 ```
+
+The neutral `1.00` base is never scaled. Classic realized ProfitFactor remains
+the separate gross-profit/gross-loss statistic.
+
+Historic calculation diagnostics use fixed four-hour UTC windows and retain
+every enabled config×symbol evaluation, indication result, and strategy result
+without sampling. Closed strategy results use the same PositionCost coordinate:
+
+```text
+historicPF = 1.00 + (0.10 × (sum(netPnlPercent) / sum(positionCostPercent)))
+```
+
+`1.00` is neutral and `1.10` is exactly one average PositionCost of net result.
+Open results never enter realised PnL/PF, and PositionCost is not deducted a
+second time. The Connection Card shows this coordinate beside the independent
+classic realised PF for every four-hour row.
 
 The physical Block target uses the immutable general order volume and never
 compounds earlier Count fills:
@@ -187,7 +229,7 @@ The complete recreation kit begins at
 
 - system architecture, ownership, and complete directory map;
 - stage, Block, DCA, exchange, and settings propagation contracts;
-- Redis data model, schema v91 migrations, recovery, and backup rules;
+- Redis data model, schema v103 migrations, recovery, and backup rules;
 - complete environment/deployment/install procedures;
 - acceptance tests and a clean-room rebuild runbook;
 - generated API, page, environment, migration, test, source-tree, and SHA-256

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto"
 import { type NextRequest, NextResponse } from "next/server"
 import {
   getSettings,
@@ -10,10 +11,13 @@ import {
 } from "@/lib/redis-db"
 import {
   clampDirectTradeSymbolCount,
+  clampDirectTradeVolumeFactor,
   DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
   DIRECT_TRADE_MAX_TOTAL_POSITIONS,
+  DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
 } from "@/lib/direct-trade-limits"
 import {
   normaliseDirectTradeTimeframes,
@@ -22,10 +26,12 @@ import {
   normaliseExitTactics,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
+  normaliseDirectTradeTrailingMinTakeProfitRatio,
   DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
+  DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   type DirectTradeEntryTiming,
   type DirectTradeEntryTactic,
   type DirectTradeExitTactic,
@@ -40,6 +46,7 @@ import {
   readDirectTradeConfigsAtIndexes,
 } from "@/lib/direct-trade-config-store"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { normalizeMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
 import {
   buildDirectTradeOpenPositionStage,
@@ -62,6 +69,13 @@ const DIRECT_TRADE_PROCESSOR_LEASE_MS = 6_000
 // polling the complete historical matrix.
 const DIRECT_TRADE_PROCESSING_INTERVAL_DEFAULT_MS = 280
 
+function sameProcessorSecret(received: string | null, expected: string): boolean {
+  if (!received || !expected) return false
+  const left = Buffer.from(received)
+  const right = Buffer.from(expected)
+  return left.length === right.length && timingSafeEqual(left, right)
+}
+
 export interface DirectTradeState {
   enabled: boolean
   liveMode: boolean
@@ -74,6 +88,8 @@ export interface DirectTradeState {
   symbolCount: number
   symbolOrder: "volatility_1h" | "volume" | "volatility"
   minVolFactor: number
+  volumeFactorEffectiveRatio?: number
+  volumeFactorDefaultsVersion?: number
   positionCostPercent: number
   maxSlRatio: number
   slRatioStep: number
@@ -95,6 +111,9 @@ export interface DirectTradeState {
   // The selected range uses unit handles; this is the sparse Set-generation
   // stride, kept separate so a 32-symbol matrix remains bounded.
   takeProfitRatioStep: number
+  // Trailing variants are evaluated/opened only when their TP target is at
+  // least this many PositionCost steps away. Non-trailing lanes remain intact.
+  trailingMinTakeProfitRatio: number
   // Allows the previous shipped TP defaults to move to the 5× contract once
   // without repeatedly rewriting later operator choices.
   takeProfitDefaultsVersion?: number
@@ -114,8 +133,8 @@ export interface DirectTradeState {
   keepEnabledPosCount: number     // Per symbol/direction/config: last N pos to check keep-enabled
   deactivatePosCount: number      // Negative last-N average permanently disables this exact config lineage
   minProfitFactor: number         // Min PF to keep config enabled
-  // Marks state written after the shipped full-history PF default changed to
-  // 4. This lets an explicit new 0.8 operator override survive later reads.
+  // Marks state written after Direct admission moved from classic realised PF
+  // to the canonical PositionCost-relative selection coordinate.
   fullHistoryPfDefaultsVersion?: number
   // Allows the former shipped 300-position default to move to the calibrated
   // 100-position target without repeatedly rewriting later operator choices.
@@ -162,7 +181,9 @@ const DEFAULT_STATE: DirectTradeState = {
   recalcIntervalMs: 2 * 60 * 60 * 1000, // 2 hours
   symbolCount: 8,
   symbolOrder: "volatility_1h",
-  minVolFactor: 0.1,
+  minVolFactor: DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+  volumeFactorEffectiveRatio: DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
+  volumeFactorDefaultsVersion: 1,
   positionCostPercent: POSITION_COST_PERCENT_DEFAULT,
   maxSlRatio: 0.75,
   slRatioStep: 0.25,
@@ -177,6 +198,7 @@ const DEFAULT_STATE: DirectTradeState = {
   maxHoldMinutes: 120,
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+  trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   takeProfitDefaultsVersion: 2,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
@@ -189,7 +211,7 @@ const DEFAULT_STATE: DirectTradeState = {
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
   minProfitFactor: DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
-  fullHistoryPfDefaultsVersion: 1,
+  fullHistoryPfDefaultsVersion: 2,
   positionCapacityDefaultsVersion: 1,
   minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
@@ -289,6 +311,13 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
     const raw = await client.get(directTradeKeyspace(connectionId).state)
     if (raw) {
       const persisted = JSON.parse(raw)
+      const persistedVolumeFactor = persisted?.volumeFactor ?? persisted?.minVolFactor
+      // The former unversioned install used 10 as its shipped Direct-Trade
+      // factor. Treat that exact legacy default as the new minimal default;
+      // once versioned, an explicitly selected value up to 10 is preserved.
+      const hasLegacyVolumeFactorDefault =
+        (Number(persisted?.volumeFactorDefaultsVersion) || 0) < 1
+        && Number(persistedVolumeFactor) === 10
       // Upgrade only the exact former default pair. Any mixed values remain
       // deliberate operator capacity choices.
       const hasLegacyCapacityDefaults = Number(persisted?.maxPositionsPerSymbol) === 3
@@ -315,6 +344,12 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
         liveMode: persisted?.liveMode === true,
         connectionId: normaliseConnectionId(persisted?.connectionId),
         symbolOrder: normaliseSymbolOrder(persisted?.symbolOrder),
+        minVolFactor: clampDirectTradeVolumeFactor(
+          hasLegacyVolumeFactorDefault ? DIRECT_TRADE_VOLUME_FACTOR_DEFAULT : persistedVolumeFactor,
+          DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+        ),
+        volumeFactorEffectiveRatio: DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
+        volumeFactorDefaultsVersion: 1,
         // Migrate the former 1m/10m/15m defaults to the optimized exact
         // 5m/15m/30m coordination set.
         timeframes: normaliseDirectTradeTimeframes(persisted?.timeframes),
@@ -346,6 +381,10 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
             persisted?.takeProfitRatioStep,
             DEFAULT_STATE.takeProfitRatioStep,
           ),
+        trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(
+          persisted?.trailingMinTakeProfitRatio ?? persisted?.trailingMinStep,
+          DEFAULT_STATE.trailingMinTakeProfitRatio,
+        ),
         takeProfitDefaultsVersion: 2,
         // Upgrade exactly the former shipped 300-position default once. A
         // different persisted limit is an explicit operator choice.
@@ -355,23 +394,20 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
           : clampOpenPositionLimit(persisted?.maxTotalPositions, DEFAULT_STATE.maxTotalPositions),
         positionCapacityDefaultsVersion: 1,
         slRatioStep: clampStopLossRatioStep(persisted?.slRatioStep, DEFAULT_STATE.slRatioStep),
-        // Upgrade the former shipped 0.8 default only for legacy state. Once
-        // versioned, an explicit operator value (including 0.8) is preserved.
-        minProfitFactor: Math.max(
-          0.8,
-          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 1
-            && Number(persisted?.minProfitFactor) === 0.8
+        minProfitFactor: normalizeMainTradePfRatio(
+          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 2
+            && [0.8, 4].includes(Number(persisted?.minProfitFactor))
             ? DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT
-            : Number(persisted?.minProfitFactor) || DEFAULT_STATE.minProfitFactor,
+            : persisted?.minProfitFactor,
+          DEFAULT_STATE.minProfitFactor,
         ),
-        fullHistoryPfDefaultsVersion: 1,
-        // 10 was the former shipped default. Migrate exactly that value to
-        // the new stricter default, while preserving custom choices.
-        minRecentProfitFactor: Math.max(
-          0.8,
-          Number(persisted?.minRecentProfitFactor) === 10
+        fullHistoryPfDefaultsVersion: 2,
+        minRecentProfitFactor: normalizeMainTradePfRatio(
+          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 2
+            && [10, 25].includes(Number(persisted?.minRecentProfitFactor))
             ? DIRECT_TRADE_RECENT_PF_DEFAULT
-            : Number(persisted?.minRecentProfitFactor) || DEFAULT_STATE.minRecentProfitFactor,
+            : persisted?.minRecentProfitFactor,
+          DEFAULT_STATE.minRecentProfitFactor,
         ),
         recentEvaluationPositions: Math.max(3, Math.floor(Number(persisted?.recentEvaluationPositions) || DEFAULT_STATE.recentEvaluationPositions)),
         // Migrate the former hard-coded 500 ms default while preserving an
@@ -384,6 +420,7 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
         blockRange: normaliseBlockRange(persisted?.blockRange, DEFAULT_STATE.blockRange),
         blockVolumeRatio: clampBlockVolumeRatio(persisted?.blockVolumeRatio, DEFAULT_STATE.blockVolumeRatio),
         blockProfitFactorRatio: clampBlockProfitFactorRatio(persisted?.blockProfitFactorRatio, DEFAULT_STATE.blockProfitFactorRatio),
+        maxSlRatio: clampStopLossRatio(persisted?.maxSlRatio, DEFAULT_STATE.maxSlRatio),
         maxPositionsPerSymbol: hasLegacyCapacityDefaults
           ? DEFAULT_STATE.maxPositionsPerSymbol
           : Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerSymbol) || DEFAULT_STATE.maxPositionsPerSymbol))),
@@ -409,13 +446,13 @@ async function setState(state: DirectTradeState, connectionId: string | null = s
 
 function clampStopLossRatio(value: unknown, fallback = 0.75): number {
   const raw = Number(value)
-  const clamped = Math.max(0.25, Math.min(0.75, Number.isFinite(raw) ? raw : fallback))
+  const clamped = Math.max(0.25, Math.min(1.5, Number.isFinite(raw) ? raw : fallback))
   return Number((Math.round(clamped / 0.25) * 0.25).toFixed(2))
 }
 
 function clampInverseStopLossRatio(value: unknown, fallback = 1.25): number {
   const raw = Number(value)
-  const clamped = Math.max(0.25, Math.min(1.25, Number.isFinite(raw) ? raw : fallback))
+  const clamped = Math.max(0.25, Math.min(1.5, Number.isFinite(raw) ? raw : fallback))
   return Number((Math.round(clamped / 0.25) * 0.25).toFixed(2))
 }
 
@@ -433,6 +470,15 @@ function clampOpenPositionLimit(value: unknown, fallback = DIRECT_TRADE_DEFAULT_
 function clampProcessingInterval(value: unknown, fallback = DIRECT_TRADE_PROCESSING_INTERVAL_DEFAULT_MS): number {
   const raw = Number(value)
   return Math.max(100, Math.min(5_000, Math.round(Number.isFinite(raw) ? raw : fallback)))
+}
+
+function requestedDirectTradeVolumeFactor(body: any, fallback: unknown): number {
+  const requested = body?.volumeFactor !== undefined
+    ? body.volumeFactor
+    : body?.minVolFactor !== undefined
+      ? body.minVolFactor
+      : fallback
+  return clampDirectTradeVolumeFactor(requested, clampDirectTradeVolumeFactor(fallback))
 }
 
 function normaliseConnectionId(value: unknown): string | null {
@@ -504,6 +550,22 @@ async function acquireProcessorLease(
   // A current lease may only be renewed by its exact owner. This gives one
   // processor authority over simulated or live positions and prevents a
   // second script from duplicating entries after a reload.
+  const owner = await client.get(leaseKey).catch(() => null)
+  if (owner !== instanceId) return false
+  const renewed = await client.set(leaseKey, instanceId, {
+    XX: true,
+    PX: processorLeaseMs(),
+  }).catch(() => null)
+  return renewed === "OK" || renewed === true
+}
+
+async function renewOwnedProcessorLease(
+  client: any,
+  instanceId: string,
+  connectionId: string | null,
+): Promise<boolean> {
+  if (!instanceId || instanceId.length > 160) return false
+  const leaseKey = directTradeKeyspace(connectionId).processorLease
   const owner = await client.get(leaseKey).catch(() => null)
   if (owner !== instanceId) return false
   const renewed = await client.set(leaseKey, instanceId, {
@@ -638,11 +700,19 @@ export async function GET(request: NextRequest) {
         const openPositions = Array.isArray(positions)
           ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
           : 0
+        const accountingPending = Array.isArray(positions)
+          ? positions.filter((position: any) => (
+              position?.status === "closed"
+              && position?.mode === "live"
+              && position?.pnlAccountingComplete !== true
+            )).length
+          : 0
         return {
           connectionId: id,
           enabled: state?.enabled === true,
           liveMode: state?.liveMode === true,
           openPositions,
+          accountingPending,
           processor,
         }
       }))
@@ -753,7 +823,9 @@ export async function POST(request: NextRequest) {
         ...(body.connectionId !== undefined ? { connectionId: normaliseConnectionId(body.connectionId) } : {}),
         ...(body.symbolCount !== undefined ? { symbolCount: clampDirectTradeSymbolCount(body.symbolCount) } : {}),
         ...(body.symbolOrder !== undefined ? { symbolOrder: normaliseSymbolOrder(body.symbolOrder) } : {}),
-        ...(body.minVolFactor !== undefined ? { minVolFactor: Math.max(0.1, Number(body.minVolFactor) || 0.1) } : {}),
+        ...((body.minVolFactor !== undefined || body.volumeFactor !== undefined)
+          ? { minVolFactor: requestedDirectTradeVolumeFactor(body, currentState.minVolFactor) }
+          : {}),
         ...(body.positionCostPercent !== undefined ? { positionCostPercent: normalizePositionCostPercent(body.positionCostPercent) } : {}),
         ...(body.maxSlRatio !== undefined ? { maxSlRatio: clampStopLossRatio(body.maxSlRatio) } : {}),
         ...(body.slRatioStep !== undefined ? { slRatioStep: clampStopLossRatioStep(body.slRatioStep) } : {}),
@@ -769,6 +841,7 @@ export async function POST(request: NextRequest) {
         ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
         ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
         ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
+        ...(body.trailingMinTakeProfitRatio !== undefined ? { trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(body.trailingMinTakeProfitRatio, currentState.trailingMinTakeProfitRatio) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
         ...(body.blockProfitFactorRatio !== undefined ? { blockProfitFactorRatio: clampBlockProfitFactorRatio(body.blockProfitFactorRatio, currentState.blockProfitFactorRatio) } : {}),
@@ -781,8 +854,8 @@ export async function POST(request: NextRequest) {
         // stale PF/DDT/trailing limits until a later debounced config update.
         ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.max(3, Number(body.keepEnabledPosCount) || 3) } : {}),
         ...(body.deactivatePosCount !== undefined ? { deactivatePosCount: Math.max(3, Number(body.deactivatePosCount) || 3) } : {}),
-        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
-        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
+        ...(body.minProfitFactor !== undefined ? { minProfitFactor: normalizeMainTradePfRatio(body.minProfitFactor, DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
+        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: normalizeMainTradePfRatio(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
         ...(body.recentEvaluationPositions !== undefined ? { recentEvaluationPositions: Math.max(3, Math.floor(Number(body.recentEvaluationPositions) || 3)) } : {}),
         ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Number(body.maxDrawdownTimeMin) || 1) } : {}),
         ...(body.prevPosWindow !== undefined ? { prevPosWindow: Math.max(5, Number(body.prevPosWindow) || 5) } : {}),
@@ -827,7 +900,9 @@ export async function POST(request: NextRequest) {
         ...(body.connectionId !== undefined ? { connectionId: normaliseConnectionId(body.connectionId) } : {}),
         ...(body.symbolCount !== undefined ? { symbolCount: clampDirectTradeSymbolCount(body.symbolCount) } : {}),
         ...(body.symbolOrder !== undefined ? { symbolOrder: normaliseSymbolOrder(body.symbolOrder) } : {}),
-        ...(body.minVolFactor !== undefined ? { minVolFactor: Math.max(0.1, Number(body.minVolFactor) || 0.1) } : {}),
+        ...((body.minVolFactor !== undefined || body.volumeFactor !== undefined)
+          ? { minVolFactor: requestedDirectTradeVolumeFactor(body, currentState.minVolFactor) }
+          : {}),
         ...(body.positionCostPercent !== undefined ? { positionCostPercent: normalizePositionCostPercent(body.positionCostPercent) } : {}),
         ...(body.maxSlRatio !== undefined ? { maxSlRatio: clampStopLossRatio(body.maxSlRatio) } : {}),
         ...(body.slRatioStep !== undefined ? { slRatioStep: clampStopLossRatioStep(body.slRatioStep) } : {}),
@@ -843,6 +918,7 @@ export async function POST(request: NextRequest) {
         ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
         ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
         ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
+        ...(body.trailingMinTakeProfitRatio !== undefined ? { trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(body.trailingMinTakeProfitRatio, currentState.trailingMinTakeProfitRatio) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
         ...(body.blockProfitFactorRatio !== undefined ? { blockProfitFactorRatio: clampBlockProfitFactorRatio(body.blockProfitFactorRatio, currentState.blockProfitFactorRatio) } : {}),
@@ -853,8 +929,8 @@ export async function POST(request: NextRequest) {
         // Evaluation settings (instant effect on processor via loadState sync)
         ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.max(3, Number(body.keepEnabledPosCount) || 3) } : {}),
         ...(body.deactivatePosCount !== undefined ? { deactivatePosCount: Math.max(3, Number(body.deactivatePosCount) || 3) } : {}),
-        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Number(body.minProfitFactor) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
-        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: Math.max(0.8, Number(body.minRecentProfitFactor) || DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
+        ...(body.minProfitFactor !== undefined ? { minProfitFactor: normalizeMainTradePfRatio(body.minProfitFactor, DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT) } : {}),
+        ...(body.minRecentProfitFactor !== undefined ? { minRecentProfitFactor: normalizeMainTradePfRatio(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT) } : {}),
         ...(body.recentEvaluationPositions !== undefined ? { recentEvaluationPositions: Math.max(3, Math.floor(Number(body.recentEvaluationPositions) || 3)) } : {}),
         ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Number(body.maxDrawdownTimeMin) || 1) } : {}),
         ...(body.prevPosWindow !== undefined ? { prevPosWindow: Math.max(5, Number(body.prevPosWindow) || 5) } : {}),
@@ -873,6 +949,26 @@ export async function POST(request: NextRequest) {
       await client.set(directTradeKeyspace(scopeConnectionId).stats, JSON.stringify(DEFAULT_STATS))
       await persistDirectTradeSnapshot("statistics reset")
       return NextResponse.json({ success: true, message: "Stats reset" })
+    }
+
+    if (body.action === "processor-heartbeat") {
+      const processorToken = String(process.env.DIRECT_TRADE_PROCESSOR_TOKEN || "")
+      if (processorToken.length < 24) {
+        return NextResponse.json({ success: false, error: "Direct-Trade worker token is not configured" }, { status: 503 })
+      }
+      if (!sameProcessorSecret(request.headers.get("x-direct-trade-processor-token"), processorToken)) {
+        return NextResponse.json({ success: false, error: "Direct-Trade worker authentication failed" }, { status: 401 })
+      }
+      const instanceId = typeof body.instanceId === "string" ? body.instanceId : ""
+      const client = await getClient()
+      const leaseHeld = await renewOwnedProcessorLease(client, instanceId, scopeConnectionId)
+      if (!leaseHeld) {
+        return NextResponse.json({ success: true, leaseHeld: false })
+      }
+
+      const keys = directTradeKeyspace(scopeConnectionId)
+      await client.set(keys.processorHeartbeat, new Date().toISOString(), { PX: 20_000 })
+      return NextResponse.json({ success: true, leaseHeld: true })
     }
 
     if (body.action === "processor-sync") {
@@ -915,6 +1011,7 @@ export async function POST(request: NextRequest) {
       write.set(keys.configStatus, JSON.stringify(configStatus))
       write.set(keys.configPerformance, JSON.stringify(configPerformance))
       write.set(keys.processor, JSON.stringify(processor))
+      write.set(keys.processorHeartbeat, now, { PX: 20_000 })
       await write.exec()
       await persistDirectTradeSnapshot("processor position sync")
       // The owner receives the compact, normalized settings acknowledgement

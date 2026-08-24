@@ -23,6 +23,7 @@ const snapshotPath = `/tmp/cts-direct-trade-live-preflight-${process.pid}.json`
 // production build. Next dev removes BUILD_ID and rewrites compiler metadata;
 // sharing `.next` would make an otherwise valid production artifact unusable.
 const preflightDistDir = `.next-live-preflight-${process.pid}`
+const testConnectionId = "bingx-x02"
 const sourceMetadataSnapshots = new Map(
   ["next-env.d.ts", "tsconfig.json"].map((file) => [file, readFileSync(file, "utf8")]),
 )
@@ -67,7 +68,9 @@ async function waitForWarmup() {
   const deadline = Date.now() + 180_000
   let last = null
   while (Date.now() < deadline) {
-    last = await request("/api/trade-engine/direct-trade/status")
+    last = await request(
+      `/api/trade-engine/direct-trade/status?connectionId=${encodeURIComponent(testConnectionId)}`,
+    )
     const historyHours = Number(last?.calculation?.historyHours)
     const tickCount = Number(last?.processor?.tickCount || 0)
     const calculationReady = last?.calculationProgress?.status === "ready"
@@ -143,7 +146,7 @@ async function main() {
       body: JSON.stringify({
         action: "start",
         liveMode: true,
-        connectionId: "bingx-x01",
+        connectionId: testConnectionId,
         symbolCount,
         symbols,
         // Live starts at 48h and may expand to 90h only if the result graph is
@@ -166,7 +169,13 @@ async function main() {
       throw new Error(`Could not enter Direct-Trade live lifecycle: ${JSON.stringify(started)}`)
     }
 
-    worker = spawn(process.execPath, ["scripts/direct-trade-processor.mjs", "--port", String(port)], {
+    worker = spawn(process.execPath, [
+      "scripts/direct-trade-processor.mjs",
+      "--port",
+      String(port),
+      "--connection-id",
+      testConnectionId,
+    ], {
       cwd: process.cwd(),
       detached: process.platform !== "win32",
       env: {

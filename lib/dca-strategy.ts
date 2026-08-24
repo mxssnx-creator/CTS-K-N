@@ -1,5 +1,3 @@
-import { applySystemVolumeFactor } from "./constants"
-
 export type DcaTakeProfitMode = "average" | "first_entry" | "breakeven_plus"
 
 /** Hard system ceiling: total confirmed position / immutable first fill. */
@@ -293,7 +291,11 @@ export function resolveNextDcaStep(args: {
  * Higher ratios (>1.0) = larger volumes for aggregation
  * Lower ratios (<1.0) = smaller volumes for conservative testing
  * 
- * Final quantities = baseQuantity * ratio; venue rules are applied at submit
+ * Final quantities = baseQuantity * ratio; venue rules are applied at submit.
+ * `baseQuantity` is the immutable, exchange-confirmed first fill and therefore
+ * already contains the global 0.2 execution scalar. Applying that scalar here
+ * again would double-reduce DCA legs and break the configured total-position
+ * ratio in both historic calculations and live execution.
  * Strategy internal calculations can use higher ratios for optimization
  * 
  * @param baseQuantity - Base quantity at ratio 1.0 (system default)
@@ -309,7 +311,7 @@ export function calculateDcaAddQuantity(
   if (!Number.isFinite(baseQuantity) || baseQuantity <= 0) return 0
   // Default ratio 1.0 keeps the DCA lane at identity before the shared scalar.
   const ratio = Number.isFinite(volumeMultiplier) && volumeMultiplier > 0 ? volumeMultiplier : 1.0
-  const requested = applySystemVolumeFactor(baseQuantity * ratio)
+  const requested = baseQuantity * ratio
   const boundedMaxRatio = finiteInRange(
     maxPositionVolumeRatio,
     MAX_DCA_POSITION_VOLUME_RATIO,

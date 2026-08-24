@@ -15,6 +15,7 @@ import {
 import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import type { ExchangeConnection } from "@/lib/types"
 import { resolveExecutableQuantity } from "@/lib/order-quantity"
+import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
 
 export const LIVE_ORDER_REDIS_KEYS = {
@@ -199,7 +200,11 @@ async function claimDirectOrderControl(record: DirectOrderControlRecord): Promis
   return { owned: false, record: existing }
 }
 
-async function resolveSubmittedQuantity(input: PlaceLiveOrderInput, symbol: string): Promise<{
+async function resolveSubmittedQuantity(
+  input: PlaceLiveOrderInput,
+  symbol: string,
+  connection?: ExchangeConnection | any,
+): Promise<{
   quantity: number
   requestedQuantity: number
   adjusted: boolean
@@ -218,19 +223,47 @@ async function resolveSubmittedQuantity(input: PlaceLiveOrderInput, symbol: stri
   } catch {
     pair = null
   }
+  const exchange = String(connection?.exchange || connection?.exchange_name || connection?.id || "")
+    .trim()
+    .toLowerCase()
+  const isBingX = exchange.includes("bingx")
+  const quantityRules: Record<string, unknown> = { ...(pair || {}) }
+  if (isBingX) {
+    // Direct-Trade can start before the optional trading-pair cache has been
+    // warmed. Keep the request minimal but never below the known BingX base
+    // quantity floor. Once exact venue metadata is present, it is authoritative
+    // and must not be inflated by a conservative static fallback.
+    const persistedMinimum = Number(
+      quantityRules.minQuantity
+      ?? quantityRules.min_order_size
+      ?? quantityRules.min_quantity,
+    )
+    const staticMinimum = getVenueMinQty(symbol)
+    if (!(persistedMinimum > 0)) quantityRules.minQuantity = staticMinimum
+    else quantityRules.minQuantity = persistedMinimum
+  }
+
   let marketPrice = Number(input.price) || 0
   if (!(marketPrice > 0) && input.reduceOnly !== true) {
     const market = await getMarketData(symbol, "1m").catch(() => null as any)
     const latest = market && (market.latest || (Array.isArray(market) ? market[market.length - 1] : null))
     marketPrice = Number(latest?.close ?? latest?.[4] ?? latest?.price ?? 0) || 0
   }
+  const hasVenueNotionalMinimum = [
+    quantityRules.minNotionalUsdt,
+    quantityRules.minNotional,
+    quantityRules.min_notional_usdt,
+  ].some((value) => Number(value) > 0)
   return resolveExecutableQuantity(
     input.quantity,
     marketPrice,
-    pair,
+    quantityRules,
     {
       reduceOnly: input.reduceOnly === true,
-      universalMinNotionalUsdt: input.reduceOnly === true ? 0 : 5,
+      // Use the venue's own notional floor when present. The $5 fallback is
+      // only for a cold/missing metadata cache and is never added on top of
+      // an exchange-provided minimum.
+      universalMinNotionalUsdt: input.reduceOnly === true || hasVenueNotionalMinimum ? 0 : 5,
     },
   )
 }
@@ -820,11 +853,16 @@ async function recordLiveOrderSourceCounter(
   const increment = async (metric: string) => client.hincrby(key, `${lane}:${metric}`, 1)
   if (event === "placed") await increment("placed")
   if (event === "failed") await increment("failed")
-  if (event === "filled" || event === "simulated") {
-    if (event === "simulated") {
-      await increment("simulated")
-      await increment("placed")
+  if (event === "simulated") {
+    await increment("simulated")
+    if (options.countPositionCreated !== false) await increment("simulated_position_created")
+    if (options.countAccumulated === true) await increment("simulated_accumulated")
+    if (volumeUsd) {
+      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(key, `${lane}:simulated_volume_usd`, volumeUsd)
+      else await client.hincrby(key, `${lane}:simulated_volume_usd`, Math.round(volumeUsd))
     }
+  }
+  if (event === "filled") {
     await increment("filled")
     if (options.countPositionCreated !== false) await increment("position_created")
     if (options.countAccumulated === true) await increment("accumulated")
@@ -869,7 +907,10 @@ export async function recordLiveOrderProgression(
   const directionKey = normalizeDirection(direction)
   if (!(await claimLiveOrderProgressionEvent(connectionId, eventKey))) return false
   await recordLiveOrderSourceCounter(connectionId, options.source, event, volumeUsd, options)
-  if (event === "placed") await client.hincrby(progKey, "live_orders_placed_count", 1)
+  if (event === "placed") {
+    await client.hincrby(progKey, "live_orders_attempted_count", 1)
+    await client.hincrby(progKey, "live_orders_placed_count", 1)
+  }
   if (event === "filled") {
     await client.hincrby(progKey, "live_orders_filled_count", 1)
     if (options.countPositionCreated !== false) {
@@ -883,32 +924,26 @@ export async function recordLiveOrderProgression(
       else await client.hincrby(progKey, "live_volume_usd_total", Math.round(volumeUsd))
     }
   }
-  if (event === "failed") await client.hincrby(progKey, "live_orders_failed_count", 1)
+  if (event === "failed") {
+    await client.hincrby(progKey, "live_orders_attempted_count", 1)
+    await client.hincrby(progKey, "live_orders_failed_count", 1)
+  }
   if (event === "simulated") {
-    // Canonical paper execution: simulated orders immediately create/open an
-    // executable position, so expose them in the same placed+filled counters
-    // dashboards and accounting code already consume while retaining the
-    // simulated-specific audit counter.
+    // Paper execution has its own counters. Never mix it into real venue
+    // attempted/placed/filled/position-created metrics.
     await client.hincrby(progKey, "live_orders_simulated_count", 1)
-    await client.hincrby(progKey, "live_orders_placed_count", 1)
-    await client.hincrby(progKey, "live_orders_filled_count", 1)
     if (options.countPositionCreated !== false) {
-      await client.hincrby(progKey, "live_positions_created_count", 1)
+      await client.hincrby(progKey, "live_simulated_positions_created_count", 1)
     }
     if (options.countAccumulated === true) {
-      await client.hincrby(progKey, "live_orders_accumulated_count", 1)
+      await client.hincrby(progKey, "live_simulated_orders_accumulated_count", 1)
     }
     if (volumeUsd) {
-      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_volume_usd_total", volumeUsd)
-      else await client.hincrby(progKey, "live_volume_usd_total", Math.round(volumeUsd))
+      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_simulated_volume_usd_total", volumeUsd)
+      else await client.hincrby(progKey, "live_simulated_volume_usd_total", Math.round(volumeUsd))
     }
   }
-  if (event !== "simulated") {
-    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, event)
-  } else {
-    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, "placed")
-    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, "filled")
-  }
+  if (event !== "simulated") await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, event)
   return true
 }
 
@@ -952,7 +987,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const connection = input.connection || await loadLiveOrderConnection(input.connectionId)
   const symbol = normalizeOrderSymbol(input.symbol)
   const direction = normalizeDirection(input.side)
-  const submitted = await resolveSubmittedQuantity(input, symbol)
+  const submitted = await resolveSubmittedQuantity(input, symbol, connection)
   if (!(submitted.quantity > 0)) {
     throw new Error(`Could not resolve an executable quantity for ${symbol}: ${input.quantity}`)
   }

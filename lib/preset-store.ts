@@ -55,6 +55,7 @@ export interface PresetOverview {
     symbols: number
     indicatorTypes: number
     averageProfitFactor: number
+    averagePositionCostRatio: number
     averageWinRate: number
     averageDrawdownHours: number
     netR: number
@@ -62,6 +63,7 @@ export interface PresetOverview {
       day: number
       date: string
       profitFactor: number
+      positionCostRatio: number
       netR: number
       positions: number
     }>
@@ -463,6 +465,26 @@ async function getActiveGeneration(connectionId: string): Promise<string | null>
   return getRedisClient().get(activeGenerationKey(connectionId))
 }
 
+function hydratePresetSelectionCoordinates(preset: OptimizedPreset): OptimizedPreset {
+  const averageR = Number(preset.metrics?.averageR) || 0
+  const positionCostRatio = Number.isFinite(Number(preset.metrics?.positionCostRatio))
+    ? Number(preset.metrics.positionCostRatio)
+    : 1 + averageR * 0.1
+  return {
+    ...preset,
+    metrics: {
+      ...preset.metrics,
+      positionCostRatio,
+      daily: (preset.metrics?.daily || []).map((row) => ({
+        ...row,
+        positionCostRatio: Number.isFinite(Number(row.positionCostRatio))
+          ? Number(row.positionCostRatio)
+          : 1 + (Number(row.averageR) || 0) * 0.1,
+      })),
+    },
+  }
+}
+
 async function loadPresetsByIds(
   connectionId: string,
   generationId: string,
@@ -473,7 +495,8 @@ async function loadPresetsByIds(
   const values = await client.mget(...ids.map((id) => candidateKey(connectionId, generationId, id)))
   return values.flatMap((raw) => {
     const preset = parseJson<OptimizedPreset | null>(raw, null)
-    return preset ? [preset] : []
+    if (!preset) return []
+    return [hydratePresetSelectionCoordinates(preset)]
   })
 }
 
@@ -507,7 +530,8 @@ export async function getOptimizedPreset(
   const generationId = await getActiveGeneration(connectionId)
   if (!generationId) return null
   const raw = await getRedisClient().get(candidateKey(connectionId, generationId, presetId))
-  return parseJson(raw, null)
+  const preset = parseJson<OptimizedPreset | null>(raw, null)
+  return preset ? hydratePresetSelectionCoordinates(preset) : null
 }
 
 async function writeProgress(connectionId: string, progress: PresetOptimizationProgress): Promise<void> {
@@ -580,6 +604,9 @@ async function persistGeneration(
     indicatorTypeCount: String(indicatorTypes.size),
     averageProfitFactor: String(average(
       presets.map((preset) => Math.min(10, preset.metrics.averageProfitFactor)),
+    )),
+    averagePositionCostRatio: String(average(
+      presets.map((preset) => preset.metrics.positionCostRatio),
     )),
     averageWinRate: String(average(presets.map((preset) => preset.metrics.winRate))),
     averageDrawdownHours: String(average(
@@ -939,6 +966,7 @@ export async function getPresetOverview(
       day: index + 1,
       date: rows[0]?.date || "",
       profitFactor: roundedAverage(rows.map((row) => Math.min(10, row.profitFactor))),
+      positionCostRatio: roundedAverage(rows.map((row) => row.positionCostRatio)),
       netR: Math.round(rows.reduce((sum, row) => sum + row.netR, 0) * 10_000) / 10_000,
       positions: rows.reduce((sum, row) => sum + row.positions, 0),
     }
@@ -955,6 +983,7 @@ export async function getPresetOverview(
       symbols: symbols.length,
       indicatorTypes: indicatorTypes.length,
       averageProfitFactor: roundedAverage(presets.map((preset) => Math.min(10, preset.metrics.averageProfitFactor))),
+      averagePositionCostRatio: roundedAverage(presets.map((preset) => preset.metrics.positionCostRatio)),
       averageWinRate: roundedAverage(presets.map((preset) => preset.metrics.winRate)),
       averageDrawdownHours: roundedAverage(presets.map((preset) => preset.metrics.drawdownTimeHours)),
       netR: Math.round(presets.reduce((sum, preset) => sum + preset.metrics.netR, 0) * 10_000) / 10_000,
@@ -993,6 +1022,7 @@ export async function getPresetChannelOverview(
         symbols: 0,
         indicatorTypes: 0,
         averageProfitFactor: 0,
+        averagePositionCostRatio: 1,
         averageWinRate: 0,
         averageDrawdownHours: 0,
         netR: 0,
@@ -1023,6 +1053,7 @@ export async function getPresetChannelOverview(
         symbols: legacy.summary.symbols,
         indicatorTypes: legacy.summary.indicatorTypes,
         averageProfitFactor: legacy.summary.averageProfitFactor,
+        averagePositionCostRatio: legacy.summary.averagePositionCostRatio,
         averageWinRate: legacy.summary.averageWinRate,
         averageDrawdownHours: legacy.summary.averageDrawdownHours,
         netR: legacy.summary.netR,
@@ -1043,6 +1074,7 @@ export async function getPresetChannelOverview(
       symbols: Number(metadata.symbolCount || 0),
       indicatorTypes: Number(metadata.indicatorTypeCount || 0),
       averageProfitFactor: Number(metadata.averageProfitFactor || 0),
+      averagePositionCostRatio: Number(metadata.averagePositionCostRatio || 1),
       averageWinRate: Number(metadata.averageWinRate || 0),
       averageDrawdownHours: Number(metadata.averageDrawdownHours || 0),
       netR: Number(metadata.netR || 0),

@@ -68,23 +68,26 @@ If Count 3 is selected first, its one order is `4.5` and the total is still
 recorded as already covered and sends no exchange order. This preserves
 independent Set results without over-adding physical exposure.
 
-## Independent minimum ProfitFactor
+## Independent minimum PF coordinate
 
 Every `blockCount` is validated independently at the Real stage before Live
-selection. Its minimum ProfitFactor is proportional to the normal/default Real
-threshold and that count's actual volume increment:
+selection. Its minimum PositionCost coordinate scales only the positive
+distance above neutral `1.00`, proportional to the configured ratio and that
+count's actual volume increment:
 
 ```text
-blockMinPF = defaultMinPF × blockProfitFactorRatio × blockVolumeIncrement
+blockMinPF = 1 + ((defaultMinPF - 1) × blockProfitFactorRatio × blockVolumeIncrement)
 blockVolumeIncrement = blockCount × blockVolumeRatio
 ```
 
 `blockProfitFactorRatio` is configurable from `0.2..5.0` and defaults to
 `0.8`. The exact Block Set reads the same latest-closed-position window and
-uses the same minimum-sample threshold as the normal PF calculation. A cold
-enabled lane starts immediately from the matching normal PF, with no private
-Block progression. Once its own window is mature, its effective minimum is the
-greater of the matching normal PF and the configured count-specific floor.
+uses the same minimum-sample threshold as the normal coordinate calculation. A
+cold enabled lane starts immediately from the matching normal coordinate, with
+no private Block progression. Once its own window is mature, its effective
+minimum is the greater of the matching normal coordinate and the configured
+count-specific floor. Classic realized PF remains a separate
+gross-profit/gross-loss statistic.
 Results from another Block count are never reused. Active counts remain valid
 until their exchange position closes, even if a later settings change raises
 their current minimum.

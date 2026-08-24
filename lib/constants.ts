@@ -12,12 +12,12 @@ import {
 export const MIN_VOLUME_FACTOR = 1
 export const MAX_VOLUME_FACTOR = 10
 export const BASE_VOLUME_RATIO = 1.0
-// Canonical ratio identity for the shared volume path. A configured ratio of
-// 1.0 must remain 1.0 all the way to the venue; hidden post-ratio scalars make
-// ratio comparisons and persisted stats lie about the quantity being traded.
-// Keep the export for snapshot/backward compatibility, but make its meaning
-// explicit: it is an identity multiplier, not an implicit safety haircut.
-export const SYSTEM_VOLUME_FACTOR_MULTIPLIER = 1
+// Explicit global execution ratio. Every pseudo/live sizing result carries
+// this provenance as `systemVolumeFactor`, and adjustment reasons surface it,
+// so a configured channel factor of 1 requests one fifth of the former
+// notional without hiding the reduction from UI/statistics consumers. Venue
+// quantity/notional floors remain authoritative for executable orders.
+export const SYSTEM_VOLUME_FACTOR_MULTIPLIER = 0.2
 
 export function applySystemVolumeFactor(value: unknown): number {
   const parsed = Number(value)

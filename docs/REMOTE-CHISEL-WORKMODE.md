@@ -42,6 +42,69 @@ copy it into the repository or a backup archive.
 The direct target root@152.53.114.112 -p 2222 bypasses the tunnel and is
 wrong. Port 443 is the separate sslh path, not the Chisel forward.
 
+## Current verification record (2026-08-24)
+
+The Work-mode transport path was rechecked with Chisel 1.11.8 and the
+process-local `HTTP_PROXY`:
+
+- the HTTP proxy reached the configured Chisel endpoint;
+- the server presented the expected fingerprint shown above;
+- an obsolete owner-only client auth file was rejected, which confirmed that
+  endpoint and fingerprint verification failed closed;
+- after that local file was updated to the active persistent server auth, the
+  tunnel connected at approximately 180–213 ms;
+- strict SSH host-key verification passed and `root@127.0.0.1 -p 2222`
+  returned the expected Linux host identity;
+- `/opt/cts-kn`, Redis, NGINX, the application, scheduler and Direct-Trade
+  services were inventoried through this path; the app answered HTTP 200 on
+  its local port 3002.
+
+The working invariant is therefore confirmed: use the current owner-only auth,
+start Chisel and SSH in the same Work-mode process, and target
+`root@127.0.0.1`. Never paste the auth value into this document, Git history,
+service logs, or a command transcript.
+
+Before the 2026-08-24 maintenance integration, the clean remote repository was
+`cc46330ed7dbba3bdceb9ef267b53736e7902c68` on branch
+`codex-sync-73d17e5`. A verified pre-deploy checkpoint containing Git, source,
+the owner-only environment, systemd units and a fresh Redis RDB was written to
+`/var/backups/cts-kn/20260824T051626Z-pre-direct-pf-v101`. Credentials and the
+Redis image remain on the server and are not copied into source control.
+
+The supplied NetBird web-SSH peer link was also checked on this date and
+returned `Site Unavailable`; it is therefore only an optional recovery path,
+not a validated replacement for Chisel. Teleport has no active local profile.
+
+## Persistent client service
+
+For a normal Linux client machine (not the CTS server itself), install the
+credential-free template `docs/chisel-client.service.example` as
+`/etc/systemd/system/chisel-client.service`. Put only this line in
+`/etc/chisel/client.env` and set it to mode 0600:
+
+    CTS_CHISEL_AUTH=chisel:<persistent-token>
+
+Then run:
+
+    systemctl daemon-reload
+    systemctl enable --now chisel-client.service
+    systemctl status --no-pager chisel-client.service
+    ssh -i /path/to/private-key -p 2222 root@127.0.0.1
+
+The service template deliberately contains the plain endpoint rather than a
+Markdown link and passes `user:token` as one argument. Do not include the
+presentation escapes from chat (`\:` or `\--`) in the environment value.
+
+## Failure classification
+
+| Last reliable output | Meaning | Action |
+| --- | --- | --- |
+| no fingerprint | process-local proxy or endpoint failure | start Chisel and SSH in the same command process and pass its inherited proxy |
+| expected fingerprint, then `Authentication failed` | server auth and client auth differ | repair/confirm the active server auth; do not rotate host keys |
+| `Connected (Latency ...)`, then local SSH says connection refused from another Work-mode command | process namespaces differ | run SSH in the same helper process as Chisel |
+| `Connected (Latency ...)`, then SSH host-key error | Chisel works but the pinned SSH host key differs | stop and investigate the server identity |
+| `Connected (Latency ...)`, then SSH key rejection | Chisel works but the root SSH key/authorization differs | verify the owner-only private key and remote `authorized_keys` |
+
 ## Verification and safety
 
 The helper uses strict SSH host-key checking and the supplied

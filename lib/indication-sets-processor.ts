@@ -527,15 +527,21 @@ function directionalProcessingResult(
   qualifiedCandidates: readonly IndicationCandidate[],
   evaluatedConfigurations: number,
 ) {
+  const evaluated = Math.max(0, evaluatedConfigurations)
   return {
     type,
     total,
     qualified: qualifiedCandidates.length,
     configs: qualifiedCandidates.length,
+    // `qualified` is the current forward-performance-qualified output while
+    // `evaluated` is the complete parameter grid visited in this cycle. Keep
+    // both dimensions explicit so the UI never labels calculated candidates
+    // as validated Sets (or vice versa).
+    evaluated,
     byDirection: countDirectionalCandidates(qualifiedCandidates),
     evaluatedByDirection: {
-      long: Math.max(0, evaluatedConfigurations),
-      short: Math.max(0, evaluatedConfigurations),
+      long: evaluated,
+      short: evaluated,
     },
   }
 }
@@ -1665,10 +1671,17 @@ export class IndicationSetsProcessor {
             type,
             error: error instanceof Error ? error.message : String(error),
           }).catch(() => {})
-          return { type, total: 0, qualified: 0, configs: 0, error: true }
+          return { type, total: 0, qualified: 0, configs: 0, evaluated: 0, error: true }
         }
       }
-      const disabledResult = (type: string) => ({ type, total: 0, qualified: 0, configs: 0, disabled: true })
+      const disabledResult = (type: string) => ({
+        type,
+        total: 0,
+        qualified: 0,
+        configs: 0,
+        evaluated: 0,
+        disabled: true,
+      })
       // The per-type calculators are CPU- and allocation-heavy before their
       // first Redis await. A Promise.all therefore did not gain CPU parallelism
       // in Node; it constructed seven large candidate graphs at once and could
@@ -1785,13 +1798,21 @@ export class IndicationSetsProcessor {
         const activeKey = `indication_sets_active:${this.connectionId}`
         const activeFields: Record<string, string> = {
           [`${symbol}:direction`]:       String(directionResults?.qualified ?? 0),
+          [`${symbol}:direction:evaluated`]: String(directionResults?.evaluated ?? 0),
           [`${symbol}:move`]:            String(moveResults?.qualified      ?? 0),
+          [`${symbol}:move:evaluated`]: String(moveResults?.evaluated ?? 0),
           [`${symbol}:active`]:          String(activeResults?.qualified    ?? 0),
+          [`${symbol}:active:evaluated`]: String(activeResults?.evaluated ?? 0),
           [`${symbol}:active_advanced`]: String(activeAdvancedResults?.qualified ?? 0),
+          [`${symbol}:active_advanced:evaluated`]: String(activeAdvancedResults?.evaluated ?? 0),
           [`${symbol}:special`]:         String(specialResults?.qualified ?? 0),
+          [`${symbol}:special:evaluated`]: String(specialResults?.evaluated ?? 0),
           [`${symbol}:optimal`]:         String(optimalResults?.qualified   ?? 0),
+          [`${symbol}:optimal:evaluated`]: String(optimalResults?.evaluated ?? 0),
           [`${symbol}:common`]:          String(commonResults?.qualified    ?? 0),
+          [`${symbol}:common:evaluated`]: String(commonResults?.evaluated ?? 0),
           [`${symbol}:trend`]:           String(trendResults?.qualified     ?? 0),
+          [`${symbol}:trend:evaluated`]: String(trendResults?.evaluated ?? 0),
           [`${symbol}:long`]:            String(longQualified),
           [`${symbol}:short`]:           String(shortQualified),
         }
@@ -1963,6 +1984,14 @@ export class IndicationSetsProcessor {
   ): Promise<IndicationCandidate[]> {
     const pendingOutcomes: PendingRealtimeOutcomeWrite[] = []
     const completedOutcomes: CompletedRealtimeOutcomeWrite[] = []
+    // A completed forward window is the only evidence that may validate an
+    // exact configuration. Read all existing windows in bounded pipelines;
+    // without this lookup a pending row that was closed by the lifecycle
+    // worker was immediately treated as a brand-new bootstrap candidate on
+    // the next market snapshot.
+    const priorPerformance = this.currentCyclePersistenceEnabled
+      ? await this.readOutcomePerformanceBatch(candidates.map((candidate) => candidate.setKey))
+      : new Map<string, OutcomePerformance>()
     const attached = await mapLimit(
       candidates,
       this.outcomeAttachmentConcurrency,
@@ -1973,6 +2002,17 @@ export class IndicationSetsProcessor {
         candidate.indication.metadata = {
           ...(candidate.indication.metadata || {}),
           direction,
+        }
+        const existingPerformance = priorPerformance.get(candidate.setKey)
+        if (existingPerformance && existingPerformance.count > 0) {
+          this.applyCompletedOutcomePerformance(
+            candidate.indication,
+            undefined,
+            existingPerformance,
+          )
+          return existingPerformance.positionCostRatio >= this.baseMinimumPfRatio
+            ? candidate
+            : null
         }
         const profitFactor = await this.attachOutcomeBackedProfitFactor(
           symbol,
@@ -2013,6 +2053,54 @@ export class IndicationSetsProcessor {
     // cannot suppress a current valid indication for the same exact Set.
     if (!this.currentCyclePersistenceEnabled) return qualified
     return this.claimQualifiedCandidateCooldowns(symbol, qualified)
+  }
+
+  /** Read exact rolling outcome aggregates without an O(configs) RTT loop. */
+  private async readOutcomePerformanceBatch(
+    setKeys: readonly string[],
+  ): Promise<Map<string, OutcomePerformance>> {
+    const uniqueKeys = Array.from(new Set(setKeys.filter(Boolean)))
+    const performanceBySet = new Map<string, OutcomePerformance>()
+    if (uniqueKeys.length === 0) return performanceBySet
+
+    const client = await getCachedClient()
+    for (let start = 0; start < uniqueKeys.length; start += INDICATION_REDIS_BATCH_SIZE) {
+      const chunk = uniqueKeys.slice(start, start + INDICATION_REDIS_BATCH_SIZE)
+      if (typeof client.pipeline === "function") {
+        const pipeline = client.pipeline()
+        for (const setKey of chunk) pipeline.hgetall(`${setKey}:outcome_stats`)
+        const results = await pipeline.exec()
+        for (let index = 0; index < chunk.length; index++) {
+          const raw = pipelineResultValue(results?.[index]) as Record<string, string> | null
+          const parsed = this.parseOutcomeStats(raw)
+          if (!parsed || parsed.count <= 0) continue
+          performanceBySet.set(
+            chunk[index],
+            this.outcomePerformanceFromStats(parsed.grossProfit, parsed.grossLoss, parsed.count),
+          )
+        }
+      } else {
+        const rows = await mapWithConcurrency(
+          chunk,
+          this.outcomeAttachmentConcurrency,
+          async (setKey) => [
+            setKey,
+            await client.hgetall(`${setKey}:outcome_stats`).catch(() => ({})),
+          ] as const,
+          { yieldEvery: 1 },
+        )
+        for (const [setKey, raw] of rows) {
+          const parsed = this.parseOutcomeStats(raw)
+          if (!parsed || parsed.count <= 0) continue
+          performanceBySet.set(
+            setKey,
+            this.outcomePerformanceFromStats(parsed.grossProfit, parsed.grossLoss, parsed.count),
+          )
+        }
+      }
+      await yieldIndicationScheduler()
+    }
+    return performanceBySet
   }
 
   private candidateCooldown(
@@ -3123,6 +3211,7 @@ export class IndicationSetsProcessor {
           signalScore: indication.signalScore,
           rawSignalStrength: indication.rawSignalStrength,
           confidence: indication.confidence,
+          validated: indication.validated === true,
           config,
           metadata: indication.metadata,
         }
@@ -3205,6 +3294,7 @@ export class IndicationSetsProcessor {
         signalScore: indication.signalScore,
         rawSignalStrength: indication.rawSignalStrength,
         confidence: indication.confidence,
+        validated: indication.validated === true,
         config,
         metadata: indication.metadata,
       }
@@ -3258,19 +3348,44 @@ export class IndicationSetsProcessor {
     const direction = resolveIndicationDirection(indication)
     if (!direction) return 0
     indication.direction = direction
-    // Replay has no permitted forward window. Keep a qualifying exact row at
-    // the Base threshold without touching realtime outcome rings or queues.
+    // Historical replay may use only the explicitly supplied future grading
+    // window. It never mutates realtime rings. If no complete forward result
+    // exists, the exact configuration stays neutral/unvalidated instead of
+    // manufacturing a successful 1.10 result for every Cartesian tuple.
     if (!this.currentCyclePersistenceEnabled) {
-      indication.profitFactor = this.baseMinimumPfRatio
+      const historicalOutcome = this.evaluateForwardOutcome(
+        marketData,
+        direction,
+        undefined,
+        indication?.metadata?.activeProtection,
+      )
+      if (historicalOutcome.completed) {
+        const sample = this.createOutcomeSample(historicalOutcome)
+        const performance = this.outcomePerformanceFromStats(
+          sample.profit,
+          sample.loss,
+          1,
+        )
+        this.applyCompletedOutcomePerformance(indication, historicalOutcome, performance)
+        indication.metadata = {
+          ...indication.metadata,
+          historicalSnapshot: true,
+          profitFactorSource: "historical_forward_window",
+        }
+        return performance.positionCostRatio
+      }
+      indication.profitFactor = 1
+      indication.validated = false
       indication.metadata = {
         ...indication.metadata,
         outcomePending: false,
         historicalSnapshot: true,
-        positionCostRatio: this.baseMinimumPfRatio,
+        positionCostRatio: 1,
         positionCostPct: this.trendPositionCostPct,
-        profitFactorSource: "historical_snapshot_base",
+        validationState: "insufficient_forward_history",
+        profitFactorSource: "historical_snapshot_neutral",
       }
-      return this.baseMinimumPfRatio
+      return 1
     }
     const outcome = this.evaluateForwardOutcome(
       marketData,
@@ -3292,37 +3407,46 @@ export class IndicationSetsProcessor {
       return performance.positionCostRatio
     }
 
-    // Bootstrap path: no forward/live close exists yet. Preserve the exact
-    // candidate at the Base minimum instead of silently dropping every new
-    // configuration before it has a chance to produce its first result.
-    indication.profitFactor = this.baseMinimumPfRatio
+    // Bootstrap path: queue the exact candidate for forward grading, but do
+    // not call it validated before that result exists. 1.00 is the canonical
+    // PositionCost-neutral coordinate; selectable stage gates start at 1.02.
+    indication.profitFactor = 1
+    indication.validated = false
     indication.metadata = {
       ...indication.metadata,
       outcomePending: true,
-      positionCostRatio: this.baseMinimumPfRatio,
+      positionCostRatio: 1,
       positionCostPct: this.trendPositionCostPct,
       bootstrapWithoutHistory: true,
+      validationState: "pending_forward_outcome",
       profitFactorSource: "pending_realtime_outcome",
     }
     const pendingWrite = this.pendingRealtimeOutcomeWrite(setKey, indication)
     if (deferredPendingOutcomes) deferredPendingOutcomes.push(pendingWrite)
     else await this.persistPendingRealtimeOutcomes(symbol, [pendingWrite])
-    return this.baseMinimumPfRatio
+    return 1
   }
 
   private applyCompletedOutcomePerformance(
     indication: any,
-    outcome: any,
+    outcome: any | undefined,
     performance: OutcomePerformance,
   ): void {
     indication.profitFactor = performance.positionCostRatio
+    indication.validated = performance.positionCostRatio >= this.baseMinimumPfRatio
     indication.metadata = {
       ...indication.metadata,
-      outcome,
+      ...(outcome !== undefined && { outcome }),
       outcomePending: false,
+      bootstrapWithoutHistory: false,
+      validationState:
+        performance.positionCostRatio >= this.baseMinimumPfRatio
+          ? "validated"
+          : "rejected",
       realizedProfitFactor: performance.classicProfitFactor,
       averageMovePct: performance.averageMovePct,
       positionCostRatio: performance.positionCostRatio,
+      outcomeSampleCount: performance.count,
       positionCostPct: this.trendPositionCostPct,
       profitFactorSource: "position_cost_relative_realized_outcomes",
     }
@@ -3655,7 +3779,9 @@ export class IndicationSetsProcessor {
     const safeCount = Math.max(0, Number(count) || 0)
     // Outcome samples are stored as decimal market returns (0.01 = 1%).
     // Convert their rolling signed average to percentage points before
-    // mapping onto the operator's PositionCost-relative 1.00…2.20 scale.
+    // mapping onto the operator's continuous PositionCost-relative scale;
+    // the selectable stage-gate range is 1.02…2.30, but 1.00 remains the
+    // neutral calculation coordinate.
     const averageMovePct = safeCount > 0
       ? ((grossProfit - grossLoss) / safeCount) * 100
       : 0

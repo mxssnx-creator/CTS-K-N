@@ -1,4 +1,8 @@
 import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
+import {
+  normalizeMainTradePfRatio,
+  signedResultRToMainTradePfRatio,
+} from "@/lib/main-trade-profit-factor"
 
 export const PRESET_INDICATOR_TYPES = [
   "ma",
@@ -118,6 +122,8 @@ export interface PresetDailyStats {
   profitFactor: number
   netR: number
   averageR: number
+  /** PositionCost-relative selection coordinate for this day's average net R. */
+  positionCostRatio: number
   winRate: number
   positions: number
 }
@@ -125,6 +131,8 @@ export interface PresetDailyStats {
 export interface PresetMetrics {
   profitFactor: number
   averageProfitFactor: number
+  /** Canonical admission coordinate; classic PF remains in `profitFactor`. */
+  positionCostRatio: number
   netR: number
   averageR: number
   grossPositiveR: number
@@ -268,7 +276,7 @@ export function normalizePresetOptimizerSettings(raw: Record<string, unknown> = 
   return {
     historyDays: snap(raw.historyDays, 1, 14, 1, d.historyDays),
     presetsPerSymbol: snap(raw.presetsPerSymbol, 1, 12, 1, d.presetsPerSymbol),
-    minProfitFactor: snap(raw.minProfitFactor, 0.4, 3, 0.1, d.minProfitFactor),
+    minProfitFactor: normalizeMainTradePfRatio(raw.minProfitFactor, d.minProfitFactor),
     maxDrawdownHours: snap(raw.maxDrawdownHours, 1, 24, 0.5, d.maxDrawdownHours),
     takeProfit: normalizeRange(raw.takeProfit as Partial<NumericPresetRange>, d.takeProfit, { min: 3, max: 30, step: 1 }),
     stopLossRatio: normalizeRange(
@@ -1399,12 +1407,14 @@ function metricsForCandidate(
     const profitFactor = dayNegative > 0 ? dayPositive / dayNegative : dayPositive > 0 ? 999 : 0
     if (dayCount > 0) dailyFactors.push(Math.min(10, profitFactor))
     if (includeDaily) {
+      const averageR = dayCount > 0 ? scratch.dailyNetR[index] / dayCount : 0
       daily.push({
         day: index + 1,
         date: new Date(historyStart + (index + 1) * DAY_MS).toISOString().slice(0, 10),
         profitFactor: round(profitFactor, 4),
         netR: round(scratch.dailyNetR[index], 4),
-        averageR: round(dayCount > 0 ? scratch.dailyNetR[index] / dayCount : 0, 4),
+        averageR: round(averageR, 4),
+        positionCostRatio: round(signedResultRToMainTradePfRatio(averageR), 6),
         winRate: round((dayCount > 0 ? scratch.dailyWins[index] / dayCount : 0) * 100, 2),
         positions: dayCount,
       })
@@ -1439,6 +1449,7 @@ function metricsForCandidate(
   const sampleConfidence = Math.min(1, count / 24)
   const boundedPf = Math.min(10, aggregateProfitFactor)
   const averageR = count > 0 ? netR / count : 0
+  const positionCostRatio = signedResultRToMainTradePfRatio(averageR)
   const winRate = count > 0 ? wins / count : 0
   const score =
     boundedPf * 3.2 +
@@ -1451,6 +1462,7 @@ function metricsForCandidate(
   return {
     profitFactor: round(aggregateProfitFactor, 4),
     averageProfitFactor: round(averageProfitFactor, 4),
+    positionCostRatio: round(positionCostRatio, 6),
     netR: round(netR, 4),
     averageR: round(averageR, 4),
     grossPositiveR: round(grossPositiveR, 4),
@@ -1468,7 +1480,7 @@ function metricsForCandidate(
     score: round(score, 6),
     eligible:
       count > 0 &&
-      aggregateProfitFactor >= settings.minProfitFactor &&
+      positionCostRatio >= settings.minProfitFactor &&
       drawdownHours <= settings.maxDrawdownHours,
     daily,
   }

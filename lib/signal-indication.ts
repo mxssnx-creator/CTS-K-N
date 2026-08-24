@@ -15,6 +15,10 @@ import {
   SIGNAL_TRAILING_MIN_STOP_PCT_FLOOR,
 } from "@/lib/signal-trailing"
 import {
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  normalizeProtectionPercentages,
+} from "@/lib/trade-protection-contract"
+import {
   SIGNAL_MAX_POSITIONS_DEFAULT,
   SIGNAL_POSITION_SELECTION_MODE,
   calculateSignalCandidateQuality,
@@ -1748,21 +1752,25 @@ export function normalizeSignalRisk(value: unknown): SignalRisk | undefined {
   const sourceIds = Array.isArray(raw.sourceIds)
     ? [...new Set(raw.sourceIds.map((item: unknown) => safePart(String(item))).filter(Boolean))]
     : []
-  const stopLossPct = Number(raw.stopLossPct)
-  const takeProfitPct = Number(raw.takeProfitPct)
-  if (
-    sourceIds.length === 0 ||
-    !Number.isFinite(stopLossPct) ||
-    !Number.isFinite(takeProfitPct) ||
-    stopLossPct <= 0 ||
-    takeProfitPct <= 0
-  ) {
-    return undefined
-  }
+  if (sourceIds.length === 0) return undefined
+  const protection = normalizeProtectionPercentages({
+    takeProfitPct: raw.takeProfitPct,
+    fallbackTakeProfitPct: 0.1,
+    stopLossPct: raw.stopLossPct,
+    fallbackStopLossPct: raw.takeProfitPct,
+    minimumTakeProfitPct: 0.01,
+    minimumStopLossPct: 0.01,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  const stopLossPct = protection.stopLossPct
+  const takeProfitPct = protection.takeProfitPct
   return {
     stopLossPct,
     takeProfitPct,
-    rewardRisk: Number(raw.rewardRisk) > 0 ? Number(raw.rewardRisk) : takeProfitPct / stopLossPct,
+    // The persisted field can be stale or computed from an uncapped legacy
+    // pair.  Keep the normalized TP/SL pair authoritative so downstream
+    // live protection cannot widen the stop through a mismatched rewardRisk.
+    rewardRisk: takeProfitPct / stopLossPct,
     sourceIds,
     ...(raw.sourceId && { sourceId: safePart(String(raw.sourceId)) }),
     ...(raw.configId && { configId: String(raw.configId) }),
@@ -1855,6 +1863,13 @@ async function persistSignalCycle(
   diagnostic: Record<string, unknown>,
 ): Promise<void> {
   const activeCount = indications.length
+  const selectedSourceCount = Array.isArray(diagnostic.selectedSources)
+    ? diagnostic.selectedSources.length
+    : Number(diagnostic.selectedSources) || 0
+  const successfulSourceCount = Array.isArray(diagnostic.successfulSources)
+    ? diagnostic.successfulSources.length
+    : Number(diagnostic.successfulSources) || 0
+  const evaluatedCount = Math.max(activeCount, selectedSourceCount, successfulSourceCount)
   const pipeline = client.multi()
   const activeKey = `indication_sets_active:${connectionId}`
   const activeRawKey = `indications_active:${connectionId}`
@@ -1865,6 +1880,10 @@ async function persistSignalCycle(
   for (const key of [activeKey, activeRawKey, setWindow5, setWindow60, rawWindow5, rawWindow60]) {
     pipeline.hset(key, `${symbol}:signal`, String(activeCount))
   }
+  // Signal does not use the exhaustive local parameter grid. Its evaluated
+  // dimension is the bounded source basket attempted in this cycle. Persist
+  // it beside qualified output so the shared stats contract stays truthful.
+  pipeline.hset(activeKey, `${symbol}:signal:evaluated`, String(evaluatedCount))
   const signalDirectionCounts = indications.reduce(
     (counts, indication) => {
       const direction = indication?.metadata?.direction

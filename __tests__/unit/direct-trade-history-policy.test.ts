@@ -86,8 +86,9 @@ describe("Direct-Trade bounded historic sufficiency", () => {
     expect(historyPolicy.clampDirectTradeHistoryHours("bad", 48)).toBe(48)
   })
 
-  test("keeps the processor and calculation full-history PF default at 4", () => {
-    expect(historyPolicy.DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(4)
-    expect(DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(4)
+  test("keeps processor and calculation on the canonical 1.10 PositionCost coordinate", () => {
+    expect(historyPolicy.DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(1.1)
+    expect(historyPolicy.DIRECT_TRADE_RECENT_PF_DEFAULT).toBe(1.1)
+    expect(DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(1.1)
   })
 })

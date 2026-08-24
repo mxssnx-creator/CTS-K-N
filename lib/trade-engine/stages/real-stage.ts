@@ -85,7 +85,7 @@ export interface RealPosition {
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
-  /** Block-only can seed its own adjusted physical parent when none exists. */
+  /** @deprecated persisted compatibility field; independent Block seeding no longer depends on it. */
   blockOnly?: boolean
   // Exchange-cost-aware protection diagnostics supplied by the strategy
   // coordinator. Live execution treats this as explanatory metadata; the

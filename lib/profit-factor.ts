@@ -1,8 +1,9 @@
 import { POSITION_COST_PERCENT_DEFAULT } from "./position-cost"
 import { normalizeTradeDirection } from "./trade-direction"
 import {
+  MAIN_TRADE_PF_RATIO_BASE,
   mainTradePfRatioToSignedResultR,
-  normalizeMainTradeStagePfRatio,
+  MAIN_TRADE_PF_RATIO_MAX,
 } from "./main-trade-profit-factor"
 
 export const POSITION_COST_PCT_DEFAULT = POSITION_COST_PERCENT_DEFAULT
@@ -109,9 +110,15 @@ export function resolvePseudoPositionSignedResultR(position: unknown): number {
     // wrote an untagged signed Result-R such as 0.6 together with the newer
     // coordinate tag. Treat that impossible tagged 0.x value as the neutral
     // 1.00 coordinate instead of manufacturing a negative result from it.
-    return mainTradePfRatioToSignedResultR(
-      normalizeMainTradeStagePfRatio("main", legacyValue),
-    )
+    // A stored measurement is not an operator setting.  In particular, the
+    // exact 1.00 coordinate is neutral and must remain neutral even though
+    // the selectable stage-gate minimum is now 1.02.  Only impossible legacy
+    // sub-1 coordinates are treated as neutral; valid measured coordinates
+    // are kept continuous and capped at the calculation safety ceiling.
+    const measuredCoordinate = legacyValue >= 1
+      ? Math.min(MAIN_TRADE_PF_RATIO_MAX, legacyValue)
+      : 1
+    return mainTradePfRatioToSignedResultR(measuredCoordinate)
   }
   // Untagged compatibility pseudo rows historically stored signed Result-R.
   return legacyValue

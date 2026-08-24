@@ -73,12 +73,13 @@ export async function POST(request: NextRequest) {
       max_positions_per_range: 0,
       timeout_per_indication: body.timeout_per_indication || 5,
       timeout_after_position: body.timeout_after_position || 10,
-      // Block-adjust and Block-Only are system defaults. Explicit `false`
-      // remains a supported operator choice for Standard+Block parallel mode.
+      // Block is an independent family. Legacy *_only fields are written
+      // false so an old reader cannot accidentally suppress Normal orders.
       block_enabled: body.block_enabled !== false,
-      block_only: body.block_only !== false,
+      block_only: false,
       dca_enabled: body.dca_enabled || false,
-      dca_only: body.dca_only || false,
+      dca_only: false,
+      normal_enabled: body.normal_enabled !== false,
       auto_evaluate: body.auto_evaluate !== false,
       evaluation_interval_hours: body.evaluation_interval_hours || 3,
       is_active: body.is_active !== false,

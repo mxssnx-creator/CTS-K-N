@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Activity } from "lucide-react"
@@ -26,14 +26,17 @@ const DEFAULT_MONITOR: CompactMonitor = {
 export function SystemMonitoringPanel() {
   const [data, setData] = useState<CompactMonitor>(DEFAULT_MONITOR)
   const [status, setStatus] = useState<"loading" | "live" | "error">("loading")
+  const requestInFlight = useRef(false)
 
   useEffect(() => {
-    loadData()
-    const interval = setInterval(loadData, 45000) // Increased from 8s to 45s
-    return () => clearInterval(interval)
+    void loadData()
+    const interval = window.setInterval(() => void loadData(), 3_000)
+    return () => window.clearInterval(interval)
   }, [])
 
   const loadData = async () => {
+    if (requestInFlight.current) return
+    requestInFlight.current = true
     try {
       const res = await fetch("/api/system/monitoring", { cache: "no-store" })
       if (res.ok) {
@@ -60,6 +63,8 @@ export function SystemMonitoringPanel() {
     } catch (err) {
       console.error("[Monitor] Error:", err)
       setStatus("error")
+    } finally {
+      requestInFlight.current = false
     }
   }
 

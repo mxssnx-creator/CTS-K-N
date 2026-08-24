@@ -45,9 +45,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       timeout_per_indication: body.timeout_per_indication || 5,
       timeout_after_position: body.timeout_after_position || 10,
       block_enabled: body.block_enabled !== false,
-      block_only: body.block_only !== false,
+      // Legacy only selectors are intentionally disabled. Main strategy
+      // family selection is controlled by normal_enabled plus the independent
+      // trailing/block/dca toggles in connection settings.
+      block_only: false,
       dca_enabled: !!body.dca_enabled,
-      dca_only: !!body.dca_only,
+      dca_only: false,
       auto_evaluate: body.auto_evaluate !== false,
       evaluation_interval_hours: body.evaluation_interval_hours || 3,
       is_active: body.is_active !== false,

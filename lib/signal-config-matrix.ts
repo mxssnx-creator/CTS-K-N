@@ -1,10 +1,14 @@
 import type { TrailingProfile } from "@/lib/signal-trailing"
+import {
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  normalizeProtectionPercentages,
+} from "@/lib/trade-protection-contract"
 
 export const SIGNAL_TAKE_PROFIT_MIN_PCT = 1
 export const SIGNAL_TAKE_PROFIT_MAX_PCT = 5
 export const SIGNAL_TAKE_PROFIT_STEP_PCT = 0.5
 export const SIGNAL_STOP_LOSS_TO_TP_MIN_RATIO = 0.5
-export const SIGNAL_STOP_LOSS_TO_TP_MAX_RATIO = 3
+export const SIGNAL_STOP_LOSS_TO_TP_MAX_RATIO = MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO
 export const SIGNAL_STOP_LOSS_TO_TP_STEP_RATIO = 0.5
 export const SIGNAL_TRAILING_STOP_MIN_PCT = 0.8
 export const SIGNAL_TRAILING_STOP_MAX_PCT = 2.4
@@ -59,23 +63,36 @@ export function buildSignalTradeConfigurations(input?: {
   trailingOnly?: boolean
 }): SignalTradeConfiguration[] {
   const takeProfits = input?.takeProfitValues || SIGNAL_TAKE_PROFIT_VALUES
-  const stopLossRatios =
-    input?.stopLossToTakeProfitValues || SIGNAL_STOP_LOSS_TO_TP_VALUES
+  const stopLossRatios = Array.from(new Set(
+    (input?.stopLossToTakeProfitValues || SIGNAL_STOP_LOSS_TO_TP_VALUES)
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .map((value) => Math.min(SIGNAL_STOP_LOSS_TO_TP_MAX_RATIO, value)),
+  ))
   const trailingStops = input?.trailingStopValues || SIGNAL_TRAILING_STOP_VALUES
   const trailingEnabled = input?.trailingEnabled !== false
   const trailingOnly = input?.trailingOnly === true
   const result: SignalTradeConfiguration[] = []
   for (const takeProfitPct of takeProfits) {
     for (const stopLossToTakeProfitRatio of stopLossRatios) {
-      const stopLossPct = Number(
-        (takeProfitPct * stopLossToTakeProfitRatio).toFixed(8),
+      const protection = normalizeProtectionPercentages({
+        takeProfitPct,
+        stopLossPct: takeProfitPct * stopLossToTakeProfitRatio,
+        minimumTakeProfitPct: SIGNAL_TAKE_PROFIT_MIN_PCT,
+        minimumStopLossPct: 0.01,
+        maxStopLossToTakeProfitRatio: SIGNAL_STOP_LOSS_TO_TP_MAX_RATIO,
+      })
+      const effectiveTakeProfitPct = Number(protection.takeProfitPct.toFixed(8))
+      const effectiveStopLossPct = Number(protection.stopLossPct.toFixed(8))
+      const effectiveStopLossToTakeProfitRatio = Number(
+        protection.stopLossToTakeProfitRatio.toFixed(8),
       )
       if (!trailingOnly) {
         result.push({
-          id: `tp${token(takeProfitPct)}:slr${token(stopLossToTakeProfitRatio)}:standard`,
-          takeProfitPct,
-          stopLossToTakeProfitRatio,
-          stopLossPct,
+          id: `tp${token(effectiveTakeProfitPct)}:slr${token(effectiveStopLossToTakeProfitRatio)}:standard`,
+          takeProfitPct: effectiveTakeProfitPct,
+          stopLossToTakeProfitRatio: effectiveStopLossToTakeProfitRatio,
+          stopLossPct: effectiveStopLossPct,
           trailingStopPct: null,
           trailing: false,
         })
@@ -84,11 +101,11 @@ export function buildSignalTradeConfigurations(input?: {
         for (const trailingStopPct of trailingStops) {
           result.push({
             id:
-              `tp${token(takeProfitPct)}:slr${token(stopLossToTakeProfitRatio)}` +
+              `tp${token(effectiveTakeProfitPct)}:slr${token(effectiveStopLossToTakeProfitRatio)}` +
               `:trail${token(trailingStopPct)}`,
-            takeProfitPct,
-            stopLossToTakeProfitRatio,
-            stopLossPct,
+            takeProfitPct: effectiveTakeProfitPct,
+            stopLossToTakeProfitRatio: effectiveStopLossToTakeProfitRatio,
+            stopLossPct: effectiveStopLossPct,
             trailingStopPct,
             trailing: true,
           })

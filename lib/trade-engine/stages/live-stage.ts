@@ -129,6 +129,10 @@ import {
   stopLossPositionCostRatioToPercent,
   takeProfitPositionCostRatioToPercent,
 } from "@/lib/position-cost"
+import {
+  MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  normalizeProtectionPercentages,
+} from "@/lib/trade-protection-contract"
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
@@ -148,6 +152,15 @@ import {
   sanitizeSpecialPositionPlan,
   type SpecialPositionPlan,
 } from "@/lib/special-strategy"
+import {
+  reconcileExchangeQuantityAdjustments,
+  type ExchangeQuantityAdjustmentRecord,
+} from "@/lib/exchange-quantity-ledger"
+import {
+  aggregateProtectionSlot,
+  buildAggregateProtectionPlans,
+  type AggregateProtectionPlan,
+} from "@/lib/aggregate-protection-coordination"
 
 async function loadExchangeQuantityRules(symbol: string): Promise<Record<string, unknown> | null> {
   try {
@@ -413,7 +426,9 @@ function computeSetAwareSL(
   derivedSl: number,
   setVariant: LivePosition["setVariant"],
   trailingProfile: LivePosition["trailingProfile"] | undefined,
+  takeProfitPct?: unknown,
 ): number {
+  let candidateSl: number
   if (setVariant === "trailing" && trailingProfile && trailingProfile.stopRatio > 0) {
     // For trailing-variant positions the initial exchange SL is placed at the
     // trailing stop distance from entry. The trailing machine then ratchets this
@@ -423,12 +438,21 @@ function computeSetAwareSL(
     const trailingSl = isSignalDynamicTrailingProfile(trailingProfile)
       ? Math.max(0.8, (trailingProfile.minStopRatio ?? trailingProfile.stopRatio) * 100)
       : trailingProfile.stopRatio * 100
-    return Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, trailingSl)
+    candidateSl = Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, trailingSl)
+  } else {
+    // For all other variants (default, block, dca, pause) the PF-derived value
+    // is already variant-adjusted (block: scaled up by sizeMultiplier, dca: 0.5×).
+    // Enforce the minimum floor in all cases.
+    candidateSl = Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, derivedSl)
   }
-  // For all other variants (default, block, dca, pause) the PF-derived value
-  // is already variant-adjusted (block: scaled up by sizeMultiplier, dca: 0.5×).
-  // Enforce the minimum floor in all cases.
-  return Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, derivedSl)
+  return normalizeProtectionPercentages({
+    takeProfitPct,
+    fallbackTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    stopLossPct: candidateSl,
+    minimumTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    minimumStopLossPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  }).stopLossPct
 }
 
 
@@ -501,6 +525,15 @@ interface LivePosition {
   remainingQuantity: number
   averageExecutionPrice: number
   volumeUsd?: number
+  /** Pre-venue requested quantity before quantity/notional floors. */
+  requestedVolume?: number
+  intendedNotionalUsd?: number
+  exchangeMinNotionalUsd?: number
+  systemVolumeFactor?: number
+  liveEngineFactor?: number
+  signalVolumeFactor?: number
+  volumeAdjusted?: boolean
+  volumeAdjustmentReason?: string
   leverage: number
   marginType: "cross" | "isolated"
   unrealized_pnl?: number
@@ -706,7 +739,7 @@ interface LivePosition {
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
-  /** Persisted dispatch mode so Block-only restarts retain parent semantics. */
+  /** @deprecated persisted compatibility field; Block parent semantics are independent. */
   blockOnly?: boolean
   blockLegs?: BlockLegState[]
   dcaProfile?: DcaProfile
@@ -771,6 +804,14 @@ interface LivePosition {
   systemProtectionLegs?: ProtectionOrderLeg[]
   /** Last authoritative BingX control-order budget used for this position. */
   controlOrderCapacity?: ControlOrderCapacitySnapshot
+  /** One physical symbol/direction slot owns exactly one outer venue pair. */
+  aggregateProtectionOwner?: boolean
+  aggregateProtectionKey?: string
+  aggregateProtectionMemberCount?: number
+  aggregateProtectionQuantity?: number
+  /** Durable hand-off: cancel the aggregate pair before a member changes qty. */
+  aggregateProtectionMutationRequestedAt?: number
+  aggregateProtectionMutationReason?: string
   // ── Set-config propagation (Set Relations → Position Protection) ──────────
   // The originating StrategySet's trailing profile and historical performance
   // snapshot are carried into the live position so that:
@@ -963,6 +1004,11 @@ async function recordFillCountersOnce(
   // Entry accounting is independently idempotent. Run it even when the legacy
   // fill marker exists so pre-rollout positions are backfilled on reconcile.
   await recordConfirmedStrategyEntry(connectionId, position, `${position.id}:initial`)
+  if (position.status === "simulated" || position.executionMode === "simulation") {
+    // Paper fills are valid strategy-history evidence, but they are not real
+    // venue fills. Keep real order/position counters exchange-only.
+    return false
+  }
   if (hasFillCounterRecorded(position)) return false
 
   // Mark first, before incrementing, so the same in-memory reconcile pass cannot
@@ -1025,13 +1071,8 @@ interface FillRecord {
   feeAsset?: string
 }
 
-interface ExchangeQuantityAdjustment {
-  id: string
+type ExchangeQuantityAdjustment = ExchangeQuantityAdjustmentRecord & {
   source: "exchange_reconcile" | "legacy_reconciliation"
-  orderId?: string
-  quantity: number
-  price: number
-  timestamp: number
 }
 
 // ── Helper function stubs (defined in adjacent modules) ──────────────
@@ -1276,6 +1317,33 @@ function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjust
     }
   }
   return { value: n, adjusted: false }
+}
+
+/**
+ * Normalize the durable percentage pair immediately before an exchange or
+ * paper protection calculation.  This is the last common boundary shared by
+ * initial placement, accumulation, restart recovery and operator re-arm, so
+ * an imported/stale position cannot reintroduce a missing stop or widen SL
+ * beyond the systemwide 1.5×TP contract.
+ */
+function normalizeLivePositionProtection(
+  position: Pick<LivePosition, "takeProfit" | "stopLoss">,
+): { takeProfitPct: number; stopLossPct: number } {
+  const protection = normalizeProtectionPercentages({
+    takeProfitPct: position.takeProfit,
+    fallbackTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    stopLossPct: position.stopLoss,
+    fallbackStopLossPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    minimumTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    minimumStopLossPct: MIN_EXCHANGE_STOP_LOSS_PERCENT,
+    maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
+  })
+  position.takeProfit = protection.takeProfitPct
+  position.stopLoss = protection.stopLossPct
+  return {
+    takeProfitPct: protection.takeProfitPct,
+    stopLossPct: protection.stopLossPct,
+  }
 }
 
 // Short crash-recovery TTL plus token-owned lease renewal: healthy long venue
@@ -1636,6 +1704,12 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     ...(parseRedisBoolean(hash.trailingActive) !== undefined && {
       trailingActive: parseRedisBoolean(hash.trailingActive),
     }),
+    ...(parseRedisBoolean(hash.volumeAdjusted) !== undefined && {
+      volumeAdjusted: parseRedisBoolean(hash.volumeAdjusted),
+    }),
+    ...(parseRedisBoolean(hash.aggregateProtectionOwner) !== undefined && {
+      aggregateProtectionOwner: parseRedisBoolean(hash.aggregateProtectionOwner),
+    }),
     accumulatedSetKeys: Array.isArray(hash.accumulatedSetKeys)
       ? hash.accumulatedSetKeys
       : safeJsonParse<string[]>(hash.accumulatedSetKeys, []),
@@ -1690,6 +1764,12 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "averageExecutionPrice",
     "quantity",
     "volumeUsd",
+    "requestedVolume",
+    "intendedNotionalUsd",
+    "exchangeMinNotionalUsd",
+    "systemVolumeFactor",
+    "liveEngineFactor",
+    "signalVolumeFactor",
     "leverage",
     "unrealized_pnl",
     "unrealized_pnl_percent",
@@ -1751,6 +1831,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "posCountsNetSetCount",
     "totalExecutedQuantity",
     "closedQuantity",
+    "aggregateProtectionMemberCount",
+    "aggregateProtectionQuantity",
+    "aggregateProtectionMutationRequestedAt",
   ]) {
     const value = parseRedisFiniteNumber(hash[field])
     if (value !== undefined) position[field] = value
@@ -2584,6 +2667,13 @@ async function incrementMetric(connectionId: string, metric: string, delta: numb
       epoch: currentEpoch,
       logStaleRejects: false,
     })
+    if (metric === "live_orders_placed_count" || metric === "live_orders_failed_count") {
+      await hincrbyProgression(connectionId, "live_orders_attempted_count", delta, {
+        connectionId,
+        epoch: currentEpoch,
+        logStaleRejects: false,
+      })
+    }
   } catch (err) {
     // metric failures should not throw the live pipeline
   }
@@ -2636,10 +2726,12 @@ async function recordPositionAdjustmentProgression(
   )
 }
 
-function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "id" | "symbol">): string {
-  const symbol = String(position.symbol || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 7)
+function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "id" | "symbol" | "connectionId">): string {
+  const connection = String(position.connectionId || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 8)
+  const kind = String(prefix || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
+  const symbol = String(position.symbol || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const suffix = nanoid(8).replace(/[^a-zA-Z0-9]/g, "")
-  return `cts${prefix}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
+  return `cts${connection}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
 }
 
 function appendClientOrderTracking(
@@ -2880,18 +2972,18 @@ function liveLockDirection(
   return `${position.direction}${laneSuffix}${variantSuffix}`
 }
 
-function initializeBlockOnlySeed(
+function initializeIndependentBlockSeed(
   position: LivePosition,
   source: RealPosition,
   filledQuantity: number,
   clientOrderId?: string,
   orderId?: string,
 ): void {
-  if (
-    source.setVariant !== "block" ||
-    source.blockOnly !== true ||
-    !(filledQuantity > 0)
-  ) return
+  // Block is an independent execution family. It can be the first physical
+  // row when Normal is disabled, but it must also retain its exact additional
+  // quantity when a Normal parent already exists. The old blockOnly flag was
+  // a dispatch-mode switch and is deliberately ignored here.
+  if (source.setVariant !== "block" || !(filledQuantity > 0)) return
   const multiplier = Math.max(
     1,
     Number(
@@ -3338,6 +3430,7 @@ function applyAccumulatedSignalRisk(
   )
   if (stopLoss !== undefined) position.stopLoss = stopLoss
   if (takeProfit !== undefined) position.takeProfit = takeProfit
+  normalizeLivePositionProtection(position)
 }
 
 function isVirtualBlockLaneKey(setKey: unknown): boolean {
@@ -3759,12 +3852,7 @@ async function accumulateIntoLivePosition(
       applySpecialPlanToPosition(existing, plan.specialPositionPlan)
       if (!(plan.addQty > 0)) {
         pushStep(existing, "special_plan_refresh", true, "target quantity already satisfied; protection/time contract refreshed")
-        existing.stopLossLastArmedAt = undefined
-        existing.takeProfitLastArmedAt = undefined
-        await updateProtectionOrders(connector, existing, "special_plan_refresh").catch((error) => {
-          pushStep(existing, "special_plan_rearm_failed", false, error instanceof Error ? error.message : String(error))
-        })
-        await savePosition(existing)
+        await rearmProtectionAfterQuantityMutation(connector, existing, "special_plan_refresh")
         return existing
       }
     }
@@ -4152,12 +4240,7 @@ async function accumulateIntoLivePosition(
         },
       )
     }
-    existing.stopLossLastArmedAt = undefined
-    existing.takeProfitLastArmedAt = undefined
-    await updateProtectionOrders(connector, existing, "accumulate_rearm", null).catch((err) => {
-      pushStep(existing, "accumulate_rearm_failed", false, err instanceof Error ? err.message : String(err))
-    })
-    await savePosition(existing)
+    await rearmProtectionAfterQuantityMutation(connector, existing, "accumulate_rearm")
   } catch (err) {
     pushStep(existing, "accumulate_error", false, err instanceof Error ? err.message : String(err))
     try {
@@ -4288,26 +4371,15 @@ async function reconcilePendingReductionAndRearm(
         Math.max(0, Number(position.pendingReduction.targetQuantity || 0)),
       )
     : Number(position.executedQuantity || 0)
-  position.stopLossLastArmedAt = undefined
-  position.takeProfitLastArmedAt = undefined
-  await updateProtectionOrders(
+  await rearmProtectionAfterQuantityMutation(
     connector,
     position,
     reason,
-    null,
     {
       allowPendingReduction: true,
       quantityOverride: retainedQuantity,
     },
-  ).catch((error) => {
-    pushStep(
-      position,
-      "reduction_rearm_failed",
-      false,
-      error instanceof Error ? error.message : String(error),
-    )
-  })
-  await savePosition(position)
+  )
 }
 
 async function reduceCombinedPosCountPosition(
@@ -4594,12 +4666,7 @@ async function reduceCombinedPosCountPosition(
       return position
     }
 
-    position.stopLossLastArmedAt = undefined
-    position.takeProfitLastArmedAt = undefined
-    await updateProtectionOrders(connector, position, "poscounts_partial_rearm", null).catch((error) => {
-      pushStep(position, "poscounts_partial_rearm", false, error instanceof Error ? error.message : String(error))
-    })
-    await savePosition(position)
+    await rearmProtectionAfterQuantityMutation(connector, position, "poscounts_partial_rearm")
     return position
   } catch (error) {
     pushStep(
@@ -4764,6 +4831,49 @@ async function reconcileCombinedPosCountTarget(
   return existing
 }
 
+async function rearmProtectionAfterQuantityMutation(
+  connector: any,
+  position: LivePosition,
+  reason: string,
+  options: {
+    allowPendingAccumulation?: boolean
+    allowPendingReduction?: boolean
+    quantityOverride?: number
+  } = {},
+): Promise<void> {
+  position.aggregateProtectionMutationRequestedAt = undefined
+  position.aggregateProtectionMutationReason = undefined
+  position.stopLossLastArmedAt = undefined
+  position.takeProfitLastArmedAt = undefined
+  if (
+    Boolean(position.aggregateProtectionKey)
+    || Number(position.aggregateProtectionMemberCount || 0) > 1
+  ) {
+    position.systemProtectionLegs = configuredSystemProtectionLegs(position)
+    position.protectionMode = position.stopLossOrderId || position.takeProfitOrderId
+      ? "hybrid_control_system"
+      : "system_close_fallback"
+    pushStep(
+      position,
+      "aggregate_protection_rearm_queued",
+      true,
+      `${position.aggregateProtectionKey || position.symbol} quantity settled; aggregate venue re-arm queued`,
+    )
+    await savePosition(position)
+    return
+  }
+
+  await updateProtectionOrders(connector, position, reason, null, options).catch((error) => {
+    pushStep(
+      position,
+      "quantity_protection_rearm_failed",
+      false,
+      error instanceof Error ? error.message : String(error),
+    )
+  })
+  await savePosition(position)
+}
+
 /**
  * An accepted/unconfirmed market accumulation must never leave the already
  * open quantity without protection. Refresh the venue quantity first, apply
@@ -4808,23 +4918,12 @@ async function reconcilePendingAccumulationAndRearm(
     )
   }
 
-  position.stopLossLastArmedAt = undefined
-  position.takeProfitLastArmedAt = undefined
-  await updateProtectionOrders(
+  await rearmProtectionAfterQuantityMutation(
     connector,
     position,
     reason,
-    null,
     { allowPendingAccumulation: true },
-  ).catch((error) => {
-    pushStep(
-      position,
-      "accumulation_rearm_failed",
-      false,
-      error instanceof Error ? error.message : String(error),
-    )
-  })
-  await savePosition(position)
+  )
 }
 
 function reconcileExchangeQuantityLedger(
@@ -4841,37 +4940,28 @@ function reconcileExchangeQuantityLedger(
   const adjustments = Array.isArray(position.exchangeQuantityAdjustments)
     ? position.exchangeQuantityAdjustments
     : []
-  const fillQuantity = fills.reduce((sum, fill) => sum + Math.max(0, Number(fill.quantity) || 0), 0)
-  const adjustmentQuantity = adjustments.reduce(
-    (sum, adjustment) => sum + Math.max(0, Number(adjustment.quantity) || 0),
-    0,
-  )
-  const tolerance = Math.max(1e-12, target * 1e-8)
-  const missing = target - fillQuantity - adjustmentQuantity
-  if (!(missing > tolerance)) return false
-
-  const adjustmentId = `${position.id}:exchange-quantity:${target.toFixed(12)}`
-  if (adjustments.some((adjustment) => adjustment.id === adjustmentId)) return false
-  position.exchangeQuantityAdjustments = [
-    ...adjustments,
-    {
-      id: adjustmentId,
-      source,
-      orderId: position.orderId,
-      quantity: Number(missing.toFixed(12)),
-      price,
-      timestamp: Date.now(),
-    },
-  ].slice(-64)
+  const reconciled = reconcileExchangeQuantityAdjustments({
+    positionId: position.id,
+    orderId: position.orderId,
+    targetQuantity: target,
+    entryPrice: price,
+    fills,
+    adjustments,
+    source,
+  })
+  if (!reconciled.changed) return false
+  position.exchangeQuantityAdjustments = reconciled.adjustments as ExchangeQuantityAdjustment[]
   // The quantity is venue-authoritative, but the adjustment has no proven
   // order-level fee settlement. Keep PnL/history consumers from presenting it
   // as a fully settled entry until the venue ledger supplies that evidence.
-  position.entryAccountingComplete = false
+  if (reconciled.expectedManagedAdjustmentQuantity > 0) position.entryAccountingComplete = false
   pushStep(
     position,
     "exchange_quantity_ledger_reconciled",
     true,
-    `recorded ${missing} venue quantity at ${price} without synthetic fill/order settlement`,
+    reconciled.expectedManagedAdjustmentQuantity > 0
+      ? `venue quantity gap set to ${reconciled.expectedManagedAdjustmentQuantity} at ${price} without synthetic fill/order settlement`
+      : `removed ${reconciled.previousManagedAdjustmentQuantity} provisional venue quantity after exact fills arrived`,
   )
   return true
 }
@@ -6301,6 +6391,8 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
   // that would cause NaN or Infinity propagation in SL/TP calculations.
   if (!Number.isFinite(fillPrice) || fillPrice <= 0) return { desiredSl: 0, desiredTp: 0 }
 
+  normalizeLivePositionProtection(pos)
+
   // ── Trailing stop: use the ratcheted absolute price directly ────────────────
   // When trailing is active syncLiveFromPseudo stamps pos.trailingStopPrice
   // with the latest ratcheted absolute stop level. Using that absolute price
@@ -6684,6 +6776,8 @@ async function updateProtectionOrders(
     allowPendingAccumulation?: boolean
     allowPendingReduction?: boolean
     quantityOverride?: number
+    allowQuantityOverrideAbovePosition?: boolean
+    desiredPricesOverride?: { desiredSl: number; desiredTp: number }
   } = {},
 ): Promise<{ changed: boolean; slPlaced: boolean; tpPlaced: boolean }> {
   const result = { changed: false, slPlaced: false, tpPlaced: false }
@@ -6699,7 +6793,9 @@ async function updateProtectionOrders(
   const rawEffectiveQty = pos.executedQuantity > 0 ? pos.executedQuantity : (pos.quantity ?? 0)
   const requestedOverride = Number(options.quantityOverride)
   const effectiveQty = Number.isFinite(requestedOverride) && requestedOverride > 0
-    ? Math.min(rawEffectiveQty, requestedOverride)
+    ? options.allowQuantityOverrideAbovePosition === true
+      ? requestedOverride
+      : Math.min(rawEffectiveQty, requestedOverride)
     : rawEffectiveQty
   if (effectiveQty <= 0) return result
 
@@ -6760,7 +6856,13 @@ async function updateProtectionOrders(
     )
   }
 
-  const { desiredSl, desiredTp } = computeDesiredProtectionPrices(pos)
+  const computedProtectionPrices = computeDesiredProtectionPrices(pos)
+  const desiredSl = Number.isFinite(Number(options.desiredPricesOverride?.desiredSl))
+    ? Math.max(0, Number(options.desiredPricesOverride?.desiredSl))
+    : computedProtectionPrices.desiredSl
+  const desiredTp = Number.isFinite(Number(options.desiredPricesOverride?.desiredTp))
+    ? Math.max(0, Number(options.desiredPricesOverride?.desiredTp))
+    : computedProtectionPrices.desiredTp
   let capacityBudget = protectionCapacityBudgetOf(liveOrderIds)
   if (!capacityBudget && isBingXCapacityConnector(connector)) {
     const capacitySnapshot = await fetchLiveOrderIdSet(connector)
@@ -6976,9 +7078,9 @@ async function updateProtectionOrders(
       ? armedQtyRaw
       : 0
   const qtyDrifted =
-    pos.executedQuantity > 0 &&
+    effectiveQty > 0 &&
     (armedQty <= 0 ||
-      Math.abs(pos.executedQuantity - armedQty) / Math.max(armedQty, 1e-12) > 0.0025)
+      Math.abs(effectiveQty - armedQty) / Math.max(armedQty, 1e-12) > 0.0025)
 
   // A replacement is a two-step exchange operation: cancel first, then place.
   // Evaluate the cooldown *before* either cancellation starts. Previously the
@@ -7334,6 +7436,233 @@ async function updateProtectionOrders(
   return result
 }
 
+interface AggregateProtectionBookResult {
+  plans: AggregateProtectionPlan[]
+  changedPositions: number
+  rearmedLeaders: number
+  ownershipMismatches: number
+}
+
+function configuredSystemProtectionLegs(position: LivePosition): ProtectionOrderLeg[] {
+  const { desiredSl, desiredTp } = computeDesiredProtectionPrices(position)
+  const legs: ProtectionOrderLeg[] = []
+  if (desiredSl > 0) legs.push("stop_loss")
+  if (desiredTp > 0) legs.push("take_profit")
+  return legs
+}
+
+async function demoteAggregateProtectionMember(
+  connector: any,
+  position: LivePosition,
+  plan: AggregateProtectionPlan,
+  detail = `${plan.key} venue SL/TP owned by ${plan.leaderId}; individual triggers remain system-side`,
+  liveOrderIds: Set<string> | null = null,
+): Promise<boolean> {
+  const previousMode = position.protectionMode
+  const previousSystemLegs = JSON.stringify(position.systemProtectionLegs || [])
+  let changed = position.aggregateProtectionOwner !== false
+    || position.aggregateProtectionKey !== plan.key
+    || position.aggregateProtectionMemberCount !== plan.memberIds.length
+    || Math.abs(Number(position.aggregateProtectionQuantity || 0) - plan.venueQuantity) > plan.quantityTolerance
+  for (const leg of ["stopLoss", "takeProfit"] as const) {
+    const pending = position.pendingProtectionOrders?.[leg]
+    if (!pending?.clientOrderId) continue
+    const recovered = await recoverEntryOrderByClientId(connector, position.symbol, pending.clientOrderId)
+    if (recovered?.orderId != null || recovered?.id != null) {
+      const orderId = String(recovered.orderId ?? recovered.id)
+      if (leg === "stopLoss") position.stopLossOrderId = orderId
+      else position.takeProfitOrderId = orderId
+      delete position.pendingProtectionOrders?.[leg]
+      changed = true
+      continue
+    }
+    if (liveOrderIds !== null && !liveOrderIds.has(pending.clientOrderId)) {
+      pending.absenceConfirmations = Number(pending.absenceConfirmations || 0) + 1
+      changed = true
+      if (pending.absenceConfirmations >= 2) delete position.pendingProtectionOrders?.[leg]
+    }
+  }
+  const [slCancelled, tpCancelled] = await Promise.all([
+    position.stopLossOrderId
+      ? cancelProtectionOrder(connector, position.symbol, position.stopLossOrderId, "AggregateDemote-SL", position.connectionId)
+      : Promise.resolve(true),
+    position.takeProfitOrderId
+      ? cancelProtectionOrder(connector, position.symbol, position.takeProfitOrderId, "AggregateDemote-TP", position.connectionId)
+      : Promise.resolve(true),
+  ])
+  if (position.stopLossOrderId && slCancelled) {
+    position.stopLossOrderId = undefined
+    position.stopLossPrice = 0
+    changed = true
+  }
+  if (position.takeProfitOrderId && tpCancelled) {
+    position.takeProfitOrderId = undefined
+    position.takeProfitPrice = 0
+    changed = true
+  }
+  position.aggregateProtectionOwner = false
+  position.aggregateProtectionKey = plan.key
+  position.aggregateProtectionMemberCount = plan.memberIds.length
+  position.aggregateProtectionQuantity = plan.venueQuantity
+  position.systemProtectionLegs = configuredSystemProtectionLegs(position)
+  position.protectionMode = position.stopLossOrderId || position.takeProfitOrderId
+    ? "hybrid_control_system"
+    : "system_close_fallback"
+  if (
+    previousMode !== position.protectionMode
+    || previousSystemLegs !== JSON.stringify(position.systemProtectionLegs || [])
+  ) changed = true
+  if (changed) {
+    pushStep(
+      position,
+      "aggregate_protection_member",
+      true,
+      detail,
+    )
+    position.updatedAt = Date.now()
+    await savePosition(position)
+  }
+  return changed
+}
+
+/**
+ * Coordinate exactly one outer venue SL and one outer venue TP for every
+ * system-owned physical symbol/direction slot. The exchange aggregates orders
+ * at that level, so arming one pair per logical Set creates duplicate controls
+ * and can reduce more than the authoritative position quantity.
+ *
+ * If the venue quantity does not exactly equal the sum of CTS-owned rows, the
+ * slot may contain an independent/manual quantity. In that case no venue order
+ * is changed; every CTS row keeps its system-side trigger handling until the
+ * ownership relation becomes exact again.
+ */
+async function reconcileAggregateProtectionBook(
+  connectionId: string,
+  connector: any,
+  positions: LivePosition[],
+  exchangePositions: any[],
+  liveOrderIds: Set<string> | null,
+): Promise<AggregateProtectionBookResult> {
+  const result: AggregateProtectionBookResult = {
+    plans: [],
+    changedPositions: 0,
+    rearmedLeaders: 0,
+    ownershipMismatches: 0,
+  }
+  if (!connector) return result
+
+  const activeStatuses = new Set(["open", "filled", "partially_filled"])
+  const candidates = positions.filter((position) =>
+    activeStatuses.has(String(position.status || "").toLowerCase())
+    && Number(position.executedQuantity || 0) > 0
+    && isExchangeLifecyclePosition(position, connectionId),
+  )
+  const planCandidates = candidates.map((position) => {
+    const direction = resolveLivePositionDirection(position)!
+    const desired = computeDesiredProtectionPrices(position)
+    return {
+      id: position.id,
+      symbol: position.symbol,
+      direction,
+      quantity: Number(position.executedQuantity || 0),
+      desiredStopLoss: desired.desiredSl,
+      desiredTakeProfit: desired.desiredTp,
+      createdAt: Number(position.createdAt || 0),
+      quantityStep: Number((position as any).quantityStep || 0),
+      hasStopLossOrder: Boolean(position.stopLossOrderId),
+      hasTakeProfitOrder: Boolean(position.takeProfitOrderId),
+    }
+  })
+  const venueCandidates = exchangePositions.flatMap((position) => {
+    const rawQuantity = Number(position?.size ?? position?.positionAmt ?? position?.quantity ?? 0)
+    const quantity = Math.abs(rawQuantity)
+    const direction = normalizeExchangePositionDirection(position?.positionSide, position?.side, rawQuantity)
+    if (!direction || !(quantity > 0)) return []
+    return [{ symbol: String(position?.symbol || ""), direction, quantity }]
+  })
+  result.plans = buildAggregateProtectionPlans(planCandidates, venueCandidates)
+  const positionsById = new Map(candidates.map((position) => [position.id, position]))
+
+  for (const plan of result.plans) {
+    const members = plan.memberIds.map((id) => positionsById.get(id)).filter((value): value is LivePosition => Boolean(value))
+    if (!plan.ownershipMatches) {
+      result.ownershipMismatches++
+      for (const member of members) {
+        if (await demoteAggregateProtectionMember(
+          connector,
+          member,
+          plan,
+          `${plan.key} system=${plan.systemQuantity} venue=${plan.venueQuantity}; CTS controls removed and independent venue quantity preserved`,
+          liveOrderIds,
+        )) result.changedPositions++
+      }
+      continue
+    }
+
+    // A member close/accumulation/reduction is a physical slot mutation. Keep
+    // this request durable across worker turns: one reconcile pass removes the
+    // complete CTS aggregate pair, the requesting worker can then mutate the
+    // quantity, and the following pass re-arms against the new venue total.
+    const mutationRequested = members.some((member) => {
+      const requestedAt = Number(member.aggregateProtectionMutationRequestedAt || 0)
+      return requestedAt > 0 && Date.now() - requestedAt <= 10_000
+    })
+    if (mutationRequested) {
+      for (const member of members) {
+        if (await demoteAggregateProtectionMember(
+          connector,
+          member,
+          plan,
+          `${plan.key} aggregate pair paused for a CTS quantity mutation; system-side triggers remain active`,
+          liveOrderIds,
+        )) result.changedPositions++
+      }
+      continue
+    }
+
+    const leader = positionsById.get(plan.leaderId)
+    if (!leader) continue
+    for (const member of members) {
+      if (member.id === leader.id) continue
+      if (await demoteAggregateProtectionMember(connector, member, plan, undefined, liveOrderIds)) result.changedPositions++
+    }
+
+    const metadataChanged = leader.aggregateProtectionOwner !== true
+      || leader.aggregateProtectionKey !== plan.key
+      || leader.aggregateProtectionMemberCount !== plan.memberIds.length
+      || Math.abs(Number(leader.aggregateProtectionQuantity || 0) - plan.venueQuantity) > plan.quantityTolerance
+    leader.aggregateProtectionOwner = true
+    leader.aggregateProtectionKey = plan.key
+    leader.aggregateProtectionMemberCount = plan.memberIds.length
+    leader.aggregateProtectionQuantity = plan.venueQuantity
+    if (metadataChanged) {
+      leader.stopLossLastArmedAt = undefined
+      leader.takeProfitLastArmedAt = undefined
+    }
+    const protectionResult = await updateProtectionOrders(
+      connector,
+      leader,
+      "aggregate_outer_guard",
+      liveOrderIds,
+      {
+        quantityOverride: plan.venueQuantity,
+        allowQuantityOverrideAbovePosition: true,
+        desiredPricesOverride: {
+          desiredSl: plan.desiredStopLoss,
+          desiredTp: plan.desiredTakeProfit,
+        },
+      },
+    )
+    if (metadataChanged || protectionResult.changed) {
+      leader.updatedAt = Date.now()
+      await savePosition(leader)
+      result.changedPositions++
+    }
+    if (protectionResult.slPlaced || protectionResult.tpPlaced) result.rearmedLeaders++
+  }
+  return result
+}
+
 // ── Main Pipeline ───�����──────���───��─────────────────────────────────────────────
 
 /**
@@ -7602,6 +7931,7 @@ export async function executeLivePosition(
       normalizeStopLossPercent(realPosition.stopLoss).value,
       realPosition.setVariant,
       realPosition.trailingProfile,
+      realPosition.takeProfit,
     ),
     takeProfit: realPosition.takeProfit,
     // Immutable assignment snapshot — preserved across overrides so the
@@ -7675,7 +8005,9 @@ export async function executeLivePosition(
     presetProfitFactor: realPosition.presetProfitFactor,
     executionIntent,
   }
+  normalizeLivePositionProtection(livePosition)
   if (specialPositionPlan) applySpecialPlanToPosition(livePosition, specialPositionPlan)
+  normalizeLivePositionProtection(livePosition)
 
   const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss)
   if (normalizedInitialSl.adjusted) {
@@ -7844,9 +8176,10 @@ export async function executeLivePosition(
     // the try block) so the catch handler can also release the correct key.
     const isBlockVariant = realPosition.setVariant === "block"
 
-    // DCA and ordinary Block rows attach to an already confirmed parent.
-    // Block-only has no Standard row by design, so its first adjusted row
-    // seeds the physical parent and later counts reconcile into that parent.
+    // DCA attaches to an already confirmed parent. Block is independent: it
+    // normally accumulates into the authoritative Normal lane, but when no
+    // Normal parent exists it seeds its own physical parent and later counts
+    // reconcile into that parent.
     const isAdjustmentVariant = isBlockVariant || realPosition.setVariant === "dca"
     if (isAdjustmentVariant) {
       if (await abortSuperseded()) return livePosition
@@ -7856,24 +8189,24 @@ export async function executeLivePosition(
         realPosition.direction,
         !isLiveTradeEnabled,
         executionSlot,
-        isBlockVariant && realPosition.blockOnly === true,
-        // Source-specific Signal Blocks retain their own bookkeeping lane. In
-        // parallel Standard+Block mode they may fall back to the ordinary
-        // Direction parent; Block-only lanes instead seed their exact physical
-        // parent below because no Standard row can exist in that mode.
-        isBlockVariant && realPosition.blockOnly !== true && executionSlot !== "default"
+        isBlockVariant,
+        // Source-specific Signal Blocks retain their own bookkeeping lane. If
+        // no exact source parent exists, they may fall back to the ordinary
+        // direction parent; otherwise the independent Block seed below owns
+        // the lane.
+        isBlockVariant && executionSlot !== "default"
           ? "default"
           : undefined,
       )
       if (!existing) {
-        if (isBlockVariant && realPosition.blockOnly === true) {
-          // A fresh Block-only lane has no Standard parent by definition.
-          // Continue into the ordinary entry pipeline with the already
-          // calculated absolute Block multiplier; the persisted Block
-          // position becomes the authoritative parent for later counts.
+        if (isBlockVariant) {
+          // A fresh independent Block lane has no confirmed parent. Continue
+          // into the ordinary entry pipeline with the already calculated
+          // absolute Block multiplier; the persisted Block position becomes
+          // the authoritative parent for later counts.
           pushStep(
             livePosition,
-            "block_only_parent_seed",
+            "block_independent_parent_seed",
             true,
             `opening adjusted Block parent for ${realPosition.setKey || "unknown"}`,
           )
@@ -8273,7 +8606,7 @@ export async function executeLivePosition(
       livePosition.totalExecutedQuantity = simQty
       livePosition.initialEntryPrice = simEntryPrice
       livePosition.blockBaseQuantity = simQty
-      initializeBlockOnlySeed(livePosition, realPosition, simQty)
+      initializeIndependentBlockSeed(livePosition, realPosition, simQty)
       if (livePosition.combinedPosCounts) {
         livePosition.posCountsSetQuantities = allocatePositionSetQuantities(
           livePosition,
@@ -8305,19 +8638,13 @@ export async function executeLivePosition(
       // Persist the durable fill marker after the idempotent entry ledger and
       // legacy fill metrics have committed.
       await savePosition(livePosition)
-      // Run counters in parallel — they're independent. Simulated orders are
-      // canonicalized as both placed and filled because this branch immediately
-      // creates an open position with executed quantity and a synthetic fill.
+      // Run paper counters independently. Real placed/filled/position-created
+      // counters remain exchange-only so UI/PF/PnL never present pseudo fills
+      // as venue executions.
       await Promise.all([
         incrementMetric(connectionId, "live_orders_simulated_count"),
-        incrementMetric(connectionId, "live_orders_placed_count"),
-        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed"),
-        // Track simulated positions in created counter as well so the
-        // openPositions.live.open = created - closed math works for
-        // paper trades (the close-counter is bumped by
-        // closeLivePosition / reconcile when the simulated position
-        // gets force-closed).
-        incrementMetric(connectionId, "live_positions_created_count"),
+        incrementMetric(connectionId, "live_simulated_positions_created_count"),
+        incrementMetric(connectionId, "live_simulated_volume_microusd_total", Math.round(livePosition.volumeUsd * 1e6)),
         logProgressionEvent(
           connectionId,
           "live_trading",
@@ -8493,6 +8820,15 @@ export async function executeLivePosition(
     livePosition.remainingQuantity = computedVolume
     livePosition.volumeUsd = computedVolume * currentPrice
     livePosition.leverage = volumeResult?.leverage || livePosition.leverage
+    livePosition.requestedVolume = Number(volumeResult?.calculatedVolume) || 0
+    livePosition.intendedNotionalUsd = Number(volumeResult?.intendedNotionalUsd) || 0
+    livePosition.exchangeMinNotionalUsd = Number(volumeResult?.exchangeMinNotionalUsd) || 0
+    livePosition.systemVolumeFactor = Number(volumeResult?.systemVolumeFactor) || 1
+    livePosition.liveEngineFactor = Number(volumeResult?.liveEngineFactor) || 1
+    livePosition.signalVolumeFactor = Number(volumeResult?.signalVolumeFactor) || 1
+    livePosition.sizeMultiplier = Number(volumeResult?.sizeMultiplier) || 1
+    livePosition.volumeAdjusted = volumeResult?.volumeAdjusted === true
+    livePosition.volumeAdjustmentReason = volumeResult?.adjustmentReason || undefined
 
     // If the volume calculator clamped the quantity UP to the exchange
     // minimum (or we synthesized a fallback above), surface that in the
@@ -9291,7 +9627,7 @@ export async function executeLivePosition(
       )
       livePosition.initialEntryPrice ??= authoritativeFillPrice
       livePosition.blockBaseQuantity ??= fill.filledQty
-      initializeBlockOnlySeed(
+      initializeIndependentBlockSeed(
         livePosition,
         realPosition,
         fill.filledQty,
@@ -10063,6 +10399,60 @@ async function settleControlOrdersBeforeSystemClose(
   }
 }
 
+/**
+ * Hand a physical symbol/direction slot from aggregate venue protection to a
+ * quantity-mutating worker without racing the still-live aggregate pair.
+ * The caller persists a short-lived request and defers. The canonical
+ * reconcile pass removes only control IDs recorded on CTS positions, keeps
+ * every logical SL/TP active system-side, and suppresses aggregate re-arming
+ * until the requesting worker has had a chance to finish.
+ */
+async function requestAggregateProtectionSlotMutation(
+  connector: any,
+  position: LivePosition,
+  reason: string,
+): Promise<boolean> {
+  if (!connector) return true
+  const direction = resolveLivePositionDirection(position)
+  if (!direction) return false
+  const slot = aggregateProtectionSlot(position.symbol, direction)
+  const allPositions = await getLivePositions(position.connectionId)
+  const related = allPositions.filter((candidate) =>
+    aggregateProtectionSlot(candidate.symbol, resolveLivePositionDirection(candidate)) === slot
+    && isExchangeLifecyclePosition(candidate, position.connectionId),
+  )
+  const aggregateCoordinated = related.length > 1 || related.some((candidate) =>
+    Boolean(candidate.aggregateProtectionKey)
+    || Number(candidate.aggregateProtectionMemberCount || 0) > 1,
+  )
+  if (!aggregateCoordinated) return true
+
+  const aggregateControlsPresent = related.some((candidate) =>
+    Boolean(candidate.stopLossOrderId)
+    || Boolean(candidate.takeProfitOrderId)
+    || Boolean(candidate.pendingProtectionOrders?.stopLoss?.clientOrderId)
+    || Boolean(candidate.pendingProtectionOrders?.takeProfit?.clientOrderId),
+  )
+  if (!aggregateControlsPresent) return true
+
+  position.aggregateProtectionKey = slot
+  position.aggregateProtectionMemberCount = related.length
+  position.aggregateProtectionMutationRequestedAt = Date.now()
+  position.aggregateProtectionMutationReason = reason
+  position.systemProtectionLegs = configuredSystemProtectionLegs(position)
+  position.protectionMode = position.stopLossOrderId || position.takeProfitOrderId
+    ? "hybrid_control_system"
+    : "system_close_fallback"
+  pushStep(
+    position,
+    "aggregate_protection_mutation_wait",
+    true,
+    `${slot} aggregate controls must settle before ${reason}; retrying on the next cycle`,
+  )
+  await savePosition(position)
+  return false
+}
+
 /** Confirm protection settlement before an independent position-size delta. */
 async function settleControlOrdersBeforeQuantityMutation(
   connector: any,
@@ -10079,6 +10469,7 @@ async function settleControlOrdersBeforeQuantityMutation(
     pushStep(position, "quantity_change_direction_guard", false, `${reason}: invalid position direction`)
     return false
   }
+  if (!await requestAggregateProtectionSlotMutation(connector, position, reason)) return false
 
   const quantityBefore = Math.max(0, Number(
     position.pendingQuantityMutation?.quantityBefore ?? position.executedQuantity ?? 0,
@@ -10336,12 +10727,22 @@ export async function closeLivePosition(
     // sequential: an exchange SL/TP or partial coordination always gets an
     // authoritative cycle to take effect before any program close is sent.
     if (exchangeConnector && hasSystemOrderId) {
-      const barrier = await settleControlOrdersBeforeSystemClose(
+      const aggregateReady = await requestAggregateProtectionSlotMutation(
         exchangeConnector,
         position,
-        closeReason,
-        closePrice,
+        `system_close:${closeReason}`,
       )
+      const barrier: ControlBarrierOutcome = aggregateReady
+        ? await settleControlOrdersBeforeSystemClose(
+            exchangeConnector,
+            position,
+            closeReason,
+            closePrice,
+          )
+        : {
+            decision: "wait",
+            detail: "aggregate CTS controls are settling before the physical quantity changes",
+          }
       pushStep(position, "control_order_barrier", barrier.decision !== "wait", barrier.detail)
       await savePosition(position)
       await persistCriticalLiveState(`control-barrier:${position.id}`)
@@ -10675,8 +11076,7 @@ export async function closeLivePosition(
         draft.lockedBy = undefined
       })
       if (rollback) Object.assign(position, rollback)
-      await updateProtectionOrders(exchangeConnector, position, "close_failed_rearm", null)
-      await savePosition(position)
+      await rearmProtectionAfterQuantityMutation(exchangeConnector, position, "close_failed_rearm")
       await incrementMetric(connectionId, "live_positions_close_failed_count")
       await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
       mutationLockHeld = false
@@ -10778,6 +11178,9 @@ export async function closeLivePosition(
     position.pendingSystemAction = undefined
     position.pendingQuantityMutation = undefined
     position.pendingAccumulation = undefined
+    position.aggregateProtectionMutationRequestedAt = undefined
+    position.aggregateProtectionMutationReason = undefined
+    position.aggregateProtectionOwner = false
     position.closeReason = closeReason
     // Persist the actual exit price so the stats route and trade-history
     // table can show the real close price without needing to back-derive
@@ -10853,8 +11256,13 @@ export async function closeLivePosition(
       )
     }
     if (!wasAlreadyClosed) {
-      await incrementMetric(connectionId, "live_positions_closed_count")
-      if (position.realizedPnlComplete && pnl > 0) await incrementMetric(connectionId, "live_wins_count")
+      if (isSimulationClose) {
+        await incrementMetric(connectionId, "live_simulated_positions_closed_count")
+        if (pnl > 0) await incrementMetric(connectionId, "live_simulated_wins_count")
+      } else {
+        await incrementMetric(connectionId, "live_positions_closed_count")
+        if (position.realizedPnlComplete && pnl > 0) await incrementMetric(connectionId, "live_wins_count")
+      }
       const closedDirection = resolveLivePositionDirection(position)
       // A Signal/default or Signal/Block leg may have joined a position whose
       // primary owner is another indication type. Attribution follows the
@@ -11642,6 +12050,14 @@ export async function reconcileLivePositions(
     // 2 × getOrder() calls per position the alternative would require.
     // `null` means "skip verification this tick"; the next tick retries.
     const liveOrderIds = await fetchLiveOrderIdSet(exchangeConnector)
+    const aggregateProtection = await reconcileAggregateProtectionBook(
+      connectionId,
+      exchangeConnector,
+      openPositions,
+      exchangePositions,
+      liveOrderIds,
+    )
+    summary.protectionRearmed += aggregateProtection.rearmedLeaders
 
     // ── Per-position worker (parallelisable) ─────────���───────────────
     // Each iteration is independent at the venue + Redis layer:
@@ -11887,24 +12303,9 @@ export async function reconcileLivePositions(
             return delta
           }
 
-          try {
-            const protectionResult = await updateProtectionOrders(
-              exchangeConnector,
-              pos,
-              justFilled ? "reconcile_fill_detected" : "reconcile",
-              liveOrderIds,
-            )
-            if (protectionResult.changed) {
-              delta.protectionRearmed++
-              await savePosition(pos)
-              delta.updated++
-            }
-          } catch (slTpErr) {
-            console.warn(
-              `${LOG_PREFIX} reconcile SL/TP heal error for ${pos.id}:`,
-              slTpErr instanceof Error ? slTpErr.message : String(slTpErr),
-            )
-          }
+          // Venue SL/TP is coordinated once per physical symbol/direction by
+          // reconcileAggregateProtectionBook above. Per-position lifecycle
+          // checks below remain independent and may still issue a system close.
 
           const crossed = await checkAndForceCloseOnSltpCross(
             connectionId,
@@ -12982,6 +13383,13 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       if (!direction) continue
       exchangeMap.set(`${sym}|${direction}`, ep)
     }
+    await reconcileAggregateProtectionBook(
+      connectionId,
+      exchangeConnector,
+      openPositions,
+      exchangePositions,
+      liveOrderIdsSync,
+    )
     const executionSlotsByPhysicalSlot = new Map<string, Set<string>>()
     for (const position of openPositions) {
       const physicalSlot = `${normSym(position.symbol)}|${position.direction}`
@@ -13342,35 +13750,9 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           }
         }
 
-        // Arm or refresh protection orders. `updateProtectionOrders` is
-        // a no-op when nothing has drifted (price + qty stable, both
-        // legs already armed at correct levels) so this is cheap on the
-        // steady state. After a delayed fill (`justFilled`) it's a real
-        // place; after accumulation it re-arms for the new total qty;
-        // after an operator-cancelled SL on the exchange it re-places.
-        if (position.executedQuantity > 0) {
-          try {
-            const protectionResult = await updateProtectionOrders(
-              exchangeConnector,
-              position,
-              justFilled ? "sync_fill_detected" : "sync_heal",
-              liveOrderIdsSync,
-            )
-            // Fire-and-forget persist — protection state (order IDs,
-            // lastArmedAt) must be durable but the save does not need to
-            // complete before we proceed to the SL/TP cross check. On a
-            // crash the 7-day setex TTL means we lose at most one tick's
-            // worth of protection metadata, which the next sync heals.
-            if (protectionResult.changed) {
-              savePosition(position).catch(() => {})
-            }
-          } catch (slTpErr) {
-            console.warn(
-              `${LOG_PREFIX} sync SL/TP heal error for ${position.id}:`,
-              slTpErr instanceof Error ? slTpErr.message : String(slTpErr),
-            )
-          }
-        }
+        // Exchange controls were reconciled once for the complete physical
+        // slot before the per-position worker pool. Each logical row still
+        // runs its own trigger/max-hold checks below.
 
         // ── Proactive close-in-time SL/TP check ────���──────────────────
         // Same safety net `reconcileLivePositions` runs, applied here
@@ -13728,6 +14110,8 @@ export async function recalculateAndApplySLTP(
         : undefined
     }
 
+    normalizeLivePositionProtection(position)
+
     const slChanged = position.stopLoss !== prevStopLossPct
     const tpChanged = position.takeProfit !== prevTakeProfitPct
     const manualProtectionChanged = JSON.stringify(previousManualProtection) !== JSON.stringify(position.manualProtectionOverride)
@@ -13762,11 +14146,10 @@ export async function recalculateAndApplySLTP(
     // Direct override/trailing updates already know the recorded order IDs and
     // intentionally avoid an extra open-orders snapshot RTT on the critical
     // path. cancelProtectionOrder treats already-gone IDs as success; the
-    // 200 ms canonical sync independently performs full liveness healing.
+    // The 280 ms canonical sync independently performs full liveness healing.
     ratchetManualTrailingStop(position)
-    await updateProtectionOrders(exchangeConnector, position, "manual_recalc", null)
     position.updatedAt = Date.now()
-    await savePosition(position)
+    await rearmProtectionAfterQuantityMutation(exchangeConnector, position, "manual_recalc")
 
     // ── Immediate post-override cross check ────────────────────────────
     // If the operator just tightened SL or TP to a level the position

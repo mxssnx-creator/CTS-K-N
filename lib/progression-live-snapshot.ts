@@ -101,7 +101,10 @@ function aggregateFreshRowField(
     total += number(hash[`s:${symbol}:${field}`])
     samples++
   }
-  return samples > 0 ? total : number(hash[field] ?? hash[legacyField])
+  // A legacy field is a last-symbol/lifetime value, not a current
+  // cross-symbol snapshot. Never resurrect it when all current rows are
+  // stale or absent; the caller will keep the stage explicitly partial.
+  return samples > 0 ? total : 0
 }
 
 type StageRowCoverage = {
@@ -170,6 +173,14 @@ function overlayCurrentStrategyRows(
   const mainCoverage = summarizeStageRowCoverage(mainHash, activeSymbols, expectedSymbols, now)
   const realCoverage = summarizeStageRowCoverage(realHash, activeSymbols, expectedSymbols, now)
   const liveCoverage = summarizeStageRowCoverage(liveHash, activeSymbols, expectedSymbols, now)
+  const aggregateCompleteFreshRowField = (
+    hash: Hash,
+    coverage: StageRowCoverage,
+    field: string,
+    legacyField: string,
+  ): number => coverage.complete
+    ? aggregateFreshRowField(hash, field, legacyField, activeSymbols, now)
+    : 0
   const openValue = (value: number): number => engineRunning ? value : 0
 
   const rows = record(next.strategyRows)
@@ -179,27 +190,27 @@ function overlayCurrentStrategyRows(
   const real = record(rows.real)
   const live = record(rows.live)
 
-  const baseTotal = aggregateFreshRowField(baseHash, "row_total", "created_sets", activeSymbols, now)
-  const baseValid = aggregateFreshRowField(baseHash, "row_valid", "passed_sets", activeSymbols, now)
-  const mainValid = aggregateFreshRowField(mainHash, "row_valid", "parent_sets_passed", activeSymbols, now)
-  const mainOverall = aggregateFreshRowField(mainHash, "row_overall", "created_sets", activeSymbols, now)
-  const realValid = aggregateFreshRowField(realHash, "row_valid", "created_sets", activeSymbols, now)
-  const realEvaluated = aggregateFreshRowField(realHash, "row_real_evaluated", "evaluated", activeSymbols, now)
-  const realActiveCycle = aggregateFreshRowField(realHash, "row_active", "sets_running_now", activeSymbols, now)
-  const liveTotal = aggregateFreshRowField(liveHash, "row_total", "evaluated", activeSymbols, now)
-  const liveMirrored = aggregateFreshRowField(liveHash, "row_mirrored", "created_sets", activeSymbols, now)
-  const baseTotalOpen = aggregateFreshRowField(baseHash, "row_total_open", "sets_running_now", activeSymbols, now)
-  const baseValidOpen = aggregateFreshRowField(baseHash, "row_valid_open", "sets_running_now", activeSymbols, now)
-  const mainValidOpen = aggregateFreshRowField(mainHash, "row_valid_open", "sets_running_now", activeSymbols, now)
-  const mainOverallOpen = aggregateFreshRowField(mainHash, "row_overall_open", "sets_running_now", activeSymbols, now)
+  const baseTotal = aggregateCompleteFreshRowField(baseHash, baseCoverage, "row_total", "created_sets")
+  const baseValid = aggregateCompleteFreshRowField(baseHash, baseCoverage, "row_valid", "passed_sets")
+  const mainValid = aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_valid", "parent_sets_passed")
+  const mainOverall = aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall", "created_sets")
+  const realValid = aggregateCompleteFreshRowField(realHash, realCoverage, "row_valid", "created_sets")
+  const realEvaluated = aggregateCompleteFreshRowField(realHash, realCoverage, "row_real_evaluated", "evaluated")
+  const realActiveCycle = aggregateCompleteFreshRowField(realHash, realCoverage, "row_active", "sets_running_now")
+  const liveTotal = aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_total", "evaluated")
+  const liveMirrored = aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_mirrored", "created_sets")
+  const baseTotalOpen = aggregateCompleteFreshRowField(baseHash, baseCoverage, "row_total_open", "sets_running_now")
+  const baseValidOpen = aggregateCompleteFreshRowField(baseHash, baseCoverage, "row_valid_open", "sets_running_now")
+  const mainValidOpen = aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_valid_open", "sets_running_now")
+  const mainOverallOpen = aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open", "sets_running_now")
   const mainOpenBreakdown = {
-    standard: aggregateFreshRowField(mainHash, "row_overall_open_standard", "row_overall_open_standard", activeSymbols, now),
-    trailing: aggregateFreshRowField(mainHash, "row_overall_open_trailing", "row_overall_open_trailing", activeSymbols, now),
-    positionCount: aggregateFreshRowField(mainHash, "row_overall_open_position_count", "row_overall_open_position_count", activeSymbols, now),
-    block: aggregateFreshRowField(mainHash, "row_overall_open_block", "row_overall_open_block", activeSymbols, now),
-    dca: aggregateFreshRowField(mainHash, "row_overall_open_dca", "row_overall_open_dca", activeSymbols, now),
+    standard: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_standard", "row_overall_open_standard"),
+    trailing: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_trailing", "row_overall_open_trailing"),
+    positionCount: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_position_count", "row_overall_open_position_count"),
+    block: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_block", "row_overall_open_block"),
+    dca: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_dca", "row_overall_open_dca"),
   }
-  const realActiveExact = aggregateFreshRowField(realHash, "row_active_exact", "sets_running_now", activeSymbols, now)
+  const realActiveExact = aggregateCompleteFreshRowField(realHash, realCoverage, "row_active_exact", "sets_running_now")
 
   next.strategyRows = {
     ...rows,
@@ -229,7 +240,7 @@ function overlayCurrentStrategyRows(
       ...real,
       valid: realValid,
       evaluated: realEvaluated,
-      rejected: aggregateFreshRowField(realHash, "row_real_rejected", "row_real_rejected", activeSymbols, now),
+      rejected: aggregateCompleteFreshRowField(realHash, realCoverage, "row_real_rejected", "row_real_rejected"),
       active: openValue(realActiveCycle),
       activeExactRows: openValue(realActiveExact),
       validRatio: percentage(realValid, realEvaluated),
@@ -239,18 +250,18 @@ function overlayCurrentStrategyRows(
       ...live,
       total: liveTotal,
       mirrored: liveMirrored,
-      active: openValue(aggregateFreshRowField(liveHash, "row_active", "sets_running_now", activeSymbols, now)),
-      blockCreated: aggregateFreshRowField(liveHash, "row_live_block_created", "row_live_block_created", activeSymbols, now),
-      blockValid: aggregateFreshRowField(liveHash, "row_live_block_valid", "row_live_block_valid", activeSymbols, now),
-      executable: aggregateFreshRowField(liveHash, "row_live_executable", "created_sets", activeSymbols, now),
+      active: openValue(aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_active", "sets_running_now")),
+      blockCreated: aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_block_created", "row_live_block_created"),
+      blockValid: aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_block_valid", "row_live_block_valid"),
+      executable: aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_executable", "created_sets"),
       mirroredRatio: percentage(liveMirrored, liveTotal),
       executablePerRow: percentage(
-        aggregateFreshRowField(liveHash, "row_live_executable", "created_sets", activeSymbols, now),
+        aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_executable", "created_sets"),
         liveTotal,
         false,
       ),
     } : live,
-    updatedAt: [baseCoverage, mainCoverage, realCoverage].every((stage) => stage.oldestUpdatedAt > 0)
+    updatedAt: [baseCoverage, mainCoverage, realCoverage].every((stage) => stage.complete && stage.oldestUpdatedAt > 0)
       ? Math.min(baseCoverage.oldestUpdatedAt, mainCoverage.oldestUpdatedAt, realCoverage.oldestUpdatedAt)
       : 0,
     semantics: "latest-cycle-and-current-open-row-snapshot",
@@ -380,7 +391,7 @@ function overlayCurrentStrategyRows(
         live: {
           total: liveTotal,
           mirrored: liveMirrored,
-          executable: aggregateFreshRowField(liveHash, "row_live_executable", "created_sets", activeSymbols, now),
+          executable: aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_executable", "created_sets"),
         },
       },
       base: effectiveBase,

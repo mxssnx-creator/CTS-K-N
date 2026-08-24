@@ -331,7 +331,8 @@ describe("requested regression guardrails", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
 
     expect(page).toContain("function PresetDailyDiagram")
-    expect(page).toContain("Daily average ProfitFactor")
+    expect(page).toContain("Daily PositionCost coordinate")
+    expect(page).toContain("Realised PF")
     expect(page).toContain("Position cost")
     expect(page).toContain("Win / Loss")
     expect(page).toContain("Drawdown time")
@@ -638,6 +639,10 @@ describe("requested regression guardrails", () => {
     expect(route).toContain("maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION")
     expect(dashboard).toContain("max={300}")
     expect(dashboard).toContain("pendingConfigKeysRef")
+    expect(dashboard).toContain("new Map<string")
+    expect(dashboard).toContain("pendingConfigRef.current.set(scopeKey")
+    expect(dashboard).toContain("updateScopeConnectionId")
+    expect(dashboard).toContain("{ connectionId: updateScopeConnectionId }")
     expect(dashboard).toContain("mergePendingDirectTradeConfig")
     expect(dashboard).toContain("setCalculationProgress(data.calculationProgress")
     expect(settings).toContain("maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL")
@@ -653,9 +658,24 @@ describe("requested regression guardrails", () => {
     expect(dashboard).toContain("minStepsBetweenThumbs={0}")
     expect(dashboard).toContain('aria-label="Direct-Trade take-profit Set-creation step"')
     expect(settings).toContain("TP Set-creation step · × PositionCost")
+    expect(settings).toContain('min={DIRECT_TRADE_VOLUME_FACTOR_MIN}')
+    expect(settings).toContain('max={DIRECT_TRADE_VOLUME_FACTOR_MAX}')
+    expect(settings).toContain('step={0.1}')
+    expect(settings).toContain('aria-label="Direct-Trade trailing minimum take-profit PositionCost ratio"')
     expect(settings).toContain('aria-label="Direct-Trade take-profit PositionCost range"')
     expect(settings).toContain("minStepsBetweenThumbs={0}")
     expect(processor).toContain("takeProfitRatioStep: state.takeProfitRatioStep")
+    expect(processor).toContain("DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO = 0.2")
+    expect(processor).toContain("DIRECT_TRADE_BASE_NOTIONAL_PER_FACTOR_USDT = 5")
+    expect(processor).toContain("normalizeDirectTradeVolumeFactor(state.minVolFactor)")
+    expect(processor).toContain("takeProfitPositionCostRatio < normalizeDirectTradeTrailingMinTakeProfitRatio")
+    expect(route).toContain("DIRECT_TRADE_PROCESSING_INTERVAL_DEFAULT_MS = 280")
+    expect(route).toContain("clampDirectTradeVolumeFactor")
+    expect(route).toContain("requestedDirectTradeVolumeFactor")
+    expect(route).toContain("normaliseDirectTradeTrailingMinTakeProfitRatio")
+    expect(dashboard).toContain('min={DIRECT_TRADE_VOLUME_FACTOR_MIN}')
+    expect(dashboard).toContain('max={DIRECT_TRADE_VOLUME_FACTOR_MAX}')
+    expect(dashboard).toContain('aria-label="Direct-Trade trailing minimum take-profit PositionCost ratio"')
     expect(processor).toContain('DIRECT_TRADE_SYNTHETIC_MARKET_DATA === "1"')
     expect(processor).toContain("Refusing unverified BingX public host")
     expect(processor).toContain('"open-api.bingx.com"')
@@ -679,6 +699,14 @@ describe("requested regression guardrails", () => {
     expect(processor).toContain("position.openControlId")
     expect(processor).toContain("pos.closeControlId")
     expect(processor).toContain("processPendingAccumulationOrders")
+    expect(processor).toContain("reconcileOneIncompleteLiveAccounting")
+    expect(processor).toContain("reconcileOneIncompleteLiveCloseAccounting")
+    expect(processor).toContain("backfillLegacyDirectTradeLegControlIds")
+    expect(processor).toContain('action: "processor-heartbeat"')
+    expect(processor).toContain("DIRECT_TRADE_PROCESSOR_HEARTBEAT_INTERVAL_MS = 1_500")
+    expect(processor).toContain('position.pnlAccountingComplete === true')
+    expect(processor).toContain("recordAccountedConfigOutcome")
+    expect(processor).not.toContain("Date.now() - waitStartedAt < 15_000")
     expect(processor).toContain("if (pos.blockPendingControlId || pos.dcaPendingControlId) continue")
     expect(processor).toContain('if (pos.mode === "live")')
     expect(processor).not.toContain('if (pos.mode === "live" && pos.orderId)')
@@ -687,6 +715,7 @@ describe("requested regression guardrails", () => {
     expect(processor).toContain('p.status === "open_failed"')
     expect(processor).not.toContain("pos.closeAttempt =")
     expect(gateway).toContain("durableControlExists")
+    expect(gateway).toContain("settlement: result.settlement")
     expect(gateway).toContain("countAccumulated: kind === \"open\" && stage === \"accumulation\"")
     expect(recoverySoak).toContain('const recoveryDistDir = `.next-recovery-${process.pid}`')
     expect(recoverySoak).toContain("NEXT_DIST_DIR: recoveryDistDir")
@@ -697,6 +726,10 @@ describe("requested regression guardrails", () => {
     expect(livePreflight).toContain("NEXT_DIST_DIR: preflightDistDir")
     expect(livePreflight).toContain("rmSync(preflightDistDir, { recursive: true, force: true })")
     expect(livePreflight).toContain("sourceMetadataSnapshots")
+    expect(livePreflight).toContain('const testConnectionId = "bingx-x02"')
+    expect(livePreflight).toContain('"--connection-id"')
+    expect(livePreflight).toContain("testConnectionId,")
+    expect(livePreflight).toContain("status?connectionId=${encodeURIComponent(testConnectionId)}")
     expect(livePreflight).toContain("process.kill(-child.pid, 0)")
     expect(livePreflight.match(/rmSync\(preflightDistDir/g)?.length).toBeGreaterThanOrEqual(3)
     expect(livePreflight).toContain("Signal only that exact group")
@@ -1099,7 +1132,8 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("const coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0")
     expect(source).toContain("const hasLocalEngineRuntime = effectiveCoordinatorEngineCount > 0")
     expect(source).toContain("const hasFreshDistributedHeartbeat")
-    expect(source).toContain("hasLocalEngineRuntime || hasFreshDistributedHeartbeat")
+    expect(source).toContain("hasLocalConnectionRuntime || hasFreshDistributedHeartbeat")
+    expect(source).toContain("const hasLocalConnectionRuntime = Boolean(localManager?.isEngineRunning)")
     expect(source).toContain("workerAttached: hasLocalEngineRuntime")
     expect(source).toContain("distributedHeartbeatFresh: hasFreshDistributedHeartbeat")
     expect(source).toContain("distributedEngineCount")
@@ -1120,10 +1154,14 @@ describe("requested regression guardrails", () => {
     }
     expect(systemStatus).toContain("rawState")
     expect(systemStatus).toContain("settingsState")
-    expect(systemStatus).toContain("return { ...(rawState || {}), ...(settingsState || {}) }")
+    expect(systemStatus).toContain("scopedRawState")
+    expect(systemStatus).toContain("scopedSettingsState")
+    expect(systemStatus).toContain("buildProgressionScope(conn.id, engineType)")
     expect(tradeStatus).toContain("rawEngineState")
     expect(tradeStatus).toContain("settingsEngineState")
-    expect(tradeStatus).toContain("const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }")
+    expect(tradeStatus).toContain("scopedRawEngineState")
+    expect(tradeStatus).toContain("scopedSettingsEngineState")
+    expect(tradeStatus).toContain("progressionReadKeys(scope)")
     expect(engineSystemStatus).toContain("rawEngineState")
     expect(engineSystemStatus).toContain("settingsEngineState")
     expect(engineSystemStatus).toContain("production status pages do not report false")
@@ -1204,6 +1242,14 @@ describe("requested regression guardrails", () => {
     expect(previewRunner).toContain("signalServerProcessGroup")
     expect(previewRunner).toContain('process.kill(-child.pid, signal)')
     expect(previewRunner).toContain('detached: process.platform !== "win32"')
+    expect(previewRunner).toContain('import net from "node:net"')
+    expect(previewRunner).toContain("async function waitForLoopbackPortRelease")
+    expect(previewRunner).toContain('error?.code === "EADDRINUSE"')
+    expect(previewRunner.match(/await waitForLoopbackPortRelease\(\)/g)).toHaveLength(2)
+    expect(previewRunner.indexOf("await waitForLoopbackPortRelease()", previewRunner.indexOf("async function stopServer")))
+      .toBeGreaterThan(previewRunner.indexOf('signalServerProcessGroup(child, "SIGKILL")', previewRunner.indexOf("async function stopServer")))
+    expect(previewRunner.indexOf("await waitForLoopbackPortRelease()", previewRunner.indexOf("async function crashServer")))
+      .toBeGreaterThan(previewRunner.indexOf('signalServerProcessGroup(child, "SIGKILL")', previewRunner.indexOf("async function crashServer")))
     expect(previewRunner).toContain("child.signalCode")
     expect(previewRunner).toContain("Position ${id} disappeared after crash instead of being reconciled")
     expect(previewRunner).toContain("recoveryTick?.ok !== true")
@@ -1351,10 +1397,14 @@ describe("requested regression guardrails", () => {
     }
     expect(systemStatus).toContain("rawState")
     expect(systemStatus).toContain("settingsState")
-    expect(systemStatus).toContain("return { ...(rawState || {}), ...(settingsState || {}) }")
+    expect(systemStatus).toContain("scopedRawState")
+    expect(systemStatus).toContain("scopedSettingsState")
+    expect(systemStatus).toContain("buildProgressionScope(conn.id, engineType)")
     expect(tradeStatus).toContain("rawEngineState")
     expect(tradeStatus).toContain("settingsEngineState")
-    expect(tradeStatus).toContain("const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }")
+    expect(tradeStatus).toContain("scopedRawEngineState")
+    expect(tradeStatus).toContain("scopedSettingsEngineState")
+    expect(tradeStatus).toContain("progressionReadKeys(scope)")
     expect(engineSystemStatus).toContain("rawEngineState")
     expect(engineSystemStatus).toContain("settingsEngineState")
     expect(engineSystemStatus).toContain("production status pages do not report false")
@@ -1533,8 +1583,11 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"')
     expect(source).toContain('client.get(`engine_is_running:${conn.id}`)')
     expect(source).toContain('const runtime = resolveDistributedEngineRuntime({')
-    expect(source).toContain('states: [runtimeState, settingsState]')
+    expect(source).toContain('states: [runtimeState, settingsState, scopedRuntimeState, scopedSettingsState]')
     expect(source).toContain('const isRunning = runtime.running')
+    expect(source).toContain("progressionReadKeys(scope)")
+    expect(source).toContain("scopedRuntimeState")
+    expect(source).toContain("scopedSettingsState")
     expect(source).toContain("...settingsState")
     expect(source).toContain("...runtimeState")
     expect(source).toContain("runtimeState.force_symbols || runtimeState.active_symbols || runtimeState.symbols")
@@ -1547,6 +1600,17 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("Engine symbol read timed out")
     expect(source).not.toContain("withTimeout(getActiveConnectionsForEngine(), 2000, [])")
     expect(source).not.toContain('from "@/lib/trade-engine"')
+  })
+
+  test("progression status requires per-connection runtime proof", () => {
+    const source = read("app/api/trade-engine/progression/route.ts")
+
+    expect(source).toContain("const localManagerRunning = coordinator.isEngineRunning(conn.id)")
+    expect(source).toContain("resolveDistributedEngineRuntime({")
+    expect(source).toContain("scopedRuntimeState")
+    expect(source).toContain("scopedSettingsRuntimeState")
+    expect(source).toContain("localManagerRunning || distributedRuntime.running")
+    expect(source).not.toContain("engineStatus !== null")
   })
 
   test("high-frequency read-only routes do not instantiate the complete trade-engine graph", () => {
@@ -2009,7 +2073,7 @@ describe("requested regression guardrails", () => {
     expect(globalReadyBlock).toContain("migrationsRan = false")
     expect(source).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(source).toContain('import("@/lib/redis-migrations")')
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 100")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 103")
     expect(source).toContain('client.get("_schema_version").catch(() => null)')
   })
 
@@ -2409,19 +2473,20 @@ describe("requested regression guardrails", () => {
     )
   })
 
-  test("new custom preset types inherit the systemwide Block-Only default while explicit false remains valid", () => {
+  test("new custom preset types expose the Normal family and no Only selector", () => {
     const dialog = read("components/presets/preset-type-dialog.tsx")
     const createRoute = read("app/api/preset-types/route.ts")
     const updateRoute = read("app/api/preset-types/[id]/route.ts")
 
     expect(dialog).toContain("const [blockEnabled, setBlockEnabled] = useState(true)")
-    expect(dialog).toContain("const [blockOnly, setBlockOnly] = useState(true)")
+    expect(dialog).toContain("const [normalEnabled, setNormalEnabled] = useState(true)")
     expect(dialog).toContain("setBlockEnabled(presetType.block_enabled ?? true)")
-    expect(dialog).toContain("setBlockOnly(presetType.block_only ?? true)")
+    expect(dialog).not.toContain("Block Only")
+    expect(dialog).not.toContain("DCA Only")
     expect(createRoute).toContain("block_enabled: body.block_enabled !== false")
-    expect(createRoute).toContain("block_only: body.block_only !== false")
+    expect(createRoute).toContain("block_only: false")
     expect(updateRoute).toContain("block_enabled: body.block_enabled !== false")
-    expect(updateRoute).toContain("block_only: body.block_only !== false")
+    expect(updateRoute).toContain("block_only: false")
   })
 
   test("Base, Main, Real and Live remain mandatory steps with independent settings", () => {
@@ -2445,7 +2510,8 @@ describe("requested regression guardrails", () => {
     expect(strategiesRoute).toContain("enabled: true")
     expect(strategiesRoute).not.toContain("is_enabled: !!strat.is_enabled")
     expect(migrations).toContain('strategy_stage_switches: "compatibility-only-always-true"')
-    expect(read("lib/strategy-coordinator.ts")).toContain(
+    expect(read("lib/strategy-coordinator.ts")).toContain("normalEnabled: this._coordinationSettings.normalEnabled !== false")
+    expect(read("lib/strategy-coordinator.ts")).not.toContain(
       "blockOnly: this._coordinationSettings.blockOnly === true",
     )
   })
@@ -2652,7 +2718,7 @@ describe("requested regression guardrails", () => {
     expect(targetedStart).not.toContain("runTradeEngineHealingSweep")
   })
 
-  test("simulated live-stage orders use the idempotent fill/entry counter path", () => {
+  test("simulated live-stage orders use the idempotent ledger path without polluting real counters", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const simStart = liveStage.indexOf("if (!isLiveTradeEnabled) {")
     const simEnd = liveStage.indexOf("if (!exchangeConnector || typeof exchangeConnector.placeOrder !== \"function\")", simStart)
@@ -2660,20 +2726,22 @@ describe("requested regression guardrails", () => {
 
     expect(simBlock).toContain("await savePosition(livePosition)")
     expect(simBlock).toContain("await recordFillCountersOnce(")
-    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_placed_count")')
-    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_simulated_count")')
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_simulated_positions_created_count")')
+    expect(simBlock).not.toContain('incrementMetric(connectionId, "live_orders_placed_count")')
+    expect(simBlock).not.toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
     expect(liveStage).toContain('await incrementMetric(connectionId, "live_orders_filled_count")')
     expect(liveStage).toContain('await incrementOrdersBySymbol(connectionId, symbol, direction, "filled")')
     expect(liveStage).toContain("await recordConfirmedStrategyEntry(connectionId, position")
     const liveOrderService = read("lib/live-order-service.ts")
     expect(liveOrderService).toContain('if (event === "simulated")')
-    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_placed_count", 1)')
-    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_filled_count", 1)')
-    expect(liveOrderService).toContain('await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, "filled")')
+    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_simulated_count", 1)')
+    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_simulated_positions_created_count", 1)')
+    expect(liveOrderService).toContain('if (event !== "simulated") await recordPerSymbolOrderCounter')
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
     expect(statsRoute).toContain("ordersSimulated remains an audit-only subset counter")
     expect(simBlock.indexOf("await savePosition(livePosition)")).toBeLessThan(
-      simBlock.indexOf('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")'),
+      simBlock.indexOf('incrementMetric(connectionId, "live_orders_simulated_count")'),
     )
   })
 
@@ -3399,8 +3467,10 @@ describe("requested regression guardrails", () => {
     expect(quickstart).toContain('{ label: "Adv",  value: stats.indActiveAdvanced }')
 
     expect(activeCard).toContain("indicationsActiveAdvanced: number")
-    expect(activeCard).toContain("indicationsActiveAdvanced: ind.activeAdvanced || 0")
-    expect(activeCard).toContain('{ label: "Adv", value: prehistoricStats.indicationsActiveAdvanced }')
+    expect(activeCard).toContain("indicationsActiveAdvanced: nonNegativeMetric(activeInd.activeAdvanced ?? ind.activeAdvanced)")
+    expect(activeCard).toContain("indicationsCalculatedActiveAdvanced: nonNegativeMetric(calculatedInd.activeAdvanced ?? activeInd.activeAdvanced ?? ind.activeAdvanced)")
+    expect(activeCard).toContain("Current Indications · qualified / calculated")
+    expect(activeCard).toContain('{ label: "Adv", value: prehistoricStats.indicationsActiveAdvanced, calculated: prehistoricStats.indicationsCalculatedActiveAdvanced }')
   })
 
   test("main connection cards use canonical ids for progression and stats polling", () => {
@@ -3805,7 +3875,7 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain("RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS")
     expect(migrations).toContain("await releaseOwnedRedisLock(client, keys.baseLock, token)")
     expect(migrations).toContain("__v0_devBootGuardDone = false")
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 100")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 103")
     expect(redisDb).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(redisDb).toContain("ensureSharedVolatileStartupCleanup")
     expect(redisDb).toContain("markSharedRuntimeReady")
@@ -3834,19 +3904,34 @@ describe("requested regression guardrails", () => {
     }
   })
 
-  test("SL/TP sizing is based on confirmed fills and cannot exceed an explicit reduction override", () => {
+  test("SL/TP sizing is fill-bounded except for an ownership-verified aggregate override", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
 
     expect(liveStage).toContain(
       "const rawEffectiveQty = pos.executedQuantity > 0 ? pos.executedQuantity : (pos.quantity ?? 0)",
     )
-    expect(liveStage).toContain("? Math.min(rawEffectiveQty, requestedOverride)")
+    expect(liveStage).toContain("options.allowQuantityOverrideAbovePosition === true")
+    expect(liveStage).toContain("? requestedOverride")
+    expect(liveStage).toContain(": Math.min(rawEffectiveQty, requestedOverride)")
     expect(liveStage).toContain(
       'await prepareProtectionSubmission(livePosition, "stopLoss", slPrice, livePosition.executedQuantity)',
     )
     expect(liveStage).toContain(
       'await prepareProtectionSubmission(livePosition, "takeProfit", tpPrice, livePosition.executedQuantity)',
     )
+  })
+
+  test("aggregate venue controls settle before any member changes physical quantity", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(liveStage).toContain("async function requestAggregateProtectionSlotMutation(")
+    expect(liveStage).toContain("aggregateProtectionMutationRequestedAt = Date.now()")
+    expect(liveStage).toContain("if (!await requestAggregateProtectionSlotMutation(connector, position, reason)) return false")
+    expect(liveStage).toContain("const aggregateReady = await requestAggregateProtectionSlotMutation(")
+    expect(liveStage).toContain("const mutationRequested = members.some((member) =>")
+    expect(liveStage).toContain("aggregate pair paused for a CTS quantity mutation")
+    expect(liveStage).toContain("CTS controls removed and independent venue quantity preserved")
+    expect(liveStage).toContain("await rearmProtectionAfterQuantityMutation(")
   })
 
 })
