@@ -30,6 +30,24 @@ describe("distributed engine runtime", () => {
     expect(runtime.heartbeatAgeMs).toBe(5_000)
   })
 
+  test("accepts the canonical global worker heartbeat aliases", () => {
+    const runtime = resolveDistributedEngineRuntime({
+      runningHint: "running",
+      states: [{
+        status: "running",
+        actual_status: "running",
+        last_heartbeat_at: String(now - 2_000),
+        last_heartbeat_iso: new Date(now - 2_000).toISOString(),
+      }],
+      globalState: { operator_intent: "running" },
+      now,
+    })
+
+    expect(runtime.running).toBe(true)
+    expect(runtime.reason).toBe("fresh-heartbeat")
+    expect(runtime.heartbeatAgeMs).toBe(2_000)
+  })
+
   test("explicit connection stop wins over a not-yet-aged-out heartbeat", () => {
     const runtime = resolveDistributedEngineRuntime({
       runningHint: "0",

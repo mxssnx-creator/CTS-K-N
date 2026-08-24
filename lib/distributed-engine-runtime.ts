@@ -21,6 +21,8 @@ const STOPPED_STATUSES = new Set(["disabled", "error", "idle", "paused", "stoppe
 const ACTIVITY_FIELDS = [
   "last_processor_heartbeat",
   "last_indication_run",
+  "last_heartbeat_at",
+  "last_heartbeat_iso",
   "last_activity_at",
   "last_cycle_at",
   "last_update",
@@ -29,7 +31,12 @@ const ACTIVITY_FIELDS = [
   "last_started_at",
 ] as const
 
-const HEARTBEAT_FIELDS = ["last_processor_heartbeat", "last_indication_run"] as const
+const HEARTBEAT_FIELDS = [
+  "last_processor_heartbeat",
+  "last_indication_run",
+  "last_heartbeat_at",
+  "last_heartbeat_iso",
+] as const
 
 export function parseRuntimeTimestamp(value: unknown): number {
   if (value === undefined || value === null || value === "") return 0
