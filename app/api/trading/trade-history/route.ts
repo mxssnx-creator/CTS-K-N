@@ -5,6 +5,7 @@ import { withTimeout } from "@/lib/async-safety"
 import {
   MAX_TRADE_HISTORY_PAGE_SIZE,
   TRADE_HISTORY_PAGE_SIZE,
+  classifyLocalTradeHistorySnapshot,
   loadClosedPositionSnapshotArchive,
   loadClosedPositionSnapshotPage,
   mergeTradeHistory,
@@ -358,9 +359,17 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
       }
 
-      const normalizedSnapshotRows = archive.snapshots
-        .map((position) => normalizeLocalTradeHistoryRow(position))
-        .filter((row): row is TradeHistoryRow => !!row)
+      const classifiedSnapshots = archive.snapshots.map(classifyLocalTradeHistorySnapshot)
+      const normalizedSnapshotRows = classifiedSnapshots.flatMap((classification) =>
+        classification.row ? [classification.row] : [],
+      )
+      const excludedNonTradeSnapshots = classifiedSnapshots.filter((classification) =>
+        classification.disposition === "excluded_non_trade",
+      ).length
+      const unresolvedTradeSnapshots = classifiedSnapshots.filter((classification) =>
+        classification.disposition === "unresolved_trade",
+      ).length
+      const eligibleSnapshots = normalizedSnapshotRows.length + unresolvedTradeSnapshots
       const localRows = normalizedSnapshotRows.filter((row) => row.environment === mode)
       // This view never opens a private connector. The durable archive is the
       // complete lineage source; a previously reconciled venue snapshot only
@@ -380,13 +389,16 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
           indexed: archive.indexed,
           uniqueIds: archive.uniqueIds,
           resolvedSnapshots: archive.snapshots.length,
+          eligibleSnapshots,
           normalizedSnapshots: normalizedSnapshotRows.length,
+          excludedNonTradeSnapshots,
+          unresolvedTradeSnapshots,
           normalizedLocalRows: localRows.length,
           exchangeOverlays: exchangeRows.length,
           returned: rows.length,
           complete:
             archive.snapshots.length === archive.uniqueIds &&
-            normalizedSnapshotRows.length === archive.snapshots.length,
+            unresolvedTradeSnapshots === 0,
           capturedAt: Date.now(),
         },
       }, {

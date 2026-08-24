@@ -217,7 +217,10 @@ interface StatisticsArchiveCoverage {
   indexed: number
   uniqueIds: number
   resolvedSnapshots: number
+  eligibleSnapshots: number
   normalizedSnapshots: number
+  excludedNonTradeSnapshots: number
+  unresolvedTradeSnapshots: number
   normalizedLocalRows: number
   exchangeOverlays: number
   returned: number
@@ -552,7 +555,10 @@ export default function StatisticsPage() {
                 Boolean(
                   value &&
                   Number.isFinite(Number(value.indexed)) &&
-                  Number.isFinite(Number(value.normalizedSnapshots)),
+                  Number.isFinite(Number(value.eligibleSnapshots)) &&
+                  Number.isFinite(Number(value.normalizedSnapshots)) &&
+                  Number.isFinite(Number(value.excludedNonTradeSnapshots)) &&
+                  Number.isFinite(Number(value.unresolvedTradeSnapshots)),
                 ),
               )
             if (coverages.length === responses.length && coverages.length > 0) {
@@ -560,7 +566,10 @@ export default function StatisticsPage() {
                 indexed: coverages.reduce((sum, value) => sum + value.indexed, 0),
                 uniqueIds: coverages.reduce((sum, value) => sum + value.uniqueIds, 0),
                 resolvedSnapshots: coverages.reduce((sum, value) => sum + value.resolvedSnapshots, 0),
+                eligibleSnapshots: coverages.reduce((sum, value) => sum + value.eligibleSnapshots, 0),
                 normalizedSnapshots: coverages.reduce((sum, value) => sum + value.normalizedSnapshots, 0),
+                excludedNonTradeSnapshots: coverages.reduce((sum, value) => sum + value.excludedNonTradeSnapshots, 0),
+                unresolvedTradeSnapshots: coverages.reduce((sum, value) => sum + value.unresolvedTradeSnapshots, 0),
                 normalizedLocalRows: coverages.reduce((sum, value) => sum + value.normalizedLocalRows, 0),
                 exchangeOverlays: coverages.reduce((sum, value) => sum + value.exchangeOverlays, 0),
                 returned: coverages.reduce((sum, value) => sum + value.returned, 0),
@@ -576,7 +585,10 @@ export default function StatisticsPage() {
                 indexed: totalIndexed,
                 uniqueIds: totalIndexed,
                 resolvedSnapshots: historyRows.length,
+                eligibleSnapshots: totalIndexed,
                 normalizedSnapshots: historyRows.length,
+                excludedNonTradeSnapshots: 0,
+                unresolvedTradeSnapshots: Math.max(0, totalIndexed - historyRows.length),
                 normalizedLocalRows: historyRows.length,
                 exchangeOverlays: 0,
                 returned: historyRows.length,
@@ -985,8 +997,8 @@ export default function StatisticsPage() {
               className="h-7 gap-1 tabular-nums"
               title={
                 archiveCoverage.complete
-                  ? `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved and ${archiveCoverage.normalizedSnapshots.toLocaleString()} valid snapshots normalized; ${archiveCoverage.normalizedLocalRows.toLocaleString()} rows match the selected environment.`
-                  : `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved and ${archiveCoverage.normalizedSnapshots.toLocaleString()} valid snapshots normalized. Statistics are in bounded fallback mode.`
+                  ? `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved; all ${archiveCoverage.eligibleSnapshots.toLocaleString()} eligible executed trades normalized; ${archiveCoverage.excludedNonTradeSnapshots.toLocaleString()} non-trade lifecycle rows excluded; ${archiveCoverage.normalizedLocalRows.toLocaleString()} rows match the selected environment.`
+                  : `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved; ${archiveCoverage.normalizedSnapshots.toLocaleString()} of ${archiveCoverage.eligibleSnapshots.toLocaleString()} eligible executed trades normalized; ${archiveCoverage.unresolvedTradeSnapshots.toLocaleString()} remain unresolved. Statistics are in bounded fallback mode.`
               }
             >
               <History className="h-3 w-3" />
