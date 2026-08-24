@@ -3,6 +3,8 @@ import { join } from "node:path"
 import { AnalyticsEngine, type AnalyticsFilter } from "@/lib/analytics"
 import type { TradingPosition } from "@/lib/trading"
 import {
+  classifyLocalTradeHistorySnapshot,
+  normalizeLocalTradeHistoryRow,
   statisticsHistoryTupleToTradingPosition,
   toStatisticsHistoryTuple,
   type TradeHistoryRow,
@@ -203,6 +205,53 @@ describe("statistics UI correctness", () => {
     })
   })
 
+  test("recovers legacy closed rows from stored P&L and fill quantity", () => {
+    const recovered = normalizeLocalTradeHistoryRow({
+      id: "legacy-close",
+      status: "closed",
+      symbol: "BTCUSDT",
+      direction: "short",
+      executedQuantity: 0,
+      averageExecutionPrice: 100,
+      currentPrice: 0,
+      realizedPnl: -10,
+      fills: [{ quantity: 2, price: 100, fee: 0.2 }],
+      createdAt: Date.parse("2026-08-20T00:00:00.000Z"),
+      closedAt: Date.parse("2026-08-20T01:00:00.000Z"),
+    })
+
+    expect(recovered).toMatchObject({
+      quantity: 2,
+      entryPrice: 100,
+      exitPrice: 105,
+      realizedPnl: -10,
+      fees: 0.2,
+      closedAt: Date.parse("2026-08-20T01:00:00.000Z"),
+    })
+  })
+
+  test("distinguishes indexed non-trades from genuinely unresolved trades", () => {
+    expect(classifyLocalTradeHistorySnapshot({
+      id: "rejected",
+      status: "error",
+      symbol: "BTCUSDT",
+    })).toMatchObject({ disposition: "excluded_non_trade", reason: "non_terminal_status" })
+
+    expect(classifyLocalTradeHistorySnapshot({
+      id: "never-filled",
+      status: "closed",
+      symbol: "BTCUSDT",
+      executedQuantity: 0,
+    })).toMatchObject({ disposition: "excluded_non_trade", reason: "no_executed_quantity" })
+
+    expect(classifyLocalTradeHistorySnapshot({
+      id: "missing-accounting",
+      status: "closed",
+      symbol: "BTCUSDT",
+      executedQuantity: 1,
+    })).toMatchObject({ disposition: "unresolved_trade", reason: "missing_entry_price" })
+  })
+
   test("uses the canonical PF coordinate and lightweight runtime polling contracts", () => {
     const page = read("app/statistics/page.tsx")
     const route = read("app/api/connections/progression/[id]/stats/route.ts")
@@ -222,7 +271,8 @@ describe("statistics UI correctness", () => {
     expect(route).toContain("runtimeOnlyStatsResponse")
     expect(historyRoute).toContain('view === "statistics"')
     expect(historyRoute).toContain("loadClosedPositionSnapshotArchive")
-    expect(historyRoute).toContain("normalizedSnapshotRows.length === archive.snapshots.length")
+    expect(historyRoute).toContain("unresolvedTradeSnapshots === 0")
+    expect(historyRoute).toContain("excludedNonTradeSnapshots")
     expect(page.match(/setPositions\(\[\]\)/g)?.length).toBeGreaterThanOrEqual(3)
     expect(page).not.toContain("const coordinationMethods =")
     expect(page).not.toContain("totalValueAtRisk * 100")

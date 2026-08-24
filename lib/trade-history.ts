@@ -282,28 +282,99 @@ function normalizeSnapshot(snapshot: Record<string, any>): Record<string, any> {
   return Object.fromEntries(Object.entries(snapshot || {}).map(([key, value]) => [key, parseStoredValue(key, value)]))
 }
 
-export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHistoryRow | null {
+export type LocalTradeHistorySnapshotDisposition =
+  | "normalized_trade"
+  | "excluded_non_trade"
+  | "unresolved_trade"
+
+export interface LocalTradeHistorySnapshotClassification {
+  disposition: LocalTradeHistorySnapshotDisposition
+  reason:
+    | "normalized"
+    | "non_terminal_status"
+    | "duplicate_bookkeeping"
+    | "no_executed_quantity"
+    | "missing_identity"
+    | "missing_entry_price"
+    | "missing_exit_and_pnl"
+  row: TradeHistoryRow | null
+}
+
+function totalFillQuantity(fills: unknown): number {
+  if (!Array.isArray(fills)) return 0
+  return fills.reduce((sum: number, fill: any) =>
+    sum + (
+      positive(fill?.quantity) ||
+      positive(fill?.qty) ||
+      positive(fill?.executedQty)
+    ), 0)
+}
+
+/**
+ * Classify one durable lifecycle snapshot without mistaking rejected/error
+ * attempts for missing trades. A terminal row with no executed quantity is an
+ * explicit non-trade. Once execution quantity and entry price exist, missing
+ * accounting fields are unresolved unless stored realised P&L can recover the
+ * legacy exit price exactly.
+ */
+export function classifyLocalTradeHistorySnapshot(
+  raw: Record<string, any>,
+): LocalTradeHistorySnapshotClassification {
   const position = normalizeSnapshot(raw)
   const status = String(position.status || "").toLowerCase()
-  if (!(["closed", "cancelled", "canceled"].includes(status))) return null
+  if (!(["closed", "cancelled", "canceled"].includes(status))) {
+    return { disposition: "excluded_non_trade", reason: "non_terminal_status", row: null }
+  }
   const closeReason = String(position.closeReason ?? position.statusReason ?? "")
-  if (/duplicate_slot|duplicate.*prun|bookkeeping/i.test(closeReason)) return null
+  if (/duplicate_slot|duplicate.*prun|bookkeeping/i.test(closeReason)) {
+    return { disposition: "excluded_non_trade", reason: "duplicate_bookkeeping", row: null }
+  }
 
-  const quantity = positive(
-    position.executedQuantity ?? position.filledQuantity ?? position.quantity ?? position.size,
-  )
+  if (!position.id || !normalizeSymbol(position.symbol)) {
+    return { disposition: "unresolved_trade", reason: "missing_identity", row: null }
+  }
+
+  const quantity =
+    positive(position.executedQuantity) ||
+    positive(position.filledQuantity) ||
+    positive(position.quantity) ||
+    positive(position.size) ||
+    totalFillQuantity(position.fills)
+  if (quantity <= 0) {
+    return { disposition: "excluded_non_trade", reason: "no_executed_quantity", row: null }
+  }
   const entryPrice = firstPositive(
     position.averageExecutionPrice,
     position.entryPrice,
     position.entry_price,
     position.fills?.[0]?.price,
   )
-  const exitPrice = firstPositive(position.closePrice, position.exitPrice, position.currentPrice, position.current_price)
-  if (!position.id || !normalizeSymbol(position.symbol) || quantity <= 0 || entryPrice <= 0 || exitPrice <= 0) return null
+  if (entryPrice <= 0) {
+    return { disposition: "unresolved_trade", reason: "missing_entry_price", row: null }
+  }
 
   const direction: "long" | "short" = String(position.direction ?? position.side).toLowerCase().includes("short")
     ? "short"
     : "long"
+  const hasStoredPnl = [position.grossPnl, position.realizedPnL, position.realizedPnl, position.pnl]
+    .some((value) => value !== undefined && value !== null && value !== "")
+  const storedPnl = firstFinite(position.grossPnl, position.realizedPnL, position.realizedPnl, position.pnl)
+  const recoveredExitPrice = hasStoredPnl
+    ? direction === "short"
+      ? entryPrice - storedPnl / quantity
+      : entryPrice + storedPnl / quantity
+    : 0
+  const exitPrice = firstPositive(
+    position.closePrice,
+    position.exitPrice,
+    position.currentPrice,
+    position.current_price,
+    recoveredExitPrice,
+  )
+  if (exitPrice <= 0) {
+    return { disposition: "unresolved_trade", reason: "missing_exit_and_pnl", row: null }
+  }
+
   const derivedGross = direction === "short"
     ? (entryPrice - exitPrice) * quantity
     : (exitPrice - entryPrice) * quantity
@@ -311,9 +382,6 @@ export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHi
     ? position.fills.reduce((sum: number, fill: any) => sum + Math.abs(finite(fill?.fee)), 0)
     : 0
   const fees = Math.abs(firstFinite(position.fees, position.totalFees, fillFees))
-  const hasStoredPnl = [position.grossPnl, position.realizedPnL, position.realizedPnl, position.pnl]
-    .some((value) => value !== undefined && value !== null && value !== "")
-  const storedPnl = firstFinite(position.grossPnl, position.realizedPnL, position.realizedPnl, position.pnl)
   const grossPnl = hasStoredPnl ? storedPnl : derivedGross
   const realizedPnl = position.grossPnl !== undefined ? grossPnl - fees : grossPnl
   const volumeUsd = firstPositive(position.volumeUsd, entryPrice * quantity)
@@ -344,7 +412,7 @@ export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHi
       ? rawIntent
       : undefined
 
-  return {
+  const row: TradeHistoryRow = {
     id: String(position.id),
     symbol: normalizeSymbol(position.symbol),
     direction,
@@ -385,6 +453,11 @@ export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHi
     executionMode: String(position.executionMode || "") || undefined,
     closeReason: closeReason || undefined,
   }
+  return { disposition: "normalized_trade", reason: "normalized", row }
+}
+
+export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHistoryRow | null {
+  return classifyLocalTradeHistorySnapshot(raw).row
 }
 
 function rowMatchScore(exchange: TradeHistoryRow, local: TradeHistoryRow): number {
