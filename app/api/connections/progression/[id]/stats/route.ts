@@ -61,9 +61,90 @@ const statsResponseCache = new Map<string, {
 }>()
 const statsResponseInFlight = new Map<string, Promise<StatsResponseSnapshot>>()
 
+function positiveInteger(...values: unknown[]): number {
+  for (const value of values) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed)
+  }
+  return 0
+}
+
+/**
+ * Return only process/runtime telemetry for the hot Statistics-page poll.
+ *
+ * The complete stats projection can be several megabytes because it contains
+ * exhaustive strategy/configuration ledgers. Rebuilding or retransmitting it
+ * every three seconds merely to refresh CPU and event-loop counters wastes
+ * browser memory and server/network capacity. This view performs four compact
+ * read-only Redis reads and never enters the full projection/cache path.
+ */
+async function runtimeOnlyStatsResponse(
+  request: NextRequest,
+  connectionId: string,
+): Promise<NextResponse> {
+  try {
+    await initRedis()
+    const client = getRedisClient()
+    if (!client) {
+      return NextResponse.json({ success: false, error: "Redis not available" }, { status: 503 })
+    }
+
+    const searchParams = request.nextUrl?.searchParams ||
+      new URL(request.url || "http://localhost").searchParams
+    const requestedEngineType = searchParams.get("engineType") || searchParams.get("engine_type") || ""
+    const connection = await getConnection(connectionId).catch(() => null)
+    const engineType = String(
+      requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main",
+    ).trim() || "main"
+    const scope = buildProgressionScope(connectionId, engineType)
+    const [scopedProgression, legacyProgression, prehistoric, processedSymbols] = await Promise.all([
+      client.hgetall(scope.progressionKey).catch(() => ({} as Record<string, string>)),
+      client.hgetall(scope.legacyProgressionKey).catch(() => ({} as Record<string, string>)),
+      client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
+      client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
+    ])
+
+    const explicitSymbols = normalizeSymbolList(
+      (connection as any)?.force_symbols ||
+      (connection as any)?.active_symbols ||
+      (connection as any)?.selected_symbols,
+    )
+    const measuredSymbolCount = explicitSymbols.length > 0
+      ? explicitSymbols.length
+      : positiveInteger(
+          (scopedProgression as any)?.symbol_count,
+          (legacyProgression as any)?.symbol_count,
+          (prehistoric as any)?.symbols_total,
+          processedSymbols,
+        )
+
+    return NextResponse.json(
+      {
+        success: true,
+        connectionId,
+        engineType: scope.engineType,
+        view: "runtime",
+        symbolCount: measuredSymbolCount,
+        runtime: getRuntimeTelemetry(measuredSymbolCount || Number.POSITIVE_INFINITY),
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store, max-age=0",
+        },
+      },
+    )
+  } catch (error) {
+    console.error(`[v0] [/stats?view=runtime] ${connectionId}:`, error)
+    return NextResponse.json(
+      { success: false, error: "Runtime telemetry unavailable" },
+      { status: 500 },
+    )
+  }
+}
+
 function statsResponseCacheKey(request: NextRequest, connectionId: string): string {
   const params = request.nextUrl?.searchParams || new URL(request.url || "http://localhost").searchParams
-  return `${connectionId}:${params.get("engineType") || params.get("engine_type") || "main"}`
+  return `${connectionId}:${params.get("engineType") || params.get("engine_type") || "main"}:${params.get("view") || "full"}`
 }
 
 function responseFromStatsSnapshot(snapshot: StatsResponseSnapshot): Response {
@@ -726,6 +807,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: connectionId } = await params
+  const searchParams = request.nextUrl?.searchParams ||
+    new URL(request.url || "http://localhost").searchParams
+  if (searchParams.get("view") === "runtime") {
+    return runtimeOnlyStatsResponse(request, connectionId)
+  }
   const responseCacheKey = statsResponseCacheKey(request, connectionId)
   const cached = statsResponseCache.get(responseCacheKey)
   // The heavy graph projection is cacheable, but worker progression and
@@ -3804,6 +3890,22 @@ export async function GET(
       },
       closedPositions: sharedClosedParsed,
     })
+
+    if (statsSearchParams.get("view") === "overview") {
+      return NextResponse.json({
+        success: true,
+        connectionId,
+        engineType,
+        view: "overview",
+        strategyRows,
+        connectionStageOverview,
+        runtime: getRuntimeTelemetry(historicSymbolsTotal),
+        settingsRecoordination,
+        statsRecalculation,
+      }, {
+        headers: { "Cache-Control": "no-store, max-age=0" },
+      })
+    }
 
     // ── Build response ──────────────────────────────────────────────────────
     return NextResponse.json({

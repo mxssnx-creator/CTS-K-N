@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import type { AnalyticsFilter } from "@/lib/analytics"
+import { AnalyticsEngine } from "@/lib/analytics"
 import type { TradingPosition } from "@/lib/trading"
 import { TrendingUp, TrendingDown, Activity, Target, Clock, DollarSign } from "lucide-react"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
@@ -21,11 +22,15 @@ interface PresetStats {
   total_trades: number
   winning_trades: number
   losing_trades: number
+  flat_trades: number
   win_rate: number
   total_pnl: number
   avg_pnl: number
   profit_factor: number
-  max_drawdown: number
+  gross_profit: number
+  gross_loss: number
+  max_drawdown_usd: number
+  drawdown_time_hours: number
   avg_duration_minutes: number
   best_symbol: string
   worst_symbol: string
@@ -36,46 +41,63 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
   const [presetStats, setPresetStats] = useState<PresetStats[]>([])
 
   useEffect(() => {
-    void loadPresets()
+    if (!connectionId) {
+      setPresets([])
+      return
+    }
+    setPresets([])
+    const controller = new AbortController()
+    void fetch(`/api/presets?connectionId=${encodeURIComponent(connectionId)}`, {
+      signal: controller.signal,
+    })
+      .then((response) => response.ok ? response.json() : [])
+      .then((data) => {
+        if (!controller.signal.aborted) setPresets(Array.isArray(data) ? data : [])
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) console.error("[v0] Failed to load presets:", error)
+      })
+    return () => controller.abort()
   }, [connectionId])
 
   useEffect(() => {
     if (presets.length > 0) {
       calculatePresetStats()
+    } else {
+      setPresetStats([])
     }
   }, [presets, filter, positions])
 
-  const loadPresets = async () => {
-    if (!connectionId) {
-      setPresets([])
-      return
-    }
-    try {
-      const response = await fetch(`/api/presets?connectionId=${encodeURIComponent(connectionId)}`)
-      const data = await response.json()
-      setPresets(data)
-    } catch (error) {
-      console.error("[v0] Failed to load presets:", error)
-    }
-  }
-
   const calculatePresetStats = () => {
     const stats: PresetStats[] = []
+    // Position-level filters use the same close-time semantics as the main
+    // AnalyticsEngine. Aggregate PF/DDT limits are applied to each preset row
+    // below, after its exact closed-trade metrics exist.
+    const filteredPositions = new AnalyticsEngine(positions).filterPositions({
+      ...filter,
+      minProfitFactor: undefined,
+      maxDrawdown: undefined,
+    })
 
-    const filteredPresets = presets
-
-    for (const preset of filteredPresets) {
+    for (const preset of presets) {
       // Attribution must be durable and exact. Never fabricate preset
       // performance by randomly assigning unrelated Main/Signal positions.
-      const presetPositions = positions.filter((position) =>
+      const presetPositions = filteredPositions.filter((position) =>
         String(position.preset_id || "") === String(preset.id),
       )
 
       if (presetPositions.length === 0) continue
 
-      const closedPositions = presetPositions.filter((p) => p.status === "closed")
+      const closedPositions = presetPositions
+        .filter((p) => p.status === "closed")
+        .sort((left, right) =>
+          new Date(left.closed_at || left.opened_at).getTime() -
+          new Date(right.closed_at || right.opened_at).getTime() ||
+          left.id.localeCompare(right.id),
+        )
       const winningTrades = closedPositions.filter((p) => (p.profit_loss || 0) > 0)
-      const losingTrades = closedPositions.filter((p) => (p.profit_loss || 0) <= 0)
+      const losingTrades = closedPositions.filter((p) => (p.profit_loss || 0) < 0)
+      const flatTrades = closedPositions.filter((p) => (p.profit_loss || 0) === 0)
 
       const totalPnl = closedPositions.reduce((sum, p) => sum + (p.profit_loss || 0), 0)
       const totalProfit = winningTrades.reduce((sum, p) => sum + (p.profit_loss || 0), 0)
@@ -83,22 +105,35 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
 
       const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? Number.POSITIVE_INFINITY : 0
 
-      // Calculate max drawdown
+      // Exact realised USD drawdown and total drawdown duration. A percentage
+      // cannot be derived from this zero-baseline P&L series without inventing
+      // an account balance.
       let cumulativePnl = 0
       let peak = 0
-      let maxDrawdown = 0
-
-      for (const pos of closedPositions.sort(
-        (a, b) => new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime(),
-      )) {
+      let maxDrawdownUsd = 0
+      let drawdownStartMs: number | null = null
+      let drawdownTimeHours = 0
+      for (const pos of closedPositions) {
+        const eventMs = new Date(pos.closed_at || pos.opened_at).getTime()
         cumulativePnl += pos.profit_loss || 0
-        if (cumulativePnl > peak) {
+        if (cumulativePnl >= peak) {
           peak = cumulativePnl
-        } else {
-          const drawdown = ((peak - cumulativePnl) / peak) * 100
-          if (drawdown > maxDrawdown) {
-            maxDrawdown = drawdown
+          if (drawdownStartMs !== null && Number.isFinite(eventMs)) {
+            drawdownTimeHours += Math.max(0, eventMs - drawdownStartMs) / 3_600_000
+            drawdownStartMs = null
           }
+        } else {
+          maxDrawdownUsd = Math.max(maxDrawdownUsd, peak - cumulativePnl)
+          if (drawdownStartMs === null && Number.isFinite(eventMs)) drawdownStartMs = eventMs
+        }
+      }
+      if (drawdownStartMs !== null && closedPositions.length > 0) {
+        const lastMs = new Date(
+          closedPositions[closedPositions.length - 1].closed_at ||
+          closedPositions[closedPositions.length - 1].opened_at,
+        ).getTime()
+        if (Number.isFinite(lastMs)) {
+          drawdownTimeHours += Math.max(0, lastMs - drawdownStartMs) / 3_600_000
         }
       }
 
@@ -130,19 +165,34 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
         total_trades: closedPositions.length,
         winning_trades: winningTrades.length,
         losing_trades: losingTrades.length,
-        win_rate: closedPositions.length > 0 ? (winningTrades.length / closedPositions.length) * 100 : 0,
+        flat_trades: flatTrades.length,
+        win_rate: winningTrades.length + losingTrades.length > 0
+          ? (winningTrades.length / (winningTrades.length + losingTrades.length)) * 100
+          : 0,
         total_pnl: totalPnl,
         avg_pnl: closedPositions.length > 0 ? totalPnl / closedPositions.length : 0,
         profit_factor: profitFactor,
-        max_drawdown: maxDrawdown,
+        gross_profit: totalProfit,
+        gross_loss: totalLoss,
+        max_drawdown_usd: maxDrawdownUsd,
+        drawdown_time_hours: drawdownTimeHours,
         avg_duration_minutes: avgDuration,
         best_symbol: bestSymbol,
         worst_symbol: worstSymbol,
       })
     }
 
+    const minimumProfitFactor = Number(filter.minProfitFactor)
+    const maximumDrawdownHours = Number(filter.maxDrawdown)
+    const filteredStats = stats.filter((row) =>
+      (!Number.isFinite(minimumProfitFactor) || minimumProfitFactor <= 0 ||
+        row.profit_factor >= minimumProfitFactor) &&
+      (!Number.isFinite(maximumDrawdownHours) || maximumDrawdownHours <= 0 ||
+        row.drawdown_time_hours <= maximumDrawdownHours),
+    )
+
     // Sort by profit factor (Infinity sorts higher than any finite value)
-    stats.sort((a, b) => {
+    filteredStats.sort((a, b) => {
       const infA = !Number.isFinite(a.profit_factor)
       const infB = !Number.isFinite(b.profit_factor)
       if (infA && infB) return 0
@@ -150,7 +200,7 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
       if (infB) return 1
       return b.profit_factor - a.profit_factor
     })
-    setPresetStats(stats)
+    setPresetStats(filteredStats)
   }
 
   const formatCurrency = (amount: number) => {
@@ -162,12 +212,21 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
   }
 
   const totalTrades = presetStats.reduce((sum, s) => sum + s.total_trades, 0)
+  const totalWins = presetStats.reduce((sum, s) => sum + s.winning_trades, 0)
+  const totalLosses = presetStats.reduce((sum, s) => sum + s.losing_trades, 0)
+  const totalGrossProfit = presetStats.reduce((sum, s) => sum + s.gross_profit, 0)
+  const totalGrossLoss = presetStats.reduce((sum, s) => sum + s.gross_loss, 0)
   const totalStats = {
     total_trades: totalTrades,
     total_pnl: presetStats.reduce((sum, s) => sum + s.total_pnl, 0),
-    avg_win_rate: presetStats.length > 0 ? presetStats.reduce((sum, s) => sum + s.win_rate, 0) / presetStats.length : 0,
-    avg_profit_factor: totalTrades > 0 ? presetStats.reduce((sum, s) => sum + s.profit_factor, 0) / presetStats.length : 0,
+    win_rate: totalWins + totalLosses > 0 ? (totalWins / (totalWins + totalLosses)) * 100 : 0,
+    profit_factor: totalGrossLoss > 0
+      ? totalGrossProfit / totalGrossLoss
+      : totalGrossProfit > 0
+        ? Number.POSITIVE_INFINITY
+        : 0,
   }
+  const finitePresetPfChart = presetStats.filter((row) => Number.isFinite(row.profit_factor))
 
   return (
     <div className="space-y-6">
@@ -197,15 +256,15 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
             <div className="flex items-center gap-2">
               <Target className="h-5 w-5 text-purple-500" />
               <div>
-                <div className="text-2xl font-bold">{totalStats.avg_win_rate.toFixed(1)}%</div>
-                <div className="text-sm text-muted-foreground">Avg Win Rate</div>
+                <div className="text-2xl font-bold">{totalStats.win_rate.toFixed(1)}%</div>
+                <div className="text-sm text-muted-foreground">Win Rate</div>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-orange-500" />
               <div>
-                <div className="text-2xl font-bold">{formatSampledMetric(totalStats.avg_profit_factor, totalStats.total_trades)}</div>
-                <div className="text-sm text-muted-foreground">Avg PF</div>
+                <div className="text-2xl font-bold">{formatSampledMetric(totalStats.profit_factor, totalStats.total_trades)}</div>
+                <div className="text-sm text-muted-foreground">Combined PF</div>
               </div>
             </div>
           </div>
@@ -216,17 +275,24 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
         <Card>
           <CardHeader>
             <CardTitle>Profit Factor by Preset</CardTitle>
+            <CardDescription>Finite classic realised PF values; loss-free presets remain visible as ∞ in the detail list.</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={presetStats.map((s) => ({ ...s, profit_factor: Number.isFinite(s.profit_factor) ? s.profit_factor : 999 }))}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="preset_name" angle={-45} textAnchor="end" height={100} />
-                <YAxis />
-                <Tooltip formatter={(value: number) => [formatSampledMetric(value === 999 ? Infinity : value, 1), "PF"]} />
-                <Bar dataKey="profit_factor" fill="#3b82f6" />
-              </BarChart>
-            </ResponsiveContainer>
+            {finitePresetPfChart.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={finitePresetPfChart}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="preset_name" angle={-45} textAnchor="end" height={100} />
+                  <YAxis />
+                  <Tooltip formatter={(value: number) => [formatSampledMetric(value, 1), "PF"]} />
+                  <Bar dataKey="profit_factor" fill="#3b82f6" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+                No finite classic-PF values in the selected sample.
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -299,7 +365,11 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
                       </div>
                       <div>
                         <div className="text-muted-foreground">Max Drawdown</div>
-                        <div className="font-medium text-red-600">{stat.max_drawdown.toFixed(1)}%</div>
+                        <div className="font-medium text-red-600">{formatCurrency(stat.max_drawdown_usd)}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Total DDT</div>
+                        <div className="font-medium text-red-600">{stat.drawdown_time_hours.toFixed(1)}h</div>
                       </div>
                       <div>
                         <div className="text-muted-foreground">Avg Duration</div>
@@ -325,6 +395,11 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
                       <Badge variant="outline" className="text-red-600">
                         {stat.losing_trades} losses
                       </Badge>
+                      {stat.flat_trades > 0 && (
+                        <Badge variant="outline" className="text-muted-foreground">
+                          {stat.flat_trades} flat
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 </CardContent>
@@ -335,7 +410,7 @@ export function PresetTradeStats({ filter, positions, connectionId }: PresetTrad
               <div className="text-center py-12 text-muted-foreground">
                 <Target className="h-12 w-12 mx-auto mb-4 opacity-50" />
                 <p>No preset statistics available</p>
-                <p className="text-sm">Select presets from the filters to view their performance</p>
+                <p className="text-sm">No preset-attributed closed trades match the current filters.</p>
               </div>
             )}
           </div>

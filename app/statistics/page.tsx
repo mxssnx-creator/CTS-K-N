@@ -2,7 +2,7 @@
 
 
 export const dynamic = "force-dynamic"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
@@ -31,11 +31,6 @@ import {
   Area,
   ScatterChart,
   Scatter,
-  RadarChart,
-  PolarGrid,
-  PolarAngleAxis,
-  PolarRadiusAxis,
-  Radar,
   ComposedChart,
 } from "recharts"
 import {
@@ -59,6 +54,7 @@ import {
   PieChart as PieChartIcon2,
   LineChart as LineChartIcon,
   ScatterChart as ScatterChartIcon,
+  History,
 
 } from "lucide-react"
 import { AdjustStrategyStats } from "@/components/statistics/adjust-strategy-stats"
@@ -70,26 +66,32 @@ import { PageHeader } from "@/components/page-header"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
 import { StatisticsSectionNav } from "@/components/statistics/statistics-section-nav"
 import {
+  statisticsHistoryTupleToTradingPosition,
+  toStatisticsHistoryTuple,
+  type StatisticsHistoryTupleV1,
+} from "@/lib/trade-history"
+import {
   buildLiveTradingAnalytics,
   type DrawdownTimeMetric,
   type LiveTradingAnalytics,
   type ProfitFactorMetric,
 } from "@/lib/live-trading-analytics"
+import { signedResultRToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 
 // Enhanced types for comprehensive analytics
 interface OptimalStrategyMetrics {
+  strategyName: string
   strategyType: string
   adjustmentType: string
   coordinationMethod: string
   optimalScore: number
   confidence: number
+  totalTrades: number
   riskAdjustedReturn: number
   maxDrawdown: number
   winRate: number
   profitFactor: number
   sharpeRatio: number
-  sortinoRatio: number
-  calmarRatio: number
   recommendations: string[]
 }
 
@@ -105,9 +107,9 @@ function toStatisticsPseudoPosition(position: TradingPosition): PseudoPosition {
     : 0
   const realizedPnl = Number(position.realized_pnl ?? position.profit_loss) || 0
   const notional = Math.abs(entryPrice * (Number(position.volume) || 0))
-  // PseudoPosition's legacy `profit_factor` field is consumed as
-  // `(value - 1) × position_cost`. Choose an exact, measured denominator so
-  // that expression reconstructs realised P&L without a fabricated $100 base.
+  // Keep the explicit signed Result-R and the operator PF coordinate separate.
+  // The canonical coordinate is 1.00 neutral and advances by 0.10 per signed
+  // PositionCost unit; +1R therefore maps to 1.10, never 2.00.
   const positionCost = Number(position.margin_used) > 0
     ? Number(position.margin_used)
     : notional > 0
@@ -141,7 +143,7 @@ function toStatisticsPseudoPosition(position: TradingPosition): PseudoPosition {
     ...(Number.isFinite(Number(enriched.trail_stop)) && { trail_stop: Number(enriched.trail_stop) }),
     entry_price: entryPrice,
     current_price: Number(position.current_price) || 0,
-    profit_factor: 1 + realizedPnl / positionCost,
+    profit_factor: signedResultRToMainTradePfRatio(realizedPnl / positionCost),
     profit_factor_kind: "main_trade_pf_ratio",
     signedResultR: realizedPnl / positionCost,
     costNormalizedReturn: realizedPnl / positionCost,
@@ -167,9 +169,17 @@ interface CoordinationAnalysis {
 interface ComprehensiveAnalytics {
   optimalStrategies: OptimalStrategyMetrics[]
   coordinationAnalysis: CoordinationAnalysis[]
-  marketConditionInsights: any
-  temporalPatterns: any
-  riskMetrics: any
+  pnlRegimeInsights: Array<{
+    condition: string
+    periodCount: number
+    averagePnlUsd: number
+    totalPnlUsd: number
+  }>
+  riskMetrics: {
+    sampleCount: number
+    historicalLossQuantile95Usd: number | null
+    expectedShortfallUsd: number | null
+  }
 }
 
 interface CurrentStrategyRows {
@@ -201,6 +211,18 @@ interface RuntimeTelemetry {
     delayP95Ms?: number
     delayMaxMs?: number
   }
+}
+
+interface StatisticsArchiveCoverage {
+  indexed: number
+  uniqueIds: number
+  resolvedSnapshots: number
+  normalizedSnapshots: number
+  normalizedLocalRows: number
+  exchangeOverlays: number
+  returned: number
+  complete: boolean
+  capturedAt: number
 }
 
 function aggregateProfitFactorMetrics(metrics: ProfitFactorMetric[]): ProfitFactorMetric {
@@ -269,6 +291,21 @@ function formatDurationMs(durationMs: number): string {
   return `${remainder}m`
 }
 
+function formatRecoveryFactor(value: number): string {
+  if (value === Number.POSITIVE_INFINITY) return "∞"
+  if (value === Number.NEGATIVE_INFINITY) return "−∞"
+  return Number.isFinite(value) ? value.toFixed(2) : "—"
+}
+
+function formatAverageRecoveryFactor(rows: readonly OptimalStrategyMetrics[]): string {
+  const values = rows.map((row) => row.riskAdjustedReturn)
+  if (values.includes(Number.POSITIVE_INFINITY)) return "∞"
+  const finiteValues = values.filter(Number.isFinite)
+  return finiteValues.length > 0
+    ? formatRecoveryFactor(finiteValues.reduce((sum, value) => sum + value, 0) / finiteValues.length)
+    : "—"
+}
+
 export default function StatisticsPage() {
   const { selectedExchange, selectedConnectionId } = useExchange()
   const [activeTab, setActiveTab] = useState("overview")
@@ -298,15 +335,17 @@ export default function StatisticsPage() {
   const [runtimeTelemetry, setRuntimeTelemetry] = useState<RuntimeTelemetry | null>(null)
   const [performanceAnalytics, setPerformanceAnalytics] = useState<LiveTradingAnalytics | null>(null)
   const [performanceConnectionCount, setPerformanceConnectionCount] = useState(0)
+  const [archiveCoverage, setArchiveCoverage] = useState<StatisticsArchiveCoverage | null>(null)
   const [reloadGeneration, setReloadGeneration] = useState(0)
 
   // Enhanced analytics state
   const [optimalStrategies, setOptimalStrategies] = useState<OptimalStrategyMetrics[]>([])
   const [coordinationAnalysis, setCoordinationAnalysis] = useState<CoordinationAnalysis[]>([])
   const [comprehensiveAnalytics, setComprehensiveAnalytics] = useState<ComprehensiveAnalytics | null>(null)
-  const [analysisMode, setAnalysisMode] = useState<'overview' | 'optimal' | 'coordination' | 'temporal'>('overview')
 
   useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
     async function initialize() {
       setIsLoading(true)
 
@@ -315,18 +354,19 @@ export default function StatisticsPage() {
           ? `/api/settings/connections?exchange=${selectedExchange}`
           : "/api/settings/connections"
         
-        console.log("[v0] [Statistics] Loading connections for exchange:", selectedExchange || "all")
-        const response = await fetch(url)
+        const response = await fetch(url, { signal: controller.signal })
         const data = await response.json()
+        if (cancelled) return
         const inventory = Array.isArray(data?.connections) ? data.connections : []
         const realConnections = inventory.filter((c: any) =>
           c?.id && !String(c.id).startsWith("demo") && c.id !== "demo-mode",
         )
         setHasRealConnections(realConnections.length > 0)
 
-        const settingsResponse = await fetch("/api/settings")
+        const settingsResponse = await fetch("/api/settings", { signal: controller.signal })
         if (settingsResponse.ok) {
           const settingsData = await settingsResponse.json()
+          if (cancelled) return
           setSettings(settingsData.settings || {})
         }
 
@@ -340,6 +380,7 @@ export default function StatisticsPage() {
           setRuntimeTelemetry(null)
           setPerformanceAnalytics(null)
           setPerformanceConnectionCount(0)
+          setArchiveCoverage(null)
           setAnalyticsEngine(engine)
           updateAnalytics(engine, filter)
         } else {
@@ -355,20 +396,24 @@ export default function StatisticsPage() {
 
             const responses = await Promise.all(
               scopeIds.map(async (id: string) => {
-                const [open, history, progression] = await Promise.all([
-                  fetch(`/api/data/positions?connectionId=${encodeURIComponent(id)}`, { cache: "no-store" })
+                const [open, history, archive, progression] = await Promise.all([
+                  fetch(`/api/data/positions?connectionId=${encodeURIComponent(id)}`, { cache: "no-store", signal: controller.signal })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
-                  fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&limit=500`, { cache: "no-store" })
+                  fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&limit=500`, { cache: "no-store", signal: controller.signal })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
-                  fetch(`/api/connections/progression/${encodeURIComponent(id)}/stats`, { cache: "no-store" })
+                  fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&view=statistics`, { cache: "no-store", signal: controller.signal })
+                    .then((r) => (r.ok ? r.json() : null))
+                    .catch(() => null),
+                  fetch(`/api/connections/progression/${encodeURIComponent(id)}/stats?view=overview`, { cache: "no-store", signal: controller.signal })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
                 ])
-                return { id, open, history, progression }
+                return { id, open, history, archive, progression }
               }),
             )
+            if (cancelled) return
 
             const rowSnapshots = responses
               .map((payload) => payload.progression?.strategyRows)
@@ -430,93 +475,115 @@ export default function StatisticsPage() {
             const merged: TradingPosition[] = []
             const historyRows: TradeHistoryRow[] = []
             const seen = new Set<string>()
-            for (const payload of responses) {
-              if (payload.open?.success && Array.isArray(payload.open.data)) {
-                for (const p of payload.open.data) {
-                  // Shape payload from /api/data/positions (camelCase) into the
-                  // snake_case TradingPosition the AnalyticsEngine consumes.
-                  const id = String(p.id || `${payload.id}:open:${p.symbol || "unknown"}`)
-                  if (seen.has(id)) continue
-                  seen.add(id)
-                  const entryPrice = Number(p.entryPrice) || 0
-                  const currentPrice = Number(p.currentPrice) || 0
-                  const quantity = Number(p.quantity) || 0
-                  const leverage = Number(p.leverage) || 1
-                  const unrealized = Number(p.unrealizedPnl) || 0
-                  merged.push({
-                    id,
-                    connection_id: payload.id,
-                    symbol: p.symbol,
-                    strategy_type: "real",
-                    volume: quantity,
-                    entry_price: entryPrice,
-                    current_price: currentPrice,
-                    takeprofit: p.takeProfitPrice ? Number(p.takeProfitPrice) : undefined,
-                    stoploss: p.stopLossPrice ? Number(p.stopLossPrice) : undefined,
-                    profit_loss: unrealized,
-                    status: p.status === "closed" ? "closed" : "open",
-                    opened_at: p.createdAt || new Date().toISOString(),
-                    closed_at: p.status === "closed" ? (p.closedAt || p.updatedAt || p.createdAt) : undefined,
-                    position_side: String(p.side || "LONG").toLowerCase() as "long" | "short",
-                    leverage,
-                    indication_type: "direction",
-                    unrealized_pnl: unrealized,
-                    realized_pnl: 0,
-                    margin_used: entryPrice * quantity / Math.max(leverage, 1),
-                    fees_paid: 0,
-                    hold_time: 0,
-                    max_profit: Math.max(0, unrealized),
-                    max_loss: Math.min(0, unrealized),
-                  } as TradingPosition)
-                }
-              }
 
+            // Closed rows are authoritative over a stale open-position read.
+            // Load the compact full archive first, then add genuinely open IDs.
+            for (const payload of responses) {
               if (payload.history?.success && Array.isArray(payload.history.rows)) {
                 for (const row of payload.history.rows) {
                   if (row && row.id && row.symbol && (row.direction === "long" || row.direction === "short")) {
                     historyRows.push(row as TradeHistoryRow)
                   }
-                  const id = String(row.id || row.positionId || row.orderId || `${payload.id}:closed:${row.symbol}:${row.closedAt}`)
-                  if (seen.has(id)) continue
-                  seen.add(id)
-                  const entryPrice = Number(row.entryPrice) || 0
-                  const exitPrice = Number(row.exitPrice) || entryPrice
-                  const quantity = Math.abs(Number(row.quantity) || 0)
-                  const volumeUsd = Math.abs(Number(row.volumeUsd) || entryPrice * quantity)
-                  const realizedPnl = Number(row.realizedPnl) || 0
-                  const fees = Math.abs(Number(row.fees) || 0)
-                  const openedAt = Number(row.openedAt) || Number(row.closedAt) || Date.now()
-                  const closedAt = Number(row.closedAt) || openedAt
-                  merged.push({
-                    id,
-                    connection_id: payload.id,
-                    symbol: String(row.symbol || "UNKNOWN"),
-                    strategy_type: String(row.setVariant || "live"),
-                    volume: quantity,
-                    entry_price: entryPrice,
-                    current_price: exitPrice,
-                    profit_loss: realizedPnl,
-                    status: "closed",
-                    opened_at: new Date(openedAt).toISOString(),
-                    closed_at: new Date(closedAt).toISOString(),
-                    position_side: row.direction === "short" ? "short" : "long",
-                    leverage: 1,
-                    indication_type: "direction",
-                    preset_id: String((row as any).presetId || "") || undefined,
-                    unrealized_pnl: 0,
-                    realized_pnl: realizedPnl,
-                    margin_used: volumeUsd,
-                    fees_paid: fees,
-                    hold_time: Math.max(0, Number(row.holdMinutes) || (closedAt - openedAt) / 60_000),
-                    max_profit: Math.max(0, realizedPnl),
-                    max_loss: Math.min(0, realizedPnl),
-                  } as TradingPosition)
                 }
+              }
+
+              const tuples: StatisticsHistoryTupleV1[] =
+                payload.archive?.success &&
+                payload.archive?.tupleVersion === 1 &&
+                Array.isArray(payload.archive.rows)
+                  ? payload.archive.rows
+                  : Array.isArray(payload.history?.rows)
+                    ? payload.history.rows.map((row: TradeHistoryRow) => toStatisticsHistoryTuple(row))
+                    : []
+              for (const tuple of tuples) {
+                if (!Array.isArray(tuple) || tuple.length !== 18 || !tuple[0] || !tuple[1]) continue
+                const position = statisticsHistoryTupleToTradingPosition(tuple, payload.id)
+                if (seen.has(position.id)) continue
+                seen.add(position.id)
+                merged.push(position)
+              }
+            }
+
+            for (const payload of responses) {
+              if (!payload.open?.success || !Array.isArray(payload.open.data)) continue
+              for (const p of payload.open.data) {
+                // Shape payload from /api/data/positions (camelCase) into the
+                // snake_case TradingPosition the AnalyticsEngine consumes.
+                const id = String(p.id || `${payload.id}:open:${p.symbol || "unknown"}`)
+                if (seen.has(id) || p.status === "closed") continue
+                seen.add(id)
+                const entryPrice = Number(p.entryPrice) || 0
+                const currentPrice = Number(p.currentPrice) || 0
+                const quantity = Math.abs(Number(p.quantity) || 0)
+                const leverage = Number(p.leverage) || 1
+                const unrealized = Number(p.unrealizedPnl) || 0
+                merged.push({
+                  id,
+                  connection_id: payload.id,
+                  symbol: p.symbol,
+                  strategy_type: "real",
+                  volume: quantity,
+                  entry_price: entryPrice,
+                  current_price: currentPrice,
+                  takeprofit: p.takeProfitPrice ? Number(p.takeProfitPrice) : undefined,
+                  stoploss: p.stopLossPrice ? Number(p.stopLossPrice) : undefined,
+                  profit_loss: unrealized,
+                  status: "open",
+                  opened_at: p.createdAt || new Date().toISOString(),
+                  position_side: String(p.side || "LONG").toLowerCase() as "long" | "short",
+                  leverage,
+                  indication_type: "direction",
+                  unrealized_pnl: unrealized,
+                  realized_pnl: 0,
+                  margin_used: entryPrice * quantity / Math.max(leverage, 1),
+                  fees_paid: 0,
+                  hold_time: 0,
+                  max_profit: Math.max(0, unrealized),
+                  max_loss: Math.min(0, unrealized),
+                } as TradingPosition)
               }
             }
 
             setPositions(merged)
             setTradeHistory(historyRows)
+            const coverages = responses
+              .map((payload) => payload.archive?.archive)
+              .filter((value): value is StatisticsArchiveCoverage =>
+                Boolean(
+                  value &&
+                  Number.isFinite(Number(value.indexed)) &&
+                  Number.isFinite(Number(value.normalizedSnapshots)),
+                ),
+              )
+            if (coverages.length === responses.length && coverages.length > 0) {
+              setArchiveCoverage({
+                indexed: coverages.reduce((sum, value) => sum + value.indexed, 0),
+                uniqueIds: coverages.reduce((sum, value) => sum + value.uniqueIds, 0),
+                resolvedSnapshots: coverages.reduce((sum, value) => sum + value.resolvedSnapshots, 0),
+                normalizedSnapshots: coverages.reduce((sum, value) => sum + value.normalizedSnapshots, 0),
+                normalizedLocalRows: coverages.reduce((sum, value) => sum + value.normalizedLocalRows, 0),
+                exchangeOverlays: coverages.reduce((sum, value) => sum + value.exchangeOverlays, 0),
+                returned: coverages.reduce((sum, value) => sum + value.returned, 0),
+                complete: coverages.every((value) => value.complete),
+                capturedAt: Math.max(...coverages.map((value) => value.capturedAt)),
+              })
+            } else {
+              const totalIndexed = responses.reduce(
+                (sum, payload) => sum + (Number(payload.history?.paging?.totalIndexed) || 0),
+                0,
+              )
+              setArchiveCoverage({
+                indexed: totalIndexed,
+                uniqueIds: totalIndexed,
+                resolvedSnapshots: historyRows.length,
+                normalizedSnapshots: historyRows.length,
+                normalizedLocalRows: historyRows.length,
+                exchangeOverlays: 0,
+                returned: historyRows.length,
+                complete: false,
+                capturedAt: Date.now(),
+              })
+            }
             const connectionAnalytics = responses
               .map((payload) => payload.history?.analytics)
               .filter((value): value is LiveTradingAnalytics =>
@@ -571,21 +638,44 @@ export default function StatisticsPage() {
             setAnalyticsEngine(engine)
             updateAnalytics(engine, filter)
           } catch (err) {
+            if (cancelled) return
             console.error("[v0] [Statistics] Failed to load real positions:", err)
+            const engine = new AnalyticsEngine([])
+            setPositions([])
             setTradeHistory([])
+            setCurrentStrategyRows(null)
             setPerformanceAnalytics(null)
             setPerformanceConnectionCount(0)
             setRuntimeTelemetry(null)
+            setArchiveCoverage(null)
+            setAnalyticsEngine(engine)
+            updateAnalytics(engine, filter)
           }
         }
       } catch (error) {
+        if (cancelled) return
         console.error("Failed to check connections:", error)
+        const engine = new AnalyticsEngine([])
+        setHasRealConnections(false)
+        setPositions([])
+        setTradeHistory([])
+        setCurrentStrategyRows(null)
+        setPerformanceAnalytics(null)
+        setPerformanceConnectionCount(0)
+        setRuntimeTelemetry(null)
+        setArchiveCoverage(null)
+        setAnalyticsEngine(engine)
+        updateAnalytics(engine, filter)
       } finally {
-        setIsLoading(false)
+        if (!cancelled) setIsLoading(false)
       }
     }
 
-    initialize()
+    void initialize()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
   }, [selectedExchange, selectedConnectionId, reloadGeneration])
 
   // Runtime resource/latency values are intentionally independent from the
@@ -595,13 +685,14 @@ export default function StatisticsPage() {
     if (!selectedConnectionId) return
     let cancelled = false
     let inFlight = false
+    const controller = new AbortController()
     const refreshRuntime = async () => {
       if (cancelled || inFlight) return
       inFlight = true
       try {
         const response = await fetch(
-          `/api/connections/progression/${encodeURIComponent(selectedConnectionId)}/stats`,
-          { cache: "no-store" },
+          `/api/connections/progression/${encodeURIComponent(selectedConnectionId)}/stats?view=runtime`,
+          { cache: "no-store", signal: controller.signal },
         )
         if (!response.ok) return
         const payload = await response.json().catch(() => null)
@@ -616,6 +707,7 @@ export default function StatisticsPage() {
     const interval = window.setInterval(() => void refreshRuntime(), 3_000)
     return () => {
       cancelled = true
+      controller.abort()
       window.clearInterval(interval)
     }
   }, [selectedConnectionId])
@@ -643,16 +735,13 @@ export default function StatisticsPage() {
     filter: AnalyticsFilter
   ): ComprehensiveAnalytics => {
     // Calculate optimal strategies across all types
-    const optimalStrategies = calculateOptimalStrategies(strategies, symbols)
+    const optimalStrategies = calculateOptimalStrategies(strategies)
 
     // Analyze coordination between different strategy types and methods
     const coordinationAnalysis = calculateCoordinationAnalysis(strategies, symbols, timeSeries)
 
     // Market condition insights
-    const marketConditionInsights = calculateMarketConditionInsights(timeSeries, symbols)
-
-    // Temporal patterns
-    const temporalPatterns = calculateTemporalPatterns(timeSeries, strategies)
+    const pnlRegimeInsights = calculatePnlRegimeInsights(timeSeries)
 
     // Risk metrics
     const riskMetrics = calculateRiskMetrics(strategies, symbols, timeSeries)
@@ -660,70 +749,59 @@ export default function StatisticsPage() {
     return {
       optimalStrategies,
       coordinationAnalysis,
-      marketConditionInsights,
-      temporalPatterns,
+      pnlRegimeInsights,
       riskMetrics,
     }
   }
 
-  const calculateOptimalStrategies = (strategies: StrategyAnalytics[], symbols: SymbolAnalytics[]): OptimalStrategyMetrics[] => {
-    const strategyTypes = ['base', 'main', 'real']
-    const adjustmentTypes = ['none', 'block', 'dca', 'trailing', 'block+dca']
-    const coordinationMethods = ['direct', 'preset', 'coordinated']
+  const calculateOptimalStrategies = (strategies: StrategyAnalytics[]): OptimalStrategyMetrics[] => {
+    const bounded01 = (value: number) => Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0))
+    const adjustmentOf = (name: string) => {
+      const normalized = name.toLowerCase()
+      const adjustments = ["block", "dca", "trailing"].filter((value) => normalized.includes(value))
+      return adjustments.length > 0 ? adjustments.join("+") : "none"
+    }
 
-    const optimalStrategies: OptimalStrategyMetrics[] = []
+    // Rank only observed strategy rows. The previous implementation expanded
+    // every row into hypothetical direct/preset/coordinated combinations and
+    // displayed those duplicates as measured results. No such coordination
+    // series exists in this data source, so it must never be invented.
+    return strategies.map((strategy) => {
+      const realizedPf = Number(strategy.profit_factor) || 0
+      const drawdownHours = Math.max(0, Number(strategy.drawdown_time) || 0)
+      const totalTrades = Math.max(0, Math.floor(Number(strategy.total_trades) || 0))
+      const confidence = bounded01(totalTrades / 100)
+      const pfScore = bounded01(realizedPf - 1)
+      const winRateScore = bounded01(Number(strategy.win_rate) || 0)
+      const drawdownDurationScore = 1 / (1 + drawdownHours / 24)
+      const measuredQualityScore =
+        pfScore * 0.4 +
+        winRateScore * 0.25 +
+        drawdownDurationScore * 0.2 +
+        confidence * 0.15
 
-    strategyTypes.forEach(strategyType => {
-      adjustmentTypes.forEach(adjustmentType => {
-        coordinationMethods.forEach(method => {
-          const relevantStrategies = strategies.filter(s =>
-            s.strategy_type?.toLowerCase().includes(strategyType) &&
-            (adjustmentType === 'none' || s.strategy_name?.toLowerCase().includes(adjustmentType.toLowerCase()))
-          )
-
-          if (relevantStrategies.length > 0) {
-            const avgProfitFactor = relevantStrategies.reduce((sum, s) => sum + s.profit_factor, 0) / relevantStrategies.length
-            const avgWinRate = relevantStrategies.reduce((sum, s) => sum + s.win_rate, 0) / relevantStrategies.length
-            const maxDrawdown = Math.max(...relevantStrategies.map(s => s.drawdown_time || 0))
-            const totalTrades = relevantStrategies.reduce((sum, s) => sum + s.total_trades, 0)
-
-            // Calculate optimal score based on multiple factors
-            const optimalScore = (
-              avgProfitFactor * 0.4 +
-              avgWinRate * 0.3 +
-              (1 - maxDrawdown) * 0.2 +
-              Math.min(totalTrades / 1000, 1) * 0.1
-            )
-
-            // Calculate risk-adjusted metrics
-            const riskAdjustedReturn = avgProfitFactor / (1 + maxDrawdown)
-            const sharpeRatio = avgProfitFactor / (maxDrawdown || 0.1)
-            const sortinoRatio = avgProfitFactor / (maxDrawdown * 0.5 || 0.1)
-            const calmarRatio = avgProfitFactor / (maxDrawdown || 0.1)
-
-            const recommendations = generateRecommendations(avgProfitFactor, avgWinRate, maxDrawdown, totalTrades)
-
-            optimalStrategies.push({
-              strategyType,
-              adjustmentType,
-              coordinationMethod: method,
-              optimalScore,
-              confidence: Math.min(totalTrades / 100, 1),
-              riskAdjustedReturn,
-              maxDrawdown,
-              winRate: avgWinRate,
-              profitFactor: avgProfitFactor,
-              sharpeRatio,
-              sortinoRatio,
-              calmarRatio,
-              recommendations,
-            })
-          }
-        })
-      })
-    })
-
-    return optimalStrategies.sort((a, b) => b.optimalScore - a.optimalScore)
+      return {
+        strategyName: strategy.strategy_name,
+        strategyType: strategy.strategy_type,
+        adjustmentType: adjustmentOf(strategy.strategy_name),
+        coordinationMethod: "measured",
+        optimalScore: measuredQualityScore,
+        confidence,
+        totalTrades,
+        // AnalyticsEngine's recovery_factor is realised net P&L divided by
+        // maximum USD drawdown. It is dimensionless, but it is not a percent.
+        riskAdjustedReturn: Number(strategy.recovery_factor) || 0,
+        maxDrawdown: drawdownHours,
+        winRate: Number(strategy.win_rate) || 0,
+        profitFactor: realizedPf,
+        sharpeRatio: Number(strategy.sharpe_ratio) || 0,
+        recommendations: generateRecommendations(realizedPf, strategy.win_rate, drawdownHours, totalTrades),
+      }
+    }).sort((left, right) =>
+      right.optimalScore - left.optimalScore ||
+      right.totalTrades - left.totalTrades ||
+      left.strategyName.localeCompare(right.strategyName),
+    )
   }
 
   const calculateCoordinationAnalysis = (
@@ -731,206 +809,80 @@ export default function StatisticsPage() {
     symbols: SymbolAnalytics[],
     timeSeries: TimeSeriesData[]
   ): CoordinationAnalysis[] => {
-    const coordinationAnalysis: CoordinationAnalysis[] = []
-
-    // Strategy-Adjustment coordination
-    const strategyTypes = ['base', 'main', 'real']
-    const adjustmentTypes = ['block', 'dca', 'trailing']
-
-    strategyTypes.forEach(strategyType => {
-      adjustmentTypes.forEach(adjustmentType => {
-        const baseStrategies = strategies.filter(s =>
-          s.strategy_type?.toLowerCase().includes(strategyType) &&
-          !s.strategy_name?.toLowerCase().includes(adjustmentType.toLowerCase())
-        )
-
-        const adjustedStrategies = strategies.filter(s =>
-          s.strategy_type?.toLowerCase().includes(strategyType) &&
-          s.strategy_name?.toLowerCase().includes(adjustmentType.toLowerCase())
-        )
-
-        if (baseStrategies.length > 0 && adjustedStrategies.length > 0) {
-          const baseAvgProfit = baseStrategies.reduce((sum, s) => sum + s.profit_factor, 0) / baseStrategies.length
-          const adjustedAvgProfit = adjustedStrategies.reduce((sum, s) => sum + s.profit_factor, 0) / adjustedStrategies.length
-
-          const synergyScore = adjustedAvgProfit / (baseAvgProfit || 1)
-          const correlation = calculateCorrelation(baseStrategies, adjustedStrategies)
-          const riskReduction = calculateRiskReduction(baseStrategies, adjustedStrategies)
-
-          coordinationAnalysis.push({
-            type: 'strategy_adjustment',
-            primaryType: strategyType,
-            secondaryType: adjustmentType,
-            correlation,
-            synergyScore,
-            riskReduction,
-            performanceBoost: synergyScore - 1,
-            optimalCombination: synergyScore > 1.1 && riskReduction > 0.1,
-          })
-        }
-      })
-    })
-
-    // Method coordination
-    const methods = ['direct', 'preset', 'coordinated']
-    methods.forEach(method1 => {
-      methods.forEach(method2 => {
-        if (method1 !== method2) {
-          // Calculate coordination between methods
-          const method1Strategies = strategies.filter(s => s.strategy_name?.toLowerCase().includes(method1))
-          const method2Strategies = strategies.filter(s => s.strategy_name?.toLowerCase().includes(method2))
-
-          if (method1Strategies.length > 0 && method2Strategies.length > 0) {
-            const correlation = calculateCorrelation(method1Strategies, method2Strategies)
-            const synergyScore = 1 + Math.abs(correlation) * 0.2
-
-            coordinationAnalysis.push({
-              type: 'method_coordination',
-              primaryType: method1,
-              secondaryType: method2,
-              correlation,
-              synergyScore,
-              riskReduction: Math.abs(correlation) * 0.1,
-              performanceBoost: synergyScore - 1,
-              optimalCombination: Math.abs(correlation) > 0.5,
-            })
-          }
-        }
-      })
-    })
-
-    return coordinationAnalysis
+    // Aggregate strategy rows do not contain aligned per-period outcome pairs.
+    // Correlation, synergy and risk reduction cannot be reconstructed from two
+    // unrelated arrays of average PF values. Keep this surface explicitly
+    // unavailable until a paired coordination ledger is supplied.
+    void strategies
+    void symbols
+    void timeSeries
+    return []
   }
 
-  const calculateCorrelation = (group1: StrategyAnalytics[], group2: StrategyAnalytics[]): number => {
-    if (group1.length === 0 || group2.length === 0) return 0
-
-    const profits1 = group1.map(s => s.profit_factor)
-    const profits2 = group2.map(s => s.profit_factor)
-
-    const mean1 = profits1.reduce((sum, p) => sum + p, 0) / profits1.length
-    const mean2 = profits2.reduce((sum, p) => sum + p, 0) / profits2.length
-
-    const covariance = profits1.reduce((sum, p1, i) => {
-      const p2 = profits2[Math.min(i, profits2.length - 1)] || mean2
-      return sum + (p1 - mean1) * (p2 - mean2)
-    }, 0) / profits1.length
-
-    const std1 = Math.sqrt(profits1.reduce((sum, p) => sum + Math.pow(p - mean1, 2), 0) / profits1.length)
-    const std2 = Math.sqrt(profits2.reduce((sum, p) => sum + Math.pow(p - mean2, 2), 0) / profits2.length)
-
-    return covariance / (std1 * std2 || 1)
-  }
-
-  const calculateRiskReduction = (baseStrategies: StrategyAnalytics[], adjustedStrategies: StrategyAnalytics[]): number => {
-    const baseMaxDrawdown = Math.max(...baseStrategies.map(s => s.drawdown_time || 0))
-    const adjustedMaxDrawdown = Math.max(...adjustedStrategies.map(s => s.drawdown_time || 0))
-
-    return Math.max(0, (baseMaxDrawdown - adjustedMaxDrawdown) / (baseMaxDrawdown || 1))
-  }
-
-  const calculateMarketConditionInsights = (timeSeries: TimeSeriesData[], symbols: SymbolAnalytics[]) => {
-    // Analyze market conditions and their impact on different strategies
-    const volatilityPeriods = timeSeries.filter(t => Math.abs(t.daily_pnl) > 100) // High volatility based on daily P&L
-    const trendingPeriods = timeSeries.filter(t => Math.abs(t.cumulative_pnl) > 1000)
-    const rangingPeriods = timeSeries.filter(t => Math.abs(t.daily_pnl) <= 10) // Low volatility based on daily P&L
-
-    return [
-      {
-        condition: 'High Volatility',
-        periodCount: volatilityPeriods.length,
-        avgPerformance: safeAvg(volatilityPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0), volatilityPeriods.length),
-        bestSymbols: symbols.filter(s => s.volatility > 0.03).sort((a, b) => b.total_pnl - a.total_pnl).slice(0, 3),
-      },
-      {
-        condition: 'Strong Trend',
-        periodCount: trendingPeriods.length,
-        avgPerformance: safeAvg(trendingPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0), trendingPeriods.length),
-        bestSymbols: symbols.sort((a, b) => Math.abs(b.total_pnl) - Math.abs(a.total_pnl)).slice(0, 3),
-      },
-      {
-        condition: 'Range Bound',
-        periodCount: rangingPeriods.length,
-        avgPerformance: safeAvg(rangingPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0), rangingPeriods.length),
-        bestSymbols: symbols.filter(s => s.volatility <= 0.02).sort((a, b) => b.total_pnl - a.total_pnl).slice(0, 3),
-      },
+  const calculatePnlRegimeInsights = (timeSeries: TimeSeriesData[]) => {
+    const regimes = [
+      { condition: "Positive P&L days", rows: timeSeries.filter((row) => row.daily_pnl > 0) },
+      { condition: "Negative P&L days", rows: timeSeries.filter((row) => row.daily_pnl < 0) },
+      { condition: "Flat P&L days", rows: timeSeries.filter((row) => row.daily_pnl === 0) },
     ]
-  }
-
-  const calculateTemporalPatterns = (timeSeries: TimeSeriesData[], strategies: StrategyAnalytics[]): { hourly: any[], daily: any[], weekly: any[] } => {
-    // Analyze performance patterns across different time periods
-    const hourlyPatterns: any[] = []
-    const dailyPatterns: any[] = []
-    const weeklyPatterns: any[] = []
-
-    // Group by hour of day
-    const hourlyGroups: Record<number, TimeSeriesData[]> = {}
-    timeSeries.forEach(data => {
-      const hour = new Date(data.timestamp).getHours()
-      if (!hourlyGroups[hour]) hourlyGroups[hour] = []
-      hourlyGroups[hour].push(data)
+    return regimes.map(({ condition, rows }) => {
+      const totalPnlUsd = rows.reduce((sum, row) => sum + row.daily_pnl, 0)
+      return {
+        condition,
+        periodCount: rows.length,
+        averagePnlUsd: safeAvg(totalPnlUsd, rows.length),
+        totalPnlUsd,
+      }
     })
-
-    Object.entries(hourlyGroups).forEach(([hour, data]) => {
-      const avgPnl = data.reduce((sum, d) => sum + (d.daily_pnl || 0), 0) / data.length
-      hourlyPatterns.push({ hour: parseInt(hour), avgPnl, tradeCount: data.length })
-    })
-
-    return {
-      hourly: hourlyPatterns.sort((a, b) => b.avgPnl - a.avgPnl),
-      daily: dailyPatterns,
-      weekly: weeklyPatterns,
-    }
   }
 
   const calculateRiskMetrics = (strategies: StrategyAnalytics[], symbols: SymbolAnalytics[], timeSeries: TimeSeriesData[]) => {
-    const portfolioMetrics = {
-      totalValueAtRisk: 0,
-      expectedShortfall: 0,
-      beta: 0,
-      correlationMatrix: {},
-      stressTestResults: [],
+    void strategies
+    void symbols
+    const dailyPnl = timeSeries
+      .map((row) => Number(row.daily_pnl))
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right)
+    if (dailyPnl.length === 0) {
+      return {
+        sampleCount: 0,
+        historicalLossQuantile95Usd: null,
+        expectedShortfallUsd: null,
+      }
     }
-
-    // Calculate Value at Risk (VaR)
-    const dailyReturns = timeSeries.map((t, i) => {
-      if (i === 0) return 0
-      const prev = timeSeries[i - 1]
-      return ((t.cumulative_pnl || 0) - (prev.cumulative_pnl || 0)) / (prev.cumulative_pnl || 1)
-    }).filter(r => r !== 0)
-
-    if (dailyReturns.length > 0) {
-      const sortedReturns = dailyReturns.sort((a, b) => a - b)
-      const varIndex = Math.floor(sortedReturns.length * 0.05) // 95% VaR
-      portfolioMetrics.totalValueAtRisk = Math.abs(sortedReturns[varIndex] || 0)
+    const quantileIndex = Math.max(0, Math.ceil(dailyPnl.length * 0.05) - 1)
+    const tail = dailyPnl.slice(0, quantileIndex + 1)
+    const quantilePnl = dailyPnl[quantileIndex]
+    return {
+      sampleCount: dailyPnl.length,
+      historicalLossQuantile95Usd: Math.max(0, -quantilePnl),
+      expectedShortfallUsd: Math.max(0, -safeAvg(tail.reduce((sum, value) => sum + value, 0), tail.length)),
     }
-
-    return portfolioMetrics
   }
 
   const generateRecommendations = (profitFactor: number, winRate: number, maxDrawdown: number, totalTrades: number): string[] => {
     const recommendations: string[] = []
 
     if (profitFactor > 1.5) {
-      recommendations.push("Excellent profit factor - consider increasing position size")
+      recommendations.push("Realised PF is above 1.50 in the selected sample")
     } else if (profitFactor < 1.1) {
-      recommendations.push("Low profit factor - review entry/exit criteria")
+      recommendations.push("Realised PF is below 1.10; inspect the closed-trade sample")
     }
 
     if (winRate > 0.7) {
-      recommendations.push("High win rate - strategy shows strong directional accuracy")
+      recommendations.push("Observed win rate is above 70%")
     } else if (winRate < 0.4) {
-      recommendations.push("Low win rate - consider adjusting stop loss placement")
+      recommendations.push("Observed win rate is below 40%")
     }
 
-    if (maxDrawdown > 0.3) {
-      recommendations.push("High drawdown - implement stricter risk management")
-    } else if (maxDrawdown < 0.1) {
-      recommendations.push("Low drawdown - excellent risk control")
+    if (maxDrawdown > 24) {
+      recommendations.push("Measured drawdown duration exceeds 24 hours")
+    } else if (maxDrawdown > 0 && maxDrawdown <= 4) {
+      recommendations.push("Measured drawdown duration is at most 4 hours")
     }
 
     if (totalTrades < 100) {
-      recommendations.push("Limited sample size - continue testing for more confidence")
+      recommendations.push("Fewer than 100 closed trades; confidence remains limited")
     }
 
     return recommendations
@@ -967,6 +919,15 @@ export default function StatisticsPage() {
         : 0,
     bestStrategy: strategyAnalytics[0]?.strategy_name || "N/A",
   }
+  const availableFilters = useMemo(() => {
+    const uniqueSorted = (values: string[]) => [...new Set(values.filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right))
+    return {
+      symbols: uniqueSorted(positions.map((position) => String(position.symbol || "").toUpperCase())),
+      indicationTypes: uniqueSorted(positions.map((position) => String(position.indication_type || "direction").toLowerCase())),
+      strategyTypes: uniqueSorted(positions.map((position) => String(position.strategy_type || "live"))),
+    }
+  }, [positions])
 
   if (isLoading) {
     return (
@@ -983,7 +944,7 @@ export default function StatisticsPage() {
   }
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="min-w-0 space-y-4 p-3 sm:p-4">
       <StatisticsSectionNav />
       {!hasRealConnections && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
@@ -1012,15 +973,30 @@ export default function StatisticsPage() {
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-2 flex-wrap">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
         <PageHeader
           title="Advanced Statistics & Analytics"
-          description="AI-powered trading performance analysis with optimal strategy recommendations"
+          description="Measured exchange performance, classic realised PF, PositionCost coordinates and runtime diagnostics"
         />
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          {archiveCoverage && (
+            <Badge
+              variant={archiveCoverage.complete ? "outline" : "destructive"}
+              className="h-7 gap-1 tabular-nums"
+              title={
+                archiveCoverage.complete
+                  ? `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved and ${archiveCoverage.normalizedSnapshots.toLocaleString()} valid snapshots normalized; ${archiveCoverage.normalizedLocalRows.toLocaleString()} rows match the selected environment.`
+                  : `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved and ${archiveCoverage.normalizedSnapshots.toLocaleString()} valid snapshots normalized. Statistics are in bounded fallback mode.`
+              }
+            >
+              <History className="h-3 w-3" />
+              {archiveCoverage.complete ? "Full archive" : "Partial archive"}
+              {" · "}{archiveCoverage.returned.toLocaleString()} rows
+            </Badge>
+          )}
           <Badge variant="secondary" className="h-7 gap-1">
             <Brain className="h-3 w-3" />
-            AI Analysis
+            Measured Analysis
           </Badge>
           <Button
             onClick={() => {
@@ -1048,7 +1024,7 @@ export default function StatisticsPage() {
             tint: overviewStats.totalPnL >= 0 ? "text-green-500" : "text-red-500",
           },
           { icon: PieChartIcon, label: "Avg Win Rate",   value: `${(overviewStats.avgWinRate * 100).toFixed(1)}%`, tint: "text-amber-500" },
-          { icon: Award,        label: "Best Strategy",  value: overviewStats.bestStrategy, tint: "text-primary", isWide: true },
+          { icon: Award,        label: "Highest PF",  value: overviewStats.bestStrategy, tint: "text-primary", isWide: true },
         ].map((stat) => (
           <Card key={stat.label} className="border-border bg-card">
             <CardContent className="p-2 flex items-center gap-2">
@@ -1253,19 +1229,25 @@ export default function StatisticsPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="lg:col-span-1">
-          <AnalyticsFilters filter={filter} onFilterChange={handleFilterChange} />
+          <AnalyticsFilters
+            filter={filter}
+            onFilterChange={handleFilterChange}
+            availableSymbols={availableFilters.symbols}
+            availableIndicationTypes={availableFilters.indicationTypes}
+            availableStrategyTypes={availableFilters.strategyTypes}
+          />
         </div>
 
         <div className="lg:col-span-3">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4 xl:grid-cols-11">
+            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
               <TabsTrigger value="overview" className="flex items-center gap-2">
                 <BarChart3 className="h-4 w-4" />
                 Overview
               </TabsTrigger>
               <TabsTrigger value="optimal" className="flex items-center gap-2">
                 <Target className="h-4 w-4" />
-                Optimal
+                Ranking
               </TabsTrigger>
               <TabsTrigger value="strategies" className="flex items-center gap-2">
                 <TrendingUp className="h-4 w-4" />
@@ -1308,8 +1290,8 @@ export default function StatisticsPage() {
             <TabsContent value="optimal" className="space-y-6">
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h3 className="text-lg font-semibold">Optimal Strategy Analysis</h3>
-                  <p className="text-sm text-muted-foreground">AI-powered optimal strategy recommendations across all types</p>
+                  <h3 className="text-lg font-semibold">Measured Strategy Ranking</h3>
+                  <p className="text-sm text-muted-foreground">Observed closed-trade rows only; no hypothetical strategy or coordination combinations</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="secondary" className="flex items-center gap-1">
@@ -1335,7 +1317,7 @@ export default function StatisticsPage() {
                         <div className="text-2xl font-bold text-green-600">
                           {optimalStrategies.filter(s => s.optimalScore > 0.8).length}
                         </div>
-                        <div className="text-sm text-muted-foreground">High-Confidence</div>
+                        <div className="text-sm text-muted-foreground">Quality score ≥ 80%</div>
                       </div>
                     </div>
                   </CardContent>
@@ -1349,9 +1331,9 @@ export default function StatisticsPage() {
                       </div>
                       <div>
                         <div className="text-2xl font-bold text-blue-600">
-                          {(safeAvg(optimalStrategies.reduce((sum, s) => sum + s.riskAdjustedReturn, 0), optimalStrategies.length) * 100).toFixed(1)}%
+                          {formatAverageRecoveryFactor(optimalStrategies)}
                         </div>
-                        <div className="text-sm text-muted-foreground">Avg Risk-Adjusted</div>
+                        <div className="text-sm text-muted-foreground">Avg Recovery Factor</div>
                       </div>
                     </div>
                   </CardContent>
@@ -1365,9 +1347,9 @@ export default function StatisticsPage() {
                       </div>
                       <div>
                         <div className="text-2xl font-bold text-purple-600">
-                          {optimalStrategies[0]?.strategyType || 'N/A'}
+                          {optimalStrategies[0]?.strategyName || 'N/A'}
                         </div>
-                        <div className="text-sm text-muted-foreground">Top Strategy Type</div>
+                        <div className="text-sm text-muted-foreground">Top Measured Strategy</div>
                       </div>
                     </div>
                   </CardContent>
@@ -1377,15 +1359,15 @@ export default function StatisticsPage() {
               {/* Optimal Strategies Table */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Strategy Optimization Matrix</CardTitle>
+                  <CardTitle>Measured strategy quality rows</CardTitle>
                   <CardDescription>
-                    Comprehensive analysis of all strategy combinations with optimal scoring
+                    Deterministic score: 40% clipped(PF−1), 25% win rate, 20% 1/(1+DDT/24h), and 15% sample confidence capped at 100 closes.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
                     {optimalStrategies.slice(0, 10).map((strategy, index) => (
-                      <div key={`${strategy.strategyType}-${strategy.adjustmentType}-${strategy.coordinationMethod}`}
+                      <div key={strategy.strategyName}
                         className="border rounded-lg p-4 hover:bg-muted/50 transition-colors"
                       >
                         <div className="flex items-center justify-between mb-3">
@@ -1396,10 +1378,10 @@ export default function StatisticsPage() {
                             </Badge>
                             <div>
                               <h4 className="font-semibold">
-                                {strategy.strategyType} + {strategy.adjustmentType}
+                                {strategy.strategyName}
                               </h4>
                               <p className="text-sm text-muted-foreground">
-                                via {strategy.coordinationMethod} coordination
+                                {strategy.strategyType} · {strategy.adjustmentType} · {strategy.totalTrades} closed trades
                               </p>
                             </div>
                           </div>
@@ -1407,26 +1389,26 @@ export default function StatisticsPage() {
                             <div className="text-lg font-bold text-green-600">
                               {(strategy.optimalScore * 100).toFixed(1)}%
                             </div>
-                            <div className="text-sm text-muted-foreground">Optimal Score</div>
+                            <div className="text-sm text-muted-foreground">Measured quality</div>
                           </div>
                         </div>
 
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
                           <div>
-                            <div className="text-sm text-muted-foreground">Profit Factor</div>
-                            <div className="font-semibold">{strategy.profitFactor.toFixed(2)}</div>
+                            <div className="text-sm text-muted-foreground">Realised PF (classic)</div>
+                            <div className="font-semibold">{strategy.profitFactor >= 999 ? "∞" : strategy.profitFactor.toFixed(2)}</div>
                           </div>
                           <div>
                             <div className="text-sm text-muted-foreground">Win Rate</div>
                             <div className="font-semibold">{(strategy.winRate * 100).toFixed(1)}%</div>
                           </div>
                           <div>
-                            <div className="text-sm text-muted-foreground">Max Drawdown</div>
-                            <div className="font-semibold">{(strategy.maxDrawdown * 100).toFixed(1)}%</div>
+                            <div className="text-sm text-muted-foreground">Drawdown duration</div>
+                            <div className="font-semibold">{strategy.maxDrawdown.toFixed(1)}h</div>
                           </div>
                           <div>
-                            <div className="text-sm text-muted-foreground">Risk-Adjusted</div>
-                            <div className="font-semibold">{(strategy.riskAdjustedReturn * 100).toFixed(1)}%</div>
+                            <div className="text-sm text-muted-foreground">Recovery factor</div>
+                            <div className="font-semibold">{formatRecoveryFactor(strategy.riskAdjustedReturn)}</div>
                           </div>
                         </div>
 
@@ -1440,7 +1422,7 @@ export default function StatisticsPage() {
 
                         {strategy.recommendations.length > 0 && (
                           <div>
-                            <div className="text-sm font-medium mb-2">Recommendations:</div>
+                            <div className="text-sm font-medium mb-2">Measured observations:</div>
                             <div className="flex flex-wrap gap-1">
                               {strategy.recommendations.map((rec, i) => (
                                 <Badge key={i} variant="outline" className="text-xs">
@@ -1459,38 +1441,37 @@ export default function StatisticsPage() {
               {/* Risk-Return Scatter Plot */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Risk-Return Optimization</CardTitle>
+                  <CardTitle>Realised PF vs. drawdown duration</CardTitle>
                   <CardDescription>
-                    Optimal strategies plotted by risk-adjusted returns vs. maximum drawdown
+                    Each finite point is one observed strategy row; x is DDT in hours and y is classic realised PF. Loss-free infinite PF rows are listed above and omitted from this finite axis.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ResponsiveContainer width="100%" height={400}>
-                    <ScatterChart data={optimalStrategies}>
+                    <ScatterChart data={optimalStrategies.filter((strategy) => strategy.profitFactor < 999)}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis
                         type="number"
                         dataKey="maxDrawdown"
                         domain={[0, 'dataMax']}
-                        tickFormatter={(value) => `${(value * 100).toFixed(0)}%`}
-                        label={{ value: 'Max Drawdown', position: 'insideBottom', offset: -5 }}
+                        tickFormatter={(value) => `${Number(value).toFixed(0)}h`}
+                        label={{ value: 'Drawdown duration (h)', position: 'insideBottom', offset: -5 }}
                       />
                       <YAxis
                         type="number"
-                        dataKey="riskAdjustedReturn"
-                        tickFormatter={(value) => `${(value * 100).toFixed(0)}%`}
-                        label={{ value: 'Risk-Adjusted Return', angle: -90, position: 'insideLeft' }}
+                        dataKey="profitFactor"
+                        tickFormatter={(value) => Number(value).toFixed(2)}
+                        label={{ value: 'Realised PF (classic)', angle: -90, position: 'insideLeft' }}
                       />
                       <Tooltip
                         formatter={(value: number, name: string) => [
-                          name === 'maxDrawdown' ? `${(value * 100).toFixed(1)}%` : `${(value * 100).toFixed(1)}%`,
-                          name === 'maxDrawdown' ? 'Max Drawdown' : 'Risk-Adjusted Return'
+                          name === 'maxDrawdown' ? `${value.toFixed(1)}h` : value.toFixed(2),
+                          name === 'maxDrawdown' ? 'Drawdown duration' : 'Realised PF (classic)'
                         ]}
-                        labelFormatter={(label) => `Strategy: ${optimalStrategies[label]?.strategyType || 'Unknown'}`}
                       />
                       <Scatter
                         name="Strategies"
-                        dataKey="riskAdjustedReturn"
+                        dataKey="profitFactor"
                         fill="#3b82f6"
                       />
                     </ScatterChart>
@@ -1502,217 +1483,29 @@ export default function StatisticsPage() {
             <TabsContent value="coordination" className="space-y-6">
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h3 className="text-lg font-semibold">Strategy Coordination Analysis</h3>
-                  <p className="text-sm text-muted-foreground">Advanced coordination insights between strategy types and methods</p>
+                  <h3 className="text-lg font-semibold">Paired Strategy Coordination</h3>
+                  <p className="text-sm text-muted-foreground">Requires time-aligned outcome pairs; aggregate PF rows are not treated as correlation data</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="secondary" className="flex items-center gap-1">
                     <Network className="h-3 w-3" />
-                    {coordinationAnalysis.length} Connections
-                  </Badge>
-                  <Badge variant="outline" className="flex items-center gap-1">
-                    <Zap className="h-3 w-3" />
-                    Optimal Pairs
+                    {coordinationAnalysis.length} measured pairs
                   </Badge>
                 </div>
               </div>
 
-              {/* Coordination Overview */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+              {coordinationAnalysis.length === 0 && (
                 <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
-                        <Network className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                      </div>
-                      <div>
-                        <div className="text-2xl font-bold">
-                          {coordinationAnalysis.filter(c => c.optimalCombination).length}
-                        </div>
-                        <div className="text-sm text-muted-foreground">Optimal Pairs</div>
-                      </div>
-                    </div>
-                  </CardContent>
+                  <CardHeader>
+                    <CardTitle>No paired coordination ledger is available</CardTitle>
+                    <CardDescription>
+                      Correlation, synergy and risk reduction remain intentionally unavailable
+                      instead of being inferred from unrelated average PF rows.
+                    </CardDescription>
+                  </CardHeader>
                 </Card>
+              )}
 
-                <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-green-100 dark:bg-green-900 rounded-lg">
-                        <TrendingUp className="h-5 w-5 text-green-600 dark:text-green-400" />
-                      </div>
-                      <div>
-                        <div className="text-2xl font-bold">
-                          {(safeAvg(coordinationAnalysis.reduce((sum, c) => sum + c.performanceBoost, 0), coordinationAnalysis.length) * 100).toFixed(1)}%
-                        </div>
-                        <div className="text-sm text-muted-foreground">Avg Performance Boost</div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-orange-100 dark:bg-orange-900 rounded-lg">
-                        <Activity className="h-5 w-5 text-orange-600 dark:text-orange-400" />
-                      </div>
-                      <div>
-                        <div className="text-2xl font-bold">
-                          {(safeAvg(coordinationAnalysis.reduce((sum, c) => sum + c.riskReduction, 0), coordinationAnalysis.length) * 100).toFixed(1)}%
-                        </div>
-                        <div className="text-sm text-muted-foreground">Avg Risk Reduction</div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-lg">
-                        <BarChart3 className="h-5 w-5 text-purple-600 dark:text-purple-400" />
-                      </div>
-                      <div>
-                        <div className="text-2xl font-bold">
-                          {Math.abs(safeAvg(coordinationAnalysis.reduce((sum, c) => sum + c.correlation, 0), coordinationAnalysis.length)).toFixed(2)}
-                        </div>
-                        <div className="text-sm text-muted-foreground">Avg Correlation</div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-
-              {/* Coordination Matrix */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>Strategy Coordination Matrix</CardTitle>
-                  <CardDescription>
-                    Synergy analysis between different strategy types and coordination methods
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    {coordinationAnalysis.slice(0, 12).map((coord, index) => (
-                      <div key={`${coord.type}-${coord.primaryType}-${coord.secondaryType}`}
-                        className="border rounded-lg p-4 hover:bg-muted/50 transition-colors"
-                      >
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center gap-3">
-                            <Badge variant={coord.optimalCombination ? "default" : "secondary"}>
-                              {coord.optimalCombination ? "Optimal" : "Compatible"}
-                            </Badge>
-                            <div>
-                              <h4 className="font-semibold">
-                                {coord.primaryType} ↔ {coord.secondaryType}
-                              </h4>
-                              <p className="text-sm text-muted-foreground capitalize">
-                                {coord.type.replace('_', ' ')} coordination
-                              </p>
-                            </div>
-                          </div>
-                          <div className="text-right">
-                            <div className={`text-lg font-bold ${
-                              coord.synergyScore > 1.1 ? "text-green-600" :
-                              coord.synergyScore > 0.9 ? "text-yellow-600" : "text-red-600"
-                            }`}>
-                              {(coord.synergyScore * 100).toFixed(1)}%
-                            </div>
-                            <div className="text-sm text-muted-foreground">Synergy Score</div>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
-                          <div>
-                            <div className="text-sm text-muted-foreground">Correlation</div>
-                            <div className="font-semibold">
-                              {coord.correlation >= 0 ? '+' : ''}{(coord.correlation * 100).toFixed(1)}%
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-sm text-muted-foreground">Performance Boost</div>
-                            <div className="font-semibold text-green-600">
-                              +{(coord.performanceBoost * 100).toFixed(1)}%
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-sm text-muted-foreground">Risk Reduction</div>
-                            <div className="font-semibold text-blue-600">
-                              {(coord.riskReduction * 100).toFixed(1)}%
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-sm text-muted-foreground">Compatibility</div>
-                            <div className="font-semibold">
-                              {coord.optimalCombination ? "High" : "Medium"}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-sm text-muted-foreground">Synergy Level</span>
-                              <span className="text-sm font-medium">
-                                {coord.synergyScore > 1.2 ? "Excellent" :
-                                 coord.synergyScore > 1.1 ? "Good" :
-                                 coord.synergyScore > 0.9 ? "Fair" : "Poor"}
-                              </span>
-                            </div>
-                            <Progress
-                              value={Math.min((coord.synergyScore - 0.8) * 100, 100)}
-                              className="h-2"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Coordination Network Visualization */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>Coordination Network</CardTitle>
-                  <CardDescription>
-                    Visual representation of strategy relationships and optimal combinations
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ResponsiveContainer width="100%" height={400}>
-                    <RadarChart data={coordinationAnalysis.slice(0, 8).map(coord => ({
-                      coordination: `${coord.primaryType}-${coord.secondaryType}`,
-                      synergy: coord.synergyScore * 100,
-                      correlation: Math.abs(coord.correlation) * 100,
-                      performance: coord.performanceBoost * 100,
-                      risk: coord.riskReduction * 100,
-                    }))}>
-                      <PolarGrid />
-                      <PolarAngleAxis dataKey="coordination" />
-                      <PolarRadiusAxis angle={90} domain={[0, 150]} />
-                      <Radar
-                        name="Synergy"
-                        dataKey="synergy"
-                        stroke="#3b82f6"
-                        fill="#3b82f6"
-                        fillOpacity={0.1}
-                        strokeWidth={2}
-                      />
-                      <Radar
-                        name="Performance Boost"
-                        dataKey="performance"
-                        stroke="#10b981"
-                        fill="#10b981"
-                        fillOpacity={0.1}
-                        strokeWidth={2}
-                      />
-                      <Tooltip />
-                    </RadarChart>
-                  </ResponsiveContainer>
-                </CardContent>
-              </Card>
             </TabsContent>
 
             <TabsContent value="overview" className="space-y-6">
@@ -1788,7 +1581,7 @@ export default function StatisticsPage() {
                       <Target className="h-5 w-5 text-cyan-500" />
                       <div>
                         <div className="text-lg font-bold truncate">{overviewStats.bestStrategy}</div>
-                        <div className="text-sm text-muted-foreground">Best Strategy</div>
+                        <div className="text-sm text-muted-foreground">Highest classic PF</div>
                       </div>
                     </div>
                   </CardContent>
@@ -1803,7 +1596,7 @@ export default function StatisticsPage() {
                     Portfolio Performance Matrix
                   </CardTitle>
                   <CardDescription>
-                    Realized and unrealized P&amp;L relative to a zero baseline; no account-balance estimate
+                    Realised and unrealised P&amp;L plus realised USD drawdown relative to a zero baseline; no account-balance estimate
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -1812,11 +1605,10 @@ export default function StatisticsPage() {
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="timestamp" tickFormatter={(value) => new Date(value).toLocaleDateString()} />
                       <YAxis yAxisId="price" orientation="left" tickFormatter={(value) => formatCurrency(value)} />
-                      <YAxis yAxisId="percentage" orientation="right" tickFormatter={(value) => `${value.toFixed(1)}%`} />
                       <Tooltip
                         labelFormatter={(value) => new Date(value).toLocaleDateString()}
                         formatter={(value: number, name: string) => {
-                          if (name === 'drawdown') return [`${(value * 100).toFixed(1)}%`, 'Drawdown']
+                          if (name === 'Realised drawdown') return [formatCurrency(value), name]
                           return [formatCurrency(value), name]
                         }}
                       />
@@ -1841,12 +1633,12 @@ export default function StatisticsPage() {
                         name="P&L + Unrealized"
                       />
                       <Line
-                        yAxisId="percentage"
+                        yAxisId="price"
                         type="monotone"
                         dataKey="drawdown"
                         stroke="#ef4444"
                         strokeWidth={2}
-                        name="drawdown"
+                        name="Realised drawdown"
                         dot={false}
                       />
                     </ComposedChart>
@@ -1854,21 +1646,21 @@ export default function StatisticsPage() {
                 </CardContent>
               </Card>
 
-              {/* Market Condition Insights */}
-              {comprehensiveAnalytics?.marketConditionInsights && (
+              {/* Exact P&L sign regimes; no market regime is inferred from P&L. */}
+              {comprehensiveAnalytics?.pnlRegimeInsights && (
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <Brain className="h-5 w-5" />
-                      Market Condition Intelligence
+                      Measured daily P&amp;L regimes
                     </CardTitle>
                     <CardDescription>
-                      AI-powered analysis of how different market conditions affect strategy performance
+                      Exact positive, negative and flat daily aggregates. These rows do not claim to identify volatility, trend or range conditions.
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {comprehensiveAnalytics.marketConditionInsights.map((condition: any, index: number) => (
+                      {comprehensiveAnalytics.pnlRegimeInsights.map((condition, index) => (
                         <div key={condition.condition} className="border rounded-lg p-4">
                           <div className="flex items-center justify-between mb-3">
                             <h4 className="font-semibold">{condition.condition}</h4>
@@ -1878,20 +1670,16 @@ export default function StatisticsPage() {
                           </div>
                           <div className="space-y-2">
                             <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Avg Performance:</span>
-                              <span className={`font-medium ${condition.avgPerformance >= 0 ? "text-green-600" : "text-red-600"}`}>
-                                {formatCurrency(condition.avgPerformance)}
+                              <span className="text-muted-foreground">Average P&amp;L:</span>
+                              <span className={`font-medium ${condition.averagePnlUsd >= 0 ? "text-green-600" : "text-red-600"}`}>
+                                {formatCurrency(condition.averagePnlUsd)}
                               </span>
                             </div>
-                            <div className="text-sm">
-                              <div className="text-muted-foreground mb-1">Top Performing Symbols:</div>
-                              <div className="flex flex-wrap gap-1">
-                                {condition.bestSymbols.map((symbol: any, i: number) => (
-                                  <Badge key={i} variant="outline" className="text-xs">
-                                    {symbol.symbol}
-                                  </Badge>
-                                ))}
-                              </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-muted-foreground">Total P&amp;L:</span>
+                              <span className={`font-medium ${condition.totalPnlUsd >= 0 ? "text-green-600" : "text-red-600"}`}>
+                                {formatCurrency(condition.totalPnlUsd)}
+                              </span>
                             </div>
                           </div>
                         </div>
@@ -1910,24 +1698,33 @@ export default function StatisticsPage() {
                       Strategy Type Performance Matrix
                     </CardTitle>
                     <CardDescription>
-                      Comparative analysis across all strategy types with optimal scoring
+                      Observed classic realised PF and win rate by strategy type. Loss-free infinite PF rows are omitted from the finite PF bars.
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <ResponsiveContainer width="100%" height={280}>
-                      <BarChart data={strategyAnalytics.slice(0, 8)}>
+                      <BarChart data={strategyAnalytics.slice(0, 8).map((strategy) => ({
+                        ...strategy,
+                        finite_profit_factor: strategy.profit_factor >= 999 ? null : strategy.profit_factor,
+                      }))}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="strategy_type" />
-                        <YAxis />
+                        <YAxis yAxisId="pf" />
+                        <YAxis
+                          yAxisId="win-rate"
+                          orientation="right"
+                          domain={[0, 1]}
+                          tickFormatter={(value) => `${(Number(value) * 100).toFixed(0)}%`}
+                        />
                         <Tooltip
                           formatter={(value: number, name: string) => {
-                            if (name === 'profit_factor') return [value.toFixed(2), 'Profit Factor']
+                            if (name === 'finite_profit_factor') return [value.toFixed(2), 'Realised PF (classic)']
                             if (name === 'win_rate') return [`${(value * 100).toFixed(1)}%`, 'Win Rate']
                             return [value, name]
                           }}
                         />
-                        <Bar dataKey="profit_factor" fill="#3b82f6" name="Profit Factor" />
-                        <Bar dataKey="win_rate" fill="#10b981" name="Win Rate" />
+                        <Bar yAxisId="pf" dataKey="finite_profit_factor" fill="#3b82f6" name="Realised PF (classic)" />
+                        <Bar yAxisId="win-rate" dataKey="win_rate" fill="#10b981" name="Win Rate" />
                       </BarChart>
                     </ResponsiveContainer>
                   </CardContent>
@@ -1941,7 +1738,7 @@ export default function StatisticsPage() {
                       Symbol Performance Distribution
                     </CardTitle>
                     <CardDescription>
-                      Trade volume and profitability distribution across symbols
+                      Closed-trade count share across the highest-P&amp;L symbols
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
@@ -1981,44 +1778,56 @@ export default function StatisticsPage() {
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <AlertTriangle className="h-5 w-5" />
-                      Risk Assessment Dashboard
+                      Measured risk statistics
                     </CardTitle>
                     <CardDescription>
-                      Comprehensive risk metrics including VaR, stress testing, and correlation analysis
+                      Historical daily P&amp;L loss distribution, drawdown duration and observed strategy metrics; no forecast, beta or stress test is inferred.
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                       <div className="text-center p-4 border rounded-lg">
                         <div className="text-2xl font-bold text-red-600">
-                          {(comprehensiveAnalytics.riskMetrics.totalValueAtRisk * 100).toFixed(1)}%
+                          {comprehensiveAnalytics.riskMetrics.historicalLossQuantile95Usd === null
+                            ? "—"
+                            : formatCurrency(comprehensiveAnalytics.riskMetrics.historicalLossQuantile95Usd)}
                         </div>
-                        <div className="text-sm text-muted-foreground">Value at Risk (95%)</div>
-                        <div className="text-xs text-muted-foreground mt-1">Daily loss threshold</div>
+                        <div className="text-sm text-muted-foreground">Historical loss q95</div>
+                        <div className="text-xs text-muted-foreground mt-1">{comprehensiveAnalytics.riskMetrics.sampleCount} daily samples · USD</div>
                       </div>
 
                       <div className="text-center p-4 border rounded-lg">
                         <div className="text-2xl font-bold text-yellow-600">
-                          {(safeAvg(strategyAnalytics.reduce((sum, s) => sum + (s.drawdown_time || 0), 0), strategyAnalytics.length) * 100).toFixed(1)}%
+                          {comprehensiveAnalytics.riskMetrics.expectedShortfallUsd === null
+                            ? "—"
+                            : formatCurrency(comprehensiveAnalytics.riskMetrics.expectedShortfallUsd)}
                         </div>
-                        <div className="text-sm text-muted-foreground">Avg Max Drawdown</div>
-                        <div className="text-xs text-muted-foreground mt-1">Peak-to-trough decline</div>
+                        <div className="text-sm text-muted-foreground">Historical tail mean</div>
+                        <div className="text-xs text-muted-foreground mt-1">Worst 5% daily P&amp;L · USD</div>
+                      </div>
+
+                      <div className="text-center p-4 border rounded-lg">
+                        <div className="text-2xl font-bold text-orange-600">
+                          {safeAvg(strategyAnalytics.reduce((sum, s) => sum + (s.drawdown_time || 0), 0), strategyAnalytics.length).toFixed(1)}h
+                        </div>
+                        <div className="text-sm text-muted-foreground">Avg DDT</div>
+                        <div className="text-xs text-muted-foreground mt-1">Measured duration, not percent</div>
                       </div>
 
                       <div className="text-center p-4 border rounded-lg">
                         <div className="text-2xl font-bold text-blue-600">
                           {strategyAnalytics.filter(s => s.profit_factor > 1).length}
                         </div>
-                        <div className="text-sm text-muted-foreground">Risk-Adjusted Winners</div>
-                        <div className="text-xs text-muted-foreground mt-1">Strategies beating benchmark</div>
+                        <div className="text-sm text-muted-foreground">Classic-PF winners</div>
+                        <div className="text-xs text-muted-foreground mt-1">Realised PF &gt; 1.00</div>
                       </div>
 
                       <div className="text-center p-4 border rounded-lg">
                         <div className="text-2xl font-bold text-green-600">
                            {(safeAvg(optimalStrategies.reduce((sum, s) => sum + s.sharpeRatio, 0), optimalStrategies.length)).toFixed(2)}
                         </div>
-                        <div className="text-sm text-muted-foreground">Avg Sharpe Ratio</div>
-                        <div className="text-xs text-muted-foreground mt-1">Risk-adjusted returns</div>
+                        <div className="text-sm text-muted-foreground">Avg observed Sharpe</div>
+                        <div className="text-xs text-muted-foreground mt-1">Closed-trade samples</div>
                       </div>
                     </div>
                   </CardContent>
@@ -2027,12 +1836,7 @@ export default function StatisticsPage() {
             </TabsContent>
 
             <TabsContent value="strategies" className="space-y-6">
-              <StrategyPerformanceTable
-                strategies={strategyAnalytics}
-                onStrategyClick={(strategy) => {
-                  console.log("Strategy clicked:", strategy)
-                }}
-              />
+              <StrategyPerformanceTable strategies={strategyAnalytics} />
             </TabsContent>
 
             <TabsContent value="symbols" className="space-y-6">
@@ -2134,6 +1938,7 @@ export default function StatisticsPage() {
                 <Card>
                   <CardHeader>
                     <CardTitle>Open Positions Over Time</CardTitle>
+                    <CardDescription>End-of-day lifecycle count from observed open/close timestamps in the selected filter window.</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <ResponsiveContainer width="100%" height={250}>

@@ -518,11 +518,13 @@ describe("requested regression guardrails", () => {
 
   test("statistics page renders real open and closed exchange data without demo fallbacks", () => {
     const source = read("app/statistics/page.tsx")
+    const history = read("lib/trade-history.ts")
 
     expect(source).toContain("/api/data/positions?connectionId=")
     expect(source).toContain("/api/trading/trade-history?connection_id=")
-    expect(source).toContain("realized_pnl: realizedPnl")
-    expect(source).toContain("fees_paid: fees")
+    expect(source).toContain("statisticsHistoryTupleToTradingPosition")
+    expect(history).toContain("realized_pnl: realizedPnl")
+    expect(history).toContain("fees_paid: Math.abs(fees)")
     expect(source).toContain("No exchange data yet")
     expect(source).not.toContain("generateMockPositions")
     expect(source).not.toContain("Using Mock Data")

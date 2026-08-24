@@ -1,6 +1,6 @@
 "use client"
 
-import { memo } from "react"
+import { memo, useId } from "react"
 import { Badge } from "@/components/ui/badge"
 import type {
   HistoricFourHourBucketStats,
@@ -79,16 +79,17 @@ export const HistoricFourHourStatsPanel = memo(function HistoricFourHourStatsPan
   stats?: HistoricFourHourStats | null
 }) {
   const summary = stats?.summary
+  const titleId = useId()
 
   return (
     <section
       className="mt-3 border-t pt-3"
-      aria-labelledby="historic-four-hour-title"
+      aria-labelledby={titleId}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h4
-            id="historic-four-hour-title"
+            id={titleId}
             className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
           >
             Historic calculations · 4-hour details

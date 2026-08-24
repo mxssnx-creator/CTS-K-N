@@ -44,7 +44,7 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        "page-header-shell isolate shrink-0 overflow-hidden border-b shadow-sm backdrop-blur-xl",
+        "page-header-shell isolate shrink-0 w-full min-w-0 max-w-full overflow-hidden border-b shadow-sm backdrop-blur-xl",
         compact && "page-header-compact",
       )}
       aria-label={`${resolvedTitle} page controls`}

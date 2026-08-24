@@ -42,6 +42,122 @@ export interface TradeHistoryRow {
   closeReason?: string
 }
 
+/**
+ * Compact, versioned transport used by the Statistics page for the complete
+ * durable close archive. The tuple avoids repeating eighteen long JSON field
+ * names for every row while retaining every input required by AnalyticsEngine,
+ * preset attribution and the PositionCost-coordinate panels.
+ */
+export type StatisticsHistoryTupleV1 = [
+  id: string,
+  symbol: string,
+  strategyType: string,
+  realizedPnl: number,
+  quantity: number,
+  entryPrice: number,
+  exitPrice: number,
+  volumeUsd: number,
+  openedAt: number,
+  closedAt: number,
+  direction: 0 | 1,
+  indicationType: string,
+  presetId: string,
+  stopLossPrice: number,
+  takeProfitPrice: number,
+  trailingActive: 0 | 1,
+  fees: number,
+  holdMinutes: number,
+]
+
+function statisticsStrategyType(row: TradeHistoryRow): string {
+  const explicit = String(row.setVariant || "").trim()
+  if (explicit) return explicit
+  if (row.presetId) return "preset"
+  if (row.executionIntent) return row.executionIntent
+  return row.source === "exchange" ? "unattributed-exchange" : "live"
+}
+
+export function toStatisticsHistoryTuple(row: TradeHistoryRow): StatisticsHistoryTupleV1 {
+  return [
+    row.id,
+    row.symbol,
+    statisticsStrategyType(row),
+    finite(row.realizedPnl),
+    positive(row.quantity),
+    positive(row.entryPrice),
+    positive(row.exitPrice),
+    positive(row.volumeUsd),
+    normalizeTimestamp(row.openedAt || row.closedAt),
+    normalizeTimestamp(row.closedAt || row.openedAt),
+    row.direction === "short" ? 1 : 0,
+    String(row.indicationType || "direction"),
+    String(row.presetId || ""),
+    positive(row.stopLossPrice),
+    positive(row.takeProfitPrice),
+    row.trailingActive ? 1 : 0,
+    positive(row.fees),
+    Math.max(0, finite(row.holdMinutes)),
+  ]
+}
+
+export function statisticsHistoryTupleToTradingPosition(
+  tuple: StatisticsHistoryTupleV1,
+  connectionId: string,
+): import("./trading").TradingPosition {
+  const [
+    id,
+    symbol,
+    strategyType,
+    realizedPnl,
+    quantity,
+    entryPrice,
+    exitPrice,
+    volumeUsd,
+    openedAt,
+    closedAt,
+    direction,
+    indicationType,
+    presetId,
+    stopLossPrice,
+    takeProfitPrice,
+    trailingActive,
+    fees,
+    holdMinutes,
+  ] = tuple
+  const safeOpenedAt = openedAt > 0 ? openedAt : closedAt
+  const safeClosedAt = closedAt > 0 ? closedAt : safeOpenedAt
+  const position = {
+    id,
+    connection_id: connectionId,
+    symbol,
+    strategy_type: strategyType || "live",
+    volume: Math.abs(quantity),
+    entry_price: entryPrice,
+    current_price: exitPrice || entryPrice,
+    ...(takeProfitPrice > 0 && { takeprofit: takeProfitPrice }),
+    ...(stopLossPrice > 0 && { stoploss: stopLossPrice }),
+    profit_loss: realizedPnl,
+    status: "closed" as const,
+    opened_at: new Date(safeOpenedAt).toISOString(),
+    closed_at: new Date(safeClosedAt).toISOString(),
+    position_side: direction === 1 ? "short" as const : "long" as const,
+    leverage: 1,
+    indication_type: (indicationType || "direction") as import("./trading").TradingPosition["indication_type"],
+    ...(presetId && { preset_id: presetId }),
+    unrealized_pnl: 0,
+    realized_pnl: realizedPnl,
+    // Analytics uses entry × quantity as the canonical PositionCost notional.
+    // Keep margin_used on the same notional basis for pseudo-position panels.
+    margin_used: volumeUsd > 0 ? volumeUsd : Math.abs(entryPrice * quantity),
+    fees_paid: Math.abs(fees),
+    hold_time: Math.max(0, holdMinutes),
+    max_profit: Math.max(0, realizedPnl),
+    max_loss: Math.min(0, realizedPnl),
+    trailing_enabled: trailingActive === 1,
+  }
+  return position as import("./trading").TradingPosition
+}
+
 function finite(raw: unknown, fallback = 0): number {
   const value = Number(raw)
   return Number.isFinite(value) ? value : fallback
@@ -380,6 +496,68 @@ export async function loadClosedPositionSnapshots(
   })).snapshots
 }
 
+async function loadPositionSnapshotsByIds(
+  client: any,
+  connectionId: string,
+  rawIds: readonly string[],
+): Promise<Record<string, any>[]> {
+  const ids = [...new Set(rawIds.map(String).filter(Boolean))]
+  const snapshots: Record<string, any>[] = []
+  for (let batchOffset = 0; batchOffset < ids.length; batchOffset += 250) {
+    const batch = ids.slice(batchOffset, batchOffset + 250)
+    const jsonValues = await client
+      .mget(...batch.map((id) => `live:position:${id}`))
+      .catch(() => batch.map(() => null)) as Array<string | null>
+    const parsedBatch = jsonValues.map((raw) => {
+      if (!raw) return null
+      try {
+        const parsed = JSON.parse(raw)
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed as Record<string, any>
+          : null
+      } catch { return null }
+    })
+    const missingIndices = parsedBatch
+      .map((parsed, index) => parsed ? -1 : index)
+      .filter((index) => index >= 0)
+    const hashes = await Promise.all(missingIndices.map((index) =>
+      client.hgetall(`live_positions:${connectionId}:${batch[index]}`).catch(() => null),
+    )) as Array<Record<string, any> | null>
+    for (let fallbackIndex = 0; fallbackIndex < missingIndices.length; fallbackIndex++) {
+      const index = missingIndices[fallbackIndex]
+      const hash = hashes[fallbackIndex]
+      if (hash && Object.keys(hash).length > 0) parsedBatch[index] = normalizeSnapshot(hash)
+    }
+    for (const parsed of parsedBatch) {
+      if (parsed) snapshots.push(parsed)
+    }
+  }
+  return snapshots
+}
+
+/**
+ * Capture the durable close index in one LRANGE before resolving snapshots.
+ * This gives Statistics a stable, complete ID boundary even if a new close is
+ * prepended while the corresponding JSON records are being read in batches.
+ */
+export async function loadClosedPositionSnapshotArchive(
+  client: any,
+  connectionId: string,
+): Promise<{
+  snapshots: Record<string, any>[]
+  indexed: number
+  uniqueIds: number
+}> {
+  const indexKey = `live:positions:${connectionId}:closed`
+  const indexedRows = await client.lrange(indexKey, 0, -1).catch(() => []) as string[]
+  const ids = [...new Set(indexedRows.map(String).filter(Boolean))]
+  return {
+    snapshots: await loadPositionSnapshotsByIds(client, connectionId, ids),
+    indexed: indexedRows.length,
+    uniqueIds: ids.length,
+  }
+}
+
 export async function loadClosedPositionSnapshotPage(
   client: any,
   connectionId: string,
@@ -407,31 +585,7 @@ export async function loadClosedPositionSnapshotPage(
   ])
   const indexed = (indexedRows || []) as string[]
   const totalIndexed = Number(totalRaw) || 0
-  const ids = [...new Set(indexed.map(String).filter(Boolean))]
-  const snapshots: Record<string, any>[] = []
-  for (let batchOffset = 0; batchOffset < ids.length; batchOffset += 250) {
-    const batch = ids.slice(batchOffset, batchOffset + 250)
-    const [jsonValues, hashes] = await Promise.all([
-      client.mget(...batch.map((id) => `live:position:${id}`)).catch(() =>
-        batch.map(() => null),
-      ),
-      Promise.all(batch.map((id) =>
-        client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => null),
-      )),
-    ]) as [Array<string | null>, Array<Record<string, any> | null>]
-    for (let index = 0; index < batch.length; index++) {
-      let parsed: Record<string, any> | null = null
-      const raw = jsonValues[index]
-      if (raw) {
-        try { parsed = JSON.parse(raw) } catch { /* hash fallback */ }
-      }
-      if (!parsed) {
-        const hash = hashes[index]
-        if (hash && Object.keys(hash).length > 0) parsed = normalizeSnapshot(hash)
-      }
-      if (parsed) snapshots.push(parsed)
-    }
-  }
+  const snapshots = await loadPositionSnapshotsByIds(client, connectionId, indexed)
   const nextOffset = offset + indexed.length
   return {
     snapshots,

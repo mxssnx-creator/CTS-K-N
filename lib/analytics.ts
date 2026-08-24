@@ -63,6 +63,23 @@ export interface TimeSeriesData {
   open_positions: number
   daily_pnl: number
   cumulative_pnl: number
+  /** Peak-to-current realised P&L drawdown on the same USD zero baseline. */
+  drawdown: number
+}
+
+function positionEventTimestamp(position: TradingPosition): number {
+  const raw = position.status === "closed"
+    ? position.closed_at || position.opened_at
+    : position.opened_at
+  const timestamp = new Date(raw).getTime()
+  return Number.isFinite(timestamp) ? timestamp : Number.NaN
+}
+
+function chronologicalPositions(positions: readonly TradingPosition[]): TradingPosition[] {
+  return [...positions].sort((left, right) =>
+    positionEventTimestamp(left) - positionEventTimestamp(right) ||
+    left.id.localeCompare(right.id),
+  )
 }
 
 export class AnalyticsEngine {
@@ -76,24 +93,41 @@ export class AnalyticsEngine {
   filterPositions(filter: AnalyticsFilter): TradingPosition[] {
     return this.positions.filter((position) => {
       // Symbol filter
-      if (filter.symbols.length > 0 && !filter.symbols.includes(position.symbol)) {
+      const symbol = String(position.symbol || "").toUpperCase()
+      if (
+        filter.symbols.length > 0 &&
+        !filter.symbols.some((candidate) => candidate.toUpperCase() === symbol)
+      ) {
         return false
       }
 
       // Time range filter
-      const positionDate = new Date(position.opened_at)
-      if (positionDate < filter.timeRange.start || positionDate > filter.timeRange.end) {
+      const positionTimestamp = positionEventTimestamp(position)
+      const startTimestamp = filter.timeRange.start.getTime()
+      const endTimestamp = filter.timeRange.end.getTime()
+      if (
+        !Number.isFinite(positionTimestamp) ||
+        positionTimestamp < startTimestamp ||
+        positionTimestamp > endTimestamp
+      ) {
         return false
       }
 
       // Indication type filter
-      if (filter.indicationTypes.length > 0 && !filter.indicationTypes.includes(position.indication_type || "")) {
+      const indicationType = String(position.indication_type || "").toLowerCase()
+      if (
+        filter.indicationTypes.length > 0 &&
+        !filter.indicationTypes.some((candidate) => candidate.toLowerCase() === indicationType)
+      ) {
         return false
       }
 
       // Strategy type filter
       if (filter.strategyTypes.length > 0) {
-        const matchesStrategy = filter.strategyTypes.some((type) => position.strategy_type.includes(type))
+        const strategyType = String(position.strategy_type || "").toLowerCase()
+        const matchesStrategy = filter.strategyTypes.some((type) =>
+          strategyType.includes(type.toLowerCase()),
+        )
         if (!matchesStrategy) return false
       }
 
@@ -126,8 +160,10 @@ export class AnalyticsEngine {
     const analytics: StrategyAnalytics[] = []
 
     strategiesMap.forEach((positions, strategyName) => {
-      const closedPositions = positions.filter((p) => p.status === "closed")
+      const closedPositions = chronologicalPositions(positions.filter((p) => p.status === "closed"))
+      if (closedPositions.length === 0) return
       const winningPositions = closedPositions.filter((p) => p.profit_loss > 0)
+      const losingPositions = closedPositions.filter((p) => p.profit_loss < 0)
 
       const totalPnl = closedPositions.reduce((sum, p) => sum + p.profit_loss, 0)
       const totalVolume = closedPositions.reduce((sum, p) => sum + p.volume, 0)
@@ -135,7 +171,7 @@ export class AnalyticsEngine {
 
       // Calculate time-based metrics
       const timeRange = this.getTimeRange(closedPositions)
-      const tradesPerDay = timeRange > 0 ? closedPositions.length / timeRange : 0
+      const tradesPerDay = closedPositions.length / timeRange
 
       // Calculate drawdown
       const drawdownTime = this.calculateDrawdownTime(closedPositions)
@@ -147,7 +183,7 @@ export class AnalyticsEngine {
       const last50 = closedPositions.slice(-50)
       const profitFactorLast50 = this.calculateProfitFactor(last50)
 
-      const positionsWithVolumeFactor = positions.filter((p) => p.volume_factor !== undefined)
+      const positionsWithVolumeFactor = closedPositions.filter((p) => p.volume_factor !== undefined)
       const avgVolumeFactor =
         positionsWithVolumeFactor.length > 0
           ? positionsWithVolumeFactor.reduce((sum, p) => sum + (p.volume_factor || 1), 0) /
@@ -165,7 +201,7 @@ export class AnalyticsEngine {
           ? positionsWithVolumeFactor.reduce((sum, p) => sum + (p.adjusted_volume || 0), 0) /
             positionsWithVolumeFactor.length
           : undefined
-      const trailingPositions = positions.filter((position) =>
+      const trailingPositions = closedPositions.filter((position) =>
         (position as TradingPosition & { trailing_enabled?: boolean }).trailing_enabled === true ||
         position.strategy_type.toLowerCase().includes("trail"),
       )
@@ -187,8 +223,8 @@ export class AnalyticsEngine {
         profit_factor_last_50: profitFactorLast50,
         trades_per_day: tradesPerDay,
         drawdown_time: drawdownTime,
-        takeprofit_factor: this.extractTakeProfitFactor(positions),
-        tp_sl_ratio: this.calculateTPSLRatio(positions),
+        takeprofit_factor: this.extractTakeProfitFactor(closedPositions),
+        tp_sl_ratio: this.calculateTPSLRatio(closedPositions),
         average_hold_time: avgHoldTime,
         trailing_info: {
           enabled: trailingPositions.length > 0,
@@ -196,25 +232,40 @@ export class AnalyticsEngine {
           trail_stop: averageOptional("trail_stop"),
         },
         volume_factor: avgVolumeFactor,
-        win_rate: closedPositions.length > 0 ? winningPositions.length / closedPositions.length : 0,
+        win_rate: winningPositions.length + losingPositions.length > 0
+          ? winningPositions.length / (winningPositions.length + losingPositions.length)
+          : 0,
         total_pnl: totalPnl,
         largest_win: Math.max(...closedPositions.map((p) => p.profit_loss), 0),
         largest_loss: Math.min(...closedPositions.map((p) => p.profit_loss), 0),
         sharpe_ratio: this.calculateSharpeRatio(closedPositions),
         max_consecutive_losses: this.calculateMaxConsecutiveLosses(closedPositions),
-        recovery_factor: maxDrawdown > 0 ? totalPnl / maxDrawdown : 0,
+        recovery_factor: maxDrawdown > 0
+          ? totalPnl / maxDrawdown
+          : totalPnl > 0
+            ? Number.POSITIVE_INFINITY
+            : 0,
         avg_base_volume: avgBaseVolume,
         avg_adjusted_volume: avgAdjustedVolume,
         total_volume_traded: totalVolume,
       })
     })
 
-    return analytics.sort((a, b) => b.profit_factor - a.profit_factor)
+    const minimumRealizedPf = Number(filter.minProfitFactor)
+    const maximumDrawdownHours = Number(filter.maxDrawdown)
+    return analytics
+      .filter((strategy) =>
+        (!Number.isFinite(minimumRealizedPf) || minimumRealizedPf <= 0 ||
+          strategy.profit_factor >= minimumRealizedPf) &&
+        (!Number.isFinite(maximumDrawdownHours) || maximumDrawdownHours <= 0 ||
+          strategy.drawdown_time <= maximumDrawdownHours),
+      )
+      .sort((a, b) => b.profit_factor - a.profit_factor)
   }
 
   // Generate symbol analytics
   generateSymbolAnalytics(filter: AnalyticsFilter): SymbolAnalytics[] {
-    const filteredPositions = this.filterPositions(filter)
+    const filteredPositions = this.filterPositionsForAggregateMetrics(filter)
     const symbolsMap = new Map<string, TradingPosition[]>()
 
     filteredPositions.forEach((position) => {
@@ -227,22 +278,26 @@ export class AnalyticsEngine {
     const analytics: SymbolAnalytics[] = []
 
     symbolsMap.forEach((positions, symbol) => {
-      const closedPositions = positions.filter((p) => p.status === "closed")
+      const closedPositions = chronologicalPositions(positions.filter((p) => p.status === "closed"))
+      if (closedPositions.length === 0) return
       const winningPositions = closedPositions.filter((p) => p.profit_loss > 0)
+      const losingPositions = closedPositions.filter((p) => p.profit_loss < 0)
       const totalPnl = closedPositions.reduce((sum, p) => sum + p.profit_loss, 0)
 
       // Find best and worst performing strategies for this symbol
-      const strategyPerformance = this.getStrategyPerformanceBySymbol(positions)
+      const strategyPerformance = this.getStrategyPerformanceBySymbol(closedPositions)
 
       analytics.push({
         symbol,
         total_trades: closedPositions.length,
-        win_rate: closedPositions.length > 0 ? winningPositions.length / closedPositions.length : 0,
+        win_rate: winningPositions.length + losingPositions.length > 0
+          ? winningPositions.length / (winningPositions.length + losingPositions.length)
+          : 0,
         total_pnl: totalPnl,
         avg_profit_per_trade: closedPositions.length > 0 ? totalPnl / closedPositions.length : 0,
         best_strategy: strategyPerformance.best,
         worst_strategy: strategyPerformance.worst,
-        volatility: this.calculateVolatility(positions),
+        volatility: this.calculateVolatility(closedPositions),
         // Correlation requires a synchronized BTC return series. This page
         // currently receives positions only, so never fabricate a value with
         // Math.random(); report the exact identity case and 0 (unavailable)
@@ -256,9 +311,7 @@ export class AnalyticsEngine {
 
   // Generate time series data for charts
   generateTimeSeriesData(filter: AnalyticsFilter): TimeSeriesData[] {
-    const filteredPositions = this.filterPositions(filter).sort(
-      (a, b) => new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime(),
-    )
+    const filteredPositions = chronologicalPositions(this.filterPositionsForAggregateMetrics(filter))
 
     const timeSeriesData: TimeSeriesData[] = []
     let cumulativePnl = 0
@@ -266,11 +319,16 @@ export class AnalyticsEngine {
     // Expose an exact relative P&L curve with a zero baseline instead of
     // fabricating a 10,000 USD starting balance.
     let balance = 0
+    let peakBalance = 0
 
-    // Group positions by day
+    // Group by the actual metric event: close time for realised P&L and open
+    // time for positions which are still open. This keeps a date-range filter
+    // and every daily series on the same observable timeline.
     const dailyGroups = new Map<string, TradingPosition[]>()
     filteredPositions.forEach((position) => {
-      const date = new Date(position.opened_at).toDateString()
+      const timestamp = positionEventTimestamp(position)
+      if (!Number.isFinite(timestamp)) return
+      const date = new Date(timestamp).toISOString().slice(0, 10)
       if (!dailyGroups.has(date)) {
         dailyGroups.set(date, [])
       }
@@ -278,24 +336,43 @@ export class AnalyticsEngine {
     })
 
     dailyGroups.forEach((positions, dateString) => {
-      const date = new Date(dateString)
+      const date = new Date(`${dateString}T00:00:00.000Z`)
       const closedPositions = positions.filter((p) => p.status === "closed")
       const dailyPnl = closedPositions.reduce((sum, p) => sum + p.profit_loss, 0)
 
       cumulativePnl += dailyPnl
       balance += dailyPnl
+      peakBalance = Math.max(peakBalance, balance)
 
-      const openPositions = positions.filter((p) => p.status === "open").length
-      const marginUsed = positions.reduce((sum, p) => sum + (p.margin_used || 0), 0)
+      const dayEnd = date.getTime() + 24 * 60 * 60 * 1000 - 1
+      const openAtDayEnd = filteredPositions.filter((position) => {
+        const openedAt = new Date(position.opened_at).getTime()
+        if (!Number.isFinite(openedAt) || openedAt > dayEnd) return false
+        if (position.status === "open" || !position.closed_at) return true
+        const closedAt = new Date(position.closed_at).getTime()
+        return Number.isFinite(closedAt) && closedAt > dayEnd
+      })
+      const isCurrentUtcDay = dateString === new Date().toISOString().slice(0, 10)
+      const currentOpenPositions = isCurrentUtcDay
+        ? openAtDayEnd.filter((position) => position.status === "open")
+        : []
+      const marginUsed = currentOpenPositions.reduce((sum, p) => sum + (p.margin_used || 0), 0)
+      const currentUnrealizedPnl = currentOpenPositions.reduce(
+        (sum, p) => sum + (p.unrealized_pnl || 0),
+        0,
+      )
 
       timeSeriesData.push({
         timestamp: date,
         balance: balance,
-        equity: balance + positions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0),
+        // Historical unrealised snapshots are not available. Past points are
+        // therefore the exact realised curve; only today adds current open P&L.
+        equity: balance + currentUnrealizedPnl,
         margin: marginUsed,
-        open_positions: openPositions,
+        open_positions: openAtDayEnd.length,
         daily_pnl: dailyPnl,
         cumulative_pnl: cumulativePnl,
+        drawdown: Math.max(0, peakBalance - balance),
       })
     })
 
@@ -303,6 +380,36 @@ export class AnalyticsEngine {
   }
 
   // Helper methods
+  private filterPositionsForAggregateMetrics(filter: AnalyticsFilter): TradingPosition[] {
+    const filtered = this.filterPositions(filter)
+    const minimumRealizedPf = Number(filter.minProfitFactor)
+    const maximumDrawdownHours = Number(filter.maxDrawdown)
+    const hasProfitFactorFilter = Number.isFinite(minimumRealizedPf) && minimumRealizedPf > 0
+    const hasDrawdownFilter = Number.isFinite(maximumDrawdownHours) && maximumDrawdownHours > 0
+    if (!hasProfitFactorFilter && !hasDrawdownFilter) return filtered
+
+    const grouped = new Map<string, TradingPosition[]>()
+    for (const position of filtered) {
+      const rows = grouped.get(position.strategy_type) || []
+      rows.push(position)
+      grouped.set(position.strategy_type, rows)
+    }
+    const allowed = new Set<string>()
+    for (const [strategyType, positions] of grouped) {
+      const closed = positions.filter((position) => position.status === "closed")
+      if (closed.length === 0) continue
+      const profitFactor = this.calculateProfitFactor(closed)
+      const drawdownHours = this.calculateDrawdownTime(closed)
+      if (
+        (!hasProfitFactorFilter || profitFactor >= minimumRealizedPf) &&
+        (!hasDrawdownFilter || drawdownHours <= maximumDrawdownHours)
+      ) {
+        allowed.add(strategyType)
+      }
+    }
+    return filtered.filter((position) => allowed.has(position.strategy_type))
+  }
+
   private calculateProfitFactor(positions: TradingPosition[]): number {
     const grossProfit = positions.filter((p) => p.profit_loss > 0).reduce((sum, p) => sum + p.profit_loss, 0)
     const grossLoss = Math.abs(positions.filter((p) => p.profit_loss < 0).reduce((sum, p) => sum + p.profit_loss, 0))
@@ -310,15 +417,11 @@ export class AnalyticsEngine {
     // Realised Profit Factor is always gross profit ÷ absolute gross loss.
     // Main-stage PositionCost ratios are a separate gate and must never alter
     // execution-history PF.
-    return grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0
+    return grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0
   }
 
   private calculateDrawdownTime(positions: TradingPosition[]): number {
-    const chronological = [...positions].sort(
-      (left, right) =>
-        new Date(left.closed_at || left.opened_at).getTime() -
-        new Date(right.closed_at || right.opened_at).getTime(),
-    )
+    const chronological = chronologicalPositions(positions)
     let equity = 0
     let peakEquity = 0
     let drawdownHours = 0
@@ -350,11 +453,7 @@ export class AnalyticsEngine {
   }
 
   private calculateMaximumDrawdown(positions: TradingPosition[]): number {
-    const chronological = [...positions].sort(
-      (left, right) =>
-        new Date(left.closed_at || left.opened_at).getTime() -
-        new Date(right.closed_at || right.opened_at).getTime(),
-    )
+    const chronological = chronologicalPositions(positions)
     let equity = 0
     let peak = 0
     let maximum = 0
@@ -370,28 +469,35 @@ export class AnalyticsEngine {
     const closedPositions = positions.filter((p) => p.status === "closed" && p.closed_at)
     if (closedPositions.length === 0) return 0
 
-    const totalHoldTime = closedPositions.reduce((sum, p) => {
+    const holdTimes = closedPositions.map((p) => {
       const openTime = new Date(p.opened_at).getTime()
       const closeTime = new Date(p.closed_at!).getTime()
-      return sum + (closeTime - openTime) / (1000 * 60) // Convert to minutes
-    }, 0)
+      return Number.isFinite(openTime) && Number.isFinite(closeTime)
+        ? Math.max(0, (closeTime - openTime) / (1000 * 60))
+        : Number.NaN
+    }).filter(Number.isFinite)
 
-    return totalHoldTime / closedPositions.length
+    return holdTimes.length > 0
+      ? holdTimes.reduce((sum, value) => sum + value, 0) / holdTimes.length
+      : 0
   }
 
   private getTimeRange(positions: TradingPosition[]): number {
-    if (positions.length < 2) return 0
-    const earliest = Math.min(...positions.map((p) => new Date(p.opened_at).getTime()))
-    const latest = Math.max(...positions.map((p) => new Date(p.opened_at).getTime()))
-    return (latest - earliest) / (1000 * 60 * 60 * 24) // Days
+    if (positions.length < 2) return 1
+    const timestamps = positions.map(positionEventTimestamp).filter(Number.isFinite)
+    if (timestamps.length < 2) return 1
+    const earliest = Math.min(...timestamps)
+    const latest = Math.max(...timestamps)
+    return Math.max(1, (latest - earliest) / (1000 * 60 * 60 * 24) + 1)
   }
 
   private getStrategyType(strategyName: string): string {
-    if (strategyName.includes("Base")) return "Base"
-    if (strategyName.includes("Partial") || strategyName.includes("Main")) return "Main"
-    if (strategyName.includes("Count") || strategyName.includes("Real")) return "Real"
-    if (strategyName.includes("Block")) return "Block"
-    if (strategyName.includes("DCA")) return "DCA"
+    const normalized = strategyName.toLowerCase()
+    if (normalized.includes("base")) return "Base"
+    if (normalized.includes("partial") || normalized.includes("main")) return "Main"
+    if (normalized.includes("count") || normalized.includes("real")) return "Real"
+    if (normalized.includes("block")) return "Block"
+    if (normalized.includes("dca")) return "DCA"
     return "Other"
   }
 
@@ -428,10 +534,13 @@ export class AnalyticsEngine {
   private calculateSharpeRatio(positions: TradingPosition[]): number {
     if (positions.length < 2) return 0
 
-    const returns = positions.map((position) => {
-      const notional = resolvePositionCostNotional(position)
-      return notional > 0 ? position.profit_loss / notional : 0
-    })
+    const returns = positions
+      .map((position) => {
+        const notional = resolvePositionCostNotional(position)
+        return notional > 0 ? position.profit_loss / notional : Number.NaN
+      })
+      .filter(Number.isFinite)
+    if (returns.length < 2) return 0
     const avgReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length
     const variance = returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length
     const stdDev = Math.sqrt(variance)
@@ -443,7 +552,7 @@ export class AnalyticsEngine {
     let maxConsecutive = 0
     let currentConsecutive = 0
 
-    positions.forEach((position) => {
+    chronologicalPositions(positions).forEach((position) => {
       if (position.profit_loss < 0) {
         currentConsecutive++
         maxConsecutive = Math.max(maxConsecutive, currentConsecutive)
@@ -457,8 +566,11 @@ export class AnalyticsEngine {
 
   private calculateVolatility(positions: TradingPosition[]): number {
     const returns = positions
-      .filter((position) => Number(position.entry_price) > 0 && Number.isFinite(Number(position.current_price)))
-      .map((position) => (position.current_price - position.entry_price) / position.entry_price)
+      .map((position) => {
+        const notional = resolvePositionCostNotional(position)
+        return notional > 0 ? Number(position.profit_loss) / notional : Number.NaN
+      })
+      .filter(Number.isFinite)
     if (returns.length === 0) return 0
     const avgReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length
     const variance = returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length
