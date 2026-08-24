@@ -115,6 +115,7 @@ unit	__tests__/unit/health-route-liveness-budget.test.ts
 unit	__tests__/unit/health-runtime-contract.test.ts
 unit	__tests__/unit/historic-candle-window.test.ts
 unit	__tests__/unit/historic-four-hour-stats.test.ts
+unit	__tests__/unit/historic-profit-factor.test.ts
 unit	__tests__/unit/historic-progression-generation.test.ts
 unit	__tests__/unit/historic-replay-policy.test.ts
 unit	__tests__/unit/indication-configuration-counts.test.ts
