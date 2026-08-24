@@ -24,6 +24,7 @@
 import { waitForDirectTradeNextCycle } from "./direct-trade-cycle-scheduler.mjs"
 import directTradeHistoryPolicy from "../lib/direct-trade-history-policy.cjs"
 import directTradePositionCapacity from "../lib/direct-trade-position-capacity.cjs"
+import directTradeLedgerRecovery from "../lib/direct-trade-ledger-recovery.cjs"
 
 const {
   DIRECT_TRADE_HISTORY_MAX_HOURS,
@@ -37,6 +38,11 @@ const {
   assessDirectTradePositionCapacity,
   assessDirectTradeRecentOpenCapacity,
 } = directTradePositionCapacity
+
+const {
+  backfillLegacyDirectTradeLegControlIds,
+  normalizeDirectTradeControlId,
+} = directTradeLedgerRecovery
 
 const PORT = process.env.PORT ?? (
   process.argv.includes("--port")
@@ -143,16 +149,22 @@ function normalizeDirectTradeConfig(config) {
 }
 
 function normalizeLoadedDirectTradePosition(position) {
-  if (!position || typeof position !== "object" || position.status === "closed") return position
+  if (!position || typeof position !== "object") return position
+  const recoveredPosition = backfillLegacyDirectTradeLegControlIds(position)
+  if (recoveredPosition !== position) {
+    stateDirty = true
+    log("info", `Recovered legacy Direct-Trade accounting controls for ${position.symbol || "unknown"}`)
+  }
+  if (recoveredPosition.status === "closed") return recoveredPosition
   const protection = normalizeDirectTradeProtection(
-    position.takeprofit,
-    position.stoploss,
-    Number(position.positionCostPercent) || Number(state.positionCostPercent) || 0.1,
+    recoveredPosition.takeprofit,
+    recoveredPosition.stoploss,
+    Number(recoveredPosition.positionCostPercent) || Number(state.positionCostPercent) || 0.1,
   )
-  const changed = Number(position.takeprofit) !== protection.takeprofit ||
-    Number(position.stoploss) !== protection.stoploss
-  if (!changed) return position
-  const next = { ...position, takeprofit: protection.takeprofit, stoploss: protection.stoploss }
+  const changed = Number(recoveredPosition.takeprofit) !== protection.takeprofit ||
+    Number(recoveredPosition.stoploss) !== protection.stoploss
+  if (!changed) return recoveredPosition
+  const next = { ...recoveredPosition, takeprofit: protection.takeprofit, stoploss: protection.stoploss }
   const entry = Number(next.entryPrice)
   if (entry > 0 && next.trailingArmed !== true) {
     next.currentSlPrice = next.direction === "short"
@@ -165,26 +177,6 @@ function normalizeLoadedDirectTradePosition(position) {
     ratio: protection.stoploss / protection.takeprofit,
   })
   return next
-}
-
-function normalizeDirectTradeControlId(value, fallback = "dt-control") {
-  const raw = String(value || fallback)
-  const normalized = raw
-    .replace(/[^A-Za-z0-9_-]+/g, "_")
-  if (normalized.length < 3) return fallback
-  if (normalized === raw && normalized.length <= 48) return normalized
-
-  // Keep the identifier bounded for the venue while retaining a deterministic
-  // collision-resistant suffix when sanitizing/truncating legacy IDs. This is
-  // important for multi-timeframe rows and for two positions with the same
-  // visible prefix but different durable timestamps.
-  let hash = 0x811c9dc5
-  for (let index = 0; index < raw.length; index++) {
-    hash ^= raw.charCodeAt(index)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  const suffix = `_${(hash >>> 0).toString(36).padStart(7, "0")}`
-  return `${normalized.slice(0, Math.max(3, 48 - suffix.length))}${suffix}`.slice(0, 48)
 }
 
 // ─── Rate Limiter ─────────────────────────────────────────────────────────────
@@ -1609,6 +1601,7 @@ async function addDirectTradeBlockLeg(position, config) {
       targetBlockQuantity: baseQuantity * (1 + nextCount * volumeRatio),
       orderId,
       controlId: appliedControlId,
+      controlGeneration: Math.max(0, Math.floor(Number(position.blockControlGeneration) || 0)),
       requestedQuantity,
       requestedPrice: marketPrice,
       tradingFeeUsdt: Math.max(0, Number(entrySettlement?.tradingFee) || 0),
@@ -1815,6 +1808,7 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
       adverseMovePct: adverseMove,
       orderId,
       controlId: appliedControlId,
+      controlGeneration: Math.max(0, Math.floor(Number(position.dcaControlGeneration) || 0)),
       requestedPrice: hasPendingControl ? Number(position.dcaPendingRequestedPrice) : Number(currentPrice),
       tradingFeeUsdt: Math.max(0, Number(entrySettlement?.tradingFee) || 0),
       accountingComplete: position.mode !== "live" || Boolean(entrySettlement),

@@ -700,6 +700,7 @@ describe("requested regression guardrails", () => {
     expect(processor).toContain("processPendingAccumulationOrders")
     expect(processor).toContain("reconcileOneIncompleteLiveAccounting")
     expect(processor).toContain("reconcileOneIncompleteLiveCloseAccounting")
+    expect(processor).toContain("backfillLegacyDirectTradeLegControlIds")
     expect(processor).toContain('action: "processor-heartbeat"')
     expect(processor).toContain("DIRECT_TRADE_PROCESSOR_HEARTBEAT_INTERVAL_MS = 1_500")
     expect(processor).toContain('position.pnlAccountingComplete === true')

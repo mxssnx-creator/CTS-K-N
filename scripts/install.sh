@@ -531,7 +531,7 @@ run_preflight() {
     fi
   fi
 
-  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
+  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs lib/direct-trade-ledger-recovery.cjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
     [[ -f "$PROJECT_ROOT/$file" ]] || fatal "Required install artifact is missing: $file"
   done
   bash -n "$PROJECT_ROOT/scripts/install.sh"

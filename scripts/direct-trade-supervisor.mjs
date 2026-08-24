@@ -75,15 +75,22 @@ async function desiredConnections() {
     const connectionId = validConnectionId(entry?.connectionId)
     if (!connectionId) continue
     const openPositions = Math.max(0, Number(entry?.openPositions || 0) || 0)
-    if (entry?.enabled === true || openPositions > 0) {
-      desired.push({ connectionId, enabled: entry?.enabled === true, openPositions })
+    const accountingPending = Math.max(0, Number(entry?.accountingPending || 0) || 0)
+    if (entry?.enabled === true || openPositions > 0 || accountingPending > 0) {
+      desired.push({
+        connectionId,
+        enabled: entry?.enabled === true,
+        openPositions,
+        accountingPending,
+        managedCount: openPositions + accountingPending,
+      })
     }
   }
   const unique = new Map()
   for (const entry of desired) unique.set(entry.connectionId, entry)
   return [...unique.values()].sort((left, right) =>
-    Number(right.openPositions > 0) - Number(left.openPositions > 0)
-      || right.openPositions - left.openPositions
+    Number(right.managedCount > 0) - Number(left.managedCount > 0)
+      || right.managedCount - left.managedCount
       || left.connectionId.localeCompare(right.connectionId),
   )
 }
@@ -91,9 +98,9 @@ async function desiredConnections() {
 async function reconcile() {
   const desired = await desiredConnections()
   // Recovery owns priority. Every scope with non-terminal positions gets a
-  // worker even when ordinary enabled scopes fill the configured performance
-  // budget; abandoning a venue position is never a valid load-shedding mode.
-  const recovery = desired.filter((entry) => entry.openPositions > 0)
+  // worker, as does a terminal live row whose exact exchange settlement is
+  // pending. This remains reconcile-only when that scope is disabled.
+  const recovery = desired.filter((entry) => entry.managedCount > 0)
   const selectedEntries = [...recovery]
   for (const entry of desired) {
     if (selectedEntries.some((selected) => selected.connectionId === entry.connectionId)) continue

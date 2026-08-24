@@ -167,6 +167,8 @@ describe("production installation and Kilo deployment contract", () => {
     const directSupervisor = await readFile(path.join(process.cwd(), "scripts", "direct-trade-supervisor.mjs"), "utf8")
     expect(directSupervisor).toContain("children.get(connectionId) === entry")
     expect(directSupervisor).toContain("Every scope with non-terminal positions gets a")
+    expect(directSupervisor).toContain("accountingPending")
+    expect(directSupervisor).toContain("entry.managedCount > 0")
     expect(directSupervisor).toContain('entry.child.kill("SIGKILL")')
     expect(directSupervisor).toContain("CTS_DIRECT_TRADE_WORKER_HEAP_MB")
     const npmRedisService = await readFile(path.join(process.cwd(), "scripts", "npm-redis-service.mjs"), "utf8")

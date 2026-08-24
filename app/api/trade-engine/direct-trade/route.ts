@@ -702,11 +702,19 @@ export async function GET(request: NextRequest) {
         const openPositions = Array.isArray(positions)
           ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
           : 0
+        const accountingPending = Array.isArray(positions)
+          ? positions.filter((position: any) => (
+              position?.status === "closed"
+              && position?.mode === "live"
+              && position?.pnlAccountingComplete !== true
+            )).length
+          : 0
         return {
           connectionId: id,
           enabled: state?.enabled === true,
           liveMode: state?.liveMode === true,
           openPositions,
+          accountingPending,
           processor,
         }
       }))

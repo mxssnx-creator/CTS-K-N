@@ -412,6 +412,49 @@ describe("Direct-Trade API state and processor lease", () => {
     }
   })
 
+  test("publishes closed live accounting work to the supervisor while the scope is disabled", async () => {
+    const [{ GET }, { getRedisClient }, { directTradeKeyspace, DIRECT_TRADE_CONNECTION_INDEX_KEY }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+      import("@/lib/direct-trade-keyspace"),
+    ])
+    const redis = getRedisClient()
+    const keys = directTradeKeyspace("bingx-x01")
+    const scopedKeys = [DIRECT_TRADE_CONNECTION_INDEX_KEY, ...Object.values(keys).filter(
+      (value): value is string => typeof value === "string" && value.startsWith("direct_trade:"),
+    )]
+    await redis.del(...scopedKeys)
+
+    try {
+      await redis.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, "bingx-x01")
+      await redis.set(keys.state, JSON.stringify({
+        connectionId: "bingx-x01",
+        enabled: false,
+        liveMode: true,
+      }))
+      await redis.set(keys.positions, JSON.stringify([
+        { id: "settled", status: "closed", mode: "live", pnlAccountingComplete: true },
+        { id: "pending", status: "closed", mode: "live", pnlAccountingComplete: false },
+        { id: "pseudo", status: "closed", mode: "pseudo", pnlAccountingComplete: false },
+      ]))
+
+      const payload = await GET(new Request(
+        "http://localhost/api/trade-engine/direct-trade?view=connections",
+      ) as any).then((response) => response.json())
+
+      expect(payload.connections).toEqual([
+        expect.objectContaining({
+          connectionId: "bingx-x01",
+          enabled: false,
+          openPositions: 0,
+          accountingPending: 1,
+        }),
+      ])
+    } finally {
+      await redis.del(...scopedKeys)
+    }
+  })
+
   test("statistics reads a compact precomputed selection instead of the full configuration grid", async () => {
     const [{ GET }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/route"),
