@@ -627,6 +627,33 @@ export function mergeTradeHistory(
   return requested > 0 ? ordered.slice(0, requested) : ordered
 }
 
+/**
+ * Keep a bounded venue overlay without evicting exact close-order matches that
+ * repair quarantined legacy accounting. A plain newest-first slice can remove
+ * an older authoritative close as soon as busy per-symbol history fills the
+ * cache, which makes the same local row oscillate between reconciled and
+ * unresolved. Required closes are pinned first; the remaining capacity stays
+ * newest-first for the normal table view.
+ */
+export function retainPrioritizedTradeHistoryRows(
+  rows: readonly TradeHistoryRow[],
+  prioritizedCloseOrderIds: readonly string[],
+  limit = MAX_TRADE_HISTORY_PAGE_SIZE,
+): TradeHistoryRow[] {
+  const maximum = Math.max(1, Math.floor(Number(limit) || MAX_TRADE_HISTORY_PAGE_SIZE))
+  const ordered = [...rows].sort((left, right) => right.closedAt - left.closedAt)
+  if (ordered.length <= maximum) return ordered
+
+  const prioritized = new Set(prioritizedCloseOrderIds.map(String).map((id) => id.trim()).filter(Boolean))
+  if (prioritized.size === 0) return ordered.slice(0, maximum)
+
+  const pinned = ordered.filter((row) => row.closeOrderId && prioritized.has(row.closeOrderId))
+  if (pinned.length >= maximum) return pinned.slice(0, maximum)
+  const regular = ordered.filter((row) => !row.closeOrderId || !prioritized.has(row.closeOrderId))
+  return [...pinned, ...regular.slice(0, maximum - pinned.length)]
+    .sort((left, right) => right.closedAt - left.closedAt)
+}
+
 export function selectHistoryReconciliationSymbols(input: {
   candidates: readonly string[]
   priority: readonly string[]

@@ -8,6 +8,7 @@ import {
   mergeTradeHistory,
   normalizeBingXClosedOrder,
   normalizeLocalTradeHistoryRow,
+  retainPrioritizedTradeHistoryRows,
   selectHistoryReconciliationSymbols,
   summarizeTradeHistory,
 } from "@/lib/trade-history"
@@ -388,6 +389,33 @@ describe("BingX-backed trade history", () => {
     expect(second.symbols).toEqual(["E", "F", "G", "H"])
   })
 
+  test("pins exact legacy close overlays inside a bounded newest-first cache", () => {
+    const rows = Array.from({ length: 1_005 }, (_, index) => ({
+      id: `exchange:${index}`,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      entryPrice: 100,
+      exitPrice: 101,
+      quantity: 1,
+      volumeUsd: 100,
+      grossPnl: 1,
+      fees: 0,
+      realizedPnl: 1,
+      pnlPct: 1,
+      openedAt: 1_000 + index,
+      closedAt: 2_000 + index,
+      source: "exchange" as const,
+      environment: "exchange" as const,
+      closeOrderId: String(index),
+    }))
+
+    const retained = retainPrioritizedTradeHistoryRows(rows, ["0", "1"], 1_000)
+    expect(retained).toHaveLength(1_000)
+    expect(retained.map((row) => row.closeOrderId)).toEqual(expect.arrayContaining(["0", "1", "1004"]))
+    expect(retained.map((row) => row.closeOrderId)).not.toContain("2")
+    expect(retained.every((row, index) => index === 0 || retained[index - 1].closedAt >= row.closedAt)).toBe(true)
+  })
+
   test("does not trust a reused venue position id outside the close-time window", () => {
     const exchange = normalizeBingXClosedOrder({
       symbol: "ETHUSDT",
@@ -553,10 +581,12 @@ describe("live-order stranded-position guards", () => {
     expect(historyRoute).toContain("HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH = 4")
     expect(historyRoute).toContain("selectHistoryReconciliationSymbols")
     expect(historyRoute).toContain("offset === 0 &&\n      !force &&")
-    expect(historyRoute).toContain("mergeExchangeSnapshotRows(previous?.rows || [], rawOrders)")
-    expect(historyRoute).toContain(".slice(0, MAX_TRADE_HISTORY_PAGE_SIZE)")
+    expect(historyRoute).toContain("mergeExchangeSnapshotRows(")
+    expect(historyRoute).toContain("retainPrioritizedTradeHistoryRows")
     expect(historyRoute).toContain("rows: parsed.rows.slice(0, MAX_TRADE_HISTORY_PAGE_SIZE)")
     expect(historyRoute).toContain("symbolHints: [...localRows, ...localReconciliationCandidates].map((row) => row.symbol)")
+    expect(historyRoute).toContain("exactOrderHints: localReconciliationCandidates")
+    expect(historyRoute).toContain("getOrderDetails(hint.symbol, closeOrderId)")
     expect(historyRoute).toContain(").slice(0, 32)")
     expect(historyRoute).toContain("getOrderHistorySnapshot")
     expect(bingx).toContain("lastOrderHistorySnapshotStatus")
