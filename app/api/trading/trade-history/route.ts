@@ -10,6 +10,7 @@ import {
   loadClosedPositionSnapshotPage,
   mergeTradeHistory,
   normalizeBingXClosedOrder,
+  retainPrioritizedTradeHistoryRows,
   selectHistoryReconciliationSymbols,
   summarizeTradeHistory,
   toStatisticsHistoryTuple,
@@ -39,6 +40,13 @@ const FIRST_RESPONSE_EXCHANGE_BUDGET_MS = 8_000
 const HISTORY_RECONCILIATION_SYMBOLS_PER_REFRESH = 4
 const HISTORY_RECONCILIATION_SYMBOL_LIMIT = 200
 const HISTORY_RECONCILIATION_INTERVAL_MS = 90_000
+const HISTORY_RECONCILIATION_EXACT_ORDERS_PER_REFRESH = 4
+const HISTORY_RECONCILIATION_EXACT_ORDER_BUDGET_MS = 6_000
+
+type ExactOrderReconciliationHint = Pick<
+  TradeHistoryRow,
+  "symbol" | "closeOrderId" | "closedAt"
+>
 
 type CachedExchangeHistory = {
   fetchedAt: number
@@ -47,6 +55,9 @@ type CachedExchangeHistory = {
   symbolRefreshedAt?: Record<string, number>
   lastReconciledSymbols?: string[]
   symbolCandidateCount?: number
+  exactOrderRefreshedAt?: Record<string, number>
+  lastReconciledExactOrderIds?: string[]
+  exactOrderCandidateCount?: number
 }
 
 type OrderHistorySnapshot = {
@@ -112,6 +123,36 @@ function sanitizeSymbolRefreshTimes(raw: unknown): Record<string, number> {
   return result
 }
 
+function sanitizeExactOrderRefreshTimes(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const result: Record<string, number> = {}
+  for (const [orderId, value] of Object.entries(raw as Record<string, unknown>)) {
+    const normalized = String(orderId || "").trim()
+    const timestamp = Number(value)
+    if (normalized && Number.isFinite(timestamp) && timestamp > 0) result[normalized] = timestamp
+  }
+  return result
+}
+
+function normalizeExactOrderHints(raw: readonly ExactOrderReconciliationHint[]): Array<{
+  symbol: string
+  closeOrderId: string
+  closedAt: number
+}> {
+  const byOrderId = new Map<string, { symbol: string; closeOrderId: string; closedAt: number }>()
+  for (const hint of raw) {
+    const closeOrderId = String(hint.closeOrderId || "").trim()
+    const symbol = String(hint.symbol || "").trim().toUpperCase().replace(/[-_]/g, "")
+    if (!closeOrderId || !symbol) continue
+    byOrderId.set(closeOrderId, {
+      symbol,
+      closeOrderId,
+      closedAt: Math.max(0, Number(hint.closedAt) || 0),
+    })
+  }
+  return [...byOrderId.values()]
+}
+
 function exchangeRowIdentity(row: TradeHistoryRow): string {
   return row.closeOrderId || row.id
 }
@@ -119,6 +160,7 @@ function exchangeRowIdentity(row: TradeHistoryRow): string {
 function mergeExchangeSnapshotRows(
   previous: readonly TradeHistoryRow[],
   rawOrders: readonly any[],
+  prioritizedCloseOrderIds: readonly string[] = [],
 ): TradeHistoryRow[] {
   const byId = new Map<string, TradeHistoryRow>()
   // Closed venue orders are immutable. Retaining an older per-symbol result
@@ -129,13 +171,14 @@ function mergeExchangeSnapshotRows(
     const row = normalizeBingXClosedOrder(order)
     if (row) byId.set(exchangeRowIdentity(row), row)
   }
-  return [...byId.values()]
-    .sort((left, right) => right.closedAt - left.closedAt)
-    // Keep the table response bounded separately below. The reconciliation
-    // overlay must be able to retain a complete 500-row global page *plus*
-    // older exact per-symbol closes; otherwise adding a legacy correction can
-    // evict another correction before the full archive is normalized.
-    .slice(0, MAX_TRADE_HISTORY_PAGE_SIZE)
+  // Keep the table response bounded separately below. Pin exact venue closes
+  // that repair quarantined local rows so later busy-symbol pages cannot evict
+  // an older correction from the bounded overlay.
+  return retainPrioritizedTradeHistoryRows(
+    [...byId.values()],
+    prioritizedCloseOrderIds,
+    MAX_TRADE_HISTORY_PAGE_SIZE,
+  )
 }
 
 function historySymbolCandidates(
@@ -169,6 +212,11 @@ async function readCachedExchangeHistory(client: any, connectionId: string): Pro
       symbolRefreshedAt: sanitizeSymbolRefreshTimes(parsed.symbolRefreshedAt),
       lastReconciledSymbols: parseSymbols(parsed.lastReconciledSymbols),
       symbolCandidateCount: Math.max(0, Math.floor(Number(parsed.symbolCandidateCount) || 0)),
+      exactOrderRefreshedAt: sanitizeExactOrderRefreshTimes(parsed.exactOrderRefreshedAt),
+      lastReconciledExactOrderIds: Array.isArray(parsed.lastReconciledExactOrderIds)
+        ? parsed.lastReconciledExactOrderIds.map(String).map((id: string) => id.trim()).filter(Boolean)
+        : [],
+      exactOrderCandidateCount: Math.max(0, Math.floor(Number(parsed.exactOrderCandidateCount) || 0)),
     }
   } catch {
     return null
@@ -179,7 +227,11 @@ async function fetchExchangeHistory(
   connectionId: string,
   connection: Record<string, any>,
   previous: CachedExchangeHistory | null,
-  options: { symbolHints?: readonly string[]; force?: boolean } = {},
+  options: {
+    symbolHints?: readonly string[]
+    exactOrderHints?: readonly ExactOrderReconciliationHint[]
+    force?: boolean
+  } = {},
 ): Promise<CachedExchangeHistory | null> {
   const existing = inFlightByConnection.get(connectionId)
   if (existing) return existing
@@ -231,6 +283,55 @@ async function fetchExchangeHistory(
     rawOrders.push(...globalSnapshot.rows)
     authoritative = globalSnapshot.ok
 
+    // A symbol page is still bounded and can no longer contain an older close
+    // on a busy account. Quarantined rows carrying a terminal venue order ID
+    // therefore get a deterministic read-only detail lookup. Calls are small,
+    // sequential and rotating so they share the connector FIFO without
+    // delaying live order work. Successful raw details contain authoritative
+    // fill price, realised PnL and commission and normalize exactly like an
+    // allOrders row.
+    const exactOrderHints = normalizeExactOrderHints(options.exactOrderHints || [])
+    const priorCloseIds = new Set((previous?.rows || []).map((row) => row.closeOrderId).filter(Boolean))
+    const pendingExactHints = exactOrderHints.filter((hint) => !priorCloseIds.has(hint.closeOrderId))
+    const exactOrderRefreshTimes = {
+      ...sanitizeExactOrderRefreshTimes(previous?.exactOrderRefreshedAt),
+    }
+    const exactOrderSelection = selectHistoryReconciliationSymbols({
+      candidates: pendingExactHints.map((hint) => hint.closeOrderId),
+      priority: pendingExactHints.map((hint) => hint.closeOrderId),
+      refreshedAt: exactOrderRefreshTimes,
+      cursor: 0,
+      now: Date.now(),
+      force: options.force === true,
+      limit: HISTORY_RECONCILIATION_EXACT_ORDERS_PER_REFRESH,
+      intervalMs: HISTORY_RECONCILIATION_INTERVAL_MS,
+    })
+    const exactHintById = new Map(pendingExactHints.map((hint) => [hint.closeOrderId, hint]))
+    const exactDeadline = Date.now() + HISTORY_RECONCILIATION_EXACT_ORDER_BUDGET_MS
+    const reconciledExactOrderIds: string[] = []
+    if (typeof (connector as any).getOrderDetails === "function") {
+      for (const closeOrderId of exactOrderSelection.symbols) {
+        const hint = exactHintById.get(closeOrderId)
+        const remainingMs = exactDeadline - Date.now()
+        if (!hint || remainingMs <= 250) break
+        const detail = await withTimeout<{ success?: boolean; order?: Record<string, any> }>(
+          (connector as any).getOrderDetails(hint.symbol, closeOrderId) as Promise<{
+            success?: boolean
+            order?: Record<string, any>
+          }>,
+          Math.max(250, Math.min(2_500, remainingMs)),
+          `trade-history exact order ${connectionId} ${closeOrderId}`,
+        ).catch(() => null)
+        exactOrderRefreshTimes[closeOrderId] = Date.now()
+        const rawDetail = detail?.success === true && detail.order ? detail.order : null
+        const normalized = rawDetail ? normalizeBingXClosedOrder(rawDetail) : null
+        if (!normalized || normalized.closeOrderId !== closeOrderId) continue
+        authoritative = true
+        rawOrders.push(rawDetail)
+        reconciledExactOrderIds.push(closeOrderId)
+      }
+    }
+
     // Always reconcile a limited, rotating symbol batch. The real VST probe
     // showed a global page with 500 rows but none of 80 freshly closed orders,
     // while the corresponding symbol pages returned every one. Only treating
@@ -273,7 +374,12 @@ async function fetchExchangeHistory(
 
     if (!authoritative) return previous
 
-    const rows = mergeExchangeSnapshotRows(previous?.rows || [], rawOrders)
+    const prioritizedCloseOrderIds = exactOrderHints.map((hint) => hint.closeOrderId)
+    const rows = mergeExchangeSnapshotRows(
+      previous?.rows || [],
+      rawOrders,
+      prioritizedCloseOrderIds,
+    )
     const snapshot: CachedExchangeHistory = {
       fetchedAt: Date.now(),
       rows,
@@ -281,6 +387,9 @@ async function fetchExchangeHistory(
       symbolRefreshedAt: refreshTimes,
       lastReconciledSymbols: reconciledSymbols,
       symbolCandidateCount: candidates.length,
+      exactOrderRefreshedAt: exactOrderRefreshTimes,
+      lastReconciledExactOrderIds: reconciledExactOrderIds,
+      exactOrderCandidateCount: exactOrderHints.length,
     }
     const client = getRedisClient()
     await client
@@ -463,6 +572,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         // exact venue PnL/fees. They are reconciled ahead of the background
         // round-robin basket without leaking credentials into the request.
         symbolHints: [...localRows, ...localReconciliationCandidates].map((row) => row.symbol),
+        exactOrderHints: localReconciliationCandidates,
         force,
       })
       if (cached && !force) {
@@ -544,6 +654,10 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
           lastSymbols: exchangeSnapshot?.lastReconciledSymbols || [],
           candidateSymbols: exchangeSnapshot?.symbolCandidateCount || 0,
           refreshedAt: exchangeSnapshot?.symbolRefreshedAt || {},
+        },
+        exactOrderReconciliation: {
+          reconciled: exchangeSnapshot?.lastReconciledExactOrderIds?.length || 0,
+          candidates: exchangeSnapshot?.exactOrderCandidateCount || 0,
         },
       },
     })
