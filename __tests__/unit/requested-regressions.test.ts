@@ -1636,7 +1636,8 @@ describe("requested regression guardrails", () => {
     const configCounts = read("app/api/indications/config-counts/route.ts")
 
     expect(engineStates).toContain("const [connection, runningHintRaw, runtimeState, settingsState, globalState] = await Promise.all")
-    expect(tradeHistory).toContain("const [connection, localPage, analyticsSnapshots, cached, forceArchive] = await Promise.all")
+    expect(tradeHistory).toContain("const [connection, localPage, analyticsSnapshots, rawCached, forceArchive] = await Promise.all")
+    expect(tradeHistory).toContain("const cached = compatibleExchangeHistory(rawCached, connection as Record<string, any>)")
     expect(configCounts).toContain("getAppSettings(),")
     expect(configCounts).not.toContain("bypassCache: true")
     expect(configCounts).toContain('namespace: "indication-config-counts"')
