@@ -2,11 +2,17 @@
 // Since Next.js doesn't natively support WebSocket, we use SSE for real-time streaming
 import type { NextRequest } from "next/server"
 import { getBroadcaster } from "@/lib/event-broadcaster"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 export const dynamic = "force-dynamic"
+// Vercel/Kilo request workers must finish before the platform timeout; the
+// browser EventSource reconnects after a bounded stream closes.
+export const maxDuration = 10
+const SERVERLESS_MAX_STREAM_LIFETIME_MS = 8_000
 
 export async function GET(request: NextRequest) {
   try {
+    const isServerless = isServerlessDeploymentRuntime()
     // Get connection ID from query parameters
     const connectionId = request.nextUrl.searchParams.get("connectionId")
 
@@ -34,17 +40,22 @@ export async function GET(request: NextRequest) {
         try {
             let closed = false
             let heartbeatInterval: ReturnType<typeof setInterval> | undefined
+            let serverlessCloseTimer: ReturnType<typeof setTimeout> | undefined
             let unsubscribe = () => {}
             const onAbort = () => cleanup()
             cleanup = () => {
               if (closed) return
               closed = true
               if (heartbeatInterval) clearInterval(heartbeatInterval)
+              if (serverlessCloseTimer) clearTimeout(serverlessCloseTimer)
               request.signal.removeEventListener("abort", onAbort)
               unsubscribe()
               try { controller.close() } catch { /* already cancelled */ }
             }
-            const enqueue = (payload: string) => controller.enqueue(encoder.encode(payload))
+            const enqueue = (payload: string) => {
+              if (closed) return
+              controller.enqueue(encoder.encode(payload))
+            }
             // Send initial connection confirmation
             const confirmationMessage = {
               type: "connected",
@@ -83,18 +94,28 @@ export async function GET(request: NextRequest) {
               enqueue(`data: ${JSON.stringify(historyMessage)}\n\n`)
             }
 
-            // Keep connection alive with periodic heartbeat
-            heartbeatInterval = setInterval(() => {
-              try {
-                enqueue(`: heartbeat at ${new Date().toISOString()}\n\n`)
-              } catch (error) {
-                console.error("[SSE] Heartbeat error:", error)
-                cleanup()
-              }
-            }, 30000) // 30 second heartbeat
-
             request.signal.addEventListener("abort", onAbort, { once: true })
-            if (request.signal.aborted) cleanup()
+            if (request.signal.aborted) {
+              cleanup()
+              return
+            }
+
+            if (isServerless) {
+              // Serverless functions cannot own an open stream indefinitely.
+              // Closing proactively prevents a platform timeout; EventSource
+              // clients reconnect and receive the bounded history snapshot.
+              serverlessCloseTimer = setTimeout(() => cleanup(), SERVERLESS_MAX_STREAM_LIFETIME_MS)
+            } else {
+              // Dedicated/self-hosted workers keep the long-lived SSE stream.
+              heartbeatInterval = setInterval(() => {
+                try {
+                  enqueue(`: heartbeat at ${new Date().toISOString()}\n\n`)
+                } catch (error) {
+                  console.error("[SSE] Heartbeat error:", error)
+                  cleanup()
+                }
+              }, 30000) // 30 second heartbeat
+            }
           } catch (error) {
             console.error("[SSE] Stream setup error:", error)
             try { controller.error(error) } catch { /* already closed */ }
