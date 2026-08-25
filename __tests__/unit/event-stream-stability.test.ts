@@ -72,6 +72,9 @@ describe("event stream stability", () => {
     expect(source).toContain("request.signal.removeEventListener")
     expect(source).toContain("cancel()")
     expect(source).toContain("unsubscribe()")
+    expect(source).toContain("isServerlessDeploymentRuntime")
+    expect(source).toContain("serverlessCloseTimer")
+    expect(source).toContain("maxDuration = 10")
     expect(source.indexOf("cleanup = () => {")).toBeLessThan(
       source.indexOf("broadcaster.registerClient"),
     )
