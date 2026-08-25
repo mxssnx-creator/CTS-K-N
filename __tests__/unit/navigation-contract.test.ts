@@ -17,6 +17,22 @@ function pagePath(href: string): string {
 }
 
 describe("site navigation contract", () => {
+  test("publishes explicit favicon metadata backed by real public assets", () => {
+    const layoutSource = source("app/layout.tsx")
+    const iconPaths = [
+      "/icon.svg",
+      "/icon-light-32x32.png",
+      "/icon-dark-32x32.png",
+      "/apple-icon.png",
+    ]
+
+    expect(layoutSource).toContain("icons: {")
+    for (const iconPath of iconPaths) {
+      expect(layoutSource).toContain(`url: "${iconPath}"`)
+      expect(fs.existsSync(path.join(process.cwd(), "public", iconPath.slice(1)))).toBe(true)
+    }
+  })
+
   test.each([
     "components/app-sidebar.tsx",
     "components/dashboard/navigation-menu.tsx",
