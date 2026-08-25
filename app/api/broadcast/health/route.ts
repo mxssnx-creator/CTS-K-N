@@ -6,6 +6,7 @@
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
 import { getBroadcaster } from '@/lib/event-broadcaster'
+import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from '@/lib/deployment-runtime'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,6 +14,7 @@ export async function GET(request: NextRequest) {
   try {
     const broadcaster = getBroadcaster()
     const stats = broadcaster.getStats()
+    const isServerless = isServerlessDeploymentRuntime()
 
     const isHealthy = stats.totalConnections >= 0 && stats.totalClients >= 0
 
@@ -31,7 +33,10 @@ export async function GET(request: NextRequest) {
             enabled: true,
             protocol: 'Server-Sent Events',
             endpoint: '/api/ws',
-            heartbeat: '30s',
+            runtime: getDeploymentRuntimeLabel(),
+            mode: isServerless ? 'bounded-reconnect' : 'long-lived',
+            heartbeat: isServerless ? null : '30s',
+            maxLifetime: isServerless ? '8s' : null,
           },
           timestamp: new Date().toISOString(),
         },
