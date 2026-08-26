@@ -1980,3 +1980,14 @@ credentials are present.
   `/workspace/backups/CTS-K-N/20260826T141840Z-pre-chisel-docs-refresh`,
   `/workspace/backups/CTS-K-N/20260826T142245Z-precommit-chisel-docs-pr226`,
   and `/workspace/backups/CTS-K-N/20260826T142318Z-prepush-7630eb9e`.
+- [x] A fresh process exposed a stale caller assumption about the SSH-key
+  location. The owner-only key was intact in the managed `ssh/` subdirectory;
+  no credential reconstruction was needed. The local managed activation now
+  exports the canonical key and known-hosts paths and strict SSH options, and
+  a fresh-process banner plus `chisel-server.service` check passed again.
+- [x] The versioned Chisel docs and normal-Linux systemd template no longer
+  embed a fixed endpoint or fingerprint. Those values are supplied only by an
+  owner-only mode-0600 environment file. The full pre-hardening checkpoint is
+  `/workspace/backups/CTS-K-N/20260826T144135Z-pre-chisel-docs-hardening`; the
+  separate activation-script checkpoint is
+  `/workspace/backups/CTS-K-N/20260826T144008Z-pre-managed-chisel-activation-fix`.
