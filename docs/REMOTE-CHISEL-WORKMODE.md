@@ -1,9 +1,27 @@
 # Remote CTS-K-N work through Chisel
 
-This is the persistent connection procedure for the CTS-K-N remote Linux
+This is the authoritative connection procedure for the CTS-K-N remote Linux
 server. It is intentionally credential-free: never commit the Chisel auth
 value, an SSH private key, exchange credentials, Redis data, or raw account
 reports.
+
+## Authoritative managed Work procedure
+
+For ChatGPT Work sessions, use the owner-only managed activation at
+`/workspace/.network-clients/activate-cts.sh`. The activation and the SSH
+operation must run in the same shell/tool process. A forward that worked in a
+previous tool process is not evidence that a later process can reuse it;
+re-activate and verify a harmless SSH banner at the execution edge each time.
+
+The managed files under `/workspace/.network-clients` are the source of truth
+for the endpoint, fingerprint, authentication material, SSH key, and pinned
+known-hosts data. Do not copy those values into commands, source control,
+reports, logs, chat, or backup archives. A remote command may run only after
+the managed activation and pinned localhost SSH banner both succeed.
+
+The repository helper described below remains useful for isolated operator
+shells where its owner-only environment is supplied explicitly. It is not a
+replacement for the managed Work activation.
 
 ## Why the working command is process-local
 
@@ -13,7 +31,8 @@ received it. A copied port from a previous command can be closed or belong to
 another namespace. Chisel and SSH must therefore be launched by the same shell
 process, using the inherited HTTP_PROXY value directly.
 
-The helper scripts/connect-remote-chisel.sh enforces that sequence:
+The helper `scripts/connect-remote-chisel.sh` enforces that sequence for an
+isolated operator shell:
 
     export CTS_CHISEL_AUTH='chisel:<persistent-token>'
     export CTS_SSH_KEY='/path/to/private-server-key'
@@ -42,7 +61,22 @@ copy it into the repository or a backup archive.
 The direct target root@152.53.114.112 -p 2222 bypasses the tunnel and is
 wrong. Port 443 is the separate sslh path, not the Chisel forward.
 
-## Current verification record (2026-08-24)
+## Current verification record (2026-08-26)
+
+The managed Work activation was rechecked from a fresh tool process:
+
+- the owner-only activation script passed its shell syntax check;
+- Chisel 1.11.8 established the pinned localhost forward;
+- a harmless SSH banner succeeded through `127.0.0.1:2222`;
+- strict SSH host-key verification succeeded;
+- the remote `chisel-server.service` was loaded, active, and enabled;
+- a later independent tool process required a fresh managed activation, which
+  confirms the process-local proxy/namespace behavior documented above.
+
+This verifies both sides of the supported transport without changing the
+remote server, application services, Redis, deployments, or exchange state.
+
+## Previous verification record (2026-08-24)
 
 The Work-mode transport path was rechecked with Chisel 1.11.8 and the
 process-local `HTTP_PROXY`:
@@ -76,6 +110,10 @@ returned `Site Unavailable`; it is therefore only an optional recovery path,
 not a validated replacement for Chisel. Teleport has no active local profile.
 
 ## Persistent client service
+
+This section is only for a normal persistent Linux client. Do not install this
+systemd unit inside ChatGPT Work: Work egress and network namespaces are
+process-local, so the managed activation above remains mandatory there.
 
 For a normal Linux client machine (not the CTS server itself), install the
 credential-free template `docs/chisel-client.service.example` as
@@ -128,6 +166,7 @@ The persistent local client bundle is under /workspace/.network-clients:
 - netbird_0.71.4_linux_amd64/netbird
 - redis-8.10.1/bin/redis-server
 
-Common executable symlinks are under /workspace/.network-clients/bin.
-Teleport, Tailscale, and NetBird remain optional alternatives; the confirmed
-working route for this project is Chisel over the process-local HTTP proxy.
+Common executable symlinks are under `/workspace/.network-clients/bin`.
+Teleport, Tailscale, and NetBird may remain installed for unrelated recovery
+work, but they are not authorized fallbacks for CTS-K-N maintenance. The
+supported project route is managed Chisel over the process-local HTTP proxy.

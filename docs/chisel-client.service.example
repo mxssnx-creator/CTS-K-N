@@ -1,3 +1,7 @@
+# Normal persistent Linux clients only. ChatGPT Work must use the managed
+# process-local activation documented in REMOTE-CHISEL-WORKMODE.md.
+# Keep all endpoint and credential values in the mode-0600 EnvironmentFile.
+
 [Unit]
 Description=CTS-K-N Chisel SSH tunnel client
 After=network-online.target
