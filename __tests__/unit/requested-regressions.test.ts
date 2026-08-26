@@ -2458,9 +2458,10 @@ describe("requested regression guardrails", () => {
     const overview = read("app/api/trade-engine/functional-overview/route.ts")
     const progression = read("app/api/connections/progression/[id]/stats/route.ts")
 
-    expect(overview).toContain("aggregateStage")
-    expect(overview).toContain('field.match(/^s:([^:]+):(created|evaluated|passed|running|apf|ts)$/)')
-    expect(overview).toContain("now - timestamp > 5 * 60_000")
+    expect(overview).toContain("aggregateFunctionalOverviewStage")
+    expect(overview).toContain("resolveOverviewActiveSymbols")
+    expect(overview).toContain('semantics: "last-observed-active-symbol-rows-with-explicit-freshness"')
+    expect(overview).toContain("OVERVIEW_STAGE_ROW_FRESH_MS")
     expect(overview).toContain("mapInBatches")
     expect(overview).toContain("client.dbSize()")
     expect(overview).toContain('dataSource: "canonical-stage-and-position-ledgers"')

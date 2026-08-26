@@ -5,6 +5,15 @@ import {
   getRedisClient,
   initRedis,
 } from "@/lib/redis-db"
+import {
+  OVERVIEW_STAGE_ROW_FRESH_MS,
+  OVERVIEW_STAGE_ROW_MAX_RETAIN_MS,
+  aggregateFunctionalOverviewStage,
+  emptyFunctionalOverviewStageSnapshot,
+  mergeFunctionalOverviewStage,
+  resolveOverviewActiveSymbols,
+  type FunctionalOverviewStageSnapshot,
+} from "@/lib/functional-overview-stage-snapshot"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -12,77 +21,9 @@ export const fetchCache = "force-no-store"
 
 type StageName = "base" | "main" | "real" | "live"
 
-type StageSnapshot = {
-  created: number
-  evaluated: number
-  passed: number
-  running: number
-  weightedPf: number
-  pfWeight: number
-  symbols: Set<string>
-}
-
-function emptyStageSnapshot(): StageSnapshot {
-  return {
-    created: 0,
-    evaluated: 0,
-    passed: 0,
-    running: 0,
-    weightedPf: 0,
-    pfWeight: 0,
-    symbols: new Set(),
-  }
-}
-
 function finite(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
-}
-
-/**
- * Aggregate fresh per-symbol rows written by StrategyCoordinator.
- *
- * Top-level fields are overwritten by each symbol cycle and therefore cannot
- * be summed across a connection. The `s:{symbol}:*` bundle is the canonical
- * cross-symbol source; rows older than five minutes are excluded exactly as in
- * the progression statistics endpoint.
- */
-function aggregateStage(
-  raw: Record<string, string> | null | undefined,
-  now = Date.now(),
-): StageSnapshot {
-  const result = emptyStageSnapshot()
-  const rows = new Map<string, Record<string, number>>()
-  for (const [field, value] of Object.entries(raw || {})) {
-    const match = field.match(/^s:([^:]+):(created|evaluated|passed|running|apf|ts)$/)
-    if (!match) continue
-    const row = rows.get(match[1]) || {}
-    row[match[2]] = finite(value)
-    rows.set(match[1], row)
-  }
-  for (const [symbol, row] of rows) {
-    const timestamp = row.ts || 0
-    if (timestamp <= 0 || now - timestamp > 5 * 60_000) continue
-    const created = Math.max(0, row.created || 0)
-    result.created += created
-    result.evaluated += Math.max(0, row.evaluated || 0)
-    result.passed += Math.max(0, row.passed || 0)
-    result.running += Math.max(0, row.running || 0)
-    result.weightedPf += (row.apf || 0) * created
-    result.pfWeight += created
-    result.symbols.add(symbol)
-  }
-  return result
-}
-
-function mergeStage(target: StageSnapshot, source: StageSnapshot): void {
-  target.created += source.created
-  target.evaluated += source.evaluated
-  target.passed += source.passed
-  target.running += source.running
-  target.weightedPf += source.weightedPf
-  target.pfWeight += source.pfWeight
-  for (const symbol of source.symbols) target.symbols.add(symbol)
 }
 
 function percentage(numerator: number, denominator: number): number {
@@ -115,11 +56,11 @@ export async function GET() {
       client.dbSize().catch(() => 0),
     ])
 
-    const totals: Record<StageName, StageSnapshot> = {
-      base: emptyStageSnapshot(),
-      main: emptyStageSnapshot(),
-      real: emptyStageSnapshot(),
-      live: emptyStageSnapshot(),
+    const totals: Record<StageName, FunctionalOverviewStageSnapshot> = {
+      base: emptyFunctionalOverviewStageSnapshot(),
+      main: emptyFunctionalOverviewStageSnapshot(),
+      real: emptyFunctionalOverviewStageSnapshot(),
+      live: emptyFunctionalOverviewStageSnapshot(),
     }
     let totalIndicationCycles = 0
     let totalStrategyCycles = 0
@@ -154,13 +95,17 @@ export async function GET() {
           client.llen(`live:positions:${connectionId}:closed`).catch(() => 0),
           client.scard(`prehistoric:${connectionId}:symbols`).catch(() => 0),
         ])
+        const activeSymbols = resolveOverviewActiveSymbols(
+          connection as Record<string, unknown>,
+          progression as Record<string, unknown>,
+        )
         return {
           progression: progression as Record<string, string>,
           stages: {
-            base: aggregateStage(base as Record<string, string>),
-            main: aggregateStage(main as Record<string, string>),
-            real: aggregateStage(real as Record<string, string>),
-            live: aggregateStage(live as Record<string, string>),
+            base: aggregateFunctionalOverviewStage(base as Record<string, string>, { activeSymbols }),
+            main: aggregateFunctionalOverviewStage(main as Record<string, string>, { activeSymbols }),
+            real: aggregateFunctionalOverviewStage(real as Record<string, string>, { activeSymbols }),
+            live: aggregateFunctionalOverviewStage(live as Record<string, string>, { activeSymbols }),
           },
           pseudoOpen: finite(pseudoOpen),
           liveOpen: finite(liveOpen),
@@ -174,7 +119,7 @@ export async function GET() {
       totalIndicationCycles += finite(row.progression.indication_cycle_count)
       totalStrategyCycles += finite(row.progression.strategy_cycle_count)
       for (const stage of ["base", "main", "real", "live"] as const) {
-        mergeStage(totals[stage], row.stages[stage])
+        mergeFunctionalOverviewStage(totals[stage], row.stages[stage])
       }
       totalPositions += row.pseudoOpen + row.liveOpen + row.liveClosed
       totalLiveOpen += row.liveOpen
@@ -243,6 +188,20 @@ export async function GET() {
         dataSizeBytes: 0,
         dataSizeMB: 0,
         sizeMeasured: false,
+      },
+      stageSnapshots: Object.fromEntries(
+        (["base", "main", "real", "live"] as const).map((stage) => [stage, {
+          coveredSymbols: totals[stage].retainedRows,
+          freshSymbols: totals[stage].freshRows,
+          complete: totals[stage].complete,
+          oldestUpdatedAt: totals[stage].oldestUpdatedAt || null,
+          latestUpdatedAt: totals[stage].latestUpdatedAt || null,
+        }]),
+      ),
+      stageSnapshotPolicy: {
+        semantics: "last-observed-active-symbol-rows-with-explicit-freshness",
+        freshMs: OVERVIEW_STAGE_ROW_FRESH_MS,
+        maxRetainMs: OVERVIEW_STAGE_ROW_MAX_RETAIN_MS,
       },
       dataSource: "canonical-stage-and-position-ledgers",
       timestamp: new Date().toISOString(),
