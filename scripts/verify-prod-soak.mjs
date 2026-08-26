@@ -1239,6 +1239,14 @@ async function main() {
       ordersPlaced: finiteNonNegative(stats?.liveExecution?.ordersPlaced, "liveExecution.ordersPlaced"),
       positionsCreated: finiteNonNegative(stats?.liveExecution?.positionsCreated, "liveExecution.positionsCreated"),
       positionsClosed: finiteNonNegative(stats?.liveExecution?.positionsClosed, "liveExecution.positionsClosed"),
+      simulatedPositionsCreated: finiteNonNegative(
+        stats?.liveExecution?.simulatedPositionsCreated,
+        "liveExecution.simulatedPositionsCreated",
+      ),
+      simulatedPositionsClosed: finiteNonNegative(
+        stats?.liveExecution?.simulatedPositionsClosed,
+        "liveExecution.simulatedPositionsClosed",
+      ),
     })
     paperPositionsPeak = Math.max(
       paperPositionsPeak,
@@ -1528,7 +1536,7 @@ async function main() {
     }
     const peakLiveSets = Math.max(...progression.map((sample) => sample.live))
     const simulatedOrdersPeak = Math.max(...liveExecution.map((sample) => sample.ordersSimulated))
-    const simulatedCreatedPeak = Math.max(...liveExecution.map((sample) => sample.positionsCreated))
+    const simulatedCreatedPeak = Math.max(...liveExecution.map((sample) => sample.simulatedPositionsCreated))
     // `openPositions.pseudo` is the upstream strategy-evaluation ledger, not
     // the executed paper-order store. Those short-lived rows may legitimately
     // close before a 2-second poll while LiveStage's simulated positions remain
@@ -1539,7 +1547,7 @@ async function main() {
       throw new Error(
         `Paper position lifecycle was not exercised (pseudoLiveSets=${peakLiveSets}, ` +
         `simulatedPositions=${simulatedPositionsPeak}, simulatedOrders=${simulatedOrdersPeak}, ` +
-        `positionsCreated=${simulatedCreatedPeak})`,
+        `simulatedPositionsCreated=${simulatedCreatedPeak})`,
       )
     }
     if (liveExecution.some((sample) => sample.ordersPlaced < sample.ordersSimulated)) {
@@ -1902,7 +1910,12 @@ async function main() {
       : 0,
     connectionToggleVerified,
     simulatedOrdersPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.ordersSimulated)) : 0,
-    simulatedPositionsCreatedPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.positionsCreated)) : 0,
+    simulatedPositionsCreatedPeak: liveExecution.length
+      ? Math.max(...liveExecution.map((sample) => sample.simulatedPositionsCreated))
+      : 0,
+    simulatedPositionsClosedPeak: liveExecution.length
+      ? Math.max(...liveExecution.map((sample) => sample.simulatedPositionsClosed))
+      : 0,
     simulatedPositionsPeak,
     realPositionsPeak,
     paperPositionsPeak,

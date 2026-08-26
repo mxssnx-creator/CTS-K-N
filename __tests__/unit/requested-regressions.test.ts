@@ -2748,6 +2748,13 @@ describe("requested regression guardrails", () => {
     expect(liveOrderService).toContain('if (event !== "simulated") await recordPerSymbolOrderCounter')
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
     expect(statsRoute).toContain("ordersSimulated remains an audit-only subset counter")
+    const detailedLogs = read("app/api/trade-engine/detailed-logs/route.ts")
+    expect(detailedLogs).toContain('simulatedPositionsCreated: progressionCounter("live_simulated_positions_created_count")')
+    expect(detailedLogs).toContain('simulatedPositionsClosed: progressionCounter("live_simulated_positions_closed_count")')
+    expect(detailedLogs).toContain("simulatedPositionsOpen")
+    const productionSoak = read("scripts/verify-prod-soak.mjs")
+    expect(productionSoak).toContain("liveExecution.simulatedPositionsCreated")
+    expect(productionSoak).toContain("sample.simulatedPositionsCreated")
     expect(simBlock.indexOf("await savePosition(livePosition)")).toBeLessThan(
       simBlock.indexOf('incrementMetric(connectionId, "live_orders_simulated_count")'),
     )
