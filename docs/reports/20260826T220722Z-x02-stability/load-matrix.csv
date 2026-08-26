@@ -1,0 +1,13 @@
+symbols,lanes,wall_ms,sets_per_second,event_loop_delay_max_ms,evaluated_sets,valid_sets,complete,deterministic,no_external_io
+1,1,1777,16887,10.70,30016,608,true,true,true
+2,1,3870,15514,16.96,60032,1324,true,true,true
+2,2,1963,30580,9.41,60032,1324,true,true,true
+4,1,6263,19169,9.56,120064,2330,true,true,true
+4,4,1830,65618,5.25,120064,2330,true,true,true
+8,2,6706,35808,13.10,240128,4512,true,true,true
+8,4,4122,58259,34.09,240128,4512,true,true,true
+15,4,7643,58910,21.76,450240,9778,true,true,true
+16,4,7933,60536,7.35,480256,10756,true,true,true
+16,8,9153,52470,205.80,480256,10756,true,true,true
+32,4,16604,57847,23.93,960512,22467,true,true,true
+32,8,17216,55791,3470.44,960512,22467,true,true,true
