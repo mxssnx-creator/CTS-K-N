@@ -1917,11 +1917,34 @@ export class GlobalTradeEngineCoordinator {
         const lastHb = await getFreshestProcessorHeartbeat(id)
         const canonicalPipelineAgeMs = manager.canonicalPipelineAgeMs
         const canonicalPipelineProgressAgeMs = manager.canonicalPipelineProgressAgeMs
+        const canonicalPipelineOwner = manager.canonicalPipelineOwner
         const canonicalPipelineOverdue =
           manager.isCanonicalPipelineInFlight &&
           canonicalPipelineProgressAgeMs > CANONICAL_PIPELINE_STALL_THRESHOLD_MS
 
         if (canonicalPipelineOverdue) {
+          // The portable cron route shares this admission but is not owned by
+          // the manager. Restarting only the manager cannot cancel/release a
+          // cron lease; it caused a restart loop every watchdog interval while
+          // one exhaustive cron calculation kept running. Cron now touches
+          // the admission after real calculation groups. If that owner is
+          // overdue, surface it to runtime recovery without churning an
+          // unrelated manager generation.
+          if (canonicalPipelineOwner === "cron") {
+            this.stallEscalation.delete(id)
+            await publishEngineEvent("engine.heartbeat.missed", {
+              connectionId: id,
+              lastHeartbeatAt: lastHb ?? undefined,
+              ageMs: canonicalPipelineProgressAgeMs,
+              reason: "portable-cron-pipeline-overdue",
+            }).catch(() => undefined)
+            console.warn(
+              `[v0] [Watchdog] Engine ${id} portable cron pipeline exceeded ` +
+                `${CANONICAL_PIPELINE_STALL_THRESHOLD_MS}ms without calculation progress; ` +
+                "manager restart suppressed because cron owns the admission",
+            )
+            continue
+          }
           const consecutiveStalls = (this.stallEscalation.get(id) ?? 0) + 1
           this.stallEscalation.set(id, consecutiveStalls)
           await publishEngineEvent("engine.heartbeat.missed", {

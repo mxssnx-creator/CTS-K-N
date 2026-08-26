@@ -1490,7 +1490,12 @@ export function DirectTradeSection() {
                       <th className="px-2 py-1.5 text-right font-medium" title="Classic realised gross-profit / absolute gross-loss Profit Factor">Realized PF</th>
                       <th className="px-2 py-1.5 text-right font-medium" title="1 + 0.1 × Σ net PnL percent / Σ realised PositionCost percent">PF coordinate</th>
                       <th className="px-2 py-1.5 text-right font-medium">Internal valid / eval</th>
-                      <th className="px-3 py-1.5 text-right font-medium">Internal PnL / PF</th>
+                      <th
+                        className="px-3 py-1.5 text-right font-medium"
+                        title="Average simulated net PnL per independently evaluated alternative set; PF uses aggregate simulated gross profit / absolute gross loss"
+                      >
+                        Internal avg/set / PF
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="font-mono">
@@ -1513,8 +1518,11 @@ export function DirectTradeSection() {
                         <td className="px-2 py-1.5 text-right">{formatPF(row.profitFactor, row.profitFactorInfinite)}</td>
                         <td className="px-2 py-1.5 text-right">{row.profitFactorCoordinate == null ? "—" : row.profitFactorCoordinate.toFixed(4)}</td>
                         <td className="px-2 py-1.5 text-right">{row.internalValid.toLocaleString()} / {row.internalEvaluated.toLocaleString()}</td>
-                        <td className={`px-3 py-1.5 text-right ${pnlColor(row.internalTotalPnl)}`}>
-                          {formatPnl(row.internalTotalPnl)} / {formatPF(row.internalProfitFactor, row.internalProfitFactorInfinite)}
+                        <td
+                          className={`px-3 py-1.5 text-right ${pnlColor(row.internalAveragePnlPerSet)}`}
+                          title={`Aggregate across ${row.internalEvaluated.toLocaleString()} alternative sets: ${formatPnl(row.internalTotalPnl)}`}
+                        >
+                          {formatPnl(row.internalAveragePnlPerSet)} / {formatPF(row.internalProfitFactor, row.internalProfitFactorInfinite)}
                         </td>
                       </tr>
                     ))}
@@ -1524,7 +1532,7 @@ export function DirectTradeSection() {
                   </tbody>
                 </table>
               </div>
-              <p className="border-t px-3 py-2 text-[10px] text-muted-foreground">Open positions and incomplete exchange settlements never enter W/L/BE, PnL or PF. Internal values are historical simulation results and are not presented as exchange settlement.</p>
+              <p className="border-t px-3 py-2 text-[10px] text-muted-foreground">Open positions and incomplete exchange settlements never enter W/L/BE, PnL or PF. Internal PnL is the average per independently evaluated alternative set; its aggregate sum is available in the cell tooltip and is not portfolio or exchange PnL.</p>
             </div>
 
             {/* Rolling Position Stats */}

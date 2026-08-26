@@ -328,6 +328,16 @@ export interface PrehistoricProcessingOptions {
   finalizePhase?: boolean
   shouldContinue?: () => boolean
   symbolSelectionEpoch?: string
+  /**
+   * Reports completed calculation groups to an enclosing owner-aware
+   * admission. This is real work progress, not a timer heartbeat.
+   */
+  onProgress?: (progress: {
+    stage: "indications" | "strategies"
+    symbol: string
+    completedUnits: number
+    totalUnits: number
+  }) => void
 }
 
 class PrehistoricProcessingCancelledError extends Error {
@@ -705,6 +715,17 @@ export class ConfigSetProcessor {
                 sub_item: configWorkCurrentSymbol || "configuration groups",
                 updated_at: activityAt,
               })
+            }
+            try {
+              options.onProgress?.({
+                stage: configWorkCurrentStage === "strategies" ? "strategies" : "indications",
+                symbol: configWorkCurrentSymbol,
+                completedUnits: completed,
+                totalUnits: configWorkUnitsTotal,
+              })
+            } catch {
+              // An observability callback must never invalidate calculated
+              // historic results or their durable progress projection.
             }
           } catch (error) {
             // A superseded generation must not write its remaining work into a
