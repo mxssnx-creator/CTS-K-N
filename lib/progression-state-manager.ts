@@ -279,6 +279,20 @@ export class ProgressionStateManager {
           "prehistoric_cycles_completed", "prehistoric_candles_processed",
           "prehistoric_symbols_processed_count",
         ])
+        const LATEST_SNAPSHOT_FIELDS = new Set([
+          "cycle_success_rate",
+          "trade_success_rate",
+          "cycle_time_ms",
+          "last_cycle_time",
+          "last_update",
+        ])
+
+        const timestamp = (value: unknown): number => {
+          const numeric = Number(value)
+          if (Number.isFinite(numeric) && numeric > 0) return numeric
+          const parsed = Date.parse(String(value || ""))
+          return Number.isFinite(parsed) ? parsed : 0
+        }
 
         const merged: Record<string, string> = { ...legacy }
         for (const [k, v] of Object.entries(scoped)) {
@@ -300,6 +314,25 @@ export class ProgressionStateManager {
             merged[k] = v // default: scoped wins for unknown fields
           }
         }
+        // Scoped and legacy writers coexist during rolling deployments. The
+        // scoped hash remains authoritative for identity, while volatile
+        // cycle/rate snapshots must come from whichever writer published the
+        // newest `last_update`; otherwise a healthy worker can show a frozen
+        // 0% success rate indefinitely after migration.
+        const scopedUpdatedAt = Math.max(
+          timestamp(scoped.last_update),
+          timestamp(scoped.last_cycle_time),
+        )
+        const legacyUpdatedAt = Math.max(
+          timestamp(legacy.last_update),
+          timestamp(legacy.last_cycle_time),
+        )
+        const latestSnapshot = legacyUpdatedAt > scopedUpdatedAt ? legacy : scoped
+        const fallbackSnapshot = latestSnapshot === scoped ? legacy : scoped
+        for (const field of LATEST_SNAPSHOT_FIELDS) {
+          const value = latestSnapshot[field] ?? fallbackSnapshot[field]
+          if (value !== undefined) merged[field] = value
+        }
         data = merged
       } catch (redisError) {
         console.warn(`[v0] Redis connection error reading scoped progression for ${connectionId}/${engineType}, using default state:`, redisError)
@@ -310,6 +343,21 @@ export class ProgressionStateManager {
         return this.getDefaultState(connectionId)
       }
 
+      const cyclesCompleted = Math.max(0, parseInt(data.cycles_completed || "0", 10) || 0)
+      const successfulCycles = Math.max(0, parseInt(data.successful_cycles || "0", 10) || 0)
+      const totalTrades = Math.max(0, parseInt(data.total_trades || "0", 10) || 0)
+      const successfulTrades = Math.max(0, parseInt(data.successful_trades || "0", 10) || 0)
+      // Counters are the authoritative, atomically updated values. Stored rate
+      // scalars are only snapshots and can lag behind a rolling scoped/legacy
+      // writer hand-off. Derive the public rates here so every API/UI reader—not
+      // only the aggregate progression route—observes the same result.
+      const cycleSuccessRate = cyclesCompleted > 0
+        ? Math.round((Math.min(successfulCycles, cyclesCompleted) / cyclesCompleted) * 10_000) / 100
+        : 0
+      const tradeSuccessRate = totalTrades > 0
+        ? Math.round((Math.min(successfulTrades, totalTrades) / totalTrades) * 10_000) / 100
+        : 0
+
       return {
         connectionId,
         // Session identity
@@ -317,14 +365,14 @@ export class ProgressionStateManager {
         epoch: data.epoch ? Number(data.epoch) : undefined,
         startedAt: data.started_at ? Number(data.started_at) : undefined,
         endedAt: data.ended_at ? Number(data.ended_at) : undefined,
-        cyclesCompleted: parseInt(data.cycles_completed || "0", 10),
-        successfulCycles: parseInt(data.successful_cycles || "0", 10),
+        cyclesCompleted,
+        successfulCycles,
         failedCycles: parseInt(data.failed_cycles || "0", 10),
-        totalTrades: parseInt(data.total_trades || "0", 10),
-        successfulTrades: parseInt(data.successful_trades || "0", 10),
+        totalTrades,
+        successfulTrades,
         totalProfit: parseFloat(data.total_profit || "0"),
-        cycleSuccessRate: parseFloat(data.cycle_success_rate || "0"),
-        tradeSuccessRate: parseFloat(data.trade_success_rate || "0"),
+        cycleSuccessRate,
+        tradeSuccessRate,
         lastCycleTime: data.last_cycle_time ? new Date(data.last_cycle_time) : undefined,
         lastUpdate: new Date(data.last_update || new Date()),
         prehistoricCyclesCompleted: parseInt(data.prehistoric_cycles_completed || "0", 10),

@@ -23,6 +23,8 @@ describe("Direct-Trade position/order statistics contract", () => {
     expect(status).toContain("accountingPending")
     expect(status).toContain("processorHeartbeatRaw")
     expect(status).toContain("const overview48h = buildDirectTradeOverview48h(positions, now)")
+    expect(status).toContain("buildDirectTradeIndicationTypeStats")
+    expect(status).toContain("indicationTypeStats")
     expect(overview).toContain('(["simulated", "exchange"] as DirectTradeOverviewMode[])')
   })
 
@@ -37,5 +39,39 @@ describe("Direct-Trade position/order statistics contract", () => {
     expect(statistics).toContain("Realized exchange PnL")
     expect(statistics).toContain("Exchange accounting pending")
     expect(logistics).toContain("configuration variants")
+  })
+
+  test("renders live indication sliders and settled-versus-internal results in Performance Stats", () => {
+    const section = read("components/dashboard/direct-trade-section.tsx")
+    const settings = read("components/settings/direct-trade-settings.tsx")
+    const processor = read("scripts/direct-trade-processor.mjs")
+
+    expect(section).toContain("Live entry indication types")
+    expect(section).toContain("All live entries blocked")
+    expect(section).toContain("Indication types · results overview")
+    expect(section).toContain("Realized PF")
+    expect(section).toContain("PF coordinate")
+    expect(section).toContain("Internal valid / eval")
+    expect(section).toContain("W / L / BE")
+    expect(settings).toContain("enabledIndicationTypes")
+    expect(settings).toContain("All sliders may be off")
+    expect(processor).toContain("state.liveMode")
+    expect(processor).toContain("normalizeEnabledIndicationTypes(state.enabledIndicationTypes, [])")
+    expect(processor).toContain("entryTactic: config.entryTactic")
+  })
+
+  test("bounds close latency, identifies already-flat controls and reports lifecycle progress independently", () => {
+    const processor = read("scripts/direct-trade-processor.mjs")
+    const orderService = read("lib/live-order-service.ts")
+    const status = read("app/api/trade-engine/direct-trade/status/route.ts")
+
+    expect(orderService).toContain("isAlreadyClosedReduceOnlyError")
+    expect(orderService).toContain("alreadyClosed: true")
+    expect(processor).toContain("DIRECT_TRADE_MAX_LIVE_CLOSE_ACTIONS_PER_CYCLE = 1")
+    expect(processor).toContain("DIRECT_TRADE_CONTROL_REQUEST_TIMEOUT_MS = 10_000")
+    expect(processor).toContain("exchange_position_absent_pending")
+    expect(processor).toContain("lifecycleCycleCount++")
+    expect(status).toContain("processorRuntime.heartbeatHealthy")
+    expect(status).toContain("processorRuntime.progressHealthy")
   })
 })

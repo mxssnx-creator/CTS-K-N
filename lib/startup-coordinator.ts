@@ -271,7 +271,21 @@ export async function cleanupOrphanedProgress() {
           const workerHeartbeatFresh = isFreshTimestamp(freshestWorkerHeartbeat, now)
 
           if (remoteHeartbeatFresh || workerHeartbeatFresh) {
-            await client.del(`engine_orphan_cleanup_pending:${conn.id}`).catch(() => 0)
+            const resolvedAt = new Date(now).toISOString()
+            await Promise.all([
+              client.del(`engine_orphan_cleanup_pending:${conn.id}`).catch(() => 0),
+              // The first startup pass may have published an orphan warning
+              // before the long-lived owner emitted its initial heartbeat.
+              // Clearing only the TTL marker leaves the UI permanently stuck
+              // on `needs_reconcile`; resolve the fields owned by this cleanup
+              // path as soon as distributed liveness is proven.
+              setSettings(`engine_progression:${conn.id}`, {
+                orphan_cleanup_pending: false,
+                needs_reconcile: false,
+                orphan_cleanup_reason: "",
+                orphan_cleanup_resolved_at: resolvedAt,
+              }).catch(() => undefined),
+            ])
             console.log(
               `[v0] [Startup] Preserving running flag for ${conn.id} — fresh distributed heartbeat present`,
             )

@@ -14,11 +14,27 @@ export type CanonicalPipelineOwner = "bootstrap" | "scheduled" | "immediate" | "
 export class CanonicalPipelineAdmission {
   private owner: CanonicalPipelineOwner | null = null
   private startedAt = 0
+  // Separate real forward progress from lease age. A cold historic bootstrap
+  // can legitimately take longer than the watchdog threshold, while a stuck
+  // phase must still be restartable once it stops making progress.
+  private lastProgressAt = 0
 
   tryAcquire(owner: CanonicalPipelineOwner, now = Date.now()): boolean {
     if (this.owner !== null) return false
     this.owner = owner
     this.startedAt = now
+    this.lastProgressAt = now
+    return true
+  }
+
+  /**
+   * Record real work completed by the current owner. A caller cannot refresh
+   * another owner's lease, which keeps an old bootstrap from masking a stuck
+   * scheduled or immediate pass.
+   */
+  touch(owner?: CanonicalPipelineOwner, now = Date.now()): boolean {
+    if (this.owner === null || (owner !== undefined && this.owner !== owner)) return false
+    this.lastProgressAt = Math.max(this.startedAt, now)
     return true
   }
 
@@ -26,12 +42,14 @@ export class CanonicalPipelineAdmission {
     if (this.owner !== owner) return false
     this.owner = null
     this.startedAt = 0
+    this.lastProgressAt = 0
     return true
   }
 
   reset(): void {
     this.owner = null
     this.startedAt = 0
+    this.lastProgressAt = 0
   }
 
   get isBusy(): boolean {
@@ -44,6 +62,10 @@ export class CanonicalPipelineAdmission {
 
   ageMs(now = Date.now()): number {
     return this.owner === null ? 0 : Math.max(0, now - this.startedAt)
+  }
+
+  progressAgeMs(now = Date.now()): number {
+    return this.owner === null ? 0 : Math.max(0, now - this.lastProgressAt)
   }
 }
 

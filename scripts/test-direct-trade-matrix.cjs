@@ -14,6 +14,7 @@ const {
   evaluateDirectTradeSets,
   resampleCandles,
   DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
+  DIRECT_TRADE_RECENT_PF_DEFAULT,
 } = require("../lib/direct-trade-coordination.ts")
 const {
   DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
@@ -26,11 +27,18 @@ const minProfitFactor = Math.max(
   0.8,
   Number(process.env.DIRECT_TRADE_MATRIX_MIN_PF) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
 )
-const minRecentProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_RECENT_PF) || 25)
+// Keep the load harness on the exact same PositionCost-relative PF coordinate
+// as the production Direct-Trade engine. The historical value `25` predates
+// that coordinate and made every normal production candidate look invalid in
+// this diagnostic despite the live engine using the canonical 1.10 floor.
+const minRecentProfitFactor = Math.max(
+  0.8,
+  Number(process.env.DIRECT_TRADE_MATRIX_MIN_RECENT_PF) || DIRECT_TRADE_RECENT_PF_DEFAULT,
+)
 const recentEvaluationPositions = Math.max(3, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_RECENT_POSITIONS) || 12))
 const positionCostPercent = Math.max(0.02, Math.min(1, Number(process.env.DIRECT_TRADE_MATRIX_POSITION_COST_PERCENT) || 0.1))
 const calibrationRecentPfThresholds = [...new Set(
-  String(process.env.DIRECT_TRADE_MATRIX_RECENT_PF_THRESHOLDS || "10,12,15,20,25,30,40,50")
+  String(process.env.DIRECT_TRADE_MATRIX_RECENT_PF_THRESHOLDS || "1,1.05,1.1,1.2,1.5,2,3,5")
     .split(",")
     .map((value) => Number(value.trim()))
     .filter((value) => Number.isFinite(value) && value >= 0.8),

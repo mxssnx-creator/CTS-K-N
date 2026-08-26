@@ -17,7 +17,7 @@ describe("Direct-Trade authoritative exchange status", () => {
 
   afterEach(() => resetInlineRedisGlobals())
 
-  test("excludes pending live settlements and uses the lightweight heartbeat", async () => {
+  test("excludes pending live settlements and requires heartbeat plus lifecycle progress", async () => {
     const [{ GET }, { getRedisClient }, { directTradeKeyspace, DIRECT_TRADE_CONNECTION_INDEX_KEY }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/status/route"),
       import("@/lib/redis-db"),
@@ -79,8 +79,15 @@ describe("Direct-Trade authoritative exchange status", () => {
         success: true,
         closedPositions: 2,
         accountingPending: 1,
-        processorHealthy: true,
-        processor: { isHealthy: true, lastTick: freshHeartbeat, tickCount: 12 },
+        processorHealthy: false,
+        processor: {
+          isHealthy: false,
+          heartbeatHealthy: true,
+          progressHealthy: false,
+          lastTick: freshHeartbeat,
+          lastProgressAt: staleTick,
+          tickCount: 12,
+        },
         stats: {
           profitFactor: 0,
           totalPnlUsdt: -0.2,
@@ -92,16 +99,35 @@ describe("Direct-Trade authoritative exchange status", () => {
         .then((response) => response.json())
       expect(aggregate).toMatchObject({
         success: true,
-        processorHealthy: true,
+        processorHealthy: false,
         accountingPending: 1,
         connections: [{
           connectionId: "bingx-x02",
-          healthy: true,
+          healthy: false,
           accountingPending: 1,
-          processor: { lastTick: freshHeartbeat, tickCount: 12 },
+          processor: { lastTick: freshHeartbeat, lastProgressAt: staleTick, tickCount: 12 },
         }],
       })
       expect(aggregate.connections[0].processor).not.toHaveProperty("instanceId")
+
+      await redis.set(keys.processor, JSON.stringify({
+        instanceId: "private-worker-identity",
+        lastTick: staleTick,
+        lastProgressAt: freshHeartbeat,
+        lifecycleCycleCount: 44,
+        tickCount: 12,
+      }))
+      const progressed = await GET(new Request("http://localhost/api/trade-engine/direct-trade/status?connectionId=bingx-x02"))
+        .then((response) => response.json())
+      expect(progressed).toMatchObject({
+        processorHealthy: true,
+        processor: {
+          isHealthy: true,
+          heartbeatHealthy: true,
+          progressHealthy: true,
+          lifecycleCycleCount: 44,
+        },
+      })
     } finally {
       await redis.del(...cleanupKeys)
     }

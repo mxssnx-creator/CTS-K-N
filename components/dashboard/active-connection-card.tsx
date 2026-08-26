@@ -2996,7 +2996,7 @@ export function ActiveConnectionCard({
                     ) && (
                       <div className="space-y-1">
                         <div className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
-                          Current Logical Stage Rows &amp; Open Positions
+                          Current Coordinated Stage Sets &amp; Open Positions
                         </div>
                         {/* Stage rows: Base → Main → Real → Live (exchange-side outcomes) */}
                         {[
@@ -3074,16 +3074,16 @@ export function ActiveConnectionCard({
                           // historic PF aggregation block).
                           (count > 0 || evaluated > 0 || avgPF > 0 || (label === "Real" && (prehistoricStats.realOpen > 0 || prehistoricStats.liveOpenPositions > 0)) || (label === "Base" && total > 0) || (label === "Main" && (valid > 0 || overall > 0)) || (label === "Real" && (valid > 0 || active > 0))) && (
                             <div key={label} className="space-y-0.5">
-                              {/* Main row: logical rows/positions count, pass/fill ratio, PF */}
+                              {/* Main row: coordinated Sets/positions count, pass/fill ratio, PF */}
                               <div className="flex items-center gap-2 text-[10px]">
                                 <span className={`font-semibold w-7 shrink-0 ${color}`}>{label}</span>
                                  <span
                                    className="font-semibold tabular-nums"
                                    title={isLive
                                      ? "Current exchange execution positions"
-                                     : "Current independent logical stage rows; physical Cartesian/materialized fan-out is excluded"}
+                                     : "Current independent coordinated Strategy Sets; physical Cartesian/materialized fan-out is excluded"}
                                  >
-                                   {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "rows"}
+                                   {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "Sets"}
                                  </span>
                                  {label === "Base" && total > 0 && (
                                    <span className="text-muted-foreground">
@@ -3102,7 +3102,7 @@ export function ActiveConnectionCard({
                                  )}
                                  {label === "Main" && overall > 0 && (
                                    <span className="text-muted-foreground">
-                                     overall <span className="text-foreground font-medium tabular-nums">{overall >= 1000 ? `${(overall / 1000).toFixed(1)}K` : overall}</span>
+                                     Overall (all Sets) <span className="text-foreground font-medium tabular-nums">{overall >= 1000 ? `${(overall / 1000).toFixed(1)}K` : overall}</span>
                                    </span>
                                  )}
                                  {label === "Real" && valid > 0 && (
@@ -3112,7 +3112,7 @@ export function ActiveConnectionCard({
                                  )}
                                   {label === "Real" && active > 0 && (
                                     <span className="text-muted-foreground">
-                                      active <span className="text-foreground font-medium tabular-nums">{active >= 1000 ? `${(active / 1000).toFixed(1)}K` : active}</span>
+                                      used at Real <span className="text-foreground font-medium tabular-nums">{active >= 1000 ? `${(active / 1000).toFixed(1)}K` : active}</span>
                                     </span>
                                   )}
                                   {label === "Real" && continuousRealCreated > 0 && (

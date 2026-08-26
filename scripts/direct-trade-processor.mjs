@@ -85,6 +85,14 @@ const DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT = 5
 const DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN = 2
 const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 22
 const DIRECT_TRADE_PROCESSOR_HEARTBEAT_INTERVAL_MS = 1_500
+const DIRECT_TRADE_CONTROL_REQUEST_TIMEOUT_MS = 10_000
+const DIRECT_TRADE_MAX_LIVE_CLOSE_ACTIONS_PER_CYCLE = 1
+const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"]
+
+function normalizeEnabledIndicationTypes(value, fallback = DIRECT_TRADE_ENTRY_TACTICS) {
+  const source = Array.isArray(value) ? value : fallback
+  return [...new Set(source.filter((entry) => DIRECT_TRADE_ENTRY_TACTICS.includes(entry)))]
+}
 
 function normalizeDirectTradeVolumeFactor(value, fallback = DIRECT_TRADE_VOLUME_FACTOR_DEFAULT) {
   const parsed = Number(value)
@@ -377,6 +385,7 @@ let state = {
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   historyHours: 48,
   entryTactics: ["relative"],
+  enabledIndicationTypes: ["relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
@@ -452,6 +461,8 @@ let lastPersistAt = 0
 let lastStateRefreshAt = 0
 let lastStandbyWarningAt = 0
 let lastHeartbeatWarningAt = 0
+let lifecycleCycleCount = 0
+let lastProgressAt = 0
 let stateDirty = false
 let tickInFlight = false
 let connectionExchange = "bingx"
@@ -1286,9 +1297,26 @@ function getOpenPositionsForSymbol(symbol, direction) {
   )
 }
 
+function currentRuntimePositions() {
+  const runtimeMode = state.liveMode ? "live" : "simulated"
+  return positions.filter((position) => (
+    (position?.mode === "live" ? "live" : "simulated") === runtimeMode
+  ))
+}
+
 function canOpenPosition(config) {
+  const runtimePositions = currentRuntimePositions()
+  // Derivatives venues net one physical position per symbol/direction slot.
+  // Independent configuration variants may still be simulated and evaluated,
+  // but two live rows must never own the same exchange slot or race each
+  // other's reduce-only close.
+  if (state.liveMode && runtimePositions.some((position) => (
+    position?.symbol === config?.symbol
+    && position?.direction === config?.direction
+    && (position?.status === "open" || position?.status === "opening")
+  ))) return false
   return assessDirectTradePositionCapacity({
-    positions,
+    positions: runtimePositions,
     candidate: config,
     maxTotalPositions: state.maxTotalPositions,
     maxPositionsPerSymbol: state.maxPositionsPerSymbol,
@@ -1334,6 +1362,8 @@ async function openPosition(config) {
     blockVolumeRatio: config.blockVolumeRatio ?? config.volumeRatio ?? state.blockVolumeRatio,
     blockProfitFactorRatio: config.blockProfitFactorRatio ?? state.blockProfitFactorRatio,
     entrySignalKey: config.entrySignalKey || null,
+    entryTactic: config.entryTactic || null,
+    indicationType: config.entryTactic || null,
     blockAddedCount: 0,
     blockLastPulseAt: 0,
     blockRealizedVolumeMultiplier: 1,
@@ -2075,6 +2105,7 @@ function momentumReversalRuntime(pos, currentPrice) {
 async function checkAndClosePositions() {
   const openPos = positions.filter((p) => p.status === "open")
   if (openPos.length === 0) return
+  let liveCloseActions = 0
 
   // Batch fetch current prices
   const symbols = [...new Set(openPos.map((p) => p.symbol))]
@@ -2094,6 +2125,8 @@ async function checkAndClosePositions() {
   for (const pos of openPos) {
     const currentPrice = prices[pos.symbol]
     if (pos.closeControlId || String(pos.closeState || "").startsWith("closing")) {
+      if (pos.mode === "live" && liveCloseActions >= DIRECT_TRADE_MAX_LIVE_CLOSE_ACTIONS_PER_CYCLE) continue
+      if (pos.mode === "live") liveCloseActions++
       await closePosition(
         pos,
         Number(pos.closeRequestedPrice) || Number(currentPrice) || Number(pos.lastObservedPrice),
@@ -2203,6 +2236,8 @@ async function checkAndClosePositions() {
     }
 
     if (shouldClose) {
+      if (pos.mode === "live" && liveCloseActions >= DIRECT_TRADE_MAX_LIVE_CLOSE_ACTIONS_PER_CYCLE) continue
+      if (pos.mode === "live") liveCloseActions++
       await closePosition(pos, currentPrice, exitReason)
     }
   }
@@ -2257,7 +2292,7 @@ async function closePosition(pos, exitPrice, reason) {
         price: pos.closeRequestedPrice,
         leverage: 10,
         reconcileOnly: wasSubmitted,
-      })
+      }, DIRECT_TRADE_CONTROL_REQUEST_TIMEOUT_MS)
       pos.closeControlState = closeResult?.controlState || pos.closeControlState
       pos.closeOrderId = closeResult?.orderId && closeResult.orderId !== "N/A"
         ? closeResult.orderId
@@ -2276,6 +2311,33 @@ async function closePosition(pos, exitPrice, reason) {
         }
         log("warn", `Close order rejected for ${pos.symbol}`, closeResult?.error)
         return false
+      }
+      if (closeResult?.alreadyClosed === true) {
+        // The venue is flat, so retrying another reduce-only generation can
+        // only create rate-limit pressure. Close the local ownership row while
+        // keeping exchange PnL explicitly pending; absence is not a fill and
+        // must never manufacture an exit price or settlement.
+        pos.orphanedCloseControlId = activeControlId
+        pos.status = "closed"
+        pos.closeState = "closed_accounting_pending"
+        pos.closeControlState = "venue_position_absent"
+        pos.closeControlId = null
+        pos.lastAppliedCloseControlId = null
+        pos.closeSubmittedAt = null
+        pos.closeRetryAfter = 0
+        pos.closeSettlementWaitStartedAt = 0
+        pos.closeAccountingComplete = false
+        pos.pnlAccountingComplete = false
+        pos.pnlAccountingSource = "exchange_position_absent_pending"
+        pos.closeAccountingLastError = "Exchange position absent; settlement must be reconciled without inferring PnL"
+        pos.closedAt = new Date().toISOString()
+        pos.exitReason = "exchange_position_absent"
+        pos.remainingQuantity = 0
+        stateDirty = true
+        rebuildRealizedNotionalStats()
+        await persistState()
+        log("warn", `Closed local ${pos.direction} ${pos.symbol} ownership because the exchange position is already absent; PnL remains accounting-pending`)
+        return true
       }
       if (!isTerminalControlOrderResult(closeResult, Number(pos.closeRequestedQuantity))) {
         pos.closeState = "closing_pending_reconciliation"
@@ -2541,6 +2603,8 @@ async function persistState() {
       lastRecalcAt,
       configCount: executionConfigs.length,
       historyPolicy: lastHistoryPolicy,
+      lifecycleCycleCount,
+      lastProgressAt: lastProgressAt > 0 ? new Date(lastProgressAt).toISOString() : null,
       positions,
       stats,
       configStatus: Object.fromEntries(configStatus),
@@ -2578,6 +2642,8 @@ async function processorHeartbeatLoop() {
         instanceId: processorInstanceId,
         tickCount,
         errorsLast5min,
+        lifecycleCycleCount,
+        lastProgressAt: lastProgressAt > 0 ? new Date(lastProgressAt).toISOString() : null,
       }, 2_500)
       if (result?.leaseHeld === false) processorLeaseHeld = false
     } catch (error) {
@@ -2603,6 +2669,10 @@ function applyRemoteState(nextState, source = "load") {
     ),
     trailingMinTakeProfitRatio: normalizeDirectTradeTrailingMinTakeProfitRatio(
       nextState.trailingMinTakeProfitRatio ?? nextState.trailingMinStep ?? state.trailingMinTakeProfitRatio,
+    ),
+    enabledIndicationTypes: normalizeEnabledIndicationTypes(
+      nextState.enabledIndicationTypes,
+      state.enabledIndicationTypes,
     ),
     dcaProfile: normalizeDirectDcaProfile(nextState.dcaProfile || state.dcaProfile),
   }
@@ -2753,6 +2823,13 @@ async function loadState(includeExecution = false) {
 
 function shouldEnterNow(config) {
   if (config?.valid === false) return false
+  // Live permissions never shrink the internal historic calculation matrix.
+  // An empty list is a valid safety state: keep calculating every selected
+  // indication type while emitting no new exchange entry.
+  if (
+    state.liveMode
+    && !normalizeEnabledIndicationTypes(state.enabledIndicationTypes, []).includes(config?.entryTactic)
+  ) return false
   // Historical PF/DDT makes a variant eligible; the one-minute pulse supplies
   // the fresh causal market signal. A stale historical winner can never open
   // an order after the pulse window has expired.
@@ -2807,7 +2884,7 @@ function shouldEnterNow(config) {
   }
 
   // Stagger entries: don't open all at once
-  if (!assessDirectTradeRecentOpenCapacity({ positions }).allowed) return false
+  if (!assessDirectTradeRecentOpenCapacity({ positions: currentRuntimePositions() }).allowed) return false
 
   return true
 }
@@ -2948,6 +3025,12 @@ async function mainLoop() {
         await sleep(5000)
       }
     }
+
+    // Progress is published only after the complete lifecycle iteration has
+    // settled. The independent heartbeat can therefore prove that a process
+    // exists without falsely declaring a blocked exchange call healthy.
+    lifecycleCycleCount++
+    lastProgressAt = Date.now()
 
     await waitForDirectTradeNextCycle({
       cycleStartedAt,

@@ -161,6 +161,7 @@ export async function GET() {
       !isServerlessDeploymentRuntime() &&
       isGloballyRunning &&
       !isGloballyPaused &&
+      !hasFreshGlobalHeartbeat &&
       effectiveCoordinatorEngineCount === 0 &&
       startupRecoveryGraceExpired
     ) {

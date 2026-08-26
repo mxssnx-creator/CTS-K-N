@@ -517,6 +517,76 @@ describe("live-order-service integration accounting", () => {
     )
   })
 
+  test("Direct-Trade completes a reduce-only control when BingX reports that the position is already absent", async () => {
+    const { directOrderControlKey, isAlreadyClosedReduceOnlyError, placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      placeOrder: jest.fn(async () => ({
+        success: false,
+        code: 101205,
+        error: "No position to close",
+      })),
+    }
+    const input = {
+      connectionId: "conn-direct-already-closed",
+      symbol: "BTCUSDT",
+      side: "short" as const,
+      positionDirection: "long" as const,
+      quantity: 1,
+      price: 100,
+      connector,
+      connection: { id: "conn-direct-already-closed", position_mode: "one_way" },
+      clientOrderId: "dtclose_already_closed_1",
+      source: "direct-trade-close",
+      reduceOnly: true,
+      persistPosition: false,
+      updateCounters: false,
+    }
+
+    expect(isAlreadyClosedReduceOnlyError({ code: 101205 })).toBe(true)
+    expect(isAlreadyClosedReduceOnlyError(new Error("No position to close"))).toBe(true)
+    expect(isAlreadyClosedReduceOnlyError(new Error("authentication failed"))).toBe(false)
+
+    const first = await placeLiveOrder(input)
+    const replay = await placeLiveOrder(input)
+
+    expect(first).toMatchObject({
+      success: true,
+      alreadyClosed: true,
+      controlState: "completed",
+      pendingReconciliation: false,
+      fill: { filled: false, filledQty: 0, filledPrice: 0, status: "already_closed" },
+    })
+    expect(replay).toMatchObject({ success: true, alreadyClosed: true, idempotentReplay: true })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(kvStore.get(directOrderControlKey(input.connectionId, input.clientOrderId))!))
+      .toMatchObject({ state: "completed", response: { alreadyClosed: true } })
+  })
+
+  test("does not reinterpret an already-closed error for a non-reduce entry", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({ success: false, code: 101205, error: "No position to close" })),
+    }
+
+    const result = await placeLiveOrder({
+      connectionId: "conn-direct-entry-failure",
+      symbol: "BTCUSDT",
+      side: "long",
+      positionDirection: "long",
+      quantity: 1,
+      price: 100,
+      connector,
+      connection: { id: "conn-direct-entry-failure", position_mode: "one_way" },
+      clientOrderId: "dtopen_not_reduce_1",
+      source: "direct-trade-open",
+      persistPosition: false,
+    })
+
+    expect(result).toMatchObject({ success: false, controlState: "failed" })
+    expect(result).not.toHaveProperty("alreadyClosed", true)
+  })
+
   test("Direct-Trade recovers an OKX acknowledgement by its portable venue client id", async () => {
     const { exchangeClientOrderIdForControl, placeLiveOrder } = await import("@/lib/live-order-service")
     const controlId = "dtopen_okx_ack_without_order_id_1"

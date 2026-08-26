@@ -293,4 +293,4 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/volume/calculate	POST	volume	force-dynamic		none-detected	app/api/volume/calculate/route.ts
 /api/volume/history/[id]	GET	volume	force-dynamic		none-detected	app/api/volume/history/[id]/route.ts
 /api/workflow-logs/[id]	DELETE,GET	workflow-logs	force-dynamic		none-detected	app/api/workflow-logs/[id]/route.ts
-/api/ws	GET	ws	force-dynamic		none-detected	app/api/ws/route.ts
+/api/ws	GET	ws	force-dynamic	10	none-detected	app/api/ws/route.ts

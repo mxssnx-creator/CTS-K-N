@@ -152,6 +152,40 @@ describe("Direct-Trade API state and processor lease", () => {
     }
   })
 
+  test("persists an empty live-indication permission set while retaining all internal calculations", async () => {
+    const [{ POST, GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.del(...DIRECT_KEYS)
+
+    try {
+      const started = await POST(post({
+        action: "start",
+        liveMode: false,
+        entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+        enabledIndicationTypes: [],
+      }) as any)
+      expect((await started.json()).state).toMatchObject({
+        entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+        enabledIndicationTypes: [],
+      })
+
+      const persisted = await (await GET()).json()
+      expect(persisted.state.enabledIndicationTypes).toEqual([])
+      expect(persisted.state.entryTactics).toHaveLength(4)
+
+      const updated = await POST(post({
+        action: "update-config",
+        enabledIndicationTypes: ["breakout", "relative", "invalid"],
+      }) as any)
+      expect((await updated.json()).state.enabledIndicationTypes).toEqual(["breakout", "relative"])
+    } finally {
+      await redis.del(...DIRECT_KEYS)
+    }
+  })
+
   test("keeps the Direct-Trade volume factor at 0.1 by default and within 0.1–10", async () => {
     const [{ POST, GET }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/route"),
@@ -290,6 +324,38 @@ describe("Direct-Trade API state and processor lease", () => {
     }
   })
 
+  test("routine state reads keep the complete execution grid off the hot path", async () => {
+    const [{ GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.del(...DIRECT_KEYS)
+
+    try {
+      const executionConfigs = Array.from({ length: 512 }, (_, index) => ({
+        setKey: `large-grid-${index}`,
+        symbol: "BTCUSDT",
+        valid: true,
+      }))
+      await redis.set("direct_trade:execution-configs", JSON.stringify(executionConfigs))
+      await redis.set("direct_trade:calculation", JSON.stringify({
+        evaluatedSets: executionConfigs.length,
+        validSets: executionConfigs.length,
+      }))
+
+      const response = await GET(new Request("http://localhost/api/trade-engine/direct-trade") as any)
+      const payload = await response.json()
+      expect(payload).toMatchObject({
+        configTotal: executionConfigs.length,
+        validConfigTotal: executionConfigs.length,
+      })
+      expect(payload).not.toHaveProperty("executionConfigs")
+    } finally {
+      await redis.del(...DIRECT_KEYS)
+    }
+  })
+
   test("authenticated heartbeats renew only the exact owner without replacing position snapshots", async () => {
     const [{ POST }, { getRedisClient, persistNow }, { directTradeKeyspace }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/route"),
@@ -304,11 +370,15 @@ describe("Direct-Trade API state and processor lease", () => {
 
     try {
       const snapshot = [{ id: "x02-open", status: "open" }]
+      const syncedProgressAt = new Date(Date.now() - 1_000).toISOString()
       const initial = await POST(post({
         action: "processor-sync",
         connectionId: "bingx-x02",
         instanceId: "worker-x02",
         tickCount: 7,
+        errorsLast5min: 1,
+        lifecycleCycleCount: 41,
+        lastProgressAt: syncedProgressAt,
         positions: snapshot,
         stats: { totalOrders: 1 },
       }) as any)
@@ -334,12 +404,17 @@ describe("Direct-Trade API state and processor lease", () => {
         instanceId: "worker-x02",
         tickCount: 8,
         errorsLast5min: 2,
+        lifecycleCycleCount: 42,
+        lastProgressAt: new Date().toISOString(),
       }, PROCESSOR_TOKEN) as any)
       await expect(heartbeat.json()).resolves.toMatchObject({ success: true, leaseHeld: true })
       expect(JSON.parse(await redis.get(keys.positions) as string)).toEqual(snapshot)
       expect(JSON.parse(await redis.get(keys.processor) as string)).toMatchObject({
         instanceId: "worker-x02",
         tickCount: 7,
+        errorsLast5min: 1,
+        lifecycleCycleCount: 41,
+        lastProgressAt: syncedProgressAt,
       })
       expect(Date.parse(String(await redis.get(keys.processorHeartbeat)))).toBeGreaterThan(0)
 

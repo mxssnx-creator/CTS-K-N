@@ -162,7 +162,10 @@ const { GET } = require("@/app/api/connections/progression/[id]/stats/route")
 
 describe("progression stats order aggregation", () => {
   it("uses one aggregation for mixed canonical and legacy rows in rows and direction totals", async () => {
-    const response = await GET({} as Request, { params: Promise.resolve({ id: "conn-1" }) })
+    const response = await GET(
+      { url: "http://localhost/api/connections/progression/conn-1/stats?view=detail&detailLimit=500" } as Request,
+      { params: Promise.resolve({ id: "conn-1" }) },
+    )
     const body = await response.json()
     expect(body.error).toBeUndefined()
     const live = body.liveExecution
@@ -272,5 +275,30 @@ describe("progression stats order aggregation", () => {
         avgVolumeIncrement: 2,
       }),
     ])
+    expect(body.strategyDetail.real.positionStats.adjustTypes.block).toMatchObject({
+      scopedEvaluationTotal: 2,
+      scopedEvaluationOffset: 0,
+      scopedEvaluationReturned: 2,
+      scopedEvaluationTruncated: false,
+    })
+  })
+
+  it("keeps exhaustive scope and related-Base rows out of the hot summary response", async () => {
+    const response = await GET(
+      { url: "http://localhost/api/connections/progression/conn-1/stats" } as Request,
+      { params: Promise.resolve({ id: "conn-1" }) },
+    )
+    const body = await response.json()
+    const positionStats = body.strategyDetail.real.positionStats
+
+    expect(positionStats.adjustTypes.block.scopedEvaluations).toEqual([])
+    expect(positionStats.adjustTypes.block).toMatchObject({
+      scopedEvaluationTotal: 2,
+      scopedEvaluationReturned: 0,
+      scopedEvaluationTruncated: true,
+    })
+    expect(positionStats.hedge.perBase).toEqual([])
+    expect(positionStats).not.toHaveProperty("hedgePosAcc")
+    expect(body.strategyDetail.real).not.toHaveProperty("hedgePosAcc")
   })
 })

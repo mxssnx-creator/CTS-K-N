@@ -983,6 +983,15 @@ export class TradeEngineManager {
   }
 
   /**
+   * Age since the admitted owner last completed a meaningful pipeline phase.
+   * This intentionally differs from lease age: a long but progressing
+   * bootstrap must not be churned by the watchdog.
+   */
+  get canonicalPipelineProgressAgeMs(): number {
+    return this.canonicalPipelineAdmission.progressAgeMs()
+  }
+
+  /**
    * A long exhaustive pass is productive work, not a stalled timer. Let the
    * watchdog renew liveness without starting another processor generation.
    */
@@ -1027,6 +1036,10 @@ export class TradeEngineManager {
   private async refreshPrehistoricBootstrapHeartbeat(): Promise<void> {
     if (!this.isRunning || !this.prehistoricBootstrapInFlight) return
     const nowMs = Date.now()
+    // A bootstrap has a separate hard 20-minute deadline. Its periodic,
+    // owner-checked progress heartbeat prevents the short realtime watchdog
+    // from repeatedly restarting a healthy, exhaustive 30-symbol bootstrap.
+    this.canonicalPipelineAdmission.touch("bootstrap", nowMs)
     const nowIso = new Date(nowMs).toISOString()
     const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
     const client = getRedisClient()
@@ -2431,13 +2444,20 @@ export class TradeEngineManager {
           ownsBootstrapAdmission = false
         }
         this.prehistoricBootstrapInFlight = false
-        if (!this.isCurrentGeneration(generationEpoch)) return
-
+        // A settings/symbol change can supersede this generation while it is
+        // still releasing its admissions. The queued replacement belongs to
+        // the current engine session and must be handed off before the stale
+        // generation guard returns; otherwise both generations disappear and
+        // the dashboard remains permanently in `recoordinating`.
         if (this.prehistoricReloadQueued) {
           this.prehistoricReloadQueued = false
-          this.loadPrehistoricDataInBackground(cacheKey, redisClient, "queued settings recoordination")
+          if (this.isRunning && this.epoch > 0) {
+            this.loadPrehistoricDataInBackground(cacheKey, redisClient, "queued settings recoordination")
+          }
           return
         }
+
+        if (!this.isCurrentGeneration(generationEpoch)) return
 
         if (succeeded) {
           // A cancelled older generation can have armed a retry while a newer
@@ -3303,6 +3323,9 @@ export class TradeEngineManager {
           REALTIME_CANONICAL_CYCLE_BUDGET_MS,
           () => { cycleBudgetExceeded = true },
         )
+        // A complete canonical pass is actual forward progress. Keep the
+        // watchdog tied to this stamp rather than the age of the lease.
+        this.canonicalPipelineAdmission.touch("scheduled")
         if (cycleBudgetExceeded) {
           // The current stage has now returned and therefore cannot overlap
           // the next tick. Record the incomplete pass explicitly, skip all
@@ -5040,6 +5063,7 @@ export class TradeEngineManager {
           0,
         )
         const successCount = results.filter((r: any) => r && !r.error).length
+        this.canonicalPipelineAdmission.touch("historic")
         try {
           const telemetryClient = getRedisClient()
           const progKey = `progression:${connId}`
@@ -5638,6 +5662,7 @@ export class TradeEngineManager {
             return null
           }),
         )
+        this.canonicalPipelineAdmission.touch("immediate")
         if (shouldContinue()) {
           console.log(
             `[v0] [Engine ${this.connectionId}] immediate strategy re-evaluation completed for ${symbols.length} symbol(s) (${reason})`,
@@ -5693,8 +5718,14 @@ export class TradeEngineManager {
       const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
       const key = scope.engineProgressionKey
       const legacyKey = `engine_progression:${this.connectionId}`
+      const updatedAt = new Date().toISOString()
       const progressionData = {
         phase,
+        status: phase === "live_trading"
+          ? "running"
+          : phase === "stopped"
+            ? "stopped"
+            : phase === "error" ? "error" : "processing",
         progress: Math.min(100, Math.max(0, progress)),
         detail,
         sub_current: subProgress?.current || 0,
@@ -5702,7 +5733,13 @@ export class TradeEngineManager {
         sub_item: subProgress?.item || "",
         connection_id: this.connectionId,
         engine_type: scope.engineType,
-        updated_at: new Date().toISOString(),
+        updated_at: updatedAt,
+        ...(phase === "live_trading" ? {
+          needs_reconcile: false,
+          orphan_cleanup_pending: false,
+          orphan_cleanup_reason: "",
+          recoordination_completed_at: updatedAt,
+        } : {}),
       }
 
       await Promise.all([

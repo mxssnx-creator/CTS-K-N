@@ -9,6 +9,8 @@ import {
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
   normaliseDirectTradeTrailingMinTakeProfitRatio,
+  normaliseEnabledDirectTradeIndicationTypes,
+  normaliseEntryTactics,
   normaliseDirectTradeStrategyTypes,
   normaliseDirectTradeTimeframes,
   normaliseDirectTradeVolumeFactor,
@@ -90,6 +92,14 @@ describe("Direct-Trade independent historical coordination", () => {
     // lineage after the operator-facing rename.
     expect(normaliseDirectTradeStrategyTypes(["trailing_auto_combination", "complex"]))
       .toEqual(["trailing_auto", "combination"])
+  })
+
+  test("allows every live indication permission to be off without disabling the calculation matrix", () => {
+    expect(normaliseEnabledDirectTradeIndicationTypes([], ["relative"])).toEqual([])
+    expect(normaliseEnabledDirectTradeIndicationTypes(undefined, ["relative"])).toEqual(["relative"])
+    expect(normaliseEnabledDirectTradeIndicationTypes(["breakout", "bad", "breakout"], []))
+      .toEqual(["breakout"])
+    expect(normaliseEntryTactics([])).toEqual(["momentum", "mean_reversion", "breakout", "relative"])
   })
 
   test("materialises independent TP/SL/trailing keys and keeps hindsight best exits analytical only", () => {

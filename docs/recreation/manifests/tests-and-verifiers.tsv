@@ -79,6 +79,7 @@ unit	__tests__/unit/direct-trade-continuity-cron.test.ts
 unit	__tests__/unit/direct-trade-control-order-route.test.ts
 unit	__tests__/unit/direct-trade-coordination.test.ts
 unit	__tests__/unit/direct-trade-history-policy.test.ts
+unit	__tests__/unit/direct-trade-indication-stats.test.ts
 unit	__tests__/unit/direct-trade-ledger-recovery.test.ts
 unit	__tests__/unit/direct-trade-market-history.test.ts
 unit	__tests__/unit/direct-trade-overview-stats.test.ts
@@ -245,6 +246,7 @@ unit	__tests__/unit/trade-direction.test.ts
 unit	__tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
 unit	__tests__/unit/trade-engine-start-all-accounting.test.ts
 unit	__tests__/unit/trade-engine-start-lock.test.ts
+unit	__tests__/unit/trade-engine-status-healing-race.test.ts
 unit	__tests__/unit/trade-history-stability.test.ts
 unit	__tests__/unit/trade-protection-contract.test.ts
 unit	__tests__/unit/trailing-dca-strategy.test.ts

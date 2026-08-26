@@ -605,6 +605,41 @@ function isAmbiguousPlacementFailure(resultOrError: any): boolean {
   ].some((needle) => message.includes(needle))
 }
 
+/**
+ * A reduce-only close can race a venue-side liquidation/manual close or a
+ * previous acknowledged control. This is a successful *absence* result, not
+ * a failed order generation. Keep the matcher deliberately narrow and invoke
+ * it only for durable Direct-Trade reduce-only controls.
+ */
+export function isAlreadyClosedReduceOnlyError(resultOrError: any): boolean {
+  const parts = [
+    resultOrError?.code,
+    resultOrError?.retCode,
+    resultOrError?.errorCode,
+    resultOrError?.data?.code,
+    resultOrError?.error,
+    resultOrError?.message,
+    resultOrError?.msg,
+    resultOrError?.data?.msg,
+    resultOrError,
+  ]
+  let serialized = ""
+  try {
+    serialized = JSON.stringify(resultOrError)
+  } catch {}
+  const text = `${parts.map((part) => String(part ?? "")).join(" ")} ${serialized}`.toLowerCase()
+  if (/(^|\D)101205(\D|$)/.test(text)) return true
+  return [
+    "no position to close",
+    "position does not exist",
+    "position not exist",
+    "position is already closed",
+    "position already closed",
+    "position quantity is zero",
+    "position qty is 0",
+  ].some((needle) => text.includes(needle))
+}
+
 export async function loadLiveOrderConnection(connectionId: string): Promise<any> {
   await initRedis()
   let connection: any = null
@@ -1132,6 +1167,41 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     }
     return response
   }
+  const completeAlreadyClosedReduceOnlyControl = async (reason: unknown, raw?: any) => {
+    const response = {
+      success: true,
+      alreadyClosed: true,
+      mode,
+      orderId: directControl?.orderId || "N/A",
+      symbol,
+      side: exchangeSide,
+      direction,
+      quantity: submitted.quantity,
+      requestedQuantity: submitted.requestedQuantity,
+      submittedQuantity: submitted.quantity,
+      quantityAdjusted: submitted.adjusted,
+      quantityAdjustmentReason: submitted.reason,
+      leverage: input.leverage || 1,
+      fill: { filled: false, filledQty: 0, filledPrice: 0, status: "already_closed" },
+      position: null,
+      details: raw || { error: String((reason as any)?.message ?? reason ?? "Position is already closed") },
+      settlement: null,
+      pendingReconciliation: false,
+      controlState: "completed",
+      idempotentReplay: false,
+    }
+    if (directControl) {
+      directControl = {
+        ...directControl,
+        state: "completed",
+        response,
+        lastError: undefined,
+        updatedAt: Date.now(),
+      }
+      await writeDirectOrderControlRecord(directControl)
+    }
+    return response
+  }
 
   if (directControl && !ownsDirectControl) {
     if ((directControl.state === "completed" || directControl.state === "failed") && directControl.response) {
@@ -1262,6 +1332,9 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     result = await connector.placeOrder(symbol, exchangeSide, submitted.quantity, input.price || 0, input.orderType || "market", options)
   } catch (error) {
     if (!directControl) throw error
+    if (input.reduceOnly === true && isAlreadyClosedReduceOnlyError(error)) {
+      return completeAlreadyClosedReduceOnlyControl(error)
+    }
     const message = error instanceof Error ? error.message : String(error)
     const response = {
       success: true,
@@ -1289,6 +1362,9 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   }
   if (!result?.success) {
     const failedOrderId = result?.orderId || result?.order_id || result?.id
+    if (directControl && input.reduceOnly === true && isAlreadyClosedReduceOnlyError(result)) {
+      return completeAlreadyClosedReduceOnlyControl(result?.error || result, result)
+    }
     if (directControl && isAmbiguousPlacementFailure(result)) {
       const response = {
         success: true,

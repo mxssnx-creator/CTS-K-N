@@ -32,7 +32,9 @@ import type {
   DirectTradeOverviewCategory,
 } from "@/lib/direct-trade-overview-stats"
 import type { ExchangeAccountPerformance15h } from "@/lib/exchange-account-performance"
+import type { DirectTradeIndicationTypeStatsRow } from "@/lib/direct-trade-indication-stats"
 import {
+  DIRECT_TRADE_ENTRY_TACTICS,
   DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
@@ -40,6 +42,7 @@ import {
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
+  type DirectTradeEntryTactic,
 } from "@/lib/direct-trade-coordination"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -84,7 +87,8 @@ interface DirectTradeState {
   timeframes: ("5m" | "15m" | "30m")[]
   strategyTypes: ("standard" | "trailing_fixed" | "trailing_auto" | "combination" | "inverse" | "high_protection" | "dca")[]
   historyHours: number
-  entryTactics: ("momentum" | "mean_reversion" | "breakout" | "relative")[]
+  entryTactics: DirectTradeEntryTactic[]
+  enabledIndicationTypes: DirectTradeEntryTactic[]
   exitTactics: ("bracket" | "momentum_reversal" | "relative" | "time")[]
   entryTiming: "current" | "last_confirmed"
   activityVolumeRatio: number
@@ -157,6 +161,7 @@ const DEFAULT_STATE: DirectTradeState = {
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   historyHours: 48,
   entryTactics: ["relative"],
+  enabledIndicationTypes: ["relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
@@ -212,6 +217,7 @@ export function DirectTradeSection() {
   const [openPositions, setOpenPositions] = useState(0)
   const [closedPositions, setClosedPositions] = useState(0)
   const [accountingPending, setAccountingPending] = useState(0)
+  const [indicationTypeStats, setIndicationTypeStats] = useState<DirectTradeIndicationTypeStatsRow[]>([])
   const [disabledConfigs, setDisabledConfigs] = useState(0)
   const [calculationProgress, setCalculationProgress] = useState<{ status?: string; completedSymbols?: number; totalSymbols?: number; evaluatedSets?: number } | null>(null)
   const [processorHealthy, setProcessorHealthy] = useState(false)
@@ -239,7 +245,8 @@ export function DirectTradeSection() {
   const [localTimeframes, setLocalTimeframes] = useState<string[]>(["5m", "15m", "30m"])
   const [localStrategyTypes, setLocalStrategyTypes] = useState<string[]>(["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"])
   const [localHistoryHours, setLocalHistoryHours] = useState(48)
-  const [localEntryTactics, setLocalEntryTactics] = useState<string[]>(["momentum", "mean_reversion", "breakout", "relative"])
+  const [localEntryTactics, setLocalEntryTactics] = useState<DirectTradeEntryTactic[]>([...DIRECT_TRADE_ENTRY_TACTICS])
+  const [localEnabledIndicationTypes, setLocalEnabledIndicationTypes] = useState<DirectTradeEntryTactic[]>(["relative"])
   const [localExitTactics, setLocalExitTactics] = useState<string[]>(["bracket", "momentum_reversal", "relative", "time"])
   const [localEntryTiming, setLocalEntryTiming] = useState<"current" | "last_confirmed">("current")
   const [localActivityVolumeRatio, setLocalActivityVolumeRatio] = useState(1)
@@ -282,6 +289,11 @@ export function DirectTradeSection() {
     if (!isPending("strategyTypes")) setLocalStrategyTypes(remoteState.strategyTypes || ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"])
     if (!isPending("historyHours")) setLocalHistoryHours(remoteState.historyHours ?? 48)
     if (!isPending("entryTactics")) setLocalEntryTactics(remoteState.entryTactics || ["momentum", "mean_reversion", "breakout", "relative"])
+    if (!isPending("enabledIndicationTypes")) {
+      setLocalEnabledIndicationTypes(Array.isArray(remoteState.enabledIndicationTypes)
+        ? remoteState.enabledIndicationTypes
+        : remoteState.entryTactics || ["relative"])
+    }
     if (!isPending("exitTactics")) setLocalExitTactics(remoteState.exitTactics || ["bracket", "momentum_reversal", "relative", "time"])
     if (!isPending("entryTiming")) setLocalEntryTiming(remoteState.entryTiming === "last_confirmed" ? "last_confirmed" : "current")
     if (!isPending("activityVolumeRatio")) setLocalActivityVolumeRatio(remoteState.activityVolumeRatio ?? 1)
@@ -325,6 +337,7 @@ export function DirectTradeSection() {
       if (data.openPositions !== undefined) setOpenPositions(data.openPositions)
       if (data.closedPositions !== undefined) setClosedPositions(data.closedPositions)
       if (data.accountingPending !== undefined) setAccountingPending(data.accountingPending)
+      setIndicationTypeStats(Array.isArray(data.indicationTypeStats) ? data.indicationTypeStats : [])
       if (data.disabledConfigs !== undefined) setDisabledConfigs(data.disabledConfigs)
       setCalculationProgress(data.calculationProgress && typeof data.calculationProgress === "object" ? data.calculationProgress : null)
       if (data.processor) setProcessorHealthy(data.processor.isHealthy || false)
@@ -341,6 +354,7 @@ export function DirectTradeSection() {
     setOpenPositions(0)
     setClosedPositions(0)
     setAccountingPending(0)
+    setIndicationTypeStats([])
     setDisabledConfigs(0)
     setCalculationProgress(null)
     setProcessorHealthy(false)
@@ -394,6 +408,7 @@ export function DirectTradeSection() {
           strategyTypes: localStrategyTypes,
           historyHours: localHistoryHours,
           entryTactics: localEntryTactics,
+          enabledIndicationTypes: localEnabledIndicationTypes,
           exitTactics: localExitTactics,
           entryTiming: localEntryTiming,
           activityVolumeRatio: localActivityVolumeRatio,
@@ -1065,10 +1080,43 @@ export function DirectTradeSection() {
                 <p className="text-[10px] text-muted-foreground/70 leading-tight">Default 48h; the public kline transport is paged until this range is fully covered.</p>
               </div>
 
+              <div className="space-y-3 rounded-lg border bg-background/70 p-3 md:col-span-2 lg:col-span-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-medium">Live entry indication types</div>
+                    <p className="text-[10px] text-muted-foreground">These sliders control only new exchange entries. Internal historical calculation and validation continue for every calculated type.</p>
+                  </div>
+                  <Badge variant={localEnabledIndicationTypes.length > 0 ? "outline" : "secondary"} className="text-[9px]">
+                    {localEnabledIndicationTypes.length > 0 ? `${localEnabledIndicationTypes.length} enabled` : "All live entries blocked"}
+                  </Badge>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  {DIRECT_TRADE_ENTRY_TACTICS.map((tactic) => {
+                    const checked = localEnabledIndicationTypes.includes(tactic)
+                    return (
+                      <label key={tactic} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs">
+                        <span className="capitalize">{tactic.replace("_", " ")}</span>
+                        <Switch
+                          aria-label={`Enable ${tactic.replace("_", " ")} Direct-Trade live entries`}
+                          checked={checked}
+                          onCheckedChange={(nextChecked) => {
+                            const next = nextChecked
+                              ? [...localEnabledIndicationTypes, tactic]
+                              : localEnabledIndicationTypes.filter((value) => value !== tactic)
+                            setLocalEnabledIndicationTypes(next)
+                            saveConfig({ enabledIndicationTypes: next })
+                          }}
+                        />
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+
               <div className="space-y-2">
-                <span className="text-xs text-muted-foreground">Independent entry tactics</span>
+                <span className="text-xs text-muted-foreground">Calculated indication types</span>
                 <div className="flex flex-wrap gap-1">
-                  {(["momentum", "mean_reversion", "breakout", "relative"] as const).map((tactic) => (
+                  {DIRECT_TRADE_ENTRY_TACTICS.map((tactic) => (
                     <Button key={tactic} size="sm" variant={localEntryTactics.includes(tactic) ? "default" : "outline"} className="h-7 px-2 text-[10px]" onClick={() => {
                       const next = localEntryTactics.includes(tactic)
                         ? localEntryTactics.filter((value) => value !== tactic)
@@ -1079,6 +1127,7 @@ export function DirectTradeSection() {
                     }}>{tactic.replace("_", " ")}</Button>
                   ))}
                 </div>
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">This matrix remains active in Live mode so simulated historic results can be compared with settled exchange results.</p>
               </div>
 
               <div className="space-y-2">
@@ -1418,6 +1467,64 @@ export function DirectTradeSection() {
                 <div className="text-muted-foreground">Max DDT</div>
                 <div className="font-mono font-bold">{formatDDT(stats.maxDrawdownTimeMin)}</div>
               </div>
+            </div>
+
+            <div className="overflow-hidden rounded-lg border">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/35 px-3 py-2">
+                <div>
+                  <div className="text-xs font-semibold">Indication types · results overview</div>
+                  <div className="text-[10px] text-muted-foreground">Settled runtime outcomes versus the simultaneous internal historical calculation</div>
+                </div>
+                <span className="text-[10px] text-muted-foreground">PF coordinate: 1.00 neutral · 1.10 = +1× PositionCost</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1050px] text-[11px]">
+                  <thead className="text-muted-foreground">
+                    <tr className="border-b">
+                      <th className="px-3 py-1.5 text-left font-medium">Indication</th>
+                      <th className="px-2 py-1.5 text-center font-medium">Live entry</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Open</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Closed / pending</th>
+                      <th className="px-2 py-1.5 text-right font-medium">W / L / BE</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Realized result</th>
+                      <th className="px-2 py-1.5 text-right font-medium" title="Classic realised gross-profit / absolute gross-loss Profit Factor">Realized PF</th>
+                      <th className="px-2 py-1.5 text-right font-medium" title="1 + 0.1 × Σ net PnL percent / Σ realised PositionCost percent">PF coordinate</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Internal valid / eval</th>
+                      <th className="px-3 py-1.5 text-right font-medium">Internal PnL / PF</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono">
+                    {indicationTypeStats.map((row) => (
+                      <tr key={row.indicationType} className="border-b border-dashed last:border-0">
+                        <td className="px-3 py-1.5 font-sans font-medium capitalize">{row.indicationType.replace("_", " ")}</td>
+                        <td className="px-2 py-1.5 text-center">
+                          <Badge variant={row.liveEntryEnabled ? "outline" : "secondary"} className="text-[9px]">
+                            {row.liveEntryEnabled ? "On" : "Off"}
+                          </Badge>
+                        </td>
+                        <td className="px-2 py-1.5 text-right">{row.openPositions}</td>
+                        <td className="px-2 py-1.5 text-right">{row.closedPositions} / <span className={row.accountingPending > 0 ? "text-amber-600" : ""}>{row.accountingPending}</span></td>
+                        <td className="px-2 py-1.5 text-right">{row.wins} / {row.losses} / {row.breakeven}</td>
+                        <td className={`px-2 py-1.5 text-right ${pnlColor(state.liveMode ? Number(row.netExchangePnlUsdt || 0) : row.netPnlPercent)}`}>
+                          {state.liveMode
+                            ? `${Number(row.netExchangePnlUsdt || 0) >= 0 ? "+" : ""}${Number(row.netExchangePnlUsdt || 0).toFixed(4)} USDT`
+                            : formatPnl(row.netPnlPercent)}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">{formatPF(row.profitFactor, row.profitFactorInfinite)}</td>
+                        <td className="px-2 py-1.5 text-right">{row.profitFactorCoordinate == null ? "—" : row.profitFactorCoordinate.toFixed(4)}</td>
+                        <td className="px-2 py-1.5 text-right">{row.internalValid.toLocaleString()} / {row.internalEvaluated.toLocaleString()}</td>
+                        <td className={`px-3 py-1.5 text-right ${pnlColor(row.internalTotalPnl)}`}>
+                          {formatPnl(row.internalTotalPnl)} / {formatPF(row.internalProfitFactor, row.internalProfitFactorInfinite)}
+                        </td>
+                      </tr>
+                    ))}
+                    {indicationTypeStats.length === 0 ? (
+                      <tr><td colSpan={10} className="px-3 py-5 text-center text-muted-foreground">Loading indication-type results…</td></tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+              <p className="border-t px-3 py-2 text-[10px] text-muted-foreground">Open positions and incomplete exchange settlements never enter W/L/BE, PnL or PF. Internal values are historical simulation results and are not presented as exchange settlement.</p>
             </div>
 
             {/* Rolling Position Stats */}

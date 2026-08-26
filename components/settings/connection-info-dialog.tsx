@@ -233,6 +233,16 @@ function RealVariantStatsCard({
   const scopedEvaluations = Array.isArray(stats.scopedEvaluations)
     ? stats.scopedEvaluations.map(asRecord)
     : []
+  const scopedEvaluationOffset = Math.max(0, Math.floor(asNumber(stats.scopedEvaluationOffset)))
+  const scopedEvaluationTotal = Math.max(
+    scopedEvaluations.length,
+    Math.floor(asNumber(stats.scopedEvaluationTotal)),
+  )
+  const [visibleScopedRows, setVisibleScopedRows] = useState(50)
+  useEffect(() => {
+    setVisibleScopedRows(50)
+  }, [label, scopedEvaluationOffset, scopedEvaluations.length])
+  const visibleScopedEvaluations = scopedEvaluations.slice(0, visibleScopedRows)
   const activeOverlay = asRecord(stats.activeOverlayEvaluation)
   const activeReal = asRecord(activeOverlay.real)
   const activeLive = asRecord(activeOverlay.live)
@@ -390,11 +400,11 @@ function RealVariantStatsCard({
               Real scope lanes
             </p>
             <Badge variant="outline" className="text-[10px] tabular-nums">
-              {formatNumber(scopedEvaluations.length, 0)} source/scope/count rows
+              {formatNumber(visibleScopedEvaluations.length, 0)} shown · {formatNumber(scopedEvaluationTotal, 0)} total
             </Badge>
           </div>
           <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
-            {scopedEvaluations.map((row, index) => {
+            {visibleScopedEvaluations.map((row, index) => {
               const observed = asNumber(row.avgObservedProfitFactor)
               const minimum = asNumber(row.avgMinimumProfitFactor)
               const normal = asNumber(row.avgNormalProfitFactor)
@@ -430,6 +440,22 @@ function RealVariantStatsCard({
               )
             })}
           </div>
+          {visibleScopedEvaluations.length < scopedEvaluations.length && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-2 h-7 w-full text-[10px]"
+              onClick={() => setVisibleScopedRows((current) => Math.min(scopedEvaluations.length, current + 50))}
+            >
+              Show 50 more ({formatNumber(scopedEvaluations.length - visibleScopedEvaluations.length, 0)} loaded rows remaining)
+            </Button>
+          )}
+          {scopedEvaluationOffset + scopedEvaluations.length < scopedEvaluationTotal && (
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              This bounded snapshot contains rows {formatNumber(scopedEvaluationOffset + 1, 0)}–{formatNumber(scopedEvaluationOffset + scopedEvaluations.length, 0)} of {formatNumber(scopedEvaluationTotal, 0)}; further windows remain available from the detail API.
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -629,7 +655,7 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
       ["preset", `/api/settings/connections/${encodedId}/preset-type`],
       ["runtime", `/api/connections/${encodedId}/engine-states`],
       ["progression", `/api/connections/progression/${encodedId}`],
-      ["strategy metrics", `/api/connections/progression/${encodedId}/stats`],
+      ["strategy metrics", `/api/connections/progression/${encodedId}/stats?view=detail&detailLimit=500`],
     ] as const
 
     try {

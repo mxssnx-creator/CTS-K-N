@@ -49,6 +49,8 @@ const STATS_RESPONSE_CACHE_TTL_MS = 5_000
 // and replaces this snapshot as soon as it finishes.
 const STATS_RESPONSE_CACHE_MAX_STALE_MS = 5 * 60_000
 const STATS_RESPONSE_CACHE_MAX_ENTRIES = 64
+const STATS_DETAIL_LIMIT_DEFAULT = 500
+const STATS_DETAIL_LIMIT_MAX = 1_000
 type StatsResponseSnapshot = {
   body: string
   headers: Array<[string, string]>
@@ -68,6 +70,20 @@ function positiveInteger(...values: unknown[]): number {
     if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed)
   }
   return 0
+}
+
+function statsDetailWindow(params: { get(name: string): string | null }): {
+  offset: number
+  limit: number
+} {
+  const rawOffset = Number(params.get("detailOffset") || 0)
+  const rawLimit = Number(params.get("detailLimit") || STATS_DETAIL_LIMIT_DEFAULT)
+  return {
+    offset: Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0,
+    limit: Number.isFinite(rawLimit)
+      ? Math.min(STATS_DETAIL_LIMIT_MAX, Math.max(1, Math.floor(rawLimit)))
+      : STATS_DETAIL_LIMIT_DEFAULT,
+  }
 }
 
 /**
@@ -145,7 +161,14 @@ async function runtimeOnlyStatsResponse(
 
 function statsResponseCacheKey(request: NextRequest, connectionId: string): string {
   const params = request.nextUrl?.searchParams || new URL(request.url || "http://localhost").searchParams
-  return `${connectionId}:${params.get("engineType") || params.get("engine_type") || "main"}:${params.get("view") || "full"}`
+  const view = params.get("view") || "full"
+  const detail = view === "detail" ? statsDetailWindow(params) : null
+  return [
+    connectionId,
+    params.get("engineType") || params.get("engine_type") || "main",
+    view,
+    detail ? `${detail.offset}:${detail.limit}` : "summary",
+  ].join(":")
 }
 
 function responseFromStatsSnapshot(snapshot: StatsResponseSnapshot): Response {
@@ -865,6 +888,11 @@ export async function GET(
       }
 
     const statsSearchParams = request.nextUrl?.searchParams || new URL(request.url || "http://localhost").searchParams
+    const statsView = statsSearchParams.get("view") || "full"
+    const includeExhaustiveDetails = statsView === "detail"
+    const detailWindow = includeExhaustiveDetails
+      ? statsDetailWindow(statsSearchParams)
+      : { offset: 0, limit: 0 }
     const requestedEngineType = statsSearchParams.get("engineType") || statsSearchParams.get("engine_type") || ""
     const connection = await getConnection(connectionId).catch(() => null)
     const engineType = stableString(requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main") || "main"
@@ -2416,6 +2444,7 @@ export async function GET(
       avgVolumeIncrement: number
       window: number
     }> = []
+    let blockScopedProfitFactorStatsTotal = 0
     for (const [field, raw] of Object.entries(blockProfitFactorStatsHash)) {
       const snapshotMatch = field.match(/^s:([^:]+):scoped_snapshot$/)
       if (!snapshotMatch) continue
@@ -2446,6 +2475,8 @@ export async function GET(
             ? n(countRow.calculated)
             : n(countRow.evaluated)
           const evaluated = n(countRow.evaluated)
+          blockScopedProfitFactorStatsTotal++
+          if (!includeExhaustiveDetails) continue
           blockScopedProfitFactorStats.push({
             symbol,
             laneKind: signalMatch ? "signal_source" : "direction",
@@ -2506,6 +2537,12 @@ export async function GET(
       left.scope.localeCompare(right.scope) ||
       left.count - right.count,
     )
+    const blockScopedProfitFactorDetailWindow = includeExhaustiveDetails
+      ? blockScopedProfitFactorStats.slice(
+          detailWindow.offset,
+          detailWindow.offset + detailWindow.limit,
+        )
+      : []
 
     const realStagePositionStats = buildRealStagePositionStats({
       validPositionsHash,
@@ -2519,8 +2556,11 @@ export async function GET(
         minimumSampleCount: blockProfitFactorMinimumSampleCount,
         activeOverlayEvaluation: blockActiveOverlayEvaluation,
         countEvaluations: blockCountProfitFactorStats,
-        scopedEvaluations: blockScopedProfitFactorStats,
+        scopedEvaluations: blockScopedProfitFactorDetailWindow,
+        scopedEvaluationTotal: blockScopedProfitFactorStatsTotal,
+        scopedEvaluationOffset: detailWindow.offset,
       },
+      detailWindow,
       // Current open positions are a separate snapshot. Prefer actual exchange
       // exposure in live mode; fall back to open Real-stage promotions in
       // paper/dev operation. Neither source changes the cumulative Overall or
@@ -2548,8 +2588,8 @@ export async function GET(
     // Shared shape for base/main/real/live. `Record<string, any>` keeps the
     // structure flexible for tier-specific extras (win rate, total PnL, etc.
     // live only) without needing a discriminated union on every write site.
-    // Typed as Record<string, unknown> to allow the Real stage to include
-    // the hedgePosAcc nested object alongside the flat number fields.
+    // Typed as Record<string, unknown> to allow the Real stage to include its
+    // bounded position-detail read model alongside the flat number fields.
     const stratDetail: Record<string, Record<string, unknown>> = {}
     // A per-symbol row is useful as a global stage snapshot only after every
     // symbol in the current selection has reported the same cycle. Showing
@@ -2773,62 +2813,6 @@ export async function GET(
                 // General = distinct Real sets this cycle (not lifetime createdSets).
                 // Combined = Real sets running now (those with active base set coordination).
 
-                // ── Hedge pos-count accumulation per base Set ─────────────────
-                // Rebuilt from flat `hedge_pos_acc:{conn}` hash fields.
-                // Fields: `{parentSetKey}:{long|short|sets_long|sets_short|ts}`
-                // We aggregate totals and per-base snapshots so the dashboard
-                // can render both a summary (total long/short entries) and the
-                // per-base breakdown (which base Set is most imbalanced).
-                const hedgeByBase = new Map<string, {
-                  long: number; short: number
-                  setsLong: number; setsShort: number
-                  ts: number
-                }>()
-                for (const [field, rawVal] of Object.entries(hedgePosAccHash)) {
-                  const val = Number(rawVal) || 0
-                  const colonIdx = field.lastIndexOf(":")
-                  if (colonIdx === -1) continue
-                  const baseKey = field.slice(0, colonIdx)
-                  const suffix  = field.slice(colonIdx + 1)
-                  let entry = hedgeByBase.get(baseKey)
-                  if (!entry) {
-                    entry = { long: 0, short: 0, setsLong: 0, setsShort: 0, ts: 0 }
-                    hedgeByBase.set(baseKey, entry)
-                  }
-                  if      (suffix === "long")       entry.long      = val
-                  else if (suffix === "short")      entry.short     = val
-                  else if (suffix === "sets_long")  entry.setsLong  = val
-                  else if (suffix === "sets_short") entry.setsShort = val
-                  else if (suffix === "ts")         entry.ts        = val
-                }
-                let hedgeTotalLong = 0, hedgeTotalShort = 0
-                let hedgeTotalSetsLong = 0, hedgeTotalSetsShort = 0
-                const hedgePerBase: Array<{
-                  parentSetKey: string
-                  longEntries: number; shortEntries: number
-                  longSets: number; shortSets: number
-                  net: number; hedgeRatio: number; lastUpdated: number
-                }> = []
-                for (const [parentSetKey, e] of hedgeByBase) {
-                  hedgeTotalLong      += e.long
-                  hedgeTotalShort     += e.short
-                  hedgeTotalSetsLong  += e.setsLong
-                  hedgeTotalSetsShort += e.setsShort
-                  const total = e.long + e.short
-                  hedgePerBase.push({
-                    parentSetKey,
-                    longEntries:  e.long,
-                    shortEntries: e.short,
-                    longSets:     e.setsLong,
-                    shortSets:    e.setsShort,
-                    net:          e.long - e.short,
-                    hedgeRatio:   total > 0 ? Math.abs(e.long - e.short) / total : 0,
-                    lastUpdated:  e.ts,
-                  })
-                }
-                // Sort most-imbalanced first
-                hedgePerBase.sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
-
                 return {
                   statOverall:     n(progHash.strategies_real_total) || stratCounts.real || 0,
                   statAccumulated: n(dh.stat_accumulated),
@@ -2844,16 +2828,6 @@ export async function GET(
                   // Trailing and Adjust comparisons, plus the current open
                   // symbol/direction snapshot.
                   positionStats: realStagePositionStats,
-                  // ── Hedge pos-count accumulation (long/short per base Set) ──
-                  hedgePosAcc: {
-                    totalLongEntries:  hedgeTotalLong,
-                    totalShortEntries: hedgeTotalShort,
-                    totalLongSets:     hedgeTotalSetsLong,
-                    totalShortSets:    hedgeTotalSetsShort,
-                    netEntries:        hedgeTotalLong - hedgeTotalShort,
-                    baseCount:         hedgeByBase.size,
-                    perBase:           hedgePerBase,
-                  },
                 }
               })()
             : {}),

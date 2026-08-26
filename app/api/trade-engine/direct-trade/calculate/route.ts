@@ -962,9 +962,11 @@ export async function POST(request: NextRequest) {
     }))
     await transaction.exec()
     // Old generations are no longer reachable once the manifest transaction
-    // has committed. Cleanup is batched and cannot affect the current keys.
+    // has committed. Await the lightweight UNLINK dispatch so serverless
+    // runtimes cannot terminate before cleanup is queued; Redis frees the
+    // multi-megabyte values asynchronously.
     if (preparedConfigStore.previousManifest) {
-      void deleteDirectTradeConfigGeneration(client, preparedConfigStore.previousManifest, connectionId)
+      await deleteDirectTradeConfigGeneration(client, preparedConfigStore.previousManifest, connectionId)
     }
 
     // The processor receives only eligible execution candidates. The complete
@@ -980,8 +982,13 @@ export async function POST(request: NextRequest) {
       configTotal: summary.evaluatedSets,
       executionConfigTotal: executionIndexes.length,
       configStorage: preparedConfigStore.manifest
-        ? { mode: "chunked", chunks: preparedConfigStore.manifest.chunks }
-        : { mode: "legacy", chunks: 0 },
+        ? {
+            mode: "chunked",
+            chunks: preparedConfigStore.manifest.chunks,
+            total: preparedConfigStore.manifest.total,
+            encoding: preparedConfigStore.manifest.encoding || "json",
+          }
+        : { mode: "legacy", chunks: 0, total: summary.evaluatedSets, encoding: "json" },
       summary,
     })
   } catch (error) {

@@ -50,6 +50,7 @@ describe("cleanupOrphanedProgress", () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockGetAllConnections.mockResolvedValue([{ id: "conn-1" }])
+    mockSetSettings.mockResolvedValue(undefined)
     mockIsEngineRunning.mockReturnValue(false)
     mockIsProcessorHeartbeatFresh.mockResolvedValue(false)
     mockGetFreshestProcessorHeartbeat.mockResolvedValue(0)
@@ -74,6 +75,14 @@ describe("cleanupOrphanedProgress", () => {
     expect(mockSetSettings).not.toHaveBeenCalledWith(
       "engine_progression:conn-1",
       expect.objectContaining({ phase: "idle", progress: 0 }),
+    )
+    expect(mockSetSettings).toHaveBeenCalledWith(
+      "engine_progression:conn-1",
+      expect.objectContaining({
+        orphan_cleanup_pending: false,
+        needs_reconcile: false,
+        orphan_cleanup_reason: "",
+      }),
     )
     expect(client.del).toHaveBeenCalledWith("engine_orphan_cleanup_pending:conn-1")
   })

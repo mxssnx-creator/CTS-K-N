@@ -67,6 +67,7 @@
     "test:direct-trade:dev-paper": "node scripts/run-direct-trade-dev-soak.mjs",
     "test:direct-trade:recovery": "node scripts/run-direct-trade-recovery-soak.mjs",
     "test:direct-trade:shared-isolation": "node scripts/run-direct-trade-shared-isolation.mjs",
+    "direct-trade:compact-configs": "node --import tsx scripts/compact-direct-trade-configs.ts",
     "test:signal-sources": "node --import tsx scripts/verify-signal-sources.ts",
     "test:prod-preview": "node scripts/run-prod-preview-check.mjs",
     "test:prod-preview:max": "node scripts/run-prod-preview-check.mjs --max-symbols",

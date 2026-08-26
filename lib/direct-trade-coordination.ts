@@ -522,6 +522,22 @@ export function normaliseEntryTactics(value: unknown): DirectTradeEntryTactic[] 
   return tactics.length > 0 ? [...new Set(tactics)] : [...DIRECT_TRADE_ENTRY_TACTICS]
 }
 
+/**
+ * Live-entry permissions are intentionally separate from the calculation
+ * matrix. Unlike `normaliseEntryTactics`, an explicit empty array is valid:
+ * all indication models continue to calculate/validate while no new live
+ * Direct-Trade order may be emitted.
+ */
+export function normaliseEnabledDirectTradeIndicationTypes(
+  value: unknown,
+  fallback: readonly DirectTradeEntryTactic[] = DIRECT_TRADE_ENTRY_TACTICS,
+): DirectTradeEntryTactic[] {
+  const raw = Array.isArray(value) ? value : fallback
+  return [...new Set(raw.filter((item): item is DirectTradeEntryTactic =>
+    DIRECT_TRADE_ENTRY_TACTICS.includes(item as DirectTradeEntryTactic),
+  ))]
+}
+
 export function normaliseExitTactics(value: unknown): DirectTradeExitTactic[] {
   const raw = Array.isArray(value) ? value : []
   const tactics = raw.filter((item): item is DirectTradeExitTactic =>

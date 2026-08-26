@@ -93,6 +93,77 @@ describe('Progression State Manager - Stability Tests', () => {
       }
     })
 
+    test('uses the newest scoped-or-legacy cycle snapshot while preserving merged counters', async () => {
+      const { getRedisClient } = await import('@/lib/redis-db')
+      const { ProgressionStateManager } = await import('@/lib/progression-state-manager')
+      const { buildProgressionScope } = await import('@/lib/progression-scope')
+      const connectionId = `progression-freshest-${Date.now()}`
+      const client = getRedisClient()
+      const scope = buildProgressionScope(connectionId, 'main')
+      const older = new Date(Date.now() - 60_000).toISOString()
+      const newer = new Date().toISOString()
+
+      try {
+        await client.del(scope.progressionKey, scope.legacyProgressionKey)
+        await client.hset(scope.progressionKey, {
+          connection_id: connectionId,
+          engine_type: 'main',
+          migrated_from_unscoped: 'true',
+          cycles_completed: '4',
+          successful_cycles: '4',
+          cycle_success_rate: '0',
+          cycle_time_ms: '9999',
+          last_update: older,
+        })
+        await client.hset(scope.legacyProgressionKey, {
+          cycles_completed: '10',
+          successful_cycles: '8',
+          cycle_success_rate: '0',
+          total_trades: '5',
+          successful_trades: '4',
+          trade_success_rate: '0',
+          cycle_time_ms: '125',
+          last_update: newer,
+        })
+
+        const state = await ProgressionStateManager.getProgressionState(connectionId, 'main')
+        expect(state.cyclesCompleted).toBe(10)
+        expect(state.successfulCycles).toBe(8)
+        expect(state.cycleSuccessRate).toBe(80)
+        expect(state.tradeSuccessRate).toBe(80)
+        expect(state.cycleTimeMs).toBe(125)
+        expect(state.lastUpdate.toISOString()).toBe(newer)
+      } finally {
+        await client.del(scope.progressionKey, scope.legacyProgressionKey)
+      }
+    })
+
+    test('progression API derives the displayed cycle rate from merged counters', () => {
+      const fs = require('fs')
+      const path = require('path')
+      const source = fs.readFileSync(path.join(process.cwd(), 'app/api/trade-engine/progression/route.ts'), 'utf8')
+
+      expect(source).toContain('const computedCycleSuccessRate =')
+      expect(source).toContain('successfulCycles / cyclesCompleted')
+      expect(source).toContain('cycleSuccessRate: computedCycleSuccessRate')
+      expect(source).not.toContain('cycleSuccessRate: progressionState.cycleSuccessRate')
+    })
+
+    test('healthy live progression resolves stale startup reconciliation presentation', () => {
+      const fs = require('fs')
+      const path = require('path')
+      const routeSource = fs.readFileSync(path.join(process.cwd(), 'app/api/trade-engine/progression/route.ts'), 'utf8')
+      const managerSource = fs.readFileSync(path.join(process.cwd(), 'lib/trade-engine/engine-manager.ts'), 'utf8')
+      const startupSource = fs.readFileSync(path.join(process.cwd(), 'lib/startup-coordinator.ts'), 'utf8')
+
+      expect(routeSource).toContain('String((storedProgression as any)?.phase || "") === "live_trading"')
+      expect(routeSource).toContain('orphan_cleanup_pending: false')
+      expect(managerSource).toContain('status: phase === "live_trading"')
+      expect(managerSource).toContain('recoordination_completed_at: updatedAt')
+      expect(startupSource).toContain('orphan_cleanup_resolved_at: resolvedAt')
+      expect(startupSource).toContain('needs_reconcile: false')
+    })
+
     test('stats route keeps scoped progression namespaces aligned and stale fallbacks isolated', () => {
       const fs = require('fs')
       const path = require('path')

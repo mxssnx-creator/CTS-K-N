@@ -157,6 +157,22 @@ export async function GET() {
           const successfulTrades = progressionState.successfulTrades || 0
           const computedTradeSuccessRate =
             totalTrades > 0 ? Math.round((successfulTrades / totalTrades) * 10000) / 100 : 0
+          const cyclesCompleted = progressionState.cyclesCompleted || 0
+          const successfulCycles = progressionState.successfulCycles || 0
+          const computedCycleSuccessRate =
+            cyclesCompleted > 0 ? Math.round((successfulCycles / cyclesCompleted) * 10000) / 100 : 0
+          const engineProgression =
+            isEngineRunning &&
+            String((storedProgression as any)?.phase || "") === "live_trading" &&
+            Number((storedProgression as any)?.progress || 0) >= 100
+              ? {
+                  ...(storedProgression || {}),
+                  status: "running",
+                  needs_reconcile: false,
+                  orphan_cleanup_pending: false,
+                  orphan_cleanup_reason: "",
+                }
+              : storedProgression || {}
 
           return {
             connectionId: conn.id,
@@ -171,16 +187,16 @@ export async function GET() {
             runtimeReason: distributedRuntime.reason,
             heartbeatFresh: distributedRuntime.heartbeatFresh,
             heartbeatAgeMs: distributedRuntime.heartbeatAgeMs,
-            engineProgression: storedProgression || {},
+            engineProgression,
             tradeCount,
             pseudoPositionCount: pseudoCount,
             prehistoricDataLoaded: prehistoricLoaded,
             lastUpdate: updatedAt,
             progression: {
-              cyclesCompleted: progressionState.cyclesCompleted,
-              successfulCycles: progressionState.successfulCycles,
+              cyclesCompleted,
+              successfulCycles,
               failedCycles: progressionState.failedCycles,
-              cycleSuccessRate: progressionState.cycleSuccessRate,
+              cycleSuccessRate: computedCycleSuccessRate,
               totalTrades,
               successfulTrades,
               totalProfit: progressionState.totalProfit,

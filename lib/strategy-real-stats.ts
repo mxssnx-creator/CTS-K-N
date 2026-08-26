@@ -72,6 +72,14 @@ export interface RealAdjustPositionStats extends RealVariantPositionStats {
    * source × symbol × long/short/overall × count.
    */
   scopedEvaluations?: RealBlockScopedProfitFactorStats[]
+  /** Total rows available before the API detail window is applied. */
+  scopedEvaluationTotal?: number
+  /** Zero-based offset of the returned API detail window. */
+  scopedEvaluationOffset?: number
+  /** Number of rows returned in the current API detail window. */
+  scopedEvaluationReturned?: number
+  /** True when more scoped rows exist outside the returned window. */
+  scopedEvaluationTruncated?: boolean
 }
 
 export interface RealBlockCountProfitFactorStats {
@@ -196,6 +204,10 @@ export interface RealStagePositionStats {
     hedgedPairs: number
     baseCount: number
     perBase: RealHedgeBaseStats[]
+    perBaseTotal: number
+    perBaseOffset: number
+    perBaseReturned: number
+    perBaseTruncated: boolean
   }
 }
 
@@ -364,6 +376,17 @@ export function buildRealStagePositionStats(input: {
     activeOverlayEvaluation?: RealAdjustPositionStats["activeOverlayEvaluation"]
     countEvaluations?: RealBlockCountProfitFactorStats[] | null
     scopedEvaluations?: RealBlockScopedProfitFactorStats[] | null
+    scopedEvaluationTotal?: unknown
+    scopedEvaluationOffset?: unknown
+  } | null
+  /**
+   * Optional bounded window for verbose related-Base rows. Omitting this
+   * preserves the library's full-detail behaviour; API summary responses pass
+   * a zero limit so hot dashboard polls never serialize the exhaustive list.
+   */
+  detailWindow?: {
+    offset?: unknown
+    limit?: unknown
   } | null
   openPositions?: {
     source?: RealOpenPositionSource
@@ -507,6 +530,27 @@ export function buildRealStagePositionStats(input: {
   const hedgeOffsetRatio = hedgeGrossPositions > 0
     ? hedgeOffsetPositionLegs / hedgeGrossPositions
     : 0
+  const hasDetailWindow = input.detailWindow !== undefined && input.detailWindow !== null
+  const detailOffset = hasDetailWindow
+    ? Math.max(0, Math.floor(count(input.detailWindow?.offset)))
+    : 0
+  const detailLimit = hasDetailWindow
+    ? Math.max(0, Math.floor(count(input.detailWindow?.limit)))
+    : perBase.length
+  const returnedPerBase = hasDetailWindow
+    ? (detailLimit > 0 ? perBase.slice(detailOffset, detailOffset + detailLimit) : [])
+    : perBase
+  const scopedEvaluations = Array.isArray(input.blockProfitFactor?.scopedEvaluations)
+    ? input.blockProfitFactor!.scopedEvaluations
+    : []
+  const scopedEvaluationTotal = Math.max(
+    scopedEvaluations.length,
+    Math.floor(count(input.blockProfitFactor?.scopedEvaluationTotal)),
+  )
+  const scopedEvaluationOffset = Math.max(
+    0,
+    Math.floor(count(input.blockProfitFactor?.scopedEvaluationOffset)),
+  )
 
   return {
     overall: {
@@ -571,6 +615,11 @@ export function buildRealStagePositionStats(input: {
         scopedEvaluations: Array.isArray(input.blockProfitFactor?.scopedEvaluations)
           ? input.blockProfitFactor!.scopedEvaluations
           : [],
+        scopedEvaluationTotal,
+        scopedEvaluationOffset,
+        scopedEvaluationReturned: scopedEvaluations.length,
+        scopedEvaluationTruncated:
+          scopedEvaluationOffset > 0 || scopedEvaluationOffset + scopedEvaluations.length < scopedEvaluationTotal,
       },
       dca: buildAdjustStats(dcaStats, withoutAdjustPositions),
     },
@@ -587,7 +636,11 @@ export function buildRealStagePositionStats(input: {
       hedgeOffsetPercent: rounded(hedgeOffsetRatio * 100, 1),
       hedgedPairs,
       baseCount: hedgeByBase.size,
-      perBase,
+      perBase: returnedPerBase,
+      perBaseTotal: perBase.length,
+      perBaseOffset: detailOffset,
+      perBaseReturned: returnedPerBase.length,
+      perBaseTruncated: detailOffset > 0 || detailOffset + returnedPerBase.length < perBase.length,
     },
   }
 }

@@ -55,6 +55,7 @@ type DirectTradeState = {
   strategyTypes: string[]
   historyHours: number
   entryTactics: string[]
+  enabledIndicationTypes: string[]
   exitTactics: string[]
   entryTiming: "current" | "last_confirmed"
   activityVolumeRatio: number
@@ -98,6 +99,7 @@ const DEFAULT_STATE: DirectTradeState = {
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   historyHours: 48,
   entryTactics: ["relative"],
+  enabledIndicationTypes: ["relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
@@ -371,7 +373,16 @@ export function DirectTradeSettings() {
           <section className="space-y-4"><div><h3 className="font-semibold">Independent coordination matrix</h3><p className="text-xs text-muted-foreground">Every selected type, timeframe combination, entry and exit tactic receives a separate set identity and performance lineage.</p></div><div className="space-y-5">
             <SelectableList label="Timeframes" values={state.timeframes} options={[["5m", "5m"], ["15m", "15m"], ["30m", "30m"]]} onChange={(value) => update("timeframes", value)} />
             <SelectableList label="Strategy types" values={state.strategyTypes} options={STRATEGY_TYPES} onChange={(value) => update("strategyTypes", value)} />
-            <SelectableList label="Entry tactics" values={state.entryTactics} options={[["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]]} onChange={(value) => update("entryTactics", value)} />
+            <div className="space-y-3 rounded-lg border p-3">
+              <div><Label className="text-xs">Live entry indication types</Label><p className="text-xs text-muted-foreground">All sliders may be off. Historical calculation and validation still run for the calculated indication types below.</p></div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                {[["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]].map(([value, title]) => {
+                  const checked = state.enabledIndicationTypes.includes(value)
+                  return <label key={value} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs"><span>{title}</span><Switch aria-label={`Enable ${title} Direct-Trade live entries`} checked={checked} onCheckedChange={(nextChecked) => update("enabledIndicationTypes", nextChecked ? [...state.enabledIndicationTypes, value] : state.enabledIndicationTypes.filter((entry) => entry !== value))} /></label>
+                })}
+              </div>
+            </div>
+            <SelectableList label="Calculated indication types" values={state.entryTactics} options={[["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]]} onChange={(value) => update("entryTactics", value)} />
             <SelectableList label="Exit tactics" values={state.exitTactics} options={[["bracket", "Bracket"], ["momentum_reversal", "Momentum reversal"], ["relative", "Relative reversal"], ["time", "Time"]]} onChange={(value) => update("exitTactics", value)} />
             <div className="max-w-xs space-y-2"><Label className="text-xs">Entry timing</Label><Select value={state.entryTiming} onValueChange={(value: DirectTradeState["entryTiming"]) => update("entryTiming", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">Current causal candle</SelectItem><SelectItem value="last_confirmed">Last confirmed candle</SelectItem></SelectContent></Select></div>
           </div></section>
