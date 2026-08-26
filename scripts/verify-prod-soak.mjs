@@ -1237,6 +1237,7 @@ async function main() {
     liveExecution.push({
       ordersSimulated: finiteNonNegative(stats?.liveExecution?.ordersSimulated, "liveExecution.ordersSimulated"),
       ordersPlaced: finiteNonNegative(stats?.liveExecution?.ordersPlaced, "liveExecution.ordersPlaced"),
+      ordersFilled: finiteNonNegative(stats?.liveExecution?.ordersFilled, "liveExecution.ordersFilled"),
       positionsCreated: finiteNonNegative(stats?.liveExecution?.positionsCreated, "liveExecution.positionsCreated"),
       positionsClosed: finiteNonNegative(stats?.liveExecution?.positionsClosed, "liveExecution.positionsClosed"),
       simulatedPositionsCreated: finiteNonNegative(
@@ -1550,8 +1551,18 @@ async function main() {
         `simulatedPositionsCreated=${simulatedCreatedPeak})`,
       )
     }
-    if (liveExecution.some((sample) => sample.ordersPlaced < sample.ordersSimulated)) {
-      throw new Error("Simulated order counters exceed canonical placed-order counters")
+    // This verifier runs with explicit simulated execution. Real venue counters
+    // may have a historical baseline, but must not move during the paper run.
+    // Simulated orders have their own counters and are never a subset of real
+    // placed/filled orders.
+    const firstLiveExecution = liveExecution[0]
+    if (liveExecution.some((sample) =>
+      sample.ordersPlaced !== firstLiveExecution.ordersPlaced ||
+      sample.ordersFilled !== firstLiveExecution.ordersFilled ||
+      sample.positionsCreated !== firstLiveExecution.positionsCreated ||
+      sample.positionsClosed !== firstLiveExecution.positionsClosed,
+    )) {
+      throw new Error("Forced-simulation soak mutated real exchange execution counters")
     }
     if (VERIFY_SIGNAL_ENGINE) {
       const finalSignal = signalRuntime.at(-1)
