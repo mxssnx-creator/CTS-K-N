@@ -20,6 +20,11 @@ describe("exhaustive realtime cycle coordination", () => {
     expect(manager).toContain('this.canonicalPipelineAdmission.touch("scheduled")')
     expect(manager).toContain('this.canonicalPipelineAdmission.touch("immediate")')
     expect(manager).toContain('this.canonicalPipelineAdmission.touch("bootstrap")')
+    expect(manager).toContain("const requiresHistoricAdmission = historicReplayNeedsCanonicalAdmission(replayMode)")
+    expect(manager).toContain("if (requiresHistoricAdmission)")
+    expect(manager).toContain("if (current && ownsHistoricAdmission)")
+    expect(manager).toContain('this.canonicalPipelineAdmission.touch("historic")')
+    expect(manager).toContain("if (ownsHistoricAdmission)")
     expect(manager).toContain("if (current && ownsBootstrapAdmission)")
     expect(manager).toContain("an actually")
     expect(manager).toContain("blocked await makes no further checks")
@@ -64,6 +69,10 @@ describe("exhaustive realtime cycle coordination", () => {
     expect(coordinator).toContain("manager restart suppressed because cron owns the admission")
     expect(coordinator).toContain("canonical-pipeline-overdue")
     expect(coordinator).toContain("await this.restartEngine(id)")
+
+    const connectionStatus = source("app/api/trade-engine/[connectionId]/status/route.ts")
+    expect(connectionStatus).toContain("canonicalPipelineProgressAgeMs")
+    expect(connectionStatus).toContain("canonicalPipelineOwner")
 
     const cron = source("app/api/cron/generate-indications/route.ts")
     const configProcessor = source("lib/trade-engine/config-set-processor.ts")

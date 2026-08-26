@@ -434,6 +434,48 @@ describe("executing Live-stage control barriers", () => {
     expect(__liveStageTest.isTerminalSystemCloseOrder({ status: "cancelled" })).toBe(true)
   })
 
+  test("backs failed system closes off without skipping ambiguous-delivery recovery", () => {
+    const now = 1_000_000
+    const position = livePosition({
+      pendingSystemAction: {
+        token: "close-token",
+        reason: "max_hold_time_exceeded",
+        phase: "system_verify",
+        startedAt: now - 35_000,
+        updatedAt: now,
+        clientOrderId: "cts-system-close-owned",
+      },
+    })
+
+    const first = __liveStageTest.scheduleSystemCloseRetry(position, "Timeout after 35000ms", now)
+    expect(first).toMatchObject({
+      retryCount: 1,
+      nextRetryAt: now + 60_000,
+      lastFailureClass: "timeout",
+    })
+    expect(__liveStageTest.isSystemCloseRetryDeferred(position, now + 59_999)).toBe(true)
+    expect(__liveStageTest.hasUnresolvedSystemCloseDelivery(position)).toBe(true)
+
+    // A response-lost order remains recoverable under the same client id; only
+    // after the barrier proves it absent may the ordinary backoff short-circuit.
+    position.pendingSystemAction.clientOrderId = undefined
+    expect(__liveStageTest.hasUnresolvedSystemCloseDelivery(position)).toBe(false)
+    expect(__liveStageTest.isSystemCloseRetryDeferred(position, now + 60_000)).toBe(false)
+
+    const second = __liveStageTest.scheduleSystemCloseRetry(position, "rate limit 429", now + 60_000)
+    const third = __liveStageTest.scheduleSystemCloseRetry(position, "network socket reset", now + 180_000)
+    const fourth = __liveStageTest.scheduleSystemCloseRetry(position, "503 unavailable", now + 420_000)
+    const fifth = __liveStageTest.scheduleSystemCloseRetry(position, "venue rejected", now + 720_000)
+    expect(second.nextRetryAt - second.updatedAt).toBe(120_000)
+    expect(third.nextRetryAt - third.updatedAt).toBe(240_000)
+    expect(fourth.nextRetryAt - fourth.updatedAt).toBe(300_000)
+    expect(fifth.nextRetryAt - fifth.updatedAt).toBe(300_000)
+    expect(second.lastFailureClass).toBe("rate_limit")
+    expect(third.lastFailureClass).toBe("network")
+    expect(fourth.lastFailureClass).toBe("venue_unavailable")
+    expect(fifth.lastFailureClass).toBe("venue_rejection")
+  })
+
   test("sweeps only owned protection for the matching hedge-mode direction", async () => {
     const openOrders = [
       {

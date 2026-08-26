@@ -1,4 +1,5 @@
 import {
+  historicReplayNeedsCanonicalAdmission,
   historicReplayNeedsRealtimeWarmup,
   resolveHistoricReplayMode,
 } from "@/lib/trade-engine/historic-replay-policy"
@@ -8,11 +9,13 @@ describe("historic replay runtime policy", () => {
     expect(resolveHistoricReplayMode(undefined)).toBe("realtime-bridge")
     expect(resolveHistoricReplayMode("bridge")).toBe("realtime-bridge")
     expect(historicReplayNeedsRealtimeWarmup("realtime-bridge")).toBe(true)
+    expect(historicReplayNeedsCanonicalAdmission("realtime-bridge")).toBe(false)
   })
 
   test("enables chronological replay only by explicit exact configuration", () => {
     expect(resolveHistoricReplayMode(" exact ")).toBe("exact")
     expect(resolveHistoricReplayMode("EXACT")).toBe("exact")
     expect(historicReplayNeedsRealtimeWarmup("exact")).toBe(false)
+    expect(historicReplayNeedsCanonicalAdmission("exact")).toBe(true)
   })
 })

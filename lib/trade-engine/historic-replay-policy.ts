@@ -21,3 +21,8 @@ export function resolveHistoricReplayMode(value = process.env.PREHISTORIC_REPLAY
 export function historicReplayNeedsRealtimeWarmup(mode: HistoricReplayMode): boolean {
   return mode !== "exact"
 }
+
+/** Only exact replay evaluates the canonical Base→Main→Real graph. */
+export function historicReplayNeedsCanonicalAdmission(mode: HistoricReplayMode): boolean {
+  return mode === "exact"
+}

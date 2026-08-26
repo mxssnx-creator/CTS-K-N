@@ -665,10 +665,12 @@ describe("live-order stranded-position guards", () => {
     expect(liveStage).not.toContain('errStr.includes("filled") ||')
   })
 
-  test("rolls back an unconfirmed exchange close and keeps the live lock", () => {
+  test("rolls back an unconfirmed exchange close and reconciles it before protected retry", () => {
     expect(liveStage).toContain("const mayFinalizeClose = exchangeCloseSuccess || (!exchangeConnector && localOnlyCloseAllowed)")
     expect(liveStage).toContain("close_failed_exchange_unconfirmed")
-    expect(liveStage).toContain("await rearmProtectionAfterQuantityMutation(exchangeConnector, position, \"close_failed_rearm\")")
+    expect(liveStage).toContain("scheduleSystemCloseRetry(position, terminalCloseError)")
+    expect(liveStage).toContain("!hasUnresolvedSystemCloseDelivery(position)")
+    expect(liveStage).toContain('"system_close_retry_backoff_rearm"')
     expect(liveStage).toContain("position kept open")
     expect(bingx).not.toContain("double 100421 after resync")
   })
