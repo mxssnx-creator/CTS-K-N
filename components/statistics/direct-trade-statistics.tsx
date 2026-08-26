@@ -102,6 +102,8 @@ type Status = {
     statsPnlBasis?: "usdt" | "percent"
     winCount?: number
     lossCount?: number
+    breakEvenCount?: number
+    settledClosedCount?: number
     last12Pos?: { pf: number; ddt: number; pnl: number }
     last25Pos?: { pf: number; ddt: number; pnl: number }
     last50Pos?: { pf: number; ddt: number; pnl: number }
@@ -282,7 +284,7 @@ export function DirectTradeStatistics() {
           />
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-          <Metric label="Orders / filled" value={`${stats.totalOrders || 0} / ${stats.totalFilled || 0}`} icon={<Activity className="h-4 w-4" />} />
+          <Metric label="Confirmed entry/add fills" value={String(stats.totalFilled || 0)} icon={<Activity className="h-4 w-4" />} />
           <Metric label="Open / opening" value={`${status.openPositions || 0} / ${status.openingPositions || 0}`} icon={<Clock3 className="h-4 w-4" />} />
           <Metric label="Closed / accounting pending" value={`${status.closedPositions || 0} / ${status.accountingPending || 0}`} icon={<ShieldCheck className="h-4 w-4" />} />
           <Metric label="Execution interval" value={`${status.state?.processingIntervalMs || 280}ms`} icon={<Zap className="h-4 w-4" />} />
@@ -384,8 +386,8 @@ export function DirectTradeStatistics() {
             <ResultRow label="Accounted closed positions PF" value={stats.profitFactor != null ? Number(stats.profitFactor).toFixed(2) : "—"} />
             <ResultRow label="Realized PnL (exchange notional)" value={stats.totalPnlUsdt != null ? `${Number(stats.totalPnlUsdt).toFixed(4)} USDT` : "—"} />
             <ResultRow label="PF basis" value={stats.statsPnlBasis === "usdt" ? "exchange notional" : "percentage fallback"} />
-            <ResultRow label="Win / loss" value={`${stats.winCount || 0} / ${stats.lossCount || 0}`} />
-            <ResultRow label="Orders / filled / closed" value={`${stats.totalOrders || 0} / ${stats.totalFilled || 0} / ${status.closedPositions || 0}`} />
+            <ResultRow label="Win / loss / break-even" value={`${stats.winCount || 0} / ${stats.lossCount || 0} / ${stats.breakEvenCount || 0}`} />
+            <ResultRow label="Confirmed fills / settled / closed" value={`${stats.totalFilled || 0} / ${stats.settledClosedCount || 0} / ${status.closedPositions || 0}`} />
             <ResultRow label="Exchange accounting pending" value={String(status.accountingPending || 0)} />
             <ResultRow label="Last 12 positions" value={`PF ${stats.last12Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last12Pos?.ddt?.toFixed(1) || "0.0"}m`} />
             <ResultRow label="Last 25 positions" value={`PF ${stats.last25Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last25Pos?.ddt?.toFixed(1) || "0.0"}m`} />

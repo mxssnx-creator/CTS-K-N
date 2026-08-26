@@ -43,6 +43,9 @@ describe("time-complete live-position analytics archive", () => {
       createdAt: 100,
       closedAt: 200,
       updatedAt: undefined,
+      realizedPnlComplete: true,
+      realizedPnlSource: undefined,
+      accountingPending: false,
       realizedPnL: 1.5,
       volumeUsd: undefined,
       quantity: undefined,
@@ -115,5 +118,59 @@ describe("time-complete live-position analytics archive", () => {
       symbol: "BTCUSDT",
       closedAt: 200,
     })).toBeNull()
+  })
+
+  test("preserves unresolved exchange accounting without storing placeholder PnL", () => {
+    expect(buildLivePositionAnalyticsSnapshot({
+      id: "pending-close",
+      connectionId: "conn",
+      status: "closed",
+      symbol: "ETHUSDT",
+      direction: "short",
+      closedAt: 300,
+      realizedPnL: 0,
+      realizedPnlComplete: false,
+      realizedPnlSource: "exchange_unresolved",
+    })).toMatchObject({
+      accountingPending: true,
+      realizedPnlComplete: false,
+      realizedPnlSource: "exchange_unresolved",
+      realizedPnL: null,
+    })
+  })
+
+  test("does not archive missing accounting as break-even and resolves non-empty aliases", () => {
+    expect(buildLivePositionAnalyticsSnapshot({
+      id: "missing-pnl",
+      connectionId: "conn",
+      status: "closed",
+      symbol: "BTCUSDT",
+      direction: "long",
+      closedAt: 400,
+    })).toBeNull()
+
+    expect(buildLivePositionAnalyticsSnapshot({
+      id: "paper-aliases",
+      connectionId: "conn",
+      status: " CLOSED ",
+      mode: "simulated",
+      symbol: "BTCUSDT",
+      direction: "long",
+      closedAt: "",
+      updatedAt: 500,
+      averageExecutionPrice: "",
+      entryPrice: 100,
+      closePrice: "",
+      exitPrice: 101,
+      quantity: 1,
+      realizedPnL: 1,
+    })).toMatchObject({
+      environment: "simulated",
+      closedAt: 500,
+      entryPrice: 100,
+      closePrice: 101,
+      realizedPnL: 1,
+      accountingPending: false,
+    })
   })
 })

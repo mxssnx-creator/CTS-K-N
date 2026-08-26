@@ -59,6 +59,14 @@ describe("Direct-Trade authoritative exchange status", () => {
           pnlAccountingComplete: false,
         },
         {
+          id: "pending-missing-marker",
+          status: "closed",
+          mode: "live",
+          closedAt: new Date(Date.now() - 500).toISOString(),
+          pnl: 400,
+          realizedPnlUsdt: 400,
+        },
+        {
           id: "paper-profit",
           status: "closed",
           mode: "simulated",
@@ -77,8 +85,8 @@ describe("Direct-Trade authoritative exchange status", () => {
         .then((response) => response.json())
       expect(scoped).toMatchObject({
         success: true,
-        closedPositions: 2,
-        accountingPending: 1,
+        closedPositions: 3,
+        accountingPending: 2,
         processorHealthy: false,
         processor: {
           isHealthy: false,
@@ -92,6 +100,8 @@ describe("Direct-Trade authoritative exchange status", () => {
           profitFactor: 0,
           totalPnlUsdt: -0.2,
           statsPnlBasis: "usdt",
+          settledClosedCount: 1,
+          accountingPending: 2,
         },
       })
 
@@ -100,11 +110,11 @@ describe("Direct-Trade authoritative exchange status", () => {
       expect(aggregate).toMatchObject({
         success: true,
         processorHealthy: false,
-        accountingPending: 1,
+        accountingPending: 2,
         connections: [{
           connectionId: "bingx-x02",
           healthy: false,
-          accountingPending: 1,
+          accountingPending: 2,
           processor: { lastTick: freshHeartbeat, lastProgressAt: staleTick, tickCount: 12 },
         }],
       })
@@ -127,6 +137,24 @@ describe("Direct-Trade authoritative exchange status", () => {
           progressHealthy: true,
           lifecycleCycleCount: 44,
         },
+      })
+
+      await redis.set(keys.positions, JSON.stringify([{
+        id: "only-pending",
+        status: "closed",
+        mode: "live",
+        closedAt: new Date().toISOString(),
+        realizedPnlUsdt: 12,
+      }]))
+      const pendingOnly = await GET(new Request("http://localhost/api/trade-engine/direct-trade/status?connectionId=bingx-x02"))
+        .then((response) => response.json())
+      expect(pendingOnly.stats).toMatchObject({
+        profitFactor: null,
+        profitFactorInfinite: false,
+        totalPnlUsdt: 0,
+        statsPnlBasis: "usdt",
+        settledClosedCount: 0,
+        accountingPending: 1,
       })
     } finally {
       await redis.del(...cleanupKeys)

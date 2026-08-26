@@ -7,10 +7,11 @@ import {
 import {
   derivePositionRoi,
   resolvePositionMargin,
-  resolveRealizedPnl,
+  resolveSettledRealizedPnl,
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
+import { isRealExchangePosition } from "@/lib/live-position-source"
 
 export const dynamic = "force-dynamic"
 
@@ -23,15 +24,21 @@ interface PositionPnL {
   quantity: number
   opened_at: string
   closed_at: string
-  pnl: number
-  pnl_percent: number
+  pnl: number | null
+  pnl_percent: number | null
   holding_time_min: number
+  accounting_status: "settled" | "pending"
+  accounting_source: string | null
 }
 
 interface PnLStats {
   // Overall metrics
   total_positions: number
   closed_positions: number
+  settled_closed_positions: number
+  accounting_pending: number
+  accounting_complete: boolean
+  accounting_coverage_percent: number
   open_positions: number
   total_pnl: number
   total_pnl_percent: number
@@ -50,14 +57,19 @@ interface PnLStats {
   avg_loss: number
   largest_win: number
   largest_loss: number
-  profit_factor: number
+  profit_factor: number | null
+  profit_factor_infinite: boolean
   expectancy: number
   
   // Last N profit factors
-  profit_factor_last_12: number
-  profit_factor_last_25: number
-  profit_factor_last_50: number
-  profit_factor_last_75: number
+  profit_factor_last_12: number | null
+  profit_factor_last_12_infinite: boolean
+  profit_factor_last_25: number | null
+  profit_factor_last_25_infinite: boolean
+  profit_factor_last_50: number | null
+  profit_factor_last_50_infinite: boolean
+  profit_factor_last_75: number | null
+  profit_factor_last_75_infinite: boolean
   
   // Time metrics
   avg_holding_time_min: number
@@ -71,6 +83,7 @@ interface PnLStats {
   last_50_win_rate: number
   source: "live_position_ledger"
   history_limit: number
+  analytics_history_limit: number
 }
 
 interface PnLStatsSuccessResponse {
@@ -84,16 +97,28 @@ interface PnLStatsSuccessResponse {
 // positions. Older rows remain in Redis for audit/history but cannot distort
 // the operational dashboard.
 const CLOSED_HISTORY_LIMIT = 50
+const CLOSED_ANALYTICS_LIMIT = 75
 
-function firstFinite(...values: unknown[]): number {
+function firstFinite(...values: unknown[]): number | undefined {
   for (const value of values) {
+    if (value === undefined || value === null || typeof value === "boolean") continue
+    if (typeof value === "string" && value.trim() === "") continue
     const parsed = Number(value)
     if (Number.isFinite(parsed)) return parsed
   }
-  return 0
+  return undefined
 }
 
 function timestampOf(value: unknown): number {
+  if (
+    typeof value === "number" ||
+    (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim()))
+  ) {
+    const numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric < 10_000_000_000 ? numeric * 1000 : numeric
+    }
+  }
   const parsed = new Date(String(value || "")).getTime()
   return Number.isFinite(parsed) ? parsed : 0
 }
@@ -106,53 +131,59 @@ function openedAtOf(position: any): string {
   return String(position?.createdAt || position?.openedAt || position?.opened_at || position?.created_at || "")
 }
 
-function isRealExchangePosition(position: any): boolean {
-  if (String(position?.status || "").toLowerCase() === "simulated") return false
-  if (String(position?.executionMode || "").toLowerCase() === "simulation") return false
-  const exchange = position?.exchangeData || {}
-  return Boolean(
-    position?.orderId
-    || position?.exchangeOrderId
-    || exchange?.orderId
-    || exchange?.exchangeOrderId
-    || exchange?.exchangePositionId,
-  )
-}
-
 function toPositionPnl(
   position: any,
-  pnl: number,
-  pnlPercent: number,
+  pnl: number | null,
+  pnlPercent: number | null,
   holdingTimeMin: number,
 ): PositionPnL {
+  const pending = pnl === null
   return {
     id: String(position?.id || "unknown"),
     symbol: String(position?.symbol || "UNKNOWN"),
     direction: String(position?.direction || position?.side || "unknown"),
-    entry_price: firstFinite(position?.averageExecutionPrice, position?.entryPrice, position?.entry_price),
-    exit_price: firstFinite(position?.closePrice, position?.exitPrice, position?.exit_price),
+    entry_price: firstFinite(position?.averageExecutionPrice, position?.entryPrice, position?.entry_price) ?? 0,
+    exit_price: firstFinite(position?.closePrice, position?.exitPrice, position?.exit_price) ?? 0,
     quantity: firstFinite(
       position?.totalExecutedQuantity,
       position?.executedQuantity,
       position?.quantity,
       position?.executed_quantity,
-    ),
+    ) ?? 0,
     opened_at: openedAtOf(position),
     closed_at: closedAtOf(position),
     pnl,
     pnl_percent: pnlPercent,
     holding_time_min: holdingTimeMin,
+    accounting_status: pending ? "pending" : "settled",
+    accounting_source: String(
+      position?.realizedPnlSource ?? position?.pnlAccountingSource ?? "",
+    ).trim() || null,
   }
 }
 
-function finiteProfitFactor(grossProfit: number, grossLoss: number): number {
-  return grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0
+function profitFactorMetrics(grossProfit: number, grossLoss: number): {
+  value: number | null
+  infinite: boolean
+} {
+  return {
+    value: grossLoss > 0 ? grossProfit / grossLoss : null,
+    infinite: grossLoss === 0 && grossProfit > 0,
+  }
+}
+
+function roundedProfitFactor(value: number | null): number | null {
+  return value === null ? null : parseFloat(value.toFixed(2))
 }
 
 function emptyStats(): PnLStats {
   return {
     total_positions: 0,
     closed_positions: 0,
+    settled_closed_positions: 0,
+    accounting_pending: 0,
+    accounting_complete: true,
+    accounting_coverage_percent: 100,
     open_positions: 0,
     total_pnl: 0,
     total_pnl_percent: 0,
@@ -167,12 +198,17 @@ function emptyStats(): PnLStats {
     avg_loss: 0,
     largest_win: 0,
     largest_loss: 0,
-    profit_factor: 0,
+    profit_factor: null,
+    profit_factor_infinite: false,
     expectancy: 0,
-    profit_factor_last_12: 0,
-    profit_factor_last_25: 0,
-    profit_factor_last_50: 0,
-    profit_factor_last_75: 0,
+    profit_factor_last_12: null,
+    profit_factor_last_12_infinite: false,
+    profit_factor_last_25: null,
+    profit_factor_last_25_infinite: false,
+    profit_factor_last_50: null,
+    profit_factor_last_50_infinite: false,
+    profit_factor_last_75: null,
+    profit_factor_last_75_infinite: false,
     avg_holding_time_min: 0,
     last_25_positions: [],
     last_25_pnl: 0,
@@ -182,6 +218,7 @@ function emptyStats(): PnLStats {
     last_50_win_rate: 0,
     source: "live_position_ledger",
     history_limit: CLOSED_HISTORY_LIMIT,
+    analytics_history_limit: CLOSED_ANALYTICS_LIMIT,
   }
 }
 
@@ -208,7 +245,7 @@ export async function GET(request: NextRequest) {
     // same authoritative calculation path.
     const [openLedger, closedLedger] = await Promise.all([
       getLivePositions(connectionId),
-      getClosedLivePositions(connectionId, CLOSED_HISTORY_LIMIT),
+      getClosedLivePositions(connectionId, CLOSED_ANALYTICS_LIMIT),
     ])
 
     const byId = new Map<string, any>()
@@ -232,9 +269,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json<PnLStatsSuccessResponse>(response)
     }
 
-    const closedPositions = positions
+    const closedHistory = positions
       .filter((position) => String(position?.status || "").toLowerCase() === "closed")
       .sort((left, right) => timestampOf(closedAtOf(right)) - timestampOf(closedAtOf(left)))
+    const closedPositions = closedHistory.slice(0, CLOSED_HISTORY_LIMIT)
     const openPositions = positions.filter((position) => isLiveOpenStatus(position?.status))
 
     let realizedPnl = 0
@@ -249,13 +287,16 @@ export async function GET(request: NextRequest) {
     let largestWin = -Infinity
     let largestLoss = Infinity
     
-    const closedRows: PositionPnL[] = []
+    const displayRows: PositionPnL[] = []
+    let accountingPending = 0
     let last25PnL = 0
     let last25Wins = 0
+    let last25Decisive = 0
     let last25GrossProfit = 0
     let last25GrossLoss = 0
     let last50PnL = 0
     let last50Wins = 0
+    let last50Decisive = 0
     let last50GrossProfit = 0
     let last50GrossLoss = 0
     
@@ -264,21 +305,28 @@ export async function GET(request: NextRequest) {
     
     let last75GrossProfit = 0
     let last75GrossLoss = 0
-    for (let i = 0; i < closedPositions.length; i++) {
-      const pos = closedPositions[i]
-      const pnl = resolveRealizedPnl(pos)
-      if (pnl === undefined || !Number.isFinite(pnl)) continue
+    for (const [closedIndex, pos] of closedPositions.entries()) {
       const openedAt = timestampOf(openedAtOf(pos))
       const closedAt = timestampOf(closedAtOf(pos))
       const holdingTimeMin = openedAt > 0 && closedAt >= openedAt
         ? Math.round((closedAt - openedAt) / 60_000)
         : 0
+      const pnl = resolveSettledRealizedPnl(pos)
+      if (pnl === undefined) {
+        accountingPending++
+        if (displayRows.length < CLOSED_HISTORY_LIMIT) {
+          displayRows.push(toPositionPnl(pos, null, null, holdingTimeMin))
+        }
+        continue
+      }
       const pnlPercent = derivePositionRoi(pos, pnl, true) ?? firstFinite(
         pos?.realizedRoi,
         pos?.realized_pnl_percent,
         pos?.realizedPnLPercent,
-      )
+      ) ?? null
       const margin = resolvePositionMargin(pos, true)
+      const settledRow = toPositionPnl(pos, pnl, pnlPercent, holdingTimeMin)
+      if (displayRows.length < CLOSED_HISTORY_LIMIT) displayRows.push(settledRow)
 
       realizedPnl += pnl
       if (margin !== undefined) totalMargin += margin
@@ -296,25 +344,31 @@ export async function GET(request: NextRequest) {
         breakEven++
       }
 
-      if (i < 12) {
+      if (closedIndex < 12) {
         if (pnl > 0) last12GrossProfit += pnl
         else if (pnl < 0) last12GrossLoss += Math.abs(pnl)
       }
-      if (i < 25) {
-        if (pnl > 0) { last25Wins++; last25GrossProfit += pnl }
-        else if (pnl < 0) last25GrossLoss += Math.abs(pnl)
+      if (closedIndex < 25) {
+        if (pnl > 0) { last25Wins++; last25Decisive++; last25GrossProfit += pnl }
+        else if (pnl < 0) { last25Decisive++; last25GrossLoss += Math.abs(pnl) }
         last25PnL += pnl
       }
-      if (i < 50) {
-        if (pnl > 0) { last50Wins++; last50GrossProfit += pnl }
-        else if (pnl < 0) last50GrossLoss += Math.abs(pnl)
-        closedRows.push(toPositionPnl(pos, pnl, pnlPercent, holdingTimeMin))
+      if (closedIndex < 50) {
+        if (pnl > 0) { last50Wins++; last50Decisive++; last50GrossProfit += pnl }
+        else if (pnl < 0) { last50Decisive++; last50GrossLoss += Math.abs(pnl) }
         last50PnL += pnl
       }
-      if (i < 75) {
-        if (pnl > 0) last75GrossProfit += pnl
-        else if (pnl < 0) last75GrossLoss += Math.abs(pnl)
-      }
+    }
+
+    // The operational overview intentionally stays capped at 50 terminal
+    // positions. The compatibility PF75 field has its own 75-row source so it
+    // is not a mislabeled copy of PF50. Pending venue settlements remain in
+    // the time window but are excluded from gross-profit/loss accounting.
+    for (const pos of closedHistory.slice(0, CLOSED_ANALYTICS_LIMIT)) {
+      const pnl = resolveSettledRealizedPnl(pos)
+      if (pnl === undefined) continue
+      if (pnl > 0) last75GrossProfit += pnl
+      else if (pnl < 0) last75GrossLoss += Math.abs(pnl)
     }
 
     for (const pos of openPositions) {
@@ -325,24 +379,31 @@ export async function GET(request: NextRequest) {
     }
 
     const totalTrades = wins + losses + breakEven
-    const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0
-    const last25Count = Math.min(25, closedRows.length)
-    const last25WinRate = last25Count > 0 ? (last25Wins / last25Count) * 100 : 0
-    const last50WinRate = closedRows.length > 0 ? (last50Wins / closedRows.length) * 100 : 0
+    const decisiveTrades = wins + losses
+    const winRate = decisiveTrades > 0 ? (wins / decisiveTrades) * 100 : 0
+    const last25WinRate = last25Decisive > 0 ? (last25Wins / last25Decisive) * 100 : 0
+    const last50WinRate = last50Decisive > 0 ? (last50Wins / last50Decisive) * 100 : 0
     const avgWin = wins > 0 ? totalWinPnL / wins : 0
     const avgLoss = losses > 0 ? totalLossPnL / losses : 0
-    const profitFactor = finiteProfitFactor(totalWinPnL, totalLossPnL)
-    const profitFactorLast12 = finiteProfitFactor(last12GrossProfit, last12GrossLoss)
-    const profitFactorLast25 = finiteProfitFactor(last25GrossProfit, last25GrossLoss)
-    const profitFactorLast50 = finiteProfitFactor(last50GrossProfit, last50GrossLoss)
-    const profitFactorLast75 = finiteProfitFactor(last75GrossProfit, last75GrossLoss)
+    const profitFactor = profitFactorMetrics(totalWinPnL, totalLossPnL)
+    const profitFactorLast12 = profitFactorMetrics(last12GrossProfit, last12GrossLoss)
+    const profitFactorLast25 = profitFactorMetrics(last25GrossProfit, last25GrossLoss)
+    const profitFactorLast50 = profitFactorMetrics(last50GrossProfit, last50GrossLoss)
+    const profitFactorLast75 = profitFactorMetrics(last75GrossProfit, last75GrossLoss)
     const effectivePnl = realizedPnl + unrealizedPnl
     const expectancy = totalTrades > 0 ? realizedPnl / totalTrades : 0
     const avgHoldingTime = totalTrades > 0 ? Math.round(totalHoldingTime / totalTrades) : 0
+    const accountingCoveragePercent = closedPositions.length > 0
+      ? (totalTrades / closedPositions.length) * 100
+      : 100
 
     const stats: PnLStats = {
-      total_positions: totalTrades + openPositions.length,
-      closed_positions: totalTrades,
+      total_positions: closedPositions.length + openPositions.length,
+      closed_positions: closedPositions.length,
+      settled_closed_positions: totalTrades,
+      accounting_pending: accountingPending,
+      accounting_complete: accountingPending === 0,
+      accounting_coverage_percent: parseFloat(accountingCoveragePercent.toFixed(2)),
       open_positions: openPositions.length,
       total_pnl: parseFloat(effectivePnl.toFixed(8)),
       total_pnl_percent: totalMargin > 0 ? parseFloat(((effectivePnl / totalMargin) * 100).toFixed(2)) : 0,
@@ -357,21 +418,27 @@ export async function GET(request: NextRequest) {
       avg_loss: parseFloat(avgLoss.toFixed(8)),
       largest_win: largestWin === -Infinity ? 0 : parseFloat(largestWin.toFixed(8)),
       largest_loss: largestLoss === Infinity ? 0 : parseFloat(largestLoss.toFixed(8)),
-      profit_factor: parseFloat(profitFactor.toFixed(2)),
+      profit_factor: roundedProfitFactor(profitFactor.value),
+      profit_factor_infinite: profitFactor.infinite,
       expectancy: parseFloat(expectancy.toFixed(8)),
-      profit_factor_last_12: parseFloat(profitFactorLast12.toFixed(2)),
-      profit_factor_last_25: parseFloat(profitFactorLast25.toFixed(2)),
-      profit_factor_last_50: parseFloat(profitFactorLast50.toFixed(2)),
-      profit_factor_last_75: parseFloat(profitFactorLast75.toFixed(2)),
+      profit_factor_last_12: roundedProfitFactor(profitFactorLast12.value),
+      profit_factor_last_12_infinite: profitFactorLast12.infinite,
+      profit_factor_last_25: roundedProfitFactor(profitFactorLast25.value),
+      profit_factor_last_25_infinite: profitFactorLast25.infinite,
+      profit_factor_last_50: roundedProfitFactor(profitFactorLast50.value),
+      profit_factor_last_50_infinite: profitFactorLast50.infinite,
+      profit_factor_last_75: roundedProfitFactor(profitFactorLast75.value),
+      profit_factor_last_75_infinite: profitFactorLast75.infinite,
       avg_holding_time_min: avgHoldingTime,
-      last_25_positions: closedRows.slice(0, 25),
+      last_25_positions: displayRows.slice(0, 25),
       last_25_pnl: parseFloat(last25PnL.toFixed(8)),
       last_25_win_rate: parseFloat(last25WinRate.toFixed(2)),
-      last_50_positions: closedRows,
+      last_50_positions: displayRows,
       last_50_pnl: parseFloat(last50PnL.toFixed(8)),
       last_50_win_rate: parseFloat(last50WinRate.toFixed(2)),
       source: "live_position_ledger",
       history_limit: CLOSED_HISTORY_LIMIT,
+      analytics_history_limit: CLOSED_ANALYTICS_LIMIT,
     }
     
     const response: PnLStatsSuccessResponse = {

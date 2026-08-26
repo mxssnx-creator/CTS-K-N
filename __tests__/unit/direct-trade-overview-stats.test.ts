@@ -22,7 +22,7 @@ describe("Direct-Trade 48-hour overview", () => {
       { id: "open-old", status: "open", mode: "simulated", openedAt: atHoursAgo(80), strategyType: "standard" },
       { id: "trail", status: "closed", mode: "simulated", closedAt: atHoursAgo(2), strategyType: "trailing_fixed", pnl: 1, realizedPnlUsdt: 5 },
       { id: "block-open", status: "open", mode: "live", blockCount: 3, strategyType: "standard" },
-      { id: "dca", status: "closed", mode: "live", closedAt: atHoursAgo(1), strategyType: "dca", blockCount: 4, pnl: 2, realizedPnlUsdt: 4 },
+      { id: "dca", status: "closed", mode: "live", closedAt: atHoursAgo(1), strategyType: "dca", blockCount: 4, pnl: 2, realizedPnlUsdt: 4, pnlAccountingComplete: true },
     ]
 
     const overview = buildDirectTradeOverview48h(positions, NOW)
@@ -70,9 +70,9 @@ describe("Direct-Trade 48-hour overview", () => {
 
   test("keeps unfinished DDT running to now and excludes closes outside the exact window", () => {
     const positions = [
-      { status: "closed", mode: "live", closedAt: atHoursAgo(50), pnl: 100, realizedPnlUsdt: 100 },
-      { status: "closed", mode: "live", closedAt: atHoursAgo(4), pnl: 4, realizedPnlUsdt: 4 },
-      { status: "closed", mode: "live", closedAt: atHoursAgo(1.5), pnl: -2, realizedPnlUsdt: -2 },
+      { status: "closed", mode: "live", closedAt: atHoursAgo(50), pnl: 100, realizedPnlUsdt: 100, pnlAccountingComplete: true },
+      { status: "closed", mode: "live", closedAt: atHoursAgo(4), pnl: 4, realizedPnlUsdt: 4, pnlAccountingComplete: true },
+      { status: "closed", mode: "live", closedAt: atHoursAgo(1.5), pnl: -2, realizedPnlUsdt: -2, pnlAccountingComplete: true },
     ]
 
     const general = row(buildDirectTradeOverview48h(positions, NOW), "exchange", "general")
@@ -131,7 +131,7 @@ describe("Direct-Trade 48-hour overview", () => {
 
   test("represents all-win PF as explicit infinity and empty PF as unavailable", () => {
     const overview = buildDirectTradeOverview48h([
-      { status: "closed", mode: "live", closedAt: atHoursAgo(1), strategyType: "dca", pnl: 1, realizedPnlUsdt: 1 },
+      { status: "closed", mode: "live", closedAt: atHoursAgo(1), strategyType: "dca", pnl: 1, realizedPnlUsdt: 1, pnlAccountingComplete: true },
     ], NOW)
 
     expect(row(overview, "exchange", "dca")).toMatchObject({
@@ -141,6 +141,34 @@ describe("Direct-Trade 48-hour overview", () => {
     expect(row(overview, "exchange", "general")).toMatchObject({
       profitFactor: null,
       profitFactorInfinite: false,
+    })
+  })
+
+  test("requires an explicit live settlement marker and ignores blank numeric aliases", () => {
+    const overview = buildDirectTradeOverview48h([
+      {
+        status: "closed",
+        mode: "live",
+        closedAt: atHoursAgo(2),
+        realizedPnlUsdt: 12,
+      },
+      {
+        status: "closed",
+        mode: "live",
+        closedAt: atHoursAgo(1),
+        realizedPnlUsdt: "",
+        realizedPnLUsdt: -3,
+        pnlAccountingComplete: true,
+      },
+    ], NOW)
+
+    expect(row(overview, "exchange", "general")).toMatchObject({
+      closed: 1,
+      accountingPending: 1,
+      pnlBasis: "usdt",
+      grossProfit: 0,
+      grossLoss: 3,
+      netPnl: -3,
     })
   })
 })

@@ -20,7 +20,11 @@ import { getRuntimeTelemetry } from "@/lib/runtime-telemetry"
 import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
 import { buildConnectionStageOverview } from "@/lib/connection-stage-overview"
 import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
-import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
+import {
+  isRealizedPnlAccountingPending,
+  resolveRealizedPnl,
+  resolveUnrealizedPnl,
+} from "@/lib/live-position-pnl"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot"
 import { strategyVariantOutcomeKey } from "@/lib/pos-history"
@@ -651,6 +655,7 @@ function aggregateOrdersBySymbol(
     let sumPnl = 0, sumGrossProfit = 0, sumGrossLoss = 0
     let sumHoldMs = 0, sumVolumeUsd = 0, sumRoe = 0, cnt = 0
     for (const pos of positions) {
+      if (isRealizedPnlAccountingPending(pos)) continue
       const pnl = effectiveRealizedPnl(pos)
       sumPnl += pnl
       if (pnl > 0) sumGrossProfit += pnl
@@ -3327,6 +3332,8 @@ export async function GET(
     // Parallelise: fetch closed IDs + scan open live positions for unrealised
     // PnL, then fan-out per-archive GETs.
     let liveClosedCount = 0
+    let liveTerminalClosedCount = 0
+    let liveAccountingPending = 0
     let liveClosedWins = 0
     let liveClosedSumPnl = 0
     let liveClosedSumGrossProfit = 0
@@ -3359,19 +3366,24 @@ export async function GET(
       // the number of GET calls on this hot path. `sharedClosedParsed`
       // already holds all 500 entries (fetched once above).
       const closedParsed = sharedClosedParsed
-      liveClosedCount = closedParsed.length
-      liveClosedCountForPf = closedParsed.length
-      const closedEval = evaluateClosedBatch(closedParsed)
+      const settledClosedParsed = closedParsed.filter(
+        (position) => !isRealizedPnlAccountingPending(position),
+      )
+      liveTerminalClosedCount = closedParsed.length
+      liveAccountingPending = liveTerminalClosedCount - settledClosedParsed.length
+      liveClosedCount = settledClosedParsed.length
+      liveClosedCountForPf = settledClosedParsed.length
+      const closedEval = evaluateClosedBatch(settledClosedParsed)
       liveClosedSumPnl         = closedEval.sumPnl
       liveClosedSumGrossProfit = closedEval.sumGrossProfit
       liveClosedSumGrossLoss   = closedEval.sumGrossLoss
       liveClosedSumHoldMs      = closedEval.sumHoldMs
       liveClosedRoeAcc         = closedEval.sumRoe
       liveClosedHoldMinutes    = closedEval.sumHoldMs / 60_000
-      liveClosedWins           = closedParsed.filter((p: Record<string, any>) => effectiveRealizedPnl(p) > 0).length
+      liveClosedWins           = settledClosedParsed.filter((p: Record<string, any>) => effectiveRealizedPnl(p) > 0).length
 
       // Build per-position history rows (cap at 500 for response payload)
-      for (const pos of closedParsed) {
+      for (const pos of settledClosedParsed) {
         const pnl = effectiveRealizedPnl(pos)
         const qty = Number(pos.executedQuantity ?? pos.quantity ?? 0) || 0
         const avgP = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
@@ -3481,7 +3493,7 @@ export async function GET(
       live: {
         symbolCount:     livePositionSetRelations.length,
         totalCreated:    n(progHash.live_positions_created_count),
-        totalEntries:    liveClosedCount + Math.max(0, n(progHash.live_positions_created_count) - n(progHash.live_positions_closed_count)),
+        totalEntries:    liveTerminalClosedCount + Math.max(0, n(progHash.live_positions_created_count) - n(progHash.live_positions_closed_count)),
         totalRunning:    Math.max(0, n(progHash.live_positions_created_count) - n(progHash.live_positions_closed_count)),
         avgProfitFactor: liveProfitFactor,
         avgDrawdownMin:  liveAvgHoldMin,
@@ -3493,6 +3505,8 @@ export async function GET(
         winRate:         liveWinRate,
         sharpe:          0, // computed from closed-archive returns below
         isExecution:     true,
+        accountingPending: liveAccountingPending,
+        settledClosed:   liveClosedCount,
       },
     }
     // Sharpe from live closed-archive returns
@@ -3851,7 +3865,9 @@ export async function GET(
         coverage: strategyRows.snapshot.coverage,
         stages: strategyRows.snapshot.stages,
       },
-      closedPositions: sharedClosedParsed,
+      closedPositions: sharedClosedParsed.filter(
+        (position) => !isRealizedPnlAccountingPending(position),
+      ),
     })
 
     if (statsSearchParams.get("view") === "overview") {
@@ -4749,6 +4765,8 @@ export async function GET(
           avgPnl:          liveClosedCount > 0 ? Math.round((liveClosedSumPnl / liveClosedCount) * 100) / 100 : 0,
           totalCreated:    n(progHash.live_positions_created_count),
           totalClosed:     n(progHash.live_positions_closed_count),
+          settledClosed:   liveClosedCount,
+          accountingPending: liveAccountingPending,
           totalRunning:    Math.max(0, n(progHash.live_positions_created_count) - n(progHash.live_positions_closed_count)),
           openScanned:     liveOpenScanned,
           symbolCount:     livePositionSetRelations.length,
@@ -4802,6 +4820,8 @@ export async function GET(
             symbolCount:   livePositionSetRelations.length,
             totalCreated:  n(progHash.live_positions_created_count),
             totalClosed:   n(progHash.live_positions_closed_count),
+            settledClosed: liveClosedCount,
+            accountingPending: liveAccountingPending,
             totalRunning:  Math.max(0, n(progHash.live_positions_created_count) - n(progHash.live_positions_closed_count)),
             avgProfitFactor: liveProfitFactor,
             avgDrawdownMin:  liveAvgHoldMin,

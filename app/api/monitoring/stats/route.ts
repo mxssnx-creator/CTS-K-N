@@ -1,9 +1,41 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { initRedis, getAllConnections, getRedisClient } from "@/lib/redis-db"
 import { RedisMonitoring, RedisPositions, RedisTrades } from "@/lib/redis-operations"
+import {
+  resolveSettledRealizedPnl,
+  resolveUnrealizedPnl,
+} from "@/lib/live-position-pnl"
+import { isLiveOpenStatus } from "@/lib/live-position-status"
+import { getLivePositionSource } from "@/lib/live-position-source"
 
 export const dynamic = "force-dynamic"
 export const fetchCache = "force-no-store"
+
+function timestampOf(value: unknown): number {
+  if (
+    typeof value === "number" ||
+    (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim()))
+  ) {
+    const numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric < 10_000_000_000 ? numeric * 1000 : numeric
+    }
+  }
+  const parsed = Date.parse(String(value || ""))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function finiteOrNull(value: unknown): number | null {
+  if (value === undefined || value === null || typeof value === "boolean") return null
+  if (typeof value === "string" && value.trim() === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function nonNegativeInteger(value: unknown): number {
+  const parsed = finiteOrNull(value)
+  return parsed === null ? 0 : Math.max(0, Math.trunc(parsed))
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -31,25 +63,45 @@ export async function GET(request: NextRequest) {
     let openPositions = 0
     let totalTrades = 0
     let dailyPnL = 0
+    let realizedPnL = 0
     let unrealizedPnL = 0
+    let accountingPending = 0
+    let dailyPnlTimestampUnknown = 0
+    const positionSourceCounts = { real: 0, simulated: 0, unknown: 0 }
+    const now = Date.now()
+    const utcDayStart = new Date(now)
+    utcDayStart.setUTCHours(0, 0, 0, 0)
+    const utcDayStartMs = utcDayStart.getTime()
+    const utcDayEndMs = utcDayStartMs + 24 * 60 * 60 * 1000
 
-    for (const conn of connections) {
-      const positions = await RedisPositions.getPositionsByConnection(conn.id)
-      const trades = await RedisTrades.getTradesByConnection(conn.id)
+    const ledgers = await Promise.all(connections.map(async (conn: any) => {
+      const [positions, trades] = await Promise.all([
+        RedisPositions.getPositionsByConnection(conn.id).catch(() => []),
+        RedisTrades.getTradesByConnection(conn.id).catch(() => []),
+      ])
+      return { positions, trades }
+    }))
+    for (const { positions, trades } of ledgers) {
 
       totalPositions += positions.length
       totalTrades += trades.length
 
-      const open = positions.filter(
-        (p: any) => p.status !== "closed" && p.status !== "CLOSED",
-      )
+      const open = positions.filter((p: any) => isLiveOpenStatus(p.status))
       openPositions += open.length
 
       positions.forEach((pos: any) => {
-        if (pos.status === "closed" || pos.status === "CLOSED") {
-          dailyPnL += parseFloat(pos.realized_pnl || "0")
-        } else {
-          unrealizedPnL += parseFloat(pos.unrealized_pnl || "0")
+        positionSourceCounts[getLivePositionSource(pos)] += 1
+        if (String(pos.status || "").trim().toLowerCase() === "closed") {
+          const pnl = resolveSettledRealizedPnl(pos)
+          if (pnl === undefined) accountingPending++
+          else {
+            realizedPnL += pnl
+            const closedAt = timestampOf(pos.closedAt ?? pos.closed_at ?? pos.updatedAt ?? pos.updated_at)
+            if (closedAt >= utcDayStartMs && closedAt < utcDayEndMs) dailyPnL += pnl
+            else if (closedAt === 0) dailyPnlTimestampUnknown++
+          }
+        } else if (isLiveOpenStatus(pos.status)) {
+          unrealizedPnL += resolveUnrealizedPnl(pos) ?? 0
         }
       })
     }
@@ -63,20 +115,16 @@ export async function GET(request: NextRequest) {
     
     try {
       const client = getRedisClient()
-      // progression:* keys are Redis HASHES (written with hset/hincrby) — must use hgetall
-      const progressionKeys = await client.keys("progression:*")
-      
-      for (const key of progressionKeys) {
-        try {
-          const hash = await client.hgetall(key)
-          if (hash) {
-            totalCycles      += parseInt(hash.indication_cycle_count || "0", 10)
-            totalIndications += parseInt(hash.indications_count      || "0", 10)
-            totalStrategies  += parseInt(hash.strategies_count       || "0", 10)
-          }
-        } catch (e) {
-          // Silently skip errors per key
-        }
+      // Canonical counters live on one known hash per selected connection.
+      // Direct reads avoid a Redis-blocking KEYS scan and prevent scoped
+      // exchange filters from accidentally including unrelated connections.
+      const progressionRows: Array<Record<string, string>> = await Promise.all(connections.map((connection: any) =>
+        client.hgetall(`progression:${connection.id}`).catch(() => ({} as Record<string, string>)),
+      ))
+      for (const hash of progressionRows) {
+        totalCycles += nonNegativeInteger(hash.indication_cycle_count)
+        totalIndications += nonNegativeInteger(hash.indications_count)
+        totalStrategies += nonNegativeInteger(hash.strategies_count)
       }
     } catch (e) {
       // non-critical
@@ -89,18 +137,26 @@ export async function GET(request: NextRequest) {
       openPositions,
       totalTrades,
       dailyPnL: Number(dailyPnL.toFixed(2)),
+      dailyPnlWindow: "UTC calendar day",
+      dailyPnlTimestampUnknown,
+      realizedPnL: Number(realizedPnL.toFixed(2)),
       unrealizedPnL: Number(unrealizedPnL.toFixed(2)),
-      totalBalance: Number((dailyPnL + unrealizedPnL).toFixed(2)),
+      effectivePnL: Number((realizedPnL + unrealizedPnL).toFixed(2)),
+      // Compatibility alias: this is lifecycle PnL, not an exchange wallet
+      // balance. New consumers should use effectivePnL.
+      totalBalance: Number((realizedPnL + unrealizedPnL).toFixed(2)),
+      accountingPending,
+      positionSourceCounts,
       statistics: {
         ...stats,
         totalCycles,
         totalIndications,
         totalStrategies,
         avgCycleDuration: (stats as any)?.avgCycleDuration || 0,
-        winRate250: (stats as any)?.winRate250 || 0.5,
-        profitFactor250: (stats as any)?.profitFactor250 || 1.0,
-        winRate50: (stats as any)?.winRate50 || 0.5,
-        profitFactor50: (stats as any)?.profitFactor50 || 1.0,
+        winRate250: finiteOrNull((stats as any)?.winRate250),
+        profitFactor250: finiteOrNull((stats as any)?.profitFactor250),
+        winRate50: finiteOrNull((stats as any)?.winRate50),
+        profitFactor50: finiteOrNull((stats as any)?.profitFactor50),
         uptime: (stats as any)?.uptime || (totalCycles > 0 ? `${totalCycles} cycles` : "Starting..."),
       },
       timestamp: new Date().toISOString(),
@@ -115,8 +171,11 @@ export async function GET(request: NextRequest) {
         openPositions: 0,
         totalTrades: 0,
         dailyPnL: 0,
+        realizedPnL: 0,
         unrealizedPnL: 0,
+        effectivePnL: 0,
         totalBalance: 0,
+        accountingPending: 0,
         error: "Failed to fetch stats",
         details: error instanceof Error ? error.message : "Unknown error",
       },

@@ -6,10 +6,14 @@ const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), "
 describe("Direct-Trade position/order statistics contract", () => {
   test("renders the scoped confirmed order count beside open positions", () => {
     const section = read("components/dashboard/direct-trade-section.tsx")
+    const processor = read("scripts/direct-trade-processor.mjs")
 
     expect(section).toContain("Open: <strong>{openPositions}</strong>")
-    expect(section).toContain("Orders: <strong data-testid=\"direct-trade-orders-count\">{stats.totalOrders.toLocaleString()}</strong>")
-    expect(section).toContain("Confirmed Direct-Trade entry, Block and DCA order fills in this connection scope")
+    expect(section).toContain("Confirmed fills: <strong data-testid=\"direct-trade-orders-count\">{stats.totalFilled.toLocaleString()}</strong>")
+    expect(section).toContain("rejected or unconfirmed submissions are excluded")
+    expect(section).toContain("Win/Loss/BE")
+    expect(processor).toContain("stats.breakEvenCount = closed.length - stats.winCount - stats.lossCount")
+    expect(processor).not.toContain("stats.lossCount = closed.length - stats.winCount")
   })
 
   test("keeps Direct-Trade positions, orders and PF from the same connection scope", () => {

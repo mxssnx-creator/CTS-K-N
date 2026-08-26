@@ -73,6 +73,8 @@ describe("live positions PnL enrichment", () => {
     })
     expect(body.positions[0].unrealizedPnL).not.toBe(40)
     expect(body.stats.all.totalUnrealizedPnL).toBe(0)
+    expect(body.stats.totalFilled).toBe(1)
+    expect(body.counts.executed).toBe(1)
   })
 
   test("returns a compact read model instead of repeating recovery lineage on every poll", async () => {
@@ -146,6 +148,136 @@ describe("live positions PnL enrichment", () => {
         positiveMoveRatio: 0.4,
         updateStopRangeRatio: 0.5,
       },
+    })
+  })
+
+  test("exposes protection coverage and recoverable processing states without private mutation tokens", async () => {
+    mockGetLivePositions.mockResolvedValue([{
+      id: "pos-protection-state",
+      status: " CLOSING_PARTIAL ",
+      direction: "long",
+      symbol: "ETHUSDT",
+      averageExecutionPrice: 100,
+      executedQuantity: 0.8,
+      totalExecutedQuantity: 1,
+      closedQuantity: 0.2,
+      stopLossOrderId: "sl-1",
+      takeProfitOrderId: "tp-1",
+      stopLossArmedQuantity: 0.8,
+      takeProfitArmedQuantity: 0.8,
+      protectionArmedQuantity: 0.8,
+      submissionState: "confirmed",
+      pendingProtectionOrders: {
+        stop_loss: { clientOrderId: "sl-client", triggerPrice: 99, quantity: 0.8 },
+      },
+      pendingSystemAction: {
+        token: "private-system-token",
+        phase: "partial_wait",
+        reason: "operator close",
+        startedAt: 10,
+        updatedAt: 11,
+        requestedQuantity: 1,
+        appliedFilledQuantity: 0.2,
+      },
+      pendingQuantityMutation: {
+        token: "private-quantity-token",
+        phase: "position_verify",
+        reason: "partial close",
+        quantityBefore: 1,
+        startedAt: 10,
+        updatedAt: 11,
+      },
+      fills: [{ quantity: 1, price: 100 }],
+      createdAt: 1,
+    }])
+
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01"))
+    const body = await response.json()
+
+    expect(body.counts).toMatchObject({
+      open: 1,
+      closing_partial: 1,
+      executed: 1,
+    })
+    expect(body.positions[0]).toMatchObject({
+      stopLossArmedQuantity: 0.8,
+      takeProfitArmedQuantity: 0.8,
+      protectionArmedQuantity: 0.8,
+      submissionState: "confirmed",
+      pendingProtectionLegs: ["stop_loss"],
+      pendingProtectionOrders: {
+        stop_loss: { clientOrderId: "sl-client", triggerPrice: 99, quantity: 0.8 },
+      },
+      pendingSystemAction: { phase: "partial_wait", appliedFilledQuantity: 0.2 },
+      pendingQuantityMutation: { phase: "position_verify", quantityBefore: 1 },
+    })
+    expect(JSON.stringify(body.positions[0])).not.toContain("private-system-token")
+    expect(JSON.stringify(body.positions[0])).not.toContain("private-quantity-token")
+  })
+
+  test("deduplicates open-to-closed transitions, sorts ISO timestamps, and sanitizes invalid limits", async () => {
+    mockGetLivePositions.mockResolvedValue([
+      {
+        id: "transition",
+        status: "closing",
+        executionMode: "live",
+        symbol: "BTCUSDT",
+        createdAt: "2026-08-26T10:00:00.000Z",
+        unrealizedPnL: 50,
+      },
+      {
+        id: "older-open",
+        status: "open",
+        executionMode: "live",
+        symbol: "ETHUSDT",
+        createdAt: "2026-08-26T09:00:00.000Z",
+        unrealizedPnL: 1,
+      },
+    ])
+    mockGetClosedLivePositions.mockResolvedValue([
+      {
+        id: "transition",
+        status: "closed",
+        executionMode: "live",
+        symbol: "BTCUSDT",
+        createdAt: "2026-08-26T10:00:00.000Z",
+        closedAt: "2026-08-26T11:00:00.000Z",
+        realizedPnL: -2,
+      },
+      {
+        id: "newer-closed",
+        status: "closed",
+        executionMode: "live",
+        symbol: "SOLUSDT",
+        createdAt: "2026-08-26T12:00:00.000Z",
+        closedAt: "2026-08-26T12:30:00.000Z",
+        realizedPnL: 3,
+      },
+    ])
+
+    const response = await GET(new Request(
+      "http://localhost/api/trading/live-positions?connection_id=bingx-x01&closedLimit=invalid",
+    ))
+    const body = await response.json()
+
+    expect(mockGetClosedLivePositions).toHaveBeenCalledWith("bingx-x01", 200)
+    expect(body.positions.map((position: any) => position.id)).toEqual([
+      "newer-closed",
+      "transition",
+      "older-open",
+    ])
+    expect(body.counts).toMatchObject({
+      total: 3,
+      open: 1,
+      closed: 2,
+      settledClosed: 2,
+    })
+    expect(body.stats.all).toMatchObject({
+      total: 3,
+      open: 1,
+      closed: 2,
+      totalRealizedPnL: 1,
+      totalUnrealizedPnL: 1,
     })
   })
 })

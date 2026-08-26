@@ -362,6 +362,66 @@ describe("BingX-backed trade history", () => {
     })
   })
 
+  test("never turns an incomplete zero placeholder into a break-even exit", () => {
+    const classification = classifyLocalTradeHistorySnapshot({
+      id: "pending-exact-close",
+      status: "closed",
+      symbol: "ETHUSDT",
+      direction: "long",
+      executionMode: "live",
+      executedQuantity: 1,
+      averageExecutionPrice: 100,
+      realizedPnL: 0,
+      realizedPnlComplete: false,
+      realizedPnlSource: "exchange_unresolved",
+      closeOrderId: "venue-close-pending",
+      createdAt: 1_700_000_000_000,
+      closedAt: 1_700_000_060_000,
+    })
+
+    expect(classification).toMatchObject({
+      disposition: "unresolved_trade",
+      reason: "venue_accounting_incomplete",
+      row: {
+        exitPrice: 0,
+        closeOrderId: "venue-close-pending",
+        accountingQuality: "exchange_required",
+      },
+    })
+    expect(normalizeLocalTradeHistoryRow({
+      ...classification.row,
+      status: "closed",
+      realizedPnlComplete: false,
+    })).toBeNull()
+  })
+
+  test("keeps simulated mode rows local and resolves non-empty numeric aliases", () => {
+    expect(classifyLocalTradeHistorySnapshot({
+      id: "paper-alias-row",
+      status: "closed",
+      mode: "simulated",
+      symbol: "BTCUSDT",
+      direction: "long",
+      executedQuantity: 1,
+      averageExecutionPrice: "",
+      entryPrice: null,
+      entry_price: 100,
+      closePrice: "",
+      exitPrice: 101,
+      realizedPnL: 1,
+      createdAt: 1_700_000_000_000,
+      closedAt: 1_700_000_060_000,
+    })).toMatchObject({
+      disposition: "normalized_trade",
+      row: {
+        environment: "simulated",
+        entryPrice: 100,
+        exitPrice: 101,
+        realizedPnl: 1,
+      },
+    })
+  })
+
   test("rotates forced priority reconciliation instead of starving later symbols", () => {
     const candidates = ["A", "B", "C", "D", "E", "F", "G", "H"]
     const first = selectHistoryReconciliationSymbols({

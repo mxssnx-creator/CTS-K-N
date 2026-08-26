@@ -49,6 +49,7 @@ COMMON_INDICATION_CALC_BATCH_SIZE	application-runtime	no	yes	3	.env.example,__te
 CONN_ID	test-or-operator-tool	no	no	3	scripts/bingx-comprehensive-test.mjs,scripts/diagnose-stats.mjs,scripts/init-engine-and-verify.mjs
 COREPACK_BIN	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
 COREPACK_HOME	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
+CRON_GENERATE_WORK_BUDGET_MS	application-runtime	no	no	1	app/api/cron/generate-indications/route.ts
 CRON_LIVE_DISPATCH	application-runtime	no	no	3	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts,lib/trade-engine/shared-ind-strat-pipeline.ts
 CRON_PREHISTORIC_SYMBOL_LIMIT	application-runtime	no	no	1	app/api/cron/generate-indications/route.ts
 CRON_SECRET	application-runtime	yes	yes	5	.env.example,__tests__/unit/direct-trade-continuity-cron.test.ts,__tests__/unit/production-continuity.test.ts,lib/cron-auth.ts,scripts/kilo-deploy-preflight.mjs

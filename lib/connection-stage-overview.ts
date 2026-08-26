@@ -3,6 +3,7 @@ import {
   type ClosedPositionLike,
 } from "@/lib/trade-engine/closed-position-aggregation"
 import { MAIN_TRADE_BASE_PF_RATIO_DEFAULT } from "@/lib/main-trade-profit-factor"
+import { isRealizedPnlAccountingPending } from "@/lib/live-position-pnl"
 
 export const CONNECTION_STAGE_PF_WINDOW = 50
 
@@ -86,6 +87,7 @@ function closedTimestamp(position: ClosedStagePosition): number {
 }
 
 function hasClosedOutcome(position: ClosedStagePosition): boolean {
+  if (isRealizedPnlAccountingPending(position)) return false
   const entry = firstPositive(
     position.averageExecutionPrice,
     position.entryPrice,

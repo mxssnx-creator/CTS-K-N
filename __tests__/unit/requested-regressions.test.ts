@@ -1094,7 +1094,9 @@ describe("requested regression guardrails", () => {
     expect(autoStart).toContain("armTimer = false")
     expect(autoStart).toContain("await runTradeEngineHealingSweep({ isStartup: true, armTimer: true })")
     expect(cronRoute).toContain("runTradeEngineHealingSweep")
-    expect(cronRoute).toContain('runCronTask("auto-start-healing-sweep", () => runTradeEngineHealingSweep({ isStartup: true }))')
+    expect(cronRoute).toContain('"auto-start-healing-sweep",')
+    expect(cronRoute).toContain("() => runTradeEngineHealingSweep({ isStartup: true })")
+    expect(cronRoute).toContain("request.signal")
     expect(cronRoute).not.toContain("initializeTradeEngineAutoStart")
   })
 
@@ -1125,7 +1127,9 @@ describe("requested regression guardrails", () => {
 
     expect(autoStart).toContain("export async function runTradeEngineHealingSweep")
     expect(autoStart).toContain("Cron/serverless routes must call this directly and await it")
-    expect(cron).toContain('runCronTask("auto-start-healing-sweep", () => runTradeEngineHealingSweep({ isStartup: true }))')
+    expect(cron).toContain('"auto-start-healing-sweep",')
+    expect(cron).toContain("() => runTradeEngineHealingSweep({ isStartup: true })")
+    expect(cron).toContain("runCooperativeTaskWithTimeout")
     expect(cron).not.toContain("initializeTradeEngineAutoStart")
   })
 
@@ -2368,7 +2372,8 @@ describe("requested regression guardrails", () => {
     expect(strategy).toContain("isCurrent,")
     expect(pipeline).toContain("shouldContinue?: () => boolean")
     expect(cron).toContain("isExpectedHistoricHandoff")
-    expect(cron).toContain('reason: "historic_generation_superseded"')
+    expect(cron).toContain('"historic_generation_superseded"')
+    expect(cron).toContain('"cron_work_budget_yield"')
     expect(cron).not.toContain("[v0] [CronIndications] Error: Error [PrehistoricProcessingCancelledError]")
   })
 
@@ -2791,7 +2796,7 @@ describe("requested regression guardrails", () => {
 
     expect(route).toContain("getAlternateLivePositionKeys")
     expect(route).toContain("partialLegacyScan")
-    expect(route).not.toMatch(/\.keys\s*\(/)
+    expect(route).not.toMatch(/(?:client|getRedisClient\(\))\.keys\s*\(/)
     expect(route).not.toContain("export async function indexAlternateLivePositionKey")
 
     expect(altIndex).toContain("live:position:live:${connectionId}:index")
@@ -3209,7 +3214,9 @@ describe("requested regression guardrails", () => {
     expect(connectionTests).toContain("exchangeConnectorFactory.getOrCreateConnector(connection.id)")
     expect(connectionTests).not.toContain("isTestnet: false, // Always mainnet")
     expect(liveStage).toContain("EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000")
-    expect(liveStage).toContain("const [slOrderId, tpOrderId] = await Promise.all")
+    expect(liveStage).toContain("const [slPlacement, tpPlacement] = await Promise.all")
+    expect(liveStage).toContain("const slOrderId = slPlacement.orderId")
+    expect(liveStage).toContain("const tpOrderId = tpPlacement.orderId")
     expect(migrations).toContain("066-bingx-sdk-fast-order-default")
     expect(migrations).toContain('connection_library: "sdk"')
   })

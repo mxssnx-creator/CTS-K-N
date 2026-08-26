@@ -53,8 +53,23 @@ function isExpectedHistoricHandoff(error: unknown): boolean {
   return (
     name === "PrehistoricProcessingCancelledError" ||
     name === "PrehistoricRunSupersededError" ||
+    name === "CronWorkCancelledError" ||
     /Historic (?:processing|run).*superseded/i.test(message)
   )
+}
+
+class CronWorkCancelledError extends Error {
+  constructor() {
+    super("Cron work budget exhausted or request aborted")
+    this.name = "CronWorkCancelledError"
+  }
+}
+
+function resolveCronWorkBudgetMs(): number {
+  const configured = Number(process.env.CRON_GENERATE_WORK_BUDGET_MS)
+  return Number.isFinite(configured)
+    ? Math.max(5_000, Math.min(50_000, Math.floor(configured)))
+    : 45_000
 }
 
 // In-memory cache for the most volatile symbol per exchange (60s TTL)
@@ -277,20 +292,24 @@ async function runCronPipelineForSymbol(
     indication: IndicationProcessor
     realtime: RealtimeProcessor
     strategy: StrategyProcessor
-setsProcessor: IndicationSetsProcessor
-   },
- ): Promise<PipelineCycleResult> {
-   await ensureCurrentMarketDataCandle(symbol, client)
-   return runIndStratCycle(connectionId, symbol, "realtime", {
-     indication: deps.indication,
-     realtime: deps.realtime,
-     strategy: deps.strategy,
-     setsProcessor: deps.setsProcessor,
-     // PRODUCTION FIX: Live dispatch enabled by default unless explicitly disabled
-     skipLiveDispatch: process.env.CRON_LIVE_DISPATCH === "0" || process.env.CRON_LIVE_DISPATCH === "false" ? true : false,
-     enableStrategyFlow: process.env.DISABLE_API_STRATEGY_FLOW === "1" ? false : true,
-   })
- }
+    setsProcessor: IndicationSetsProcessor
+  },
+  shouldContinue: () => boolean,
+): Promise<PipelineCycleResult> {
+  if (!shouldContinue()) throw new CronWorkCancelledError()
+  await ensureCurrentMarketDataCandle(symbol, client)
+  if (!shouldContinue()) throw new CronWorkCancelledError()
+  return runIndStratCycle(connectionId, symbol, "realtime", {
+    indication: deps.indication,
+    realtime: deps.realtime,
+    strategy: deps.strategy,
+    setsProcessor: deps.setsProcessor,
+    // PRODUCTION FIX: Live dispatch enabled by default unless explicitly disabled
+    skipLiveDispatch: process.env.CRON_LIVE_DISPATCH === "0" || process.env.CRON_LIVE_DISPATCH === "false" ? true : false,
+    enableStrategyFlow: process.env.DISABLE_API_STRATEGY_FLOW === "1" ? false : true,
+    shouldContinue,
+  })
+}
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10)
@@ -315,7 +334,9 @@ async function runBounded<T, R>(
     }
   }
 
-  await Promise.all(Array.from({ length: concurrency }, () => worker()))
+  const settled = await Promise.allSettled(Array.from({ length: concurrency }, () => worker()))
+  const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected")
+  if (rejected) throw rejected.reason
   return results
 }
 
@@ -453,6 +474,11 @@ export async function GET(request: Request) {
     connectionId: string
     admission: CanonicalPipelineAdmission
   }> = []
+  const workDeadlineMs = Date.now() + resolveCronWorkBudgetMs()
+  const cronWorkActive = () => !request.signal.aborted && Date.now() < workDeadlineMs
+  const assertCronWorkActive = () => {
+    if (!cronWorkActive()) throw new CronWorkCancelledError()
+  }
 
   try {
     const { initRedis, getRedisClient, getAssignedAndEnabledConnections, getConnection, getAppSettings } = await import("@/lib/redis-db")
@@ -558,6 +584,7 @@ export async function GET(request: Request) {
     const cyclesPerCron = 1
 
     for (const connection of activeConnections) {
+      assertCronWorkActive()
       const exchangeName = (connection.exchange || "bingx").toLowerCase()
       const progKey = `progression:${connection.id}`
       const [
@@ -691,6 +718,7 @@ export async function GET(request: Request) {
             {
               finalizePhase: false,
               onProgress: () => touchCronProgress(connection.id),
+              shouldContinue: cronWorkActive,
             },
           )
           touchCronProgress(connection.id)
@@ -752,6 +780,7 @@ export async function GET(request: Request) {
       }
 
       for (let c = 0; c < cyclesPerCron; c++) {
+        assertCronWorkActive()
         // Process symbols for this cycle with bounded concurrency.
         // Each call touches distinct market_data:{symbol} and
         // indications:{conn}:{type}:latest keys so there is no key collision.
@@ -769,9 +798,16 @@ export async function GET(request: Request) {
         const cycleResults = await runBounded(
           symbolsToProcess,
           symbolConcurrency,
-          (symbol) => runCronPipelineForSymbol(connection.id, symbol, client, pipelineDeps)
+          (symbol) => runCronPipelineForSymbol(
+            connection.id,
+            symbol,
+            client,
+            pipelineDeps,
+            cronWorkActive,
+          )
             .finally(() => touchCronProgress(connection.id)),
         )
+        assertCronWorkActive()
         let cycleIndications = 0
         let cycleStrategiesEvaluated = 0
         for (const r of cycleResults) {
@@ -862,7 +898,11 @@ export async function GET(request: Request) {
       return NextResponse.json({
         success: true,
         skipped: true,
-        reason: "historic_generation_superseded",
+        reason: cronWorkActive()
+          ? "historic_generation_superseded"
+          : request.signal.aborted
+            ? "cron_request_aborted"
+            : "cron_work_budget_yield",
         timestamp: Date.now(),
       })
     }

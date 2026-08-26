@@ -46,8 +46,10 @@ export function isBingXControlOrder(order: Record<string, any>): boolean {
 }
 
 function orderIdentity(order: Record<string, any>, index: number): string {
-  const id = order.orderId ?? order.orderID ?? order.id
-  return id == null || String(id).trim() === "" ? `row:${index}` : `venue:${String(id)}`
+  const id = [order.orderId, order.orderID, order.id, order.ordId]
+    .map((value) => value == null ? "" : String(value).trim())
+    .find(Boolean)
+  return id ? `venue:${id}` : `row:${index}`
 }
 
 export function countUniqueBingXControlOrders(orders: readonly Record<string, any>[]): number {

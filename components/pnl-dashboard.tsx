@@ -11,14 +11,20 @@ interface PositionPnL {
   quantity: number
   opened_at: string
   closed_at: string
-  pnl: number
-  pnl_percent: number
+  pnl: number | null
+  pnl_percent: number | null
   holding_time_min: number
+  accounting_status: "settled" | "pending"
+  accounting_source: string | null
 }
 
 interface PnLStats {
   total_positions: number
   closed_positions: number
+  settled_closed_positions?: number
+  accounting_pending?: number
+  accounting_complete?: boolean
+  accounting_coverage_percent?: number
   open_positions: number
   total_pnl: number
   total_pnl_percent: number
@@ -33,7 +39,8 @@ interface PnLStats {
   avg_loss: number
   largest_win: number
   largest_loss: number
-  profit_factor: number
+  profit_factor: number | null
+  profit_factor_infinite?: boolean
   expectancy: number
   avg_holding_time_min: number
   last_25_positions: PositionPnL[]
@@ -56,7 +63,7 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
   const { data, error, isLoading } = useSWR<ApiResponse>(
     connectionId ? `/api/trade-engine/pnl-stats?connection_id=${encodeURIComponent(connectionId)}` : null,
     fetcher,
-    { refreshInterval: 5000 } // Refresh every 5 seconds
+    { refreshInterval: 3000 }
   )
 
   const stats = data?.stats
@@ -103,6 +110,10 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
   const recentPositions = stats.last_50_positions ?? stats.last_25_positions
   const recentPnl = stats.last_50_pnl ?? stats.last_25_pnl
   const recentWinRate = stats.last_50_win_rate ?? stats.last_25_win_rate
+  const settledClosed = stats.settled_closed_positions ?? stats.closed_positions
+  const accountingPending = stats.accounting_pending ?? 0
+  const profitFactor = stats.profit_factor
+  const profitFactorInfinite = stats.profit_factor_infinite === true
 
   return (
     <div className="w-full space-y-6">
@@ -134,10 +145,12 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
         {/* Profit Factor */}
         <div className="rounded-lg border border-border bg-card p-4">
           <p className="text-sm font-medium text-muted-foreground">Closed PF (gross)</p>
-          <p className={`text-2xl font-bold ${stats.profit_factor >= 1.2 ? "text-green-600" : stats.profit_factor >= 1 ? "text-blue-600" : "text-amber-600"}`}>
-            {stats.profit_factor.toFixed(2)}
+          <p className={`text-2xl font-bold ${profitFactorInfinite ? "text-green-600" : profitFactor === null ? "text-muted-foreground" : profitFactor >= 1.2 ? "text-green-600" : profitFactor >= 1 ? "text-blue-600" : "text-amber-600"}`}>
+            {profitFactorInfinite ? "∞" : profitFactor === null ? "—" : profitFactor.toFixed(2)}
           </p>
-          <p className="text-xs text-muted-foreground">Closed wins/losses; PnL is evaluated separately.</p>
+          <p className="text-xs text-muted-foreground">
+            Settled wins/losses only; {accountingPending} awaiting venue accounting.
+          </p>
         </div>
 
         {/* Expectancy */}
@@ -155,7 +168,9 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
         <div className="rounded-lg border border-border bg-card p-4">
           <p className="text-sm font-medium text-muted-foreground">Positions</p>
           <p className="text-2xl font-bold">{stats.closed_positions}</p>
-          <p className="text-xs text-muted-foreground">{stats.open_positions} open</p>
+          <p className="text-xs text-muted-foreground">
+            {settledClosed} settled · {accountingPending} pending · {stats.open_positions} open
+          </p>
         </div>
 
         <div className="rounded-lg border border-border bg-card p-4">
@@ -187,6 +202,12 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
           </div>
         </div>
 
+        {accountingPending > 0 && (
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            Pending settlement rows stay visible but are excluded from realized PnL, W/L/BE, PF and holding-time averages until exact venue accounting is complete.
+          </p>
+        )}
+
         <div className="max-h-96 overflow-y-auto rounded-lg border border-border">
           <table className="w-full text-sm">
             <thead className="sticky top-0 border-b border-border bg-muted">
@@ -208,12 +229,14 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
                     {pos.direction === "long" ? "L" : "S"}
                   </td>
                   <td className="px-3 py-2 text-right text-muted-foreground">${pos.entry_price.toFixed(8)}</td>
-                  <td className="px-3 py-2 text-right text-muted-foreground">${pos.exit_price.toFixed(8)}</td>
-                  <td className={`px-3 py-2 text-right font-semibold ${pos.pnl >= 0 ? "text-green-600" : "text-red-600"}`}>
-                    {formatCurrency(pos.pnl)}
+                  <td className="px-3 py-2 text-right text-muted-foreground">
+                    {pos.accounting_status === "pending" || pos.exit_price <= 0 ? "—" : `$${pos.exit_price.toFixed(8)}`}
                   </td>
-                  <td className={`px-3 py-2 text-right font-semibold ${pos.pnl_percent >= 0 ? "text-green-600" : "text-red-600"}`}>
-                    {formatPercent(pos.pnl_percent)}
+                  <td className={`px-3 py-2 text-right font-semibold ${pos.pnl === null ? "text-amber-600" : pos.pnl >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    {pos.pnl === null ? "Pending" : formatCurrency(pos.pnl)}
+                  </td>
+                  <td className={`px-3 py-2 text-right font-semibold ${pos.pnl_percent === null ? "text-muted-foreground" : pos.pnl_percent >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    {pos.pnl_percent === null ? "—" : formatPercent(pos.pnl_percent)}
                   </td>
                   <td className="px-3 py-2 text-right text-muted-foreground text-xs">
                     {formatTime(pos.holding_time_min)}

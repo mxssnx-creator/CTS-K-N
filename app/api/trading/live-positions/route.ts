@@ -10,36 +10,47 @@ import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { calculateLivePositionStatistics } from "@/lib/live-position-statistics"
 import {
   derivePositionRoi,
-  resolveRealizedPnl,
+  resolveSettledRealizedPnl,
   resolveUnrealizedPnl,
   roundPositionPnl,
 } from "@/lib/live-position-pnl"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
+import { getLivePositionSource, type LivePositionSource } from "@/lib/live-position-source"
 
 export const dynamic = "force-dynamic"
 
-type LiveSource = "real" | "simulated" | "unknown"
-
-function getLiveSource(pos: any): LiveSource {
-  if (pos?.status === "simulated") return "simulated"
-  if (String(pos?.statusReason || "").includes("live_trade disabled")) return "simulated"
-  const ex = pos?.exchangeData || {}
+function timestampOf(value: unknown): number {
   if (
-    pos?.orderId ||
-    pos?.exchangeOrderId ||
-    ex.exchangeOrderId ||
-    ex.exchangePositionId ||
-    ex.orderId ||
-    ex.source === "exchange" ||
-    ex.syncedFrom === "exchange"
+    typeof value === "number" ||
+    (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim()))
   ) {
-    return "real"
+    const numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric < 10_000_000_000 ? numeric * 1000 : numeric
+    }
   }
-  return "unknown"
+  const parsed = Date.parse(String(value || ""))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function closedLimitOf(value: string | null): number {
+  const parsed = Number.parseInt(String(value || "200"), 10)
+  return Number.isFinite(parsed) ? Math.min(1000, Math.max(1, parsed)) : 200
+}
+
+function mergeLifecyclePositions(...ledgers: any[][]): any[] {
+  const byId = new Map<string, any>()
+  const withoutId: any[] = []
+  for (const position of ledgers.flat()) {
+    const id = String(position?.id ?? position?.positionId ?? "").trim()
+    if (id) byId.set(id, position)
+    else withoutId.push(position)
+  }
+  return [...byId.values(), ...withoutId]
 }
 
 function normalizePosition(pos: any) {
-  const source = getLiveSource(pos)
+  const source: LivePositionSource = getLivePositionSource(pos)
   return {
     ...pos,
     dataSource: source,
@@ -76,6 +87,37 @@ function compactExchangeData(raw: unknown): Record<string, unknown> | undefined 
 }
 
 function toLivePositionView(pos: any): Record<string, unknown> {
+  const pendingProtectionOrders = pos.pendingProtectionOrders && typeof pos.pendingProtectionOrders === "object"
+    ? Object.fromEntries(Object.entries(pos.pendingProtectionOrders).map(([leg, raw]) => {
+        const pending = raw && typeof raw === "object" ? raw as Record<string, unknown> : {}
+        return [leg, {
+          clientOrderId: pending.clientOrderId,
+          triggerPrice: pending.triggerPrice,
+          quantity: pending.quantity,
+          absenceConfirmations: pending.absenceConfirmations,
+        }]
+      }))
+    : undefined
+  const pendingSystemAction = pos.pendingSystemAction && typeof pos.pendingSystemAction === "object"
+    ? {
+        phase: pos.pendingSystemAction.phase,
+        reason: pos.pendingSystemAction.reason,
+        startedAt: pos.pendingSystemAction.startedAt,
+        updatedAt: pos.pendingSystemAction.updatedAt,
+        requestedQuantity: pos.pendingSystemAction.requestedQuantity,
+        appliedFilledQuantity: pos.pendingSystemAction.appliedFilledQuantity,
+        absenceConfirmations: pos.pendingSystemAction.absenceConfirmations,
+      }
+    : undefined
+  const pendingQuantityMutation = pos.pendingQuantityMutation && typeof pos.pendingQuantityMutation === "object"
+    ? {
+        phase: pos.pendingQuantityMutation.phase,
+        reason: pos.pendingQuantityMutation.reason,
+        quantityBefore: pos.pendingQuantityMutation.quantityBefore,
+        startedAt: pos.pendingQuantityMutation.startedAt,
+        updatedAt: pos.pendingQuantityMutation.updatedAt,
+      }
+    : undefined
   const view: Record<string, unknown> = {
     id: pos.id,
     connectionId: pos.connectionId,
@@ -119,6 +161,11 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     entryAccountingComplete: pos.entryAccountingComplete,
     realizedPnlComplete: pos.realizedPnlComplete,
     realizedPnlSource: pos.realizedPnlSource,
+    pnlAccountingComplete: pos.pnlAccountingComplete,
+    pnlAccountingSource: pos.pnlAccountingSource,
+    accountingPending: String(pos.status || "").trim().toLowerCase() === "closed"
+      ? resolveSettledRealizedPnl(pos) === undefined
+      : false,
     exchangeQuantityAdjustmentCount: Array.isArray(pos.exchangeQuantityAdjustments)
       ? pos.exchangeQuantityAdjustments.length
       : 0,
@@ -166,9 +213,20 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     orderId: pos.orderId,
     stopLossOrderId: pos.stopLossOrderId,
     takeProfitOrderId: pos.takeProfitOrderId,
+    stopLossArmedQuantity: pos.stopLossArmedQuantity,
+    takeProfitArmedQuantity: pos.takeProfitArmedQuantity,
+    protectionArmedQuantity: pos.protectionArmedQuantity,
+    stopLossLastArmedAt: pos.stopLossLastArmedAt,
+    takeProfitLastArmedAt: pos.takeProfitLastArmedAt,
     protectionMode: pos.protectionMode,
     systemProtectionLegs: pos.systemProtectionLegs,
     controlOrderCapacity: pos.controlOrderCapacity,
+    submissionState: pos.submissionState,
+    submissionAbsentConfirmations: pos.submissionAbsentConfirmations,
+    pendingProtectionLegs: pendingProtectionOrders ? Object.keys(pendingProtectionOrders) : [],
+    pendingProtectionOrders,
+    pendingSystemAction,
+    pendingQuantityMutation,
     closePrice: pos.closePrice ?? pos.exitPrice,
     createdAt: pos.createdAt,
     updatedAt: pos.updatedAt,
@@ -182,8 +240,8 @@ function toLivePositionView(pos: any): Record<string, unknown> {
 }
 
 function enrichPnl(pos: any) {
-  const closed = String(pos.status || "").toLowerCase() === "closed"
-  const pnl = closed ? resolveRealizedPnl(pos) : resolveUnrealizedPnl(pos)
+  const closed = String(pos.status || "").trim().toLowerCase() === "closed"
+  const pnl = closed ? resolveSettledRealizedPnl(pos) : resolveUnrealizedPnl(pos)
   if (pnl !== undefined) {
     if (closed) pos.realizedPnL = roundPositionPnl(pnl)
     else pos.unrealizedPnL = roundPositionPnl(pnl)
@@ -199,22 +257,31 @@ function enrichPnl(pos: any) {
 }
 
 function computeStats(positions: any[]) {
-  const closed = positions.filter((p) => p.status === "closed")
+  const closed = positions.filter((p) => String(p.status || "").trim().toLowerCase() === "closed")
+  const settledClosed = closed
+    .map((position) => ({ position, pnl: resolveSettledRealizedPnl(position) }))
+    .filter((entry): entry is { position: any; pnl: number } => entry.pnl !== undefined)
+  const accountingPending = closed.length - settledClosed.length
   const open = positions.filter((p) => isLiveOpenStatus(p.status))
-  const totalRealizedPnL = closed.reduce((sum, p) => sum + (resolveRealizedPnl(p) ?? 0), 0)
+  const totalRealizedPnL = settledClosed.reduce((sum, entry) => sum + entry.pnl, 0)
   const totalUnrealizedPnL = open.reduce((sum, p) => sum + (resolveUnrealizedPnl(p) ?? 0), 0)
-  const wins = closed.filter((p) => (resolveRealizedPnl(p) ?? 0) > 0).length
-  const losses = closed.filter((p) => (resolveRealizedPnl(p) ?? 0) < 0).length
+  const wins = settledClosed.filter((entry) => entry.pnl > 0).length
+  const losses = settledClosed.filter((entry) => entry.pnl < 0).length
+  const breakEven = settledClosed.filter((entry) => entry.pnl === 0).length
   const winRate = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 10000) / 100 : 0
   return {
     total: positions.length,
     open: open.length,
     closed: closed.length,
+    settledClosed: settledClosed.length,
+    accountingPending,
+    accountingComplete: accountingPending === 0,
     totalRealizedPnL: Math.round(totalRealizedPnL * 100) / 100,
     totalUnrealizedPnL: Math.round(totalUnrealizedPnL * 100) / 100,
     effectivePnL: Math.round((totalRealizedPnL + totalUnrealizedPnL) * 100) / 100,
     wins,
     losses,
+    breakEven,
     winRate,
   }
 }
@@ -240,7 +307,7 @@ async function buildLivePositionsResponse(request: Request) {
       { status: 400 },
     )
   }
-  const closedLimit = Math.min(1000, Math.max(1, parseInt(searchParams.get("closedLimit") || "200", 10)))
+  const closedLimit = closedLimitOf(searchParams.get("closedLimit"))
   const statusFilter = searchParams.get("status") || undefined
   const sourceFilter = (searchParams.get("source") || "all").toLowerCase()
 
@@ -273,9 +340,12 @@ async function buildLivePositionsResponse(request: Request) {
       } catch { /* skip malformed */ }
     }
 
-    const all = [...open, ...closed, ...altPositions]
+    // Closed/archive rows override a stale open-index copy with the same id.
+    // This makes the dashboard monotonic during the short archive transition.
+    const all = mergeLifecyclePositions(open, closed, altPositions)
       .map((pos) => enrichPnl(normalizePosition(pos)))
-      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .sort((a, b) => timestampOf(b.createdAt ?? b.openedAt ?? b.updatedAt)
+        - timestampOf(a.createdAt ?? a.openedAt ?? a.updatedAt))
 
     const realPositions = all.filter((p) => p.dataSource === "real")
     const simulatedPositions = all.filter((p) => p.dataSource === "simulated")
@@ -288,7 +358,7 @@ async function buildLivePositionsResponse(request: Request) {
             all
 
     const filtered = statusFilter
-      ? sourceFiltered.filter((p) => p.status === statusFilter)
+      ? sourceFiltered.filter((p) => String(p.status || "").trim().toLowerCase() === statusFilter.trim().toLowerCase())
       : sourceFiltered
 
     // We already hold the canonical open/closed read model for this response.
@@ -299,7 +369,9 @@ async function buildLivePositionsResponse(request: Request) {
     const realExchangeStatistics = calculateLivePositionStatistics(realPositions)
     const simulatedStatistics = calculateLivePositionStatistics(simulatedPositions)
     const legacyStats = {
-      totalFilled: all.filter((p) => p.status === "filled").length,
+      // `filled` is a transient lifecycle status. Count every position with a
+      // confirmed lifetime execution, including rows already open or closed.
+      totalFilled: completeStatistics.filled,
       totalOpen: allStats.open,
       totalClosed: allStats.closed,
       totalPnL: allStats.effectivePnL,
@@ -328,13 +400,18 @@ async function buildLivePositionsResponse(request: Request) {
         simulated: simulatedPositions.length,
         unknown: unknownPositions.length,
         open: countLiveOpenPositions(all),
-        pending: all.filter((p) => p.status === "pending").length,
-        placed: all.filter((p) => p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed").length,
-        pending_fill: all.filter((p) => p.status === "pending_fill").length,
-        filled: all.filter((p) => p.status === "filled").length,
-        closed: all.filter((p) => p.status === "closed").length,
-        rejected: all.filter((p) => p.status === "rejected").length,
-        error: all.filter((p) => p.status === "error").length,
+        executed: completeStatistics.filled,
+        pending: all.filter((p) => String(p.status || "").trim().toLowerCase() === "pending").length,
+        placed: all.filter((p) => ["placed", "pending_fill", "placed_unconfirmed"].includes(String(p.status || "").trim().toLowerCase())).length,
+        pending_fill: all.filter((p) => String(p.status || "").trim().toLowerCase() === "pending_fill").length,
+        filled: all.filter((p) => String(p.status || "").trim().toLowerCase() === "filled").length,
+        closing: all.filter((p) => String(p.status || "").trim().toLowerCase() === "closing").length,
+        closing_partial: all.filter((p) => String(p.status || "").trim().toLowerCase() === "closing_partial").length,
+        closed: allStats.closed,
+        settledClosed: allStats.settledClosed,
+        accountingPending: allStats.accountingPending,
+        rejected: all.filter((p) => String(p.status || "").trim().toLowerCase() === "rejected").length,
+        error: all.filter((p) => String(p.status || "").trim().toLowerCase() === "error").length,
       },
       stats: {
         ...legacyStats,
@@ -388,7 +465,7 @@ export async function GET(request: Request) {
       { status: 400 },
     )
   }
-  const closedLimit = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("closedLimit") || "200", 10)))
+  const closedLimit = closedLimitOf(url.searchParams.get("closedLimit"))
   const status = url.searchParams.get("status") || "all"
   const source = (url.searchParams.get("source") || "all").toLowerCase()
   return serveSerializedResponseSWR({

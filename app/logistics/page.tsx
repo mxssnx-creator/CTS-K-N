@@ -124,6 +124,7 @@ interface DirectTradeSnapshot {
     totalPnl?: number
     totalPnlUsdt?: number
     profitFactor?: number | null
+    settledClosedCount?: number
   } | null
   openPositions?: number
   openingPositions?: number
@@ -583,7 +584,7 @@ function MainSystemTab({
           </Block>
           <Block icon={Zap} title="Direct Trade" sub={`${directIntervalMs} ms non-overlapping execution loop`} accent="orange">
             <Row label="Processor" value={directTrade?.processor?.isHealthy ? "healthy" : "idle / stale"} />
-            <Row label="Orders / filled" value={`${fmt(directTrade?.stats?.totalOrders ?? 0)} / ${fmt(directTrade?.stats?.totalFilled ?? 0)}`} />
+            <Row label="Confirmed entry/add fills" value={fmt(directTrade?.stats?.totalFilled ?? 0)} />
             <Row label="Open / opening / closed" value={`${fmt(directTrade?.openPositions ?? 0)} / ${fmt(directTrade?.openingPositions ?? 0)} / ${fmt(directTrade?.closedPositions ?? 0)}`} />
             <Row label="Exchange accounting pending" value={fmt(directTrade?.accountingPending ?? 0)} />
             <Row label="Realized PnL / PF" value={`${Number(directTrade?.stats?.totalPnlUsdt ?? 0).toFixed(4)} USDT / ${directTrade?.stats?.profitFactor == null ? "—" : Number(directTrade?.stats?.profitFactor).toFixed(2)}`} />
