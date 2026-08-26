@@ -2217,9 +2217,20 @@ export class TradeEngineManager {
     let ownsGlobalHistoricBootstrapAdmission = false
     const bootstrapStartedAt = new Date(this.prehistoricBootstrapStartedAt).toISOString()
 
-    const shouldContinue = () =>
-      this.isCurrentGeneration(generationEpoch) &&
-      this.prehistoricBootstrapGeneration === bootstrapGeneration
+    const shouldContinue = () => {
+      const current =
+        this.isCurrentGeneration(generationEpoch) &&
+        this.prehistoricBootstrapGeneration === bootstrapGeneration
+      // Historic owns the canonical admission for the full exhaustive load.
+      // Its generation checks are cooperative progress just like Scheduled
+      // and Immediate checkpoints. Touch only after this exact bootstrap has
+      // acquired its own admission: a queued or stale generation must never
+      // refresh another owner's lease.
+      if (current && ownsBootstrapAdmission) {
+        this.canonicalPipelineAdmission.touch("bootstrap")
+      }
+      return current
+    }
 
     void (async () => {
       try {
