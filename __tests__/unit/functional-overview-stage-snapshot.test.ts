@@ -46,6 +46,36 @@ describe("functional overview stage snapshots", () => {
     expect(snapshot.complete).toBe(false)
   })
 
+  test("uses logical Real Set survivors instead of physical fan-out rows", () => {
+    const snapshot = aggregateFunctionalOverviewStage({
+      "s:BTCUSDT:created": "30",
+      "s:BTCUSDT:evaluated": "10",
+      "s:BTCUSDT:passed": "30",
+      "s:BTCUSDT:logical_passed_sets": "6",
+      "s:BTCUSDT:ts": String(now),
+    }, {
+      now,
+      activeSymbols: new Set(["BTCUSDT"]),
+      passedField: "logical_passed_sets",
+    })
+
+    expect(snapshot).toMatchObject({ created: 30, evaluated: 10, passed: 6 })
+  })
+
+  test("bounds legacy Real fallback survivors to their logical input count", () => {
+    const snapshot = aggregateFunctionalOverviewStage({
+      "s:BTCUSDT:evaluated": "10",
+      "s:BTCUSDT:passed": "30",
+      "s:BTCUSDT:ts": String(now),
+    }, {
+      now,
+      activeSymbols: new Set(["BTCUSDT"]),
+      passedField: "logical_passed_sets",
+    })
+
+    expect(snapshot.passed).toBe(10)
+  })
+
   test("resolves JSON and delimited active-symbol settings without merging stale fallbacks", () => {
     expect([...resolveOverviewActiveSymbols({ force_symbols: '["btcusdt","ETHUSDT"]' })])
       .toEqual(["BTCUSDT", "ETHUSDT"])
