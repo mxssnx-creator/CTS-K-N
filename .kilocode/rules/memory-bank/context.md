@@ -1952,3 +1952,22 @@ credentials are present.
   zero orders. Keep credentials only in ignored mode-0600 `.env`; never commit
   them. A real virtual-funds cycle may run only after that credential gate
   passes; Mainnet remains out of scope.
+
+## Session 2026-08-26 — Chisel-only recovery and publication policy
+
+- [x] A verified local checkpoint was created before Chisel repair at
+  `/workspace/backups/CTS-K-N/20260826T030509Z-pre-chisel-repair-verified`,
+  followed by a verified publication checkpoint at
+  `/workspace/backups/CTS-K-N/20260826T031055Z-pre-github-policy-publish`.
+- [x] The managed activation script and pinned SSH material have safe local
+  modes; its launcher is syntactically valid and starts only if the localhost
+  forward is absent. The current sandbox has no reachable `127.0.0.1:2222`
+  listener and both managed PID records are stale or unreachable.
+- [ ] The managed client reconnect was stopped before the Chisel registration
+  could leave this Work sandbox by an external network-broker disconnect. Do
+  not use a direct SSH/proxy fallback, kill unverified processes, deploy, or
+  run VST orders until one official activation produces a verified localhost
+  SSH banner.
+- [x] Project policy now requires a verified backup before material work and a
+  reviewed GitHub branch/PR publication after required validation; GitHub
+  publication is authorized for this project.
