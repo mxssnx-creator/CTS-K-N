@@ -1971,3 +1971,8 @@ credentials are present.
 - [x] Project policy now requires a verified backup before material work and a
   reviewed GitHub branch/PR publication after required validation; GitHub
   publication is authorized for this project.
+- [ ] The Work sandbox explicitly rejected network escalation for the managed
+  reconnect. This is a platform control-plane boundary, not a Chisel,
+  credential, or CTS-server diagnosis; user authorization cannot override it.
+  Retry only the normal managed activation when ordinary network execution is
+  available, then require the localhost SSH banner before any remote action.
