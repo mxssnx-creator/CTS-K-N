@@ -94,14 +94,18 @@ export function emptyFunctionalOverviewStageSnapshot(): FunctionalOverviewStageS
  */
 export function aggregateFunctionalOverviewStage(
   raw: Record<string, string> | null | undefined,
-  options: { now?: number; activeSymbols?: Set<string> } = {},
+  options: {
+    now?: number
+    activeSymbols?: Set<string>
+    passedField?: "passed" | "logical_passed_sets"
+  } = {},
 ): FunctionalOverviewStageSnapshot {
   const result = emptyFunctionalOverviewStageSnapshot()
   const now = options.now ?? Date.now()
   const activeSymbols = options.activeSymbols ?? new Set<string>()
   const rows = new Map<string, Record<string, number>>()
   for (const [field, value] of Object.entries(raw || {})) {
-    const match = field.match(/^s:([^:]+):(created|evaluated|passed|running|apf|ts)$/)
+    const match = field.match(/^s:([^:]+):(created|evaluated|passed|logical_passed_sets|running|apf|ts)$/)
     if (!match) continue
     const symbol = match[1].toUpperCase()
     if (activeSymbols.size > 0 && !activeSymbols.has(symbol)) continue
@@ -116,7 +120,13 @@ export function aggregateFunctionalOverviewStage(
     const created = Math.max(0, row.created || 0)
     result.created += created
     result.evaluated += Math.max(0, row.evaluated || 0)
-    result.passed += Math.max(0, row.passed || 0)
+    const requestedPassed = row[options.passedField || "passed"]
+    // Older snapshots may not carry the logical Real survivor field. Their
+    // physical materialisation count can exceed the logical input because one
+    // input Set fans out into multiple child/row Sets, so cap that fallback to
+    // the matching logical evaluated denominator.
+    const passed = requestedPassed ?? Math.min(row.passed || 0, row.evaluated || 0)
+    result.passed += Math.max(0, passed)
     result.running += Math.max(0, row.running || 0)
     result.weightedPf += (row.apf || 0) * created
     result.pfWeight += created
