@@ -89,8 +89,9 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).not.toContain("chpasswd")
     expect(installer).toContain("CTS_INSTALLED_REPOSITORY=$repository")
     expect(installer).toContain("CTS_INSTALLED_BRANCH=$branch")
-    expect(installer).toContain('for runtime_path in node_modules .next scripts lib package.json')
+    expect(installer).toContain('for runtime_path in node_modules .next scripts lib package.json tsconfig.json')
     expect(installer).toContain('run_root chmod -R g+rX "$PROJECT_ROOT/$runtime_path"')
+    expect(installer).toContain('run_as_service test -r "$PROJECT_ROOT/tsconfig.json"')
     expect(installer).toContain('scripts/run-with-env.mjs" "$ENV_FILE" --')
     expect(installer).toContain(
       'REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)"',

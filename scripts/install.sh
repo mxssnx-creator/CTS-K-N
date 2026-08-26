@@ -1269,7 +1269,11 @@ prepare_runtime_permissions() {
   # lib must stay group-readable: the Direct-Trade processor service imports
   # lib/*.cjs helpers directly (not through the standalone Next build), so the
   # service user needs read/traverse access to the whole directory.
-  for runtime_path in node_modules .next scripts lib package.json pnpm-lock.yaml pnpm-workspace.yaml next.config.js next.config.mjs next.config.ts; do
+  # Next's production runtime still loads tsconfig.json to resolve project
+  # aliases. Keep it readable by the service identity as well; otherwise the
+  # app starts but emits EACCES on every type-config lookup after a clean
+  # installer run with a restrictive umask.
+  for runtime_path in node_modules .next scripts lib package.json tsconfig.json pnpm-lock.yaml pnpm-workspace.yaml next.config.js next.config.mjs next.config.ts; do
     [[ -e "$PROJECT_ROOT/$runtime_path" ]] || continue
     run_root chown -R "$install_owner:$service_group" "$PROJECT_ROOT/$runtime_path"
     run_root chmod -R g+rX "$PROJECT_ROOT/$runtime_path"
@@ -1286,6 +1290,7 @@ prepare_runtime_permissions() {
   run_root chmod -R u+rwX,g+rX,o-rwx "$PROJECT_ROOT/.next/cache"
   run_root chown -R "$SERVICE_USER:$service_group" "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data"
   run_as_service test -r "$PROJECT_ROOT/package.json" || fatal "Service user cannot read the checkout"
+  run_as_service test -r "$PROJECT_ROOT/tsconfig.json" || fatal "Service user cannot read tsconfig.json"
   run_as_service test -x "$RUNTIME_DIR/start-app.sh" || fatal "Service user cannot execute the app wrapper"
   run_as_service test -x "$RUNTIME_DIR/start-direct-trade.sh" || fatal "Service user cannot execute the Direct-Trade wrapper"
   run_as_service test -x "$RUNTIME_DIR/start-recovery.sh" || fatal "Service user cannot execute the recovery wrapper"
