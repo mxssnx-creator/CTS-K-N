@@ -19,6 +19,7 @@ import {
   getCanonicalPipelineAdmission,
   getGlobalHistoricBootstrapAdmission,
   type CanonicalPipelineAdmission,
+  type CanonicalPipelineOwner,
   type GlobalHistoricBootstrapAdmission,
 } from "@/lib/canonical-pipeline-admission"
 import { publishEngineEvent } from "@/lib/engine-event-bus"
@@ -989,6 +990,10 @@ export class TradeEngineManager {
    */
   get canonicalPipelineProgressAgeMs(): number {
     return this.canonicalPipelineAdmission.progressAgeMs()
+  }
+
+  get canonicalPipelineOwner(): CanonicalPipelineOwner | null {
+    return this.canonicalPipelineAdmission.activeOwner
   }
 
   /**

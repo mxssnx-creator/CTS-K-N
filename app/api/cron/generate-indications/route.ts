@@ -524,6 +524,11 @@ export async function GET(request: Request) {
       return true
     })
     const skippedBusyPipelineOwners = ownership.eligible.length - activeConnections.length
+    const touchCronProgress = (connectionId: string) => {
+      canonicalCronOwners
+        .find((owner) => owner.connectionId === connectionId)
+        ?.admission.touch("cron")
+    }
 
     // Cron intentionally uses the same assigned-and-enabled connection set as
     // the engine coordinator, with only fresh queued start requests merged after
@@ -574,6 +579,7 @@ export async function GET(request: Request) {
         client.hget(progKey, "stats_recalculation_requested_version").catch(() => ""),
         client.hget(progKey, "stats_recalculation_requested_event_id").catch(() => ""),
       ])
+      touchCronProgress(connection.id)
       const baseBefore = Number.parseInt(String(baseBeforeRaw || "0"), 10) || 0
       const mainBefore = Number.parseInt(String(mainBeforeRaw || "0"), 10) || 0
       const realBefore = Number.parseInt(String(realBeforeRaw || "0"), 10) || 0
@@ -656,7 +662,7 @@ export async function GET(request: Request) {
 
         if (historicChunk.length > 0) {
           await runBounded(historicChunk, Math.min(2, historicChunk.length), (symbol) =>
-            ensureCurrentMarketDataCandle(symbol, client),
+            ensureCurrentMarketDataCandle(symbol, client).finally(() => touchCronProgress(connection.id)),
           )
           const engineState = (await client.hgetall(`trade_engine_state:${connection.id}`).catch(() => ({}))) || {}
           const rangeHoursRaw = Number(
@@ -676,13 +682,18 @@ export async function GET(request: Request) {
           const historicStart = new Date(historicEnd.getTime() - rangeHours * 60 * 60 * 1000)
           const processor = new ConfigSetProcessor(connection.id, Date.now())
           await processor.initializeConfigSets()
+          touchCronProgress(connection.id)
           historicResult = await processor.processPrehistoricData(
             historicChunk,
             historicStart,
             historicEnd,
             timeframeSeconds,
-            { finalizePhase: false },
+            {
+              finalizePhase: false,
+              onProgress: () => touchCronProgress(connection.id),
+            },
           )
+          touchCronProgress(connection.id)
 
           // A failed symbol remains retryable on the next minute rather than
           // being counted as a permanently successful generation.
@@ -758,7 +769,8 @@ export async function GET(request: Request) {
         const cycleResults = await runBounded(
           symbolsToProcess,
           symbolConcurrency,
-          (symbol) => runCronPipelineForSymbol(connection.id, symbol, client, pipelineDeps),
+          (symbol) => runCronPipelineForSymbol(connection.id, symbol, client, pipelineDeps)
+            .finally(() => touchCronProgress(connection.id)),
         )
         let cycleIndications = 0
         let cycleStrategiesEvaluated = 0
