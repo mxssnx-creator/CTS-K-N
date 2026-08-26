@@ -16,6 +16,11 @@ describe("exhaustive realtime cycle coordination", () => {
     expect(manager).toContain("!cycleBudgetExceeded")
     expect(manager).toContain("canonical_cycle_budget_exceeded_count")
     expect(manager).toContain("The admission lease is intentionally")
+    expect(manager).toContain("const scheduledGenerationIsCurrent = () =>")
+    expect(manager).toContain('this.canonicalPipelineAdmission.touch("scheduled")')
+    expect(manager).toContain('this.canonicalPipelineAdmission.touch("immediate")')
+    expect(manager).toContain("an actually")
+    expect(manager).toContain("blocked await makes no further checks")
 
     const realtimeStart = manager.indexOf("const pipelineResults = await withCycleDiagnostic(")
     expect(realtimeStart).toBeGreaterThan(-1)
