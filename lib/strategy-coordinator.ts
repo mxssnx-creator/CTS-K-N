@@ -325,14 +325,43 @@ const STRATEGY_FINGERPRINT_CACHE_TTL_SECONDS = 300
  * only drains the microtask queue; it does not prevent a large exhaustive
  * Base/Main/Real pass from starving the server event loop.
  */
-function yieldStrategyScheduler(force = false): Promise<void> {
+class StrategyGenerationSupersededError extends Error {
+  constructor() {
+    super("Strategy generation superseded")
+    this.name = "StrategyGenerationSupersededError"
+  }
+}
+
+function assertStrategyGenerationCurrent(shouldContinue?: () => boolean): void {
+  if (!shouldContinue) return
+  let current = false
+  try {
+    current = shouldContinue() !== false
+  } catch {
+    current = false
+  }
+  if (!current) throw new StrategyGenerationSupersededError()
+}
+
+async function yieldStrategyScheduler(
+  force = false,
+  shouldContinue?: () => boolean,
+): Promise<void> {
+  // The callback is generation-specific and records the watchdog heartbeat.
+  // Never touch admission globally here: stale work must fail its own guard
+  // instead of refreshing a newer owner's progress timestamp.
+  assertStrategyGenerationCurrent(shouldContinue)
   if (
     !force &&
     Date.now() - strategyLastMacrotaskYieldAt < STRATEGY_COOPERATIVE_TIME_SLICE_MS
   ) {
-    return Promise.resolve()
+    return
   }
-  if (strategyMacrotaskYieldInFlight) return strategyMacrotaskYieldInFlight
+  if (strategyMacrotaskYieldInFlight) {
+    await strategyMacrotaskYieldInFlight
+    assertStrategyGenerationCurrent(shouldContinue)
+    return
+  }
 
   strategyMacrotaskYieldInFlight = new Promise<void>((resolve) => {
     // setImmediate resumes after the poll phase, so queued health/stats and
@@ -348,13 +377,15 @@ function yieldStrategyScheduler(force = false): Promise<void> {
     strategyLastMacrotaskYieldAt = Date.now()
     strategyMacrotaskYieldInFlight = null
   })
-  return strategyMacrotaskYieldInFlight
+  await strategyMacrotaskYieldInFlight
+  assertStrategyGenerationCurrent(shouldContinue)
 }
 
 async function hsetStrategyRecordInBatches(
   client: any,
   key: string,
   values: Record<string, string>,
+  shouldContinue?: () => boolean,
 ): Promise<void> {
   const entries = Object.entries(values)
   for (let start = 0; start < entries.length; start += STRATEGY_REDIS_HASH_WRITE_BATCH_SIZE) {
@@ -367,7 +398,7 @@ async function hsetStrategyRecordInBatches(
     }
     await client.hset(key, chunk)
     if (start + STRATEGY_REDIS_HASH_WRITE_BATCH_SIZE < entries.length) {
-      await yieldStrategyScheduler()
+      await yieldStrategyScheduler(false, shouldContinue)
     }
   }
 }
@@ -3545,6 +3576,7 @@ export class StrategyCoordinator {
         indications,
         posCtx,
         isPrehistoric,
+        isCurrent,
       )
       markPhase("base")
       if (!isCurrent()) return []
@@ -3566,6 +3598,7 @@ export class StrategyCoordinator {
         posCtx,
         coordIndex,
         isPrehistoric,
+        isCurrent,
       )
       markPhase("main")
       if (!isCurrent()) return []
@@ -3587,6 +3620,7 @@ export class StrategyCoordinator {
         coordIndex,
         posCtx,
         isPrehistoric,
+        isCurrent,
       )
       markPhase("real")
       if (!isCurrent()) return []
@@ -3682,6 +3716,7 @@ export class StrategyCoordinator {
 
       return results
     } catch (error) {
+      if (error instanceof StrategyGenerationSupersededError) return results
       console.error(`[v0] [StrategyCoordinator] Flow failed for ${symbol}:`, error)
       throw error
     } finally {
@@ -3885,6 +3920,7 @@ export class StrategyCoordinator {
     indications: any[],
     posCtx?: PositionContext,
     isPrehistoric = false,
+    shouldContinue?: () => boolean,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[]; coordIndex: CoordIndex }> {
     const signalSettings = await loadSignalIndicationSettings()
     const signalTrailingEnabled = strategyIndicationVariantEnabled(
@@ -4048,7 +4084,7 @@ export class StrategyCoordinator {
       setMap.get(key)!.indications.push(ind)
       groupedIndications++
       if (groupedIndications % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
     }
 
@@ -4198,7 +4234,7 @@ export class StrategyCoordinator {
         )
         prospectiveRows++
         if (prospectiveRows % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
-          await yieldStrategyScheduler()
+          await yieldStrategyScheduler(false, shouldContinue)
         }
       }
     }
@@ -4450,7 +4486,7 @@ export class StrategyCoordinator {
         baseSets.push(set)
         materializedBaseRows++
         if (materializedBaseRows % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
-          await yieldStrategyScheduler()
+          await yieldStrategyScheduler(false, shouldContinue)
         }
       }
     }
@@ -4707,6 +4743,7 @@ export class StrategyCoordinator {
     posCtx?: PositionContext,
     coordIndex?: CoordIndex,
     isPrehistoric = false,
+    shouldContinue?: () => boolean,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[] }> {
     // Prefer in-memory input (hot-path pipelined from createBaseSets). Fall
     // back to Redis only when called standalone (tests / diagnostics).
@@ -4838,7 +4875,7 @@ export class StrategyCoordinator {
     let scannedBaseSets = 0
     for (const baseSet of baseSets) {
       if (scannedBaseSets > 0 && scannedBaseSets % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       scannedBaseSets++
       // ── Min-positions gate + Status tracking (operator spec) ────────────────────
@@ -5036,14 +5073,17 @@ export class StrategyCoordinator {
       buildTasks,
       variantBuildConcurrency,
       (task) => task(),
-      { yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL },
+      {
+        yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL,
+        onProgress: () => assertStrategyGenerationCurrent(shouldContinue),
+      },
     )
     
     // ── Process results and populate mainSets ──���────────�����────────────────
     let processedBuildResults = 0
     for (const result of results) {
       if (processedBuildResults > 0 && processedBuildResults % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       processedBuildResults++
       const { baseSet, profile, built, cachedSet } = result
@@ -5186,7 +5226,7 @@ export class StrategyCoordinator {
             registerCoordRecord(coordIndex, axisRec)
           }
         }
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       if (axisSetsAdded > 0) {
         // Axis fan-out complete — each qualifying default Main variant
@@ -5275,7 +5315,7 @@ export class StrategyCoordinator {
     let aggregatedMainSets = 0
     for (const set of mainSets) {
       if (aggregatedMainSets > 0 && aggregatedMainSets % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       aggregatedMainSets++
       // Variant tag — sets always carry an authoritative .variant field;
@@ -5341,7 +5381,12 @@ export class StrategyCoordinator {
         // stale fingerprints never outlive the canonical Main projection.
         await client.del(fpCacheKey).catch(() => {})
         if (nextFpCacheCount > 0) {
-          await hsetStrategyRecordInBatches(client, fpCacheKey, nextFpCache)
+          await hsetStrategyRecordInBatches(
+            client,
+            fpCacheKey,
+            nextFpCache,
+            shouldContinue,
+          )
           await client.expire(fpCacheKey, STRATEGY_FINGERPRINT_CACHE_TTL_SECONDS)
         }
       } catch { /* non-critical */ }
@@ -7101,6 +7146,7 @@ export class StrategyCoordinator {
     coordIndex?: CoordIndex,
     posCtx?: PositionContext,
     isPrehistoric = false,
+    shouldContinue?: () => boolean,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[] }> {
     let mainSets: StrategySet[]
     if (inputSets) {
@@ -7199,7 +7245,7 @@ export class StrategyCoordinator {
         mainSetIndex > 0 &&
         mainSetIndex % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0
       ) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       const s = mainSets[mainSetIndex]
       const posCount = Math.max(s.entryCount ?? 0, s.prevPos?.count ?? 0)
@@ -7276,7 +7322,11 @@ export class StrategyCoordinator {
     // representative, and the final physical row is sorted below. Sorting the
     // complete pre-combination matrix here as well was therefore redundant and
     // could block the event loop for several seconds at 32 symbols.
-    const realSorted = (await this.combinePosCountAxisSets(realQualifying, symbol))
+    const realSorted = (await this.combinePosCountAxisSets(
+      realQualifying,
+      symbol,
+      shouldContinue,
+    ))
       .sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
 
     // ── HEDGE NETTING (operator spec: Real stage only) ─────────────────────
@@ -7319,7 +7369,7 @@ export class StrategyCoordinator {
         hedgeInputIndex > 0 &&
         hedgeInputIndex % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0
       ) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       hedgeInputIndex++
       const dir = s.axisWindows?.direction
@@ -7345,7 +7395,7 @@ export class StrategyCoordinator {
         passthroughIndex > 0 &&
         passthroughIndex % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0
       ) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       passthroughIndex++
       const aw = s.axisWindows
@@ -7387,7 +7437,7 @@ export class StrategyCoordinator {
         hedgeBucketIndex > 0 &&
         hedgeBucketIndex % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0
       ) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       hedgeBucketIndex++
       const L = b.long.length
@@ -7767,7 +7817,12 @@ export class StrategyCoordinator {
         // indication axes, and outcome combinations cannot accumulate forever.
         await netClient.del(targetKey)
         if (Object.keys(netTargetWrites).length > 0) {
-          await hsetStrategyRecordInBatches(netClient, targetKey, netTargetWrites)
+          await hsetStrategyRecordInBatches(
+            netClient,
+            targetKey,
+            netTargetWrites,
+            shouldContinue,
+          )
           await netClient.expire(targetKey, 7 * 24 * 60 * 60)
         }
       } catch { /* non-critical */ }
@@ -8301,7 +8356,11 @@ export class StrategyCoordinator {
    * hedged against each other: a Base config with both sides produces two
    * Real rows. Each row sums every member's exact configured volume ratio.
    */
-  private async combinePosCountAxisSets(sets: StrategySet[], symbol: string): Promise<StrategySet[]> {
+  private async combinePosCountAxisSets(
+    sets: StrategySet[],
+    symbol: string,
+    shouldContinue?: () => boolean,
+  ): Promise<StrategySet[]> {
     const passthrough: StrategySet[] = []
     const groups = new Map<string, {
       parentSetKey: string
@@ -8321,7 +8380,7 @@ export class StrategyCoordinator {
         setIndex > 0 &&
         setIndex % STRATEGY_POS_COUNT_COMBINE_YIELD_INTERVAL === 0
       ) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       const set = sets[setIndex]
       if (set.combinedPosCounts) {
@@ -8379,7 +8438,7 @@ export class StrategyCoordinator {
         groupIndex > 0 &&
         groupIndex % STRATEGY_POS_COUNT_COMBINE_YIELD_INTERVAL === 0
       ) {
-        await yieldStrategyScheduler()
+        await yieldStrategyScheduler(false, shouldContinue)
       }
       groupIndex++
       const {

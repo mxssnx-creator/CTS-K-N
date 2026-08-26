@@ -891,8 +891,9 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("const buildTasks: Array<() => Promise<VariantBuildResult>>")
     expect(source).toContain("mapWithConcurrency(")
     expect(source).toContain("(task) => task()")
-    expect(source).toContain("{ yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL }")
-    expect(source).toContain("await yieldStrategyScheduler()")
+    expect(source).toContain("yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL")
+    expect(source).toContain("onProgress: () => assertStrategyGenerationCurrent(shouldContinue)")
+    expect(source).toContain("await yieldStrategyScheduler(false, shouldContinue)")
     expect(source).not.toContain("const results = await Promise.all(buildTasks)")
     expect(source).toContain("liveSets.length <= fastPathLimit")
     expect(source).toContain("._lastRealSets[symbol] = liveSets")
@@ -921,8 +922,8 @@ describe("requested regression guardrails", () => {
     expect(envExample).toContain("INDICATION_COOPERATIVE_TIME_SLICE_MS=8")
     expect(envExample).toContain("LIVE_DISPATCH_PER_CYCLE=4")
     expect(strategy).toContain('process.env.LIVE_DISPATCH_PER_CYCLE || "4"')
-    expect(strategy).toContain("hsetStrategyRecordInBatches(client, fpCacheKey, nextFpCache)")
-    expect(strategy).toContain("hsetStrategyRecordInBatches(netClient, targetKey, netTargetWrites)")
+    expect(strategy).toContain("fpCacheKey,\n            nextFpCache,\n            shouldContinue,")
+    expect(strategy).toContain("targetKey,\n            netTargetWrites,\n            shouldContinue,")
   })
 
   test("routine engine memory collection cannot stop the UI event loop", () => {

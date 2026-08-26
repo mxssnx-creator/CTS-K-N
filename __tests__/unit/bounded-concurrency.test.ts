@@ -123,6 +123,30 @@ describe("bounded engine concurrency", () => {
     expect(started).toEqual([0, 1])
   })
 
+  test("reports completed work and stops scheduling when the progress guard fails", async () => {
+    const completed: number[] = []
+    let heartbeats = 0
+
+    await expect(mapWithConcurrency(
+      [0, 1, 2, 3, 4],
+      1,
+      async (item) => {
+        completed.push(item)
+        return item
+      },
+      {
+        yieldEvery: 0,
+        onProgress: () => {
+          heartbeats++
+          if (heartbeats === 3) throw new Error("generation superseded")
+        },
+      },
+    )).rejects.toThrow("generation superseded")
+
+    expect(heartbeats).toBe(3)
+    expect(completed).toEqual([0, 1, 2])
+  })
+
   test("shares one adaptive budget across independent async branches", async () => {
     let desired = 2
     let active = 0

@@ -35,9 +35,18 @@ describe("exhaustive realtime cycle coordination", () => {
     expect(manager.slice(strategyStart, strategyEnd)).not.toContain("withCycleDeadline(")
 
     const indicationSets = source("lib/indication-sets-processor.ts")
+    const indicationProcessor = source("lib/trade-engine/indication-processor-fixed.ts")
+    const strategyCoordinator = source("lib/strategy-coordinator.ts")
+    const boundedConcurrency = source("lib/bounded-concurrency.ts")
     expect(indicationSets).toContain("const DEFAULT_OUTCOME_ATTACHMENT_CONCURRENCY = 8")
     expect(indicationSets).toContain("groupedEntries")
     expect(indicationSets).toContain("{ yieldEvery: 1 }")
+    expect(indicationSets).toContain("assertIndicationGenerationCurrent(shouldContinue)")
+    expect(indicationSets).toContain("yieldIndicationScheduler(false, this.currentCycleShouldContinue)")
+    expect(indicationProcessor).toContain("}, isCurrent)")
+    expect(strategyCoordinator).toContain("assertStrategyGenerationCurrent(shouldContinue)")
+    expect(strategyCoordinator).toContain("yieldStrategyScheduler(false, shouldContinue)")
+    expect(boundedConcurrency).toContain("await options.onProgress?.()")
 
     // The exhaustive pass remains serial while it is healthy, but a genuine
     // generation that never completes must not be kept alive forever by the

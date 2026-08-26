@@ -36,7 +36,8 @@ describe("market-data history contract", () => {
     const source = await readFile(sourceFile("lib/indication-sets-processor.ts"), "utf8")
     expect(source).toContain("INDICATION_CANDIDATE_YIELD_INTERVAL")
     expect(source).toContain("INDICATION_COOPERATIVE_TIME_SLICE_MS")
-    expect(source).toContain("yieldIndicationScheduler()")
+    expect(source).toContain("yieldIndicationScheduler(false, this.currentCycleShouldContinue)")
+    expect(source).toContain("assertIndicationGenerationCurrent(shouldContinue)")
     expect(source).toContain("changes scheduling only")
   })
 
