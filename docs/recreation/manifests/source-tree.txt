@@ -8,8 +8,6 @@
 .kilocode/rules/memory-bank/architecture.md
 .kilocode/rules/memory-bank/brief.md
 .kilocode/rules/memory-bank/context.md
-.kilocode/rules/memory-bank/context.md
-.kilocode/rules/memory-bank/context.md
 .kilocode/rules/memory-bank/product.md
 .kilocode/rules/memory-bank/tech.md
 .node-version
