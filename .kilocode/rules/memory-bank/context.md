@@ -1953,6 +1953,41 @@ credentials are present.
   them. A real virtual-funds cycle may run only after that credential gate
   passes; Mainnet remains out of scope.
 
+## Session 2026-08-26 — progression simulation metrics and remote reinstall gate
+
+- [x] Diagnosed the production-preview paper soak failure precisely: the
+  verifier read `/api/connections/progression/[id]/stats`, while the new
+  simulated lifecycle fields existed only in `detailed-logs`. The progression
+  API now exposes separate simulated created/closed/open/win/volume/win-rate
+  metrics and keeps real exchange counters unmodified. The paper verifier now
+  requires the simulated lifecycle counter and rejects any real-counter
+  movement during forced simulation.
+- [x] Merged PR #225 as `main@b6b0a22` after head-binding PR head
+  `27f97589bb64fbebe104162d5ae4338bfb2fc16c` and all GitHub/Vercel checks.
+  It also contains bounded aggregate-protection reconciliation and the
+  canonical Direct-Trade recent PF default `1.10`.
+- [x] Isolated remote validation on the exact release source passed: 219/219
+  unit suites (1,427 tests), 4/4 integration suites (58 tests), TypeScript,
+  full ESLint, production build (42 pages, 347 traces), and the 32-symbol
+  forced-paper UI/recovery soak. The soak recorded 367 simulated positions,
+  zero real positions and zero exchange order requests; API p95 was 404 ms
+  against the 1,000 ms gate and the GC/Redis plateau gates passed.
+- [x] Direct-Trade paper validation passed without network/Redis/credentials:
+  15 symbols × 90 h, all four entry tactics and seven strategy lineages,
+  450,240 deterministic sets and 120 best-first paper positions. Async
+  coordination retained exact results at 15 symbols and reduced runtime from
+  29.1 s (1 worker) to 6.8 s (8 workers), with 9.03 ms max parent event-loop
+  delay. Block comparison produced 5,322,240 independent Count PF/DDT ledger
+  rows with zero identity mismatches. Broad all-config aggregate PF was 0.883;
+  do not present it as qualified/live performance or use it to claim profit.
+- [ ] Deployment is intentionally pending. The production checkout remains
+  paused at `b439796`; Redis and the recovery timer remain active. A required
+  Chisel forward restart is blocked by the current Work sandbox network broker
+  before tunnel registration. Do not use an alternate server route or deploy
+  without first restoring `/workspace/.network-clients/activate-cts.sh`,
+  verifying `127.0.0.1:2222`, creating a server checkpoint, then running the
+  canonical `scripts/update.sh --dir /opt/cts-kn --branch main --reinstall`.
+
 ## Session 2026-08-26 — Chisel-only recovery and publication policy
 
 - [x] A verified local checkpoint was created before Chisel repair at
