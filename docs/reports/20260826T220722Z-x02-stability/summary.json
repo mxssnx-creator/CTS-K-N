@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-26T22:07:22Z",
+  "sanitized": true,
+  "productionBaselineCommit": "f6477985a2c2058b3f9c9991e9f3e125f85f3c9f",
+  "releaseCandidateCodeCommit": "5f5f30d004e58afcbf863d6c96c043e81a2cd80b",
+  "observation": {
+    "runId": "observe-20260826203831-bc33d32e",
+    "startedAt": "2026-08-26T20:38:31.448Z",
+    "finishedAt": "2026-08-26T21:38:31.650Z",
+    "durationMs": 3600202,
+    "sampleIntervalMs": 15000,
+    "samples": 241,
+    "exchangeWrites": false,
+    "apiRequests": 1446,
+    "apiFailures": 0
+  },
+  "continuity": {
+    "allServicesReachableEverySample": true,
+    "appRestarts": 0,
+    "schedulerRestarts": 0,
+    "directSystemdRestarts": 0,
+    "chiselRestarts": 0,
+    "redisHistoricalRestartCounter": 7,
+    "pipelineInFlightSamples": 231,
+    "pipelineAgeMsMax": 2637283,
+    "pipelineProgressAgeMsMax": 2280398,
+    "budgetExceededMax": 7,
+    "successfulCyclesFirst": 235,
+    "successfulCyclesLast": 236,
+    "failedCyclesFirst": 4,
+    "failedCyclesLast": 4,
+    "stalled": true,
+    "rootCause": "timeout_race_did_not_cancel_losing_cron_task",
+    "recoveryObserved": "supervisor_app_restart_after_liveness_unavailable"
+  },
+  "apiLatencyMs": {
+    "engineStatus": { "p50": 128.847, "p95": 694.956, "p99": 840.285, "max": 1014.755, "failures": 0 },
+    "directStatus": { "p50": 32.165, "p95": 629.628, "p99": 770.089, "max": 970.415, "failures": 0 },
+    "pnlStats": { "p50": 118.385, "p95": 676.087, "p99": 837.196, "max": 1007.937, "failures": 0 },
+    "functionalOverview": { "p50": 116.433, "p95": 689.623, "p99": 827.649, "max": 1018.022, "failures": 0 },
+    "mainStats": { "p50": 143.51, "p95": 704.145, "p99": 847.33, "max": 1026.323, "failures": 0 },
+    "systemStatus": { "p50": 34.645, "p95": 630.756, "p99": 774.892, "max": 971.187, "failures": 0 }
+  },
+  "resources": {
+    "appRssKiBMax": 30704,
+    "schedulerRssKiBMax": 48272,
+    "directRssKiBMax": 48176,
+    "directCpuPercentMax": 1,
+    "redisDbSizeMin": 106872,
+    "redisDbSizeMax": 118998,
+    "redisUsedMemoryBytesMax": 3530054216,
+    "redisRssBytesMax": 3366363136,
+    "redisBlockedClientsMax": 0,
+    "redisRejectedConnectionsMax": 0,
+    "redisSchema": 103
+  },
+  "accountingPolicy": {
+    "classicProfitFactor": "gross_settled_profit / abs(gross_settled_loss)",
+    "profitFactorCoordinate": "1 + 0.1 * (sum_settled_net_pnl / sum_position_cost)",
+    "neutralCoordinate": 1,
+    "minimumCoordinate": 1.1,
+    "pendingSettlementExcluded": ["realizedPnl", "wins", "losses", "breakEven", "profitFactor", "holdingTime", "drawdownTime"],
+    "missingProfitFactorRepresentation": null
+  },
+  "direct": {
+    "enabled": true,
+    "liveMode": true,
+    "symbols": 32,
+    "allEntryIndicationTypesEnabled": true,
+    "allStrategyTypesEnabled": true,
+    "evaluatedSets": 960512,
+    "validSets": 1590,
+    "minimumHistoricPf": 1.1,
+    "minimumRecentPf": 1.1,
+    "positionCostPercent": 0.15,
+    "takeProfitPositionCostRatios": [5, 10],
+    "takeProfitRatioStep": 5,
+    "stopLossRatioStep": 0.25,
+    "live": {
+      "orders": 0,
+      "fills": 0,
+      "open": 0,
+      "closed": 0,
+      "accountingPending": 0,
+      "classicProfitFactor": null,
+      "profitFactorCoordinate": null,
+      "liveToInternalPfRatio": null
+    },
+    "internalBase": {
+      "profitFactor": 0.5710899884,
+      "selectedBlockProfitFactor": 0.5758665474,
+      "blockLedgerProfitFactor": 0.5757631576
+    },
+    "indicationTypes": [
+      { "name": "momentum", "enabled": true, "evaluated": 240128, "valid": 498, "profitFactor": 0.57702906, "totalPnl": -202870.5571, "liveClosed": 0, "liveProfitFactor": null },
+      { "name": "mean_reversion", "enabled": true, "evaluated": 240128, "valid": 0, "profitFactor": 0.50458829, "totalPnl": -1675.725, "liveClosed": 0, "liveProfitFactor": null },
+      { "name": "breakout", "enabled": true, "evaluated": 240128, "valid": 512, "profitFactor": 0.56036511, "totalPnl": -154777.3499, "liveClosed": 0, "liveProfitFactor": null },
+      { "name": "relative", "enabled": true, "evaluated": 240128, "valid": 580, "profitFactor": 0.57279239, "totalPnl": -289127.3612, "liveClosed": 0, "liveProfitFactor": null }
+    ],
+    "strategyTypes": [
+      { "name": "standard", "evaluated": 43008, "valid": 47, "profitFactor": 0.54227045, "totalPnl": -32223.6159 },
+      { "name": "trailing_fixed", "evaluated": 129024, "valid": 105, "profitFactor": 0.53086556, "totalPnl": -89384.0698 },
+      { "name": "trailing_auto", "evaluated": 129024, "valid": 117, "profitFactor": 0.54956012, "totalPnl": -87520.204 },
+      { "name": "combination", "evaluated": 301056, "valid": 269, "profitFactor": 0.54060844, "totalPnl": -209127.8897 },
+      { "name": "inverse", "evaluated": 286720, "valid": 1012, "profitFactor": 0.61925611, "totalPnl": -170403.9041 },
+      { "name": "high_protection", "evaluated": 57344, "valid": 28, "profitFactor": 0.57674239, "totalPnl": -43370.6821 },
+      { "name": "dca", "evaluated": 14336, "valid": 12, "profitFactor": 0.68039575, "totalPnl": -16420.6276 }
+    ]
+  },
+  "main": {
+    "running": true,
+    "mainEnginesRunning": 2,
+    "mainEnginesTotal": 3,
+    "liveEnginesRunning": 1,
+    "lastHourLiveTrades": 0,
+    "totalPositions": 0,
+    "totalTrades": 0,
+    "cycles": 28,
+    "indicationCycles": 14,
+    "strategyCycles": 14,
+    "indications": 261,
+    "strategies": 54923,
+    "lastCycleDurationMs": 2267
+  },
+  "stageOverview": {
+    "symbolsActive": 30,
+    "strategiesEvaluated": 242106,
+    "averageInternalPf": { "base": 1.8734, "main": 1.8849, "real": 1.9776, "live": 1.9345 },
+    "freshSymbols": { "base": 0, "main": 0, "real": 0, "live": 0 },
+    "profitFactorIsVenueRealized": false
+  },
+  "existingExchangeHistory": {
+    "attributedToObservationRun": false,
+    "windows": {
+      "4h": { "trades": 109, "wins": 0, "losses": 1, "flat": 108, "netPnl": -0.06, "classicProfitFactor": 0, "volume": 691.36 },
+      "12h": { "trades": 151, "wins": 0, "losses": 4, "flat": 147, "netPnl": -0.17, "classicProfitFactor": 0, "volume": 912.93 },
+      "48h": { "trades": 406, "wins": 15, "losses": 28, "flat": 363, "netPnl": 4.92, "classicProfitFactor": 1.7546, "volume": 4579.9 }
+    },
+    "drawdown3d": {
+      "samples": 763,
+      "episodes": 2,
+      "maxDurationMs": 238331123,
+      "averageDurationMs": 127017245,
+      "currentDurationMs": 238331123,
+      "maxDepth": 13.4514,
+      "currentDepth": 6.3114,
+      "inDrawdown": true
+    }
+  },
+  "paperMatrix": {
+    "symbols": 32,
+    "historicHours": 48,
+    "evaluatedSets": 960512,
+    "validSets": 22467,
+    "validRatePercent": 2.339,
+    "elapsedMs": 34223,
+    "heapMiB": 160,
+    "networkRedisCredentialsOrOrders": false,
+    "totalSimulatedPnl": -154064.583,
+    "warning": "mean per-config PF is not aggregate PF and cannot qualify Mainnet"
+  },
+  "asyncScale": {
+    "allSpecsComplete": true,
+    "deterministicAcrossConcurrency": true,
+    "noNetworkRedisCredentialsOrOrders": true,
+    "recommendedMaxLanes": 4,
+    "symbols32Lanes4": { "wallMs": 16604, "setsPerSecond": 57847, "eventLoopDelayMaxMs": 23.93 },
+    "symbols32Lanes8": { "wallMs": 17216, "setsPerSecond": 55791, "eventLoopDelayMaxMs": 3470.44 }
+  },
+  "releaseCandidateFixes": [
+    "cooperative_cron_cancellation",
+    "bounded_cleanup_drain",
+    "clean_forwarded_signal_exit",
+    "pending_settlement_excluded_from_realized_metrics",
+    "lifecycle_deduplication_and_timestamp_normalization",
+    "protection_state_without_private_tokens",
+    "atomic_direct_control_and_processor_lease",
+    "ownership_scoped_protection_cleanup",
+    "three_second_pnl_refresh",
+    "set_based_stage_overview"
+  ],
+  "verification": {
+    "unitSuites": 227,
+    "unitTests": 1481,
+    "integrationSuites": 4,
+    "integrationTests": 61,
+    "typescriptErrors": 0,
+    "eslintErrors": 0,
+    "kiloChecks": 37,
+    "schemaVersion": 103,
+    "secretScanFiles": 1517,
+    "secretFindings": 0,
+    "buildStaticPages": 42,
+    "buildTraceFiles": 347
+  },
+  "mainnetQualified": false,
+  "mainnetQualificationReasons": [
+    "no owned Direct or Main live closes in observation window",
+    "all current internal aggregate groups below classic PF 1.0",
+    "recent 4h and 12h general exchange history negative",
+    "drawdown duration exceeds target",
+    "live-to-simulated attribution unavailable"
+  ]
+}

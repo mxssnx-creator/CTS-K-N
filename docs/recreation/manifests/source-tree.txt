@@ -940,6 +940,12 @@ docs/recreation/strategy-block-dca.md
 docs/recreation/testing-and-acceptance.md
 docs/recreation/verification-record.md
 docs/redis-client-keys-audit.md
+docs/reports/20260826T220722Z-x02-stability/SHA256SUMS
+docs/reports/20260826T220722Z-x02-stability/engine-results.csv
+docs/reports/20260826T220722Z-x02-stability/load-matrix.csv
+docs/reports/20260826T220722Z-x02-stability/report.md
+docs/reports/20260826T220722Z-x02-stability/step-results.csv
+docs/reports/20260826T220722Z-x02-stability/summary.json
 docs/signal-source-research.md
 docs/system-modules-map.md
 drizzle.config.ts
