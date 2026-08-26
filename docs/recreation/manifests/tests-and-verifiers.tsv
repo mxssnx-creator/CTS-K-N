@@ -111,6 +111,7 @@ unit	__tests__/unit/exchange-force-simulated.test.ts
 unit	__tests__/unit/exchange-position-trailing.test.ts
 unit	__tests__/unit/exchange-quantity-ledger.test.ts
 unit	__tests__/unit/forced-symbols.test.ts
+unit	__tests__/unit/functional-overview-stage-snapshot.test.ts
 unit	__tests__/unit/futures-connectors-contract.test.ts
 unit	__tests__/unit/health-route-liveness-budget.test.ts
 unit	__tests__/unit/health-runtime-contract.test.ts

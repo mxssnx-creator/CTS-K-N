@@ -217,14 +217,44 @@ const INDICATION_COOPERATIVE_TIME_SLICE_MS = Math.max(
 let indicationLastMacrotaskYieldAt = Date.now()
 let indicationMacrotaskYieldInFlight: Promise<void> | null = null
 
-function yieldIndicationScheduler(force = false): Promise<void> {
+class IndicationGenerationSupersededError extends Error {
+  constructor() {
+    super("Indication generation superseded")
+    this.name = "IndicationGenerationSupersededError"
+  }
+}
+
+function assertIndicationGenerationCurrent(shouldContinue?: () => boolean): void {
+  if (!shouldContinue) return
+  let current = false
+  try {
+    current = shouldContinue() !== false
+  } catch {
+    current = false
+  }
+  if (!current) throw new IndicationGenerationSupersededError()
+}
+
+async function yieldIndicationScheduler(
+  force = false,
+  shouldContinue?: () => boolean,
+): Promise<void> {
+  // The generation guard also records an owner-bound heartbeat. Call it on
+  // every logical cooperative checkpoint, even when the wall-clock slice does
+  // not require a macrotask turn. A stale generation consequently cannot keep
+  // its replacement alive: its own callback fails and cancels that work.
+  assertIndicationGenerationCurrent(shouldContinue)
   if (
     !force &&
     Date.now() - indicationLastMacrotaskYieldAt < INDICATION_COOPERATIVE_TIME_SLICE_MS
   ) {
-    return Promise.resolve()
+    return
   }
-  if (indicationMacrotaskYieldInFlight) return indicationMacrotaskYieldInFlight
+  if (indicationMacrotaskYieldInFlight) {
+    await indicationMacrotaskYieldInFlight
+    assertIndicationGenerationCurrent(shouldContinue)
+    return
+  }
 
   indicationMacrotaskYieldInFlight = new Promise<void>((resolve) => {
     if (typeof setImmediate === "function") {
@@ -236,7 +266,8 @@ function yieldIndicationScheduler(force = false): Promise<void> {
     indicationLastMacrotaskYieldAt = Date.now()
     indicationMacrotaskYieldInFlight = null
   })
-  return indicationMacrotaskYieldInFlight
+  await indicationMacrotaskYieldInFlight
+  assertIndicationGenerationCurrent(shouldContinue)
 }
 
 // Sample v2 stores the gross market move used by the Main-stage
@@ -718,6 +749,7 @@ async function mapLimit<T, R>(
   limit: number,
   mapper: (item: T, index: number) => Promise<R>,
   yieldEvery = 0,
+  shouldContinue?: () => boolean,
 ): Promise<R[]> {
   if (items.length === 0) return []
 
@@ -736,7 +768,7 @@ async function mapLimit<T, R>(
       // candidates through one microtask burst before the first macrotask
       // yield, which is still enough to starve API/control requests.
       if (yieldEvery > 0 && completed % yieldEvery === 0) {
-        await yieldIndicationScheduler()
+        await yieldIndicationScheduler(false, shouldContinue)
       }
     }
   }
@@ -818,6 +850,13 @@ export class IndicationSetsProcessor {
    * configuration and is cleared as soon as the cycle is published.
    */
   private currentCycleEntries: any[] | null = null
+  /**
+   * Owner-bound generation guard for this instance's current exhaustive pass.
+   * IndicationSetsProcessor is already single-call stateful (`currentCycleEntries`
+   * and persistence mode), so keeping the callback beside that state lets every
+   * nested calculation checkpoint update progress without a global owner leak.
+   */
+  private currentCycleShouldContinue: (() => boolean) | undefined
   /**
    * Historical replay shares the exact calculation code with realtime, but
    * produces an in-memory snapshot only. Durable Set, cooldown, outcome, and
@@ -1449,7 +1488,7 @@ export class IndicationSetsProcessor {
           { yieldEvery: 1 },
         )
       }
-      await yieldIndicationScheduler()
+      await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
     }
   }
 
@@ -1573,7 +1612,11 @@ export class IndicationSetsProcessor {
   /**
    * Process all indication types independently for a symbol
    */
-  async processAllIndicationSets(symbol: string, marketData: any): Promise<any[]> {
+  async processAllIndicationSets(
+    symbol: string,
+    marketData: any,
+    shouldContinue?: () => boolean,
+  ): Promise<any[]> {
     const startTime = Date.now()
     // A slow exhaustive cycle is diagnostic information, not a cancellation
     // boundary.  Returning here used to discard the already-completed current
@@ -1587,8 +1630,11 @@ export class IndicationSetsProcessor {
     this.currentCycleSnapshotTimestamp =
       isHistoricalSnapshot && Number.isFinite(asOfMs) ? asOfMs : null
     this.currentCycleEntries = []
+    this.currentCycleShouldContinue = shouldContinue
     try {
+      assertIndicationGenerationCurrent(this.currentCycleShouldContinue)
       await this.settingsReady
+      assertIndicationGenerationCurrent(this.currentCycleShouldContinue)
       // A historical candle has no permitted forward-looking outcome and must
       // never consume or mutate the realtime pending-outcome queue.
       const closedForwardOutcomes = this.currentCyclePersistenceEnabled
@@ -1662,6 +1708,7 @@ export class IndicationSetsProcessor {
         try {
           return await fn()
         } catch (error) {
+          if (error instanceof IndicationGenerationSupersededError) throw error
           console.warn(
             `[v0] [IndicationSets] ${symbol}:${type} failed:`,
             error instanceof Error ? error.message : String(error),
@@ -1708,7 +1755,10 @@ export class IndicationSetsProcessor {
         async (task) => task.enabled
           ? runType(task.type, task.run)
           : disabledResult(task.type),
-        { yieldEvery: 1 },
+        {
+          yieldEvery: 1,
+          onProgress: () => assertIndicationGenerationCurrent(this.currentCycleShouldContinue),
+        },
       )
       // Active/Outbreak is an explicit completion barrier immediately before
       // Trend. The fast outbreak family can use the completed primary market
@@ -1924,6 +1974,7 @@ export class IndicationSetsProcessor {
       this.currentCycleEntries = null
       return completed
     } catch (error) {
+      if (error instanceof IndicationGenerationSupersededError) return []
       console.error(`[v0] [IndicationSets] Failed to process sets for ${symbol}:`, error)
       this.currentCycleEntries = null
       return []
@@ -1931,6 +1982,7 @@ export class IndicationSetsProcessor {
       this.currentCycleEntries = null
       this.currentCyclePersistenceEnabled = true
       this.currentCycleSnapshotTimestamp = null
+      this.currentCycleShouldContinue = undefined
     }
   }
 
@@ -2031,6 +2083,7 @@ export class IndicationSetsProcessor {
         return candidate
       },
       INDICATION_CANDIDATE_YIELD_INTERVAL,
+      this.currentCycleShouldContinue,
     )
 
     // Realized rows used to issue one EVAL round-trip for every exact Common
@@ -2098,7 +2151,7 @@ export class IndicationSetsProcessor {
           )
         }
       }
-      await yieldIndicationScheduler()
+      await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
     }
     return performanceBySet
   }
@@ -2203,12 +2256,13 @@ export class IndicationSetsProcessor {
             return value ? candidate : null
           },
           INDICATION_CANDIDATE_YIELD_INTERVAL,
+          this.currentCycleShouldContinue,
         )
         admitted.push(...fallback.filter(
           (candidate): candidate is IndicationCandidate => candidate !== null,
         ))
       }
-      await yieldIndicationScheduler()
+      await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
     }
     return admitted
   }
@@ -2233,7 +2287,7 @@ export class IndicationSetsProcessor {
           for (const factorMultiplier of factorMultipliers) {
             evaluated++
             if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-              await yieldIndicationScheduler()
+              await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
             }
             const indication = this.calculateDirectionIndication(marketData, {
               range,
@@ -2334,7 +2388,7 @@ export class IndicationSetsProcessor {
           for (const factorMultiplier of factorMultipliers) {
             evaluated++
             if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-              await yieldIndicationScheduler()
+              await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
             }
             const indication = this.calculateMoveIndication(marketData, {
               range,
@@ -2431,7 +2485,7 @@ export class IndicationSetsProcessor {
               for (const factorMultiplier of factorMultipliers) {
                 scheduledEvaluations++
                 if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-                  await yieldIndicationScheduler()
+                  await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
                 }
                 try {
                   const indication = this.calculateActiveIndication(marketData, {
@@ -2499,7 +2553,7 @@ export class IndicationSetsProcessor {
                 }
                 evaluated++
                 if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-                  await yieldIndicationScheduler()
+                  await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
                 }
               }
             }
@@ -2597,7 +2651,7 @@ export class IndicationSetsProcessor {
       for (const factorMultiplier of factorMultipliers) {
         scheduledEvaluations++
         if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-          await yieldIndicationScheduler()
+          await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
         }
         evaluated++
         const config = { activityRatio, minPositions, continuationRatio, factorMultiplier }
@@ -2841,7 +2895,7 @@ export class IndicationSetsProcessor {
           for (const direction of ["long", "short"] as const) {
             scheduledEvaluations++
             if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-              await yieldIndicationScheduler()
+              await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
             }
             const indication = evaluateSpecialIndication(
               series.closes,
@@ -2862,7 +2916,7 @@ export class IndicationSetsProcessor {
         evaluatedPerDirection++
         scheduledEvaluations++
         if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-          await yieldIndicationScheduler()
+          await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
         }
         const coordination = evaluateSpecialMultiTimeframeCoordination({
           observations: timedObservations,
@@ -2889,7 +2943,7 @@ export class IndicationSetsProcessor {
         for (const direction of ["long", "short"] as const) {
           scheduledEvaluations++
           if (scheduledEvaluations % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-            await yieldIndicationScheduler()
+            await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
           }
           const indication = evaluateSpecialIndication(prices, direction, range, settings, activity)
           if (indication) addCandidate(indication, range, "tfnative", "native")
@@ -2918,7 +2972,7 @@ export class IndicationSetsProcessor {
       for (const factorMultiplier of factorMultipliers) {
         evaluated++
         if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-          await yieldIndicationScheduler()
+          await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
         }
         const indication = this.calculateOptimalIndication(marketData, range, factorMultiplier)
         if (!indication) continue
@@ -3070,7 +3124,7 @@ export class IndicationSetsProcessor {
           for (const activeSituationRatio of this.trendActiveSituationRatios) {
             evaluated++
             if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
-              await yieldIndicationScheduler()
+              await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
             }
             const signal = calculateTrendSignal(prices, {
               timeframeMinutes,
@@ -3523,7 +3577,7 @@ export class IndicationSetsProcessor {
           performance,
         )
       }
-      await yieldIndicationScheduler()
+      await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
     }
   }
 
@@ -3862,13 +3916,14 @@ export class IndicationSetsProcessor {
               await client.ltrim(key, -pendingCap, -1)
             },
             INDICATION_CANDIDATE_YIELD_INTERVAL,
+            this.currentCycleShouldContinue,
           )
           await Promise.all([
             client.expire(key, 86400),
             client.expire(guardKey, 86400),
           ])
         }
-        await yieldIndicationScheduler()
+        await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
       }
     } catch { /* non-critical */ }
   }
@@ -4084,7 +4139,7 @@ export class IndicationSetsProcessor {
               }
             }
           }
-          await yieldIndicationScheduler()
+          await yieldIndicationScheduler(false, this.currentCycleShouldContinue)
         }
       } else {
         // Compatibility path for a minimal Redis adapter without EVAL or

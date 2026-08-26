@@ -58,6 +58,7 @@ async function runWithConcurrency<T>(
   options: {
     yieldEvery?: number
     getConcurrency?: () => number
+    onProgress?: () => void | Promise<void>
   } = {},
 ): Promise<void> {
   if (items.length === 0) return
@@ -83,6 +84,7 @@ async function runWithConcurrency<T>(
       task = (async () => {
         await runner(items[index], index)
         completed++
+        await options.onProgress?.()
         if (yieldEvery > 0 && completed % yieldEvery === 0) {
           await yieldToEventLoop()
         }
@@ -121,6 +123,7 @@ async function runWithConcurrency<T>(
       if (index >= items.length) return
       await runner(items[index], index)
       completedByWorker++
+      await options.onProgress?.()
       if (yieldEvery > 0 && completedByWorker % yieldEvery === 0) {
         await yieldToEventLoop()
       }
@@ -143,6 +146,8 @@ export async function mapWithConcurrency<T, R>(
      * changes.
      */
     getConcurrency?: () => number
+    /** Called after each completed item, before the optional event-loop yield. */
+    onProgress?: () => void | Promise<void>
   } = {},
 ): Promise<R[]> {
   if (items.length === 0) return []
@@ -221,7 +226,11 @@ export async function mapSettledWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
   mapper: (item: T, index: number) => Promise<R>,
-  options: { yieldEvery?: number; getConcurrency?: () => number } = {},
+  options: {
+    yieldEvery?: number
+    getConcurrency?: () => number
+    onProgress?: () => void | Promise<void>
+  } = {},
 ): Promise<Array<PromiseSettledResult<R>>> {
   return mapWithConcurrency(
     items,
@@ -241,7 +250,11 @@ export async function forEachWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
   mapper: (item: T, index: number) => Promise<void>,
-  options: { yieldEvery?: number; getConcurrency?: () => number } = {},
+  options: {
+    yieldEvery?: number
+    getConcurrency?: () => number
+    onProgress?: () => void | Promise<void>
+  } = {},
 ): Promise<void> {
   await runWithConcurrency(items, concurrency, mapper, options)
 }

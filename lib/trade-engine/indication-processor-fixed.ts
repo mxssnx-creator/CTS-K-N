@@ -1815,7 +1815,7 @@ export class IndicationProcessor {
           prices: pricesOldestFirst,
           priceOrder: "oldest-first",
           executionPrice: currentClose,
-        })
+        }, isCurrent)
         .catch((error) => {
           console.warn(
             `[v0] [IndicationProcessor] Exhaustive Set processing failed for ${symbol}:`,

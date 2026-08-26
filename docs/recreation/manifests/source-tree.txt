@@ -135,6 +135,7 @@ __tests__/unit/exchange-force-simulated.test.ts
 __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
 __tests__/unit/forced-symbols.test.ts
+__tests__/unit/functional-overview-stage-snapshot.test.ts
 __tests__/unit/futures-connectors-contract.test.ts
 __tests__/unit/health-route-liveness-budget.test.ts
 __tests__/unit/health-runtime-contract.test.ts
@@ -1119,6 +1120,7 @@ lib/exchange-quantity-ledger.ts
 lib/exchanges.ts
 lib/file-storage.ts
 lib/forced-symbols.ts
+lib/functional-overview-stage-snapshot.ts
 lib/global-rate-limiter.ts
 lib/health-check.ts
 lib/historic-four-hour-stats.ts
