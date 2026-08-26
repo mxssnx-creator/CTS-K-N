@@ -28,7 +28,7 @@ function finite(value: unknown): number {
 
 function percentage(numerator: number, denominator: number): number {
   if (!(denominator > 0)) return 0
-  return Number(((numerator / denominator) * 100).toFixed(2))
+  return Number(Math.min(100, (Math.max(0, numerator) / denominator) * 100).toFixed(2))
 }
 
 async function mapInBatches<T, R>(
@@ -104,7 +104,13 @@ export async function GET() {
           stages: {
             base: aggregateFunctionalOverviewStage(base as Record<string, string>, { activeSymbols }),
             main: aggregateFunctionalOverviewStage(main as Record<string, string>, { activeSymbols }),
-            real: aggregateFunctionalOverviewStage(real as Record<string, string>, { activeSymbols }),
+            real: aggregateFunctionalOverviewStage(real as Record<string, string>, {
+              activeSymbols,
+              // Real can materialise several physical Row/Block children from
+              // one logical Main input Set. Its public funnel percentage must
+              // compare logical survivors with that same logical denominator.
+              passedField: "logical_passed_sets",
+            }),
             live: aggregateFunctionalOverviewStage(live as Record<string, string>, { activeSymbols }),
           },
           pseudoOpen: finite(pseudoOpen),
