@@ -1,8 +1,10 @@
 import {
+  isRealizedPnlAccountingPending,
   resolvePositionQuantity,
   resolveRealizedPnl,
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
+import { isLiveOpenStatus } from "@/lib/live-position-status"
 
 export type LiveStrategySource = "direct-trade" | "main-trade" | "preset-trade" | "signal-trade" | "unknown"
 
@@ -11,6 +13,7 @@ export interface LivePositionStatisticsLane {
   filled: number
   open: number
   closed: number
+  accountingPending: number
   partialExecutions: number
   lifetimeQuantity: number
   openQuantity: number
@@ -37,6 +40,9 @@ export interface LivePositionStatistics extends LivePositionStatisticsLane {
     systemClose: number
     systemCloseFallback: number
     missingVenueLegsHandledBySystem: number
+    venueLegsQuantityCovered: number
+    venueLegsQuantityUnknown: number
+    venueLegsQuantityDrifted: number
   }
   relationIntegrity: {
     success: boolean
@@ -46,11 +52,8 @@ export interface LivePositionStatistics extends LivePositionStatisticsLane {
   }
 }
 
-const OPEN_STATUSES = new Set([
-  "pending", "placed", "pending_fill", "placed_unconfirmed", "partially_filled", "filled", "open", "simulated",
-])
-
 type ProtectionLeg = "stop_loss" | "take_profit"
+type ProtectionQuantityState = "covered" | "unknown" | "drifted"
 
 function finite(value: unknown): number {
   const parsed = Number(value)
@@ -86,6 +89,7 @@ function emptyLane(): LivePositionStatisticsLane {
     filled: 0,
     open: 0,
     closed: 0,
+    accountingPending: 0,
     partialExecutions: 0,
     lifetimeQuantity: 0,
     openQuantity: 0,
@@ -99,9 +103,10 @@ function emptyLane(): LivePositionStatisticsLane {
 }
 
 function positionMeasures(position: Record<string, any>): LivePositionStatisticsLane {
-  const status = String(position.status || "").toLowerCase()
+  const status = String(position.status || "").trim().toLowerCase()
   const isClosed = status === "closed"
-  const isOpen = OPEN_STATUSES.has(status) && !isClosed
+  const isOpen = isLiveOpenStatus(status) && !isClosed
+  const accountingPending = isClosed && isRealizedPnlAccountingPending(position)
   const executed = Math.max(0, resolvePositionQuantity(position) ?? 0)
   const closedQuantity = Math.max(0, finite(position.closedQuantity))
   const totalExecuted = Math.max(
@@ -141,6 +146,7 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
     filled: totalExecuted > 0 ? 1 : 0,
     open: isOpen ? 1 : 0,
     closed: isClosed ? 1 : 0,
+    accountingPending: accountingPending ? 1 : 0,
     partialExecutions: Array.isArray(position.partialOrderExecutions)
       ? position.partialOrderExecutions.length
       : 0,
@@ -149,7 +155,7 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
     closedQuantity: isClosed ? totalExecuted : closedQuantity,
     lifetimeVolumeUsd,
     openVolumeUsd,
-    realizedPnl: resolveRealizedPnl(position) ?? 0,
+    realizedPnl: accountingPending ? 0 : resolveRealizedPnl(position) ?? 0,
     unrealizedPnl: isOpen
       ? resolveUnrealizedPnl(position) ?? 0
       : 0,
@@ -226,11 +232,34 @@ function effectiveSystemProtectionLegs(position: Record<string, any>): Set<Prote
   return legs
 }
 
+function venueProtectionQuantityState(
+  position: Record<string, any>,
+  leg: ProtectionLeg,
+): ProtectionQuantityState | null {
+  if (!isLiveOpenStatus(position.status)) return null
+  const orderId = leg === "stop_loss" ? position.stopLossOrderId : position.takeProfitOrderId
+  if (!String(orderId || "").trim()) return null
+  const expected = Math.max(0, resolvePositionQuantity(position) ?? 0)
+  if (!(expected > 0)) return null
+  const specific = leg === "stop_loss"
+    ? position.stopLossArmedQuantity
+    : position.takeProfitArmedQuantity
+  const raw = specific === undefined || specific === null || specific === ""
+    ? position.protectionArmedQuantity
+    : specific
+  if (raw === undefined || raw === null || raw === "") return "unknown"
+  const armed = Number(raw)
+  if (!Number.isFinite(armed)) return "unknown"
+  return Math.abs(Math.max(0, armed) - expected) <= quantityTolerance(position)
+    ? "covered"
+    : "drifted"
+}
+
 function positionRelationMismatches(position: Record<string, any>, index: number): string[] {
   const id = String(position.id || `index-${index}`)
   const label = `${id}/${String(position.symbol || "missing")}/${String(position.direction || position.side || "missing")}`
   const mismatches: string[] = []
-  const status = String(position.status || "").toLowerCase()
+  const status = String(position.status || "").trim().toLowerCase()
   const executed = finite(position.executedQuantity ?? position.quantity)
   const closed = finite(position.closedQuantity)
   const total = finite(position.totalExecutedQuantity)
@@ -283,7 +312,7 @@ function positionRelationMismatches(position: Record<string, any>, index: number
   } else if (position.setKey && !(position.accumulatedSetKeys || []).includes(position.setKey)) {
     mismatches.push(`${label}: originating Set is absent from accumulated lineage`)
   }
-  if (OPEN_STATUSES.has(status) && Math.max(0, executed) > 0) {
+  if (isLiveOpenStatus(status) && Math.max(0, executed) > 0) {
     const averageExecutionPrice = finite(position.averageExecutionPrice ?? position.entryPrice)
     if (averageExecutionPrice <= 0) {
       mismatches.push(`${label}: open execution has no authoritative average price`)
@@ -295,6 +324,18 @@ function positionRelationMismatches(position: Record<string, any>, index: number
     }
     if (configuredLegs.has("take_profit") && !position.takeProfitOrderId && !systemLegs.has("take_profit")) {
       mismatches.push(`${label}: take-profit has neither venue order nor system handling`)
+    }
+    for (const leg of ["stop_loss", "take_profit"] as const) {
+      const quantityState = venueProtectionQuantityState(position, leg)
+      const legLabel = leg === "stop_loss" ? "stop-loss" : "take-profit"
+      if (quantityState === "unknown") {
+        mismatches.push(`${label}: ${legLabel} venue order has no authoritative armed quantity`)
+      } else if (quantityState === "drifted") {
+        const armed = leg === "stop_loss"
+          ? position.stopLossArmedQuantity ?? position.protectionArmedQuantity
+          : position.takeProfitArmedQuantity ?? position.protectionArmedQuantity
+        mismatches.push(`${label}: ${legLabel} venue quantity ${finite(armed)} != open quantity ${Math.max(0, executed)}`)
+      }
     }
   }
   const orderIds = [position.orderId, position.stopLossOrderId, position.takeProfitOrderId]
@@ -318,6 +359,9 @@ export function calculateLivePositionStatistics(
     systemClose: 0,
     systemCloseFallback: 0,
     missingVenueLegsHandledBySystem: 0,
+    venueLegsQuantityCovered: 0,
+    venueLegsQuantityUnknown: 0,
+    venueLegsQuantityDrifted: 0,
   }
   let wins = 0
   let losses = 0
@@ -331,7 +375,7 @@ export function calculateLivePositionStatistics(
     addBucket(byVariant, strategyVariant(position), measures)
     addBucket(byIndicationType, String(position.indicationType || "unknown"), measures)
     mismatches.push(...positionRelationMismatches(position, index))
-    if (measures.closed > 0) {
+    if (measures.closed > 0 && measures.accountingPending === 0) {
       if (measures.realizedPnl > 0) wins++
       else if (measures.realizedPnl < 0) losses++
       else breakeven++
@@ -350,6 +394,12 @@ export function calculateLivePositionStatistics(
     if (mode === "system_close") protection.systemClose++
     if (mode === "system_close_fallback") protection.systemCloseFallback++
     protection.missingVenueLegsHandledBySystem += systemLegs.size
+    for (const leg of ["stop_loss", "take_profit"] as const) {
+      const quantityState = venueProtectionQuantityState(position, leg)
+      if (quantityState === "covered") protection.venueLegsQuantityCovered++
+      if (quantityState === "unknown") protection.venueLegsQuantityUnknown++
+      if (quantityState === "drifted") protection.venueLegsQuantityDrifted++
+    }
   })
   const decisive = wins + losses
   return {

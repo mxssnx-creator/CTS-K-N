@@ -440,6 +440,11 @@ let stats = {
   profitFactorUsdtInfinite: false,
   winCount: 0,
   lossCount: 0,
+  breakEvenCount: 0,
+  settledClosedCount: 0,
+  accountingPending: 0,
+  openPositionCount: 0,
+  openingPositionCount: 0,
   profitFactor: null,
   profitFactorInfinite: false,
   maxDrawdownTimeMin: 0,
@@ -1915,10 +1920,11 @@ function relativeExitRuntime(pos, currentPrice) {
 
 function rebuildRealizedNotionalStats() {
   const runtimeMode = state.liveMode ? "live" : "simulated"
-  const modeClosed = positions.filter((position) => {
+  const modePositions = positions.filter((position) => {
     const positionMode = position.mode === "live" ? "live" : "simulated"
-    return position.status === "closed" && positionMode === runtimeMode
+    return positionMode === runtimeMode
   })
+  const modeClosed = modePositions.filter((position) => position.status === "closed")
   const closed = modeClosed.filter((position) => (
     position.mode !== "live" || (
       position.pnlAccountingComplete === true
@@ -1978,12 +1984,17 @@ function rebuildRealizedNotionalStats() {
   stats.winCount = closed.filter((position) => (
     runtimeMode === "live" ? Number(position.realizedPnlUsdt) > 0 : Number(position.pnl) > 0
   )).length
-  stats.lossCount = closed.length - stats.winCount
+  stats.lossCount = closed.filter((position) => (
+    runtimeMode === "live" ? Number(position.realizedPnlUsdt) < 0 : Number(position.pnl) < 0
+  )).length
+  stats.breakEvenCount = closed.length - stats.winCount - stats.lossCount
+  stats.settledClosedCount = closed.length
+  stats.openPositionCount = modePositions.filter((position) => position.status === "open").length
+  stats.openingPositionCount = modePositions.filter((position) => position.status === "opening").length
   stats.maxDrawdownTimeMin = closed.reduce(
     (maximum, position) => Math.max(maximum, Number(position.drawdownTimeMin) || 0),
     0,
   )
-  stats.lastPositionAt = closed.at(-1)?.closedAt || null
   stats.accountingPending = modeClosed.length - closed.length
   let cumulativePnl = 0
   stats.pnlHistory = closed
@@ -1998,6 +2009,7 @@ function rebuildRealizedNotionalStats() {
       }
     })
     .slice(-500)
+  stats.lastPositionAt = stats.pnlHistory.at(-1)?.time || null
   const byCount = {}
   for (const position of closed) {
     const count = Math.max(0, Math.floor(Number(position.blockCount) || 0))

@@ -3,6 +3,10 @@ import { getRedisClient, initRedis, withSharedPersistenceLease } from "@/lib/red
 import { runTradeEngineHealingSweep } from "@/lib/trade-engine-auto-start"
 import { startServerContinuityRunner } from "@/lib/server-continuity-runner"
 import { authorizeCronRequest, createInternalCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
+import {
+  CooperativeTaskTimeoutError,
+  runCooperativeTaskWithTimeout,
+} from "@/lib/cooperative-task-timeout"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -25,25 +29,26 @@ function requestSource(request: Request): string {
 
 async function runCronTask(
   name: string,
-  task: () => Promise<unknown>,
+  task: (signal: AbortSignal) => Promise<unknown>,
   timeoutMs = 20_000,
+  parentSignal?: AbortSignal,
 ): Promise<{ name: string; ok: boolean; error?: string; timedOut?: boolean }> {
   try {
-    let timeout: NodeJS.Timeout | undefined
-    await Promise.race([
-      task(),
-      new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs)
-        timeout.unref?.()
-      }),
-    ]).finally(() => {
-      if (timeout) clearTimeout(timeout)
+    await runCooperativeTaskWithTimeout(name, task, {
+      timeoutMs,
+      cleanupGraceMs: 5_000,
+      parentSignal,
     })
     return { name, ok: true }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.warn(`[v0] [ContinuityCron] ${name} failed:`, message)
-    return { name, ok: false, error: message, timedOut: message.includes("timed out") }
+    return {
+      name,
+      ok: false,
+      error: message,
+      timedOut: error instanceof CooperativeTaskTimeoutError,
+    }
   }
 }
 
@@ -99,11 +104,17 @@ export async function GET(request: Request) {
       // runs; the dedicated sync cron is the engine-down safety net).
       startServerContinuityRunner()
       const tasks = await Promise.all([
-        runCronTask("auto-start-healing-sweep", () => runTradeEngineHealingSweep({ isStartup: true })),
-        runCronTask("generate-indications", async () => {
+        runCronTask(
+          "auto-start-healing-sweep",
+          () => runTradeEngineHealingSweep({ isStartup: true }),
+          20_000,
+          request.signal,
+        ),
+        runCronTask("generate-indications", async (signal) => {
           const mod = await import("@/app/api/cron/generate-indications/route")
-          return mod.GET(createInternalCronRequest("/api/cron/generate-indications"))
-        }, 50_000),
+          const internalRequest = createInternalCronRequest("/api/cron/generate-indications")
+          return mod.GET(new Request(internalRequest, { signal }))
+        }, 50_000, request.signal),
       ])
       const failedTasks = tasks.filter((task) => !task.ok)
       const finishedAt = Date.now()

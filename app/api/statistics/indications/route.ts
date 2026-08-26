@@ -29,6 +29,7 @@ import {
   getOpenLivePositionReadModels,
 } from "@/lib/live-position-read-model"
 import { LIVE_POSITION_ANALYTICS_WINDOW_MS } from "@/lib/live-position-analytics-archive"
+import { isRealizedPnlAccountingPending } from "@/lib/live-position-pnl"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 
 export const dynamic = "force-dynamic"
@@ -135,7 +136,12 @@ function normalizeClosedTrade(
 ): SignalAnalyticsTrade | null {
   const closedAt = Number(position?.closedAt ?? position?.closed_at ?? position?.updatedAt ?? 0)
   const symbol = normalizeSymbol(position?.symbol)
-  if (String(position?.status || "").toLowerCase() !== "closed" || !(closedAt > 0) || !symbol) return null
+  if (
+    String(position?.status || "").toLowerCase() !== "closed" ||
+    !(closedAt > 0) ||
+    !symbol ||
+    isRealizedPnlAccountingPending(position)
+  ) return null
   return {
     id: String(position?.id || `${connectionId}:${symbol}:${closedAt}`),
     connectionId,

@@ -35,6 +35,8 @@ describe("live position status grouping", () => {
       "closing",
       "closing_partial",
     ])
+    expect(isLiveOpenStatus(" CLOSING ")).toBe(true)
+    expect(isLiveOpenStatus("OPEN")).toBe(true)
 
     expect(countLiveOpenPositions(regressionFixture)).toBe(10)
     expect(regressionFixture.filter((position) => isLiveOpenStatus(position.status)).map((position) => position.status)).toEqual([

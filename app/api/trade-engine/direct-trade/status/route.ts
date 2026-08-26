@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
-import { buildDirectTradeOverview48h } from "@/lib/direct-trade-overview-stats"
+import {
+  buildDirectTradeOverview48h,
+  resolveDirectTradeSettledExchangePnlUsdt,
+} from "@/lib/direct-trade-overview-stats"
 import { buildDirectTradeIndicationTypeStats } from "@/lib/direct-trade-indication-stats"
 import {
   DIRECT_TRADE_CONNECTION_INDEX_KEY,
@@ -12,6 +15,25 @@ export const dynamic = "force-dynamic"
 
 const PROCESSOR_HEARTBEAT_STALE_MS = 7_000
 const PROCESSOR_PROGRESS_STALE_MS = 20_000
+
+function parseStoredJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed === null || parsed === undefined ? fallback : parsed as T
+  } catch {
+    return fallback
+  }
+}
+
+function directTradeStatus(value: unknown): string {
+  return String(value || "").trim().toLowerCase()
+}
+
+function isExchangePosition(position: any): boolean {
+  const mode = directTradeStatus(position?.mode || position?.executionMode)
+  return mode === "live" || mode === "exchange" || mode === "real" || Boolean(position?.exchangeOrderId)
+}
 
 function processorRuntimeStatus(
   processor: any,
@@ -87,19 +109,23 @@ export async function GET(request: Request) {
           client.get(scoped.processor),
           client.get(scoped.processorHeartbeat),
         ])
-        const state = stateRaw ? JSON.parse(stateRaw) : null
-        const positions = positionsRaw ? JSON.parse(positionsRaw) : []
-        const processor = processorRaw ? JSON.parse(processorRaw) : null
+        const state = parseStoredJson<any>(stateRaw, null)
+        const storedPositions = parseStoredJson<unknown>(positionsRaw, [])
+        const positions = Array.isArray(storedPositions) ? storedPositions : []
+        const processor = parseStoredJson<any>(processorRaw, null)
         const runtime = processorRuntimeStatus(processor, processorHeartbeatRaw, now)
         const latestProcessor = runtime.processor
         const openPositions = Array.isArray(positions)
-          ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
+          ? positions.filter((position: any) => {
+              const status = directTradeStatus(position?.status)
+              return status === "open" || status === "opening"
+            }).length
           : 0
         const accountingPending = Array.isArray(positions)
           ? positions.filter((position: any) => (
-              position?.status === "closed"
-              && position?.mode === "live"
-              && position?.pnlAccountingComplete !== true
+              directTradeStatus(position?.status) === "closed"
+              && isExchangePosition(position)
+              && resolveDirectTradeSettledExchangePnlUsdt(position) === null
             )).length
           : 0
         const required = state?.enabled === true || openPositions > 0 || accountingPending > 0
@@ -144,43 +170,46 @@ export async function GET(request: Request) {
       client.get(keys.recoveryRequest),
     ])
 
-    const state = stateRaw ? JSON.parse(stateRaw) : null
-    const stats = statsRaw ? JSON.parse(statsRaw) : null
+    const state = parseStoredJson<any>(stateRaw, null)
+    const stats = parseStoredJson<any>(statsRaw, null)
     // Modern calculations persist aggregate counts. Do not deserialize the
     // potentially large eligible-config snapshot on each dashboard poll.
     // The fallback retains accurate status for pre-index installations.
-    const calculation = calculationRaw ? JSON.parse(calculationRaw) : null
-    const calculationProgress = progressRaw ? JSON.parse(progressRaw) : null
+    const calculation = parseStoredJson<any>(calculationRaw, null)
+    const calculationProgress = parseStoredJson<any>(progressRaw, null)
     const hasIndexedCounts = Number.isFinite(Number(calculation?.evaluatedSets))
     const executionConfigs: any[] = []
-    const positions = positionsRaw ? JSON.parse(positionsRaw) : []
-    const openPositionStage = openPositionStageRaw ? JSON.parse(openPositionStageRaw) : null
-    const processor = processorRaw ? JSON.parse(processorRaw) : null
+    const storedPositions = parseStoredJson<unknown>(positionsRaw, [])
+    const positions: any[] = Array.isArray(storedPositions) ? storedPositions : []
+    const openPositionStage = parseStoredJson<any>(openPositionStageRaw, null)
+    const processor = parseStoredJson<any>(processorRaw, null)
     const processorRuntime = processorRuntimeStatus(processor, processorHeartbeatRaw)
     const latestProcessor = processorRuntime.processor
-    const configStatus = configStatusRaw ? JSON.parse(configStatusRaw) : {}
+    const configStatus = parseStoredJson<Record<string, any>>(configStatusRaw, {})
     if (!hasIndexedCounts) {
       const executionConfigsRaw = await client.get(keys.executionConfigs)
-      if (executionConfigsRaw) executionConfigs.push(...JSON.parse(executionConfigsRaw))
+      const storedExecutionConfigs = parseStoredJson<unknown>(executionConfigsRaw, [])
+      if (Array.isArray(storedExecutionConfigs)) executionConfigs.push(...storedExecutionConfigs)
     }
 
     // Calculate rolling stats from positions
     const now = Date.now()
     const allClosedPositions = positions
-      .filter((p: any) => p.status === "closed")
+      .filter((p: any) => directTradeStatus(p.status) === "closed")
       .sort((left: any, right: any) =>
         new Date(left.closedAt || left.exitTime || 0).getTime() -
         new Date(right.closedAt || right.exitTime || 0).getTime(),
       )
     const selectedMode = state?.liveMode === true ? "live" : "simulated"
     const closedPositions = allClosedPositions.filter((position: any) => (
-      (position?.mode === "live" ? "live" : "simulated") === selectedMode
+      (isExchangePosition(position) ? "live" : "simulated") === selectedMode
     ))
     const accountingPending = allClosedPositions.filter((position: any) => (
-      position?.mode === "live" && position?.pnlAccountingComplete !== true
+      isExchangePosition(position)
+      && resolveDirectTradeSettledExchangePnlUsdt(position) === null
     )).length
-    const openPositions = positions.filter((p: any) => p.status === "open")
-    const openingPositions = positions.filter((p: any) => p.status === "opening")
+    const openPositions = positions.filter((p: any) => directTradeStatus(p.status) === "open")
+    const openingPositions = positions.filter((p: any) => directTradeStatus(p.status) === "opening")
     const processorRequired = state?.enabled === true
       || openPositions.length > 0
       || openingPositions.length > 0
@@ -207,19 +236,20 @@ export async function GET(request: Request) {
         ? state.enabledIndicationTypes
         : [],
     })
-    const responseStats = stats
-      ? {
-          ...stats,
-          ...rollingStats,
-          ...(closedPositions.length > 0 ? {
-            profitFactorPercent: stats.profitFactor,
-            profitFactor: allRolling.pf,
-            profitFactorInfinite: allRolling.pfInfinite,
-            totalPnlUsdt: allRolling.pnlUsdt,
-            statsPnlBasis: allRolling.basis,
-          } : {}),
-        }
-      : { ...rollingStats, ...allRolling }
+    const responseStats = {
+      ...(stats || {}),
+      ...rollingStats,
+      profitFactorPercent: selectedMode === "simulated" ? allRolling.pf : stats?.profitFactorPercent,
+      profitFactor: allRolling.pf,
+      profitFactorInfinite: allRolling.pfInfinite,
+      totalPnl: allRolling.pnl,
+      totalPnlUsdt: allRolling.pnlUsdt,
+      statsPnlBasis: allRolling.basis,
+      settledClosedCount: closedPositions.length - allRolling.accountingPending,
+      accountingPending: allRolling.accountingPending,
+      openPositionCount: openPositions.length,
+      openingPositionCount: openingPositions.length,
+    }
 
     return NextResponse.json({
       success: true,
@@ -285,37 +315,58 @@ function calculateRollingPF(positions: any[]): {
   basis: "usdt" | "percent"
   accountingPending: number
 } {
-  const isExchange = (position: any) => {
-    const mode = String(position?.mode ?? position?.executionMode ?? "").toLowerCase()
-    return mode === "live" || mode === "exchange" || mode === "real" || Boolean(position?.exchangeOrderId)
+  const finite = (value: unknown): number | null => {
+    if (value === undefined || value === null || typeof value === "boolean") return null
+    if (typeof value === "string" && value.trim() === "") return null
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
   }
-  const accounted = positions.filter((position) => !isExchange(position) || (
-    position?.pnlAccountingComplete !== false && Number.isFinite(Number(position?.realizedPnlUsdt))
+  const accounted = positions.filter((position) => (
+    !isExchangePosition(position)
+    || resolveDirectTradeSettledExchangePnlUsdt(position) !== null
   ))
   const accountingPending = positions.length - accounted.length
-  if (!accounted.length) return { pf: null, pfInfinite: false, ddt: 0, pnl: 0, pnlUsdt: 0, basis: "percent", accountingPending }
-  const percentValue = (position: any) => Number(position.pnl) || 0
+  const exchangeBasis = positions.some(isExchangePosition)
+  if (!accounted.length) {
+    return {
+      pf: null,
+      pfInfinite: false,
+      ddt: 0,
+      pnl: 0,
+      pnlUsdt: 0,
+      basis: exchangeBasis ? "usdt" : "percent",
+      accountingPending,
+    }
+  }
+  const percentValue = (position: any) => finite(position.pnl) ?? finite(position.pnlPercent) ?? 0
   const hasCompleteNotional = accounted.every((position) => {
-    if (Number.isFinite(Number(position.realizedPnlUsdt))) return true
-    if (isExchange(position)) return false
-    return Number(position.entryPrice) > 0 && Number(position.quantity) > 0 && Number.isFinite(Number(position.pnl))
+    if (isExchangePosition(position)) {
+      return resolveDirectTradeSettledExchangePnlUsdt(position) !== null
+    }
+    if (finite(position.realizedPnlUsdt) !== null) return true
+    return (finite(position.entryPrice) ?? 0) > 0
+      && (finite(position.quantity) ?? 0) > 0
+      && finite(position.pnl) !== null
   })
   const value = (position: any) => {
     if (!hasCompleteNotional) return percentValue(position)
-    if (Number.isFinite(Number(position.realizedPnlUsdt))) return Number(position.realizedPnlUsdt)
-    return Math.abs(Number(position.entryPrice) * Number(position.quantity)) * percentValue(position) / 100
+    if (isExchangePosition(position)) {
+      return resolveDirectTradeSettledExchangePnlUsdt(position) ?? 0
+    }
+    const explicit = finite(position.realizedPnlUsdt)
+    if (explicit !== null) return explicit
+    return Math.abs((finite(position.entryPrice) ?? 0) * (finite(position.quantity) ?? 0)) * percentValue(position) / 100
   }
-  const wins = accounted.filter((p) => value(p) > 0)
-  const losses = accounted.filter((p) => value(p) <= 0)
-  const totalProfit = wins.reduce((s, p) => s + value(p), 0)
-  const totalLoss = Math.abs(losses.reduce((s, p) => s + value(p), 0))
+  const values = accounted.map(value)
+  const totalProfit = values.reduce((sum, current) => sum + Math.max(0, current), 0)
+  const totalLoss = values.reduce((sum, current) => sum + Math.abs(Math.min(0, current)), 0)
   const pfInfinite = totalLoss === 0 && totalProfit > 0
-  const pf = totalLoss > 0 ? totalProfit / totalLoss : 0
+  const pf = totalLoss > 0 ? totalProfit / totalLoss : null
   const avgDdt = accounted.reduce((s, p) => s + (p.drawdownTimeMin || 0), 0) / accounted.length
   const totalPnl = accounted.reduce((s, p) => s + percentValue(p), 0)
-  const totalPnlUsdt = hasCompleteNotional ? accounted.reduce((s, p) => s + value(p), 0) : 0
+  const totalPnlUsdt = hasCompleteNotional ? values.reduce((sum, current) => sum + current, 0) : 0
   return {
-    pf: pfInfinite ? null : Number(pf.toFixed(3)),
+    pf: pf === null || pfInfinite ? null : Number(pf.toFixed(3)),
     pfInfinite,
     ddt: Number(avgDdt.toFixed(1)),
     pnl: Number(totalPnl.toFixed(4)),

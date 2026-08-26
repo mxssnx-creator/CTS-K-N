@@ -63,6 +63,13 @@ export function parseEnvironmentFile(source, options = {}) {
   return parsed
 }
 
+export function isExpectedForwardedTermination(signal, forwardedSignal) {
+  return (
+    (signal === "SIGTERM" || signal === "SIGINT") &&
+    signal === forwardedSignal
+  )
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const separator = argv.indexOf("--")
   if (separator !== 1 || !argv[0] || !argv[2]) {
@@ -79,7 +86,9 @@ export async function main(argv = process.argv.slice(2)) {
     env,
     stdio: "inherit",
   })
+  let forwardedSignal = null
   const forward = (signal) => {
+    forwardedSignal = signal
     if (!child.killed) child.kill(signal)
   }
   process.once("SIGINT", () => forward("SIGINT"))
@@ -88,7 +97,10 @@ export async function main(argv = process.argv.slice(2)) {
   await new Promise((resolve, reject) => {
     child.once("error", reject)
     child.once("exit", (code, signal) => {
-      if (signal) reject(new Error(`Child terminated by ${signal}`))
+      if (isExpectedForwardedTermination(signal, forwardedSignal)) {
+        resolve()
+      }
+      else if (signal) reject(new Error(`Child terminated by ${signal}`))
       else if (code === 0) resolve()
       else reject(new Error(`Child exited with status ${code ?? "unknown"}`))
     })

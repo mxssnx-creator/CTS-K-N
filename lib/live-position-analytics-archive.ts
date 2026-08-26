@@ -6,7 +6,11 @@
  * analytics and stores only the fields used by reporting.
  */
 
-import { resolvePositionQuantity, resolveRealizedPnl } from "@/lib/live-position-pnl"
+import {
+  isRealizedPnlAccountingPending,
+  resolvePositionQuantity,
+  resolveRealizedPnl,
+} from "@/lib/live-position-pnl"
 
 export const LIVE_POSITION_ANALYTICS_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
 export const LIVE_POSITION_ANALYTICS_RETENTION_MS = 73 * 60 * 60 * 1000
@@ -51,8 +55,18 @@ function liveClosedAnalyticsPruneKey(connectionId: string): string {
 }
 
 function finite(value: unknown): number | undefined {
+  if (value === undefined || value === null || typeof value === "boolean") return undefined
+  if (typeof value === "string" && value.trim() === "") return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function firstFinite(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const parsed = finite(value)
+    if (parsed !== undefined) return parsed
+  }
+  return undefined
 }
 
 function compactSignalRisk(raw: unknown): Record<string, unknown> | undefined {
@@ -76,14 +90,16 @@ function compactSignalRisk(raw: unknown): Record<string, unknown> | undefined {
 export function buildLivePositionAnalyticsSnapshot(
   position: Record<string, unknown>,
 ): Record<string, unknown> | null {
-  if (String(position.status || "").toLowerCase() !== "closed") return null
+  if (String(position.status || "").trim().toLowerCase() !== "closed") return null
   const id = String(position.id || "").trim()
   const connectionId = String(
     position.connectionId ?? position.connection_id ?? "",
   ).trim()
   const symbol = String(position.symbol || "").trim()
-  const closedAt = finite(
-    position.closedAt ?? position.closed_at ?? position.updatedAt,
+  const closedAt = firstFinite(
+    position.closedAt,
+    position.closed_at,
+    position.updatedAt,
   )
   if (!id || !connectionId || !symbol || !closedAt || closedAt <= 0) return null
 
@@ -99,8 +115,10 @@ export function buildLivePositionAnalyticsSnapshot(
         }
       : undefined
   const executionMode = String(position.executionMode || "").trim().toLowerCase()
+  const positionMode = String(position.mode || "").trim().toLowerCase()
   const environment =
     executionMode === "simulation" ||
+    ["simulation", "simulated", "paper"].includes(positionMode) ||
     position.simulated === true ||
     position.simulated === "1" ||
     /paper|simulat|live_trade disabled/i.test(
@@ -108,6 +126,14 @@ export function buildLivePositionAnalyticsSnapshot(
     )
       ? "simulated"
       : "exchange"
+  const accountingPending = isRealizedPnlAccountingPending(
+    position as Record<string, any>,
+  )
+  const realizedPnl = resolveRealizedPnl(position as Record<string, any>)
+  // A legacy terminal row with neither an authoritative result nor enough
+  // price/quantity data to derive one is not a break-even trade. Explicitly
+  // pending exchange rows stay in the archive for coverage observability.
+  if (!accountingPending && realizedPnl === undefined) return null
 
   return {
     id,
@@ -125,29 +151,32 @@ export function buildLivePositionAnalyticsSnapshot(
     environment,
     executionMode: executionMode || undefined,
     executionIntent: String(position.executionIntent || "") || undefined,
-    createdAt: finite(
-      position.createdAt ??
-      position.openedAt ??
-      position.opened_at ??
+    createdAt: firstFinite(
+      position.createdAt,
+      position.openedAt,
+      position.opened_at,
       position.timestamp,
     ),
     closedAt,
     updatedAt: finite(position.updatedAt),
-    realizedPnL: resolveRealizedPnl(position as Record<string, any>) ?? 0,
+    realizedPnlComplete: !accountingPending,
+    realizedPnlSource: String(position.realizedPnlSource || "") || undefined,
+    accountingPending,
+    realizedPnL: accountingPending ? null : realizedPnl,
     volumeUsd: finite(position.volumeUsd),
     quantity: resolvePositionQuantity(position as Record<string, any>, true) ?? finite(position.size),
-    entryPrice: finite(
-      position.averageExecutionPrice ??
-      position.entryPrice ??
+    entryPrice: firstFinite(
+      position.averageExecutionPrice,
+      position.entryPrice,
       position.entry_price,
     ),
-    closePrice: finite(
-      position.closePrice ??
-      position.exitPrice ??
-      position.currentPrice ??
+    closePrice: firstFinite(
+      position.closePrice,
+      position.exitPrice,
+      position.currentPrice,
       position.current_price,
     ),
-    fees: finite(position.fees ?? position.totalFees),
+    fees: firstFinite(position.fees, position.totalFees),
     closeOrderId: String(
       position.closeOrderId ??
       (position.exchangeData as Record<string, unknown> | undefined)?.closeOrderId ??

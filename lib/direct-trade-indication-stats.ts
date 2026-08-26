@@ -2,6 +2,7 @@ import {
   DIRECT_TRADE_ENTRY_TACTICS,
   type DirectTradeEntryTactic,
 } from "@/lib/direct-trade-coordination"
+import { resolveDirectTradeSettledExchangePnlUsdt } from "@/lib/direct-trade-overview-stats"
 
 type CalculationAxisBucket = {
   evaluated?: number
@@ -42,6 +43,13 @@ function finite(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function finiteOrNull(value: unknown): number | null {
+  if (value === undefined || value === null || typeof value === "boolean") return null
+  if (typeof value === "string" && value.trim() === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function rounded(value: number, digits = 8): number {
   return Number(value.toFixed(digits))
 }
@@ -77,26 +85,23 @@ export function buildDirectTradeIndicationTypeStats(input: {
 
   return DIRECT_TRADE_ENTRY_TACTICS.map((indicationType) => {
     const typed = positions.filter((position) => {
-      const mode = position?.mode === "live" ? "live" : "simulated"
+      const rawMode = String(position?.mode ?? position?.executionMode ?? "").trim().toLowerCase()
+      const mode = ["live", "exchange", "real"].includes(rawMode) ? "live" : "simulated"
       return mode === input.selectedMode && directTradePositionIndicationType(position) === indicationType
     })
     const openPositions = typed.filter((position) => (
-      position?.status === "open" || position?.status === "opening"
+      ["open", "opening"].includes(String(position?.status || "").trim().toLowerCase())
     )).length
-    const closed = typed.filter((position) => position?.status === "closed")
-    const accountingPending = input.selectedMode === "live"
-      ? closed.filter((position) => position?.pnlAccountingComplete !== true).length
-      : 0
+    const closed = typed.filter((position) => String(position?.status || "").trim().toLowerCase() === "closed")
     const accounted = closed.filter((position) => {
-      if (!Number.isFinite(Number(position?.pnl))) return false
-      return input.selectedMode !== "live" || (
-        position?.pnlAccountingComplete === true
-        && Number.isFinite(Number(position?.realizedPnlUsdt))
-      )
+      if (finiteOrNull(position?.pnl) === null) return false
+      return input.selectedMode !== "live"
+        || resolveDirectTradeSettledExchangePnlUsdt(position) !== null
     })
+    const accountingPending = closed.length - accounted.length
     const resultValue = (position: any) => input.selectedMode === "live"
-      ? finite(position?.realizedPnlUsdt)
-      : finite(position?.pnl)
+      ? resolveDirectTradeSettledExchangePnlUsdt(position) ?? 0
+      : finiteOrNull(position?.pnl) ?? 0
     const wins = accounted.filter((position) => resultValue(position) > 1e-12).length
     const losses = accounted.filter((position) => resultValue(position) < -1e-12).length
     const breakeven = accounted.length - wins - losses

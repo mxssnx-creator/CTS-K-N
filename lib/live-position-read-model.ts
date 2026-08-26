@@ -26,7 +26,9 @@ const NUMERIC_FIELDS = [
   "updatedAt",
   "closedAt",
   "realizedPnL",
+  "realizedPnl",
   "realized_pnl",
+  "realizedPnlGross",
   "pnl",
   "unrealizedPnL",
   "unrealized_pnl",
@@ -41,6 +43,11 @@ const NUMERIC_FIELDS = [
   "marginUsd",
   "fees",
   "totalFees",
+  "tradingFees",
+  "entryTradingFee",
+  "entryTradingFeeAllocated",
+  "fundingFee",
+  "fundingFees",
   "stopLoss",
   "stop_loss",
   "takeProfit",
@@ -50,15 +57,68 @@ const NUMERIC_FIELDS = [
   "entryPrice",
   "entry_price",
   "closePrice",
+  "exitPrice",
   "quantity",
   "executedQuantity",
+  "totalExecutedQuantity",
+  "closedQuantity",
   "remainingQuantity",
+  "quantityStep",
+  "stopLossPrice",
+  "takeProfitPrice",
+  "trailingStopPrice",
+  "stopLossLastArmedAt",
+  "takeProfitLastArmedAt",
+  "stopLossArmedQuantity",
+  "takeProfitArmedQuantity",
+  "protectionArmedQuantity",
+  "positionCostPct",
+  "realizedRoi",
+  "roi",
 ] as const
 
 const JSON_FIELDS = [
   "signalRisk",
   "trailingProfile",
   "exchangeData",
+  "fills",
+  "progression",
+  "blockLegs",
+  "dcaProfile",
+  "dcaLegs",
+  "axisWindows",
+  "specialPositionPlan",
+  "prevPos",
+  "accumulatedSetKeys",
+  "posCountsSetQuantities",
+  "posCountsSetRatios",
+  "partialOrderExecutions",
+  "exchangeQuantityAdjustments",
+  "entrySettlementOrderIds",
+  "settledOrderIds",
+  "pendingAccumulation",
+  "pendingReduction",
+  "pendingSystemAction",
+  "systemCloseRetry",
+  "pendingQuantityMutation",
+  "pendingProtectionOrders",
+  "manualProtectionOverride",
+  "systemProtectionLegs",
+  "controlOrderCapacity",
+] as const
+
+const BOOLEAN_FIELDS = [
+  "trailingActive",
+  "realizedPnlComplete",
+  "pnlAccountingComplete",
+  "entryAccountingComplete",
+  "accountingPending",
+  "isSimulated",
+  "simulated",
+  "combinedPosCounts",
+  "posCountsTargetFlat",
+  "volumeAdjusted",
+  "aggregateProtectionOwner",
 ] as const
 
 function parseJsonRecord(raw: unknown): LivePositionReadModel | null {
@@ -106,8 +166,10 @@ export function normalizeLivePositionReadModel(
     if (raw[field] !== undefined) normalized[field] = parseEmbeddedJson(raw[field])
   }
 
-  const trailingActive = normalizeBoolean(raw.trailingActive)
-  if (trailingActive !== undefined) normalized.trailingActive = trailingActive
+  for (const field of BOOLEAN_FIELDS) {
+    const value = normalizeBoolean(raw[field])
+    if (value !== undefined) normalized[field] = value
+  }
 
   return normalized
 }

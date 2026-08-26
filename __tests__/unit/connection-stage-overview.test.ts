@@ -42,6 +42,22 @@ describe("connection stage overview", () => {
     expect(resolveRealProfitFactorSnapshot({ prevPos: JSON.stringify({ profitFactor: 1.5 }) })).toBe(1.5)
   })
 
+  test("excludes incomplete exchange settlement from Real-to-Live PF", () => {
+    expect(calculateRealLivePfComparison([
+      closed({
+        realizedPnL: 0,
+        closePrice: undefined,
+        realizedPnlComplete: false,
+        realizedPnlSource: "exchange_unresolved",
+      }),
+    ])).toMatchObject({
+      availableClosedPositions: 0,
+      matchedPositions: 0,
+      liveProfitFactor: null,
+      status: "unavailable",
+    })
+  })
+
   test("keeps stage identities, variant totals, directions, and independent running orders coherent", () => {
     const overview = buildConnectionStageOverview({
       base: { totalOpen: 10, validOpen: 8, pfMinimum: 0.8 },
