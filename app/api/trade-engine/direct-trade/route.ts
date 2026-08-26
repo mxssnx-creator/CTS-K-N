@@ -40,6 +40,11 @@ import {
   type DirectTradeStrategyType,
 } from "@/lib/direct-trade-coordination"
 import {
+  acquireOrRenewDirectTradeProcessorLease,
+  renewDirectTradeProcessorLease,
+} from "@/lib/direct-trade-processor-lease"
+import { resolveDirectTradeSettledExchangePnlUsdt } from "@/lib/direct-trade-overview-stats"
+import {
   DIRECT_TRADE_ACTIVE_SIGNAL_KEYS_KEY,
   DIRECT_TRADE_EXECUTION_INDEX_KEY,
   DIRECT_TRADE_EXECUTION_SIGNAL_INDEX_KEY,
@@ -159,6 +164,11 @@ export interface DirectTradeStats {
   totalPnl: number
   winCount: number
   lossCount: number
+  breakEvenCount: number
+  settledClosedCount: number
+  accountingPending: number
+  openPositionCount: number
+  openingPositionCount: number
   profitFactor: number | null
   profitFactorInfinite?: boolean
   maxDrawdownTimeMin: number
@@ -232,18 +242,23 @@ const DEFAULT_STATS: DirectTradeStats = {
   totalPnl: 0,
   winCount: 0,
   lossCount: 0,
+  breakEvenCount: 0,
+  settledClosedCount: 0,
+  accountingPending: 0,
+  openPositionCount: 0,
+  openingPositionCount: 0,
   profitFactor: null,
   profitFactorInfinite: false,
   maxDrawdownTimeMin: 0,
   currentDrawdownTimeMin: 0,
   lastPositionAt: null,
   pnlHistory: [],
-  last12Pos: { pf: 0, ddt: 0, pnl: 0 },
-  last25Pos: { pf: 0, ddt: 0, pnl: 0 },
-  last50Pos: { pf: 0, ddt: 0, pnl: 0 },
-  last4h: { pf: 0, ddt: 0, pnl: 0 },
-  last12h: { pf: 0, ddt: 0, pnl: 0 },
-  last48h: { pf: 0, ddt: 0, pnl: 0 },
+  last12Pos: { pf: null, ddt: 0, pnl: 0 },
+  last25Pos: { pf: null, ddt: 0, pnl: 0 },
+  last50Pos: { pf: null, ddt: 0, pnl: 0 },
+  last4h: { pf: null, ddt: 0, pnl: 0 },
+  last12h: { pf: null, ddt: 0, pnl: 0 },
+  last48h: { pf: null, ddt: 0, pnl: 0 },
 }
 
 async function getClient() {
@@ -550,22 +565,13 @@ async function acquireProcessorLease(
 ): Promise<boolean> {
   if (!instanceId || instanceId.length > 160) return false
   const leaseKey = directTradeKeyspace(connectionId).processorLease
-  const created = await client.set(leaseKey, instanceId, {
-    NX: true,
-    PX: processorLeaseMs(),
-  }).catch(() => null)
-  if (created === "OK" || created === true) return true
-
-  // A current lease may only be renewed by its exact owner. This gives one
-  // processor authority over simulated or live positions and prevents a
-  // second script from duplicating entries after a reload.
-  const owner = await client.get(leaseKey).catch(() => null)
-  if (owner !== instanceId) return false
-  const renewed = await client.set(leaseKey, instanceId, {
-    XX: true,
-    PX: processorLeaseMs(),
-  }).catch(() => null)
-  return renewed === "OK" || renewed === true
+  return acquireOrRenewDirectTradeProcessorLease({
+    client,
+    key: leaseKey,
+    owner: instanceId,
+    ttlMs: processorLeaseMs(),
+    backend: getRedisBackend(),
+  })
 }
 
 async function renewOwnedProcessorLease(
@@ -575,13 +581,13 @@ async function renewOwnedProcessorLease(
 ): Promise<boolean> {
   if (!instanceId || instanceId.length > 160) return false
   const leaseKey = directTradeKeyspace(connectionId).processorLease
-  const owner = await client.get(leaseKey).catch(() => null)
-  if (owner !== instanceId) return false
-  const renewed = await client.set(leaseKey, instanceId, {
-    XX: true,
-    PX: processorLeaseMs(),
-  }).catch(() => null)
-  return renewed === "OK" || renewed === true
+  return renewDirectTradeProcessorLease({
+    client,
+    key: leaseKey,
+    owner: instanceId,
+    ttlMs: processorLeaseMs(),
+    backend: getRedisBackend(),
+  })
 }
 
 async function getStats(connectionId: string | null = null): Promise<DirectTradeStats> {
@@ -663,6 +669,16 @@ async function getJsonObject(key: string): Promise<Record<string, unknown>> {
   return {}
 }
 
+function parseStoredJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed === null || parsed === undefined ? fallback : parsed as T
+  } catch {
+    return fallback
+  }
+}
+
 async function getCalculation(connectionId: string | null = null): Promise<Record<string, unknown>> {
   return getJsonObject(directTradeKeyspace(connectionId).calculation)
 }
@@ -689,7 +705,7 @@ export async function GET(request: NextRequest) {
       const client = await getClient()
       const indexed = await client.smembers(DIRECT_TRADE_CONNECTION_INDEX_KEY).catch(() => [])
       const legacyRaw = await client.get(directTradeKeyspace().state).catch(() => null)
-      const legacy = legacyRaw ? JSON.parse(legacyRaw) : null
+      const legacy = parseStoredJson<any>(legacyRaw, null)
       const legacyId = normaliseConnectionId(legacy?.connectionId)
       const ids = [...new Set([
         ...indexed.map(String).map(normaliseConnectionId).filter((id): id is string => Boolean(id)),
@@ -703,17 +719,21 @@ export async function GET(request: NextRequest) {
           client.get(keys.positions),
           client.get(keys.processor),
         ])
-        const state = stateRaw ? JSON.parse(stateRaw) : { ...DEFAULT_STATE, connectionId: id }
-        const positions = positionsRaw ? JSON.parse(positionsRaw) : []
-        const processor = processorRaw ? JSON.parse(processorRaw) : null
+        const state = parseStoredJson<any>(stateRaw, { ...DEFAULT_STATE, connectionId: id })
+        const storedPositions = parseStoredJson<unknown>(positionsRaw, [])
+        const positions = Array.isArray(storedPositions) ? storedPositions : []
+        const processor = parseStoredJson<any>(processorRaw, null)
         const openPositions = Array.isArray(positions)
-          ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
+          ? positions.filter((position: any) => {
+              const status = String(position?.status || "").trim().toLowerCase()
+              return status === "open" || status === "opening"
+            }).length
           : 0
         const accountingPending = Array.isArray(positions)
           ? positions.filter((position: any) => (
-              position?.status === "closed"
-              && position?.mode === "live"
-              && position?.pnlAccountingComplete !== true
+              String(position?.status || "").trim().toLowerCase() === "closed"
+              && ["live", "exchange", "real"].includes(String(position?.mode || "").trim().toLowerCase())
+              && resolveDirectTradeSettledExchangePnlUsdt(position) === null
             )).length
           : 0
         return {

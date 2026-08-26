@@ -3,6 +3,59 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
+## Control-order and lifecycle correctness release in progress (2026-08-26; authoritative)
+
+- Canonical checkout: `/workspace/CTS-K-N`, branch
+  `fix/control-orders-complete-20260826`, based on GitHub
+  `main@f6477985a2c2058b3f9c9991e9f3e125f85f3c9f`. The reviewed worktree is
+  intentionally uncommitted until the final release gate and pre-push backup
+  complete. It must not be reset or mixed with the other local fix branches.
+- Control-order writes now use atomic, monotonic Redis transitions with
+  fingerprint ownership, terminal-state protection, exact exchange-order
+  identity matching, and process-local serialization. The Direct processor
+  lease is atomic and fail-closed. Live-stage protection tracks SL/TP armed
+  quantities per venue leg, preserves closing exposure, and safely reconciles
+  retry/replacement/cancel/close paths without reopening a logical slot.
+- Open, closing, executed, settled, and accounting-pending are now distinct
+  lifecycle concepts across live positions, Direct status, symbol statistics,
+  trading statistics, monitoring, indication statistics, and PnL history.
+  Duplicate open/archive views are collapsed by lifecycle precedence. A single
+  source classifier distinguishes real, simulated, and unknown rows. Missing or
+  incomplete exchange accounting remains pending with null PnL; it is never
+  converted to break-even. Profit factor is nullable with an explicit infinity
+  flag, break-even rows do not distort decisive win rate, and rolling windows
+  are chronological and use their stated sizes.
+- Event continuity uses cooperative cancellation and cleanup for cron time
+  budgets, bounded/abort-aware indication workers, and correct signal handling
+  in the environment runner. Status and read routes use normalized states,
+  timestamps, strict numeric parsing, bounded reads, and scoped ledgers.
+- Local release evidence on this exact source is green: 227 unit suites / 1,480
+  tests, 4 integration suites / 61 tests, TypeScript, repository-wide ESLint,
+  a production Next 15.5.18 build (42 pages and 347 validated traces), and a
+  1,517-file security scan with zero findings. Recreation manifests contain
+  1,509 project files, 295 API routes / 379 methods, 47 UI pages, 103 migrations,
+  and 263 tests/verifiers and verify successfully. Re-run the complete final
+  gate after this checkpoint entry before publication.
+- Read-only production checks against `http://152.53.114.112:3002` return HTTP
+  200 for health, database, initialization, settings, engine, functional
+  overview, and aggregate Direct status; the deployment-contract verifier also
+  passes schema v103 and shared Redis persistence. The cloud browser upgrades
+  the numeric HTTP URL to HTTPS and therefore receives a TLS 502; direct HTTP
+  proves the application itself is available. Current production is still the
+  older main and exhibits the PnL/execution contradiction fixed by this branch.
+  No production mutation or exchange order was performed during this audit.
+- Latest verified full recovery point is
+  `/workspace/backups/CTS-K-N/20260826T221212Z-final-precommit-control-orders`.
+  It contains the Git bundle, binary patch, untracked archive/list, HEAD/status,
+  and verified SHA-256 records with owner-only permissions. It captures the
+  complete source change set before publication; refresh it if source changes.
+- Publication sequence remains mandatory: final local gate; full backup; commit
+  and push this branch; green PR checks; merge only that checked head; server
+  backup; deploy merged GitHub `main`; then repeat read-only health/contracts.
+  X01/Mainnet and every Bybit connection remain read-only. An actual X02 BingX
+  Prod-VST minimum-volume lifecycle requires explicit authorization, isolated
+  ownership IDs, and restoration to the recorded pre-test baseline.
+
 ## Runtime-stability release in progress (2026-08-26; supersedes older availability notes)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch

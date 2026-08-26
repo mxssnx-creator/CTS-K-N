@@ -120,6 +120,11 @@ interface DirectTradeStats {
   totalPnlUsdt?: number
   winCount: number
   lossCount: number
+  breakEvenCount: number
+  settledClosedCount: number
+  accountingPending: number
+  openPositionCount: number
+  openingPositionCount: number
   profitFactor: number | null
   profitFactorInfinite?: boolean
   profitFactorPercent?: number
@@ -192,6 +197,11 @@ const DEFAULT_STATS: DirectTradeStats = {
   totalPnl: 0,
   winCount: 0,
   lossCount: 0,
+  breakEvenCount: 0,
+  settledClosedCount: 0,
+  accountingPending: 0,
+  openPositionCount: 0,
+  openingPositionCount: 0,
   profitFactor: null,
   profitFactorInfinite: false,
   maxDrawdownTimeMin: 0,
@@ -682,9 +692,9 @@ export function DirectTradeSection() {
               <span className="text-muted-foreground">Open: <strong>{openPositions}</strong></span>
               <span
                 className="text-muted-foreground"
-                title="Confirmed Direct-Trade entry, Block and DCA order fills in this connection scope"
+                title="Confirmed Direct-Trade entry, Block and DCA fills; rejected or unconfirmed submissions are excluded"
               >
-                Orders: <strong data-testid="direct-trade-orders-count">{stats.totalOrders.toLocaleString()}</strong>
+                Confirmed fills: <strong data-testid="direct-trade-orders-count">{stats.totalFilled.toLocaleString()}</strong>
               </span>
               <span className="text-muted-foreground">Closed: <strong>{closedPositions}</strong></span>
               <span className="text-muted-foreground">Disabled: <strong>{disabledConfigs}</strong></span>
@@ -1460,8 +1470,8 @@ export function DirectTradeSection() {
                   <div className="font-mono font-bold">{formatPF(stats.profitFactor, stats.profitFactorInfinite)}</div>
               </div>
               <div className="bg-muted/40 rounded p-2">
-                <div className="text-muted-foreground">Win/Loss</div>
-                <div className="font-mono font-bold">{stats.winCount}/{stats.lossCount}</div>
+                <div className="text-muted-foreground">Win/Loss/BE</div>
+                <div className="font-mono font-bold">{stats.winCount}/{stats.lossCount}/{stats.breakEvenCount}</div>
               </div>
               <div className="bg-muted/40 rounded p-2">
                 <div className="text-muted-foreground">Max DDT</div>

@@ -49,6 +49,14 @@ describe("BingX control-order capacity and batching", () => {
     ])).toBe(3)
   })
 
+  test("uses the first non-empty venue id when adapters emit empty aliases", () => {
+    expect(countUniqueBingXControlOrders([
+      { orderId: "", orderID: "shared-5", type: "STOP_MARKET" },
+      { orderId: "", orderID: "shared-5", id: "secondary-ignored", type: "STOP_MARKET" },
+      { orderId: "", orderID: "", id: "venue-6", type: "TAKE_PROFIT_MARKET" },
+    ])).toBe(2)
+  })
+
   test("combines only economically identical intents and sends overflow to system handling", () => {
     const base = {
       connectionId: "bingx-x02",

@@ -67,6 +67,7 @@ unit	__tests__/unit/connection-settings-merge-clamp.test.ts
 unit	__tests__/unit/connection-stage-overview.test.ts
 unit	__tests__/unit/connection-test-stored-credentials.test.ts
 unit	__tests__/unit/control-order-capacity.test.ts
+unit	__tests__/unit/cooperative-task-timeout.test.ts
 unit	__tests__/unit/cron-generate-indications-eligibility.test.ts
 unit	__tests__/unit/dashboard-event-polling.test.ts
 unit	__tests__/unit/dashboard-main-connections.test.ts
@@ -85,6 +86,7 @@ unit	__tests__/unit/direct-trade-market-history.test.ts
 unit	__tests__/unit/direct-trade-overview-stats.test.ts
 unit	__tests__/unit/direct-trade-position-capacity.test.ts
 unit	__tests__/unit/direct-trade-position-stage.test.ts
+unit	__tests__/unit/direct-trade-processor-lease.test.ts
 unit	__tests__/unit/direct-trade-pulse-route.test.ts
 unit	__tests__/unit/direct-trade-route-concurrency.test.ts
 unit	__tests__/unit/direct-trade-schema-v100.test.ts
@@ -108,6 +110,7 @@ unit	__tests__/unit/exchange-account-performance.test.ts
 unit	__tests__/unit/exchange-connector-factory.test.ts
 unit	__tests__/unit/exchange-control-order-options.test.ts
 unit	__tests__/unit/exchange-force-simulated.test.ts
+unit	__tests__/unit/exchange-position-symbols-stats.test.ts
 unit	__tests__/unit/exchange-position-trailing.test.ts
 unit	__tests__/unit/exchange-quantity-ledger.test.ts
 unit	__tests__/unit/forced-symbols.test.ts
@@ -135,6 +138,7 @@ unit	__tests__/unit/live-position-actions.test.ts
 unit	__tests__/unit/live-position-analytics-archive.test.ts
 unit	__tests__/unit/live-position-lineage-index.test.ts
 unit	__tests__/unit/live-position-read-model.test.ts
+unit	__tests__/unit/live-position-source.test.ts
 unit	__tests__/unit/live-position-statistics.test.ts
 unit	__tests__/unit/live-position-stats-sources.test.ts
 unit	__tests__/unit/live-position-status.test.ts
@@ -152,6 +156,7 @@ unit	__tests__/unit/main-trade-profit-factor.test.ts
 unit	__tests__/unit/market-data-fetch-deadline.test.ts
 unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts
+unit	__tests__/unit/monitoring-stats-route.test.ts
 unit	__tests__/unit/multi-range-coordination.test.ts
 unit	__tests__/unit/navigation-contract.test.ts
 unit	__tests__/unit/no-fixed-sleeps-regression.test.ts
@@ -197,6 +202,7 @@ unit	__tests__/unit/redis-runtime-root.test.ts
 unit	__tests__/unit/redis-secondary-indexes.test.ts
 unit	__tests__/unit/redis-stats.test.ts
 unit	__tests__/unit/requested-regressions.test.ts
+unit	__tests__/unit/run-with-env-lifecycle.test.ts
 unit	__tests__/unit/runtime-boot-id.test.ts
 unit	__tests__/unit/runtime-concurrency-profile.test.ts
 unit	__tests__/unit/runtime-log-throttle.test.ts
@@ -250,6 +256,7 @@ unit	__tests__/unit/trade-engine-start-lock.test.ts
 unit	__tests__/unit/trade-engine-status-healing-race.test.ts
 unit	__tests__/unit/trade-history-stability.test.ts
 unit	__tests__/unit/trade-protection-contract.test.ts
+unit	__tests__/unit/trading-stats-route.test.ts
 unit	__tests__/unit/trailing-dca-strategy.test.ts
 unit	__tests__/unit/trend-indication.test.ts
 unit	__tests__/unit/trend-wiring.test.ts

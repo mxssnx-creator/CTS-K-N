@@ -89,6 +89,7 @@ import {
   type RealStrategyVariant,
 } from "@/lib/strategy-real-stats"
 import { getLivePositionSetLineageKeys } from "@/lib/live-position-lineage"
+import { isLiveOpenStatus } from "@/lib/live-position-status"
 import {
   resolveCombinedPosCountDelta,
   resolveCombinedPosCountTargetQuantity,
@@ -617,6 +618,10 @@ interface LivePosition {
   takeProfitLastArmedAt?: number
   assignedStopLoss?: number
   assignedTakeProfit?: number
+  /** Venue-confirmed protected quantity for each independent control leg. */
+  stopLossArmedQuantity?: number
+  takeProfitArmedQuantity?: number
+  /** Legacy minimum armed quantity retained for older snapshots/readers. */
   protectionArmedQuantity?: number
   // ── Trailing stop state ────────────────────────────────────────────────
   // Written by syncLiveFromPseudo when the pseudo position's trailing machine
@@ -1599,16 +1604,7 @@ function livePositionSlotIndexKey(
 }
 
 function isActiveLiveSlotStatus(status: unknown): boolean {
-  return [
-    "pending",
-    "open",
-    "filled",
-    "partially_filled",
-    "placed",
-    "pending_fill",
-    "placed_unconfirmed",
-    "simulated",
-  ].includes(String(status || "").toLowerCase())
+  return isLiveOpenStatus(status)
 }
 
 function matchesLiveSlot(
@@ -1897,6 +1893,8 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "takeProfitLastArmedAt",
     "assignedStopLoss",
     "assignedTakeProfit",
+    "stopLossArmedQuantity",
+    "takeProfitArmedQuantity",
     "protectionArmedQuantity",
     "trailingStopPrice",
     "presetRank",
@@ -2834,6 +2832,15 @@ function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "
   return `cts${connection}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
 }
 
+function firstNonEmptyIdentifier(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (value === null || value === undefined) continue
+    const normalized = String(value).trim()
+    if (normalized) return normalized
+  }
+  return undefined
+}
+
 function appendClientOrderTracking(
   position: LivePosition,
   clientOrderId: string,
@@ -2888,11 +2895,11 @@ async function recoverEntryOrderByClientId(
   const normalize = (candidate: any): any | null => {
     const raw = candidate?.order ?? candidate?.data ?? candidate
     if (!raw || candidate?.success === false) return null
-    const echoedClientId = raw?.clientOrderId ?? raw?.clientOrderID ?? raw?.client_oid
-    if (echoedClientId && String(echoedClientId) !== clientOrderId) return null
-    const orderId = raw?.orderId ?? raw?.orderID ?? raw?.id
-    if (orderId == null || String(orderId).length === 0) return null
-    return { ...raw, success: true, orderId: String(orderId), clientOrderId }
+    const echoedClientId = firstNonEmptyIdentifier(raw?.clientOrderId, raw?.clientOrderID, raw?.client_oid)
+    if (echoedClientId && echoedClientId !== clientOrderId) return null
+    const orderId = firstNonEmptyIdentifier(raw?.orderId, raw?.orderID, raw?.id, raw?.ordId)
+    if (!orderId) return null
+    return { ...raw, success: true, orderId, clientOrderId }
   }
 
   for (const lookup of [
@@ -2926,7 +2933,12 @@ async function recoverEntryOrderByClientId(
         `recoverEntryOrderByClientId.openOrders(${symbol})`,
       )
       const match = Array.isArray(orders)
-        ? orders.find((order: any) => String(order?.clientOrderId ?? order?.clientOrderID ?? order?.client_oid ?? "") === clientOrderId)
+        ? orders.find((order: any) => firstNonEmptyIdentifier(
+            order?.clientOrderId,
+            order?.clientOrderID,
+            order?.client_oid,
+            order?.clOrdId,
+          ) === clientOrderId)
         : null
       return normalize(match)
     } catch { /* authoritative sync will retry */ }
@@ -2964,11 +2976,11 @@ async function reconcileAmbiguousProtectionWrite(input: {
       Math.max(1, input.graceMs ?? EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS),
       `awaitAmbiguousProtectionWrite(${input.symbol})`,
     )
-    const lateOrderId = lateResult?.orderId ?? lateResult?.id
-    if (lateResult?.success && lateOrderId != null && String(lateOrderId).length > 0) {
+    const lateOrderId = firstNonEmptyIdentifier(lateResult?.orderId, lateResult?.orderID, lateResult?.id, lateResult?.ordId)
+    if (lateResult?.success && lateOrderId) {
       return {
         ...lateResult,
-        orderId: String(lateOrderId),
+        orderId: lateOrderId,
         recoveredFromAmbiguousWrite: "late_acknowledgement",
       }
     }
@@ -2986,14 +2998,14 @@ async function reconcileAmbiguousProtectionWrite(input: {
       totalTimeoutMs: Math.max(1, input.recoveryMs ?? EXCHANGE_AMBIGUOUS_RECOVERY_MS),
     },
   )
-  const recoveredOrderId = recovered?.orderId ?? recovered?.id
-  if (recoveredOrderId == null || String(recoveredOrderId).length === 0) return null
+  const recoveredOrderId = firstNonEmptyIdentifier(recovered?.orderId, recovered?.orderID, recovered?.id, recovered?.ordId)
+  if (!recoveredOrderId) return null
   const status = String(recovered?.status || "").trim().toLowerCase()
   if (["cancelled", "canceled", "rejected", "expired"].includes(status)) return null
   return {
     ...recovered,
     success: true,
-    orderId: String(recoveredOrderId),
+    orderId: recoveredOrderId,
     clientOrderId,
     recoveredFromAmbiguousWrite: "client_order_id",
   }
@@ -5928,19 +5940,19 @@ async function sweepOrphanProtectionOrders(
     const sideOk = sameSide(o)
     const psOk   = matchesPositionSide(o)
     const typeOk = isReduceOnly(o) || isProtectionType(o)
-    const exchangeOrderId = o?.id ?? o?.orderId ?? o?.orderID
-    const clientOrderId = o?.clientOrderId ?? o?.clientOrderID ?? o?.client_oid
-    const ordId  = exchangeOrderId ?? clientOrderId
+    const exchangeOrderId = firstNonEmptyIdentifier(o?.id, o?.orderId, o?.orderID, o?.ordId)
+    const clientOrderId = firstNonEmptyIdentifier(o?.clientOrderId, o?.clientOrderID, o?.client_oid, o?.clOrdId)
+    const ordId = exchangeOrderId || clientOrderId
     const ownershipMatches =
-      (exchangeOrderId != null && ownedOrderIds.has(String(exchangeOrderId))) ||
-      (clientOrderId != null && ownedClientOrderIds.has(String(clientOrderId)))
+      (exchangeOrderId != null && ownedOrderIds.has(exchangeOrderId)) ||
+      (clientOrderId != null && ownedClientOrderIds.has(clientOrderId))
     if (!sideOk) continue
     if (!psOk) continue
     if (!typeOk) continue
     // Manual/foreign orders never match the durable ownership allow-list.
     if (!ownershipMatches) continue
-    if (ordId == null || String(ordId).length === 0) continue
-    const ok = await cancelProtectionOrder(connector, symbol, String(ordId), "OrphanSweep", position.connectionId)
+    if (!ordId) continue
+    const ok = await cancelProtectionOrder(connector, symbol, ordId, "OrphanSweep", position.connectionId)
     if (ok) result.cancelled++
   }
 
@@ -6018,6 +6030,11 @@ async function cancelProtectionOrder(
  * what prevents the exchange from treating this as a new opposite-side
  * entry and hedging against the real position.
  */
+interface ProtectionOrderPlacementResult {
+  orderId: string | null
+  armedQuantity: number
+}
+
 async function placeProtectionOrder(
   connector: any,
   symbol: string,
@@ -6027,7 +6044,7 @@ async function placeProtectionOrder(
   orderLabel: "StopLoss" | "TakeProfit",
   positionDirection: "long" | "short",
   clientOrderId?: string,
-): Promise<string | null> {
+): Promise<ProtectionOrderPlacementResult> {
   // ── Structured trace context ──────────────────────���─────────────────
   // Every protection-order placement gets a single multi-field log line
   // before any exchange interaction, so when an operator reports "the
@@ -6055,7 +6072,7 @@ async function placeProtectionOrder(
     // connectors that haven't been upgraded yet (see `BaseExchangeConnector`).
     if (typeof connector?.placeStopOrder !== "function") {
       console.warn(`${tag} REJECTED LOCALLY: connector has no placeStopOrder — protection unavailable`)
-      return null
+      return { orderId: null, armedQuantity: 0 }
     }
 
     // Defensive input validation. The SL/TP test suite previously sent
@@ -6066,11 +6083,11 @@ async function placeProtectionOrder(
     // local log line rather than as a venue-side rejection mid-trade.
     if (!Number.isFinite(quantity) || quantity <= 0) {
       console.error(`${tag} REJECTED LOCALLY: invalid quantity=${quantity} (must be finite, >0)`)
-      return null
+      return { orderId: null, armedQuantity: 0 }
     }
     if (!Number.isFinite(triggerPrice) || triggerPrice <= 0) {
       console.error(`${tag} REJECTED LOCALLY: invalid triggerPrice=${triggerPrice} (must be finite, >0)`)
-      return null
+      return { orderId: null, armedQuantity: 0 }
     }
 
     // A reduce-only protection quantity must never exceed authoritative
@@ -6247,13 +6264,14 @@ async function placeProtectionOrder(
     // legitimately-zero (or zero-string) id for "no order placed". The
     // venues we support never issue id=0 in practice, but the coercion
     // keeps the type contract identical across connectors.
-    const rawId = result?.success ? (result.orderId ?? result.id) : null
-    const orderId = rawId !== null && rawId !== undefined && String(rawId).length > 0 ? String(rawId) : null
+    const orderId = result?.success
+      ? firstNonEmptyIdentifier(result?.orderId, result?.orderID, result?.id, result?.ordId) || null
+      : null
     if (orderId) {
       console.log(
         `${tag} PLACED: orderId=${orderId} @ trigger=${triggerPrice} qty=${effectiveQty}${effectiveQty !== quantity ? ` (requested=${quantity}, adjusted)` : ""} latency=${latencyMs}ms`,
       )
-      return orderId
+      return { orderId, armedQuantity: effectiveQty }
     }
     // code=110412 / 110413: "SL price must be > current price" (for long SL placed above mark)
     // or "TP price must be < current price" (for short TP placed above mark after a spike).
@@ -6267,7 +6285,7 @@ async function placeProtectionOrder(
       console.warn(
         `${tag} PRICE_CROSSED (code=${is110412 ? "110412" : "110413"}): market moved past ${kind} trigger — position will be force-closed`,
       )
-      return "PRICE_CROSSED"
+      return { orderId: "PRICE_CROSSED", armedQuantity: 0 }
     }
     // code=110206: "The number of your TP/SL orders has exceeded the limit."
     // The account's open protection-order quota is full. Retrying immediately
@@ -6278,19 +6296,19 @@ async function placeProtectionOrder(
       // connectionId is not in scope here; the caller (updateProtectionOrders)
       // reads the sentinel and calls markProtectionQuotaExhausted(connId).
       console.warn(`${tag} QUOTA_EXCEEDED (code=110206): TP/SL order limit reached — caller will suspend placement`)
-      return "QUOTA_EXCEEDED"
+      return { orderId: "QUOTA_EXCEEDED", armedQuantity: 0 }
     }
     // result.error is the connector's normalized venue-side message.
     // Log verbatim so operators see the EXACT venue rejection.
     console.warn(
       `${tag} VENUE REJECTED: error="${result?.error || "unknown"}" code=${result?.code ?? "n/a"} latency=${latencyMs}ms`,
     )
-    return null
+    return { orderId: null, armedQuantity: 0 }
   } catch (err) {
     const latencyMs = Date.now() - placeStart
     const msg = err instanceof Error ? err.message : String(err)
     console.warn(`${tag} EXCEPTION: ${msg} latency=${latencyMs}ms`)
-    return null
+    return { orderId: null, armedQuantity: 0 }
   }
 }
 
@@ -6364,19 +6382,17 @@ async function fetchLiveOrderIdSet(
       // real numeric ID is present on the order — otherwise a future client-ID
       // echo from the connector could mask a genuinely-missing real orderId and
       // suppress liveness-based re-arming of a gone SL/TP order.
-      const realId = o?.id ?? o?.orderId ?? o?.orderID
-      if (realId != null && String(realId).length > 0) {
-        set.add(String(realId))
-        // Also add the secondary form so both "1234" and "orderId:1234" styles
-        // that different connectors might store on the position are matched.
-        if (o?.orderId != null && String(o.orderId) !== String(realId)) set.add(String(o.orderId))
-        if (o?.id     != null && String(o.id)      !== String(realId)) set.add(String(o.id))
+      for (const candidate of [o?.id, o?.orderId, o?.orderID, o?.ordId]) {
+        const identifier = firstNonEmptyIdentifier(candidate)
+        if (identifier) set.add(identifier)
       }
       // Keep the client id alongside the venue id. Durable submissions are
       // written under this id before the HTTP request, so restart recovery can
       // resolve a response-lost order without issuing a duplicate.
-      const fallback = o?.clientOrderId ?? o?.clientOrderID ?? o?.client_oid
-      if (fallback != null && String(fallback).length > 0) set.add(String(fallback))
+      for (const candidate of [o?.clientOrderId, o?.clientOrderID, o?.client_oid, o?.clOrdId]) {
+        const identifier = firstNonEmptyIdentifier(candidate)
+        if (identifier) set.add(identifier)
+      }
     }
     set.observedOrderCount = orders.length
     if (isBingXCapacityConnector(connector)) {
@@ -6891,6 +6907,81 @@ function releaseProtectionCapacityReservation(
   pos.controlOrderCapacity = budget.snapshot()
 }
 
+function protectionLegArmedQuantity(pos: LivePosition, leg: ProtectionOrderLeg): number {
+  const rawSpecific = leg === "stop_loss"
+    ? pos.stopLossArmedQuantity
+    : pos.takeProfitArmedQuantity
+  if (rawSpecific !== undefined && rawSpecific !== null) {
+    const specific = Number(rawSpecific)
+    if (Number.isFinite(specific)) return specific > 0 ? specific : 0
+  }
+  const legacy = Number(pos.protectionArmedQuantity)
+  return Number.isFinite(legacy) && legacy > 0 ? legacy : 0
+}
+
+function refreshLegacyProtectionArmedQuantity(pos: LivePosition): void {
+  const quantities: number[] = []
+  if (pos.stopLossOrderId) {
+    quantities.push(protectionLegArmedQuantity(pos, "stop_loss"))
+  }
+  if (pos.takeProfitOrderId) {
+    quantities.push(protectionLegArmedQuantity(pos, "take_profit"))
+  }
+  pos.protectionArmedQuantity = quantities.length > 0 ? Math.min(...quantities) : 0
+}
+
+function setProtectionLegArmedQuantity(
+  pos: LivePosition,
+  leg: ProtectionOrderLeg,
+  quantity: number,
+): void {
+  const normalized = Number.isFinite(Number(quantity)) && Number(quantity) > 0
+    ? Number(quantity)
+    : 0
+  if (leg === "stop_loss") pos.stopLossArmedQuantity = normalized
+  else pos.takeProfitArmedQuantity = normalized
+  refreshLegacyProtectionArmedQuantity(pos)
+}
+
+function controlOrderRequestedQuantity(order: any, fallback: number): number {
+  const quantity = Number(
+    order?.quantity
+    ?? order?.origQty
+    ?? order?.orderQty
+    ?? order?.qty
+    ?? order?.size
+    ?? order?.amount
+    ?? 0,
+  )
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : fallback
+}
+
+function clearMissingProtectionOrderIds(
+  pos: LivePosition,
+  liveOrderIds: Set<string> | null | undefined,
+  result: { changed: boolean },
+): void {
+  if (!liveOrderIds) return
+  if (pos.stopLossOrderId && !liveOrderIds.has(String(pos.stopLossOrderId))) {
+    console.log(
+      `${LOG_PREFIX} [verify] StopLoss ${pos.symbol} orderId=${pos.stopLossOrderId} not found on venue — clearing & re-arming`,
+    )
+    pos.stopLossOrderId = undefined
+    pos.stopLossPrice = 0
+    setProtectionLegArmedQuantity(pos, "stop_loss", 0)
+    result.changed = true
+  }
+  if (pos.takeProfitOrderId && !liveOrderIds.has(String(pos.takeProfitOrderId))) {
+    console.log(
+      `${LOG_PREFIX} [verify] TakeProfit ${pos.symbol} orderId=${pos.takeProfitOrderId} not found on venue — clearing & re-arming`,
+    )
+    pos.takeProfitOrderId = undefined
+    pos.takeProfitPrice = 0
+    setProtectionLegArmedQuantity(pos, "take_profit", 0)
+    result.changed = true
+  }
+}
+
 async function updateProtectionOrders(
   connector: any,
   pos: LivePosition,
@@ -7007,6 +7098,11 @@ async function updateProtectionOrders(
   }
   if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
 
+  // Liveness is an observation, not a venue mutation. Apply it before quota
+  // and trigger-frequency backoff gates so a silently filled/cancelled leg is
+  // immediately represented as system-side protection during the backoff.
+  clearMissingProtectionOrderIds(pos, liveOrderIds, result)
+
   // ── code=110206 quota backoff gate ────────────────────────────────
   // When the account's TP/SL order count has hit the exchange cap, all
   // placement attempts are suspended for PROTECTION_QUOTA_BACKOFF_MS.
@@ -7058,12 +7154,14 @@ async function updateProtectionOrders(
         capacityBudget?.noteCancellation(pos.stopLossOrderId)
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
+        setProtectionLegArmedQuantity(pos, "stop_loss", 0)
         result.changed = true
       }
       if (pos.takeProfitOrderId && cancellations[1]) {
         capacityBudget?.noteCancellation(pos.takeProfitOrderId)
         pos.takeProfitOrderId = undefined
         pos.takeProfitPrice = 0
+        setProtectionLegArmedQuantity(pos, "take_profit", 0)
         result.changed = true
       }
       if (!cancellations.every(Boolean)) {
@@ -7092,25 +7190,6 @@ async function updateProtectionOrders(
   //   • Operator manually cancelled via the venue UI
   // Clearing the local id forces the placement branch below to re-arm
   // the leg in the same reconcile tick.
-  if (liveOrderIds && liveOrderIds.size >= 0) {
-    if (pos.stopLossOrderId && !liveOrderIds.has(String(pos.stopLossOrderId))) {
-      console.log(
-        `${LOG_PREFIX} [verify] StopLoss ${pos.symbol} orderId=${pos.stopLossOrderId} not found on venue — clearing & re-arming`,
-      )
-      pos.stopLossOrderId = undefined
-      pos.stopLossPrice = 0
-      result.changed = true
-    }
-    if (pos.takeProfitOrderId && !liveOrderIds.has(String(pos.takeProfitOrderId))) {
-      console.log(
-        `${LOG_PREFIX} [verify] TakeProfit ${pos.symbol} orderId=${pos.takeProfitOrderId} not found on venue — clearing & re-arming`,
-      )
-      pos.takeProfitOrderId = undefined
-      pos.takeProfitPrice = 0
-      result.changed = true
-    }
-  }
-
   const closeSide: "buy" | "sell" = pos.direction === "long" ? "sell" : "buy"
   const priceDriftTolerance = pos.trailingActive ? 0.0001 : 0.0025
 
@@ -7133,7 +7212,12 @@ async function updateProtectionOrders(
     const terminalStatuses = new Set([
       "cancelled", "canceled", "rejected", "expired", "filled", "closed",
     ])
-    const recoveredOrderId = recovered?.orderId ?? recovered?.id
+    const recoveredOrderId = firstNonEmptyIdentifier(
+      recovered?.orderId,
+      recovered?.orderID,
+      recovered?.id,
+      recovered?.ordId,
+    )
 
     if (recoveredOrderId != null && !terminalStatuses.has(recoveredStatus)) {
       const orderId = String(recoveredOrderId)
@@ -7146,7 +7230,11 @@ async function updateProtectionOrders(
         pos.takeProfitPrice = pending.triggerPrice
         pos.takeProfitLastArmedAt = Date.now()
       }
-      pos.protectionArmedQuantity = pending.quantity
+      setProtectionLegArmedQuantity(
+        pos,
+        leg === "stopLoss" ? "stop_loss" : "take_profit",
+        controlOrderRequestedQuantity(recovered, pending.quantity),
+      )
       delete pos.pendingProtectionOrders?.[leg]
       result.changed = true
       pushStep(pos, "protection_submission_recovered", true, `${leg} orderId=${orderId}`)
@@ -7155,6 +7243,11 @@ async function updateProtectionOrders(
 
     if (recovered && terminalStatuses.has(recoveredStatus)) {
       delete pos.pendingProtectionOrders?.[leg]
+      setProtectionLegArmedQuantity(
+        pos,
+        leg === "stopLoss" ? "stop_loss" : "take_profit",
+        0,
+      )
       result.changed = true
       pushStep(pos, "protection_submission_terminal", true, `${leg} status=${recoveredStatus}`)
       // A filled/closed control order may have changed the authoritative
@@ -7206,15 +7299,15 @@ async function updateProtectionOrders(
   // a partial-fill increase would silently NOT re-arm. Coerce to a
   // finite number first, treating non-finite or non-positive armed
   // quantities as "never armed" (forces re-arm).
-  const armedQtyRaw = pos.protectionArmedQuantity
-  const armedQty =
-    typeof armedQtyRaw === "number" && Number.isFinite(armedQtyRaw) && armedQtyRaw > 0
-      ? armedQtyRaw
-      : 0
-  const qtyDrifted =
-    effectiveQty > 0 &&
-    (armedQty <= 0 ||
-      Math.abs(effectiveQty - armedQty) / Math.max(armedQty, 1e-12) > 0.0025)
+  const quantityDriftedForLeg = (leg: ProtectionOrderLeg): boolean => {
+    const armedQty = protectionLegArmedQuantity(pos, leg)
+    return effectiveQty > 0 && (
+      armedQty <= 0
+      || Math.abs(effectiveQty - armedQty) / Math.max(armedQty, 1e-12) > 0.0025
+    )
+  }
+  const stopLossQuantityDrifted = quantityDriftedForLeg("stop_loss")
+  const takeProfitQuantityDrifted = quantityDriftedForLeg("take_profit")
 
   // A replacement is a two-step exchange operation: cancel first, then place.
   // Evaluate the cooldown *before* either cancellation starts. Previously the
@@ -7229,14 +7322,14 @@ async function updateProtectionOrders(
     desiredSl > 0 &&
     !pendingSlBlocksPlacement &&
     pos.stopLossOrderId &&
-    (priceDrifted(pos.stopLossPrice, desiredSl, priceDriftTolerance) || qtyDrifted) &&
+    (priceDrifted(pos.stopLossPrice, desiredSl, priceDriftTolerance) || stopLossQuantityDrifted) &&
     Date.now() - (pos.stopLossLastArmedAt ?? 0) >= rearmCooldownMs,
   )
   const needsTakeProfitReplacement = Boolean(
     desiredTp > 0 &&
     !pendingTpBlocksPlacement &&
     pos.takeProfitOrderId &&
-    (priceDrifted(pos.takeProfitPrice, desiredTp, priceDriftTolerance) || qtyDrifted) &&
+    (priceDrifted(pos.takeProfitPrice, desiredTp, priceDriftTolerance) || takeProfitQuantityDrifted) &&
     Date.now() - (pos.takeProfitLastArmedAt ?? 0) >= rearmCooldownMs,
   )
 
@@ -7303,6 +7396,7 @@ async function updateProtectionOrders(
         capacityBudget?.noteCancellation(cancelledOrderId)
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
+        setProtectionLegArmedQuantity(pos, "stop_loss", 0)
         result.changed = true
       }
     } else if (
@@ -7360,6 +7454,7 @@ async function updateProtectionOrders(
         // failure cannot leave a phantom "armed" stop in Redis.
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
+        setProtectionLegArmedQuantity(pos, "stop_loss", 0)
         result.changed = true
       }
       const reservation = reserveProtectionCapacity(capacityBudget, pos, "stop_loss")
@@ -7373,7 +7468,7 @@ async function updateProtectionOrders(
         desiredSl,
         effectiveQty,
       )
-      const id = await placeProtectionOrder(
+      const placement = await placeProtectionOrder(
         connector,
         pos.symbol,
         closeSide,
@@ -7383,6 +7478,7 @@ async function updateProtectionOrders(
         pos.direction!,
         protectionClientOrderId,
       )
+      const id = placement.orderId
       // Only treat the leg as "armed at desiredSl" when we actually
       // have a confirmed numeric order id (not the "PRICE_CROSSED" sentinel
       // which means market already blew past the SL and a force-close should
@@ -7397,6 +7493,7 @@ async function updateProtectionOrders(
         releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
         pos.protectionMode = "system_close_fallback"
         setSystemProtectionLeg(pos, "stop_loss", true)
+        setProtectionLegArmedQuantity(pos, "stop_loss", 0)
         if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
         result.changed = true
         pushStep(pos, "protection_quota_system_fallback", true, "SL quota exhausted; using system-side trigger handling")
@@ -7404,6 +7501,7 @@ async function updateProtectionOrders(
         pos.stopLossOrderId = id!
         pos.stopLossPrice = desiredSl
         pos.stopLossLastArmedAt = Date.now()
+        setProtectionLegArmedQuantity(pos, "stop_loss", placement.armedQuantity)
         result.changed = true
         result.slPlaced = true
         setSystemProtectionLeg(pos, "stop_loss", false)
@@ -7413,6 +7511,7 @@ async function updateProtectionOrders(
         releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
+        setProtectionLegArmedQuantity(pos, "stop_loss", 0)
       }
     }
   })()
@@ -7425,6 +7524,7 @@ async function updateProtectionOrders(
         capacityBudget?.noteCancellation(cancelledOrderId)
         pos.takeProfitOrderId = undefined
         pos.takeProfitPrice = 0
+        setProtectionLegArmedQuantity(pos, "take_profit", 0)
         result.changed = true
       }
     } else if (
@@ -7457,6 +7557,7 @@ async function updateProtectionOrders(
         if (replacedOrderId) capacityBudget?.noteCancellation(replacedOrderId)
         pos.takeProfitOrderId = undefined
         pos.takeProfitPrice = 0
+        setProtectionLegArmedQuantity(pos, "take_profit", 0)
         result.changed = true
       }
       const reservation = reserveProtectionCapacity(capacityBudget, pos, "take_profit")
@@ -7470,7 +7571,7 @@ async function updateProtectionOrders(
         desiredTp,
         effectiveQty,
       )
-      const id = await placeProtectionOrder(
+      const placement = await placeProtectionOrder(
         connector,
         pos.symbol,
         closeSide,
@@ -7480,6 +7581,7 @@ async function updateProtectionOrders(
         pos.direction!,
         protectionClientOrderId,
       )
+      const id = placement.orderId
       const tpIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted" && id !== "QUOTA_EXCEEDED"
       if (id === "QUOTA_EXCEEDED") {
         // Mirror of the SL leg: preserve the fact that the venue order is
@@ -7489,6 +7591,7 @@ async function updateProtectionOrders(
         releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
         pos.protectionMode = "system_close_fallback"
         setSystemProtectionLeg(pos, "take_profit", true)
+        setProtectionLegArmedQuantity(pos, "take_profit", 0)
         if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.takeProfit
         result.changed = true
         pushStep(pos, "protection_quota_system_fallback", true, "TP quota exhausted; using system-side trigger handling")
@@ -7496,6 +7599,7 @@ async function updateProtectionOrders(
         pos.takeProfitOrderId = id!
         pos.takeProfitPrice = desiredTp
         pos.takeProfitLastArmedAt = Date.now()
+        setProtectionLegArmedQuantity(pos, "take_profit", placement.armedQuantity)
         result.changed = true
         result.tpPlaced = true
         setSystemProtectionLeg(pos, "take_profit", false)
@@ -7505,6 +7609,7 @@ async function updateProtectionOrders(
         releaseProtectionCapacityReservation(capacityBudget, pos, reservation.reservationId)
         pos.takeProfitOrderId = undefined
         pos.takeProfitPrice = 0
+        setProtectionLegArmedQuantity(pos, "take_profit", 0)
       }
     }
   })()
@@ -7523,15 +7628,11 @@ async function updateProtectionOrders(
     })
   })
 
-  // Record the qty we armed for only when at least one leg was actually
-  // (re-)placed on the exchange. A liveness-verify clear sets result.changed
-  // but may not result in a successful placement (venue reject, timeout).
-  // Stamping the baseline from a failed placement tells the drift-detector
-  // "this qty is protected" when it is unprotected, suppressing re-arm on
-  // the next tick. We keep result.changed for the pushStep / save path below.
-  if (result.slPlaced || result.tpPlaced) {
-    pos.protectionArmedQuantity = effectiveQty
-  }
+  // Each successful leg records the exact quantity accepted by the venue.
+  // Keep the legacy aggregate as the smaller active leg so old readers remain
+  // conservative and can never mistake a quantity-adjusted order for full
+  // coverage. Failed/missing legs do not contribute a protected baseline.
+  refreshLegacyProtectionArmedQuantity(pos)
   refreshProtectionHandlingMode(pos, desiredSl, desiredTp)
   if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
 
@@ -7627,11 +7728,13 @@ async function demoteAggregateProtectionMember(
   if (position.stopLossOrderId && slCancelled) {
     position.stopLossOrderId = undefined
     position.stopLossPrice = 0
+    setProtectionLegArmedQuantity(position, "stop_loss", 0)
     changed = true
   }
   if (position.takeProfitOrderId && tpCancelled) {
     position.takeProfitOrderId = undefined
     position.takeProfitPrice = 0
+    setProtectionLegArmedQuantity(position, "take_profit", 0)
     changed = true
   }
   position.aggregateProtectionOwner = false
@@ -10095,7 +10198,7 @@ export async function executeLivePosition(
       const tpClientOrderId = tpPrice > 0 && !livePosition.takeProfitOrderId && tpCapacity.allowed
         ? await prepareProtectionSubmission(livePosition, "takeProfit", tpPrice, livePosition.executedQuantity)
         : undefined
-      const [slOrderId, tpOrderId] = await Promise.all([
+      const [slPlacement, tpPlacement] = await Promise.all([
         (slPrice > 0 && !livePosition.stopLossOrderId && slCapacity.allowed)
           ? placeProtectionOrder(
               exchangeConnector,
@@ -10107,7 +10210,12 @@ export async function executeLivePosition(
               realPosition.direction,
               slClientOrderId,
             )
-          : Promise.resolve(livePosition.stopLossOrderId || (slPrice > 0 ? "SYSTEM_FALLBACK" : null)),
+          : Promise.resolve({
+              orderId: livePosition.stopLossOrderId || (slPrice > 0 ? "SYSTEM_FALLBACK" : null),
+              armedQuantity: livePosition.stopLossOrderId
+                ? protectionLegArmedQuantity(livePosition, "stop_loss")
+                : 0,
+            }),
         (tpPrice > 0 && !livePosition.takeProfitOrderId && tpCapacity.allowed)
           ? placeProtectionOrder(
               exchangeConnector,
@@ -10119,8 +10227,15 @@ export async function executeLivePosition(
               realPosition.direction,
               tpClientOrderId,
             )
-          : Promise.resolve(livePosition.takeProfitOrderId || (tpPrice > 0 ? "SYSTEM_FALLBACK" : null)),
+          : Promise.resolve({
+              orderId: livePosition.takeProfitOrderId || (tpPrice > 0 ? "SYSTEM_FALLBACK" : null),
+              armedQuantity: livePosition.takeProfitOrderId
+                ? protectionLegArmedQuantity(livePosition, "take_profit")
+                : 0,
+            }),
       ])
+      const slOrderId = slPlacement.orderId
+      const tpOrderId = tpPlacement.orderId
 
       // "PRICE_CROSSED" sentinel: market moved past the protection price between
       // calculation and placement (BingX 110412/110413). Force-close immediately
@@ -10163,10 +10278,12 @@ export async function executeLivePosition(
       if (slIdValid) {
         livePosition.stopLossOrderId = slOrderId!
         livePosition.stopLossPrice = slPrice
+        setProtectionLegArmedQuantity(livePosition, "stop_loss", slPlacement.armedQuantity)
         if (livePosition.pendingProtectionOrders) delete livePosition.pendingProtectionOrders.stopLoss
         setSystemProtectionLeg(livePosition, "stop_loss", false)
       } else {
         releaseProtectionCapacityReservation(initialCapacityBudget, livePosition, slCapacity.reservationId)
+        setProtectionLegArmedQuantity(livePosition, "stop_loss", 0)
       }
       if (slPrice > 0 && slOrderId !== "QUOTA_EXCEEDED" && slOrderId !== "SYSTEM_FALLBACK" && !slIdValid) {
         // Surface the protection gap loudly so operators and the
@@ -10186,10 +10303,12 @@ export async function executeLivePosition(
       if (tpIdValid) {
         livePosition.takeProfitOrderId = tpOrderId!
         livePosition.takeProfitPrice = tpPrice
+        setProtectionLegArmedQuantity(livePosition, "take_profit", tpPlacement.armedQuantity)
         if (livePosition.pendingProtectionOrders) delete livePosition.pendingProtectionOrders.takeProfit
         setSystemProtectionLeg(livePosition, "take_profit", false)
       } else {
         releaseProtectionCapacityReservation(initialCapacityBudget, livePosition, tpCapacity.reservationId)
+        setProtectionLegArmedQuantity(livePosition, "take_profit", 0)
       }
       if (tpPrice > 0 && tpOrderId !== "QUOTA_EXCEEDED" && tpOrderId !== "SYSTEM_FALLBACK" && !tpIdValid) {
         console.error(
@@ -10214,7 +10333,7 @@ export async function executeLivePosition(
       // reconcile would treat the position as "armed for current qty"
       // and never retry the failed legs because qtyDrifted is false.
       if (slIdValid || tpIdValid) {
-        livePosition.protectionArmedQuantity = livePosition.executedQuantity
+        refreshLegacyProtectionArmedQuantity(livePosition)
         // Prime the cooldown so the first 30 s of reconcile ticks cannot
         // drift-cancel-replace orders we just placed milliseconds ago.
         const nowMs = Date.now()
@@ -10679,10 +10798,12 @@ async function settleControlOrdersBeforeSystemClose(
   if (!liveOrderIds || !position.stopLossOrderId || !liveOrderIds.has(position.stopLossOrderId)) {
     position.stopLossOrderId = undefined
     position.stopLossPrice = 0
+    setProtectionLegArmedQuantity(position, "stop_loss", 0)
   }
   if (!liveOrderIds || !position.takeProfitOrderId || !liveOrderIds.has(position.takeProfitOrderId)) {
     position.takeProfitOrderId = undefined
     position.takeProfitPrice = 0
+    setProtectionLegArmedQuantity(position, "take_profit", 0)
   }
 
   authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
@@ -10875,6 +10996,8 @@ async function settleControlOrdersBeforeQuantityMutation(
   position.takeProfitOrderId = undefined
   position.stopLossPrice = 0
   position.takeProfitPrice = 0
+  position.stopLossArmedQuantity = 0
+  position.takeProfitArmedQuantity = 0
   position.protectionArmedQuantity = 0
 
   const localQuantity = Math.max(0, Number(position.executedQuantity || 0))
@@ -11520,8 +11643,14 @@ export async function closeLivePosition(
           // If the sweep cleaned up the recorded ids' leftovers, clear
           // the local fields too — at this point there is nothing on
           // the venue tied to those ids.
-          if (hadSlId && !slCancelled) position.stopLossOrderId = undefined
-          if (hadTpId && !tpCancelled) position.takeProfitOrderId = undefined
+          if (hadSlId && !slCancelled) {
+            position.stopLossOrderId = undefined
+            setProtectionLegArmedQuantity(position, "stop_loss", 0)
+          }
+          if (hadTpId && !tpCancelled) {
+            position.takeProfitOrderId = undefined
+            setProtectionLegArmedQuantity(position, "take_profit", 0)
+          }
           pushStep(
             position,
             "orphan_sweep",
@@ -12890,6 +13019,8 @@ export async function reconcileLivePositions(
             await Promise.all(cancellations).catch(() => {})
             pos.stopLossOrderId = undefined
             pos.takeProfitOrderId = undefined
+            setProtectionLegArmedQuantity(pos, "stop_loss", 0)
+            setProtectionLegArmedQuantity(pos, "take_profit", 0)
           }
 
           // ── Do NOT call closePosition on the exchange here ────────────
@@ -15025,6 +15156,7 @@ export async function syncLiveFromPseudo(
 
 export const __liveStageTest = {
   liveExecutionSlot,
+  isActiveLiveSlotStatus,
   resolveConfirmedStrategyVariant,
   clearLiveTickerCache() {
     liveTickerCache.clear()
@@ -15052,7 +15184,12 @@ export const __liveStageTest = {
   reconcileAuthoritativeExchangeQuantity,
   physicalAccumulationCount,
   sweepOrphanProtectionOrders,
+  fetchLiveOrderIdSet,
+  placeProtectionOrder,
   updateProtectionOrders,
+  protectionLegArmedQuantity,
+  setProtectionLegArmedQuantity,
+  clearMissingProtectionOrderIds,
   resolvePseudoProtectionPercents,
   isTrailingStopTightening,
   isPreFillWithoutExchangeHandle,

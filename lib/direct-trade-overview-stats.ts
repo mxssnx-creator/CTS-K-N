@@ -59,8 +59,18 @@ const CATEGORY_ORDER: DirectTradeOverviewCategory[] = [
 ]
 
 function finite(value: unknown): number | null {
+  if (value === undefined || value === null || typeof value === "boolean") return null
+  if (typeof value === "string" && value.trim() === "") return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function firstFinite(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = finite(value)
+    if (parsed !== null) return parsed
+  }
+  return null
 }
 
 function timestamp(value: unknown): number | null {
@@ -149,25 +159,35 @@ export function directTradeOverviewCategory(
   return "general"
 }
 
+export function resolveDirectTradeSettledExchangePnlUsdt(
+  position: UnknownPosition,
+): number | null {
+  // Direct-Trade live accounting is deliberately stricter than the generic
+  // legacy live-position projection: only an explicit completed settlement is
+  // allowed into money-denominated PF/PnL statistics.
+  if (position.pnlAccountingComplete !== true) return null
+  return firstFinite(
+    position.realizedPnlUsdt,
+    position.realizedPnLUsdt,
+    position.realized_pnl_usdt,
+  )
+}
+
 function canonicalUsdtPnl(position: UnknownPosition): number | null {
-  if (overviewMode(position) === "exchange" && position.pnlAccountingComplete === false) {
-    return null
+  if (overviewMode(position) === "exchange") {
+    return resolveDirectTradeSettledExchangePnlUsdt(position)
   }
-  const explicit = finite(
-    position.realizedPnlUsdt ??
-    position.realizedPnLUsdt ??
+  const explicit = firstFinite(
+    position.realizedPnlUsdt,
+    position.realizedPnLUsdt,
     position.realized_pnl_usdt,
   )
   if (explicit !== null) return explicit
 
-  // Exchange accounting is authoritative only when it came from venue fills
-  // or closed-PnL settlement. Never reconstruct live money from a configured
-  // percentage/notional pair.
-  if (overviewMode(position) === "exchange") return null
-
-  const pnlPercent = finite(position.pnl ?? position.pnlPercent)
-  const baseNotional = finite(
-    position.baseEntryNotionalUsdt ?? position.initialEntryNotionalUsdt,
+  const pnlPercent = firstFinite(position.pnl, position.pnlPercent)
+  const baseNotional = firstFinite(
+    position.baseEntryNotionalUsdt,
+    position.initialEntryNotionalUsdt,
   )
   if (pnlPercent !== null && baseNotional !== null && baseNotional > 0) {
     return baseNotional * pnlPercent / 100
@@ -176,7 +196,7 @@ function canonicalUsdtPnl(position: UnknownPosition): number | null {
 }
 
 function percentPnl(position: UnknownPosition): number {
-  return finite(position.pnl ?? position.pnlPercent) ?? 0
+  return firstFinite(position.pnl, position.pnlPercent) ?? 0
 }
 
 function calculateDrawdownDurations(

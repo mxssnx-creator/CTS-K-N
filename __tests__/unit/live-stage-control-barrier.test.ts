@@ -59,6 +59,12 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("keeps closing and partially-closing exposure in the occupied execution slot", () => {
+    expect(__liveStageTest.isActiveLiveSlotStatus("closing")).toBe(true)
+    expect(__liveStageTest.isActiveLiveSlotStatus(" CLOSING_PARTIAL ")).toBe(true)
+    expect(__liveStageTest.isActiveLiveSlotStatus("closed")).toBe(false)
+  })
+
   test("keeps observing the same timed-out protection write and accepts its late acknowledgement", async () => {
     const placementPromise = new Promise((resolve) => {
       setTimeout(() => resolve({ success: true, orderId: 123456 }), 10)
@@ -330,6 +336,119 @@ describe("executing Live-stage control barriers", () => {
     expect(exchange.placeStopOrder).not.toHaveBeenCalled()
     expect(position.stopLossOrderId).toBe("sl-1")
     expect(position.stopLossPrice).toBe(98)
+  })
+
+  test("records the actual BingX quantity after a 110424 protection retry", async () => {
+    const placeStopOrder = jest
+      .fn()
+      .mockResolvedValueOnce({
+        success: false,
+        error: "BingX stop order error (code=110424): The order size must be less than the available amount of 0.4 BTC",
+      })
+      .mockResolvedValueOnce({ success: true, orderId: "adjusted-sl" })
+    const exchange = connector({ placeStopOrder })
+
+    await expect(__liveStageTest.placeProtectionOrder(
+      exchange,
+      "BTCUSDT",
+      "sell",
+      1,
+      95,
+      "StopLoss",
+      "long",
+      "cts-sl-adjusted",
+    )).resolves.toEqual({ orderId: "adjusted-sl", armedQuantity: 0.4 })
+
+    expect(placeStopOrder).toHaveBeenNthCalledWith(
+      1,
+      "BTCUSDT",
+      "sell",
+      1,
+      95,
+      "stop_loss",
+      expect.objectContaining({ clientOrderId: "cts-sl-adjusted", positionSide: "LONG", reduceOnly: true }),
+    )
+    expect(placeStopOrder).toHaveBeenNthCalledWith(
+      2,
+      "BTCUSDT",
+      "sell",
+      0.4,
+      95,
+      "stop_loss",
+      expect.objectContaining({ clientOrderId: "cts-sl-adjusted", positionSide: "LONG", reduceOnly: true }),
+    )
+  })
+
+  test("tracks stop-loss and take-profit armed quantities independently", () => {
+    const position = livePosition({
+      takeProfitOrderId: "tp-1",
+      takeProfitPrice: 110,
+      protectionArmedQuantity: 1,
+      stopLossArmedQuantity: undefined,
+      takeProfitArmedQuantity: undefined,
+    })
+
+    __liveStageTest.setProtectionLegArmedQuantity(position, "stop_loss", 0.4)
+    __liveStageTest.setProtectionLegArmedQuantity(position, "take_profit", 1)
+
+    expect(__liveStageTest.protectionLegArmedQuantity(position, "stop_loss")).toBe(0.4)
+    expect(__liveStageTest.protectionLegArmedQuantity(position, "take_profit")).toBe(1)
+    expect(position.protectionArmedQuantity).toBe(0.4)
+
+    // An explicit zero means this venue leg is not armed. It must not inherit
+    // the sibling leg's quantity from the legacy aggregate field.
+    __liveStageTest.setProtectionLegArmedQuantity(position, "stop_loss", 0)
+    expect(__liveStageTest.protectionLegArmedQuantity(position, "stop_loss")).toBe(0)
+    expect(position.protectionArmedQuantity).toBe(0)
+
+    __liveStageTest.setProtectionLegArmedQuantity(position, "stop_loss", 1)
+    expect(position.protectionArmedQuantity).toBe(1)
+  })
+
+  test("clears silently missing protection ids and their covered quantities", () => {
+    const position = livePosition({
+      takeProfitOrderId: "tp-1",
+      takeProfitPrice: 110,
+      stopLossArmedQuantity: 0.4,
+      takeProfitArmedQuantity: 1,
+      protectionArmedQuantity: 0.4,
+    })
+    const result = { changed: false }
+
+    __liveStageTest.clearMissingProtectionOrderIds(position, new Set(["tp-1"]), result)
+
+    expect(result.changed).toBe(true)
+    expect(position.stopLossOrderId).toBeUndefined()
+    expect(position.stopLossPrice).toBe(0)
+    expect(position.stopLossArmedQuantity).toBe(0)
+    expect(position.takeProfitOrderId).toBe("tp-1")
+    expect(position.takeProfitArmedQuantity).toBe(1)
+    expect(position.protectionArmedQuantity).toBe(1)
+
+    result.changed = false
+    __liveStageTest.clearMissingProtectionOrderIds(position, new Set(), result)
+    expect(result.changed).toBe(true)
+    expect(position.takeProfitOrderId).toBeUndefined()
+    expect(position.takeProfitArmedQuantity).toBe(0)
+    expect(position.protectionArmedQuantity).toBe(0)
+  })
+
+  test("keeps every non-empty venue and client id alias in the liveness snapshot", async () => {
+    const exchange = connector({
+      getOpenOrders: jest.fn(async () => [{
+        id: "",
+        orderId: "venue-sl-alias",
+        clientOrderId: "",
+        clientOrderID: "client-sl-alias",
+        type: "STOP_MARKET",
+      }]),
+    })
+
+    const ids = await __liveStageTest.fetchLiveOrderIdSet(exchange)
+
+    expect(ids).not.toBeNull()
+    expect([...ids!]).toEqual(expect.arrayContaining(["venue-sl-alias", "client-sl-alias"]))
+    expect(ids?.observedOrderCount).toBe(1)
   })
 
   test("gives every Base-parent Pos-Count row its own direction-preserving slot", () => {

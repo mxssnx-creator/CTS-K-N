@@ -1,3 +1,5 @@
+import { isRealizedPnlAccountingPending } from "@/lib/live-position-pnl"
+
 /** Bounded transport page; the durable history itself is never truncated. */
 export const TRADE_HISTORY_PAGE_SIZE = 500
 export const MAX_TRADE_HISTORY_PAGE_SIZE = 1_000
@@ -188,6 +190,8 @@ function normalizeTimestamp(raw: unknown): number {
 
 function firstFinite(...values: unknown[]): number {
   for (const value of values) {
+    if (value === undefined || value === null || typeof value === "boolean") continue
+    if (typeof value === "string" && value.trim() === "") continue
     const parsed = Number(value)
     if (Number.isFinite(parsed)) return parsed
   }
@@ -196,6 +200,8 @@ function firstFinite(...values: unknown[]): number {
 
 function firstPositive(...values: unknown[]): number {
   for (const value of values) {
+    if (value === undefined || value === null || typeof value === "boolean") continue
+    if (typeof value === "string" && value.trim() === "") continue
     const parsed = Number(value)
     if (Number.isFinite(parsed) && parsed > 0) return parsed
   }
@@ -315,6 +321,7 @@ export interface LocalTradeHistorySnapshotClassification {
     | "missing_identity"
     | "missing_entry_price"
     | "missing_exit_and_pnl"
+    | "venue_accounting_incomplete"
     | "venue_accounting_required"
   row: TradeHistoryRow | null
 }
@@ -420,7 +427,28 @@ export function classifyLocalTradeHistorySnapshot(
   const direction: "long" | "short" = String(position.direction ?? position.side).toLowerCase().includes("short")
     ? "short"
     : "long"
-  const hasStoredPnl = [position.grossPnl, position.realizedPnL, position.realizedPnl, position.pnl]
+  const exchangeData = position.exchangeData && typeof position.exchangeData === "object" ? position.exchangeData : {}
+  const positionId = String(
+    exchangeData.exchangePositionId ?? exchangeData.positionId ?? position.exchangePositionId ?? "",
+  ).trim()
+  const executionMode = String(position.executionMode || "").trim().toLowerCase()
+  const positionMode = String(position.mode || "").trim().toLowerCase()
+  const environment: "exchange" | "simulated" =
+    String(position.environment || "").trim().toLowerCase() === "simulated" ||
+    executionMode === "simulation" ||
+    ["simulation", "simulated", "paper"].includes(positionMode) ||
+    position.simulated === true ||
+    position.simulated === "1" ||
+    /paper|simulat|live_trade disabled/i.test(
+      String(position.statusReason || position.closeReason || ""),
+    )
+      ? "simulated"
+      : "exchange"
+  const closeOrderId = closeOrderIdFromSnapshot(position)
+  const accountingPending = environment === "exchange" &&
+    isRealizedPnlAccountingPending(position)
+  const hasStoredPnl = !accountingPending &&
+    [position.grossPnl, position.realizedPnL, position.realizedPnl, position.pnl]
     .some((value) => value !== undefined && value !== null && value !== "")
   const storedPnl = firstFinite(position.grossPnl, position.realizedPnL, position.realizedPnl, position.pnl)
   const recoveredExitPrice = hasStoredPnl
@@ -435,13 +463,15 @@ export function classifyLocalTradeHistorySnapshot(
     position.current_price,
     recoveredExitPrice,
   )
-  if (exitPrice <= 0) {
+  if (exitPrice <= 0 && (environment !== "exchange" || !closeOrderId)) {
     return { disposition: "unresolved_trade", reason: "missing_exit_and_pnl", row: null }
   }
 
-  const derivedGross = direction === "short"
-    ? (entryPrice - exitPrice) * quantity
-    : (exitPrice - entryPrice) * quantity
+  const derivedGross = exitPrice > 0
+    ? direction === "short"
+      ? (entryPrice - exitPrice) * quantity
+      : (exitPrice - entryPrice) * quantity
+    : 0
   const fillFees = Array.isArray(position.fills)
     ? position.fills.reduce((sum: number, fill: any) => sum + Math.abs(finite(fill?.fee)), 0)
     : 0
@@ -451,27 +481,11 @@ export function classifyLocalTradeHistorySnapshot(
   const volumeUsd = firstPositive(position.volumeUsd, entryPrice * quantity)
   const openedAt = normalizeTimestamp(position.createdAt ?? position.openedAt ?? position.timestamp)
   const closedAt = normalizeTimestamp(position.closedAt ?? position.closeTimestamp ?? position.updatedAt)
-  const exchangeData = position.exchangeData && typeof position.exchangeData === "object" ? position.exchangeData : {}
   const manualProtection = position.manualProtectionOverride && typeof position.manualProtectionOverride === "object"
     ? position.manualProtectionOverride
     : null
   const manualHasStop = manualProtection && Object.prototype.hasOwnProperty.call(manualProtection, "stopLossPrice")
   const manualHasTarget = manualProtection && Object.prototype.hasOwnProperty.call(manualProtection, "takeProfitPrice")
-  const positionId = String(
-    exchangeData.exchangePositionId ?? exchangeData.positionId ?? position.exchangePositionId ?? "",
-  ).trim()
-  const executionMode = String(position.executionMode || "").trim().toLowerCase()
-  const environment: "exchange" | "simulated" =
-    String(position.environment || "").trim().toLowerCase() === "simulated" ||
-    executionMode === "simulation" ||
-    position.simulated === true ||
-    position.simulated === "1" ||
-    /paper|simulat|live_trade disabled/i.test(
-      String(position.statusReason || position.closeReason || ""),
-    )
-      ? "simulated"
-      : "exchange"
-  const closeOrderId = closeOrderIdFromSnapshot(position)
   const rawIntent = String(position.executionIntent || "").trim().toLowerCase()
   const executionIntent =
     rawIntent === "main" || rawIntent === "preset" || rawIntent === "signal"
@@ -518,6 +532,14 @@ export function classifyLocalTradeHistorySnapshot(
     dcaStep: firstPositive(position.dcaStep) || undefined,
     executionMode: String(position.executionMode || "") || undefined,
     closeReason: closeReason || undefined,
+  }
+  if (accountingPending || exitPrice <= 0) {
+    row.accountingQuality = "exchange_required"
+    return {
+      disposition: "unresolved_trade",
+      reason: accountingPending ? "venue_accounting_incomplete" : "missing_exit_and_pnl",
+      row,
+    }
   }
   if (requiresVenueAccounting({ environment, entryPrice, exitPrice, openedAt, closedAt })) {
     row.accountingQuality = "exchange_required"

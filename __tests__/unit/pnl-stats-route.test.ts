@@ -75,7 +75,7 @@ describe("trade-engine PnL statistics", () => {
     const stats = response.body.stats
 
     expect(mockGetLivePositions).toHaveBeenCalledWith("conn-stats")
-    expect(mockGetClosedLivePositions).toHaveBeenCalledWith("conn-stats", 50)
+    expect(mockGetClosedLivePositions).toHaveBeenCalledWith("conn-stats", 75)
     expect(stats).toMatchObject({
       source: "live_position_ledger",
       total_positions: 3,
@@ -96,6 +96,8 @@ describe("trade-engine PnL statistics", () => {
       profit_factor_last_50: 2,
       profit_factor_last_75: 2,
       avg_holding_time_min: 30,
+      history_limit: 50,
+      analytics_history_limit: 75,
     })
     expect(stats.last_25_positions).toHaveLength(2)
     expect(stats.last_50_positions).toHaveLength(2)
@@ -132,6 +134,177 @@ describe("trade-engine PnL statistics", () => {
       closed_positions: 1,
       realized_pnl: 2,
       last_50_pnl: 2,
+    })
+  })
+
+  test("quarantines incomplete venue settlement and parses numeric millisecond timestamps", async () => {
+    const openedAt = Date.UTC(2026, 7, 26, 10, 0, 0)
+    const closedAt = openedAt + 30 * 60_000
+    mockGetClosedLivePositions.mockResolvedValue([{
+      id: "pending-venue-close",
+      status: "closed",
+      executionMode: "live",
+      orderId: "entry-pending",
+      symbol: "ETHUSDT",
+      direction: "short",
+      realizedPnL: 0,
+      realizedPnlComplete: false,
+      realizedPnlSource: "exchange_unresolved",
+      totalExecutedQuantity: 1,
+      entryPrice: 100,
+      createdAt: openedAt,
+      closedAt,
+    }])
+    mockGetLivePositions.mockResolvedValue([])
+
+    const response = await GET({
+      url: "http://localhost/api/trade-engine/pnl-stats?connection_id=conn-pending",
+    })
+    const stats = response.body.stats
+
+    expect(stats).toMatchObject({
+      total_positions: 1,
+      closed_positions: 1,
+      settled_closed_positions: 0,
+      accounting_pending: 1,
+      accounting_complete: false,
+      accounting_coverage_percent: 0,
+      realized_pnl: 0,
+      wins: 0,
+      losses: 0,
+      break_even: 0,
+      profit_factor: null,
+    })
+    expect(stats.last_50_positions).toEqual([
+      expect.objectContaining({
+        id: "pending-venue-close",
+        pnl: null,
+        pnl_percent: null,
+        holding_time_min: 30,
+        accounting_status: "pending",
+      }),
+    ])
+  })
+
+  test("keeps settled PnL without an ROI denominator and represents loss-free PF explicitly", async () => {
+    mockGetClosedLivePositions.mockResolvedValue([{
+      id: "settled-win-without-margin",
+      status: "closed",
+      executionMode: "live",
+      symbol: "BTCUSDT",
+      direction: "long",
+      averageExecutionPrice: "",
+      entryPrice: null,
+      entry_price: 100,
+      closePrice: "",
+      exit_price: 101,
+      realizedPnL: 1,
+      closedAt: "2026-08-26T10:00:00.000Z",
+    }, {
+      id: "settled-break-even",
+      status: "closed",
+      executionMode: "live",
+      symbol: "ETHUSDT",
+      direction: "short",
+      realizedPnL: 0,
+      closedAt: "2026-08-26T09:00:00.000Z",
+    }])
+    mockGetLivePositions.mockResolvedValue([])
+
+    const response = await GET({
+      url: "http://localhost/api/trade-engine/pnl-stats?connection_id=conn-infinite",
+    })
+    const stats = response.body.stats
+
+    expect(stats).toMatchObject({
+      settled_closed_positions: 2,
+      accounting_pending: 0,
+      wins: 1,
+      losses: 0,
+      break_even: 1,
+      win_rate: 100,
+      profit_factor: null,
+      profit_factor_infinite: true,
+      profit_factor_last_50: null,
+      profit_factor_last_50_infinite: true,
+    })
+    expect(stats.last_50_positions[0]).toMatchObject({
+      id: "settled-win-without-margin",
+      entry_price: 100,
+      exit_price: 101,
+      pnl: 1,
+      pnl_percent: null,
+      accounting_status: "settled",
+    })
+  })
+
+  test("keeps the operational window at 50 while computing PF75 from 75 terminal rows", async () => {
+    const rows = Array.from({ length: 75 }, (_, index) => ({
+      id: `closed-${index}`,
+      status: "closed",
+      executionMode: "live",
+      symbol: "BTCUSDT",
+      direction: "long",
+      realizedPnL: index < 50 ? (index % 2 === 0 ? 2 : -1) : -1,
+      closedAt: new Date(Date.UTC(2026, 7, 26, 12, 0, 0) - index * 60_000).toISOString(),
+    }))
+    mockGetClosedLivePositions.mockResolvedValue(rows)
+    mockGetLivePositions.mockResolvedValue([])
+
+    const response = await GET({
+      url: "http://localhost/api/trade-engine/pnl-stats?connection_id=conn-windows",
+    })
+    const stats = response.body.stats
+
+    expect(stats).toMatchObject({
+      closed_positions: 50,
+      settled_closed_positions: 50,
+      wins: 25,
+      losses: 25,
+      realized_pnl: 25,
+      profit_factor: 2,
+      profit_factor_last_50: 2,
+      profit_factor_last_75: 1,
+      history_limit: 50,
+      analytics_history_limit: 75,
+    })
+    expect(stats.last_50_positions).toHaveLength(50)
+  })
+
+  test("pending closes consume their chronological PF window without becoming break-even", async () => {
+    mockGetClosedLivePositions.mockResolvedValue([
+      {
+        id: "pending-newest",
+        status: "closed",
+        executionMode: "live",
+        symbol: "BTCUSDT",
+        realizedPnl: 0,
+        realizedPnlComplete: false,
+        closedAt: "2026-08-26T12:00:00.000Z",
+      },
+      ...Array.from({ length: 12 }, (_, index) => ({
+        id: `settled-${index}`,
+        status: "closed",
+        executionMode: "live",
+        symbol: "BTCUSDT",
+        realizedPnL: index === 11 ? -10 : 1,
+        closedAt: new Date(Date.UTC(2026, 7, 26, 11, 59, 0) - index * 60_000).toISOString(),
+      })),
+    ])
+    mockGetLivePositions.mockResolvedValue([])
+
+    const response = await GET({
+      url: "http://localhost/api/trade-engine/pnl-stats?connection_id=conn-window-pending",
+    })
+    const stats = response.body.stats
+
+    // The loss is the 13th terminal close and therefore outside "last 12".
+    expect(stats).toMatchObject({
+      accounting_pending: 1,
+      profit_factor_last_12: null,
+      profit_factor_last_12_infinite: true,
+      wins: 11,
+      losses: 1,
     })
   })
 

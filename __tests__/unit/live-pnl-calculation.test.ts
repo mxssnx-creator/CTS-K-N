@@ -11,6 +11,7 @@ jest.mock("@/lib/redis-db", () => ({
 import {
   closedPnl,
   derivePositionRoi,
+  isRealizedPnlAccountingPending,
   openPnl,
   resolveRealizedPnl,
   resolveUnrealizedPnl,
@@ -96,5 +97,37 @@ describe("live PnL calculation contract", () => {
     }])
 
     expect(statistics.unrealizedPnl).toBe(7.25)
+  })
+
+  it("keeps explicit exchange accounting gaps pending without misclassifying paper rows", () => {
+    expect(isRealizedPnlAccountingPending({
+      status: "closed",
+      mode: "live",
+      realizedPnlComplete: "",
+      pnlAccountingComplete: false,
+    })).toBe(true)
+    expect(isRealizedPnlAccountingPending({
+      status: "closed",
+      mode: "live",
+      accountingPending: "1",
+      pnlAccountingComplete: true,
+    })).toBe(true)
+    expect(isRealizedPnlAccountingPending({
+      status: "closed",
+      mode: "live",
+      pnlAccountingSource: "exchange_position_absent_pending",
+    })).toBe(true)
+    expect(isRealizedPnlAccountingPending({
+      status: "closed",
+      mode: "live",
+      realizedPnlSource: "",
+      pnlAccountingSource: "exchange_fills_incomplete_fees",
+    })).toBe(true)
+    expect(isRealizedPnlAccountingPending({
+      status: "closed",
+      mode: "simulated",
+      pnlAccountingComplete: false,
+      accountingPending: true,
+    })).toBe(false)
   })
 })

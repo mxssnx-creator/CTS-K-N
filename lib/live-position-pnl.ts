@@ -206,6 +206,83 @@ export function resolveRealizedPnl(position: Record<string, any>): number | unde
   return calculateFallbackPnl(position, resolveClosePrice(position), true)
 }
 
+/**
+ * Resolve a reporting-safe terminal result. Explicitly incomplete accounting
+ * and rows with no finite realized value are both unresolved; neither may be
+ * converted into a synthetic break-even result by overview/statistics code.
+ */
+export function resolveSettledRealizedPnl(
+  position: Record<string, any> | null | undefined,
+): number | undefined {
+  if (!position || isRealizedPnlAccountingPending(position)) return undefined
+  const pnl = resolveRealizedPnl(position)
+  return pnl !== undefined && Number.isFinite(pnl) ? pnl : undefined
+}
+
+/**
+ * A terminal exchange row can exist before the venue has returned every fill,
+ * fee, or funding component. The lifecycle deliberately persists that row for
+ * recovery, but its placeholder `realizedPnL` (often zero) is not a settled
+ * result and must never enter W/L/BE, PF, DDT, or operator PnL statistics.
+ *
+ * Legacy rows without an explicit accounting marker retain their historical
+ * behaviour. New exchange rows are fail-closed whenever either completeness
+ * alias is false or the durable source explicitly says accounting is pending.
+ */
+export function isRealizedPnlAccountingPending(
+  position: Record<string, any> | null | undefined,
+): boolean {
+  if (!position) return false
+  const status = String(position.status || "").trim().toLowerCase()
+  const executionMode = String(position.executionMode || "").trim().toLowerCase()
+  const mode = String(position.mode || "").trim().toLowerCase()
+  const environment = String(position.environment || "").trim().toLowerCase()
+  if (
+    status === "simulated" ||
+    ["simulation", "simulated", "paper"].includes(executionMode) ||
+    mode === "simulated" ||
+    mode === "simulation" ||
+    mode === "paper" ||
+    ["simulation", "simulated", "paper"].includes(environment) ||
+    position.isSimulated === true ||
+    position.isSimulated === "1" ||
+    position.isSimulated === "true" ||
+    position.simulated === true ||
+    position.simulated === "1" ||
+    position.simulated === "true"
+  ) {
+    return false
+  }
+
+  for (const completeness of [
+    position.realizedPnlComplete,
+    position.pnlAccountingComplete,
+  ]) {
+    const normalizedCompleteness = String(completeness ?? "").trim().toLowerCase()
+    if (
+      completeness === false ||
+      completeness === 0 ||
+      normalizedCompleteness === "false" ||
+      normalizedCompleteness === "0"
+    ) {
+      return true
+    }
+  }
+
+  const accountingPending = String(position.accountingPending ?? "").trim().toLowerCase()
+  if (
+    position.accountingPending === true ||
+    position.accountingPending === 1 ||
+    accountingPending === "true" ||
+    accountingPending === "1"
+  ) return true
+
+  const source = [position.realizedPnlSource, position.pnlAccountingSource]
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .find(Boolean) || ""
+  return source.includes("pending") || source.includes("incomplete") || source.includes("unresolved")
+}
+
 /** Reporting-safe realized PnL: retain an authoritative zero and use 0 only when absent. */
 export function closedPnl(position: Record<string, any> | null | undefined): number {
   return resolveRealizedPnl(position || {}) ?? 0

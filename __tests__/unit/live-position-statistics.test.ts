@@ -10,6 +10,7 @@ describe("complete live position/order/statistics relations", () => {
         status: "open",
         orderId: "entry-main",
         stopLossOrderId: "sl-main",
+        stopLossArmedQuantity: 0.02,
         stopLoss: 1,
         takeProfit: 2,
         protectionMode: "hybrid_control_system",
@@ -113,6 +114,9 @@ describe("complete live position/order/statistics relations", () => {
     expect(stats.protection).toMatchObject({
       hybridControlSystem: 1,
       missingVenueLegsHandledBySystem: 1,
+      venueLegsQuantityCovered: 1,
+      venueLegsQuantityUnknown: 0,
+      venueLegsQuantityDrifted: 0,
     })
   })
 
@@ -141,6 +145,38 @@ describe("complete live position/order/statistics relations", () => {
       expect.stringContaining("member allocation"),
       expect.stringContaining("take-profit has neither venue order nor system handling"),
       expect.stringContaining("order IDs are not unique"),
+      expect.stringContaining("stop-loss venue order has no authoritative armed quantity"),
+    ]))
+    expect(stats.protection.venueLegsQuantityUnknown).toBe(1)
+  })
+
+  test("surfaces independently drifted SL and TP venue coverage", () => {
+    const stats = calculateLivePositionStatistics([{
+      id: "quantity-drift",
+      symbol: "ETHUSDT",
+      direction: "long",
+      status: "closing_partial",
+      executedQuantity: 0.8,
+      totalExecutedQuantity: 1,
+      closedQuantity: 0.2,
+      averageExecutionPrice: 100,
+      fills: [{ quantity: 1, price: 100 }],
+      stopLoss: 1,
+      takeProfit: 2,
+      stopLossOrderId: "sl-quantity-drift",
+      takeProfitOrderId: "tp-quantity-covered",
+      stopLossArmedQuantity: 1,
+      takeProfitArmedQuantity: 0.8,
+    }])
+
+    expect(stats.open).toBe(1)
+    expect(stats.protection).toMatchObject({
+      venueLegsQuantityCovered: 1,
+      venueLegsQuantityUnknown: 0,
+      venueLegsQuantityDrifted: 1,
+    })
+    expect(stats.relationIntegrity.mismatches).toEqual(expect.arrayContaining([
+      expect.stringContaining("stop-loss venue quantity 1 != open quantity 0.8"),
     ]))
   })
 
@@ -230,5 +266,39 @@ describe("complete live position/order/statistics relations", () => {
     expect(stats.relationIntegrity).toMatchObject({ success: true, mismatchCount: 0 })
     expect(stats.lifetimeQuantity).toBe(2)
     expect(stats.lifetimeVolumeUsd).toBe(201)
+  })
+
+  test("keeps incomplete exchange settlement out of realized outcomes and indication totals", () => {
+    const stats = calculateLivePositionStatistics([{
+      id: "pending-accounting",
+      symbol: "ETHUSDT",
+      direction: "short",
+      status: " CLOSED ",
+      executionMode: "live",
+      orderId: "entry-pending",
+      executedQuantity: 1,
+      closedQuantity: 1,
+      totalExecutedQuantity: 1,
+      averageExecutionPrice: 100,
+      fills: [{ quantity: 1, price: 100 }],
+      realizedPnL: 0,
+      realizedPnlComplete: false,
+      realizedPnlSource: "exchange_unresolved",
+      indicationType: "trend",
+    }])
+
+    expect(stats).toMatchObject({
+      closed: 1,
+      accountingPending: 1,
+      realizedPnl: 0,
+      wins: 0,
+      losses: 0,
+      breakeven: 0,
+    })
+    expect(stats.byIndicationType.trend).toMatchObject({
+      closed: 1,
+      accountingPending: 1,
+      realizedPnl: 0,
+    })
   })
 })

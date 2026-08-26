@@ -508,7 +508,7 @@ describe("Direct-Trade API state and processor lease", () => {
         liveMode: true,
       }))
       await redis.set(keys.positions, JSON.stringify([
-        { id: "settled", status: "closed", mode: "live", pnlAccountingComplete: true },
+        { id: "settled", status: "closed", mode: "live", pnlAccountingComplete: true, realizedPnlUsdt: 0 },
         { id: "pending", status: "closed", mode: "live", pnlAccountingComplete: false },
         { id: "pseudo", status: "closed", mode: "pseudo", pnlAccountingComplete: false },
       ]))
