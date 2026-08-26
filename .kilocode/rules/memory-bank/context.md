@@ -7,9 +7,10 @@ Total output lines: 1636
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
   `fix/runtime-stats-stability-20260825`, based on GitHub
-  `main@d10dc9529dc14b9073a2ae121e17613e2591a063`. GitHub has no open PR.
-  The worktree contains the intended runtime/status/statistics release and
-  must be preserved until its checked commit is published.
+  `main@d10dc9529dc14b9073a2ae121e17613e2591a063`. The checked release source
+  commit is `70a628b` (`fix: stabilize runtime stats and direct trade`) and is
+  awaiting GitHub PR publication. The worktree must remain clean apart from
+  the continuation documentation/manifest commit that records this checkpoint.
 - The change set removes the observed hot-path failures: routine Direct-Trade
   state polls no longer hydrate the full execution grid, large Direct config
   grids are versioned/gzip-compacted with bounded reads, progression/stats
@@ -40,6 +41,10 @@ Total output lines: 1636
   limited to X02 BingX Prod-VST, must use scoped unique IDs, reconcile owned
   positions/orders back to the pre-test baseline, and must never be presented
   as a profitability guarantee.
+- Latest verified local pre-commit recovery point:
+  `/workspace/backups/CTS-K-N/20260826T001551Z-precommit-runtime-stats`.
+  It contains a complete Git bundle, binary patch, untracked archive/list,
+  HEAD/status records and a SHA-256 manifest that was successfully verified.
 
 ## Backup gate checkpoint (2026-08-26)
 
