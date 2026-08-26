@@ -477,7 +477,13 @@ async function isLiveTradeEnabledForConnection(connectionId: string): Promise<bo
 // time synchronization; returning early cannot cancel a POST already in flight.
 const EXCHANGE_TIMEOUT_CANCEL_ORDER_MS  = 8_000   // cancel; retried next tick on failure
 const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // initial response deadline; ambiguous writes are reconciled below
-const EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS = 30_000  // same in-flight write; includes connector queue + time sync
+// Do not hold a live-sync worker for a full extra 30 seconds after the
+// acknowledgement deadline.  The durable client id was persisted before the
+// POST left the process, so a short observation window followed by a bounded
+// lookup is enough to avoid duplicate submissions while keeping other symbols
+// responsive under a slow venue.
+const EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS = 3_000
+const EXCHANGE_AMBIGUOUS_RECOVERY_MS    = 3_000
 const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption + sync prefetch
 const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via next sync tick on miss
 
@@ -491,6 +497,29 @@ const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via n
 let __stopSemCount = 0
 const __STOP_SEM_LIMIT = 6
 const __stopSemQueue: Array<() => void> = []
+
+// Quantity-changing work temporarily removes the one aggregate venue pair
+// for a physical symbol/direction.  Keep the hand-off visible to the same
+// sync owner so it can perform a fresh, bounded re-arm before returning.  The
+// durable marker on the position remains the restart-safe source of truth;
+// this queue merely avoids waiting for an unrelated later tick.
+const __aggregateProtectionFinalizeQueue = new Map<string, Set<string>>()
+function queueAggregateProtectionFinalization(connectionId: string, slot: string): void {
+  if (!connectionId || !slot) return
+  const queued = __aggregateProtectionFinalizeQueue.get(connectionId) ?? new Set<string>()
+  queued.add(slot)
+  __aggregateProtectionFinalizeQueue.set(connectionId, queued)
+}
+function queuedAggregateProtectionFinalizations(connectionId: string): Set<string> {
+  return new Set(__aggregateProtectionFinalizeQueue.get(connectionId) ?? [])
+}
+function settleAggregateProtectionFinalizations(connectionId: string, slots: Iterable<string>): void {
+  const queued = __aggregateProtectionFinalizeQueue.get(connectionId)
+  if (!queued) return
+  for (const slot of slots) queued.delete(slot)
+  if (queued.size === 0) __aggregateProtectionFinalizeQueue.delete(connectionId)
+}
+
 function acquireStopSem(): Promise<void> {
   return new Promise<void>((resolve) => {
     if (__stopSemCount < __STOP_SEM_LIMIT) {
@@ -2769,8 +2798,22 @@ async function recoverEntryOrderByClientId(
   connector: any,
   symbol: string,
   clientOrderId: string,
+  options: {
+    /** Per-request cap. Existing callers retain the normal order-read limit. */
+    timeoutMs?: number
+    /** Total budget across every connector lookup in this recovery attempt. */
+    totalTimeoutMs?: number
+  } = {},
 ): Promise<any | null> {
   if (!connector || !clientOrderId) return null
+  const startedAt = Date.now()
+  const totalTimeoutMs = Math.max(1, Number(options.totalTimeoutMs || 0) || Number.POSITIVE_INFINITY)
+  const timeoutForLookup = (): number | null => {
+    const remaining = totalTimeoutMs - (Date.now() - startedAt)
+    if (!(remaining > 0)) return null
+    const requested = Math.max(1, Number(options.timeoutMs || EXCHANGE_TIMEOUT_GET_ORDER_MS))
+    return Math.max(1, Math.min(requested, remaining))
+  }
   const normalize = (candidate: any): any | null => {
     const raw = candidate?.order ?? candidate?.data ?? candidate
     if (!raw || candidate?.success === false) return null
@@ -2790,10 +2833,12 @@ async function recoverEntryOrderByClientId(
       : null,
   ]) {
     if (!lookup) continue
+    const timeoutMs = timeoutForLookup()
+    if (timeoutMs === null) return null
     try {
       const recovered = normalize(await withTimeout(
         lookup() as Promise<any>,
-        EXCHANGE_TIMEOUT_GET_ORDER_MS,
+        timeoutMs,
         `recoverEntryOrderByClientId(${symbol})`,
       ))
       if (recovered) return recovered
@@ -2801,10 +2846,12 @@ async function recoverEntryOrderByClientId(
   }
 
   if (typeof connector.getOpenOrders === "function") {
+    const timeoutMs = timeoutForLookup()
+    if (timeoutMs === null) return null
     try {
       const orders = await withTimeout(
         connector.getOpenOrders(symbol) as Promise<any>,
-        EXCHANGE_TIMEOUT_GET_ORDER_MS,
+        timeoutMs,
         `recoverEntryOrderByClientId.openOrders(${symbol})`,
       )
       const match = Array.isArray(orders)
@@ -2835,6 +2882,7 @@ async function reconcileAmbiguousProtectionWrite(input: {
   placementPromise: Promise<any>
   initialError: unknown
   graceMs?: number
+  recoveryMs?: number
 }): Promise<any | null> {
   const clientOrderId = String(input.clientOrderId || "").trim()
   if (!clientOrderId || !isAmbiguousControlOrderDelivery(input.initialError)) return null
@@ -2862,6 +2910,10 @@ async function reconcileAmbiguousProtectionWrite(input: {
     input.connector,
     input.symbol,
     clientOrderId,
+    {
+      timeoutMs: Math.max(1, input.recoveryMs ?? EXCHANGE_AMBIGUOUS_RECOVERY_MS),
+      totalTimeoutMs: Math.max(1, input.recoveryMs ?? EXCHANGE_AMBIGUOUS_RECOVERY_MS),
+    },
   )
   const recoveredOrderId = recovered?.orderId ?? recovered?.id
   if (recoveredOrderId == null || String(recoveredOrderId).length === 0) return null
@@ -4849,6 +4901,13 @@ async function rearmProtectionAfterQuantityMutation(
     Boolean(position.aggregateProtectionKey)
     || Number(position.aggregateProtectionMemberCount || 0) > 1
   ) {
+    const direction = resolveLivePositionDirection(position)
+    if (direction) {
+      queueAggregateProtectionFinalization(
+        position.connectionId,
+        position.aggregateProtectionKey || aggregateProtectionSlot(position.symbol, direction),
+      )
+    }
     position.systemProtectionLegs = configuredSystemProtectionLegs(position)
     position.protectionMode = position.stopLossOrderId || position.takeProfitOrderId
       ? "hybrid_control_system"
@@ -6204,7 +6263,10 @@ function protectionCapacityBudgetOf(liveOrderIds?: Set<string> | null): ControlO
   return (liveOrderIds as LiveOrderIdSet | null | undefined)?.protectionCapacityBudget || null
 }
 
-async function fetchLiveOrderIdSet(connector: any): Promise<LiveOrderIdSet | null> {
+async function fetchLiveOrderIdSet(
+  connector: any,
+  options: { timeoutMs?: number } = {},
+): Promise<LiveOrderIdSet | null> {
   if (!connector || typeof connector.getOpenOrders !== "function") return null
   try {
     // 25 s upper bound — BingX getOpenOrders queues behind live-order calls
@@ -6213,9 +6275,10 @@ async function fetchLiveOrderIdSet(connector: any): Promise<LiveOrderIdSet | nul
     // request even starts. 25 s covers queue-wait + HTTP round-trip reliably
     // without blocking the rate limiter indefinitely.
     // On timeout we degrade gracefully to drift-only reconciliation.
+    const timeoutMs = Math.max(1, Math.min(25_000, Number(options.timeoutMs || 25_000)))
     const orders = (await withTimeout(
       connector.getOpenOrders() as Promise<any>,
-      25_000,
+      timeoutMs,
       "getOpenOrders(reconcile-tick)",
     )) as any[] | undefined
     if (!Array.isArray(orders)) return null
@@ -7608,6 +7671,7 @@ async function reconcileAggregateProtectionBook(
       return requestedAt > 0 && Date.now() - requestedAt <= 10_000
     })
     if (mutationRequested) {
+      queueAggregateProtectionFinalization(connectionId, plan.key)
       for (const member of members) {
         if (await demoteAggregateProtectionMember(
           connector,
@@ -7660,6 +7724,147 @@ async function reconcileAggregateProtectionBook(
     }
     if (protectionResult.slPlaced || protectionResult.tpPlaced) result.rearmedLeaders++
   }
+  return result
+}
+
+function aggregateProtectionMutationIsInFlight(position: LivePosition): boolean {
+  const status = String(position.status || "").toLowerCase()
+  return (
+    status === "closing" ||
+    status === "closing_partial" ||
+    Boolean(position.pendingSystemAction) ||
+    Boolean(position.pendingQuantityMutation) ||
+    Boolean(position.pendingReduction) ||
+    Boolean(position.pendingAccumulation)
+  )
+}
+
+type AggregateProtectionFinalizationResult = {
+  completedSlots: Set<string>
+  deferredSlots: Set<string>
+  rearmedLeaders: number
+  changedPositions: number
+}
+
+/**
+ * Finish a quantity-mutation hand-off before the current sync owner returns.
+ *
+ * The first aggregate pass deliberately removes the old outer pair so a
+ * reduce/accumulate/close cannot race a stale-size protection order. This
+ * second, bounded pass sees the post-mutation venue quantity and re-arms the
+ * exact same physical slot as soon as the mutating action is settled. It is
+ * scoped to queued hand-offs, so normal hot-path syncs pay no extra exchange
+ * round trip.
+ */
+async function finalizeQueuedAggregateProtection(
+  connectionId: string,
+  connector: any,
+  requestedSlots: Iterable<string>,
+): Promise<AggregateProtectionFinalizationResult> {
+  const result: AggregateProtectionFinalizationResult = {
+    completedSlots: new Set<string>(),
+    deferredSlots: new Set<string>(),
+    rearmedLeaders: 0,
+    changedPositions: 0,
+  }
+  const slots = new Set(Array.from(requestedSlots).filter(Boolean))
+  if (slots.size === 0 || !connector || typeof connector.getPositions !== "function") return result
+
+  let allPositions: LivePosition[] = []
+  try {
+    allPositions = await getLivePositions(connectionId)
+  } catch (error) {
+    console.warn(
+      `${LOG_PREFIX} aggregate finalization could not load positions for ${connectionId}:`,
+      error instanceof Error ? error.message : String(error),
+    )
+    return result
+  }
+
+  const activeStatuses = new Set(["open", "filled", "partially_filled"])
+  const membersBySlot = new Map<string, LivePosition[]>()
+  for (const position of allPositions) {
+    const direction = resolveLivePositionDirection(position)
+    if (!direction || !activeStatuses.has(String(position.status || "").toLowerCase())) continue
+    if (!isExchangeLifecyclePosition(position, connectionId)) continue
+    const slot = aggregateProtectionSlot(position.symbol, direction)
+    if (!slots.has(slot)) continue
+    const members = membersBySlot.get(slot) ?? []
+    members.push(position)
+    membersBySlot.set(slot, members)
+  }
+
+  const eligible: LivePosition[] = []
+  const eligibleSlots = new Set<string>()
+  for (const slot of slots) {
+    const members = membersBySlot.get(slot) ?? []
+    if (members.length === 0) {
+      // The physical slot is flat/terminal now. No outer pair remains to arm.
+      result.completedSlots.add(slot)
+      continue
+    }
+    if (members.some(aggregateProtectionMutationIsInFlight)) {
+      result.deferredSlots.add(slot)
+      continue
+    }
+    eligible.push(...members)
+    eligibleSlots.add(slot)
+  }
+  if (eligible.length === 0) return result
+
+  let exchangePositions: any[] = []
+  try {
+    const snapshot = await withTimeout(
+      connector.getPositions() as Promise<any[]>,
+      EXCHANGE_TIMEOUT_GET_POSITIONS_MS,
+      "getPositions(aggregate-finalize)",
+    )
+    const snapshotStatus = typeof connector.getLastPositionsSnapshotStatus === "function"
+      ? connector.getLastPositionsSnapshotStatus()
+      : { ok: Array.isArray(snapshot) }
+    if (snapshotStatus.ok !== true || !Array.isArray(snapshot)) {
+      console.warn(`${LOG_PREFIX} aggregate finalization deferred: venue position snapshot is not authoritative`)
+      for (const slot of eligibleSlots) result.deferredSlots.add(slot)
+      return result
+    }
+    exchangePositions = snapshot
+  } catch (error) {
+    console.warn(
+      `${LOG_PREFIX} aggregate finalization getPositions failed:`,
+      error instanceof Error ? error.message : String(error),
+    )
+    for (const slot of eligibleSlots) result.deferredSlots.add(slot)
+    return result
+  }
+
+  // Bound the final liveness read tightly. If it is unavailable, the
+  // aggregate book preserves durable IDs and retries on the next sync.
+  const liveOrderIds = await fetchLiveOrderIdSet(connector, { timeoutMs: EXCHANGE_TIMEOUT_GET_ORDER_MS })
+
+  for (const position of eligible) {
+    if (!position.aggregateProtectionMutationRequestedAt && !position.aggregateProtectionMutationReason) continue
+    position.aggregateProtectionMutationRequestedAt = undefined
+    position.aggregateProtectionMutationReason = undefined
+    position.updatedAt = Date.now()
+    pushStep(
+      position,
+      "aggregate_protection_mutation_finalized",
+      true,
+      "quantity mutation settled; re-arming aggregate venue protection from a fresh snapshot",
+    )
+    await savePosition(position)
+  }
+
+  const applied = await reconcileAggregateProtectionBook(
+    connectionId,
+    connector,
+    eligible,
+    exchangePositions,
+    liveOrderIds,
+  )
+  result.rearmedLeaders = applied.rearmedLeaders
+  result.changedPositions = applied.changedPositions
+  for (const slot of eligibleSlots) result.completedSlots.add(slot)
   return result
 }
 
@@ -10191,6 +10396,12 @@ function controlOrderFillPrice(order: any): number {
   return Number.isFinite(value) && value > 0 ? value : 0
 }
 
+function isTerminalSystemCloseOrder(order: any): boolean {
+  if (!order) return false
+  const status = controlOrderStatus(order)
+  return isFilledControlOrderStatus(status) || ["cancelled", "canceled", "rejected", "expired"].includes(status)
+}
+
 /**
  * Serialize venue control orders and a system close.
  *
@@ -10462,6 +10673,7 @@ async function requestAggregateProtectionSlotMutation(
   position.aggregateProtectionMemberCount = related.length
   position.aggregateProtectionMutationRequestedAt = Date.now()
   position.aggregateProtectionMutationReason = reason
+  queueAggregateProtectionFinalization(position.connectionId, slot)
   position.systemProtectionLegs = configuredSystemProtectionLegs(position)
   position.protectionMode = position.stopLossOrderId || position.takeProfitOrderId
     ? "hybrid_control_system"
@@ -11019,6 +11231,38 @@ export async function closeLivePosition(
         })
         if (action) action.appliedFilledQuantity = observed.cumulativeApplied
         if (authoritative.quantity > 1e-12) {
+          // A terminal partial market close leaves a real residual exposure.
+          // Do not wait for a later cron/engine tick to make it safe again:
+          // once the submitted close is confirmed terminal, restore the row to
+          // an open lifecycle state and queue an aggregate re-arm against the
+          // fresh authoritative quantity.  If the close is still active or
+          // cannot be proved terminal, preserve the durable pending action and
+          // let the next reconcile observe it instead of placing overlapping
+          // reduce-only controls.
+          if (isTerminalSystemCloseOrder(orderDetail)) {
+            position.pendingSystemAction = undefined
+            position.status = "open"
+            position.statusReason =
+              `system_close_partial_settled: open=${authoritative.quantity}; protection re-arm queued from terminal close order`
+            const partialSettledMutation = await mutatePositionWithVersionCheck(position, ["closing"], draft => {
+              Object.assign(draft, position)
+              draft.status = "open"
+              draft.lockedAt = 0
+              draft.lockedBy = undefined
+            })
+            if (partialSettledMutation) Object.assign(position, partialSettledMutation)
+            await savePosition(position)
+            await persistCriticalLiveState(`system-close-partial-settled:${position.id}`)
+            await rearmProtectionAfterQuantityMutation(
+              exchangeConnector,
+              position,
+              "system_close_partial_rearm",
+              { quantityOverride: authoritative.quantity },
+            )
+            await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+            mutationLockHeld = false
+            return position
+          }
           position.status = "closing_partial"
           position.statusReason = `system_close_pending_exchange_effect: open=${authoritative.quantity}`
           if (action) {
@@ -12623,6 +12867,29 @@ export async function reconcileLivePositions(
     }
     await Promise.all(runners)
 
+    // A worker may have just completed an aggregate quantity hand-off (or
+    // restored a terminal partial close). Re-arm that exact physical slot from
+    // a fresh venue snapshot before returning, rather than leaving it until a
+    // future cron tick. Deferred slots retain their durable marker and remain
+    // queued for the next authoritative pass.
+    const queuedAggregateSlots = queuedAggregateProtectionFinalizations(connectionId)
+    if (queuedAggregateSlots.size > 0) {
+      try {
+        const finalization = await finalizeQueuedAggregateProtection(
+          connectionId,
+          exchangeConnector,
+          queuedAggregateSlots,
+        )
+        summary.protectionRearmed += finalization.rearmedLeaders
+        settleAggregateProtectionFinalizations(connectionId, finalization.completedSlots)
+      } catch (error) {
+        console.warn(
+          `${LOG_PREFIX} aggregate protection finalization failed; retaining durable retry queue:`,
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    }
+
     // BATCHING: Save all collected positions in one operation instead of N sequential calls
     if (positionsToSave.length > 0) {
       try {
@@ -13950,6 +14217,32 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       )
     }
 
+    // Complete any aggregate quantity hand-off produced by the parallel
+    // workers before reporting this sync as done. This is deliberately after
+    // stuck-entry cleanup as that path can also release a physical slot.
+    const queuedAggregateSlots = queuedAggregateProtectionFinalizations(connectionId)
+    if (queuedAggregateSlots.size > 0) {
+      try {
+        const finalization = await finalizeQueuedAggregateProtection(
+          connectionId,
+          exchangeConnector,
+          queuedAggregateSlots,
+        )
+        settleAggregateProtectionFinalizations(connectionId, finalization.completedSlots)
+        if (finalization.rearmedLeaders > 0 || finalization.changedPositions > 0) {
+          console.log(
+            `${LOG_PREFIX} [aggregate-finalize] conn=${connectionId} ` +
+            `rearmed=${finalization.rearmedLeaders} changed=${finalization.changedPositions}`,
+          )
+        }
+      } catch (error) {
+        console.warn(
+          `${LOG_PREFIX} [aggregate-finalize] failed; retaining durable retry queue:`,
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    }
+
     const syncMs = Date.now() - syncStartMs
     console.log(
       `${LOG_PREFIX} [sync-done] conn=${connectionId} took=${syncMs}ms processed=${openPositions.length} adopted=${adoptedCount}`,
@@ -14602,6 +14895,8 @@ export const __liveStageTest = {
     return (await evalLockLua(client, RELEASE_LOCK_LUA, key, [token])) === 1
   },
   computeDesiredProtectionPrices,
+  aggregateProtectionMutationIsInFlight,
+  isTerminalSystemCloseOrder,
   settleControlOrdersBeforeSystemClose,
   settleControlOrdersBeforeQuantityMutation,
   reconcilePendingAccumulationAndRearm,
