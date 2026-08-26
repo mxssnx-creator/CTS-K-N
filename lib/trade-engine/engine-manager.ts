@@ -3276,16 +3276,27 @@ export class TradeEngineManager {
         // This guarantees correct counts even when withCycleDeadline
         // fires before all tasks settle — no silent data loss.
         const cycleSettingsVersion = this.settingsVersion
-        const pipelineDeps = {
-          indication: this.indicationProcessor,
-          strategy: this.strategyProcessor,
-          realtime: this.realtimeProcessor,
-          shouldContinue: () =>
+        const scheduledGenerationIsCurrent = () => {
+          const current =
             this.isRunning &&
             this.liveProgressionsArmed &&
             entryGeneration === this.entryProcessingGeneration &&
             cycleSettingsVersion === this.settingsVersion &&
-            !cycleBudgetExceeded,
+            !cycleBudgetExceeded
+          // `shouldContinue` is threaded through every indication, strategy,
+          // Set-stage, and Live-dispatch checkpoint. Reaching one of those
+          // checkpoints is real cooperative forward progress even when one
+          // exhaustive symbol takes longer than the watchdog window. Touching
+          // here keeps productive scheduled work alive, while an actually
+          // blocked await makes no further checks and remains restartable.
+          if (current) this.canonicalPipelineAdmission.touch("scheduled")
+          return current
+        }
+        const pipelineDeps = {
+          indication: this.indicationProcessor,
+          strategy: this.strategyProcessor,
+          realtime: this.realtimeProcessor,
+          shouldContinue: scheduledGenerationIsCurrent,
         }
         const pipelineResults = await withCycleDiagnostic(
           mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
@@ -5642,11 +5653,18 @@ export class TradeEngineManager {
     void (async () => {
       const entryGeneration = this.entryProcessingGeneration
       const cycleSettingsVersion = this.settingsVersion
-      const shouldContinue = () =>
-        this.isRunning &&
-        this.liveProgressionsArmed &&
-        entryGeneration === this.entryProcessingGeneration &&
-        cycleSettingsVersion === this.settingsVersion
+      const shouldContinue = () => {
+        const current =
+          this.isRunning &&
+          this.liveProgressionsArmed &&
+          entryGeneration === this.entryProcessingGeneration &&
+          cycleSettingsVersion === this.settingsVersion
+        // Immediate settings work uses the same cooperative checkpoints as
+        // scheduled work. Preserve its owner while those checkpoints advance,
+        // without masking a promise that truly stops returning.
+        if (current) this.canonicalPipelineAdmission.touch("immediate")
+        return current
+      }
       try {
         const symbols = await this.prioritizeSignalSymbols(await this.getSymbols())
         if (!shouldContinue() || !symbols || symbols.length === 0) return
