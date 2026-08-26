@@ -19,6 +19,8 @@ describe("exhaustive realtime cycle coordination", () => {
     expect(manager).toContain("const scheduledGenerationIsCurrent = () =>")
     expect(manager).toContain('this.canonicalPipelineAdmission.touch("scheduled")')
     expect(manager).toContain('this.canonicalPipelineAdmission.touch("immediate")')
+    expect(manager).toContain('this.canonicalPipelineAdmission.touch("bootstrap")')
+    expect(manager).toContain("if (current && ownsBootstrapAdmission)")
     expect(manager).toContain("an actually")
     expect(manager).toContain("blocked await makes no further checks")
 

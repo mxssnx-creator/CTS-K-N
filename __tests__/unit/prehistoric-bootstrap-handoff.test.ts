@@ -23,6 +23,8 @@ describe("prehistoric bootstrap generation hand-off", () => {
     expect(verification).toContain("startup verification self-heal")
     expect(historicCatch).toContain("!run.shouldContinue()")
     expect(historicCatch).toContain("new PrehistoricRunSupersededError")
+    expect(historicBootstrap).toContain("if (current && ownsBootstrapAdmission)")
+    expect(historicBootstrap).toContain('this.canonicalPipelineAdmission.touch("bootstrap")')
 
     const handoffStart = historicBootstrap.indexOf("this.prehistoricBootstrapInFlight = false")
     const handoffEnd = historicBootstrap.indexOf("if (succeeded)", handoffStart)
