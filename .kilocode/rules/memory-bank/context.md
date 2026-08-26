@@ -1960,19 +1960,23 @@ credentials are present.
   followed by a verified publication checkpoint at
   `/workspace/backups/CTS-K-N/20260826T031055Z-pre-github-policy-publish`.
 - [x] The managed activation script and pinned SSH material have safe local
-  modes; its launcher is syntactically valid and starts only if the localhost
-  forward is absent. The current sandbox has no reachable `127.0.0.1:2222`
-  listener and both managed PID records are stale or unreachable.
-- [ ] The managed client reconnect was stopped before the Chisel registration
-  could leave this Work sandbox by an external network-broker disconnect. Do
-  not use a direct SSH/proxy fallback, kill unverified processes, deploy, or
-  run VST orders until one official activation produces a verified localhost
-  SSH banner.
+  modes; Chisel 1.11.8 and both shell launchers pass syntax checks. Work-mode
+  forwards are process-local, so every independent remote command must run the
+  managed activation and SSH operation in the same tool process.
+- [x] A later ordinary managed activation established the pinned localhost
+  forward and returned a harmless SSH banner with strict host-key checking.
+  The remote `chisel-server.service` is loaded, active, and enabled. No server
+  service, application, Redis, deployment, or exchange state was changed.
+- [x] Direct SSH and alternate proxy routes remain out of scope. A missing
+  listener in a new tool process is handled by managed reactivation, not by
+  reusing stale PID/proxy data or killing an unverified process.
 - [x] Project policy now requires a verified backup before material work and a
   reviewed GitHub branch/PR publication after required validation; GitHub
   publication is authorized for this project.
-- [ ] The Work sandbox explicitly rejected network escalation for the managed
-  reconnect. This is a platform control-plane boundary, not a Chisel,
-  credential, or CTS-server diagnosis; user authorization cannot override it.
-  Retry only the normal managed activation when ordinary network execution is
-  available, then require the localhost SSH banner before any remote action.
+- [x] The authoritative Chisel documentation and reconstruction manifests were
+  refreshed in PR #226. Secret scan covered 1,505 files with zero findings,
+  recreation verification covered 1,497 project files, and the verified
+  checkpoints include
+  `/workspace/backups/CTS-K-N/20260826T141840Z-pre-chisel-docs-refresh`,
+  `/workspace/backups/CTS-K-N/20260826T142245Z-precommit-chisel-docs-pr226`,
+  and `/workspace/backups/CTS-K-N/20260826T142318Z-prepush-7630eb9e`.
