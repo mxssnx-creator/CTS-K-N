@@ -1,4 +1,6 @@
 const historyPolicy = require("@/lib/direct-trade-history-policy.cjs")
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT } from "@/lib/direct-trade-coordination"
 
 describe("Direct-Trade bounded historic sufficiency", () => {
@@ -90,5 +92,16 @@ describe("Direct-Trade bounded historic sufficiency", () => {
     expect(historyPolicy.DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(1.1)
     expect(historyPolicy.DIRECT_TRADE_RECENT_PF_DEFAULT).toBe(1.1)
     expect(DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(1.1)
+  })
+
+  test("keeps the paper Block harness on the same recent-PF coordinate", () => {
+    const harness = readFileSync(
+      resolve(process.cwd(), "scripts/test-direct-trade-block-comparison.cjs"),
+      "utf8",
+    )
+
+    expect(harness).toContain("DIRECT_TRADE_RECENT_PF_DEFAULT")
+    expect(harness).toContain("DIRECT_TRADE_BLOCK_MIN_RECENT_PF) || DIRECT_TRADE_RECENT_PF_DEFAULT")
+    expect(harness).not.toContain("DIRECT_TRADE_BLOCK_MIN_RECENT_PF) || 25")
   })
 })
