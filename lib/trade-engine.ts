@@ -1896,14 +1896,11 @@ export class GlobalTradeEngineCoordinator {
         ? Math.max(180_000, configuredStallThresholdMs)
         : 180_000
       // A canonical pipeline can legitimately outlive one ordinary health
-      // interval, but it must not hold the scheduler forever.  The old
-      // watchdog only looked at the generic heartbeat, which is refreshed by
-      // the 10-second manager heartbeat even when the indication timer is
-      // suspended inside one exhaustive symbol pass.  That left
-      // `hasFreshDistributedHeartbeat=true` while no scheduled cycle ever
-      // completed.  Give one exhaustive pass a generous four-minute window;
-      // after three consecutive watchdog observations, restart the same
-      // connection generation through the normal serialized coordinator path.
+      // interval, but it must not hold the scheduler forever.  Lease age alone
+      // is not enough: a 30-symbol historic bootstrap can work for several
+      // minutes.  Escalate only when the admitted owner has made no phase
+      // progress for the full window; the bootstrap's separate hard deadline
+      // remains the final bound for a genuinely hung historic calculation.
       // stop() invalidates the generation guard, so an abandoned pass cannot
       // publish stale rows or overlap the replacement pipeline.
       const configuredPipelineStallMs = Number(
@@ -1919,9 +1916,10 @@ export class GlobalTradeEngineCoordinator {
         if (!manager.isEngineRunning) continue
         const lastHb = await getFreshestProcessorHeartbeat(id)
         const canonicalPipelineAgeMs = manager.canonicalPipelineAgeMs
+        const canonicalPipelineProgressAgeMs = manager.canonicalPipelineProgressAgeMs
         const canonicalPipelineOverdue =
           manager.isCanonicalPipelineInFlight &&
-          canonicalPipelineAgeMs > CANONICAL_PIPELINE_STALL_THRESHOLD_MS
+          canonicalPipelineProgressAgeMs > CANONICAL_PIPELINE_STALL_THRESHOLD_MS
 
         if (canonicalPipelineOverdue) {
           const consecutiveStalls = (this.stallEscalation.get(id) ?? 0) + 1
@@ -1929,14 +1927,15 @@ export class GlobalTradeEngineCoordinator {
           await publishEngineEvent("engine.heartbeat.missed", {
             connectionId: id,
             lastHeartbeatAt: lastHb ?? undefined,
-            ageMs: canonicalPipelineAgeMs,
+            ageMs: canonicalPipelineProgressAgeMs,
             reason: "canonical-pipeline-overdue",
           }).catch(() => undefined)
 
           if (consecutiveStalls >= 3) {
             console.warn(
               `[v0] [Watchdog] Engine ${id} canonical pipeline exceeded ` +
-                `${CANONICAL_PIPELINE_STALL_THRESHOLD_MS}ms for ${consecutiveStalls} checks; ` +
+                `${CANONICAL_PIPELINE_STALL_THRESHOLD_MS}ms without phase progress ` +
+                `(lease age=${canonicalPipelineAgeMs}ms) for ${consecutiveStalls} checks; ` +
                 "requesting serialized generation restart",
             )
             await this.restartEngine(id).catch((error: unknown) => {

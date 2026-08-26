@@ -162,6 +162,7 @@ export async function POST(request: NextRequest) {
       controlState: result.controlState,
       pendingReconciliation: result.pendingReconciliation === true,
       idempotentReplay: result.idempotentReplay === true,
+      alreadyClosed: result.alreadyClosed === true,
     })
   } catch (error: any) {
     return NextResponse.json(

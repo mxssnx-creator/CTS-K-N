@@ -34,6 +34,30 @@ function upwardHistory() {
   })
 }
 
+/**
+ * The calculation route deliberately switches to an immutable chunk manifest
+ * once a full grid no longer fits safely in a single Redis value.  Route
+ * contracts must validate the published rows rather than assume the legacy
+ * storage representation.
+ */
+async function readPublishedConfigs(redis: any, connectionId?: string) {
+  const {
+    getDirectTradeConfigManifest,
+    readDirectTradeConfigsAtIndexes,
+  } = await import("@/lib/direct-trade-config-store")
+  const manifest = await getDirectTradeConfigManifest(redis, connectionId)
+  if (manifest) {
+    return readDirectTradeConfigsAtIndexes(
+      redis,
+      Array.from({ length: manifest.total }, (_, index) => index),
+      connectionId,
+    )
+  }
+  return JSON.parse((await redis.get(connectionId
+    ? `direct_trade:connection:${connectionId}:configs`
+    : "direct_trade:configs")) || "[]")
+}
+
 describe("Direct-Trade historical calculation route", () => {
   const originalFetch = global.fetch
 
@@ -187,7 +211,7 @@ describe("Direct-Trade historical calculation route", () => {
     })
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("interval=1m")
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("startTime=")
-    const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+    const persisted = await readPublishedConfigs(getRedisClient())
     const statisticsIndex = JSON.parse((await getRedisClient().get("direct_trade:statistics-index")) || "{}")
     expect(persisted).toHaveLength(208)
     expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(208)
@@ -228,7 +252,7 @@ describe("Direct-Trade historical calculation route", () => {
       }),
     }) as any)
     const payload = await response.json()
-    const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+    const persisted = await readPublishedConfigs(getRedisClient())
 
     expect(payload.success).toBe(true)
     expect(payload.configTotal).toBe(1072)
@@ -273,7 +297,7 @@ describe("Direct-Trade historical calculation route", () => {
       }),
     }) as any)
     const payload = await response.json()
-    const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+    const persisted = await readPublishedConfigs(getRedisClient())
 
     expect(response.status).toBe(200)
     expect(payload.summary).toMatchObject({
@@ -310,7 +334,7 @@ describe("Direct-Trade historical calculation route", () => {
       }),
     }) as any)
     const payload = await response.json()
-    const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+    const persisted = await readPublishedConfigs(getRedisClient())
 
     expect(payload.success).toBe(true)
     // Two default TP Set ratios (5 and 10× PositionCost) × two configured
@@ -344,7 +368,7 @@ describe("Direct-Trade historical calculation route", () => {
       }),
     }) as any)
     const payload = await response.json()
-    const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+    const persisted = await readPublishedConfigs(getRedisClient())
 
     expect(payload.success).toBe(true)
     expect(payload.configTotal).toBe(72)

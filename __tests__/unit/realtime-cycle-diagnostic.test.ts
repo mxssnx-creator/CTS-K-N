@@ -37,9 +37,12 @@ describe("exhaustive realtime cycle coordination", () => {
     // The exhaustive pass remains serial while it is healthy, but a genuine
     // generation that never completes must not be kept alive forever by the
     // generic 10-second heartbeat. The coordinator watchdog confirms an
-    // overdue canonical owner before using the normal serialized restart.
+    // overdue canonical owner with no forward phase progress before using the
+    // normal serialized restart. A long historic bootstrap has its own hard
+    // deadline and must not be restarted merely because its lease is old.
     expect(coordinator).toContain("ENGINE_CANONICAL_PIPELINE_STALL_THRESHOLD_MS")
     expect(coordinator).toContain("canonicalPipelineAgeMs")
+    expect(coordinator).toContain("canonicalPipelineProgressAgeMs")
     expect(coordinator).toContain("canonical-pipeline-overdue")
     expect(coordinator).toContain("await this.restartEngine(id)")
   })

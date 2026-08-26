@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { buildDirectTradeOverview48h } from "@/lib/direct-trade-overview-stats"
+import { buildDirectTradeIndicationTypeStats } from "@/lib/direct-trade-indication-stats"
 import {
   DIRECT_TRADE_CONNECTION_INDEX_KEY,
   directTradeKeyspace,
@@ -9,10 +10,53 @@ import {
 
 export const dynamic = "force-dynamic"
 
+const PROCESSOR_HEARTBEAT_STALE_MS = 7_000
+const PROCESSOR_PROGRESS_STALE_MS = 20_000
+
+function processorRuntimeStatus(
+  processor: any,
+  heartbeatRaw: string | null,
+  now = Date.now(),
+): {
+  processor: any
+  heartbeatHealthy: boolean
+  progressHealthy: boolean
+  healthy: boolean
+  progressAgeMs: number | null
+} {
+  const lastHeartbeatAt = heartbeatRaw || processor?.lastHeartbeatAt || processor?.lastTick || null
+  // Pre-upgrade workers do not publish `lastProgressAt`; their full snapshot
+  // tick is the only safe evidence that the lifecycle itself completed.
+  const lastProgressAt = processor?.lastProgressAt || processor?.lastTick || null
+  const heartbeatAt = Date.parse(String(lastHeartbeatAt || ""))
+  const progressAt = Date.parse(String(lastProgressAt || ""))
+  const heartbeatAgeMs = Number.isFinite(heartbeatAt) ? Math.max(0, now - heartbeatAt) : null
+  const progressAgeMs = Number.isFinite(progressAt) ? Math.max(0, now - progressAt) : null
+  const heartbeatHealthy = heartbeatAgeMs !== null && heartbeatAgeMs < PROCESSOR_HEARTBEAT_STALE_MS
+  const progressHealthy = progressAgeMs !== null && progressAgeMs < PROCESSOR_PROGRESS_STALE_MS
+  return {
+    processor: processor || lastHeartbeatAt ? {
+      ...(processor || {}),
+      lastTick: lastHeartbeatAt,
+      lastHeartbeatAt,
+      lastProgressAt,
+      progressAgeMs,
+    } : null,
+    heartbeatHealthy,
+    progressHealthy,
+    healthy: heartbeatHealthy && progressHealthy,
+    progressAgeMs,
+  }
+}
+
 function publicProcessorStatus(processor: any): Record<string, unknown> | null {
   if (!processor || typeof processor !== "object") return null
   return {
     lastTick: typeof processor.lastTick === "string" ? processor.lastTick : null,
+    lastHeartbeatAt: typeof processor.lastHeartbeatAt === "string" ? processor.lastHeartbeatAt : null,
+    lastProgressAt: typeof processor.lastProgressAt === "string" ? processor.lastProgressAt : null,
+    progressAgeMs: Number.isFinite(Number(processor.progressAgeMs)) ? Math.max(0, Number(processor.progressAgeMs)) : null,
+    lifecycleCycleCount: Math.max(0, Math.floor(Number(processor.lifecycleCycleCount) || 0)),
     tickCount: Math.max(0, Math.floor(Number(processor.tickCount) || 0)),
     errorsLast5min: Math.max(0, Math.floor(Number(processor.errorsLast5min) || 0)),
     historyPolicy: processor.historyPolicy && typeof processor.historyPolicy === "object"
@@ -46,9 +90,8 @@ export async function GET(request: Request) {
         const state = stateRaw ? JSON.parse(stateRaw) : null
         const positions = positionsRaw ? JSON.parse(positionsRaw) : []
         const processor = processorRaw ? JSON.parse(processorRaw) : null
-        const latestProcessor = processor
-          ? { ...processor, lastTick: processorHeartbeatRaw || processor.lastTick || null }
-          : processorHeartbeatRaw ? { lastTick: processorHeartbeatRaw } : null
+        const runtime = processorRuntimeStatus(processor, processorHeartbeatRaw, now)
+        const latestProcessor = runtime.processor
         const openPositions = Array.isArray(positions)
           ? positions.filter((position: any) => position?.status === "open" || position?.status === "opening").length
           : 0
@@ -60,9 +103,7 @@ export async function GET(request: Request) {
             )).length
           : 0
         const required = state?.enabled === true || openPositions > 0 || accountingPending > 0
-        const healthy = !required || Boolean(
-          latestProcessor?.lastTick && now - Date.parse(String(latestProcessor.lastTick)) < 7_000,
-        )
+        const healthy = !required || runtime.healthy
         return {
           connectionId,
           required,
@@ -115,7 +156,8 @@ export async function GET(request: Request) {
     const positions = positionsRaw ? JSON.parse(positionsRaw) : []
     const openPositionStage = openPositionStageRaw ? JSON.parse(openPositionStageRaw) : null
     const processor = processorRaw ? JSON.parse(processorRaw) : null
-    const processorLastTick = processorHeartbeatRaw || processor?.lastTick || null
+    const processorRuntime = processorRuntimeStatus(processor, processorHeartbeatRaw)
+    const latestProcessor = processorRuntime.processor
     const configStatus = configStatusRaw ? JSON.parse(configStatusRaw) : {}
     if (!hasIndexedCounts) {
       const executionConfigsRaw = await client.get(keys.executionConfigs)
@@ -143,10 +185,9 @@ export async function GET(request: Request) {
       || openPositions.length > 0
       || openingPositions.length > 0
       || accountingPending > 0
-    const processorHeartbeatHealthy = Boolean(
-      processorLastTick && (now - new Date(processorLastTick).getTime()) < 7000,
-    )
-    const processorHealthy = !processorRequired || processorHeartbeatHealthy
+    const processorHeartbeatHealthy = processorRuntime.heartbeatHealthy
+    const processorProgressHealthy = processorRuntime.progressHealthy
+    const processorHealthy = !processorRequired || processorRuntime.healthy
 
     const rollingStats = {
       last12Pos: calculateRollingPF(closedPositions.slice(-12)),
@@ -158,6 +199,14 @@ export async function GET(request: Request) {
     }
     const allRolling = calculateRollingPF(closedPositions)
     const overview48h = buildDirectTradeOverview48h(positions, now)
+    const indicationTypeStats = buildDirectTradeIndicationTypeStats({
+      positions,
+      calculation,
+      selectedMode,
+      enabledIndicationTypes: Array.isArray(state?.enabledIndicationTypes)
+        ? state.enabledIndicationTypes
+        : [],
+    })
     const responseStats = stats
       ? {
           ...stats,
@@ -187,17 +236,24 @@ export async function GET(request: Request) {
       processorRequired,
       processorHealthy,
       overview48h,
+      indicationTypeStats,
       configStatus,
       calculation,
       calculationProgress,
       disabledConfigs: Object.values(configStatus as Record<string, any>)
         .filter((entry: any) => entry?.enabled === false).length,
-      processor: processor ? {
-        lastTick: processorLastTick,
-        tickCount: processor.tickCount,
-        errorsLast5min: processor.errorsLast5min || 0,
-        historyPolicy: processor.historyPolicy || null,
-        isHealthy: processorHeartbeatHealthy,
+      processor: latestProcessor ? {
+        lastTick: latestProcessor.lastTick,
+        lastHeartbeatAt: latestProcessor.lastHeartbeatAt,
+        lastProgressAt: latestProcessor.lastProgressAt,
+        progressAgeMs: latestProcessor.progressAgeMs,
+        lifecycleCycleCount: latestProcessor.lifecycleCycleCount || 0,
+        tickCount: latestProcessor.tickCount,
+        errorsLast5min: latestProcessor.errorsLast5min || 0,
+        historyPolicy: latestProcessor.historyPolicy || null,
+        heartbeatHealthy: processorHeartbeatHealthy,
+        progressHealthy: processorProgressHealthy,
+        isHealthy: processorRuntime.healthy,
       } : null,
       recovery: recoveryRequestRaw ? (() => {
         try {

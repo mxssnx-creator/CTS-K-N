@@ -103,6 +103,7 @@ __tests__/unit/direct-trade-continuity-cron.test.ts
 __tests__/unit/direct-trade-control-order-route.test.ts
 __tests__/unit/direct-trade-coordination.test.ts
 __tests__/unit/direct-trade-history-policy.test.ts
+__tests__/unit/direct-trade-indication-stats.test.ts
 __tests__/unit/direct-trade-ledger-recovery.test.ts
 __tests__/unit/direct-trade-market-history.test.ts
 __tests__/unit/direct-trade-overview-stats.test.ts
@@ -269,6 +270,7 @@ __tests__/unit/trade-direction.test.ts
 __tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
 __tests__/unit/trade-engine-start-all-accounting.test.ts
 __tests__/unit/trade-engine-start-lock.test.ts
+__tests__/unit/trade-engine-status-healing-race.test.ts
 __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
 __tests__/unit/trailing-dca-strategy.test.ts
@@ -1065,6 +1067,7 @@ lib/detailed-tracking.ts
 lib/direct-trade-config-store.ts
 lib/direct-trade-coordination.ts
 lib/direct-trade-history-policy.cjs
+lib/direct-trade-indication-stats.ts
 lib/direct-trade-keyspace.ts
 lib/direct-trade-ledger-recovery.cjs
 lib/direct-trade-limits.ts
@@ -1377,6 +1380,7 @@ scripts/build-next-with-trace-retry.mjs
 scripts/clean-next-dist.mjs
 scripts/clean-opennext-output.mjs
 scripts/cleanup-bingx-cts-protection-orders.ts
+scripts/compact-direct-trade-configs.ts
 scripts/configure-prod-trading.sh
 scripts/connect-remote-chisel.sh
 scripts/dev-artifact-lock.mjs

@@ -23,6 +23,7 @@ import {
   normaliseDirectTradeTimeframes,
   normaliseDirectTradeStrategyTypes,
   normaliseEntryTactics,
+  normaliseEnabledDirectTradeIndicationTypes,
   normaliseExitTactics,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
@@ -100,6 +101,7 @@ export interface DirectTradeState {
   strategyTypes: DirectTradeStrategyType[]
   historyHours: number
   entryTactics: DirectTradeEntryTactic[]
+  enabledIndicationTypes: DirectTradeEntryTactic[]
   exitTactics: DirectTradeExitTactic[]
   entryTiming: DirectTradeEntryTiming
   activityVolumeRatio: number
@@ -192,6 +194,7 @@ const DEFAULT_STATE: DirectTradeState = {
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   historyHours: 48,
   entryTactics: ["relative"],
+  enabledIndicationTypes: ["relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
@@ -355,6 +358,12 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
         timeframes: normaliseDirectTradeTimeframes(persisted?.timeframes),
         strategyTypes: normaliseDirectTradeStrategyTypes(persisted?.strategyTypes),
         entryTactics: normaliseEntryTactics(persisted?.entryTactics),
+        enabledIndicationTypes: Object.prototype.hasOwnProperty.call(persisted || {}, "enabledIndicationTypes")
+          ? normaliseEnabledDirectTradeIndicationTypes(persisted?.enabledIndicationTypes, [])
+          : normaliseEnabledDirectTradeIndicationTypes(
+            persisted?.entryTactics,
+            DEFAULT_STATE.enabledIndicationTypes,
+          ),
         exitTactics: normaliseExitTactics(persisted?.exitTactics),
         entryTiming: persisted?.entryTiming === "last_confirmed" ? "last_confirmed" : "current",
         recalcIntervalMs: clampRecalculationInterval(persisted?.recalcIntervalMs, DEFAULT_STATE.recalcIntervalMs),
@@ -835,6 +844,9 @@ export async function POST(request: NextRequest) {
         ...(body.historyHours !== undefined ? { historyHours: clampDirectTradeHistoryHours(body.historyHours, DEFAULT_STATE.historyHours) } : {}),
         ...(body.recalcIntervalMs !== undefined ? { recalcIntervalMs: clampRecalculationInterval(body.recalcIntervalMs) } : {}),
         ...(body.entryTactics !== undefined ? { entryTactics: normaliseEntryTactics(body.entryTactics) } : {}),
+        ...(body.enabledIndicationTypes !== undefined ? {
+          enabledIndicationTypes: normaliseEnabledDirectTradeIndicationTypes(body.enabledIndicationTypes, []),
+        } : {}),
         ...(body.exitTactics !== undefined ? { exitTactics: normaliseExitTactics(body.exitTactics) } : {}),
         ...(body.entryTiming !== undefined ? { entryTiming: body.entryTiming === "last_confirmed" ? "last_confirmed" : "current" as const } : {}),
         ...(body.activityVolumeRatio !== undefined ? { activityVolumeRatio: Math.max(0, Number(body.activityVolumeRatio) || 0) } : {}),
@@ -912,6 +924,9 @@ export async function POST(request: NextRequest) {
         ...(body.historyHours !== undefined ? { historyHours: clampDirectTradeHistoryHours(body.historyHours, DEFAULT_STATE.historyHours) } : {}),
         ...(body.recalcIntervalMs !== undefined ? { recalcIntervalMs: clampRecalculationInterval(body.recalcIntervalMs) } : {}),
         ...(body.entryTactics !== undefined ? { entryTactics: normaliseEntryTactics(body.entryTactics) } : {}),
+        ...(body.enabledIndicationTypes !== undefined ? {
+          enabledIndicationTypes: normaliseEnabledDirectTradeIndicationTypes(body.enabledIndicationTypes, []),
+        } : {}),
         ...(body.exitTactics !== undefined ? { exitTactics: normaliseExitTactics(body.exitTactics) } : {}),
         ...(body.entryTiming !== undefined ? { entryTiming: body.entryTiming === "last_confirmed" ? "last_confirmed" : "current" as const } : {}),
         ...(body.activityVolumeRatio !== undefined ? { activityVolumeRatio: Math.max(0, Number(body.activityVolumeRatio) || 0) } : {}),
@@ -967,7 +982,13 @@ export async function POST(request: NextRequest) {
       }
 
       const keys = directTradeKeyspace(scopeConnectionId)
-      await client.set(keys.processorHeartbeat, new Date().toISOString(), { PX: 20_000 })
+      const now = new Date().toISOString()
+      // Heartbeat and full processor-sync run on independent loops. Updating
+      // the full JSON snapshot here creates a read/modify/write race in which
+      // an older heartbeat can overwrite a newer lifecycle progress marker or
+      // authoritative position summary. Keep liveness on its dedicated key;
+      // processor-sync remains the sole writer of the complete snapshot.
+      await client.set(keys.processorHeartbeat, now, { PX: 20_000 })
       return NextResponse.json({ success: true, leaseHeld: true })
     }
 
@@ -989,9 +1010,16 @@ export async function POST(request: NextRequest) {
       const configPerformance = body.configPerformance && typeof body.configPerformance === "object"
         ? body.configPerformance
         : {}
+      const requestedProgressAt = Date.parse(String(body.lastProgressAt || ""))
+      const lastProgressAt = Number.isFinite(requestedProgressAt) && requestedProgressAt <= Date.now() + 1_000
+        ? new Date(requestedProgressAt).toISOString()
+        : null
       const processor = {
         instanceId,
         lastTick: now,
+        lastHeartbeatAt: now,
+        lastProgressAt,
+        lifecycleCycleCount: Math.max(0, Math.floor(Number(body.lifecycleCycleCount) || 0)),
         tickCount: Math.max(0, Math.floor(Number(body.tickCount) || 0)),
         errorsLast5min: Math.max(0, Math.floor(Number(body.errorsLast5min) || 0)),
         lastRecalcAt: typeof body.lastRecalcAt === "number" ? body.lastRecalcAt : null,

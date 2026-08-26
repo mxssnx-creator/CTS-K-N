@@ -3,6 +3,69 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
+## Runtime-stability release in progress (2026-08-26; supersedes older availability notes)
+
+- Canonical checkout: `/workspace/CTS-K-N`, branch
+  `fix/runtime-stats-stability-20260825`, based on GitHub
+  `main@d10dc9529dc14b9073a2ae121e17613e2591a063`. The checked release source
+  commit is `70a628b` (`fix: stabilize runtime stats and direct trade`) and is
+  awaiting GitHub PR publication. The worktree must remain clean apart from
+  the continuation documentation/manifest commit that records this checkpoint.
+- The change set removes the observed hot-path failures: routine Direct-Trade
+  state polls no longer hydrate the full execution grid, large Direct config
+  grids are versioned/gzip-compacted with bounded reads, progression/stats
+  reads are paged, and the Main canonical-pipeline watchdog measures forward
+  progress rather than lease age. Status/progression healing and exact
+  closed-live accounting are regression-tested. Direct indication result
+  tables and enable toggles are persistent; an empty enabled-indication set
+  keeps internal calculations running but blocks live entries.
+- Validation already completed on the pinned remote validation checkout:
+  219/219 unit suites and 1,423/1,423 tests, 4/4 integration suites and
+  58/58 tests, TypeScript and ESLint. The final added hot-path guard also
+  passed its focused 14/14 Direct-Trade API suite. Local `git diff --check`,
+  a 1,505-file secret scan (zero findings), and recreation-manifest
+  verification (1,497 project files) are clean. The current local sandbox
+  lacks a complete pnpm-10 link tree; do not substitute its global pnpm 11 or
+  change the lockfile—use the remote pinned validation/deploy checkout.
+- Current deployed `/opt/cts-kn` is still old `main@217ebd3`, not this fix.
+  Runtime evidence at 2026-08-26 02:09 CEST: Redis 5.71 GiB RSS (unbounded),
+  Next 2.18 GiB RSS, 3.03 MB X02 progression stats response, repeated false
+  five-minute watchdog restarts, and a prior kernel OOM kill of Redis. A
+  stale browser dump process was cleanly terminated. Do not run another build
+  beside the old Next/Redis workload; merge first, back up, stop CTS owners,
+  then clean-clone/install/build the merged main and restart only after gates.
+- Remote access uses the managed Chisel activation
+  `/workspace/.network-clients/activate-cts.sh` and the existing pinned
+  localhost SSH forward. Keep it intact and do not log its credentials, keys,
+  or arguments. X01/Mainnet and Bybit remain read-only. Any live validation is
+  limited to X02 BingX Prod-VST, must use scoped unique IDs, reconcile owned
+  positions/orders back to the pre-test baseline, and must never be presented
+  as a profitability guarantee.
+- Latest verified local pre-commit recovery point:
+  `/workspace/backups/CTS-K-N/20260826T001551Z-precommit-runtime-stats`.
+  It contains a complete Git bundle, binary patch, untracked archive/list,
+  HEAD/status records and a SHA-256 manifest that was successfully verified.
+
+## Backup gate checkpoint (2026-08-26)
+
+- Canonical persistent checkout remains `/workspace/CTS-K-N`. GitHub `main` and
+  the active branch `fix/runtime-stats-stability-20260825` both resolve to
+  `d10dc9529dc14b9073a2ae121e17613e2591a063`; there are no open pull requests.
+- The active worktree contains 42 intended but uncommitted Direct-Trade/runtime
+  stability changes. It was preserved without reset. A verified, credential-free
+  local checkpoint is `/workspace/backups/CTS-K-N/backup-gate-2026-08-26T0157Z`:
+  sanitized source archive, source Git bundle, binary patch, untracked list,
+  HEAD/status records and SHA-256 manifest all verify. Do not upload its source
+  archive without explicit permission.
+- Publication is blocked: the canonical checkout had no runnable dependency
+  tree. A pinned, offline `pnpm install --frozen-lockfile --offline` could not
+  restore the exact lockfile because `@hookform/resolvers@3.10.0` is absent from
+  the local pnpm store, so typecheck, lint, Jest, source syntax, security scan,
+  build and release validation cannot be reproduced. No commit, push, PR or
+  merge was performed. Restore the approved pinned dependency cache or install
+  against the registry with the lockfile unchanged, then run the full gate on
+  this exact worktree before publishing.
+
 ## Binding continuation checkpoint (2026-08-24, current)
 
 - This section supersedes every older checkout/path statement below it. The

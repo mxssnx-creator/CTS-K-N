@@ -14,6 +14,34 @@ function parseEngineRefreshRequestTtlMs(): number {
 export const ENGINE_REFRESH_REQUEST_TTL_MS = parseEngineRefreshRequestTtlMs()
 const ENGINE_REFRESH_REQUEST_INDEX = "engine_coordinator:refresh_requested:index"
 
+// Queues written before the maintained Set index existed require one legacy
+// namespace discovery pass. Coalesce that recovery per process and never run
+// KEYS on every idle poll: with a large Redis dataset the former empty-index
+// fallback blocked Redis for tens of milliseconds every few seconds even
+// though there were no queued requests.
+let legacyRefreshIndexRecoveryComplete = false
+let legacyRefreshIndexRecoveryInFlight: Promise<string[]> | null = null
+
+async function recoverLegacyRefreshRequestConnectionIds(client: any): Promise<string[]> {
+  if (legacyRefreshIndexRecoveryComplete) return []
+  if (legacyRefreshIndexRecoveryInFlight) return legacyRefreshIndexRecoveryInFlight
+
+  const recovery = client
+    .keys(`settings:${ENGINE_REFRESH_REQUEST_PREFIX}*`)
+    .catch(() => [] as string[])
+    .then((keys: string[]) => keys
+      .filter((redisKey: string) => !redisKey.endsWith(ENGINE_REFRESH_REQUEST_INDEX))
+      .map((redisKey: string) => redisKey.replace(/^settings:/, "").slice(ENGINE_REFRESH_REQUEST_PREFIX.length))
+      .filter(Boolean))
+    .finally(() => {
+      legacyRefreshIndexRecoveryComplete = true
+      legacyRefreshIndexRecoveryInFlight = null
+    })
+  legacyRefreshIndexRecoveryInFlight = recovery
+
+  return recovery
+}
+
 export const ENGINE_REFRESH_CLAIM_PREFIX = "engine_coordinator:refresh_claim:"
 export const ENGINE_REFRESH_CLAIM_TTL_MS = 60_000
 
@@ -355,12 +383,9 @@ export async function getQueuedEngineRefreshRequests(): Promise<Array<{ key: str
   const client = getRedisClient()
   let connectionIds = await (client.smembers?.(`settings:${ENGINE_REFRESH_REQUEST_INDEX}`) ?? Promise.resolve([] as string[])).catch(() => [] as string[])
   if (!connectionIds || connectionIds.length === 0) {
-    // Backward-compatible fallback for queues written before the index existed.
-    const keys = await client.keys(`settings:${ENGINE_REFRESH_REQUEST_PREFIX}*`).catch(() => [] as string[])
-    connectionIds = keys
-      .filter((redisKey: string) => !redisKey.endsWith(ENGINE_REFRESH_REQUEST_INDEX))
-      .map((redisKey: string) => redisKey.replace(/^settings:/, "").slice(ENGINE_REFRESH_REQUEST_PREFIX.length))
-      .filter(Boolean)
+    // Backward-compatible, process-once recovery for queues written before
+    // the index existed. New requests always SADD the maintained index.
+    connectionIds = await recoverLegacyRefreshRequestConnectionIds(client)
   }
 
   const missingConnectionIds: string[] = []

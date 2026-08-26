@@ -15,6 +15,19 @@ describe("CanonicalPipelineAdmission", () => {
     expect(admission.tryAcquire("bootstrap", 1_175)).toBe(false)
     expect(admission.activeOwner).toBe("scheduled")
     expect(admission.ageMs(1_250)).toBe(250)
+    expect(admission.progressAgeMs(1_250)).toBe(250)
+  })
+
+  test("tracks phase progress without erasing the age of an active lease", () => {
+    const admission = new CanonicalPipelineAdmission()
+
+    expect(admission.tryAcquire("bootstrap", 10_000)).toBe(true)
+    expect(admission.touch("scheduled", 10_500)).toBe(false)
+    expect(admission.touch("bootstrap", 12_000)).toBe(true)
+    expect(admission.ageMs(15_000)).toBe(5_000)
+    expect(admission.progressAgeMs(15_000)).toBe(3_000)
+    expect(admission.release("bootstrap")).toBe(true)
+    expect(admission.progressAgeMs(16_000)).toBe(0)
   })
 
   test("does not let a rejected caller release the active owner", () => {

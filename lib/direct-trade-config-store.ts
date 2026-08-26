@@ -1,4 +1,5 @@
-import type { RedisClientLike } from "@/lib/redis-db"
+import { gzip, gunzip } from "node:zlib"
+import { getRedisBackend, type RedisClientLike } from "@/lib/redis-db"
 import {
   directTradeConfigChunkKeyForScope,
   directTradeKeyspace,
@@ -15,9 +16,14 @@ export const DIRECT_TRADE_EXECUTION_SIGNAL_INDEX_KEY = "direct_trade:execution-s
 export const DIRECT_TRADE_ACTIVE_SIGNAL_KEYS_KEY = "direct_trade:active-signals"
 
 export const DIRECT_TRADE_CONFIG_CHUNK_SIZE = 10_000
+export const DIRECT_TRADE_CONFIG_LEGACY_MAX_BYTES = 1 * 1024 * 1024
+export const DIRECT_TRADE_CONFIG_CHUNK_ENCODING = "gzip-base64-json" as const
+const DIRECT_TRADE_CONFIG_GUNZIP_MAX_BYTES = 128 * 1024 * 1024
+const DIRECT_TRADE_CONFIG_READ_CHUNK_BATCH_SIZE = 2
 
 export interface DirectTradeConfigManifest {
-  version: 1
+  version: 1 | 2
+  encoding?: typeof DIRECT_TRADE_CONFIG_CHUNK_ENCODING
   generation: string
   chunkSize: number
   chunks: number
@@ -36,12 +42,24 @@ export interface DirectTradeConfigStoreWriter {
   finish(): Promise<PreparedDirectTradeConfigStore>
 }
 
+export interface DirectTradeConfigCompactionResult {
+  compacted: boolean
+  connectionId: string | null
+  previousGeneration: string | null
+  generation: string | null
+  chunks: number
+  total: number
+  originalBytes: number
+  storedBytes: number
+}
+
 function safeManifest(raw: string | null): DirectTradeConfigManifest | null {
   if (!raw) return null
   try {
     const value = JSON.parse(raw)
     if (
-      value?.version === 1 &&
+      (value?.version === 1 || value?.version === 2) &&
+      (value?.version !== 2 || value?.encoding === DIRECT_TRADE_CONFIG_CHUNK_ENCODING) &&
       typeof value?.generation === "string" &&
       Number.isInteger(value?.chunkSize) && value.chunkSize > 0 &&
       Number.isInteger(value?.chunks) && value.chunks >= 0 &&
@@ -49,6 +67,44 @@ function safeManifest(raw: string | null): DirectTradeConfigManifest | null {
     ) return value as DirectTradeConfigManifest
   } catch {}
   return null
+}
+
+function gzipConfigChunk(raw: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    gzip(raw, { level: 6 }, (error, compressed) => {
+      if (error) reject(error)
+      else resolve(compressed.toString("base64"))
+    })
+  })
+}
+
+function gunzipConfigChunk(raw: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    gunzip(
+      Buffer.from(raw, "base64"),
+      { maxOutputLength: DIRECT_TRADE_CONFIG_GUNZIP_MAX_BYTES },
+      (error, decompressed) => {
+        if (error) reject(error)
+        else resolve(decompressed.toString("utf8"))
+      },
+    )
+  })
+}
+
+async function decodeConfigChunk(
+  raw: string | null,
+  manifest: DirectTradeConfigManifest,
+): Promise<any[]> {
+  if (!raw) return []
+  try {
+    const json = manifest.version === 2 && manifest.encoding === DIRECT_TRADE_CONFIG_CHUNK_ENCODING
+      ? await gunzipConfigChunk(raw)
+      : raw
+    const parsed = JSON.parse(json)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
 }
 
 export function directTradeConfigChunkKey(
@@ -100,7 +156,8 @@ export async function createDirectTradeConfigStoreWriter(
 
   const flush = async () => {
     const rows = pending.splice(0, DIRECT_TRADE_CONFIG_CHUNK_SIZE)
-    await client.set(directTradeConfigChunkKey(generation, chunks, connectionId), JSON.stringify(rows))
+    const compressed = await gzipConfigChunk(JSON.stringify(rows))
+    await client.set(directTradeConfigChunkKey(generation, chunks, connectionId), compressed)
     chunks++
   }
 
@@ -119,12 +176,17 @@ export async function createDirectTradeConfigStoreWriter(
       if (finished) throw new Error("Direct-Trade config writer is already finished")
       finished = true
       if (chunks === 0) {
-        return { manifest: null, legacyJson: JSON.stringify(pending), previousManifest }
+        const legacyJson = JSON.stringify(pending)
+        if (Buffer.byteLength(legacyJson, "utf8") <= DIRECT_TRADE_CONFIG_LEGACY_MAX_BYTES) {
+          return { manifest: null, legacyJson, previousManifest }
+        }
+        await flush()
       }
       if (pending.length > 0) await flush()
       return {
         manifest: {
-          version: 1,
+          version: 2,
+          encoding: DIRECT_TRADE_CONFIG_CHUNK_ENCODING,
           generation,
           chunkSize: DIRECT_TRADE_CONFIG_CHUNK_SIZE,
           chunks,
@@ -139,7 +201,7 @@ export async function createDirectTradeConfigStoreWriter(
 }
 
 export async function deleteDirectTradeConfigGeneration(
-  client: Pick<RedisClientLike, "del">,
+  client: Pick<RedisClientLike, "del" | "eval">,
   manifest: DirectTradeConfigManifest | null,
   connectionId?: string | null,
 ): Promise<void> {
@@ -150,7 +212,124 @@ export async function deleteDirectTradeConfigGeneration(
       { length: Math.min(batchSize, manifest.chunks - start) },
       (_, offset) => directTradeConfigChunkKey(manifest.generation, start + offset, connectionId),
     )
+    if (getRedisBackend() === "redis-network" && typeof client.eval === "function") {
+      const unlinked = await client.eval(
+        "return redis.call('UNLINK', unpack(KEYS))",
+        { keys, arguments: [] },
+      ).then(() => true).catch(() => false)
+      if (unlinked) continue
+    }
     await client.del(...keys).catch(() => 0)
+  }
+}
+
+/**
+ * Rewrite an already-published version-1 JSON generation into the compressed
+ * version-2 format without recalculating or reordering any configuration.
+ * Publication is compare-and-swap guarded by the exact prior manifest, so a
+ * concurrent calculation can win safely and the compactor will discard its
+ * unreachable generation instead of replacing newer results.
+ */
+export async function compactDirectTradeConfigGeneration(
+  client: RedisClientLike,
+  connectionId?: string | null,
+  onProgress?: (progress: { completed: number; total: number; originalBytes: number; storedBytes: number }) => void,
+): Promise<DirectTradeConfigCompactionResult> {
+  const keys = directTradeKeyspace(connectionId)
+  const previousManifestRaw = await client.get(keys.configManifest).catch(() => null)
+  const previousManifest = safeManifest(previousManifestRaw)
+  if (!previousManifest || previousManifest.version === 2) {
+    return {
+      compacted: false,
+      connectionId: connectionId || null,
+      previousGeneration: previousManifest?.generation || null,
+      generation: previousManifest?.generation || null,
+      chunks: previousManifest?.chunks || 0,
+      total: previousManifest?.total || 0,
+      originalBytes: 0,
+      storedBytes: 0,
+    }
+  }
+
+  const generation = `${Date.now().toString(36)}-compact-${Math.random().toString(36).slice(2, 10)}`
+  let chunksWritten = 0
+  let originalBytes = 0
+  let storedBytes = 0
+  let published = false
+
+  try {
+    for (let index = 0; index < previousManifest.chunks; index++) {
+      const raw = await client.get(
+        directTradeConfigChunkKey(previousManifest.generation, index, connectionId),
+      )
+      if (raw === null) {
+        throw new Error(`Direct-Trade config generation ${previousManifest.generation} is missing chunk ${index}`)
+      }
+      const compressed = await gzipConfigChunk(raw)
+      await client.set(directTradeConfigChunkKey(generation, index, connectionId), compressed)
+      chunksWritten++
+      originalBytes += Buffer.byteLength(raw, "utf8")
+      storedBytes += Buffer.byteLength(compressed, "utf8")
+      onProgress?.({
+        completed: chunksWritten,
+        total: previousManifest.chunks,
+        originalBytes,
+        storedBytes,
+      })
+    }
+
+    const nextManifest: DirectTradeConfigManifest = {
+      version: 2,
+      encoding: DIRECT_TRADE_CONFIG_CHUNK_ENCODING,
+      generation,
+      chunkSize: previousManifest.chunkSize,
+      chunks: previousManifest.chunks,
+      total: previousManifest.total,
+      publishedAt: new Date().toISOString(),
+    }
+    const nextManifestRaw = JSON.stringify(nextManifest)
+
+    if (getRedisBackend() === "redis-network" && typeof client.eval === "function") {
+      const result = await client.eval(
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2]); return 1 else return 0 end",
+        { keys: [keys.configManifest], arguments: [previousManifestRaw || "", nextManifestRaw] },
+      )
+      published = Number(result) === 1
+    } else {
+      const currentManifestRaw = await client.get(keys.configManifest).catch(() => null)
+      if (currentManifestRaw === previousManifestRaw) {
+        await client.set(keys.configManifest, nextManifestRaw)
+        published = true
+      }
+    }
+    if (!published) {
+      throw new Error("Direct-Trade config manifest changed during compaction")
+    }
+
+    await deleteDirectTradeConfigGeneration(client, previousManifest, connectionId)
+    return {
+      compacted: true,
+      connectionId: connectionId || null,
+      previousGeneration: previousManifest.generation,
+      generation,
+      chunks: nextManifest.chunks,
+      total: nextManifest.total,
+      originalBytes,
+      storedBytes,
+    }
+  } catch (error) {
+    if (!published && chunksWritten > 0) {
+      await deleteDirectTradeConfigGeneration(client, {
+        version: 2,
+        encoding: DIRECT_TRADE_CONFIG_CHUNK_ENCODING,
+        generation,
+        chunkSize: previousManifest.chunkSize,
+        chunks: chunksWritten,
+        total: 0,
+        publishedAt: new Date().toISOString(),
+      }, connectionId)
+    }
+    throw error
   }
 }
 
@@ -184,20 +363,21 @@ export async function readDirectTradeConfigsAtIndexes(
     if (entries) entries.push(index)
     else byChunk.set(chunkIndex, [index])
   }
-  const parsedChunks = new Map<number, any[]>()
+  const selectedConfigs = new Map<number, any>()
   const chunkIndexes = [...byChunk.keys()]
-  for (let start = 0; start < chunkIndexes.length; start += 32) {
-    const batch = chunkIndexes.slice(start, start + 32)
+  for (let start = 0; start < chunkIndexes.length; start += DIRECT_TRADE_CONFIG_READ_CHUNK_BATCH_SIZE) {
+    const batch = chunkIndexes.slice(start, start + DIRECT_TRADE_CONFIG_READ_CHUNK_BATCH_SIZE)
     const values = await client.mget(...batch.map((chunkIndex) => directTradeConfigChunkKey(manifest.generation, chunkIndex, connectionId)))
     for (let offset = 0; offset < batch.length; offset++) {
-      try {
-        const parsed = values[offset] ? JSON.parse(values[offset] as string) : []
-        if (Array.isArray(parsed)) parsedChunks.set(batch[offset], parsed)
-      } catch {}
+      const chunkIndex = batch[offset]
+      const parsed = await decodeConfigChunk(values[offset] as string | null, manifest)
+      for (const configIndex of byChunk.get(chunkIndex) || []) {
+        const config = parsed[configIndex % manifest.chunkSize]
+        if (config && typeof config === "object") selectedConfigs.set(configIndex, config)
+      }
     }
   }
-  return uniqueIndexes.map((index) => {
-    const chunk = parsedChunks.get(Math.floor(index / manifest.chunkSize))
-    return chunk?.[index % manifest.chunkSize]
-  }).filter((config) => config && typeof config === "object")
+  return uniqueIndexes
+    .map((index) => selectedConfigs.get(index))
+    .filter((config) => config && typeof config === "object")
 }

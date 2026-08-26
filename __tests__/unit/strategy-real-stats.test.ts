@@ -123,6 +123,29 @@ describe("Strategy Stage Real detailed position stats", () => {
     expect(result.hedge.offsetPositionLegs).toBe(0)
   })
 
+  test("keeps hedge totals exact while bounding verbose related-Base rows", () => {
+    const result = buildRealStagePositionStats({
+      hedgePosAccHash: {
+        "BTCUSDT:direction:long": "5",
+        "BTCUSDT:direction:short": "1",
+        "ETHUSDT:move:long": "2",
+        "ETHUSDT:move:short": "2",
+      },
+      detailWindow: { offset: 0, limit: 1 },
+    })
+
+    expect(result.hedge).toMatchObject({
+      totalLongEntries: 7,
+      totalShortEntries: 3,
+      baseCount: 2,
+      perBaseTotal: 2,
+      perBaseOffset: 0,
+      perBaseReturned: 1,
+      perBaseTruncated: true,
+    })
+    expect(result.hedge.perBase).toHaveLength(1)
+  })
+
   test("uses evaluation counts only for pre-ledger variant history", () => {
     const result = buildRealStagePositionStats({
       strategyVariants: {

@@ -26,6 +26,11 @@ precedence over stale workspace paths in older notes.
 - Never print, commit, bundle, or copy into chat: SSH/Chisel secrets, private
   keys, exchange credentials, `.env` contents, raw account reports, or Redis
   snapshots. Load existing owner-only credentials only at the execution edge.
+- For remote work, use the managed Chisel activation at
+  `/workspace/.network-clients/activate-cts.sh` and its pinned localhost SSH
+  forward. Validate the existing tunnel before operating the server; never
+  replace it with an ad-hoc proxy or reveal its credentials, keys, or server
+  arguments in logs, commits, reports, or chat.
 - Use the lockfile and the pinned package-manager version for dependencies.
   Do not upgrade runtimes or dependencies incidentally during maintenance.
 - Before handoff, update `.kilocode/rules/memory-bank/context.md` with the exact

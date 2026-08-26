@@ -94,6 +94,17 @@ describe("engine refresh queue claims", () => {
     expect(state.settings.get(`engine_coordinator:refresh_requested:${request.connectionId}`)).toBeUndefined()
   })
 
+  test("performs legacy empty-index discovery only once per process", async () => {
+    const state = mockRedis()
+    const { getQueuedEngineRefreshRequests } = await import("@/lib/engine-refresh-queue")
+
+    await getQueuedEngineRefreshRequests()
+    await getQueuedEngineRefreshRequests()
+
+    expect(state.client.keys).toHaveBeenCalledTimes(1)
+    expect(state.client.keys).toHaveBeenCalledWith("settings:engine_coordinator:refresh_requested:*")
+  })
+
   test("failed actions record failure, keep request queued, and release claim", async () => {
     const state = mockRedis()
     const { queueEngineRefreshRequest, processQueuedEngineRefreshRequests, ENGINE_REFRESH_CLAIM_PREFIX } = await import(
