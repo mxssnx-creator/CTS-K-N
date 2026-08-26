@@ -15,6 +15,11 @@ precedence over stale workspace paths in older notes.
   patch, untracked-file archive/list, HEAD/status records, SHA-256 manifest,
   `sha256sum -c`, and `git bundle verify`. Protect backup directories/files
   with owner-only permissions. Never place credentials or Redis data in Git.
+- After a material source change has passed its required validation, commit it
+  and push it to GitHub through the reviewed branch/PR flow before it is
+  treated as a deployable result. If GitHub is temporarily unreachable, retain
+  the verified checkpoint, record the exact blocker, and do not describe the
+  change as published.
 - Deploy only a merged, green GitHub `main`. Preserve the remote `.env`, Redis
   persistence, exchange credentials, systemd configuration, and rollback
   binaries. Resolve exact services, revisions, and paths read-only before any
@@ -31,6 +36,10 @@ precedence over stale workspace paths in older notes.
   forward. Validate the existing tunnel before operating the server; never
   replace it with an ad-hoc proxy or reveal its credentials, keys, or server
   arguments in logs, commits, reports, or chat.
+- Treat the managed Chisel listener as a production-access prerequisite:
+  diagnose and restart only the managed client when the pinned forward is not
+  healthy, verify the localhost SSH banner before remote work, and record a
+  broker/network blocker instead of falling back to another route.
 - Use the lockfile and the pinned package-manager version for dependencies.
   Do not upgrade runtimes or dependencies incidentally during maintenance.
 - Before handoff, update `.kilocode/rules/memory-bank/context.md` with the exact
