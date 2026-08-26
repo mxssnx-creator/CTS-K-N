@@ -96,6 +96,12 @@ export async function GET(
     const canonicalPipelineAgeMs = canonicalPipelineInFlight
       ? Math.max(0, Number(localManager?.canonicalPipelineAgeMs) || 0)
       : 0
+    const canonicalPipelineProgressAgeMs = canonicalPipelineInFlight
+      ? Math.max(0, Number(localManager?.canonicalPipelineProgressAgeMs) || 0)
+      : 0
+    const canonicalPipelineOwner = canonicalPipelineInFlight
+      ? localManager?.canonicalPipelineOwner ?? null
+      : null
 
     const hasLocalConnectionRuntime = Boolean(localManager?.isEngineRunning)
     const connectionRunning =
@@ -140,6 +146,8 @@ export async function GET(
       hasFreshScheduledCycle,
       canonicalPipelineInFlight,
       canonicalPipelineAgeMs,
+      canonicalPipelineProgressAgeMs,
+      canonicalPipelineOwner,
       canonicalCycleBudgetExceededCount,
       canonicalCycleBudgetLastAt: canonicalCycleBudgetLastAt || null,
       canonicalCycleBudgetMs: canonicalCycleBudgetMs || null,

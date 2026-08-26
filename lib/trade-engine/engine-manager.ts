@@ -515,6 +515,7 @@ import { getStrategyMemoryCoordinationSnapshot } from "@/lib/strategy-memory-gua
 import { withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import {
+  historicReplayNeedsCanonicalAdmission,
   historicReplayNeedsRealtimeWarmup,
   resolveHistoricReplayMode,
 } from "./historic-replay-policy"
@@ -4636,6 +4637,12 @@ export class TradeEngineManager {
     let firstPassDone = false
     const connId = this.connectionId
     const replayMode = resolveHistoricReplayMode()
+    // The normal realtime bridge only advances one durable market-data
+    // watermark. It never executes the Base→Main→Real graph, so making it
+    // own the canonical CPU admission while Redis serves that watermark can
+    // stall the actual scheduled pipeline. Exact replay does execute the full
+    // graph and therefore remains serialized with scheduled/immediate work.
+    const requiresHistoricAdmission = historicReplayNeedsCanonicalAdmission(replayMode)
     const entryGeneration = this.entryProcessingGeneration
     // Adaptive pause tracking — see scheduleNext above.
     let _ppLastSteps = 0
@@ -4712,9 +4719,13 @@ export class TradeEngineManager {
         entryGeneration !== this.entryProcessingGeneration
       ) return
       if (await this.stopIfSupersededByNewGeneration("prehistoric-tick")) return
-      if (!this.canonicalPipelineAdmission.tryAcquire("historic")) {
-        scheduleAdmissionRetry()
-        return
+      let ownsHistoricAdmission = false
+      if (requiresHistoricAdmission) {
+        if (!this.canonicalPipelineAdmission.tryAcquire("historic")) {
+          scheduleAdmissionRetry()
+          return
+        }
+        ownsHistoricAdmission = true
       }
       const cycleStart = Date.now()
 
@@ -4789,11 +4800,17 @@ export class TradeEngineManager {
           : 1
         const client = getRedisClient()
         const cycleSettingsVersion = this.settingsVersion
-        const shouldContinue = () =>
-          this.isRunning &&
-          this.liveProgressionsArmed &&
-          entryGeneration === this.entryProcessingGeneration &&
-          cycleSettingsVersion === this.settingsVersion
+        const shouldContinue = () => {
+          const current =
+            this.isRunning &&
+            this.liveProgressionsArmed &&
+            entryGeneration === this.entryProcessingGeneration &&
+            cycleSettingsVersion === this.settingsVersion
+          if (current && ownsHistoricAdmission) {
+            this.canonicalPipelineAdmission.touch("historic")
+          }
+          return current
+        }
 
         type ReplaySymbolResult = {
           symbol: string
@@ -5090,7 +5107,9 @@ export class TradeEngineManager {
           0,
         )
         const successCount = results.filter((r: any) => r && !r.error).length
-        this.canonicalPipelineAdmission.touch("historic")
+        if (ownsHistoricAdmission) {
+          this.canonicalPipelineAdmission.touch("historic")
+        }
         try {
           const telemetryClient = getRedisClient()
           const progKey = `progression:${connId}`
@@ -5140,7 +5159,9 @@ export class TradeEngineManager {
         )
       } finally {
         await this.refreshCanonicalPipelineHeartbeat().catch(() => undefined)
-        this.canonicalPipelineAdmission.release("historic")
+        if (ownsHistoricAdmission) {
+          this.canonicalPipelineAdmission.release("historic")
+        }
         scheduleNext()
       }
     }

@@ -486,6 +486,15 @@ const EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS = 3_000
 const EXCHANGE_AMBIGUOUS_RECOVERY_MS    = 3_000
 const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption + sync prefetch
 const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via next sync tick on miss
+const SYSTEM_CLOSE_RETRY_DELAYS_MS = [60_000, 120_000, 240_000, 300_000] as const
+
+type SystemCloseFailureClass =
+  | "timeout"
+  | "rate_limit"
+  | "network"
+  | "venue_unavailable"
+  | "venue_rejection"
+  | "invalid_response"
 
 // ── Global SL/TP placement semaphore ────────────────────────��────────────
 // 4 symbols × 2 directions × 2 stops (SL+TP) = up to 16 concurrent stop calls.
@@ -729,6 +738,20 @@ interface LivePosition {
     appliedFilledQuantity?: number
     absenceConfirmations?: number
   }
+  /**
+   * Backoff after a failed system-owned close. This is intentionally separate
+   * from pendingSystemAction: the pending action keeps an ambiguous delivery
+   * on the same durable client id until it is reconciled, while this marker can
+   * survive after confirmed absence so venue protection may be re-armed during
+   * the bounded wait before a new close id is prepared.
+   */
+  systemCloseRetry?: {
+    reason: string
+    retryCount: number
+    nextRetryAt: number
+    lastFailureClass: SystemCloseFailureClass
+    updatedAt: number
+  }
   /** Durable protection-to-quantity barrier. A position-size mutation cannot
    * outlive a failed authoritative snapshot and then continue from stale size. */
   pendingQuantityMutation?: {
@@ -886,6 +909,50 @@ function resolveLivePositionDirection(position: Pick<LivePosition, "direction" |
     position.side,
     (position.exchangeData as any)?.positionSide,
     (position.exchangeData as any)?.side,
+  )
+}
+
+function classifySystemCloseFailure(error: unknown): SystemCloseFailureClass {
+  const message = String(error || "").toLowerCase()
+  if (message.includes("timeout") || message.includes("timed out")) return "timeout"
+  if (message.includes("rate limit") || message.includes("429")) return "rate_limit"
+  if (message.includes("econn") || message.includes("network") || message.includes("socket")) return "network"
+  if (message.includes("502") || message.includes("503") || message.includes("unavailable")) {
+    return "venue_unavailable"
+  }
+  if (!message || message === "invalid_response") return "invalid_response"
+  return "venue_rejection"
+}
+
+function scheduleSystemCloseRetry(
+  position: LivePosition,
+  failure: unknown,
+  nowMs = Date.now(),
+): NonNullable<LivePosition["systemCloseRetry"]> {
+  const previousCount = Math.max(0, Math.floor(Number(position.systemCloseRetry?.retryCount) || 0))
+  const retryCount = previousCount + 1
+  const delay = SYSTEM_CLOSE_RETRY_DELAYS_MS[
+    Math.min(retryCount - 1, SYSTEM_CLOSE_RETRY_DELAYS_MS.length - 1)
+  ]
+  const retry = {
+    reason: String(position.pendingSystemAction?.reason || position.systemCloseRetry?.reason || "system_close"),
+    retryCount,
+    nextRetryAt: nowMs + delay,
+    lastFailureClass: classifySystemCloseFailure(failure),
+    updatedAt: nowMs,
+  } satisfies NonNullable<LivePosition["systemCloseRetry"]>
+  position.systemCloseRetry = retry
+  return retry
+}
+
+function isSystemCloseRetryDeferred(position: LivePosition, nowMs = Date.now()): boolean {
+  return Number(position.systemCloseRetry?.nextRetryAt || 0) > nowMs
+}
+
+function hasUnresolvedSystemCloseDelivery(position: LivePosition): boolean {
+  return Boolean(
+    position.pendingSystemAction?.clientOrderId ||
+    position.pendingSystemAction?.orderId,
   )
 }
 
@@ -1587,6 +1654,7 @@ function livePositionDurabilityFingerprint(position: LivePosition): string {
     position.pendingAccumulation ? JSON.stringify(position.pendingAccumulation) : "",
     position.pendingReduction ? JSON.stringify(position.pendingReduction) : "",
     position.pendingSystemAction ? JSON.stringify(position.pendingSystemAction) : "",
+    position.systemCloseRetry ? JSON.stringify(position.systemCloseRetry) : "",
     position.pendingQuantityMutation ? JSON.stringify(position.pendingQuantityMutation) : "",
   ].join("|")
 }
@@ -1751,6 +1819,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     pendingSystemAction: typeof hash.pendingSystemAction === "string"
       ? safeJsonParse<LivePosition["pendingSystemAction"]>(hash.pendingSystemAction, undefined)
       : hash.pendingSystemAction,
+    systemCloseRetry: typeof hash.systemCloseRetry === "string"
+      ? safeJsonParse<LivePosition["systemCloseRetry"]>(hash.systemCloseRetry, undefined)
+      : hash.systemCloseRetry,
     pendingQuantityMutation: typeof hash.pendingQuantityMutation === "string"
       ? safeJsonParse<LivePosition["pendingQuantityMutation"]>(hash.pendingQuantityMutation, undefined)
       : hash.pendingQuantityMutation,
@@ -10903,6 +10974,27 @@ export async function closeLivePosition(
     position.side ??= resolvedDirection
     const originalStatus = position.status
 
+    // Once an ambiguous close delivery has been proved absent, keep the
+    // position protected and avoid entering the mutation/cancellation path at
+    // all until its durable retry window opens. An unresolved client/order id
+    // is never short-circuited here: it must first pass the authoritative
+    // recovery barrier below so the same delivery cannot be submitted twice.
+    if (
+      exchangeConnector &&
+      originalStatus !== "simulated" &&
+      isSystemCloseRetryDeferred(position) &&
+      !hasUnresolvedSystemCloseDelivery(position)
+    ) {
+      logRuntimeInfo(
+        `system-close-backoff:${connectionId}:${position.id}`,
+        30_000,
+        `${LOG_PREFIX} System close retry deferred for ${position.symbol} ${position.direction}; ` +
+          `attempt=${position.systemCloseRetry?.retryCount || 0} ` +
+          `class=${position.systemCloseRetry?.lastFailureClass || "unknown"}`,
+      )
+      return position
+    }
+
     const locked = await acquirePositionMutationLock(connectionId, livePositionId, lockId)
     if (!locked) return null
     mutationLockHeld = true
@@ -11003,6 +11095,41 @@ export async function closeLivePosition(
         return position
       }
 
+      if (barrier.decision === "proceed_system" && isSystemCloseRetryDeferred(position)) {
+        // The previous durable client/order id has now been authoritatively
+        // reconciled absent. Retire only that action marker, retain the retry
+        // backoff, restore the open lifecycle and re-arm venue protection.
+        // The future retry will prepare a new id only after nextRetryAt.
+        position.pendingSystemAction = undefined
+        const rollbackStatus: LivePosition["status"] = originalStatus && originalStatus !== "closing"
+          ? originalStatus
+          : "open"
+        position.status = rollbackStatus
+        position.statusReason =
+          `system_close_retry_backoff: attempt=${position.systemCloseRetry?.retryCount || 0}; ` +
+          `class=${position.systemCloseRetry?.lastFailureClass || "unknown"}; ` +
+          `retry_at=${position.systemCloseRetry?.nextRetryAt || 0}`
+        position.lockedAt = 0
+        position.lockedBy = undefined
+        const rollback = await mutatePositionWithVersionCheck(position, ["closing"], draft => {
+          Object.assign(draft, position)
+          draft.status = rollbackStatus
+          draft.lockedAt = 0
+          draft.lockedBy = undefined
+        })
+        if (rollback) Object.assign(position, rollback)
+        await savePosition(position)
+        await persistCriticalLiveState(`system-close-backoff:${position.id}`)
+        await rearmProtectionAfterQuantityMutation(
+          exchangeConnector,
+          position,
+          "system_close_retry_backoff_rearm",
+        )
+        await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+        mutationLockHeld = false
+        return position
+      }
+
       if (barrier.decision === "exchange_closed") {
         position.executedQuantity = 0
         position.quantity = 0
@@ -11045,6 +11172,7 @@ export async function closeLivePosition(
       const maxRetries = 1
       const backoffMs = [500]
       const CLOSE_ATTEMPT_TIMEOUT_MS = 35_000
+      let terminalCloseError = "invalid_response"
 
       const isAlreadyClosedError = (msg: string): boolean => {
         const m = String(msg || "").toLowerCase()
@@ -11149,6 +11277,7 @@ export async function closeLivePosition(
           }
 
           lastErrorMsg = (r && typeof r === "object" && r.error) ? String(r.error) : "invalid_response"
+          terminalCloseError = lastErrorMsg
 
           // ── Already-closed reconciliation ─��─���─────────────────────────
           // If the venue says the position is gone, we treat the close as
@@ -11175,6 +11304,7 @@ export async function closeLivePosition(
           break
         } catch (err) {
           lastErrorMsg = err instanceof Error ? err.message : String(err)
+          terminalCloseError = lastErrorMsg
           console.error(`${LOG_PREFIX} [v0] Exchange close threw error (attempt ${attempt + 1}): ${lastErrorMsg}`)
           // Thrown timeouts and network errors ARE retryable.
           if (attempt < maxRetries - 1 && isRetryableError(lastErrorMsg)) {
@@ -11187,8 +11317,14 @@ export async function closeLivePosition(
 
       if (!exchangeCloseSuccess) {
         exchangeCloseReason = "failed"
+        const retry = scheduleSystemCloseRetry(position, terminalCloseError)
+        if (position.pendingSystemAction) {
+          position.pendingSystemAction.phase = "system_verify"
+          position.pendingSystemAction.updatedAt = retry.updatedAt
+        }
         console.error(
-          `${LOG_PREFIX} [v0] FAILED to close position on exchange after ${maxRetries} attempts: ${position.symbol} ${position.direction}`,
+          `${LOG_PREFIX} [v0] FAILED to close position on exchange after ${maxRetries} attempts: ` +
+            `${position.symbol} ${position.direction}; retry=${retry.retryCount} class=${retry.lastFailureClass}`,
         )
       }
     }
@@ -11241,6 +11377,7 @@ export async function closeLivePosition(
           // reduce-only controls.
           if (isTerminalSystemCloseOrder(orderDetail)) {
             position.pendingSystemAction = undefined
+            position.systemCloseRetry = undefined
             position.status = "open"
             position.statusReason =
               `system_close_partial_settled: open=${authoritative.quantity}; protection re-arm queued from terminal close order`
@@ -11283,6 +11420,7 @@ export async function closeLivePosition(
           return position
         }
         position.pendingSystemAction = undefined
+        position.systemCloseRetry = undefined
       } else if (typeof exchangeConnector.getPosition === "function") {
         position.status = "closing_partial"
         position.statusReason = "system_close_accepted_but_exchange_effect_unconfirmed"
@@ -11330,7 +11468,9 @@ export async function closeLivePosition(
         : "open"
       position.status = rollbackStatus
       position.statusReason =
-        `close_failed_exchange_unconfirmed: ${closeReason}; position kept open until authoritative exchange confirmation`
+        `close_failed_exchange_unconfirmed: ${closeReason}; position kept open; ` +
+        `retry_at=${position.systemCloseRetry?.nextRetryAt || 0}; ` +
+        `class=${position.systemCloseRetry?.lastFailureClass || "unknown"}`
       position.closeReason = undefined
       position.closedAt = undefined
       position.lockedAt = 0
@@ -11343,12 +11483,16 @@ export async function closeLivePosition(
         draft.lockedBy = undefined
       })
       if (rollback) Object.assign(position, rollback)
-      await rearmProtectionAfterQuantityMutation(exchangeConnector, position, "close_failed_rearm")
+      position.systemProtectionLegs = configuredSystemProtectionLegs(position)
+      position.protectionMode = "system_close_fallback"
+      await savePosition(position)
+      await persistCriticalLiveState(`system-close-failed:${position.id}`)
       await incrementMetric(connectionId, "live_positions_close_failed_count")
       await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
       mutationLockHeld = false
       console.warn(
-        `${LOG_PREFIX} Exchange close was not confirmed for ${position.symbol}; position kept open and protection re-armed`,
+        `${LOG_PREFIX} Exchange close was not confirmed for ${position.symbol}; ` +
+          `the durable delivery will be reconciled before the bounded retry`,
       )
       return position
     }
@@ -11443,6 +11587,7 @@ export async function closeLivePosition(
     }
     position.pendingReduction = undefined
     position.pendingSystemAction = undefined
+    position.systemCloseRetry = undefined
     position.pendingQuantityMutation = undefined
     position.pendingAccumulation = undefined
     position.aggregateProtectionMutationRequestedAt = undefined
@@ -14897,6 +15042,10 @@ export const __liveStageTest = {
   computeDesiredProtectionPrices,
   aggregateProtectionMutationIsInFlight,
   isTerminalSystemCloseOrder,
+  classifySystemCloseFailure,
+  scheduleSystemCloseRetry,
+  isSystemCloseRetryDeferred,
+  hasUnresolvedSystemCloseDelivery,
   settleControlOrdersBeforeSystemClose,
   settleControlOrdersBeforeQuantityMutation,
   reconcilePendingAccumulationAndRearm,
