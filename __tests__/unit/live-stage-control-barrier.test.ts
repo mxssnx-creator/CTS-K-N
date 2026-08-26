@@ -411,6 +411,29 @@ describe("executing Live-stage control barriers", () => {
     expect(exchange.placeOrder).not.toHaveBeenCalled()
   })
 
+  test("keeps aggregate re-arm deferred until every physical quantity action is settled", () => {
+    expect(__liveStageTest.aggregateProtectionMutationIsInFlight(
+      livePosition({ status: "closing_partial", pendingSystemAction: { phase: "partial_wait" } }),
+    )).toBe(true)
+    expect(__liveStageTest.aggregateProtectionMutationIsInFlight(
+      livePosition({ pendingQuantityMutation: { phase: "position_verify" } }),
+    )).toBe(true)
+    expect(__liveStageTest.aggregateProtectionMutationIsInFlight(
+      livePosition({ pendingReduction: { clientOrderId: "reduce-pending" } }),
+    )).toBe(true)
+    expect(__liveStageTest.aggregateProtectionMutationIsInFlight(
+      livePosition({ status: "filled" }),
+    )).toBe(false)
+  })
+
+  test("restores protection only after a partial system-close order is terminal", () => {
+    expect(__liveStageTest.isTerminalSystemCloseOrder(null)).toBe(false)
+    expect(__liveStageTest.isTerminalSystemCloseOrder({ status: "open" })).toBe(false)
+    expect(__liveStageTest.isTerminalSystemCloseOrder({ status: "partially_filled" })).toBe(false)
+    expect(__liveStageTest.isTerminalSystemCloseOrder({ status: "filled" })).toBe(true)
+    expect(__liveStageTest.isTerminalSystemCloseOrder({ status: "cancelled" })).toBe(true)
+  })
+
   test("sweeps only owned protection for the matching hedge-mode direction", async () => {
     const openOrders = [
       {

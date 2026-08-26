@@ -628,9 +628,10 @@ export async function GET(request: Request) {
               ? Math.max(0, now - signalCapacityUpdatedAt)
               : null,
           },
-          // Live exchange execution metrics sourced from the progression hash
-          // (written by live-stage.ts). Counters only — no exchange history
-          // calls. Keeps the endpoint fast even with heavy live activity.
+          // Live execution metrics sourced from the progression hash (written
+          // by live-stage.ts). Real exchange and simulated-paper counters stay
+          // deliberately separate so the dashboard and verification harnesses
+          // never present paper activity as venue execution.
           liveMetrics: {
             ordersPlaced: progressionCounter("live_orders_placed_count"),
             ordersFilled: progressionCounter("live_orders_filled_count"),
@@ -641,6 +642,11 @@ export async function GET(request: Request) {
             positionsClosed: progressionCounter("live_positions_closed_count"),
             wins: progressionCounter("live_wins_count"),
             volumeUsdTotal: progressionCounter("live_volume_usd_total"),
+            simulatedPositionsCreated: progressionCounter("live_simulated_positions_created_count"),
+            simulatedPositionsClosed: progressionCounter("live_simulated_positions_closed_count"),
+            simulatedWins: progressionCounter("live_simulated_wins_count"),
+            simulatedVolumeUsdTotal: progressionCounter("live_simulated_volume_usd_total") ||
+              progressionCounter("live_simulated_volume_microusd_total") / 1_000_000,
           },
           prehistoric: {
             loaded: prehistoricLoaded,
@@ -825,11 +831,17 @@ export async function GET(request: Request) {
         acc.positionsClosed  += lm.positionsClosed  || 0
         acc.wins             += lm.wins             || 0
         acc.volumeUsdTotal   += lm.volumeUsdTotal   || 0
+        acc.simulatedPositionsCreated += lm.simulatedPositionsCreated || 0
+        acc.simulatedPositionsClosed  += lm.simulatedPositionsClosed  || 0
+        acc.simulatedWins             += lm.simulatedWins             || 0
+        acc.simulatedVolumeUsdTotal   += lm.simulatedVolumeUsdTotal   || 0
         return acc
       },
       {
         ordersPlaced: 0, ordersFilled: 0, ordersFailed: 0, ordersRejected: 0, ordersSimulated: 0,
         positionsCreated: 0, positionsClosed: 0, wins: 0, volumeUsdTotal: 0,
+        simulatedPositionsCreated: 0, simulatedPositionsClosed: 0,
+        simulatedWins: 0, simulatedVolumeUsdTotal: 0,
       },
     )
     const liveFillRate = aggregatedLive.ordersPlaced > 0
@@ -837,6 +849,9 @@ export async function GET(request: Request) {
       : 0
     const liveWinRate = aggregatedLive.positionsClosed > 0
       ? Math.round((aggregatedLive.wins / aggregatedLive.positionsClosed) * 1000) / 10
+      : 0
+    const simulatedWinRate = aggregatedLive.simulatedPositionsClosed > 0
+      ? Math.round((aggregatedLive.simulatedWins / aggregatedLive.simulatedPositionsClosed) * 1000) / 10
       : 0
 
     const basePseudoByIndication = perConnection.reduce(
@@ -1093,8 +1108,13 @@ export async function GET(request: Request) {
           aggregatedLive.positionsCreated - aggregatedLive.positionsClosed +
           Math.max(0, aggregatedLive.ordersPlaced - aggregatedLive.ordersFilled)
         ),
+        simulatedPositionsOpen: Math.max(
+          0,
+          aggregatedLive.simulatedPositionsCreated - aggregatedLive.simulatedPositionsClosed,
+        ),
         fillRate: liveFillRate,
         winRate: liveWinRate,
+        simulatedWinRate,
       },
       cycleDurationMs,
       realtimeCycles,

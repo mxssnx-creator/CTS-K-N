@@ -4590,9 +4590,10 @@ export async function GET(
       })(),
 
       liveExecution: {
-        // Orders. Simulated/paper orders are included in placed+filled because
-        // they immediately create an open position with synthetic fill data;
-        // ordersSimulated remains an audit-only subset counter.
+        // Real exchange and paper execution must stay deliberately separate.
+        // The simulated lifecycle persists its own counters, so a disabled
+        // live-trade connection can be verified without presenting synthetic
+        // fills as venue orders, positions, volume, or win rate.
         ordersPlaced:     n(progHash.live_orders_placed_count),
         ordersFilled:     n(progHash.live_orders_filled_count),
         ordersFailed:     n(progHash.live_orders_failed_count),
@@ -4609,6 +4610,20 @@ export async function GET(
         // Positions
         positionsCreated: n(progHash.live_positions_created_count),
         positionsClosed:  n(progHash.live_positions_closed_count),
+        simulatedPositionsCreated: n(progHash.live_simulated_positions_created_count),
+        simulatedPositionsClosed:  n(progHash.live_simulated_positions_closed_count),
+        simulatedPositionsOpen: Math.max(
+          0,
+          n(progHash.live_simulated_positions_created_count) -
+          n(progHash.live_simulated_positions_closed_count),
+        ),
+        simulatedWins: n(progHash.live_simulated_wins_count),
+        simulatedVolumeUsdTotal: (() => {
+          const dollars = n(progHash.live_simulated_volume_usd_total)
+          return dollars > 0
+            ? dollars
+            : n(progHash.live_simulated_volume_microusd_total) / 1_000_000
+        })(),
         positionsOpen: (() => {
           // Prefer key-scan (liveOpenScanned) — authoritative; survives server
           // restarts where InlineLocalRedis counters reset to 0.
@@ -4656,6 +4671,11 @@ export async function GET(
         winRate: (() => {
           const closed = n(progHash.live_positions_closed_count)
           const wins   = n(progHash.live_wins_count)
+          return ratioPercent(wins, closed)
+        })(),
+        simulatedWinRate: (() => {
+          const closed = n(progHash.live_simulated_positions_closed_count)
+          const wins = n(progHash.live_simulated_wins_count)
           return ratioPercent(wins, closed)
         })(),
         // Per-symbol rows plus global directional totals; rows are empty when

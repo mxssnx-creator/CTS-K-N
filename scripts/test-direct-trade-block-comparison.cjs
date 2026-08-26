@@ -15,6 +15,7 @@ const {
   evaluateDirectTradeSets,
   resampleCandles,
   DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
+  DIRECT_TRADE_RECENT_PF_DEFAULT,
 } = require("../lib/direct-trade-coordination.ts")
 const {
   calculateBlockMinimumProfitFactor,
@@ -39,7 +40,13 @@ const minProfitFactor = Math.max(
   0.8,
   Number(process.env.DIRECT_TRADE_BLOCK_MIN_PF) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
 )
-const minRecentProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_BLOCK_MIN_RECENT_PF) || 25)
+// Keep the paper Block comparison on the same PositionCost-relative recent-PF
+// coordinate as Direct-Trade itself. The historical `25` fallback was from the
+// old percentage-style scale and falsely filtered otherwise eligible sets.
+const minRecentProfitFactor = Math.max(
+  0.8,
+  Number(process.env.DIRECT_TRADE_BLOCK_MIN_RECENT_PF) || DIRECT_TRADE_RECENT_PF_DEFAULT,
+)
 const recentEvaluationPositions = Math.max(3, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_RECENT_POSITIONS) || 12))
 const maxDrawdownTimeMin = Math.max(1, Number(process.env.DIRECT_TRADE_BLOCK_MAX_DDT_MIN) || 10)
 const reportFile = String(process.env.DIRECT_TRADE_BLOCK_REPORT_FILE || "").trim()
