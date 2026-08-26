@@ -1,3 +1,8 @@
+# Normal persistent Linux clients only. ChatGPT Work must use the managed
+# process-local activation documented in REMOTE-CHISEL-WORKMODE.md.
+# Keep endpoint, fingerprint, forward, and auth values only in the mode-0600
+# EnvironmentFile. Do not commit or paste them into this unit.
+
 [Unit]
 Description=CTS-K-N Chisel SSH tunnel client
 After=network-online.target
@@ -6,7 +11,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/chisel/client.env
-ExecStart=/usr/local/bin/chisel client --keepalive 25s --fingerprint Q0MxL4WHKwM2JbRy6/6fAUee3600R7pPo1CKov8/EPc= --auth ${CTS_CHISEL_AUTH} http://152.53.114.112:8090 127.0.0.1:2222:127.0.0.1:22
+ExecStart=/usr/local/bin/chisel client --keepalive 25s --fingerprint ${CTS_CHISEL_FINGERPRINT} --auth ${CTS_CHISEL_AUTH} ${CTS_CHISEL_ENDPOINT} ${CTS_CHISEL_FORWARD}
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

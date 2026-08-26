@@ -1952,3 +1952,42 @@ credentials are present.
   zero orders. Keep credentials only in ignored mode-0600 `.env`; never commit
   them. A real virtual-funds cycle may run only after that credential gate
   passes; Mainnet remains out of scope.
+
+## Session 2026-08-26 — Chisel-only recovery and publication policy
+
+- [x] A verified local checkpoint was created before Chisel repair at
+  `/workspace/backups/CTS-K-N/20260826T030509Z-pre-chisel-repair-verified`,
+  followed by a verified publication checkpoint at
+  `/workspace/backups/CTS-K-N/20260826T031055Z-pre-github-policy-publish`.
+- [x] The managed activation script and pinned SSH material have safe local
+  modes; Chisel 1.11.8 and both shell launchers pass syntax checks. Work-mode
+  forwards are process-local, so every independent remote command must run the
+  managed activation and SSH operation in the same tool process.
+- [x] A later ordinary managed activation established the pinned localhost
+  forward and returned a harmless SSH banner with strict host-key checking.
+  The remote `chisel-server.service` is loaded, active, and enabled. No server
+  service, application, Redis, deployment, or exchange state was changed.
+- [x] Direct SSH and alternate proxy routes remain out of scope. A missing
+  listener in a new tool process is handled by managed reactivation, not by
+  reusing stale PID/proxy data or killing an unverified process.
+- [x] Project policy now requires a verified backup before material work and a
+  reviewed GitHub branch/PR publication after required validation; GitHub
+  publication is authorized for this project.
+- [x] The authoritative Chisel documentation and reconstruction manifests were
+  refreshed in PR #226. Secret scan covered 1,505 files with zero findings,
+  recreation verification covered 1,497 project files, and the verified
+  checkpoints include
+  `/workspace/backups/CTS-K-N/20260826T141840Z-pre-chisel-docs-refresh`,
+  `/workspace/backups/CTS-K-N/20260826T142245Z-precommit-chisel-docs-pr226`,
+  and `/workspace/backups/CTS-K-N/20260826T142318Z-prepush-7630eb9e`.
+- [x] A fresh process exposed a stale caller assumption about the SSH-key
+  location. The owner-only key was intact in the managed `ssh/` subdirectory;
+  no credential reconstruction was needed. The local managed activation now
+  exports the canonical key and known-hosts paths and strict SSH options, and
+  a fresh-process banner plus `chisel-server.service` check passed again.
+- [x] The versioned Chisel docs and normal-Linux systemd template no longer
+  embed a fixed endpoint or fingerprint. Those values are supplied only by an
+  owner-only mode-0600 environment file. The full pre-hardening checkpoint is
+  `/workspace/backups/CTS-K-N/20260826T144135Z-pre-chisel-docs-hardening`; the
+  separate activation-script checkpoint is
+  `/workspace/backups/CTS-K-N/20260826T144008Z-pre-managed-chisel-activation-fix`.
