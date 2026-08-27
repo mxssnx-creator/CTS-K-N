@@ -84,6 +84,17 @@ interface CompactStats {
   liveClosed: number
   liveWinRate: number
   liveFillRate: number
+  liveOpenOrders: number
+  liveEntryOrders: number
+  liveControlOrders: number
+  liveOpenSymbols: number
+  liveExcludedUntrackedPositions: number
+  liveExcludedUntrackedOrders: number
+  liveFailedToOpen: number
+  liveDispatchAttempted: number
+  liveDispatchDeferred: number
+  liveDispatchDurationMs: number
+  liveDispatchAvgAttemptMs: number
   // ── Portfolio-wide exchange aggregates (scan-derived) ────────────
   // Summed across every open exchange position. Optional because the
   // server may lag behind schema changes; defaults to 0 via setStats
@@ -96,6 +107,9 @@ interface CompactStats {
   liveNearLiquidation: number
   liveStaleSync: number
   liveConsolidatedSetsTotal: number
+  liveControlOrderSets: number
+  liveProtectedControlOrderSets: number
+  liveUnprotectedControlOrderSets: number
   // ── Per-position exchange details + mirroring coordination ───────
   // Each entry carries the FULL exchange Position Details (leverage,
   // margin at risk, liquidation distance, SL/TP levels, ROI) plus
@@ -235,6 +249,17 @@ const EMPTY: CompactStats = {
   liveClosed: 0,
   liveWinRate: 0,
   liveFillRate: 0,
+  liveOpenOrders: 0,
+  liveEntryOrders: 0,
+  liveControlOrders: 0,
+  liveOpenSymbols: 0,
+  liveExcludedUntrackedPositions: 0,
+  liveExcludedUntrackedOrders: 0,
+  liveFailedToOpen: 0,
+  liveDispatchAttempted: 0,
+  liveDispatchDeferred: 0,
+  liveDispatchDurationMs: 0,
+  liveDispatchAvgAttemptMs: 0,
   liveUnrealizedPnl: 0,
   liveMarginUsd: 0,
   livePortfolioRoiPct: 0,
@@ -243,6 +268,9 @@ const EMPTY: CompactStats = {
   liveNearLiquidation: 0,
   liveStaleSync: 0,
   liveConsolidatedSetsTotal: 0,
+  liveControlOrderSets: 0,
+  liveProtectedControlOrderSets: 0,
+  liveUnprotectedControlOrderSets: 0,
   livePositions: [],
   liveResolution: { pseudo: 0, realFallback: 0, unresolved: 0 },
   performanceTiers: {
@@ -878,6 +906,17 @@ export function StatisticsOverviewV2() {
           liveClosed:       liveExec.positionsClosed  || 0,
           liveWinRate:      liveExec.winRate          || liveDetail.winRate  || 0,
           liveFillRate:     liveExec.fillRate         || liveDetail.passRatio || 0,
+          liveOpenOrders:   Number(liveExec.openOrders) || 0,
+          liveEntryOrders:  Number(liveExec.entryOrders) || 0,
+          liveControlOrders: Number(liveExec.controlOrders) || 0,
+          liveOpenSymbols:  Number(liveExec.openSymbols) || 0,
+          liveExcludedUntrackedPositions: Number(liveExec.excludedUntrackedPositions) || 0,
+          liveExcludedUntrackedOrders: Number(liveExec.excludedUntrackedOrders) || 0,
+          liveFailedToOpen: Number(liveExec.dispatchOutcome?.failedToOpen) || 0,
+          liveDispatchAttempted: Number(liveExec.dispatchOutcome?.attempted) || 0,
+          liveDispatchDeferred: Number(liveExec.dispatchDeferredCount) || 0,
+          liveDispatchDurationMs: Number(liveExec.dispatchOutcome?.durationMsMax) || 0,
+          liveDispatchAvgAttemptMs: Number(liveExec.dispatchOutcome?.avgAttemptMs) || 0,
           // Exchange-wide aggregates (scan-derived on the server).
           // Each field falls back to 0 when the server hasn't emitted
           // it yet (e.g. during a staged schema rollout), keeping the
@@ -890,6 +929,9 @@ export function StatisticsOverviewV2() {
           liveNearLiquidation:       Number(opLive.aggregate?.nearLiquidation)    || 0,
           liveStaleSync:             Number(opLive.aggregate?.staleSync)          || 0,
           liveConsolidatedSetsTotal: Number(opLive.aggregate?.consolidatedSetsTotal) || 0,
+          liveControlOrderSets: Number(opLive.aggregate?.controlOrderSets) || 0,
+          liveProtectedControlOrderSets: Number(opLive.aggregate?.protectedControlOrderSets) || 0,
+          liveUnprotectedControlOrderSets: Number(opLive.aggregate?.unprotectedControlOrderSets) || 0,
           // Mirroring coordination payload: each live position row
           // normalized to a COMPLETE shape (every numeric field
           // coerced to a finite number, optional strings kept as-is).
@@ -1553,6 +1595,36 @@ export function StatisticsOverviewV2() {
                 {stats.liveFillRate.toFixed(0)}%
               </span>
             </div>
+            <div
+              className="flex flex-col gap-0.5"
+              title={`${stats.liveOpenOrders} CTS-tracked exchange orders on ${stats.liveOpenSymbols} positioned symbols: ${stats.liveEntryOrders} entry and ${stats.liveControlOrders} control. Excluded as unrelated: ${stats.liveExcludedUntrackedOrders} orders and ${stats.liveExcludedUntrackedPositions} positions.`}
+            >
+              <span className="text-muted-foreground">Open orders</span>
+              <span className="font-semibold text-cyan-700 tabular-nums">
+                {fmt(stats.liveOpenOrders)}
+                <span className="ml-1 text-[9px] font-normal text-muted-foreground">
+                  {fmt(stats.liveEntryOrders)}E/{fmt(stats.liveControlOrders)}C
+                </span>
+              </span>
+            </div>
+            <div
+              className="flex flex-col gap-0.5"
+              title="Unrelated exchange positions and orders are excluded from every CTS coordination, PnL and overall statistic."
+            >
+              <span className="text-muted-foreground">Excluded external</span>
+              <span className="font-semibold text-slate-600 tabular-nums">
+                {fmt(stats.liveExcludedUntrackedPositions)}P/{fmt(stats.liveExcludedUntrackedOrders)}O
+              </span>
+            </div>
+            <div
+              className="flex flex-col gap-0.5"
+              title={`${stats.liveDispatchAttempted} latest dispatch attempts; ${stats.liveDispatchDeferred} suppressed or unavailable candidates; ${stats.liveDispatchAvgAttemptMs.toFixed(1)}ms average per attempt.`}
+            >
+              <span className="text-muted-foreground">Failed / next / time</span>
+              <span className={`font-semibold tabular-nums ${stats.liveFailedToOpen > 0 ? "text-red-600" : "text-emerald-600"}`}>
+                {fmt(stats.liveFailedToOpen)} / {fmt(stats.liveDispatchDeferred)} / {Math.round(stats.liveDispatchDurationMs)}ms
+              </span>
+            </div>
           </div>
         )}
 
@@ -1560,6 +1632,7 @@ export function StatisticsOverviewV2() {
             situations the operator needs to act on immediately. Only
             rendered when there's something to warn about. */}
         {(stats.liveNearLiquidation > 0 || stats.liveStaleSync > 0 ||
+          stats.liveUnprotectedControlOrderSets > 0 ||
           (stats.liveConsolidatedSetsTotal > stats.livePositions.length && stats.livePositions.length > 0)) && (
           <div className="mt-1 flex items-center gap-3 flex-wrap text-[9px]">
             {stats.liveNearLiquidation > 0 && (
@@ -1577,6 +1650,14 @@ export function StatisticsOverviewV2() {
                 title={`${stats.liveStaleSync} position${stats.liveStaleSync === 1 ? "" : "s"} not reconciled with the exchange in >60s — sync may be lagging`}
               >
                 {stats.liveStaleSync} stale sync
+              </span>
+            )}
+            {stats.liveUnprotectedControlOrderSets > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300 font-semibold"
+                title={`${stats.liveProtectedControlOrderSets}/${stats.liveControlOrderSets} exact Set lineages have current exchange-control or system-fallback protection coverage.`}
+              >
+                {stats.liveUnprotectedControlOrderSets} Sets unprotected
               </span>
             )}
             {stats.liveConsolidatedSetsTotal > stats.livePositions.length && stats.livePositions.length > 0 && (

@@ -34,9 +34,11 @@ interface PositionStats {
   active_positions: number
   closed_positions: number
   total_pnl: number
-  win_rate: number
-  avg_profit: number
-  avg_loss: number
+  win_rate: number | null
+  avg_profit: number | null
+  avg_loss: number | null
+  accounting_pending?: number
+  data_available?: boolean
 }
 
 export default function AnalysisPage() {
@@ -61,7 +63,7 @@ export default function AnalysisPage() {
       fetchPositionStats()
     }, 5000) // Update every 5 seconds
     return () => clearInterval(interval)
-  }, [selectedConnection])
+  }, [selectedConnection, connections])
 
   useEffect(() => {
     const analysis = calculator.calculateSymbolPositions(selectedSymbol)
@@ -82,12 +84,33 @@ export default function AnalysisPage() {
 
   const fetchActivePositions = async () => {
     try {
-      const url = selectedConnection === "all" ? "/api/positions" : `/api/positions/${selectedConnection}`
-      const res = await fetch(url)
-      if (res.ok) {
-        const data = await res.json()
-        setActivePositions(data.positions || [])
+      const connectionIds = selectedConnection === "all"
+        ? connections.map((connection) => String(connection.id || "")).filter(Boolean)
+        : [selectedConnection]
+      if (connectionIds.length === 0) {
+        setActivePositions([])
+        return
       }
+      const payloads = await Promise.all(connectionIds.map(async (connectionId) => {
+        const res = await fetch(`/api/positions?connectionId=${encodeURIComponent(connectionId)}&status=open&limit=1000`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json()
+        return Array.isArray(data.data) ? data.data : Array.isArray(data.positions) ? data.positions : []
+      }))
+      setActivePositions(payloads.flat().map((position: any) => ({
+        ...position,
+        id: String(position.id || position.positionId || ""),
+        symbol: String(position.symbol || "—"),
+        direction: String(position.direction || position.side || "long").toLowerCase() === "short" ? "short" : "long",
+        entry_price: Number(position.entry_price ?? position.entryPrice ?? position.averageExecutionPrice ?? 0),
+        current_price: Number(position.current_price ?? position.currentPrice ?? position.markPrice ?? position.entryPrice ?? 0),
+        quantity: Number(position.quantity ?? position.executedQuantity ?? 0),
+        leverage: Number(position.leverage ?? 1),
+        unrealized_pnl: Number(position.unrealized_pnl ?? position.unrealizedPnL ?? 0),
+        unrealized_pnl_percent: Number(position.unrealized_pnl_percent ?? position.unrealizedRoi ?? position.roi ?? 0),
+        created_at: String(position.created_at ?? position.createdAt ?? position.openedAt ?? ""),
+        connection_id: String(position.connection_id ?? position.connectionId ?? ""),
+      })))
     } catch (error) {
       console.error("[v0] Failed to fetch positions:", error)
     } finally {
@@ -97,7 +120,9 @@ export default function AnalysisPage() {
 
   const fetchPositionStats = async () => {
     try {
-      const url = selectedConnection === "all" ? "/api/positions/stats" : `/api/positions/${selectedConnection}/stats`
+      const url = selectedConnection === "all"
+        ? "/api/positions/stats"
+        : `/api/positions/stats?connectionId=${encodeURIComponent(selectedConnection)}`
       const res = await fetch(url)
       if (res.ok) {
         const data = await res.json()
@@ -183,21 +208,21 @@ export default function AnalysisPage() {
               icon: DollarSign,
               label: "Total P&L",
               value: formatCurrency(positionStats.total_pnl),
-              sub: "Unrealized",
+              sub: "Realized + current open",
               tint: positionStats.total_pnl >= 0 ? "text-green-500" : "text-red-500",
             },
             {
               icon: Target,
               label: "Win Rate",
-              value: `${positionStats.win_rate.toFixed(1)}%`,
+              value: positionStats.win_rate === null ? "—" : `${positionStats.win_rate.toFixed(1)}%`,
               sub: "Closed positions",
               tint: "text-indigo-500",
             },
             {
               icon: Clock,
               label: "Avg P/L",
-              value: `${formatCurrency(positionStats.avg_profit)}`,
-              sub: `Loss ${formatCurrency(positionStats.avg_loss)}`,
+              value: positionStats.avg_profit === null ? "—" : formatCurrency(positionStats.avg_profit),
+              sub: positionStats.avg_loss === null ? "No settled losses" : `Loss ${formatCurrency(positionStats.avg_loss)}`,
               tint: "text-amber-500",
             },
           ].map((stat) => (

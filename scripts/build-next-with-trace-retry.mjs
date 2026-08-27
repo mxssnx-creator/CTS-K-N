@@ -5,6 +5,7 @@ import { createHash } from "node:crypto"
 import { basename, join, relative } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
+import { isRecoverableNextFilesystemRace } from "./next-build-race-classifier.mjs"
 
 const distDir = process.env.NEXT_DIST_DIR || ".next"
 const maxAttempts = Math.max(1, Number(process.env.NEXT_TRACE_BUILD_ATTEMPTS || 4))
@@ -163,19 +164,6 @@ function trackedSourceDrift(before, after) {
   return [...names]
     .filter((file) => before.files.get(file) !== after.files.get(file))
     .sort()
-}
-
-function isRecoverableNextFilesystemRace(output) {
-  const providerPath = /(?:ENOENT|ENOTEMPTY):[\s\S]{0,800}(?:\.next|pages-manifest|nft\.json|routes-manifest|prerender-manifest|\/export)/i
-  // stdout and stderr are captured independently and joined only after the
-  // child exits, so their textual order is not reliable. Require the complete
-  // Next lifecycle signature without assuming which stream flushed first.
-  const truncatedManifest =
-    /(?=[\s\S]*Compiled successfully)(?=[\s\S]*Collecting page data)(?=[\s\S]*Unexpected end of JSON input)/i
-  const postbuildRoutesManifestRace =
-    /(?=[\s\S]*Compiled successfully)(?=[\s\S]*Collecting build traces)(?=[\s\S]*\[next-env\][\s\S]*routes-manifest\.json is missing or is not valid JSON)/i
-  const sourceFailure = /Failed to compile|webpack errors|Merge conflict marker|Syntax Error|Type error/i
-  return (providerPath.test(output) || truncatedManifest.test(output) || postbuildRoutesManifestRace.test(output)) && !sourceFailure.test(output)
 }
 
 function collectFiles(root, suffix) {

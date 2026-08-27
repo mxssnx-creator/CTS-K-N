@@ -6,7 +6,12 @@ import {
 } from "@/lib/redis-db"
 import { getDashboardWorkflowSnapshot } from "@/lib/dashboard-workflow"
 import { getSystemResourceMetrics } from "@/lib/system-resource-metrics"
-import { getOpenLivePositionReadModels } from "@/lib/live-position-read-model"
+import {
+  getOpenLivePositionReadModels,
+  LIVE_POSITION_OPEN_READ_LIMIT,
+} from "@/lib/live-position-read-model"
+import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
+import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { PseudoPositionManager } from "@/lib/trade-engine/pseudo-position-manager"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { SystemLogger } from "@/lib/system-logger"
@@ -43,9 +48,13 @@ export async function GET(request: NextRequest) {
           const connectionId = String(connection.id)
           const [pseudo, live] = await Promise.all([
             new PseudoPositionManager(connectionId).getActivePositions().catch(() => []),
-            getOpenLivePositionReadModels(connectionId, 0),
+            getOpenLivePositionReadModels(connectionId, LIVE_POSITION_OPEN_READ_LIMIT),
           ])
-          return { pseudo: pseudo.length, live: live.length }
+          const executedOpen = live.filter((position: any) => (
+            isExecutedRealExchangePosition(position) &&
+            isLiveOpenStatus(position.status)
+          ))
+          return { pseudo: pseudo.length, live: executedOpen.length }
         }),
         SystemLogger.getLogs(undefined, 100),
       ])

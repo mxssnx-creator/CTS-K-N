@@ -57,10 +57,11 @@ export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [
   DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO,
   DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO * 2,
 ]
-// The range control remains single-ratio precise. Five is the systemwide
-// fresh-install TP Set stride; an explicit operator value can still choose a
-// denser grid when its capacity budget permits it.
-export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 5
+// Keep the default grid dense enough to compare neighbouring protection
+// coordinates without tripling the full Direct matrix. A 5–10 range therefore
+// materialises 5×, 8× and the explicit 10× endpoint. Operators may still
+// choose a finer step, while fresh/migrated production state starts at 3×.
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 3
 // Direct-Trade owns an independent low-notional sizing control. Unlike the
 // Main/Preset channel factors, its documented range intentionally starts
 // below one; live connectors still round up to the venue minimum quantity and

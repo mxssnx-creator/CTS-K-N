@@ -159,8 +159,6 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "variantTrailingEnabled",
   "variantBlockEnabled",
   "normalEnabled",
-  "blockOnly",
-  "variantBlockOnly",
   "variantDcaEnabled",
   "axisPrevEnabled",
   "axisLastEnabled",
@@ -183,6 +181,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "blockRowLiveProfitFactorRatio",
   "blockRowLiveMaxStack",
   "blockRowLivePauseCountRatio",
+  "blockRowRealEvalPosCount",
   "liveEvalPosCount",
   "strategyBaseTrailingEnabled",
   "strategyBaseTrailingVariants",
@@ -343,7 +342,7 @@ export async function GET(
         if ([
           "symbol_count", "symbolCount", "leveragePercentage",
           "prevPosMinCount", "prevPosWindow", "mainEvalPosCount",
-          "realEvalPosCount", "liveEvalPosCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
+          "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
           // Volume / live trading factors
           "live_volume_factor", "volume_factor_live", "preset_volume_factor",
           "signal_volume_factor", "volume_factor_signal",
@@ -368,7 +367,6 @@ export async function GET(
           // Coordination variant toggles
           "variantTrailingEnabled", "variantBlockEnabled",
           "normalEnabled",
-          "blockOnly", "variantBlockOnly",
           "variantDcaEnabled",
           "blockActiveRealEnabled", "blockActiveLiveEnabled", "blockRowLiveEnabled",
           "strategyBaseTrailingEnabled",
@@ -470,9 +468,8 @@ export async function GET(
           connection.variant_dca,
         ), false),
       },
-      // Canonical main execution-family switch. Legacy blockOnly values are
-      // intentionally not used as a fallback because they no longer control
-      // dispatch.
+      // Canonical main execution-family switch. Retired exclusive-family
+      // values are not fallbacks and cannot control dispatch.
       normalEnabled: asBoolean(firstDefined(
         storedCoord.normalEnabled,
         storedCoord.normal_enabled,
@@ -1013,7 +1010,7 @@ export async function PATCH(
 
     const flatKnobs: Record<string, string> = {}
     const knobKeys = [
-      "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount", "liveEvalPosCount",
+      "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount",
       "minStep", "maxStopLossRatio", "trailingMinStep", "posCountsVolumeRatio",
       "strategyBlockMaterializationBatchSize",
     ] as const
@@ -1092,6 +1089,12 @@ export async function PATCH(
       if (Number.isFinite(rowLiveStack) && rowLiveStack >= 1) flatKnobs.blockRowLiveMaxStack = String(Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(rowLiveStack))))
       const rowLivePause = Number(coord.blockRowLivePauseCountRatio)
       if (Number.isFinite(rowLivePause) && rowLivePause > 0) flatKnobs.blockRowLivePauseCountRatio = String(Math.max(1, Math.min(4, Math.round(rowLivePause * 2) / 2)))
+      for (const key of ["blockRowRealEvalPosCount"] as const) {
+        const rowWindow = Number(coord[key])
+        if (Number.isFinite(rowWindow) && rowWindow > 0) {
+          flatKnobs[key] = String(Math.max(1, Math.min(200, Math.floor(rowWindow))))
+        }
+      }
       const pvr = Number(coord.posCountsVolumeRatio)
       if (Number.isFinite(pvr) && pvr > 0) {
         flatKnobs.posCountsVolumeRatio = String(normalizePosCountVolumeRatio(pvr))

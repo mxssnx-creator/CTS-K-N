@@ -30,6 +30,9 @@ import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot
 import { strategyVariantOutcomeKey } from "@/lib/pos-history"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
+import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -1510,6 +1513,16 @@ export async function GET(
       // holding. No per-Set USD (eval-stage notionals are NOT real
       // exposure and would be misleading).
       setKeys: Array<{ setKey: string; count: number }>
+      controlOrderSetCoverage: Array<{
+        setKey: string
+        protected: boolean
+        protectionMode: string
+        aggregateProtectionOwner: boolean
+        stopLossOrderId?: string
+        takeProfitOrderId?: string
+        systemProtectionLegs: string[]
+        updatedAt: number
+      }>
       // `resolution` tells the UI exactly HOW the Set was identified:
       //   • "pseudo"        — exact pseudo row exists for this symbol+dir
       //   • "real-fallback" — no pseudo match; resolved via Real ledger
@@ -1645,6 +1658,25 @@ export async function GET(
               syncedAt:  Number(pos.exchangeData?.syncedAt) || 0,
               realPositionId: pos.realPositionId ? String(pos.realPositionId) : undefined,
               setKeys,
+              controlOrderSetCoverage: Object.entries(
+                pos.controlOrderSetCoverage && typeof pos.controlOrderSetCoverage === "object"
+                  ? pos.controlOrderSetCoverage
+                  : {},
+              ).map(([setKey, raw]) => {
+                const coverage = raw && typeof raw === "object" ? raw as Record<string, any> : {}
+                return {
+                  setKey,
+                  protected: coverage.protected === true,
+                  protectionMode: String(coverage.protectionMode || "unknown"),
+                  aggregateProtectionOwner: coverage.aggregateProtectionOwner === true,
+                  ...(coverage.stopLossOrderId ? { stopLossOrderId: String(coverage.stopLossOrderId) } : {}),
+                  ...(coverage.takeProfitOrderId ? { takeProfitOrderId: String(coverage.takeProfitOrderId) } : {}),
+                  systemProtectionLegs: Array.isArray(coverage.systemProtectionLegs)
+                    ? coverage.systemProtectionLegs.map(String)
+                    : [],
+                  updatedAt: Number(coverage.updatedAt || 0) || 0,
+                }
+              }),
               resolution,
             })
           } catch { /* skip malformed */ }
@@ -1698,6 +1730,14 @@ export async function GET(
     let liveAggStaleSync = 0         // no exchange sync in >60s
     const liveAggConsolidatedSets = livePositionSetRelations.reduce(
       (sum, p) => sum + (p.setKeys?.length || 0),
+      0,
+    )
+    const liveControlOrderSets = livePositionSetRelations.reduce(
+      (sum, position) => sum + position.controlOrderSetCoverage.length,
+      0,
+    )
+    const liveProtectedControlOrderSets = livePositionSetRelations.reduce(
+      (sum, position) => sum + position.controlOrderSetCoverage.filter((row) => row.protected).length,
       0,
     )
     const nowMsAgg = Date.now()
@@ -2861,9 +2901,11 @@ export async function GET(
     // Redis round trips on every dashboard refresh. Real exchange history and
     // fee enrichment live in the dedicated /api/trading/trade-history route;
     // this hot stats endpoint deliberately stays local and lightweight.
-    const sharedClosedParsed = await loadClosedPositionSnapshots(client, connectionId, 500).catch(
+    const sharedClosedParsedRaw = await loadClosedPositionSnapshots(client, connectionId, 500).catch(
       () => [] as Array<Record<string, any>>,
     )
+    const sharedClosedParsed = sharedClosedParsedRaw.filter(isExecutedRealExchangePosition)
+    const liveExecutionSummary = await getLiveExecutionSummary(connectionId).catch(() => null)
 
     type DispatchSummaryRow = {
       bucket: string
@@ -2905,18 +2947,49 @@ export async function GET(
       }
       return Array.from(merged.values()).sort((a, b) => b.count - a.count || a.bucket.localeCompare(b.bucket))
     }
-    const readFreshSymbolDispatchSummary = (suffix: "dispatch_selected" | "dispatch_suppressed"): DispatchSummaryRow[] => {
+    const readFreshSymbolDispatchSummary = (
+      suffix: "dispatch_selected" | "dispatch_deferred" | "dispatch_suppressed",
+    ): DispatchSummaryRow[] => {
       const FRESH_MS = 5 * 60 * 1000
       const nowMs = Date.now()
       const rows: DispatchSummaryRow[] = []
       for (const [field, raw] of Object.entries(strategyDetailLiveHash)) {
         if (!field.startsWith("s:") || !field.endsWith(`:${suffix}`)) continue
         const symbol = field.slice(2, -(suffix.length + 1))
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
         const ts = Number(strategyDetailLiveHash[`s:${symbol}:ts`] || "0") || 0
         if (!ts || nowMs - ts > FRESH_MS) continue
         rows.push(...parseDispatchSummary(raw))
       }
       return mergeDispatchSummaries(rows)
+    }
+    const readFreshSymbolDispatchCount = (suffix: string): number => {
+      const freshMs = 5 * 60 * 1000
+      const nowMs = Date.now()
+      let total = 0
+      for (const [field, raw] of Object.entries(strategyDetailLiveHash)) {
+        if (!field.startsWith("s:") || !field.endsWith(`:${suffix}`)) continue
+        const symbol = field.slice(2, -(suffix.length + 1))
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
+        const ts = Number(strategyDetailLiveHash[`s:${symbol}:ts`] || "0") || 0
+        if (!ts || nowMs - ts > freshMs) continue
+        total += Math.max(0, Number(raw) || 0)
+      }
+      return total
+    }
+    const readFreshSymbolDispatchMaximum = (suffix: string): number => {
+      const freshMs = 5 * 60 * 1000
+      const nowMs = Date.now()
+      let maximum = 0
+      for (const [field, raw] of Object.entries(strategyDetailLiveHash)) {
+        if (!field.startsWith("s:") || !field.endsWith(`:${suffix}`)) continue
+        const symbol = field.slice(2, -(suffix.length + 1))
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
+        const ts = Number(strategyDetailLiveHash[`s:${symbol}:ts`] || "0") || 0
+        if (!ts || nowMs - ts > freshMs) continue
+        maximum = Math.max(maximum, Math.max(0, Number(raw) || 0))
+      }
+      return maximum
     }
 
     // ── LIVE STAGE DETAIL (4th tier — mirrors Real but from real exchange) ��──
@@ -2967,15 +3040,38 @@ export async function GET(
         ? closedEval.sumVolumeUsd / countSampled
         : liveCreated > 0 ? liveVolumeUsd / liveCreated : 0
       const perSymbolDispatchSelected = readFreshSymbolDispatchSummary("dispatch_selected")
+      const perSymbolDispatchDeferred = readFreshSymbolDispatchSummary("dispatch_deferred")
       const perSymbolDispatchSuppressed = readFreshSymbolDispatchSummary("dispatch_suppressed")
       const dispatchSelected = perSymbolDispatchSelected.length > 0
         ? perSymbolDispatchSelected
         : parseDispatchSummary(strategyDetailLiveHash.dispatch_selected)
+      const dispatchDeferred = perSymbolDispatchDeferred.length > 0
+        ? perSymbolDispatchDeferred
+        : parseDispatchSummary(strategyDetailLiveHash.dispatch_deferred)
       const dispatchSuppressed = perSymbolDispatchSuppressed.length > 0
         ? perSymbolDispatchSuppressed
         : parseDispatchSummary(strategyDetailLiveHash.dispatch_suppressed)
       const dispatchSelectedCount = dispatchSelected.reduce((sum, row) => sum + row.count, 0)
+      const dispatchDeferredCount = dispatchDeferred.reduce((sum, row) => sum + row.count, 0)
       const dispatchSuppressedCount = dispatchSuppressed.reduce((sum, row) => sum + row.count, 0)
+      const dispatchOutcome = {
+        attempted: readFreshSymbolDispatchCount("dispatch_attempted_count"),
+        placed: readFreshSymbolDispatchCount("dispatch_placed_count"),
+        filled: readFreshSymbolDispatchCount("dispatch_filled_count"),
+        rejected: readFreshSymbolDispatchCount("dispatch_rejected_count"),
+        errored: readFreshSymbolDispatchCount("dispatch_errored_count"),
+        missingEntry: readFreshSymbolDispatchCount("dispatch_missing_entry_count"),
+        noResult: readFreshSymbolDispatchCount("dispatch_no_result_count"),
+        otherStatus: readFreshSymbolDispatchCount("dispatch_other_status_count"),
+        failedToOpen: readFreshSymbolDispatchCount("dispatch_failed_to_open_count"),
+        durationMsTotal: readFreshSymbolDispatchCount("dispatch_duration_ms"),
+        durationMsMax: readFreshSymbolDispatchMaximum("dispatch_duration_ms"),
+        avgAttemptMs: (() => {
+          const attempted = readFreshSymbolDispatchCount("dispatch_attempted_count")
+          const total = readFreshSymbolDispatchCount("dispatch_duration_ms")
+          return attempted > 0 ? Math.round((total / attempted) * 100) / 100 : 0
+        })(),
+      }
 
       stratDetail.live = {
         // Same shape as base/main/real so the UI can reuse its row renderer:
@@ -3012,9 +3108,12 @@ export async function GET(
         setsWithOpenPositions: Math.max(0, liveCreated - liveClosed),
         volumeUsdTotal: Math.round(liveVolumeUsd * 100) / 100,
         dispatchSelected,
+        dispatchDeferred,
         dispatchSuppressed,
         dispatchSelectedCount,
+        dispatchDeferredCount,
         dispatchSuppressedCount,
+        dispatchOutcome,
       }
     }
 
@@ -3120,6 +3219,8 @@ export async function GET(
     const liveRowBlockCreated = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_block_created", "row_live_block_created")
     const liveRowBlockValid = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_block_valid", "row_live_block_valid")
     const liveRowExecutable = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_executable", "created_sets")
+    const liveAdditionalDca = aggregateCompleteFreshRowField(strategyDetailLiveHash, "additional_dca_executable", "additional_dca_executable")
+    const liveExecutableTotal = aggregateCompleteFreshRowField(strategyDetailLiveHash, "executable_total", "created_sets")
     const blockWork = {
       logicalEmitted: 0,
       materialized: 0,
@@ -3204,6 +3305,11 @@ export async function GET(
         active: engineIsStopped ? 0 : realRowActive,
         activeExactRows: currentOpenRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
         activeRatio: ratio(realRowActive, realRowValid),
+        blockRows: {
+          evaluated: aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_block_evaluated", "row_real_block_evaluated"),
+          created: aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_block_created", "row_real_block_created"),
+          rejected: aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_block_rejected", "row_real_block_rejected"),
+        },
         blockWork,
       },
       live: {
@@ -3212,7 +3318,9 @@ export async function GET(
         active: currentOpenRowField(strategyDetailLiveHash, "row_active", "sets_running_now"),
         blockCreated: liveRowBlockCreated,
         blockValid: liveRowBlockValid,
-        executable: liveRowExecutable,
+        rowExecutable: liveRowExecutable,
+        additionalDca: liveAdditionalDca,
+        executable: liveExecutableTotal,
         mirroredRatio: ratio(liveRowMirrored, liveRowTotal),
         executablePerRow: ratio(liveRowExecutable, liveRowTotal, false),
       },
@@ -3786,7 +3894,10 @@ export async function GET(
           "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
           "leveragePercentage", "useMaximalLeverage",
           "is_live_trade", "is_preset_trade",
-          "baseProfitFactor", "normalEnabled", "blockOnly", "variantBlockOnly", "block_only",
+          "baseProfitFactor", "normalEnabled", "normal_enabled",
+          "variantTrailingEnabled", "strategyBaseTrailingEnabled",
+          "variantBlockEnabled", "blockEnabled", "blockAdjustment",
+          "variantDcaEnabled", "dcaEnabled",
         ] as const
         for (const f of CONN_FIELDS) {
           const v = (vcConn as Record<string, unknown>)[f]
@@ -3815,8 +3926,7 @@ export async function GET(
       "base",
       stageOverviewSettings.baseProfitFactor ?? (connection as any)?.baseProfitFactor,
     )
-    const normalEnabledRaw = stageOverviewSettings.normalEnabled ??
-      stageOverviewSettings.normal_enabled
+    const executionPolicy = normalizeStrategyExecutionPolicy(stageOverviewSettings)
     const connectionStageOverview = buildConnectionStageOverview({
       base: {
         totalOpen: strategyRows.base.totalOpen,
@@ -3827,9 +3937,7 @@ export async function GET(
         validOpen: strategyRows.main.validOpen,
         overallOpen: strategyRows.main.overallOpen,
         breakdown: strategyRows.main.breakdown,
-        normalEnabled: ![false, 0, "0", "false", "off", "no"].includes(
-          typeof normalEnabledRaw === "string" ? normalEnabledRaw.toLowerCase() : normalEnabledRaw as any,
-        ),
+        ...executionPolicy,
       },
       real: {
         valid: strategyRows.real.valid,
@@ -3870,6 +3978,41 @@ export async function GET(
       ),
     })
 
+    const mainIndicationDefinitions = [
+      ["direction", "Direction", "direction"],
+      ["move", "Move", "move"],
+      ["active", "Active", "active"],
+      ["activeAdvanced", "Active Advanced", "active_advanced"],
+      ["special", "Special", "special"],
+      ["optimal", "Optimal", "optimal"],
+      ["auto", "Auto", "auto"],
+      ["trend", "Trend", "trend"],
+    ] as const
+    const mainIndicationTypes = Object.fromEntries(
+      mainIndicationDefinitions.map(([publicKey, label, storageKey]) => [
+        publicKey,
+        {
+          label,
+          trackings: indCounts[storageKey] || 0,
+          evaluated: activeIndEvaluatedByType[storageKey] || 0,
+          active: activeIndByType[storageKey] || 0,
+          progressingSets: activeSetsIndByType[storageKey] || 0,
+        },
+      ]),
+    )
+    const mainIndications = {
+      types: mainIndicationTypes,
+      totals: Object.values(mainIndicationTypes).reduce(
+        (sum, row) => ({
+          trackings: sum.trackings + row.trackings,
+          evaluated: sum.evaluated + row.evaluated,
+          active: sum.active + row.active,
+          progressingSets: sum.progressingSets + row.progressingSets,
+        }),
+        { trackings: 0, evaluated: 0, active: 0, progressingSets: 0 },
+      ),
+    }
+
     if (statsSearchParams.get("view") === "overview") {
       return NextResponse.json({
         success: true,
@@ -3878,6 +4021,7 @@ export async function GET(
         view: "overview",
         strategyRows,
         connectionStageOverview,
+        mainIndications,
         runtime: getRuntimeTelemetry(historicSymbolsTotal),
         settingsRecoordination,
         statsRecalculation,
@@ -4449,10 +4593,17 @@ export async function GET(
           n(progHash.live_positions_created_count) -
             n(progHash.live_positions_closed_count),
         )
-        const liveOpen = liveOpenScanned > 0
-          ? liveOpenScanned
-          : liveCounterOpen
-        const liveVolumeUsd = n(progHash.live_volume_usd_total)
+        const exchangeSnapshot = liveExecutionSummary?.exchange
+        const exchangePositionsAvailable = exchangeSnapshot?.positionsStatus.available === true
+        const exchangeOrdersAvailable = exchangeSnapshot?.ordersStatus.available === true
+        const liveOpen = exchangePositionsAvailable
+          ? exchangeSnapshot!.openPositions
+          : liveOpenScanned > 0
+            ? liveOpenScanned
+            : liveCounterOpen
+        const liveVolumeUsd = exchangePositionsAvailable
+          ? exchangeSnapshot!.positionNotionalUsd
+          : n(progHash.live_volume_usd_total)
         const liveVolumeUsdR = Math.round(liveVolumeUsd * 100) / 100
         // Used-balance (margin) cumulative counter — incremented in
         // lock-step with `live_volume_usd_total` by live-stage.ts at both
@@ -4534,7 +4685,23 @@ export async function GET(
               count:  s.count,
             })),
             resolution: p.resolution,
+            controlOrderSetCoverage: p.controlOrderSetCoverage,
+            protectedSetCount: p.controlOrderSetCoverage.filter((row) => row.protected).length,
+            unprotectedSetCount: p.controlOrderSetCoverage.filter((row) => !row.protected).length,
           }))
+        const authoritativeLiveBySymbol = exchangePositionsAvailable
+          ? exchangeSnapshot!.positionsBySymbol.map((row) => ({
+              symbol: row.symbol,
+              long: row.long,
+              short: row.short,
+              volumeUsd: row.notionalUsd,
+              marginUsd: 0,
+              unrealizedPnl: row.unrealizedPnl,
+            }))
+          : liveBySymbol
+        const authoritativeUnrealizedPnl = exchangePositionsAvailable
+          ? exchangeSnapshot!.unrealizedPnl
+          : liveAggTotalUnrealizedPnl
 
         return {
           pseudo: {
@@ -4555,6 +4722,16 @@ export async function GET(
           },
           live: {
             open:         liveOpen,                  // count
+            symbolCount:  exchangePositionsAvailable
+              ? exchangeSnapshot!.openPositionSymbols
+              : authoritativeLiveBySymbol.length,
+            openOrders:   exchangeOrdersAvailable ? exchangeSnapshot!.openOrders : 0,
+            openOrderSymbols: exchangeOrdersAvailable ? exchangeSnapshot!.openOrderSymbols : 0,
+            entryOrders:  exchangeOrdersAvailable ? exchangeSnapshot!.entryOrders : 0,
+            controlOrders: exchangeOrdersAvailable ? exchangeSnapshot!.controlOrders : 0,
+            source: exchangePositionsAvailable ? "exchange-api" : "tracked-live-ledger",
+            snapshotComplete: exchangeSnapshot?.complete === true,
+            snapshot: exchangeSnapshot || null,
             volumeUsd:    liveVolumeUsdR,            // exchange USD notional (qty × price, leveraged exposure)
             // Used-balance / margin USDT — the value of the *capital
             // committed* to live exchange positions, NOT the leveraged
@@ -4575,7 +4752,7 @@ export async function GET(
             // Sum of `positions[]` — guarantees the Live strip
             // totals always equal what's visible in the rows.
             aggregate: {
-              totalUnrealizedPnl: liveAggTotalUnrealizedPnl,
+              totalUnrealizedPnl: authoritativeUnrealizedPnl,
               totalMarginUsd:     liveAggTotalMarginUsd,
               totalVolumeUsd:     liveAggTotalVolumeUsd,
               portfolioRoiPct:    liveAggPortfolioRoiPct,
@@ -4584,13 +4761,16 @@ export async function GET(
               nearLiquidation:    liveAggNearLiquidation,
               staleSync:          liveAggStaleSync,
               consolidatedSetsTotal: liveAggConsolidatedSets,
+              controlOrderSets: liveControlOrderSets,
+              protectedControlOrderSets: liveProtectedControlOrderSets,
+              unprotectedControlOrderSets: Math.max(0, liveControlOrderSets - liveProtectedControlOrderSets),
             },
             // Per-symbol position groupings (count of long/short positions +
             // USD totals, sorted by descending size). Lets the dashboard
             // render "BTCUSDT L:2 S:1" chips under the Positions row without
             // re-deriving from `positions[]`. Empty array when no live
             // positions exist.
-            bySymbol: liveBySymbol,
+            bySymbol: authoritativeLiveBySymbol,
           },
           overall: {
             // Pipeline-health counters. Semantically distinct from
@@ -4598,7 +4778,7 @@ export async function GET(
             pipelineEvalOpen: pseudoOpen,   // strategies evaluating
             exchangeOpen:     liveOpen,     // orders actually on exchange
             exchangeVolumeUsd: liveVolumeUsdR,
-            exchangeUnrealizedPnl: liveAggTotalUnrealizedPnl,
+            exchangeUnrealizedPnl: authoritativeUnrealizedPnl,
             exchangeMarginUsd:     liveAggTotalMarginUsd,
             runningSetsCount: pseudoRunningSets,
           },
@@ -4615,6 +4795,32 @@ export async function GET(
         ordersFailed:     n(progHash.live_orders_failed_count),
         ordersRejected:   n(progHash.live_orders_rejected_count),
         ordersSimulated:  n(progHash.live_orders_simulated_count),
+        openOrders: liveExecutionSummary?.openOrders ?? 0,
+        openOrderSymbols: liveExecutionSummary?.openOrderSymbols ?? 0,
+        entryOrders: liveExecutionSummary?.entryOrders ?? 0,
+        controlOrders: liveExecutionSummary?.controlOrders ?? 0,
+        excludedUntrackedPositions: liveExecutionSummary?.excludedUntrackedPositions ?? 0,
+        excludedUntrackedOrders: liveExecutionSummary?.excludedUntrackedOrders ?? 0,
+        exchangeScope: "cts_tracked_only",
+        openSymbols: liveExecutionSummary?.openSymbols ?? 0,
+        exchangeSnapshot: liveExecutionSummary?.exchange ?? null,
+        dispatchOutcome: stratDetail.live?.dispatchOutcome || {
+          attempted: 0,
+          placed: 0,
+          filled: 0,
+          rejected: 0,
+          errored: 0,
+          missingEntry: 0,
+          noResult: 0,
+          otherStatus: 0,
+          failedToOpen: 0,
+          durationMsTotal: 0,
+          durationMsMax: 0,
+          avgAttemptMs: 0,
+        },
+        dispatchSelectedCount: stratDetail.live?.dispatchSelectedCount || 0,
+        dispatchDeferredCount: stratDetail.live?.dispatchDeferredCount || 0,
+        dispatchSuppressedCount: stratDetail.live?.dispatchSuppressedCount || 0,
         // Accumulated entries (extra fills merged into an existing
         // exchange position because multiple Real-stage Set signals
         // for the same symbol+direction landed on a still-open live
@@ -4624,8 +4830,8 @@ export async function GET(
         // exchange orders, keeping the live exposure consolidated.
         ordersAccumulated: n(progHash.live_orders_accumulated_count),
         // Positions
-        positionsCreated: n(progHash.live_positions_created_count),
-        positionsClosed:  n(progHash.live_positions_closed_count),
+        positionsCreated: liveExecutionSummary?.totalPositions ?? n(progHash.live_positions_created_count),
+        positionsClosed:  liveExecutionSummary?.closedPositions ?? n(progHash.live_positions_closed_count),
         simulatedPositionsCreated: n(progHash.live_simulated_positions_created_count),
         simulatedPositionsClosed:  n(progHash.live_simulated_positions_closed_count),
         simulatedPositionsOpen: Math.max(
@@ -4640,7 +4846,7 @@ export async function GET(
             ? dollars
             : n(progHash.live_simulated_volume_microusd_total) / 1_000_000
         })(),
-        positionsOpen: (() => {
+        positionsOpen: liveExecutionSummary?.openPositions ?? (() => {
           // Prefer key-scan (liveOpenScanned) — authoritative; survives server
           // restarts where InlineLocalRedis counters reset to 0.
           const execCounterOpen = Math.max(
@@ -4655,9 +4861,21 @@ export async function GET(
             ? liveOpenScanned + execPending
             : Math.max(0, execCounterOpen + execPending)
         })(),
-        wins:             n(progHash.live_wins_count),
+        wins: liveExecutionSummary?.wins ?? n(progHash.live_wins_count),
+        losses: liveExecutionSummary?.losses ?? 0,
+        breakEven: liveExecutionSummary?.breakEven ?? 0,
+        settledClosedPositions: liveExecutionSummary?.settledClosedPositions ?? 0,
+        accountingPending: liveExecutionSummary?.accountingPending ?? 0,
+        realizedPnl: liveExecutionSummary?.realizedPnl ?? 0,
+        unrealizedPnl: liveExecutionSummary?.unrealizedPnl ?? 0,
+        effectivePnl: liveExecutionSummary?.effectivePnl ?? 0,
+        avgWin: liveExecutionSummary?.avgWin ?? null,
+        avgLoss: liveExecutionSummary?.avgLoss ?? null,
+        sourceCounts: liveExecutionSummary?.sourceCounts ?? { real: 0, simulated: 0, unknown: 0 },
+        coverage: liveExecutionSummary?.coverage ?? null,
+        complete: liveExecutionSummary?.complete ?? false,
         // Volume — leveraged notional (cumulative qty × price across all fills)
-        volumeUsdTotal:   n(progHash.live_volume_usd_total),
+        volumeUsdTotal: liveExecutionSummary?.lifetimeVolumeUsd ?? n(progHash.live_volume_usd_total),
         // Used-balance margin (cumulative notional/leverage). This is
         // the canonical "USDT" figure the dashboard should display:
         // the actual capital committed, not the leveraged exposure.
@@ -4684,7 +4902,7 @@ export async function GET(
           const filled = n(progHash.live_orders_filled_count)
           return ratioPercent(filled, placed)
         })(),
-        winRate: (() => {
+        winRate: liveExecutionSummary?.winRate ?? (() => {
           const closed = n(progHash.live_positions_closed_count)
           const wins   = n(progHash.live_wins_count)
           return ratioPercent(wins, closed)

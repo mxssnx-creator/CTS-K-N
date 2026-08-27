@@ -10,6 +10,7 @@ import {
   isConnectionWorking,
   isTruthyFlag,
 } from "@/lib/connection-state-utils"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -139,6 +140,36 @@ export async function GET() {
       baseConnections.length > 0 ? "partial" : "down"
 
     const workflow = await getDashboardWorkflowSnapshot()
+    const executionRows = await Promise.all(activeInsertedAll.map(async (connection: any) => ({
+      connection,
+      summary: await getLiveExecutionSummary(connection.id),
+    })))
+    const totalPositions = executionRows.reduce((sum, row) => sum + row.summary.totalPositions, 0)
+    const totalTrades = executionRows.reduce((sum, row) => sum + row.summary.totalTrades, 0)
+    const exchangeOpenPositions = executionRows.reduce((sum, row) => sum + row.summary.openPositions, 0)
+    const exchangeOpenSymbols = executionRows.reduce((sum, row) => sum + row.summary.openSymbols, 0)
+    const exchangeOpenOrders = executionRows.reduce((sum, row) => sum + row.summary.openOrders, 0)
+    const exchangeEntryOrders = executionRows.reduce((sum, row) => sum + row.summary.entryOrders, 0)
+    const exchangeControlOrders = executionRows.reduce((sum, row) => sum + row.summary.controlOrders, 0)
+    const excludedUntrackedPositions = executionRows.reduce((sum, row) => sum + row.summary.excludedUntrackedPositions, 0)
+    const excludedUntrackedOrders = executionRows.reduce((sum, row) => sum + row.summary.excludedUntrackedOrders, 0)
+    const exchangeSnapshotsComplete = executionRows.filter((row) => row.summary.exchange.complete).length
+    const lastHourTrades = executionRows.reduce((sum, row) => sum + row.summary.lastHourTrades, 0)
+    const topConnections = executionRows
+      .filter((row) => row.summary.lastHourTrades > 0 || row.summary.totalTrades > 0)
+      .sort((left, right) =>
+        right.summary.lastHourTrades - left.summary.lastHourTrades
+        || right.summary.totalTrades - left.summary.totalTrades,
+      )
+      .slice(0, 5)
+      .map((row) => ({
+        connectionId: row.connection.id,
+        name: row.connection.name || row.connection.id,
+        tradesLastHour: row.summary.lastHourTrades,
+        totalTrades: row.summary.totalTrades,
+        realizedPnl: row.summary.realizedPnl,
+        accountingPending: row.summary.accountingPending,
+      }))
 
     // ── Aggregate cycle/indication/strategy stats from ALL active-inserted connections ──
     // The focusConnection in dashboard-workflow only tracks one connection; read all
@@ -234,8 +265,8 @@ export async function GET() {
       },
       availableConnections: enabledBase.filter((c: any) => !isConnectionInActivePanel(c)).length,
       liveTrades: {
-        lastHour: 0,
-        topConnections: [],
+        lastHour: lastHourTrades,
+        topConnections,
       },
       cycleStats: {
         cycleCount: finalTotalCycles,
@@ -245,8 +276,21 @@ export async function GET() {
         strategiesCount: totalStrategiesCount,
         cycleDurationMs: workflow.connectionMetrics.engineDurations?.indicationAvgMs || 0,
       },
-      totalPositions: workflow.connectionMetrics.positions,
-      totalTrades: workflow.connectionMetrics.trades,
+      totalPositions,
+      totalTrades,
+      exchangeLive: {
+        openPositions: exchangeOpenPositions,
+        openSymbols: exchangeOpenSymbols,
+        openOrders: exchangeOpenOrders,
+        entryOrders: exchangeEntryOrders,
+        controlOrders: exchangeControlOrders,
+        excludedUntrackedPositions,
+        excludedUntrackedOrders,
+        scope: "cts_tracked_only",
+        snapshotsComplete: exchangeSnapshotsComplete,
+        snapshotsTotal: executionRows.length,
+        complete: executionRows.length > 0 && exchangeSnapshotsComplete === executionRows.length,
+      },
       workflowOverview: {
         ...workflow.overview,
         // Override with accurate active-inserted count

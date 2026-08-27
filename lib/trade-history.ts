@@ -1,4 +1,7 @@
-import { isRealizedPnlAccountingPending } from "@/lib/live-position-pnl"
+import {
+  isRealizedPnlAccountingPending,
+  requiresVenueAccountingForPricePair,
+} from "@/lib/live-position-pnl"
 
 /** Bounded transport page; the durable history itself is never truncated. */
 export const TRADE_HISTORY_PAGE_SIZE = 500
@@ -357,30 +360,6 @@ function closeOrderIdFromSnapshot(position: Record<string, any>): string {
   return String(terminal?.orderId || "").trim()
 }
 
-function requiresVenueAccounting(input: {
-  environment: "exchange" | "simulated"
-  entryPrice: number
-  exitPrice: number
-  openedAt: number
-  closedAt: number
-}): boolean {
-  if (input.environment !== "exchange") return false
-  if (!(input.entryPrice > 0) || !(input.exitPrice > 0)) return false
-  if (!(input.openedAt > 0) || input.closedAt < input.openedAt) return false
-
-  // A >=50% entry/exit displacement inside one day is not discarded as an
-  // impossible market event. It is deliberately treated as requiring venue
-  // accounting because legacy BingX minimum-size retries sometimes persisted
-  // quote/notional-like values as fill prices. Those rows produced fictitious
-  // six-figure PnL despite venue notionals near a few USDT. A matching close
-  // order resolves the row exactly; until then the dashboard reports partial
-  // coverage instead of presenting invented accounting.
-  const priceRatio = Math.max(input.entryPrice, input.exitPrice) /
-    Math.max(Math.min(input.entryPrice, input.exitPrice), Number.EPSILON)
-  const holdingMs = input.closedAt - input.openedAt
-  return priceRatio >= 1.5 && holdingMs <= 24 * 60 * 60 * 1000
-}
-
 /**
  * Classify one durable lifecycle snapshot without mistaking rejected/error
  * attempts for missing trades. A terminal row with no executed quantity is an
@@ -541,7 +520,7 @@ export function classifyLocalTradeHistorySnapshot(
       row,
     }
   }
-  if (requiresVenueAccounting({ environment, entryPrice, exitPrice, openedAt, closedAt })) {
+  if (requiresVenueAccountingForPricePair({ environment, entryPrice, exitPrice, openedAt, closedAt })) {
     row.accountingQuality = "exchange_required"
     return {
       disposition: "unresolved_trade",

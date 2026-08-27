@@ -87,6 +87,7 @@ const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 22
 const DIRECT_TRADE_PROCESSOR_HEARTBEAT_INTERVAL_MS = 1_500
 const DIRECT_TRADE_CONTROL_REQUEST_TIMEOUT_MS = 10_000
 const DIRECT_TRADE_MAX_LIVE_CLOSE_ACTIONS_PER_CYCLE = 1
+const DIRECT_TRADE_RECALC_STALE_GRACE_MS = 30 * 60 * 1_000
 const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"]
 
 function normalizeEnabledIndicationTypes(value, fallback = DIRECT_TRADE_ENTRY_TACTICS) {
@@ -363,7 +364,13 @@ async function apiCall(path, method = "GET", body = null, timeoutMs = 30_000) {
   const res = await fetch(url, opts)
   if (!res.ok) {
     const text = await res.text().catch(() => "")
-    throw new Error(`API ${method} ${path} → ${res.status}: ${text.slice(0, 200)}`)
+    let payload = null
+    try { payload = JSON.parse(text) } catch { /* non-JSON error body */ }
+    const error = new Error(`API ${method} ${path} → ${res.status}: ${text.slice(0, 200)}`)
+    error.status = res.status
+    error.retryAfterSeconds = Number(payload?.retryAfterSeconds) || 0
+    error.responseCode = String(payload?.code || payload?.errorCode || "")
+    throw error
   }
   return res.json()
 }
@@ -455,6 +462,10 @@ let stats = {
 }
 
 let lastRecalcAt = 0
+let nextRecalcAttemptAt = 0
+let recalcRequestInFlight = null
+let completedRecalcRequest = null
+let lastRecalcConflictLogAt = 0
 let tickCount = 0
 let errorsLast5min = 0
 let errorTimestamps = []
@@ -765,7 +776,7 @@ function calculationInputsSignature(input = state, historyHoursOverride = null) 
   })
 }
 
-async function recalculateConfigs() {
+async function requestConfigRecalculation() {
   log("info", "Recalculating optimal configs...")
   const requestedHistoryHours = requiredCalculationHistoryHours()
   const configuredHistoryHours = configuredCalculationHistoryHours()
@@ -806,66 +817,100 @@ async function recalculateConfigs() {
       dcaProfile: normalizeDirectDcaProfile(state.dcaProfile),
     }, 300_000)
 
-    if (result.success && processorLeaseHeld) {
-      if (calculationInputs !== calculationInputsSignature(state, requiredCalculationHistoryHours())) {
-        // A settings acknowledgement arrived while this long historical grid
-        // was evaluating. Do not open an entry from the now-stale generation;
-        // the next owned pulse starts the exact new grid.
-        lastRecalcAt = 0
-        log("info", "Direct-Trade settings changed during calculation; scheduling an exact replacement grid")
-        return false
-      }
-      calculationVersion = result.summary?.calculatedAt || result.timestamp || calculationVersion
-      calculationHistoryHours = Number(result.summary?.historyHours) || requestedHistoryHours
-      lastHistoryPolicy = assessCalculationHistory(result.summary, calculationHistoryHours)
-      if (!lastHistoryPolicy.canProceed) {
-        adaptiveHistoryHours = lastHistoryPolicy.nextHistoryHours
-        lastRecalcAt = 0
-        configs = []
-        executionConfigs = []
-        activeExecutionConfigs = []
-        executionConfigsBySignal = new Map()
-        activeSignalKeys = new Set()
-        lastSignalPulseAt = 0
-        stateDirty = true
-        log(
-          "warn",
-          `Historic ${calculationHistoryHours}h graph is insufficient (${lastHistoryPolicy.reasons.join(", ")}); ` +
-            `expanding once to ${adaptiveHistoryHours}h before realtime entries`,
-        )
-        await persistState()
-        return false
-      }
-      adaptiveHistoryHours = calculationHistoryHours
-      lastRecalcAt = Date.now()
-      // The API stores the full grid in chunks. Active candidates are loaded
-      // after the causal pulse below, never as one multi-million-row payload.
-      await loadState()
-      log(
-        lastHistoryPolicy.sufficient ? "info" : "warn",
-        `Recalculated: ${Number(result.configTotal || 0)} evaluated / ` +
-          `${Number(result.executionConfigTotal || executionConfigs.length)} valid configs for ${result.symbols?.length || 0} symbols; ` +
-          `history=${calculationHistoryHours}h requested=${configuredHistoryHours}h ` +
-          `coverage=${lastHistoryPolicy.sufficient ? "sufficient" : "maximum reached, eligible rows only"}`,
-      )
-
-      // Save to server
-      await apiCall("/api/trade-engine/direct-trade", "POST", {
-        action: "update-config",
-        lastRecalcAt: new Date().toISOString(),
-      }).catch(() => {})
-
-      stateDirty = true
-      await persistState()
-      await refreshActiveSignals()
-      return true
-    }
-    return false
+    nextRecalcAttemptAt = 0
+    return { result, requestedHistoryHours, configuredHistoryHours, calculationInputs }
   } catch (err) {
-    log("error", "Recalculation failed", err.message)
+    const status = Number(err?.status) || 0
+    const retryAfterMs = Math.max(10_000, Math.min(300_000, (Number(err?.retryAfterSeconds) || 10) * 1_000))
+    nextRecalcAttemptAt = Date.now() + retryAfterMs
+    if (status === 409) {
+      if (Date.now() - lastRecalcConflictLogAt >= 30_000) {
+        lastRecalcConflictLogAt = Date.now()
+        log("info", `Historical publisher already active; retrying after ${Math.round(retryAfterMs / 1000)}s`)
+      }
+      return null
+    }
+    log("error", "Recalculation failed", err?.message || err)
     trackError()
+    return null
+  }
+}
+
+function scheduleConfigRecalculation() {
+  if (recalcRequestInFlight || completedRecalcRequest || Date.now() < nextRecalcAttemptAt) return false
+  const request = requestConfigRecalculation()
+  recalcRequestInFlight = request
+  void request.then((completed) => {
+    if (completed) completedRecalcRequest = completed
+  }).finally(() => {
+    if (recalcRequestInFlight === request) recalcRequestInFlight = null
+  })
+  return true
+}
+
+async function applyCompletedConfigRecalculation() {
+  const completed = completedRecalcRequest
+  if (!completed) return false
+  completedRecalcRequest = null
+  const { result, requestedHistoryHours, configuredHistoryHours, calculationInputs } = completed
+  if (!result?.success || !processorLeaseHeld) {
+    lastRecalcAt = 0
+    nextRecalcAttemptAt = Date.now() + 2_000
     return false
   }
+  if (calculationInputs !== calculationInputsSignature(state, requiredCalculationHistoryHours())) {
+    // A settings acknowledgement arrived while this long historical grid was
+    // evaluating. The API snapshot is retained for audit, but no live entry
+    // may consume it; a replacement is scheduled from the exact new inputs.
+    lastRecalcAt = 0
+    nextRecalcAttemptAt = 0
+    log("info", "Direct-Trade settings changed during calculation; scheduling an exact replacement grid")
+    return false
+  }
+  calculationVersion = result.summary?.calculatedAt || result.timestamp || calculationVersion
+  calculationHistoryHours = Number(result.summary?.historyHours) || requestedHistoryHours
+  lastHistoryPolicy = assessCalculationHistory(result.summary, calculationHistoryHours)
+  if (!lastHistoryPolicy.canProceed) {
+    adaptiveHistoryHours = lastHistoryPolicy.nextHistoryHours
+    lastRecalcAt = 0
+    nextRecalcAttemptAt = 0
+    configs = []
+    executionConfigs = []
+    activeExecutionConfigs = []
+    executionConfigsBySignal = new Map()
+    activeSignalKeys = new Set()
+    lastSignalPulseAt = 0
+    stateDirty = true
+    log(
+      "warn",
+      `Historic ${calculationHistoryHours}h graph is insufficient (${lastHistoryPolicy.reasons.join(", ")}); ` +
+        `expanding once to ${adaptiveHistoryHours}h before realtime entries`,
+    )
+    await persistState()
+    return false
+  }
+  adaptiveHistoryHours = calculationHistoryHours
+  // Apply only at this serialized lifecycle boundary. No background publisher
+  // can race position management, settings hydration or processor persistence.
+  await loadState()
+  const appliedAt = Date.now()
+  lastRecalcAt = appliedAt
+  nextRecalcAttemptAt = 0
+  log(
+    lastHistoryPolicy.sufficient ? "info" : "warn",
+    `Recalculated: ${Number(result.configTotal || 0)} evaluated / ` +
+      `${Number(result.executionConfigTotal || executionConfigs.length)} valid configs for ${result.symbols?.length || 0} symbols; ` +
+      `history=${calculationHistoryHours}h requested=${configuredHistoryHours}h ` +
+      `coverage=${lastHistoryPolicy.sufficient ? "sufficient" : "maximum reached, eligible rows only"}`,
+  )
+  await apiCall("/api/trade-engine/direct-trade", "POST", {
+    action: "update-config",
+    lastRecalcAt: new Date(appliedAt).toISOString(),
+  }).catch(() => {})
+  stateDirty = true
+  await persistState()
+  await refreshActiveSignals()
+  return true
 }
 
 // ─── Position Management ──────────────────────────────────────────────────────
@@ -2599,14 +2644,20 @@ async function closePosition(pos, exitPrice, reason) {
 function trackError() {
   const now = Date.now()
   errorTimestamps.push(now)
+  refreshErrorWindow(now)
+}
+
+function refreshErrorWindow(now = Date.now()) {
   errorTimestamps = errorTimestamps.filter((t) => now - t < 5 * 60 * 1000)
   errorsLast5min = errorTimestamps.length
+  return errorsLast5min
 }
 
 // ─── State Persistence ────────────────────────────────────────────────────────
 
 async function persistState() {
   try {
+    refreshErrorWindow()
     const result = await apiCall("/api/trade-engine/direct-trade", "POST", {
       action: "processor-sync",
       instanceId: processorInstanceId,
@@ -2617,6 +2668,8 @@ async function persistState() {
       historyPolicy: lastHistoryPolicy,
       lifecycleCycleCount,
       lastProgressAt: lastProgressAt > 0 ? new Date(lastProgressAt).toISOString() : null,
+      recalculationInFlight: Boolean(recalcRequestInFlight),
+      nextRecalcAttemptAt: nextRecalcAttemptAt > Date.now() ? new Date(nextRecalcAttemptAt).toISOString() : null,
       positions,
       stats,
       configStatus: Object.fromEntries(configStatus),
@@ -2649,6 +2702,7 @@ async function processorHeartbeatLoop() {
     ))
     if (!processorLeaseHeld || (!state.enabled && !hasManagedPositions)) continue
     try {
+      refreshErrorWindow()
       const result = await apiCall("/api/trade-engine/direct-trade", "POST", {
         action: "processor-heartbeat",
         instanceId: processorInstanceId,
@@ -2907,16 +2961,23 @@ async function processTick() {
   if (tickInFlight) return
   tickInFlight = true
   try {
+  await applyCompletedConfigRecalculation()
+  refreshErrorWindow()
   tickCount++
 
   // 1. Check if recalculation needed (every 2h)
-  if (calculationHistoryHours !== requiredCalculationHistoryHours()) {
+  const requiredHistoryHours = requiredCalculationHistoryHours()
+  const calculationInputsMatch = calculationHistoryHours === requiredHistoryHours
+  if (!calculationInputsMatch) {
     lastRecalcAt = 0
   }
-  let calculationFresh = true
-  if (Date.now() - lastRecalcAt > state.recalcIntervalMs) {
-    calculationFresh = await recalculateConfigs()
-  }
+  const calculationAgeMs = Math.max(0, Date.now() - lastRecalcAt)
+  if (calculationAgeMs > state.recalcIntervalMs) scheduleConfigRecalculation()
+  // A previously published exact grid remains safe for a bounded grace while
+  // its atomic replacement runs. This keeps live protection/entries moving
+  // without accepting a changed-history or indefinitely stale generation.
+  const calculationFresh = Boolean(calculationVersion) && calculationInputsMatch &&
+    calculationAgeMs <= state.recalcIntervalMs + DIRECT_TRADE_RECALC_STALE_GRACE_MS
 
   // 2. Check and close existing positions
   await processOpeningPositions()
@@ -2932,7 +2993,10 @@ async function processTick() {
 
   // Existing positions remain protected above, but a stale or failed
   // historical generation may never create a new Direct-Trade entry.
-  if (!calculationFresh) return
+  if (!calculationFresh) {
+    if (stateDirty || Date.now() - lastPersistAt >= 2_000) await persistState()
+    return
+  }
 
   // 3. Open new positions based on configs
   if (activeExecutionConfigs.length > 0) {
@@ -2978,7 +3042,7 @@ async function mainLoop() {
     await ensureProcessorLease() &&
     (!calculationVersion || calculationHistoryHours !== requiredCalculationHistoryHours())
   ) {
-    await recalculateConfigs()
+    scheduleConfigRecalculation()
   }
 
   while (true) {

@@ -171,7 +171,7 @@ describe("historic runtime generation stability", () => {
     }
   })
 
-  test("local production ownership uses the same capped basket as the engine", async () => {
+  test("local production ownership keeps the complete configured basket", async () => {
     const connectionId = `selection-local-cap-${Date.now()}`
     const client = getRedisClient()
     const settingsKey = `settings:trade_engine_state:${connectionId}`
@@ -194,9 +194,9 @@ describe("historic runtime generation stability", () => {
         epoch: "epoch-local-cap",
         symbols: [
           "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT", "BNBUSDT",
-          "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT",
+          "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
         ],
-        total: 12,
+        total: 13,
       })
     } finally {
       await client.del(settingsKey)

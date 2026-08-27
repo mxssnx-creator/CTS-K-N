@@ -266,6 +266,7 @@ function getDefaultSettings(): Record<string, any> {
     maxDrawdownTimeLiveHours: 4,
     mainEvalPosCount: 25,
     realEvalPosCount: 20,
+    blockRowRealEvalPosCount: 20,
     liveEvalPosCount: 15,
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     strategyBaseTrailingEnabled: true,
@@ -273,10 +274,6 @@ function getDefaultSettings(): Record<string, any> {
     normalEnabled: true,
     blockAdjustment: true,
     variantBlockEnabled: true,
-    // Legacy only fields are retained only for old hash readers and are
-    // deliberately false; Normal/Trailing/Block/DCA are independent now.
-    blockOnly: false,
-    variantBlockOnly: false,
     blockVolumeRatio: 1,
     blockProfitFactorRatio: 0.8,
     presetBlockProfitFactorRatio: 0.8,

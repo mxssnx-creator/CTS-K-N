@@ -24,7 +24,7 @@
  *                 ▼
  *   ┌─────────────────────────────────────────────────────────────────┐
  *   │ MAIN  — VARIANT Sets per Base (NO new positions; reuse Base's)  │
- *   │   • Default / Trailing / Block / DCA                            │
+ *   │   • Normal / Trailing / Block / DCA                             │
  *   │   • Block + DCA: validate Base's COMPLETE positions via gates   │
  *   │   • Trailing: per-base (start, stop) trailing matrix expansion  │
  *   │   • Pos-count variants are validated here via axisWindows tag   │
@@ -51,6 +51,7 @@ import {
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
   normalizeMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
+import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 
 const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
 
@@ -138,6 +139,12 @@ export interface IndicationTracking {
 }
 
 export interface StrategyStageTracking {
+  executionPolicy: {
+    normalEnabled: boolean
+    trailingEnabled: boolean
+    blockEnabled: boolean
+    dcaEnabled: boolean
+  }
   rows: {
     base: { total: number; valid: number; totalOpen: number; validOpen: number; validRatio: number }
     main: {
@@ -260,6 +267,14 @@ export interface StrategyStageTracking {
     dispatchCandidates: number        // latest cycle candidates before selection
     dispatchSelectedCount: number     // latest cycle selected active Live sets
     dispatchSuppressedCount: number   // latest cycle candidates not selected for dispatch
+    dispatchAttemptedCount: number
+    dispatchPlacedCount: number
+    dispatchFilledCount: number
+    dispatchRejectedCount: number
+    dispatchErroredCount: number
+    dispatchFailedToOpenCount: number
+    dispatchDurationMs: number
+    dispatchAvgAttemptMs: number
     avgProfitFactor: number
     cap: number                       // compatibility value; 0 means Unlimited
   }
@@ -439,6 +454,7 @@ export async function getStrategyTracking(
   const main = (mainDetail || {}) as Record<string, string>
   const real = (realDetail || {}) as Record<string, string>
   const settings = (settingsHash || {}) as Record<string, string>
+  const executionPolicy = normalizeStrategyExecutionPolicy(settings)
   const activeStrats = (activeHash || {}) as Record<string, string>
 
   // Canonical per-stage Max-Drawdown-Time ceilings (the SAME source the
@@ -710,9 +726,12 @@ export async function getStrategyTracking(
     real: pct(realLogicalPassed || Math.min(realOutput, realInput), realInput),
     live: rows.live.total > 0 ? pct(rows.live.mirrored, rows.live.total) : 0,
   }
+  const liveDispatchAttempted = sumFreshRow(liveDetail, "dispatch_attempted_count", "dispatch_attempted_count")
+  const liveDispatchDurationMs = sumFreshRow(liveDetail, "dispatch_duration_ms", "dispatch_duration_ms")
 
   return {
     rows,
+    executionPolicy,
     base: {
       setsActivelyProcessing: rows.base.totalOpen || baseActivelyProcessing,
       setsRunningNow: rows.base.totalOpen,
@@ -771,9 +790,19 @@ export async function getStrategyTracking(
       setsProgressing: Number(liveDetail.sets_progressing || "0"),
       setsTotal: Number(prog.strategies_live_total || "0"),
       setsCandidatesTotal: Number(prog.strategies_live_candidates_total || "0"),
-      dispatchCandidates: Number(liveDetail.dispatch_candidates || "0"),
-      dispatchSelectedCount: Number(liveDetail.dispatch_selected_count || liveDetail.sets_running_now || liveActive),
-      dispatchSuppressedCount: Number(liveDetail.dispatch_suppressed_count || "0"),
+      dispatchCandidates: sumFreshRow(liveDetail, "dispatch_candidates", "dispatch_candidates"),
+      dispatchSelectedCount: sumFreshRow(liveDetail, "dispatch_selected_count", "sets_running_now") || liveActive,
+      dispatchSuppressedCount: sumFreshRow(liveDetail, "dispatch_suppressed_count", "dispatch_suppressed_count"),
+      dispatchAttemptedCount: liveDispatchAttempted,
+      dispatchPlacedCount: sumFreshRow(liveDetail, "dispatch_placed_count", "dispatch_placed_count"),
+      dispatchFilledCount: sumFreshRow(liveDetail, "dispatch_filled_count", "dispatch_filled_count"),
+      dispatchRejectedCount: sumFreshRow(liveDetail, "dispatch_rejected_count", "dispatch_rejected_count"),
+      dispatchErroredCount: sumFreshRow(liveDetail, "dispatch_errored_count", "dispatch_errored_count"),
+      dispatchFailedToOpenCount: sumFreshRow(liveDetail, "dispatch_failed_to_open_count", "dispatch_failed_to_open_count"),
+      dispatchDurationMs: liveDispatchDurationMs,
+      dispatchAvgAttemptMs: liveDispatchAttempted > 0
+        ? Number((liveDispatchDurationMs / liveDispatchAttempted).toFixed(2))
+        : 0,
       avgProfitFactor: Number(prog.live_avg_profit_factor || "0"),
       cap: 0,
     },

@@ -128,6 +128,39 @@ function resolveClosePrice(position: Record<string, any>): number | undefined {
   )
 }
 
+function normalizedTimestamp(value: unknown): number {
+  if (typeof value === "number" || (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim()))) {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0
+    return parsed < 10_000_000_000 ? parsed * 1000 : parsed
+  }
+  const parsed = Date.parse(String(value || ""))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+/**
+ * Require authoritative venue accounting for a physically implausible legacy
+ * local close. The row is retained for reconciliation, but must not contribute
+ * to PnL/PF until the matching exchange close supplies a trustworthy price and
+ * result. A 50%+ displacement inside one day is a quarantine trigger, not a
+ * claim that such a market move is impossible.
+ */
+export function requiresVenueAccountingForPricePair(input: {
+  environment: "exchange" | "simulated"
+  entryPrice: number
+  exitPrice: number
+  openedAt: number
+  closedAt: number
+}): boolean {
+  if (input.environment !== "exchange") return false
+  if (!(input.entryPrice > 0) || !(input.exitPrice > 0)) return false
+  if (!(input.openedAt > 0) || input.closedAt < input.openedAt) return false
+  const priceRatio = Math.max(input.entryPrice, input.exitPrice) /
+    Math.max(Math.min(input.entryPrice, input.exitPrice), Number.EPSILON)
+  const holdingMs = input.closedAt - input.openedAt
+  return priceRatio >= 1.5 && holdingMs <= 24 * 60 * 60 * 1000
+}
+
 function fillFees(position: Record<string, any>): number | undefined {
   if (!Array.isArray(position.fills)) return undefined
   let hasFee = false
@@ -253,6 +286,18 @@ export function isRealizedPnlAccountingPending(
   ) {
     return false
   }
+
+  if (status === "closed" && requiresVenueAccountingForPricePair({
+    environment: "exchange",
+    entryPrice: resolveEntryPrice(position) ?? 0,
+    exitPrice: resolveClosePrice(position) ?? 0,
+    openedAt: normalizedTimestamp(
+      position.openedAt ?? position.opened_at ?? position.createdAt ?? position.created_at ?? position.timestamp,
+    ),
+    closedAt: normalizedTimestamp(
+      position.closedAt ?? position.closed_at ?? position.closeTimestamp ?? position.updatedAt ?? position.updated_at,
+    ),
+  })) return true
 
   for (const completeness of [
     position.realizedPnlComplete,

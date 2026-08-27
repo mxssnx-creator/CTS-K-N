@@ -202,6 +202,9 @@ export interface StageOverviewInput {
     }
     /** Whether the Normal/default execution family is enabled. */
     normalEnabled?: boolean
+    trailingEnabled?: boolean
+    blockEnabled?: boolean
+    dcaEnabled?: boolean
   }
   real: {
     valid: number
@@ -367,6 +370,12 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
       breakdown,
       breakdownComplete,
       normalEnabled: input.main?.normalEnabled !== false,
+      executionPolicy: {
+        normalEnabled: input.main?.normalEnabled !== false,
+        trailingEnabled: input.main?.trailingEnabled !== false,
+        blockEnabled: input.main?.blockEnabled !== false,
+        dcaEnabled: input.main?.dcaEnabled === true,
+      },
     },
     real: {
       valid: nonNegative(input.real?.valid),

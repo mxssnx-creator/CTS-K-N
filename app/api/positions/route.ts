@@ -4,6 +4,8 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import {
   getClosedLivePositionReadModels,
   getOpenLivePositionReadModels,
+  LIVE_POSITION_CLOSED_READ_LIMIT,
+  LIVE_POSITION_OPEN_READ_LIMIT,
 } from "@/lib/live-position-read-model"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
@@ -41,15 +43,15 @@ export async function GET(request: NextRequest) {
 
     const client = getRedisClient()
 
-    // Fetch complete, merged JSON+hash read models from the canonical live
-    // indexes. Pagination is applied after filtering, never by silently
-    // truncating closed history to the first 100 IDs.
+    // Fetch bounded, merged JSON+hash read models from the canonical live
+    // indexes. The limits exceed supported active capacity and prevent a stale
+    // compatibility index from blocking dashboard/session recovery.
     const positions: any[] = []
     let processed = 0
     const [liveOpen, liveClosed] = await Promise.all([
-      getOpenLivePositionReadModels(connectionId, 0),
+      getOpenLivePositionReadModels(connectionId, LIVE_POSITION_OPEN_READ_LIMIT),
       status === "all" || status === "closed"
-        ? getClosedLivePositionReadModels(connectionId, 0)
+        ? getClosedLivePositionReadModels(connectionId, LIVE_POSITION_CLOSED_READ_LIMIT)
         : Promise.resolve([]),
     ])
     const terminalStatuses = new Set(["closed", "rejected", "error", "cancelled", "canceled", "failed"])
@@ -119,6 +121,13 @@ export async function GET(request: NextRequest) {
       limit,
       offset,
       duration: Date.now() - startTime,
+      coverage: {
+        openLimit: LIVE_POSITION_OPEN_READ_LIMIT,
+        closedLimit: LIVE_POSITION_CLOSED_READ_LIMIT,
+        possiblyTruncated:
+          liveOpen.length >= LIVE_POSITION_OPEN_READ_LIMIT ||
+          liveClosed.length >= LIVE_POSITION_CLOSED_READ_LIMIT,
+      },
     })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error)

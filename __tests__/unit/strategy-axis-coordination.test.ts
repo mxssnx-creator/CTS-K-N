@@ -125,6 +125,41 @@ describe("strategy position-count axis coordination", () => {
     })
   })
 
+  test("uses an independent Block Row-Real window and never assigns DCA to Rows", () => {
+    const normal = baseSet([0.2, 0.1, -0.1, -0.2, 0.3, 0.4])
+    const block: StrategySet = {
+      ...normal,
+      setKey: `${normal.setKey}#block:2`,
+      parentSetKey: normal.setKey,
+      variant: "block",
+    }
+    const dca: StrategySet = {
+      ...normal,
+      setKey: `${normal.setKey}#dca`,
+      parentSetKey: normal.setKey,
+      variant: "dca",
+    }
+
+    const result = materializeContinuousStageRows([normal, block, dca], {
+      stage: "real",
+      lookback: 6,
+      lookbackByVariant: { block: 2 },
+      metrics: { minProfitFactor: -99, maxDrawdownTime: 999 },
+    })
+
+    expect(result).toMatchObject({ evaluated: 2, rejected: 0 })
+    expect(result.rows.find((row) => row.variant === "block")).toMatchObject({
+      rowEvaluationWindow: 2,
+      entryCount: 2,
+    })
+    expect(result.rows.some((row) => row.variant === "dca")).toBe(false)
+    expect(result.rows.some((row) => row.setKey.includes("#dca#row_"))).toBe(false)
+    expect(result.rows.find((row) => row.variant !== "block" && row.variant !== "dca")).toMatchObject({
+      rowEvaluationWindow: 6,
+      entryCount: 6,
+    })
+  })
+
   test("does not mark a derived sibling active through its shared Base parent", () => {
     const derived = baseSet([-1, -1, -1])
     derived.setKey = "BTCUSDT:direction:long#axis:continuous:4"

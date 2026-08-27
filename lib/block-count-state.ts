@@ -121,7 +121,7 @@ export function calculateBlockMinimumProfitFactor(
  *
  * During cold start the coordinator deliberately uses the normal PF directly
  * and marks comparisonAvailable=false. That lets an enabled Block strategy
- * start without first requiring Block-only closes, while the first mature
+ * start without first requiring Block-specific closes, while the first mature
  * Block window immediately becomes subject to this comparison.
  */
 export function calculateBlockEffectiveMinimumProfitFactor(
@@ -237,7 +237,7 @@ export function calculateBlockAddQuantity(
  *
  * Example: base=1, count=3, ratio=1.5 => 1 + (1 × 3 × 1.5) = 5.5.
  * Other adjustment lanes (for example DCA) remain independent and are not
- * included in this Block-only target.
+ * included in this Block-specific target.
  */
 export function calculateBlockTargetQuantity(
   positionBaseQuantity: number,

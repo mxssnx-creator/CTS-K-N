@@ -6,6 +6,7 @@ import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { resolveSettledRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { isRealExchangePosition } from "@/lib/live-position-source"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
 
@@ -127,7 +128,8 @@ export async function GET(request: Request) {
     // These reads are independent per connection. Fetching them serially made
     // stats latency grow linearly with the number of enabled live connections,
     // which was a primary p95 problem zone.
-    const perConnectionPositions = await Promise.all(
+    const [perConnectionPositions, executionSummaries] = await Promise.all([
+      Promise.all(
       liveConnections.map(async (connection: any) => {
         const [open, closed] = await Promise.all([
           getLivePositions(connection.id).catch(() => []),
@@ -135,7 +137,9 @@ export async function GET(request: Request) {
         ])
         return mergeLifecyclePositions(open, closed)
       }),
-    )
+      ),
+      Promise.all(liveConnections.map((connection: any) => getLiveExecutionSummary(connection.id))),
+    ])
     const positions: any[] = perConnectionPositions.flat()
 
     const realPositions = positions.filter(isRealExchangePosition)
@@ -146,14 +150,51 @@ export async function GET(request: Request) {
     const now = Date.now()
     const last32hCutoff = now - 32 * 60 * 60 * 1000
 
+    const authoritativeOpenPositions = executionSummaries.reduce((sum, row) => sum + row.openPositions, 0)
+    const authoritativeUnrealizedPnl = executionSummaries.reduce((sum, row) => sum + row.unrealizedPnl, 0)
+    const authoritativeOpenSymbols = executionSummaries.reduce((sum, row) => sum + row.openSymbols, 0)
+    const authoritativeOpenOrders = executionSummaries.reduce((sum, row) => sum + row.openOrders, 0)
+    const authoritativeEntryOrders = executionSummaries.reduce((sum, row) => sum + row.entryOrders, 0)
+    const authoritativeControlOrders = executionSummaries.reduce((sum, row) => sum + row.controlOrders, 0)
+    const excludedUntrackedPositions = executionSummaries.reduce(
+      (sum, row) => sum + (Number(row.excludedUntrackedPositions) || 0),
+      0,
+    )
+    const excludedUntrackedOrders = executionSummaries.reduce(
+      (sum, row) => sum + (Number(row.excludedUntrackedOrders) || 0),
+      0,
+    )
+    const snapshotComplete = executionSummaries.length > 0 && executionSummaries.every((row) => row.exchange.complete)
+    const applyAuthoritativeOpen = (stats: TradeStats): TradeStats => ({
+      ...stats,
+      total: stats.closedPositions + authoritativeOpenPositions,
+      openPositions: authoritativeOpenPositions,
+      unrealizedPnl: round2(authoritativeUnrealizedPnl),
+      unrealizedPnlUnknown: snapshotComplete ? 0 : stats.unrealizedPnlUnknown,
+      unrealizedPnlComplete: snapshotComplete,
+      effectivePnl: round2(stats.realizedPnl + authoritativeUnrealizedPnl),
+    })
+
     return NextResponse.json({
       // Closed-trade windows are chronological terminal windows. Current open
       // exposure is included separately in each effective/unrealized total and
       // never consumes a closed-trade PF sample slot.
-      last250: buildStats([...closedPositions.slice(0, 250), ...openPositions]),
-      last50: buildStats([...closedPositions.slice(0, 50), ...openPositions]),
-      last32h: buildStats(realPositions.filter((position) => lifecycleTimestamp(position) >= last32hCutoff)),
-      source: "exchange_live_positions",
+      last250: applyAuthoritativeOpen(buildStats([...closedPositions.slice(0, 250), ...openPositions])),
+      last50: applyAuthoritativeOpen(buildStats([...closedPositions.slice(0, 50), ...openPositions])),
+      last32h: applyAuthoritativeOpen(buildStats(realPositions.filter((position) => lifecycleTimestamp(position) >= last32hCutoff))),
+      exchangeLive: {
+        openPositions: authoritativeOpenPositions,
+        openSymbols: authoritativeOpenSymbols,
+        openOrders: authoritativeOpenOrders,
+        entryOrders: authoritativeEntryOrders,
+        controlOrders: authoritativeControlOrders,
+        excludedUntrackedPositions,
+        excludedUntrackedOrders,
+        scope: "cts_tracked_only",
+        snapshotComplete,
+        connections: executionSummaries.map((row) => row.exchange),
+      },
+      source: "executed_exchange_positions_and_live_exchange_snapshot",
       simulatedExcluded: true,
       connectionCount: liveConnections.length,
       connectionId: requestedConnectionId || null,

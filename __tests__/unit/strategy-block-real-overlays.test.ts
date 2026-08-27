@@ -10,6 +10,7 @@ import {
   collectActivePositionCountsBySymbol,
   isPositionCountStrategySet,
   limitLiveDispatchCandidatesFairly,
+  planLiveDispatchCandidatesFairly,
   resolveBlockNormalProfitFactor,
   resolveLiveDispatchSizeMultiplier,
   selectLiveDispatchCandidates,
@@ -632,7 +633,7 @@ describe("Real-stage Block overlays", () => {
     await getRedisClient().del(statsKey)
   })
 
-  test("advances independent Block counts fairly in bounded asymmetric batches", () => {
+  test("dispatches every independent Block count and normal row without a per-direction cap", () => {
     const standardLong = { ...source("BTCUSDT:direction:long#standard", "long"), variant: "default" as const }
     const standardLongLower = { ...source("BTCUSDT:move:long#standard", "long"), variant: "default" as const }
     const activeLongOne = {
@@ -667,7 +668,10 @@ describe("Real-stage Block overlays", () => {
     ])
     expect(firstBatch.map((set) => set.setKey)).toEqual([
       standardLong.setKey,
+      standardLongLower.setKey,
+      activeLongOne.setKey,
       pendingLongTwo.setKey,
+      pendingLongThree.setKey,
       pendingShortFour.setKey,
     ])
 
@@ -677,7 +681,12 @@ describe("Real-stage Block overlays", () => {
       pendingLongThree,
       { ...pendingShortFour, _hasLivePositions: true } as StrategySet,
     ])
-    expect(secondBatch.map((set) => set.setKey)).toEqual([pendingLongThree.setKey])
+    expect(secondBatch.map((set) => set.setKey)).toEqual([
+      activeLongOne.setKey,
+      pendingLongTwo.setKey,
+      pendingLongThree.setKey,
+      pendingShortFour.setKey,
+    ])
   })
 
   test("keeps standard, Block, DCA and combined-axis batch lanes independent per side", () => {
@@ -707,8 +716,10 @@ describe("Real-stage Block overlays", () => {
     const selected = selectLiveDispatchCandidates(candidates)
     expect(selected.map((set) => set.setKey)).toEqual([
       "BTCUSDT:direction:long#standard:a",
+      "BTCUSDT:direction:long#standard:b",
       "BTCUSDT:direction:short#standard:a",
       "BTCUSDT:direction:long#block:1",
+      "BTCUSDT:direction:long#block:2",
       "BTCUSDT:direction:short#block:3",
       "BTCUSDT:direction:long#dca",
       "BTCUSDT:direction:short#dca",
@@ -855,7 +866,7 @@ describe("Real-stage Block overlays", () => {
     )
   })
 
-  test("bounds physical dispatch fairly so Standard cannot starve Signal trailing", () => {
+  test("dispatches every unique eligible Set without symbol-family sampling", () => {
     const signal = (
       index: number,
       variant: "default" | "trailing",
@@ -891,15 +902,41 @@ describe("Real-stage Block overlays", () => {
 
     const standard = Array.from({ length: 20 }, (_, index) => signal(index, "default", index < 2))
     const trailing = Array.from({ length: 4 }, (_, index) => signal(index + 20, "trailing"))
-    const bounded = limitLiveDispatchCandidatesFairly([...standard, ...trailing], 8)
+    const candidates = [...standard, ...trailing]
+    const first = planLiveDispatchCandidatesFairly(candidates, 999, 0)
+    const second = planLiveDispatchCandidatesFairly(candidates, 999, first.nextCursor)
 
-    expect(bounded).toHaveLength(8)
-    expect(bounded.some((candidate) => candidate.trailingProfile?.mode === "signal_dynamic")).toBe(true)
-    expect(bounded.filter((candidate) => candidate._hasLivePositions === true)).toHaveLength(0)
-    expect(new Set(bounded.map((candidate) => candidate.setKey)).size).toBe(8)
+    expect(limitLiveDispatchCandidatesFairly(candidates, 999)).toEqual(first.selected)
+    expect(first.selected).toHaveLength(24)
+    expect(first.deferred).toHaveLength(0)
+    expect(first.familyCount).toBe(2)
+    expect(first.budget).toBe(24)
+    expect(first.selected.some((candidate) => candidate.trailingProfile?.mode === "signal_dynamic")).toBe(true)
+    expect(first.selected.filter((candidate) => candidate._hasLivePositions === true)).toHaveLength(2)
+    expect(new Set(first.selected.map((candidate) => candidate.setKey)).size).toBe(24)
+    expect(second.selected.map((candidate) => candidate.setKey)).toEqual(
+      first.selected.map((candidate) => candidate.setKey),
+    )
+    expect(second.deferred).toHaveLength(0)
+    expect(first.nextCursor).toBe(first.cursor)
+
+    let cursor = 0
+    const eventuallySelected = new Set<string>()
+    for (let cycle = 0; cycle < 22; cycle++) {
+      const plan = planLiveDispatchCandidatesFairly(candidates, 999, cursor)
+      plan.selected.forEach((candidate) => eventuallySelected.add(candidate.setKey))
+      cursor = plan.nextCursor
+    }
+    for (const candidate of candidates.filter((candidate) => candidate._hasLivePositions !== true)) {
+      expect(eventuallySelected).toContain(candidate.setKey)
+    }
+
+    const reducedBudget = planLiveDispatchCandidatesFairly(candidates, 1, 9)
+    expect(reducedBudget.selected).toHaveLength(24)
+    expect(reducedBudget.deferred).toHaveLength(0)
   })
 
-  test("keeps exact Signal Block lanes eligible when Block-only removes their Standard rows", () => {
+  test("keeps exact Signal Block lanes eligible when Normal processing is disabled", () => {
     const signalBlock = (sourceId: string, configId: string) => ({
       ...source(`BTCUSDT:signal:long:${sourceId}:${configId}#block:1`, "long"),
       indicationType: "signal",

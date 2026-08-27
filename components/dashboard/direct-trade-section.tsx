@@ -824,7 +824,7 @@ export function DirectTradeSection() {
                     saveConfig({ takeProfitRatioStep: value })
                   }}
                 />
-                <p className="text-[10px] text-muted-foreground/70 leading-tight">The two handles accept every 2–22× ratio. Only every configured Set step plus the upper handle is materialised, preserving the selected boundary without multiplying the grid unnecessarily.</p>
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">The two handles accept every 2–22× ratio. The default 1× step materialises every PositionCost coordinate in the selected range; larger operator-selected steps remain supported.</p>
               </div>
 
               <div className="space-y-1">
@@ -1521,9 +1521,11 @@ export function DirectTradeSection() {
                         <td className="px-2 py-1.5 text-right">{row.closedPositions} / <span className={row.accountingPending > 0 ? "text-amber-600" : ""}>{row.accountingPending}</span></td>
                         <td className="px-2 py-1.5 text-right">{row.wins} / {row.losses} / {row.breakeven}</td>
                         <td className={`px-2 py-1.5 text-right ${pnlColor(state.liveMode ? Number(row.netExchangePnlUsdt || 0) : row.netPnlPercent)}`}>
-                          {state.liveMode
-                            ? `${Number(row.netExchangePnlUsdt || 0) >= 0 ? "+" : ""}${Number(row.netExchangePnlUsdt || 0).toFixed(4)} USDT`
-                            : formatPnl(row.netPnlPercent)}
+                          {row.closedPositions === 0
+                            ? "—"
+                            : state.liveMode
+                              ? `${Number(row.netExchangePnlUsdt || 0) >= 0 ? "+" : ""}${Number(row.netExchangePnlUsdt || 0).toFixed(4)} USDT`
+                              : formatPnl(row.netPnlPercent)}
                         </td>
                         <td className="px-2 py-1.5 text-right">{formatPF(row.profitFactor, row.profitFactorInfinite)}</td>
                         <td className="px-2 py-1.5 text-right">{row.profitFactorCoordinate == null ? "—" : row.profitFactorCoordinate.toFixed(4)}</td>

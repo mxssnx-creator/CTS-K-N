@@ -18,6 +18,14 @@ import {
  */
 export type LivePositionReadModel = Record<string, unknown>
 
+// Reporting routes must never turn a dashboard poll into a complete Redis
+// ledger scan. The limits comfortably cover the supported live capacity while
+// keeping cold-worker and reconnect reads bounded under stale compatibility
+// indexes. Historical analytics use their separate three-day archive.
+export const LIVE_POSITION_OPEN_READ_LIMIT = 2_000
+export const LIVE_POSITION_CLOSED_READ_LIMIT = 1_000
+export const LIVE_POSITION_ANALYTICS_READ_LIMIT = 5_000
+
 const NUMERIC_FIELDS = [
   "version",
   "createdAt",
@@ -105,6 +113,7 @@ const JSON_FIELDS = [
   "manualProtectionOverride",
   "systemProtectionLegs",
   "controlOrderCapacity",
+  "controlOrderSetCoverage",
 ] as const
 
 const BOOLEAN_FIELDS = [
@@ -205,10 +214,17 @@ async function readPositionIndex(
   connectionId: string,
   indexKey: string,
   limit: number,
+  maximumLimit: number,
 ): Promise<LivePositionReadModel[]> {
-  const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 0
+  const parsedLimit = Number.isFinite(limit) ? Math.floor(limit) : maximumLimit
+  // Zero historically meant "all". Preserve caller compatibility while
+  // changing that unsafe request into the documented hard maximum.
+  const normalizedLimit = Math.max(
+    1,
+    Math.min(maximumLimit, parsedLimit > 0 ? parsedLimit : maximumLimit),
+  )
   const ids = await client
-    .lrange(indexKey, 0, normalizedLimit > 0 ? normalizedLimit - 1 : -1)
+    .lrange(indexKey, 0, normalizedLimit - 1)
     .catch(() => [])
   const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
   if (uniqueIds.length === 0) return []
@@ -241,23 +257,29 @@ async function readClosedAnalyticsWindow(
   connectionId: string,
   sinceMs: number,
 ): Promise<LivePositionReadModel[]> {
-  const [ids, rawSnapshots]: [string[], Record<string, string>] = await Promise.all([
-    client
-      .zrangebyscore(
-        liveClosedAnalyticsTimeKey(connectionId),
-        Math.max(0, Math.floor(sinceMs)),
-        "+inf",
-      )
-      .catch(() => []),
-    client
-      .hgetall(liveClosedAnalyticsDataKey(connectionId))
-      .catch(() => ({} as Record<string, string>)),
-  ])
+  const allIds = await client
+    .zrangebyscore(
+      liveClosedAnalyticsTimeKey(connectionId),
+      Math.max(0, Math.floor(sinceMs)),
+      "+inf",
+    )
+    .catch(() => [])
+  const ids = allIds
+    .slice(-LIVE_POSITION_ANALYTICS_READ_LIMIT)
+    .reverse()
   const positions: LivePositionReadModel[] = []
-  for (let index = ids.length - 1; index >= 0; index--) {
-    const raw = rawSnapshots[ids[index]]
-    const parsed = parseJsonRecord(raw)
-    if (parsed) positions.push(normalizeLivePositionReadModel(parsed))
+  const batchSize = 250
+  for (let offset = 0; offset < ids.length; offset += batchSize) {
+    const batch = ids.slice(offset, offset + batchSize)
+    const snapshots = await Promise.all(
+      batch.map((id) => client
+        .hget(liveClosedAnalyticsDataKey(connectionId), id)
+        .catch(() => null)),
+    )
+    for (const raw of snapshots) {
+      const parsed = parseJsonRecord(raw)
+      if (parsed) positions.push(normalizeLivePositionReadModel(parsed))
+    }
   }
   return positions
 }
@@ -273,7 +295,43 @@ export async function getOpenLivePositionReadModels(
     connectionId,
     `live:positions:${connectionId}`,
     limit,
+    LIVE_POSITION_OPEN_READ_LIMIT,
   ).catch(() => [])
+}
+
+/**
+ * Strict variant for exchange attribution. A failed tracking-ledger read must
+ * never be converted into an authoritative empty CTS exchange snapshot,
+ * because that would hide system-owned venue exposure as "unrelated".
+ */
+export async function getOpenLivePositionReadModelsStrict(
+  connectionId: string,
+  limit = 500,
+): Promise<LivePositionReadModel[]> {
+  await initRedis()
+  const client = getRedisClient()
+  return readPositionIndex(
+    client,
+    connectionId,
+    `live:positions:${connectionId}`,
+    limit,
+    LIVE_POSITION_OPEN_READ_LIMIT,
+  )
+}
+
+export async function getClosedLivePositionReadModelsStrict(
+  connectionId: string,
+  limit = 1_000,
+): Promise<LivePositionReadModel[]> {
+  await initRedis()
+  const client = getRedisClient()
+  return readPositionIndex(
+    client,
+    connectionId,
+    `live:positions:${connectionId}:closed`,
+    limit,
+    LIVE_POSITION_CLOSED_READ_LIMIT,
+  )
 }
 
 export async function getClosedLivePositionReadModels(
@@ -291,10 +349,14 @@ export async function getClosedLivePositionReadModels(
       connectionId,
       `live:positions:${connectionId}:closed`,
       options,
+      LIVE_POSITION_CLOSED_READ_LIMIT,
     ).catch(() => [])
   }
 
-  const recentLimit = Math.max(50, Math.floor(options.recentLimit || 50))
+  const recentLimit = Math.min(
+    LIVE_POSITION_CLOSED_READ_LIMIT,
+    Math.max(50, Math.floor(options.recentLimit || 50)),
+  )
   const sinceMs = Number.isFinite(options.sinceMs)
     ? Number(options.sinceMs)
     : Date.now() - LIVE_POSITION_ANALYTICS_WINDOW_MS
@@ -304,6 +366,7 @@ export async function getClosedLivePositionReadModels(
       connectionId,
       `live:positions:${connectionId}:closed`,
       recentLimit,
+      LIVE_POSITION_CLOSED_READ_LIMIT,
     ),
     readClosedAnalyticsWindow(client, connectionId, sinceMs),
   ]).catch(() => [[], []] as [LivePositionReadModel[], LivePositionReadModel[]])

@@ -1002,11 +1002,6 @@ async function handlePost(request: Request) {
       normalEnabled: resolvedNormal,
       variantTrailingEnabled: resolvedVariantTrailing,
       variantBlockEnabled: resolvedVariantBlock,
-      // Write legacy only fields as false during migration; the coordinator
-      // ignores them, but old readers must not suppress Normal execution.
-      blockOnly: "false",
-      variantBlockOnly: "false",
-      block_only: "false",
       variantDcaEnabled: resolvedVariantDca,
       variant_trailing: effectiveVariantTrailing,
       variant_block: effectiveVariantBlock,

@@ -258,6 +258,12 @@ interface ConnectionStageOverview {
     }
     breakdownComplete: boolean
     normalEnabled: boolean
+    executionPolicy?: {
+      normalEnabled: boolean
+      trailingEnabled: boolean
+      blockEnabled: boolean
+      dcaEnabled: boolean
+    }
   }
   real: {
     valid: number
@@ -342,8 +348,17 @@ export function ActiveConnectionCard({
         dca: number
       }
     }
-    real: { valid: number; evaluated?: number; rejected?: number; validRatio?: number; active: number; activeExactRows?: number; activeRatio?: number }
-    live: { total: number; mirrored: number; active: number; blockCreated?: number; blockValid?: number; executable?: number; mirroredRatio?: number; executablePerRow?: number }
+    real: {
+      valid: number
+      evaluated?: number
+      rejected?: number
+      validRatio?: number
+      active: number
+      activeExactRows?: number
+      activeRatio?: number
+      blockRows?: { evaluated: number; created: number; rejected: number }
+    }
+    live: { total: number; mirrored: number; active: number; blockCreated?: number; blockValid?: number; rowExecutable?: number; additionalDca?: number; executable?: number; mirroredRatio?: number; executablePerRow?: number }
   } | null>(null)
   const [connectionStageOverview, setConnectionStageOverview] =
     useState<ConnectionStageOverview | null>(null)
@@ -516,6 +531,18 @@ export function ActiveConnectionCard({
     liveOrdersFilled: number
     liveOrdersFailed: number
     liveOrdersRejected: number
+    liveFailedToOpen: number
+    liveDispatchAttempted: number
+    liveDispatchDeferred: number
+    liveDispatchDurationMs: number
+    liveDispatchAvgAttemptMs: number
+    liveOpenOrders: number
+    liveOpenOrderSymbols: number
+    liveEntryOrders: number
+    liveControlOrders: number
+    liveOpenSymbols: number
+    liveExcludedUntrackedPositions: number
+    liveExcludedUntrackedOrders: number
     liveOrdersSimulated: number
     /**
      * Number of upstream Real-stage Set signals that were merged into
@@ -1419,6 +1446,18 @@ export function ActiveConnectionCard({
           liveOrdersFilled:      data?.liveExecution?.ordersFilled     || 0,
           liveOrdersFailed:      data?.liveExecution?.ordersFailed     || 0,
           liveOrdersRejected:    data?.liveExecution?.ordersRejected   || 0,
+          liveFailedToOpen:      data?.liveExecution?.dispatchOutcome?.failedToOpen || 0,
+          liveDispatchAttempted: data?.liveExecution?.dispatchOutcome?.attempted || 0,
+          liveDispatchDeferred:  data?.liveExecution?.dispatchDeferredCount || 0,
+          liveDispatchDurationMs: data?.liveExecution?.dispatchOutcome?.durationMsMax || 0,
+          liveDispatchAvgAttemptMs: data?.liveExecution?.dispatchOutcome?.avgAttemptMs || 0,
+          liveOpenOrders:        data?.liveExecution?.openOrders || 0,
+          liveOpenOrderSymbols:  data?.liveExecution?.openOrderSymbols || 0,
+          liveEntryOrders:       data?.liveExecution?.entryOrders || 0,
+          liveControlOrders:     data?.liveExecution?.controlOrders || 0,
+          liveOpenSymbols:       data?.liveExecution?.openSymbols || 0,
+          liveExcludedUntrackedPositions: data?.liveExecution?.excludedUntrackedPositions || 0,
+          liveExcludedUntrackedOrders: data?.liveExecution?.excludedUntrackedOrders || 0,
           liveOrdersSimulated:   data?.liveExecution?.ordersSimulated  || 0,
           liveOrdersAccumulated: data?.liveExecution?.ordersAccumulated || 0,
           livePositionsCreated:  data?.liveExecution?.positionsCreated || 0,
@@ -1800,6 +1839,7 @@ export function ActiveConnectionCard({
     const ordersFailed =
       (prehistoricStats?.liveOrdersFailed ?? 0) +
       (prehistoricStats?.liveOrdersRejected ?? 0)
+    const failedToOpen = prehistoricStats?.liveFailedToOpen ?? 0
     const livePnl =
       finiteMetric(prehistoricStats?.liveAggUnrealizedPnl) +
       finiteMetric(prehistoricStats?.liveTotalPnl)
@@ -1993,6 +2033,22 @@ export function ActiveConnectionCard({
         title: "Live exchange orders placed / filled.",
         tone: ordersPlaced > 0 ? "text-amber-700 dark:text-amber-400" : undefined,
       },
+      {
+        label: "Open ord",
+        value: prehistoricStats?.liveOpenOrders ?? 0,
+        title: `CTS-tracked exchange orders across ${prehistoricStats?.liveOpenOrderSymbols ?? 0} symbols: ${prehistoricStats?.liveEntryOrders ?? 0} entry and ${prehistoricStats?.liveControlOrders ?? 0} control. Excluded as unrelated: ${prehistoricStats?.liveExcludedUntrackedOrders ?? 0} orders.`,
+        tone: (prehistoricStats?.liveOpenOrders ?? 0) > 0 ? "text-cyan-700 dark:text-cyan-400" : undefined,
+      },
+      {
+        label: "Live sym",
+        value: prehistoricStats?.liveOpenSymbols ?? 0,
+        title: `Symbols with a CTS-tracked non-zero exchange position. Unrelated venue positions excluded: ${prehistoricStats?.liveExcludedUntrackedPositions ?? 0}.`,
+      },
+      {
+        label: "Excluded",
+        value: `${prehistoricStats?.liveExcludedUntrackedPositions ?? 0}P/${prehistoricStats?.liveExcludedUntrackedOrders ?? 0}O`,
+        title: "Unrelated live-exchange positions/orders excluded from every CTS coordination, PnL and overall statistic.",
+      },
     )
 
     if (ordersFailed > 0) {
@@ -2001,6 +2057,31 @@ export function ActiveConnectionCard({
         value: ordersFailed,
         title: "Live exchange orders failed or rejected.",
         tone: "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if (failedToOpen > 0) {
+      tiles.push({
+        label: "Failed open",
+        value: failedToOpen,
+        title: "Qualified Sets that failed to open in the latest complete per-symbol dispatch snapshot (rejected, error, missing entry or no result).",
+        tone: "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if ((prehistoricStats?.liveDispatchDeferred ?? 0) > 0) {
+      tiles.push({
+        label: "Next cycle",
+        value: prehistoricStats?.liveDispatchDeferred ?? 0,
+        title: "Qualified Sets safely deferred by the per-symbol physical dispatch budget; the durable cursor rotates them into later cycles.",
+      })
+    }
+
+    if ((prehistoricStats?.liveDispatchAttempted ?? 0) > 0) {
+      tiles.push({
+        label: "Dispatch",
+        value: `${Math.round(prehistoricStats?.liveDispatchDurationMs ?? 0)}ms`,
+        title: `${prehistoricStats?.liveDispatchAttempted ?? 0} attempts; average ${Number(prehistoricStats?.liveDispatchAvgAttemptMs ?? 0).toFixed(1)}ms per attempt.`,
       })
     }
 
@@ -2151,6 +2232,22 @@ export function ActiveConnectionCard({
         title: "Live exchange orders placed / filled.",
         tone: ordersPlaced > 0 ? "text-amber-700 dark:text-amber-400" : undefined,
       },
+      {
+        label: "Open ord",
+        value: prehistoricStats?.liveOpenOrders ?? 0,
+        title: `CTS-tracked exchange orders across ${prehistoricStats?.liveOpenOrderSymbols ?? 0} symbols: ${prehistoricStats?.liveEntryOrders ?? 0} entry and ${prehistoricStats?.liveControlOrders ?? 0} control. Excluded as unrelated: ${prehistoricStats?.liveExcludedUntrackedOrders ?? 0} orders.`,
+        tone: (prehistoricStats?.liveOpenOrders ?? 0) > 0 ? "text-cyan-700 dark:text-cyan-400" : undefined,
+      },
+      {
+        label: "Live sym",
+        value: prehistoricStats?.liveOpenSymbols ?? 0,
+        title: `Symbols with a CTS-tracked non-zero exchange position. Unrelated venue positions excluded: ${prehistoricStats?.liveExcludedUntrackedPositions ?? 0}.`,
+      },
+      {
+        label: "Excluded",
+        value: `${prehistoricStats?.liveExcludedUntrackedPositions ?? 0}P/${prehistoricStats?.liveExcludedUntrackedOrders ?? 0}O`,
+        title: "Unrelated live-exchange positions/orders excluded from every CTS coordination, PnL and overall statistic.",
+      },
     )
 
     if (ordersFailed > 0) {
@@ -2159,6 +2256,31 @@ export function ActiveConnectionCard({
         value: ordersFailed,
         title: "Live exchange orders failed or rejected.",
         tone: "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if (failedToOpen > 0) {
+      tiles.push({
+        label: "Failed open",
+        value: failedToOpen,
+        title: "Qualified Sets that failed to open in the latest complete per-symbol dispatch snapshot.",
+        tone: "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if ((prehistoricStats?.liveDispatchDeferred ?? 0) > 0) {
+      tiles.push({
+        label: "Next cycle",
+        value: prehistoricStats?.liveDispatchDeferred ?? 0,
+        title: "Qualified Sets safely deferred by the per-symbol physical dispatch budget; the durable cursor rotates them into later cycles.",
+      })
+    }
+
+    if ((prehistoricStats?.liveDispatchAttempted ?? 0) > 0) {
+      tiles.push({
+        label: "Dispatch",
+        value: `${Math.round(prehistoricStats?.liveDispatchDurationMs ?? 0)}ms`,
+        title: `${prehistoricStats?.liveDispatchAttempted ?? 0} attempts; average ${Number(prehistoricStats?.liveDispatchAvgAttemptMs ?? 0).toFixed(1)}ms per attempt.`,
       })
     }
 
@@ -2909,7 +3031,7 @@ export function ActiveConnectionCard({
                           {strategyRows && (
                             <div
                               className="flex items-center gap-1"
-                              title={`Current rows with ratios/open positions: Base Total/Valid ${strategyRows.base.validRatio?.toFixed(1) ?? "0.0"}% (${strategyRows.base.totalOpen ?? 0}/${strategyRows.base.validOpen ?? 0} open) · Main Valid/Overall ${(strategyRows.main.overallToValidRatio ?? 0).toFixed(1)}% (${strategyRows.main.validOpen ?? 0}/${strategyRows.main.overallOpen ?? 0} open) · Row-Real Valid/Evaluated ${(strategyRows.real.validRatio ?? 0).toFixed(1)}%, Active ${strategyRows.real.active}/${strategyRows.real.valid} · Row-Live Mirrored ${strategyRows.live.mirroredRatio?.toFixed(1) ?? "0.0"}%, Block materialized/valid ${strategyRows.live.blockCreated ?? 0}/${strategyRows.live.blockValid ?? 0}, executable ${strategyRows.live.executable ?? strategyRows.live.mirrored} (${(strategyRows.live.executablePerRow ?? strategyRows.live.mirroredRatio ?? 0).toFixed(1)}% per evaluated row).`}
+                              title={`Current rows with ratios/open positions: Base Total/Valid ${strategyRows.base.validRatio?.toFixed(1) ?? "0.0"}% (${strategyRows.base.totalOpen ?? 0}/${strategyRows.base.validOpen ?? 0} open) · Main Valid/Overall ${(strategyRows.main.overallToValidRatio ?? 0).toFixed(1)}% (${strategyRows.main.validOpen ?? 0}/${strategyRows.main.overallOpen ?? 0} open) · Row-Real Valid/Evaluated ${(strategyRows.real.validRatio ?? 0).toFixed(1)}%, Active ${strategyRows.real.active}/${strategyRows.real.valid}, Block ${strategyRows.real.blockRows?.created ?? 0}/${strategyRows.real.blockRows?.evaluated ?? 0}; DCA remains an independent additional strategy without Row assignment · Row-Live Mirrored ${strategyRows.live.mirroredRatio?.toFixed(1) ?? "0.0"}%, Block materialized/valid ${strategyRows.live.blockCreated ?? 0}/${strategyRows.live.blockValid ?? 0}, executable ${strategyRows.live.executable ?? strategyRows.live.mirrored} (${(strategyRows.live.executablePerRow ?? strategyRows.live.mirroredRatio ?? 0).toFixed(1)}% per evaluated row).`}
                             >
                               <span className="text-muted-foreground">Rows B/M/R/L/Exec</span>
                               <span className="font-medium tabular-nums text-violet-700 dark:text-violet-400">
@@ -3282,11 +3404,12 @@ export function ActiveConnectionCard({
                             avgProfitFactor: 0,
                             avgDrawdownTime: 0,
                           }
+                          const executionPolicy = connectionStageOverview?.main.executionPolicy
                           const variantRows = [
-                            { label: "Default", value: realDetail.strategyTypes?.default || emptyVariant, adjust: false },
-                            { label: "Trailing", value: realDetail.strategyTypes?.trailing || emptyVariant, adjust: false },
-                            { label: "Block", value: realDetail.adjustTypes?.block || emptyVariant, adjust: true },
-                            { label: "DCA", value: realDetail.adjustTypes?.dca || emptyVariant, adjust: true },
+                            { label: "Normal", value: realDetail.strategyTypes?.default || emptyVariant, adjust: false, enabled: executionPolicy?.normalEnabled !== false },
+                            { label: "Trailing", value: realDetail.strategyTypes?.trailing || emptyVariant, adjust: false, enabled: executionPolicy?.trailingEnabled !== false },
+                            { label: "Block", value: realDetail.adjustTypes?.block || emptyVariant, adjust: true, enabled: executionPolicy?.blockEnabled === true },
+                            { label: "DCA", value: realDetail.adjustTypes?.dca || emptyVariant, adjust: true, enabled: executionPolicy?.dcaEnabled === true },
                           ]
                           const symbols = Array.isArray(openPositions.bySymbol) ? openPositions.bySymbol : []
                           const openSource = openPositions.source === "live-exchange"
@@ -3331,12 +3454,14 @@ export function ActiveConnectionCard({
                                 </span>
                               </div>
                               <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
-                                {variantRows.map(({ label, value, adjust }) => {
+                                {variantRows.map(({ label, value, adjust, enabled }) => {
                                   const ratioAvailable = adjust && value.differencePercent !== null && value.differencePercent !== undefined && Number.isFinite(Number(value.differencePercent))
                                   return (
                                     <div key={label} className="rounded border border-border/70 bg-background/75 p-1.5 text-[9px]">
                                       <div className="flex items-center justify-between gap-1">
-                                        <span className="font-semibold">{label}</span>
+                                        <span className="font-semibold" title={`Calculated continuously; live execution ${enabled ? "enabled" : "disabled"}`}>
+                                          {label}<span className="ml-1 text-[8px] font-normal text-muted-foreground">{enabled ? "on" : "calc"}</span>
+                                        </span>
                                         <span
                                           className="text-muted-foreground tabular-nums"
                                           title={value.positionCountSource === "evaluation-fallback" ? "Pre-ledger evaluation fallback" : "Idempotent confirmed positions"}
@@ -3345,12 +3470,12 @@ export function ActiveConnectionCard({
                                         </span>
                                       </div>
                                       <div className="mt-0.5 flex flex-wrap gap-x-2 text-muted-foreground">
-                                        <span title="PF from this variant's independent confirmed close-outcome ledger">PF <strong className="text-foreground">{nonNegativeMetric(value.avgProfitFactor) > 0 ? nonNegativeMetric(value.avgProfitFactor).toFixed(2) : "—"}</strong></span>
-                                        <span title="DDT from this variant's independent confirmed close-outcome ledger">DDT <strong className="text-foreground">{nonNegativeMetric(value.avgDrawdownTime) > 0 ? `${nonNegativeMetric(value.avgDrawdownTime).toFixed(0)}m` : "—"}</strong></span>
+                                        <span title="PF from this variant's independent confirmed close-outcome ledger">PF <strong className="text-foreground">{nonNegativeMetric(value.performanceSamples) > 0 ? nonNegativeMetric(value.avgProfitFactor).toFixed(2) : "—"}</strong></span>
+                                        <span title="DDT from this variant's independent confirmed close-outcome ledger">DDT <strong className="text-foreground">{nonNegativeMetric(value.performanceSamples) > 0 ? `${nonNegativeMetric(value.avgDrawdownTime).toFixed(0)}m` : "—"}</strong></span>
                                         <span title="Confirmed outcome samples; evaluation PF/DDT is kept separate">n={nonNegativeMetric(value.performanceSamples).toLocaleString()}</span>
                                       </div>
                                       {adjust && (
-                                        <div className="mt-0.5 text-muted-foreground" title="Additional positions versus Default + Trailing, banded in 0.2 ratio steps.">
+                                        <div className="mt-0.5 text-muted-foreground" title="Additional positions versus Normal + Trailing, banded in 0.2 ratio steps.">
                                           ratio <strong className="text-foreground tabular-nums">
                                             {ratioAvailable
                                               ? `+${nonNegativeMetric(value.differencePercent).toFixed(1)}% · 0.2→${nonNegativeMetric(value.ratioLevel).toFixed(1)}`
@@ -3814,12 +3939,20 @@ export function ActiveConnectionCard({
                       <div><div className="text-[9px] text-muted-foreground">Open valid</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.main.valid.toLocaleString()}</div></div>
                       <div><div className="text-[9px] text-muted-foreground">Open overall</div><div className="text-lg font-semibold tabular-nums">{connectionStageOverview.main.overall.toLocaleString()}</div></div>
                     </div>
-                    <div
-                      className="mt-1 truncate text-[9px] text-muted-foreground"
-                      title={`Standard ${connectionStageOverview.main.breakdown.standard}, Trailing ${connectionStageOverview.main.breakdown.trailing}, Position-count ${connectionStageOverview.main.breakdown.positionCount}, Block ${connectionStageOverview.main.breakdown.block}, DCA ${connectionStageOverview.main.breakdown.dca}`}
-                    >
-                      Cycle {connectionStageOverview.latestCycle?.main.valid.toLocaleString() ?? "—"}/{connectionStageOverview.latestCycle?.main.overall.toLocaleString() ?? "—"} · S {connectionStageOverview.main.breakdown.standard} · T {connectionStageOverview.main.breakdown.trailing} · Pos {connectionStageOverview.main.breakdown.positionCount} · B {connectionStageOverview.main.breakdown.block} · D {connectionStageOverview.main.breakdown.dca}
-                    </div>
+                        <div
+                          className="mt-1 truncate text-[9px] text-muted-foreground"
+                          title={[
+                            `Normal ${connectionStageOverview.main.breakdown.standard}`,
+                            `Trailing ${connectionStageOverview.main.breakdown.trailing}`,
+                            `Position-count ${connectionStageOverview.main.breakdown.positionCount}`,
+                            `Block ${connectionStageOverview.main.breakdown.block} (live ${connectionStageOverview.main.executionPolicy?.blockEnabled ? "on" : "off"})`,
+                            `DCA ${connectionStageOverview.main.breakdown.dca} (live ${connectionStageOverview.main.executionPolicy?.dcaEnabled ? "on" : "off"})`,
+                          ].join(", ")}
+                        >
+                          Cycle {connectionStageOverview.latestCycle?.main.valid.toLocaleString() ?? "—"}/{connectionStageOverview.latestCycle?.main.overall.toLocaleString() ?? "—"} · N {connectionStageOverview.main.breakdown.standard} · T {connectionStageOverview.main.breakdown.trailing} · Pos {connectionStageOverview.main.breakdown.positionCount}
+                          <> · B {connectionStageOverview.main.breakdown.block}{connectionStageOverview.main.executionPolicy?.blockEnabled ? "" : " (calc)"}</>
+                          <> · D {connectionStageOverview.main.breakdown.dca}{connectionStageOverview.main.executionPolicy?.dcaEnabled ? "" : " (calc)"}</>
+                        </div>
                   </div>
 
                   <div className="rounded-lg border border-emerald-200/70 bg-emerald-50/70 p-2.5 dark:border-emerald-900/70 dark:bg-emerald-950/25">

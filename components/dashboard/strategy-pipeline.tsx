@@ -13,6 +13,12 @@ import {
 } from "lucide-react"
 
 interface StrategyTracking {
+  executionPolicy?: {
+    normalEnabled: boolean
+    trailingEnabled: boolean
+    blockEnabled: boolean
+    dcaEnabled: boolean
+  }
   rows?: {
     base: { total: number; valid: number; totalOpen: number; validOpen: number; validRatio: number }
     main: { valid: number; overall: number; validOpen: number; overallOpen: number; overallToValidRatio: number }
@@ -496,17 +502,17 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
               Variants per Base Set (cloned & adjusted)
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <VariantBox label="Default" value={data.main.variants.default} />
+              <VariantBox label="Normal" value={data.main.variants.default} />
               <VariantBox label="Trailing" value={data.main.variants.trailing} />
               <VariantBox
                 label="Block"
                 value={data.main.variants.block}
-                hint="Clones Base positions"
+                hint={`Calculated continuously · live execution ${data.executionPolicy?.blockEnabled ? "enabled" : "disabled"}`}
               />
               <VariantBox
                 label="DCA"
                 value={data.main.variants.dca}
-                hint="Clones Base positions"
+                hint={`Calculated continuously · live execution ${data.executionPolicy?.dcaEnabled ? "enabled" : "disabled"}`}
               />
             </div>
           </div>
@@ -670,7 +676,7 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <VariantBox
-                label="Default"
+                label="Normal"
                 value={data.real.variantsAccumulated.default}
               />
               <VariantBox
@@ -680,10 +686,12 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
               <VariantBox
                 label="Block"
                 value={data.real.variantsAccumulated.block}
+                hint={`Calculated continuously · live execution ${data.executionPolicy?.blockEnabled ? "enabled" : "disabled"}`}
               />
               <VariantBox
                 label="DCA"
                 value={data.real.variantsAccumulated.dca}
+                hint={`Calculated continuously · live execution ${data.executionPolicy?.dcaEnabled ? "enabled" : "disabled"}`}
               />
             </div>
           </div>

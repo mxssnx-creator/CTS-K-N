@@ -150,6 +150,12 @@ interface AnalyticsPayload {
     rankings: Record<WindowKey, { top: Array<{ symbol: string; metric: WindowMetric }>; worst: Array<{ symbol: string; metric: WindowMetric }> }>
     sources: SignalSourceRow[]
   }
+  main: {
+    counts: Record<string, number>
+    windows: Record<WindowKey, WindowMetric>
+    rankings: Record<WindowKey, { top: Array<{ symbol: string; metric: WindowMetric }>; worst: Array<{ symbol: string; metric: WindowMetric }> }>
+    types: CommonTypeRow[]
+  }
   common: {
     counts: Record<string, number>
     windows: Record<WindowKey, WindowMetric>
@@ -254,7 +260,7 @@ function WindowDetails({ metric }: { metric: WindowMetric }) {
   )
 }
 
-export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "common" }) {
+export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "main" | "common" }) {
   const [payload, setPayload] = useState<AnalyticsPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -302,11 +308,19 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
     void load(initial)
   }, [load])
 
-  const section = mode === "signal" ? payload?.signal : payload?.common
+  const section = mode === "signal"
+    ? payload?.signal
+    : mode === "main"
+      ? payload?.main
+      : payload?.common
   const metric = section?.windows?.[windowKey]
   const rankings = section?.rankings?.[windowKey]
   const groups: Array<SignalSourceRow | CommonTypeRow> = useMemo(
-    () => mode === "signal" ? payload?.signal?.sources || [] : payload?.common?.types || [],
+    () => mode === "signal"
+      ? payload?.signal?.sources || []
+      : mode === "main"
+        ? payload?.main?.types || []
+        : payload?.common?.types || [],
     [mode, payload],
   )
   const groupOptions = useMemo(() => groups.map((row) => ({
@@ -395,8 +409,12 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
     )
   }
 
-  const modeTitle = mode === "signal" ? "Signal Engine Statistics" : "Common Indication Statistics"
-  const ModeIcon = mode === "signal" ? RadioTower : Layers3
+  const modeTitle = mode === "signal"
+    ? "Signal Engine Statistics"
+    : mode === "main"
+      ? "Main Trade Engine Indications"
+      : "Common Indication Statistics"
+  const ModeIcon = mode === "signal" ? RadioTower : mode === "main" ? Activity : Layers3
   const counts = section.counts
 
   return (

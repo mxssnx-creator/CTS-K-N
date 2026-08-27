@@ -4,6 +4,7 @@ const mockGetRedisClient = jest.fn()
 const mockGetPositions = jest.fn()
 const mockGetTrades = jest.fn()
 const mockGetStatistics = jest.fn()
+const mockGetLiveExecutionSummary = jest.fn()
 
 jest.mock("next/server", () => ({
   NextResponse: {
@@ -19,8 +20,10 @@ jest.mock("@/lib/redis-db", () => ({
 
 jest.mock("@/lib/redis-operations", () => ({
   RedisMonitoring: { getStatistics: (...args: unknown[]) => mockGetStatistics(...args) },
-  RedisPositions: { getPositionsByConnection: (...args: unknown[]) => mockGetPositions(...args) },
-  RedisTrades: { getTradesByConnection: (...args: unknown[]) => mockGetTrades(...args) },
+}))
+
+jest.mock("@/lib/live-execution-summary", () => ({
+  getLiveExecutionSummary: (...args: unknown[]) => mockGetLiveExecutionSummary(...args),
 }))
 
 const { GET } = require("@/app/api/monitoring/stats/route")
@@ -44,6 +47,17 @@ describe("monitoring statistics route", () => {
       },
     ])
     mockGetTrades.mockResolvedValue([{ id: "trade-1" }])
+    mockGetLiveExecutionSummary.mockResolvedValue({
+      totalPositions: 6,
+      openPositions: 1,
+      totalTrades: 4,
+      dailyRealizedPnl: 2,
+      dailyPnlTimestampUnknown: 0,
+      realizedPnl: 1,
+      unrealizedPnl: 3,
+      accountingPending: 2,
+      sourceCounts: { real: 6, simulated: 1, unknown: 0 },
+    })
     mockGetStatistics.mockResolvedValue({
       winRate250: null,
       profitFactor250: "",
@@ -120,22 +134,23 @@ describe("monitoring statistics route", () => {
       nextUrl: new URL("http://localhost/api/monitoring/stats?exchange=bingx"),
     })
 
-    expect(mockGetPositions).toHaveBeenCalledTimes(1)
-    expect(mockGetPositions).toHaveBeenCalledWith("bingx-selected")
-    expect(mockGetTrades).toHaveBeenCalledWith("bingx-selected")
+    expect(mockGetLiveExecutionSummary).toHaveBeenCalledTimes(1)
+    expect(mockGetLiveExecutionSummary).toHaveBeenCalledWith("bingx-selected")
+    expect(mockGetPositions).not.toHaveBeenCalled()
+    expect(mockGetTrades).not.toHaveBeenCalled()
     expect(keys).not.toHaveBeenCalled()
     expect(response.body).toMatchObject({
       activeConnections: 1,
       totalConnections: 1,
-      totalPositions: 7,
-      openPositions: 2,
-      totalTrades: 1,
+      totalPositions: 6,
+      openPositions: 1,
+      totalTrades: 4,
       dailyPnL: 2,
       dailyPnlWindow: "UTC calendar day",
       realizedPnL: 1,
-      unrealizedPnL: 8,
-      effectivePnL: 9,
-      totalBalance: 9,
+      unrealizedPnL: 3,
+      effectivePnL: 4,
+      totalBalance: 4,
       accountingPending: 2,
       positionSourceCounts: { real: 6, simulated: 1, unknown: 0 },
       statistics: {

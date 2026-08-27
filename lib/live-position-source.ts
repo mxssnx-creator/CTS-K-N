@@ -1,3 +1,5 @@
+import { resolvePositionQuantity } from "@/lib/live-position-pnl"
+
 export type LivePositionSource = "real" | "simulated" | "unknown"
 
 function normalized(value: unknown): string {
@@ -52,6 +54,17 @@ export function getLivePositionSource(position: Record<string, any> | null | und
 
 export function isRealExchangePosition(position: Record<string, any> | null | undefined): boolean {
   return getLivePositionSource(position) === "real"
+}
+
+/** Exclude rejected/error/pending intents that never obtained a venue fill. */
+export function isExecutedRealExchangePosition(
+  position: Record<string, any> | null | undefined,
+): boolean {
+  return Boolean(
+    position &&
+    isRealExchangePosition(position) &&
+    (resolvePositionQuantity(position, true) ?? 0) > 0,
+  )
 }
 
 export function isSimulatedPosition(position: Record<string, any> | null | undefined): boolean {

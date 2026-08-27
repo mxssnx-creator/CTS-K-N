@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server"
-import { getAllConnections, getConnectionPositions, getConnectionTrades, initRedis } from "@/lib/redis-db"
+import { getAllConnections, initRedis } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getProgressionLogs } from "@/lib/engine-progression-logs"
 import {
   hasConnectionCredentials,
   isConnectionDashboardEnabled,
   isConnectionLiveTradeEnabled,
-  isOpenPosition,
 } from "@/lib/connection-state-utils"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
 
@@ -19,30 +19,38 @@ export async function GET() {
 
     const items = await Promise.all(
       connections.map(async (connection: any) => {
-        const [positions, trades, progression, logs] = await Promise.all([
-          getConnectionPositions(connection.id),
-          getConnectionTrades(connection.id),
+        const [execution, progression, logs] = await Promise.all([
+          getLiveExecutionSummary(connection.id),
           ProgressionStateManager.getProgressionState(connection.id),
           getProgressionLogs(connection.id),
         ])
-
-        const activePositions = positions.filter(isOpenPosition)
-        const closedPositions = positions.filter((position) => !isOpenPosition(position))
-        const totalVolume = positions.reduce((sum, position) => sum + Number(position.size || position.volume || 0), 0)
-        const profit = positions.reduce((sum, position) => sum + Number(position.profit_loss || position.pnl || 0), 0)
-        const winRate = trades.length > 0
-          ? (trades.filter((trade) => Number(trade.profit_loss || trade.pnl || 0) > 0).length / trades.length) * 100
-          : 0
 
         return {
           connectionId: connection.id,
           connectionName: connection.name || connection.exchange || connection.id,
           exchange: connection.exchange || "unknown",
-          activePositions: activePositions.length,
-          closedPositions: closedPositions.length,
-          totalVolume,
-          profit,
-          winRate,
+          activePositions: execution.openPositions,
+          activeSymbols: execution.openSymbols,
+          openOrders: execution.openOrders,
+          openOrderSymbols: execution.openOrderSymbols,
+          entryOrders: execution.entryOrders,
+          controlOrders: execution.controlOrders,
+          excludedUntrackedPositions: execution.excludedUntrackedPositions,
+          excludedUntrackedOrders: execution.excludedUntrackedOrders,
+          exchangeSnapshot: execution.exchange,
+          closedPositions: execution.closedPositions,
+          totalVolume: execution.lifetimeVolumeUsd,
+          profit: execution.effectivePnl,
+          realizedProfit: execution.realizedPnl,
+          unrealizedProfit: execution.unrealizedPnl,
+          winRate: execution.winRate,
+          wins: execution.wins,
+          losses: execution.losses,
+          breakEven: execution.breakEven,
+          accountingPending: execution.accountingPending,
+          accountingComplete: execution.complete,
+          sourceCounts: execution.sourceCounts,
+          statisticsAvailable: execution.totalPositions > 0,
           progression,
           logs: logs.slice(0, 10),
           hasCredentials: hasConnectionCredentials(connection, 10),
@@ -60,8 +68,15 @@ export async function GET() {
         totalConnections: items.length,
         activeConnections: items.filter((item) => item.dashboardEnabled).length,
         totalActivePositions: items.reduce((sum, item) => sum + item.activePositions, 0),
+        totalActiveSymbols: items.reduce((sum, item) => sum + item.activeSymbols, 0),
+        totalOpenOrders: items.reduce((sum, item) => sum + item.openOrders, 0),
+        totalEntryOrders: items.reduce((sum, item) => sum + item.entryOrders, 0),
+        totalControlOrders: items.reduce((sum, item) => sum + item.controlOrders, 0),
+        totalExcludedUntrackedPositions: items.reduce((sum, item) => sum + item.excludedUntrackedPositions, 0),
+        totalExcludedUntrackedOrders: items.reduce((sum, item) => sum + item.excludedUntrackedOrders, 0),
         totalClosedPositions: items.reduce((sum, item) => sum + item.closedPositions, 0),
         totalProfit: items.reduce((sum, item) => sum + item.profit, 0),
+        exchangeScope: "cts_tracked_only",
       },
       timestamp: new Date().toISOString(),
     })

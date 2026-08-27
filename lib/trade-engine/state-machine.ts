@@ -15,6 +15,11 @@ import { getRedisClient, getConnection } from "@/lib/redis-db"
 import { placeLiveOrder } from "@/lib/live-order-service"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import {
+  attributeSystemTrackedExchangePositions,
+  buildSystemExchangeTrackingScope,
+} from "@/lib/exchange-live-state-summary"
+import { getOpenLivePositionReadModelsStrict } from "@/lib/live-position-read-model"
 // shim: existing code uses redisDb.set; map to InlineLocalRedis instance.
 const redisDb = {
   set: (key: string, val: string, opts?: { ex?: number }) =>
@@ -152,26 +157,48 @@ export class TradeEngineStateMachine {
         return
       }
 
-      // Fetch fresh positions from exchange
-      const exchangePositions = await connector.getPositions()
+      // Fail closed when durable CTS tracking is unavailable. Raw account-wide
+      // exchange rows can include manual trades and other bots and must never be
+      // adopted into this engine's coordination state.
+      const trackedPositions = await getOpenLivePositionReadModelsStrict(
+        this.config.connectionId,
+        2_000,
+      )
+      const trackingScope = buildSystemExchangeTrackingScope(
+        this.config.connectionId,
+        trackedPositions,
+      )
+      const exchangePositions = attributeSystemTrackedExchangePositions(
+        await connector.getPositions(),
+        trackingScope,
+      )
 
       // Update local position tracking
-      for (const exPos of exchangePositions) {
+      for (const attributedPosition of exchangePositions) {
+        const exPos = attributedPosition.row
         const exPosAny = exPos as any
-        const direction = normalizeTradeDirection(exPosAny.positionSide, exPosAny.side)
+        const direction = attributedPosition.direction || normalizeTradeDirection(exPosAny.positionSide, exPosAny.side)
         if (!direction) continue
+        const unrealizedPnl = (
+          typeof exPos.unrealizedPnl === "number"
+            ? exPos.unrealizedPnl
+            : parseFloat(String(exPos.unrealizedPnl))
+        ) * attributedPosition.attributionRatio
+        const entryPrice = typeof exPos.entryPrice === "number"
+          ? exPos.entryPrice
+          : parseFloat(String(exPos.entryPrice))
         const localPos: LivePosition = {
           id: `${exPos.symbol}-${Date.now()}`,
           connection_id: this.config!.connectionId,
           symbol: exPos.symbol,
           side: direction,
-          entry_price: typeof exPos.entryPrice === "number" ? exPos.entryPrice : parseFloat(String(exPos.entryPrice)),
+          entry_price: entryPrice,
           current_price: typeof exPos.markPrice === "number" ? exPos.markPrice : parseFloat(String(exPos.markPrice)),
-          quantity: typeof exPos.contracts === "number" ? exPos.contracts : parseFloat(String(exPos.contracts)),
+          quantity: attributedPosition.quantity,
           leverage: typeof exPos.leverage === "number" ? exPos.leverage : parseFloat(String(exPos.leverage)),
           margin_type: exPosAny.marginType?.toUpperCase() === "CROSSED" ? "cross" : "isolated",
-          unrealized_pnl: typeof exPos.unrealizedPnl === "number" ? exPos.unrealizedPnl : parseFloat(String(exPos.unrealizedPnl)),
-          unrealized_pnl_percent: (typeof exPos.unrealizedPnl === "number" ? exPos.unrealizedPnl : parseFloat(String(exPos.unrealizedPnl))) / ((typeof exPos.contracts === "number" ? exPos.contracts : parseFloat(String(exPos.contracts))) * (typeof exPos.entryPrice === "number" ? exPos.entryPrice : parseFloat(String(exPos.entryPrice)))) * 100,
+          unrealized_pnl: unrealizedPnl,
+          unrealized_pnl_percent: unrealizedPnl / (attributedPosition.quantity * entryPrice) * 100,
           liquidation_price: exPos.liquidationPrice ? (typeof exPos.liquidationPrice === "number" ? exPos.liquidationPrice : parseFloat(String(exPos.liquidationPrice))) : undefined,
           timestamp: Date.now(),
           last_update: Date.now(),

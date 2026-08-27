@@ -2,8 +2,6 @@ import { getRedisClient, getSettings } from "@/lib/redis-db"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import { withCanonicalForcedSymbols } from "@/lib/forced-symbols"
-import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
-import { getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
 
 export interface SymbolSelectionSnapshot {
   epoch: string
@@ -37,23 +35,12 @@ export function sameSymbolSelection(a: string[], b: string[]): boolean {
 /**
  * Resolve the very same effective symbol basket as TradeEngineManager.
  *
- * Local dev/self-hosted production processes can deliberately cap the basket
- * to protect process memory.  Ownership checks must apply that cap too: if
- * the engine evaluates 12 symbols while the Historic writer still owns the
- * uncapped 13-symbol list (the mandatory BCH addition is a common example),
- * every historic generation immediately self-cancels as stale.
+ * Explicit operator selection is authoritative. Runtime memory controls must
+ * bound concurrency rather than truncate the basket, otherwise Historic can
+ * claim completion for a different symbol set than Realtime actually trades.
  */
-function effectiveCanonicalSymbols(state: Record<string, unknown>, storedSymbols: string[]): string[] {
-  const localCapActive =
-    process.env.NODE_ENV === "development" ||
-    (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())
-  if (!localCapActive) return withCanonicalForcedSymbols(storedSymbols)
-
-  const stateCap = Number(state.dev_symbol_count_override)
-  const cap = Number.isFinite(stateCap) && stateCap >= 1
-    ? Math.floor(stateCap)
-    : getExplicitLocalSymbolCap()
-  return cap ? withCanonicalForcedSymbols(storedSymbols, cap) : withCanonicalForcedSymbols(storedSymbols)
+function effectiveCanonicalSymbols(_state: Record<string, unknown>, storedSymbols: string[]): string[] {
+  return withCanonicalForcedSymbols(storedSymbols)
 }
 
 export async function getCanonicalSymbolSelection(connectionId: string): Promise<SymbolSelectionSnapshot | null> {
