@@ -7,15 +7,16 @@ Total output lines: 1636
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
   `fix/control-orders-complete-20260826`. Merge commit `6e8e03a` combines
-  schema-v104 protection commit `bb20668` with GitHub `main@a8b7d90`. Safety
-  commit `e1cdba3` remains authoritative for physical Main dispatch: every Set
-  is calculated, evaluated, and published, while at most four
+  schema-v104 protection commit `bb20668` with GitHub `main@a8b7d90`; the
+  current candidate additionally merges latest `main@6696890` from PR #238.
+  Safety commit `e1cdba3` remains authoritative for physical Main dispatch:
+  every Set is calculated, evaluated, and published, while at most four
   family-interleaved Sets per symbol/cycle create paper or exchange side
   effects; a persisted cursor resumes deferred Sets fairly after restart.
-- GitHub PR #235 merged an unbounded physical-dispatch tree as `a8b7d90`. It is
-  not deployed to the self-hosted server. Never deploy `a8b7d90` alone; PR #236
-  must first carry the bounded corrective merge, pass every reported check, and
-  merge with exact-head binding.
+- GitHub PRs #235/#238 merged an unbounded physical-dispatch tree. Neither is
+  deployed to the self-hosted server. PR #236 was closed against its obsolete
+  head; publish the latest-main bounded correction in a fresh PR, wait for all
+  checks, and merge with exact-head binding before deployment.
 - Schema v104 migrates every known Main/Preset/Signal channel factor to the
   minimum system identity factor, Direct Trade to its canonical 0.1 default,
   and enables control-order protection aliases without enabling a live engine.
@@ -54,7 +55,8 @@ Total output lines: 1636
   `/workspace/backups/CTS-K-N/20260827T013719Z-prepush-a715ab1`, and
   `/workspace/backups/CTS-K-N/20260827T014653Z-premerge-github-main-a8b7d90`,
   `/workspace/backups/CTS-K-N/20260827T015856Z-precommit-merge-v104-bounded`,
-  and `/workspace/backups/CTS-K-N/20260827T020245Z-pre-final-context-6e8e03a`.
+  `/workspace/backups/CTS-K-N/20260827T020245Z-pre-final-context-6e8e03a`, and
+  `/workspace/backups/CTS-K-N/20260827T020615Z-premerge-main-6696890`.
   All include owner-only bundle/patch/untracked/status/SHA evidence and passed
   bundle/hash verification.
 - X01/Mainnet and every Bybit connection remain read-only. Any X02 write uses
