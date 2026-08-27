@@ -509,7 +509,7 @@ describe("requested regression guardrails", () => {
     expect(liveRoute).toContain("effectivePnL")
     expect(exchangeRoute).toContain('searchParams.get("connection_id") || searchParams.get("connectionId")')
     expect(exchangeRoute).toContain('source: "exchange_position_manager"')
-    expect(tradingStatsRoute).toContain('source: "exchange_live_positions"')
+    expect(tradingStatsRoute).toContain('source: "executed_exchange_positions_and_live_exchange_snapshot"')
     expect(tradingStatsRoute).toContain("simulatedExcluded: true")
     expect(tradingStatsRoute).not.toContain("FROM pseudo_positions")
     expect(symbolStatsRoute).toContain('source: "exchange_live_positions"')
@@ -569,15 +569,14 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("simulated slot already open")
   })
 
-  test("dev symbol cap honors operator-selected symbols before slicing", () => {
+  test("runtime never truncates the operator-selected symbol basket", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
     const defaults = read("lib/symbol-selection-defaults.ts")
 
-    expect(source).toContain("dev_symbol_count_override")
-    expect(source).toContain("getExplicitLocalSymbolCap")
+    expect(source).not.toContain("getExplicitLocalSymbolCap")
     expect(defaults).toContain("DEFAULT_SYMBOL_COUNT = CANONICAL_FORCED_SYMBOLS.length")
-    expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
-    expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
+    expect(source).toContain("Explicit operator symbols are authoritative in every runtime")
+    expect(source).not.toContain("dev-symbol-cap")
   })
 
   test("progression trade counters clamp impossible success rates after resets", () => {
@@ -833,7 +832,7 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("perSymbolLiveOpenByDir")
     expect(source).toContain("getUnavailableBlockKeys(symbol)")
     expect(source).toContain("limitLiveDispatchCandidatesFairly(")
-    expect(source).toContain("boundedDispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))")
+    expect(source).toContain("dispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))")
     expect(liveStage).toContain("Block Set ${realPosition.setKey || \"unknown\"} waits for authoritative parent fill")
     expect(liveStage).toContain("real?.sizeMultiplier ?? existing.sizeMultiplier")
     expect(liveStage).toContain("calculateBlockRemainingAddQuantity(")
@@ -920,8 +919,17 @@ describe("requested regression guardrails", () => {
     expect(envExample).toContain("STRATEGY_REDIS_HASH_WRITE_BATCH_SIZE=256")
     expect(envExample).toContain("STRATEGY_COOPERATIVE_TIME_SLICE_MS=8")
     expect(envExample).toContain("INDICATION_COOPERATIVE_TIME_SLICE_MS=8")
-    expect(envExample).toContain("LIVE_DISPATCH_PER_CYCLE=4")
-    expect(strategy).toContain('process.env.LIVE_DISPATCH_PER_CYCLE || "4"')
+    expect(envExample).not.toContain("LIVE_DISPATCH_PER_CYCLE")
+    expect(strategy).not.toContain("process.env.LIVE_DISPATCH_PER_CYCLE")
+    expect(strategy).not.toContain("LIVE_DISPATCH_HARD_MAX_PER_SYMBOL")
+    expect(strategy).toContain("planLiveDispatchCandidatesFairly(")
+    expect(strategy).toContain("no hidden per-symbol budget may defer otherwise eligible Sets")
+    expect(strategy).toContain("dispatch_deferred_count: String(dispatchPlan.deferred.length)")
+    expect(strategy).toContain("dispatch_failed_to_open_count")
+    expect(strategy).toContain("dispatch_duration_ms")
+    expect(strategy).toContain('summarizeLiveDispatchRows(dispatchSets, "qualified_policy_enabled")')
+    expect(strategy).toContain('summarizeLiveDispatchRows(dispatchPlan.deferred, "physical_budget_deferred")')
+    expect(strategy).toContain('persistUnavailableDispatch("connector_unavailable")')
     expect(strategy).toContain("fpCacheKey,\n            nextFpCache,\n            shouldContinue,")
     expect(strategy).toContain("targetKey,\n            netTargetWrites,\n            shouldContinue,")
   })
@@ -1188,23 +1196,23 @@ describe("requested regression guardrails", () => {
 
 
 
-  test("symbol cache compares dev-capped force symbols to prevent per-tick invalidation churn", () => {
+  test("symbol cache compares the complete force-symbol basket", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
     const defaults = read("lib/symbol-selection-defaults.ts")
 
-    expect(source).toContain("effectiveForceSymbols = withCanonicalForcedSymbols(effectiveForceSymbols, devCap)")
-    expect(source).toContain("localSymbolCapActive")
-    expect(source).toContain("getExplicitLocalSymbolCap")
+    expect(source).toContain("const effectiveForceSymbols = withCanonicalForcedSymbols(forceSymbols)")
+    expect(source).not.toContain("localSymbolCapActive")
+    expect(source).not.toContain("getExplicitLocalSymbolCap")
     expect(defaults).toContain("env.V0_DEV_SYMBOL_COUNT")
-    expect(source).toContain("Compare the same effective symbol list")
+    expect(source).toContain("complete canonical operator basket")
   })
 
-  test("local symbol cap preserves operator-selected symbols before slicing", () => {
+  test("explicit symbol selection uses bounded concurrency instead of truncation", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
 
-    expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
-    expect(source).toContain("stayed at 0/N symbols with no indication/strategy calculations")
-    expect(source).toContain("Resolve the real list first, then slice it at the end if needed")
+    expect(source).toContain("bounded concurrency/yields")
+    expect(source).toContain("const resolved = withCanonicalForcedSymbols(await resolve())")
+    expect(source).toContain("Explicit operator symbols are authoritative in every runtime")
     expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
 
@@ -2450,8 +2458,9 @@ describe("requested regression guardrails", () => {
     expect(liveGetter).toContain("const READ_BATCH_SIZE = 32")
     expect(liveGetter).not.toContain("0, 500")
 
-    expect(positionsApi).toContain("getOpenLivePositionReadModels(connectionId, 0)")
-    expect(positionsApi).toContain("getClosedLivePositionReadModels(connectionId, 0)")
+    expect(positionsApi).toContain("getOpenLivePositionReadModels(connectionId, LIVE_POSITION_OPEN_READ_LIMIT)")
+    expect(positionsApi).toContain("getClosedLivePositionReadModels(connectionId, LIVE_POSITION_CLOSED_READ_LIMIT)")
+    expect(positionsApi).toContain("possiblyTruncated")
     expect(positionsApi).not.toContain("live:positions:${connectionId}:closed`, 0, 99")
     expect(connectionStats).not.toContain("symbolsSet.slice(0, 50)")
     expect(connectionStats).toContain("const READ_BATCH_SIZE = 32")
@@ -2499,9 +2508,14 @@ describe("requested regression guardrails", () => {
     expect(dialog).not.toContain("Block Only")
     expect(dialog).not.toContain("DCA Only")
     expect(createRoute).toContain("block_enabled: body.block_enabled !== false")
-    expect(createRoute).toContain("block_only: false")
-    expect(updateRoute).toContain("block_enabled: body.block_enabled !== false")
-    expect(updateRoute).toContain("block_only: false")
+    expect(createRoute).not.toContain("trailing_only: false")
+    expect(createRoute).not.toContain("block_only: false")
+    expect(createRoute).not.toContain("dca_only: false")
+    expect(updateRoute).toContain("block_enabled: String(toBoolean(")
+    expect(updateRoute).toContain('await client.hdel(key, "trailing_only", "block_only", "dca_only")')
+    expect(updateRoute).toContain("normal_enabled: String(toBoolean(")
+    expect(updateRoute).toContain("trailing_enabled: String(toBoolean(")
+    expect(createRoute).toContain("await (client as any).persist(key)")
   })
 
   test("Base, Main, Real and Live remain mandatory steps with independent settings", () => {
@@ -2526,9 +2540,7 @@ describe("requested regression guardrails", () => {
     expect(strategiesRoute).not.toContain("is_enabled: !!strat.is_enabled")
     expect(migrations).toContain('strategy_stage_switches: "compatibility-only-always-true"')
     expect(read("lib/strategy-coordinator.ts")).toContain("normalEnabled: this._coordinationSettings.normalEnabled !== false")
-    expect(read("lib/strategy-coordinator.ts")).not.toContain(
-      "blockOnly: this._coordinationSettings.blockOnly === true",
-    )
+    expect(read("lib/strategy-coordinator.ts")).not.toContain("blockOnly")
   })
 
   test("statistics never invent portfolio balance, TP/SL values, trailing values, or execution PF", () => {
@@ -3281,11 +3293,11 @@ describe("requested regression guardrails", () => {
     const monitoringPage = read("app/monitoring/page.tsx")
 
     expect(system).toContain("getDashboardWorkflowSnapshot")
-    expect(system).toContain("getOpenLivePositionReadModels(connectionId, 0)")
+    expect(system).toContain("getOpenLivePositionReadModels(connectionId, LIVE_POSITION_OPEN_READ_LIMIT)")
     expect(system).toContain("new PseudoPositionManager(connectionId).getActivePositions()")
     expect(system).not.toContain("getPseudoPositions(undefined, 10)")
     expect(system).not.toContain('status: "running"')
-    expect(comprehensive).toContain("getClosedLivePositionReadModels(connectionId, 0)")
+    expect(comprehensive).toContain("getClosedLivePositionReadModels(connectionId, LIVE_POSITION_CLOSED_READ_LIMIT)")
     expect(comprehensive).toContain("getSystemResourceMetrics")
     expect(comprehensive).not.toContain("DatabaseManager")
     expect(logs).toContain("SystemLogger.getLogs")
@@ -3613,7 +3625,7 @@ describe("requested regression guardrails", () => {
   })
 
 
-  test("QuickStart 12-symbol production smoke seeds local symbol cap before engine start", () => {
+  test("QuickStart records symbol diagnostics without allowing a runtime cap", () => {
     const quickStart = read("app/api/trade-engine/quick-start/route.ts")
     const manager = read("lib/trade-engine/engine-manager.ts")
 
@@ -3621,7 +3633,7 @@ describe("requested regression guardrails", () => {
     expect(quickStart).toContain("tradeEngineStatePatch: {")
     expect(quickStart).toContain("config_set_symbols_total: String(symbols.length)")
     expect(quickStart).toContain("so an explicit multi-symbol smoke is never sliced back to the safe default one")
-    expect(manager).toContain("(connSettings as any)?.dev_symbol_count_override")
+    expect(manager).not.toContain("(connSettings as any)?.dev_symbol_count_override")
   })
 
   test("supervised live smoke is admin-gated, SDK-first, and cleans up authoritatively", () => {
@@ -3683,11 +3695,12 @@ describe("requested regression guardrails", () => {
     expect(initStatus).toContain("last_tick_fresh: liveRecoveryAgeMs !== null && liveRecoveryAgeMs <= 90_000")
   })
 
-  test("realtime pipeline rotates a bounded fair symbol slice instead of blocking a wide basket", () => {
+  test("realtime pipeline processes the full configured basket by default", () => {
     const engine = read("lib/trade-engine/engine-manager.ts")
     const env = read(".env.example")
 
     expect(engine).toContain("REALTIME_PIPELINE_SYMBOLS_PER_TICK")
+    expect(engine).toContain(": configuredSymbols.length")
     expect(engine).toContain("let realtimeSymbolCursor = 0")
     expect(engine).toContain("configuredSymbols[(realtimeSymbolCursor + offset) % configuredSymbols.length]")
     expect(engine).toContain("realtimeSymbolCursor = (realtimeSymbolCursor + symbols.length) % configuredSymbols.length")
@@ -3962,6 +3975,57 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("aggregate pair paused for a CTS quantity mutation")
     expect(liveStage).toContain("CTS controls removed and independent venue quantity preserved")
     expect(liveStage).toContain("await rearmProtectionAfterQuantityMutation(")
+  })
+
+  test("Statistics exposes Main indications, real-order analytics, and a top time range", () => {
+    const navigation = read("components/statistics/statistics-section-nav.tsx")
+    const mainPage = read("app/statistics/indications/main/page.tsx")
+    const dashboard = read("components/statistics/indication-analytics-dashboard.tsx")
+    const indicationRoute = read("app/api/statistics/indications/route.ts")
+    const progressionRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+    const statisticsPage = read("app/statistics/page.tsx")
+
+    expect(navigation).toContain('/statistics/indications/main')
+    expect(mainPage).toContain('mode="main"')
+    expect(dashboard).toContain('"signal" | "main" | "common"')
+    expect(indicationRoute).toContain("const MAIN_TYPES = [")
+    expect(indicationRoute).toContain("closed.filter(isExecutedRealExchangePosition)")
+    expect(indicationRoute).toContain("open.filter(isExecutedRealExchangePosition)")
+    expect(progressionRoute).toContain("mainIndications,")
+    expect(statisticsPage).toContain("Main Trade Engine · Indications")
+    expect(statisticsPage).toContain("TOP_TIME_RANGES")
+    expect(statisticsPage).toContain("Statistics time range")
+    expect(statisticsPage).toContain("tradeHistoryInSelectedTimeRange")
+  })
+
+  test("calculated Block and DCA results stay visible when live execution is disabled", () => {
+    const directStats = read("components/statistics/direct-trade-statistics.tsx")
+    const pipeline = read("components/dashboard/strategy-pipeline.tsx")
+    const quickStart = read("components/dashboard/quickstart-section.tsx")
+    const connectionInfo = read("components/settings/connection-info-dialog.tsx")
+    const activeCard = read("components/dashboard/active-connection-card.tsx")
+
+    expect(directStats).not.toContain('{calculation.blockEnabled && <Card className="overflow-hidden p-4">')
+    expect(pipeline).toContain('label="Block"')
+    expect(pipeline).toContain('label="DCA"')
+    expect(pipeline).toContain("Calculated continuously · live execution")
+    expect(quickStart).toContain('label: "Block"')
+    expect(quickStart).toContain('label: "DCA"')
+    expect(quickStart).toContain('"calc only"')
+    expect(connectionInfo).toContain("Calculated continuously · Block live")
+    expect(activeCard).toContain('label: "Block"')
+    expect(activeCard).toContain('label: "DCA"')
+    expect(activeCard).toContain('" (calc)"')
+  })
+
+  test("Direct Trade Performance Stats exposes each indication type against internal results", () => {
+    const performance = read("components/statistics/direct-trade-statistics.tsx")
+
+    expect(performance).toContain("Indication types · live vs internal results")
+    expect(performance).toContain("PF coordinate: 1.00 neutral · 1.10 = +1× PositionCost")
+    expect(performance).toContain("row.liveEntryEnabled ? \"On\" : \"Calc only\"")
+    expect(performance).toContain("row.internalAveragePnlPerSet")
+    expect(performance).toContain("Only settled closed executions enter live W/L/BE")
   })
 
 })

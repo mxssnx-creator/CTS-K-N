@@ -5,6 +5,7 @@ import {
   recordAndCalculateExchangeAccountPerformance15h,
 } from "@/lib/exchange-account-performance"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import { getExchangeLiveStateSummary } from "@/lib/exchange-live-state-summary"
 
 export const dynamic = "force-dynamic"
 
@@ -87,23 +88,20 @@ export async function GET(request: Request) {
         // We query BOTH and merge, de-duplicating by id. This keeps the
         // footer correct regardless of which code path opened the
         // position. Balance cache is pulled in the same round-trip.
-        const [exchangeIdsRaw, genericIdsRaw, balanceCache] = await Promise.all([
+        const [exchangeIdsRaw, genericIdsRaw, balanceCache, exchangeSnapshot] = await Promise.all([
           client.smembers(`exchange_positions:${connId}:open`).catch(() => [] as string[]),
           client.smembers(`positions:${connId}`).catch(() => [] as string[]),
           getSettings(`connection_balance:${connId}`).catch(() => null),
+          getExchangeLiveStateSummary(connId),
         ])
 
         const exchangeIds = Array.isArray(exchangeIdsRaw) ? exchangeIdsRaw : []
         const genericIds  = Array.isArray(genericIdsRaw)  ? genericIdsRaw  : []
 
-        // Cap each source at 200 as a safety guard.
-        const cappedExchange = exchangeIds.slice(0, 200)
-        const cappedGeneric  = genericIds.slice(0, 200)
-
         // Fetch both stores in parallel.
         const [exchangePositionObjs, genericPositionHashes] = await Promise.all([
-          Promise.all(cappedExchange.map((id) => getSettings(`exchange_position:${id}`).catch(() => null))),
-          Promise.all(cappedGeneric.map((id)  => client.hgetall(`position:${connId}:${id}`).catch(() => null))),
+          Promise.all(exchangeIds.map((id) => getSettings(`exchange_position:${id}`).catch(() => null))),
+          Promise.all(genericIds.map((id)  => client.hgetall(`position:${connId}:${id}`).catch(() => null))),
         ])
 
         // Normalise both into a single array of position objects. Only
@@ -128,22 +126,9 @@ export async function GET(request: Request) {
           positionObjs.push(p)
         }
 
-        let openPositions  = 0
-        let longPositions  = 0
-        let shortPositions = 0
         let invalidDirectionPositions = 0
-        let unrealizedPnl  = 0
         let marginUsdSum   = 0      // used balance committed across this connection
         let volumeUsdSum   = 0      // leveraged notional across this connection
-        const positions: Array<{
-          symbol: string; side: string; qty: number
-          entry: number;  mark: number; pnl: number
-          /** Used balance (margin = notional / leverage). Canonical USDT figure. */
-          marginUsd: number
-          /** Leveraged notional (qty × mark). Kept for back-compat. */
-          volumeUsd: number
-          leverage: number
-        }> = []
 
         for (const p of positionObjs) {
           if (!p) continue
@@ -158,13 +143,6 @@ export async function GET(request: Request) {
             invalidDirectionPositions++
             continue
           }
-          openPositions++
-          if (side === "short") shortPositions++
-          else                  longPositions++
-
-          const pnl = toNum(p.unrealized_pnl ?? p.pnl)
-          unrealizedPnl += pnl
-
           // ── USDT semantics: derive the *used balance* (margin) so the
           //    UI never shows leveraged notional under any "USDT" label.
           //    margin = notional / leverage. Falls back to a stored
@@ -184,18 +162,32 @@ export async function GET(request: Request) {
           marginUsdSum += marginUsd
           volumeUsdSum += volumeUsd
 
-          positions.push({
-            symbol: String(p.symbol || ""),
-            side,
-            qty,
-            entry:  toNum(p.entry_price),
-            mark:   markPrice,
-            pnl,
-            marginUsd: Math.round(marginUsd * 100) / 100,
-            volumeUsd: Math.round(volumeUsd * 100) / 100,
-            leverage,
-          })
         }
+
+        const positionsDataAvailable = exchangeSnapshot.positionsStatus.available &&
+          exchangeSnapshot.tracking.attributionComplete
+        const systemNotionalUsd = positionsDataAvailable ? exchangeSnapshot.positionNotionalUsd : 0
+        const marginAttributionRatio = volumeUsdSum > 0
+          ? Math.min(1, systemNotionalUsd / volumeUsdSum)
+          : 0
+        const systemMarginUsd = positionsDataAvailable
+          ? marginUsdSum * marginAttributionRatio
+          : 0
+        const systemPositions = positionsDataAvailable
+          ? exchangeSnapshot.positionsBySymbol.map((position) => ({
+              symbol: position.symbol,
+              side: position.long > 0 && position.short > 0
+                ? "mixed"
+                : position.short > 0 ? "short" : "long",
+              qty: position.quantity,
+              entry: 0,
+              mark: 0,
+              pnl: position.unrealizedPnl,
+              marginUsd: 0,
+              volumeUsd: position.notionalUsd,
+              leverage: 0,
+            }))
+          : []
 
         // Balance cache shape is { balance: number, timestamp: number }.
         // The exchange connectors expose wallet balance at this layer. Equity
@@ -211,24 +203,33 @@ export async function GET(request: Request) {
         // Preserve a real but stale cache value for existing diagnostic
         // consumers. Fallback balances are never exposed as exchange money.
         const totalBal = isFallbackBalance ? 0 : cachedBalance ?? 0
-        const equity = totalBal + unrealizedPnl
-        const estimatedAvailable = Math.max(0, equity - marginUsdSum)
+        const systemUnrealizedPnl = positionsDataAvailable ? exchangeSnapshot.unrealizedPnl : 0
+        const equity = totalBal + systemUnrealizedPnl
+        const estimatedAvailable = Math.max(0, equity - systemMarginUsd)
 
         return {
           connectionId: connId,
           name:         String(conn.name || conn.exchange_name || conn.exchange || connId),
           exchange:     String(conn.exchange || conn.exchange_type || conn.exchange_name || ""),
-          openPositions,
-          longPositions,
-          shortPositions,
-          invalidDirectionPositions,
-          unrealizedPnl,
+          openPositions: positionsDataAvailable ? exchangeSnapshot.openPositions : 0,
+          longPositions: positionsDataAvailable ? exchangeSnapshot.longPositions : 0,
+          shortPositions: positionsDataAvailable ? exchangeSnapshot.shortPositions : 0,
+          invalidDirectionPositions: positionsDataAvailable ? 0 : invalidDirectionPositions,
+          unrealizedPnl: systemUnrealizedPnl,
+          positionsDataAvailable,
+          exchangeSource: exchangeSnapshot.source,
+          exchangeScope: "cts_tracked_only" as const,
+          excludedUntrackedPositions: exchangeSnapshot.tracking.venuePositionsExcluded,
+          excludedUntrackedOrders: exchangeSnapshot.tracking.venueOrdersExcluded,
+          openOrders: exchangeSnapshot.ordersStatus.available ? exchangeSnapshot.openOrders : 0,
+          ordersDataAvailable: exchangeSnapshot.ordersStatus.available &&
+            exchangeSnapshot.tracking.attributionComplete,
           // Connection-level USDT roll-ups. `marginUsd` is the canonical
           // "USDT" figure (used balance = notional / leverage); we
           // expose `volumeUsd` alongside it for the leveraged-notional
           // tooltip surface.
-          marginUsd: Math.round(marginUsdSum * 100) / 100,
-          volumeUsd: Math.round(volumeUsdSum * 100) / 100,
+          marginUsd: Math.round(systemMarginUsd * 100) / 100,
+          volumeUsd: Math.round(systemNotionalUsd * 100) / 100,
           balance: {
             total:     totalBal,
             available: estimatedAvailable,
@@ -238,7 +239,7 @@ export async function GET(request: Request) {
             dataAvailable: balanceDataAvailable,
             isFallback: isFallbackBalance,
           },
-          positions: positions.slice(0, 20),
+          positions: systemPositions.slice(0, 20),
         }
       }),
     )
@@ -278,6 +279,10 @@ export async function GET(request: Request) {
     const accountDataAvailable = perConnection.length > 0 &&
       perConnection.every((connection) => connection.balance.dataAvailable) &&
       accountCurrencies.size === 1
+    const positionsDataAvailable = perConnection.length > 0 &&
+      perConnection.every((connection) => connection.positionsDataAvailable)
+    const ordersDataAvailable = perConnection.length > 0 &&
+      perConnection.every((connection) => connection.ordersDataAvailable)
     const connectionIds = perConnection.map((connection) => connection.connectionId).sort()
     const currentAccountSnapshot = accountDataAvailable
       ? {
@@ -298,6 +303,18 @@ export async function GET(request: Request) {
       totals: {
         ...totals,
         accountDataAvailable,
+        positionsDataAvailable,
+        ordersDataAvailable,
+        exchangeScope: "cts_tracked_only",
+        openOrders: perConnection.reduce((sum, connection) => sum + connection.openOrders, 0),
+        excludedUntrackedPositions: perConnection.reduce(
+          (sum, connection) => sum + connection.excludedUntrackedPositions,
+          0,
+        ),
+        excludedUntrackedOrders: perConnection.reduce(
+          (sum, connection) => sum + connection.excludedUntrackedOrders,
+          0,
+        ),
         directionIntegrity: totals.openPositions === totals.longPositions + totals.shortPositions,
       },
       accountPerformance15h,
@@ -344,6 +361,12 @@ function emptyResponse() {
       marginUsd: 0, volumeUsd: 0,
       currency: "USDT",
       accountDataAvailable: false,
+      positionsDataAvailable: false,
+      ordersDataAvailable: false,
+      exchangeScope: "cts_tracked_only",
+      openOrders: 0,
+      excludedUntrackedPositions: 0,
+      excludedUntrackedOrders: 0,
     },
     accountPerformance15h: calculateExchangeAccountPerformance15h(null, []),
     updatedAt: Date.now(),

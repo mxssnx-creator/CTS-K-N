@@ -1,12 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { Activity, BarChart3, Clock3, Filter, RefreshCw, ShieldCheck, Target, Zap } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { useExchange } from "@/lib/exchange-context"
+import type { DirectTradeIndicationTypeStatsRow } from "@/lib/direct-trade-indication-stats"
 import {
   Select,
   SelectContent,
@@ -165,6 +166,7 @@ type Status = {
       meanRealizedVolumeMultiplier?: number
     }>
   }
+  indicationTypeStats?: DirectTradeIndicationTypeStatsRow[]
   processor?: { isHealthy?: boolean; lastTick?: string; errorsLast5min?: number } | null
 }
 
@@ -193,6 +195,10 @@ function formatPnl(value: number | undefined): string {
   return `${amount >= 0 ? "+" : ""}${amount.toFixed(3)}%`
 }
 
+function formatWindowMetric(value: number | null | undefined, decimals: number): string {
+  return value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(decimals)
+}
+
 export function DirectTradeStatistics() {
   const { selectedConnectionId } = useExchange()
   const [status, setStatus] = useState<Status>({})
@@ -204,8 +210,12 @@ export function DirectTradeStatistics() {
   const [strategyType, setStrategyType] = useState("all")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const activeRequestRef = useRef<AbortController | null>(null)
 
   const load = useCallback(async () => {
+    activeRequestRef.current?.abort()
+    const controller = new AbortController()
+    activeRequestRef.current = controller
     setLoading(true)
     setError("")
     try {
@@ -221,25 +231,34 @@ export function DirectTradeStatistics() {
         ? `?connectionId=${encodeURIComponent(selectedConnectionId)}`
         : ""
       const [statusResponse, configResponse] = await Promise.all([
-        fetch(`/api/trade-engine/direct-trade/status${statusSelection}`, { cache: "no-store" }),
-        fetch(`/api/trade-engine/direct-trade?${selection.toString()}`, { cache: "no-store" }),
+        fetch(`/api/trade-engine/direct-trade/status${statusSelection}`, { cache: "no-store", signal: controller.signal }),
+        fetch(`/api/trade-engine/direct-trade?${selection.toString()}`, { cache: "no-store", signal: controller.signal }),
       ])
       if (!statusResponse.ok || !configResponse.ok) throw new Error("Direct-Trade statistics are unavailable")
       const [nextStatus, snapshot] = await Promise.all([statusResponse.json(), configResponse.json()])
+      if (controller.signal.aborted || activeRequestRef.current !== controller) return
       setStatus(nextStatus)
       setConfigs(Array.isArray((snapshot as StatisticsSnapshot)?.rows) ? (snapshot as StatisticsSnapshot).rows! : [])
       setMatched(Math.max(0, Number((snapshot as StatisticsSnapshot)?.matched) || 0))
     } catch (cause) {
+      if (controller.signal.aborted) return
       setError(cause instanceof Error ? cause.message : "Direct-Trade statistics are unavailable")
     } finally {
-      setLoading(false)
+      if (activeRequestRef.current === controller) {
+        activeRequestRef.current = null
+        setLoading(false)
+      }
     }
   }, [direction, selectedConnectionId, stateFilter, strategyType, timeframe])
 
   useEffect(() => {
     void load()
     const interval = window.setInterval(() => void load(), 10_000)
-    return () => window.clearInterval(interval)
+    return () => {
+      window.clearInterval(interval)
+      activeRequestRef.current?.abort()
+      activeRequestRef.current = null
+    }
   }, [load])
 
   const chartRows = useMemo(() => Object.entries(status.calculation?.byTimeframe || {}).map(([name, count]) => ({
@@ -250,6 +269,7 @@ export function DirectTradeStatistics() {
   const visibleRows = configs
   const stats = status.stats || {}
   const calculation = status.calculation || {}
+  const indicationTypeStats = Array.isArray(status.indicationTypeStats) ? status.indicationTypeStats : []
   const blockRows = Object.entries(calculation.byBlockCount || {})
     .sort(([left], [right]) => Number(left) - Number(right))
 
@@ -290,6 +310,67 @@ export function DirectTradeStatistics() {
           <Metric label="Execution interval" value={`${status.state?.processingIntervalMs || 280}ms`} icon={<Zap className="h-4 w-4" />} />
           <Metric label="Mode" value={status.state?.liveMode ? "Live exchange" : "Demo / paper"} icon={<Target className="h-4 w-4" />} />
         </div>
+      </Card>
+
+      <Card className="overflow-hidden p-4">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-medium">Indication types · live vs internal results</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Momentum, Mean-Reversion, Breakout and Relative remain internally calculated; the Live entry badge is the persisted physical-order gate.
+            </p>
+          </div>
+          <span className="text-[11px] text-muted-foreground">PF coordinate: 1.00 neutral · 1.10 = +1× PositionCost</span>
+        </div>
+        <div className="overflow-auto rounded-md border">
+          <table className="w-full min-w-[1120px] text-xs">
+            <thead className="bg-muted/95 text-muted-foreground">
+              <tr>
+                <th className="p-2 text-left">Indication</th>
+                <th className="p-2 text-center">Live entry</th>
+                <th className="p-2 text-right">Open</th>
+                <th className="p-2 text-right">Closed / pending</th>
+                <th className="p-2 text-right">W / L / BE</th>
+                <th className="p-2 text-right">Realized result</th>
+                <th className="p-2 text-right">Classic PF</th>
+                <th className="p-2 text-right">PF coordinate</th>
+                <th className="p-2 text-right">Internal valid / eval</th>
+                <th className="p-2 text-right">Internal avg/set / PF</th>
+              </tr>
+            </thead>
+            <tbody>
+              {indicationTypeStats.map((row) => (
+                <tr key={row.indicationType} className="border-t">
+                  <td className="p-2 font-medium capitalize">{row.indicationType.replace("_", " ")}</td>
+                  <td className="p-2 text-center"><Badge variant={row.liveEntryEnabled ? "default" : "secondary"}>{row.liveEntryEnabled ? "On" : "Calc only"}</Badge></td>
+                  <td className="p-2 text-right font-mono">{row.openPositions}</td>
+                  <td className="p-2 text-right font-mono">{row.closedPositions} / <span className={row.accountingPending > 0 ? "text-amber-600" : ""}>{row.accountingPending}</span></td>
+                  <td className="p-2 text-right font-mono">{row.wins} / {row.losses} / {row.breakeven}</td>
+                  <td className={`p-2 text-right font-mono ${(status.state?.liveMode ? Number(row.netExchangePnlUsdt || 0) : row.netPnlPercent) >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                    {row.closedPositions === 0
+                      ? "—"
+                      : status.state?.liveMode
+                        ? `${Number(row.netExchangePnlUsdt || 0) >= 0 ? "+" : ""}${Number(row.netExchangePnlUsdt || 0).toFixed(4)} USDT`
+                        : formatPnl(row.netPnlPercent)}
+                  </td>
+                  <td className="p-2 text-right font-mono">{displayAggregatePf(row.profitFactor, row.profitFactorInfinite)}</td>
+                  <td className="p-2 text-right font-mono">{row.profitFactorCoordinate == null ? "—" : row.profitFactorCoordinate.toFixed(4)}</td>
+                  <td className="p-2 text-right font-mono">{row.internalValid.toLocaleString()} / {row.internalEvaluated.toLocaleString()}</td>
+                  <td
+                    className={`p-2 text-right font-mono ${row.internalAveragePnlPerSet >= 0 ? "text-emerald-600" : "text-rose-600"}`}
+                    title={`Aggregate internal result: ${formatPnl(row.internalTotalPnl)}`}
+                  >
+                    {formatPnl(row.internalAveragePnlPerSet)} / {displayAggregatePf(row.internalProfitFactor, row.internalProfitFactorInfinite)}
+                  </td>
+                </tr>
+              ))}
+              {indicationTypeStats.length === 0 ? (
+                <tr><td colSpan={10} className="p-5 text-center text-muted-foreground">No indication-type snapshot is available yet.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-[11px] text-muted-foreground">Only settled closed executions enter live W/L/BE, PnL and PF. Open and accounting-pending positions remain separate; internal results are simultaneous historical evaluations, not exchange PnL.</p>
       </Card>
 
       <Card className="overflow-hidden p-4">
@@ -389,9 +470,9 @@ export function DirectTradeStatistics() {
             <ResultRow label="Win / loss / break-even" value={`${stats.winCount || 0} / ${stats.lossCount || 0} / ${stats.breakEvenCount || 0}`} />
             <ResultRow label="Confirmed fills / settled / closed" value={`${stats.totalFilled || 0} / ${stats.settledClosedCount || 0} / ${status.closedPositions || 0}`} />
             <ResultRow label="Exchange accounting pending" value={String(status.accountingPending || 0)} />
-            <ResultRow label="Last 12 positions" value={`PF ${stats.last12Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last12Pos?.ddt?.toFixed(1) || "0.0"}m`} />
-            <ResultRow label="Last 25 positions" value={`PF ${stats.last25Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last25Pos?.ddt?.toFixed(1) || "0.0"}m`} />
-            <ResultRow label="Last 50 positions" value={`PF ${stats.last50Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last50Pos?.ddt?.toFixed(1) || "0.0"}m`} />
+            <ResultRow label="Last 12 executed positions" value={`PF ${formatWindowMetric(stats.last12Pos?.pf, 2)} · DDT ${formatWindowMetric(stats.last12Pos?.ddt, 1)}m`} />
+            <ResultRow label="Last 25 executed positions" value={`PF ${formatWindowMetric(stats.last25Pos?.pf, 2)} · DDT ${formatWindowMetric(stats.last25Pos?.ddt, 1)}m`} />
+            <ResultRow label="Last 50 executed positions" value={`PF ${formatWindowMetric(stats.last50Pos?.pf, 2)} · DDT ${formatWindowMetric(stats.last50Pos?.ddt, 1)}m`} />
             <ResultRow label="Processor errors (5m)" value={String(status.processor?.errorsLast5min || 0)} />
           </div>
           {error && <p className="mt-4 rounded bg-destructive/10 p-2 text-xs text-destructive">{error}</p>}

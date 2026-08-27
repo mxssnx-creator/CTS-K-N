@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 const SECTIONS = [
   { href: "/statistics", label: "Overall", icon: BarChart3 },
   { href: "/statistics/direct-trade", label: "Direct Trade", icon: Target },
+  { href: "/statistics/indications/main", label: "Main Indications", icon: Layers3 },
   { href: "/statistics/indications/common", label: "Common Indications", icon: Layers3 },
   { href: "/statistics/indications/signal", label: "Signal Engine", icon: RadioTower },
 ] as const

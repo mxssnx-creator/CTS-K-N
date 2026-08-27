@@ -1,7 +1,7 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { dbCoordinator } from "@/lib/database-coordinator"
 import { UnifiedLogger, ErrorCode, LogContext } from "@/lib/error-handling"
-import { ExchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
+import { getExchangeLiveStateSummary } from "@/lib/exchange-live-state-summary"
 
 /**
  * Position Monitoring & Lifecycle Management
@@ -61,27 +61,47 @@ export class PositionMonitor {
     try {
       this.log(`Starting position monitoring for ${connectionId}`)
 
-      // Get connector
-      const connector = ExchangeConnectorFactory.getConnector(connectionId)
-      if (!connector) {
-        this.error(`Connector not found for ${connectionId}`)
+      const exchangeSnapshot = await getExchangeLiveStateSummary(connectionId)
+      if (!exchangeSnapshot.positionsStatus.available) {
+        this.error(`CTS-tracked exchange snapshot unavailable for ${connectionId}`)
         return []
       }
 
-      // Fetch positions from exchange
-      const exchangePositions = await connector.getPositions()
-      this.log(`Fetched ${exchangePositions.length} positions from exchange`)
+      // This projection is already quantity-clamped to exact CTS-tracked
+      // symbol/direction slots. Account-level manual/foreign positions never
+      // enter the legacy database monitor or its risk calculations.
+      const exchangePositions = exchangeSnapshot.positionsBySymbol.map((position) => ({
+        symbol: position.symbol,
+        size: position.quantity,
+        currentPrice: position.quantity > 0 ? position.notionalUsd / position.quantity : 0,
+        markPrice: position.quantity > 0 ? position.notionalUsd / position.quantity : 0,
+        unrealizedPnl: position.unrealizedPnl,
+      }))
+      this.log(
+        `Fetched ${exchangePositions.length} CTS-tracked symbol positions; ` +
+        `excluded ${exchangeSnapshot.tracking.venuePositionsExcluded} unrelated venue positions`,
+      )
 
       // Get currently tracked positions
       const trackedPositions = await dbCoordinator.getPositions(connectionId)
+      const trackedBySymbol = new Map(
+        Object.entries(trackedPositions).map(([symbol, position]) => [
+          String(symbol || "").trim().toUpperCase().replace(/[-/_:\s]/g, ""),
+          position,
+        ]),
+      )
 
       const results: PositionMonitoringResult[] = []
 
       // Update each position
       for (const exchangePos of exchangePositions) {
         try {
-          const symbol = exchangePos.symbol
-          const tracked = trackedPositions[symbol]
+          const symbol = String(exchangePos.symbol || "").trim().toUpperCase()
+          const tracked = trackedBySymbol.get(symbol.replace(/[-/_:\s]/g, ""))
+          // Never import or calculate an exchange-account position that has no
+          // CTS lifecycle record. Manual trades and other bots remain outside
+          // system monitoring, PnL, risk and coordination statistics.
+          if (!tracked) continue
 
           // Update position in database
           const updated = {
@@ -95,14 +115,16 @@ export class PositionMonitor {
           await dbCoordinator.storePosition(connectionId, symbol, updated)
 
           // Calculate metrics
-          const percentPnL = updated.unrealizedPnl / (updated.size * updated.entryPrice)
+          const pnl = Number(updated.unrealizedPnl ?? updated.unrealizedPnL) || 0
+          const costBasis = (Number(updated.size) || 0) * (Number(updated.entryPrice) || 0)
+          const percentPnL = costBasis > 0 ? pnl / costBasis : 0
           const timeHeld = Date.now() - new Date(updated.created_at).getTime()
 
           results.push({
             symbol,
             status: "active",
             lastPrice: updated.currentPrice,
-            pnl: updated.unrealizedPnl,
+            pnl,
             percentPnL,
             timeHeld,
           })

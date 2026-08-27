@@ -174,6 +174,9 @@ export interface CoordinationSettings {
    */
   realEvalPosCount: number
 
+  /** Independent Row-Real result window for Block Sets. */
+  blockRowRealEvalPosCount: number
+
   /**
    * Row-Live is the final, materialised live candidate. It evaluates the
    * latest Row-Real result window exactly once; Exchange dispatch consumes
@@ -246,6 +249,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   prevPosWindow:    25,
   mainEvalPosCount: 25,
   realEvalPosCount: 20,
+  blockRowRealEvalPosCount: 20,
   liveEvalPosCount: 15,
   minStep:           DEFAULT_BASE_MIN_STEP,
   maxStopLossRatio:  2.5,
@@ -1454,6 +1458,27 @@ export function StrategyCoordinationSection({
               <span className="text-xs font-semibold tabular-nums w-8 text-right">
                 {value.realEvalPosCount}
               </span>
+            </div>
+            <div className="border-t border-border/50 pt-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-xs font-medium">Block Row-Real window</Label>
+                  <span className="w-8 text-right text-xs font-semibold tabular-nums">
+                    {value.blockRowRealEvalPosCount}
+                  </span>
+                </div>
+                <Slider
+                  value={[value.blockRowRealEvalPosCount]}
+                  min={8}
+                  max={80}
+                  step={2}
+                  onValueChange={([next]) => onChange({ ...value, blockRowRealEvalPosCount: next })}
+                  disabled={!value.variants.block}
+                />
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  Exact completed-position window for each Block Set row.
+                </p>
+              </div>
             </div>
           </div>
 

@@ -85,8 +85,6 @@ export interface RealPosition {
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
-  /** @deprecated persisted compatibility field; independent Block seeding no longer depends on it. */
-  blockOnly?: boolean
   // Exchange-cost-aware protection diagnostics supplied by the strategy
   // coordinator. Live execution treats this as explanatory metadata; the
   // actionable stopLoss/takeProfit percentages are already widened upstream.

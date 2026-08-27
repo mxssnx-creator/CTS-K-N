@@ -44,7 +44,7 @@ describe("Direct-Trade indication-type performance statistics", () => {
           mode: "live",
           configKey: "BTCUSDT|entry:momentum|type:standard",
           pnl: -1,
-          realizedPnlUsdt: -2,
+          realizedPnLUsdt: -2,
           pnlAccountingComplete: true,
           positionCostPercent: 0.1,
         },

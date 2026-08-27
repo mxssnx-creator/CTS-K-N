@@ -3,9 +3,8 @@
  *
  * Evaluation is intentionally separate from execution: a disabled family is
  * still materialised and validated by the stage pipeline, but its candidate
- * is not sent to the physical dispatcher.  The old `blockOnly` and
- * `variantBlockOnly` settings are legacy persistence fields and must never
- * participate in this policy.
+ * is not sent to the physical dispatcher. Retired one-family persistence
+ * fields must never participate in this policy.
  */
 
 export type StrategyExecutionFamily = "normal" | "trailing" | "block" | "dca" | "axis" | "signal"

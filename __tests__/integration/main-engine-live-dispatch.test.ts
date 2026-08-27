@@ -463,7 +463,6 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       parentSetKey: broaderBlockKey,
       indicationType: "direction",
       setVariant: "block",
-      blockOnly: true,
       blockLaneKey,
       accumulatedSetKeys: [broaderBlockKey, blockLaneKey],
       combinedPosCounts: false,
@@ -661,7 +660,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(placeOrder).not.toHaveBeenCalled()
   })
 
-  test("seeds an exact Signal Block parent in paper Block-only mode", async () => {
+  test("seeds an exact Signal Block parent when Normal is independently disabled", async () => {
     connection.is_live_trade = "0"
     connection.live_trade_requested = "0"
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
@@ -696,7 +695,6 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       setKey: `AVAXUSDT:signal:long:source:${sourceId}:config:${configId}#block:1`,
       parentSetKey: `AVAXUSDT:signal:long:source:${sourceId}:config:${configId}`,
       setVariant: "block",
-      blockOnly: true,
       blockSourceId: sourceId,
       blockCount: 1,
       blockVolumeRatio: 1,
@@ -711,7 +709,6 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       executionMode: "simulation",
       indicationType: "signal",
       setVariant: "block",
-      blockOnly: true,
       blockBaseQuantity: 0.005,
       signalRisk: expect.objectContaining({ sourceId, configId }),
     })
@@ -1276,7 +1273,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     ]))
   })
 
-  test("seeds Block-only at its absolute target and advances independent counts correctly after hash-only restart", async () => {
+  test("seeds independent Block at its absolute target and advances counts after hash-only restart", async () => {
     const {
       executeLivePosition,
       getLivePositions,
@@ -1339,7 +1336,6 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       indicationType: "direction",
       parentSetKey: "AVAXUSDT:direction:long",
       setVariant: "block" as const,
-      blockOnly: true,
       blockVolumeRatio: 1,
       blockScope: "long" as const,
       status: "pending" as const,
@@ -1359,7 +1355,6 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(countTwo).toMatchObject({
       status: "open",
       setVariant: "block",
-      blockOnly: true,
       executedQuantity: 0.03,
       blockBaseQuantity: 0.01,
     })
@@ -1408,7 +1403,6 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     const restored = (await getLivePositions(connection.id))
       .find((position) => position.id === countThree.id)
     expect(restored).toMatchObject({
-      blockOnly: true,
       blockBaseQuantity: 0.01,
       executedQuantity: 0.04,
     })

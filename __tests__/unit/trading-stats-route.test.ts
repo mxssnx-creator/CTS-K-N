@@ -2,6 +2,7 @@ const mockInitRedis = jest.fn()
 const mockGetAllConnections = jest.fn()
 const mockGetLivePositions = jest.fn()
 const mockGetClosedLivePositions = jest.fn()
+const mockGetLiveExecutionSummary = jest.fn()
 const mockLogError = jest.fn()
 
 jest.mock("next/server", () => ({
@@ -18,6 +19,10 @@ jest.mock("@/lib/redis-db", () => ({
 jest.mock("@/lib/trade-engine/stages/live-stage", () => ({
   getLivePositions: (...args: unknown[]) => mockGetLivePositions(...args),
   getClosedLivePositions: (...args: unknown[]) => mockGetClosedLivePositions(...args),
+}))
+
+jest.mock("@/lib/live-execution-summary", () => ({
+  getLiveExecutionSummary: (...args: unknown[]) => mockGetLiveExecutionSummary(...args),
 }))
 
 jest.mock("@/lib/system-logger", () => ({
@@ -38,9 +43,27 @@ describe("trading statistics route", () => {
     }])
     mockGetLivePositions.mockResolvedValue([])
     mockGetClosedLivePositions.mockResolvedValue([])
+    mockGetLiveExecutionSummary.mockResolvedValue({
+      openPositions: 0,
+      openSymbols: 0,
+      openOrders: 0,
+      entryOrders: 0,
+      controlOrders: 0,
+      unrealizedPnl: 0,
+      exchange: { complete: false },
+    })
   })
 
   test("uses closed-trade windows, deduplicates transitions, and exposes incomplete accounting", async () => {
+    mockGetLiveExecutionSummary.mockResolvedValue({
+      openPositions: 2,
+      openSymbols: 2,
+      openOrders: 0,
+      entryOrders: 0,
+      controlOrders: 0,
+      unrealizedPnl: 3,
+      exchange: { complete: false },
+    })
     mockGetLivePositions.mockResolvedValue([
       {
         id: "transition",

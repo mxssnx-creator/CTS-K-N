@@ -796,8 +796,6 @@ interface LivePosition {
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
-  /** @deprecated persisted compatibility field; Block parent semantics are independent. */
-  blockOnly?: boolean
   blockLegs?: BlockLegState[]
   dcaProfile?: DcaProfile
   dcaLegs?: DcaLegState[]
@@ -861,6 +859,22 @@ interface LivePosition {
   systemProtectionLegs?: ProtectionOrderLeg[]
   /** Last authoritative BingX control-order budget used for this position. */
   controlOrderCapacity?: ControlOrderCapacitySnapshot
+  /**
+   * Per exact Strategy-Set protection projection. Exchange venues net physical
+   * exposure by symbol/direction, so several Sets may safely share one outer
+   * SL/TP pair; this map proves that every Set lineage remains independently
+   * covered without placing duplicate reduce orders for the same quantity.
+   */
+  controlOrderSetCoverage?: Record<string, {
+    protected: boolean
+    protectionMode: "exchange_control" | "hybrid_control_system" | "system_close" | "system_close_fallback"
+    aggregateProtectionOwner: boolean
+    aggregateProtectionKey?: string
+    stopLossOrderId?: string
+    takeProfitOrderId?: string
+    systemProtectionLegs: ProtectionOrderLeg[]
+    updatedAt: number
+  }>
   /** One physical symbol/direction slot owns exactly one outer venue pair. */
   aggregateProtectionOwner?: boolean
   aggregateProtectionKey?: string
@@ -1790,9 +1804,6 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     }),
     ...(parseRedisBoolean(hash.blockComparisonAvailable) !== undefined && {
       blockComparisonAvailable: parseRedisBoolean(hash.blockComparisonAvailable),
-    }),
-    ...(parseRedisBoolean(hash.blockOnly) !== undefined && {
-      blockOnly: parseRedisBoolean(hash.blockOnly),
     }),
     ...(parseRedisBoolean(hash.trailingActive) !== undefined && {
       trailingActive: parseRedisBoolean(hash.trailingActive),
@@ -3116,8 +3127,7 @@ function initializeIndependentBlockSeed(
 ): void {
   // Block is an independent execution family. It can be the first physical
   // row when Normal is disabled, but it must also retain its exact additional
-  // quantity when a Normal parent already exists. The old blockOnly flag was
-  // a dispatch-mode switch and is deliberately ignored here.
+  // quantity when a Normal parent already exists.
   if (source.setVariant !== "block" || !(filledQuantity > 0)) return
   const multiplier = Math.max(
     1,
@@ -6871,6 +6881,36 @@ function refreshProtectionHandlingMode(
   } else {
     pos.protectionMode = "system_close_fallback"
   }
+  refreshControlOrderSetCoverage(pos)
+}
+
+function exactProtectionSetKeys(pos: LivePosition): string[] {
+  return [...new Set([
+    String(pos.setKey || "").trim(),
+    ...(pos.accumulatedSetKeys || []).map((value) => String(value || "").trim()),
+  ].filter(Boolean))]
+}
+
+function refreshControlOrderSetCoverage(pos: LivePosition): void {
+  const desired = computeDesiredProtectionPrices(pos)
+  const systemLegs = new Set(pos.systemProtectionLegs || [])
+  const stopLossCovered = !(desired.desiredSl > 0) || Boolean(pos.stopLossOrderId) || systemLegs.has("stop_loss")
+  const takeProfitCovered = !(desired.desiredTp > 0) || Boolean(pos.takeProfitOrderId) || systemLegs.has("take_profit")
+  const coverage: NonNullable<LivePosition["controlOrderSetCoverage"]> = {}
+  const updatedAt = Date.now()
+  for (const setKey of exactProtectionSetKeys(pos)) {
+    coverage[setKey] = {
+      protected: stopLossCovered && takeProfitCovered,
+      protectionMode: pos.protectionMode || "system_close_fallback",
+      aggregateProtectionOwner: pos.aggregateProtectionOwner === true,
+      ...(pos.aggregateProtectionKey ? { aggregateProtectionKey: pos.aggregateProtectionKey } : {}),
+      ...(pos.stopLossOrderId ? { stopLossOrderId: pos.stopLossOrderId } : {}),
+      ...(pos.takeProfitOrderId ? { takeProfitOrderId: pos.takeProfitOrderId } : {}),
+      systemProtectionLegs: [...systemLegs],
+      updatedAt,
+    }
+  }
+  pos.controlOrderSetCoverage = coverage
 }
 
 function reserveProtectionCapacity(
@@ -7745,6 +7785,7 @@ async function demoteAggregateProtectionMember(
   position.protectionMode = position.stopLossOrderId || position.takeProfitOrderId
     ? "hybrid_control_system"
     : "system_close_fallback"
+  refreshControlOrderSetCoverage(position)
   if (
     previousMode !== position.protectionMode
     || previousSystemLegs !== JSON.stringify(position.systemProtectionLegs || [])
@@ -8187,7 +8228,6 @@ export async function executeLivePosition(
       blockLaneKind:  realPosition.blockLaneKind,
       blockLaneKey:   realPosition.blockLaneKey,
       blockSourceId:  realPosition.blockSourceId,
-      blockOnly:      realPosition.blockOnly,
       accumulatedSetKeys: initialLivePositionSetLineage(realPosition),
       combinedPosCounts: realPosition.combinedPosCounts ?? false,
       posCountsTargetFlat: realPosition.posCountsTargetFlat ?? false,
@@ -8358,7 +8398,6 @@ export async function executeLivePosition(
     blockLaneKind: realPosition.blockLaneKind,
     blockLaneKey: realPosition.blockLaneKey,
     blockSourceId: realPosition.blockSourceId,
-    blockOnly: realPosition.blockOnly,
     blockVolumeIncrementRatio: realPosition.blockVolumeIncrementRatio,
     blockCalculatedVolumeMultiplier: realPosition.blockCalculatedVolumeMultiplier,
     accumulatedSetKeys: initialLivePositionSetLineage(realPosition),

@@ -12,7 +12,11 @@ import { getDashboardWorkflowSnapshot } from "@/lib/dashboard-workflow"
 import {
   getClosedLivePositionReadModels,
   getOpenLivePositionReadModels,
+  LIVE_POSITION_CLOSED_READ_LIMIT,
+  LIVE_POSITION_OPEN_READ_LIMIT,
 } from "@/lib/live-position-read-model"
+import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
+import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { PseudoPositionManager } from "@/lib/trade-engine/pseudo-position-manager"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 import {
@@ -56,10 +60,20 @@ export async function GET() {
         const connectionId = String(connection.id)
         const [pseudo, liveOpen, liveClosed] = await Promise.all([
           new PseudoPositionManager(connectionId).getActivePositions().catch(() => []),
-          getOpenLivePositionReadModels(connectionId, 0),
-          getClosedLivePositionReadModels(connectionId, 0),
+          getOpenLivePositionReadModels(connectionId, LIVE_POSITION_OPEN_READ_LIMIT),
+          getClosedLivePositionReadModels(connectionId, LIVE_POSITION_CLOSED_READ_LIMIT),
         ])
-        return { pseudo, liveOpen, liveClosed }
+        return {
+          pseudo,
+          liveOpen: liveOpen.filter((position: any) => (
+            isExecutedRealExchangePosition(position) &&
+            isLiveOpenStatus(position.status)
+          )),
+          liveClosed: liveClosed.filter((position: any) => (
+            isExecutedRealExchangePosition(position) &&
+            String(position.status || "").trim().toLowerCase() === "closed"
+          )),
+        }
       },
     )
     const pseudoPositions = positionRows.flatMap((row) => row.pseudo)

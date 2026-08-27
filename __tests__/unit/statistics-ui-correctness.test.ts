@@ -275,7 +275,7 @@ describe("statistics UI correctness", () => {
 
     expect(classifyLocalTradeHistorySnapshot(snapshot)).toMatchObject({
       disposition: "unresolved_trade",
-      reason: "venue_accounting_required",
+      reason: "venue_accounting_incomplete",
       row: {
         closeOrderId: "venue-close-1",
         accountingQuality: "exchange_required",

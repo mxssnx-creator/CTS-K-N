@@ -418,6 +418,7 @@ interface Settings {
   blockRowLiveProfitFactorRatio?: number
   blockRowLiveMaxStack?: number
   blockRowLivePauseCountRatio?: number
+  blockRowRealEvalPosCount?: number
   presetDcaEnabled?: boolean
   presetDirectionEnabled?: boolean
   presetMoveEnabled?: boolean
@@ -731,6 +732,7 @@ const initialSettings: Settings = {
   blockRowLiveProfitFactorRatio: 0.8,
   blockRowLiveMaxStack: 12,
   blockRowLivePauseCountRatio: 1,
+  blockRowRealEvalPosCount: 20,
   presetDcaEnabled: false,
   presetDirectionEnabled: true,
   presetMoveEnabled: true,

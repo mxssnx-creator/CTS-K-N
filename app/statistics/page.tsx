@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { AnalyticsFilters } from "@/components/statistics/analytics-filters"
 import { StrategyPerformanceTable } from "@/components/statistics/strategy-performance-table"
 import { AnalyticsEngine } from "@/lib/analytics"
@@ -189,6 +190,22 @@ interface CurrentStrategyRows {
   live: { total: number; mirrored: number; active: number; mirroredRatio: number }
 }
 
+interface MainIndicationSnapshot {
+  types: Record<string, {
+    label: string
+    trackings: number
+    evaluated: number
+    active: number
+    progressingSets: number
+  }>
+  totals: {
+    trackings: number
+    evaluated: number
+    active: number
+    progressingSets: number
+  }
+}
+
 interface RuntimeTelemetry {
   capturedAt?: string
   concurrency?: {
@@ -227,6 +244,14 @@ interface StatisticsArchiveCoverage {
   complete: boolean
   capturedAt: number
 }
+
+const TOP_TIME_RANGES = [
+  { value: "24h", label: "Last 24 hours", durationMs: 24 * 60 * 60 * 1000 },
+  { value: "7d", label: "Last 7 days", durationMs: 7 * 24 * 60 * 60 * 1000 },
+  { value: "30d", label: "Last 30 days", durationMs: 30 * 24 * 60 * 60 * 1000 },
+  { value: "90d", label: "Last 90 days", durationMs: 90 * 24 * 60 * 60 * 1000 },
+  { value: "all", label: "All executed history", durationMs: null },
+] as const
 
 function aggregateProfitFactorMetrics(metrics: ProfitFactorMetric[]): ProfitFactorMetric {
   const totals = metrics.reduce((result, metric) => ({
@@ -335,6 +360,7 @@ export default function StatisticsPage() {
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryRow[]>([])
   const [settings, setSettings] = useState<any>(null)
   const [currentStrategyRows, setCurrentStrategyRows] = useState<CurrentStrategyRows | null>(null)
+  const [mainIndications, setMainIndications] = useState<MainIndicationSnapshot | null>(null)
   const [runtimeTelemetry, setRuntimeTelemetry] = useState<RuntimeTelemetry | null>(null)
   const [performanceAnalytics, setPerformanceAnalytics] = useState<LiveTradingAnalytics | null>(null)
   const [performanceConnectionCount, setPerformanceConnectionCount] = useState(0)
@@ -380,6 +406,7 @@ export default function StatisticsPage() {
           setPositions([])
           setTradeHistory([])
           setCurrentStrategyRows(null)
+          setMainIndications(null)
           setRuntimeTelemetry(null)
           setPerformanceAnalytics(null)
           setPerformanceConnectionCount(0)
@@ -421,6 +448,9 @@ export default function StatisticsPage() {
             const rowSnapshots = responses
               .map((payload) => payload.progression?.strategyRows)
               .filter(Boolean)
+            const mainIndicationSnapshots = responses
+              .map((payload) => payload.progression?.mainIndications)
+              .filter(Boolean) as MainIndicationSnapshot[]
             const runtimeSnapshot = responses
               .map((payload) => payload.progression?.runtime)
               .find(Boolean) as RuntimeTelemetry | undefined
@@ -473,6 +503,34 @@ export default function StatisticsPage() {
               })
             } else {
               setCurrentStrategyRows(null)
+            }
+            if (mainIndicationSnapshots.length > 0) {
+              const typeKeys = Array.from(new Set(
+                mainIndicationSnapshots.flatMap((snapshot) => Object.keys(snapshot.types || {})),
+              ))
+              const types = Object.fromEntries(typeKeys.map((key) => {
+                const rows = mainIndicationSnapshots
+                  .map((snapshot) => snapshot.types?.[key])
+                  .filter(Boolean)
+                return [key, {
+                  label: rows[0]?.label || key,
+                  trackings: rows.reduce((sum, row) => sum + (Number(row.trackings) || 0), 0),
+                  evaluated: rows.reduce((sum, row) => sum + (Number(row.evaluated) || 0), 0),
+                  active: rows.reduce((sum, row) => sum + (Number(row.active) || 0), 0),
+                  progressingSets: rows.reduce((sum, row) => sum + (Number(row.progressingSets) || 0), 0),
+                }]
+              }))
+              setMainIndications({
+                types,
+                totals: Object.values(types).reduce((sum, row) => ({
+                  trackings: sum.trackings + row.trackings,
+                  evaluated: sum.evaluated + row.evaluated,
+                  active: sum.active + row.active,
+                  progressingSets: sum.progressingSets + row.progressingSets,
+                }), { trackings: 0, evaluated: 0, active: 0, progressingSets: 0 }),
+              })
+            } else {
+              setMainIndications(null)
             }
 
             const merged: TradingPosition[] = []
@@ -656,6 +714,7 @@ export default function StatisticsPage() {
             setPositions([])
             setTradeHistory([])
             setCurrentStrategyRows(null)
+            setMainIndications(null)
             setPerformanceAnalytics(null)
             setPerformanceConnectionCount(0)
             setRuntimeTelemetry(null)
@@ -672,6 +731,7 @@ export default function StatisticsPage() {
         setPositions([])
         setTradeHistory([])
         setCurrentStrategyRows(null)
+        setMainIndications(null)
         setPerformanceAnalytics(null)
         setPerformanceConnectionCount(0)
         setRuntimeTelemetry(null)
@@ -907,6 +967,30 @@ export default function StatisticsPage() {
     }
   }
 
+  const selectedTopTimeRange = useMemo(() => {
+    const startMs = filter.timeRange.start.getTime()
+    const endMs = filter.timeRange.end.getTime()
+    if (startMs <= 0) return "all"
+    const durationMs = Math.max(0, endMs - startMs)
+    return TOP_TIME_RANGES.find((option) =>
+      option.durationMs !== null && Math.abs(option.durationMs - durationMs) < 60_000,
+    )?.value || "custom"
+  }, [filter.timeRange.end, filter.timeRange.start])
+
+  const applyTopTimeRange = (value: string) => {
+    if (value === "custom") return
+    const now = new Date()
+    const option = TOP_TIME_RANGES.find((candidate) => candidate.value === value)
+    if (!option) return
+    handleFilterChange({
+      ...filter,
+      timeRange: {
+        start: new Date(option.durationMs === null ? 0 : now.getTime() - option.durationMs),
+        end: now,
+      },
+    })
+  }
+
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
@@ -940,6 +1024,22 @@ export default function StatisticsPage() {
       strategyTypes: uniqueSorted(positions.map((position) => String(position.strategy_type || "live"))),
     }
   }, [positions])
+  const positionsInSelectedTimeRange = useMemo(() => {
+    const startMs = filter.timeRange.start.getTime()
+    const endMs = filter.timeRange.end.getTime()
+    return positions.filter((position) => {
+      const timestamp = Date.parse(String(position.closed_at || position.opened_at || ""))
+      return Number.isFinite(timestamp) && timestamp >= startMs && timestamp <= endMs
+    })
+  }, [filter.timeRange.end, filter.timeRange.start, positions])
+  const tradeHistoryInSelectedTimeRange = useMemo(() => {
+    const startMs = filter.timeRange.start.getTime()
+    const endMs = filter.timeRange.end.getTime()
+    return tradeHistory.filter((trade) => {
+      const timestamp = Number(trade.closedAt || 0)
+      return timestamp >= startMs && timestamp <= endMs
+    })
+  }, [filter.timeRange.end, filter.timeRange.start, tradeHistory])
 
   if (isLoading) {
     return (
@@ -991,6 +1091,19 @@ export default function StatisticsPage() {
           description="Measured exchange performance, classic realised PF, PositionCost coordinates and runtime diagnostics"
         />
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          <Select value={selectedTopTimeRange} onValueChange={applyTopTimeRange}>
+            <SelectTrigger size="sm" className="h-8 min-w-44 bg-background" aria-label="Statistics time range">
+              <SelectValue placeholder="Select time range" />
+            </SelectTrigger>
+            <SelectContent>
+              {selectedTopTimeRange === "custom" && (
+                <SelectItem value="custom">Custom range</SelectItem>
+              )}
+              {TOP_TIME_RANGES.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           {archiveCoverage && (
             <Badge
               variant={archiveCoverage.complete ? "outline" : "destructive"}
@@ -1128,6 +1241,60 @@ export default function StatisticsPage() {
             <div className="text-sm text-muted-foreground">
               No closed-position PF/DDT samples are available for the selected scope.
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Main Trade Engine · Indications</CardTitle>
+          <CardDescription>
+            Complete per-type Main indication snapshot from the current engine cycle. Trackings are cumulative; evaluated, active and progressing Sets are current-cycle values.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {mainIndications ? (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {[
+                  ["Trackings", mainIndications.totals.trackings],
+                  ["Evaluated", mainIndications.totals.evaluated],
+                  ["Active", mainIndications.totals.active],
+                  ["Progressing Sets", mainIndications.totals.progressingSets],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-lg border bg-muted/10 p-2.5">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+                    <div className="mt-1 text-lg font-bold tabular-nums">{Number(value).toLocaleString()}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="overflow-x-auto rounded-lg border">
+                <table className="w-full min-w-[560px] text-xs">
+                  <thead className="bg-muted/40 text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Indication</th>
+                      <th className="px-3 py-2 text-right font-medium">Trackings</th>
+                      <th className="px-3 py-2 text-right font-medium">Evaluated</th>
+                      <th className="px-3 py-2 text-right font-medium">Active</th>
+                      <th className="px-3 py-2 text-right font-medium">Sets</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(mainIndications.types).map(([key, row]) => (
+                      <tr key={key} className="border-t">
+                        <td className="px-3 py-2 font-medium">{row.label}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{row.trackings.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{row.evaluated.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{row.active.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{row.progressingSets.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">No current Main indication snapshot is available for the selected connection.</div>
           )}
         </CardContent>
       </Card>
@@ -1973,14 +2140,14 @@ export default function StatisticsPage() {
             <TabsContent value="preset" className="space-y-6">
               <PresetTradeStats
                 filter={filter}
-                positions={positions}
+                positions={positionsInSelectedTimeRange}
                 connectionId={selectedConnectionId}
               />
             </TabsContent>
 
             <TabsContent value="adjust" className="space-y-6">
               <AdjustStrategyStats
-                positions={positions
+                positions={positionsInSelectedTimeRange
                   .filter((p) => p.status === "closed")
                   .map(toStatisticsPseudoPosition)}
                 timeIntervals={[4, 12, 24, 48]}
@@ -1990,7 +2157,7 @@ export default function StatisticsPage() {
 
             <TabsContent value="block" className="space-y-6">
               <BlockStrategyStats
-                positions={positions
+                positions={positionsInSelectedTimeRange
                   .filter((p) => p.status === "closed")
                   .map(toStatisticsPseudoPosition)}
                 comparisonWindow={50}
@@ -2014,7 +2181,7 @@ export default function StatisticsPage() {
 
             <TabsContent value="history" className="space-y-4">
               <TradeHistoryTable
-                trades={tradeHistory}
+                trades={tradeHistoryInSelectedTimeRange}
                 visibleWindow={50}
                 onRefresh={() => setReloadGeneration((generation) => generation + 1)}
               />

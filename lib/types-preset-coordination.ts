@@ -62,12 +62,9 @@ export interface PresetType {
 
   // Strategy Configuration
   trailing_enabled: boolean
-  trailing_only: boolean
   block_enabled: boolean
-  block_only: boolean
   dca_enabled: boolean
-  dca_only: boolean
-  /** Canonical main-family switch; legacy *_only fields are migration data. */
+  /** Process Sets without an additional strategy type; enabled by default. */
   normal_enabled?: boolean
 
   // Auto Evaluation

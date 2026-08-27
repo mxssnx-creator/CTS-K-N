@@ -105,7 +105,7 @@ describe("Direct-Trade API state and processor lease", () => {
         trailingMinTakeProfitRatio: 2,
         processingIntervalMs: 280,
         takeProfitRatioRange: [5, 10],
-        takeProfitRatioStep: 5,
+        takeProfitRatioStep: 3,
         strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
       })
 
@@ -217,7 +217,7 @@ describe("Direct-Trade API state and processor lease", () => {
     }
   })
 
-  test("migrates only former Direct-Trade defaults to the 5× TP and capacity contract", async () => {
+  test("migrates only former Direct-Trade defaults to the 3× TP and capacity contract", async () => {
     const [{ GET }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/route"),
       import("@/lib/redis-db"),
@@ -237,7 +237,7 @@ describe("Direct-Trade API state and processor lease", () => {
       const migrated = await (await GET()).json()
       expect(migrated.state).toMatchObject({
         takeProfitRatioRange: [5, 10],
-        takeProfitRatioStep: 5,
+        takeProfitRatioStep: 3,
         historyHours: 48,
         maxPositionsPerSymbol: 12,
         maxPositionsPerDirection: 6,

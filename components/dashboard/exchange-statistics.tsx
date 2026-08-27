@@ -38,14 +38,17 @@ const ExchangeStatisticsComponent = ({ connectionId, connectionName }: ExchangeS
   const liveDetail = strategyDetail.live || {}
   const prehistoric = {
     symbols_analyzed: historic.symbolsProcessed ?? historic.symbolsTotal ?? 0,
-    win_rate: liveDetail.winRate ?? realtime.successRate ?? 0,
+    win_rate: liveExecution.winRate ?? null,
     profit_factor: liveDetail.avgProfitFactor ?? strategyDetail.real?.avgProfitFactor ?? strategyDetail.main?.avgProfitFactor ?? 0,
-    trades: liveExecution.totalOrdersFilled ?? liveExecution.totalOrdersPlaced ?? realtime.totalTrades ?? 0,
-    profit: liveDetail.totalProfit ?? liveExecution.totalPnl ?? 0,
-    drawdown: liveDetail.avgMaxDrawdownTime ?? strategyDetail.real?.avgMaxDrawdownTime ?? 0,
-    avg_win: liveDetail.avgWinRate ?? 0,
-    avg_loss: liveDetail.avgLossRate ?? 0,
+    trades: liveExecution.positionsClosed ?? 0,
+    profit: liveExecution.realizedPnl ?? null,
+    drawdown: liveDetail.avgDrawdownTime ?? null,
+    avg_win: liveExecution.avgWin ?? null,
+    avg_loss: liveExecution.avgLoss ?? null,
   }
+  const hasSettledResults = Number(liveExecution.settledClosedPositions || 0) > 0
+  const showMetric = (value: unknown, decimals: number, suffix = "") =>
+    value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value).toFixed(decimals)}${suffix}`
 
   return (
     <Card className="border-primary/10 bg-card/50">
@@ -58,15 +61,15 @@ const ExchangeStatisticsComponent = ({ connectionId, connectionName }: ExchangeS
 
           <div className="flex flex-col gap-0.5">
             <span className="text-muted-foreground">Win%</span>
-            <span className={`font-bold ${prehistoric.win_rate >= 0.55 ? "text-green-600" : "text-slate-600"}`}>
-              {((prehistoric.win_rate || 0) * 100).toFixed(0)}%
+            <span className={`font-bold ${Number(prehistoric.win_rate) >= 50 ? "text-green-600" : "text-slate-600"}`}>
+              {hasSettledResults ? showMetric(prehistoric.win_rate, 0, "%") : "—"}
             </span>
           </div>
 
           <div className="flex flex-col gap-0.5">
             <span className="text-muted-foreground">PF</span>
             <span className={`font-bold ${prehistoric.profit_factor >= 1.5 ? "text-green-600" : prehistoric.profit_factor >= 1.0 ? "text-blue-600" : "text-red-600"}`}>
-              {(prehistoric.profit_factor || 0).toFixed(1)}
+              {hasSettledResults ? showMetric(prehistoric.profit_factor, 1) : "—"}
             </span>
           </div>
 
@@ -78,25 +81,25 @@ const ExchangeStatisticsComponent = ({ connectionId, connectionName }: ExchangeS
           <div className="flex flex-col gap-0.5">
             <span className="text-muted-foreground">Profit</span>
             <span className={`font-bold ${(prehistoric.profit || 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
-              ${(prehistoric.profit || 0).toFixed(0)}
+              {prehistoric.profit == null ? "—" : `${showMetric(prehistoric.profit, 2)} USDT`}
             </span>
           </div>
 
           <div className="flex flex-col gap-0.5">
-            <span className="text-muted-foreground">DD%</span>
+            <span className="text-muted-foreground">DDT</span>
             <span className={`font-bold ${Math.abs(prehistoric.drawdown || 0) <= 10 ? "text-green-600" : Math.abs(prehistoric.drawdown || 0) <= 25 ? "text-orange-600" : "text-red-600"}`}>
-              {(prehistoric.drawdown || 0).toFixed(1)}%
+              {showMetric(prehistoric.drawdown, 1, "m")}
             </span>
           </div>
 
           <div className="flex flex-col gap-0.5">
             <span className="text-muted-foreground">Avg W</span>
-            <span className="font-bold text-green-600">{((prehistoric.avg_win || 0) * 100).toFixed(2)}%</span>
+            <span className="font-bold text-green-600">{prehistoric.avg_win == null ? "—" : `${showMetric(prehistoric.avg_win, 3)} USDT`}</span>
           </div>
 
           <div className="flex flex-col gap-0.5">
             <span className="text-muted-foreground">Avg L</span>
-            <span className="font-bold text-red-600">{((prehistoric.avg_loss || 0) * 100).toFixed(2)}%</span>
+            <span className="font-bold text-red-600">{prehistoric.avg_loss == null ? "—" : `${showMetric(prehistoric.avg_loss, 3)} USDT`}</span>
           </div>
         </div>
       </CardContent>
