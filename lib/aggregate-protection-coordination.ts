@@ -23,14 +23,50 @@ export interface AggregateProtectionPlan {
   key: string
   leaderId: string
   memberIds: string[]
+  staleMemberIds: string[]
   direction: AggregateProtectionDirection
   symbol: string
+  reportedSystemQuantity: number
   systemQuantity: number
   venueQuantity: number
   quantityTolerance: number
   ownershipMatches: boolean
   desiredStopLoss: number
   desiredTakeProfit: number
+}
+
+function newestVenueBackedRows(
+  rows: AggregateProtectionCandidate[],
+  venueQuantity: number,
+  tolerance: number,
+): { active: AggregateProtectionCandidate[]; stale: AggregateProtectionCandidate[] } | null {
+  if (!(venueQuantity > 0)) return null
+  const total = rows.reduce((sum, row) => sum + finitePositive(row.quantity), 0)
+  if (total <= venueQuantity + tolerance) return null
+
+  // BingX nets every Set entry into one physical symbol/direction position.
+  // When an aggregate SL/TP closes that slot and a later Set re-opens it
+  // before the next snapshot, the venue never exposes an intermediate zero.
+  // The current quantity therefore belongs to the newest complete CTS fills;
+  // older rows describe the superseded slot generation. Select only complete
+  // rows so a partially attributable venue quantity remains fail-closed.
+  const newest = [...rows].sort((a, b) =>
+    finitePositive(b.createdAt) - finitePositive(a.createdAt)
+    || b.id.localeCompare(a.id),
+  )
+  const active: AggregateProtectionCandidate[] = []
+  let attributed = 0
+  for (const row of newest) {
+    const quantity = finitePositive(row.quantity)
+    if (!(quantity > 0)) continue
+    if (attributed + quantity > venueQuantity + tolerance) continue
+    active.push(row)
+    attributed += quantity
+    if (Math.abs(attributed - venueQuantity) <= tolerance) break
+  }
+  if (active.length === 0 || Math.abs(attributed - venueQuantity) > tolerance) return null
+  const activeIds = new Set(active.map((row) => row.id))
+  return { active, stale: rows.filter((row) => !activeIds.has(row.id)) }
 }
 
 export function aggregateProtectionSlot(symbol: unknown, direction: unknown): string {
@@ -93,27 +129,33 @@ export function buildAggregateProtectionPlans(
   }
 
   return [...groups.entries()].map(([key, rows]) => {
-    const leader = selectLeader(rows)
     const venue = venueBySlot.get(key)
-    const systemQuantity = rows.reduce((sum, row) => sum + finitePositive(row.quantity), 0)
+    const reportedSystemQuantity = rows.reduce((sum, row) => sum + finitePositive(row.quantity), 0)
     const venueQuantity = finitePositive(venue?.quantity)
     const quantityTolerance = Math.max(
       1e-10,
       venueQuantity * 1e-8,
       ...rows.map((row) => finitePositive(row.quantityStep) / 2),
     )
+    const generation = newestVenueBackedRows(rows, venueQuantity, quantityTolerance)
+    const activeRows = generation?.active || rows
+    const staleRows = generation?.stale || []
+    const leader = selectLeader(activeRows)
+    const systemQuantity = activeRows.reduce((sum, row) => sum + finitePositive(row.quantity), 0)
     return {
       key,
       leaderId: leader.id,
-      memberIds: rows.map((row) => row.id).sort(),
+      memberIds: activeRows.map((row) => row.id).sort(),
+      staleMemberIds: staleRows.map((row) => row.id).sort(),
       direction: leader.direction,
       symbol: leader.symbol,
+      reportedSystemQuantity,
       systemQuantity,
       venueQuantity,
       quantityTolerance,
       ownershipMatches: venueQuantity > 0 && Math.abs(systemQuantity - venueQuantity) <= quantityTolerance,
-      desiredStopLoss: outerStopLoss(leader.direction, rows.map((row) => row.desiredStopLoss)),
-      desiredTakeProfit: outerTakeProfit(leader.direction, rows.map((row) => row.desiredTakeProfit)),
+      desiredStopLoss: outerStopLoss(leader.direction, activeRows.map((row) => row.desiredStopLoss)),
+      desiredTakeProfit: outerTakeProfit(leader.direction, activeRows.map((row) => row.desiredTakeProfit)),
     }
   }).sort((a, b) => a.key.localeCompare(b.key))
 }
