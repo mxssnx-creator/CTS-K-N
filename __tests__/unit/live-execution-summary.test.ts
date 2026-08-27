@@ -219,6 +219,10 @@ describe("live execution summary", () => {
     expect(summary.openOrders).toBe(5)
     expect(summary.entryOrders).toBe(1)
     expect(summary.controlOrders).toBe(4)
+    expect(summary.positionsDataAvailable).toBe(true)
+    expect(summary.ordersDataAvailable).toBe(true)
+    expect(summary.positionsSnapshotError).toBeNull()
+    expect(summary.ordersSnapshotError).toBeNull()
     expect(summary.unrealizedPnl).toBe(4.5)
     expect(summary.openVolumeUsd).toBe(75)
     expect(summary.complete).toBe(true)
@@ -229,6 +233,10 @@ describe("live execution summary", () => {
 
     expect(summary.exchange.complete).toBe(false)
     expect(summary.complete).toBe(false)
+    expect(summary.positionsDataAvailable).toBe(false)
+    expect(summary.ordersDataAvailable).toBe(false)
+    expect(summary.positionsSnapshotError).toBe("not mocked")
+    expect(summary.ordersSnapshotError).toBe("not mocked")
   })
 
   test("returns null performance metrics when no settled exchange result exists", async () => {

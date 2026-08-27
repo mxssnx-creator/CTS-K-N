@@ -33,6 +33,7 @@ import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
+import { getOpenLivePositionReadModels } from "@/lib/live-position-read-model"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -228,6 +229,7 @@ async function responseFromVolatileStatsSnapshot(
       strategyDetailLive,
       globalEngineState,
       runningHint,
+      currentLivePositionRows,
     ] = await Promise.all([
       Promise.all(progressionKeys.map((key) => client.hgetall(key).catch(() => ({} as Record<string, string>)))),
       client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
@@ -251,6 +253,7 @@ async function responseFromVolatileStatsSnapshot(
       client.hgetall(`strategy_detail:${connectionId}:live`).catch(() => ({} as Record<string, string>)),
       client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
       client.get(`engine_is_running:${connectionId}`).catch(() => null),
+      getOpenLivePositionReadModels(connectionId, 2_000).catch(() => []),
     ])
     const historicFourHourKey = historicFourHourKeyFromPrehistoric(
       (prehistoricRaw || {}) as Record<string, string>,
@@ -293,6 +296,76 @@ async function responseFromVolatileStatsSnapshot(
       },
     })
     if (!overlaid) return responseFromStatsSnapshot(snapshot)
+    // The heavyweight 32-symbol projection may be served stale for up to five
+    // minutes while one refresh is in flight. Never freeze live lifecycle and
+    // protection coverage with it: rebuild the bounded open-ledger portion on
+    // every volatile overlay so closed generations disappear immediately and
+    // current shared-control coverage is visible without a full graph rebuild.
+    const activeLiveRows = currentLivePositionRows.filter((position) =>
+      isOpenLiveExposureStatus(String(position.status || "").toLowerCase()) &&
+      isExecutedRealExchangePosition(position as Record<string, any>),
+    )
+    const freshCoverage = (position: Record<string, any>) => Object.entries(
+      position.controlOrderSetCoverage && typeof position.controlOrderSetCoverage === "object"
+        ? position.controlOrderSetCoverage
+        : {},
+    ).map(([setKey, raw]) => {
+      const coverage = raw && typeof raw === "object" ? raw as Record<string, any> : {}
+      return {
+        setKey,
+        protected: coverage.protected === true,
+        protectionMode: String(coverage.protectionMode || "unknown"),
+        aggregateProtectionOwner: coverage.aggregateProtectionOwner === true,
+        ...(coverage.aggregateProtectionLeaderId
+          ? { aggregateProtectionLeaderId: String(coverage.aggregateProtectionLeaderId) }
+          : {}),
+        ...(coverage.stopLossOrderId ? { stopLossOrderId: String(coverage.stopLossOrderId) } : {}),
+        ...(coverage.takeProfitOrderId ? { takeProfitOrderId: String(coverage.takeProfitOrderId) } : {}),
+        systemProtectionLegs: Array.isArray(coverage.systemProtectionLegs)
+          ? coverage.systemProtectionLegs.map(String)
+          : [],
+        updatedAt: Number(coverage.updatedAt || 0) || 0,
+      }
+    })
+    const currentCoverageRows = activeLiveRows.flatMap((position) => freshCoverage(position as Record<string, any>))
+    const liveOverlay = (overlaid as any)?.openPositions?.live
+    if (liveOverlay && typeof liveOverlay === "object") {
+      const previousPositions = Array.isArray(liveOverlay.positions)
+        ? liveOverlay.positions
+        : []
+      const previousById = new Map(previousPositions.map((position: any) => [String(position?.id || ""), position]))
+      liveOverlay.openScanned = activeLiveRows.length
+      liveOverlay.positions = activeLiveRows.slice(0, 50).map((position) => {
+        const row = position as Record<string, any>
+        const id = String(row.id || "")
+        const coverage = freshCoverage(row)
+        return {
+          ...(previousById.get(id) || {}),
+          id,
+          symbol: String(row.symbol || "").toUpperCase(),
+          direction: String(row.direction || "").toLowerCase(),
+          status: String(row.status || "").toLowerCase(),
+          quantity: Number(row.executedQuantity ?? row.quantity) || 0,
+          orderId: row.orderId ? String(row.orderId) : undefined,
+          stopLossOrderId: row.stopLossOrderId ? String(row.stopLossOrderId) : undefined,
+          takeProfitOrderId: row.takeProfitOrderId ? String(row.takeProfitOrderId) : undefined,
+          controlOrderSetCoverage: coverage,
+          protectedSetCount: coverage.filter((entry) => entry.protected).length,
+          unprotectedSetCount: coverage.filter((entry) => !entry.protected).length,
+          updatedAt: Number(row.updatedAt || 0) || 0,
+          syncedAt: Number(row.exchangeData?.syncedAt || 0) || 0,
+        }
+      })
+      if (liveOverlay.aggregate && typeof liveOverlay.aggregate === "object") {
+        liveOverlay.aggregate.controlOrderSets = currentCoverageRows.length
+        liveOverlay.aggregate.protectedControlOrderSets = currentCoverageRows.filter(
+          (entry) => entry.protected,
+        ).length
+        liveOverlay.aggregate.unprotectedControlOrderSets = currentCoverageRows.filter(
+          (entry) => !entry.protected,
+        ).length
+      }
+    }
     // These acknowledgement objects are written by the settings/engine owner
     // and must not remain frozen at the last heavy-projection snapshot. A
     // stale `idle` object made a successfully queued or applied settings
@@ -1557,6 +1630,7 @@ export async function GET(
               takeProfitOrderId: pos.takeProfitOrderId ? String(pos.takeProfitOrderId) : undefined,
             })
             if (!isOpenLiveExposureStatus(status)) continue
+            if (!isExecutedRealExchangePosition(pos)) continue
 
             const sym = String(pos.symbol || "").trim().toUpperCase()
             const dir = String(pos.direction || "").trim().toLowerCase()
@@ -4811,6 +4885,10 @@ export async function GET(
         openOrderSymbols: liveExecutionSummary?.openOrderSymbols ?? 0,
         entryOrders: liveExecutionSummary?.entryOrders ?? 0,
         controlOrders: liveExecutionSummary?.controlOrders ?? 0,
+        positionsDataAvailable: liveExecutionSummary?.positionsDataAvailable ?? false,
+        ordersDataAvailable: liveExecutionSummary?.ordersDataAvailable ?? false,
+        positionsSnapshotError: liveExecutionSummary?.positionsSnapshotError ?? "exchange_snapshot_unavailable",
+        ordersSnapshotError: liveExecutionSummary?.ordersSnapshotError ?? "exchange_snapshot_unavailable",
         excludedUntrackedPositions: liveExecutionSummary?.excludedUntrackedPositions ?? 0,
         excludedUntrackedOrders: liveExecutionSummary?.excludedUntrackedOrders ?? 0,
         exchangeScope: "cts_tracked_only",

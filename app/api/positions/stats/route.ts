@@ -54,6 +54,8 @@ export async function GET(request: NextRequest) {
     const excludedUntrackedPositions = summaries.reduce((sum, row) => sum + row.excludedUntrackedPositions, 0)
     const excludedUntrackedOrders = summaries.reduce((sum, row) => sum + row.excludedUntrackedOrders, 0)
     const exchangeSnapshotsComplete = summaries.filter((row) => row.exchange.complete).length
+    const positionsSnapshotsAvailable = summaries.filter((row) => row.positionsDataAvailable).length
+    const ordersSnapshotsAvailable = summaries.filter((row) => row.ordersDataAvailable).length
     const openOnly = statusFilter === "open"
     const closedOnly = statusFilter === "closed"
     const visibleOpenPositions = closedOnly ? 0 : openPositions
@@ -93,6 +95,10 @@ export async function GET(request: NextRequest) {
         excluded_untracked_orders: closedOnly ? 0 : excludedUntrackedOrders,
         exchange_scope: "cts_tracked_only",
         exchange_snapshot_complete: summaries.length > 0 && exchangeSnapshotsComplete === summaries.length,
+        positions_data_available: summaries.length > 0 && positionsSnapshotsAvailable === summaries.length,
+        orders_data_available: summaries.length > 0 && ordersSnapshotsAvailable === summaries.length,
+        positions_snapshots_available: positionsSnapshotsAvailable,
+        orders_snapshots_available: ordersSnapshotsAvailable,
         exchange_snapshots_complete: exchangeSnapshotsComplete,
         exchange_snapshots_total: summaries.length,
         closed_positions: visibleClosedPositions,

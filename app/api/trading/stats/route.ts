@@ -165,6 +165,12 @@ export async function GET(request: Request) {
       0,
     )
     const snapshotComplete = executionSummaries.length > 0 && executionSummaries.every((row) => row.exchange.complete)
+    const positionsDataAvailable = executionSummaries.length > 0 && executionSummaries.every(
+      (row) => row.positionsDataAvailable,
+    )
+    const ordersDataAvailable = executionSummaries.length > 0 && executionSummaries.every(
+      (row) => row.ordersDataAvailable,
+    )
     const applyAuthoritativeOpen = (stats: TradeStats): TradeStats => ({
       ...stats,
       total: stats.closedPositions + authoritativeOpenPositions,
@@ -192,6 +198,8 @@ export async function GET(request: Request) {
         excludedUntrackedOrders,
         scope: "cts_tracked_only",
         snapshotComplete,
+        positionsDataAvailable,
+        ordersDataAvailable,
         connections: executionSummaries.map((row) => row.exchange),
       },
       source: "executed_exchange_positions_and_live_exchange_snapshot",

@@ -45,6 +45,19 @@ export async function POST(request: Request) {
       // one safe default to assign, enable and enqueue for Main Trade.
       // Other connections retain their operator-selected dashboard state.
       const autoStartVst = connectionId === "bingx-x02" && credentialsSafe
+      const hasPersistedLiveIntent = [
+        existing?.live_trade_requested,
+        existing?.is_live_trade,
+        existing?.live_trade_enabled,
+      ].some((value) => value !== undefined && value !== null && String(value).trim() !== "")
+      const existingLiveRequested = existing?.live_trade_requested !== undefined
+        ? existing.live_trade_requested === "1" || existing.live_trade_requested === "true"
+        : existing?.is_live_trade === "1" || existing?.is_live_trade === "true"
+      // The X02 migration owns the one-time default. Credential refreshes run
+      // on every install/restart and must never turn Live back on after an
+      // operator explicitly disabled it. On a genuinely unseeded connection,
+      // retain the safe Prod-VST default so first install is still usable.
+      const vstLiveRequested = autoStartVst && (!hasPersistedLiveIntent || existingLiveRequested)
       const updatedAt = new Date().toISOString()
       const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, existing)
       const transition = await updateConnectionState(connectionId, {
@@ -64,9 +77,9 @@ export async function POST(request: Request) {
         connection_library: "sdk",
         ...(autoStartVst
           ? {
-              is_live_trade: "1",
-              live_trade_requested: "1",
-              live_trade_enabled: "1",
+              is_live_trade: vstLiveRequested ? "1" : "0",
+              live_trade_requested: vstLiveRequested ? "1" : "0",
+              live_trade_enabled: vstLiveRequested ? "1" : "0",
               live_trade_blocked_reason: "",
               live_trade_block_code: "",
             }
@@ -95,7 +108,7 @@ export async function POST(request: Request) {
       }
       results[connectionId] = credentialsSafe
         ? autoStartVst
-          ? "Credentials injected, Prod-VST live trade enabled and Main Trade engine queued"
+          ? `Credentials injected, Prod-VST operator live state ${vstLiveRequested ? "enabled" : "disabled"} and Main Trade engine queued`
           : "Credentials injected (operator live/dashboard state preserved)"
         : "Credentials injected (live trade remains disabled: placeholder/invalid credentials)"
     }

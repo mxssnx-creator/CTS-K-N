@@ -117,6 +117,35 @@ describe("production base-connection credential injection", () => {
     await expect(redis.smembers("connections:main:enabled")).resolves.toContain("bingx-x01")
   })
 
+  it("preserves an explicit X02 operator disable across credential reinjection", async () => {
+    const [{ POST }, { getRedisClient, initRedis }] = await Promise.all([
+      import("@/app/api/system/inject-credentials/route"),
+      import("@/lib/redis-db"),
+    ])
+    await initRedis()
+    const redis = getRedisClient()
+    await redis.hset("connection:bingx-x02", {
+      is_live_trade: "0",
+      live_trade_enabled: "0",
+      live_trade_requested: "0",
+      live_trade_changed_at: "2026-08-27T12:00:00.000Z",
+      state_switch_version: "7",
+    })
+
+    const request = new Request("http://localhost/api/system/inject-credentials", {
+      headers: { Authorization: "Bearer inject-test-admin-secret-1234567890" },
+    })
+    const injected = await (await POST(request)).json()
+    expect(injected.success).toBe(true)
+    expect(injected.results["bingx-x02"]).toContain("operator live state disabled")
+    expect(injected.results["bingx-x02"]).toContain("Main Trade engine queued")
+    await expect(redis.hgetall("connection:bingx-x02")).resolves.toMatchObject({
+      is_live_trade: "0",
+      live_trade_enabled: "0",
+      live_trade_requested: "0",
+    })
+  })
+
   it("rejects credential injection without the admin bearer token", async () => {
     const { POST } = await import("@/app/api/system/inject-credentials/route")
     const response = await POST(new Request("http://localhost/api/system/inject-credentials"))
