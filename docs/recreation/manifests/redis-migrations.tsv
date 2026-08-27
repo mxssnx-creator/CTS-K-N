@@ -102,3 +102,4 @@ version	name	source
 101	101-direct-execution-and-main-pf-selection-grid	lib/redis-migrations.ts
 102	102-credential-injection-live-safety-and-index-repair	lib/redis-migrations.ts
 103	103-systemwide-position-cost-pf-selection-coordinate	lib/redis-migrations.ts
+104	104-minimum-executable-volumes-and-set-protection	lib/redis-migrations.ts

@@ -3,19 +3,19 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
-## Bounded-dispatch, schema-v104, and X02 audit release candidate (2026-08-27; authoritative)
+## Complete-dispatch, schema-v104, and X02 audit release (2026-08-27; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
-  `fix/control-orders-complete-20260826`. Schema-v104 protection commit
-  `bb20668` is being merged with GitHub `main@a8b7d90`. Safety commit `e1cdba3`
-  remains authoritative for physical Main dispatch: every Set is calculated,
-  evaluated, and published, while at most four family-interleaved Sets per
-  symbol/cycle create paper or exchange side effects; a persisted cursor
-  resumes deferred Sets fairly after restart.
-- GitHub PR #235 merged an unbounded physical-dispatch tree as `a8b7d90`. It is
-  not deployed to the self-hosted server. Never deploy `a8b7d90` alone; PR #236
-  must first carry the bounded corrective merge, pass every reported check, and
-  merge with exact-head binding.
+  `release/green-main-20260827`, exactly tracks GitHub
+  `main@66968907b0a893f21fff1fd7961dac84bdb6f01d`. PR #235 merged the
+  CTS-only exchange attribution, statistics/UI, lifecycle and exhaustive
+  policy-eligible dispatch tree; corrected PR #238 added schema-v104 minimum
+  execution volumes and Set protection. The obsolete bounded-dispatch PR #236
+  and truncated-upload PR #237 are closed without merge.
+- Main coordination calculates, evaluates, publishes, and physically dispatches
+  every unique policy-enabled Set without a hidden per-symbol sampling budget.
+  Durable Set identity, execution-family settings, CTS ownership, deduplication,
+  connector/venue controls, and independent per-Set protection remain binding.
 - Schema v104 migrates every known Main/Preset/Signal channel factor to the
   minimum system identity factor, Direct Trade to its canonical 0.1 default,
   and enables control-order protection aliases without enabling a live engine.
@@ -33,29 +33,28 @@ Total output lines: 1636
   projection lease conflicts back off without inflating the error window, and
   live position management stays independent. Direct Performance Stats cancel
   superseded polls and show `—`, never fake zero, without a settled close.
-- The pre-reconciliation full gates were green: 231/231 Unit suites and
+- The complete release gates are green: 231/231 Unit suites and
   1,503/1,503 tests, 4/4 Integration suites and 61/61 tests, TypeScript, ESLint,
   42 pages, 348 complete Next traces, mutation-free Linux preflight, recreation
-  verification, and a 1,537-file zero-finding secret scan. Repeat all affected
-  gates on the resolved v104/main merge before updating PR #236.
-- The isolated `.next-prod` build is green. The 32-symbol standalone preview
-  did not start because workspace cleanup removed the documented local Redis
-  test binary; no app server or exchange action started. Restore isolated Redis
-  before claiming this paper-only gate.
-- Managed Chisel and the pinned SSH banner are healthy. The release bundle was
-  transferred as 14 individually hashed segments and passed total SHA-256 plus
-  `git bundle verify` remotely. Self-hosted production remains clean on
-  `main@ec3be83`; core services and liveness/readiness were active/HTTP 200 at
-  the last read-only check.
+  verification, Kilo 37/37 at schema v104, and a 1,537-file zero-finding secret
+  scan. Both Vercel projects are successful on merged `main@6696890`; the PR
+  #238 Dev Preview Smoke also completed successfully.
+- Local standalone HTTP and the self-hosted deployment/reload remain blocked by
+  the Work network broker. The mandatory managed Chisel activation was denied
+  before tunnel activation or SSH banner validation in the final deployment
+  attempt. No server fetch, installation, service restart, exchange mutation,
+  direct SSH, or alternate proxy was attempted. Repeat the remote checkpoint,
+  atomic merged-main install, reload, and read-only UI/API smoke only when the
+  managed path is available.
 - Verified checkpoints include
   `/workspace/backups/CTS-K-N/20260827T013133Z-pre-safety-correction-570d838`,
   `/workspace/backups/CTS-K-N/20260827T013341Z-precommit-bounded-dispatch`,
   `/workspace/backups/CTS-K-N/20260827T013719Z-prepush-a715ab1`, and
-  `/workspace/backups/CTS-K-N/20260827T014653Z-premerge-github-main-a8b7d90`.
+  `/workspace/backups/CTS-K-N/20260827T021504Z-pre-switch-green-main`.
   All include owner-only bundle/patch/untracked/status/SHA evidence and passed
   bundle/hash verification.
 - X01/Mainnet and every Bybit connection remain read-only. Any X02 write uses
-  virtual minimum volume, unique ownership IDs, hard safety limits, and complete
+  virtual minimum volume, unique ownership IDs, venue controls, and complete
   owned-object cleanup. No profit or Mainnet qualification may be inferred from
   this negative/incomplete hour.
 

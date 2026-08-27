@@ -866,7 +866,7 @@ describe("Real-stage Block overlays", () => {
     )
   })
 
-  test("dispatches a bounded rotating family-fair slice without losing eligible Sets", () => {
+  test("dispatches every unique eligible Set without symbol-family sampling", () => {
     const signal = (
       index: number,
       variant: "default" | "trailing",
