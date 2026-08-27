@@ -1121,12 +1121,13 @@ export function collectActivePositionCountsBySymbol(
 }
 
 /**
- * Select the bounded exchange-dispatch batch for one symbol and cycle.
+ * Select every policy-enabled, independently qualified Live row.
  *
- * Block counts remain independent, but only one new count per direction is
- * submitted in a cycle. Counts already represented by a confirmed Block leg
- * are skipped, allowing the next eligible count to advance on the following
- * cycle instead of repeatedly selecting Count 1 and starving Counts 2..N.
+ * This selector deliberately imposes no per-direction, per-family, or
+ * per-symbol ceiling. Exact Set idempotency belongs to LiveStage's durable
+ * accumulatedSetKeys/client-order lifecycle, while the connector coordinates
+ * venue rate limits. An enabled family therefore cannot lose lower-ranked
+ * rows merely because another row for the same symbol/direction came first.
  */
 export function selectLiveDispatchCandidates(
   candidates: StrategySet[],
@@ -1135,8 +1136,6 @@ export function selectLiveDispatchCandidates(
     trailingEnabled?: boolean
     blockEnabled?: boolean
     dcaEnabled?: boolean
-    /** @deprecated retained for callers during the settings migration; ignored. */
-    blockOnly?: boolean
   } = {},
 ): StrategySet[] {
   const selected: StrategySet[] = []
@@ -1152,11 +1151,6 @@ export function selectLiveDispatchCandidates(
     // The coordinator always passes its explicit persisted DCA toggle.
     dcaEnabled: options.dcaEnabled !== false,
   }
-  const seen = {
-    long: { normal: false, trailing: false, block: false, dca: false },
-    short: { normal: false, trailing: false, block: false, dca: false },
-  }
-
   for (const candidate of candidates) {
     const direction = normalizeStrategyDirection(candidate?.direction)
     if (!direction || !candidate?.setKey || seenKeys.has(candidate.setKey)) continue
@@ -1164,7 +1158,6 @@ export function selectLiveDispatchCandidates(
     // Signal is a separate admission family in the policy classifier, so use
     // the structural variant here to retain its distinct Signal-Block lane.
     const isBlock = candidate.variant === "block"
-    const isDca = candidate.variant === "dca"
     const isSignal =
       String(candidate.indicationType || "").toLowerCase() === "signal" ||
       Boolean(candidate.signalRisk?.sourceId || candidate.signalRisk?.sourceIds?.length)
@@ -1184,7 +1177,6 @@ export function selectLiveDispatchCandidates(
     // must not suppress its normal and trailing execution slots.
     if (isSignal) {
       if (isBlock) {
-        if ((candidate as any)._hasLivePositions === true) continue
         const signalBlockSlot = resolveSignalExecutionSlot({
           indicationType: candidate.indicationType,
           trailingProfile: candidate.trailingProfile,
@@ -1211,100 +1203,101 @@ export function selectLiveDispatchCandidates(
     }
 
     if (!isStrategyExecutionFamilyEnabled(family, policy)) continue
-    if (isBlock) {
-      if ((candidate as any)._hasLivePositions === true) continue
-      if (seen[direction].block) continue
-      seen[direction].block = true
-    } else if (isDca) {
-      if (seen[direction].dca) continue
-      seen[direction].dca = true
-    } else if (family === "trailing") {
-      if (seen[direction].trailing) continue
-      seen[direction].trailing = true
-    } else {
-      if (seen[direction].normal) continue
-      seen[direction].normal = true
-    }
     selected.push(candidate)
     seenKeys.add(candidate.setKey)
   }
   return selected
 }
 
-/**
- * Bound one symbol's physical dispatch without starving an independent lane.
- *
- * `selectLiveDispatchCandidates` preserves best-first order, but an exhaustive
- * Signal matrix normally contains many Standard configurations before the
- * first dynamic-Trailing configuration. A simple `length = budget` therefore
- * selected the same family at every symbol until the connection-wide Signal
- * position limit was full. Evaluation was complete, but the Trailing lane
- * could never obtain a physical slot.
- *
- * Keep the smallest possible fairness reservation: the best pending candidate
- * from each execution family is admitted first, then every remaining slot is
- * filled in the original best-first order. Existing/active rows are placed
- * after pending rows so a previously opened slot cannot consume the entire
- * bounded batch forever. No candidate is duplicated and the caller's input is
- * never mutated.
- */
+export interface LiveDispatchPlan {
+  selected: StrategySet[]
+  deferred: StrategySet[]
+  cursor: number
+  nextCursor: number
+  familyCount: number
+  budget: number
+}
+
+function liveDispatchFamily(candidate: StrategySet): string {
+  const isSignal =
+    String(candidate.indicationType || "").toLowerCase() === "signal" ||
+    Boolean(candidate.signalRisk?.sourceId || candidate.signalRisk?.sourceIds?.length)
+  if (candidate.variant === "block") return isSignal ? "signal_block" : "main_block"
+  if (candidate.variant === "dca") return "main_dca"
+  if (candidate.axisWindows?.direction && (candidate.posCountsVolumeRatio ?? 0) > 0) {
+    return "main_pos_count"
+  }
+  if (isSignal) {
+    return isSignalDynamicTrailingProfile(candidate.trailingProfile)
+      ? "signal_trailing"
+      : "signal_standard"
+  }
+  if (candidate.variant === "trailing" || candidate.trailingProfile) return "main_trailing"
+  return "main_standard"
+}
+
+/** Return every unique policy-eligible Set for physical dispatch. */
+export function planLiveDispatchCandidatesFairly(
+  candidates: readonly StrategySet[],
+  _rawBudget?: unknown,
+  _rawCursor?: unknown,
+): LiveDispatchPlan {
+  const unique: StrategySet[] = []
+  const seenKeys = new Set<string>()
+  for (const candidate of candidates) {
+    const key = String(candidate?.setKey || "").trim()
+    if (!key || seenKeys.has(key)) continue
+    seenKeys.add(key)
+    unique.push(candidate)
+  }
+  const budget = unique.length
+  const familyCount = new Set(unique.map(liveDispatchFamily)).size
+  return {
+    selected: unique,
+    deferred: [],
+    cursor: 0,
+    nextCursor: 0,
+    familyCount,
+    budget,
+  }
+}
+
 export function limitLiveDispatchCandidatesFairly(
   candidates: readonly StrategySet[],
   rawBudget: unknown,
+  rawCursor: unknown = 0,
 ): StrategySet[] {
-  const parsedBudget = Number(rawBudget)
-  const budget = Math.max(
-    1,
-    Math.min(
-      candidates.length || 1,
-      Number.isFinite(parsedBudget) ? Math.floor(parsedBudget) : 1,
-    ),
-  )
-  if (candidates.length <= budget) return [...candidates]
+  return planLiveDispatchCandidatesFairly(candidates, rawBudget, rawCursor).selected
+}
 
-  const familyOf = (candidate: StrategySet): string => {
-    const isSignal =
-      String(candidate.indicationType || "").toLowerCase() === "signal" ||
-      Boolean(candidate.signalRisk?.sourceId || candidate.signalRisk?.sourceIds?.length)
-    if (candidate.variant === "block") return isSignal ? "signal_block" : "main_block"
-    if (candidate.variant === "dca") return "main_dca"
-    if (candidate.axisWindows?.direction && (candidate.posCountsVolumeRatio ?? 0) > 0) {
-      return "main_pos_count"
-    }
-    if (isSignal) {
-      return isSignalDynamicTrailingProfile(candidate.trailingProfile)
-        ? "signal_trailing"
-        : "signal_standard"
-    }
-    if (candidate.variant === "trailing" || candidate.trailingProfile) return "main_trailing"
-    return "main_standard"
+function summarizeLiveDispatchRows(
+  candidates: readonly StrategySet[],
+  reason: string,
+): Array<{
+  bucket: string
+  direction: string
+  isTrailing: boolean
+  reason: string
+  count: number
+}> {
+  const rows = new Map<string, {
+    bucket: string
+    direction: string
+    isTrailing: boolean
+    reason: string
+    count: number
+  }>()
+  for (const candidate of candidates) {
+    const bucket = classifyStrategyExecutionFamily(candidate)
+    const direction = normalizeStrategyDirection(candidate.direction) || "unknown"
+    const isTrailing = bucket === "trailing" ||
+      isSignalDynamicTrailingProfile(candidate.trailingProfile)
+    const key = `${bucket}:${direction}:${isTrailing ? "1" : "0"}:${reason}`
+    const current = rows.get(key)
+    if (current) current.count++
+    else rows.set(key, { bucket, direction, isTrailing, reason, count: 1 })
   }
-
-  const pending = candidates.filter((candidate) => candidate._hasLivePositions !== true)
-  const active = candidates.filter((candidate) => candidate._hasLivePositions === true)
-  const selected = new Set<StrategySet>()
-  const seenFamilies = new Set<string>()
-
-  // Reserve one best pending row per family. This is intentionally based on
-  // the existing order, so quality ordering remains deterministic inside each
-  // independent execution lane.
-  for (const candidate of pending) {
-    const family = familyOf(candidate)
-    if (seenFamilies.has(family)) continue
-    seenFamilies.add(family)
-    selected.add(candidate)
-    if (selected.size >= budget) break
-  }
-
-  // Fill all unreserved capacity best-first. Pending rows precede already
-  // active rows, allowing the finite matrix to progress across cycles while
-  // retaining active rows as refresh/accumulation candidates when room exists.
-  for (const candidate of [...pending, ...active]) {
-    if (selected.size >= budget) break
-    selected.add(candidate)
-  }
-
-  return [...selected]
+  return [...rows.values()]
 }
 
 // ─── BASE-ANCHORED COORDINATION MODEL ────────────────────────────────────────
@@ -1621,6 +1614,8 @@ export function materializeContinuousStageRows(
   options: {
     stage: "real" | "live"
     lookback: number
+    /** Optional exact windows for additional strategy families at this row. */
+    lookbackByVariant?: Partial<Record<"default" | "trailing" | "block", number>>
     metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">
     activeSetKeys?: ReadonlySet<string>
     /**
@@ -1634,7 +1629,7 @@ export function materializeContinuousStageRows(
   evaluated: number
   rejected: number
 } {
-  const lookback = Math.max(1, Math.min(200, Math.floor(Number(options.lookback) || 1)))
+  const defaultLookback = Math.max(1, Math.min(200, Math.floor(Number(options.lookback) || 1)))
   const rows: StrategySet[] = []
   let evaluated = 0
   let rejected = 0
@@ -1642,6 +1637,16 @@ export function materializeContinuousStageRows(
 
   for (const source of sourceSets) {
     if (!source?.setKey) continue
+    // DCA is a separate lifecycle strategy. It is Real-validated and then
+    // dispatched independently, but never receives a Row-Real/Row-Live key.
+    if (source.variant === "dca") continue
+    const variant = source.variant === "trailing" || source.variant === "block"
+      ? source.variant
+      : "default"
+    const configuredLookback = Number(options.lookbackByVariant?.[variant])
+    const lookback = Number.isFinite(configuredLookback) && configuredLookback > 0
+      ? Math.max(1, Math.min(200, Math.floor(configuredLookback)))
+      : defaultLookback
     const key = `${source.setKey}#row_${options.stage}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -2655,8 +2660,6 @@ export class StrategyCoordinator {
     blockRowLivePauseCountRatio: number
     /** Normal/default execution family; evaluation is always retained. */
     normalEnabled: boolean
-    /** @deprecated legacy persisted field; never controls dispatch. */
-    blockOnly: boolean
     /**
      * Position-Count coordination ratio — normalized on the 0.1..10 operator
      * grid, then converted to the per-valid-Set multiplier (10 → 0.02).
@@ -2664,6 +2667,7 @@ export class StrategyCoordinator {
     posCountsVolumeRatio: number
     mainEvalPosCount: number
     realEvalPosCount: number
+    blockRowRealEvalPosCount: number
     liveEvalPosCount: number
   } = {
     axes: {
@@ -2693,9 +2697,6 @@ export class StrategyCoordinator {
     blockRowLiveMaxStack: 12,
     blockRowLivePauseCountRatio: 1.0,
     normalEnabled: true,
-    // Kept only so old in-memory callers can be read during migration. The
-    // execution policy deliberately ignores this legacy value.
-    blockOnly: false,
     /**
      * Operator coordination ratio. Default 3.0; conversion to direct physical
      * volume happens once during exhaustive axis materialisation.
@@ -2703,6 +2704,7 @@ export class StrategyCoordinator {
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     mainEvalPosCount: 25,
     realEvalPosCount: 20,
+    blockRowRealEvalPosCount: 20,
     liveEvalPosCount: 15,
   }
   private _coordinationLoadedAt = 0
@@ -3185,6 +3187,8 @@ export class StrategyCoordinator {
       }
       this._coordinationSettings.mainEvalPosCount = evalCount((s as any).mainEvalPosCount) ?? 25
       this._coordinationSettings.realEvalPosCount = evalCount((s as any).realEvalPosCount) ?? 20
+      this._coordinationSettings.blockRowRealEvalPosCount =
+        evalCount((s as any).blockRowRealEvalPosCount) ?? this._coordinationSettings.realEvalPosCount
       const liveEvalRaw = Number((s as any).liveEvalPosCount)
       this._coordinationSettings.liveEvalPosCount = Number.isFinite(liveEvalRaw) && liveEvalRaw > 0
         ? Math.min(55, Math.max(5, Math.round(liveEvalRaw / 5) * 5))
@@ -3311,9 +3315,8 @@ export class StrategyCoordinator {
         s.normalEnabled ?? s.normal_enabled ?? s.strategyNormalEnabled,
         true,
       )
-      // `blockOnly`/`variantBlockOnly` are intentionally not read here. They
-      // remain in old Redis hashes only as migration data and no longer
-      // suppress Normal/Trailing or change Block parent semantics.
+      // Old Only-mode Redis fields are intentionally not read. Normal,
+      // Trailing, Block and DCA are independent execution families.
 
       // ── Block-strategy tuning (previously never read from settings) ─────
       // blockVolumeRatio, blockMaxStack, blockPauseCountRatio, and
@@ -7621,26 +7624,45 @@ export class StrategyCoordinator {
     let rowRealSets: StrategySet[] = []
     let continuousRealCreated = 0
     let continuousRealRejected = 0
+    let continuousRealBlockEvaluated = 0
+    let continuousRealBlockCreated = 0
     try {
       // One bounded batch resolves the exact closed positions for every
       // Base-anchored configuration lineage.  The row's future Live ledger
       // key is read first; source keys remain a compatibility fallback for
       // pre-row positions.  This is O(unique keys) with 500-key pipelines,
       // never O(rows × Redis round trips).
-      const rowHistoryKeys = Array.from(new Set(
-        realPostHedge.flatMap((set) => {
+      const rowHistoryKeysFor = (sets: readonly StrategySet[]) => Array.from(new Set(
+        sets.flatMap((set) => {
           const evaluationKey = set.rowEvaluationKey ||
             `${set.rowSourceSetKey || set.setKey}#row_real#row_live`
           return [evaluationKey, set.setKey, set.rowSourceSetKey].filter(Boolean) as string[]
         }),
       ))
-      const rowWindows = await this.getStrategySetWindowBatch(
-        rowHistoryKeys,
-        this._coordinationSettings.realEvalPosCount,
-      )
-      const continuous = materializeContinuousStageRows(realPostHedge, {
+      const blockSources = realPostHedge.filter((set) => set.variant === "block")
+      const normalSources = realPostHedge.filter((set) => set.variant !== "block" && set.variant !== "dca")
+      const rowSources = normalSources.concat(blockSources)
+      const [normalWindows, blockWindows] = await Promise.all([
+        this.getStrategySetWindowBatch(
+          rowHistoryKeysFor(normalSources),
+          this._coordinationSettings.realEvalPosCount,
+        ),
+        this.getStrategySetWindowBatch(
+          rowHistoryKeysFor(blockSources),
+          this._coordinationSettings.blockRowRealEvalPosCount,
+        ),
+      ])
+      const rowWindows = new Map<string, PosWindowStats>([
+        ...normalWindows,
+        ...blockWindows,
+      ])
+      continuousRealBlockEvaluated = blockSources.length
+      const continuous = materializeContinuousStageRows(rowSources, {
         stage: "real",
         lookback: this._coordinationSettings.realEvalPosCount,
+        lookbackByVariant: {
+          block: this._coordinationSettings.blockRowRealEvalPosCount,
+        },
         metrics,
         activeSetKeys: realActiveKeysForVP,
         windowBySetKey: rowWindows,
@@ -7648,6 +7670,7 @@ export class StrategyCoordinator {
       rowRealSets = continuous.rows
       continuousRealCreated = rowRealSets.length
       continuousRealRejected = continuous.rejected
+      continuousRealBlockCreated = rowRealSets.filter((set) => set.variant === "block").length
       if (coordIndex) {
         for (const row of rowRealSets) {
           const sourceKey = row.rowSourceSetKey || row.setKey
@@ -8027,6 +8050,10 @@ export class StrategyCoordinator {
           row_real_created: String(continuousRealCreated),
           row_real_evaluated: String(continuousRealEvaluated),
           row_real_rejected: String(continuousRealRejected),
+          row_real_block_window: String(this._coordinationSettings.blockRowRealEvalPosCount),
+          row_real_block_evaluated: String(continuousRealBlockEvaluated),
+          row_real_block_created: String(continuousRealBlockCreated),
+          row_real_block_rejected: String(Math.max(0, continuousRealBlockEvaluated - continuousRealBlockCreated)),
           // (Overall is pulled from `strategies_real_total` on read.)
           updated_at:         String(Date.now()),
           // Per-symbol fields — see createBaseSets for rationale.
@@ -8055,6 +8082,10 @@ export class StrategyCoordinator {
           [`s:${symbol}:row_real_created`]: String(continuousRealCreated),
           [`s:${symbol}:row_real_evaluated`]: String(continuousRealEvaluated),
           [`s:${symbol}:row_real_rejected`]: String(continuousRealRejected),
+          [`s:${symbol}:row_real_block_window`]: String(this._coordinationSettings.blockRowRealEvalPosCount),
+          [`s:${symbol}:row_real_block_evaluated`]: String(continuousRealBlockEvaluated),
+          [`s:${symbol}:row_real_block_created`]: String(continuousRealBlockCreated),
+          [`s:${symbol}:row_real_block_rejected`]: String(Math.max(0, continuousRealBlockEvaluated - continuousRealBlockCreated)),
           [`s:${symbol}:row_pass_rate`]: String(rowRealPassRatio.toFixed(4)),
           [`s:${symbol}:row_active`]:       String(rowRealRunningNow),
           [`s:${symbol}:row_active_exact`]: String(activeRealSets.length),
@@ -8709,7 +8740,14 @@ export class StrategyCoordinator {
     // compatibility fallback only serves diagnostics/tests that call this
     // private stage directly without first materialising Row-Real.
     const rowRealSets = realSets.filter((set) => set.rowStage === "real")
-    const rowLiveSource = rowRealSets.length > 0 ? rowRealSets : realSets
+    // DCA deliberately has no Row identity. It keeps its Real Set key and is
+    // appended as a separate lifecycle candidate after Row-Live validation.
+    const dcaAdditionalSets = realSets.filter(
+      (set) => set.variant === "dca" && !set.rowStage,
+    )
+    const rowLiveSource = rowRealSets.length > 0
+      ? rowRealSets
+      : realSets.filter((set) => set.variant !== "dca")
     // Row-Live evaluates the exact results of its own stable evaluation key.
     // Read all lineages in one bounded batch so a symbol with a wide axis
     // matrix does not turn a 500 ms processing tick into an N+1 Redis stall.
@@ -8758,8 +8796,9 @@ export class StrategyCoordinator {
       metrics,
       activeStrategyKeys,
     )
+    const rowQualifying = rowLive.rows.concat(rowLiveBlock)
     const allQualifying = Array.from(new Map(
-      rowLive.rows.concat(rowLiveBlock).map((set) => [set.setKey, set]),
+      rowQualifying.concat(dcaAdditionalSets).map((set) => [set.setKey, set]),
     ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
     if (coordIndex) {
       for (const row of allQualifying) {
@@ -8937,7 +8976,9 @@ export class StrategyCoordinator {
           // those Block rows that passed their own exact result window.
           row_live_block_created: String(builtRowLiveBlock.length),
           row_live_block_valid: String(rowLiveBlock.length),
-          row_live_executable: String(qualifying.length),
+          row_live_executable: String(rowQualifying.length),
+          additional_dca_executable: String(dcaAdditionalSets.length),
+          executable_total: String(qualifying.length),
           row_active:        String(liveRunningNow),
           pass_rate:         String(passRatioLive.toFixed(4)),
           // ── ACTIVELY-RUNNING metrics (operator spec) ──────────������──
@@ -8963,7 +9004,9 @@ export class StrategyCoordinator {
           [`s:${symbol}:row_live_rejected`]: String(rowLive.rejected),
           [`s:${symbol}:row_live_block_created`]: String(builtRowLiveBlock.length),
           [`s:${symbol}:row_live_block_valid`]: String(rowLiveBlock.length),
-          [`s:${symbol}:row_live_executable`]: String(qualifying.length),
+          [`s:${symbol}:row_live_executable`]: String(rowQualifying.length),
+          [`s:${symbol}:additional_dca_executable`]: String(dcaAdditionalSets.length),
+          [`s:${symbol}:executable_total`]: String(qualifying.length),
           [`s:${symbol}:row_active`]:   String(liveRunningNow),
           [`s:${symbol}:apf`]:        String(liveAvgPF.toFixed(4)),
           [`s:${symbol}:addt`]:       String(Math.round(liveAvgDDT)),
@@ -9018,6 +9061,77 @@ export class StrategyCoordinator {
     // minProfitFactor to 0.75 on first run), so this workaround is no longer needed.
 
     if (qualifying.length > 0 && !skipLiveDispatch && isCurrent()) {
+      const dispatchPipelineStartedAt = Date.now()
+      let dispatchOutcomePersisted = false
+      const persistUnavailableDispatch = async (reason: string): Promise<void> => {
+        try {
+          const eligible = anyExecutionFamilyEnabled
+            ? selectLiveDispatchCandidates(qualifying, executionPolicy)
+            : []
+          const eligibleKeys = new Set(eligible.map((candidate) => candidate.setKey))
+          const suppressed = qualifying.filter((set) => !eligibleKeys.has(set.setKey))
+          const completedAt = Date.now()
+          const durationMs = Math.max(0, completedAt - dispatchPipelineStartedAt)
+          const detailKey = `strategy_detail:${this.connectionId}:live`
+          await getRedisClient().hset(detailKey, {
+            dispatch_candidates: String(qualifying.length),
+            dispatch_eligible_count: String(eligible.length),
+            dispatch_selected_count: "0",
+            dispatch_deferred_count: "0",
+            dispatch_suppressed_count: String(suppressed.length),
+            dispatch_budget: String(eligible.length),
+            dispatch_family_count: String(new Set(eligible.map(liveDispatchFamily)).size),
+            dispatch_cursor: "0",
+            dispatch_selected: "[]",
+            dispatch_deferred: "[]",
+            dispatch_suppressed: JSON.stringify(
+              summarizeLiveDispatchRows(suppressed, "execution_family_disabled"),
+            ),
+            dispatch_attempted_count: "0",
+            dispatch_placed_count: "0",
+            dispatch_filled_count: "0",
+            dispatch_rejected_count: "0",
+            dispatch_errored_count: String(eligible.length),
+            dispatch_missing_entry_count: "0",
+            dispatch_no_result_count: "0",
+            dispatch_other_status_count: "0",
+            dispatch_failed_to_open_count: String(eligible.length),
+            dispatch_duration_ms: String(durationMs),
+            dispatch_avg_attempt_ms: "0",
+            dispatch_failure_reason: reason,
+            [`s:${symbol}:dispatch_candidates`]: String(qualifying.length),
+            [`s:${symbol}:dispatch_eligible_count`]: String(eligible.length),
+            [`s:${symbol}:dispatch_selected_count`]: "0",
+            [`s:${symbol}:dispatch_deferred_count`]: "0",
+            [`s:${symbol}:dispatch_suppressed_count`]: String(suppressed.length),
+            [`s:${symbol}:dispatch_budget`]: String(eligible.length),
+            [`s:${symbol}:dispatch_family_count`]: String(new Set(eligible.map(liveDispatchFamily)).size),
+            [`s:${symbol}:dispatch_cursor`]: "0",
+            [`s:${symbol}:dispatch_selected`]: "[]",
+            [`s:${symbol}:dispatch_deferred`]: "[]",
+            [`s:${symbol}:dispatch_suppressed`]: JSON.stringify(
+              summarizeLiveDispatchRows(suppressed, "execution_family_disabled"),
+            ),
+            [`s:${symbol}:dispatch_attempted_count`]: "0",
+            [`s:${symbol}:dispatch_placed_count`]: "0",
+            [`s:${symbol}:dispatch_filled_count`]: "0",
+            [`s:${symbol}:dispatch_rejected_count`]: "0",
+            [`s:${symbol}:dispatch_errored_count`]: String(eligible.length),
+            [`s:${symbol}:dispatch_missing_entry_count`]: "0",
+            [`s:${symbol}:dispatch_no_result_count`]: "0",
+            [`s:${symbol}:dispatch_other_status_count`]: "0",
+            [`s:${symbol}:dispatch_failed_to_open_count`]: String(eligible.length),
+            [`s:${symbol}:dispatch_duration_ms`]: String(durationMs),
+            [`s:${symbol}:dispatch_avg_attempt_ms`]: "0",
+            [`s:${symbol}:dispatch_failure_reason`]: reason,
+            [`s:${symbol}:dispatch_completed_at`]: String(completedAt),
+            [`s:${symbol}:ts`]: String(completedAt),
+          })
+          dispatchOutcomePersisted = true
+        } catch {
+          // The engine remains authoritative if diagnostic persistence is down.
+        }
+      }
       try {
         const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
         if (!isCurrent()) return cancelled()
@@ -9033,83 +9147,74 @@ export class StrategyCoordinator {
         // direct pseudo fan-out opened adjustment variants as standalone
         // positions and never exercised their real quantity/step lifecycle.
         if (!isLiveTradeEnabled || connector) {
-            // Dispatch live positions. Each pipeline call is heavyweight:
-            // price fetch → volume calc → leverage → order → fill poll →
-            // SL/TP → sync. With 10+ symbols �� N qualifying Sets per symbol,
-            // dispatching every Set serially creates a blocking storm that
-            // saturates the cycle budget.
-            //
-            // The dedup lock (live:lock:{conn}:{sym}:{dir}) already enforces
-            // "at most 1 open position per symbol+direction". Every Set beyond
-            // the first that targets the same direction will hit "Dedup lock
-            // held" and still cost 3-5 Redis round-trips (tryAcquireLock +
-            // findOpenLivePositionByDir + savePosition + incrementMetric +
-            // logProgressionEvent) before being deferred.
-            //
-            // Fix: pre-select at most 1 Set per direction (the highest-PF one,
-            // already guaranteed by .sort() above) before calling the pipeline.
-            // Only call executeLivePosition for sets that have a real chance of
-            // acquiring the lock or merging — not for the 49 duplicates that
-            // will always be deferred on the same cycle.
-            //
-            // The qualifying array is already sorted by avgProfitFactor desc.
-            //
-            // Preselection rules:
-            //   • "new" variants (default, trailing): at most 1 per
-            //   • "new" variants (default, trailing, pause): at most 1 per
-            //     direction — first (highest-PF) wins.
-            //   • "block" overlays: allowed through even when the direction
-            //     already has a "new" set selected. One new independent count
-            //     per direction advances per cycle; confirmed counts are
-            //     skipped so the ladder progresses without an exchange burst.
-            //   • "dca" variant: same as block — at most 1 per direction,
-            //     allowed alongside a "new" set.
-            //
-            // Without this rule, block/dca sets targeting e.g. long were
-            // always dropped because `sawLong=true` was already set by the
-            // default set, meaning block strategy NEVER dispatched.
-            //
-            // Block count Sets were already independently evaluated at Real.
-            // Live consumes that exact list; synthesizing another ladder here
-            // would bypass the count-specific PF gate and duplicate identities.
+            // Calculation and physical dispatch are exhaustive for every
+            // policy-enabled Set. Deduplication prevents duplicate writes, but
+            // no hidden per-symbol budget may defer otherwise eligible Sets.
             const dispatchCandidates = qualifying
-
-            // A bounded batch avoids exchange bursts while advancing the
-            // independent Block ladder fairly: one not-yet-active Block count
-            // per direction per cycle. Confirmed counts are skipped, so the
-            // next cycle selects the next eligible count instead of starving
-            // behind the same already-accumulated top-ranked Set.
-            const dispatchSets = anyExecutionFamilyEnabled
+            const policyEligibleDispatchSets = anyExecutionFamilyEnabled
               ? selectLiveDispatchCandidates(dispatchCandidates, executionPolicy)
               : []
-
-            // Evaluation remains complete above; only physical exchange/paper
-            // execution is bounded. This keeps every indication/strategy
-            // result and statistic intact while preventing a large symbol
-            // basket from issuing an unbounded burst of Redis/order work.
-            const dispatchBudget = Math.max(
-              1,
-              Math.min(128, Number.parseInt(process.env.LIVE_DISPATCH_PER_CYCLE || "4", 10) || 4),
+            const policyEligibleKeys = new Set(
+              policyEligibleDispatchSets.map((set) => set.setKey),
             )
-            const boundedDispatchSets = limitLiveDispatchCandidatesFairly(
-              dispatchSets,
-              dispatchBudget,
+            const suppressedDispatchSets = dispatchCandidates.filter(
+              (set) => !policyEligibleKeys.has(set.setKey),
             )
-
+            const dispatchClient = getRedisClient()
+            const dispatchDetailKey = `strategy_detail:${this.connectionId}:live`
+            const dispatchPlan = planLiveDispatchCandidatesFairly(policyEligibleDispatchSets)
+            const dispatchSets = dispatchPlan.selected
+            try {
+              const selectedSummary = summarizeLiveDispatchRows(dispatchSets, "qualified_policy_enabled")
+              const deferredSummary = summarizeLiveDispatchRows(dispatchPlan.deferred, "physical_budget_deferred")
+              const suppressedSummary = summarizeLiveDispatchRows(suppressedDispatchSets, "execution_family_disabled")
+              await dispatchClient.hset(dispatchDetailKey, {
+                dispatch_candidates: String(dispatchCandidates.length),
+                dispatch_eligible_count: String(policyEligibleDispatchSets.length),
+                dispatch_selected_count: String(dispatchSets.length),
+                dispatch_deferred_count: String(dispatchPlan.deferred.length),
+                dispatch_suppressed_count: String(suppressedDispatchSets.length),
+                dispatch_budget: String(dispatchPlan.budget),
+                dispatch_family_count: String(dispatchPlan.familyCount),
+                dispatch_cursor: String(dispatchPlan.nextCursor),
+                dispatch_selected: JSON.stringify(selectedSummary),
+                dispatch_deferred: JSON.stringify(deferredSummary),
+                dispatch_suppressed: JSON.stringify(suppressedSummary),
+                [`s:${symbol}:dispatch_candidates`]: String(dispatchCandidates.length),
+                [`s:${symbol}:dispatch_eligible_count`]: String(policyEligibleDispatchSets.length),
+                [`s:${symbol}:dispatch_selected_count`]: String(dispatchSets.length),
+                [`s:${symbol}:dispatch_deferred_count`]: String(dispatchPlan.deferred.length),
+                [`s:${symbol}:dispatch_suppressed_count`]: String(suppressedDispatchSets.length),
+                [`s:${symbol}:dispatch_budget`]: String(dispatchPlan.budget),
+                [`s:${symbol}:dispatch_family_count`]: String(dispatchPlan.familyCount),
+                [`s:${symbol}:dispatch_cursor`]: String(dispatchPlan.nextCursor),
+                [`s:${symbol}:dispatch_selected`]: JSON.stringify(selectedSummary),
+                [`s:${symbol}:dispatch_deferred`]: JSON.stringify(deferredSummary),
+                [`s:${symbol}:dispatch_suppressed`]: JSON.stringify(suppressedSummary),
+                [`s:${symbol}:ts`]: String(Date.now()),
+              })
+            } catch {
+              // Execution remains authoritative if diagnostics cannot persist.
+            }
             const dispatchOrder = (set: StrategySet): number => {
               if (set.variant === "block") return 1
               if (set.variant === "dca") return 2
               return 0
             }
-            boundedDispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))
+            dispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))
 
             let placed = 0
             let filled = 0
             let rejected = 0
             let errored = 0
+            let attempted = 0
+            let missingEntry = 0
+            let noResult = 0
+            let otherStatus = 0
+            const dispatchStartedAt = Date.now()
             const physicallyExecutedSets: StrategySet[] = []
 
-            for (const set of boundedDispatchSets) {
+            for (const set of dispatchSets) {
               if (!isCurrent()) return cancelled()
               try {
                 // ── Axis-entry hydration — O(1) via BaseRegistry ──────────────
@@ -9135,7 +9240,10 @@ export class StrategyCoordinator {
                   (best, e) => (e.profitFactor > best.profitFactor ? e : best),
                   effectiveEntries[0]
                 )
-                if (!bestEntry) continue
+                if (!bestEntry) {
+                  missingEntry++
+                  continue
+                }
 
                 // ── Apply CoordRecord quality metadata at dispatch ──────
                 // `sizeDelta` is accepted only for compatibility with restored
@@ -9224,6 +9332,7 @@ export class StrategyCoordinator {
                 }
 
                 if (!isCurrent()) return cancelled()
+                attempted++
                 const liveResult = await executeLivePosition(
                   this.connectionId,
                   {
@@ -9314,7 +9423,7 @@ export class StrategyCoordinator {
                     blockSourceId: set.blockSourceId,
                     // Block is an independent execution family. LiveStage
                     // may seed its own authoritative parent when Normal is
-                    // disabled; no legacy "Block-only" flag is needed.
+                    // disabled; no exclusive-family flag is needed.
                     blockVolumeIncrementRatio: set.blockVolumeIncrementRatio,
                     blockCalculatedVolumeMultiplier: set.blockCalculatedVolumeMultiplier,
                     // Scoped Block Sets keep their physical identity first and
@@ -9365,7 +9474,10 @@ export class StrategyCoordinator {
                 )
                 if (!isCurrent()) return cancelled()
 
-                if (!liveResult) continue
+                if (!liveResult) {
+                  noResult++
+                  continue
+                }
                 // Simulation is an immediate, fully-filled execution. Keep it
                 // on the same accounting path as an exchange fill so the
                 // paper position, active Set snapshot, and progression stats
@@ -9379,7 +9491,12 @@ export class StrategyCoordinator {
                   filled++
                   placed++
                   physicallyExecutedSets.push(set)
-                } else if (liveResult.status === "placed" || liveResult.status === "pending_fill" || liveResult.status === "placed_unconfirmed") {
+                } else if (
+                  liveResult.status === "placed" ||
+                  liveResult.status === "pending" ||
+                  liveResult.status === "pending_fill" ||
+                  liveResult.status === "placed_unconfirmed"
+                ) {
                   placed++
                 } else if (liveResult.status === "rejected") {
                   rejected++
@@ -9392,6 +9509,8 @@ export class StrategyCoordinator {
                   } else {
                     errored++
                   }
+                } else {
+                  otherStatus++
                 }
               } catch (err) {
                 errored++
@@ -9400,6 +9519,41 @@ export class StrategyCoordinator {
                   err instanceof Error ? err.message : String(err)
                 )
               }
+            }
+
+            try {
+              const failedToOpen = rejected + errored + missingEntry + noResult + otherStatus
+              const dispatchCompletedAt = Date.now()
+              const dispatchDurationMs = Math.max(0, dispatchCompletedAt - dispatchStartedAt)
+              const outcomeFields = {
+                dispatch_attempted_count: String(attempted),
+                dispatch_placed_count: String(placed),
+                dispatch_filled_count: String(filled),
+                dispatch_rejected_count: String(rejected),
+                dispatch_errored_count: String(errored),
+                dispatch_missing_entry_count: String(missingEntry),
+                dispatch_no_result_count: String(noResult),
+                dispatch_other_status_count: String(otherStatus),
+                dispatch_failed_to_open_count: String(failedToOpen),
+                dispatch_duration_ms: String(dispatchDurationMs),
+                dispatch_avg_attempt_ms: String(attempted > 0 ? dispatchDurationMs / attempted : 0),
+                [`s:${symbol}:dispatch_attempted_count`]: String(attempted),
+                [`s:${symbol}:dispatch_placed_count`]: String(placed),
+                [`s:${symbol}:dispatch_filled_count`]: String(filled),
+                [`s:${symbol}:dispatch_rejected_count`]: String(rejected),
+                [`s:${symbol}:dispatch_errored_count`]: String(errored),
+                [`s:${symbol}:dispatch_missing_entry_count`]: String(missingEntry),
+                [`s:${symbol}:dispatch_no_result_count`]: String(noResult),
+                [`s:${symbol}:dispatch_other_status_count`]: String(otherStatus),
+                [`s:${symbol}:dispatch_failed_to_open_count`]: String(failedToOpen),
+                [`s:${symbol}:dispatch_duration_ms`]: String(dispatchDurationMs),
+                [`s:${symbol}:dispatch_avg_attempt_ms`]: String(attempted > 0 ? dispatchDurationMs / attempted : 0),
+                [`s:${symbol}:dispatch_completed_at`]: String(dispatchCompletedAt),
+              }
+              await dispatchClient.hset(dispatchDetailKey, outcomeFields)
+              dispatchOutcomePersisted = true
+            } catch {
+              // Exchange execution remains authoritative if stats persistence fails.
             }
 
             if (placed > 0 || errored > 0) {
@@ -9474,9 +9628,13 @@ export class StrategyCoordinator {
             }
         } else {
           console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: live_trade=true but connector not available`)
+          await persistUnavailableDispatch("connector_unavailable")
         }
       } catch (liveErr) {
         console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: Real exchange execution error:`, liveErr instanceof Error ? liveErr.message : String(liveErr))
+        if (!dispatchOutcomePersisted) {
+          await persistUnavailableDispatch("dispatch_pipeline_error")
+        }
       }
 
       // After dispatching new entries, reconcile already-open positions with

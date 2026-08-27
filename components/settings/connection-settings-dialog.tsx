@@ -647,6 +647,11 @@ export function ConnectionSettingsDialog({
             blockRowLiveProfitFactorRatio: typeof coord.blockRowLiveProfitFactorRatio === "number" ? coord.blockRowLiveProfitFactorRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLiveProfitFactorRatio,
             blockRowLiveMaxStack: typeof coord.blockRowLiveMaxStack === "number" ? coord.blockRowLiveMaxStack : DEFAULT_COORDINATION_SETTINGS.blockRowLiveMaxStack,
             blockRowLivePauseCountRatio: typeof coord.blockRowLivePauseCountRatio === "number" ? coord.blockRowLivePauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLivePauseCountRatio,
+            blockRowRealEvalPosCount: typeof coord.blockRowRealEvalPosCount === "number"
+              ? coord.blockRowRealEvalPosCount
+              : typeof (settings as Record<string, unknown>).blockRowRealEvalPosCount === "number"
+                ? Number((settings as Record<string, unknown>).blockRowRealEvalPosCount)
+                : DEFAULT_COORDINATION_SETTINGS.blockRowRealEvalPosCount,
             normalEnabled: typeof coord.normalEnabled === "boolean"
               ? coord.normalEnabled
               : typeof (settings as Record<string, unknown>).normalEnabled === "boolean"

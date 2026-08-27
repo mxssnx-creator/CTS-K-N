@@ -129,5 +129,19 @@ describe("live PnL calculation contract", () => {
       pnlAccountingComplete: false,
       accountingPending: true,
     })).toBe(false)
+    const implausibleLegacyClose = {
+      status: "closed",
+      mode: "live",
+      averageExecutionPrice: 100,
+      closePrice: 0.001,
+      openedAt: "2026-08-23T13:56:06.000Z",
+      closedAt: "2026-08-23T13:57:46.000Z",
+      realizedPnL: 100_000,
+    }
+    expect(isRealizedPnlAccountingPending(implausibleLegacyClose)).toBe(true)
+    expect(isRealizedPnlAccountingPending({
+      ...implausibleLegacyClose,
+      mode: "simulated",
+    })).toBe(false)
   })
 })

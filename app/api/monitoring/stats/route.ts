@@ -1,29 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { initRedis, getAllConnections, getRedisClient } from "@/lib/redis-db"
-import { RedisMonitoring, RedisPositions, RedisTrades } from "@/lib/redis-operations"
-import {
-  resolveSettledRealizedPnl,
-  resolveUnrealizedPnl,
-} from "@/lib/live-position-pnl"
-import { isLiveOpenStatus } from "@/lib/live-position-status"
-import { getLivePositionSource } from "@/lib/live-position-source"
+import { RedisMonitoring } from "@/lib/redis-operations"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
 export const fetchCache = "force-no-store"
-
-function timestampOf(value: unknown): number {
-  if (
-    typeof value === "number" ||
-    (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim()))
-  ) {
-    const numeric = Number(value)
-    if (Number.isFinite(numeric) && numeric > 0) {
-      return numeric < 10_000_000_000 ? numeric * 1000 : numeric
-    }
-  }
-  const parsed = Date.parse(String(value || ""))
-  return Number.isFinite(parsed) ? parsed : 0
-}
 
 function finiteOrNull(value: unknown): number | null {
   if (value === undefined || value === null || typeof value === "boolean") return null
@@ -65,45 +46,45 @@ export async function GET(request: NextRequest) {
     let dailyPnL = 0
     let realizedPnL = 0
     let unrealizedPnL = 0
+    let exchangeOpenSymbols = 0
+    let exchangeOpenOrders = 0
+    let exchangeOpenOrderSymbols = 0
+    let exchangeEntryOrders = 0
+    let exchangeControlOrders = 0
+    let excludedUntrackedPositions = 0
+    let excludedUntrackedOrders = 0
+    let exchangeSnapshotsComplete = 0
     let accountingPending = 0
     let dailyPnlTimestampUnknown = 0
     const positionSourceCounts = { real: 0, simulated: 0, unknown: 0 }
-    const now = Date.now()
-    const utcDayStart = new Date(now)
-    utcDayStart.setUTCHours(0, 0, 0, 0)
-    const utcDayStartMs = utcDayStart.getTime()
-    const utcDayEndMs = utcDayStartMs + 24 * 60 * 60 * 1000
-
-    const ledgers = await Promise.all(connections.map(async (conn: any) => {
-      const [positions, trades] = await Promise.all([
-        RedisPositions.getPositionsByConnection(conn.id).catch(() => []),
-        RedisTrades.getTradesByConnection(conn.id).catch(() => []),
-      ])
-      return { positions, trades }
-    }))
-    for (const { positions, trades } of ledgers) {
-
-      totalPositions += positions.length
-      totalTrades += trades.length
-
-      const open = positions.filter((p: any) => isLiveOpenStatus(p.status))
-      openPositions += open.length
-
-      positions.forEach((pos: any) => {
-        positionSourceCounts[getLivePositionSource(pos)] += 1
-        if (String(pos.status || "").trim().toLowerCase() === "closed") {
-          const pnl = resolveSettledRealizedPnl(pos)
-          if (pnl === undefined) accountingPending++
-          else {
-            realizedPnL += pnl
-            const closedAt = timestampOf(pos.closedAt ?? pos.closed_at ?? pos.updatedAt ?? pos.updated_at)
-            if (closedAt >= utcDayStartMs && closedAt < utcDayEndMs) dailyPnL += pnl
-            else if (closedAt === 0) dailyPnlTimestampUnknown++
-          }
-        } else if (isLiveOpenStatus(pos.status)) {
-          unrealizedPnL += resolveUnrealizedPnl(pos) ?? 0
-        }
-      })
+    // All overview surfaces read the same durable live lifecycle indexes.
+    // The legacy `positions:*`/`trades:*` sets are optional compatibility
+    // stores and can legitimately be empty while thousands of live archive
+    // rows exist; treating those sets as authoritative caused the UI-wide
+    // false-zero state.
+    const ledgers = await Promise.all(connections.map((conn: any) =>
+      getLiveExecutionSummary(conn.id),
+    ))
+    for (const ledger of ledgers) {
+      totalPositions += ledger.totalPositions
+      openPositions += ledger.openPositions
+      totalTrades += ledger.totalTrades
+      dailyPnL += ledger.dailyRealizedPnl
+      realizedPnL += ledger.realizedPnl
+      unrealizedPnL += ledger.unrealizedPnl
+      exchangeOpenSymbols += nonNegativeInteger(ledger.openSymbols)
+      exchangeOpenOrders += nonNegativeInteger(ledger.openOrders)
+      exchangeOpenOrderSymbols += nonNegativeInteger(ledger.openOrderSymbols)
+      exchangeEntryOrders += nonNegativeInteger(ledger.entryOrders)
+      exchangeControlOrders += nonNegativeInteger(ledger.controlOrders)
+      excludedUntrackedPositions += nonNegativeInteger(ledger.excludedUntrackedPositions)
+      excludedUntrackedOrders += nonNegativeInteger(ledger.excludedUntrackedOrders)
+      if (ledger.exchange?.complete === true) exchangeSnapshotsComplete++
+      accountingPending += ledger.accountingPending
+      dailyPnlTimestampUnknown += ledger.dailyPnlTimestampUnknown
+      positionSourceCounts.real += ledger.sourceCounts.real
+      positionSourceCounts.simulated += ledger.sourceCounts.simulated
+      positionSourceCounts.unknown += ledger.sourceCounts.unknown
     }
 
     const stats = await RedisMonitoring.getStatistics()
@@ -147,6 +128,20 @@ export async function GET(request: NextRequest) {
       totalBalance: Number((realizedPnL + unrealizedPnL).toFixed(2)),
       accountingPending,
       positionSourceCounts,
+      exchangeLive: {
+        openPositions,
+        openSymbols: exchangeOpenSymbols,
+        openOrders: exchangeOpenOrders,
+        openOrderSymbols: exchangeOpenOrderSymbols,
+        entryOrders: exchangeEntryOrders,
+        controlOrders: exchangeControlOrders,
+        excludedUntrackedPositions,
+        excludedUntrackedOrders,
+        scope: "cts_tracked_only",
+        snapshotsComplete: exchangeSnapshotsComplete,
+        snapshotsTotal: ledgers.length,
+        complete: ledgers.length > 0 && exchangeSnapshotsComplete === ledgers.length,
+      },
       statistics: {
         ...stats,
         totalCycles,

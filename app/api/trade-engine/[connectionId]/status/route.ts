@@ -122,9 +122,15 @@ export async function GET(
     const indCycles = Number(engineState.indication_cycle_count || engineState.ind_cycles || 0)
     const stratCycles = Number(engineState.strategy_cycle_count || engineState.strat_cycles || 0)
     const realtimeCycles = Number(progression.realtime_cycle_count || engineState.realtime_cycle_count || engineState.rt_cycles || cyclesCompleted)
-    const canonicalCycleBudgetExceededCount = Number(progression.canonical_cycle_budget_exceeded_count || 0)
-    const canonicalCycleBudgetLastAt = Number(progression.canonical_cycle_budget_last_at || 0)
-    const canonicalCycleBudgetMs = Number(progression.canonical_cycle_budget_ms || 0)
+    const canonicalCycleSlowCount = Number(
+      progression.canonical_cycle_slow_count || progression.canonical_cycle_budget_exceeded_count || 0,
+    )
+    const canonicalCycleSlowLastAt = Number(
+      progression.canonical_cycle_slow_last_at || progression.canonical_cycle_budget_last_at || 0,
+    )
+    const canonicalCycleSlowThresholdMs = Number(
+      progression.canonical_cycle_slow_threshold_ms || progression.canonical_cycle_budget_ms || 0,
+    )
 
     // Avg durations
     const indAvg = Number(engineState.indication_avg_duration_ms || 0)
@@ -148,9 +154,9 @@ export async function GET(
       canonicalPipelineAgeMs,
       canonicalPipelineProgressAgeMs,
       canonicalPipelineOwner,
-      canonicalCycleBudgetExceededCount,
-      canonicalCycleBudgetLastAt: canonicalCycleBudgetLastAt || null,
-      canonicalCycleBudgetMs: canonicalCycleBudgetMs || null,
+      canonicalCycleSlowCount,
+      canonicalCycleSlowLastAt: canonicalCycleSlowLastAt || null,
+      canonicalCycleSlowThresholdMs: canonicalCycleSlowThresholdMs || null,
       workerAttached: hasLocalConnectionRuntime,
       lastProcessorHeartbeat: processorHeartbeat || null,
       lastScheduledCycleAt: portableCycleAt || null,

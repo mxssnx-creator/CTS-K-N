@@ -136,7 +136,10 @@ export function buildDirectTradeIndicationTypeStats(input: {
       breakeven,
       netPnlPercent: rounded(netPnlPercent),
       netExchangePnlUsdt: input.selectedMode === "live"
-        ? rounded(accounted.reduce((sum, position) => sum + finite(position?.realizedPnlUsdt), 0))
+        ? rounded(accounted.reduce(
+            (sum, position) => sum + (resolveDirectTradeSettledExchangePnlUsdt(position) ?? 0),
+            0,
+          ))
         : null,
       positionCostPercent: rounded(positionCostPercent),
       profitFactor: profitFactor == null ? null : rounded(profitFactor),

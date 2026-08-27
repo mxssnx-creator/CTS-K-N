@@ -132,10 +132,8 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       timeout_per_indication: timeoutPerIndication,
       timeout_after_position: timeoutAfterPosition,
       trailing_enabled: trailingEnabled && baseSettings.trailingEnabled,
-      trailing_only: false,
       block_enabled: blockEnabled && baseSettings.blockEnabled,
       dca_enabled: dcaEnabled && baseSettings.dcaEnabled,
-      dca_only: false,
       normal_enabled: normalEnabled,
     }
 

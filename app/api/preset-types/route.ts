@@ -2,6 +2,12 @@ import { type NextRequest, NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { nanoid } from "nanoid"
 
+const toBoolean = (value: unknown, fallback: boolean): boolean => {
+  if (value === true || value === 1 || value === "1" || value === "true" || value === "on") return true
+  if (value === false || value === 0 || value === "0" || value === "false" || value === "off") return false
+  return fallback
+}
+
 // GET /api/preset-types - Get all preset types from Redis
 export const dynamic = "force-dynamic"
 export async function GET(request: NextRequest) {
@@ -19,12 +25,20 @@ export async function GET(request: NextRequest) {
       if (!id) continue
       const data = await (client as any).hgetall(`preset_type:${id}`)
       if (data && Object.keys(data).length > 0) {
+        const sanitized = { ...data }
+        delete sanitized.trailing_only
+        delete sanitized.block_only
+        delete sanitized.dca_only
         types.push({
           id,
-          ...data,
+          ...sanitized,
           max_positions_per_indication: 0,
           max_positions_per_direction: 0,
           max_positions_per_range: 0,
+          normal_enabled: toBoolean(data.normal_enabled, true),
+          trailing_enabled: toBoolean(data.trailing_enabled, true),
+          block_enabled: toBoolean(data.block_enabled, true),
+          dca_enabled: toBoolean(data.dca_enabled, false),
         })
       }
     }
@@ -73,12 +87,10 @@ export async function POST(request: NextRequest) {
       max_positions_per_range: 0,
       timeout_per_indication: body.timeout_per_indication || 5,
       timeout_after_position: body.timeout_after_position || 10,
-      // Block is an independent family. Legacy *_only fields are written
-      // false so an old reader cannot accidentally suppress Normal orders.
+      trailing_enabled: body.trailing_enabled !== false,
+      // Normal, Block and DCA are independent execution families.
       block_enabled: body.block_enabled !== false,
-      block_only: false,
       dca_enabled: body.dca_enabled || false,
-      dca_only: false,
       normal_enabled: body.normal_enabled !== false,
       auto_evaluate: body.auto_evaluate !== false,
       evaluation_interval_hours: body.evaluation_interval_hours || 3,
@@ -98,8 +110,8 @@ export async function POST(request: NextRequest) {
     // Add to index
     await (client as any).sadd("preset_types:all", id)
     
-    // Set TTL (30 days)
-    await (client as any).expire(key, 30 * 24 * 60 * 60)
+    // Preset settings are durable operator configuration, not cache data.
+    await (client as any).persist(key)
 
     console.log("[v0] Preset type created successfully:", id)
     return NextResponse.json(presetType, { status: 201 })

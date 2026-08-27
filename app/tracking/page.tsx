@@ -39,7 +39,15 @@ interface TrackingItem {
   closedPositions: number
   totalVolume: number
   profit: number
-  winRate: number
+  realizedProfit?: number
+  unrealizedProfit?: number
+  winRate: number | null
+  wins?: number
+  losses?: number
+  breakEven?: number
+  accountingPending?: number
+  accountingComplete?: boolean
+  statisticsAvailable?: boolean
   progression: TrackingProgression
   logs: TrackingLog[]
   hasCredentials: boolean
@@ -238,10 +246,18 @@ export default function TrackingPage() {
                   <div>
                     <div className="text-sm text-muted-foreground">Profit</div>
                     <div className={`text-lg font-semibold ${item.profit >= 0 ? "text-green-600" : "text-red-600"}`}>${item.profit.toFixed(2)}</div>
+                    {(item.accountingPending || 0) > 0 && (
+                      <div className="text-xs text-amber-600">{item.accountingPending} settlement(s) pending</div>
+                    )}
                   </div>
                   <div>
                     <div className="text-sm text-muted-foreground">Win Rate</div>
-                    <div className="text-lg font-semibold">{item.winRate.toFixed(1)}%</div>
+                    <div className="text-lg font-semibold">{item.winRate === null ? "—" : `${item.winRate.toFixed(1)}%`}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {item.statisticsAvailable
+                        ? `${item.wins || 0} W / ${item.losses || 0} L / ${item.breakEven || 0} BE`
+                        : "No executed positions"}
+                    </div>
                   </div>
                 </CardContent>
               </Card>

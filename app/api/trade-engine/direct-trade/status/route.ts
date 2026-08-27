@@ -81,6 +81,8 @@ function publicProcessorStatus(processor: any): Record<string, unknown> | null {
     lifecycleCycleCount: Math.max(0, Math.floor(Number(processor.lifecycleCycleCount) || 0)),
     tickCount: Math.max(0, Math.floor(Number(processor.tickCount) || 0)),
     errorsLast5min: Math.max(0, Math.floor(Number(processor.errorsLast5min) || 0)),
+    recalculationInFlight: processor.recalculationInFlight === true,
+    nextRecalcAttemptAt: typeof processor.nextRecalcAttemptAt === "string" ? processor.nextRecalcAttemptAt : null,
     historyPolicy: processor.historyPolicy && typeof processor.historyPolicy === "object"
       ? processor.historyPolicy
       : null,

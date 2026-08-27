@@ -115,8 +115,10 @@ async function collectMetrics(): Promise<{ metrics: HealthMetrics; fresh: boolea
         settingsState,
         scopedRuntimeState,
         scopedSettingsState,
-        trades,
-        positions,
+        legacyTrades,
+        legacyPositions,
+        liveClosed,
+        liveOpen,
       ] = await Promise.all([
         client.get(`engine_is_running:${id}`).catch(() => null),
         client.hgetall(`trade_engine_state:${id}`).catch(() => ({} as Record<string, string>)),
@@ -125,6 +127,12 @@ async function collectMetrics(): Promise<{ metrics: HealthMetrics; fresh: boolea
         client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
         client.scard(`trades:${id}`).catch(() => 0),
         client.scard(`positions:${id}`).catch(() => 0),
+        typeof client.llen === "function"
+          ? client.llen(`live:positions:${id}:closed`).catch(() => 0)
+          : Promise.resolve(0),
+        typeof client.llen === "function"
+          ? client.llen(`live:positions:${id}`).catch(() => 0)
+          : Promise.resolve(0),
       ])
       const enabled = isConnectionMainProcessing(connection)
       const runtime = resolveDistributedEngineRuntime({
@@ -136,8 +144,8 @@ async function collectMetrics(): Promise<{ metrics: HealthMetrics; fresh: boolea
       return {
         running: runtime.running,
         expected: operatorWantsRunning && enabled,
-        trades: Math.max(0, Number(trades) || 0),
-        positions: Math.max(0, Number(positions) || 0),
+        trades: Math.max(0, Number(legacyTrades) || 0, Number(liveClosed) || 0),
+        positions: Math.max(0, Number(legacyPositions) || 0, Number(liveOpen) || 0),
       }
     })),
     null,

@@ -134,6 +134,7 @@ __tests__/unit/exchange-account-performance.test.ts
 __tests__/unit/exchange-connector-factory.test.ts
 __tests__/unit/exchange-control-order-options.test.ts
 __tests__/unit/exchange-force-simulated.test.ts
+__tests__/unit/exchange-live-state-summary.test.ts
 __tests__/unit/exchange-position-symbols-stats.test.ts
 __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
@@ -154,6 +155,7 @@ __tests__/unit/indication-outcome-cost-basis.test.ts
 __tests__/unit/indication-set-type-coordination.test.ts
 __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/install-deployment-contract.test.ts
+__tests__/unit/live-execution-summary.test.ts
 __tests__/unit/live-order-coordination.test.ts
 __tests__/unit/live-order-preflight.test.ts
 __tests__/unit/live-pnl-calculation.test.ts
@@ -193,6 +195,7 @@ __tests__/unit/pos-count-volume-ratio.test.ts
 __tests__/unit/pos-history-batch.test.ts
 __tests__/unit/position-cost-net-results.test.ts
 __tests__/unit/position-flow-calculations.test.ts
+__tests__/unit/positions-stats-route.test.ts
 __tests__/unit/prehistoric-bootstrap-handoff.test.ts
 __tests__/unit/prehistoric-progress-tracker.test.ts
 __tests__/unit/prehistoric-runtime-stability.test.ts
@@ -200,6 +203,7 @@ __tests__/unit/preset-config-display-contract.test.ts
 __tests__/unit/preset-optimizer.test.ts
 __tests__/unit/preset-pseudo-trailing-resilience.test.ts
 __tests__/unit/preset-type-config.test.ts
+__tests__/unit/preset-types-persistence.test.ts
 __tests__/unit/production-continuity.test.ts
 __tests__/unit/progression-live-snapshot.test.ts
 __tests__/unit/progression-order-aggregation.test.ts
@@ -652,6 +656,7 @@ app/simple/page.tsx
 app/statistics/direct-trade/page.tsx
 app/statistics/indications/common/page.tsx
 app/statistics/indications/layout.tsx
+app/statistics/indications/main/page.tsx
 app/statistics/indications/signal/page.tsx
 app/statistics/layout.tsx
 app/statistics/loading.tsx
@@ -1129,6 +1134,7 @@ lib/exchange-connectors/orangex-connector.ts
 lib/exchange-connectors/pionex-connector.ts
 lib/exchange-connectors/simulated-connector.ts
 lib/exchange-context.tsx
+lib/exchange-live-state-summary.ts
 lib/exchange-min-qty.ts
 lib/exchange-position-manager.ts
 lib/exchange-quantity-ledger.ts
@@ -1158,6 +1164,7 @@ lib/integration-test-suite.ts
 lib/interval-progression-manager.ts
 lib/kilo-database-client.ts
 lib/leverage-policy.ts
+lib/live-execution-summary.ts
 lib/live-order-coordination.ts
 lib/live-order-counter-keys.ts
 lib/live-order-logger.ts

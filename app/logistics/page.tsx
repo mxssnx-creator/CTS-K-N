@@ -88,6 +88,7 @@ interface StrategyRows {
     active: number
     activeExactRows: number
     activeRatio: number
+    blockRows?: { evaluated: number; created: number; rejected: number }
     blockWork?: {
       logicalEmitted: number
       materialized: number
@@ -101,6 +102,8 @@ interface StrategyRows {
     active: number
     blockCreated?: number
     blockValid?: number
+    rowExecutable?: number
+    additionalDca?: number
     executable?: number
     mirroredRatio: number
     executablePerRow?: number
@@ -518,6 +521,11 @@ function MainSystemTab({
             <Row label="Active ratio" value={`${(rows?.real.activeRatio ?? 0).toFixed(1)}%`} />
             <Row label="PF ratio gate" value={`${realPf.toFixed(2)} × PositionCost`} />
             <Row label="Evaluation lookback" value={`Latest ${realLookback} positions per independent Row-Real`} />
+            <Row
+              label="Block Row-Real (evaluated / valid / rejected)"
+              value={`${fmt(rows?.real.blockRows?.evaluated ?? 0)} / ${fmt(rows?.real.blockRows?.created ?? 0)} / ${fmt(rows?.real.blockRows?.rejected ?? 0)} · window ${settingNumber("blockRowRealEvalPosCount", realLookback)}`}
+            />
+            <Row label="DCA assignment" value="Independent additional strategy · no Row-Real / Row-Live subtype" />
             <Row label="Avg positions" value={realAvgPositions !== null ? realAvgPositions.toFixed(2) : "—"} />
             <Row label="Max drawdown time" value={`≤ ${settingNumber("maxDrawdownTimeRealHours", 4)} h`} />
             <Row
@@ -536,6 +544,7 @@ function MainSystemTab({
             <Row label="Rows / Mirrored / Executable / Active" value={`${fmt(rows?.live.total ?? 0)} / ${fmt(rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.executable ?? rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.active ?? 0)}`} />
             <Row label="Mirror ratio" value={`${(rows?.live.mirroredRatio ?? 0).toFixed(1)}%`} />
             <Row label="Independent Block rows (materialized / PF-DDT valid)" value={`${fmt(rows?.live.blockCreated ?? 0)} / ${fmt(rows?.live.blockValid ?? 0)}`} />
+            <Row label="Independent DCA candidates (without Row subtype)" value={fmt(rows?.live.additionalDca ?? 0)} />
             <Row label="Executables per evaluated Row-Live" value={`${(rows?.live.executablePerRow ?? 0).toFixed(1)}% (normal + valid Block)`} />
             <Row label="Configured PF ratio" value={`${livePf.toFixed(2)} × PositionCost`} />
             <Row label="Max drawdown time" value={`≤ ${settingNumber("maxDrawdownTimeLiveHours", 4)} h`} />

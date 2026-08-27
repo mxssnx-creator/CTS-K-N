@@ -245,6 +245,11 @@ function overlayCurrentStrategyRows(
       activeExactRows: openValue(realActiveExact),
       validRatio: percentage(realValid, realEvaluated),
       activeRatio: percentage(openValue(realActiveCycle), realValid),
+      blockRows: {
+        evaluated: aggregateCompleteFreshRowField(realHash, realCoverage, "row_real_block_evaluated", "row_real_block_evaluated"),
+        created: aggregateCompleteFreshRowField(realHash, realCoverage, "row_real_block_created", "row_real_block_created"),
+        rejected: aggregateCompleteFreshRowField(realHash, realCoverage, "row_real_block_rejected", "row_real_block_rejected"),
+      },
     } : real,
     live: hasLiveRows ? {
       ...live,
@@ -253,7 +258,9 @@ function overlayCurrentStrategyRows(
       active: openValue(aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_active", "sets_running_now")),
       blockCreated: aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_block_created", "row_live_block_created"),
       blockValid: aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_block_valid", "row_live_block_valid"),
-      executable: aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_executable", "created_sets"),
+      rowExecutable: aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_executable", "created_sets"),
+      additionalDca: aggregateCompleteFreshRowField(liveHash, liveCoverage, "additional_dca_executable", "additional_dca_executable"),
+      executable: aggregateCompleteFreshRowField(liveHash, liveCoverage, "executable_total", "created_sets"),
       mirroredRatio: percentage(liveMirrored, liveTotal),
       executablePerRow: percentage(
         aggregateCompleteFreshRowField(liveHash, liveCoverage, "row_live_executable", "created_sets"),

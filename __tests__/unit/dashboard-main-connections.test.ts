@@ -180,7 +180,7 @@ describe("Main Connections dashboard contracts", () => {
 
     for (const source of [infoDialog, activeCard]) {
       expect(source).toContain("Real position detail")
-      expect(source).toContain("Default")
+      expect(source).toContain("Normal")
       expect(source).toContain("Trailing")
       expect(source).toContain("Block")
       expect(source).toContain("DCA")
@@ -193,6 +193,8 @@ describe("Main Connections dashboard contracts", () => {
     expect(infoDialog).toContain("Open symbols · Long / Short positions")
     expect(activeCard).toContain('aria-label="Currently open Real positions by symbol and direction"')
     expect(activeCard).toContain("Hedge extra")
+    expect(activeCard).toContain("executionPolicy?.blockEnabled")
+    expect(activeCard).toContain("executionPolicy?.dcaEnabled")
     expect(statsRoute).toContain("buildRealStagePositionStats")
     expect(statsRoute).toContain("hasCompleteRealVariantPositionLedger")
     expect(statsRoute).toContain("isOpenLiveExposureStatus")

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 /**
  * GET /api/settings/connections/[id]/statistics
@@ -77,32 +78,47 @@ export async function GET(
       }
     }
 
-    // Get progression data
-    const progressionKey = `settings:engine_progression:${connectionId}`
-    const progression = await getSettings(progressionKey) || {}
-
-    // Get trading metrics
-    const metricsKey = `trading_metrics:${connectionId}`
-    const metrics = await client.hgetall(metricsKey)
-    const tradingMetrics = metrics
-      ? {
-          total_trades: parseInt(metrics.total_trades || "0"),
-          winning_trades: parseInt(metrics.winning_trades || "0"),
-          losing_trades: parseInt(metrics.losing_trades || "0"),
-          total_profit: parseFloat(metrics.total_profit || "0"),
-          total_loss: parseFloat(metrics.total_loss || "0"),
-          max_drawdown: parseFloat(metrics.max_drawdown || "0"),
-          win_rate: parseFloat(metrics.win_rate || "0"),
-        }
-      : {
-          total_trades: 0,
-          winning_trades: 0,
-          losing_trades: 0,
-          total_profit: 0,
-          total_loss: 0,
-          max_drawdown: 0,
-          win_rate: 0,
-        }
+    const [scopedProgression, legacyProgression, execution] = await Promise.all([
+      client.hgetall(`progression:${connectionId}:main`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`progression:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      getLiveExecutionSummary(connectionId),
+    ])
+    const progression = Object.keys(scopedProgression).length > 0
+      ? scopedProgression
+      : Object.keys(legacyProgression).length > 0
+        ? legacyProgression
+        : await getSettings(`engine_progression:${connectionId}`) || {}
+    const tradingMetrics = {
+      total_trades: execution.totalTrades,
+      total_positions: execution.totalPositions,
+      open_positions: execution.openPositions,
+      open_symbols: execution.openSymbols,
+      open_orders: execution.openOrders,
+      open_order_symbols: execution.openOrderSymbols,
+      entry_orders: execution.entryOrders,
+      control_orders: execution.controlOrders,
+      excluded_untracked_positions: execution.excludedUntrackedPositions,
+      excluded_untracked_orders: execution.excludedUntrackedOrders,
+      exchange_scope: "cts_tracked_only",
+      exchange_snapshot_complete: execution.exchange.complete,
+      closed_positions: execution.closedPositions,
+      settled_closed_positions: execution.settledClosedPositions,
+      accounting_pending: execution.accountingPending,
+      accounting_complete: execution.complete,
+      winning_trades: execution.wins,
+      losing_trades: execution.losses,
+      break_even_trades: execution.breakEven,
+      total_profit: execution.realizedPnl,
+      unrealized_profit: execution.unrealizedPnl,
+      effective_profit: execution.effectivePnl,
+      total_loss: execution.losses > 0 && execution.avgLoss !== null
+        ? Math.abs(execution.avgLoss * execution.losses)
+        : 0,
+      max_drawdown: null,
+      win_rate: execution.winRate,
+      data_available: execution.totalPositions > 0,
+      source_counts: execution.sourceCounts,
+    }
 
     return NextResponse.json({
       success: true,
@@ -115,6 +131,7 @@ export async function GET(
       symbols: symbolStats,
       progression: progression,
       metrics: tradingMetrics,
+      exchange: execution.exchange,
       timestamp: new Date().toISOString(),
     })
   } catch (error) {

@@ -3,6 +3,94 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
+## Systemwide coordination/statistics release candidate (2026-08-27; authoritative)
+
+- Canonical checkout: `/workspace/CTS-K-N`, branch
+  `fix/control-orders-complete-20260826`, based on GitHub
+  `main@ec3be83`. The candidate implements exhaustive all-symbol/all-Set live
+  dispatch, independent per-Set control coverage, failed-open counts and
+  timings, session-recovery guards, Normal-by-default coordination without
+  legacy Block-only/DCA-only modes, Block Real-row controls (never DCA Rows),
+  Trailing/Direct TP/PF coordinate corrections, and expanded Main/overview/
+  indication statistics with time-range selection.
+- Every overall live statistic and monitoring/legacy coordination read now
+  derives from an authoritative exchange snapshot intersected with durable CTS
+  lifecycle tracking. Exact exchange/client/control order IDs identify CTS
+  orders; positions are matched by normalized connection/symbol/direction and
+  clamped to the durable CTS executed quantity. Manual or other-bot account
+  positions/orders are excluded and reported separately. When CTS tracking or
+  the venue snapshot is unavailable, the read fails non-authoritatively rather
+  than presenting zero. Realized PnL uses executed exchange accounting only and
+  the rolling UI view is limited to the latest 50 positions.
+- The legacy state machine is also fail-closed on the CTS ledger before it may
+  write exchange positions into its local tracker, preventing account-wide
+  rows from leaking back into downstream coordination. A mixed venue slot with
+  quantity 5 and durable CTS quantity 2 is attributed as quantity 2 with
+  proportional unrealized PnL; an untracked symbol is omitted completely.
+- Exact local gates on this source are green: 236/236 Jest suites and
+  1,564/1,564 tests, TypeScript, ESLint for every changed TS/TSX file,
+  `git diff --check`, production Next 15.5.18 build with 42/42 pages and 348
+  validated traces, plus local standalone HTTP 200 smoke checks for `/`,
+  `/main`, `/statistics`, `/statistics/indications/main`, `/settings`,
+  `/monitoring`, `/api/health/liveness`, and `/api/exchange/live-summary`.
+  Dependencies were restored offline with the repository-pinned pnpm 10.28.1;
+  the lockfile was unchanged.
+- The former `LIVE_DISPATCH_PER_CYCLE`/four-Set physical ceiling is removed;
+  dispatch now deduplicates by Set key and processes every policy-eligible Set
+  in the cycle. QuickStart `/api/exchange/live-summary` likewise uses the
+  CTS-attributed exchange snapshot for position/order counts and unrealized
+  PnL, exposes excluded external rows, and renders unavailable truth as an
+  explicit unavailable state instead of zero. The final standalone HTTP smoke
+  returned 200 for all eight release routes after these changes.
+- Verified pre-push recovery point:
+  `/workspace/backups/CTS-K-N/20260827T005058Z-final-prepush-system-stats`. It contains
+  the complete Git bundle, binary patch, untracked archive/list, HEAD/status,
+  and successful bundle/SHA-256 verification with owner-only permissions.
+- Direct-Trade statistics also cancel superseded/unmounted browser requests,
+  preventing a slower prior filter/connection response from overwriting the
+  current view. Recreation manifests verify 1,522 release files and exclude
+  the separate concurrent, uncommitted X02 observation report.
+- No exchange order, Redis mutation, or production service change was made.
+  X01/Mainnet and every Bybit connection remain read-only. The self-hosted IP
+  target is not updated: mandatory managed Chisel activation was rejected by
+  the workspace broker and the pinned localhost SSH forward was unavailable.
+  Publish through a green GitHub PR and merge first; then create a fresh server
+  backup and deploy only that merged `main` when the managed route is enabled.
+
+## Control-order release publication checkpoint (2026-08-26; latest handoff)
+
+- GitHub PR #233 (`Harden control orders and lifecycle statistics`) passed Dev
+  Preview Smoke plus both Vercel preview checks and was merged with the exact
+  reviewed head `3ee737d559f302bc0b9e3addf2f1505ae47b7073`. GitHub `main` now points to
+  merge commit `4d1bdb115cef2523bd02ce06174dc7a0da68d9a8`. The remote comparison contained
+  exactly the 63 reviewed paths and one commit over
+  `f6477985a2c2058b3f9c9991e9f3e125f85f3c9f`.
+- Final source gates for the merged change are green: 227/227 unit suites and
+  1,481/1,481 tests, 4/4 integration suites and 61/61 tests, TypeScript,
+  repository-wide ESLint, production Next build, 1,509-file recreation
+  verification, and a 1,517-file zero-finding secret scan.
+- The self-hosted target `http://152.53.114.112:3002` remains healthy with
+  healthy Redis, but has not been updated in this session. The mandatory managed
+  Chisel/SSH activation was denied by the workspace network approval layer
+  before a fetch or server mutation could occur. Do not claim the IP deployment
+  is complete. Resume with server backup, deploy only merged GitHub `main`, and
+  repeat the read-only health/deployment-contract checks once that channel is
+  explicitly enabled. Do not use an alternate unmanaged SSH route.
+- Both merged-main Vercel checks completed successfully. The `cts-k-n`
+  production deployment for `4d1bdb1` reached `READY`, and the 30-minute
+  Vercel runtime-error query returned zero clusters. This remains separate from
+  the self-hosted IP target, which still requires its controlled SSH deployment.
+- A separate concurrent task committed the X02 stability report and reconciled
+  it locally, then began additional execution-summary/coordination edits in the
+  shared checkout. Those follow-up edits are not part of PR #233 and must not be
+  reset, staged, or represented as validated by the release gates above. The
+  pre-merge recovery point is
+  `/workspace/backups/CTS-K-N/20260826T223106Z-premerge-control-orders`.
+- X01/Mainnet and all Bybit connections remain read-only. No production cron,
+  admin mutation, or exchange order was executed. A minimum-volume X02 BingX
+  Prod-VST lifecycle still requires explicit authorization, isolated ownership
+  IDs, and complete restoration to the recorded pre-test baseline.
+
 ## Control-order and lifecycle correctness release in progress (2026-08-26; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
@@ -2079,3 +2167,23 @@ credentials are present.
   `/workspace/backups/CTS-K-N/20260826T144135Z-pre-chisel-docs-hardening`; the
   separate activation-script checkpoint is
   `/workspace/backups/CTS-K-N/20260826T144008Z-pre-managed-chisel-activation-fix`.
+
+## Session 2026-08-27 — scheduled backup and publication gate
+
+- [x] Recovered and used the canonical checkout at `/workspace/CTS-K-N`.
+  Before updating refs, captured the active branch, binary worktree patch,
+  untracked-file archive/list, Git bundle, status, and SHA-256 verification in
+  `/workspace/backups/CTS-K-N/backup-gate-active-2026-08-27T000356Z`.
+- [x] Fetched GitHub and fast-forwarded the active branch
+  `fix/control-orders-complete-20260826` without conflicts from `d1e9a154` to
+  `main@ec3be835`; all pre-existing tracked and untracked work was preserved.
+- [x] `git diff --check`, the source credential scan, Kilo preflight, and the
+  Linux install preflight passed.
+- [ ] Publication is blocked. The pinned frozen install cannot complete
+  offline because `@hookform/resolvers@3.10.0` is absent from the local pnpm
+  store and registry access is unavailable in this runtime. Consequently
+  TypeScript, ESLint, Jest, source-syntax, and production build cannot be
+  declared passed. Recreation verification also reports stale manifests for
+  the uncommitted source changes, and deployment-contract verification has no
+  deployment URL. Do not commit, push, open a PR, merge, or deploy this
+  worktree until every required gate is rerun successfully.

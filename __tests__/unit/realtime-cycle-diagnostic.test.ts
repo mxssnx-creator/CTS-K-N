@@ -12,9 +12,10 @@ describe("exhaustive realtime cycle coordination", () => {
 
     expect(manager).toContain("function withCycleDiagnostic")
     expect(manager).toContain("continuing exhaustive work without retry")
-    expect(manager).toContain("REALTIME_CANONICAL_CYCLE_BUDGET_MS")
-    expect(manager).toContain("!cycleBudgetExceeded")
-    expect(manager).toContain("canonical_cycle_budget_exceeded_count")
+    expect(manager).toContain("REALTIME_CANONICAL_SLOW_THRESHOLD_MS")
+    expect(manager).not.toContain("!cycleBudgetExceeded")
+    expect(manager).toContain("canonical_cycle_slow_count")
+    expect(manager).toContain("configuredSymbols.length")
     expect(manager).toContain("The admission lease is intentionally")
     expect(manager).toContain("const scheduledGenerationIsCurrent = () =>")
     expect(manager).toContain('this.canonicalPipelineAdmission.touch("scheduled")')

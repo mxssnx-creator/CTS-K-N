@@ -508,7 +508,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { fetchTopSymbols } from "@/lib/top-symbols"
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
-import { DEFAULT_SYMBOL_COUNT, getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
+import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
 import { getStrategyMemoryCoordinationSnapshot } from "@/lib/strategy-memory-guard"
@@ -639,18 +639,16 @@ function parseCycleDeadlineMs(): number {
 // exchange work is repeatedly cancelled and appears stuck.
 const CYCLE_DEADLINE_MS = parseCycleDeadlineMs()
 
-function parseCanonicalRealtimeCycleBudgetMs(): number {
+function parseCanonicalRealtimeSlowThresholdMs(): number {
   const raw = Number(process.env.REALTIME_CANONICAL_CYCLE_BUDGET_MS)
   if (Number.isFinite(raw) && raw >= 5_000) return Math.floor(raw)
-  // One symbol owns one serial Indication→Strategy pass. Thirty seconds is
-  // long enough for the measured exhaustive indication grid, but short enough
-  // that one pathological symbol cannot prevent a 30-symbol basket from
-  // progressing for many minutes. Cancellation is cooperative and the owner
-  // remains awaited, so this budget can never admit overlapping work.
+  // Diagnostic only. Exhaustive symbol/Set work is never cancelled at this
+  // threshold; cancellation caused configured symbols later in the basket to
+  // remain permanently absent from Live after a slow first symbol.
   return process.env.NODE_ENV === "production" ? 30_000 : 60_000
 }
 
-const REALTIME_CANONICAL_CYCLE_BUDGET_MS = parseCanonicalRealtimeCycleBudgetMs()
+const REALTIME_CANONICAL_SLOW_THRESHOLD_MS = parseCanonicalRealtimeSlowThresholdMs()
 
 function parsePrehistoricBootstrapDeadlineMs(): number {
   const raw = Number(
@@ -781,6 +779,7 @@ export class TradeEngineManager {
   private strategyTimer?: NodeJS.Timeout
   private realtimeTimer?: NodeJS.Timeout
   private liveProgressionsArmed = false
+  private historicHandoffRecoveryInFlight = false
   /**
    * The cold, full-range bootstrap and the continuous checkpoint replay both
    * populate historical Sets. They must never run at the same time: doing so
@@ -1878,6 +1877,104 @@ export class TradeEngineManager {
   }
 
   /**
+   * Recover a lost Historic -> Realtime hand-off without trusting heartbeat
+   * liveness alone. The exit-only position loop intentionally keeps the
+   * manager heartbeat fresh during bootstrap, so a completed Historic run can
+   * otherwise leave Main entry processors gated forever after a session race.
+   *
+   * Every completion surface must agree with the current exact symbol basket
+   * and selection epoch before entry-producing loops are armed. If they do not
+   * agree and no Historic worker/retry owns the session, restart the guarded
+   * bootstrap instead of bypassing it.
+   */
+  private async recoverHistoricHandoffIfNeeded(
+    reason: string,
+  ): Promise<"armed" | "bootstrap" | "none"> {
+    if (
+      !this.isRunning ||
+      !this.startConfig ||
+      this.liveProgressionsArmed ||
+      this.historicHandoffRecoveryInFlight ||
+      this.prehistoricBootstrapInFlight ||
+      this.prehistoricReloadQueued ||
+      Boolean(this.prehistoricRetryTimer)
+    ) return "none"
+
+    this.historicHandoffRecoveryInFlight = true
+    try {
+      const client = getRedisClient()
+      const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
+      const [symbols, selection] = await Promise.all([
+        this.getSymbols(),
+        getCanonicalSymbolSelection(this.connectionId).catch(() => null),
+      ])
+      const [done, firstPass, complete, pfSample, storedEpoch, processed, total, persistedSymbols] =
+        await Promise.all([
+          readPrehistoricGate(client, this.connectionId, this.currentEngineType, "done"),
+          readPrehistoricGate(client, this.connectionId, this.currentEngineType, "firstpass:done"),
+          client.hget(scope.prehistoricKey, "is_complete"),
+          client.hget(scope.prehistoricKey, "historic_avg_profit_factor"),
+          client.hget(scope.prehistoricKey, "symbol_selection_epoch"),
+          client.hget(scope.prehistoricKey, "symbols_processed"),
+          client.hget(scope.prehistoricKey, "symbols_total"),
+          client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => []),
+        ])
+      const expected = symbols.map(String).sort()
+      const persisted = (persistedSymbols || []).map(String).sort()
+      const exactBasket = expected.length > 0 &&
+        Number(processed || 0) === expected.length &&
+        Number(total || 0) === expected.length &&
+        persisted.length === expected.length &&
+        persisted.every((symbol, index) => symbol === expected[index])
+      const exactEpoch = !selection?.epoch || storedEpoch === selection.epoch
+      const completeForCurrentSession = Boolean(
+        done &&
+        firstPass &&
+        complete === "1" &&
+        String(pfSample ?? "").trim() !== "" &&
+        exactBasket &&
+        exactEpoch
+      )
+
+      if (completeForCurrentSession) {
+        await setSettings(`trade_engine_state:${this.connectionId}`, {
+          prehistoric_data_loaded: true,
+          prehistoric_data_source: "verified-handoff-recovery",
+          prehistoric_bootstrap_status: "complete",
+          prehistoric_data_error: "",
+          entry_processors_gated: false,
+          engine_ready: true,
+          updated_at: new Date().toISOString(),
+        })
+        this.armLiveProgressions(`verified Historic hand-off recovery (${reason})`)
+        await logProgressionEvent(
+          this.connectionId,
+          "historic_handoff_recovered",
+          "warning",
+          `Recovered completed Historic -> Realtime hand-off for ${expected.length} symbols`,
+          { reason, symbols: expected.length, selectionEpoch: selection?.epoch || "" },
+        ).catch(() => undefined)
+        return "armed"
+      }
+
+      this.loadPrehistoricDataInBackground(
+        `prehistoric_loaded:${this.connectionId}`,
+        client,
+        `historic hand-off recovery: ${reason}`,
+      )
+      return "bootstrap"
+    } catch (error) {
+      console.warn(
+        `[v0] [Engine ${this.connectionId}] Historic hand-off recovery check failed:`,
+        error instanceof Error ? error.message : String(error),
+      )
+      return "none"
+    } finally {
+      this.historicHandoffRecoveryInFlight = false
+    }
+  }
+
+  /**
    * In-place self-heal for a stalled engine. Called by the coordinator's
    * watchdog (heartbeat older than 60s) and the unhandled-rejection
    * recovery path. Re-arms ONLY the processor timers that are currently
@@ -1892,6 +1989,8 @@ export class TradeEngineManager {
     if (!this.isRunning || !this.startConfig) return false
 
     const reasons: string[] = []
+    const historicRecovery = await this.recoverHistoricHandoffIfNeeded("watchdog re-arm")
+    if (historicRecovery !== "none") reasons.push(`historic-${historicRecovery}`)
     // Entry-producing loops remain deliberately absent during cold bootstrap.
     // A watchdog re-arm must not bypass that gate and race historical writes.
     if (this.liveProgressionsArmed) {
@@ -2981,12 +3080,10 @@ export class TradeEngineManager {
     let errorCount = 0
     let lastRealtimeStartedAt = 0
     let lastRealtimeCompletedAt = 0
-    // The full Base→Main→Real pipeline is CPU-heavy.  Processing a wide
-    // basket all at once on the Node event loop made a productive 12-symbol
-    // pass block health/control requests for tens of seconds.  Keep the
-    // complete configured basket, but rotate a small fair slice through it
-    // on each realtime tick. No Set/result is capped or discarded; this only
-    // bounds simultaneous work and gives every symbol a deterministic turn.
+    // The full Base→Main→Real pipeline is CPU-heavy, so bounded concurrency
+    // and cooperative yields protect the event loop. The complete configured
+    // basket is processed by default. An explicit per-tick override may rotate
+    // smaller batches for diagnostics, but no implicit symbol cap applies.
     let realtimeSymbolCursor = 0
 
     // Adaptive idle backoff. When prehistoric calc is complete and the cycle
@@ -3113,7 +3210,7 @@ export class TradeEngineManager {
       // monopolising the rotating basket. The admission lease is intentionally
       // retained until the currently-running stage actually returns; no
       // Promise.race and no second matrix can overlap the first.
-      let cycleBudgetExceeded = false
+      let cycleSlowThresholdExceeded = false
 
       // Refresh the prehistoric-done flag every 3s (non-blocking).
       if (startTime - prehistoricDoneCheckedAt > 3000) {
@@ -3138,9 +3235,9 @@ export class TradeEngineManager {
         }
 
         const configuredSymbolsPerTick = Number(process.env.REALTIME_PIPELINE_SYMBOLS_PER_TICK)
-        const symbolsPerTick = Number.isFinite(configuredSymbolsPerTick)
-          ? Math.max(1, Math.min(8, Math.floor(configuredSymbolsPerTick)))
-          : 1
+        const symbolsPerTick = Number.isFinite(configuredSymbolsPerTick) && configuredSymbolsPerTick > 0
+          ? Math.max(1, Math.min(configuredSymbols.length, Math.floor(configuredSymbolsPerTick)))
+          : configuredSymbols.length
         const symbols = Array.from(
           { length: Math.min(symbolsPerTick, configuredSymbols.length) },
           (_, offset) => configuredSymbols[(realtimeSymbolCursor + offset) % configuredSymbols.length],
@@ -3293,8 +3390,7 @@ export class TradeEngineManager {
             this.isRunning &&
             this.liveProgressionsArmed &&
             entryGeneration === this.entryProcessingGeneration &&
-            cycleSettingsVersion === this.settingsVersion &&
-            !cycleBudgetExceeded
+            cycleSettingsVersion === this.settingsVersion
           // `shouldContinue` is threaded through every indication, strategy,
           // Set-stage, and Live-dispatch checkpoint. Reaching one of those
           // checkpoints is real cooperative forward progress even when one
@@ -3348,16 +3444,15 @@ export class TradeEngineManager {
             }),
           ),
           `Engine ${this.connectionId} realtime-progression`,
-          REALTIME_CANONICAL_CYCLE_BUDGET_MS,
-          () => { cycleBudgetExceeded = true },
+          REALTIME_CANONICAL_SLOW_THRESHOLD_MS,
+          () => { cycleSlowThresholdExceeded = true },
         )
         // A complete canonical pass is actual forward progress. Keep the
         // watchdog tied to this stamp rather than the age of the lease.
         this.canonicalPipelineAdmission.touch("scheduled")
-        if (cycleBudgetExceeded) {
-          // The current stage has now returned and therefore cannot overlap
-          // the next tick. Record the incomplete pass explicitly, skip all
-          // success/current-row counters, then let finally rotate onward.
+        if (cycleSlowThresholdExceeded) {
+          // Record slow exhaustive work without discarding its completed
+          // results. The diagnostic threshold is not an admission/result cap.
           try {
             const client = getRedisClient()
             const progressionKey = buildProgressionScope(
@@ -3365,15 +3460,14 @@ export class TradeEngineManager {
               this.currentEngineType,
             ).progressionKey
             await Promise.all([
-              client.hincrby(progressionKey, "canonical_cycle_budget_exceeded_count", 1),
+              client.hincrby(progressionKey, "canonical_cycle_slow_count", 1),
               client.hset(progressionKey, {
-                canonical_cycle_budget_last_at: String(Date.now()),
-                canonical_cycle_budget_ms: String(REALTIME_CANONICAL_CYCLE_BUDGET_MS),
-                canonical_cycle_budget_symbols: symbols.join(","),
+                canonical_cycle_slow_last_at: String(Date.now()),
+                canonical_cycle_slow_threshold_ms: String(REALTIME_CANONICAL_SLOW_THRESHOLD_MS),
+                canonical_cycle_slow_symbols: symbols.join(","),
               }),
             ])
           } catch { /* best-effort telemetry */ }
-          return
         }
         if (
           !this.liveProgressionsArmed ||
@@ -5181,6 +5275,7 @@ export class TradeEngineManager {
       if (!this.isRunning) return
 
       try {
+        await this.recoverHistoricHandoffIfNeeded("manager health check")
         // Update component health statuses (pass cycleCount to skip checks during warmup)
         this.componentHealth.indications.status = this.getComponentHealthStatus(
           this.componentHealth.indications.successRate,
@@ -5341,25 +5436,11 @@ export class TradeEngineManager {
           try { forceSymbols = JSON.parse(forceSymbols) } catch { /* ignore */ }
         }
         
-        // If force_symbols exists but differs from cache, invalidate. In dev
-        // and self-hosted local-prod, getSymbols() applies V0_DEV_SYMBOL_COUNT
-        // after resolving force_symbols. Compare the same effective symbol list
-        // here; otherwise force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates
-        // on every tick and causes noisy coordinator/progression churn.
+        // If force_symbols exists but differs from cache, invalidate. Compare
+        // the complete canonical operator basket; runtime memory controls must
+        // never truncate it behind the operator's back.
         if (Array.isArray(forceSymbols) && forceSymbols.length > 0) {
-          let effectiveForceSymbols = withCanonicalForcedSymbols(forceSymbols)
-          const localSymbolCapActive =
-            process.env.NODE_ENV === "development" ||
-            (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())
-          if (localSymbolCapActive) {
-            const stateCap = Number((connState as any)?.dev_symbol_count_override)
-            const devCap = Number.isFinite(stateCap) && stateCap >= 1
-              ? Math.floor(stateCap)
-              : getExplicitLocalSymbolCap()
-            if (devCap) {
-              effectiveForceSymbols = withCanonicalForcedSymbols(effectiveForceSymbols, devCap)
-            }
-          }
+          const effectiveForceSymbols = withCanonicalForcedSymbols(forceSymbols)
           const sortedForce = [...effectiveForceSymbols].sort()
           const sortedCache = [...this._symbolsCache].sort()
           // CRITICAL FIX: Use efficient array comparison instead of JSON.stringify
@@ -5406,38 +5487,9 @@ export class TradeEngineManager {
         ])
 
         // ── DEV / LOCAL-PROD SYMBOL CAP ───────────────────────────────────
-        // In development the InlineLocalRedis emulator holds ALL state on the
-        // Node.js heap, so symbol count directly controls peak RSS. The cap
-        // is controlled by an explicit V0_DEV_SYMBOL_COUNT env override so it
-        // can be raised to 10+ on a larger-RAM VM without touching code.
-        //
-        // ALSO applied when running `next start` locally (NODE_ENV=production
-        // but VERCEL !== "1"). On a local VM the same RSS constraint applies.
-        // True Vercel deployments always have VERCEL="1" so they are unaffected.
-        //
-        // Behaviour:
-        //   V0_DEV_SYMBOL_COUNT=1  → resolve the mandatory quartet (minimum 4)
-        //   V0_DEV_SYMBOL_COUNT=10 → resolve operator symbols, then slice to 10
-        //   unset                  → no process-only cap; durable settings own N
-        const _isLocalRun = process.env.NODE_ENV === "development" ||
-          (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())
-        if (_isLocalRun) {
-          const stateCap = Number(
-            (connState as any)?.dev_symbol_count_override ??
-            (connSettings as any)?.dev_symbol_count_override,
-          )
-          const devCap = Number.isFinite(stateCap) && stateCap >= 1
-            ? Math.floor(stateCap)
-            : getExplicitLocalSymbolCap()
-          // IMPORTANT: never short-circuit to ["BTCUSDT"] here. That made
-          // local/self-hosted production ignore operator-selected force_symbols
-          // / active_symbols before the ownership guard ran, so ConfigSetProcessor
-          // saw active symbols [BTCUSDT] while the canonical selection still held
-          // the user's list and refused to write progress. The dashboard then
-          // stayed at 0/N symbols with no indication/strategy calculations.
-          // Resolve the real list first, then slice it at the end if needed.
-          ;(resolve as any)._devCap = devCap ?? undefined
-        }
+        // Explicit operator symbols are authoritative in every runtime. Memory
+        // pressure is controlled by bounded concurrency/yields, never by a
+        // hidden process-local truncation of the configured basket.
 
         if (operatorSettings && typeof operatorSettings === "object") {
           const symbolsField =
@@ -5475,12 +5527,7 @@ export class TradeEngineManager {
               60_000,
               `[v0] [getSymbols] ${this.connectionId}: using force_symbols (${forceSymbols.length} symbols)`,
             )
-            const forcedResolved = withCanonicalForcedSymbols(forceSymbols)
-            const localForcedCap = (resolve as any)._devCap
-            const effectiveForced =
-              typeof localForcedCap === "number" && localForcedCap >= 1
-                ? withCanonicalForcedSymbols(forcedResolved, localForcedCap)
-                : forcedResolved
+            const effectiveForced = withCanonicalForcedSymbols(forceSymbols)
             logRuntimeInfo(
               `engine:${this.connectionId}:force-symbols-effective`,
               60_000,
@@ -5574,21 +5621,7 @@ export class TradeEngineManager {
       }
     }
 
-    let resolved = withCanonicalForcedSymbols(await resolve())
-    // Apply dev symbol cap (devCap was stashed on the resolve function to
-    // avoid a closure variable that could race with concurrent calls).
-    if (process.env.NODE_ENV === "development" ||
-        (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())) {
-      const devCap = (resolve as any)._devCap
-      if (typeof devCap === "number" && resolved.length > devCap) {
-        resolved = withCanonicalForcedSymbols(resolved, devCap)
-        logRuntimeInfo(
-          `engine:${this.connectionId}:dev-symbol-cap`,
-          60_000,
-          `[v0] [getSymbols] Dev cap ${devCap}: using ${resolved.join(",")}`,
-        )
-      }
-    }
+    const resolved = withCanonicalForcedSymbols(await resolve())
     this._symbolsCache = resolved
     this._symbolsCachedAt = now
     return resolved

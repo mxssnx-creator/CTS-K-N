@@ -212,7 +212,7 @@ const DEFAULT_STATE: DirectTradeState = {
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
-  takeProfitDefaultsVersion: 2,
+  takeProfitDefaultsVersion: 3,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 0.8,
@@ -356,6 +356,11 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
         && Number(persisted?.takeProfitRatioStep) === 2
       const hasLegacyTakeProfitDefaults = takeProfitDefaultsVersion < 2
         && (hasFormerShippedTakeProfitGrid || hasUnversionedTransitionGrid)
+      const hasFormerShippedStepFiveDefault = takeProfitDefaultsVersion < 3
+        && Array.isArray(persisted?.takeProfitRatioRange)
+        && Number(persisted.takeProfitRatioRange[0]) === DEFAULT_STATE.takeProfitRatioRange[0]
+        && Number(persisted.takeProfitRatioRange[1]) === DEFAULT_STATE.takeProfitRatioRange[1]
+        && Number(persisted?.takeProfitRatioStep) === 5
       return {
         ...DEFAULT_STATE,
         ...persisted,
@@ -399,7 +404,7 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
             persisted?.takeProfitRatioRange,
             DEFAULT_STATE.takeProfitRatioRange,
           ),
-        takeProfitRatioStep: hasLegacyTakeProfitDefaults
+        takeProfitRatioStep: hasLegacyTakeProfitDefaults || hasFormerShippedStepFiveDefault
           ? DEFAULT_STATE.takeProfitRatioStep
           : normaliseDirectTradeTakeProfitRatioStep(
             persisted?.takeProfitRatioStep,
@@ -409,7 +414,7 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
           persisted?.trailingMinTakeProfitRatio ?? persisted?.trailingMinStep,
           DEFAULT_STATE.trailingMinTakeProfitRatio,
         ),
-        takeProfitDefaultsVersion: 2,
+        takeProfitDefaultsVersion: 3,
         // Upgrade exactly the former shipped 300-position default once. A
         // different persisted limit is an explicit operator choice.
         maxTotalPositions: (Number(persisted?.positionCapacityDefaultsVersion) || 0) < 1
@@ -1042,6 +1047,8 @@ export async function POST(request: NextRequest) {
         lifecycleCycleCount: Math.max(0, Math.floor(Number(body.lifecycleCycleCount) || 0)),
         tickCount: Math.max(0, Math.floor(Number(body.tickCount) || 0)),
         errorsLast5min: Math.max(0, Math.floor(Number(body.errorsLast5min) || 0)),
+        recalculationInFlight: body.recalculationInFlight === true,
+        nextRecalcAttemptAt: typeof body.nextRecalcAttemptAt === "string" ? body.nextRecalcAttemptAt : null,
         lastRecalcAt: typeof body.lastRecalcAt === "number" ? body.lastRecalcAt : null,
         positionCount: positions.length,
         openPositionCount: positions.filter((position: any) => position?.status === "open").length,

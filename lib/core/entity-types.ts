@@ -114,7 +114,8 @@ export const EntityMetadataMap: Record<EntityType, EntityMetadata> = {
       'id', 'name', 'description', 'preset_trade_type',
       'max_positions_per_indication', 'max_positions_per_direction', 'max_positions_per_range',
       'timeout_per_indication', 'timeout_after_position',
-      'block_enabled', 'block_only', 'dca_enabled', 'dca_only',
+      'normal_enabled', 'trailing_enabled', 'trailing_only',
+      'block_enabled', 'dca_enabled',
       'auto_evaluate', 'evaluation_interval_hours', 'last_evaluation_at',
       'is_active', 'created_at', 'updated_at'
     ],

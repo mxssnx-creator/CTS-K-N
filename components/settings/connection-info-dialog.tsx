@@ -273,11 +273,11 @@ function RealVariantStatsCard({
         </div>
         <div>
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">PF</p>
-          <p className="mt-0.5 font-semibold tabular-nums">{asNumber(stats.avgProfitFactor) > 0 ? formatNumber(stats.avgProfitFactor, 2) : "—"}</p>
+          <p className="mt-0.5 font-semibold tabular-nums">{asNumber(stats.performanceSamples) > 0 ? formatNumber(stats.avgProfitFactor, 2) : "—"}</p>
         </div>
         <div>
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">DDT</p>
-          <p className="mt-0.5 font-semibold tabular-nums">{asNumber(stats.avgDrawdownTime) > 0 ? `${formatNumber(stats.avgDrawdownTime, 1)} min` : "—"}</p>
+          <p className="mt-0.5 font-semibold tabular-nums">{asNumber(stats.performanceSamples) > 0 ? `${formatNumber(stats.avgDrawdownTime, 1)} min` : "—"}</p>
         </div>
         <div>
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Outcomes</p>
@@ -462,7 +462,15 @@ function RealVariantStatsCard({
   )
 }
 
-function RealStagePositionDetail({ value }: { value: unknown }) {
+function RealStagePositionDetail({ value, executionPolicy }: {
+  value: unknown
+  executionPolicy?: {
+    normalEnabled: boolean
+    trailingEnabled: boolean
+    blockEnabled: boolean
+    dcaEnabled: boolean
+  }
+}) {
   const detail = asRecord(value)
   const overall = asRecord(detail.overall)
   const openPositions = asRecord(detail.openPositions)
@@ -540,12 +548,15 @@ function RealStagePositionDetail({ value }: { value: unknown }) {
         <div>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Strategy types</p>
           <div className="grid gap-2 sm:grid-cols-2">
-            <RealVariantStatsCard label="Default" value={strategyTypes.default} />
+            <RealVariantStatsCard label="Normal" value={strategyTypes.default} />
             <RealVariantStatsCard label="Trailing" value={strategyTypes.trailing} />
           </div>
         </div>
         <div>
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Adjust types</p>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Additional types</p>
+          <p className="mb-2 text-[10px] text-muted-foreground">
+            Calculated continuously · Block live {executionPolicy?.blockEnabled ? "on" : "off"} · DCA live {executionPolicy?.dcaEnabled ? "on" : "off"}
+          </p>
           <div className="grid gap-2 sm:grid-cols-2">
             <RealVariantStatsCard label="Block" value={adjustTypes.block} adjust />
             <RealVariantStatsCard label="DCA" value={adjustTypes.dca} adjust />
@@ -800,6 +811,20 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
   const executionMode = asText(derived.mainTradeState.executionMode, mainTradeEffective ? "real" : "simulation")
   const statsSettingsRecoordination = asRecord(derived.stats.settingsRecoordination)
   const statsRecalculation = asRecord(derived.stats.statsRecalculation)
+  const coordinationSettings = asRecord(derived.settings.coordination_settings ?? derived.settings.coordinationSettings)
+  const coordinationVariants = asRecord(coordinationSettings.variants)
+  const stageOverviewMain = asRecord(asRecord(derived.stats.connectionStageOverview).main)
+  const reportedExecutionPolicy = asRecord(stageOverviewMain.executionPolicy)
+  const policyValue = (reported: unknown, configured: unknown, fallback: boolean): boolean => {
+    const value = reported ?? configured
+    return value === undefined || value === null || value === "" ? fallback : asBoolean(value)
+  }
+  const strategyExecutionPolicy = {
+    normalEnabled: policyValue(reportedExecutionPolicy.normalEnabled, derived.settings.normalEnabled ?? coordinationSettings.normalEnabled, true),
+    trailingEnabled: policyValue(reportedExecutionPolicy.trailingEnabled, derived.settings.variantTrailingEnabled ?? coordinationVariants.trailing, true),
+    blockEnabled: policyValue(reportedExecutionPolicy.blockEnabled, derived.settings.variantBlockEnabled ?? coordinationVariants.block, true),
+    dcaEnabled: policyValue(reportedExecutionPolicy.dcaEnabled, derived.settings.variantDcaEnabled ?? coordinationVariants.dca, false),
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1144,20 +1169,21 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
                     </div>
                   </SectionPanel>
 
-                  <RealStagePositionDetail value={asRecord(derived.strategyDetail.real).positionStats} />
+                  <RealStagePositionDetail
+                    value={asRecord(derived.strategyDetail.real).positionStats}
+                    executionPolicy={strategyExecutionPolicy}
+                  />
 
                   <div className="grid gap-4 lg:grid-cols-2">
                     <SectionPanel title="Strategy variants" description="Saved coordination gates applied during Main-stage Set creation." icon={<SlidersHorizontal className="h-4 w-4" />}>
                       {(() => {
-                        const coordination = asRecord(derived.settings.coordination_settings ?? derived.settings.coordinationSettings)
-                        const variants = asRecord(coordination.variants)
                         return (
                           <div className="grid grid-cols-2 gap-2">
                             {[
-                              ["Default", true],
-                              ["Trailing", asBoolean(variants.trailing, derived.settings.variantTrailingEnabled)],
-                              ["Block", asBoolean(variants.block, derived.settings.variantBlockEnabled)],
-                              ["DCA", asBoolean(variants.dca, derived.settings.variantDcaEnabled)],
+                              ["Normal", strategyExecutionPolicy.normalEnabled],
+                              ["Trailing", strategyExecutionPolicy.trailingEnabled],
+                              ["Block", strategyExecutionPolicy.blockEnabled],
+                              ["DCA", strategyExecutionPolicy.dcaEnabled],
                             ].map(([label, enabled]) => (
                               <div key={String(label)} className="flex items-center justify-between rounded-lg border bg-background/60 p-2.5">
                                 <span className="text-xs font-medium">{String(label)}</span>

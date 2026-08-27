@@ -27,23 +27,28 @@ import {
 import {
   getClosedLivePositionReadModels,
   getOpenLivePositionReadModels,
+  LIVE_POSITION_OPEN_READ_LIMIT,
 } from "@/lib/live-position-read-model"
 import { LIVE_POSITION_ANALYTICS_WINDOW_MS } from "@/lib/live-position-analytics-archive"
 import { isRealizedPnlAccountingPending } from "@/lib/live-position-pnl"
+import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-const COMMON_TYPES = [
+const MAIN_TYPES = [
   "direction",
   "move",
   "active",
   "active_advanced",
+  "special",
   "optimal",
   "auto",
   "trend",
 ]
+
+const COMMON_TYPES = ["common"]
 
 function normalizeSymbol(value: unknown): string {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, "")
@@ -220,15 +225,16 @@ export async function GET(request: Request) {
           recentLimit: 50,
           sinceMs: now - LIVE_POSITION_ANALYTICS_WINDOW_MS,
         }),
-        // Open counts must cover every active indication lane. A concurrency
-        // batch bounds Redis I/O inside the reader; it does not omit rows.
-        getOpenLivePositionReadModels(connectionId, 0),
+        // The hard limit exceeds supported exchange capacity while preventing
+        // a stale compatibility index from turning this UI poll into an
+        // unbounded Redis scan.
+        getOpenLivePositionReadModels(connectionId, LIVE_POSITION_OPEN_READ_LIMIT),
         getSignalSourceHealth(connectionId),
       ])
       return { connection, connectionId, closed, open, sourceHealth }
     }))
     const allClosed = snapshots.flatMap(({ connectionId, closed }) =>
-      closed.map((position: any) => ({
+      closed.filter(isExecutedRealExchangePosition).map((position: any) => ({
         position,
         trade: normalizeClosedTrade(connectionId, position),
         type: indicationType(position),
@@ -239,7 +245,7 @@ export async function GET(request: Request) {
       type: string
     }>
     const openRows = snapshots.flatMap(({ connectionId, open }) =>
-      open.map((position: any) => ({
+      open.filter(isExecutedRealExchangePosition).map((position: any) => ({
         connectionId,
         type: indicationType(position),
         symbol: normalizeSymbol(position?.symbol),
@@ -260,8 +266,20 @@ export async function GET(request: Request) {
       (!requestedGroup || row.trade.sourceIds.includes(requestedGroup))
     ))
     const signalTrades = signalRows.map((row) => row.trade)
-    const commonRowsUnfiltered = allClosed.filter((row) =>
+    const nonSignalRowsUnfiltered = allClosed.filter((row) =>
       row.type !== "signal" && row.trade.sourceIds.length === 0,
+    )
+    const mainRowsUnfiltered = nonSignalRowsUnfiltered.filter((row) =>
+      MAIN_TYPES.includes(row.type),
+    )
+    const mainRows = mainRowsUnfiltered.filter((row) => (
+      (!requestedDirection || row.trade.direction === requestedDirection) &&
+      (!requestedSymbol || row.trade.symbol.includes(requestedSymbol)) &&
+      (!requestedGroup || row.type === requestedGroup)
+    ))
+    const mainTrades = mainRows.map((row) => row.trade)
+    const commonRowsUnfiltered = nonSignalRowsUnfiltered.filter((row) =>
+      COMMON_TYPES.includes(row.type),
     )
     const commonRows = commonRowsUnfiltered.filter((row) => (
       (!requestedDirection || row.trade.direction === requestedDirection) &&
@@ -347,11 +365,14 @@ export async function GET(request: Request) {
       }
     })
 
-    const commonTypes = Array.from(new Set([
-      ...COMMON_TYPES,
-      ...commonRows.map((row) => row.type).filter((type) => type && type !== "unknown"),
+    const buildTypeRows = (
+      configuredTypes: readonly string[],
+      filteredRows: typeof commonRows,
+    ) => Array.from(new Set([
+      ...configuredTypes,
+      ...filteredRows.map((row) => row.type).filter((type) => type && type !== "unknown"),
     ])).map((type) => {
-      const rows = commonRows.filter((row) => row.type === type)
+      const rows = filteredRows.filter((row) => row.type === type)
       const trades = rows.map((row) => row.trade)
       const symbols = sortSymbolsBestFirst(Array.from(new Set([
         ...candidateSymbols,
@@ -381,6 +402,8 @@ export async function GET(request: Request) {
         symbols,
       }
     })
+    const mainTypes = buildTypeRows(MAIN_TYPES, mainRows)
+    const commonTypes = buildTypeRows(COMMON_TYPES, commonRows)
 
     return NextResponse.json({
       success: true,
@@ -436,11 +459,27 @@ export async function GET(request: Request) {
         rankings: buildSignalSymbolRankings(signalTrades, now, 12),
         sources: signalSources,
       },
+      main: {
+        counts: {
+          closedPositions: mainTrades.length,
+          openPositions: openRows.filter((row) =>
+            MAIN_TYPES.includes(row.type) &&
+            row.sourceIds.length === 0 &&
+            (!requestedDirection || row.direction === requestedDirection) &&
+            (!requestedSymbol || row.symbol.includes(requestedSymbol)) &&
+            (!requestedGroup || row.type === requestedGroup),
+          ).length,
+          indicationTypes: mainTypes.length,
+        },
+        windows: buildSignalAnalyticsWindows(mainTrades, now),
+        rankings: buildSignalSymbolRankings(mainTrades, now, 12),
+        types: mainTypes,
+      },
       common: {
         counts: {
           closedPositions: commonTrades.length,
           openPositions: openRows.filter((row) =>
-            row.type !== "signal" &&
+            COMMON_TYPES.includes(row.type) &&
             row.sourceIds.length === 0 &&
             (!requestedDirection || row.direction === requestedDirection) &&
             (!requestedSymbol || row.symbol.includes(requestedSymbol)) &&

@@ -132,10 +132,10 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/portfolios	GET,POST	portfolios	force-dynamic		none-detected	app/api/portfolios/route.ts
 /api/portfolios/[id]/history	GET	portfolios	force-dynamic		none-detected	app/api/portfolios/[id]/history/route.ts
 /api/portfolios/[id]/metrics	GET	portfolios	force-dynamic		none-detected	app/api/portfolios/[id]/metrics/route.ts
-/api/positions	GET,POST	positions	force-dynamic		none-detected	app/api/positions/route.ts
+/api/positions	GET,POST	positions	force-dynamic		session	app/api/positions/route.ts
 /api/positions/[id]	DELETE,GET,PATCH	positions	force-dynamic		none-detected	app/api/positions/[id]/route.ts
 /api/positions/evaluate-readiness	GET	positions	force-dynamic		none-detected	app/api/positions/evaluate-readiness/route.ts
-/api/positions/stats	GET	positions	force-dynamic		session	app/api/positions/stats/route.ts
+/api/positions/stats	GET	positions	force-dynamic		none-detected	app/api/positions/stats/route.ts
 /api/preset-coordination-engine/[id]/[presetTypeId]/start	POST	preset-coordination-engine	force-dynamic		none-detected	app/api/preset-coordination-engine/[id]/[presetTypeId]/start/route.ts
 /api/preset-coordination-engine/[id]/[presetTypeId]/status	GET	preset-coordination-engine	force-dynamic		none-detected	app/api/preset-coordination-engine/[id]/[presetTypeId]/status/route.ts
 /api/preset-coordination-engine/[id]/[presetTypeId]/stop	POST	preset-coordination-engine	force-dynamic		none-detected	app/api/preset-coordination-engine/[id]/[presetTypeId]/stop/route.ts

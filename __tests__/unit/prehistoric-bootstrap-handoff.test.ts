@@ -40,4 +40,28 @@ describe("prehistoric bootstrap generation hand-off", () => {
     expect(handoff.indexOf("this.prehistoricReloadQueued"))
       .toBeLessThan(handoff.indexOf("!this.isCurrentGeneration(generationEpoch)"))
   })
+
+  test("recovers a lost completed Historic to Realtime hand-off from exact session evidence", () => {
+    const recovery = source.slice(
+      source.indexOf("private async recoverHistoricHandoffIfNeeded("),
+      source.indexOf("async rearmIfStalled()", source.indexOf("private async recoverHistoricHandoffIfNeeded(")),
+    )
+    expect(recovery).toContain('readPrehistoricGate(client, this.connectionId, this.currentEngineType, "done")')
+    expect(recovery).toContain('readPrehistoricGate(client, this.connectionId, this.currentEngineType, "firstpass:done")')
+    expect(recovery).toContain('complete === "1"')
+    expect(recovery).toContain('String(pfSample ?? "").trim() !== ""')
+    expect(recovery).toContain("exactBasket")
+    expect(recovery).toContain("exactEpoch")
+    expect(recovery).toContain('prehistoric_data_source: "verified-handoff-recovery"')
+    expect(recovery).toContain("entry_processors_gated: false")
+    expect(recovery).toContain("engine_ready: true")
+    expect(recovery).toContain("this.armLiveProgressions")
+    expect(recovery).toContain("this.loadPrehistoricDataInBackground")
+
+    const health = source.slice(
+      source.indexOf("private startHealthMonitoring(): void"),
+      source.indexOf("private calculateOverallHealth", source.indexOf("private startHealthMonitoring(): void")),
+    )
+    expect(health).toContain('await this.recoverHistoricHandoffIfNeeded("manager health check")')
+  })
 })

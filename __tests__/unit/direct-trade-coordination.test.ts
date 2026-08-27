@@ -51,13 +51,13 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(normaliseDirectTradeTrailingMinTakeProfitRatio(35)).toBe(22)
   })
 
-  test("uses the 2–22 PositionCost TP contract with the fresh 5–10 default and 5× stride", () => {
+  test("uses the 2–22 PositionCost TP contract with the fresh 5–10 default and 3× stride", () => {
     expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([5, 10])
     expect(normaliseDirectTradeTakeProfitRatioRange([0, 99])).toEqual([2, 22])
-    expect(normaliseDirectTradeTakeProfitRatioStep(undefined)).toBe(5)
+    expect(normaliseDirectTradeTakeProfitRatioStep(undefined)).toBe(3)
     expect(normaliseDirectTradeTakeProfitRatioStep(0)).toBe(1)
     expect(buildDirectTradeTakeProfitPositionCostRatios([2, 5], 1)).toEqual([2, 3, 4, 5])
-    expect(buildDirectTradeTakeProfitPositionCostRatios([5, 10])).toEqual([5, 10])
+    expect(buildDirectTradeTakeProfitPositionCostRatios([5, 10])).toEqual([5, 8, 10])
     expect(directTradeTakeProfitPercent(0.1, 5)).toBe(0.5)
     expect(directTradeTakeProfitPercent(0.1, 22)).toBe(2.2)
     expect(averageDirectTradeTakeProfitRatio([5, 10])).toBe(7.5)

@@ -42,6 +42,8 @@ describe("Direct-Trade position/order statistics contract", () => {
     expect(statistics).toContain("Evaluated variants")
     expect(statistics).toContain("Realized exchange PnL")
     expect(statistics).toContain("Exchange accounting pending")
+    expect(statistics).toContain("activeRequestRef.current?.abort()")
+    expect(statistics).toContain("activeRequestRef.current !== controller")
     expect(logistics).toContain("configuration variants")
   })
 
@@ -59,6 +61,7 @@ describe("Direct-Trade position/order statistics contract", () => {
     expect(section).toContain("Internal avg/set / PF")
     expect(section).toContain("row.internalAveragePnlPerSet")
     expect(section).toContain("Aggregate across")
+    expect(section).toContain('row.closedPositions === 0')
     expect(section).not.toContain("{formatPnl(row.internalTotalPnl)} / {formatPF")
     expect(section).toContain("W / L / BE")
     expect(settings).toContain("enabledIndicationTypes")
@@ -81,5 +84,21 @@ describe("Direct-Trade position/order statistics contract", () => {
     expect(processor).toContain("lifecycleCycleCount++")
     expect(status).toContain("processorRuntime.heartbeatHealthy")
     expect(status).toContain("processorRuntime.progressHealthy")
+  })
+
+  test("keeps live lifecycle work serial while historic recalculation runs independently", () => {
+    const processor = read("scripts/direct-trade-processor.mjs")
+
+    expect(processor).toContain("function scheduleConfigRecalculation()")
+    expect(processor).toContain("async function applyCompletedConfigRecalculation()")
+    expect(processor).toContain("await applyCompletedConfigRecalculation()")
+    expect(processor).toContain("scheduleConfigRecalculation()")
+    expect(processor).not.toContain("calculationFresh = await recalculateConfigs()")
+    expect(processor).not.toContain("await recalculateConfigs()")
+    expect(processor).toContain("status === 409")
+    expect(processor).toContain("nextRecalcAttemptAt = Date.now() + retryAfterMs")
+    expect(processor).toContain("if (!calculationFresh) {")
+    expect(processor).toContain("if (stateDirty || Date.now() - lastPersistAt >= 2_000) await persistState()")
+    expect(processor).toContain("refreshErrorWindow()")
   })
 })

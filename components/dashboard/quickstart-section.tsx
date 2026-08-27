@@ -116,6 +116,11 @@ interface IndicationConfigCounts {
       longPositions: number
       shortPositions: number
       unrealizedPnl: number
+      positionsDataAvailable: boolean
+      ordersDataAvailable: boolean
+      openOrders: number
+      excludedUntrackedPositions: number
+      excludedUntrackedOrders: number
       /** Used balance committed to live positions on this connection
        *  (margin = sum of notional/leverage). Canonical USDT figure. */
       marginUsd?: number
@@ -141,6 +146,11 @@ interface IndicationConfigCounts {
       /** USDT leveraged notional across every connection. */
       volumeUsd?: number
       currency:      string
+      positionsDataAvailable: boolean
+      ordersDataAvailable: boolean
+      openOrders: number
+      excludedUntrackedPositions: number
+      excludedUntrackedOrders: number
     }
     updatedAt: number
   }
@@ -242,6 +252,10 @@ interface LiveStats {
   variantBlock: VariantDetail
   variantDca: VariantDetail
   variantOverall: VariantDetail
+  normalEnabled: boolean
+  trailingEnabled: boolean
+  blockEnabled: boolean
+  dcaEnabled: boolean
   // Main-stage coordination snapshot (position context + reuse rate)
   mainCoord: MainCoordination
   // live execution — real exchange positions
@@ -339,6 +353,7 @@ const EMPTY_STATS: LiveStats = {
   variantDefault:  { ...EMPTY_VARIANT }, variantTrailing: { ...EMPTY_VARIANT },
   variantBlock:    { ...EMPTY_VARIANT }, variantDca:      { ...EMPTY_VARIANT },
   variantOverall:  { ...EMPTY_VARIANT },
+  normalEnabled: true, trailingEnabled: true, blockEnabled: true, dcaEnabled: false,
   mainCoord: {
     ...EMPTY_MAIN_COORD,
     positionContext: { ...EMPTY_MAIN_COORD.positionContext },
@@ -624,6 +639,10 @@ export function QuickstartSection() {
         variantBlock:          variant(s.strategyVariants?.block),
         variantDca:            variant(s.strategyVariants?.dca),
         variantOverall:        variant(s.strategyVariants?.overall),
+        normalEnabled:         s.connectionStageOverview?.main?.executionPolicy?.normalEnabled !== false,
+        trailingEnabled:       s.connectionStageOverview?.main?.executionPolicy?.trailingEnabled !== false,
+        blockEnabled:          s.connectionStageOverview?.main?.executionPolicy?.blockEnabled !== false,
+        dcaEnabled:            s.connectionStageOverview?.main?.executionPolicy?.dcaEnabled === true,
         mainCoord,
         // Live exchange execution — prefer openPositions.live.open (scan-based, authoritative)
         // over liveExecution.positionsOpen (counter formula that can drift on restart).
@@ -2174,8 +2193,8 @@ export function QuickstartSection() {
                           )}
                         </td>
                         <td className="text-right py-1 px-1">{d.avgPosPerSet > 0 ? d.avgPosPerSet.toFixed(1) : "—"}</td>
-                        <td className="text-right py-1 px-1">{d.avgProfitFactor > 0 ? d.avgProfitFactor.toFixed(2) : "—"}</td>
-                        <td className="text-right py-1 pl-1">{d.avgDrawdownTime > 0 ? Math.round(d.avgDrawdownTime) : "—"}</td>
+                        <td className="text-right py-1 px-1">{d.createdSets > 0 ? d.avgProfitFactor.toFixed(2) : "—"}</td>
+                        <td className="text-right py-1 pl-1">{d.createdSets > 0 ? Math.round(d.avgDrawdownTime) : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -2288,7 +2307,7 @@ export function QuickstartSection() {
             {/* ── Strategy Variants — per-type breakdown ─────────────────
                 The Main stage now produces one DEDICATED Set per active
                 variant (linked to its Base parent via parentSetKey):
-                  Default  — always on: validates the Base Set
+                  Normal   — default-enabled, independent Base Set processing
                   Trailing — recent winners with no open position
                   Block    — open position available to add to
                   DCA      — recent losses to recover
@@ -2321,18 +2340,20 @@ export function QuickstartSection() {
                   </thead>
                   <tbody>
                     {[
-                      { label: "Default",  color: "text-slate-600  dark:text-slate-400",  d: stats.variantDefault  },
-                      { label: "Trailing", color: "text-cyan-600   dark:text-cyan-400",   d: stats.variantTrailing },
-                      { label: "Block",    color: "text-fuchsia-600 dark:text-fuchsia-400", d: stats.variantBlock   },
-                      { label: "DCA",      color: "text-amber-600  dark:text-amber-400",  d: stats.variantDca      },
-                    ].map(({ label, color, d }) => (
+                      { label: "Normal",   color: "text-slate-600  dark:text-slate-400",  d: stats.variantDefault, enabled: stats.normalEnabled },
+                      { label: "Trailing", color: "text-cyan-600   dark:text-cyan-400",   d: stats.variantTrailing, enabled: stats.trailingEnabled },
+                      { label: "Block", color: "text-fuchsia-600 dark:text-fuchsia-400", d: stats.variantBlock, enabled: stats.blockEnabled },
+                      { label: "DCA", color: "text-amber-600 dark:text-amber-400", d: stats.variantDca, enabled: stats.dcaEnabled },
+                    ].map(({ label, color, d, enabled }) => (
                       <tr key={label} className="border-b border-border/20">
-                        <td className={`py-1 pr-2 font-semibold ${color}`}>{label}</td>
+                        <td className={`py-1 pr-2 font-semibold ${color}`} title={`Calculated continuously; live execution ${enabled ? "enabled" : "disabled"}`}>
+                          {label}<span className="ml-1 text-[9px] font-normal text-muted-foreground">{enabled ? "on" : "calc only"}</span>
+                        </td>
                         <td className="text-right py-1 px-1">{fmt(d.createdSets)}</td>
                         <td className="text-right py-1 px-1">{fmt(d.entriesCount)}</td>
                         <td className="text-right py-1 px-1">{d.avgPosPerSet > 0 ? d.avgPosPerSet.toFixed(1) : "—"}</td>
-                        <td className="text-right py-1 px-1">{d.avgProfitFactor > 0 ? d.avgProfitFactor.toFixed(2) : "—"}</td>
-                        <td className="text-right py-1 pl-1">{d.avgDrawdownTime > 0 ? Math.round(d.avgDrawdownTime) : "—"}</td>
+                        <td className="text-right py-1 px-1">{d.performanceSamples > 0 ? d.avgProfitFactor.toFixed(2) : "—"}</td>
+                        <td className="text-right py-1 pl-1">{d.performanceSamples > 0 ? Math.round(d.avgDrawdownTime) : "—"}</td>
                         <td className="text-right py-1 pl-1">{fmt(d.performanceSamples)}</td>
                       </tr>
                     ))}
@@ -2345,8 +2366,8 @@ export function QuickstartSection() {
                           ? (stats.variantOverall.entriesCount / Math.max(1, stats.variantOverall.createdSets)).toFixed(1)
                           : "—"}
                       </td>
-                      <td className="text-right py-1 px-1">{stats.variantOverall.avgProfitFactor > 0 ? stats.variantOverall.avgProfitFactor.toFixed(2) : "—"}</td>
-                      <td className="text-right py-1 pl-1">{stats.variantOverall.avgDrawdownTime > 0 ? Math.round(stats.variantOverall.avgDrawdownTime) : "—"}</td>
+                      <td className="text-right py-1 px-1">{stats.variantOverall.performanceSamples > 0 ? stats.variantOverall.avgProfitFactor.toFixed(2) : "—"}</td>
+                      <td className="text-right py-1 pl-1">{stats.variantOverall.performanceSamples > 0 ? Math.round(stats.variantOverall.avgDrawdownTime) : "—"}</td>
                       <td className="text-right py-1 pl-1">{fmt(stats.variantOverall.performanceSamples)}</td>
                     </tr>
                   </tbody>
@@ -2430,18 +2451,32 @@ export function QuickstartSection() {
               <div className="flex flex-wrap gap-1.5">
                 <MiniStat
                   label="Open Pos"
-                  value={fmt(liveSummary?.totals.openPositions ?? 0)}
+                  value={liveSummary?.totals.positionsDataAvailable
+                    ? fmt(liveSummary.totals.openPositions)
+                    : "—"}
                   sub={liveSummary
-                    ? `${liveSummary.totals.longPositions}L / ${liveSummary.totals.shortPositions}S`
+                    ? liveSummary.totals.positionsDataAvailable
+                      ? `${liveSummary.totals.longPositions}L / ${liveSummary.totals.shortPositions}S`
+                      : "Exchange unavailable"
                     : undefined}
                 />
                 <MiniStat
                   label="Unrealised PnL"
                   value={(() => {
+                    if (!liveSummary?.totals.positionsDataAvailable) return "—"
                     const v = liveSummary?.totals.unrealizedPnl ?? 0
                     return `${v >= 0 ? "+" : ""}${v.toFixed(2)}`
                   })()}
                   sub={liveSummary?.totals.currency}
+                />
+                <MiniStat
+                  label="CTS Orders"
+                  value={liveSummary?.totals.ordersDataAvailable
+                    ? fmt(liveSummary.totals.openOrders)
+                    : "—"}
+                  sub={liveSummary
+                    ? `Excluded ${liveSummary.totals.excludedUntrackedPositions}P/${liveSummary.totals.excludedUntrackedOrders}O`
+                    : undefined}
                 />
                 <MiniStat
                   label="Balance"
@@ -2483,8 +2518,8 @@ export function QuickstartSection() {
                         )}
                       </span>
                       <span className="text-right tabular-nums">
-                        {c.openPositions}
-                        {c.openPositions > 0 && (
+                        {c.positionsDataAvailable ? c.openPositions : "—"}
+                        {c.positionsDataAvailable && c.openPositions > 0 && (
                           <span className="text-muted-foreground/70 ml-1">
                             {c.longPositions}L/{c.shortPositions}S
                           </span>
@@ -2500,7 +2535,9 @@ export function QuickstartSection() {
                               : "text-muted-foreground")
                         }
                       >
-                        {c.unrealizedPnl >= 0 ? "+" : ""}{c.unrealizedPnl.toFixed(2)}
+                        {c.positionsDataAvailable
+                          ? `${c.unrealizedPnl >= 0 ? "+" : ""}${c.unrealizedPnl.toFixed(2)}`
+                          : "—"}
                       </span>
                       <span className="text-right tabular-nums">
                         {c.balance.total.toFixed(2)}
