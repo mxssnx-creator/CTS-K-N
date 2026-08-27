@@ -1,5 +1,6 @@
 const mockGetLivePositions = jest.fn()
 const mockGetClosedLivePositions = jest.fn()
+const mockGetLiveExecutionSummary = jest.fn()
 
 jest.mock("next/server", () => ({
   NextResponse: {
@@ -16,12 +17,85 @@ jest.mock("@/lib/trade-engine/stages/live-stage", () => ({
   getClosedLivePositions: (...args: unknown[]) => mockGetClosedLivePositions(...args),
 }))
 
+jest.mock("@/lib/live-execution-summary", () => ({
+  getLiveExecutionSummary: (...args: unknown[]) => mockGetLiveExecutionSummary(...args),
+}))
+
 const { GET } = require("@/app/api/trade-engine/pnl-stats/route")
 
 describe("trade-engine PnL statistics", () => {
   beforeEach(() => {
     mockGetLivePositions.mockReset()
     mockGetClosedLivePositions.mockReset()
+    mockGetLiveExecutionSummary.mockReset()
+    mockGetLiveExecutionSummary.mockResolvedValue({
+      openPositions: 0,
+      unrealizedPnl: 0,
+      excludedUntrackedPositions: 0,
+      excludedUntrackedOrders: 0,
+      exchange: {
+        positionsStatus: { available: false },
+        ordersStatus: { available: false },
+        tracking: { attributionComplete: false },
+      },
+    })
+  })
+
+  test("uses one CTS-attributed venue PnL for independently tracked Sets", async () => {
+    mockGetClosedLivePositions.mockResolvedValue([])
+    mockGetLivePositions.mockResolvedValue([
+      {
+        id: "set-a",
+        status: "open",
+        executionMode: "live",
+        orderId: "venue-a",
+        symbol: "BTCUSDT",
+        direction: "long",
+        executedQuantity: 0.0001,
+        entryPrice: 100,
+        markPrice: 110,
+        marginUsd: 1,
+      },
+      {
+        id: "set-b",
+        status: "filled",
+        executionMode: "live",
+        orderId: "venue-b",
+        symbol: "BTCUSDT",
+        direction: "long",
+        executedQuantity: 0.0001,
+        entryPrice: 100,
+        markPrice: 110,
+        marginUsd: 1,
+      },
+    ])
+    mockGetLiveExecutionSummary.mockResolvedValue({
+      openPositions: 1,
+      unrealizedPnl: 0.25,
+      excludedUntrackedPositions: 25,
+      excludedUntrackedOrders: 2,
+      exchange: {
+        positionsStatus: { available: true },
+        ordersStatus: { available: true },
+        tracking: { attributionComplete: true },
+      },
+    })
+
+    const response = await GET({
+      url: "http://localhost/api/trade-engine/pnl-stats?connection_id=conn-netted-sets",
+    })
+
+    expect(response.body.stats).toMatchObject({
+      total_positions: 1,
+      open_positions: 1,
+      open_set_lifecycles: 2,
+      open_exchange_positions: 1,
+      open_positions_source: "cts_exchange_snapshot",
+      excluded_untracked_positions: 25,
+      excluded_untracked_orders: 2,
+      unrealized_pnl: 0.25,
+      total_pnl: 0.25,
+    })
   })
 
   test("uses the canonical live ledger for realised and current PnL", async () => {
