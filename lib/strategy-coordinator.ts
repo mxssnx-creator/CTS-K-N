@@ -1218,6 +1218,16 @@ export interface LiveDispatchPlan {
   budget: number
 }
 
+/**
+ * Hard physical dispatch ceiling per symbol and coordinator cycle.
+ *
+ * Every Set is still calculated, evaluated and published. Only exchange/paper
+ * side effects are sliced so a large all-indication basket cannot monopolize
+ * the event loop or create an unbounded venue burst. The durable cursor below
+ * visits the remaining Sets on subsequent cycles.
+ */
+export const LIVE_DISPATCH_HARD_MAX_PER_SYMBOL = 4
+
 function liveDispatchFamily(candidate: StrategySet): string {
   const isSignal =
     String(candidate.indicationType || "").toLowerCase() === "signal" ||
@@ -1236,11 +1246,18 @@ function liveDispatchFamily(candidate: StrategySet): string {
   return "main_standard"
 }
 
-/** Return every unique policy-eligible Set for physical dispatch. */
+/**
+ * Select one bounded, family-interleaved physical slice.
+ *
+ * The returned `deferred` rows are not discarded; the caller persists
+ * `nextCursor` and resumes from it after restart. Family interleaving prevents
+ * a large Standard matrix from starving Trailing/Block/DCA while the rotating
+ * cursor proves eventual coverage of every unique eligible Set.
+ */
 export function planLiveDispatchCandidatesFairly(
   candidates: readonly StrategySet[],
-  _rawBudget?: unknown,
-  _rawCursor?: unknown,
+  rawBudget: unknown = LIVE_DISPATCH_HARD_MAX_PER_SYMBOL,
+  rawCursor: unknown = 0,
 ): LiveDispatchPlan {
   const unique: StrategySet[] = []
   const seenKeys = new Set<string>()
@@ -1250,14 +1267,46 @@ export function planLiveDispatchCandidatesFairly(
     seenKeys.add(key)
     unique.push(candidate)
   }
-  const budget = unique.length
-  const familyCount = new Set(unique.map(liveDispatchFamily)).size
+  const families = new Map<string, StrategySet[]>()
+  for (const candidate of unique) {
+    const family = liveDispatchFamily(candidate)
+    const queue = families.get(family) ?? []
+    queue.push(candidate)
+    families.set(family, queue)
+  }
+  const fairSequence: StrategySet[] = []
+  for (let row = 0; fairSequence.length < unique.length; row += 1) {
+    for (const queue of families.values()) {
+      if (queue[row]) fairSequence.push(queue[row])
+    }
+  }
+  const parsedBudget = Number(rawBudget)
+  const budget = Math.min(
+    fairSequence.length,
+    Math.max(
+      1,
+      Math.min(
+        LIVE_DISPATCH_HARD_MAX_PER_SYMBOL,
+        Number.isFinite(parsedBudget) ? Math.floor(parsedBudget) : LIVE_DISPATCH_HARD_MAX_PER_SYMBOL,
+      ),
+    ),
+  )
+  const parsedCursor = Number(rawCursor)
+  const cursor = fairSequence.length > 0
+    ? ((Number.isFinite(parsedCursor) ? Math.floor(parsedCursor) : 0) % fairSequence.length + fairSequence.length) % fairSequence.length
+    : 0
+  const selected = Array.from(
+    { length: budget },
+    (_, offset) => fairSequence[(cursor + offset) % fairSequence.length],
+  )
+  const selectedKeys = new Set(selected.map((candidate) => candidate.setKey))
+  const deferred = fairSequence.filter((candidate) => !selectedKeys.has(candidate.setKey))
   return {
-    selected: unique,
-    deferred: [],
-    cursor: 0,
-    nextCursor: 0,
-    familyCount,
+    selected,
+    deferred,
+    cursor,
+    nextCursor: fairSequence.length > budget ? (cursor + budget) % fairSequence.length : 0,
+    familyCount: families.size,
     budget,
   }
 }
@@ -9147,9 +9196,9 @@ export class StrategyCoordinator {
         // direct pseudo fan-out opened adjustment variants as standalone
         // positions and never exercised their real quantity/step lifecycle.
         if (!isLiveTradeEnabled || connector) {
-            // Calculation and physical dispatch are exhaustive for every
-            // policy-enabled Set. Deduplication prevents duplicate writes, but
-            // no hidden per-symbol budget may defer otherwise eligible Sets.
+            // Calculation/evaluation above remains exhaustive for every Set.
+            // Physical exchange/paper side effects use a bounded durable
+            // cursor so all rows progress without an event-loop/order burst.
             const dispatchCandidates = qualifying
             const policyEligibleDispatchSets = anyExecutionFamilyEnabled
               ? selectLiveDispatchCandidates(dispatchCandidates, executionPolicy)
@@ -9162,7 +9211,26 @@ export class StrategyCoordinator {
             )
             const dispatchClient = getRedisClient()
             const dispatchDetailKey = `strategy_detail:${this.connectionId}:live`
-            const dispatchPlan = planLiveDispatchCandidatesFairly(policyEligibleDispatchSets)
+            let persistedDispatchCursor = 0
+            try {
+              if (typeof (dispatchClient as any).hget === "function") {
+                persistedDispatchCursor = Number.parseInt(
+                  String(await (dispatchClient as any).hget(
+                    dispatchDetailKey,
+                    `s:${symbol}:dispatch_cursor`,
+                  ) || "0"),
+                  10,
+                ) || 0
+              }
+            } catch {
+              // A missing diagnostic cursor may restart at zero; durable
+              // execution identity still prevents duplicate exchange orders.
+            }
+            const dispatchPlan = planLiveDispatchCandidatesFairly(
+              policyEligibleDispatchSets,
+              LIVE_DISPATCH_HARD_MAX_PER_SYMBOL,
+              persistedDispatchCursor,
+            )
             const dispatchSets = dispatchPlan.selected
             try {
               const selectedSummary = summarizeLiveDispatchRows(dispatchSets, "qualified_policy_enabled")

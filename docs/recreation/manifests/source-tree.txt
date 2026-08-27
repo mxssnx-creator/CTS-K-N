@@ -951,6 +951,12 @@ docs/reports/20260826T220722Z-x02-stability/load-matrix.csv
 docs/reports/20260826T220722Z-x02-stability/report.md
 docs/reports/20260826T220722Z-x02-stability/step-results.csv
 docs/reports/20260826T220722Z-x02-stability/summary.json
+docs/reports/20260826T233006Z-x02-vst-one-hour/SHA256SUMS
+docs/reports/20260826T233006Z-x02-vst-one-hour/engine-results.csv
+docs/reports/20260826T233006Z-x02-vst-one-hour/report.md
+docs/reports/20260826T233006Z-x02-vst-one-hour/runtime-series.csv
+docs/reports/20260826T233006Z-x02-vst-one-hour/step-results.csv
+docs/reports/20260826T233006Z-x02-vst-one-hour/summary.json
 docs/signal-source-research.md
 docs/system-modules-map.md
 drizzle.config.ts
@@ -1428,6 +1434,7 @@ scripts/local-redis.sh
 scripts/logistics-test-suite.mjs
 scripts/maintain-github-origin.sh
 scripts/monitor-prod-8h.sh
+scripts/next-build-race-classifier.mjs
 scripts/next-fs-rm-compat.cjs
 scripts/normalize-next-env.mjs
 scripts/npm-redis-service.mjs

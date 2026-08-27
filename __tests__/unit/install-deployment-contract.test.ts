@@ -3,6 +3,7 @@ import { existsSync, lstatSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
 import { POST } from "@/app/api/install/remote/route"
 
 const ADMIN_SECRET = "install-test-admin-secret-000000000000"
@@ -250,6 +251,30 @@ describe("production installation and Kilo deployment contract", () => {
     execFileSync("bash", ["-n", "scripts/service-control.sh"], { cwd: process.cwd() })
     expect(await readFile(path.join(process.cwd(), "pnpm-workspace.yaml"), "utf8"))
       .toContain("onlyBuiltDependencies:")
+  })
+
+  it("retries a missing Next BUILD_ID only after compilation reached page collection", () => {
+    const classifierUrl = pathToFileURL(
+      path.join(process.cwd(), "scripts", "next-build-race-classifier.mjs"),
+    ).href
+    const script = `
+      import { isRecoverableNextFilesystemRace } from ${JSON.stringify(classifierUrl)};
+      const lifecycle = "Compiled successfully\\nCollecting page data";
+      const missing = "Could not find a production build in '/workspace/project/.next'. https://nextjs.org/docs/messages/next-export-no-build-id";
+      const results = [
+        isRecoverableNextFilesystemRace(lifecycle + "\\n" + missing),
+        isRecoverableNextFilesystemRace(missing),
+        isRecoverableNextFilesystemRace(lifecycle + "\\nType error\\n" + missing),
+        isRecoverableNextFilesystemRace("Compiled successfully\\nCollecting page data\\nUnexpected end of JSON input"),
+      ];
+      process.stdout.write(JSON.stringify(results));
+    `
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    })
+
+    expect(JSON.parse(output)).toEqual([true, false, false, true])
   })
 
   it("moves out of an installed checkout before deletion so the replacement clone can start", async () => {

@@ -3,59 +3,53 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
-## Systemwide coordination/statistics release candidate (2026-08-27; authoritative)
+## One-hour X02 audit and continuity release candidate (2026-08-27; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
-  `fix/control-orders-complete-20260826`, based on GitHub
-  `main@ec3be83`. The candidate implements exhaustive all-symbol/all-Set live
-  dispatch, independent per-Set control coverage, failed-open counts and
-  timings, session-recovery guards, Normal-by-default coordination without
-  legacy Block-only/DCA-only modes, Block Real-row controls (never DCA Rows),
-  Trailing/Direct TP/PF coordinate corrections, and expanded Main/overview/
-  indication statistics with time-range selection.
-- Every overall live statistic and monitoring/legacy coordination read now
-  derives from an authoritative exchange snapshot intersected with durable CTS
-  lifecycle tracking. Exact exchange/client/control order IDs identify CTS
-  orders; positions are matched by normalized connection/symbol/direction and
-  clamped to the durable CTS executed quantity. Manual or other-bot account
-  positions/orders are excluded and reported separately. When CTS tracking or
-  the venue snapshot is unavailable, the read fails non-authoritatively rather
-  than presenting zero. Realized PnL uses executed exchange accounting only and
-  the rolling UI view is limited to the latest 50 positions.
-- The legacy state machine is also fail-closed on the CTS ledger before it may
-  write exchange positions into its local tracker, preventing account-wide
-  rows from leaking back into downstream coordination. A mixed venue slot with
-  quantity 5 and durable CTS quantity 2 is attributed as quantity 2 with
-  proportional unrealized PnL; an untracked symbol is omitted completely.
-- Exact local gates on this source are green: 236/236 Jest suites and
-  1,564/1,564 tests, TypeScript, ESLint for every changed TS/TSX file,
-  `git diff --check`, production Next 15.5.18 build with 42/42 pages and 348
-  validated traces, plus local standalone HTTP 200 smoke checks for `/`,
-  `/main`, `/statistics`, `/statistics/indications/main`, `/settings`,
-  `/monitoring`, `/api/health/liveness`, and `/api/exchange/live-summary`.
-  Dependencies were restored offline with the repository-pinned pnpm 10.28.1;
-  the lockfile was unchanged.
-- The former `LIVE_DISPATCH_PER_CYCLE`/four-Set physical ceiling is removed;
-  dispatch now deduplicates by Set key and processes every policy-eligible Set
-  in the cycle. QuickStart `/api/exchange/live-summary` likewise uses the
-  CTS-attributed exchange snapshot for position/order counts and unrealized
-  PnL, exposes excluded external rows, and renders unavailable truth as an
-  explicit unavailable state instead of zero. The final standalone HTTP smoke
-  returned 200 for all eight release routes after these changes.
-- Verified pre-push recovery point:
-  `/workspace/backups/CTS-K-N/20260827T005058Z-final-prepush-system-stats`. It contains
-  the complete Git bundle, binary patch, untracked archive/list, HEAD/status,
-  and successful bundle/SHA-256 verification with owner-only permissions.
-- Direct-Trade statistics also cancel superseded/unmounted browser requests,
-  preventing a slower prior filter/connection response from overwriting the
-  current view. Recreation manifests verify 1,522 release files and exclude
-  the separate concurrent, uncommitted X02 observation report.
-- No exchange order, Redis mutation, or production service change was made.
-  X01/Mainnet and every Bybit connection remain read-only. The self-hosted IP
-  target is not updated: mandatory managed Chisel activation was rejected by
-  the workspace broker and the pinned localhost SSH forward was unavailable.
-  Publish through a green GitHub PR and merge first; then create a fresh server
-  backup and deploy only that merged `main` when the managed route is enabled.
+  `fix/control-orders-complete-20260826`. Local source commit `6bd7b8b` is a
+  linear child of GitHub `main@ec3be83`; the final report/build/safety follow-up
+  remains uncommitted until the last checkpoint. Do not reset or split this
+  shared release candidate.
+- The read-only X02 observer captured 241 samples from
+  2026-08-26T23:30:06Z through 2026-08-27T00:30:43Z. Health was HTTP 200 for
+  241/241 samples, but the deployed Direct worker had only 196/241 healthy
+  progress samples, progress-age p95 47.993 s, and repeated expected projection
+  lease conflicts counted as errors. The durable settled exchange subset was
+  -2.15 USDT with classic PF 0.73876063; no new entry and no new settled result
+  occurred during the hour. No configuration is Mainnet-qualified.
+- Sanitized evidence is under
+  `docs/reports/20260826T233006Z-x02-vst-one-hour/`: Markdown, JSON, 241-row
+  runtime CSV, 22-row engine CSV, 29-row step CSV, and verified SHA-256 sums.
+  PF coordinate remains unavailable unless every settled row has a positive
+  PositionCost denominator; pending/open rows never enter realized PnL/PF.
+- The Direct worker fix makes historical recalculation single-flight and
+  asynchronous, backs off expected 409 lease conflicts without inflating the
+  error window, persists progress while projection runs, and keeps live
+  position management independent. Direct Performance Stats cancel superseded
+  browser polls and show `—`, never fake `+0.0000`, for types without a settled
+  close.
+- Main coordination still calculates/evaluates/publishes every Set, but
+  physical exchange/paper side effects have a non-configurable hard ceiling of
+  four Sets per symbol/cycle. A family-interleaved cursor is persisted per
+  symbol in Redis, so deferred Normal/Trailing/Block/DCA rows resume fairly
+  after subsequent cycles or restart without an unbounded order/event-loop
+  burst.
+- Current exact gates are green: 231/231 Unit suites and 1,503/1,503 tests,
+  4/4 Integration suites and 61/61 tests, TypeScript, ESLint, 42/42 static
+  pages, 348/348 complete Next traces, Kilo 37/37 with schema v103, mutation-free
+  Linux install preflight, and zero secret findings. The Next wrapper now
+  retries a missing BUILD_ID only after successful compile/page collection;
+  source and type failures remain fail-closed.
+- Verified checkpoints:
+  `/workspace/backups/CTS-K-N/20260827T005156Z-pre-next-build-retry-fix` and
+  `/workspace/backups/CTS-K-N/20260827T010152Z-pre-main-dispatch-safety`.
+  Both contain complete bundle/patch/untracked/status/SHA evidence with
+  owner-only permissions.
+- Publish only through a green, head-bound GitHub PR, then use the managed
+  Chisel activation and pinned localhost SSH banner before a fresh server
+  checkpoint and atomic deployment of merged `main`. X01/Mainnet and every
+  Bybit connection remain read-only; any X02 write must use virtual minimum
+  volume, unique ownership IDs and complete owned-object cleanup.
 
 ## Control-order release publication checkpoint (2026-08-26; latest handoff)
 
