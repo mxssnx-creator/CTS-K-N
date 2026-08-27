@@ -6,12 +6,12 @@ Total output lines: 1636
 ## Bounded-dispatch, schema-v104, and X02 audit release candidate (2026-08-27; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
-  `fix/control-orders-complete-20260826`. Schema-v104 protection commit
-  `bb20668` is being merged with GitHub `main@a8b7d90`. Safety commit `e1cdba3`
-  remains authoritative for physical Main dispatch: every Set is calculated,
-  evaluated, and published, while at most four family-interleaved Sets per
-  symbol/cycle create paper or exchange side effects; a persisted cursor
-  resumes deferred Sets fairly after restart.
+  `fix/control-orders-complete-20260826`. Merge commit `6e8e03a` combines
+  schema-v104 protection commit `bb20668` with GitHub `main@a8b7d90`. Safety
+  commit `e1cdba3` remains authoritative for physical Main dispatch: every Set
+  is calculated, evaluated, and published, while at most four
+  family-interleaved Sets per symbol/cycle create paper or exchange side
+  effects; a persisted cursor resumes deferred Sets fairly after restart.
 - GitHub PR #235 merged an unbounded physical-dispatch tree as `a8b7d90`. It is
   not deployed to the self-hosted server. Never deploy `a8b7d90` alone; PR #236
   must first carry the bounded corrective merge, pass every reported check, and
@@ -33,11 +33,12 @@ Total output lines: 1636
   projection lease conflicts back off without inflating the error window, and
   live position management stays independent. Direct Performance Stats cancel
   superseded polls and show `—`, never fake zero, without a settled close.
-- The pre-reconciliation full gates were green: 231/231 Unit suites and
-  1,503/1,503 tests, 4/4 Integration suites and 61/61 tests, TypeScript, ESLint,
-  42 pages, 348 complete Next traces, mutation-free Linux preflight, recreation
-  verification, and a 1,537-file zero-finding secret scan. Repeat all affected
-  gates on the resolved v104/main merge before updating PR #236.
+- Exact gates on resolved merge `6e8e03a` are green: 231/231 Unit suites and
+  1,503/1,503 tests; 4/4 Integration suites and 61/61 tests; 246 combined
+  dispatch/v104 regression tests; TypeScript; repository-wide ESLint; Kilo
+  37/37 with schema v104; mutation-free Linux preflight; 1,529-file recreation
+  verification; 1,537-file zero-finding secret scan; and a trace-validating
+  production build with 42 pages and 348 complete traces.
 - The isolated `.next-prod` build is green. The 32-symbol standalone preview
   did not start because workspace cleanup removed the documented local Redis
   test binary; no app server or exchange action started. Restore isolated Redis
@@ -51,7 +52,9 @@ Total output lines: 1636
   `/workspace/backups/CTS-K-N/20260827T013133Z-pre-safety-correction-570d838`,
   `/workspace/backups/CTS-K-N/20260827T013341Z-precommit-bounded-dispatch`,
   `/workspace/backups/CTS-K-N/20260827T013719Z-prepush-a715ab1`, and
-  `/workspace/backups/CTS-K-N/20260827T014653Z-premerge-github-main-a8b7d90`.
+  `/workspace/backups/CTS-K-N/20260827T014653Z-premerge-github-main-a8b7d90`,
+  `/workspace/backups/CTS-K-N/20260827T015856Z-precommit-merge-v104-bounded`,
+  and `/workspace/backups/CTS-K-N/20260827T020245Z-pre-final-context-6e8e03a`.
   All include owner-only bundle/patch/untracked/status/SHA evidence and passed
   bundle/hash verification.
 - X01/Mainnet and every Bybit connection remain read-only. Any X02 write uses
