@@ -189,7 +189,12 @@ export class ErrorHandler {
     if (msg.includes("econnrefused") || msg.includes("connection refused")) return ErrorCode.CONNECTION_FAILED
     if (msg.includes("invalid api key") || msg.includes("invalid credentials")) return ErrorCode.INVALID_CREDENTIALS
     if (msg.includes("timeout")) return ErrorCode.API_TIMEOUT
-    if (msg.includes("rate limit") || msg.includes("429")) return ErrorCode.RATE_LIMITED
+    if (
+      msg.includes("rate limit") ||
+      msg.includes("429") ||
+      msg.includes("100410") ||
+      msg.includes("trigger frequency limit")
+    ) return ErrorCode.RATE_LIMITED
 
     // Order errors
     if (msg.includes("insufficient balance") || msg.includes("insufficient margin")) return ErrorCode.INSUFFICIENT_BALANCE
@@ -210,13 +215,16 @@ export class ErrorHandler {
   }
 
   /**
-   * Parse the "can retry after time: <timestamp>" field from a BingX
-   * rate-limit (109429) error message. Returns the delay in ms until that
+   * Parse BingX's absolute retry timestamp from either the rolling-order
+   * limit (109429: "can retry after time") or the endpoint-frequency limit
+   * (100410: "will be unblocked after"). Returns the delay in ms until that
    * timestamp, clamped to [1000, 600000]. Returns null if absent.
    */
   static parseBingXRetryAfter(errorMsg: string): number | null {
     if (!errorMsg) return null
-    const match = errorMsg.match(/can retry after time:\s*(\d+)/i)
+    const match = errorMsg.match(
+      /(?:can retry after time:|will be unblocked after)\s*(\d+)/i,
+    )
     if (!match) return null
     const retryAt = parseInt(match[1], 10)
     if (Number.isNaN(retryAt)) return null
