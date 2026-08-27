@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
-"""Serve stats + CTS/pulse config with CORS so the desk can GET/POST overlay."""
+"""Serve per-connection stats/config. Lanes run independently; overall aggregates."""
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+from position_cost import POSITION_COST_PCT_DEFAULT, last_n_cost_pf
 
 DIR = "/opt/grok-x01-pulse"
-OVERLAY = os.path.join(DIR, "overlay.json")
-CTS_PATH = os.path.join(DIR, "cts-settings.json")
-STATS = os.path.join(DIR, "stats.json")
+
+# Display type → redis connection id. Independent processes write stats-{id}.json.
+LANES = [
+    {"type": "live", "id": "bingx-x01", "label": "Live", "unit": "USDT", "exchange": "BingX"},
+    {"type": "vst", "id": "bingx-x02", "label": "VST demo", "unit": "VST", "exchange": "BingX VST"},
+]
+SLOTS = [
+    {"type": "binance", "label": "Binance", "ready": False},
+    {"type": "bybit", "label": "Bybit", "ready": False},
+    {"type": "okx", "label": "OKX", "ready": False},
+]
+TYPE_TO_ID = {l["type"]: l["id"] for l in LANES}
+ID_TO_LANE = {l["id"]: l for l in LANES}
 
 
 def parse_val(v: str):
@@ -32,38 +44,215 @@ def parse_val(v: str):
         return v
 
 
-def load_cts() -> dict:
-    if os.path.exists(CTS_PATH):
-        try:
-            return json.load(open(CTS_PATH))
-        except Exception:
-            pass
-    p = subprocess.run(
-        ["redis-cli", "HGETALL", "settings:connection_settings:bingx-x01"],
-        capture_output=True,
-        text=True,
-    )
+def qs(path: str) -> dict:
+    q = parse_qs(urlparse(path).query)
+    return {k: (v[0] if v else "") for k, v in q.items()}
+
+
+def resolve_conn(raw: str) -> str:
+    raw = (raw or "").strip()
+    if not raw or raw in ("overall", "all"):
+        return "overall"
+    if raw in TYPE_TO_ID:
+        return TYPE_TO_ID[raw]
+    return raw.replace("connection:", "")
+
+
+def overlay_path(conn: str) -> str:
+    p = os.path.join(DIR, f"overlay-{conn}.json")
+    if os.path.exists(p):
+        return p
+    return os.path.join(DIR, "overlay.json")
+
+
+def cts_path(conn: str) -> str:
+    return os.path.join(DIR, f"cts-settings-{conn}.json")
+
+
+def stats_path(conn: str) -> str:
+    p = os.path.join(DIR, f"stats-{conn}.json")
+    if os.path.exists(p):
+        return p
+    if conn == "bingx-x02" and os.path.exists(os.path.join(DIR, "stats.json")):
+        return os.path.join(DIR, "stats.json")
+    return p
+
+
+def load_json(path: str) -> dict:
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_cts(conn: str) -> dict:
+    path = cts_path(conn)
+    if os.path.exists(path):
+        data = load_json(path)
+        if data:
+            return data
+    key = f"settings:connection_settings:{conn}"
+    p = subprocess.run(["redis-cli", "HGETALL", key], capture_output=True, text=True)
     lines = (p.stdout or "").splitlines()
     out = {}
     for i in range(0, len(lines) - 1, 2):
         out[lines[i]] = parse_val(lines[i + 1])
     try:
-        tmp = CTS_PATH + ".tmp"
+        tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(out, f)
-        os.replace(tmp, CTS_PATH)
+        os.replace(tmp, path)
     except Exception:
         pass
     return out
 
 
-def load_overlay() -> dict:
-    if os.path.exists(OVERLAY):
-        try:
-            return json.load(open(OVERLAY))
-        except Exception:
-            pass
-    return {}
+def load_overlay(conn: str) -> dict:
+    return load_json(overlay_path(conn))
+
+
+def load_stats(conn: str) -> dict:
+    return load_json(stats_path(conn))
+
+
+def lane_summary(lane: dict) -> dict:
+    st = load_stats(lane["id"])
+    gp = sum(c.get("pnl") or 0 for c in (st.get("closed") or []) if (c.get("pnl") or 0) > 0)
+    gl = abs(sum(c.get("pnl") or 0 for c in (st.get("closed") or []) if (c.get("pnl") or 0) < 0))
+    pf = (gp / gl) if gl > 0 else (99 if gp > 0 else 0)
+    return {
+        "type": lane["type"],
+        "id": lane["id"],
+        "label": lane["label"],
+        "unit": lane["unit"],
+        "exchange": st.get("exchange") or lane["exchange"],
+        "mode": st.get("mode"),
+        "running": bool(st.get("running")),
+        "halted": bool(st.get("halted")),
+        "haltReason": st.get("haltReason"),
+        "equity": st.get("equity") or 0,
+        "available": st.get("available") or 0,
+        "unrealized": st.get("unrealized") or 0,
+        "openCount": st.get("openCount") or 0,
+        "wins": st.get("wins") or 0,
+        "losses": st.get("losses") or 0,
+        "sessionPnl": st.get("sessionPnl") or 0,
+        "pf": round(pf, 3),
+        "scanMs": st.get("scanMs"),
+        "rssMb": st.get("rssMb"),
+        "errors": st.get("errors") or 0,
+        "alive": bool(st),
+    }
+
+
+def merge_overall() -> dict:
+    lanes = [lane_summary(l) for l in LANES]
+    opens = []
+    closed = []
+    tests = []
+    wins = losses = errors = 0
+    running_any = False
+    for lane in LANES:
+        st = load_stats(lane["id"])
+        if not st:
+            continue
+        running_any = running_any or bool(st.get("running") and not st.get("halted"))
+        wins += int(st.get("wins") or 0)
+        losses += int(st.get("losses") or 0)
+        errors += int(st.get("errors") or 0)
+        for p in st.get("open") or []:
+            q = dict(p)
+            q["connection"] = lane["id"]
+            q["connType"] = lane["type"]
+            q["unit"] = lane["unit"]
+            opens.append(q)
+        for c in st.get("closed") or []:
+            q = dict(c)
+            q["connection"] = lane["id"]
+            q["connType"] = lane["type"]
+            q["unit"] = lane["unit"]
+            closed.append(q)
+        tests.extend(st.get("tests") or [])
+    closed.sort(key=lambda r: r.get("t") or 0, reverse=True)
+    live = next((x for x in lanes if x["type"] == "live"), {})
+    vst = next((x for x in lanes if x["type"] == "vst"), {})
+    wr = (wins / (wins + losses) * 100) if (wins + losses) else 0
+    vst_st = load_stats("bingx-x02")
+    live_st = load_stats("bingx-x01")
+    pc = last_n_cost_pf(list(reversed(closed)), 15, POSITION_COST_PCT_DEFAULT)
+    pc["minPf"] = 1.1
+    pc["pass"] = bool(pc["count"] < 8 or pc["ratio"] + 1e-9 >= 1.1)
+    return {
+        "running": running_any,
+        "mode": "OVERALL",
+        "connection": "overall",
+        "connType": "overall",
+        "unit": "MIXED",
+        "exchange": "All",
+        "lanes": lanes,
+        "slots": SLOTS,
+        "equity": live.get("equity") or 0,
+        "equityLive": live.get("equity") or 0,
+        "equityVst": vst.get("equity") or 0,
+        "available": live.get("available") or 0,
+        "usedMargin": 0,
+        "unrealized": (live.get("unrealized") or 0) + (vst.get("unrealized") or 0),
+        "sessionPnl": live.get("sessionPnl") or 0,
+        "pnlPct": 0,
+        "drawdownPct": 0,
+        "wins": wins,
+        "losses": losses,
+        "winRate": round(wr, 1),
+        "openCount": len(opens),
+        "maxOpen": 16,
+        "open": opens,
+        "closed": closed[:80],
+        "tests": tests[-24:],
+        "errors": errors,
+        "halted": not running_any,
+        "symbols": [],
+        "now": __import__("time").time(),
+        "pfCost": pc,
+        "coord": vst_st.get("coord") or live_st.get("coord"),
+        "pulse": vst_st.get("pulse") or live_st.get("pulse"),
+        "indications": vst_st.get("indications") or live_st.get("indications"),
+        "engine": vst_st.get("engine") or live_st.get("engine"),
+    }
+
+
+def connections_blob() -> dict:
+    lanes = [lane_summary(l) for l in LANES]
+    return {
+        "selectedDefault": "overall",
+        "types": [
+            {
+                "type": "overall",
+                "label": "Overall",
+                "blurb": "All desks in parallel",
+                "running": any(l["running"] and not l["halted"] for l in lanes),
+                "openCount": sum(l["openCount"] for l in lanes),
+            },
+            *[
+                {
+                    "type": l["type"],
+                    "label": l["label"],
+                    "id": l["id"],
+                    "unit": l["unit"],
+                    "blurb": l["exchange"],
+                    "running": l["running"] and not l["halted"],
+                    "halted": l["halted"],
+                    "equity": l["equity"],
+                    "openCount": l["openCount"],
+                    "alive": l["alive"],
+                }
+                for l in lanes
+            ],
+        ],
+        "slots": SLOTS,
+        "lanes": lanes,
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -71,9 +260,13 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*a, directory=DIR, **k)
 
     def log_message(self, fmt, *args):
+        msg = fmt % args
+        if "GET /stats.json" in msg or "GET /universe.json" in msg or "GET /connections.json" in msg:
+            return
         try:
-            with open(os.path.join(DIR, "http.log"), "a") as f:
-                f.write("%s - %s\n" % (self.address_string(), fmt % args))
+            path = os.path.join(DIR, "http.log")
+            with open(path, "a") as f:
+                f.write("%s - %s\n" % (self.address_string(), msg))
         except Exception:
             pass
 
@@ -83,28 +276,62 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Cache-Control", "no-store")
 
+    def _json(self, obj, code=200):
+        blob = json.dumps(obj, separators=(",", ":")).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(blob)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(blob)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
         self.end_headers()
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        parsed = urlparse(self.path)
+        path = parsed.path
+        conn = resolve_conn(qs(self.path).get("conn", ""))
+        if path in ("/connections.json", "/connections"):
+            self._json(connections_blob())
+            return
         if path in ("/config.json", "/config"):
-            blob = json.dumps({"cts": load_cts(), "overlay": load_overlay()}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(blob)))
-            self._cors()
-            self.end_headers()
-            self.wfile.write(blob)
+            if conn == "overall":
+                self._json({
+                    "conn": "overall",
+                    "lanes": [
+                        {"type": l["type"], "id": l["id"], "cts": load_cts(l["id"]), "overlay": load_overlay(l["id"])}
+                        for l in LANES
+                    ],
+                    "cts": load_cts("bingx-x02"),
+                    "overlay": load_overlay("bingx-x02"),
+                })
+                return
+            self._json({"cts": load_cts(conn), "overlay": load_overlay(conn), "conn": conn})
+            return
+        if path in ("/stats.json", "/live-stats.json"):
+            if conn == "overall":
+                self._json(merge_overall())
+                return
+            st = load_stats(conn)
+            if not st:
+                self._json({"running": False, "connection": conn, "mode": "OFFLINE", "open": [], "closed": []})
+                return
+            self._json(st)
             return
         return super().do_GET()
 
     def do_POST(self):
-        path = self.path.split("?", 1)[0]
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path not in ("/config.json", "/config"):
             self.send_error(404)
+            return
+        conn = resolve_conn(qs(self.path).get("conn", "vst"))
+        if conn == "overall":
+            self._json({"ok": False, "detail": "pick Live or VST to save overlay"}, 400)
             return
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b"{}"
@@ -116,19 +343,14 @@ class Handler(SimpleHTTPRequestHandler):
         overlay = body.get("overlay") if isinstance(body, dict) else None
         if not isinstance(overlay, dict):
             overlay = body if isinstance(body, dict) else {}
-        cur = load_overlay()
+        dest = os.path.join(DIR, f"overlay-{conn}.json")
+        cur = load_overlay(conn)
         cur.update(overlay)
-        tmp = OVERLAY + ".tmp"
+        tmp = dest + ".tmp"
         with open(tmp, "w") as f:
             json.dump(cur, f)
-        os.replace(tmp, OVERLAY)
-        blob = json.dumps({"ok": True, "overlay": cur}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(blob)))
-        self._cors()
-        self.end_headers()
-        self.wfile.write(blob)
+        os.replace(tmp, dest)
+        self._json({"ok": True, "overlay": cur, "conn": conn})
 
 
 if __name__ == "__main__":

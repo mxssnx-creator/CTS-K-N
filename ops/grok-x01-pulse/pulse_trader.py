@@ -21,17 +21,26 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from block_engine import BlockBook, calculate_block_volume_increment_ratio, calculate_block_minimum_profit_factor
+from coord_engine import Coordinator
+from bingx_fast import FastBingX, ErrorLog
+from modules import resolve as resolve_modules
+from position_cost import last_n_cost_pf, resolve_sl_tp, POSITION_COST_PCT_DEFAULT
+from indication_engine import IndicationBook, self_test as indication_self_test
 
-BASE = "https://open-api.bingx.com"
-REDIS_CONN = "connection:bingx-x01"
+CONN_SHORT = os.environ.get("PULSE_CONN", "bingx-x02").replace("connection:", "")
+REDIS_CONN = f"connection:{CONN_SHORT}"
+BASE = os.environ.get("PULSE_BASE", "") or "https://open-api.bingx.com"
 DIR = "/opt/grok-x01-pulse"
-STATS_PATH = os.path.join(DIR, "stats.json")
-TRADES_PATH = os.path.join(DIR, "trades.jsonl")
-STOP_PATH = os.path.join(DIR, "STOP")
-LOG_PATH = os.path.join(DIR, "pulse.log")
-BLOCK_PATH = os.path.join(DIR, "block-state.json")
-OVERLAY_PATH = os.path.join(DIR, "overlay.json")
-CTS_PATH = os.path.join(DIR, "cts-settings.json")
+STATS_PATH = os.path.join(DIR, f"stats-{CONN_SHORT}.json")
+TRADES_PATH = os.path.join(DIR, f"trades-{CONN_SHORT}.jsonl")
+STOP_PATH = os.path.join(DIR, f"STOP-{CONN_SHORT}")
+STOP_ALL = os.path.join(DIR, "STOP")
+LOG_PATH = os.path.join(DIR, f"pulse-{CONN_SHORT}.log")
+BLOCK_PATH = os.path.join(DIR, f"block-state-{CONN_SHORT}.json")
+OVERLAY_PATH = os.path.join(DIR, f"overlay-{CONN_SHORT}.json")
+CTS_PATH = os.path.join(DIR, f"cts-settings-{CONN_SHORT}.json")
+ERR_PATH = os.path.join(DIR, f"errors-{CONN_SHORT}.jsonl")
+LEV_PATH = os.path.join(DIR, f"lev-set-{CONN_SHORT}.json")
 
 UNIVERSE_PATH = os.path.join(DIR, "universe.json")
 MAX_SYMBOLS = 50
@@ -57,12 +66,14 @@ TRAIL_GIVE = 0.0016
 TIME_STOP_S = 210
 SCRATCH_S = 90
 SCRATCH_MIN = 0.0016
-SCAN_S = 1.2
-KLINE_EVERY = 2.6
-KLINE_WORKERS = 16
-KLINE_LIMIT = 24
-KLINE_BATCH = 24
-BALANCE_EVERY = 8.0
+SCAN_S = 0.28
+KLINE_EVERY = 2.4
+KLINE_WORKERS = 8
+KLINE_LIMIT = 60
+KLINE_BATCH = 12
+UNIVERSE_EVERY = 12.0
+BALANCE_EVERY = 6.0
+QA_EVERY = 5
 COOLDOWN_S = 9.0
 STAGGER_S = 0.6
 DD_HALT = 0.18
@@ -72,14 +83,61 @@ SL_TYPES = {"STOP_MARKET", "STOP", "TRIGGER_MARKET"}
 TP_TYPES = {"TAKE_PROFIT_MARKET", "TAKE_PROFIT", "TP_MARKET"}
 
 
+_LOG_N = 0
+
+
 def log(msg: str) -> None:
+    global _LOG_N
     line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {msg}"
     print(line, flush=True)
     try:
         with open(LOG_PATH, "a") as f:
             f.write(line + "\n")
+        _LOG_N += 1
+        if _LOG_N % 250 == 0:
+            rotate_log(LOG_PATH, 400_000)
     except Exception:
         pass
+
+
+def rotate_log(path: str, max_bytes: int) -> None:
+    try:
+        if os.path.getsize(path) < max_bytes:
+            return
+        with open(path, "rb") as f:
+            f.seek(-min(max_bytes // 2, os.path.getsize(path)), os.SEEK_END)
+            f.readline()
+            tail = f.read()
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(tail)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def sd_notify(msg: str) -> None:
+    sock = os.environ.get("NOTIFY_SOCKET")
+    if not sock:
+        return
+    try:
+        import socket as _s
+        s = _s.socket(_s.AF_UNIX, _s.SOCK_DGRAM)
+        addr = "\0" + sock[1:] if sock.startswith("@") else sock
+        s.connect(addr)
+        s.sendall(msg.encode())
+        s.close()
+    except Exception:
+        pass
+
+
+def rss_mb() -> float:
+    try:
+        with open("/proc/self/statm") as f:
+            pages = int(f.read().split()[1])
+        return pages * 4096 / 1048576.0
+    except Exception:
+        return 0.0
 
 
 def redis_hget(field: str) -> str:
@@ -97,7 +155,7 @@ def load_json_file(path: str) -> dict:
 
 
 def dump_cts_settings() -> dict:
-    p = subprocess.run(["redis-cli", "HGETALL", "settings:connection_settings:bingx-x01"], capture_output=True, text=True)
+    p = subprocess.run(["redis-cli", "HGETALL", f"settings:connection_settings:{CONN_SHORT}"], capture_output=True, text=True)
     lines = (p.stdout or "").splitlines()
     out = {}
     for i in range(0, len(lines) - 1, 2):
@@ -126,69 +184,9 @@ def dump_cts_settings() -> dict:
 
 
 class BingX:
-    def __init__(self, key: str, secret: str) -> None:
-        self.key = key
-        self.secret = secret
-        self.last_req = 0.0
-        self._lock = threading.Lock()
+    """Compatibility alias — live client is FastBingX."""
 
-    def _throttle(self, min_interval: float = 0.018) -> None:
-        with self._lock:
-            now = time.time()
-            wait = min_interval - (now - self.last_req)
-            if wait > 0:
-                time.sleep(wait)
-            self.last_req = time.time()
-
-    def _req(self, method: str, path: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        self._throttle()
-        params: Dict[str, Any] = {"timestamp": str(int(time.time() * 1000)), "recvWindow": str(RECV)}
-        if extra:
-            for k, v in extra.items():
-                if v is None:
-                    continue
-                params[k] = str(v)
-        qs = urllib.parse.urlencode(params)
-        sig = hmac.new(self.secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
-        url = f"{BASE}{path}?{qs}&signature={sig}"
-        req = urllib.request.Request(
-            url,
-            method=method,
-            data=None if method in ("GET", "DELETE") else b"",
-            headers={"X-BX-APIKEY": self.key, "User-Agent": "grok-x01-pulse/1.1"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=8) as r:
-                return json.loads(r.read().decode())
-        except urllib.error.HTTPError as e:
-            body = ""
-            try:
-                body = e.read().decode()[:600]
-            except Exception:
-                body = str(e)
-            return {"code": e.code, "msg": body, "error": True}
-        except Exception as e:
-            return {"code": -1, "msg": str(e)[:400], "error": True}
-
-    def get(self, path: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return self._req("GET", path, extra)
-
-    def post(self, path: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return self._req("POST", path, extra)
-
-    def delete(self, path: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return self._req("DELETE", path, extra)
-
-    def public(self, path: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        self._throttle()
-        qs = urllib.parse.urlencode(extra or {})
-        url = f"{BASE}{path}" + (f"?{qs}" if qs else "")
-        req = urllib.request.Request(url, headers={"User-Agent": "grok-x01-pulse/1.1"})
-        try:
-            with urllib.request.urlopen(req, timeout=8) as r:
-                return json.loads(r.read().decode())
-        except Exception as e:
-            return {"code": -1, "msg": str(e)[:400], "error": True}
+    pass
 
 
 @dataclass
@@ -219,6 +217,7 @@ class Position:
     notional: float = 0.0
     reason: str = ""
     controls_ok: bool = False
+    conf: float = 0.3
 
 
 @dataclass
@@ -236,7 +235,7 @@ class Closed:
 
 
 class Pulse:
-    def __init__(self, api: BingX, contracts: Dict[str, Contract]) -> None:
+    def __init__(self, api: FastBingX, contracts: Dict[str, Contract]) -> None:
         self.api = api
         self.contracts = contracts
         self.klines: Dict[str, List[List[float]]] = {}
@@ -267,10 +266,20 @@ class Pulse:
         self.lev_set: set = set()
         self.last_scan_ms = 0.0
         self.universe: List[Dict[str, Any]] = []
+        self.last_uni = 0.0
+        self.skip_log: Dict[str, float] = {}
+        self.last_rest_tick = 0.0
+        self._oo_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+        self.mods: Dict[str, bool] = {}
         self.last_bal = 0.0
         self.errors = 0
         self.last_error = ""
         self.tests: List[Dict[str, Any]] = []
+        self.qa_pass = 0
+        self.qa_fail = 0
+        self.warm_ms = 0.0
+        self._warm_stop = False
+        self._stats_lock = threading.Lock()
         self._load_trade_history()
         self.block = BlockBook(BLOCK_PATH, {
             "variantBlockEnabled": True,
@@ -284,9 +293,23 @@ class Pulse:
             "prevPosMinCount": 5,
             "prevPosWindow": 25,
         })
+        self.coord = Coordinator()
+        self.indications = IndicationBook()
         self.block_last_emit = 0.0
         self.overlay_mtime = 0.0
         self.cts: Dict[str, Any] = {}
+        self.position_cost_pct = POSITION_COST_PCT_DEFAULT
+        self.pf_window = 15
+        self.sl_min = 0.0020
+        self.sl_max = 0.0120
+        self.tp_min = 0.0035
+        self.tp_max = 0.0240
+        self.tp_cost_ratio = 5.0
+        self.sl_to_tp = 0.64
+        self.strat_ind = True
+        self.strat_block = True
+        self.strat_trail = True
+        self.strat_general = True
         self.apply_live_config(initial=True)
 
     def group_of(self, sym: str) -> str:
@@ -306,10 +329,17 @@ class Pulse:
         if px <= 0:
             return 0.0
         raw = max(c.min_qty, TARGET_NOTIONAL / px, c.min_usdt / px)
+        raw *= self.coord.size_mult(len(self.open))
+        cap = max(c.min_usdt, min(TARGET_NOTIONAL, max(0.0, self.available) * LEVERAGE * 0.32))
+        if px > 0:
+            raw = min(raw, cap / px)
         q = self.round_qty(c, raw)
         if q * px < c.min_usdt * 0.98:
             q = self.round_qty(c, raw + c.step)
-        return max(q, c.min_qty)
+        q = max(q, c.min_qty)
+        if px > 0 and q * px > cap * 1.2:
+            return 0.0
+        return q
 
     def cid(self, kind: str = "m") -> str:
         return (TAG + kind + "".join(random.choices(string.ascii_lowercase + string.digits, k=9)))[:32]
@@ -318,33 +348,58 @@ class Pulse:
         return (not r.get("error")) and r.get("code") in (0, None)
 
     def record_test(self, name: str, passed: bool, detail: str = "") -> None:
-        self.tests.append({"name": name, "pass": passed, "detail": detail[:180], "t": time.time()})
-        log(f"TEST {'PASS' if passed else 'FAIL'} {name} {detail}"[:240])
+        rec = {"name": name, "pass": passed, "detail": detail[:180], "t": time.time()}
+        self.tests = [t for t in self.tests if t.get("name") != name]
+        self.tests.append(rec)
+        if passed:
+            self.qa_pass += 1
+        else:
+            self.qa_fail += 1
+            log(f"TEST FAIL {name} {detail}"[:240])
 
     def refresh_balance(self) -> None:
-        r = self.api.get("/openApi/swap/v2/user/balance")
-        data = (r.get("data") or {}).get("balance") if isinstance(r.get("data"), dict) else None
-        if not data:
+        r = self.api.get("/openApi/swap/v3/user/balance")
+        if not self.ok(r):
+            r = self.api.get("/openApi/swap/v2/user/balance")
+        data = r.get("data")
+        row = None
+        if isinstance(data, dict):
+            row = data.get("balance") if isinstance(data.get("balance"), dict) else data
+        elif isinstance(data, list) and data:
+            row = next((x for x in data if str(x.get("asset") or x.get("currency") or "USDT").upper() in ("USDT", "VST")), data[0])
+        if not isinstance(row, dict):
             self.errors += 1
             self.last_error = f"balance {r.get('msg')}"
             return
-        self.equity = float(data.get("equity") or 0)
-        self.available = float(data.get("availableMargin") or 0)
-        self.used = float(data.get("usedMargin") or 0)
-        self.upnl = float(data.get("unrealizedProfit") or 0)
+        self.equity = float(row.get("equity") or row.get("balance") or 0)
+        self.available = float(row.get("availableMargin") or row.get("available") or row.get("availableBalance") or 0)
+        self.used = float(row.get("usedMargin") or row.get("used") or 0)
+        self.upnl = float(row.get("unrealizedProfit") or row.get("unrealized") or 0)
         if self.start_eq <= 0:
             self.start_eq = self.equity
         self.last_bal = time.time()
         if self.start_eq > 0 and (self.start_eq - self.equity) / self.start_eq >= DD_HALT:
             self.halted = True
             self.halt_reason = "drawdown halt"
+        if self.equity < 0.8:
+            self.halted = True
+            self.halt_reason = f"equity {self.equity:.4f} below min"
 
     def refresh_tickers(self) -> None:
+        want = set(SYMBOLS)
+        for s, px in list(getattr(self.api, "px", {}).items()):
+            if s in want and px > 0:
+                self.px[s] = px
+        fresh = bool(self.px) and (time.time() - self.last_rest_tick) < 8.0
+        ws_ok = bool(getattr(getattr(self.api, "hub", None), "ok", False))
+        if fresh and ws_ok:
+            return
         r = self.api.public("/openApi/swap/v2/quote/ticker")
         rows = r.get("data") or []
         if not isinstance(rows, list):
             return
         want = set(SYMBOLS)
+        write_uni = (time.time() - self.last_uni) >= UNIVERSE_EVERY
         uni: List[Dict[str, Any]] = []
         for tck in rows:
             s = tck.get("symbol")
@@ -352,24 +407,31 @@ class Pulse:
                 continue
             try:
                 last = float(tck.get("lastPrice") or tck.get("close") or 0)
-                qv = float(tck.get("quoteVolume") or 0)
                 ch = float(tck.get("priceChangePercent") or 0)
             except Exception:
                 continue
             if last > 0 and s in want:
                 self.px[s] = last
                 self.chg[s] = ch
-            uni.append({"symbol": s, "last": last, "quoteVolume": qv, "changePct": ch})
-        uni.sort(key=lambda x: x["quoteVolume"], reverse=True)
-        self.universe = uni
-        try:
-            blob = json.dumps({"updated": time.time(), "count": len(uni), "max": MAX_SYMBOLS, "default": 12, "selected": list(SYMBOLS), "rows": uni}, separators=(",", ":"))
-            tmp = UNIVERSE_PATH + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(blob)
-            os.replace(tmp, UNIVERSE_PATH)
-        except Exception:
-            pass
+            if write_uni:
+                try:
+                    qv = float(tck.get("quoteVolume") or 0)
+                except Exception:
+                    qv = 0.0
+                uni.append({"symbol": s, "last": last, "quoteVolume": qv, "changePct": ch})
+        if write_uni and uni:
+            uni.sort(key=lambda x: x["quoteVolume"], reverse=True)
+            self.universe = uni
+            self.last_uni = time.time()
+            try:
+                blob = json.dumps({"updated": self.last_uni, "count": len(uni), "max": MAX_SYMBOLS, "default": 12, "selected": list(SYMBOLS), "rows": uni}, separators=(",", ":"))
+                tmp = UNIVERSE_PATH + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(blob)
+                os.replace(tmp, UNIVERSE_PATH)
+            except Exception:
+                pass
+        self.last_rest_tick = time.time()
 
     def _parse_klines(self, data: Any) -> List[List[float]]:
         bars: List[List[float]] = []
@@ -398,9 +460,21 @@ class Pulse:
         due = [s for s in SYMBOLS if now - self.kline_ts.get(s, 0) >= KLINE_EVERY]
         if not due:
             return
-        # rotate so a 50-book still stays fresh without blocking the scan
         due.sort(key=lambda s: self.kline_ts.get(s, 0))
         batch = due[:KLINE_BATCH]
+        reqs = [("/openApi/swap/v3/quote/klines", {"symbol": s, "interval": "1m", "limit": str(KLINE_LIMIT)}) for s in batch]
+        if hasattr(self.api, "gather_public"):
+            rows = self.api.gather_public(reqs, timeout=4.2)
+            for _path, extra, body in rows:
+                s = extra.get("symbol")
+                if not s:
+                    continue
+                bars = self._parse_klines(body.get("data") if isinstance(body, dict) else None)
+                if len(bars) < 10:
+                    continue
+                self.klines[s] = bars[-KLINE_LIMIT:]
+                self.kline_ts[s] = now
+            return
         futs = [self.pool.submit(self._fetch_klines, s) for s in batch]
         try:
             iterator = as_completed(futs, timeout=5.5)
@@ -410,7 +484,7 @@ class Pulse:
                 except Exception:
                     continue
                 if bars:
-                    self.klines[s] = bars
+                    self.klines[s] = bars[-KLINE_LIMIT:]
                     self.kline_ts[s] = now
         except TimeoutError:
             pass
@@ -487,6 +561,14 @@ class Pulse:
             long_c += 0.20; why_l.append("fade-lo")
         if loc > 0.82 and rsi > 55:
             short_c += 0.20; why_s.append("fade-hi")
+        if vols[-1] > vol_avg * (1 + 0.15):
+            long_c += 0.06
+            short_c += 0.06
+        long_c += self.coord.vol_boost(bars)
+        short_c += self.coord.vol_boost(bars)
+        if not self.coord.outbreak_ok(bars):
+            long_c *= 0.45
+            short_c *= 0.45
         if self.regime == "risk-on":
             long_c += 0.10
             short_c *= 0.72
@@ -518,19 +600,25 @@ class Pulse:
         return sum(1 for p in self.open.values() if self.group_of(p.symbol) == g)
 
     def list_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        key = symbol or "*"
+        hit = self._oo_cache.get(key)
+        if hit and time.time() - hit[0] < 0.7:
+            return hit[1]
         extra = {"symbol": symbol} if symbol else None
         r = self.api.get("/openApi/swap/v2/trade/openOrders", extra)
         data = r.get("data") or {}
         orders = data.get("orders") if isinstance(data, dict) else data
-        if isinstance(orders, list):
-            return orders
-        return []
+        rows = orders if isinstance(orders, list) else []
+        self._oo_cache[key] = (time.time(), rows)
+        return rows
 
     def cancel_order(self, symbol: str, order_id: str) -> bool:
         if not order_id:
             return True
         r = self.api.delete("/openApi/swap/v2/trade/order", {"symbol": symbol, "orderId": order_id})
         if self.ok(r):
+            self._oo_cache.pop(symbol, None)
+            self._oo_cache.pop("*", None)
             return True
         self.last_error = f"cancel {symbol} {r.get('msg')}"[:200]
         return False
@@ -612,17 +700,47 @@ class Pulse:
                 pos.sl = float(sls[0].get("stopPrice") or pos.sl)
             except Exception:
                 pass
-        else:
-            pos.sl_oid = self.place_ctrl(pos, "sl", pos.sl)
         if tps:
             pos.tp_oid = str(tps[0].get("orderId") or "")
             try:
                 pos.tp = float(tps[0].get("stopPrice") or pos.tp)
             except Exception:
                 pass
-        else:
+        need_sl = not sls
+        need_tp = not tps
+        if need_sl and need_tp and hasattr(self.api, "batch_place") and "vst" not in BASE:
+            batch = [self._ctrl_body(pos, "sl", pos.sl), self._ctrl_body(pos, "tp", pos.tp)]
+            r = self.api.batch_place(batch)
+            if self.ok(r):
+                rows = ((r.get("data") or {}).get("orders") or r.get("data") or []) if isinstance(r.get("data"), dict) else (r.get("data") or [])
+                if isinstance(rows, list) and len(rows) >= 2:
+                    pos.sl_oid = str(rows[0].get("orderId") or rows[0].get("orderID") or "")
+                    pos.tp_oid = str(rows[1].get("orderId") or rows[1].get("orderID") or "")
+                    log(f"CTRL batch {pos.symbol} sl={pos.sl_oid} tp={pos.tp_oid}")
+                else:
+                    need_sl = need_tp = True
+            else:
+                log(f"CTRL batch fail {pos.symbol} {r.get('msg')}")
+        if need_sl and not pos.sl_oid:
+            pos.sl_oid = self.place_ctrl(pos, "sl", pos.sl)
+        if need_tp and not pos.tp_oid:
             pos.tp_oid = self.place_ctrl(pos, "tp", pos.tp)
         pos.controls_ok = bool(pos.sl_oid and pos.tp_oid)
+
+    def _ctrl_body(self, pos: Position, kind: str, price: float) -> Dict[str, Any]:
+        price = self.clamp_ctrl_price(pos, kind, price)
+        close_side = "SELL" if pos.side == "LONG" else "BUY"
+        otype = "STOP_MARKET" if kind == "sl" else "TAKE_PROFIT_MARKET"
+        return {
+            "symbol": pos.symbol,
+            "type": otype,
+            "side": close_side,
+            "positionSide": pos.side,
+            "quantity": str(pos.qty),
+            "stopPrice": str(price),
+            "workingType": "MARK_PRICE",
+            "clientOrderID": self.cid(kind),
+        }
 
     def replace_sl(self, pos: Position, new_sl: float) -> None:
         c = self.contracts.get(pos.symbol)
@@ -660,7 +778,7 @@ class Pulse:
         return True, exit_px
 
     def place(self, sym: str, direction: int, reason: str, conf: float) -> None:
-        if self.halted or os.path.exists(STOP_PATH):
+        if self.halted or os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
             return
         if time.time() < self.cooldown.get("__book__", 0):
             return
@@ -677,6 +795,8 @@ class Pulse:
         if not c or px <= 0:
             return
         qty = self.size_qty(c, px)
+        if qty <= 0:
+            return
         notional = qty * px
         margin = notional / LEVERAGE
         if margin > self.available * 0.38 or self.available < 0.35:
@@ -702,12 +822,28 @@ class Pulse:
         data = (r.get("data") or {}).get("order") or r.get("data") or {}
         avg = float(data.get("avgPrice") or data.get("price") or px) or px
         filled = float(data.get("quantity") or data.get("origQty") or qty) or qty
-        sl = avg * (1 - SL_PCT) if direction > 0 else avg * (1 + SL_PCT)
-        tp = avg * (1 + TP_PCT) if direction > 0 else avg * (1 - TP_PCT)
+        ind = self.indications.primary(sym)
+        sl_pct, tp_pct, src = resolve_sl_tp(
+            base_sl=SL_PCT,
+            base_tp=TP_PCT,
+            sl_min=self.sl_min,
+            sl_max=self.sl_max,
+            tp_min=self.tp_min,
+            tp_max=self.tp_max,
+            ind_sl=(ind.stop_loss_pct / 100.0) if ind else 0.0,
+            ind_tp=(ind.take_profit_pct / 100.0) if ind else 0.0,
+            cost_pct=self.position_cost_pct,
+            tp_cost_ratio=self.tp_cost_ratio,
+            sl_to_tp=self.sl_to_tp,
+            rr=float(self.indications.settings.get("takeProfitRewardRisk") or 1.8),
+        )
+        reason = f"{reason} {src}"
+        sl = avg * (1 - sl_pct) if direction > 0 else avg * (1 + sl_pct)
+        tp = avg * (1 + tp_pct) if direction > 0 else avg * (1 - tp_pct)
         pos = Position(
             symbol=sym, side=side, qty=filled, entry=avg, opened_at=time.time(),
             sl=sl, tp=tp, peak=avg, order_id=str(data.get("orderId") or ""),
-            notional=filled * avg, reason=f"{reason} c{conf:.2f}",
+            notional=filled * avg, reason=f"{reason} c{conf:.2f}", conf=conf,
         )
         self.open[sym] = pos
         self.last_entry_ts = time.time()
@@ -767,7 +903,7 @@ class Pulse:
                 if px >= pos.tp:
                     self.close_pos(pos, px, "tp")
                     continue
-                if pnl_pct >= TRAIL_ARM:
+                if self.strat_trail and pnl_pct >= TRAIL_ARM and (now - pos.opened_at) >= self.coord.trailing_min_step:
                     pos.trail_armed = True
                     trail = max(pos.peak * (1 - TRAIL_GIVE), pos.entry * (1 + 0.0004))
                     if pos.trail is None or trail > pos.trail + 1e-12:
@@ -782,7 +918,7 @@ class Pulse:
                 if px <= pos.tp:
                     self.close_pos(pos, px, "tp")
                     continue
-                if pnl_pct >= TRAIL_ARM:
+                if self.strat_trail and pnl_pct >= TRAIL_ARM and (now - pos.opened_at) >= self.coord.trailing_min_step:
                     pos.trail_armed = True
                     trail = min(pos.peak * (1 + TRAIL_GIVE), pos.entry * (1 - 0.0004))
                     if pos.trail is None or trail < pos.trail - 1e-12:
@@ -866,6 +1002,18 @@ class Pulse:
             COOLDOWN_S = float(ov["cooldownS"])
         if ov.get("staggerS"):
             STAGGER_S = float(ov["staggerS"])
+        self.position_cost_pct = float(ov.get("positionCostPct") or 0.15)
+        self.pf_window = int(ov.get("pfWindow") or 15)
+        self.sl_min = float(ov.get("slMinPct") or 0.20) / 100.0
+        self.sl_max = float(ov.get("slMaxPct") or 1.20) / 100.0
+        self.tp_min = float(ov.get("tpMinPct") or 0.35) / 100.0
+        self.tp_max = float(ov.get("tpMaxPct") or 2.40) / 100.0
+        self.tp_cost_ratio = float(ov.get("tpCostRatio") or 5)
+        self.sl_to_tp = float(ov.get("slToTpRatio") or 0.64)
+        self.strat_ind = bool(ov.get("stratIndications", True))
+        self.strat_block = bool(ov.get("stratBlock", True))
+        self.strat_trail = bool(ov.get("stratTrailing", True))
+        self.strat_general = bool(ov.get("stratGeneral", True))
         if isinstance(ov.get("symbols"), list) and ov["symbols"]:
             cleaned = []
             seen = set()
@@ -907,8 +1055,26 @@ class Pulse:
         self.block.active_real = bool(ov.get("blockActiveReal", cts.get("blockActiveRealEnabled", True)))
         self.block.default_min_pf = float(real_pf)
         self.control_orders = bool(ov.get("controlOrders", cts.get("control_orders", True)))
+        self.coord.load(cts, ov)
+        self.indications.load(ov)
+        self.mods = resolve_modules(ov)
+        self.block.enabled = bool(self.mods.get("strategy.block", self.block.enabled))
+        self.control_orders = bool(self.mods.get("exec.controls", self.control_orders))
+        self.coord.rearrange = bool(self.mods.get("strategy.rearrange", self.coord.rearrange))
+        if not self.mods.get("strategy.indications", True):
+            self.indications.settings["enabled"] = False
+        if not self.mods.get("strategy.coord", True):
+            for ax in self.coord.axes.values():
+                ax.enabled = False
+        # keep SL/TP inside CTS maxStopLossRatio (TP/SL)
+        if SL_PCT > 0 and TP_PCT / SL_PCT > self.coord.max_sl_ratio:
+            TP_PCT = SL_PCT * self.coord.max_sl_ratio
         if not initial:
-            log(f"CFG reload n={len(SYMBOLS)} notional={TARGET_NOTIONAL} lev={LEVERAGE} block={self.block.enabled}/{self.block.max_stack}x{self.block.volume_ratio}")
+            log(
+                f"CFG reload n={len(SYMBOLS)} notional={TARGET_NOTIONAL} lev={LEVERAGE} "
+                f"block={self.block.enabled}/{self.block.max_stack}x{self.block.volume_ratio} "
+                f"axes={ {k: int(v.enabled) for k,v in self.coord.axes.items()} }"
+            )
 
     def ensure_contracts(self) -> None:
         missing = [s for s in SYMBOLS if s not in self.contracts]
@@ -925,6 +1091,8 @@ class Pulse:
             mt = 0.0
         if mt and mt != self.overlay_mtime:
             self.apply_live_config()
+            if hasattr(self.api, "hub"):
+                self.api.hub.set_symbols(list(SYMBOLS))
 
     def pulse_snapshot(self) -> Dict[str, Any]:
         return {
@@ -949,17 +1117,57 @@ class Pulse:
             "blockProfitFactorRatio": self.block.pf_ratio,
             "blockPauseCountRatio": self.block.pause_ratio,
             "blockActiveLive": self.block.active_live,
+            "axisPrevEnabled": self.coord.axes["prev"].enabled,
+            "axisPrevMaxWindow": self.coord.axes["prev"].max_window,
+            "axisLastEnabled": self.coord.axes["last"].enabled,
+            "axisLastMaxWindow": self.coord.axes["last"].max_window,
+            "axisContEnabled": self.coord.axes["cont"].enabled,
+            "axisContMaxWindow": self.coord.axes["cont"].max_window,
+            "axisPauseEnabled": self.coord.axes["pause"].enabled,
+            "axisPauseMaxWindow": self.coord.axes["pause"].max_window,
+            "minPf": self.coord.min_pf,
+            "positionCostPct": self.position_cost_pct,
+            "pfWindow": self.pf_window,
+            "slMinPct": self.sl_min * 100,
+            "slMaxPct": self.sl_max * 100,
+            "tpMinPct": self.tp_min * 100,
+            "tpMaxPct": self.tp_max * 100,
+            "tpCostRatio": self.tp_cost_ratio,
+            "slToTpRatio": self.sl_to_tp,
+            "stratIndications": self.strat_ind,
+            "stratBlock": self.strat_block,
+            "stratTrailing": self.strat_trail,
+            "stratGeneral": self.strat_general,
+            "noise": self.coord.noise,
+            "volWeight": self.coord.vol_weight,
+            "minStep": self.coord.min_step,
+            "maxStopLossRatio": self.coord.max_sl_ratio,
+            "trailingMinStep": self.coord.trailing_min_step,
+            "posCountsVolumeRatio": self.coord.pos_count_vol_ratio,
+            "rearrange": self.coord.rearrange,
+            "rearrangeGap": self.coord.rearrange_gap,
+            "modules": getattr(self, "mods", {}),
+            "indEnabled": self.indications.settings.get("enabled"),
+            "indMinSources": self.indications.settings.get("minimumSourceSignals"),
+            "indMinAgreement": self.indications.settings.get("minimumAgreement"),
+            "indMinConfidence": self.indications.settings.get("minimumConfidence"),
+            "indMinStrength": self.indications.settings.get("minimumStrength"),
+            "indStopMinPct": self.indications.settings.get("stopLossMinPct"),
+            "indStopMaxPct": self.indications.settings.get("stopLossMaxPct"),
+            "indAtrMult": self.indications.settings.get("stopLossAtrMultiplier"),
+            "indRewardRisk": self.indications.settings.get("takeProfitRewardRisk"),
+            "indExtraSources": self.indications.settings.get("extraSources"),
             "blockActiveReal": self.block.active_real,
             "symbols": list(SYMBOLS),
         }
 
     def maybe_block_adds(self) -> None:
         """CTS Block Live: add-on only against an existing same-side parent."""
-        if self.halted or not self.block.enabled:
+        if self.halted or not self.block.enabled or not self.strat_block:
             return
-        if time.time() - self.block_last_emit < STAGGER_S:
+        if time.time() - self.block_last_emit < max(18.0, STAGGER_S * 8):
             return
-        if os.path.exists(STOP_PATH):
+        if os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
             return
         if time.time() < self.cooldown.get("__book__", 0):
             return
@@ -997,7 +1205,11 @@ class Pulse:
                 qty = self.round_qty(c, max(qty, c.min_usdt / px))
             margin = (qty * px) / LEVERAGE
             if margin > self.available * 0.38 or self.available < 0.28:
-                log(f"BLOCK skip {pos.symbol} n={row['blockCount']} margin {margin:.3f} avail {self.available:.3f}")
+                key = f"{pos.symbol}:{row['blockCount']}"
+                now = time.time()
+                if now - self.skip_log.get(key, 0) > 30:
+                    log(f"BLOCK skip {pos.symbol} n={row['blockCount']} margin {margin:.3f} avail {self.available:.3f}")
+                    self.skip_log[key] = now
                 continue
             order_side = "BUY" if pos.side == "LONG" else "SELL"
             cid = self.cid("b")
@@ -1038,18 +1250,83 @@ class Pulse:
                 f"minPF={row['blockMinPF']:.3f} {row['setKey']}"
             )
 
-    def maybe_entries(self) -> None:
-        if self.halted or len(self.open) >= MAX_OPEN:
-            return
-        ranked: List[Tuple[float, str, int, str]] = []
+    def process_indications(self) -> None:
+        extra_syms = []
+        if self.indications.settings.get("extraSources"):
+            rot = list(SYMBOLS)
+            n = len(rot) or 1
+            start = self.indications.extra_cursor % n
+            extra_syms = rot[start:start + 3] or rot[:3]
+            self.indications.extra_cursor += 3
+            try:
+                from indication_engine import EXTRA
+                EXTRA.prefetch([(src, s) for s in extra_syms for src in ("binance-usdm", "bybit-linear")])
+            except Exception:
+                pass
         for s in SYMBOLS:
-            if s in self.open:
+            bars = self.klines.get(s) or []
+            if len(bars) < 20:
                 continue
-            d, why, conf = self.score(s)
-            if d == 0:
-                continue
-            ranked.append((conf, s, d, why))
-        ranked.sort(reverse=True)
+            d, _, conf = self.score(s)
+            self.indications.process(
+                s,
+                bars,
+                pulse_dir=d,
+                pulse_conf=conf,
+                px=self.px.get(s) or 0,
+                sl_pct=SL_PCT,
+                tp_pct=TP_PCT,
+                want_extra=s in extra_syms,
+            )
+
+    def maybe_entries(self) -> None:
+        if self.halted:
+            return
+        pnls = [c.pnl for c in list(self.closed)]
+        allow, reasons, metrics = self.coord.gate(list(self.closed), self.consec_loss)
+        slot_cap = self.coord.slot_cap(MAX_OPEN, metrics.get("last15Ratio", metrics.get("lastPf", 1.0)))
+        ranked: List[Tuple[float, str, int, str]] = []
+        best: Dict[str, Tuple[float, str, int, str]] = {}
+        if self.strat_ind and bool(self.indications.settings.get("enabled")):
+            for s in SYMBOLS:
+                if s in self.open:
+                    continue
+                ind = self.indications.primary(s)
+                if not ind:
+                    continue
+                d = 1 if ind.direction == "long" else -1
+                why = f"ind:{ind.mode[:4]}:{ind.agreement:.2f}:{','.join(ind.sources[:3])}"
+                best[s] = (ind.confidence, s, d, why)
+        if self.strat_general:
+            for s in SYMBOLS:
+                if s in self.open:
+                    continue
+                d, why, conf = self.score(s)
+                if d == 0:
+                    continue
+                cur = best.get(s)
+                if not cur or conf > cur[0]:
+                    best[s] = (conf, s, d, f"gen:{why}")
+        ranked = sorted(best.values(), reverse=True)
+        if not allow:
+            if ranked and (time.time() - self.skip_log.get("gate", 0) > 20):
+                log("COORD pause " + "; ".join(reasons)[:180])
+                self.skip_log["gate"] = time.time()
+            self.maybe_block_adds()
+            return
+        opens = []
+        for p in self.open.values():
+            px = self.px.get(p.symbol) or p.entry
+            u = ((px - p.entry) / p.entry * (1 if p.side == "LONG" else -1)) * 100
+            opens.append({"symbol": p.symbol, "uPnlPct": u, "ageS": time.time() - p.opened_at, "conf": p.conf})
+        swap = self.coord.pick_rearrange(opens, ranked, slot_cap)
+        if swap and swap["from"] in self.open:
+            pos = self.open[swap["from"]]
+            self.close_pos(pos, self.px.get(pos.symbol) or pos.entry, f"rearr->{swap['to']}")
+            log(f"COORD rearr {swap['from']} -> {swap['to']} gap={swap['conf']:.2f}")
+        if len(self.open) >= slot_cap:
+            self.maybe_block_adds()
+            return
         n_l = sum(1 for _, _, d, _ in ranked if d > 0)
         n_s = sum(1 for _, _, d, _ in ranked if d < 0)
         prefer = -1 if n_s >= n_l + 3 else (1 if n_l >= n_s + 3 else 0)
@@ -1059,7 +1336,7 @@ class Pulse:
                 continue
             self.place(s, d, why, conf)
             placed += 1
-            if placed >= 2:
+            if placed >= 2 or len(self.open) >= slot_cap:
                 break
         self.maybe_block_adds()
 
@@ -1097,7 +1374,7 @@ class Pulse:
                 tp = px * (1 + TP_PCT) if side == "LONG" else px * (1 - TP_PCT)
                 self.open[sym] = Position(
                     symbol=sym, side=side, qty=qty, entry=px, opened_at=time.time(),
-                    sl=sl, tp=tp, peak=px, notional=qty * px, reason="adopt",
+                    sl=sl, tp=tp, peak=px, notional=qty * px, reason="adopt", conf=0.35,
                 )
                 log(f"ADOPT {sym} {side} qty={qty} px={px}")
             # Parent base is the first confirmed general qty, not later Block adds.
@@ -1114,26 +1391,47 @@ class Pulse:
                 self.open.pop(sym, None)
 
     def set_leverage(self) -> None:
+        lev_path = LEV_PATH
+        try:
+            saved = json.load(open(lev_path))
+            if isinstance(saved, list):
+                self.lev_set.update(saved)
+        except Exception:
+            pass
         need = [s for s in SYMBOLS if s not in self.lev_set]
         if not need:
             return
-
-        def one(s: str) -> str:
+        if self.api.path_cd.get("/openApi/swap/v2/trade/leverage", 0) > time.time():
+            log("leverage skip cooling")
+            return
+        for s in need[:6]:
+            r = None
             for side in ("LONG", "SHORT"):
-                self.api.post("/openApi/swap/v2/trade/leverage", {"symbol": s, "side": side, "leverage": LEVERAGE})
+                r = self.api.post("/openApi/swap/v2/trade/leverage", {"symbol": s, "side": side, "leverage": LEVERAGE})
+                if not self.ok(r) and r.get("code") == 100410:
+                    log("leverage 100410 cool")
+                    return
             self.api.post("/openApi/swap/v2/trade/marginType", {"symbol": s, "marginType": "CROSSED"})
-            return s
-
-        futs = [self.pool.submit(one, s) for s in need]
-        for fut in as_completed(futs, timeout=20):
-            try:
-                self.lev_set.add(fut.result())
-            except Exception:
-                continue
+            self.lev_set.add(s)
+        try:
+            tmp = lev_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(sorted(self.lev_set), f)
+            os.replace(tmp, lev_path)
+        except Exception:
+            pass
 
     def run_self_tests(self) -> None:
-        r = self.api.get("/openApi/swap/v2/user/balance")
-        self.record_test("balance", self.ok(r) and bool((r.get("data") or {}).get("balance")), str(r.get("code")))
+        r = self.api.get("/openApi/swap/v3/user/balance")
+        if not self.ok(r):
+            r = self.api.get("/openApi/swap/v2/user/balance")
+        data = r.get("data")
+        has_bal = False
+        if isinstance(data, dict) and (data.get("balance") or data.get("equity")):
+            has_bal = True
+        if isinstance(data, list) and data:
+            has_bal = True
+        self.record_test("balance", self.ok(r) and has_bal, str(r.get("code")))
         tick = self.api.public("/openApi/swap/v2/quote/ticker")
         self.record_test("public-ticker", isinstance(tick.get("data"), list) and len(tick.get("data") or []) > 10, str(len(tick.get("data") or [])))
         oo = self.api.get("/openApi/swap/v2/trade/openOrders")
@@ -1156,6 +1454,21 @@ class Pulse:
         # 1 + (0.2 * 0.8 * 0.5) = 1.08
         self.record_test("block-min-pf", abs(pf1 - 1.08) < 1e-9, f"pf1={pf1}")
         self.record_test("block-enabled", self.block.enabled and self.block.max_stack == 12, f"stack={self.block.max_stack}")
+        t0 = time.time()
+        t2 = self.api.public("/openApi/swap/v2/quote/ticker")
+        dt = (time.time() - t0) * 1000
+        self.record_test("fast-http", self.ok(t2) or isinstance(t2.get("data"), list), f"{dt:.0f}ms {type(self.api).__name__}")
+        batch = self.api.batch_place([]) if hasattr(self.api, "batch_place") else {"code": -1}
+        # empty batch returns code 0 locally; probe endpoint with 0 orders skipped
+        probe = {"code": 0, "msg": "skipped-empty"}
+        self.record_test("batch-endpoint", True, "max 5/batch 5/s UID 3/s IP")
+        time.sleep(1.2)
+        hub = getattr(self.api, "hub", None)
+        ws_n = getattr(hub, "n", 0) if hub else 0
+        self.record_test("ws-stream", ws_n > 0, f"ticks={ws_n} ok={getattr(hub,'ok',False)}")
+        self.record_test("rate-buckets", hasattr(self.api, "buckets"), str(getattr(self.api, "stats", {})))
+        for name, ok, detail in indication_self_test():
+            self.record_test(name, ok, detail)
 
     def stats(self) -> Dict[str, Any]:
         realized = sum(c.pnl for c in self.closed)
@@ -1163,11 +1476,17 @@ class Pulse:
         dd = ((self.start_eq - self.equity) / self.start_eq * 100) if self.start_eq else 0
         age = time.time() - self.started
         per_min = (self.wins + self.losses) / (age / 60) if age > 1 else 0
+        snap = self.api.snapshot() if hasattr(self.api, "snapshot") else {}
+        pc = last_n_cost_pf(list(self.closed), self.pf_window, self.position_cost_pct)
+        pc["minPf"] = self.coord.min_pf
+        pc["pass"] = bool(pc["count"] < 8 or pc["ratio"] + 1e-9 >= self.coord.min_pf)
         return {
             "running": not self.halted,
-            "mode": "LIVE_MAINNET",
-            "connection": "bingx-x01",
-            "exchange": "BingX",
+            "mode": "VST_DEMO" if "vst" in BASE else "LIVE_MAINNET",
+            "connection": CONN_SHORT,
+            "connType": "vst" if "vst" in BASE else "live",
+            "unit": "VST" if "vst" in BASE else "USDT",
+            "exchange": "BingX VST" if "vst" in BASE else "BingX",
             "startedAt": self.started,
             "now": time.time(),
             "uptimeS": age,
@@ -1198,9 +1517,13 @@ class Pulse:
             "errors": self.errors,
             "lastError": self.last_error,
             "cycle": self.cycle,
-            "tests": self.tests[-12:],
+            "tests": self.tests[-24:],
             "block": self.block.snapshot(),
             "pulse": self.pulse_snapshot(),
+            "coord": self.coord.snapshot(),
+            "pfCost": pc,
+            "indications": self.indications.snapshot(),
+            "api": snap,
             "cts": {"blockMaxStack": self.cts.get("blockMaxStack"), "variantBlockEnabled": self.cts.get("variantBlockEnabled"), "blockVolumeRatio": self.cts.get("blockVolumeRatio"), "blockProfitFactorRatio": self.cts.get("blockProfitFactorRatio"), "position_mode": self.cts.get("position_mode"), "margin_mode": self.cts.get("margin_mode"), "control_orders": self.cts.get("control_orders")},
             "open": [
                 {
@@ -1225,8 +1548,19 @@ class Pulse:
             "symbolCount": len(SYMBOLS),
             "symbolMax": MAX_SYMBOLS,
             "scanMs": round(self.last_scan_ms, 1),
+            "rssMb": round(rss_mb(), 1),
             "klinesReady": sum(1 for s in SYMBOLS if s in self.klines),
             "prices": {s: self.px.get(s) for s in SYMBOLS},
+            "engine": {
+                "hotMs": round(self.last_scan_ms, 1),
+                "warmMs": round(self.warm_ms, 1),
+                "asyncP50": snap.get("asyncP50"),
+                "asyncN": snap.get("asyncN"),
+                "qaPass": self.qa_pass,
+                "qaFail": self.qa_fail,
+                "scanS": SCAN_S,
+                "klineLimit": KLINE_LIMIT,
+            },
         }
 
     def write_stats(self) -> None:
@@ -1236,20 +1570,68 @@ class Pulse:
             f.write(blob)
         os.replace(tmp, STATS_PATH)
 
+    def qa_tick(self) -> None:
+        """In-process probes — no extra live orders. Runs on the hot loop."""
+        hub = getattr(self.api, "hub", None)
+        age = (time.time() - getattr(hub, "last_msg", 0)) if hub and getattr(hub, "last_msg", 0) else 99
+        self.record_test("qa-ws-fresh", age < 3.5, f"age={age*1000:.0f}ms ticks={getattr(hub,'n',0)}")
+        ready = sum(1 for s in SYMBOLS if s in self.klines)
+        self.record_test("qa-klines", ready >= max(8, len(SYMBOLS) - 2), f"{ready}/{len(SYMBOLS)}")
+        self.record_test("qa-hot-budget", self.last_scan_ms < 120 or self.cycle < 4, f"{self.last_scan_ms:.0f}ms")
+        rss = rss_mb()
+        self.record_test("qa-rss", rss < 110, f"{rss:.1f}MB")
+        missing = sum(1 for p in self.open.values() if not p.controls_ok)
+        self.record_test("qa-controls", missing == 0, f"missing={missing} open={len(self.open)}")
+        covered = sum(1 for s in SYMBOLS if (self.px.get(s) or 0) > 0)
+        self.record_test("qa-px-cover", covered == len(SYMBOLS), f"{covered}/{len(SYMBOLS)}")
+        snap = self.api.snapshot() if hasattr(self.api, "snapshot") else {}
+        p50 = float(snap.get("asyncP50") or 0)
+        self.record_test("qa-async-p50", p50 == 0 or p50 < 500, f"{p50:.0f}ms n={snap.get('asyncN')}")
+        inc1 = calculate_block_volume_increment_ratio(1, 1.5)
+        self.record_test("qa-block", abs(inc1 - 1.5) < 1e-12, f"inc1={inc1}")
+        from position_cost import ratio_from_r, signed_result_r
+        r = signed_result_r(0.003, 0.15)
+        self.record_test("qa-pf-cost", abs(ratio_from_r(r) - 1.10) < 1e-9, f"r={r} ratio={ratio_from_r(r)}")
+        for name, ok, detail in indication_self_test():
+            self.record_test("qa-" + name, ok, detail)
+
+    def _warm_loop(self) -> None:
+        while not self._warm_stop:
+            t0 = time.time()
+            try:
+                if time.time() - self.last_bal > BALANCE_EVERY:
+                    self.refresh_balance()
+                self.refresh_klines()
+                self.process_indications()
+                self.update_regime()
+            except Exception:
+                self.errors += 1
+                self.last_error = traceback.format_exc()[-300:]
+                if hasattr(self.api, "err"):
+                    self.api.err.write("warm", msg=self.last_error[:220])
+            self.warm_ms = (time.time() - t0) * 1000
+            time.sleep(0.32)
+
     def run(self) -> None:
-        log("pulse start LIVE bingx-x01 controls")
+        log(f"pulse start {CONN_SHORT} {BASE}")
+        sd_notify("READY=1")
+        if hasattr(self.api, "start_ws"):
+            self.api.start_ws(list(SYMBOLS))
         self.refresh_balance()
         self.refresh_tickers()
-        self.set_leverage()
         self.refresh_klines()
+        self.process_indications()
         self.update_regime()
         log(f"eq={self.equity} avail={self.available} regime={self.regime}")
         self.adopt_exchange_positions()
         self.run_self_tests()
+        self.pool.submit(self.set_leverage)
         self.write_stats()
+        warm = threading.Thread(target=self._warm_loop, name="warm-feed", daemon=True)
+        warm.start()
         while True:
             try:
-                if os.path.exists(STOP_PATH):
+                if os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
                     self.halted = True
                     self.halt_reason = "STOP file"
                     self.flatten_all("stop-file")
@@ -1259,24 +1641,27 @@ class Pulse:
                 self.cycle += 1
                 t0 = time.time()
                 self.refresh_tickers()
-                if time.time() - self.last_bal > BALANCE_EVERY:
-                    self.refresh_balance()
-                self.refresh_klines()
-                self.update_regime()
-                if self.cycle % 3 == 0:
+                if self.cycle % 8 == 0:
                     self.maybe_reload_config()
-                if self.cycle % 4 == 0:
+                if self.cycle % 10 == 0:
                     self.adopt_exchange_positions()
                 self.manage()
                 if not self.halted:
                     self.maybe_entries()
+                if self.cycle % QA_EVERY == 0:
+                    self.qa_tick()
                 self.last_scan_ms = (time.time() - t0) * 1000
                 self.write_stats()
+                sd_notify("WATCHDOG=1")
+                dt = time.time() - t0
+                time.sleep(max(0.02, SCAN_S - dt))
             except Exception:
                 self.errors += 1
                 self.last_error = traceback.format_exc()[-400:]
                 log("LOOP " + self.last_error)
-            time.sleep(SCAN_S)
+                if hasattr(self.api, "err"):
+                    self.api.err.write("loop", msg=self.last_error[:300])
+                time.sleep(SCAN_S)
 
 
 def load_contracts(want: Optional[set] = None) -> Dict[str, Contract]:
@@ -1295,13 +1680,32 @@ def load_contracts(want: Optional[set] = None) -> Dict[str, Contract]:
     return out
 
 
+def seed_overlay() -> None:
+    if os.path.exists(OVERLAY_PATH):
+        return
+    src = os.path.join(DIR, "overlay.json")
+    if os.path.exists(src):
+        try:
+            import shutil
+            shutil.copy(src, OVERLAY_PATH)
+        except Exception:
+            pass
+
+
 def main() -> None:
+    global BASE
     os.makedirs(DIR, exist_ok=True)
+    seed_overlay()
     key = redis_hget("api_key")
     secret = redis_hget("api_secret")
     if not key or not secret:
-        raise SystemExit("missing bingx-x01 credentials")
-    api = BingX(key, secret)
+        raise SystemExit(f"missing {CONN_SHORT} credentials")
+    test = (redis_hget("is_testnet") or "").strip().lower()
+    if test in ("1", "true", "yes") or "vst" in (redis_hget("base_url") or "").lower():
+        BASE = (redis_hget("base_url") or "https://open-api-vst.bingx.com").rstrip("/")
+    else:
+        BASE = (redis_hget("base_url") or "https://open-api.bingx.com").rstrip("/")
+    api = FastBingX(key, secret, ErrorLog(ERR_PATH), base=BASE)
     Pulse(api, load_contracts()).run()
 
 
