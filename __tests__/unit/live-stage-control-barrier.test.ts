@@ -545,6 +545,71 @@ describe("executing Live-stage control barriers", () => {
     )).toBe(false)
   })
 
+  test("defers individual initial controls when Sets share one physical slot", () => {
+    const tracking = {
+      system_tracking_id: "sys-connection-control-test-control-test",
+      connection_tracking_id: "conn-connection-control-test",
+    }
+    const first = livePosition({ id: "row-a", setKey: "set-a", stopLoss: 5, takeProfit: 10, ...tracking })
+    const second = livePosition({ id: "row-b", setKey: "set-b", stopLoss: 4, takeProfit: 8, ...tracking })
+    expect(__liveStageTest.initialAggregateProtectionCoordination(first, [first])).toMatchObject({
+      deferred: false,
+      slot: "BTCUSDT|long",
+      memberCount: 1,
+    })
+    expect(__liveStageTest.initialAggregateProtectionCoordination(second, [first, second])).toMatchObject({
+      deferred: true,
+      slot: "BTCUSDT|long",
+      memberCount: 2,
+    })
+  })
+
+  test("projects shared venue IDs into each Set without transferring cancellation ownership", () => {
+    const leader = livePosition({
+      id: "leader",
+      setKey: "set-leader",
+      stopLoss: 5,
+      takeProfit: 10,
+      stopLossOrderId: "venue-sl",
+      takeProfitOrderId: "venue-tp",
+      takeProfitPrice: 110,
+    })
+    const member = livePosition({
+      id: "member",
+      setKey: "set-member",
+      stopLoss: 4,
+      takeProfit: 8,
+      stopLossOrderId: undefined,
+      takeProfitOrderId: undefined,
+    })
+    expect(__liveStageTest.projectAggregateMemberCoverage(member, leader, {
+      key: "BTCUSDT|long",
+      leaderId: "leader",
+      memberIds: ["leader", "member"],
+      direction: "long",
+      symbol: "BTCUSDT",
+      systemQuantity: 2,
+      venueQuantity: 2,
+      quantityTolerance: 1e-8,
+      ownershipMatches: true,
+      desiredStopLoss: 95,
+      desiredTakeProfit: 110,
+    })).toBe(true)
+    expect(member.stopLossOrderId).toBeUndefined()
+    expect(member.takeProfitOrderId).toBeUndefined()
+    expect(member.protectionMode).toBe("hybrid_control_system")
+    expect(member.controlOrderSetCoverage?.["set-member"]).toMatchObject({
+      protected: true,
+      aggregateProtectionOwner: false,
+      aggregateProtectionLeaderId: "leader",
+      stopLossOrderId: "venue-sl",
+      takeProfitOrderId: "venue-tp",
+      stopLossPrice: 95,
+      takeProfitPrice: 110,
+      systemProtectionLegs: ["stop_loss", "take_profit"],
+    })
+  })
+
   test("restores protection only after a partial system-close order is terminal", () => {
     expect(__liveStageTest.isTerminalSystemCloseOrder(null)).toBe(false)
     expect(__liveStageTest.isTerminalSystemCloseOrder({ status: "open" })).toBe(false)
@@ -719,6 +784,45 @@ describe("executing Live-stage control barriers", () => {
     expect(position.executedQuantity).toBe(0)
     expect(position.closedQuantity).toBe(1)
     expect(position.partialOrderExecutions).toHaveLength(1)
+    expect(exchange.placeOrder).not.toHaveBeenCalled()
+  })
+
+  test("does not archive a flat slot until response-lost protection writes are confirmed absent", async () => {
+    const position = livePosition({
+      stopLossOrderId: undefined,
+      takeProfitOrderId: undefined,
+      pendingProtectionOrders: {
+        stopLoss: {
+          clientOrderId: "cts-pending-sl",
+          triggerPrice: 95,
+          quantity: 1,
+        },
+      },
+    })
+    const exchange = connector({
+      getOrder: jest.fn(async () => null),
+      getOrderDetails: jest.fn(async () => null),
+      getOpenOrder: jest.fn(async () => null),
+      getPosition: jest.fn(async () => null),
+      getOpenOrders: jest.fn(async () => []),
+    })
+
+    await expect(__liveStageTest.settleControlOrdersBeforeSystemClose(
+      exchange,
+      position,
+      "exchange_externally_closed",
+      100,
+    )).resolves.toMatchObject({ decision: "wait" })
+    expect(position.pendingProtectionOrders?.stopLoss).toBeDefined()
+    expect(position.pendingSystemAction?.absenceConfirmations).toBe(1)
+
+    await expect(__liveStageTest.settleControlOrdersBeforeSystemClose(
+      exchange,
+      position,
+      "exchange_externally_closed",
+      100,
+    )).resolves.toMatchObject({ decision: "exchange_closed", authoritativeQuantity: 0 })
+    expect(position.pendingProtectionOrders?.stopLoss).toBeUndefined()
     expect(exchange.placeOrder).not.toHaveBeenCalled()
   })
 

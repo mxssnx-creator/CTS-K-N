@@ -128,6 +128,43 @@ describe("installed bingx-api package fast path", () => {
     expect(connector.getLastOperationTransport("cancelOrder")).toMatchObject({ transport: "bingx-api" })
   })
 
+  test("collapses concurrent cancellation of one control order into one venue request", async () => {
+    mockServerTimeFetch()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const cancelOrder = jest.fn(async () => {
+      await gate
+      return { code: 0, data: { orderId: "shared-control-order" } }
+    })
+    const connector = await connectorWithTradeService({ cancelOrder })
+
+    const first = connector.cancelOrder("BTCUSDT", "shared-control-order")
+    const second = connector.cancelOrder("BTCUSDT", "shared-control-order")
+    release()
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { success: true },
+      { success: true },
+    ])
+    expect(cancelOrder).toHaveBeenCalledTimes(1)
+    await expect(connector.cancelOrder("BTCUSDT", "shared-control-order")).resolves.toEqual({ success: true })
+    expect(cancelOrder).toHaveBeenCalledTimes(1)
+  })
+
+  test("keeps control-order writes available during the benign missing-order lookup brake", async () => {
+    mockServerTimeFetch()
+    const cancelOrder = jest.fn(async () => ({ code: 0, data: { orderId: "write-during-lookup-brake" } }))
+    const connector = await connectorWithTradeService({ cancelOrder })
+    ;(BingXConnector as any).bingxLookupCooldownUntil = Date.now() + 90_000
+    try {
+      await expect(connector.getOrder("BTCUSDT", "lookup-miss")).resolves.toBeNull()
+      await expect(connector.cancelOrder("BTCUSDT", "write-during-lookup-brake")).resolves.toEqual({ success: true })
+      expect(cancelOrder).toHaveBeenCalledTimes(1)
+    } finally {
+      ;(BingXConnector as any).bingxLookupCooldownUntil = 0
+    }
+  })
+
   test("treats an SDK-thrown already-absent cancellation as success without a REST retry", async () => {
     const fetchMock = mockServerTimeFetch()
     const cancelOrder = jest.fn(async () => {

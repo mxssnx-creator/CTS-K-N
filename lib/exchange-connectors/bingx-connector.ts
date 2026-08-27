@@ -63,10 +63,9 @@ export class BingXConnector extends BaseExchangeConnector {
    * that window and gets locked out for the full 480 s — and the naive retry
    * loop re-triggers the limit continuously (a storm).
    *
-   * Once ANY order call observes a 109429/109421, we record the timestamp BingX
-   * told us to wait until. Every subsequent order call then sleeps until that
-   * timestamp before firing, so at most ~1 error is generated per window
-   * instead of hundreds.
+   * Once an order call observes the real 109429 lockout, we record the
+   * timestamp BingX told us to wait until. Routine 109421 missing-order
+   * responses use a separate lookup-only brake so SL/TP writes stay available.
    *
    * This is a STATIC (class-level) field so every BingXConnector instance for
    * the same process — including the per-symbol reconciliation lanes — shares
@@ -103,6 +102,10 @@ export class BingXConnector extends BaseExchangeConnector {
   //     the cache entry for its clientOrderId.
   private static bingxNotFoundTimestamps: number[] = []
   private static bingxNotFoundCache = new Map<string, number>()
+  /** Benign missing-order pressure pauses lookup endpoints only, never writes. */
+  private static bingxLookupCooldownUntil = 0
+  /** Collapse concurrent cancellation attempts for the same immutable venue id. */
+  private static cancelOrderInFlight = new Map<string, Promise<{ success: boolean; error?: string }>>()
   // Keep an authoritative absence cached beyond BingX's complete rolling
   // error window. Re-querying the same retired control id after three minutes
   // (while it was still inside the 480-second venue window) recreated the
@@ -1694,6 +1697,28 @@ export class BingXConnector extends BaseExchangeConnector {
     symbol: string,
     orderId: string,
   ): Promise<{ success: boolean; error?: string }> {
+    const flightKey = `${this.accountCacheScope}:${this.toBingXSymbol(symbol)}:${orderId}`
+    const existing = BingXConnector.cancelOrderInFlight.get(flightKey)
+    if (existing) return existing
+    let flight: Promise<{ success: boolean; error?: string }>
+    flight = this.cancelOrderOnce(symbol, orderId)
+      .then((result) => {
+        if (result.success) this.cacheOrderAbsent(symbol, orderId)
+        return result
+      })
+      .finally(() => {
+        if (BingXConnector.cancelOrderInFlight.get(flightKey) === flight) {
+          BingXConnector.cancelOrderInFlight.delete(flightKey)
+        }
+      })
+    BingXConnector.cancelOrderInFlight.set(flightKey, flight)
+    return flight
+  }
+
+  private async cancelOrderOnce(
+    symbol: string,
+    orderId: string,
+  ): Promise<{ success: boolean; error?: string }> {
     try {
       // A preceding authoritative lookup may already have proved that this
       // exact venue order is absent. Cancellation is idempotent, so do not
@@ -1923,11 +1948,9 @@ export class BingXConnector extends BaseExchangeConnector {
 
   /**
    * Record a 109421 "order does not exist" response. Never engages the
-   * global cooldown directly — but when not-found responses accumulate
-   * faster than BingX's >20-per-480 s lockout rule, applies a short
-   * pre-emptive brake so the shared lane slows down BEFORE BingX slams
-   * a real 109429. Also negative-caches the order ID so repeated polls
-   * of the same missing order don't count against the window at all.
+   * global write cooldown. When misses approach BingX's >20-per-480 s rule,
+   * only exact-order lookup endpoints pause; placements, cancels, positions,
+   * and aggregate snapshots continue. The exact missing ID is also cached.
    */
   private recordBingxOrderNotFound(operation: string, symbol?: string, orderId?: string, clientOrderId?: string): void {
     const now = Date.now()
@@ -1940,11 +1963,11 @@ export class BingXConnector extends BaseExchangeConnector {
     BingXConnector.bingxNotFoundTimestamps.push(now)
     if (BingXConnector.bingxNotFoundTimestamps.length > BingXConnector.NOT_FOUND_SOFT_LIMIT) {
       const until = now + BingXConnector.NOT_FOUND_SOFT_COOLDOWN_MS
-      if (until > BingXConnector.bingxRateLimitUntil) {
-        BingXConnector.bingxRateLimitUntil = until
+      if (until > BingXConnector.bingxLookupCooldownUntil) {
+        BingXConnector.bingxLookupCooldownUntil = until
         console.warn(
           `[v0] [BingXConnector] ${operation}: ${BingXConnector.bingxNotFoundTimestamps.length} order-not-found responses ` +
-          `within ${BingXConnector.NOT_FOUND_WINDOW_MS / 1000}s — pre-emptive ${BingXConnector.NOT_FOUND_SOFT_COOLDOWN_MS / 1000}s brake ` +
+          `within ${BingXConnector.NOT_FOUND_WINDOW_MS / 1000}s — pre-emptive ${BingXConnector.NOT_FOUND_SOFT_COOLDOWN_MS / 1000}s lookup brake ` +
           `to stay under BingX's 109429 threshold`,
         )
       }
@@ -1972,6 +1995,17 @@ export class BingXConnector extends BaseExchangeConnector {
       BingXConnector.bingxNotFoundCache.delete(key)
     }
     return false
+  }
+
+  private isLookupCooldownActive(): boolean {
+    return BingXConnector.bingxLookupCooldownUntil > Date.now()
+  }
+
+  private cacheOrderAbsent(symbol: string, orderId: string): void {
+    BingXConnector.bingxNotFoundCache.set(
+      this.notFoundCacheKey(symbol, "oid", orderId),
+      Date.now() + BingXConnector.NOT_FOUND_CACHE_TTL_MS,
+    )
   }
 
   /**
@@ -2002,6 +2036,7 @@ export class BingXConnector extends BaseExchangeConnector {
 
   async getOrder(symbol: string, orderId: string): Promise<any> {
     if (this.isNotFoundCached(symbol, orderId)) return null
+    if (this.isLookupCooldownActive()) return null
     return this.bingxRateLimitedCall("getOrder", async () => {
       // Sync server time before any signed request
       await this.syncServerTime()
@@ -3886,6 +3921,9 @@ export class BingXConnector extends BaseExchangeConnector {
     if (this.isNotFoundCached(symbol, orderId, clientOrderId)) {
       return { success: false, error: "BingX API error (code=109421): order does not exist (negative cache)" }
     }
+    if (this.isLookupCooldownActive()) {
+      return { success: false, error: "BingX order lookup cooldown active after missing-order pressure" }
+    }
     try {
       const result = await this.bingxRateLimitedCall("getOpenOrder", async () => {
         const params: Record<string, any> = {
@@ -3967,6 +4005,9 @@ export class BingXConnector extends BaseExchangeConnector {
   ): Promise<{ success: boolean; order?: any; error?: string }> {
     if (this.isNotFoundCached(symbol, orderId, clientOrderId)) {
       return { success: false, error: "BingX API error (code=109421): order does not exist (negative cache)" }
+    }
+    if (this.isLookupCooldownActive()) {
+      return { success: false, error: "BingX order lookup cooldown active after missing-order pressure" }
     }
     const now = Date.now()
     if (BingXConnector.bingxRateLimitUntil > now) {
