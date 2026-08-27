@@ -6,6 +6,10 @@ import {
 } from "@/lib/exchange-account-performance"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 import { getExchangeLiveStateSummary } from "@/lib/exchange-live-state-summary"
+import {
+  isConnectionAssignedToMain,
+  isConnectionProcessingEnabled,
+} from "@/lib/connection-state-utils"
 
 export const dynamic = "force-dynamic"
 
@@ -45,8 +49,9 @@ export async function GET(request: Request) {
     const client = getRedisClient()
     const connections = await getAllConnections()
 
-    // Reuse the same flag semantics as the engine filter. Accept both
-    // boolean and string truthy representations ("1" / "true" / true).
+    // Accept both boolean and string truthy representations for balance
+    // metadata below. Main-engine eligibility itself uses the canonical
+    // connection-state helpers shared with the coordinator.
     const isTruthy = (v: any): boolean =>
       v === true || v === "true" || v === "1" || v === 1
 
@@ -59,14 +64,8 @@ export async function GET(request: Request) {
       searchParams?.get("connectionId") || searchParams?.get("connection_id") || "",
     ).trim()
     const activeConns = connections.filter((c) => {
-      const assignedOrActive = isTruthy(c.is_active_inserted) || isTruthy(c.is_assigned)
-      const engineEnabled    = isTruthy(c.is_enabled) || isTruthy(c.enabled)
-      // Require engine-assigned AND not-disabled. Either condition alone
-      // is insufficient: `is_enabled` alone covers connections that can
-      // be tested but aren't trading; `is_active_inserted` alone could
-      // include connections that have been disabled globally.
       const selected = !requestedConnectionId || String(c.id) === requestedConnectionId
-      return selected && assignedOrActive && engineEnabled
+      return selected && isConnectionAssignedToMain(c) && isConnectionProcessingEnabled(c)
     })
 
     if (activeConns.length === 0) {
