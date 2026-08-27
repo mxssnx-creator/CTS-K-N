@@ -4,7 +4,7 @@ import path from "node:path"
 const root = process.cwd()
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8")
 
-describe("coherent strategy snapshots and schema v103", () => {
+describe("coherent strategy snapshots and schema v104", () => {
   test("uses symbol-local active lineage under parallel symbol processing", () => {
     const source = read("lib/strategy-coordinator.ts")
     expect(source).toContain("private _activeKeysCache = new Map<string")
@@ -50,7 +50,7 @@ describe("coherent strategy snapshots and schema v103", () => {
   test("migrations are sequential through the coherent schema", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
-    expect(versions.at(-1)).toBe(103)
+    expect(versions.at(-1)).toBe(104)
     expect(versions.every((version, index) => version === index + 1)).toBe(true)
     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
     expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')
@@ -73,6 +73,7 @@ describe("coherent strategy snapshots and schema v103", () => {
     expect(source).toContain('name: "097-enforce-canonical-mandatory-symbol-basket"')
     expect(source).toContain('name: "102-credential-injection-live-safety-and-index-repair"')
     expect(source).toContain('name: "103-systemwide-position-cost-pf-selection-coordinate"')
+    expect(source).toContain('name: "104-minimum-executable-volumes-and-set-protection"')
     expect(source).toContain('strategy_set_listing_indexes: "lifetime-active-closed"')
     expect(source).toContain('inline_snapshot_interval_ms: "60000"')
     expect(source).toContain('independent_block_profit_factor: "neutral-distance-x-ratio-x-volume-increment-v2"')

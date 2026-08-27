@@ -8,6 +8,8 @@
 .kilocode/rules/memory-bank/architecture.md
 .kilocode/rules/memory-bank/brief.md
 .kilocode/rules/memory-bank/context.md
+.kilocode/rules/memory-bank/context.md
+.kilocode/rules/memory-bank/context.md
 .kilocode/rules/memory-bank/product.md
 .kilocode/rules/memory-bank/tech.md
 .node-version
@@ -230,6 +232,8 @@ __tests__/unit/redis-runtime-root.test.ts
 __tests__/unit/redis-secondary-indexes.test.ts
 __tests__/unit/redis-stats.test.ts
 __tests__/unit/requested-regressions.test.ts
+__tests__/unit/requested-regressions.test.ts
+__tests__/unit/requested-regressions.test.ts
 __tests__/unit/run-with-env-lifecycle.test.ts
 __tests__/unit/runtime-boot-id.test.ts
 __tests__/unit/runtime-concurrency-profile.test.ts
@@ -257,6 +261,8 @@ __tests__/unit/state-switch-coordination.test.ts
 __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/statistics-ui-correctness.test.ts
 __tests__/unit/strategy-axis-coordination.test.ts
+__tests__/unit/strategy-block-real-overlays.test.ts
+__tests__/unit/strategy-block-real-overlays.test.ts
 __tests__/unit/strategy-block-real-overlays.test.ts
 __tests__/unit/strategy-execution-policy.test.ts
 __tests__/unit/strategy-flow-log-throttle.test.ts
@@ -1300,6 +1306,8 @@ lib/stoploss-ratio-range.ts
 lib/strategies.ts
 lib/strategy-axis-settings.ts
 lib/strategy-config-manager.ts
+lib/strategy-coordinator.ts
+lib/strategy-coordinator.ts
 lib/strategy-coordinator.ts
 lib/strategy-evaluator.ts
 lib/strategy-execution-policy.ts

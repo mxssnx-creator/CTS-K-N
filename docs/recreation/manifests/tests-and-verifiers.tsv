@@ -206,6 +206,8 @@ unit	__tests__/unit/redis-runtime-root.test.ts
 unit	__tests__/unit/redis-secondary-indexes.test.ts
 unit	__tests__/unit/redis-stats.test.ts
 unit	__tests__/unit/requested-regressions.test.ts
+unit	__tests__/unit/requested-regressions.test.ts
+unit	__tests__/unit/requested-regressions.test.ts
 unit	__tests__/unit/run-with-env-lifecycle.test.ts
 unit	__tests__/unit/runtime-boot-id.test.ts
 unit	__tests__/unit/runtime-concurrency-profile.test.ts
@@ -233,6 +235,8 @@ unit	__tests__/unit/state-switch-coordination.test.ts
 unit	__tests__/unit/statistics-rollups.test.ts
 unit	__tests__/unit/statistics-ui-correctness.test.ts
 unit	__tests__/unit/strategy-axis-coordination.test.ts
+unit	__tests__/unit/strategy-block-real-overlays.test.ts
+unit	__tests__/unit/strategy-block-real-overlays.test.ts
 unit	__tests__/unit/strategy-block-real-overlays.test.ts
 unit	__tests__/unit/strategy-execution-policy.test.ts
 unit	__tests__/unit/strategy-flow-log-throttle.test.ts

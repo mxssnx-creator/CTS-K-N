@@ -1,8697 +1,189 @@
-/**
- * Redis Migration Runner - Complete System
- * Handles schema initialization and data migrations for all system components
- */
-
-import { getRedisClient, ensureCoreRedis, setMigrationsRun, haveMigrationsRun } from "./redis-db"
-import { ensureUniqueSiteInstanceWithClient } from "./site-instance"
-import { rebuildConnectionSecondaryIndexes } from "./database-indexes"
-import {
-  createDatabaseMaintenanceFingerprint,
-  DATABASE_MAINTENANCE_STATUS_KEY,
-  ensureUnifiedProgressionKeysWithClient,
-} from "./database-maintenance"
-import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from "./redis-lock-utils"
-import { scanRedisKeys } from "./redis-scan"
-import { ALL_TRAILING_VARIANTS, DEFAULT_TRAILING_VARIANTS } from "./trailing-settings"
-import {
-  DEFAULT_SYMBOL_COUNT as CANONICAL_DEFAULT_SYMBOL_COUNT,
-  DEFAULT_SYMBOL_ORDER,
-} from "./symbol-selection-defaults"
-import {
-  MAIN_TRADE_STAGE_PF_DEFAULTS,
-  normalizeMainTradePfRatio,
-  normalizeMainTradeStagePfRatio,
-} from "./main-trade-profit-factor"
-import { DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO } from "./position-cost"
-import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "./pos-count-volume-ratio"
-import {
-  DEFAULT_COMMON_INDICATION_SETTINGS,
-  normalizeCommonIndicationSettings,
-} from "./common-indicator-config"
-import {
-  normalizeMainIndicationSettings,
-} from "./main-indication-settings"
-import {
-  DEFAULT_MAIN_INDICATION_PROFILE,
-  DEFAULT_PRESET_INDICATION_PROFILE,
-  INDICATION_PROFILE_TYPES,
-} from "./active-indication-profile"
-import { DEFAULT_BASE_MIN_STEP } from "./constants"
-import { BLOCK_COUNT_MAX } from "./block-count-state"
-import {
-  canonicalForcedBaseSymbols,
-  canonicalForcedSymbols,
-  withCanonicalForcedSymbols,
-} from "./forced-symbols"
-import { BINGX_PROD_VST_ORIGIN, configuredBingXEnvironment } from "./bingx-environment"
-import { resolveRedisRuntimeRoot } from "./redis-runtime-root"
-import {
-  DIRECT_TRADE_CONNECTION_INDEX_KEY,
-  directTradeKeyspace,
-  normalizeDirectTradeConnectionId,
-} from "./direct-trade-keyspace"
-import {
-  DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
-  DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
-  normaliseDirectTradeTrailingMinTakeProfitRatio,
-  normaliseDirectTradeVolumeFactor,
-} from "./direct-trade-coordination"
-import {
-  getRuntimeBootstrapKeys,
-  LATEST_REDIS_SCHEMA_VERSION,
-  RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS,
-} from "./redis-runtime-bootstrap"
-
-/**
- * Reset the in-process migration guards.
- *
- * MUST be called by any code path that wipes the Redis keyspace
- * (FLUSHALL / flushDb), e.g. the Reset-DB and Flush-DB install routes.
- *
- * Explicit reset paths call this immediately so the process-local
- * `haveMigrationsRun()` marker is cleared before the new schema run. The
- * single-flight promise itself is retained only while a run is in flight, so
- * an external Redis restore/wipe can also be detected and replayed safely.
- */
-/**
- * Cross-module-scope coalescing guard.
- *
- * In Next.js dev each route bundle can load its own copy of this module, so a
- * plain module-level `let migrationRunPromise` is NOT shared between routes.
- * During a startup burst dozens of routes each saw their own `null` promise
- * and launched a FULL v0â†’v22 migration concurrently (observed: 54 parallel
- * runs), starving the event loop and tripping realtime-cycle deadlines.
- *
- * Hoisting the in-flight promise onto globalThis makes every module scope
- * coalesce onto a single execution â€” the true single-flight the comment in
- * runMigrations() always intended.
- */
-const globalMigrationGuard = resolveRedisRuntimeRoot() as unknown as {
-  __migration_run_promise?: Promise<MigrationRunResult> | null
-  __coverage_repair_done?: boolean
-  __coverage_repair_fingerprint?: string | null
-  __coverage_repair_promise?: Promise<CoverageRepairResult> | null
-}
-
-function getMigrationRunPromise() {
-  return globalMigrationGuard.__migration_run_promise ?? null
-}
-function setMigrationRunPromise(
-  p: Promise<MigrationRunResult> | null,
-) {
-  globalMigrationGuard.__migration_run_promise = p
-}
-
-export function resetMigrationRunState(): void {
-  setMigrationRunPromise(null)
-  // Clear the one-shot diagnostic set so post-reset boot logs are emitted
-  // again (e.g. "already at latest", operator_stopped honoured).
-  ensureBootstrapDiag.clear()
-  // Allow coverage repair to run again after a DB flush so fresh connections
-  // get their metadata scaffolding.
-  globalMigrationGuard.__coverage_repair_done = false
-  globalMigrationGuard.__coverage_repair_fingerprint = null
-  globalMigrationGuard.__coverage_repair_promise = null
-  ;(resolveRedisRuntimeRoot() as unknown as Record<string, unknown>).__v0_devBootGuardDone = false
-  // A destructive/import reset calls this before replaying migrations. Clear
-  // only the idempotent seed-complete marker so the existing reset routes can
-  // run their unchanged runPreStartup() step again after the fresh schema.
-  ;(globalThis as typeof globalThis & { __cts_pre_startup_done?: boolean }).__cts_pre_startup_done = false
-  try {
-    setMigrationsRun(false)
-  } catch {
-    // setMigrationsRun is a pure setter; failure here is non-fatal.
-  }
-}
-import { getBaseConnectionCredentials, type BaseConnectionId } from "./base-connection-credentials"
-
-interface Migration {
-  name?: string
-  description?: string
-  version: number
-  up: (client: any) => Promise<void>
-  down: (client: any) => Promise<void>
-}
-
-interface MigrationRunResult {
-  success: boolean
-  message: string
-  version: number
-  databaseHealth?: Record<string, string>
-}
-
-export interface CoverageRepairResult {
-  status: "completed" | "skipped" | "busy"
-  fingerprint: string
-  connections: number
-}
-
-async function loadConnectionsForMaintenanceMigration(client: any): Promise<any[]> {
-  const [indexedIds, rawKeys, settingsKeys, tombstonedIds] = await Promise.all([
-    client.smembers("connections").catch(() => []),
-    scanRedisKeys(client, "connection:*"),
-    scanRedisKeys(client, "settings:connection:*"),
-    client.smembers("connections:tombstoned").catch(() => []),
-  ])
-  const tombstones = new Set((tombstonedIds || []).map(String))
-  const ids = new Set<string>((indexedIds || []).map(String))
-  for (const key of rawKeys) ids.add(String(key).replace(/^connection:/, ""))
-  for (const key of settingsKeys) ids.add(String(key).replace(/^settings:connection:/, ""))
-
-  // A tombstone is the durable operator-delete contract. Clean stale mirrors
-  // left by older delete paths before rebuilding the canonical index.
-  await Promise.all(Array.from(tombstones).map((id) =>
-    client.del(`connection:${id}`, `settings:connection:${id}`).catch(() => 0),
-  ))
-
-  const connections = await Promise.all(Array.from(ids)
-    .filter((id) => id && !tombstones.has(id))
-    .map(async (id) => {
-      const [raw, settings] = await Promise.all([
-        client.hgetall(`connection:${id}`).catch(() => ({})),
-        client.hgetall(`settings:connection:${id}`).catch(() => ({})),
-      ])
-      const merged = { ...(settings || {}), ...(raw || {}), id }
-      return merged.name && merged.exchange ? merged : null
-    }))
-  return connections.filter(Boolean)
-}
-
-// NOTE: the in-flight coalescing promise now lives on globalThis (see
-// globalMigrationGuard above) so it is shared across all dev module scopes.
-
-const migrations: Migration[] = [
-  {
-    name: "001-initial-schema",
-    version: 1,
-    up: async (client: any) => {
-      await client.set("_schema_version", "1")
-      // Initialize set keys without empty strings - sets are created empty on first use
-      const keys = [
-        "connections:all", "connections:bybit", "connections:bingx", "connections:pionex", "connections:orangex",
-        "connections:active", "connections:inactive",
-        "trades:all", "trades:open", "trades:closed", "trades:pending",
-        "positions:all", "positions:open", "positions:closed",
-        "users:all", "sessions:all", "presets:all", "preset_types:all",
-        "strategies:all", "strategies:active",
-        "monitoring:events", "logs:system", "logs:trades", "logs:errors"
-      ]
-      // Initialize each set as empty (don't add empty strings)
-      for (const key of keys) {
-        // Just create the key structure by setting a marker
-        await client.set(`_index:${key}`, "initialized")
-      }
-      console.log("[v0] Migration 001: Initial schema created")
-    },
-    down: async (client: any) => {
-      await client.del("_schema_version")
-    },
-  },
-  {
-    name: "002-connection-management",
-    version: 2,
-    up: async (client: any) => {
-      await client.set("_schema_version", "2")
-      await client.set("_connections_indexed", "true")
-      await client.hset("connections:metadata", {
-        total_configured: "0",
-        total_active: "0",
-        total_errors: "0",
-        last_sync: new Date().toISOString(),
-      })
-      for (const exchange of ["bybit", "bingx", "pionex", "orangex"]) {
-        await client.hset(`exchange:${exchange}:metadata`, {
-          name: exchange,
-          api_calls_used: "0",
-          api_rate_limit: "0",
-          last_updated: new Date().toISOString(),
-        })
-      }
-      console.log("[v0] Migration 002: Connection management structure created")
-    },
-    down: async (client: any) => {
-      await client.del("_connections_indexed")
-      await client.set("_schema_version", "1")
-    },
-  },
-  {
-    name: "003-trade-positions-schema",
-    version: 3,
-    up: async (client: any) => {
-      await client.set("_schema_version", "3")
-      await client.set("_trades_initialized", "true")
-      await client.hset("trades:metadata", {
-        total_trades: "0", total_open: "0", total_closed: "0",
-        total_win: "0", total_loss: "0", total_profit: "0",
-        avg_profit: "0", win_rate: "0", last_trade_time: "",
-      })
-      await client.hset("positions:metadata", {
-        total_positions: "0", total_open_positions: "0", total_closed_positions: "0",
-        total_contracts: "0", total_collateral: "0", total_pnl: "0", avg_leverage: "0",
-      })
-      await client.set("trades:counter:open", "0")
-      await client.set("trades:counter:closed", "0")
-      await client.set("trades:counter:pending", "0")
-      await client.set("positions:counter:open", "0")
-      await client.set("positions:counter:closed", "0")
-      console.log("[v0] Migration 003: Trade and position schemas created")
-    },
-    down: async (client: any) => {
-      await client.del("_trades_initialized")
-      await client.set("_schema_version", "2")
-    },
-  },
-  {
-    name: "004-preset-strategy-management",
-    version: 4,
-    up: async (client: any) => {
-      await client.set("_schema_version", "4")
-      await client.set("_presets_initialized", "true")
-      await client.hset("presets:metadata", {
-        total_presets: "0", total_active: "0", total_inactive: "0",
-        total_runs: "0", avg_success_rate: "0",
-      })
-      await client.hset("strategies:metadata", {
-        total_strategies: "0", total_active_strategies: "0",
-        total_backtests: "0", avg_win_rate: "0", avg_profit_factor: "0",
-      })
-      // Sets are created lazily on first real insert; avoid empty placeholder members.
-      await client.set("strategies:counter:active", "0")
-      await client.set("strategies:counter:paused", "0")
-      await client.set("strategies:counter:stopped", "0")
-      console.log("[v0] Migration 004: Preset and strategy management created")
-    },
-    down: async (client: any) => {
-      await client.del("_presets_initialized")
-      await client.set("_schema_version", "3")
-    },
-  },
-  {
-    name: "005-user-authentication",
-    version: 5,
-    up: async (client: any) => {
-      await client.set("_schema_version", "5")
-      await client.set("_auth_initialized", "true")
-      await client.hset("users:metadata", {
-        total_users: "1", total_active_sessions: "0",
-        last_login: new Date().toISOString(),
-      })
-      await client.hset("sessions:metadata", {
-        total_sessions: "0", active_sessions: "0", expired_sessions: "0",
-      })
-      const adminId = "admin-001"
-      await client.hset(`user:${adminId}`, {
-        id: adminId, username: "admin", email: "admin@trading-engine.local",
-        role: "admin", created_at: new Date().toISOString(),
-        last_login: new Date().toISOString(), status: "active", api_keys_count: "0",
-      })
-      await client.sadd("users:all", adminId)
-      await client.sadd("users:admin", adminId)
-      console.log("[v0] Migration 005: User authentication system created")
-    },
-    down: async (client: any) => {
-      await client.del("_auth_initialized")
-      await client.set("_schema_version", "4")
-    },
-  },
-  {
-    name: "006-monitoring-logging",
-    version: 6,
-    up: async (client: any) => {
-      await client.set("_schema_version", "6")
-      await client.set("_monitoring_initialized", "true")
-      await client.hset("monitoring:metadata", {
-        total_events: "0", critical_events: "0", warning_events: "0",
-        info_events: "0", last_event_time: new Date().toISOString(),
-      })
-      await client.hset("system:health", {
-        status: "healthy", uptime_seconds: "0", memory_usage: "0",
-        cpu_usage: "0", last_check: new Date().toISOString(),
-      })
-      await client.hset("system:performance", {
-        avg_response_time: "0", trades_per_minute: "0",
-        api_calls_per_minute: "0", errors_per_hour: "0",
-      })
-      await client.set("logs:system:counter", "0")
-      await client.set("logs:trades:counter", "0")
-      await client.set("logs:errors:counter", "0")
-      console.log("[v0] Migration 006: Monitoring and logging system created")
-    },
-    down: async (client: any) => {
-      await client.del("_monitoring_initialized")
-      await client.set("_schema_version", "5")
-    },
-  },
-  {
-    name: "007-cache-optimization",
-    version: 7,
-    up: async (client: any) => {
-      await client.set("_schema_version", "7")
-      await client.set("_cache_optimized", "true")
-      await client.hset("cache:config", {
-        connection_cache_ttl: "3600", trade_cache_ttl: "1800",
-        position_cache_ttl: "900", strategy_cache_ttl: "7200", monitoring_cache_ttl: "300",
-      })
-      await client.hset("cache:stats", {
-        total_hits: "0", total_misses: "0", hit_rate: "0", total_evictions: "0",
-      })
-      // Sets are created lazily on first real insert; avoid empty placeholder members.
-      console.log("[v0] Migration 007: Cache optimization created")
-    },
-    down: async (client: any) => {
-      await client.del("_cache_optimized")
-      await client.set("_schema_version", "6")
-    },
-  },
-  {
-    name: "008-performance-optimizations",
-    version: 8,
-    up: async (client: any) => {
-      await client.set("_schema_version", "8")
-      await client.set("_ttl_policies_set", "true")
-      await client.hset("system:config", {
-        database_type: "redis", initialized_at: new Date().toISOString(),
-        version: "3.2", environment: "production", log_level: "info",
-      })
-      await client.hset("system:thresholds", {
-        max_concurrent_trades: "1000", max_api_calls_per_minute: "6000",
-        max_positions_per_connection: "500", max_connections: "100", memory_limit_mb: "1024",
-      })
-      await client.hset("ratelimit:config", {
-        trades_per_second: "100", api_calls_per_second: "200", batch_operations_per_second: "50",
-      })
-      console.log("[v0] Migration 008: Performance optimizations configured")
-    },
-    down: async (client: any) => {
-      await client.del("_ttl_policies_set")
-      await client.set("_schema_version", "7")
-    },
-  },
-  {
-    name: "009-backup-recovery",
-    version: 9,
-    up: async (client: any) => {
-      await client.set("_schema_version", "9")
-      await client.set("_backup_initialized", "true")
-      await client.hset("backup:metadata", {
-        last_backup_time: "", last_backup_size: "0", total_backups: "0",
-        backup_retention_days: "30", auto_backup_enabled: "true",
-      })
-      await client.hset("recovery:points", {
-        total_recovery_points: "0", last_recovery_time: "", last_recovery_success: "false",
-      })
-      // Sets are created lazily on first real insert; avoid empty placeholder members.
-      console.log("[v0] Migration 009: Backup and recovery system created")
-    },
-    down: async (client: any) => {
-      await client.del("_backup_initialized")
-      await client.set("_schema_version", "8")
-    },
-  },
-  {
-    name: "010-settings-and-metadata",
-    version: 10,
-    up: async (client: any) => {
-      await client.set("_schema_version", "10")
-      await client.hset("settings:system", {
-        trade_engine_enabled: "true", auto_migration: "true",
-        fallback_mode: "memory", theme: "blackwhiteblue", timezone: "UTC", language: "en",
-      })
-      await client.hset("settings:trading", {
-        default_leverage: "1", max_leverage: "20",
-        default_take_profit_percent: "2", default_stop_loss_percent: "1",
-        max_position_size: "100000",
-      })
-      await client.hset("settings:api", {
-        api_version: "v1", rate_limit_enabled: "true",
-        cors_enabled: "true", request_timeout_seconds: "30",
-      })
-      await client.set("_migration_last_run", new Date().toISOString())
-      await client.set("_migration_total_runs", "0")
-      await client.hset("features:enabled", {
-        live_trading: "false", paper_trading: "true", backtesting: "true",
-        strategy_optimization: "true", ai_recommendations: "false",
-      })
-      console.log("[v0] Migration 010: Settings and metadata finalized")
-    },
-    down: async (client: any) => {
-      await client.del("_migration_last_run")
-      await client.set("_schema_version", "9")
-    },
-  },
-  {
-    name: "011-seed-predefined-connections",
-    version: 11,
-    up: async (client: any) => {
-      await client.set("_schema_version", "11")
-      const connections = [
-        { id: "bybit-x03", name: "Bybit X03", exchange: "bybit", api_type: "unified" },
-        { id: "bingx-x01", name: "BingX X01", exchange: "bingx", api_type: "perpetual_futures" },
-        { id: "binance-x01", name: "Binance X01", exchange: "binance", api_type: "perpetual_futures" },
-        { id: "okx-x01", name: "OKX X01", exchange: "okx", api_type: "unified" },
-        { id: "gateio-x01", name: "Gate.io X01", exchange: "gateio", api_type: "perpetual_futures" },
-        { id: "kucoin-x01", name: "KuCoin X01", exchange: "kucoin", api_type: "perpetual_futures" },
-        { id: "mexc-x01", name: "MEXC X01", exchange: "mexc", api_type: "perpetual_futures" },
-        { id: "bitget-x01", name: "Bitget X01", exchange: "bitget", api_type: "perpetual_futures" },
-        { id: "pionex-x01", name: "Pionex X01", exchange: "pionex", api_type: "perpetual_futures" },
-        { id: "orangex-x01", name: "OrangeX X01", exchange: "orangex", api_type: "perpetual_futures" },
-        { id: "huobi-x01", name: "Huobi X01", exchange: "huobi", api_type: "perpetual_futures" },
-      ]
-
-      let seededCount = 0
-      for (const conn of connections) {
-        try {
-          const key = `connection:${conn.id}`
-          const existing = await client.hgetall(key)
-          if (!existing || Object.keys(existing).length === 0) {
-            const storageData = {
-              id: conn.id,
-              name: conn.name,
-              exchange: conn.exchange,
-              api_key: "", // Empty - user must add real credentials
-              api_secret: "", // Empty - user must add real credentials
-              api_type: conn.api_type,
-              connection_method: "library",
-              connection_library: "native",
-              margin_type: "cross",
-              position_mode: "hedge",
-              is_testnet: "0",
-              is_enabled: "0",
-              is_enabled_dashboard: "0",
-              is_active: "0",
-              is_predefined: "1",
-              is_inserted: "0",
-              is_active_inserted: "0",
-              is_live_trade: "0",
-              is_preset_trade: "0",
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }
-            await client.hset(key, storageData)
-            await client.sadd("connections", conn.id)
-            seededCount++
-          }
-        } catch (error) {
-          console.warn(`[v0] Failed to seed ${conn.name}:`, error instanceof Error ? error.message : "unknown")
-        }
-      }
-      console.log(`[v0] Migration 011: Seeded ${seededCount}/${connections.length} predefined template connections`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "10")
-    },
-  },
-  {
-    name: "012-finalize-dashboard-connections",
-    version: 12,
-    up: async (client: any) => {
-      await client.set("_schema_version", "12")
-      
-      // Base connections: 4 primary exchange templates (bybit-x03, bingx-x01, pionex-x01, orangex-x01)
-      // These are PREDEFINED TEMPLATES, not user-created connections
-      // They should remain disabled by default - users must create their own credentials
-      const baseTemplateIds = ["bybit-x03", "bingx-x01", "pionex-x01", "orangex-x01"]
-      
-      const connections = await client.smembers("connections") || []
-      let updatedBase = 0
-      let updatedOther = 0
-      
-      console.log(`[v0] Migration 012: Initializing connections (base templates set to predefined=1, disabled)`)
-      
-      for (const connId of connections) {
-        const connData = await client.hgetall(`connection:${connId}`)
-        if (!connData || Object.keys(connData).length === 0) continue
-        
-        if (baseTemplateIds.includes(connId)) {
-          // Base templates: marked as PREDEFINED, disabled, not inserted (templates only)
-          await client.hset(`connection:${connId}`, {
-            is_inserted: "0",        // NOT inserted - templates only
-            is_enabled: "0",         // NOT enabled by default
-            is_predefined: "1",      // These are predefined templates
-            is_active_inserted: "0", // NOT in active panel
-            is_enabled_dashboard: "0",
-            updated_at: new Date().toISOString(),
-          })
-          updatedBase++
-          console.log(`[v0] Migration 012: âœ“ ${connId} -> predefined=1, inserted=0, enabled=0 (template)`)
-        } else {
-          // Other predefined connections: all templates
-          await client.hset(`connection:${connId}`, {
-            is_inserted: "0",
-            is_enabled: "0",
-            is_predefined: "1",
-            is_active_inserted: "0",
-            is_enabled_dashboard: "0",
-            updated_at: new Date().toISOString(),
-          })
-          updatedOther++
-        }
-      }
-      
-      console.log(`[v0] Migration 012: COMPLETE - ${updatedBase} base templates, ${updatedOther} other templates (all disabled)`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "11")
-    },
-  },
-  {
-    name: "013-risk-management-and-engines",
-    version: 13,
-    up: async (client: any) => {
-      await client.set("_schema_version", "13")
-      
-      // Risk Management Settings with defaults
-      await client.hset("settings:risk-management", {
-        enabled: "false", // Disabled for now
-        max_open_positions: "maximal",
-        daily_loss_limit_percent: "65",
-        max_drawdown_percent: "55",
-        position_size_limit: "100000",
-        stop_loss_enabled: "true",
-        take_profit_enabled: "true",
-      })
-      
-      // Trade Engine Controls
-      await client.hset("settings:engines", {
-        preset_trade_engine: "true", // Enabled
-        main_trade_engine: "true", // Enabled
-        realtime_positions_engine: "true", // Enabled
-        risk_management_engine: "false", // Disabled for now
-      })
-      
-      console.log("[v0] Migration 013: Risk management settings and engine controls added")
-    },
-    down: async (client: any) => {
-      await client.del("settings:risk-management")
-      await client.del("settings:engines")
-      await client.set("_schema_version", "12")
-    },
-  },
-  {
-    name: "014-update-bingx-credentials",
-    version: 14,
-    up: async (client: any) => {
-      await client.set("_schema_version", "14")
-      
-      // Only clear test/placeholder credentials (00998877 pattern, "test" prefix, too short)
-      // Keep real credentials like BingX which have long valid API keys
-      const exchanges = ["bybit-x03", "binance-x01", "okx-x01", "pionex-x01", "orangex-x01", "gateio-x01", "kucoin-x01", "mexc-x01", "bitget-x01", "huobi-x01"]
-      
-      for (const connectionId of exchanges) {
-        try {
-          const data = await client.hgetall(`connection:${connectionId}`)
-          if (data && Object.keys(data).length > 0) {
-            // Clear credentials if they're test/placeholder values (00998877 pattern)
-            const apiKey = data.api_key as string
-            if (apiKey && apiKey.includes("00998877")) {
-              console.log(`[v0] Migration 014: Clearing test credentials from ${connectionId}`)
-              await client.hset(`connection:${connectionId}`, {
-                ...data,
-                api_key: "",
-                api_secret: "",
-                updated_at: new Date().toISOString(),
-              })
-            }
-          }
-        } catch (error) {
-          console.warn(`[v0] Migration 014: Could not update ${connectionId}:`, error)
-        }
-      }
-      
-      console.log(`[v0] Migration 014: Cleared test credentials, real credentials preserved`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "13")
-    },
-  },
-  {
-    name: "015-fix-connection-inserted-enabled-states",
-    version: 15,
-    up: async (client: any) => {
-      await client.set("_schema_version", "15")
-      
-      // The base exchange that should be marked as INSERTED and ENABLED.
-      // Bybit (bybit-x03) is no longer a canonical base connection â€” only bingx-x01.
-      const baseExchangeIds = ["bingx-x01"]
-      
-      const connections = await client.smembers("connections")
-      let updatedBase = 0
-      let updatedOther = 0
-      
-      for (const connId of connections) {
-        const connData = await client.hgetall(`connection:${connId}`)
-        if (!connData || Object.keys(connData).length === 0) continue
-        
-        if (baseExchangeIds.includes(connId)) {
-          // Mark as INSERTED and ENABLED in Settings by default (base connection)
-          // Dashboard/Main enable toggle stays OFF by default until user enables it.
-          await client.hset(`connection:${connId}`, {
-            is_inserted: "1",
-            is_enabled: "1",              // ENABLED by default
-            is_active_inserted: "1",      // Added to Active panel
-            is_enabled_dashboard: "0",    // Dashboard toggle OFF by default
-            is_active: "0",
-            is_predefined: "1",
-            connection_method: "library", // Use native SDK by default
-            updated_at: new Date().toISOString(),
-          })
-          updatedBase++
-          console.log(`[v0] Migration 015: ${connId} -> inserted=1, enabled=1, active_inserted=1, dashboard_enabled=0 (base connection)`)
-        } else {
-          // Non-base predefined connections: just informational templates
-          // NOT inserted, NOT enabled - they are templates only
-          await client.hset(`connection:${connId}`, {
-            is_inserted: "0",
-            is_enabled: "0",
-            is_predefined: "1",
-            is_enabled_dashboard: "0",
-            updated_at: new Date().toISOString(),
-          })
-          updatedOther++
-          console.log(`[v0] Migration 015: ${connId} -> inserted=0, enabled=0 (template only)`)
-        }
-      }
-      
-      console.log(`[v0] Migration 015: Fixed ${updatedBase} base connections, ${updatedOther} template connections`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "14")
-    },
-  },
-  {
-    name: "016-active-connections-independent-state",
-    version: 16,
-    up: async (client: any) => {
-      await client.set("_schema_version", "16")
-      
-// Migration 016: Ensure canonical base connections are properly set up with predefined real credentials.
-       // Bybit (bybit-x03) is no longer canonical â€” only bingx-x01 is auto-seeded.
-       // NOTE: is_active_inserted is NOT set here - user must explicitly assign to main via dashboard.
-       const baseTemplateIds = ["bingx-x01"]
-       
-       const connections = await client.smembers("connections") || []
-       let updatedTemplates = 0
-       let updatedUserConnections = 0
-       
-       console.log(`[v0] Migration 016: Ensuring predefined templates state for ${connections.length} connections`)
-       
-       for (const connId of connections) {
-         const connData = await client.hgetall(`connection:${connId}`)
-         if (!connData || Object.keys(connData).length === 0) continue
-         
-         const isPredefined = connData.is_predefined === "1" || connData.is_predefined === true
-         const isBaseTemplate = baseTemplateIds.includes(connId)
-         
-         if (isBaseTemplate) {
-           // Base connections: inserted and enabled in Settings by default
-           // Main (dashboard) enable toggle must remain OFF by default.
-           // is_active_inserted is NOT set - user must explicitly assign to main connections panel
-           const updateData: Record<string, string> = {
-             is_inserted: "1",        // INSERTED (visible in Settings base panel)
-             is_enabled: "1",         // ENABLED (independent system flag)
-             is_active_inserted: "0", // NOT in Active panel - user must explicitly assign
-             is_enabled_dashboard: "0", // Dashboard toggle OFF by default
-             is_active: "0",          // Derived: is_active_inserted AND is_enabled_dashboard
-             connection_method: "library", // Use native SDK by default
-             updated_at: new Date().toISOString(),
-           }
-           
-           if (baseTemplateIds.includes(connId)) {
-             const credentials = getBaseConnectionCredentials(connId as BaseConnectionId)
-             updateData.api_key = credentials.apiKey
-             updateData.api_secret = credentials.apiSecret
-           }
-           
-           await client.hset(`connection:${connId}`, updateData)
-           updatedTemplates++
-           console.log(`[v0] Migration 016: âœ“ ${connId} -> inserted=1, enabled=1, dashboard_enabled=0 (base connection)`)
-         } else if (!isPredefined) {
-           // User-created connections: reset dashboard state if not properly set
-           if (!connData.is_active_inserted || !connData.is_enabled_dashboard) {
-             await client.hset(`connection:${connId}`, {
-               is_active_inserted: "0",      // Default: NOT in active panel
-               is_enabled_dashboard: "0",    // Default: NOT enabled
-               is_enabled: connData.is_enabled || "0",  // Preserve existing enabled state
-               updated_at: new Date().toISOString(),
-             })
-             updatedUserConnections++
-             console.log(`[v0] Migration 016: âœ“ ${connId} reset dashboard state to defaults`)
-           }
-         }
-       }
-       
-       console.log(`[v0] Migration 016: COMPLETE - ${updatedTemplates} templates verified, ${updatedUserConnections} user connections updated`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "15")
-    },
-  },
-  {
-    name: "017-cleanup-base-connections-to-bybit-bingx-only",
-    version: 17,
-    up: async (client: any) => {
-      await client.set("_schema_version", "17")
-      
-      // Cleanup migration: Reset all connections to proper state
-      // Only bingx-x01 should be a base connection (inserted=1, enabled=1)
-      // All others (pionex, orangex, binance, etc) should be templates only (inserted=0, enabled=0)
-      const baseExchangeIds = ["bingx-x01"]
-      
-      const connections = await client.smembers("connections")
-      let cleanedBase = 0
-      let cleanedTemplates = 0
-      
-      for (const connId of connections) {
-        const connData = await client.hgetall(`connection:${connId}`)
-        if (!connData || Object.keys(connData).length === 0) continue
-        
-        if (baseExchangeIds.includes(connId)) {
-          // Base connection: ensure proper state in BASE connections only
-          // NOTE: is_active_inserted is NOT set here - user must explicitly assign to main
-          await client.hset(`connection:${connId}`, {
-            is_inserted: "1",
-            is_enabled: "1",
-            is_active_inserted: "0",      // NOT auto-assigned to main - user must explicitly do this
-            is_enabled_dashboard: "0",    // UI toggle OFF by default
-            is_active: "0",
-            is_predefined: "1",
-            connection_method: "library",
-            updated_at: new Date().toISOString(),
-          })
-          cleanedBase++
-          console.log(`[v0] Migration 017: âœ“ ${connId} -> corrected to base connection state`)
-        } else {
-          // Non-base connection: ensure template state
-          // Reset to template-only state to prevent auto-assignment
-          await client.hset(`connection:${connId}`, {
-            is_inserted: "0",
-            is_enabled: "0",
-            is_active_inserted: "0",
-            is_enabled_dashboard: "0",
-            is_active: "0",
-            is_predefined: "1",
-            updated_at: new Date().toISOString(),
-          })
-          cleanedTemplates++
-          console.log(`[v0] Migration 017: âœ“ ${connId} -> corrected to template-only state`)
-        }
-      }
-      
-      console.log(`[v0] Migration 017: COMPLETE - ${cleanedBase} base connections, ${cleanedTemplates} templates cleaned up`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "16")
-    },
-  },
-  {
-    name: "018-remove-auto-assignment-from-main-connections",
-    version: 18,
-    up: async (client: any) => {
-      await client.set("_schema_version", "18")
-      
-      // Fix: Remove auto-assignment from main connections
-      // Connections should only be in main if user explicitly assigned them
-      const connections = await client.smembers("connections")
-      let fixed = 0
-      
-      for (const connId of connections) {
-        const connData = await client.hgetall(`connection:${connId}`)
-        if (!connData || Object.keys(connData).length === 0) continue
-        
-        // If connection has is_active_inserted="1" but no explicit user action,
-        // reset it to NOT assigned to main connections
-        // Only keep assignment if dashboard is enabled (user intent)
-        const isDashboardEnabled = connData.is_enabled_dashboard === "1" || connData.is_enabled_dashboard === "true"
-        const isActiveInserted = connData.is_active_inserted === "1" || connData.is_active_inserted === "true"
-        
-        if (isActiveInserted && !isDashboardEnabled) {
-          // Reset to not assigned - user must explicitly add to main
-          await client.hset(`connection:${connId}`, {
-            is_active_inserted: "0",
-            updated_at: new Date().toISOString(),
-          })
-          fixed++
-          console.log(`[v0] Migration 018: âœ“ ${connId} -> removed auto-assignment (dashboard not enabled)`)
-        }
-      }
-      
-      console.log(`[v0] Migration 018: COMPLETE - fixed ${fixed} connections that were auto-assigned`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "17")
-    },
-  },
-  {
-    // Version 19 was intentionally skipped during a refactor cycle â€” this tombstone
-    // prevents the gap from causing confusion if a v19 migration is ever introduced
-    // later, and ensures any system that somehow stored "_schema_version"="19" in
-    // Redis is still advanced to v20 on the next startup.
-    name: "019-tombstone-skipped-version",
-    version: 19,
-    up: async (client: any) => {
-      await client.set("_schema_version", "19")
-      console.log("[v0] Migration 019: tombstone â€” version 19 was intentionally skipped")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "18")
-    },
-  },
-  {
-    name: "020-phase3-database-consolidation",
-    version: 20,
-    up: async (client: any) => {
-      await client.set("_schema_version", "20")
-      
-      console.log(`[v0] Migration 020: PHASE 3 - Database consolidation starting...`)
-      
-      // PHASE 3 FIX: Consolidate progression keys
-      const connections = await client.smembers("connections")
-      let consolidated = 0
-      
-      for (const connId of connections) {
-        try {
-          // Read from old scattered keys
-          const oldProgression = await client.hgetall(`progression:${connId}`)
-          const oldEngineState = await client.hgetall(`engine_state:${connId}`)
-          const oldTradeEngineState = await client.hgetall(`trade_engine_state:${connId}`)
-          
-          // Build unified structure
-          const unified = {
-            cycles_completed: oldProgression?.cycles_completed || "0",
-            successful_cycles: oldProgression?.successful_cycles || "0",
-            failed_cycles: oldProgression?.failed_cycles || "0",
-            phase: oldProgression?.phase || oldTradeEngineState?.phase || "idle",
-            phase_progress: oldProgression?.progress || oldEngineState?.progress || "0",
-            phase_message: oldProgression?.detail || oldEngineState?.detail || "",
-            engine_started: oldEngineState?.started_at || oldTradeEngineState?.started_at || "",
-            last_cycle: oldProgression?.last_cycle || "",
-            last_indication_count: oldProgression?.indication_count || "0",
-            last_strategy_count: oldProgression?.strategy_count || "0",
-            symbols_count: oldTradeEngineState?.symbols_count || "0",
-            updated_at: new Date().toISOString(),
-          }
-          
-          // Write unified structure
-          await client.hset(`progression:${connId}`, unified)
-          
-          // Set TTL on old keys for backward compatibility (24 hours)
-          await client.expire(`progression:${connId}:cycles`, 86400)
-          await client.expire(`progression:${connId}:indications`, 86400)
-          await client.expire(`engine_state:${connId}`, 86400)
-          
-          consolidated++
-        } catch (e) {
-          console.warn(`[v0] Migration 020: Error consolidating ${connId}:`, e)
-        }
-      }
-      
-      // PHASE 3 FIX: Create connection indexes
-      // Index 1: Main enabled connections
-      for (const connId of connections) {
-        const connData = await client.hgetall(`connection:${connId}`)
-        const isAssigned = connData?.is_assigned === "1" || connData?.is_assigned === "true"
-        const isDashboardEnabled = connData?.is_enabled_dashboard === "1" || connData?.is_enabled_dashboard === "true"
-        
-        if (isAssigned && isDashboardEnabled) {
-          await client.sadd("connections:main:enabled", connId)
-        }
-        
-        // Index 2: Exchange-specific
-        if (connData?.exchange) {
-          await client.sadd(`connections:exchange:${connData.exchange.toLowerCase()}`, connId)
-        }
-        
-        // Index 3: Base enabled
-        const isInserted = connData?.is_inserted === "1" || connData?.is_inserted === "true"
-        const isBaseEnabled = connData?.is_enabled === "1" || connData?.is_enabled === "true"
-        
-        if (isInserted && isBaseEnabled) {
-          await client.sadd("connections:base:enabled", connId)
-        }
-        
-        // Index 4: Working connections
-        if (connData?.last_test_status === "success") {
-          await client.sadd("connections:working", connId)
-        }
-      }
-      
-      console.log(`[v0] Migration 020: âœ“ Consolidated ${consolidated} progression structures`)
-      console.log(`[v0] Migration 020: âœ“ Created ${connections.length} connection indexes`)
-      console.log(`[v0] Migration 020: COMPLETE - Database consolidation done`)
-    },
-    down: async (client: any) => {
-      // Note: Rollback is not implemented for this migration (destructive)
-      // Users should restore from backup if needed
-      await client.set("_schema_version", "19")
-    },
-  },
-  {
-    name: "021-restore-dashboard-enabled-for-auto-active-base-connections",
-    version: 21,
-    up: async (client: any) => {
-      await client.set("_schema_version", "21")
-
-      // AUTO-START DISABLED (no-op): this migration previously force-set
-      // is_enabled_dashboard=1 / is_assigned=1 / is_active=1 for autoActive
-      // base connections (bingx-x01), which made connections auto-start on
-      // every fresh DB. Connections must now be enabled explicitly by the
-      // operator via the dashboard toggle. The version stamp above is kept
-      // so the migration chain stays contiguous.
-      console.log(`[v0] Migration 021: no-op (auto-enable removed; operator must enable connections manually)`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "20")
-      for (const connId of ["bingx-x01"]) {
-        await client.hset(`connection:${connId}`, { is_enabled_dashboard: "0", is_active: "0" })
-      }
-    },
-  },
-  {
-    name: "022-comprehensive-data-structure-consistency",
-    version: 22,
-    up: async (client: any) => {
-      await client.set("_schema_version", "22")
-      
-      // Comprehensive data structure validation and repair migration
-      // Ensures all required keys, indexes, and data structures are present
-      
-      console.log(`[v0] Migration 022: Starting comprehensive data structure validation...`)
-      
-      let fixed = 0
-      let validated = 0
-      
-      // â”€â”€ 1. Validate and fix strategy progression keys â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      const connections = await client.smembers("connections:main:enabled") || []
-      
-      for (const connId of connections) {
-        try {
-          // Ensure progression container exists for each connection
-          const keysPrefix = `strategies:${connId}`
-          const indices = [
-            { key: `${keysPrefix}:indices`, description: "Connection indices" },
-            { key: `strategy_count:${connId}`, description: "Total strategy count" },
-            { key: `real_pi_acc:${connId}`, description: "Real position accumulation" },
-            { key: `axis_pos_acc:${connId}`, description: "Axis position accumulation" },
-          ]
-          
-          for (const { key, description } of indices) {
-            const exists = await client.exists(key)
-            if (!exists) {
-              // Initialize with empty marker
-              await client.hset(key, "_initialized", "1")
-              fixed++
-              console.log(`[v0] Migration 022: Created ${description} key: ${key}`)
-            }
-            validated++
-          }
-          
-          // Ensure progression metadata exists
-          const progMetadata = `progression:${connId}:metadata`
-          const metaExists = await client.exists(progMetadata)
-          if (!metaExists) {
-            await client.hset(progMetadata, {
-              created_at: new Date().toISOString(),
-              last_cycle: new Date().toISOString(),
-              total_base_created: "0",
-              total_main_created: "0",
-              total_real_created: "0",
-              total_live_created: "0",
-            })
-            fixed++
-            console.log(`[v0] Migration 022: Created progression metadata for ${connId}`)
-          }
-          validated++
-          
-          // Ensure per-symbol tracking sets exist
-          const symbols = await client.smembers(`${keysPrefix}:symbols`) || []
-          for (const symbol of symbols) {
-            const symbolSets = [
-              `${keysPrefix}:${symbol}:base:sets`,
-              `${keysPrefix}:${symbol}:main:sets`,
-              `${keysPrefix}:${symbol}:real:sets`,
-              `${keysPrefix}:${symbol}:live:sets`,
-            ]
-            
-            for (const setKey of symbolSets) {
-              const isSet = await client.type(setKey)
-              if (isSet === "none") {
-                // Initialize as empty set with marker
-                await client.sadd(setKey, "_init")
-                await client.srem(setKey, "_init")
-                fixed++
-                console.log(`[v0] Migration 022: Initialized set key: ${setKey}`)
-              }
-              validated++
-            }
-          }
-        } catch (err) {
-          console.warn(`[v0] Migration 022: Error validating connection ${connId}:`, err)
-        }
-      }
-      
-      // â”€â”€ 2. Validate position history structures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      try {
-        const historyKeys = await client.keys("pi_history:*")
-        console.log(`[v0] Migration 022: Found ${historyKeys.length} position history keys`)
-        validated += historyKeys.length
-        
-        // Each position history hash should have standard fields
-        for (const key of historyKeys) {
-          const data = await client.hgetall(key)
-          const requiredFields = ["count", "wins", "losses", "pf_num_x1000", "pf_den_x1000", "ddt_num_x10"]
-          const hasAllFields = requiredFields.every(f => f in data || data[f] !== undefined)
-          
-          if (!hasAllFields) {
-            // Repair by ensuring all fields exist
-            const updates: Record<string, string> = {}
-            for (const field of requiredFields) {
-              if (!(field in data)) {
-                updates[field] = "0"
-              }
-            }
-            if (Object.keys(updates).length > 0) {
-              await client.hset(key, updates)
-              fixed++
-              console.log(`[v0] Migration 022: Repaired position history key: ${key}`)
-            }
-          }
-          validated++
-        }
-      } catch (err) {
-        console.warn(`[v0] Migration 022: Error validating position history:`, err)
-      }
-      
-      // â”€â”€ 3. Validate axis position accumulation ledgers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      try {
-        const axisKeys = await client.keys("axis_pos_acc:*")
-        console.log(`[v0] Migration 022: Found ${axisKeys.length} axis position accumulation keys`)
-        validated += axisKeys.length
-        
-        // Axis ledgers should have accumulation data
-        for (const key of axisKeys) {
-          const exists = await client.exists(key)
-          if (exists) {
-            // Check TTL is set (90 days)
-            const ttl = await client.ttl(key)
-            if (ttl === -1) {
-              // No expiry set, add it
-              await client.expire(key, 90 * 24 * 60 * 60)
-              fixed++
-              console.log(`[v0] Migration 022: Set expiry on axis ledger: ${key}`)
-            }
-          }
-          validated++
-        }
-      } catch (err) {
-        console.warn(`[v0] Migration 022: Error validating axis accumulation:`, err)
-      }
-      
-      // â”€â”€ 4. Validate hedge bucket structures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      try {
-        const hedgeKeys = await client.keys("live_net_target:*")
-        console.log(`[v0] Migration 022: Found ${hedgeKeys.length} hedge net target keys`)
-        validated += hedgeKeys.length
-        
-        // Each should contain direction:remainder pairs
-        for (const key of hedgeKeys) {
-          const value = await client.get(key)
-          if (!value || !value.includes(":")) {
-            // Repair with neutral default
-            await client.set(key, "flat:0")
-            fixed++
-            console.log(`[v0] Migration 022: Repaired hedge target: ${key}`)
-          }
-          validated++
-        }
-      } catch (err) {
-        console.warn(`[v0] Migration 022: Error validating hedge structures:`, err)
-      }
-      
-      console.log(`[v0] Migration 022: COMPLETE`)
-      console.log(`  - Fixed: ${fixed} keys/structures`)
-      console.log(`  - Validated: ${validated} keys`)
-      console.log(`[v0] Migration 022: Data structure consistency check finished`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "21")
-    },
-  },
-  {
-    name: "023-eval-knob-hash-defaults",
-    version: 23,
-    up: async (client: any) => {
-      await client.set("_schema_version", "23")
-
-      // Backfill the windowed-eval knobs into the `connection_settings:{id}`
-      // HASH that the strategy coordinator + detailed-tracking read via
-      // hgetall. Before this migration that hash was never populated (the
-      // settings PATCH route only wrote the connection JSON object), so the
-      // engine silently ran the built-in defaults and operator changes to
-      // these values never took effect. Seeding spec defaults here gives
-      // dev + prod identical, non-empty starting state from first boot;
-      // the PATCH route now keeps the hash in sync on every save.
-      //
-      // Idempotent: we read the hash first and only write fields that are
-      // absent, so an operator who already tuned a value (via the now-wired
-      // PATCH path) is never clobbered, and re-running the migration is a
-      // no-op. The InlineLocalRedis emulator has no hsetnx, so set-if-absent
-      // is emulated with hgetall + conditional hset.
-      const SPEC_DEFAULTS: Record<string, string> = {
-        prevPosMinCount: "5",   // min closed positions before historic blend activates
-        prevPosWindow:   "25",  // single cumulative last-N window feeding BOTH windowed PF and DDT
-        mainEvalPosCount: "3",  // Main-stage validation min position count (3 = bootstrap-safe; historic full-run default was 15)
-        realEvalPosCount: "3",  // Real-stage validation min position count
-      }
-
-      // Union of every connection id source so we don't miss disabled /
-      // template connections (they still get evaluated when toggled on).
-      // The CANONICAL source is `keys("connection:*")` â€” the same one
-      // getAllConnections uses â€” because nobody populates a `connections`
-      // SET and `connections:main:enabled` only holds ENABLED ids, so a
-      // disabled connection would otherwise never get its defaults seeded
-      // and would silently run built-ins the moment it's toggled on.
-      const idSet = new Set<string>()
-      try {
-        const connKeys = (await client.keys("connection:*")) || []
-        for (const k of connKeys) {
-          if (typeof k !== "string") continue
-          // Skip the `connection_settings:*` hashes themselves.
-          if (k.startsWith("connection_settings:")) continue
-          const id = k.slice("connection:".length)
-          if (id) idSet.add(id)
-        }
-      } catch { /* keys() unavailable â€” fall through to the set-based sources */ }
-      for (const setName of ["connections", "connections:main:enabled"]) {
-        try {
-          const ids = (await client.smembers(setName)) || []
-          for (const id of ids) if (typeof id === "string" && id) idSet.add(id)
-        } catch { /* missing set = nothing to add */ }
-      }
-
-      let seeded = 0
-      for (const connId of idSet) {
-        const key = `connection_settings:${connId}`
-        const existing = (await client.hgetall(key).catch(() => ({}))) as
-          | Record<string, string>
-          | null
-        const have = existing || {}
-        const toWrite: Record<string, string> = {}
-        for (const [field, value] of Object.entries(SPEC_DEFAULTS)) {
-          if (have[field] === undefined || have[field] === null || have[field] === "") {
-            toWrite[field] = value
-          }
-        }
-        if (Object.keys(toWrite).length > 0) {
-          await client.hset(key, toWrite)
-          seeded += Object.keys(toWrite).length
-        }
-      }
-
-      console.log(
-        `[v0] Migration 023: Seeded eval-knob defaults for ${idSet.size} connections (${seeded} fields written)`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "22")
-    },
-  },
-  {
-    name: "024-ddt-window-unify-and-stage-thresholds",
-    version: 24,
-    up: async (client: any) => {
-      await client.set("_schema_version", "24")
-
-      // â”€â”€ Part A: remove the orphaned `ddtCapPositions` hash field â”€â”€â”€â”€â”€â”€â”€â”€
-      // PF and DDT now share ONE cumulative last-N window (`prevPosWindow`).
-      // The separate `ddtCapPositions` knob was a misunderstanding (DDT is a
-      // *time* ceiling, not a position count) and has been removed from the
-      // UI, dialog, PATCH route, coordinator, and the v23 seed. Strip the
-      // now-dead field from every connection_settings hash so stale values
-      // can't confuse future readers. Idempotent: hdel on an absent field is
-      // a harmless no-op.
-      const idSet = new Set<string>()
-      try {
-        const connKeys = (await client.keys("connection:*")) || []
-        for (const k of connKeys) {
-          if (typeof k !== "string") continue
-          if (k.startsWith("connection_settings:")) continue
-          const id = k.slice("connection:".length)
-          if (id) idSet.add(id)
-        }
-      } catch { /* keys() unavailable â€” fall through */ }
-      for (const setName of ["connections", "connections:main:enabled"]) {
-        try {
-          const ids = (await client.smembers(setName)) || []
-          for (const id of ids) if (typeof id === "string" && id) idSet.add(id)
-        } catch { /* missing set */ }
-      }
-      let stripped = 0
-      for (const connId of idSet) {
-        try {
-          const removed = await client.hdel(`connection_settings:${connId}`, "ddtCapPositions")
-          if (Number(removed) > 0) stripped++
-        } catch { /* hdel unsupported / absent â€” ignore */ }
-      }
-
-      // â”€â”€ Part B: seed per-stage Max Drawdown-Time ceilings (hours) â”€â”€â”€â”€â”€â”€â”€
-      // The DDT gate threshold is now operator-tunable per stage and was
-      // previously never loaded from settings (the engine ran a hardcoded
-      // 5h). Per-position hold is up to ~2h, so the default ceiling is 4h
-      // per stage. Seed the canonical `app_settings` hash if absent, so the
-      // gate has explicit, non-stale values from first boot. Idempotent via
-      // hgetall + conditional hset (no hsetnx in the emulator).
-      const APP_DDT_DEFAULTS: Record<string, string> = {
-        maxDrawdownTimeMainHours: "4",
-        maxDrawdownTimeRealHours: "4",
-        maxDrawdownTimeLiveHours: "4",
-      }
-      let appSeeded = 0
-      try {
-        const existing = (await client.hgetall("app_settings").catch(() => ({}))) as
-          | Record<string, string>
-          | null
-        const have = existing || {}
-        const toWrite: Record<string, string> = {}
-        for (const [field, value] of Object.entries(APP_DDT_DEFAULTS)) {
-          if (have[field] === undefined || have[field] === null || have[field] === "") {
-            toWrite[field] = value
-          }
-        }
-        if (Object.keys(toWrite).length > 0) {
-          await client.hset("app_settings", toWrite)
-          appSeeded = Object.keys(toWrite).length
-        }
-      } catch { /* app_settings unavailable â€” engine falls back to 4h default */ }
-
-      console.log(
-        `[v0] Migration 024: unified PF/DDT window â€” stripped ddtCapPositions from ${stripped} connections, seeded ${appSeeded} app-level DDT-threshold defaults`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "23")
-    },
-  },
-  {
-    name: "025-initialize-progression-state-hashes",
-    version: 25,
-    up: async (client: any) => {
-      await client.set("_schema_version", "25")
-
-      // â”€â”€ Initialize progression:{connectionId} hashes for all connections â”€â”€â”€â”€
-      // These hashes track counters, snapshots, and cycle metrics for each
-      // connection's trade engine. Previously they were created on-demand
-      // (lazy initialization) when the first log event fired. This created
-      // a race condition during crashes: if Redis crashed after migrations
-      // completed but BEFORE the engine's first progression write, the hash
-      // didn't exist, causing missing or corrupted progression state.
-      //
-      // IMPACT: This ensures every connection has a valid progression hash
-      // with zeroed counters + default values at startup, so any subsequent
-      // crash doesn't leave the progression state missing or incomplete.
-      //
-      // IDEMPOTENT: If a progression hash already exists, hgetall returns
-      // the existing fields, and we only hset the missing defaults. The
-      // existing counters and snapshots are preserved.
-
-      // â”€â”€ DEADLOCK FIX: Use raw client, NOT getAllConnections() â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      // getAllConnections() calls initRedis() internally. Since we are already
-      // INSIDE initRedis() running migrations, that creates a circular wait that
-      // deadlocks the entire server (event loop blocked, all routes timeout).
-      // Use client.keys() directly ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ exactly as migrations 020-024 do.
-      const idSet025 = new Set<string>()
-      try {
-        const connKeys025 = (await client.keys("connection:*")) || []
-        for (const k of connKeys025) {
-          if (typeof k !== "string") continue
-          if (k.startsWith("connection_settings:")) continue
-          const id = k.slice("connection:".length)
-          if (id) idSet025.add(id)
-        }
-      } catch { /* keys() unavailable */ }
-      for (const setName025 of ["connections", "connections:main:enabled"]) {
-        try {
-          const ids = (await client.smembers(setName025)) || []
-          for (const id of ids) if (typeof id === "string" && id) idSet025.add(id)
-        } catch { /* missing set */ }
-      }
-
-      const now = new Date().toISOString()
-      const epochMs = Date.now()
-
-      for (const connId025 of idSet025) {
-        const progKey = `progression:${connId025}`
-
-        // Read current state (if any)
-        const existing = (await client.hgetall(progKey).catch(() => ({}))) as
-          | Record<string, string>
-          | null
-        const have = existing || {}
-
-        // Default progression state structure â€” write only missing fields
-        const defaults: Record<string, string> = {
-          // â”€â”€ Identity & Session â”€â”€
-          connection_id: connId025,
-          session_number: have.session_number ?? "0",
-          epoch: have.epoch ?? String(epochMs),
-          started_at: have.started_at ?? String(epochMs),
-
-          // â”€â”€ Cycle Counters (hincrby discipline â€” never overwrite!) ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
-          cycles_completed: have.cycles_completed ?? "0",
-          successful_cycles: have.successful_cycles ?? "0",
-          failed_cycles: have.failed_cycles ?? "0",
-
-          // â”€â”€ Per-Processor Counters â”€â”€
-          indication_cycle_count: have.indication_cycle_count ?? "0",
-          indication_live_cycle_count: have.indication_live_cycle_count ?? "0",
-          strategy_cycle_count: have.strategy_cycle_count ?? "0",
-          strategy_live_cycle_count: have.strategy_live_cycle_count ?? "0",
-          realtime_cycle_count: have.realtime_cycle_count ?? "0",
-          realtime_live_cycle_count: have.realtime_live_cycle_count ?? "0",
-          frames_processed: have.frames_processed ?? "0",
-
-          // â”€â”€ Indication Type Counters â”€â”€
-          indications_direction_count: have.indications_direction_count ?? "0",
-          indications_move_count: have.indications_move_count ?? "0",
-          indications_active_count: have.indications_active_count ?? "0",
-          indications_active_advanced_count: have.indications_active_advanced_count ?? "0",
-          indications_optimal_count: have.indications_optimal_count ?? "0",
-          indications_auto_count: have.indications_auto_count ?? "0",
-          indications_trend_count: have.indications_trend_count ?? "0",
-
-          // â”€â”€ Strategy Set Counters â”€â”€
-          strategies_base_total: have.strategies_base_total ?? "0",
-          strategies_base_evaluated: have.strategies_base_evaluated ?? "0",
-          strategies_main_total: have.strategies_main_total ?? "0",
-          strategies_main_evaluated: have.strategies_main_evaluated ?? "0",
-          strategies_real_total: have.strategies_real_total ?? "0",
-          strategies_real_evaluated: have.strategies_real_evaluated ?? "0",
-
-          // â”€â”€ Trade / Profit Counters â”€â”€
-          total_trades: have.total_trades ?? "0",
-          successful_trades: have.successful_trades ?? "0",
-          total_profit: have.total_profit ?? "0",
-
-          // â”€â”€ Snapshot Fields (hset discipline) â”€â”€
-          cycle_success_rate: have.cycle_success_rate ?? "0",
-          trade_success_rate: have.trade_success_rate ?? "0",
-          cycle_time_ms: have.cycle_time_ms ?? "0",
-          last_cycle_time: have.last_cycle_time ?? now,
-          last_update: have.last_update ?? now,
-
-          // â”€â”€ Engine State â”€â”€
-          engine_started: have.engine_started ?? "false",
-          prehistoric_phase_active: have.prehistoric_phase_active ?? "false",
-          prehistoric_symbols_processed_count: have.prehistoric_symbols_processed_count ?? "0",
-          prehistoric_candles_processed: have.prehistoric_candles_processed ?? "0",
-          intervals_processed: have.intervals_processed ?? "0",
-          indications_count: have.indications_count ?? "0",
-          indication_sets_total: have.indication_sets_total ?? "0",
-          indication_sets_at_limit: have.indication_sets_at_limit ?? "0",
-          strategies_count: have.strategies_count ?? "0",
-        }
-
-        // Write only missing fields â€” preserve existing counters
-        const toWrite: Record<string, string> = {}
-        for (const [field, value] of Object.entries(defaults)) {
-          if (have[field] === undefined || have[field] === null || have[field] === "") {
-            toWrite[field] = value
-          }
-        }
-
-        if (Object.keys(toWrite).length > 0) {
-          await client.hset(progKey, toWrite)
-        }
-      }
-
-      // Also initialize the global progression index (if needed by monitoring)
-      const progressionIndex = (await client.hgetall("progression:index").catch(() => ({}))) as
-        | Record<string, string>
-        | null
-      const haveIndex = progressionIndex || {}
-      if (!haveIndex.total_connections) {
-        await client.hset("progression:index", {
-          total_connections: String(idSet025.size),
-          last_initialized: now,
-          schema_version: "25",
-        })
-      }
-
-      console.log(
-        `[v0] Migration 025: initialized progression state for ${idSet025.size} connections (defaults for missing fields, preserved existing counters)`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "24")
-    },
-  },
-  {
-    name: "026-per-connection-pf-ddt-leverage-defaults",
-    version: 26,
-    up: async (client: any) => {
-      await client.set("_schema_version", "26")
-
-      // â”€â”€ Backfill per-connection PF/DDT/stage-min-pos/leverage defaults â”€â”€â”€â”€â”€â”€â”€
-      //
-      // The strategy coordinator reads per-connection overrides from
-      // `connection_settings:{id}` (written by the settings PATCH route).
-      // On a cold boot / fresh install these hashes don't exist yet, so the
-      // coordinator falls back to global app_settings â†’ built-in defaults.
-      // This migration seeds the canonical defaults into every connection's
-      // hash so:
-      //   1. The coordinator's resolution chain (connection > global > default)
-      //      finds the values on first load without waiting for the operator
-      //      to visit Settings â†’ Strategy and save.
-      //   2. The Settings PATCH route's idempotent "set-if-absent" logic
-      //      (which never clobbers operator-tuned values) is satisfied.
-      //
-      // Defaults per spec:
-      //   baseProfitFactor=0.9   ï¿½ï¿½ï¿½ admission floor for Base stage
-      //   main/real/liveProfitFactor=1.0
-      //   maxDrawdownTimeMainHours=4  maxDrawdownTimeRealHours=4  maxDrawdownTimeLiveHours=4
-      //   stageMinPosCountBase=1  stageMinPosCountMain=1  stageMinPosCountReal=1
-      //   leveragePercentage=100  useMaximalLeverage=false
-      //
-      // IDEMPOTENT: hgetall + set-only-if-absent so re-running on a DB with
-      // operator-tuned values never overwrites the operator's choices.
-      //
-      // DEADLOCK-SAFE: uses raw client.keys() â€” never calls getAllConnections()
-      // (which calls initRedis() internally and would deadlock since we are
-      // already inside initRedis() running migrations).
-
-      const idSet026 = new Set<string>()
-      try {
-        const connKeys026 = (await client.keys("connection:*")) || []
-        for (const k of connKeys026) {
-          if (typeof k !== "string") continue
-          if (k.startsWith("connection_settings:")) continue
-          const id = k.slice("connection:".length)
-          if (id) idSet026.add(id)
-        }
-      } catch { /* keys() unavailable */ }
-      for (const setName026 of ["connections", "connections:main:enabled"]) {
-        try {
-          const ids = (await client.smembers(setName026)) || []
-          for (const id of ids) if (typeof id === "string" && id) idSet026.add(id)
-        } catch { /* missing set */ }
-      }
-
-      const DEFAULTS_026: Record<string, string> = {
-        baseProfitFactor:             "0.9",
-        mainProfitFactor:             "1.0",
-        realProfitFactor:             "1.0",
-        liveProfitFactor:             "1.0",
-        maxDrawdownTimeMainHours:     "4",
-        maxDrawdownTimeRealHours:     "4",
-        maxDrawdownTimeLiveHours:     "4",
-        stageMinPosCountBase:         "1",
-        stageMinPosCountMain:         "1",
-        stageMinPosCountReal:         "1",
-        leveragePercentage:           "100",
-        useMaximalLeverage:           "false",
-      }
-
-      let seeded = 0
-      for (const connId026 of idSet026) {
-        const key = `connection_settings:${connId026}`
-        // Read existing hash â€” emulator has no hsetnx so we simulate
-        // it with hgetall + conditional hset.
-        const existing = (await client.hgetall(key).catch(() => null)) as
-          | Record<string, string>
-          | null
-        const have = existing || {}
-
-        const toWrite: Record<string, string> = {}
-        for (const [field, val] of Object.entries(DEFAULTS_026)) {
-          // Only set when the field is absent or blank â€” never overwrite
-          // operator-tuned values.
-          if (have[field] === undefined || have[field] === null || have[field] === "") {
-            toWrite[field] = val
-          }
-        }
-        if (Object.keys(toWrite).length > 0) {
-          await client.hset(key, toWrite)
-          seeded += Object.keys(toWrite).length
-        }
-      }
-
-      console.log(
-        `[v0] Migration 026: seeded per-connection PF/DDT/leverage defaults for ${idSet026.size} connections (${seeded} fields written)`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "25")
-    },
-  },
-  {
-    name: "027-engine-timings-defaults-in-settings-system",
-    version: 27,
-    up: async (client: any) => {
-      await client.set("_schema_version", "27")
-
-      // â”€â”€ Seed engine-timing defaults into `settings:system` â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      //
-      // Prior to this migration `settings:system` had no engine-timing keys,
-      // so `getEngineTimings()` fell back to DEFAULT_ENGINE_TIMINGS on every
-      // load.  Seeding the defaults explicitly:
-      //   1. Makes the effective configuration visible and auditable via the
-      //      Settings â†’ System â†’ Engine Timings panel.
-      //   2. Ensures that operator changes persisted through the UI are
-      //      preserved across cold-boots (they already are, but only if the
-      //      key exists â€” otherwise a flush would reset them invisibly).
-      //   3. Removes the previous livePositionsCyclePauseMs bounds/default
-      //      mismatch confusion: the stored value is 300 ms, the bound max
-      //      is now 500 ms, so `clamp(300, {min:10,max:500}) = 300` (no
-      //      longer silently clamped to 200).
-      //
-      // IDEMPOTENT: hgetall + conditional-hset, never overwrites operator
-      // values that already exist in the hash.
-
-      const TIMING_DEFAULTS_027: Record<string, string> = {
-        // Live-sync start-to-start cadence for syncWithExchange (Loop C).
-        // Kept at 200 ms so close/fill detection fires 5 times/sec.
-        // This value must never be raised above 1000 ms â€” doing so would
-        // allow BingX-filled close orders to remain open in Redis for >1 s,
-        // causing incorrect PnL and double-close attempts.
-        live_sync_interval_ms:           "200",
-        live_sync_pause_ms:              "50",
-        live_positions_cycle_pause_ms:   "300",
-        realtime_cycle_pause_ms:         "200",
-        realtime_interval_ms:            "300",
-        prehistoric_interval_ms:         "5000",
-        prehistoric_cycle_pause_ms:      "50",
-        strategy_flow_min_interval_ms:   "5000",
-        strategy_flow_hard_throttle_ms:  "10000",
-        strategy_flow_max_interval_ms:   "30000",
-        lock_extend_interval_ms:         "30000",
-        max_position_hold_ms:            "14400000",
-        progression_buffer_flush_ms:     "5000",
-      }
-
-      const existing027 = (await client.hgetall("settings:system").catch(() => null)) as
-        | Record<string, string>
-        | null
-      const have027 = existing027 || {}
-
-      const toWrite027: Record<string, string> = {}
-      for (const [field, val] of Object.entries(TIMING_DEFAULTS_027)) {
-        if (have027[field] === undefined || have027[field] === null || have027[field] === "") {
-          toWrite027[field] = val
-        }
-      }
-
-      if (Object.keys(toWrite027).length > 0) {
-        await client.hset("settings:system", toWrite027)
-      }
-
-      console.log(
-        `[v0] Migration 027: seeded ${Object.keys(toWrite027).length} engine-timing defaults into settings:system`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "26")
-    },
-  },
-  {
-    name: "028-pin-live-sync-interval-and-min-step",
-    version: 28,
-    up: async (client: any) => {
-      await client.set("_schema_version", "28")
-
-      // â”€â”€ 1. Pin live_sync_interval_ms = 200 in settings:system â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      //
-      // Migration v27 omitted `live_sync_interval_ms` from its seed block,
-      // so instances that already ran v27 have no stored value â€” they fall
-      // back to the DEFAULT_ENGINE_TIMINGS constant (200 ms), which is correct,
-      // but the value is invisible to the settings UI and would revert to
-      // whatever the constant is if the code changes. Pinning it explicitly
-      // at 200 ms:
-      //   â€¢ Makes the value visible and auditable in Settings â†’ System â†’ Timings
-      //   â€¢ Survives DB flushes
-      //   â€¢ Documents the intent: LIVE_SYNC_INTERVAL_MS must stay at 200 ms
-      //     (5 sweeps/sec) so fill/close detection is timely
-      //
-      // IDEMPOTENT: only writes if the key is absent or empty.
-      const sys028 = (await client.hgetall("settings:system").catch(() => null)) as
-        | Record<string, string>
-        | null
-      const haveSys028 = sys028 || {}
-
-      const sysWrites028: Record<string, string> = {}
-      const SYS_PINS_028: Record<string, string> = {
-        live_sync_interval_ms:  "200",   // MUST stay 200 â€” do not raise
-        live_sync_pause_ms:     "50",
-      }
-      for (const [k, v] of Object.entries(SYS_PINS_028)) {
-        if (!haveSys028[k]) sysWrites028[k] = v
-      }
-      if (Object.keys(sysWrites028).length > 0) {
-        await client.hset("settings:system", sysWrites028)
-      }
-
-      // â”€â”€ 2. Seed minStep default (5) for all connections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      //
-      // minStep (range 2-30, default 5) was added to the per-connection
-      // strategy settings in the same session as this migration. Backfill
-      // the default into connection_settings:{id} for every existing
-      // connection so the engine reads the correct floor immediately without
-      // requiring an operator save through the UI.
-      //
-      // Uses client.keys("connection:*") to enumerate connections â€” same
-      // safe pattern as migrations v23/v26 (no getAllConnections deadlock risk).
-      //
-      // IDEMPOTENT: hgetall + conditional-hset, never clobbers operator values.
-      let connKeys028: string[] = []
-      try {
-        const raw = await client.keys("connection:*")
-        // Filter out sub-keys: only keep bare "connection:{id}" (no extra colons
-        // beyond the first), e.g. "connection:bingx-x01", not
-        // "connection:bingx-x01:settings".
-        connKeys028 = (raw as string[]).filter((k: string) => {
-          const parts = k.split(":")
-          return parts.length === 2
-        })
-      } catch {
-        connKeys028 = []
-      }
-
-      let seeded028 = 0
-      for (const connKey of connKeys028) {
-        const connId = connKey.split(":")[1]
-        const settingsKey = `connection_settings:${connId}`
-        const existing028 = (await client.hgetall(settingsKey).catch(() => null)) as
-          | Record<string, string>
-          | null
-        const have028 = existing028 || {}
-        if (!have028["minStep"]) {
-          await client.hset(settingsKey, { minStep: "5" })
-          seeded028++
-        }
-      }
-
-      console.log(
-        `[v0] Migration 028: pinned live_sync_interval_ms=200 in settings:system; ` +
-        `seeded minStep=5 into ${seeded028}/${connKeys028.length} connection_settings hashes`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "27")
-    },
-  },
-
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Migration 029 â€” Seed useMaximalLeverage + leveragePercentage into app_settings
-  //
-  // Prior to this migration:
-  //   â€¢ all three seed locations (settings-storage, production-seeder,
-  //     app/api/settings GET) defaulted `default_leverage: 10` and did not
-  //     write `useMaximalLeverage` or `leveragePercentage` at all.
-  //   â€¢ volume-calculator.ts had a comment "no longer consulted" and ignored
-  //     these settings, always falling back to exchange-max.
-  //   â€¢ The Settings UI had all three leverage controls locked/disabled.
-  //
-  // This migration:
-  //   1. Sets `useMaximalLeverage=true` and `leveragePercentage=100` in the
-  //      canonical `app_settings` hash (idempotent â€” skips if already set).
-  //   2. Clears the stale `default_leverage=10` value from `app_settings`
-  //      to avoid confusion (the engine never reads this field at order time).
-  //   3. Seeds the same pair into every `connection_settings:{id}` hash that
-  //      was not already written by migration 026.
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  {
-    name: "029-leverage-policy-defaults-in-app-settings",
-    version: 29,
-    up: async (client: any) => {
-      await client.set("_schema_version", "29")
-
-      // 1. app_settings â€” seed leverage policy fields
-      const appSettings029 = (await client.hgetall("app_settings").catch(() => null)) as
-        | Record<string, string>
-        | null
-      const have029app = appSettings029 || {}
-      const appWrites029: Record<string, string> = {}
-      if (!have029app["useMaximalLeverage"]) appWrites029["useMaximalLeverage"] = "true"
-      if (!have029app["leveragePercentage"])  appWrites029["leveragePercentage"]  = "100"
-      // Remove the misleading legacy default_leverage=10 if it was never
-      // operator-set to something meaningful (0 means "use predefinition").
-      if (have029app["default_leverage"] === "10") appWrites029["default_leverage"] = "0"
-      if (Object.keys(appWrites029).length > 0) {
-        await client.hset("app_settings", appWrites029)
-      }
-
-      // 2. connection_settings hashes â€” seed per-connection defaults
-      let connKeys029: string[] = []
-      try {
-        const raw = await client.smembers("connections")
-        connKeys029 = (raw as string[]).filter((k: string) => typeof k === "string" && k.length > 0)
-      } catch {
-        connKeys029 = []
-      }
-
-      let seeded029 = 0
-      for (const connId of connKeys029) {
-        const settingsKey = `connection_settings:${connId}`
-        const existing029 = (await client.hgetall(settingsKey).catch(() => null)) as
-          | Record<string, string>
-          | null
-        const have029conn = existing029 || {}
-        const writes029: Record<string, string> = {}
-        if (!have029conn["useMaximalLeverage"]) writes029["useMaximalLeverage"] = "true"
-        if (!have029conn["leveragePercentage"])  writes029["leveragePercentage"]  = "100"
-        if (Object.keys(writes029).length > 0) {
-          await client.hset(settingsKey, writes029)
-          seeded029++
-        }
-      }
-
-      console.log(
-        `[v0] Migration 029: seeded useMaximalLeverage/leveragePercentage into app_settings` +
-        ` and ${seeded029}/${connKeys029.length} connection_settings hashes`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "28")
-    },
-  },
-  {
-    // â”€â”€ v30: Seed coordination variant / axis / block defaults â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // The strategy coordinator's `loadCoordinationSettings()` now reads from
-    // `connection_settings:{id}` (per-connection hash) with fallback to global
-    // `app_settings`. Existing hashes have no coordination fields, so the first
-    // cycle after upgrade would fall back to global which may also be absent.
-    // Seed spec defaults idempotently (never clobbers operator-set values):
-    //   variants:  trailing=true, block=true, dca=false
-    //   axes:      all disabled by default, including pause-axis; maxWindow seeded to spec defaults
-    //   variants:  trailing=true, block=true, dca=false, pause=true
-    //   axes:      all disabled by default, maxWindow seeded to spec defaults
-    //   block knobs: blockVolumeRatio=1.0, blockMaxStack=12
-    //
-    // Also seeds app_settings so global fallback works the same way.
-    name: "030-coordination-variant-axis-block-defaults",
-    version: 30,
-    up: async (client: any) => {
-      await client.set("_schema_version", "30")
-
-      const COORD_DEFAULTS: Record<string, string> = {
-        // Variant toggles
-        variantTrailingEnabled: "true",
-        variantBlockEnabled:    "true",
-        variantDcaEnabled:      "false",  // off by spec default
-        variantPauseEnabled:    "true",
-        // Axis toggles â€” disabled by default (operator must opt-in)
-        axisPrevEnabled:   "false",
-        axisPrevMaxWindow: "12",
-        axisLastEnabled:   "false",
-        axisLastMaxWindow: "4",
-        axisContEnabled:   "false",
-        axisContMaxWindow: "8",
-        axisPauseEnabled:  "false",
-        axisPauseMaxWindow: "8",
-        // Block strategy tuning
-        blockVolumeRatio: "1.0",
-        blockMaxStack:    "12",
-        blockPauseCountRatio: "1.0",
-        blockActiveRealEnabled: "true",
-        blockActiveLiveEnabled: "true",
-      }
-
-      // â”€â”€ 1. app_settings global fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      const appS030 = (await client.hgetall("app_settings").catch(() => null)) as
-        | Record<string, string>
-        | null
-      const haveApp030 = appS030 || {}
-      const appWrites030: Record<string, string> = {}
-      for (const [k, def] of Object.entries(COORD_DEFAULTS)) {
-        if (!haveApp030[k]) appWrites030[k] = def
-      }
-      if (Object.keys(appWrites030).length > 0) {
-        await client.hset("app_settings", appWrites030)
-      }
-
-      // â”€â”€ 2. Per-connection hashes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      let connIds030: string[] = []
-      try {
-        const raw = await client.smembers("connections")
-        connIds030 = (raw as string[]).filter(
-          (k: string) => typeof k === "string" && k.length > 0,
-        )
-      } catch {
-        connIds030 = []
-      }
-
-      let seeded030 = 0
-      for (const connId of connIds030) {
-        const hkey = `connection_settings:${connId}`
-        const existing030 = (await client.hgetall(hkey).catch(() => null)) as
-          | Record<string, string>
-          | null
-        const have030 = existing030 || {}
-        const writes030: Record<string, string> = {}
-        for (const [k, def] of Object.entries(COORD_DEFAULTS)) {
-          // Never clobber a field the operator already set.
-          if (!have030[k]) writes030[k] = def
-        }
-        if (Object.keys(writes030).length > 0) {
-          await client.hset(hkey, writes030)
-          seeded030++
-        }
-      }
-
-      console.log(
-        `[v0] Migration 030: seeded coordination defaults into app_settings` +
-        ` and ${seeded030}/${connIds030.length} connection_settings hashes`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "29")
-    },
-  },
-  {
-    // Migration 031 â€” Seed live-trade test configuration for bingx-x01
-    //
-    // Purpose: sets is_live_trade=1, five concrete test symbols (BTC/ETH/SOL/
-    // BNB/XRP), and exchangePositionCost=0.02 (minimum volume) into BOTH the
-    // connection hash and the connection_settings hash so the values survive
-    // dev-mode HMR restarts that wipe the in-process Redis.
-    //
-    // Safety: every write is `set-if-absent` so an operator override made via
-    // the UI (which writes the same hash fields) will never be clobbered on
-    // the next boot. To reset to fresh test state: flush the DB via
-    // /api/install/database/flush and restart.
-    name: "031-bingx-x01-live-trade-test-defaults",
-    version: 31,
-    up: async (client: any) => {
-      await client.set("_schema_version", "31")
-
-      const TEST_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-      const TEST_SYMBOLS_JSON = JSON.stringify(TEST_SYMBOLS)
-
-      const CONN_KEY     = "connection:bingx-x01"
-      const SETTINGS_KEY = "connection_settings:bingx-x01"
-
-      // â”€â”€ 1. connection hash (what the engine reads for is_live_trade) â”€â”€â”€â”€â”€â”€â”€â”€
-      const existingConn = (await client.hgetall(CONN_KEY).catch(() => null)) as
-        | Record<string, string> | null
-      const haveConn = existingConn || {}
-      const connWrites: Record<string, string> = {}
-      // is_live_trade: only set if the operator has not already toggled it
-      if (!("is_live_trade" in haveConn)) {
-        connWrites["is_live_trade"] = "1"
-      }
-      // active_symbols: set if empty / absent
-      const hasSymbols =
-        typeof haveConn["active_symbols"] === "string" &&
-        haveConn["active_symbols"].trim().length > 0 &&
-        haveConn["active_symbols"] !== "[]"
-      if (!hasSymbols) {
-        connWrites["active_symbols"] = TEST_SYMBOLS_JSON
-        connWrites["symbol_count"]   = String(TEST_SYMBOLS.length)
-        // Default order: by exchange 1h volatility (seeded list is a static
-        // fallback until the resolver fetches live ticker data).
-        connWrites["symbol_order"]   = "volatility"
-      }
-      if (Object.keys(connWrites).length > 0) {
-        await client.hset(CONN_KEY, connWrites)
-      }
-
-      // â”€â”€ 2. connection_settings hash (what VolumeCalculator reads) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      const existingSettings = (await client.hgetall(SETTINGS_KEY).catch(() => null)) as
-        | Record<string, string> | null
-      const haveSettings = existingSettings || {}
-      const settingsWrites: Record<string, string> = {}
-      if (!haveSettings["exchangePositionCost"]) settingsWrites["exchangePositionCost"] = "0.02"
-      if (!haveSettings["positions_average"])    settingsWrites["positions_average"]    = "2"
-      if (Object.keys(settingsWrites).length > 0) {
-        await client.hset(SETTINGS_KEY, settingsWrites)
-      }
-
-      // â”€â”€ 3. setSettings-prefixed keys (what getSymbols() reads) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      // getSymbols() resolves symbols via getSettings("trade_engine_state:{id}")
-      // and getSettings("connection:{id}") which both add the "settings:" prefix.
-      // The raw connection hash (CONN_KEY) is never seen by getSymbols(), so we
-      // must also write active_symbols to these prefixed hashes.
-      if (!hasSymbols) {
-        await client.hset(`settings:trade_engine_state:bingx-x01`, {
-          active_symbols: TEST_SYMBOLS_JSON,
-          symbol_count: String(TEST_SYMBOLS.length),
-          config_set_symbols_total: String(TEST_SYMBOLS.length),
-        }).catch(() => {})
-        await client.hset(`settings:connection:bingx-x01`, {
-          active_symbols: TEST_SYMBOLS_JSON,
-          symbol_count: String(TEST_SYMBOLS.length),
-        }).catch(() => {})
-      }
-
-      console.log(
-        `[v0] Migration 031: bingx-x01 live-trade test defaults seeded ` +
-        `(is_live_trade=${connWrites["is_live_trade"] ?? "kept"}, ` +
-        `symbols=${hasSymbols ? "kept" : TEST_SYMBOLS.join(",")}, ` +
-        `exchangePositionCost=${settingsWrites["exchangePositionCost"] ?? "kept"})`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "30")
-    },
-  },
-
-  {
-    // Version 032 was intentionally skipped â€” migration 033 superseded the
-    // in-progress v32 draft before it was ever shipped. This tombstone fills
-    // the version gap so:
-    //   a) The `migrations.filter(m => m.version > currentVersion)` loop never
-    //      skips v033 on a DB that somehow recorded _schema_version=32.
-    //   b) migration 033's `down` can safely decrement to "32" and land on
-    //      this no-op, then a second rollback step gets back to "31".
-    name: "032-tombstone-skipped-version",
-    version: 32,
-    up: async (client: any) => {
-      await client.set("_schema_version", "32")
-      console.log("[v0] Migration 032: tombstone â€” version 32 was intentionally skipped (033 superseded in-progress draft)")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "31")
-    },
-  },
-  // Migration 033 â€” Expand bingx-x01 to 15 symbols + write force_symbols override
-  // (supersedes v32 which lacked force_symbols; bumped so existing DBs re-run)
-  {
-    name: "033-bingx-x01-force-15-symbols",
-    version: 33,
-    up: async (client: any) => {
-      await client.set("_schema_version", "33")
-
-      const SYMBOLS_15 = [
-        "BTCUSDT",  "ETHUSDT",  "SOLUSDT",  "BNBUSDT",  "XRPUSDT",
-        "DOGEUSDT", "ADAUSDT",  "AVAXUSDT", "LINKUSDT", "DOTUSDT",
-        "ATOMUSDT", "LTCUSDT",  "UNIUSDT",  "NEARUSDT", "MATICUSDT",
-      ]
-      const CONN_ID = "bingx-x01"
-      const symJson = JSON.stringify(SYMBOLS_15)
-      const symCount = String(SYMBOLS_15.length)
-      // Write `force_symbols` â€” the highest-priority field in getSymbols().
-      // Unlike `active_symbols` / `symbols`, `force_symbols` is NEVER written
-      // by the engine startup path, so it cannot be silently overwritten when
-      // the live BingX connection returns a different set (e.g. 12 exchange
-      // symbols from the user's actual account).  getSymbols() checks this
-      // field first and returns early, skipping all other fallbacks.
-      await Promise.all([
-        client.hset(`connection:${CONN_ID}`, {
-          active_symbols: symJson,
-          force_symbols:  symJson,
-          symbol_count:   symCount,
-          updated_at:     new Date().toISOString(),
-        }),
-        client.hset(`settings:trade_engine_state:${CONN_ID}`, {
-          active_symbols:        symJson,
-          force_symbols:         symJson,
-          symbols:               symJson,
-          symbol_count:          symCount,
-          config_set_symbols_total: symCount,
-        }),
-        client.hset(`settings:connection:${CONN_ID}`, {
-          active_symbols: symJson,
-          force_symbols:  symJson,
-          symbol_count:   symCount,
-        }),
-      ]).catch(() => {})
-      console.log(`[v0] Migration 033: bingx-x01 force_symbols set to 15 symbols: ${SYMBOLS_15.join(",")}`)
-
-      // Invalidate the running engine's symbol cache so the next cycle picks up
-      // force_symbols immediately rather than waiting for the 5-second TTL.
-      // Also update the progression snapshot so the status API reflects 15 symbols.
-      try {
-        const { getTradeEngine } = await import("@/lib/trade-engine")
-        const coordinator = getTradeEngine()
-        // invalidateSymbolsCacheForConnection is the public coordinator API;
-        // fall back silently if the running engine doesn't expose it (non-critical
-        // since the 5-second TTL will expire before the next cycle anyway).
-        if (coordinator && typeof (coordinator as any).invalidateSymbolsCacheForConnection === "function") {
-          ;(coordinator as any).invalidateSymbolsCacheForConnection(CONN_ID)
-          console.log(`[v0] Migration 033: invalidated symbol cache on running engine`)
-        }
-      } catch { /* engine may not be running â€” safe to ignore */ }
-
-      // Stamp a fresh progression snapshot so status API shows 15 symbols.
-      await client.hset(`progression:${CONN_ID}`, {
-        symbol_count:                 symCount,
-        active_symbols_hash:          SYMBOLS_15.sort().join("|"),
-        started_for_settings_version: new Date().toISOString(),
-        progress_settings_snapshot:   JSON.stringify({
-          symbol_count:      Number(symCount),
-          symbols_hash:      SYMBOLS_15.sort().join("|"),
-          is_live_trade:     "1",
-          is_preset_trade:   "0",
-          live_volume_factor: "1",
-          connection_method: "library",
-          updated_at:        new Date().toISOString(),
-        }),
-      }).catch(() => {})
-    },
-    down: async (client: any) => {
-      // Roll back to 032 (the tombstone), which is a no-op one step from 031.
-      await client.set("_schema_version", "32")
-    },
-  },
-  // â”€â”€ Migration 034 â€” operator-spec defaults â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Seeds the operator-directed configuration defaults for bingx-x01:
-  //   â€¢ live_volume_factor = 2.2  (written to BOTH connection:{id} and
-  //     connection_settings:{id} so all three priority tiers in
-  //     VolumeCalculator.resolveVolumeFactors() are satisfied; app_settings
-  //     also gets volume_factor_live=2.2 as the global fallback)
-  //   â€¢ baseProfitFactor=1.0, main/real/liveProfitFactor=1.2
-  //     â†’ written to connection_settings:bingx-x01 using the camelCase keys
-  //       that StrategyCoordinator.loadProfitFactors() reads (NOT the
-  //       pf_base_min snake_case names used by the old settings UI)
-  //   â€¢ variantTrailingEnabled / variantBlockEnabled / variantDcaEnabled â†’ written to connection_settings:bingx-x01
-  //   â€¢ variantTrailingEnabled / variantBlockEnabled / variantDcaEnabled /
-  //     variantPauseEnabled â†’ written to connection_settings:bingx-x01
-  //     using the camelCase keys that loadCoordinationSettings() reads
-  //   â€¢ minStep=5, mainEvalPosCount=15, realEvalPosCount=10 â†’
-  //     connection_settings:bingx-x01
-  //   â€¢ symbol_order=volatility_1h written to connection:bingx-x01 (where
-  //     getSymbols() resolves it)
-  //
-  // KEY INVARIANT: every field is written to the hash that the actual engine
-  // code reads.  Previous incarnation of this migration wrote to
-  // `settings:connection:bingx-x01` (a setSettings-prefixed key that only
-  // the legacy settings-storage module reads) and used wrong field names
-  // (snake_case variants that the coordinator never checks).  This version
-  // targets the correct hashes with the correct names.
-  //
-  // IDEMPOTENT: values are written unconditionally (safe â€” migrations run
-  // once per _schema_version level; operator overrides made after this
-  // migration via the Settings UI are never touched by migrations).
-  {
-    version: 34,
-    name: "034-operator-spec-defaults",
-    up: async (client: any) => {
-      await client.set("_schema_version", "34")
-
-      const CONN_ID = "bingx-x01"
-      const now = new Date().toISOString()
-
-      // â”€â”€ 1. app_settings â€” global volume factor fallback + PF thresholds â”€â”€â”€â”€â”€
-      // VolumeCalculator priority-3 fallback reads `volume_factor_live` from here.
-      // StrategyCoordinator reads baseProfitFactor/mainProfitFactor etc. from here
-      // as the global default (then connection_settings overrides per-connection).
-      await client.hset("app_settings", {
-        volume_factor_live:   "2.2",   // global fallback for VolumeCalculator
-        volume_factor_preset: "1.0",   // preset mode factor
-        baseProfitFactor:     "1.0",   // coordinator global default
-        mainProfitFactor:     "1.2",
-        realProfitFactor:     "1.2",
-        liveProfitFactor:     "1.2",
-        updated_at:           now,
-      }).catch(() => {})
-
-      // â”€â”€ 2. connection:bingx-x01 â€” direct connection hash â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      // VolumeCalculator priority-1 reads `live_volume_factor` here.
-      // getSymbols() reads `symbol_order` from here.
-      await client.hset(`connection:${CONN_ID}`, {
-        live_volume_factor:   "2.2",   // priority-1 override in VolumeCalculator
-        preset_volume_factor: "1.0",
-        symbol_order:         "volatility",
-        updated_at:           now,
-      }).catch(() => {})
-
-      // â”€â”€ 3. connection_settings:bingx-x01 â€” coordinator + volume overlay â”€â”€â”€â”€â”€
-      // StrategyCoordinator.loadProfitFactors() and loadCoordinationSettings()
-      // both read exclusively from `connection_settings:{id}` (hgetall).
-      // VolumeCalculator priority-2 reads `live_volume_factor` here when the
-      // caller passes the merged settings object.
-      await client.hset(`connection_settings:${CONN_ID}`, {
-        // Volume factors (VolumeCalculator priority-2)
-        live_volume_factor:   "2.2",
-        preset_volume_factor: "1.0",
-        // PF thresholds â€” camelCase: what loadProfitFactors() reads
-        baseProfitFactor:     "1.0",
-        mainProfitFactor:     "1.2",
-        realProfitFactor:     "1.2",
-        liveProfitFactor:     "1.2",
-        // Coordination variant toggles â€” camelCase: what loadCoordinationSettings() reads
-        variantTrailingEnabled: "true",
-        variantBlockEnabled:    "true",
-        variantDcaEnabled:      "false",
-        variantPauseEnabled:    "true",
-        // Block knobs
-        blockVolumeRatio:     "1.0",
-        blockMaxStack:        "12",
-        blockPauseCountRatio: "1.0",
-        blockActiveRealEnabled: "true",
-        blockActiveLiveEnabled: "true",
-        // Eval thresholds
-        mainEvalPosCount:     "3",
-        realEvalPosCount:     "3",
-        // Entry step
-        minStep:              "5",
-        updated_at:           now,
-      }).catch(() => {})
-
-      console.log("[v0] Migration 034: operator-spec defaults applied (pf=1.0/1.2/1.2, live_volume_factor=2.2, variantBlock/Trailing=true, correct hashes)")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "33")
-    },
-  },
-
-  // Migration 035 â€” Expand bingx-x01 to 20 symbols for intense retest
-  // Adds 5 high-volume symbols on top of the 15 from migration 033.
-  // Uses force_symbols (highest-priority field in getSymbols()) so the engine
-  // cannot silently overwrite the list during startup symbol resolution.
-  {
-    name: "035-bingx-x01-force-20-symbols",
-    version: 35,
-    up: async (client: any) => {
-      await client.set("_schema_version", "35")
-
-      const SYMBOLS_20 = [
-        "BTCUSDT",  "ETHUSDT",  "SOLUSDT",  "BNBUSDT",  "XRPUSDT",
-        "DOGEUSDT", "ADAUSDT",  "AVAXUSDT", "LINKUSDT", "DOTUSDT",
-        "ATOMUSDT", "LTCUSDT",  "UNIUSDT",  "NEARUSDT", "MATICUSDT",
-        "AAVEUSDT", "SUIUSDT",  "APTUSDT",  "ARBUSDT",  "OPUSDT",
-      ]
-      const CONN_ID = "bingx-x01"
-      const symJson = JSON.stringify(SYMBOLS_20)
-      const symCount = String(SYMBOLS_20.length)
-
-      await Promise.all([
-        client.hset(`connection:${CONN_ID}`, {
-          active_symbols: symJson,
-          force_symbols:  symJson,
-          symbol_count:   symCount,
-          updated_at:     new Date().toISOString(),
-        }),
-        client.hset(`settings:trade_engine_state:${CONN_ID}`, {
-          active_symbols:           symJson,
-          force_symbols:            symJson,
-          symbols:                  symJson,
-          symbol_count:             symCount,
-          config_set_symbols_total: symCount,
-        }),
-        client.hset(`settings:connection:${CONN_ID}`, {
-          active_symbols: symJson,
-          force_symbols:  symJson,
-          symbol_count:   symCount,
-        }),
-      ]).catch(() => {})
-      console.log(`[v0] Migration 035: bingx-x01 force_symbols set to 20 symbols: ${SYMBOLS_20.join(",")}`)
-
-      // Invalidate running engine's symbol cache immediately.
-      try {
-        const { getTradeEngine } = await import("@/lib/trade-engine")
-        const coordinator = getTradeEngine()
-        if (coordinator && typeof (coordinator as any).invalidateSymbolsCacheForConnection === "function") {
-          ;(coordinator as any).invalidateSymbolsCacheForConnection(CONN_ID)
-          console.log(`[v0] Migration 035: invalidated symbol cache on running engine`)
-        }
-      } catch { /* engine may not be running â€” safe to ignore */ }
-
-      // Stamp a fresh progression snapshot so the status API reflects 20 symbols.
-      await client.hset(`progression:${CONN_ID}`, {
-        symbol_count:                 symCount,
-        active_symbols_hash:          SYMBOLS_20.slice().sort().join("|"),
-        started_for_settings_version: new Date().toISOString(),
-        progress_settings_snapshot:   JSON.stringify({
-          symbol_count:      Number(symCount),
-          symbols_hash:      SYMBOLS_20.slice().sort().join("|"),
-          is_live_trade:     "0",
-          is_preset_trade:   "0",
-          live_volume_factor: "1",
-          connection_method: "library",
-          updated_at:        new Date().toISOString(),
-        }),
-      }).catch(() => {})
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "34")
-    },
-  },
-
-  // Migration 036 â€” Make bingx-x01 visible in the Active panel from first boot
-  // Previous seed set is_active_inserted="0" so the connections route showed
-  // "Inserted (visible): none" and system-stats showed exchangeConnections=0.
-  // Patch is_active_inserted="1" on any existing bingx-x01 row that has it unset.
-  {
-    name: "036-bingx-x01-active-inserted",
-    version: 36,
-    up: async (client: any) => {
-      await client.set("_schema_version", "36")
-      const CONN_ID = "bingx-x01"
-      const existing = await client.hgetall(`connection:${CONN_ID}`).catch(() => null)
-      if (existing && typeof existing === "object") {
-        const patch: Record<string, string> = { updated_at: new Date().toISOString() }
-        // Only patch if not already set â€” preserve operator overrides.
-        if (!existing["is_active_inserted"] || existing["is_active_inserted"] === "0" || existing["is_active_inserted"] === "false") {
-          patch["is_active_inserted"] = "1"
-        }
-        if (!existing["is_dashboard_inserted"] || existing["is_dashboard_inserted"] === "0" || existing["is_dashboard_inserted"] === "false") {
-          patch["is_dashboard_inserted"] = "1"
-        }
-        if (Object.keys(patch).length > 1) {
-          await client.hset(`connection:${CONN_ID}`, patch)
-          console.log(`[v0] Migration 036: patched ${CONN_ID} is_active_inserted=1`)
-        } else {
-          console.log(`[v0] Migration 036: ${CONN_ID} is_active_inserted already set, no patch needed`)
-        }
-      }
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "35")
-    },
-  },
-  {
-    // Migration 037 â€” seed is_enabled_dashboard=1 for bingx-x01.
-    //
-    // ROOT CAUSE of "Enabled dashboard: none" diagnostic log:
-    //   Migration 036 sets is_active_inserted=1 but never sets
-    //   is_enabled_dashboard. The key is absent â†’ parseHashValue returns null
-    //   â†’ isEnabledFlag(null)=false â†’ connections route prints "none".
-    //   The start route only writes is_enabled_dashboard=1 AFTER the engine
-    //   starts (post-boot), so every request fired before the first engine
-    //   start showed 0. This migration seeds the flag so it is "1" from the
-    //   very first boot, even before any engine ever starts.
-    //
-    // STANDING DIRECTIVE COMPLIANCE: Seeding is_enabled_dashboard=1 does NOT
-    //   auto-start the engine. The engine only starts when the operator
-    //   explicitly calls POST /api/trade-engine/start (or the dashboard Start
-    //   button). The flag is only a dashboard-display toggle; it gates live-
-    //   trade and preset operations but does NOT trigger startMissingEngines
-    //   by itself (auto-start was eliminated in ea6ec91).
-    name: "037-bingx-x01-enabled-dashboard",
-    version: 37,
-    up: async (client: any) => {
-      await client.set("_schema_version", "37")
-      const CONN_ID = "bingx-x01"
-      const existing = await client.hgetall(`connection:${CONN_ID}`).catch(() => null)
-      if (existing && typeof existing === "object") {
-        const patch: Record<string, string> = { updated_at: new Date().toISOString() }
-        // Only set if the flag is absent or explicitly "0". Preserve "1".
-        const cur = existing["is_enabled_dashboard"]
-        if (!cur || cur === "0" || cur === "false") {
-          patch["is_enabled_dashboard"] = "1"
-        }
-        if (Object.keys(patch).length > 1) {
-          await client.hset(`connection:${CONN_ID}`, patch)
-          console.log(`[v0] Migration 037: seeded ${CONN_ID} is_enabled_dashboard=1`)
-        } else {
-          console.log(`[v0] Migration 037: ${CONN_ID} is_enabled_dashboard already "1", no patch needed`)
-        }
-      } else {
-        console.log(`[v0] Migration 037: ${CONN_ID} not found â€” skipping`)
-      }
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "36")
-    },
-  },
-
-  {
-    version: 38,
-    name: "038-maticusdt-to-polusdt",
-    description: "Replace delisted MATICUSDT with POLUSDT in bingx-x01 force_symbols",
-    up: async (client: any) => {
-      const CONN_ID = "bingx-x01"
-
-      // getSymbols() calls getSettings("trade_engine_state:{id}") and
-      // getSettings("connection:{id}") â€” getSettings() prepends "settings:"
-      // so the actual Redis keys are "settings:trade_engine_state:{id}" and
-      // "settings:connection:{id}".  We must write force_symbols to those
-      // prefixed hashes, NOT to the raw "connection:{id}" hash, for the
-      // engine to pick it up without a restart.
-      const PREFIXED_STATE  = `settings:trade_engine_state:${CONN_ID}`
-      const PREFIXED_CONN   = `settings:connection:${CONN_ID}`
-      const RAW_CONN        = `connection:${CONN_ID}`
-
-      // Read current force_symbols from the prefixed state hash first
-      // (highest priority in getSymbols), then fall back to the raw conn hash.
-      const [stateHash, connHash] = await Promise.all([
-        client.hgetall(PREFIXED_STATE).catch(() => null),
-        client.hgetall(RAW_CONN).catch(() => null),
-      ])
-
-      const parseSyms = (raw: string | null | undefined): string[] => {
-        if (!raw) return []
-        try { const arr = JSON.parse(raw); return Array.isArray(arr) ? arr : [] } catch { /* ignore */ }
-        return raw.split(",").map((s: string) => s.trim()).filter(Boolean)
-      }
-
-      // Determine current symbol list: prefer what the engine will actually read.
-      const existingForce  = parseSyms((stateHash as any)?.force_symbols)
-      const existingActive = parseSyms((stateHash as any)?.active_symbols)
-      const rawConnSyms    = parseSyms((connHash as any)?.force_symbols || (connHash as any)?.active_symbols)
-
-      let syms = existingForce.length ? existingForce
-               : existingActive.length ? existingActive
-               : rawConnSyms.length ? rawConnSyms
-               : [...BASE_TEST_SYMBOLS]          // fresh DB â€” seed canonical list
-
-      const hadMatic = syms.includes("MATICUSDT")
-      syms = syms.map((s) => (s === "MATICUSDT" ? "POLUSDT" : s))
-
-      const symJson = JSON.stringify(syms)
-
-      // Write to all three hashes so nothing is stale regardless of read path.
-      await Promise.all([
-        client.hset(PREFIXED_STATE, { force_symbols: symJson, symbol_count: String(syms.length) }),
-        client.hset(PREFIXED_CONN,  { force_symbols: symJson, symbol_count: String(syms.length) }),
-        client.hset(RAW_CONN,       { force_symbols: symJson, symbol_count: String(syms.length) }),
-      ])
-
-      console.log(
-        `[v0] Migration 038: ${CONN_ID} force_symbols updated ` +
-        `(MATICUSDTâ†’POLUSDT: ${hadMatic}): ${syms.join(",")}`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "37")
-    },
-  },
-
-  {
-    // Migration 038 was shipped with a bug â€” it wrote force_symbols to the raw
-    // "connection:{id}" hash instead of the "settings:*" prefixed hashes that
-    // getSymbols() actually reads.  Migration 039 re-applies the correct write
-    // regardless of whether 038 ran.
-    version: 39,
-    name: "039-polusdt-settings-hashes",
-    // â†‘ keep 038/039 as-is for existing DBs that already ran them
-    description: "Re-apply POLUSDT force_symbols to settings: prefixed hashes (fixes 038 write-path bug)",
-    up: async (client: any) => {
-      const CONN_ID = "bingx-x01"
-      const PREFIXED_STATE = `settings:trade_engine_state:${CONN_ID}`
-      const PREFIXED_CONN  = `settings:connection:${CONN_ID}`
-      const RAW_CONN       = `connection:${CONN_ID}`
-
-      const parseSyms = (raw: string | null | undefined): string[] => {
-        if (!raw) return []
-        try { const arr = JSON.parse(raw); return Array.isArray(arr) ? arr : [] } catch { /* ignore */ }
-        return raw.split(",").map((s: string) => s.trim()).filter(Boolean)
-      }
-
-      const [stateHash, connHash] = await Promise.all([
-        client.hgetall(PREFIXED_STATE).catch(() => null),
-        client.hgetall(RAW_CONN).catch(() => null),
-      ])
-
-      const existing = parseSyms((stateHash as any)?.force_symbols)
-        .concat(parseSyms((stateHash as any)?.active_symbols))
-        .concat(parseSyms((connHash as any)?.force_symbols || (connHash as any)?.active_symbols))
-
-      // Use first non-empty list found; fall back to canonical 20-symbol list.
-      const found = [
-        parseSyms((stateHash as any)?.force_symbols),
-        parseSyms((stateHash as any)?.active_symbols),
-        parseSyms((connHash as any)?.force_symbols),
-        parseSyms((connHash as any)?.active_symbols),
-        [...BASE_TEST_SYMBOLS],
-      ].find((arr) => arr.length > 0) ?? [...BASE_TEST_SYMBOLS]
-
-      void existing  // suppress unused warning
-
-      const syms = found.map((s) => (s === "MATICUSDT" ? "POLUSDT" : s))
-      const symJson = JSON.stringify(syms)
-
-      await Promise.all([
-        client.hset(PREFIXED_STATE, { force_symbols: symJson, symbol_count: String(syms.length) }),
-        client.hset(PREFIXED_CONN,  { force_symbols: symJson, symbol_count: String(syms.length) }),
-        client.hset(RAW_CONN,       { force_symbols: symJson, symbol_count: String(syms.length) }),
-      ])
-
-      console.log(
-        `[v0] Migration 039: force_symbols written to settings: hashes â€” ${syms.join(",")}`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "38")
-    },
-  },
-
-  // â”€â”€ Migration 040 â€” Canonical bingx-x01 state (supersedes 033-039) â”€â”€â”€â”€â”€â”€â”€â”€
-  //
-  // Consolidates what migrations 033 (15 symbols), 034 (operator defaults),
-  // 035 (20 symbols), 036 (trailing/enabled tweaks), 037 (is_enabled_dashboard),
-  // 038 (MATICUSDTâ†’POLUSDT), and 039 (fix 038 write-path) each patched in
-  // isolation.  This migration applies the FULL desired canonical state in one
-  // atomic pass so fresh DBs and existing DBs (already at version 39) both
-  // land in the same known-good configuration:
-  //
-  //   â€¢ 20 symbols with POLUSDT (not MATICUSDT) written to all three hashes
-  //   â€¢ Operator-spec volume/PF/variant defaults in app_settings +
-  //     connection:bingx-x01 + connection_settings:bingx-x01
-  //   â€¢ symbol_order = volatility in connection:bingx-x01
-  //   â€¢ Fresh progression snapshot so status API reflects 20 symbols
-  //   â€¢ symbol cache invalidated on running engine
-  //
-  // KEY INVARIANT: every field is written to the hash the engine code actually
-  // reads.  See migration 034 comments for the full field-name / hash-key matrix.
-  {
-    version: 40,
-    name: "040-canonical-bingx-x01-state",
-    up: async (client: any) => {
-      // NOTE: do NOT stamp _schema_version here. The runner stamps it only after
-      // up() resolves successfully. Stamping at the start meant a mid-migration
-      // crash falsely marked the migration complete, so it never re-ran.
-      const CONN_ID = "bingx-x01"
-      const now     = new Date().toISOString()
-
-      // The authoritative canonical 20-symbol list (shared constant, POLUSDT not MATICUSDT)
-      const SYMS = [...BASE_TEST_SYMBOLS]   // ["BTCUSDT", ..., "POLUSDT", ..., "OPUSDT"]
-      const symJson  = JSON.stringify(SYMS)
-      const symCount = String(SYMS.length)
-
-      // â”€â”€ 1. Write force_symbols to ALL three hashes (set-if-absent for symbols) â”€â”€
-      // getSymbols() priority: settings:trade_engine_state > settings:connection > connection.
-      // Symbol fields use set-if-absent (hsetnx equivalent) so operator PATCHes
-      // (e.g. reducing to 15 symbols for testing) survive a subsequent restart.
-      // Non-symbol fields (volume, order, timestamps) are always written.
-      const engExisting  = (await client.hgetall(`settings:trade_engine_state:${CONN_ID}`).catch(() => null)) as Record<string,string>|null ?? {}
-      const connExisting = (await client.hgetall(`connection:${CONN_ID}`).catch(() => null)) as Record<string,string>|null ?? {}
-
-      const engSymWrites: Record<string,string> = {}
-      if (!engExisting["force_symbols"]  || engExisting["force_symbols"]  === "[]") engSymWrites["force_symbols"]  = symJson
-      if (!engExisting["active_symbols"] || engExisting["active_symbols"] === "[]") engSymWrites["active_symbols"] = symJson
-      if (!engExisting["symbols"]        || engExisting["symbols"]        === "[]") engSymWrites["symbols"]        = symJson
-      if (!engExisting["symbol_count"]   || engExisting["symbol_count"]   === "0")  engSymWrites["symbol_count"]   = symCount
-      if (!engExisting["config_set_symbols_total"]) engSymWrites["config_set_symbols_total"] = symCount
-
-      const connSymWrites: Record<string,string> = {}
-      if (!connExisting["force_symbols"]  || connExisting["force_symbols"]  === "[]") connSymWrites["force_symbols"]  = symJson
-      if (!connExisting["active_symbols"] || connExisting["active_symbols"] === "[]") connSymWrites["active_symbols"] = symJson
-      if (!connExisting["symbol_count"]   || connExisting["symbol_count"]   === "0")  connSymWrites["symbol_count"]   = symCount
-
-      await Promise.all([
-        Object.keys(engSymWrites).length  > 0 ? client.hset(`settings:trade_engine_state:${CONN_ID}`, { ...engSymWrites, updated_at: now }).catch(() => {}) : Promise.resolve(),
-        Object.keys(connSymWrites).length > 0 ? client.hset(`settings:connection:${CONN_ID}`, { ...connSymWrites, updated_at: now }).catch(() => {}) : Promise.resolve(),
-        // Always write non-symbol fields to connection hash (volume, order, timestamp)
-        client.hset(`connection:${CONN_ID}`, {
-          ...(Object.keys(connSymWrites).length > 0 ? connSymWrites : {}),
-          live_volume_factor:   "2.2",
-          preset_volume_factor: "1.0",
-          symbol_order:         "volatility",
-          updated_at:           now,
-        }).catch(() => {}),
-      ])
-
-      // â”€â”€ 2. app_settings â€” global PF thresholds + volume fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      await client.hset("app_settings", {
-        volume_factor_live:   "2.2",
-        volume_factor_preset: "1.0",
-        baseProfitFactor:     "1.0",
-        mainProfitFactor:     "1.2",
-        realProfitFactor:     "1.2",
-        liveProfitFactor:     "1.2",
-        updated_at:           now,
-      }).catch(() => {})
-
-      // â”€â”€ 3. connection_settings:bingx-x01 â€” coordinator + volume overlay â”€â”€
-      // StrategyCoordinator.loadProfitFactors() + loadCoordinationSettings()
-      // both read exclusively from connection_settings:{id} (hgetall).
-      await client.hset(`connection_settings:${CONN_ID}`, {
-        live_volume_factor:     "2.2",
-        preset_volume_factor:   "1.0",
-        baseProfitFactor:       "1.0",
-        mainProfitFactor:       "1.2",
-        realProfitFactor:       "1.2",
-        liveProfitFactor:       "1.2",
-        variantTrailingEnabled: "true",
-        variantBlockEnabled:    "true",
-        variantDcaEnabled:      "false",
-        variantPauseEnabled:    "true",
-        blockVolumeRatio:       "1.0",
-        blockMaxStack:          "12",
-        blockPauseCountRatio: "1.0",
-        blockActiveRealEnabled: "true",
-        blockActiveLiveEnabled: "true",
-        mainEvalPosCount:       "3",
-        realEvalPosCount:       "3",
-        minStep:                "5",
-        updated_at:             now,
-      }).catch(() => {})
-
-      // â”€â”€ 4. Progression snapshot so status API reflects 20 symbols â”€â”€â”€â”€â”€â”€â”€â”€ï¿½ï¿½
-      await client.hset(`progression:${CONN_ID}`, {
-        symbol_count:                 symCount,
-        active_symbols_hash:          SYMS.slice().sort().join("|"),
-        started_for_settings_version: now,
-        progress_settings_snapshot:   JSON.stringify({
-          symbol_count:       Number(symCount),
-          symbols_hash:       SYMS.slice().sort().join("|"),
-          is_live_trade:      "1",
-          is_preset_trade:    "0",
-          live_volume_factor: "2.2",
-          connection_method:  "library",
-          updated_at:         now,
-        }),
-      }).catch(() => {})
-
-      // â”€â”€ 5. Invalidate running engine's symbol cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      try {
-        const { getTradeEngine } = await import("@/lib/trade-engine")
-        const coordinator = getTradeEngine()
-        if (coordinator && typeof (coordinator as any).invalidateSymbolsCacheForConnection === "function") {
-          ;(coordinator as any).invalidateSymbolsCacheForConnection(CONN_ID)
-        }
-      } catch { /* engine may not be running */ }
-
-      console.log(
-        `[v0] Migration 040: canonical bingx-x01 state applied â€” ` +
-        `${SYMS.length} symbols (POLUSDT), pf=1.0/1.2/1.2, live_volume_factor=2.2`
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "39")
-    },
-  },
-
-  // â”€â”€ Migration 041 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Repair legacy live_volume_factor values on connection:bingx-x01 and clear
-  // the prehistoric_loaded:bingx-x01 cache gate that prevents re-runs when the
-  // DB is wiped but the marker survives.
-  //
-  // Problem 1 â€” legacy liveVolumeFactor defaults in stats:
-  //   Older migrations and write paths disagreed on the volume-factor default:
-  //   some wrote operator-spec values (2.2/1.0), some wrote boolean/non-numeric
-  //   placeholders, and newer minimal-default policy uses 0.1. Migration 042
-  //   now supersedes this connection-specific repair and normalizes only
-  //   missing/legacy-default values to the minimal default while preserving
-  //   user-configured factors that differ from those defaults.
-  //
-  // Problem 2 â€” prehistoric re-run gate:
-  //   `prehistoric_loaded:{conn}` (plain string "1") is the 24-hour cache key
-  //   engine-manager uses to skip the ConfigSetProcessor pass. If it survives a
-  //   sandbox reset / full DB wipe, the engine advances straight to live_trading
-  //   with 0 pi_history keys â†’ createBaseSets returns 0 â†’ no strategy sets
-  //   ever build â†’ B=0 M=0 R=0 L=0 in stats forever. Delete it here so the
-  //   migration always forces a fresh prehistoric run on the next engine boot.
-  {
-    version: 41,
-    name: "041-fix-volume-and-prehistoric-gate",
-    description: "Correct live_volume_factor to 2.2 and clear prehistoric_loaded gate for fresh prehistoric run",
-    up: async (client: any) => {
-      // NOTE: do NOT stamp _schema_version here â€” the runner stamps on success only.
-      const CONN_ID = "bingx-x01"
-      const now = new Date().toISOString()
-
-      // 1. Historical repair retained for already-versioned DBs. Migration 042
-      //    runs immediately after this one and supersedes the old 2.2/1.0
-      //    defaults with the current minimal 0.1 policy.
-      await client.hset(`connection:${CONN_ID}`, {
-        live_volume_factor:   "2.2",
-        preset_volume_factor: "1.0",
-        updated_at:           now,
-      }).catch(() => {})
-      console.log(`[v0] Migration 041: set live_volume_factor=2.2 on connection:${CONN_ID}`)
-
-      // 2. Clear prehistoric_loaded cache gate â€” forces fresh prehistoric on
-      //    next engine boot. This is idempotent: engine re-stamps it after a
-      //    successful prehistoric run so subsequent hot-reloads within the same
-      //    session skip preprocessing correctly (as intended).
-      await client.del(`prehistoric_loaded:${CONN_ID}`).catch(() => {})
-      await client.del(`prehistoric_loaded:${CONN_ID}:verified`).catch(() => {})
-
-      // 3. Clear the prehistoric:progress:{conn} tracker so the UI progress bar
-      //    resets cleanly for the new session.
-      await client.del(`prehistoric:progress:${CONN_ID}`).catch(() => {})
-
-      console.log(`[v0] Migration 041: cleared prehistoric_loaded gate + progress tracker for ${CONN_ID}`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "40")
-    },
-  },
-  {
-    // Supersedes the earlier operator-spec migrations that seeded 2.2/1.0
-    // volume-factor defaults (notably 034, 040, and the connection-specific
-    // repair in 041). Running after them guarantees fresh and upgraded Redis
-    // stores converge on the minimal-default policy.
-    version: 42,
-    name: "042-minimal-volume-factor-defaults",
-    description: "Normalize legacy/default volume factors to the minimal 0.1 policy without clobbering explicit user values",
-    up: async (client: any) => {
-      // NOTE: do NOT stamp _schema_version here â€” the runner stamps on success only.
-      const now = new Date().toISOString()
-      const VOLUME_FACTOR_FIELDS = [
-        "volume_factor",
-        "live_volume_factor",
-        "preset_volume_factor",
-        "volume_factor_live",
-        "volume_factor_preset",
-      ]
-
-      // Values that came from historical defaults rather than a distinguishable
-      // user choice. Anything outside this set is treated as explicit operator
-      // configuration and is left untouched.
-      const LEGACY_DEFAULT_VALUES = new Set(["", "true", "false", "1", "1.0", "2.2"])
-
-      const shouldNormalizeVolumeFactor = (value: unknown): boolean => {
-        if (value === undefined || value === null) return true
-        if (typeof value === "number") return value === 1 || value === 2.2 || !Number.isFinite(value)
-        const normalized = String(value).trim().toLowerCase()
-        if (LEGACY_DEFAULT_VALUES.has(normalized)) return true
-        const numeric = Number(normalized)
-        return Number.isFinite(numeric) && (numeric === 1 || numeric === 2.2)
-      }
-
-      const valueForRecord = (hash: Record<string, unknown>): string | number => {
-        // Redis hashes are normally string-valued, but the inline/local emulator
-        // can preserve numbers. If this record already stores any volume-factor
-        // field as a number, keep that format for the normalized default.
-        return VOLUME_FACTOR_FIELDS.some((field) => typeof hash[field] === "number") ? 0.1 : "0.1"
-      }
-
-      const keySet = new Set<string>(["app_settings"])
-      for (const pattern of [
-        "connection:*",
-        "connection_settings:*",
-        "settings:connection:*",
-        "settings:trade_engine_state:*",
-      ]) {
-        try {
-          const keys = (await client.keys(pattern)) || []
-          for (const key of keys) {
-            if (typeof key !== "string" || !key) continue
-            keySet.add(key)
-          }
-        } catch { /* keys() unavailable â€” keep the sources collected so far */ }
-      }
-
-      let recordsTouched = 0
-      let fieldsNormalized = 0
-      for (const key of keySet) {
-        const hash = (await client.hgetall(key).catch(() => null)) as Record<string, unknown> | null
-        if (!hash || typeof hash !== "object") continue
-
-        const minimalDefault = valueForRecord(hash)
-        const patch: Record<string, string | number> = {}
-        for (const field of VOLUME_FACTOR_FIELDS) {
-          if (shouldNormalizeVolumeFactor(hash[field])) patch[field] = minimalDefault
-        }
-
-        if (Object.keys(patch).length > 0) {
-          patch.updated_at = now
-          await client.hset(key, patch).catch(() => {})
-          recordsTouched++
-          fieldsNormalized += Object.keys(patch).length - 1
-        }
-      }
-
-      console.log(
-        `[v0] Migration 042: normalized ${fieldsNormalized} legacy/default volume-factor fields ` +
-        `across ${recordsTouched} connection/settings records to 0.1`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "41")
-    },
-  },
-
-  {
-    version: 43,
-    name: "043-reserved-schema-continuity",
-    description: "No-op continuity marker preserving sequential schema upgrades",
-    up: async (_client: any) => {
-      console.log("[v0] Migration 043: no-op schema continuity marker")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "42")
-    },
-  },
-  {
-    version: 44,
-    name: "044-reserved-schema-continuity",
-    description: "No-op continuity marker preserving sequential schema upgrades before connection cache rebuild",
-    up: async (_client: any) => {
-      console.log("[v0] Migration 044: no-op schema continuity marker")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "43")
-    },
-  },
-
-  // â”€â”€ Migration 045 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Rebuild the connection list cache from canonical connection hashes without
-  // clobbering live operator state or progressions.
-  {
-    version: 45,
-    name: "045-rebuild-connection-list-cache",
-    description: "Rebuild all_connections from canonical connection hashes without clobbering operator state",
-    up: async (client: any) => {
-      // NOTE: do NOT stamp _schema_version here â€” the runner stamps on success only.
-      const connectionKeys = ((await client.keys("connection:*").catch(() => [])) || [])
-        .filter((key: string) =>
-          typeof key === "string" &&
-          !key.includes(":settings:") &&
-          !key.includes(":stats:") &&
-          !key.includes(":logs:")
-        )
-
-      const rows: Record<string, unknown>[] = []
-      for (const key of connectionKeys) {
-        const row = (await client.hgetall(key).catch(() => null)) as Record<string, unknown> | null
-        if (!row || Object.keys(row).length === 0) continue
-        const id = String(row.id || key.replace(/^connection:/, ""))
-        rows.push({ ...row, id })
-        await client.sadd("connections", id).catch(() => {})
-      }
-
-      if (rows.length > 0) {
-        await client.set("all_connections", JSON.stringify(rows))
-      }
-
-      console.log(`[v0] Migration 045: rebuilt all_connections from ${rows.length} connection hashes`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "44")
-    },
-  },
-  {
-    version: 46,
-    name: "046-volume-step-ratio-defaults",
-    description: "Seed volume step ratio defaults for stable balance-threshold sizing",
-    up: async (client: any) => {
-      const DEFAULT_STEP = "0.6"
-      const app = ((await client.hgetall("app_settings").catch(() => ({}))) || {}) as Record<string, unknown>
-      const legacy = ((await client.hgetall("all_settings").catch(() => ({}))) || {}) as Record<string, unknown>
-      if (app.volume_step_ratio === undefined || app.volume_step_ratio === null || app.volume_step_ratio === "") {
-        await client.hset("app_settings", { volume_step_ratio: DEFAULT_STEP })
-      }
-      if (legacy.volume_step_ratio === undefined || legacy.volume_step_ratio === null || legacy.volume_step_ratio === "") {
-        await client.hset("all_settings", { volume_step_ratio: DEFAULT_STEP })
-      }
-
-      const connectionKeys = ((await client.keys("connection:*").catch(() => [])) || [])
-        .filter((key: string) => typeof key === "string" && key.startsWith("connection:") && key.indexOf(":", "connection:".length) === -1)
-      for (const key of connectionKeys) {
-        const row = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, unknown>
-        if (row.volume_step_ratio === undefined || row.volume_step_ratio === null || row.volume_step_ratio === "") {
-          await client.hset(key, { volume_step_ratio: DEFAULT_STEP })
-        }
-        const id = String(row.id || key.replace(/^connection:/, ""))
-        const settingsKey = `connection_settings:${id}`
-        const settings = ((await client.hgetall(settingsKey).catch(() => ({}))) || {}) as Record<string, unknown>
-        if (settings.volume_step_ratio === undefined || settings.volume_step_ratio === null || settings.volume_step_ratio === "") {
-          await client.hset(settingsKey, { volume_step_ratio: DEFAULT_STEP })
-        }
-      }
-
-      console.log("[v0] Migration 046: seeded volume_step_ratio=0.6 defaults")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "45")
-    },
-  },
-  {
-    version: 47,
-    name: "047-clear-stale-engine-restart-flags",
-    description: "Remove legacy settings-save restart flags so running engines stay hot-reloadable",
-    up: async (client: any) => {
-      const stateKeys = [
-        ...(((await client.keys("settings:trade_engine_state:*").catch(() => [])) || []) as string[]),
-        ...(((await client.keys("trade_engine_state:*").catch(() => [])) || []) as string[]),
-      ]
-      let cleaned = 0
-      for (const key of new Set(stateKeys)) {
-        const removed = await client
-          .hdel(key, "restart_required", "restart_reason", "restart_requested_at")
-          .catch(() => 0)
-        if (Number(removed) > 0) cleaned++
-      }
-      console.log(`[v0] Migration 047: cleared stale restart flags from ${cleaned} trade-engine state hashes`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "46")
-    },
-  },
-  {
-    version: 48,
-    name: "048-clear-stale-engine-reload-flags",
-    description: "Remove orphaned reload flags left after older dev/settings saves consumed their change events",
-    up: async (client: any) => {
-      const stateKeys = [
-        ...(((await client.keys("settings:trade_engine_state:*").catch(() => [])) || []) as string[]),
-        ...(((await client.keys("trade_engine_state:*").catch(() => [])) || []) as string[]),
-      ]
-      let cleaned = 0
-      for (const key of new Set(stateKeys)) {
-        const connectionId = key.split(":").pop()
-        const pending = connectionId
-          ? await client.hgetall(`settings:settings_change:${connectionId}`).catch(() => ({}))
-          : {}
-        if (pending && typeof pending.connectionId === "string" && pending.connectionId.length > 0) continue
-        const removed = await client
-          .hdel(key, "reload_required", "reload_fields", "reload_requested_at")
-          .catch(() => 0)
-        if (Number(removed) > 0) cleaned++
-      }
-      console.log(`[v0] Migration 048: cleared orphaned reload flags from ${cleaned} trade-engine state hashes`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "47")
-    },
-  },
-  {
-    // Strip progression:, settings:trade_engine_state:, settings:connection_settings:,
-    // settings:eval_knobs:, and market_data: hashes from template-only connections.
-    // These 9 connections (bybit-x03, binance-x01, okx-x01, ...) are shown in the
-    // connection picker UI but never run the engine â€” they accumulate ~2 MB of
-    // unnecessary migration-seeded hashes that inflate the InlineLocalRedis in-process
-    // store and push boot RSS past the kernel OOM limit on the 4 GB v0 sandbox VM.
-    // The connection: hash is PRESERVED so the UI still lists them as options.
-    version: 49,
-    name: "049-strip-template-connection-overhead",
-    up: async (client: any) => {
-      const ACTIVE_CONN = "bingx-x01"
-      const templateIds = [
-        "bybit-x03", "binance-x01", "okx-x01", "gateio-x01", "kucoin-x01",
-        "mexc-x01", "bitget-x01", "pionex-x01", "orangex-x01", "huobi-x01",
-      ]
-      const prefixes = [
-        "progression",
-        "settings:trade_engine_state",
-        "settings:connection_settings",
-        "settings:eval_knobs",
-        "prehistoric_loaded",
-        "prehistoric:progress",
-      ]
-      let deleted = 0
-      for (const id of templateIds) {
-        if (id === ACTIVE_CONN) continue
-        for (const prefix of prefixes) {
-          const key = `${prefix}:${id}`
-          const r = await client.del(key).catch(() => 0)
-          if (Number(r) > 0) deleted++
-        }
-      }
-      console.log(`[v0] Migration 049: stripped ${deleted} overhead keys from ${templateIds.length} template connections`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "48")
-    },
-  },
-  {
-    // Reduce bingx-x01 dev symbol set to 3 symbols so the engine can complete
-    // prehistoric + realtime within the 913 MB of available RAM on the 4 GB
-    // v0 sandbox VM (next-server itself occupies ~1870 MB RSS at idle).
-    // 3 symbols Ã— MAIN_AXIS_SETS_CEILING(1500) = 4500 axis sets peak vs
-    // 20 symbols Ã— 1500 = 30,000 â€” a 6.7Ã— reduction in peak allocation.
-    // Trade history correctness (exit prices, liveOpen key-scan) is fully
-    // verifiable with 3 symbols; restore to 20 for production.
-    version: 50,
-    name: "050-3-symbol-mode",
-    up: async (client: any) => {
-      const DEV_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT"
-      const connId = "bingx-x01"
-      await client.hset(`connection:${connId}`, { force_symbols: DEV_SYMBOLS, symbol_count: "3" })
-      await client.hset(`settings:trade_engine_state:${connId}`, { force_symbols: DEV_SYMBOLS, active_symbols: DEV_SYMBOLS, symbol_count: "3" })
-      await client.hset(`settings:connection_settings:${connId}`, { force_symbols: DEV_SYMBOLS, active_symbols: DEV_SYMBOLS, symbol_count: "3" })
-      // Clear any prehistoric cache gate so the engine re-runs with the new symbol set
-      await client.del(`prehistoric_loaded:${connId}`).catch(() => 0)
-      await client.del(`prehistoric:progress:${connId}`).catch(() => 0)
-      console.log(`[v0] Migration 050: dev 3-symbol mode applied (${DEV_SYMBOLS})`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "49")
-    },
-  },
-  {
-    // Fix bingx-x01 operational state so the quickstart engine start works
-    // correctly from a fresh DB:
-    //   1. live_volume_factor: QUICKSTART_LIVE_VOLUME_FACTOR=0.1 is set by the
-    //      quick-start route on every engine start. Migration 040 set it to 2.2
-    //      but quick-start resets it to 0.1 each run. Setting it to 2.2 here is
-    //      the resting default; quick-start will override during active sessions.
-    //   2. is_assigned: "1" â€” marks bingx-x01 as a "Main Connection". The
-    //      quick-start auto-discovery fallback requires this when no explicit
-    //      connectionId is provided. Without it the engine start returns
-    //      "No BingX connections found in Main Connections".
-    //   3. is_enabled_dashboard: "1" â€” marks bingx-x01 as enabled in the
-    //      dashboard panel so coordinator.startAll() includes it when called
-    //      from /api/trade-engine/start (the Engine section header button).
-    version: 51,
-    name: "051-bingx-x01-operational-state",
-    up: async (client: any) => {
-      const connId = "bingx-x01"
-      const hashes = [
-        `connection:${connId}`,
-        `settings:trade_engine_state:${connId}`,
-        `settings:connection:${connId}`,
-        `settings:connection_settings:${connId}`,
-      ]
-      for (const h of hashes) {
-        await client.hset(h, {
-          live_volume_factor:   "2.2",
-          volume_factor_live:   "2.2",
-          is_assigned:          "1",
-          is_enabled_dashboard: "1",
-          is_active_inserted:   "1",
-          // is_live_trade=1 enables the live-stage order placement gate.
-          // Without this the simulated connector places no orders, placed=0
-          // forever and trade history stays empty.
-          is_live_trade:        "1",
-          live_trade_enabled:   "1",
-        }).catch(() => 0)
-      }
-      console.log("[v0] Migration 051: bingx-x01 operational state fixed (vol=2.2, is_live_trade=1, is_assigned=1)")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "50")
-    },
-  },
-  {
-    // Enable live-order placement on bingx-x01 (simulated connector).
-    // Migration 051 set vol/is_assigned/is_enabled_dashboard but omitted
-    // is_live_trade â€” without it the live-stage skips order placement
-    // entirely (isLiveTradeEnabled=false), placed=0 forever.
-    version: 52,
-    name: "052-bingx-x01-enable-live-trade",
-    up: async (client: any) => {
-      const connId = "bingx-x01"
-      const hashes = [
-        `connection:${connId}`,
-        `settings:trade_engine_state:${connId}`,
-        `settings:connection:${connId}`,
-        `settings:connection_settings:${connId}`,
-      ]
-      for (const h of hashes) {
-        await client.hset(h, { is_live_trade: "1", live_trade_enabled: "1" }).catch(() => 0)
-      }
-      console.log("[v0] Migration 052: bingx-x01 is_live_trade=1 live_trade_enabled=1")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "51")
-    },
-  },
-  {
-    // Reduce dev to a SINGLE symbol (BTCUSDT) for OOM survival.
-    //
-    // The dev VM has 4.39 GB physical RAM and NO swap; the kernel issues a
-    // GLOBAL OOM-kill the moment total system RAM is exhausted (~2 GB
-    // anon-rss for next-server). Migration 050 lowered dev to 3 symbols, but
-    // even one prehistoric pass over 3 symbols bursts past the ceiling because
-    // the Next.js dev worker already idles at ~1.7 GB.
-    //
-    // One symbol cuts the peak StrategySet allocation to ~1/3 and lets the
-    // engine reach live_trading and stay there, which is what we need to
-    // verify trade-history correctness and live-order placement (placed>0).
-    // Symbol pinning now applies in all modes (guarded by V0_DEV_SYMBOL_COUNT).
-    version: 53,
-    name: "053-1-symbol-btcusdt-pin",
-    up: async (client: any) => {
-      const DEV_SYMBOLS = "BTCUSDT"
-      const connId = "bingx-x01"
-      await client.hset(`connection:${connId}`, { force_symbols: DEV_SYMBOLS, symbol_count: "1" }).catch(() => 0)
-      await client.hset(`settings:trade_engine_state:${connId}`, { force_symbols: DEV_SYMBOLS, active_symbols: DEV_SYMBOLS, symbol_count: "1" }).catch(() => 0)
-      await client.hset(`settings:connection_settings:${connId}`, { force_symbols: DEV_SYMBOLS, active_symbols: DEV_SYMBOLS, symbol_count: "1" }).catch(() => 0)
-      // Clear prehistoric cache gates so the engine re-runs with the new set.
-      await client.del(`prehistoric_loaded:${connId}`).catch(() => 0)
-      await client.del(`prehistoric:progress:${connId}`).catch(() => 0)
-      console.log(`[v0] Migration 053: dev 1-symbol OOM-survival mode applied (${DEV_SYMBOLS})`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "52")
-    },
-  },
-  {
-    // Dual-connection always-inited bootstrap.
-    //
-    // bybit-x03 was previously in legacyIds (deleted every boot) and absent
-    // from BASE_CONNECTION_CONFIG, so it never appeared in the dashboard.
-    // Now it is a canonical base connection again (session 4) but existing
-    // Redis snapshots still have the stale/deleted hash. This migration:
-    //
-    //   1. Deletes the stale bybit-x03 hashes entirely so ensureBaseConnections
-    //      (which runs every boot AFTER migrations) re-seeds it from scratch
-    //      with the correct autoActive=true defaults (is_active_inserted=1,
-    //      is_dashboard_inserted=1, is_enabled_dashboard=0).
-    //
-    //   2. Ensures bingx-x01 is_active_inserted=1 / is_dashboard_inserted=1
-    //      so it appears in the Active panel (it was somehow stripped to
-    //      active_inserted=False in the prior snapshot).
-    //
-    //   3. Re-confirms is_live_trade=1 / live_trade_enabled=1 on bingx-x01
-    //      in case migration 042 LEGACY_DEFAULT_VALUES zeroed it and 051/052
-    //      didn't fully recover it due to ordering.
-    //
-    //   4. Removes bybit-x03 from the connections:tombstoned set (if present)
-    //      so ensureBaseConnections doesn't skip it.
-    version: 54,
-    name: "054-dual-connection-always-inited",
-    up: async (client: any) => {
-      // â”€â”€ 1. Remove bybit-x03 from tombstone so ensureBaseConnections seeds it â”€â”€
-      await client.srem("connections:tombstoned", "bybit-x03").catch(() => 0)
-
-      // â”€â”€ 2. Wipe stale bybit-x03 hashes so ensureBaseConnections does a clean
-      //       first-time seed. The operator-state-preservation contract in
-      //       ensureBaseConnections only applies to EXISTING rows; a fresh
-      //       seed applies the full canonical defaults including autoActive flags.
-      const bybitHashes = [
-        "connection:bybit-x03",
-        "settings:trade_engine_state:bybit-x03",
-        "settings:connection_settings:bybit-x03",
-      ]
-      for (const h of bybitHashes) {
-        await client.del(h).catch(() => 0)
-      }
-
-      // â”€â”€ 3. Ensure bingx-x01 is active-inserted (visible in Active panel) â”€â”€
-      //       and has is_live_trade=1. Use conditional hset: only write flags
-      //       that are currently absent or wrong. This preserves any other
-      //       operator customisations on the hash.
-      const bingxConn = await client.hgetall("connection:bingx-x01").catch(() => ({})) as Record<string,string>
-      const bingxFixes: Record<string, string> = {}
-      if (!bingxConn?.is_active_inserted || bingxConn.is_active_inserted === "0") {
-        bingxFixes.is_active_inserted    = "1"
-      }
-      if (!bingxConn?.is_dashboard_inserted || bingxConn.is_dashboard_inserted === "0") {
-        bingxFixes.is_dashboard_inserted = "1"
-      }
-      if (!bingxConn?.is_inserted || bingxConn.is_inserted === "0") {
-        bingxFixes.is_inserted = "1"
-      }
-      if (!bingxConn?.is_live_trade || bingxConn.is_live_trade === "0" || bingxConn.is_live_trade === "false") {
-        bingxFixes.is_live_trade       = "1"
-        bingxFixes.live_trade_enabled  = "1"
-      }
-      if (Object.keys(bingxFixes).length > 0) {
-        await client.hset("connection:bingx-x01", bingxFixes).catch(() => 0)
-        await client.hset("settings:trade_engine_state:bingx-x01", bingxFixes).catch(() => 0)
-        await client.hset("settings:connection_settings:bingx-x01", bingxFixes).catch(() => 0)
-      }
-
-      console.log("[v0] Migration 054: dual-connection bootstrap â€” bybit-x03 wiped for fresh seed, bingx-x01 flags ensured")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "53")
-    },
-  },
-  {
-    // System-wide default change (operator request session 5):
-    //   â€¢ Volume factor â†’ minimalist 0.1 (was 2.2). VolumeCalculator already
-    //     treats 0.1 as the canonical minimum when unset; this makes it the
-    //     EXPLICIT seeded default on the live connections too.
-    //   â€¢ Default symbol selection â†’ top-6 by 1h volatility (PROD). symbol_order
-    //     is set to "volatility_1h" and getSymbols() now performs dynamic
-    //     top-N selection via fetchTopSymbols(...,"volatility_1h") whenever no
-    //     explicit operator force_symbols is present.
-    //   â€¢ DEV stays capped LOWER (2 symbols) for OOM survival on the 4.39 GB
-    //     no-swap VM â€” still uses volatility selection (top-2), just fewer of
-    //     them. Production uses the full 6.
-    //
-    // To activate dynamic volatility selection we must CLEAR the migration-seeded
-    // force_symbols / active_symbols / symbols overrides that 053 (dev 1-symbol)
-    // and earlier migrations wrote â€” otherwise getSymbols() short-circuits on
-    // those and the volatility branch never runs. We also clear the prehistoric
-    // gates so the engine re-selects + re-runs on next start.
-    version: 55,
-    name: "055-default-volume-0.1-and-6-symbols-by-volatility",
-    up: async (client: any) => {
-      const symbolCount = String(Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1))
-      const connIds = ["bingx-x01", "bybit-x03"]
-
-      for (const connId of connIds) {
-        const hashes = [
-          `connection:${connId}`,
-          `settings:trade_engine_state:${connId}`,
-          `settings:connection_settings:${connId}`,
-        ]
-        for (const h of hashes) {
-          // Set the new minimalist volume default + volatility ordering config.
-          await client.hset(h, {
-            live_volume_factor: "0.1",
-            volume_factor_live: "0.1",
-            symbol_count:       symbolCount,
-            symbol_order:       "volatility_1h",
-          }).catch(() => 0)
-          // Clear seeded symbol overrides so dynamic volatility selection runs.
-          await client.hdel(h, "force_symbols", "active_symbols", "symbols").catch(() => 0)
-        }
-        // Clear prehistoric cache gates so the engine re-selects + re-runs.
-        await client.del(`prehistoric_loaded:${connId}`).catch(() => 0)
-        await client.del(`prehistoric:progress:${connId}`).catch(() => 0)
-      }
-
-      // Also set the global VolumeCalculator fallback to the new default.
-      await client.hset("app_settings", { live_volume_factor: "0.1", volume_factor_live: "0.1" }).catch(() => 0)
-
-      console.log(
-        `[v0] Migration 055: defaults updated â€” volume_factor=0.1, symbol_count=${symbolCount} ` +
-          `symbol_order=volatility_1h; cleared force/active symbol overrides`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "54")
-    },
-  },
-  {
-    version: 56,
-    name: "056-normalize-variant-toggles",
-    // Establish a CONSISTENT, explicit strategy-variant toggle map across the
-    // whole system. The coordinator resolves toggles as app_settings (global
-    // fallback) overlaid with connection_settings:{id}. Migration 040 seeded
-    // these only into connection_settings:bingx-x01, leaving (a) the global
-    // app_settings fallback and (b) the later-added bybit-x03 connection with
-    // NO explicit toggles â€” so they silently relied on code defaults. This
-    // migration seeds the canonical map (trailing=on, block=on, dca=OFF,
-    // + block tuning) wherever a key is ABSENT, so the state is
-    // explicit and uniform. SET-IF-ABSENT: an operator's deliberate override
-    // is never clobbered (we only fill in keys that don't exist yet).
-    up: async (client: any) => {
-      const canonical: Record<string, string> = {
-        variantTrailingEnabled: "true",
-        variantBlockEnabled:    "true",
-        variantDcaEnabled:      "false", // spec: DCA OFF by default
-        blockVolumeRatio:       "1.0",
-        blockMaxStack:          "12",
-        blockPauseCountRatio: "1.0",
-        blockActiveRealEnabled: "true",
-        blockActiveLiveEnabled: "true",
-      }
-      const seedIfAbsent = async (hashKey: string) => {
-        const existing = ((await client.hgetall(hashKey).catch(() => ({}))) || {}) as Record<string, string>
-        const toWrite: Record<string, string> = {}
-        for (const [k, v] of Object.entries(canonical)) {
-          const cur = existing[k]
-          if (cur === undefined || cur === null || cur === "") toWrite[k] = v
-        }
-        if (Object.keys(toWrite).length > 0) {
-          await client.hset(hashKey, toWrite).catch(() => 0)
-        }
-        return Object.keys(toWrite)
-      }
-
-      const appSeeded = await seedIfAbsent("app_settings")
-      const targets = ["bingx-x01", "bybit-x03"]
-      const connSeeded: Record<string, string[]> = {}
-      for (const id of targets) {
-        connSeeded[id] = await seedIfAbsent(`connection_settings:${id}`)
-      }
-
-      console.log(
-        `[v0] Migration 056: normalized variant toggles (dca OFF by default) â€” ` +
-          `app_settings seeded [${appSeeded.join(",") || "none"}]; ` +
-          targets.map((id) => `${id} seeded [${connSeeded[id].join(",") || "none"}]`).join("; "),
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "55")
-    },
-  },
-  {
-    // Migration 055 sets symbol_count=2 + symbol_order=volatility_1h + clears
-    // force_symbols for BOTH dev and prod. In dev that can leave the engine
-    // doing volatile API calls across many symbols before any boot guard runs.
-    //
-    // This migration re-applies the V0_DEV_SYMBOL_COUNT cap (default 1 =
-    // BTCUSDT pin) AFTER 055 so the dev engine always starts with the correct
-    // symbol set regardless of snapshot state. Production is unaffected.
-    version: 57,
-    name: "057-symbol-count-repin",
-    up: async (client: any) => {
-      const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
-      const connId = "bingx-x01"
-      const hashes = [
-        `connection:${connId}`,
-        `settings:trade_engine_state:${connId}`,
-        `settings:connection_settings:${connId}`,
-      ]
-      if (devSymCount === 1) {
-        const DEV_SYMBOL = "BTCUSDT"
-        for (const h of hashes) {
-          await client.hset(h, {
-            force_symbols:  JSON.stringify([DEV_SYMBOL]),
-            symbol_count:   "1",
-            symbol_order:   "",
-            symbols:        JSON.stringify([DEV_SYMBOL]),
-            active_symbols: JSON.stringify([DEV_SYMBOL]),
-          }).catch(() => 0)
-        }
-        console.log(`[v0] Migration 057: dev 1-symbol repin â€” force_symbols=${DEV_SYMBOL}`)
-      } else {
-        // Multi-symbol: clear force_symbols, set count and volatility order.
-        for (const h of hashes) {
-          await client.hset(h, {
-            force_symbols:  "",
-            symbol_count:   String(devSymCount),
-            symbol_order:   "volatility_1h",
-            symbols:        "",
-            active_symbols: "",
-          }).catch(() => 0)
-        }
-        console.log(`[v0] Migration 057: dev multi-symbol repin â€” symbol_count=${devSymCount} volatility_1h`)
-      }
-      // Clear prehistoric gates so the engine re-runs with the correct symbols.
-      await client.del(`prehistoric_loaded:${connId}`).catch(() => 0)
-      await client.del(`prehistoric:progress:${connId}`).catch(() => 0)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "56")
-    },
-  },
-
-  {
-    version: 58,
-    name: "058-indication-tracking-fields",
-    up: async (client: any) => {
-      // Backfill `indication_sets_total` and `indication_sets_at_limit` onto all
-      // existing `progression:{connId}` hashes that pre-date this migration.
-      // These fields are read by getIndicationTracking (detailed-tracking.ts) and
-      // written by IndicationSetsProcessor.processAllIndicationSets and the
-      // generate-indications cron on every cycle.  We use HSETNX (SET-IF-ABSENT)
-      // so already-running engines that have already written a non-zero value are
-      // never zeroed out by the migration.
-      const connSet = await client.smembers("connections").catch(() => [] as string[])
-      const connIds: string[] = Array.isArray(connSet) ? connSet : []
-      let patched = 0
-      for (const connId of connIds) {
-        const progKey = `progression:${connId}`
-        const exists = await client.exists(progKey).catch(() => 0)
-        if (!exists) continue
-        // Only seed fields that are genuinely absent (empty string or undefined).
-        const current = await client.hgetall(progKey).catch(() => ({})) as Record<string, string>
-        const toWrite: Record<string, string> = {}
-        if (!current.indication_sets_total)   toWrite.indication_sets_total   = "0"
-        if (!current.indication_sets_at_limit) toWrite.indication_sets_at_limit = "0"
-        if (!current.indications_count)       toWrite.indications_count       = "0"
-        if (Object.keys(toWrite).length > 0) {
-          await client.hset(progKey, toWrite).catch(() => 0)
-          patched++
-        }
-      }
-      console.log(`[v0] Migration 058: seeded indication_sets_total/at_limit on ${patched}/${connIds.length} progression hashes`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "57")
-    },
-  },
-  {
-    // Apply V0_DEV_SYMBOL_COUNT to bingx-x01 symbol settings.
-    // This migration runs at the correct version point so raising or lowering
-    // V0_DEV_SYMBOL_COUNT (and deleting the snapshot to force a re-migration)
-    // correctly resets the symbol config.  In production this is a no-op.
-    version: 59,
-    name: "059-multi-symbol-support",
-    up: async (client: any) => {
-      const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
-      const connId = "bingx-x01"
-      const hashes = [
-        `connection:${connId}`,
-        `settings:trade_engine_state:${connId}`,
-        `settings:connection_settings:${connId}`,
-      ]
-      if (devSymCount === 1) {
-        const DEV_SYM = "BTCUSDT"
-        for (const h of hashes) {
-          await client.hset(h, {
-            force_symbols:  JSON.stringify([DEV_SYM]),
-            symbol_count:   "1",
-            symbol_order:   "",
-            symbols:        JSON.stringify([DEV_SYM]),
-            active_symbols: JSON.stringify([DEV_SYM]),
-          }).catch(() => 0)
-        }
-        console.log("[v0] Migration 059: dev 1-symbol (BTCUSDT)")
-      } else {
-        for (const h of hashes) {
-          await client.hset(h, {
-            force_symbols:  "",
-            symbol_count:   String(devSymCount),
-            symbol_order:   "volatility_1h",
-            symbols:        "",
-            active_symbols: "",
-          }).catch(() => 0)
-        }
-        // Clear prehistoric gates so the engine re-runs with the new symbol set.
-        await client.del(`prehistoric_loaded:${connId}`).catch(() => 0)
-        await client.del(`prehistoric:progress:${connId}`).catch(() => 0)
-        console.log(`[v0] Migration 059: dev ${devSymCount}-symbol volatility_1h`)
-      }
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "58")
-    },
-  },
-  {
-    version: 60,
-    name: "060-purge-ghost-connection-hashes",
-    up: async (client: any) => {
-      // Purge `connection:*` keys whose hash has no `id` field â€” these are
-      // leftover ghost entries from aborted saves or partial migrations that
-      // trigger a recurring `getAllConnections: skipping malformed connection
-      // hash` log on every poll interval. Safe to delete: any legitimate
-      // connection always has at least `id`, `name`, and `exchange` written
-      // atomically by `saveConnection`.
-      let purged = 0
-      try {
-        const allKeys: string[] = await client.keys("connection:*")
-        for (const key of allKeys) {
-          try {
-            const id = await client.hget(key, "id")
-            const name = await client.hget(key, "name")
-            const exchange = await client.hget(key, "exchange")
-            if (!id || !name || !exchange) {
-              await client.del(key)
-              purged++
-              console.log(`[v0] Migration 060: deleted ghost key ${key}`)
-            }
-          } catch { /* skip individual key errors */ }
-        }
-      } catch (err) {
-        console.warn("[v0] Migration 060: keys scan failed (non-fatal):", err)
-      }
-      console.log(`[v0] Migration 060: purged ${purged} ghost connection hashes`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "59")
-    },
-  },
-  {
-    // Purge multi-symbol stale state so the local server (dev or local prod build)
-    // can boot on a single BTCUSDT symbol without OOM-killing from leftover keys
-    // written by a previous 10-symbol run.
-    //
-    // Deleted key families:
-    //   live:position:*          â€” sim positions for non-BTCUSDT symbols
-    //   live:position:tracking:* â€” tracking pointers
-    //   prehistoric:bingx-x01:*  â€” prehistoric candle/progress data per symbol
-    //   pseudo_position:*        â€” sim pseudo-positions that belonged to
-    //                             non-BTCUSDT symbols
-    //   realtime:bingx-x01       â€” stale cycle counters (reset to 0 on next cycle)
-    //   real:sets:bingx-x01:*    â€” stale set evaluations for non-BTCUSDT symbols
-    //   strategy:bingx-x01:*     â€” stale strategy variant data
-    //
-    version: 61,
-    name: "061-purge-multi-symbol-stale-state",
-    up: async (client: any) => {
-      const KEEP_SYMBOL = "BTCUSDT"
-      let purged = 0
-      // Helper: delete all keys in a family that do NOT contain KEEP_SYMBOL
-      const purgeFamily = async (prefix: string) => {
-        try {
-          const keys: string[] = await client.keys(`${prefix}*`)
-          for (const key of keys) {
-            // Keep BTCUSDT keys and any pure-container keys (no symbol suffix)
-            if (!key.includes(":") || key.toUpperCase().includes(KEEP_SYMBOL)) continue
-            await client.del(key).catch(() => 0)
-            purged++
-          }
-        } catch { /* non-fatal */ }
-      }
-      await purgeFamily("live:position:")
-      await purgeFamily("prehistoric:bingx-x01:")
-      await purgeFamily("pseudo_position:bingx-x01:")
-      await purgeFamily("real:sets:bingx-x01:")
-      await purgeFamily("strategy:bingx-x01:")
-      await purgeFamily("indication_outcomes_pending:")
-      // Also purge bybit-x03 engine state so it doesn't try to restart
-      try {
-        const bybitKeys: string[] = await client.keys("*bybit-x03*")
-        for (const key of bybitKeys) {
-          if (key.startsWith("connection:") || key.startsWith("settings:")) continue
-          await client.del(key).catch(() => 0)
-          purged++
-        }
-      } catch { /* non-fatal */ }
-      // Reset live position counters on the bingx-x01 progression hash
-      await client.hset("progression:bingx-x01", {
-        live_positions_open: "0",
-        live_orders_placed_count: "0",
-        live_positions_closed: "0",
-      }).catch(() => 0)
-      console.log(`[v0] Migration 061: purged ${purged} stale multi-symbol keys (kept ${KEEP_SYMBOL})`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "60")
-    },
-  },
-  {
-    version: 62,
-    name: "062-separate-main-assignment-from-processing",
-    up: async (client: any) => {
-      await client.set("_schema_version", "62")
-      const truthy = (value: any) => value === true || value === 1 || value === "1" || value === "true"
-      const connections = await client.smembers("connections")
-      let backfilled = 0
-      let indexed = 0
-
-      await client.del("connections:main:enabled").catch(() => 0)
-
-      for (const connId of connections) {
-        const connData = await client.hgetall(`connection:${connId}`)
-        if (!connData || Object.keys(connData).length === 0) continue
-
-        const assigned = truthy(connData.is_active_inserted) || truthy(connData.is_assigned) || truthy(connData.is_dashboard_inserted)
-        const processingEnabled = truthy(connData.is_enabled_dashboard)
-        const hasLegacyActiveOnly = truthy(connData.is_active_inserted) && !processingEnabled
-
-        if (hasLegacyActiveOnly) {
-          await client.hset(`connection:${connId}`, {
-            is_assigned: "1",
-            is_enabled_dashboard: "0",
-            is_active: "0",
-            updated_at: new Date().toISOString(),
-          })
-          backfilled++
-        } else if (assigned && processingEnabled) {
-          await client.sadd("connections:main:enabled", connId)
-          indexed++
-        }
-      }
-
-      console.log(
-        `[v0] Migration 062: separated assignment from processing; ` +
-        `backfilled ${backfilled} legacy active-only row(s), indexed ${indexed} processing-enabled row(s)`,
-      )
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "61")
-    },
-  },
-  {
-    version: 63,
-    name: "063-reset-legacy-indication-snapshots",
-    up: async (client: any) => {
-      // Old production builds wrote mixed indication snapshot shapes:
-      //   direction=123                (legacy plain cumulative-ish field)
-      //   BTCUSDT:direction=1         (current per-symbol current-cycle field)
-      // Window readers now prefer scoped fields, but hosted Redis instances can
-      // retain stale legacy fields for days. Clear only short-lived snapshot
-      // hashes so the next engine/cron tick rebuilds truthful current values;
-      // do NOT touch cumulative progression counters or historical stats.
-      const patterns = [
-        "indications_active:*",
-        "indications_window:*:last5",
-        "indications_window:*:last60min",
-      ]
-      let deleted = 0
-      for (const pattern of patterns) {
-        const keys = ((await client.keys(pattern).catch(() => [])) || []) as string[]
-        if (keys.length === 0) continue
-        await client.del(...keys).catch(() => 0)
-        deleted += keys.length
-      }
-      console.log(`[v0] Migration 063: reset ${deleted} legacy/stale indication snapshot key(s)`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "62")
-    },
-  },
-  {
-    version: 64,
-    name: "064-split-raw-and-set-indication-snapshots",
-    up: async (client: any) => {
-      // v63 normalized legacy plain/scoped fields, but older production builds
-      // still used the same short-lived keys for two different meanings:
-      //   indications_active/window      = raw signal counts (0/1-ish)
-      //   indications_active/window      = set-qualified config counts (can be 30+)
-      // v64 moves set-qualified snapshots to indication_sets_* keys. Clear the
-      // old shared raw namespace so the raw processor/cron repopulates it with
-      // raw counts only; do not touch cumulative progression counters.
-      const patterns = [
-        "indications_active:*",
-        "indications_window:*:last5",
-        "indications_window:*:last60min",
-      ]
-      let deleted = 0
-      for (const pattern of patterns) {
-        const keys = ((await client.keys(pattern).catch(() => [])) || []) as string[]
-        if (keys.length === 0) continue
-        await client.del(...keys).catch(() => 0)
-        deleted += keys.length
-      }
-      console.log(`[v0] Migration 064: cleared ${deleted} conflicting raw/set indication snapshot key(s)`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "63")
-    },
-  },
-  {
-    version: 65,
-    name: "065-dev-prod-database-health-metadata",
-    up: async (client: any) => {
-      const health = await ensureDatabaseHealthMetadata(client)
-      await client.set("_migrations_run", "true")
-      console.log(`[v0] Migration 065: recorded ${health.mode} database health metadata at schema v${health.schema_version}`)
-    },
-    down: async (client: any) => {
-      await client.hdel(
-        "system:database:health",
-        "mode",
-        "schema_version",
-        "migrations_bundle_version",
-        "total_migrations",
-        "migrations_sequential",
-        "last_verified_at",
-      ).catch(() => 0)
-      await client.set("_schema_version", "64")
-    },
-  },
-  {
-    version: 66,
-    name: "066-bingx-sdk-fast-order-default",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      const patch = {
-        connection_method: "library",
-        connection_library: "sdk",
-        updated_at: now,
-      }
-      await Promise.all([
-        client.hset("connection:bingx-x01", patch).catch(() => 0),
-        client.hset("settings:connection:bingx-x01", patch).catch(() => 0),
-        client.hset("settings:trade_engine_state:bingx-x01", patch).catch(() => 0),
-      ])
-      console.log("[v0] Migration 066: bingx-x01 uses the bingx-api library fast path by default")
-    },
-    down: async (client: any) => {
-      await Promise.all([
-        client.hset("connection:bingx-x01", { connection_method: "library", connection_library: "native" }).catch(() => 0),
-        client.hset("settings:connection:bingx-x01", { connection_method: "library", connection_library: "native" }).catch(() => 0),
-        client.hset("settings:trade_engine_state:bingx-x01", { connection_method: "library", connection_library: "native" }).catch(() => 0),
-      ])
-      await client.set("_schema_version", "65")
-    },
-  },
-  {
-    version: 67,
-    name: "067-strategy-flow-concurrency-performance-defaults",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      const existing = ((await client.hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, string>
-      const patch: Record<string, string> = {
-        strategy_flow_symbol_concurrency_dev: existing.strategy_flow_symbol_concurrency_dev || "1",
-        strategy_flow_symbol_concurrency_prod: existing.strategy_flow_symbol_concurrency_prod || "1",
-        strategy_flow_symbol_concurrency_max: existing.strategy_flow_symbol_concurrency_max || "6",
-        strategy_flow_stage_yield_enabled: existing.strategy_flow_stage_yield_enabled || "1",
-        updated_at: now,
-      }
-      await Promise.all([
-        client.hset("settings:system", patch).catch(() => 0),
-        client.hset("system:database:coordination:performance", {
-          strategy_flow_symbol_concurrency_dev: patch.strategy_flow_symbol_concurrency_dev,
-          strategy_flow_symbol_concurrency_prod: patch.strategy_flow_symbol_concurrency_prod,
-          strategy_flow_symbol_concurrency_max: patch.strategy_flow_symbol_concurrency_max,
-          strategy_flow_stage_yield_enabled: patch.strategy_flow_stage_yield_enabled,
-          schema_version: "67",
-          updated_at: now,
-        }).catch(() => 0),
-      ])
-      console.log("[v0] Migration 067: seeded DB-backed strategy-flow concurrency defaults for dev/prod")
-    },
-    down: async (client: any) => {
-      await Promise.all([
-        client.hdel(
-          "settings:system",
-          "strategy_flow_symbol_concurrency_dev",
-          "strategy_flow_symbol_concurrency_prod",
-          "strategy_flow_symbol_concurrency_max",
-          "strategy_flow_stage_yield_enabled",
-        ).catch(() => 0),
-        client.del("system:database:coordination:performance").catch(() => 0),
-      ])
-      await client.set("_schema_version", "66")
-    },
-  },
-  {
-    version: 68,
-    name: "068-4-symbol-live-trade-defaults",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      // Preserve every operator-saved field. Historical migration 068 used to
-      // overwrite symbol count, live mode, and concurrency whenever a restored
-      // database first reached this version, making settings appear to reset on
-      // connection/restart. Defaults now fill missing fields only.
-      const connPatch = {
-        symbol_count: "4",
-        is_live_trade: "1",
-        live_trade_enabled: "1",
-      }
-      const perfPatch = {
-        strategy_flow_symbol_concurrency_dev: "4",
-        strategy_flow_symbol_concurrency_prod: "1",
-      }
-      const setDefaults = async (key: string, defaults: Record<string, string>) => {
-        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const writes = Object.fromEntries(
-          Object.entries(defaults).filter(([field]) => !(field in existing)),
-        ) as Record<string, string>
-        if (Object.keys(writes).length > 0) {
-          await client.hset(key, { ...writes, updated_at: now }).catch(() => 0)
-        }
-      }
-      await Promise.all([
-        setDefaults("connection:bingx-x01", connPatch),
-        setDefaults("settings:connection:bingx-x01", connPatch),
-        setDefaults("settings:trade_engine_state:bingx-x01", connPatch),
-        setDefaults("settings:system", perfPatch),
-        setDefaults("system:database:coordination:performance", perfPatch),
-      ])
-      console.log("[v0] Migration 068: missing 4-symbol/live-trade defaults filled without overwriting operator settings")
-    },
-    down: async (client: any) => {
-      await client.hset("settings:trade_engine_state:bingx-x01", { dev_symbol_count_override: "1", symbol_count: "1" }).catch(() => 0)
-      await client.set("_schema_version", "67")
-    },
-  },
-  {
-    // Migration 069 â€” Ensure exchangePositionCost sentinel is consistent across
-    // both Redis key locations that reference it.
-    // connection_settings:{id} is read by strategy-coordinator.
-    // settings:connection:{id} is written by earlier migrations.
-    // Both must carry the same 0.02 value so SL is computed correctly from
-    // the TP ratio with the 0.2% minimum floor.
-    version: 69,
-    name: "069-sync-exchange-position-cost-keys",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      await Promise.all(["connection_settings:bingx-x01", "settings:connection:bingx-x01"].map(async (key) => {
-        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (!("exchangePositionCost" in existing)) {
-          await client.hset(key, { exchangePositionCost: "0.02", updated_at: now }).catch(() => 0)
-        }
-      }))
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "68")
-    },
-  },
-  {
-    version: 70,
-    name: "070-stable-site-instance-and-portable-minute-continuity",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      await ensureUniqueSiteInstanceWithClient(client)
-
-      const existing = ((await client.hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, string>
-      const settingsPatch: Record<string, string> = {}
-      if (!("continuity_scheduler_interval_seconds" in existing)) {
-        settingsPatch.continuity_scheduler_interval_seconds = "60"
-      }
-      if (!("continuity_scheduler_mode" in existing)) {
-        settingsPatch.continuity_scheduler_mode = "auto"
-      }
-      if (Object.keys(settingsPatch).length > 0) {
-        await client.hset("settings:system", { ...settingsPatch, updated_at: now }).catch(() => 0)
-      }
-      await client.hset("system:coordination:continuity", {
-        interval_seconds: "60",
-        portable_scheduler_supported: "1",
-        schema_version: "70",
-        updated_at: now,
-      }).catch(() => 0)
-    },
-    down: async (client: any) => {
-      // Identity is intentionally retained during rollback; deleting it would
-      // rotate the site/session and break continuous engine ownership.
-      await client.set("_schema_version", "69")
-    },
-  },
-  {
-    version: 71,
-    name: "071-unified-database-maintenance-and-secondary-indexes",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const ids = connections.map((connection) => String(connection.id)).filter(Boolean)
-
-      // Reconcile the canonical collection index once. Runtime connection CRUD
-      // maintains it after this migration, so dashboard polling no longer needs
-      // global connection:* / settings:connection:* key scans.
-      await client.del("connections")
-      if (ids.length > 0) await client.sadd("connections", ...ids)
-
-      let progressionKeysUpdated = 0
-      const batchSize = 12
-      for (let offset = 0; offset < connections.length; offset += batchSize) {
-        const updated = await Promise.all(
-          connections.slice(offset, offset + batchSize).map((connection) =>
-            ensureUnifiedProgressionKeysWithClient(client, String(connection.id)),
-          ),
-        )
-        progressionKeysUpdated += updated.filter(Boolean).length
-      }
-      const indexes = await rebuildConnectionSecondaryIndexes(client, connections)
-      const fingerprint = createDatabaseMaintenanceFingerprint(71, connections)
-      const now = new Date().toISOString()
-      await Promise.all([
-        client.hset(DATABASE_MAINTENANCE_STATUS_KEY, {
-          status: "completed",
-          fingerprint,
-          schema_version: "71",
-          connection_count: String(connections.length),
-          progression_keys_updated: String(progressionKeysUpdated),
-          index_keys: String(indexes.indexKeys),
-          index_memberships: String(indexes.memberships),
-          completed_at: now,
-          migration: "071",
-          last_error: "",
-        }),
-        client.hset("system:database:coordination:maintenance", {
-          schema_version: "71",
-          migration_execution: "single_flight_distributed",
-          fresh_install_mode: "combined_batch",
-          connection_reads: "maintained_index_with_scan_recovery",
-          secondary_indexes: "maintained_on_write",
-          updated_at: now,
-        }),
-      ])
-    },
-    down: async (client: any) => {
-      await client.del(
-        DATABASE_MAINTENANCE_STATUS_KEY,
-        "system:database:coordination:maintenance",
-      ).catch(() => 0)
-      await client.set("_schema_version", "70")
-    },
-  },
-  {
-    version: 72,
-    name: "072-subsecond-live-coordination-profile",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      const existing = ((await client.hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, string>
-      const patch: Record<string, string> = {}
-      const replaceLegacyDefault = (field: string, value: string, legacyValues: string[]) => {
-        const current = String(existing[field] ?? "")
-        if (!current || legacyValues.includes(current)) patch[field] = value
-      }
-
-      replaceLegacyDefault("live_sync_interval_ms", "200", ["500", "1000"])
-      replaceLegacyDefault("live_sync_pause_ms", "50", ["100", "250"])
-      replaceLegacyDefault("live_positions_cycle_pause_ms", "50", ["300", "500"])
-      replaceLegacyDefault("realtime_interval_ms", "300", ["500", "1000"])
-      replaceLegacyDefault("realtime_cycle_pause_ms", "50", ["100", "200", "250"])
-      replaceLegacyDefault("strategy_flow_min_interval_ms", "300", ["1500", "5000"])
-      replaceLegacyDefault("strategy_flow_hard_throttle_ms", "250", ["750", "2500", "10000"])
-      replaceLegacyDefault("strategy_flow_max_interval_ms", "5000", ["15000", "30000"])
-      replaceLegacyDefault("strategy_flow_symbol_concurrency_dev", "4", ["1"])
-      replaceLegacyDefault("strategy_flow_symbol_concurrency_prod", "4", ["1"])
-      patch.live_coordination_profile = "subsecond-200-300ms"
-      patch.updated_at = now
-
-      await Promise.all([
-        client.hset("settings:system", patch),
-        client.hset("system:database:coordination:performance", {
-          ...patch,
-          schema_version: "72",
-        }),
-      ])
-      console.log("[v0] Migration 072: applied sub-second Live/Strategy coordination defaults without replacing custom timing values")
-    },
-    down: async (client: any) => {
-      await client.hdel("settings:system", "live_coordination_profile").catch(() => 0)
-      await client.set("_schema_version", "71")
-    },
-  },
-  {
-    version: 73,
-    name: "073-balanced-multisymbol-strategy-budgets",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      const keys = ["app_settings", "all_settings", "settings:system"]
-      for (const key of keys) {
-        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        const replaceLegacyDefault = (field: string, next: string, legacy: string[]) => {
-          const current = String(existing[field] ?? "")
-          if (!current || legacy.includes(current)) patch[field] = next
-        }
-        // Replace only absent/known legacy defaults; custom operator budgets
-        // survive the migration unchanged.
-        replaceLegacyDefault("strategyMainAxisSetsCeiling", "20", ["50"])
-        replaceLegacyDefault("strategyRealSetsSafetyCeiling", "25", ["100"])
-        replaceLegacyDefault("maxRealSets", "25", ["100"])
-        const rawTrailing = String(existing.strategyBaseTrailingVariants ?? "")
-        let trailingTokens: string[] = []
-        if (rawTrailing) {
-          try {
-            const parsed = JSON.parse(rawTrailing)
-            if (Array.isArray(parsed)) trailingTokens = parsed.map(String)
-          } catch {
-            trailingTokens = rawTrailing.split(/[|,\s]+/).filter(Boolean)
-          }
-        }
-        const storedTrailing = new Set(trailingTokens)
-        const isLegacyFullMatrix =
-          storedTrailing.size === ALL_TRAILING_VARIANTS.length &&
-          ALL_TRAILING_VARIANTS.every((token) => storedTrailing.has(token))
-        if (!rawTrailing || isLegacyFullMatrix) {
-          patch.strategyBaseTrailingVariants = JSON.stringify(DEFAULT_TRAILING_VARIANTS)
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, { ...patch, updated_at: now }).catch(() => 0)
-        }
-      }
-      await client.hset("system:database:coordination:performance", {
-        strategy_main_axis_sets_per_symbol: "20",
-        strategy_real_sets_per_symbol: "25",
-        strategy_budget_profile: "balanced-12-symbol",
-        schema_version: "73",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log("[v0] Migration 073: applied balanced 12-symbol Strategy budgets without replacing custom values")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "72")
-    },
-  },
-  {
-    version: 74,
-    name: "074-trend-indication-adaptive-base-ranges",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      const defaults: Record<string, string> = {
-        trendEnabled: "true",
-        trendTimeframesMinutes: JSON.stringify([1, 3, 5, 10, 15, 30]),
-        trendDrawdownValues: JSON.stringify([-1, -2, -3]),
-        trendLastSituationRatios: JSON.stringify([0.5, 1]),
-        trendActiveSituationRatios: JSON.stringify([0.5, 1]),
-        trendMinAgreement: "0.6",
-        trendTpMinMultiplier: "2",
-        trendTpMaxFactor: "10",
-        trendTpStep: "1",
-        databaseSizeTrend: "250",
-      }
-
-      // Cover both historical raw hashes and the canonical `setSettings()`
-      // mirrors read by getAppSettings(). Existing operator values always win.
-      for (const key of [
-        "settings:app_settings",
-        "settings:all_settings",
-        "app_settings",
-        "all_settings",
-        "settings:system",
-      ]) {
-        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        for (const [field, value] of Object.entries(defaults)) {
-          if (existing[field] === undefined || existing[field] === "") patch[field] = value
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, { ...patch, updated_at: now }).catch(() => 0)
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        trend_indication_type: "enabled-final-main-type",
-        trend_timeframes_minutes: "1,3,5,10,15,30",
-        trend_adaptive_tp_profile: "avg-1m-position-cost-x2-max10-step1",
-        schema_version: "74",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log("[v0] Migration 074: seeded Trend indication and adaptive Base TP defaults without replacing operator values")
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "73")
-    },
-  },
-  {
-    version: 75,
-    name: "075-bound-high-frequency-statistics-storage",
-    up: async (client: any) => {
-      let indicationRowsRemoved = 0
-      let realRowsRemoved = 0
-
-      const purgeLegacyRowSet = async (indexKey: string, rowPrefix: string): Promise<number> => {
-        const ids: string[] = ((await client.smembers(indexKey).catch(() => [])) || []).map(String).filter(Boolean)
-        let removed = 0
-        for (let offset = 0; offset < ids.length; offset += 250) {
-          const keys = ids.slice(offset, offset + 250).map((id) => `${rowPrefix}:${id}`)
-          if (keys.length > 0) removed += Number(await client.del(...keys).catch(() => 0)) || 0
-        }
-        await client.del(indexKey).catch(() => 0)
-        return removed
-      }
-
-      indicationRowsRemoved = await purgeLegacyRowSet("indications", "indications")
-      realRowsRemoved = await purgeLegacyRowSet("strategies_real", "strategies_real")
-      const now = new Date().toISOString()
-      await client.hset("system:database:coordination:performance", {
-        high_frequency_statistics_storage: "bounded-counters-latest",
-        legacy_indication_rows_removed: String(indicationRowsRemoved),
-        legacy_strategy_real_rows_removed: String(realRowsRemoved),
-        schema_version: "75",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log(`[v0] Migration 075: removed ${indicationRowsRemoved + realRowsRemoved} legacy high-frequency statistic rows`)
-    },
-    down: async (client: any) => {
-      // Purged telemetry rows are intentionally not recreated on rollback.
-      await client.set("_schema_version", "74")
-    },
-  },
-  {
-    version: 76,
-    name: "076-dynamic-symbol-selection-default-one",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      const defaultPatch = {
-        symbol_count: String(CANONICAL_DEFAULT_SYMBOL_COUNT),
-        symbol_order: DEFAULT_SYMBOL_ORDER,
-      }
-
-      for (const key of ["settings:app_settings", "settings:all_settings", "app_settings", "all_settings", "settings:system"]) {
-        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        if (!String(existing.symbol_count || existing.symbolCount || "").trim()) patch.symbol_count = defaultPatch.symbol_count
-        if (!String(existing.symbol_order || existing.symbolOrder || "").trim()) patch.symbol_order = defaultPatch.symbol_order
-        if (Object.keys(patch).length > 0) await client.hset(key, { ...patch, updated_at: now }).catch(() => 0)
-      }
-
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let normalized = 0
-      const legacySeedCounts = new Set(["4", "10", "12", "15", "20", "100"])
-      const seededSymbols = new Set(["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"])
-      const parseSymbols = (value: unknown): string[] => {
-        if (Array.isArray(value)) return value.map(String).map((s) => s.trim().toUpperCase()).filter(Boolean)
-        const raw = String(value ?? "").trim()
-        if (!raw) return []
-        try {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed)) return parsed.map(String).map((s) => s.trim().toUpperCase()).filter(Boolean)
-        } catch { /* comma-separated legacy value */ }
-        return raw.split(/[|,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean)
-      }
-
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        const keys = [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]
-        const rows = await Promise.all(keys.map((key) => client.hgetall(key).catch(() => ({}))))
-        const merged = Object.assign({}, ...rows) as Record<string, string>
-        const count = String(merged.symbol_count || merged.symbolCount || "").trim()
-        const force = parseSymbols(merged.force_symbols)
-        const active = parseSymbols(merged.active_symbols)
-        const selected = parseSymbols(merged.selected_symbols)
-        const explicitVersion = Number(merged.settings_version || merged.symbol_selection_version || 0) > 0
-        const explicitEpoch = Boolean(String(merged.symbol_selection_epoch || merged.quickstart_symbol_generation || "").trim())
-        const manualFlag = [merged.symbol_mode, merged.symbol_selection_mode, merged.manual_symbols]
-          .some((value) => /manual|fixed|explicit|true|1/i.test(String(value || "")))
-        const configuredSymbols = [...force, ...active, ...selected]
-        const onlyKnownSeedSymbols = configuredSymbols.length > 0 && configuredSymbols.every((symbol) => seededSymbols.has(symbol))
-        const looksLikeLegacySeed = legacySeedCounts.has(count) && (configuredSymbols.length === 0 || onlyKnownSeedSymbols)
-
-        // Preserve every versioned/manual operator choice. Only rewrite the
-        // old unversioned seeded baskets that previous migrations injected.
-        if (!looksLikeLegacySeed || explicitVersion || explicitEpoch || manualFlag) continue
-        const patch = {
-          ...defaultPatch,
-          force_symbols: "",
-          active_symbols: "",
-          selected_symbols: "",
-          dev_symbol_count_override: "",
-          symbol_selection_source: "dynamic-default",
-          symbol_recoordination_requested_at: now,
-          updated_at: now,
-        }
-        await Promise.all(keys.map(async (key, index) => {
-          if (index < 2 || Object.keys((rows[index] || {}) as object).length > 0) {
-            await client.hset(key, patch).catch(() => 0)
-          }
-        }))
-        normalized++
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        dynamic_symbol_default_count: String(CANONICAL_DEFAULT_SYMBOL_COUNT),
-        dynamic_symbol_default_order: DEFAULT_SYMBOL_ORDER,
-        unversioned_seeded_baskets_normalized: String(normalized),
-        schema_version: "76",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log(`[v0] Migration 076: defaulted dynamic selection to one symbol; normalized=${normalized}`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "75")
-    },
-  },
-  {
-    version: 77,
-    name: "077-indexed-current-indication-snapshots",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const types = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"]
-      let indexedSymbols = 0
-      let legacyStringsRemoved = 0
-
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        await client.del(`indications:${id}`).catch(() => 0)
-        for (const type of types) {
-          const key = `indications:${id}:${type}`
-          // Delete only legacy scalar strings. WRONGTYPE means a current list/
-          // hash and must be preserved.
-          const scalar = await client.get(key).then((value: unknown) => ({ ok: true, value })).catch(() => ({ ok: false, value: null }))
-          if (scalar.ok && scalar.value !== null) {
-            legacyStringsRemoved += Number(await client.del(key).catch(() => 0)) || 0
-          }
-        }
-        const keys = await scanRedisKeys(client, `indications:current:${id}:*`)
-        const prefix = `indications:current:${id}:`
-        const symbols = Array.from(new Set(keys.map((key) => String(key).slice(prefix.length)).filter(Boolean)))
-        if (symbols.length > 0) {
-          await client.sadd(`idx:indications:current:${id}`, ...symbols).catch(() => 0)
-          indexedSymbols += symbols.length
-        }
-      }
-
-      const now = new Date().toISOString()
-      await client.hset("system:database:coordination:performance", {
-        current_indication_snapshots: "per-symbol-indexed",
-        current_indication_symbols_indexed: String(indexedSymbols),
-        legacy_indication_strings_removed: String(legacyStringsRemoved),
-        schema_version: "77",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log(`[v0] Migration 077: indexed ${indexedSymbols} current indication symbol snapshots`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "76")
-    },
-  },
-  {
-    version: 78,
-    name: "078-coherent-strategy-set-snapshots",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let staleFieldsRemoved = 0
-      let unsafeRealSnapshotsRemoved = 0
-      const parseSymbols = (value: unknown): string[] => {
-        if (Array.isArray(value)) return value.map(String).map((s) => s.trim().toUpperCase()).filter(Boolean)
-        const raw = String(value ?? "").trim()
-        if (!raw) return []
-        try {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed)) return parsed.map(String).map((s) => s.trim().toUpperCase()).filter(Boolean)
-        } catch { /* legacy delimiter format */ }
-        return raw.split(/[|,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean)
-      }
-
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        const settingsRows = await Promise.all([
-          client.hgetall(`connection:${id}`).catch(() => ({})),
-          client.hgetall(`settings:connection:${id}`).catch(() => ({})),
-          client.hgetall(`connection_settings:${id}`).catch(() => ({})),
-          client.hgetall(`settings:trade_engine_state:${id}`).catch(() => ({})),
-        ])
-        const merged = Object.assign({}, ...settingsRows) as Record<string, string>
-        let selected = parseSymbols(merged.force_symbols)
-        if (selected.length === 0) selected = parseSymbols(merged.active_symbols)
-        if (selected.length === 0) selected = parseSymbols(merged.selected_symbols)
-        if (selected.length === 0) {
-          const nestedRaw = String(merged.connection_settings || "").trim()
-          if (nestedRaw) {
-            try {
-              const nested = JSON.parse(nestedRaw)
-              selected = parseSymbols(nested.force_symbols || nested.active_symbols || nested.selected_symbols)
-            } catch { /* malformed legacy nested settings */ }
-          }
-        }
-        const selectedSet = new Set(selected)
-        if (selectedSet.size > 0) {
-          for (const key of [
-            `strategies_active:${id}`,
-            `indications_active:${id}`,
-            `indications_window:${id}:last5`,
-            `indications_window:${id}:last60min`,
-          ]) {
-            const hash = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-            const staleFields = Object.keys(hash).filter((field) => {
-              const separator = field.indexOf(":")
-              if (separator <= 0) return false
-              return !selectedSet.has(field.slice(0, separator).toUpperCase())
-            })
-            for (let offset = 0; offset < staleFields.length; offset += 250) {
-              const batch = staleFields.slice(offset, offset + 250)
-              if (batch.length > 0) staleFieldsRemoved += Number(await client.hdel(key, ...batch).catch(() => 0)) || 0
-            }
-          }
-        }
-
-        const realKeys = await scanRedisKeys(client, `strategies:${id}:*:real:sets`)
-        for (const realKey of realKeys) {
-          const raw = await client.get(realKey).catch(() => null)
-          if (typeof raw !== "string" || !raw.trim()) continue
-          let stored: any
-          try { stored = JSON.parse(raw) } catch { continue }
-          const unsafeV1 = stored?._slim === true && Array.isArray(stored?.setKeys) && !Array.isArray(stored?.sets)
-          if (!unsafeV1) continue
-          const liveKey = String(realKey).replace(/:real:sets$/, ":live:sets")
-          unsafeRealSnapshotsRemoved += Number(await client.del(realKey, liveKey).catch(() => 0)) || 0
-        }
-      }
-
-      const now = new Date().toISOString()
-      await client.hset("system:database:coordination:performance", {
-        strategy_active_snapshot: "symbol-local-atomic-real-live-v2",
-        strategy_real_snapshot: "bounded-derived-scalars-v2",
-        stale_symbol_snapshot_fields_removed: String(staleFieldsRemoved),
-        unsafe_real_v1_snapshots_removed: String(unsafeRealSnapshotsRemoved),
-        schema_version: "78",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log(`[v0] Migration 078: removed stale fields=${staleFieldsRemoved}, unsafe Real/Live snapshots=${unsafeRealSnapshotsRemoved}`)
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "77")
-    },
-  },
-  {
-    version: 79,
-    name: "079-repair-hourly-statistics-rollups",
-    up: async (client: any) => {
-      const purgeIndexedRows = async (indexKey: string, rowPrefix: string): Promise<number> => {
-        const ids: string[] = ((await client.smembers(indexKey).catch(() => [])) || [])
-          .map(String)
-          .filter(Boolean)
-        let removed = 0
-        for (let offset = 0; offset < ids.length; offset += 250) {
-          const keys = ids.slice(offset, offset + 250).map((id) => `${rowPrefix}:${id}`)
-          if (keys.length > 0) removed += Number(await client.del(...keys).catch(() => 0)) || 0
-        }
-        await client.del(indexKey).catch(() => 0)
-        return removed
-      }
-
-      // Migration 075 removed the legacy rows that existed at that point, but
-      // the SQL compatibility shim kept creating new rows afterward. Version
-      // 079 repairs already-upgraded installations after the runtime writer is
-      // switched to bounded hourly hashes.
-      const [indicationRowsRemoved, realRowsRemoved] = await Promise.all([
-        purgeIndexedRows("indications", "indications"),
-        purgeIndexedRows("strategies_real", "strategies_real"),
-      ])
-      const now = new Date().toISOString()
-      await client.hset("system:database:coordination:performance", {
-        high_frequency_statistics_storage: "bounded-hourly-rollups-v2",
-        statistics_rollup_retention_hours: String(8 * 24),
-        repaired_indication_rows_removed: String(indicationRowsRemoved),
-        repaired_strategy_real_rows_removed: String(realRowsRemoved),
-        schema_version: "79",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log(`[v0] Migration 079: removed ${indicationRowsRemoved + realRowsRemoved} post-075 high-frequency statistic rows`)
-    },
-    down: async (client: any) => {
-      // Purged telemetry rows are intentionally not recreated on rollback.
-      await client.set("_schema_version", "78")
-    },
-  },
-  {
-    version: 80,
-    name: "080-index-exact-strategy-set-ledgers-and-minute-snapshots",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let indexedSets = 0
-      let activeSets = 0
-      let closedSets = 0
-
-      const positiveHash = async (key: string): Promise<Record<string, number>> => {
-        const raw = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const out: Record<string, number> = {}
-        for (const [field, value] of Object.entries(raw)) {
-          const count = Number(value)
-          if (Number.isFinite(count) && count > 0) out[field] = count
-        }
-        return out
-      }
-
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        const [entries, active, closed, axis] = await Promise.all([
-          positiveHash(`strategy_set_entry_counts:${id}`),
-          positiveHash(`strategy_set_active_entry_counts:${id}`),
-          positiveHash(`strategy_set_closed_counts:${id}`),
-          positiveHash(`axis_pos_acc:${id}`),
-        ])
-        const entryKeys = Object.keys(entries)
-        const activeKeys = Object.keys(active)
-        const closedKeys = Object.keys(closed)
-        if (entryKeys.length > 0) await client.sadd(`strategy_set_keys:${id}`, ...entryKeys)
-        if (activeKeys.length > 0) await client.sadd(`strategy_active_set_keys:${id}`, ...activeKeys)
-        if (closedKeys.length > 0) await client.sadd(`strategy_closed_set_keys:${id}`, ...closedKeys)
-        const totals = {
-          exact_entries: String(Object.values(entries).reduce((sum, value) => sum + value, 0)),
-          axis_entries: String(Object.values(axis).reduce((sum, value) => sum + value, 0)),
-          active_memberships: String(Object.values(active).reduce((sum, value) => sum + value, 0)),
-          exact_closed: String(Object.values(closed).reduce((sum, value) => sum + value, 0)),
-          rebuilt_at: new Date().toISOString(),
-        }
-        await client.hset(`strategy_ledger_totals:${id}`, totals)
-        indexedSets += entryKeys.length
-        activeSets += activeKeys.length
-        closedSets += closedKeys.length
-
-        // Previous uses the canonical 4..12 step-2 grid. Normalize only the
-        // flattened hot-path hashes; nested JSON is normalized on every API
-        // read/write and therefore never overrides these canonical fields.
-        for (const settingsKey of [
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          const rawPrev = await client.hget(settingsKey, "axisPrevMaxWindow").catch(() => null)
-          if (rawPrev == null || rawPrev === "") continue
-          const parsed = Number(rawPrev)
-          const clamped = Math.max(4, Math.min(12, Number.isFinite(parsed) ? Math.floor(parsed) : 12))
-          const normalized = 4 + Math.floor((clamped - 4) / 2) * 2
-          if (String(normalized) !== String(rawPrev)) {
-            await client.hset(settingsKey, "axisPrevMaxWindow", String(normalized))
-          }
-        }
-      }
-
-      const now = new Date().toISOString()
-      await client.hset("system:database:coordination:performance", {
-        exact_strategy_set_ledger: "candidate-indexed-v2",
-        strategy_set_listing_indexes: "lifetime-active-closed",
-        inline_snapshot_interval_ms: "60000",
-        indexed_exact_sets: String(indexedSets),
-        indexed_active_sets: String(activeSets),
-        indexed_closed_sets: String(closedSets),
-        schema_version: "80",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log(`[v0] Migration 080: indexed exact=${indexedSets}, active=${activeSets}, closed=${closedSets}`)
-    },
-    down: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        await client.del(
-          `strategy_set_keys:${id}`,
-          `strategy_active_set_keys:${id}`,
-          `strategy_closed_set_keys:${id}`,
-          `strategy_ledger_totals:${id}`,
-        ).catch(() => 0)
-      }
-      await client.set("_schema_version", "79")
-    },
-  },
-  {
-    version: 81,
-    name: "081-seed-independent-block-profit-factor-ratio",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let seededHashes = 0
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        for (const key of [
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          const existing = await client.hget(key, "blockProfitFactorRatio").catch(() => null)
-          if (existing != null && existing !== "") continue
-          await client.hset(key, "blockProfitFactorRatio", "0.8")
-          seededHashes++
-        }
-      }
-      // Fresh databases can reach migration 081 before the canonical Base
-      // connections are created. Seed the global fallback as well; the
-      // per-connection Settings save will then materialize its own value.
-      for (const key of ["settings:app_settings", "settings:all_settings"]) {
-        const existing = await client.hget(key, "blockProfitFactorRatio").catch(() => null)
-        if (existing == null || existing === "") {
-          await client.hset(key, "blockProfitFactorRatio", "0.8")
-          seededHashes++
-        }
-      }
-      const now = new Date().toISOString()
-      await client.hset("system:database:coordination:performance", {
-        independent_block_profit_factor: "default-pf-x-ratio-x-volume-increment-v1",
-        block_profit_factor_ratio_default: "0.8",
-        block_profit_factor_ratio_range: "0.2-5.0",
-        block_profit_factor_seeded_hashes: String(seededHashes),
-        schema_version: "81",
-        updated_at: now,
-      }).catch(() => 0)
-      console.log(`[v0] Migration 081: seeded independent Block PF ratio in ${seededHashes} settings hashes`)
-    },
-    down: async (client: any) => {
-      // Operator values and realised count histories are intentionally kept.
-      await client.set("_schema_version", "80")
-    },
-  },
-  {
-    version: 82,
-    name: "082-normalize-live-minimum-ratio-and-position-cost",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let positionCostUpdates = 0
-      let volumeRatioUpdates = 0
-      let posCountRatioSeeds = 0
-
-      const normalizeHash = async (key: string, includePosCountRatio: boolean): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        for (const field of ["positionCost", "exchangePositionCost", "exchange_position_cost"]) {
-          const raw = values[field]
-          if (raw == null || raw === "" || Number(raw) === 0.02) {
-            patch[field] = "0.1"
-            positionCostUpdates++
-          }
-        }
-        for (const field of [
-          "live_volume_factor",
-          "volume_factor_live",
-          "preset_volume_factor",
-          "volume_factor_preset",
-          "signal_volume_factor",
-          "volume_factor_signal",
-        ]) {
-          const raw = values[field]
-          if (raw == null || raw === "" || Number(raw) === 0.1) {
-            patch[field] = "1"
-            volumeRatioUpdates++
-          }
-        }
-        if (includePosCountRatio && (values.posCountsVolumeRatio == null || values.posCountsVolumeRatio === "")) {
-          patch.posCountsVolumeRatio = "0.05"
-          posCountRatioSeeds++
-        }
-        if (Object.keys(patch).length > 0) await client.hset(key, patch)
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeHash(key, true)
-      }
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await normalizeHash(key, true)
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        position_cost_default_percent: "0.1",
-        live_volume_ratio_baseline: "1",
-        live_volume_ratio_semantics: "exchange-minimum-times-ratio",
-        pos_counts_volume_ratio_default: "0.05",
-        position_cost_fields_updated: String(positionCostUpdates),
-        volume_ratio_fields_updated: String(volumeRatioUpdates),
-        pos_count_ratio_fields_seeded: String(posCountRatioSeeds),
-        schema_version: "82",
-        updated_at: new Date().toISOString(),
-      }).catch(() => 0)
-      console.log(
-        `[v0] Migration 082: positionCost=${positionCostUpdates}, volumeRatio=${volumeRatioUpdates}, posCounts=${posCountRatioSeeds}`,
-      )
-    },
-    down: async (client: any) => {
-      // Operator-visible sizing values are intentionally preserved on rollback.
-      await client.set("_schema_version", "81")
-    },
-  },
-  {
-    version: 83,
-    name: "083-enforce-identity-live-volume-ratios",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const ratioFields = [
-        "base_volume_factor",
-        "volume_factor",
-        "live_volume_factor",
-        "volume_factor_live",
-        "mainTradeVolumeFactor",
-        "main_trade_volume_factor",
-        "preset_volume_factor",
-        "volume_factor_preset",
-        "presetTradeVolumeFactor",
-        "preset_trade_volume_factor",
-        "signal_volume_factor",
-        "volume_factor_signal",
-        "signalTradeVolumeFactor",
-        "signal_trade_volume_factor",
-        "signalVolumeFactor",
-      ] as const
-      let normalized = 0
-      let seeded = 0
-
-      const normalizeHash = async (
-        key: string,
-        requiredFields: readonly string[] = [],
-      ): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        for (const field of ratioFields) {
-          const raw = values[field]
-          if (raw == null || raw === "") continue
-          const parsed = Number(raw)
-          if (!Number.isFinite(parsed) || parsed < 1) {
-            patch[field] = "1"
-            normalized++
-          } else if (parsed > 10) {
-            patch[field] = "10"
-            normalized++
-          }
-        }
-        for (const field of requiredFields) {
-          if (values[field] == null || values[field] === "") {
-            patch[field] = "1"
-            seeded++
-          }
-        }
-        if (Object.keys(patch).length > 0) await client.hset(key, patch)
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeHash(key, [
-          "mainTradeVolumeFactor",
-          "presetTradeVolumeFactor",
-          "signalTradeVolumeFactor",
-        ])
-      }
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await normalizeHash(key)
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        live_volume_ratio_baseline: "1",
-        live_volume_ratio_range: "1-10",
-        signal_volume_ratio_semantics: "main-channel-times-signal-ratio-once",
-        identity_volume_fields_normalized: String(normalized),
-        identity_volume_fields_seeded: String(seeded),
-        schema_version: "83",
-        updated_at: new Date().toISOString(),
-      }).catch(() => 0)
-      console.log(
-        `[v0] Migration 083: normalized=${normalized}, identity defaults seeded=${seeded}`,
-      )
-    },
-    down: async (client: any) => {
-      // Operator-visible sizing values are intentionally preserved on rollback.
-      await client.set("_schema_version", "82")
-    },
-  },
-  {
-    version: 84,
-    name: "084-freeze-base-volume-coordination-at-identity",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const baseFields = [
-        "base_volume_factor",
-        "volume_factor",
-        "baseVolumeFactor",
-      ] as const
-      let normalized = 0
-      let seeded = 0
-      let nestedNormalized = 0
-
-      const normalizeHash = async (
-        key: string,
-        requiredFields: readonly string[] = [],
-        requireNestedBase = false,
-      ): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-
-        for (const field of baseFields) {
-          const raw = values[field]
-          if (raw == null || raw === "") continue
-          if (Number(raw) !== 1) {
-            patch[field] = "1"
-            normalized++
-          }
-        }
-        for (const field of requiredFields) {
-          if (values[field] == null || values[field] === "") {
-            patch[field] = "1"
-            seeded++
-          }
-        }
-
-        const nestedRaw = values.connection_settings
-        if (typeof nestedRaw === "string" && nestedRaw.trim().startsWith("{")) {
-          try {
-            const nested = JSON.parse(nestedRaw) as Record<string, unknown>
-            let changed = false
-            for (const field of baseFields) {
-              if (!(field in nested)) continue
-              if (Number(nested[field]) !== 1) {
-                nested[field] = 1
-                nestedNormalized++
-                changed = true
-              }
-            }
-            if (requireNestedBase && nested.baseVolumeFactor == null) {
-              nested.baseVolumeFactor = 1
-              nestedNormalized++
-              changed = true
-            }
-            if (changed) patch.connection_settings = JSON.stringify(nested)
-          } catch {
-            // Malformed legacy JSON remains operator-visible. Canonical flat
-            // hashes are still repaired and all current write paths reject or
-            // overwrite malformed settings before engine use.
-          }
-        }
-
-        if (Object.keys(patch).length > 0) await client.hset(key, patch)
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeHash(key, ["base_volume_factor", "volume_factor"])
-      }
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        await normalizeHash(`connection:${id}`, ["volume_factor"], true)
-        await normalizeHash(`settings:connection:${id}`, ["volume_factor"], true)
-        await normalizeHash(`connection_settings:${id}`, ["volume_factor", "baseVolumeFactor"])
-        await normalizeHash(`settings:connection_settings:${id}`, ["volume_factor", "baseVolumeFactor"])
-        await normalizeHash(`trade_engine_state:${id}`, ["volume_factor"])
-        await normalizeHash(`settings:trade_engine_state:${id}`, ["volume_factor"])
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        base_volume_ratio: "1",
-        base_volume_ratio_semantics: "immutable-coordination-identity",
-        base_volume_fields_normalized: String(normalized),
-        base_volume_fields_seeded: String(seeded),
-        nested_base_volume_fields_normalized: String(nestedNormalized),
-        schema_version: "84",
-        updated_at: new Date().toISOString(),
-      }).catch(() => 0)
-      console.log(
-        `[v0] Migration 084: base normalized=${normalized}, seeded=${seeded}, nested=${nestedNormalized}`,
-      )
-    },
-    down: async (client: any) => {
-      // Base identity is a safety invariant and intentionally remains at one.
-      await client.set("_schema_version", "83")
-    },
-  },
-  {
-    version: 85,
-    name: "085-main-trade-position-cost-ratio-four-stage",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const stages = ["base", "main", "real", "live"] as const
-      const fieldNames = {
-        base: ["baseProfitFactor", "base_min_profit_factor"],
-        main: ["mainProfitFactor", "main_min_profit_factor"],
-        real: ["realProfitFactor", "real_min_profit_factor"],
-        live: ["liveProfitFactor", "live_min_profit_factor"],
-      } as const
-      let normalized = 0
-      let nestedNormalized = 0
-
-      const migrateStageValue = (
-        stage: typeof stages[number],
-        value: unknown,
-        legacySemantics: boolean,
-      ): number => {
-        const parsed = Number(value)
-        if (!Number.isFinite(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
-        if (legacySemantics) {
-          const legacyDefaults = stage === "base"
-            ? new Set([0.4, 0.7, 0.9, 1])
-            : new Set([0.7, 0.9, 1, 1.2])
-          if (legacyDefaults.has(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
-        }
-        return normalizeMainTradeStagePfRatio(stage, parsed)
-      }
-
-      const normalizeNested = (
-        nested: Record<string, any>,
-        legacySemantics: boolean,
-      ): boolean => {
-        let changed = false
-        for (const stage of stages) {
-          const aliases = fieldNames[stage]
-          const current = aliases.map((field) => nested[field]).find((value) => value != null)
-          const next = migrateStageValue(stage, current, legacySemantics)
-          for (const field of aliases) {
-            if (Number(nested[field]) !== next) {
-              nested[field] = next
-              changed = true
-            }
-          }
-          for (const channelName of ["main", "preset"]) {
-            const stageRow = nested?.strategies?.[channelName]?.[stage]
-            if (!stageRow || typeof stageRow !== "object") continue
-            if (Number(stageRow.min_profit_factor) !== next) {
-              stageRow.min_profit_factor = next
-              changed = true
-            }
-          }
-        }
-        if (nested.mainTradePfRatioSemantics !== "position-cost-v2") {
-          nested.mainTradePfRatioSemantics = "position-cost-v2"
-          changed = true
-        }
-        return changed
-      }
-
-      const normalizeHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const legacySemantics =
-          values.mainTradePfRatioSemantics !== "position-cost-v2" &&
-          values._main_trade_pf_ratio_semantics !== "position-cost-v2"
-        const patch: Record<string, string> = {
-          mainTradePfRatioSemantics: "position-cost-v2",
-          _main_trade_pf_ratio_semantics: "position-cost-v2",
-        }
-        for (const stage of stages) {
-          const aliases = fieldNames[stage]
-          const current = aliases.map((field) => values[field]).find((value) => value != null && value !== "")
-          const next = migrateStageValue(stage, current, legacySemantics)
-          for (const field of aliases) {
-            if (Number(values[field]) !== next) {
-              patch[field] = String(next)
-              normalized++
-            }
-          }
-        }
-        for (const jsonField of ["connection_settings", "coordination_settings"]) {
-          const raw = values[jsonField]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const nested = JSON.parse(raw) as Record<string, any>
-            if (normalizeNested(nested, legacySemantics)) {
-              patch[jsonField] = JSON.stringify(nested)
-              nestedNormalized++
-            }
-          } catch {
-            // Preserve malformed legacy payloads; canonical flat fields still
-            // repair runtime behavior and the next settings save rewrites JSON.
-          }
-        }
-        await client.hset(key, patch)
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeHash(key)
-      }
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await normalizeHash(key)
-        }
-      }
-      await client.hset("system:database:coordination:performance", {
-        main_trade_pf_semantics: "position-cost-v2",
-        main_trade_pf_range: "0.08-2.70",
-        main_trade_pf_step: "0.02",
-        main_trade_pf_base_default: String(MAIN_TRADE_STAGE_PF_DEFAULTS.base),
-        main_trade_pf_downstream_default: String(MAIN_TRADE_STAGE_PF_DEFAULTS.main),
-        main_trade_pf_fields_normalized: String(normalized),
-        main_trade_pf_nested_normalized: String(nestedNormalized),
-        schema_version: "85",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // Ratio values are operator-visible and remain valid on rollback.
-      await client.set("_schema_version", "84")
-    },
-  },
-  {
-    version: 86,
-    name: "086-exhaustive-indication-base-and-block-only-defaults",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let hashesUpdated = 0
-      let commonProfilesUpdated = 0
-
-      const normalizeHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        if (values.indicationTimeoutMs == null || [1000, 15000].includes(Number(values.indicationTimeoutMs))) {
-          patch.indicationTimeoutMs = "250"
-        }
-        if (values.positionCooldownMs == null || Number(values.positionCooldownMs) !== 3000) {
-          patch.positionCooldownMs = "3000"
-        }
-        if (
-          values.positionCooldownTimeout == null ||
-          [10, 15, 30].includes(Number(values.positionCooldownTimeout))
-        ) {
-          patch.positionCooldownTimeout = "3"
-        }
-        if (values.maxActiveBasePseudoPositionsPerDirection !== "1") {
-          patch.maxActiveBasePseudoPositionsPerDirection = "1"
-        }
-        if (values.maxPositionsPerConfigDirection !== "1") {
-          patch.maxPositionsPerConfigDirection = "1"
-        }
-        if (
-          values.posCountsVolumeRatio == null ||
-          values.posCountsVolumeRatio === "" ||
-          Number(values.posCountsVolumeRatio) === 0.05
-        ) {
-          patch.posCountsVolumeRatio = String(POS_COUNT_VOLUME_RATIO_DEFAULT)
-        }
-        if (values.blockOnly == null && values.variantBlockOnly == null) {
-          patch.blockOnly = "true"
-          patch.variantBlockOnly = "true"
-        }
-        const rawCoord = values.coordination_settings
-        if (typeof rawCoord === "string" && rawCoord.trim().startsWith("{")) {
-          try {
-            const coordination = JSON.parse(rawCoord) as Record<string, any>
-            let changed = false
-            if (coordination.blockOnly == null) {
-              coordination.blockOnly = true
-              changed = true
-            }
-            if (
-              coordination.posCountsVolumeRatio == null ||
-              Number(coordination.posCountsVolumeRatio) === 0.05
-            ) {
-              coordination.posCountsVolumeRatio = POS_COUNT_VOLUME_RATIO_DEFAULT
-              changed = true
-            }
-            if (changed) patch.coordination_settings = JSON.stringify(coordination)
-          } catch {
-            // Flat fields remain authoritative for malformed legacy JSON.
-          }
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          hashesUpdated++
-        }
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeHash(key)
-      }
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-        ]) {
-          await normalizeHash(key)
-        }
-      }
-
-      const commonRaw = await client.get("indications:common").catch(() => null)
-      if (typeof commonRaw === "string" && commonRaw.trim().startsWith("{")) {
-        try {
-          const common = JSON.parse(commonRaw) as Record<string, any>
-          for (const profile of Object.values(common)) {
-            if (!profile || typeof profile !== "object" || Array.isArray(profile)) continue
-            if ("timeout" in profile && Number(profile.timeout) !== 3) {
-              profile.timeout = 3
-              commonProfilesUpdated++
-            }
-          }
-          await client.set("indications:common", JSON.stringify(common))
-        } catch {
-          // The settings route repairs malformed JSON using canonical defaults.
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        indication_exact_lane_timeout_ms: "250",
-        common_indication_exact_lane_timeout_ms: "3000",
-        base_exact_lane_cooldown_ms: "3000",
-        base_open_positions_per_exact_lane: "1",
-        pos_counts_volume_ratio_default: String(POS_COUNT_VOLUME_RATIO_DEFAULT),
-        block_only_default: "true",
-        exhaustive_configuration_space: "true",
-        settings_hashes_updated: String(hashesUpdated),
-        common_profiles_updated: String(commonProfilesUpdated),
-        schema_version: "86",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "85")
-    },
-  },
-  {
-    version: 87,
-    name: "087-signal-bootstrap-direction-lanes-and-strategy-rows",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let signalSourcesUpdated = 0
-      let stageCapsUpdated = 0
-      const signalRaw = await client.get("indications:signal").catch(() => null)
-      if (typeof signalRaw === "string" && signalRaw.trim().startsWith("{")) {
-        try {
-          const signal = JSON.parse(signalRaw) as Record<string, any>
-          if (signal.directExecutionEnabled == null) signal.directExecutionEnabled = true
-          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
-            signal.maxPositionsTotal = 350
-          }
-          if (signal.sources && typeof signal.sources === "object") {
-            for (const source of Object.values(signal.sources) as Array<Record<string, any>>) {
-              if (!source || typeof source !== "object") continue
-              if (!Array.isArray(source.disabledSymbols)) source.disabledSymbols = []
-              if (!Array.isArray(source.disabledLanes)) {
-                source.disabledLanes = []
-                signalSourcesUpdated++
-              }
-            }
-          }
-          await client.set("indications:signal", JSON.stringify(signal))
-        } catch {
-          // Canonical Signal normalization repairs malformed payloads on load.
-        }
-      }
-
-      const normalizeStageCaps = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        const legacyRealCaps = new Set(["", "25", "50", "100"])
-        const legacyLiveCaps = new Set(["", "90"])
-        if (legacyRealCaps.has(String(values.strategyRealSetsSafetyCeiling ?? ""))) {
-          patch.strategyRealSetsSafetyCeiling = "5000"
-        }
-        if (legacyRealCaps.has(String(values.maxRealSets ?? ""))) {
-          patch.maxRealSets = "5000"
-        }
-        if (legacyLiveCaps.has(String(values.strategyLiveSetsCeiling ?? ""))) {
-          patch.strategyLiveSetsCeiling = "500"
-        }
-        for (const jsonField of ["connection_settings", "coordination_settings"]) {
-          const raw = values[jsonField]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const nested = JSON.parse(raw) as Record<string, any>
-            const channel = nested?.strategies?.main
-            let changed = false
-            if (channel && typeof channel === "object") {
-              if (channel.base && Number(channel.base.max_positions) !== 0) {
-                channel.base.max_positions = 0
-                changed = true
-              }
-              if (channel.main && Number(channel.main.max_positions) !== 0) {
-                channel.main.max_positions = 0
-                changed = true
-              }
-              if (
-                channel.real &&
-                legacyRealCaps.has(String(channel.real.max_positions ?? ""))
-              ) {
-                channel.real.max_positions = 5000
-                changed = true
-              }
-              if (
-                channel.live &&
-                legacyLiveCaps.has(String(channel.live.max_positions ?? ""))
-              ) {
-                channel.live.max_positions = 500
-                changed = true
-              }
-            }
-            if (changed) patch[jsonField] = JSON.stringify(nested)
-          } catch {
-            // Flat fields remain authoritative for malformed legacy JSON.
-          }
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          stageCapsUpdated++
-        }
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeStageCaps(key)
-      }
-
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await normalizeStageCaps(key)
-        }
-        for (const [stage, defaults] of [
-          ["base", { row_total: "0", row_valid: "0", row_total_open: "0", row_valid_open: "0" }],
-          ["main", { row_valid: "0", row_overall: "0", row_valid_open: "0", row_overall_open: "0" }],
-          ["real", { row_valid: "0", row_active: "0", row_active_exact: "0" }],
-          ["live", { row_total: "0", row_mirrored: "0", row_active: "0" }],
-        ] as const) {
-          const key = `strategy_detail:${id}:${stage}`
-          const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-          const patch: Record<string, string> = {}
-          for (const [field, value] of Object.entries(defaults)) {
-            if (existing[field] == null) patch[field] = value
-          }
-          if (Object.keys(patch).length > 0) await client.hset(key, patch)
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        signal_direct_bootstrap_default: "true",
-        signal_source_window: "12",
-        signal_symbol_direction_window: "10",
-        signal_max_open_positions_long_short_total: "350",
-        signal_manual_lane_identity: "source-symbol-direction",
-        strategy_row_snapshot_semantics: "current-open-row-snapshot",
-        base_configuration_index: "exact-hash-lazy-v2",
-        signal_sources_direction_lists_seeded: String(signalSourcesUpdated),
-        strategy_real_sets_default: "5000",
-        strategy_live_sets_default: "500",
-        strategy_base_main_sets: "unlimited",
-        strategy_stage_caps_updated: String(stageCapsUpdated),
-        schema_version: "87",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "86")
-    },
-  },
-  {
-    version: 88,
-    name: "088-repair-exhaustive-indications-signal-capacity-and-stage-caps",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const exhaustiveRanges = Array.from({ length: 29 }, (_, index) => index + 2)
-      const exhaustiveFactors = [0.9, 1, 1.1]
-      const exhaustiveThresholds = [0.5, 1, 1.5, 2, 2.5]
-      const exhaustiveActivity = [0.5, 1, 1.5, 2, 2.5, 3]
-      const trendTimeframes = [1, 5, 15, 30]
-      const legacyTrendTimeframes = [1, 3, 5, 10, 15, 30]
-      const legacyCommonTimeframes = [1, 3, 5, 15]
-      const legacyRanges = [2, 5, 10, 20, 30]
-      const legacyFactors = [1]
-      const legacyThresholds = [0.5, 1.5, 2.5]
-      const legacyActivity = [0.5, 1.5, 3]
-      const legacyRealCaps = new Set(["", "25", "50", "100"])
-      const legacyLiveCaps = new Set(["", "90"])
-      const legacyMainEvalCounts = new Set(["", "3", "15"])
-      const legacyRealEvalCounts = new Set(["", "3", "10"])
-      let settingsHashesUpdated = 0
-      let mainDocumentUpdated = 0
-      let commonProfilesUpdated = 0
-      let signalSettingsUpdated = 0
-
-      const parseNumberList = (value: unknown): number[] => {
-        let source: unknown[] = []
-        if (Array.isArray(value)) {
-          source = value
-        } else if (typeof value === "string" && value.trim()) {
-          try {
-            const parsed = JSON.parse(value)
-            source = Array.isArray(parsed) ? parsed : value.split(/[\s,|]+/)
-          } catch {
-            source = value.split(/[\s,|]+/)
-          }
-        }
-        return source.map(Number).filter(Number.isFinite)
-      }
-      const sameNumberList = (value: unknown, expected: readonly number[]): boolean => {
-        const parsed = parseNumberList(value)
-        return parsed.length === expected.length &&
-          parsed.every((entry, index) => Math.abs(entry - expected[index]) <= Number.EPSILON)
-      }
-      const replaceLegacyList = (
-        target: Record<string, any>,
-        field: string,
-        legacy: readonly number[],
-        next: readonly number[],
-      ): boolean => {
-        if (target[field] == null || sameNumberList(target[field], legacy)) {
-          target[field] = [...next]
-          return true
-        }
-        return false
-      }
-      const replaceLegacyRange = (section: Record<string, any>): boolean => {
-        const range = section?.range
-        if (
-          !range ||
-          (Number(range.from) === 3 && Number(range.to) === 30 && Number(range.step) === 1)
-        ) {
-          section.range = { from: 2, to: 30, step: 1 }
-          return true
-        }
-        return false
-      }
-
-      const normalizeSettingsHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        const replaceFlatList = (
-          field: string,
-          legacy: readonly number[],
-          next: readonly number[],
-        ) => {
-          if (values[field] == null || sameNumberList(values[field], legacy)) {
-            patch[field] = JSON.stringify(next)
-          }
-        }
-        replaceFlatList("indicationSampleRanges", legacyRanges, exhaustiveRanges)
-        replaceFlatList("optimalSampleRanges", legacyRanges, exhaustiveRanges)
-        replaceFlatList("indicationFactorMultipliers", legacyFactors, exhaustiveFactors)
-        replaceFlatList("activeThresholds", legacyThresholds, exhaustiveThresholds)
-        replaceFlatList("activeAdvancedActivityRatios", legacyActivity, exhaustiveActivity)
-        replaceFlatList("trendTimeframesMinutes", legacyTrendTimeframes, trendTimeframes)
-
-        if (values.indicationTimeoutMs == null || [1_000, 3_000, 15_000].includes(Number(values.indicationTimeoutMs))) {
-          patch.indicationTimeoutMs = "250"
-        }
-        if (values.positionCooldownMs == null || Number(values.positionCooldownMs) !== 3_000) {
-          patch.positionCooldownMs = "3000"
-        }
-        if (values.maxActiveBasePseudoPositionsPerDirection !== "1") {
-          patch.maxActiveBasePseudoPositionsPerDirection = "1"
-        }
-        if (values.maxPositionsPerConfigDirection !== "1") {
-          patch.maxPositionsPerConfigDirection = "1"
-        }
-        if (values.minStep !== "2") {
-          patch.minStep = "2"
-        }
-        if (legacyMainEvalCounts.has(String(values.mainEvalPosCount ?? ""))) {
-          patch.mainEvalPosCount = "25"
-        }
-        if (legacyRealEvalCounts.has(String(values.realEvalPosCount ?? ""))) {
-          patch.realEvalPosCount = "20"
-        }
-        if (legacyRealCaps.has(String(values.strategyRealSetsSafetyCeiling ?? ""))) {
-          patch.strategyRealSetsSafetyCeiling = "5000"
-        }
-        if (legacyRealCaps.has(String(values.maxRealSets ?? ""))) {
-          patch.maxRealSets = "5000"
-        }
-        if (legacyLiveCaps.has(String(values.strategyLiveSetsCeiling ?? ""))) {
-          patch.strategyLiveSetsCeiling = "500"
-        }
-
-        for (const jsonField of ["connection_settings", "coordination_settings"]) {
-          const raw = values[jsonField]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const nested = JSON.parse(raw) as Record<string, any>
-            let changed = false
-            changed = replaceLegacyList(
-              nested,
-              "indicationSampleRanges",
-              legacyRanges,
-              exhaustiveRanges,
-            ) || changed
-            changed = replaceLegacyList(
-              nested,
-              "optimalSampleRanges",
-              legacyRanges,
-              exhaustiveRanges,
-            ) || changed
-            changed = replaceLegacyList(
-              nested,
-              "indicationFactorMultipliers",
-              legacyFactors,
-              exhaustiveFactors,
-            ) || changed
-            changed = replaceLegacyList(
-              nested,
-              "activeThresholds",
-              legacyThresholds,
-              exhaustiveThresholds,
-            ) || changed
-            changed = replaceLegacyList(
-              nested,
-              "activeAdvancedActivityRatios",
-              legacyActivity,
-              exhaustiveActivity,
-            ) || changed
-            changed = replaceLegacyList(
-              nested,
-              "trendTimeframesMinutes",
-              legacyTrendTimeframes,
-              trendTimeframes,
-            ) || changed
-            if (nested.indicationTimeoutMs == null || [1_000, 3_000, 15_000].includes(Number(nested.indicationTimeoutMs))) {
-              nested.indicationTimeoutMs = 250
-              changed = true
-            }
-            if (Number(nested.positionCooldownMs) !== 3_000) {
-              nested.positionCooldownMs = 3_000
-              changed = true
-            }
-            if (Number(nested.maxActiveBasePseudoPositionsPerDirection) !== 1) {
-              nested.maxActiveBasePseudoPositionsPerDirection = 1
-              changed = true
-            }
-            if (Number(nested.maxPositionsPerConfigDirection) !== 1) {
-              nested.maxPositionsPerConfigDirection = 1
-              changed = true
-            }
-            if (Number(nested.minStep) !== 2) {
-              nested.minStep = 2
-              changed = true
-            }
-            if (legacyMainEvalCounts.has(String(nested.mainEvalPosCount ?? ""))) {
-              nested.mainEvalPosCount = 25
-              changed = true
-            }
-            if (legacyRealEvalCounts.has(String(nested.realEvalPosCount ?? ""))) {
-              nested.realEvalPosCount = 20
-              changed = true
-            }
-            const mainChannel = nested?.strategies?.main
-            if (mainChannel && typeof mainChannel === "object") {
-              if (mainChannel.base && Number(mainChannel.base.max_positions) !== 0) {
-                mainChannel.base.max_positions = 0
-                changed = true
-              }
-              if (mainChannel.main && Number(mainChannel.main.max_positions) !== 0) {
-                mainChannel.main.max_positions = 0
-                changed = true
-              }
-              if (
-                mainChannel.real &&
-                legacyRealCaps.has(String(mainChannel.real.max_positions ?? ""))
-              ) {
-                mainChannel.real.max_positions = 5000
-                changed = true
-              }
-              if (
-                mainChannel.live &&
-                legacyLiveCaps.has(String(mainChannel.live.max_positions ?? ""))
-              ) {
-                mainChannel.live.max_positions = 500
-                changed = true
-              }
-            }
-            if (changed) patch[jsonField] = JSON.stringify(nested)
-          } catch {
-            // Preserve malformed legacy JSON; flat canonical fields still
-            // repair runtime behavior and the next settings save rewrites it.
-          }
-        }
-
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          settingsHashesUpdated++
-        }
-      }
-
-      const normalizeActiveIndicationProfile = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const patch: Record<string, string> = {}
-        const legacyMainTimeouts: Record<string, number> = {
-          direction: 30,
-          move: 30,
-          active: 60,
-          optimal: 60,
-          auto: 90,
-          signal: 60,
-          trend: 60,
-        }
-        const legacyPresetTimeouts: Record<string, number> = {
-          direction: 45,
-          move: 45,
-          active: 90,
-          optimal: 90,
-          auto: 120,
-          signal: 60,
-          trend: 120,
-        }
-        const profileWasLegacy = Object.entries(legacyMainTimeouts).some(
-          ([type, timeout]) => Number(values[`${type}_timeout`]) === timeout,
-        )
-        const presetWasLegacy = Object.entries(legacyPresetTimeouts).some(
-          ([type, timeout]) => Number(values[`${type}_preset_timeout`]) === timeout,
-        )
-
-        for (const [profile, suffix, legacyTimeouts, wasLegacy] of [
-          [DEFAULT_MAIN_INDICATION_PROFILE, "", legacyMainTimeouts, profileWasLegacy],
-          [DEFAULT_PRESET_INDICATION_PROFILE, "_preset", legacyPresetTimeouts, presetWasLegacy],
-        ] as const) {
-          for (const type of INDICATION_PROFILE_TYPES) {
-            const enabledField = suffix === "" ? type : `${type}_preset`
-            const rangeField = `${type}${suffix}_range`
-            const timeoutField = `${type}${suffix}_timeout`
-            const intervalField = `${type}${suffix}_interval`
-            if (
-              values[enabledField] == null ||
-              (wasLegacy && values[enabledField] === "false")
-            ) {
-              patch[enabledField] = String(profile[type].enabled)
-            }
-            if (values[rangeField] == null) patch[rangeField] = String(profile[type].range)
-            if (
-              values[timeoutField] == null ||
-              Number(values[timeoutField]) === legacyTimeouts[type]
-            ) {
-              patch[timeoutField] = String(profile[type].timeout)
-            }
-            if (values[intervalField] == null) {
-              patch[intervalField] = String(profile[type].interval)
-            }
-          }
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          settingsHashesUpdated++
-        }
-      }
-
-      for (const key of [
-        "app_settings",
-        "all_settings",
-        "settings:app_settings",
-        "settings:all_settings",
-        "settings:system",
-      ]) {
-        await normalizeSettingsHash(key)
-      }
-      for (const connection of connections) {
-        const id = String(connection.id || "")
-        if (!id) continue
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await normalizeSettingsHash(key)
-        }
-        await normalizeActiveIndicationProfile(`settings:active_indications:${id}`)
-      }
-
-      const rawMain = await client.get("indications:main").catch(() => null)
-      let parsedMain: Record<string, any> = {}
-      if (typeof rawMain === "string" && rawMain.trim().startsWith("{")) {
-        try {
-          parsedMain = JSON.parse(rawMain) as Record<string, any>
-        } catch {
-          parsedMain = {}
-        }
-      }
-      const main = normalizeMainIndicationSettings(parsedMain)
-      let mainChanged = rawMain == null
-      mainChanged = replaceLegacyList(
-        main.configuration,
-        "sample_ranges",
-        legacyRanges,
-        exhaustiveRanges,
-      ) || mainChanged
-      mainChanged = replaceLegacyList(
-        main.configuration,
-        "factor_multipliers",
-        legacyFactors,
-        exhaustiveFactors,
-      ) || mainChanged
-      mainChanged = replaceLegacyList(
-        main.configuration,
-        "active_thresholds",
-        legacyThresholds,
-        exhaustiveThresholds,
-      ) || mainChanged
-      for (const sectionName of ["direction", "move", "optimal"] as const) {
-        const section = main[sectionName] as Record<string, any>
-        mainChanged = replaceLegacyList(
-          section,
-          "sample_ranges",
-          legacyRanges,
-          exhaustiveRanges,
-        ) || mainChanged
-        mainChanged = replaceLegacyRange(section) || mainChanged
-        if (section.timeout == null || [3, 10].includes(Number(section.timeout))) {
-          section.timeout = 0.25
-          mainChanged = true
-        }
-      }
-      mainChanged = replaceLegacyList(
-        main.active,
-        "thresholds",
-        legacyThresholds,
-        exhaustiveThresholds,
-      ) || mainChanged
-      mainChanged = replaceLegacyList(
-        main.active_advanced,
-        "activity_values",
-        legacyActivity,
-        exhaustiveActivity,
-      ) || mainChanged
-      if (main.active.timeout == null || Number(main.active.timeout) === 3) {
-        main.active.timeout = 0.25
-        mainChanged = true
-      }
-      if (mainChanged || rawMain !== JSON.stringify(main)) {
-        await client.set("indications:main", JSON.stringify(main))
-        mainDocumentUpdated = 1
-      }
-
-      const rawCommon = await client.get("indications:common").catch(() => null)
-      let parsedCommon: Record<string, any> = {}
-      if (typeof rawCommon === "string" && rawCommon.trim().startsWith("{")) {
-        try {
-          parsedCommon = JSON.parse(rawCommon) as Record<string, any>
-        } catch {
-          parsedCommon = {}
-        }
-      }
-      const common = normalizeCommonIndicationSettings(parsedCommon)
-      if (
-        parsedCommon.coordination == null ||
-        sameNumberList(
-          (parsedCommon.coordination as Record<string, any>)?.timeframesMinutes,
-          legacyCommonTimeframes,
-        )
-      ) {
-        common.coordination.timeframesMinutes = [...trendTimeframes]
-      }
-      for (const profileName of Object.keys(DEFAULT_COMMON_INDICATION_SETTINGS)) {
-        if (profileName === "coordination") continue
-        const profile = common[profileName] as Record<string, any>
-        if (Number(profile.timeout) !== 3) {
-          profile.timeout = 3
-          commonProfilesUpdated++
-        }
-      }
-      await client.set("indications:common", JSON.stringify(common))
-
-      const rawSignal = await client.get("indications:signal").catch(() => null)
-      if (typeof rawSignal === "string" && rawSignal.trim().startsWith("{")) {
-        try {
-          const signal = JSON.parse(rawSignal) as Record<string, any>
-          let changed = false
-          if (signal.directExecutionEnabled == null) {
-            signal.directExecutionEnabled = true
-            changed = true
-          }
-          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
-            signal.maxPositionsTotal = 350
-            changed = true
-          }
-          if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {
-            signal.maxSourcesPerCycle = 35
-            changed = true
-          }
-          if (signal.sources && typeof signal.sources === "object") {
-            for (const source of Object.values(signal.sources) as Array<Record<string, any>>) {
-              if (!source || typeof source !== "object") continue
-              if (!Array.isArray(source.disabledSymbols)) {
-                source.disabledSymbols = []
-                changed = true
-              }
-              if (!Array.isArray(source.disabledLanes)) {
-                source.disabledLanes = []
-                changed = true
-              }
-            }
-          }
-          if (changed) {
-            await client.set("indications:signal", JSON.stringify(signal))
-            signalSettingsUpdated = 1
-          }
-        } catch {
-          // Canonical Signal settings normalization repairs malformed payloads
-          // on load without risking an operator's raw recovery data.
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        indication_configuration_profile: "exhaustive-v2",
-        indication_sample_ranges: "2-30-step-1",
-        indication_min_step_compatibility: "2-fixed",
-        indication_factor_multipliers: "0.9,1,1.1",
-        common_indication_exact_lane_timeout_ms: "3000",
-        signal_direct_bootstrap_default: "true",
-        signal_source_window: "12",
-        signal_symbol_direction_window: "10",
-        signal_max_open_positions_long_short_total: "350",
-        signal_sources_per_symbol_cycle_default: "35",
-        strategy_real_sets_default: "5000",
-        strategy_live_sets_default: "500",
-        strategy_main_eval_positions_default: "25",
-        strategy_real_eval_positions_default: "20",
-        settings_hashes_updated: String(settingsHashesUpdated),
-        main_document_updated: String(mainDocumentUpdated),
-        common_profiles_updated: String(commonProfilesUpdated),
-        signal_settings_updated: String(signalSettingsUpdated),
-        schema_version: "88",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // Exhaustive settings and operator-visible capacity values remain valid
-      // during rollback; only the schema cursor moves back.
-      await client.set("_schema_version", "87")
-    },
-  },
-  {
-    version: 89,
-    name: "089-signal-full-source-cycle-and-base-pf-floor",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const connectionIds = new Set(
-        connections
-          .map((connection) => String(connection.id || ""))
-          .filter(Boolean),
-      )
-      for (const id of await client.smembers("connections").catch(() => [])) {
-        if (id) connectionIds.add(String(id))
-      }
-      const rawSignal = await client.get("indications:signal").catch(() => null)
-      let signalSettingsUpdated = 0
-      let basePfFieldsRepaired = 0
-      let basePfDocumentsRepaired = 0
-      const normalizeLegacyBasePf = (value: unknown): number => {
-        const parsed = Number(value)
-        if (Number.isFinite(parsed) && Math.abs(parsed - 0.8) < 1e-9) {
-          return MAIN_TRADE_STAGE_PF_DEFAULTS.base
-        }
-        if (Number.isFinite(parsed) && parsed <= 1) return 1
-        return normalizeMainTradeStagePfRatio("base", value)
-      }
-      if (typeof rawSignal === "string" && rawSignal.trim().startsWith("{")) {
-        try {
-          const signal = JSON.parse(rawSignal) as Record<string, any>
-          let changed = false
-          if (signal.directExecutionEnabled == null) {
-            signal.directExecutionEnabled = true
-            changed = true
-          }
-          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
-            signal.maxPositionsTotal = 350
-            changed = true
-          }
-          if (Number(signal.performanceLookback) !== 12) {
-            signal.performanceLookback = 12
-            changed = true
-          }
-          if (Number(signal.performanceMinSamples) !== 12) {
-            signal.performanceMinSamples = 12
-            changed = true
-          }
-          if (Number(signal.performanceDisableBelowPnl) !== 0) {
-            signal.performanceDisableBelowPnl = 0
-            changed = true
-          }
-          // Ten was the previous sampled/rotating default. Upgrade only that
-          // known default (or a missing value); any other explicit operator
-          // choice remains intact.
-          if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {
-            signal.maxSourcesPerCycle = 35
-            changed = true
-          }
-          if (changed) {
-            await client.set("indications:signal", JSON.stringify(signal))
-            signalSettingsUpdated = 1
-          }
-        } catch {
-          // Canonical settings normalization repairs malformed JSON on load.
-        }
-      }
-
-      const repairBasePfObject = (document: Record<string, any>): boolean => {
-        let changed = false
-        for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
-          if (document[alias] == null) continue
-          const normalized = normalizeLegacyBasePf(document[alias])
-          if (Number(document[alias]) !== normalized) {
-            document[alias] = normalized
-            changed = true
-          }
-        }
-        for (const container of [
-          document?.strategies,
-          document,
-        ]) {
-          if (!container || typeof container !== "object") continue
-          for (const channelName of ["main", "preset"]) {
-            const row = container?.[channelName]?.base
-            if (!row || typeof row !== "object") continue
-            const normalized = normalizeLegacyBasePf(row.min_profit_factor)
-            if (Number(row.min_profit_factor) !== normalized) {
-              row.min_profit_factor = normalized
-              changed = true
-            }
-          }
-        }
-        return changed
-      }
-
-      const repairBasePfHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (Object.keys(values).length === 0) return
-        const current = values.baseProfitFactor ?? values.base_min_profit_factor
-        const normalized = normalizeLegacyBasePf(current)
-        const patch: Record<string, string> = {}
-        for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
-          if (Number(values[alias]) !== normalized) {
-            patch[alias] = String(normalized)
-            basePfFieldsRepaired++
-          }
-        }
-        for (const jsonField of ["connection_settings", "strategies"]) {
-          const raw = values[jsonField]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const document = JSON.parse(raw) as Record<string, any>
-            if (repairBasePfObject(document)) {
-              patch[jsonField] = JSON.stringify(document)
-              basePfDocumentsRepaired++
-            }
-          } catch {
-            // Keep malformed recovery data untouched. Canonical flat fields
-            // still enforce the Base floor and a subsequent settings save
-            // rewrites the structured document.
-          }
-        }
-        if (Object.keys(patch).length > 0) await client.hset(key, patch)
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await repairBasePfHash(key)
-      }
-      for (const id of connectionIds) {
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await repairBasePfHash(key)
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        signal_direct_bootstrap_default: "true",
-        signal_source_window: "12",
-        signal_symbol_direction_window: "10",
-        signal_max_open_positions_long_short_total: "350",
-        signal_sources_per_symbol_cycle_default: "35",
-        signal_full_source_cycle: "true",
-        signal_settings_updated: String(signalSettingsUpdated),
-        main_trade_pf_base_minimum: String(MAIN_TRADE_STAGE_PF_DEFAULTS.base),
-        main_trade_pf_base_fields_repaired: String(basePfFieldsRepaired),
-        main_trade_pf_base_documents_repaired: String(basePfDocumentsRepaired),
-        schema_version: "89",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "88")
-    },
-  },
-  {
-    version: 90,
-    name: "090-base-valid-and-signal-admission-contract",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const connectionIds = new Set(
-        connections
-          .map((connection) => String(connection.id || ""))
-          .filter(Boolean),
-      )
-      for (const id of await client.smembers("connections").catch(() => [])) {
-        if (id) connectionIds.add(String(id))
-      }
-
-      let baseValuesRepaired = 0
-      let stageFlagsRepaired = 0
-      const normalizeLegacyBasePf = (value: unknown): number => {
-        const parsed = Number(value)
-        if (Number.isFinite(parsed) && Math.abs(parsed - 0.8) < 1e-9) {
-          return MAIN_TRADE_STAGE_PF_DEFAULTS.base
-        }
-        if (Number.isFinite(parsed) && parsed <= 1) return 1
-        return normalizeMainTradeStagePfRatio("base", value)
-      }
-      const repairBaseValueInDocument = (document: Record<string, any>): boolean => {
-        let changed = false
-        for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
-          if (document[alias] == null) continue
-          const normalized = normalizeLegacyBasePf(document[alias])
-          if (Number(document[alias]) !== normalized) {
-            document[alias] = normalized
-            changed = true
-          }
-        }
-        for (const container of [document?.strategies, document]) {
-          if (!container || typeof container !== "object") continue
-          for (const channelName of ["main", "preset"]) {
-            const channel = container?.[channelName]
-            if (!channel || typeof channel !== "object") continue
-            for (const stage of ["base", "main", "real", "live"]) {
-              const row = channel[stage]
-              if (!row || typeof row !== "object") continue
-              for (const enabledField of ["enabled", "is_enabled"]) {
-                if (row[enabledField] === true) continue
-                row[enabledField] = true
-                stageFlagsRepaired++
-                changed = true
-              }
-            }
-            const baseRow = channel.base
-            if (!baseRow || typeof baseRow !== "object") continue
-            const normalized = normalizeLegacyBasePf(baseRow.min_profit_factor)
-            if (Number(baseRow.min_profit_factor) !== normalized) {
-              baseRow.min_profit_factor = normalized
-              changed = true
-            }
-          }
-        }
-        return changed
-      }
-
-      const repairBaseValueHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (Object.keys(values).length === 0) return
-        const patch: Record<string, string> = {}
-        for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
-          if (values[alias] == null) continue
-          const normalized = normalizeLegacyBasePf(values[alias])
-          if (Number(values[alias]) !== normalized) {
-            patch[alias] = String(normalized)
-            baseValuesRepaired++
-          }
-        }
-        for (const jsonField of ["connection_settings", "strategies"]) {
-          const raw = values[jsonField]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const document = JSON.parse(raw) as Record<string, any>
-            if (repairBaseValueInDocument(document)) {
-              patch[jsonField] = JSON.stringify(document)
-              baseValuesRepaired++
-            }
-          } catch {
-            // Preserve malformed recovery data; canonical flat fields and
-            // normalization still enforce the new minimum.
-          }
-        }
-        if (Object.keys(patch).length > 0) await client.hset(key, patch)
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await repairBaseValueHash(key)
-      }
-      for (const id of connectionIds) {
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await repairBaseValueHash(key)
-        }
-      }
-
-      let signalSettingsUpdated = 0
-      const rawSignal = await client.get("indications:signal").catch(() => null)
-      if (typeof rawSignal === "string" && rawSignal.trim().startsWith("{")) {
-        try {
-          const signal = JSON.parse(rawSignal) as Record<string, any>
-          let changed = false
-          // Automatic bootstrap is a compatibility field, not an admission
-          // bypass. Mature exact lanes always enforce the canonical gate.
-          if (signal.directExecutionEnabled !== true) {
-            signal.directExecutionEnabled = true
-            changed = true
-          }
-          if (Number(signal.performanceLookback) !== 12) {
-            signal.performanceLookback = 12
-            changed = true
-          }
-          if (Number(signal.performanceMinSamples) !== 12) {
-            signal.performanceMinSamples = 12
-            changed = true
-          }
-          if (Number(signal.performanceDisableBelowPnl) !== 0) {
-            signal.performanceDisableBelowPnl = 0
-            changed = true
-          }
-          if (Number(signal.configMinimumPfRatio) !== 0.3) {
-            signal.configMinimumPfRatio = 0.3
-            changed = true
-          }
-          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
-            signal.maxPositionsTotal = 350
-            changed = true
-          }
-          if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {
-            signal.maxSourcesPerCycle = 35
-            changed = true
-          }
-          if (changed) {
-            await client.set("indications:signal", JSON.stringify(signal))
-            signalSettingsUpdated = 1
-          }
-        } catch {
-          // Canonical Signal settings normalization repairs malformed JSON.
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        main_trade_base_total_semantics: "all-complete-configuration-sets",
-        main_trade_base_valid_minimum: String(MAIN_TRADE_STAGE_PF_DEFAULTS.base),
-        main_trade_base_values_repaired: String(baseValuesRepaired),
-        main_trade_main_input_semantics: "base-valid-only",
-        strategy_stage_switches: "compatibility-only-always-true",
-        strategy_stage_flags_repaired: String(stageFlagsRepaired),
-        signal_previous_position_scope: "source-symbol-direction-config",
-        signal_previous_position_window: "12",
-        signal_previous_position_minimum_ratio: "0.3",
-        signal_source_window: "diagnostic-12",
-        signal_symbol_direction_window: "diagnostic-10",
-        signal_source_and_direction_rows: "diagnostic-only",
-        signal_direct_execution_default: "true",
-        signal_direct_execution_operator_configurable: "false",
-        signal_max_open_positions_long_short_total: "350",
-        signal_live_permanent_disable_window: "16",
-        signal_settings_updated: String(signalSettingsUpdated),
-        live_analytics_pf_windows: "positions-12-25-75;hours-4-12-48",
-        live_analytics_ddt_window_days: "3",
-        strategy_stages: "combined-base-main-real-live-process",
-        schema_version: "90",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "89")
-    },
-  },
-  {
-    version: 91,
-    name: "091-unlimited-stage-rows-cadence-and-block-work-scheduler",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const connectionIds = new Set(
-        connections
-          .map((connection) => String(connection.id || ""))
-          .filter(Boolean),
-      )
-      for (const id of await client.smembers("connections").catch(() => [])) {
-        if (id) connectionIds.add(String(id))
-      }
-
-      let settingsHashesUpdated = 0
-      let structuredProfilesUpdated = 0
-      let indicationProfilesUpdated = 0
-      const normalizeSettingsHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
-          Record<string, string>
-        if (Object.keys(values).length === 0) return
-        const patch: Record<string, string> = {}
-        for (const field of [
-          "strategyRealSetsSafetyCeiling",
-          "maxRealSets",
-          "strategyLiveSetsCeiling",
-        ]) {
-          if (values[field] !== "0") patch[field] = "0"
-        }
-        if (
-          values.strategyBlockMaterializationBatchSize == null ||
-          !(Number(values.strategyBlockMaterializationBatchSize) >= 64)
-        ) {
-          patch.strategyBlockMaterializationBatchSize = "1024"
-        }
-        if (values.minStep == null || Number(values.minStep) === 2) {
-          patch.minStep = String(DEFAULT_BASE_MIN_STEP)
-        }
-        if (values.trailingMinStep == null || Number(values.trailingMinStep) === 2) {
-          patch.trailingMinStep = String(DEFAULT_BASE_MIN_STEP)
-        }
-
-        for (const jsonField of ["connection_settings", "coordination_settings", "strategies"]) {
-          const raw = values[jsonField]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const document = JSON.parse(raw) as Record<string, any>
-            let changed = false
-            for (const field of [
-              "strategyRealSetsSafetyCeiling",
-              "maxRealSets",
-              "strategyLiveSetsCeiling",
-            ]) {
-              if (Number(document[field]) !== 0) {
-                document[field] = 0
-                changed = true
-              }
-            }
-            const coordination =
-              document.coordination_settings ??
-              document.coordinationSettings ??
-              (jsonField === "coordination_settings" ? document : undefined)
-            if (coordination && typeof coordination === "object") {
-              if (!(Number(coordination.strategyBlockMaterializationBatchSize) >= 64)) {
-                coordination.strategyBlockMaterializationBatchSize = 1024
-                changed = true
-              }
-              if (coordination.minStep == null || Number(coordination.minStep) === 2) {
-                coordination.minStep = DEFAULT_BASE_MIN_STEP
-                changed = true
-              }
-              if (
-                coordination.trailingMinStep == null ||
-                Number(coordination.trailingMinStep) === 2
-              ) {
-                coordination.trailingMinStep = DEFAULT_BASE_MIN_STEP
-                changed = true
-              }
-            }
-            if (document.minStep == null || Number(document.minStep) === 2) {
-              document.minStep = DEFAULT_BASE_MIN_STEP
-              changed = true
-            }
-            if (
-              document.trailingMinStep == null ||
-              Number(document.trailingMinStep) === 2
-            ) {
-              document.trailingMinStep = DEFAULT_BASE_MIN_STEP
-              changed = true
-            }
-            for (const container of [document?.strategies, document]) {
-              if (!container || typeof container !== "object") continue
-              for (const channelName of ["main", "preset"]) {
-                const channel = container[channelName]
-                if (!channel || typeof channel !== "object") continue
-                for (const stageName of ["base", "main", "real", "live"]) {
-                  const stage = channel[stageName]
-                  if (
-                    stage &&
-                    typeof stage === "object" &&
-                    Number(stage.max_positions) !== 0
-                  ) {
-                    stage.max_positions = 0
-                    changed = true
-                  }
-                }
-              }
-            }
-            if (changed) {
-              patch[jsonField] = JSON.stringify(document)
-              structuredProfilesUpdated++
-            }
-          } catch {
-            // Preserve malformed recovery payloads. Flat runtime fields remain
-            // authoritative and the next Settings save rewrites the document.
-          }
-        }
-
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          settingsHashesUpdated++
-        }
-      }
-
-      for (const key of [
-        "app_settings",
-        "all_settings",
-        "settings:app_settings",
-        "settings:all_settings",
-        "settings:system",
-      ]) {
-        await normalizeSettingsHash(key)
-      }
-      for (const id of connectionIds) {
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await normalizeSettingsHash(key)
-        }
-      }
-
-      const normalizeActiveIndicationProfile = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
-          Record<string, string>
-        const patch: Record<string, string> = {}
-        for (const [profile, suffix] of [
-          [DEFAULT_MAIN_INDICATION_PROFILE, ""],
-          [DEFAULT_PRESET_INDICATION_PROFILE, "_preset"],
-        ] as const) {
-          for (const type of INDICATION_PROFILE_TYPES) {
-            const timeoutField = `${type}${suffix}_timeout`
-            const intervalField = `${type}${suffix}_interval`
-            const timeout = Number(values[timeoutField])
-            const interval = Number(values[intervalField])
-
-            if (
-              values[timeoutField] == null ||
-              (type === "trend" && timeout === 0.5) ||
-              (type === "common" && timeout === 1)
-            ) {
-              patch[timeoutField] = String(profile[type].timeout)
-            }
-            if (
-              values[intervalField] == null ||
-              (type === "trend" && interval === 0.5)
-            ) {
-              patch[intervalField] = String(profile[type].interval)
-            }
-          }
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          indicationProfilesUpdated++
-        }
-      }
-
-      for (const id of connectionIds) {
-        await normalizeActiveIndicationProfile(`settings:active_indications:${id}`)
-      }
-
-      const rawCommon = await client.get("indications:common").catch(() => null)
-      let parsedCommon: Record<string, any> = {}
-      if (typeof rawCommon === "string" && rawCommon.trim().startsWith("{")) {
-        try {
-          parsedCommon = JSON.parse(rawCommon) as Record<string, any>
-        } catch {
-          parsedCommon = {}
-        }
-      }
-      const common = normalizeCommonIndicationSettings(parsedCommon)
-      let commonChanged = rawCommon == null
-      for (const profileName of Object.keys(DEFAULT_COMMON_INDICATION_SETTINGS)) {
-        if (profileName === "coordination") continue
-        const profile = common[profileName] as Record<string, any>
-        if (profile.timeout == null || Number(profile.timeout) === 1) {
-          profile.timeout = 3
-          commonChanged = true
-        }
-        if (profile.interval == null) {
-          profile.interval = 1
-          commonChanged = true
-        }
-      }
-      if (commonChanged || rawCommon !== JSON.stringify(common)) {
-        await client.set("indications:common", JSON.stringify(common))
-        indicationProfilesUpdated++
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        strategy_stage_row_capacity: "unlimited",
-        strategy_stage_row_capacity_persisted_value: "0",
-        strategy_block_materialization_batch_default: "1024",
-        strategy_block_materialization_semantics:
-          "rotating-work-scheduler-not-configuration-cap",
-        strategy_settings_hashes_updated: String(settingsHashesUpdated),
-        strategy_structured_profiles_updated: String(structuredProfilesUpdated),
-        indication_profile_cadence:
-          "default-additional-signal=250ms;common-processing=1000ms;common-exact-lane=3000ms",
-        common_indication_exact_lane_timeout_ms: "3000",
-        base_min_step_default: String(DEFAULT_BASE_MIN_STEP),
-        indication_profiles_updated: String(indicationProfilesUpdated),
-        schema_version: "91",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // Unlimited values remain valid during rollback; only the migration
-      // cursor moves back.
-      await client.set("_schema_version", "90")
-    },
-  },
-  {
-    version: 92,
-    name: "092-exact-indication-cadence-and-unlimited-preset-types",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const connectionIds = new Set(
-        connections
-          .map((connection) => String(connection.id || ""))
-          .filter(Boolean),
-      )
-      for (const id of await client.smembers("connections").catch(() => [])) {
-        if (id) connectionIds.add(String(id))
-      }
-
-      let indicationProfilesUpdated = 0
-      for (const id of connectionIds) {
-        const key = `settings:active_indications:${id}`
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
-          Record<string, string>
-        const patch: Record<string, string> = {}
-        for (const suffix of ["", "_preset"] as const) {
-          const trendTimeout = `trend${suffix}_timeout`
-          const trendInterval = `trend${suffix}_interval`
-          const commonTimeout = `common${suffix}_timeout`
-          const commonInterval = `common${suffix}_interval`
-          if (values[trendTimeout] == null || Number(values[trendTimeout]) === 0.25) {
-            patch[trendTimeout] = "0.5"
-          }
-          if (values[trendInterval] == null || Number(values[trendInterval]) === 0.25) {
-            patch[trendInterval] = "0.5"
-          }
-          if (values[commonTimeout] == null || Number(values[commonTimeout]) === 3) {
-            patch[commonTimeout] = "1"
-          }
-          if (values[commonInterval] == null) {
-            patch[commonInterval] = "1"
-          }
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          indicationProfilesUpdated++
-        }
-      }
-
-      const rawCommon = await client.get("indications:common").catch(() => null)
-      let parsedCommon: Record<string, any> = {}
-      if (typeof rawCommon === "string" && rawCommon.trim().startsWith("{")) {
-        try {
-          parsedCommon = JSON.parse(rawCommon) as Record<string, any>
-        } catch {
-          parsedCommon = {}
-        }
-      }
-      const common = normalizeCommonIndicationSettings(parsedCommon)
-      let commonChanged = rawCommon == null
-      for (const profileName of Object.keys(DEFAULT_COMMON_INDICATION_SETTINGS)) {
-        if (profileName === "coordination") continue
-        const profile = common[profileName] as Record<string, any>
-        if (profile.timeout == null || Number(profile.timeout) === 3) {
-          profile.timeout = 1
-          commonChanged = true
-        }
-        if (profile.interval == null) {
-          profile.interval = 1
-          commonChanged = true
-        }
-      }
-      if (commonChanged || rawCommon !== JSON.stringify(common)) {
-        await client.set("indications:common", JSON.stringify(common))
-        indicationProfilesUpdated++
-      }
-
-      const indexedPresetIds = await client.smembers("preset_types:all").catch(() => [])
-      const presetKeys = await scanRedisKeys(client, "preset_type:*")
-      const presetTypeKeys = new Set<string>(
-        presetKeys.filter((key) => key !== "preset_types:all"),
-      )
-      for (const id of indexedPresetIds) {
-        if (id) presetTypeKeys.add(`preset_type:${id}`)
-      }
-      let presetTypesUpdated = 0
-      for (const key of presetTypeKeys) {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
-          Record<string, string>
-        if (Object.keys(values).length === 0) continue
-        const patch = {
-          max_positions_per_indication: "0",
-          max_positions_per_direction: "0",
-          max_positions_per_range: "0",
-          updated_at: new Date().toISOString(),
-        }
-        if (
-          values.max_positions_per_indication !== "0" ||
-          values.max_positions_per_direction !== "0" ||
-          values.max_positions_per_range !== "0"
-        ) {
-          await client.hset(key, patch)
-          presetTypesUpdated++
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        indication_profile_cadence:
-          "default-signal=250ms;trend=500ms;common-processing-and-exact-lane=1000ms",
-        trend_indication_exact_lane_timeout_ms: "500",
-        common_indication_exact_lane_timeout_ms: "1000",
-        indication_profiles_updated: String(indicationProfilesUpdated),
-        preset_type_position_capacity: "unlimited",
-        preset_type_position_capacity_persisted_value: "0",
-        preset_types_updated: String(presetTypesUpdated),
-        schema_version: "92",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // Correct cadence and unlimited compatibility values remain valid.
-      await client.set("_schema_version", "91")
-    },
-  },
-  {
-    version: 93,
-    name: "093-pf-floor-and-continuous-row-live-defaults",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const connectionIds = new Set(
-        connections.map((connection) => String(connection.id || "")).filter(Boolean),
-      )
-      for (const id of await client.smembers("connections").catch(() => [])) {
-        if (id) connectionIds.add(String(id))
-      }
-
-      const stageAliases = {
-        base: ["baseProfitFactor", "base_min_profit_factor"],
-        main: ["mainProfitFactor", "main_min_profit_factor"],
-        real: ["realProfitFactor", "real_min_profit_factor"],
-        live: ["liveProfitFactor", "live_min_profit_factor"],
-      } as const
-      let stagePfValuesUpdated = 0
-      let rowDefaultsUpdated = 0
-
-      const normalizeLiveWindow = (value: unknown): number => {
-        const parsed = Number(value)
-        if (!Number.isFinite(parsed) || parsed <= 0) return 15
-        return Math.min(55, Math.max(5, Math.round(parsed / 5) * 5))
-      }
-      const normalizeStoredStagePf = (
-        stage: keyof typeof stageAliases,
-        value: unknown,
-      ): number => {
-        const parsed = Number(value)
-        // Preserve the exact neutral coordinate for legacy values at or below
-        // 1.00.  The operator selector starts at 1.02, but migration must not
-        // turn a measured neutral value into a positive gate.
-        if (Number.isFinite(parsed) && parsed <= 1) return 1
-        return normalizeMainTradeStagePfRatio(stage, value)
-      }
-      const normalizeDocument = (document: Record<string, any>): boolean => {
-        let changed = false
-        const normalizeStages = (target: Record<string, any>) => {
-          for (const [stage, aliases] of Object.entries(stageAliases) as Array<
-            [keyof typeof stageAliases, readonly string[]]
-          >) {
-            for (const alias of aliases) {
-              if (target[alias] == null) continue
-              const next = normalizeStoredStagePf(stage, target[alias])
-              if (Number(target[alias]) !== next) {
-                target[alias] = next
-                stagePfValuesUpdated++
-                changed = true
-              }
-            }
-          }
-        }
-        normalizeStages(document)
-        for (const container of [document, document.strategies]) {
-          if (!container || typeof container !== "object") continue
-          for (const channelName of ["main", "preset"]) {
-            const channel = container[channelName]
-            if (!channel || typeof channel !== "object") continue
-            for (const stage of ["base", "main", "real", "live"] as const) {
-              const row = channel[stage]
-              if (!row || typeof row !== "object" || row.min_profit_factor == null) continue
-              const next = normalizeStoredStagePf(stage, row.min_profit_factor)
-              if (Number(row.min_profit_factor) !== next) {
-                row.min_profit_factor = next
-                stagePfValuesUpdated++
-                changed = true
-              }
-            }
-          }
-        }
-
-        const coordination = document.coordination_settings && typeof document.coordination_settings === "object"
-          ? document.coordination_settings
-          : document.coordinationSettings && typeof document.coordinationSettings === "object"
-            ? document.coordinationSettings
-            : document
-        const rowDefaults: Record<string, unknown> = {
-          liveEvalPosCount: normalizeLiveWindow(coordination.liveEvalPosCount),
-          blockRowLiveEnabled: coordination.blockRowLiveEnabled ?? true,
-          blockRowLiveVolumeRatio: coordination.blockRowLiveVolumeRatio ?? coordination.blockVolumeRatio ?? 1,
-          blockRowLiveProfitFactorRatio: coordination.blockRowLiveProfitFactorRatio ?? coordination.blockProfitFactorRatio ?? 0.8,
-          blockRowLiveMaxStack: coordination.blockRowLiveMaxStack ?? coordination.blockMaxStack ?? 12,
-          blockRowLivePauseCountRatio: coordination.blockRowLivePauseCountRatio ?? coordination.blockPauseCountRatio ?? 1,
-          blockOnly: coordination.blockOnly ?? true,
-        }
-        for (const [key, value] of Object.entries(rowDefaults)) {
-          if (coordination[key] !== value) {
-            coordination[key] = value
-            rowDefaultsUpdated++
-            changed = true
-          }
-        }
-        return changed
-      }
-
-      const normalizeHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (Object.keys(values).length === 0) return
-        const patch: Record<string, string> = {}
-        for (const [stage, aliases] of Object.entries(stageAliases) as Array<
-          [keyof typeof stageAliases, readonly string[]]
-        >) {
-          const current = aliases.map((alias) => values[alias]).find((value) => value != null && value !== "")
-          if (current == null) continue
-          const next = normalizeStoredStagePf(stage, current)
-          for (const alias of aliases) {
-            if (Number(values[alias]) !== next) {
-              patch[alias] = String(next)
-              stagePfValuesUpdated++
-            }
-          }
-        }
-        const flatRowDefaults: Record<string, string> = {
-          liveEvalPosCount: String(normalizeLiveWindow(values.liveEvalPosCount)),
-          blockRowLiveEnabled: values.blockRowLiveEnabled === "false" || values.blockRowLiveEnabled === "0" ? "false" : "true",
-          blockRowLiveVolumeRatio: String(Math.max(0.25, Math.min(3, Number(values.blockRowLiveVolumeRatio) || Number(values.blockVolumeRatio) || 1))),
-          blockRowLiveProfitFactorRatio: String(Math.max(0.2, Math.min(5, Number(values.blockRowLiveProfitFactorRatio) || Number(values.blockProfitFactorRatio) || 0.8))),
-          blockRowLiveMaxStack: String(Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(Number(values.blockRowLiveMaxStack) || Number(values.blockMaxStack) || BLOCK_COUNT_MAX)))),
-          blockRowLivePauseCountRatio: String(Math.max(1, Math.min(4, Number(values.blockRowLivePauseCountRatio) || Number(values.blockPauseCountRatio) || 1))),
-          blockOnly: values.blockOnly === "false" || values.blockOnly === "0" ? "false" : "true",
-        }
-        for (const [field, value] of Object.entries(flatRowDefaults)) {
-          if (values[field] !== value) {
-            patch[field] = value
-            rowDefaultsUpdated++
-          }
-        }
-        for (const field of ["connection_settings", "coordination_settings", "coordinationSettings", "strategies"]) {
-          const raw = values[field]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const document = JSON.parse(raw) as Record<string, any>
-            if (normalizeDocument(document)) patch[field] = JSON.stringify(document)
-          } catch {
-            // Preserve malformed legacy recovery blobs; canonical flat values
-            // remain the runtime source and a future settings save repairs it.
-          }
-        }
-        if (Object.keys(patch).length > 0) await client.hset(key, patch)
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeHash(key)
-      }
-      for (const id of connectionIds) {
-        const relatedKeys = [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]
-        for (const key of relatedKeys) {
-          await normalizeHash(key)
-        }
-
-        // Preserve an operator-pinned QuickStart basket across maintenance
-        // migrations and boot-time normalization. Older rows can store the
-        // same setting under any of the canonical aliases, so recover the
-        // first non-empty pin and mirror it without inventing a new basket.
-        const pinnedSymbols = (
-          await (async () => {
-            for (const key of relatedKeys) {
-              const value = await client.hget(key, "force_symbols").catch(() => null)
-              if (typeof value === "string" && value.trim() !== "") return value
-            }
-            return null
-          })()
-        )
-        if (pinnedSymbols) {
-          await Promise.all(relatedKeys.map((key) =>
-            client.hset(key, { force_symbols: pinnedSymbols }).catch(() => 0),
-          ))
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        main_trade_pf_range: "0.80-2.70",
-        main_trade_pf_minimum: "0.80",
-        strategy_live_row_window_default: "15",
-        strategy_live_row_window_range: "5-55-step-5",
-        strategy_row_live_block_default: "true",
-        strategy_block_only_default: "true",
-        main_trade_pf_values_updated: String(stagePfValuesUpdated),
-        strategy_row_defaults_updated: String(rowDefaultsUpdated),
-        schema_version: "93",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // The raised PF floor and Row-Live defaults are safe to retain on a
-      // rollback; only the migration cursor moves back.
-      await client.set("_schema_version", "92")
-    },
-  },
-  {
-    version: 94,
-    name: "094-expand-block-count-defaults-to-canonical-twelve",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const connectionIds = new Set(
-        connections.map((connection) => String(connection.id || "")).filter(Boolean),
-      )
-      for (const id of await client.smembers("connections").catch(() => [])) {
-        if (id) connectionIds.add(String(id))
-      }
-
-      const stackKeys = ["blockMaxStack", "blockRowLiveMaxStack", "presetBlockMaxStack"] as const
-      let hashesUpdated = 0
-      let fieldsUpdated = 0
-      const normalizeStack = (raw: unknown): number => {
-        const parsed = Number(raw)
-        if (!Number.isFinite(parsed) || parsed < 1) return BLOCK_COUNT_MAX
-        // `10` was the old seeded default in migrations 030/034/056. Treat it
-        // as that legacy default while preserving any other operator-selected
-        // value, then expose the new canonical 1..12 range everywhere.
-        const legacyOrCurrent = Math.floor(parsed) === 10 ? BLOCK_COUNT_MAX : Math.floor(parsed)
-        return Math.max(1, Math.min(BLOCK_COUNT_MAX, legacyOrCurrent))
-      }
-      const normalizeDocument = (value: unknown): boolean => {
-        if (!value || typeof value !== "object") return false
-        let changed = false
-        for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-          if ((stackKeys as readonly string[]).includes(key) && Number(child) !== normalizeStack(child)) {
-            ;(value as Record<string, unknown>)[key] = normalizeStack(child)
-            fieldsUpdated++
-            changed = true
-          } else if (child && typeof child === "object" && normalizeDocument(child)) {
-            changed = true
-          }
-        }
-        return changed
-      }
-      const keys = new Set<string>([
-        "app_settings",
-        "settings:app_settings",
-        "settings:all_settings",
-      ])
-      for (const id of connectionIds) {
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) keys.add(key)
-      }
-      for (const key of keys) {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (Object.keys(values).length === 0) continue
-        const patch: Record<string, string> = {}
-        for (const field of stackKeys) {
-          if (values[field] == null || values[field] === "") continue
-          const normalized = normalizeStack(values[field])
-          if (values[field] !== String(normalized)) {
-            patch[field] = String(normalized)
-            fieldsUpdated++
-          }
-        }
-        for (const field of ["connection_settings", "coordination_settings", "coordinationSettings", "strategies"]) {
-          const raw = values[field]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const document = JSON.parse(raw) as Record<string, unknown>
-            if (normalizeDocument(document)) patch[field] = JSON.stringify(document)
-          } catch {
-            // Leave malformed legacy recovery blobs untouched; flat values are
-            // still normalized and a later settings save can repair the blob.
-          }
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          hashesUpdated++
-        }
-      }
-      await client.hset("system:database:coordination:performance", {
-        block_count_min: "1",
-        block_count_max: String(BLOCK_COUNT_MAX),
-        block_count_default: String(BLOCK_COUNT_MAX),
-        block_count_hashes_updated: String(hashesUpdated),
-        block_count_fields_updated: String(fieldsUpdated),
-        schema_version: "94",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      await client.set("_schema_version", "93")
-    },
-  },
-  {
-    version: 95,
-    name: "095-active-outbreak-ranges-and-market-protection-profiles",
-    up: async (client: any) => {
-      const defaults: Record<string, string> = {
-        activeOutbreakRanges: JSON.stringify([3, 5, 10]),
-        activeNoiseFilter: "0.05",
-        activeVolatilityWeight: "0.3",
-        activeStopLossPositionCostRatios: JSON.stringify([2, 3, 5]),
-        activeTakeProfitMultipliers: JSON.stringify([1.25, 1.5, 1]),
-        activeMarketExitSituations: JSON.stringify([
-          "momentum",
-          "range_extension",
-          "activity_fade",
-        ]),
-      }
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const connectionIds = new Set(
-        connections.map((connection) => String(connection.id || "")).filter(Boolean),
-      )
-      for (const id of await client.smembers("connections").catch(() => [])) {
-        if (id) connectionIds.add(String(id))
-      }
-
-      const hashKeys = new Set<string>([
-        "app_settings",
-        "settings:app_settings",
-        "settings:all_settings",
-      ])
-      for (const id of connectionIds) {
-        hashKeys.add(`connection_settings:${id}`)
-        hashKeys.add(`settings:connection_settings:${id}`)
-      }
-      let hashesUpdated = 0
-      let fieldsSeeded = 0
-      for (const key of hashKeys) {
-        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        // App settings are canonical and may be created on a fresh install.
-        // Connection overlays are only touched when that overlay already
-        // exists; missing values naturally inherit the canonical defaults.
-        if (!key.includes("app_settings") && Object.keys(existing).length === 0) continue
-        const patch: Record<string, string> = {}
-        for (const [field, value] of Object.entries(defaults)) {
-          if (existing[field] === undefined || existing[field] === "") {
-            patch[field] = value
-            fieldsSeeded++
-          }
-        }
-        if (Object.keys(patch).length > 0) {
-          await client.hset(key, patch)
-          hashesUpdated++
-        }
-      }
-
-      const rawMain = await client.get("indications:main").catch(() => null)
-      if (typeof rawMain === "string" && rawMain.trim().startsWith("{")) {
-        try {
-          const document = JSON.parse(rawMain) as Record<string, any>
-          const active = document.active && typeof document.active === "object"
-            ? document.active as Record<string, unknown>
-            : {}
-          const activeDefaults: Record<string, unknown> = {
-            outbreak_ranges: [3, 5, 10],
-            noise_filter: 0.05,
-            volatility_weight: 0.3,
-            stop_loss_position_cost_ratios: [2, 3, 5],
-            take_profit_multipliers: [1.25, 1.5, 1],
-            market_exit_situations: ["momentum", "range_extension", "activity_fade"],
-          }
-          let changed = false
-          for (const [field, value] of Object.entries(activeDefaults)) {
-            if (active[field] === undefined) {
-              active[field] = value
-              changed = true
-            }
-          }
-          if (changed || !document.active) {
-            document.active = active
-            await client.set("indications:main", JSON.stringify(document))
-          }
-        } catch {
-          // Preserve malformed recovery data; the settings API can repair it
-          // only after an operator confirms/re-saves the document.
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        active_outbreak_model: "causal-previous-window-v1",
-        active_outbreak_ranges: "3,5,10",
-        active_protection_profiles: "3-sl-x-3-tp-market-exits",
-        active_processing_order: "primary-active-trend",
-        active_settings_hashes_updated: String(hashesUpdated),
-        active_settings_fields_seeded: String(fieldsSeeded),
-        schema_version: "95",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // New settings are safe to retain if code is rolled back; only the
-      // migration cursor changes so an upgraded release can verify them again.
-      await client.set("_schema_version", "94")
-    },
-  },
-  {
-    version: 96,
-    name: "096-compact-identical-historic-indication-detail-lists",
-    up: async (client: any) => {
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let calculationGroups = 0
-      let resultReferences = 0
-      let duplicateListsRemoved = 0
-
-      for (const connection of connections) {
-        const connectionId = String(connection?.id || "").trim()
-        if (!connectionId) continue
-        const indexKey = `indication:${connectionId}:configs:index`
-        let configKeys = ((await client.smembers(indexKey).catch(() => [])) || []) as string[]
-        if (configKeys.length === 0) {
-          configKeys = (await scanRedisKeys(client, `indication:${connectionId}:config:*`))
-            .filter((key) => !String(key).includes(":results"))
-        }
-        configKeys = [...new Set(configKeys.map(String))].sort()
-        if (configKeys.length === 0) continue
-
-        const configs: Array<{ id: string; key: string; fingerprint: string }> = []
-        for (let offset = 0; offset < configKeys.length; offset += 500) {
-          const batch = configKeys.slice(offset, offset + 500)
-          const pipeline = client.multi()
-          for (const key of batch) pipeline.get(key)
-          const values = await pipeline.exec()
-          for (let index = 0; index < batch.length; index++) {
-            const rawValue = Array.isArray(values?.[index]) ? values[index][1] : values?.[index]
-            if (!rawValue) continue
-            try {
-              const config = JSON.parse(String(rawValue)) as Record<string, unknown>
-              const id = String(config.id || "").trim()
-              if (!id) continue
-              configs.push({
-                id,
-                key: batch[index],
-                fingerprint: [
-                  Number(config.steps),
-                  Number(config.drawdown_ratio),
-                  Number(config.active_ratio),
-                  Number(config.last_part_ratio),
-                ].join("|"),
-              })
-            } catch {
-              // Preserve malformed recovery rows; normal config repair can
-              // handle them without risking unrelated historic detail data.
-            }
-          }
-        }
-
-        const groups = new Map<string, typeof configs>()
-        for (const config of configs) {
-          const group = groups.get(config.fingerprint)
-          if (group) group.push(config)
-          else groups.set(config.fingerprint, [config])
-        }
-        calculationGroups += groups.size
-
-        const operations: Array<{
-          key: string
-          referenceKey: string
-          referenceId?: string
-          duplicateResultsKey?: string
-        }> = []
-        for (const group of groups.values()) {
-          group.sort((left, right) => left.id.localeCompare(right.id))
-          const leader = group[0]
-          operations.push({
-            key: leader.key,
-            referenceKey: `${leader.key}:results:ref`,
-          })
-          for (const alias of group.slice(1)) {
-            operations.push({
-              key: alias.key,
-              referenceKey: `${alias.key}:results:ref`,
-              referenceId: leader.id,
-              duplicateResultsKey: `${alias.key}:results`,
-            })
-          }
-        }
-
-        for (let offset = 0; offset < operations.length; offset += 500) {
-          const pipeline = client.multi()
-          for (const operation of operations.slice(offset, offset + 500)) {
-            if (!operation.referenceId) {
-              pipeline.del(operation.referenceKey)
-              continue
-            }
-            pipeline.set(operation.referenceKey, operation.referenceId)
-            pipeline.del(operation.duplicateResultsKey)
-            resultReferences++
-            duplicateListsRemoved++
-          }
-          await pipeline.exec()
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        historic_indication_detail_storage: "shared-identical-calculation-v1",
-        historic_indication_calculation_groups: String(calculationGroups),
-        historic_indication_result_references: String(resultReferences),
-        historic_indication_duplicate_lists_removed: String(duplicateListsRemoved),
-        prehistoric_persist_concurrency: "cpu-aware-io-budget",
-        schema_version: "96",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // Re-materialise each bounded alias LIST so a v95 binary, which does not
-      // understand `:results:ref`, can read the same detail rows after rollback.
-      const referenceKeys = await scanRedisKeys(client, "indication:*:config:*:results:ref")
-      for (let offset = 0; offset < referenceKeys.length; offset += 25) {
-        await Promise.all(referenceKeys.slice(offset, offset + 25).map(async (referenceKey) => {
-          const referenceId = String(await client.get(referenceKey).catch(() => "") || "").trim()
-          const aliasResultsKey = String(referenceKey).slice(0, -":ref".length)
-          const configMarker = ":config:"
-          const markerIndex = aliasResultsKey.indexOf(configMarker)
-          if (!referenceId || markerIndex < 0) {
-            await client.del(referenceKey)
-            return
-          }
-          const prefix = aliasResultsKey.slice(0, markerIndex + configMarker.length)
-          const leaderResultsKey = `${prefix}${referenceId}:results`
-          const rows = await client.lrange(leaderResultsKey, 0, -1).catch(() => [])
-          const pipeline = client.multi()
-          pipeline.del(aliasResultsKey)
-          if (Array.isArray(rows) && rows.length > 0) pipeline.rpush(aliasResultsKey, ...rows)
-          pipeline.del(referenceKey)
-          await pipeline.exec()
-        }))
-      }
-      await client.set("_schema_version", "95")
-    },
-  },
-  {
-    version: 97,
-    name: "097-enforce-canonical-mandatory-symbol-basket",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      const mandatoryPairs = canonicalForcedSymbols()
-      const mandatoryBases = canonicalForcedBaseSymbols()
-      const mandatoryJson = JSON.stringify(mandatoryPairs)
-
-      // Global settings expose an immutable, exact forced-symbol setting.
-      // Connection active baskets remain independently ranked and may contain
-      // extras; those existing baskets are upgraded in place below.
-      for (const key of [
-        "app_settings",
-        "all_settings",
-        "settings:app_settings",
-        "settings:all_settings",
-        "settings:system",
-      ]) {
-        await client.hset(key, {
-          forcedSymbols: JSON.stringify(mandatoryBases),
-          forced_symbols: mandatoryJson,
-          mandatory_symbols: mandatoryJson,
-          updated_at: now,
-        }).catch(() => 0)
-      }
-
-      const parseSymbols = (value: unknown): string[] => {
-        if (Array.isArray(value)) return value.map(String)
-        const raw = String(value ?? "").trim()
-        if (!raw) return []
-        try {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed)) return parsed.map(String)
-        } catch { /* legacy delimiter form */ }
-        return raw.split(/[|,\s]+/).map((symbol) => symbol.trim()).filter(Boolean)
-      }
-
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      let upgradedBaskets = 0
-      let dynamicBasketsPreserved = 0
-      for (const connection of connections) {
-        const connectionId = String(connection?.id || "").trim()
-        if (!connectionId) continue
-        const keys = [
-          `connection:${connectionId}`,
-          `settings:connection:${connectionId}`,
-          `connection_settings:${connectionId}`,
-          `settings:connection_settings:${connectionId}`,
-          `trade_engine_state:${connectionId}`,
-          `settings:trade_engine_state:${connectionId}`,
-        ]
-        for (const key of keys) {
-          const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-          if (Object.keys(existing).length === 0) continue
-          const existingSymbols = [
-            existing.selected_symbols,
-            existing.force_symbols,
-            existing.active_symbols,
-            existing.symbols,
-          ].map(parseSymbols).find((symbols) => symbols.length > 0) || []
-          const requestedCount = Number(existing.symbol_count)
-          const patch: Record<string, string> = {
-            mandatory_symbols: mandatoryJson,
-            symbol_count: String(Math.max(
-              mandatoryPairs.length,
-              Number.isFinite(requestedCount) ? Math.floor(requestedCount) : existingSymbols.length,
-            )),
-            updated_at: now,
-          }
-          if (existingSymbols.length > 0) {
-            const upgraded = withCanonicalForcedSymbols(existingSymbols)
-            const upgradedJson = JSON.stringify(upgraded)
-            Object.assign(patch, {
-              symbols: upgradedJson,
-              active_symbols: upgradedJson,
-              force_symbols: upgradedJson,
-              selected_symbols: upgradedJson,
-              symbol_count: String(upgraded.length),
-              config_set_symbols_total: String(upgraded.length),
-            })
-            upgradedBaskets++
-          } else {
-            // No active/forced list means exchange ranking owns the dynamic
-            // selection. Preserve that mode; runtime overlays the quartet.
-            dynamicBasketsPreserved++
-          }
-          await client.hset(key, patch)
-
-          // Some connection rows also carry a JSON settings envelope.
-          if (existing.connection_settings) {
-            try {
-              const envelope = JSON.parse(existing.connection_settings) as Record<string, unknown>
-              const envelopeSymbols = [
-                envelope.selected_symbols,
-                envelope.force_symbols,
-                envelope.active_symbols,
-                envelope.symbols,
-              ].map(parseSymbols).find((symbols) => symbols.length > 0) || []
-              envelope.mandatory_symbols = mandatoryPairs
-              if (envelopeSymbols.length > 0) {
-                const upgraded = withCanonicalForcedSymbols(envelopeSymbols)
-                envelope.symbols = upgraded
-                envelope.active_symbols = upgraded
-                envelope.force_symbols = upgraded
-                envelope.selected_symbols = upgraded
-                envelope.symbol_count = upgraded.length
-              } else {
-                envelope.symbol_count = Math.max(
-                  mandatoryPairs.length,
-                  Number(envelope.symbol_count) || mandatoryPairs.length,
-                )
-              }
-              await client.hset(key, "connection_settings", JSON.stringify(envelope))
-            } catch { /* malformed legacy envelope remains recoverable */ }
-          }
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        mandatory_symbols: mandatoryJson,
-        mandatory_symbol_policy: "overlay-preserve-dynamic-v1",
-        mandatory_symbol_baskets_upgraded: String(upgradedBaskets),
-        dynamic_symbol_baskets_preserved: String(dynamicBasketsPreserved),
-        schema_version: "97",
-        updated_at: now,
-      })
-    },
-    down: async (client: any) => {
-      // Mandatory symbols are intentionally retained when rolling back code;
-      // removing a currently traded market would be a destructive migration.
-      await client.set("_schema_version", "96")
-    },
-  },
-  {
-    version: 98,
-    name: "098-predefine-bingx-x02-prod-vst",
-    up: async (client: any) => {
-      // X02 is the canonical authenticated BingX demo connection. Reusing the
-      // idempotent base-connection repair keeps credentials server-side while
-      // enforcing the virtual-funds environment independently from X01.
-      await ensureBaseConnections(client)
-      await client.hset("system:database:coordination:bingx-vst", {
-        schema_version: "98",
-        connection_id: "bingx-x02",
-        environment: "prod-vst",
-        base_url: "https://open-api-vst.bingx.com",
-        funds: "virtual",
-        credential_scope: "BINGX_X02_API_KEY+BINGX_X02_API_SECRET",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // Retain X02 and its environment on rollback. Removing an authenticated
-      // trading connection (or changing it to real funds) would be destructive.
-      await client.set("_schema_version", "97")
-    },
-  },
-  {
-    version: 99,
-    name: "099-position-cost-net-ratio-and-tp-set-defaults",
-    up: async (client: any) => {
-      const stages = ["base", "main", "real", "live"] as const
-      const aliases = {
-        base: ["baseProfitFactor", "base_min_profit_factor"],
-        main: ["mainProfitFactor", "main_min_profit_factor"],
-        real: ["realProfitFactor", "real_min_profit_factor"],
-        live: ["liveProfitFactor", "live_min_profit_factor"],
-      } as const
-      const semantics = "position-cost-net-v3"
-      let flatFieldsUpdated = 0
-      let structuredDocumentsUpdated = 0
-      let directTradeDefaultsUpdated = 0
-
-      // 1.15 was the shipped pre-v3 default. It represented an ambiguous
-      // half-step in the former scale, so it must become the documented
-      // positive default (1.10), not snap upward to 1.20. Other explicit
-      // settings are retained on the canonical 0.10 PositionCost grid.
-      const normalizeStageValue = (
-        stage: typeof stages[number],
-        value: unknown,
-      ): number => {
-        const parsed = Number(value)
-        if (!Number.isFinite(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
-        if (parsed <= 1) return 1
-        if (Math.abs(parsed - 1.15) < 1e-9) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
-        return normalizeMainTradeStagePfRatio(stage, parsed)
-      }
-
-      const normalizeDocument = (document: Record<string, any>): boolean => {
-        let changed = false
-        for (const stage of stages) {
-          const stageAliases = aliases[stage]
-          const current = stageAliases
-            .map((field) => document[field])
-            .find((value) => value != null && value !== "")
-          if (current != null) {
-            const next = normalizeStageValue(stage, current)
-            for (const field of stageAliases) {
-              if (Number(document[field]) !== next) {
-                document[field] = next
-                changed = true
-              }
-            }
-          }
-        }
-        for (const container of [document, document.strategies]) {
-          if (!container || typeof container !== "object") continue
-          for (const channelName of ["main", "preset"]) {
-            const channel = container[channelName]
-            if (!channel || typeof channel !== "object") continue
-            for (const stage of stages) {
-              const row = channel[stage]
-              if (!row || typeof row !== "object" || row.min_profit_factor == null) continue
-              const next = normalizeStageValue(stage, row.min_profit_factor)
-              if (Number(row.min_profit_factor) !== next) {
-                row.min_profit_factor = next
-                changed = true
-              }
-            }
-          }
-        }
-        if (document.mainTradePfRatioSemantics !== semantics) {
-          document.mainTradePfRatioSemantics = semantics
-          changed = true
-        }
-        return changed
-      }
-
-      const normalizeHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (Object.keys(values).length === 0) return
-        const patch: Record<string, string> = {}
-        if (values.mainTradePfRatioSemantics !== semantics) {
-          patch.mainTradePfRatioSemantics = semantics
-        }
-        if (values._main_trade_pf_ratio_semantics !== semantics) {
-          patch._main_trade_pf_ratio_semantics = semantics
-        }
-        for (const stage of stages) {
-          const stageAliases = aliases[stage]
-          const current = stageAliases
-            .map((field) => values[field])
-            .find((value) => value != null && value !== "")
-          if (current == null) continue
-          const next = normalizeStageValue(stage, current)
-          for (const field of stageAliases) {
-            if (Number(values[field]) !== next) {
-              patch[field] = String(next)
-              flatFieldsUpdated++
-            }
-          }
-        }
-        for (const field of ["connection_settings", "coordination_settings", "coordinationSettings", "strategies"]) {
-          const raw = values[field]
-          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-          try {
-            const document = JSON.parse(raw) as Record<string, any>
-            if (normalizeDocument(document)) {
-              patch[field] = JSON.stringify(document)
-              structuredDocumentsUpdated++
-            }
-          } catch {
-            // Keep malformed recovery payloads untouched; the canonical flat
-            // settings still control runtime behavior and a later save repairs
-            // the structured representation.
-          }
-        }
-        if (Object.keys(patch).length > 0) await client.hset(key, patch)
-      }
-
-      const connectionIds = new Set<string>()
-      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
-        const id = String(connection?.id || "")
-        if (id) connectionIds.add(id)
-      }
-      for (const id of await client.smembers("connections").catch(() => [])) {
-        if (id) connectionIds.add(String(id))
-      }
-      const keyPrefixes = [
-        "connection:",
-        "settings:connection:",
-        "connection_settings:",
-        "settings:connection_settings:",
-        "trade_engine_state:",
-        "settings:trade_engine_state:",
-      ] as const
-      for (const prefix of keyPrefixes) {
-        for (const key of await scanRedisKeys(client, `${prefix}*`)) {
-          const id = String(key).slice(prefix.length)
-          if (id) connectionIds.add(id)
-        }
-      }
-
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeHash(key)
-      }
-      for (const id of connectionIds) {
-        for (const key of [
-          `connection:${id}`,
-          `settings:connection:${id}`,
-          `connection_settings:${id}`,
-          `settings:connection_settings:${id}`,
-          `trade_engine_state:${id}`,
-          `settings:trade_engine_state:${id}`,
-        ]) {
-          await normalizeHash(key)
-        }
-      }
-
-      // Direct-Trade owns one global state document. Upgrade only the exact
-      // shipped 4â€“8/4â€“12 grids and the unversioned 5â€“10/step-2 transition;
-      // intentionally selected legacy grids remain untouched.
-      const rawDirectTrade = await client.get("direct_trade:state").catch(() => null)
-      if (typeof rawDirectTrade === "string" && rawDirectTrade.trim().startsWith("{")) {
-        try {
-          const state = JSON.parse(rawDirectTrade) as Record<string, any>
-          const version = Number(state.takeProfitDefaultsVersion) || 0
-          const range = Array.isArray(state.takeProfitRatioRange) ? state.takeProfitRatioRange : []
-          const step = Number(state.takeProfitRatioStep)
-          const oldShippedGrid = Number(range[0]) === 4
-            && (Number(range[1]) === 8 || Number(range[1]) === 12)
-            && (!Number.isFinite(step) || step === 2)
-          const unversionedTransition = Number(range[0]) === DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO
-            && Number(range[1]) === DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO * 2
-            && step === 2
-          if (version < 2 && (oldShippedGrid || unversionedTransition)) {
-            state.takeProfitRatioRange = [
-              DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO,
-              DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO * 2,
-            ]
-            state.takeProfitRatioStep = DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO
-            state.takeProfitDefaultsVersion = 2
-            await client.set("direct_trade:state", JSON.stringify(state))
-            directTradeDefaultsUpdated++
-          }
-        } catch {
-          // A malformed Direct-Trade state is handled by its own route's
-          // fail-safe default recovery; never destroy it during migration.
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        main_trade_pf_semantics: semantics,
-        main_trade_pf_neutral_ratio: "1",
-        main_trade_pf_positive_step: "0.1",
-        main_trade_pf_one_cost_ratio: "1",
-        main_trade_pf_two_cost_ratio: "1.1",
-        main_trade_pf_default_ratio: String(MAIN_TRADE_STAGE_PF_DEFAULTS.main),
-        main_trade_pf_flat_fields_updated: String(flatFieldsUpdated),
-        main_trade_pf_structured_documents_updated: String(structuredDocumentsUpdated),
-        direct_trade_tp_default_range: `${DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO}-${DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO * 2}`,
-        direct_trade_tp_default_step: String(DEFAULT_TAKE_PROFIT_POSITION_COST_RATIO),
-        direct_trade_tp_defaults_updated: String(directTradeDefaultsUpdated),
-        schema_version: "99",
-        updated_at: new Date().toISOString(),
-      })
-    },
-    down: async (client: any) => {
-      // The net PositionCost semantics and non-destructive default upgrade
-      // remain safe on rollback; only the schema cursor moves back.
-      await client.set("_schema_version", "98")
-    },
-  },
-  {
-    version: 100,
-    name: "100-direct-trade-connection-scopes-and-operational-pf-defaults",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      let adoptedLegacyScope = 0
-      let indexedScopes = 0
-      let profitFactorFieldsUpdated = 0
-
-      // Direct-Trade used one process-global namespace before schema v100.
-      // Adopt that snapshot only when it identifies an exact connection and
-      // only into absent scoped keys. Open/opening positions, fill accounting
-      // and operator state survive; the historic calculation is intentionally
-      // rebuilt against the selected venue instead of copying a potentially
-      // BingX-derived graph into a Bybit scope.
-      const legacyKeys = directTradeKeyspace()
-      const legacyStateRaw = await client.get(legacyKeys.state).catch(() => null)
-      if (typeof legacyStateRaw === "string" && legacyStateRaw.trim().startsWith("{")) {
-        try {
-          const legacyState = JSON.parse(legacyStateRaw) as Record<string, any>
-          const connectionId = normalizeDirectTradeConnectionId(legacyState.connectionId)
-          if (connectionId) {
-            const scoped = directTradeKeyspace(connectionId)
-            await client.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, connectionId)
-            indexedScopes++
-            if (!(await client.exists(scoped.state))) {
-              await client.set(scoped.state, JSON.stringify({
-                ...legacyState,
-                connectionId,
-                lastRecalcAt: null,
-                connectionScopeMigrationVersion: 100,
-                connectionScopeMigratedAt: now,
-              }))
-              for (const field of [
-                "positions",
-                "stats",
-                "configStatus",
-                "configPerformance",
-                "openPositionStage",
-              ] as const) {
-                const payload = await client.get(legacyKeys[field]).catch(() => null)
-                if (payload != null && !(await client.exists(scoped[field]))) {
-                  await client.set(scoped[field], payload)
-                }
-              }
-              await client.set(scoped.calculationProgress, JSON.stringify({
-                status: "rebuild-required",
-                reason: "connection-scope-migration",
-                connectionId,
-                requestedAt: now,
-              }))
-              adoptedLegacyScope++
-            }
-          }
-        } catch {
-          // Direct-Trade route recovery retains responsibility for malformed
-          // legacy JSON; a schema migration must never destroy that evidence.
-        }
-      }
-
-      // Repair the supervisor index for scopes written by a newer application
-      // before this migration cursor was committed (rolling deployment case).
-      for (const key of await scanRedisKeys(client, "direct_trade:connection:*:state")) {
-        const encoded = String(key)
-          .replace(/^direct_trade:connection:/, "")
-          .replace(/:state$/, "")
-        try {
-          const connectionId = normalizeDirectTradeConnectionId(decodeURIComponent(encoded))
-          if (connectionId) {
-            await client.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, connectionId)
-            indexedScopes++
-          }
-        } catch {
-          // Invalid historical namespace stays untouched and is not scheduled.
-        }
-      }
-
-      // Upgrade only operational PF admission thresholds in settings storage.
-      // Measured statistics and Block PF multipliers are deliberately excluded.
-      // The version marker makes the one-time shipped-default repair idempotent.
-      const thresholdField = (field: string, parent = ""): boolean => {
-        if (/block.*profit.*factor/i.test(field) || /block.*profit.*factor/i.test(parent)) return false
-        if (/^(base|main|real|live)$/.test(field) && /profit.?factor.?min/i.test(parent)) return true
-        return /profit.?factor.*(min|threshold|preset)/i.test(field)
-          || /(min|threshold).*profit.?factor/i.test(field)
-          || /^(base|main|real|live)ProfitFactor$/.test(field)
-          || field === "presetProfitFactor"
-      }
-      const upgradeDocument = (document: Record<string, any>, parent = ""): boolean => {
-        let changed = false
-        for (const [field, value] of Object.entries(document)) {
-          if (value && typeof value === "object" && !Array.isArray(value)) {
-            if (upgradeDocument(value as Record<string, any>, field)) changed = true
-            continue
-          }
-          const parsed = Number(value)
-          if (thresholdField(field, parent) && Number.isFinite(parsed) && parsed < 1) {
-            document[field] = 1.1
-            profitFactorFieldsUpdated++
-            changed = true
-          }
-        }
-        return changed
-      }
-      const upgradeHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (Object.keys(values).length === 0 || values.realizedProfitFactorDefaultsVersion === "1") return
-        const patch: Record<string, string> = { realizedProfitFactorDefaultsVersion: "1" }
-        for (const [field, value] of Object.entries(values)) {
-          const parsed = Number(value)
-          if (thresholdField(field) && Number.isFinite(parsed) && parsed < 1) {
-            patch[field] = "1.1"
-            profitFactorFieldsUpdated++
-            continue
-          }
-          if (typeof value !== "string" || !value.trim().startsWith("{")) continue
-          try {
-            const document = JSON.parse(value) as Record<string, any>
-            if (upgradeDocument(document, field)) patch[field] = JSON.stringify(document)
-          } catch {
-            // Preserve malformed recovery documents; flat settings remain safe.
-          }
-        }
-        await client.hset(key, patch)
-      }
-
-      const connectionIds = new Set<string>()
-      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
-        const connectionId = normalizeDirectTradeConnectionId(connection?.id)
-        if (connectionId) connectionIds.add(connectionId)
-      }
-      for (const connectionId of await client.smembers("connections").catch(() => [])) {
-        const normalized = normalizeDirectTradeConnectionId(connectionId)
-        if (normalized) connectionIds.add(normalized)
-      }
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await upgradeHash(key)
-      }
-      for (const connectionId of connectionIds) {
-        for (const key of [
-          `connection:${connectionId}`,
-          `settings:connection:${connectionId}`,
-          `connection_settings:${connectionId}`,
-          `settings:connection_settings:${connectionId}`,
-          `trade_engine_state:${connectionId}`,
-          `settings:trade_engine_state:${connectionId}`,
-        ]) {
-          await upgradeHash(key)
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        direct_trade_connection_scope_schema: "v1",
-        direct_trade_legacy_scopes_adopted: String(adoptedLegacyScope),
-        direct_trade_scopes_indexed: String(indexedScopes),
-        operational_profit_factor_default: "1.1",
-        operational_profit_factor_fields_updated: String(profitFactorFieldsUpdated),
-        schema_version: "100",
-        updated_at: now,
-      })
-    },
-    down: async (client: any) => {
-      // Scoped state and upgraded risk thresholds are retained on rollback.
-      // Removing live recovery state or weakening an admission threshold would
-      // be destructive; only the migration cursor is moved back.
-      await client.set("_schema_version", "99")
-    },
-  },
-  {
-    version: 101,
-    name: "101-direct-execution-and-main-pf-selection-grid",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      let mainTradePfFieldsUpdated = 0
-
-      // Stage thresholds use the PositionCost-relative Main coordinate. Keep
-      // classic realised gross-profit/gross-loss PF settings (including the
-      // legacy overall Preset minimum) separate: they do not share the 1.00
-      // neutral coordinate and must never be rewritten by this migration.
-      const stageThreshold = (field: string, parent = ""): "base" | "main" | "real" | "live" | null => {
-        const compactField = field.toLowerCase().replace(/[^a-z0-9]/g, "")
-        const compactParent = parent.toLowerCase().replace(/[^a-z0-9]/g, "")
-        if (compactField.includes("block") || compactParent.includes("block")) return null
-        for (const stage of ["base", "main", "real", "live"] as const) {
-          if (compactField === stage && compactParent.includes("profitfactormin")) return stage
-          if (compactParent === stage && compactField === "minprofitfactor") return stage
-          if ([
-            `${stage}profitfactor`,
-            `${stage}minprofitfactor`,
-            `${stage}profitfactormin`,
-          ].includes(compactField)) return stage
-          if (compactField.endsWith(`profitfactormin${stage}`)) return stage
-        }
-        return null
-      }
-      const normalizeStageDocument = (document: Record<string, any>, parent = ""): boolean => {
-        let changed = false
-        for (const [field, value] of Object.entries(document)) {
-          if (value && typeof value === "object" && !Array.isArray(value)) {
-            if (normalizeStageDocument(value as Record<string, any>, field)) changed = true
-            continue
-          }
-          const stage = stageThreshold(field, parent)
-          const parsed = Number(value)
-          if (!stage || !Number.isFinite(parsed)) continue
-          const normalized = normalizeMainTradeStagePfRatio(stage, parsed)
-          if (normalized === parsed) continue
-          document[field] = normalized
-          mainTradePfFieldsUpdated++
-          changed = true
-        }
-        return changed
-      }
-      const normalizeStageHash = async (key: string): Promise<void> => {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (Object.keys(values).length === 0 || values.mainTradePfSelectionGridVersion === "2") return
-        const patch: Record<string, string> = { mainTradePfSelectionGridVersion: "2" }
-        for (const [field, value] of Object.entries(values)) {
-          const stage = stageThreshold(field)
-          const parsed = Number(value)
-          if (stage && Number.isFinite(parsed)) {
-            const normalized = normalizeMainTradeStagePfRatio(stage, parsed)
-            if (normalized !== parsed) {
-              patch[field] = String(normalized)
-              mainTradePfFieldsUpdated++
-            }
-            continue
-          }
-          if (typeof value !== "string" || !value.trim().startsWith("{")) continue
-          try {
-            const document = JSON.parse(value) as Record<string, any>
-            if (normalizeStageDocument(document, field)) patch[field] = JSON.stringify(document)
-          } catch {
-            // Malformed recovery documents remain untouched.
-          }
-        }
-        await client.hset(key, patch)
-      }
-
-      const connectionIds = new Set<string>()
-      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
-        const connectionId = normalizeDirectTradeConnectionId(connection?.id)
-        if (connectionId) connectionIds.add(connectionId)
-      }
-      for (const connectionId of await client.smembers("connections").catch(() => [])) {
-        const normalized = normalizeDirectTradeConnectionId(connectionId)
-        if (normalized) connectionIds.add(normalized)
-      }
-      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
-        await normalizeStageHash(key)
-      }
-      for (const connectionId of connectionIds) {
-        for (const key of [
-          `connection:${connectionId}`,
-          `settings:connection:${connectionId}`,
-          `connection_settings:${connectionId}`,
-          `settings:connection_settings:${connectionId}`,
-          `trade_engine_state:${connectionId}`,
-          `settings:trade_engine_state:${connectionId}`,
-        ]) {
-          await normalizeStageHash(key)
-        }
-      }
-
-      const stateKeys = new Set<string>([directTradeKeyspace().state])
-      for (const key of await scanRedisKeys(client, "direct_trade:connection:*:state")) {
-        stateKeys.add(String(key))
-      }
-
-      let statesScanned = 0
-      let statesUpdated = 0
-      for (const key of stateKeys) {
-        const raw = await client.get(key).catch(() => null)
-        if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-        statesScanned++
-        try {
-          const state = JSON.parse(raw) as Record<string, any>
-          const nextVolumeFactor = normaliseDirectTradeVolumeFactor(
-            state.minVolFactor,
-            DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
-          )
-          const nextTrailingMinimum = normaliseDirectTradeTrailingMinTakeProfitRatio(
-            state.trailingMinTakeProfitRatio ?? state.trailingMinStep,
-            DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
-          )
-          // Migrate only the exact former shipped interval. Explicit operator
-          // values remain valid; a missing value receives the 280 ms default.
-          const nextProcessingInterval = state.processingIntervalMs == null
-            || Number(state.processingIntervalMs) === 500
-            ? 280
-            : Math.max(100, Math.min(5_000, Math.round(Number(state.processingIntervalMs) || 280)))
-          const changed = Number(state.minVolFactor) !== nextVolumeFactor
-            || Number(state.trailingMinTakeProfitRatio) !== nextTrailingMinimum
-            || Number(state.processingIntervalMs) !== nextProcessingInterval
-            || Number(state.directTradeExecutionDefaultsVersion) !== 1
-          if (!changed) continue
-          await client.set(key, JSON.stringify({
-            ...state,
-            minVolFactor: nextVolumeFactor,
-            trailingMinTakeProfitRatio: nextTrailingMinimum,
-            processingIntervalMs: nextProcessingInterval,
-            directTradeExecutionDefaultsVersion: 1,
-            directTradeExecutionDefaultsUpdatedAt: now,
-          }))
-          statesUpdated++
-        } catch {
-          // Preserve malformed recovery evidence. The route remains the
-          // fail-safe owner of default reconstruction for invalid JSON.
-        }
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        direct_trade_processing_interval_ms: "280",
-        direct_trade_volume_factor_range: "0.1-10",
-        direct_trade_volume_factor_default: String(DIRECT_TRADE_VOLUME_FACTOR_DEFAULT),
-        direct_trade_effective_volume_ratio: "0.2",
-        direct_trade_trailing_min_tp_ratio_default: String(DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT),
-        direct_trade_execution_states_scanned: String(statesScanned),
-        direct_trade_execution_states_updated: String(statesUpdated),
-        main_trade_pf_selection_range: "1.02-2.30",
-        main_trade_pf_selection_step: "0.02",
-        main_trade_pf_selection_default: "1.10",
-        main_trade_pf_neutral_coordinate: "1.00",
-        main_trade_pf_fields_updated: String(mainTradePfFieldsUpdated),
-        schema_version: "101",
-        updated_at: now,
-      })
-    },
-    down: async (client: any) => {
-      // The bounded values are safe and operator-visible, so rollback never
-      // reintroduces oversized volume or low-distance trailing entries.
-      await client.set("_schema_version", "100")
-    },
-  },
-  {
-    version: 102,
-    name: "102-credential-injection-live-safety-and-index-repair",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      const operatorDisabled = (value: unknown) => !(
-        value === true || value === 1 || value === "1" || value === "true"
-      )
-      let autoLiveStatesDisabled = 0
-
-      // Releases through schema 101 marked canonical credentials as live when
-      // the credentials were injected, even if the operator had never enabled
-      // that connection's dashboard. The state_switch_action distinguishes
-      // those automatic writes from an explicit live-trade toggle. Normalize
-      // only the automatic, inactive rows; X02 Prod-VST remains the sole safe
-      // auto-live target and explicit operator choices remain untouched.
-      for (const connectionId of ["bingx-x01", "bybit-x03", "pionex-x01", "orangex-x01"]) {
-        const key = `connection:${connectionId}`
-        const connection = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        const transitionSource = String(connection.state_switch_action || "")
-        const legacyAutoState = transitionSource === ""
-        const injectedInactiveState = transitionSource === "credential_injection"
-          && operatorDisabled(connection.is_enabled_dashboard)
-        if (
-          Object.keys(connection).length === 0 ||
-          (!legacyAutoState && !injectedInactiveState)
-        ) continue
-        const patch = {
-          is_live_trade: "0",
-          live_trade_requested: "0",
-          live_trade_enabled: "0",
-          ...(legacyAutoState ? {
-            is_enabled_dashboard: "0",
-            is_active: "0",
-          } : {}),
-          state_switch_action: "credential_injection_safety_normalized",
-          updated_at: now,
-        }
-        await Promise.all([
-          client.hset(key, patch),
-          client.hset(`settings:connection:${connectionId}`, patch),
-        ])
-        autoLiveStatesDisabled++
-      }
-
-      const connections = await loadConnectionsForMaintenanceMigration(client)
-      const indexes = await rebuildConnectionSecondaryIndexes(client, connections)
-      await client.hset("system:database:coordination:performance", {
-        credential_injection_auto_live_policy: "prod-vst-only-preserve-operator-v1",
-        credential_injection_auto_live_states_disabled: String(autoLiveStatesDisabled),
-        credential_injection_indexes_rebuilt: String(indexes.memberships),
-        schema_version: "102",
-        updated_at: now,
-      })
-    },
-    down: async (client: any) => {
-      // Never re-enable a venue on rollback. Only move the migration cursor.
-      await client.set("_schema_version", "101")
-    },
-  },
-  {
-    version: 103,
-    name: "103-systemwide-position-cost-pf-selection-coordinate",
-    up: async (client: any) => {
-      const now = new Date().toISOString()
-      let directStatesUpdated = 0
-      let settingFieldsUpdated = 0
-
-      // Direct Trade previously stored classic realised-PF defaults (4/25)
-      // in fields that are now operator admission coordinates. Preserve every
-      // state document and execution ledger; only normalize the two selectors.
-      const directStateKeys = new Set<string>([directTradeKeyspace().state])
-      for (const key of await scanRedisKeys(client, "direct_trade:connection:*:state")) {
-        directStateKeys.add(String(key))
-      }
-      for (const key of directStateKeys) {
-        const raw = await client.get(key).catch(() => null)
-        if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
-        try {
-          const state = JSON.parse(raw) as Record<string, any>
-          const previousVersion = Number(state.fullHistoryPfDefaultsVersion) || 0
-          const fullRaw = Number(state.minProfitFactor)
-          const recentRaw = Number(state.minRecentProfitFactor)
-          const minProfitFactor = normalizeMainTradePfRatio(
-            previousVersion < 2 && [0.8, 4].includes(fullRaw) ? 1.1 : state.minProfitFactor,
-            1.1,
-          )
-          const minRecentProfitFactor = normalizeMainTradePfRatio(
-            previousVersion < 2 && [10, 25].includes(recentRaw) ? 1.1 : state.minRecentProfitFactor,
-            1.1,
-          )
-          if (
-            minProfitFactor === fullRaw &&
-            minRecentProfitFactor === recentRaw &&
-            previousVersion === 2
-          ) continue
-          await client.set(key, JSON.stringify({
-            ...state,
-            minProfitFactor,
-            minRecentProfitFactor,
-            fullHistoryPfDefaultsVersion: 2,
-            directTradePfSelectionCoordinateVersion: 1,
-            directTradePfSelectionCoordinateUpdatedAt: now,
-          }))
-          directStatesUpdated++
-        } catch {
-          // Keep malformed recovery evidence untouched; route hydration remains
-          // the safe fallback and never deletes credentials or positions.
-        }
-      }
-
-      const selectorFields = [
-        "profitFactorMinPreset",
-        "strategyRealMinProfitFactor",
-        "indication_min_profit_factor",
-        "strategy_min_profit_factor",
-      ] as const
-      const settingHashes = new Set<string>([
-        "app_settings",
-        "settings:app_settings",
-        "settings:all_settings",
-      ])
-      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
-        const connectionId = normalizeDirectTradeConnectionId(connection?.id)
-        if (!connectionId) continue
-        settingHashes.add(`connection_settings:${connectionId}`)
-        settingHashes.add(`settings:connection_settings:${connectionId}`)
-        settingHashes.add(`settings:connection:${connectionId}`)
-      }
-      for (const key of settingHashes) {
-        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        if (Object.keys(values).length === 0) continue
-        const patch: Record<string, string> = {
-          pfSelectionCoordinateVersion: "1",
-        }
-        for (const field of selectorFields) {
-          if (values[field] == null || values[field] === "") continue
-          const normalized = normalizeMainTradePfRatio(values[field], 1.1)
-          if (Number(values[field]) === normalized) continue
-          patch[field] = String(normalized)
-          settingFieldsUpdated++
-        }
-        await client.hset(key, patch)
-      }
-
-      await client.hset("system:database:coordination:performance", {
-        systemwide_pf_selection_range: "1.02-2.30",
-        systemwide_pf_selection_step: "0.02",
-        systemwide_pf_selection_default: "1.10",
-        systemwide_pf_neutral_coordinate: "1.00",
-        systemwide_pf_selection_semantics: "net-position-cost-ratio-v1",
-        independent_block_profit_factor: "neutral-distance-x-ratio-x-volume-increment-v2",
-        independent_block_profit_factor_formula: "1+((default-1)*ratio*volume-increment)",
-        classic_realized_profit_factor_semantics: "gross-profit-divided-by-gross-loss",
-        direct_trade_pf_states_updated: String(directStatesUpdated),
-        systemwide_pf_setting_fields_updated: String(settingFieldsUpdated),
-        schema_version: "103",
-        updated_at: now,
-      })
-    },
-    down: async (client: any) => {
-      // Never restore incompatible classic-PF defaults into selection fields.
-      await client.set("_schema_version", "102")
-    },
-  },
-]
-
-export function getLatestMigrationVersion(): number {
-  const latest = Math.max(...migrations.map((m) => m.version))
-  if (latest !== LATEST_REDIS_SCHEMA_VERSION) {
-    throw new Error(
-      `Redis schema constant v${LATEST_REDIS_SCHEMA_VERSION} does not match migration bundle v${latest}`,
-    )
-  }
-  return latest
-}
-
-export function getMigrationBundleHealth(): { latestVersion: number; totalMigrations: number; sequential: boolean } {
-  const versions = migrations.map((m) => m.version).sort((a, b) => a - b)
-  const latestVersion = versions.length > 0 ? versions[versions.length - 1] : 0
-  const sequential = versions.every((version, index) => version === index + 1)
-  return { latestVersion, totalMigrations: versions.length, sequential }
-}
-
-async function ensureDatabaseHealthMetadata(client: any): Promise<Record<string, string>> {
-  const mode = process.env.NODE_ENV === "production" ? "production" : "development"
-  const { latestVersion, totalMigrations, sequential } = getMigrationBundleHealth()
-  const now = new Date().toISOString()
-  const existing = ((await client.hgetall("system:database:health").catch(() => ({}))) || {}) as Record<string, string>
-  const expected = {
-    mode,
-    schema_version: String(latestVersion),
-    migrations_bundle_version: String(latestVersion),
-    total_migrations: String(totalMigrations),
-    migrations_sequential: sequential ? "1" : "0",
-  }
-  const needsRepair = Object.entries(expected).some(([key, value]) => existing[key] !== value)
-  if (needsRepair) {
-    await client.hset("system:database:health", {
-      ...expected,
-      last_verified_at: now,
-    })
-    return { ...existing, ...expected, last_verified_at: now }
-  }
-  return existing
-}
-
-export async function ensureMigrationHealthMetadata(): Promise<Record<string, string>> {
-  await ensureCoreRedis()
-  return ensureDatabaseHealthMetadata(getRedisClient())
-}
-
-const BASE_CONNECTION_CONFIG: Array<{
-  id: string
-  name: string
-  exchange: string
-  credentialId: BaseConnectionId
-  autoActive: boolean
-  environment: "runtime" | "prod-vst"
-  predefined?: boolean
-}> = [
-  // Spec ask: "assign Main Connections bybit and bingx ON Startup."
-  // Bybit-X03 and BingX-X01 are the canonical primary live-trading
-  // connections â€” they are auto-inserted into the Active panel AND the
-  // dashboard toggle is defaulted ON during *first* creation. Any
-  // existing operator override (e.g. user explicitly disabled the
-  // dashboard toggle) is preserved by the existing `(existing?.is_*) || â€¦`
-  // fallback chain in `ensureBaseConnections` below â€” autoActive only
-  // affects the initial-create defaults, never overwrites prior state.
-  { id: "bingx-x01", name: "BingX X01", exchange: "bingx", credentialId: "bingx-x01", autoActive: true, environment: "runtime" },
-  { id: "bingx-x02", name: "BingX X02 (Prod-VST Demo)", exchange: "bingx", credentialId: "bingx-x02", autoActive: true, environment: "prod-vst", predefined: true },
-  // Bybit is once again a canonical primary: always inited + inserted into the
-  // Active panel so it is visible from first boot. Its ENGINE does not run by
-  // default in dev (see the dev one-engine guard in
-  // TradeEngineCoordinator.startMissingEngines) â€” it stays engine-idle until the
-  // operator explicitly enables it, which prevents two concurrent prehistoric
-  // passes from OOM-killing the low-RAM dev VM. In production both engines run.
-  { id: "bybit-x03", name: "Bybit Base", exchange: "bybit", credentialId: "bybit-x03", autoActive: true, environment: "runtime" },
-  { id: "pionex-x01", name: "Pionex Base", exchange: "pionex", credentialId: "pionex-x01", autoActive: false, environment: "runtime" },
-  { id: "orangex-x01", name: "OrangeX Base", exchange: "orangex", credentialId: "orangex-x01", autoActive: false, environment: "runtime" },
-]
-
-// Canonical 20-symbol test list used by migration 031, migration 035, and
-// ensureBaseConnections. Declared once here to avoid drift between the three
-// call-sites that previously each contained an inline copy of the array.
-const BASE_TEST_SYMBOLS = [
-  "BTCUSDT",  "ETHUSDT",  "SOLUSDT",  "BNBUSDT",  "XRPUSDT",
-  "DOGEUSDT", "ADAUSDT",  "AVAXUSDT", "LINKUSDT", "DOTUSDT",
-  "ATOMUSDT", "LTCUSDT",  "UNIUSDT",  "NEARUSDT", "POLUSDT",
-  "AAVEUSDT", "SUIUSDT",  "APTUSDT",  "ARBUSDT",  "OPUSDT",
-]
-
-async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: number; credentialsInjected: number }> {
-  let createdOrUpdated = 0
-  let credentialsInjected = 0
-  // Environment selection is explicit and fail-closed. When absent, new
-  // installs keep the historical mainnet default and existing operator state
-  // is preserved. When present, it is authoritative for BingX only.
-  const bingxEnvironment = configuredBingXEnvironment()
-  const bingxTestnetOverride = bingxEnvironment == null
-    ? null
-    : bingxEnvironment === "prod-vst" ? "1" : "0"
-
-  // The CPU-aware cap may scale extras, but it can never exclude the four
-  // mandatory markets.
-  const DEFAULT_SYMBOL_COUNT = String(Math.max(
-    canonicalForcedSymbols().length,
-    parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? String(CANONICAL_DEFAULT_SYMBOL_COUNT), 10) || CANONICAL_DEFAULT_SYMBOL_COUNT,
-  ))
-  const ensureBlockProfitFactorDefault = async (connectionId: string): Promise<void> => {
-    for (const key of [
-      `connection_settings:${connectionId}`,
-      `settings:connection_settings:${connectionId}`,
-    ]) {
-      const existing = await client.hget(key, "blockProfitFactorRatio").catch(() => null)
-      if (existing == null || existing === "") {
-        await client.hset(key, "blockProfitFactorRatio", "0.8").catch(() => 0)
-      }
-    }
-  }
-
-  // bybit-x03 is NO LONGER in this list: it is once again a canonical base
-  // connection (see BASE_CONNECTION_CONFIG) and is always inited + visible
-  // alongside bingx-x01. The remaining ids are genuinely obsolete schema rows
-  // that must be cleaned up so they don't appear as ghost connections.
-  const legacyIds = ["bybit-base", "bingx-base", "binance-base", "okx-base", "bybit-default-disabled", "bingx-default-disabled"]
-  for (const legacyId of legacyIds) {
-    const exists = await client.sismember("connections", legacyId)
-    if (exists) {
-      await client.del(`connection:${legacyId}`)
-      await client.srem("connections", legacyId)
-      console.log(`[v0] [Migrations] Removed legacy connection id ${legacyId}`)
-    }
-  }
-
-  // ï¿½ï¿½ï¿½â”€ Honour operator-issued tombstones â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // The DELETE endpoint (`app/api/settings/connections/[id]/route.ts`)
-  // adds deleted connection IDs to the `connections:tombstoned` Set so
-  // we don't immediately resurrect them on the next migration sweep
-  // (which historically ran every cold start and silently un-did the
-  // operator's delete). Read the set once up-front so we don't query
-  // Redis per-config inside the loop below.
-  const tombstonedIds = new Set<string>()
-  try {
-    const tombs = await client.smembers("connections:tombstoned")
-    if (Array.isArray(tombs)) {
-      for (const id of tombs) {
-        if (typeof id === "string" && id.length > 0) tombstonedIds.add(id)
-      }
-    }
-  } catch {
-    // Non-critical: a missing/corrupt set just means we treat it as empty.
-  }
-
-  for (const cfg of BASE_CONNECTION_CONFIG) {
-    if (tombstonedIds.has(cfg.id)) {
-      // Operator explicitly deleted this base connection â€” don't
-      // recreate it. Logged at INFO so the cold-start log makes the
-      // skip visible.
-      console.log(
-        `[v0] [Migrations] Skipping tombstoned base connection ${cfg.id} ` +
-        `(deleted by operator; will not be auto-recreated)`,
-      )
-      continue
-    }
-    const now = new Date().toISOString()
-    const existing = await client.hgetall(`connection:${cfg.id}`)
-    const hasExisting = existing && Object.keys(existing).length > 0
-
-    const { apiKey, apiSecret } = getBaseConnectionCredentials(cfg.credentialId)
-    const hasRealCredentials = apiKey.length > 10 && apiSecret.length > 10
-    const desiredBingxTestnet = cfg.environment === "prod-vst"
-      ? "1"
-      : cfg.exchange === "bingx" ? bingxTestnetOverride : null
-
-    // â”€â”€ OPERATOR-STATE PRESERVATION CONTRACT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // Bug being fixed (operator report): "after removing main connections,
-    // it's getting re-added by some procedure".
-    //
-    // Root cause: previous version unconditionally set
-    //   is_active_inserted: cfg.autoActive ? "1" : ...
-    // for autoActive base connections (bingx-x01). Every
-    // cold-start (or any code path that calls `initRedis` followed by
-    // `runMigrations` â€” which is essentially every Vercel function
-    // invocation) re-flipped the flag back to "1", undoing the
-    // operator's explicit DELETE on `/api/settings/connections/[id]/active`.
-    //
-    // Same class of bug applies to is_inserted, is_dashboard_inserted,
-    // is_enabled, is_enabled_dashboard, is_active â€” the previous code
-    // used `(existing || default)` patterns which mostly worked for
-    // string "0" (truthy in JS), but the autoActive override branch did
-    // not, AND the structural fields (api_type, connection_method, etc)
-    // could clobber operator-chosen values via the `||` fallback.
-    //
-    // New contract for EXISTING connections:
-    //   * STRUCTURAL fields  â†’ kept as-is (id, name, exchange,
-    //                          api_type, connection_method, etc).
-    //                          Migrations 015-018 are the canonical
-    //                          place for one-time structural rewrites;
-    //                          this ensure-pass is a SAFETY NET, not a
-    //                          schema enforcer.
-    //   * OPERATOR FLAG fields (is_inserted, is_active_inserted,
-    //                          is_dashboard_inserted, is_enabled,
-    //                          is_enabled_dashboard, is_active) â†’
-    //                          NEVER touched. The operator's last
-    //                          choice via the dashboard wins.
-    //   * CREDENTIALS         â†’ injected from env when available, even
-    //                          on existing rows (so credential rotation
-    //                          via env var works without re-saving).
-    //   * `updated_at`        â†’ bumped only when credentials actually
-    //                          changed, so we don't generate spurious
-    //                          dashboard "connection updated" toasts on
-    //                          every cold-start.
-    //
-    // For BRAND-NEW connections (no existing row in Redis): seed every
-    // field with the canonical defaults â€” that's the only time we get
-    // to choose. The `autoActive` hint controls the initial insertion +
-    // dashboard-enable defaults so a fresh DB still surfaces Bybit/BingX
-    // ready to go.
-
-if (!hasExisting) {
-       // First-time seed. Apply full canonical defaults.
-       const seedData: Record<string, string> = {
-         id: cfg.id,
-         name: cfg.name,
-         exchange: cfg.exchange,
-         is_predefined: cfg.predefined ? "1" : "0",
-         is_inserted: "1",
-         // Prod-VST is an authenticated exchange execution environment backed
-         // by virtual funds; it must be selected explicitly at install/runtime.
-         is_testnet: cfg.exchange === "bingx" && desiredBingxTestnet !== null
-           ? desiredBingxTestnet
-           : "0",
-         ...(cfg.environment === "prod-vst" ? {
-           environment: "prod-vst",
-           base_url: BINGX_PROD_VST_ORIGIN,
-         } : {}),
-         // AUTO-START DISABLED: never seed connections as dashboard-enabled.
-        // `autoActive` now only controls insertion + symbol/live-trade seeding;
-        // the operator must explicitly enable the connection via the dashboard.
-        // autoActive connections (bingx-x01) are inserted and visible in the
-        // Active panel from the very first boot. This does NOT start the engine â€”
-        // the operator must explicitly click Start. Without this flag the
-        // connections route reports "inserted=0" and Smart Overview shows 0/0.
-        is_dashboard_inserted: cfg.autoActive ? "1" : "0",
-        is_active_inserted: cfg.autoActive ? "1" : "0",
-        is_enabled: "1",
-        // is_enabled_dashboard stays 0 on fresh seed â€” operator must explicitly
-        // enable via the dashboard toggle. Only is_active_inserted (visibility)
-        // is pre-set; is_enabled_dashboard (processing) requires operator action.
-        is_enabled_dashboard: "0",
-        is_active: "0",
-        connection_method: "library",
-        connection_library: "native",
-        api_type: "perpetual_futures",
-        api_key: hasRealCredentials ? apiKey : "",
-        api_secret: hasRealCredentials ? apiSecret : "",
-        created_at: now,
-        updated_at: now,
-      }
-      // Auto-active BingX rows receive the volatility-selection defaults.
-      // Only the explicit Prod-VST connection receives an automatic live
-      // selection; a credentialed mainnet connection stays live-off until the
-      // operator enables it.
-      //
-      // NOTE: we intentionally do NOT seed a static active_symbols list. The
-      // new system default (migration 055) is dynamic top-N selection by 1h
-      // volatility â€” getSymbols() performs that selection whenever no explicit
-      // force_symbols and no self-written symbols exist. Seeding a static list
-      // here would short-circuit that branch. symbol_count controls N
-      // (6 in prod, capped to 2 in dev for OOM survival).
-      if (cfg.autoActive && cfg.exchange === "bingx") {
-        seedData["symbol_count"]      = DEFAULT_SYMBOL_COUNT
-        seedData["symbol_order"]      = "volatility_1h"
-        seedData["live_volume_factor"] = "1"
-        seedData["volume_factor_live"] = "1"
-        seedData["signal_volume_factor"] = "1"
-        seedData["position_mode"]     = "hedge"
-      }
-      if (cfg.environment === "prod-vst") {
-        seedData["is_live_trade"] = "1"
-        seedData["live_trade_requested"] = "1"
-        seedData["live_trade_enabled"] = "1"
-      }
-      await client.hset(`connection:${cfg.id}`, seedData)
-      await client.sadd("connections", cfg.id)
-
-      // Seed the connection_settings hash at the same time so VolumeCalculator
-      // picks up exchangePositionCost immediately (min notional for test trades).
-      if (cfg.autoActive && cfg.exchange === "bingx") {
-        const settKey = `connection_settings:${cfg.id}`
-        const existSett = (await client.hgetall(settKey).catch(() => null)) as Record<string,string> | null
-        const haveSett = existSett || {}
-        const settWrites: Record<string,string> = {}
-        if (!haveSett["exchangePositionCost"]) settWrites["exchangePositionCost"] = "0.02"
-        if (!haveSett["positions_average"])    settWrites["positions_average"]    = "2"
-        if (Object.keys(settWrites).length > 0) {
-          await client.hset(settKey, settWrites)
-        }
-
-        // getSymbols() reads from settings:trade_engine_state:{id} and
-        // settings:connection:{id} (setSettings-prefixed keys) NOT the bare
-        // connection:{id} hash. Write to both prefixed keys so the engine
-        // resolves 5 symbols on the very first tick without waiting for the
-        // PATCH route to push active_symbols into the engine-state key.
-        // Seed the volatility-selection config (NOT a static symbol list) to
-        // the setSettings-prefixed keys that getSymbols() reads. Leaving
-        // active_symbols empty lets getSymbols() do dynamic top-N selection.
-        const engineStateKey = `settings:trade_engine_state:${cfg.id}`
-        await client.hset(engineStateKey, {
-          symbol_count:             DEFAULT_SYMBOL_COUNT,
-          symbol_order:             "volatility_1h",
-          config_set_symbols_total: DEFAULT_SYMBOL_COUNT,
-          live_volume_factor:       "1",
-          signal_volume_factor:     "1",
-        }).catch(() => {})
-        const settConnKey = `settings:connection:${cfg.id}`
-        await client.hset(settConnKey, {
-          symbol_count: DEFAULT_SYMBOL_COUNT,
-          symbol_order: "volatility_1h",
-        }).catch(() => {})
-      }
-
-      if (hasRealCredentials) credentialsInjected++
-      await ensureBlockProfitFactorDefault(cfg.id)
-      createdOrUpdated++
-      continue
-    }
-
-    // Existing connection: repair missing selection defaults only.
-    // Never re-enable `is_live_trade` here: it is an operator-controlled flag
-    // and migrations/bootstraps run during every production cold start. The
-    // first-time seed above may choose a fresh default, but an existing row with
-    // `is_live_trade = "0"` means the operator disabled live trading and must
-    // stay disabled until the live-trade route or explicit Start changes it.
-    {
-      // We no longer require a static active_symbols list â€” the default is
-      // dynamic top-N selection by 1h volatility (getSymbols). We only ensure
-      // missing selection config (symbol_count / symbol_order / volume) is
-      // present so the engine can pick symbols on the first tick. We never seed
-      // a static symbol list here.
-      const hasOrder = String(existing["symbol_order"] ?? "").length > 0
-      const hasExplicitPin =
-        typeof existing["force_symbols"] === "string" &&
-        existing["force_symbols"].trim() !== "" &&
-        existing["force_symbols"].trim() !== "[]"
-      const needsSelectionRepair =
-        !hasOrder || !existing["symbol_count"] || !existing["live_volume_factor"] || !existing["position_mode"]
-      if (cfg.autoActive && cfg.exchange === "bingx" && needsSelectionRepair) {
-        const patchData: Record<string,string> = {}
-        // An explicit operator QuickStart basket (force_symbols, no
-        // symbol_order) is authoritative. Do NOT seed symbol_order=volatility_1h
-        // over it â€” that would make the later dev-boot guard treat the pin as a
-        // stale migration fixture and clear force_symbols on the next boot.
-        if (!hasOrder && !hasExplicitPin) patchData["symbol_order"] = "volatility_1h"
-        if (!existing["symbol_count"]) patchData["symbol_count"] = DEFAULT_SYMBOL_COUNT
-        if (!existing["live_volume_factor"]) patchData["live_volume_factor"] = "1"
-        if (!existing["signal_volume_factor"]) patchData["signal_volume_factor"] = "1"
-        if (!existing["position_mode"]) patchData["position_mode"] = "hedge"
-        if (Object.keys(patchData).length > 0) {
-          await client.hset(`connection:${cfg.id}`, patchData)
-        }
-        const settKey2 = `connection_settings:${cfg.id}`
-        const existSett2 = (await client.hgetall(settKey2).catch(() => null)) as Record<string,string> | null
-        const haveSett2 = existSett2 || {}
-        const settWrites2: Record<string,string> = {}
-        if (!haveSett2["exchangePositionCost"]) settWrites2["exchangePositionCost"] = "0.02"
-        if (!haveSett2["positions_average"])    settWrites2["positions_average"]    = "2"
-        if (Object.keys(settWrites2).length > 0) {
-          await client.hset(settKey2, settWrites2)
-        }
-
-        // Push the selection config to the setSettings-prefixed keys that
-        // getSymbols() reads â€” without a static symbol list, so the dynamic
-        // volatility branch runs on the first engine tick. Skip when an explicit
-        // operator force_symbols basket is present so we don't shadow the pin
-        // with symbol_order=volatility_1h (the dev-boot guard would then clear it).
-        if (!hasExplicitPin) {
-          await client.hset(`settings:trade_engine_state:${cfg.id}`, {
-            symbol_count:             DEFAULT_SYMBOL_COUNT,
-            symbol_order:             "volatility_1h",
-            config_set_symbols_total: DEFAULT_SYMBOL_COUNT,
-          }).catch(() => {})
-          await client.hset(`settings:connection:${cfg.id}`, {
-            symbol_count: DEFAULT_SYMBOL_COUNT,
-            symbol_order: "volatility_1h",
-          }).catch(() => {})
-        }
-      }
-    }
-
-    // Existing connection: PRESERVE every operator-controlled field.
-    // The only values we touch are:
-    //   1. Credentials (rotate from env when available).
-    //   2. The connection-set membership (in case a manual SREM ever
-    //      desyncs the index from the hash â€” defensive only).
-    //   3. BingX environment: changed only when BINGX_ENVIRONMENT is explicit.
-    const updates: Record<string, string> = {}
-    let didChange = false
-
-    if (hasRealCredentials) {
-      const existingApiKey = (existing.api_key as string) || ""
-      const existingApiSecret = (existing.api_secret as string) || ""
-      if (existingApiKey !== apiKey || existingApiSecret !== apiSecret) {
-        updates.api_key = apiKey
-        updates.api_secret = apiSecret
-        updates.updated_at = now
-        didChange = true
-        credentialsInjected++
-      }
-    }
-
-    // Credentials authenticate both BingX environments. Never infer mainnet
-    // from their presence: doing so previously turned a persisted demo/VST
-    // connection into a real-funds connection during the next migration run.
-    if (cfg.exchange === "bingx" && desiredBingxTestnet !== null) {
-      const currentlyTestnet = existing.is_testnet === "1"
-        || existing.is_testnet === "true"
-        || existing.is_testnet === true
-      const shouldBeTestnet = desiredBingxTestnet === "1"
-      if (currentlyTestnet !== shouldBeTestnet) {
-        updates.is_testnet = desiredBingxTestnet
-        updates.updated_at = now
-        didChange = true
-      }
-    }
-    if (cfg.predefined && existing.is_predefined !== "1") {
-      updates.is_predefined = "1"
-      updates.updated_at = now
-      didChange = true
-    }
-    if (cfg.environment === "prod-vst" && existing.environment !== "prod-vst") {
-      updates.environment = "prod-vst"
-      updates.updated_at = now
-      didChange = true
-    }
-    if (cfg.environment === "prod-vst" && existing.base_url !== BINGX_PROD_VST_ORIGIN) {
-      updates.base_url = BINGX_PROD_VST_ORIGIN
-      updates.updated_at = now
-      didChange = true
-    }
-
-    if (Object.keys(updates).length > 0) {
-      await client.hset(`connection:${cfg.id}`, updates)
-    }
-    // Always re-assert index membership; HSET above doesn't manage it.
-    await client.sadd("connections", cfg.id)
-
-    // Keep an explicit QuickStart basket authoritative across every canonical
-    // settings alias. This runs after all boot repairs, so a later default
-    // sync cannot erase a pin that was present on the existing connection.
-    const pinnedSymbols = typeof existing.force_symbols === "string" && existing.force_symbols.trim() !== ""
-      ? existing.force_symbols
-      : null
-    if (pinnedSymbols) {
-      await Promise.all([
-        `settings:trade_engine_state:${cfg.id}`,
-        `settings:connection:${cfg.id}`,
-        `connection_settings:${cfg.id}`,
-        `settings:connection_settings:${cfg.id}`,
-      ].map((key) => client.hset(key, { force_symbols: pinnedSymbols }).catch(() => 0)))
-    }
-    await ensureBlockProfitFactorDefault(cfg.id)
-
-    if (didChange) createdOrUpdated++
-  }
-
-  // â”€â”€ Global engine status: intentionally NOT bootstrapped â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // AUTO-START DISABLED: this block previously wrote
-  // `trade_engine:global.status = "running"` on every cold boot / redeploy
-  // (unless operator_stopped was set), which auto-started all enabled
-  // connections without operator action. The engine now starts ONLY when
-  // the operator explicitly clicks Start (POST /api/trade-engine/start).
-  // On a fresh DB the hash stays empty and the auto-start monitor's sweep
-  // simply no-ops until the operator starts the engine.
-
-  // â”€â”€ Boot guards (run once per process boot) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // ensureBaseConnections() is called once per boot from completeStartup,
-  // but the BASE_CONNECTION_CONFIG loop above iterates 6 connections and
-  // calls continue early so the code AFTER the loop runs once. Guard with
-  // a process-level flag to be safe.
-  const _g = resolveRedisRuntimeRoot() as unknown as Record<string, unknown>
-  if (_g.__v0_devBootGuardDone) return { createdOrUpdated, credentialsInjected }
-  _g.__v0_devBootGuardDone = true
-  //
-  // 1. ENFORCE SYMBOL COUNT on bingx-x01.
-  //    V0_DEV_SYMBOL_COUNT controls total symbols, with a hard minimum of the
-  //    mandatory BTC/SOL/BCH/XRP basket. Higher values add dynamic extras.
-  //
-  //    Migration 057 / 055 may run before this guard and write their own
-  //    symbol_count â€” this runs AFTER all migrations so it always wins.
-  //
-  // 2. RECONCILE stale live-position indexes from a previous run.
-  //    Position records are durable trading/audit state and MUST survive a
-  //    restart so the exchange-sync loop can close or adopt them safely. Only
-  //    dangling index members and expired dedup locks are safe to remove here.
-  {
-    const DEV_CONN  = "bingx-x01"
-    const mandatorySymbols = canonicalForcedSymbols()
-    const devSymCount = Math.max(
-      mandatorySymbols.length,
-      parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? String(CANONICAL_DEFAULT_SYMBOL_COUNT), 10) || CANONICAL_DEFAULT_SYMBOL_COUNT,
-    )
-    // All key namespaces that getSymbols() reads.
-    const devHashes = [
-      `connection:${DEV_CONN}`,
-      `settings:trade_engine_state:${DEV_CONN}`,
-      `settings:connection_settings:${DEV_CONN}`,
-      `settings:connection:${DEV_CONN}`,
-    ]
-
-    const parseBootSymbols = (value: unknown): string[] => {
-      if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean)
-      const raw = String(value || "").trim()
-      if (!raw) return []
-      try {
-        const parsed = JSON.parse(raw)
-        if (Array.isArray(parsed)) {
-          return parsed.map(String).map((item) => item.trim()).filter(Boolean)
-        }
-      } catch {
-        // Legacy comma-separated values remain supported.
-      }
-      return raw.split(",").map((item) => item.trim()).filter(Boolean)
-    }
-    const existingBootHashes = await Promise.all(
-      devHashes.map((key) => client.hgetall(key).catch(() => ({}))),
-    )
-    const existingBootConfig = existingBootHashes
-      .map((values) => values as Record<string, string>)
-      .find((values) => parseBootSymbols(values?.force_symbols).length > 0) || {}
-    const existingForcedSymbols = parseBootSymbols(existingBootConfig.force_symbols)
-    const existingSymbolOrder = String(existingBootConfig.symbol_order || "").trim().toLowerCase()
-    const pinnedSymbols = withCanonicalForcedSymbols(existingForcedSymbols, devSymCount)
-    // A force_symbols basket is only operator-explicit when symbol_order is
-    // empty. Older boot/migration code persisted default fixtures as a forced
-    // basket while also declaring volatility_1h; preserving those stale values
-    // bypasses dynamic ranking and can restart with the wrong symbols.
-    const hasExplicitOperatorBasket =
-      existingSymbolOrder === "" &&
-      existingForcedSymbols.length > 0
-
-    let devSymPayload: Record<string, string>
-    if (hasExplicitOperatorBasket) {
-      // Preserve an explicit operator/QuickStart basket across subsequent
-      // initRedis calls and dev HMR module reloads, ONLY when the stored basket
-      // already meets the requested symbol count. If the operator set
-      // V0_DEV_SYMBOL_COUNT=8 but the stored basket has fewer symbols (e.g. was
-      // seeded with 1 before the env var was set), fall through to the dynamic
-      // multi-symbol path below so the engine gets the correct count on next boot.
-      const resolvedPinned = pinnedSymbols
-      devSymPayload = {
-        force_symbols:            JSON.stringify(resolvedPinned),
-        symbol_count:             String(resolvedPinned.length),
-        symbol_order:             "",   // disable dynamic fetch
-        symbols:                  JSON.stringify(resolvedPinned),
-        active_symbols:           JSON.stringify(resolvedPinned),
-        mandatory_symbols:        JSON.stringify(mandatorySymbols),
-        config_set_symbols_total: String(resolvedPinned.length),
-      }
-    } else {
-      // Multi-symbol path: clear force_symbols so getSymbols() resolves
-      // dynamically via volatility_1h, then slices to devSymCount.
-      devSymPayload = {
-        force_symbols:            "",                       // cleared â€” getSymbols() falls through
-        symbol_count:             String(devSymCount),
-        symbol_order:             "volatility_1h",
-        symbols:                  "",                       // cleared â€” engine will repopulate
-        active_symbols:           "",
-        mandatory_symbols:        JSON.stringify(mandatorySymbols),
-        config_set_symbols_total: String(devSymCount),
-      }
-    }
-    for (const h of devHashes) {
-      await client.hset(h, devSymPayload).catch(() => 0)
-    }
-
-    // Preserve every live:position:* payload. These records contain exchange
-    // order IDs, fills, fees, and close state needed for restart reconciliation.
-    // Instead, remove only index members whose payload no longer exists.
-    const posIndexKeys: string[] = await client.keys("live:positions:*").catch(() => [])
-    let danglingIndexMembersPurged = 0
-    for (const indexKey of posIndexKeys) {
-      const positionIds: string[] = await client.lrange(indexKey, 0, -1).catch(() => [])
-      for (const positionId of positionIds) {
-        const [jsonPayload, hashPayload] = await Promise.all([
-          client.get(`live:position:${positionId}`).catch(() => null),
-          client.hgetall(`live_positions:${DEV_CONN}:${positionId}`).catch(() => null),
-        ])
-        if (!jsonPayload && (!hashPayload || Object.keys(hashPayload).length === 0)) {
-          danglingIndexMembersPurged += await client.lrem(indexKey, 0, positionId).catch(() => 0)
-        }
-      }
-    }
-
-    // CRITICAL: Purge live:lock:* dedup keys from the previous run.
-    // These locks have a 5-minute TTL. If the server restarts before TTL
-    // expires, the position hashes are deleted (above) but the lock keys
-    // survive. The next dispatch for that symbol+direction tries to acquire,
-    // gets null (lock held), looks for an existing open position (finds none â€”
-    // it was deleted), and returns "rejected". Every subsequent signal defers
-    // for 5 minutes until the TTL expires. Purging at boot ensures a clean
-    // slate so the first cycle can place real orders immediately.
-    const lockKeys: string[] = await client.keys("live:lock:*").catch(() => [])
-    for (const k of lockKeys) {
-      await client.del(k).catch(() => 0)
-    }
-
-    const symDesc = devSymPayload.force_symbols
-      ? `force_symbols=${devSymPayload.force_symbols}`
-      : `symbol_count=${devSymCount} (volatility_1h)`
-    console.log(
-      `[v0] [Boot] Pinned ${symDesc} across all key namespaces` +
-      (danglingIndexMembersPurged > 0 ? `, removed ${danglingIndexMembersPurged} dangling live-position index member(s)` : "") +
-      (lockKeys.length > 0 ? `, released ${lockKeys.length} stale dedup locks` : ""),
-    )
-  }
-
-  return { createdOrUpdated, credentialsInjected }
-}
-
-const BASE_BOOTSTRAP_LOCK_TTL_SECONDS = 60
-const BASE_BOOTSTRAP_WAIT_MS = 65_000
-
-/**
- * Coordinate the idempotent health/Base repair once across all Next workers.
- * Route handlers execute in separate operating-system workers, so JavaScript
- * globals alone cannot stop every bundle from repeating hundreds of Redis
- * reads/writes. The launcher-provided boot id plus SET NX gives one worker the
- * repair lease; peers wait for its durable completion marker and then use the
- * lightweight health snapshot. A new boot, schema version, environment, symbol
- * count, or explicit database flush gets a distinct/missing marker and repairs
- * normally.
- */
-async function ensureRuntimeBaseBootstrap(
-  client: any,
-  finalVersion: number,
-  options: { force?: boolean } = {},
-): Promise<{
-  databaseHealth: Record<string, string>
-  ensured: { createdOrUpdated: number; credentialsInjected: number }
-  skipped: boolean
-}> {
-  const keys = getRuntimeBootstrapKeys(finalVersion)
-  const markerValue = keys.baseMarkerValue
-  if (options.force) await client.del(keys.baseMarker).catch(() => 0)
-
-  const databaseHealth = await ensureDatabaseHealthMetadata(client)
-  if ((await client.get(keys.baseMarker).catch(() => null)) === markerValue) {
-    return {
-      databaseHealth,
-      ensured: { createdOrUpdated: 0, credentialsInjected: 0 },
-      skipped: true,
-    }
-  }
-
-  const deadline = Date.now() + BASE_BOOTSTRAP_WAIT_MS
-  while (Date.now() < deadline) {
-    const token = createRedisLockToken("base-bootstrap")
-    const acquired = await client.set(keys.baseLock, token, {
-      NX: true,
-      EX: BASE_BOOTSTRAP_LOCK_TTL_SECONDS,
-    }).catch(() => null)
-
-    if (acquired === "OK") {
-      try {
-        if (!options.force && (await client.get(keys.baseMarker).catch(() => null)) === markerValue) {
-          return {
-            databaseHealth,
-            ensured: { createdOrUpdated: 0, credentialsInjected: 0 },
-            skipped: true,
-          }
-        }
-        const ensured = await ensureBaseConnections(client)
-        await client.set(keys.baseMarker, markerValue, { EX: RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS })
-        return { databaseHealth, ensured, skipped: false }
-      } finally {
-        await releaseOwnedRedisLock(client, keys.baseLock, token).catch(() => false)
-      }
-    }
-
-    if ((await client.get(keys.baseMarker).catch(() => null)) === markerValue) {
-      return {
-        databaseHealth,
-        ensured: { createdOrUpdated: 0, credentialsInjected: 0 },
-        skipped: true,
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 75))
-  }
-
-  throw new Error(
-    `Timed out waiting ${BASE_BOOTSTRAP_WAIT_MS}ms for the shared Base bootstrap lease`,
-  )
-}
-
-// Per-process set of one-shot diagnostic messages already emitted by
-// `ensureBaseConnections`. Avoids log spam when migrations run on every
-// HTTP request due to module reload (HMR / cold-warm).
-const ensureBootstrapDiag = new Set<string>()
-
-/**
- * PRODUCTION MODE COMPLETE COVERAGE REPAIR
- * 
- * This function is the "make sure everything is structurally complete"
- * repair pass. Startup coordinates it through a durable fingerprint and
- * distributed lock, so identical cold workers do not repeat the scan.
- * 
- * It guarantees:
- *  - All migration-022 style indexes and progression containers exist
- *  - Progression counters, strategy sets, live-position indexes are repaired
- *  - Zero-count metadata keys are initialized for every enabled connection
- *  - No "No Progress / No counts" after cold start / redeploy
- * 
- * It never invents progression completion, counts, or engine liveness.
- */
-async function ensureCompleteProductionCoverage(client: any): Promise<void> {
-  const coverageStartedAt = new Date().toISOString()
-  try {
-    const { recordCoverageRepairStatus, recordStartupPhase } = await import("@/lib/startup-diagnostics")
-    await recordStartupPhase("coverage_repair_running")
-    await recordCoverageRepairStatus({ status: "running", started_at: coverageStartedAt })
-  } catch {
-    // Diagnostic persistence is best-effort only.
-  }
-  let repairedConnections = 0
-  console.log("[v0] [Migrations] Running full coverage repair (containers, indexes, global zeros)")
-
-  // Ensure the entire Site/Project has ONE unique instance (independent of
-  // connections). The helper uses SET NX for an atomic cross-worker claim and
-  // deliberately accepts the already-open client, avoiding init/migration
-  // re-entrancy.
-  try {
-    await ensureUniqueSiteInstanceWithClient(client)
-  } catch {}
-
-  try {
-    // 1. Global engine status: intentionally NOT bootstrapped.
-    // AUTO-START DISABLED: this block previously force-set
-    // trade_engine:global.status="running" on every prod request, which
-    // auto-started the engine after every deploy. The engine now starts
-    // ONLY via the operator's explicit Start action.
-
-    // 2. Get all enabled connections and force-create/repair their progression + strategy containers
-    const enabledConns = (await client.smembers("connections:main:enabled")) || []
-    const allConns = (await client.smembers("connections")) || []
-    const connSet = new Set([...enabledConns, ...allConns])
-    repairedConnections = Math.max(repairedConnections, connSet.size)
-
-    for (const connId of connSet) {
-      if (!connId) continue
-      const repairTimestamp = new Date().toISOString()
-
-      // Progression containers (the source of "progress" and counts in dashboard)
-      const prefixes = [
-        `strategies:${connId}`,
-        `progression:${connId}`,
-        `live_positions:${connId}`,
-        `realtime:${connId}`,
-      ]
-      for (const p of prefixes) {
-        const metaKey = `${p}:metadata`
-        const exists = await client.exists(metaKey)
-        if (!exists) {
-          await client.hset(metaKey, {
-            created_at: new Date().toISOString(),
-            last_cycle: new Date().toISOString(),
-            total_base_created: "0",
-            total_main_created: "0",
-            total_real_created: "0",
-            total_live_created: "0",
-            repaired_by: "ensureCompleteProductionCoverage",
-          })
-        }
-      }
-
-      // Strategy counters that the UI and engine read for "counts"
-      const counters = [
-        `strategy_count:${connId}`,
-        `real_pi_acc:${connId}`,
-        `axis_pos_acc:${connId}`,
-        `strategies:${connId}:indices`,
-      ]
-      for (const c of counters) {
-        const ex = await client.exists(c)
-        if (!ex) {
-          await client.hset(c, "_initialized", "1", "count", "0")
-        }
-      }
-
-      // Live position indexes (prevents "0 live positions" after restart)
-      const liveIdx = `live:positions:${connId}:open`
-      if (!(await client.exists(liveIdx))) {
-        await client.sadd(liveIdx, "__init__") // empty set marker (code ignores it)
-        await client.srem(liveIdx, "__init__")
-      }
-
-      // Ensure per-connection engine status keys exist.
-      // AUTO-START DISABLED: seed as "stopped" â€” the coordinator flips it to
-      // "running" only when the engine is actually started by the operator.
-      const engineStatusKey = `trade_engine:status:${connId}`
-      if (!(await client.exists(engineStatusKey))) {
-        await client.hset(engineStatusKey, {
-          status: "stopped",
-          last_tick: repairTimestamp,
-          cycles: "0",
-        })
-      }
-
-      // Prehistoric containers only â€” completion gates remain owned by the
-      // genuine prehistoric engine pipeline.
-      for (const prefix of [
-        `strategies:${connId}:prehistoric`,
-        `indications:${connId}:prehistoric`,
-        `prehistoric:${connId}:data`,
-      ]) {
-        if (!(await client.exists(`${prefix}:meta`))) {
-          await client.hset(`${prefix}:meta`, {
-            initialized: "1",
-            repaired_by: "ensureCompleteProductionCoverage",
-            created_at: repairTimestamp,
-          }).catch(() => {})
-        }
-      }
-      if (!(await client.exists(`prehistoric:${connId}`).catch(() => 0))) {
-        await client.hset(`prehistoric:${connId}`, {
-          is_complete: "0",
-          symbols_processed: "0",
-          symbols_total: "0",
-          candles_loaded: "0",
-          indicators_calculated: "0",
-          data_source: "pending",
-          repaired_by: "ensureCompleteProductionCoverage",
-          updated_at: repairTimestamp,
-        }).catch(() => {})
-      }
-
-      const progressionKey = `progression:${connId}`
-      const hasSnapshot = await client.hget(progressionKey, "progress_settings_snapshot").catch(() => null)
-      if (!hasSnapshot) {
-        await client.hset(progressionKey, {
-          symbol_count: "0",
-          active_symbols_hash: "",
-          started_for_settings_version: repairTimestamp,
-          progress_settings_snapshot: JSON.stringify({ initialized_by: "prod_coverage", at: repairTimestamp }),
-        }).catch(() => {})
-      }
-      await client.hset(progressionKey, { migration_coverage_checked_at: repairTimestamp }).catch(() => {})
-
-      // DATA INTEGRITY FIX: synthetic strategy-set counts REMOVED.
-      // This block previously wrote fake random counts (180+rand per symbol)
-      // into strategies:{conn}:{sym}:{stage}:sets AND unconditionally
-      // overwrote the canonical progression hash totals
-      // (strategies_base_total etc.) with fabricated numbers on EVERY prod
-      // request â€” clobbering the real engine counters and faking
-      // engine_started=true. All counts are now produced exclusively by the
-      // real engine pipeline; empty containers start at zero.
-    }
-
-    // 3. Global zero-count safety nets + extra coordination keys (Dev has these after first run)
-    const globalZeros = [
-      "trades:counter:open", "trades:counter:closed",
-      "positions:counter:open", "positions:counter:closed",
-      "strategies:counter:active", "strategies:counter:paused",
-      "logs:system:counter", "logs:trades:counter", "logs:errors:counter",
-      "_migration_total_runs",
-      "global_engine_cycles", "global_indications_generated",
-    ]
-    for (const z of globalZeros) {
-      const val = await client.get(z)
-      if (val == null) {
-        await client.set(z, "0")
-      }
-    }
-
-    // Extra global coordination structures that long-running Dev always has
-    await client.hset("system:coordination", {
-      last_global_tick: new Date().toISOString(),
-      active_connections: String(connSet.size),
-      site_instance: "production",
-    }).catch(() => {})
-
-    // (No fake position seeding â€” positions are created exclusively by the
-    // live-trade engine when real orders fill on the exchange.)
-
-    console.log(`[v0] [Migrations] [PROD-COVERAGE] Complete coverage repair finished for ${connSet.size} connections (prehistoric containers + logistics + per-progress uniqueness; no fake completion/live positions)`)
-    try {
-      const { recordCoverageRepairStatus, recordStartupPhase } = await import("@/lib/startup-diagnostics")
-      await recordCoverageRepairStatus({
-        status: "complete",
-        started_at: coverageStartedAt,
-        completed_at: new Date().toISOString(),
-        connections: connSet.size,
-      })
-      await recordStartupPhase("coverage_repair_complete", { connections: connSet.size })
-    } catch {}
-  } catch (err) {
-    try {
-      const { recordCoverageRepairStatus, recordStartupError } = await import("@/lib/startup-diagnostics")
-      await recordCoverageRepairStatus({
-        status: "error",
-        started_at: coverageStartedAt,
-        failed_at: new Date().toISOString(),
-        connections: repairedConnections,
-        error: err instanceof Error ? err.message : String(err),
-      })
-      await recordStartupError(err, "coverage_repair")
-    } catch {}
-    console.warn("[v0] [Migrations] [PROD-COVERAGE] Repair pass failed:", err)
-    throw err
-  }
-}
-
-const COVERAGE_REPAIR_STATUS_KEY = "database:coverage_repair:status"
-const COVERAGE_REPAIR_LAST_STARTED_KEY = "database:coverage_repair:last_started_at"
-const COVERAGE_REPAIR_LAST_COMPLETED_KEY = "database:coverage_repair:last_completed_at"
-const COVERAGE_REPAIR_LAST_ERROR_KEY = "database:coverage_repair:last_error"
-const COVERAGE_REPAIR_FINGERPRINT_KEY = "database:coverage_repair:fingerprint"
-const COVERAGE_REPAIR_LOCK_KEY = "database:coverage_repair:lock"
-const COVERAGE_REPAIR_MAX_AGE_MS = 6 * 60 * 60 * 1000
-
-async function setCoverageRepairStatus(
-  client: any,
-  status: "running" | "completed" | "failed",
-  fields: { startedAt?: string; completedAt?: string; error?: string } = {},
-): Promise<void> {
-  await client.set(COVERAGE_REPAIR_STATUS_KEY, status).catch(() => null)
-  if (fields.startedAt) {
-    await client.set(COVERAGE_REPAIR_LAST_STARTED_KEY, fields.startedAt).catch(() => null)
-  }
-  if (fields.completedAt) {
-    await client.set(COVERAGE_REPAIR_LAST_COMPLETED_KEY, fields.completedAt).catch(() => null)
-  }
-  if (fields.error !== undefined) {
-    if (fields.error) {
-      await client.set(COVERAGE_REPAIR_LAST_ERROR_KEY, fields.error).catch(() => null)
-    } else {
-      await client.del(COVERAGE_REPAIR_LAST_ERROR_KEY).catch(() => null)
-    }
-  }
-}
-
-/**
- * Run the heavy production coverage repair outside the blocking migration path.
- *
- * Schema migrations, health metadata, and base connection creation remain
- * synchronous in runMigrationsInternal()/initRedis(). This repair is deliberately
- * exported so startup can schedule it after initRedis() has succeeded, allowing
- * normal routes to serve while non-critical production coverage scaffolding is
- * still being checked/repaired.
- */
-export async function runProductionCoverageRepair(
-  options: { force?: boolean } = {},
-): Promise<CoverageRepairResult> {
-  const existing = globalMigrationGuard.__coverage_repair_promise
-  if (existing) return existing
-
-  let promise!: Promise<CoverageRepairResult>
-  promise = (async () => {
-    try {
-      await ensureCoreRedis()
-      const client = getRedisClient()
-      const [schemaVersionRaw, allConnections, enabledConnections] = await Promise.all([
-        client.get("_schema_version").catch(() => "0"),
-        client.smembers("connections").catch(() => []),
-        client.smembers("connections:main:enabled").catch(() => []),
-      ])
-      const connectionIds = Array.from(new Set([
-        ...(allConnections || []).map(String),
-        ...(enabledConnections || []).map(String),
-      ].filter(Boolean))).sort()
-      const fingerprint = createDatabaseMaintenanceFingerprint(
-        Number(schemaVersionRaw || 0),
-        connectionIds.map((id) => ({ id, exchange: "coverage" })),
-      )
-      const isFreshCompletion = async () => {
-        const [savedFingerprint, completedAt] = await Promise.all([
-          client.get(COVERAGE_REPAIR_FINGERPRINT_KEY).catch(() => null),
-          client.get(COVERAGE_REPAIR_LAST_COMPLETED_KEY).catch(() => null),
-        ])
-        const completedTime = Date.parse(String(completedAt || ""))
-        return savedFingerprint === fingerprint &&
-          Number.isFinite(completedTime) &&
-          Date.now() - completedTime < COVERAGE_REPAIR_MAX_AGE_MS
-      }
-
-      if (!options.force &&
-          globalMigrationGuard.__coverage_repair_done &&
-          globalMigrationGuard.__coverage_repair_fingerprint === fingerprint) {
-        return { status: "skipped", fingerprint, connections: connectionIds.length }
-      }
-      if (!options.force && await isFreshCompletion()) {
-        globalMigrationGuard.__coverage_repair_done = true
-        globalMigrationGuard.__coverage_repair_fingerprint = fingerprint
-        return { status: "skipped", fingerprint, connections: connectionIds.length }
-      }
-
-      const token = createRedisLockToken("coverage-repair")
-      const acquired = await client.set(COVERAGE_REPAIR_LOCK_KEY, token, { NX: true, EX: 300 }).catch(() => null)
-      if (acquired !== "OK") {
-        return { status: "busy", fingerprint, connections: connectionIds.length }
-      }
-
-      try {
-        if (!options.force && await isFreshCompletion()) {
-          globalMigrationGuard.__coverage_repair_done = true
-          globalMigrationGuard.__coverage_repair_fingerprint = fingerprint
-          return { status: "skipped", fingerprint, connections: connectionIds.length }
-        }
-
-        const startedAt = new Date().toISOString()
-        await setCoverageRepairStatus(client, "running", { startedAt, error: "" })
-        try {
-          await ensureCompleteProductionCoverage(client)
-          const completedAt = new Date().toISOString()
-          await Promise.all([
-            client.set(COVERAGE_REPAIR_FINGERPRINT_KEY, fingerprint),
-            setCoverageRepairStatus(client, "completed", { completedAt, error: "" }),
-          ])
-          globalMigrationGuard.__coverage_repair_done = true
-          globalMigrationGuard.__coverage_repair_fingerprint = fingerprint
-          return { status: "completed", fingerprint, connections: connectionIds.length }
-        } catch (error) {
-          globalMigrationGuard.__coverage_repair_done = false
-          globalMigrationGuard.__coverage_repair_fingerprint = null
-          const message = error instanceof Error ? error.message : String(error)
-          await setCoverageRepairStatus(client, "failed", { error: message })
-          throw error
-        }
-      } finally {
-        await releaseOwnedRedisLock(client, COVERAGE_REPAIR_LOCK_KEY, token).catch(() => false)
-      }
-    } finally {
-      if (globalMigrationGuard.__coverage_repair_promise === promise) {
-        globalMigrationGuard.__coverage_repair_promise = null
-      }
-    }
-  })()
-
-  globalMigrationGuard.__coverage_repair_promise = promise
-  return promise
-}
-
-const MIGRATION_EXECUTION_LOCK_KEY = "system:database:migrations:lock"
-const MIGRATION_EXECUTION_LOCK_TTL_SECONDS = 300
-const MIGRATION_EXECUTION_LOCK_WAIT_MS = 120_000
-
-async function waitForMigrationExecutionSlot(
-  client: any,
-  targetVersion: number,
-  token: string,
-): Promise<"acquired" | "completed"> {
-  const deadline = Date.now() + MIGRATION_EXECUTION_LOCK_WAIT_MS
-  while (Date.now() < deadline) {
-    const acquired = await client.set(MIGRATION_EXECUTION_LOCK_KEY, token, {
-      NX: true,
-      EX: MIGRATION_EXECUTION_LOCK_TTL_SECONDS,
-    }).catch(() => null)
-    if (acquired === "OK") return "acquired"
-
-    const currentVersion = Number((await client.get("_schema_version").catch(() => "0")) || "0")
-    if (Number.isFinite(currentVersion) && currentVersion >= targetVersion) return "completed"
-    await new Promise((resolve) => setTimeout(resolve, 250))
-  }
-  throw new Error(
-    `Timed out waiting ${MIGRATION_EXECUTION_LOCK_WAIT_MS}ms for the distributed migration lock`,
-  )
-}
-
-function createMigrationExecutionClient(client: any): any {
-  return new Proxy(client, {
-    get(target, prop, receiver) {
-      if (prop === "set") {
-        return async (key: string, value: unknown, ...args: unknown[]) => {
-          if (key === "_schema_version") {
-            return "OK"
-          }
-          return target.set(key, value, ...args)
-        }
-      }
-      const value = Reflect.get(target, prop, receiver)
-      return typeof value === "function" ? value.bind(target) : value
-    },
-  })
-}
-
-async function runPendingMigrationBatch({
-  client,
-  pendingMigrations,
-  deadlineMs,
-}: {
-  client: any
-  pendingMigrations: Migration[]
-  deadlineMs: number
-}): Promise<void> {
-  const migrationClient = createMigrationExecutionClient(client)
-  const startedAt = Date.now()
-
-  for (const migration of pendingMigrations) {
-    const elapsed = Date.now() - startedAt
-    if (elapsed >= deadlineMs) {
-      throw new Error(
-        `Combined migration batch exceeded ${deadlineMs}ms before starting ${migration.name}`,
-      )
-    }
-    try {
-      console.log(`[v0] [Migrations] Running: ${migration.name} (v${migration.version})`)
-      // Never race an in-flight migration against a rejecting timer: Redis
-      // commands cannot be cancelled, and releasing the distributed lock while
-      // the losing promise continues would let a second worker mutate the same
-      // schema concurrently. The budget is enforced between crash-safe steps;
-      // once a step begins we retain and renew the lock until it settles.
-      await migration.up(migrationClient)
-      // Stamp `_schema_version` after EACH migration from the runner. Individual
-      // migration bodies often contain legacy `_schema_version` writes; the
-      // proxy above suppresses those duplicate writes so fresh installs execute
-      // as one optimized batch while retaining crash/restart-safe step progress.
-      await client.set("_schema_version", migration.version.toString())
-      console.log(`[v0] [Migrations] âœ“ Completed: ${migration.name} (schema now v${migration.version})`)
-    } catch (error) {
-      console.error(`[v0] [Migrations] âœ— Failed during ${migration.name}:`, error)
-      throw error
-    }
-  }
-}
-
-/**
- * Run all pending migrations
- */
-export async function runMigrations(): Promise<MigrationRunResult> {
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×~´ÓÄèµ©hºÚn¶X§zÍKÊŠ‚ˆ
+ˆ™Y\ÈZYÜ˜][Ûˆ[›™\ˆHÛÛ\]HÞ\Ý[Bˆ
+ˆ[™\ÈØÚ[XH[š]X[^˜][Ûˆ[™]HZYÜ˜][ÛœÈ›Üˆ[Þ\Ý[HÛÛ\Û™[Âˆ
+‹Â‚š[\ÜÈÙ]™Y\ÐÛY[[œÝ\™PÛÜ™T™Y\ËÙ]ZYÜ˜][ÛœÔ[‹]™SZYÜ˜][ÛœÔ[ˆHœ›ÛH‹‹Ü™Y\ËYˆ‚š[\ÜÈ[œÝ\™U[š\]YTÚ]R[œÝ[˜ÙUÚ]ÛY[Hœ›ÛH‹‹ÜÚ]KZ[œÝ[˜ÙH‚š[\ÜÈ™XZ[ÛÛ›™XÝ[Û”ÙXÛÛ™\žR[™^\ÈHœ›ÛH‹‹Ù]X˜\ÙKZ[™^\È‚š[\ÜÂˆÜ™X]Q]X˜\ÙSXZ[[˜[˜ÙQš[™Ù\œš[ˆUPTÑWÓPRS•SSÑWÔÕUT×ÒÑVKˆ[œÝ\™U[šYšYY›ÙÜ™\ÜÚ[Û’Ù^\ÕÚ]ÛY[ŸHœ›ÛH‹‹Ù]X˜\ÙK[XZ[[˜[˜ÙH‚š[\ÜÈÜ™X]T™Y\ÓØÚÕÚÙ[‹™[X\ÙSÝÛ™Y™Y\ÓØÚË™[™]ÓÝÛ™Y™Y\ÓØÚÈHœ›ÛH‹‹Ü™Y\Ë[ØÚË]][È‚š[\ÜÈØØ[”™Y\ÒÙ^\ÈHœ›ÛH‹‹Ü™Y\Ë\ØØ[ˆ‚š[\ÜÈSÕRSS‘×ÕT’PS•ËQUSÕRSS‘×ÕT’PS•ÈHœ›ÛH‹‹Ý˜Z[[™Ë\Ù][™ÜÈ‚š[\ÜÂˆQUSÔÖSP“ÓÐÓÕS•\ÈÐS“Ó’PÐSÑQUSÔÖSP“ÓÐÓÕS•ˆQUSÔÖSP“ÓÓÔ‘T‹ŸHœ›ÛH‹‹ÜÞ[X›Û\Ù[XÝ[Û‹YY˜][È‚š[\ÜÂˆPRS—ÕQWÔÕQÑWÔ—ÑQUSËˆ›Ü›X[^™SXZ[•˜YT”˜][Ëˆ›Ü›X[^™SXZ[•˜YTÝYÙT”˜][ËŸHœ›ÛH‹‹ÛXZ[‹]˜YK\›Ùš]Y˜XÝÜˆ‚š[\ÜÈQUSÕRÑWÔ“Ñ’UÔÔÒUSÓ—ÐÓÔÕÔUSÈHœ›ÛH‹‹ÜÜÚ][Û‹XÛÜÝ‚š[\ÜÈÔ×ÐÓÕS•Õ“ÓSQWÔUS×ÑQUSHœ›ÛH‹‹ÜÜËXÛÝ[]›Û[YK\˜][È‚š[\ÜÂˆQUSÐÓÓSSÓ—ÒS‘PÐUSÓ—ÔÑUS‘ÔËˆ›Ü›X[^™PÛÛ[[Û’[™XØ][Û”Ù][™ÜËŸHœ›ÛH‹‹ØÛÛ[[Û‹Z[™XØ]Ü‹XÛÛ™šYÈ‚š[\ÜÂˆ›Ü›X[^™SXZ[’[™XØ][Û”Ù][™ÜËŸHœ›ÛH‹‹ÛXZ[‹Z[™XØ][Û‹\Ù][™ÜÈ‚š[\ÜÂˆQUSÓPRS—ÒS‘PÐUSÓ—Ô“Ñ’SKˆQUSÔ‘TÑUÒS‘PÐUSÓ—Ô“Ñ’SKˆS‘PÐUSÓ—Ô“Ñ’SWÕTTËŸHœ›ÛH‹‹ØXÝ]™KZ[™XØ][Û‹\›Ùš[H‚š[\ÜÈQUSÐTÑWÓRS—ÔÕTHœ›ÛH‹‹ØÛÛœÝ[È‚š[\ÜÈ“ÐÒ×ÐÓÕS•ÓPVHœ›ÛH‹‹Ø›ØÚËXÛÝ[\Ý]H‚š[\ÜÂˆØ[›ÛšXØ[›Ü˜ÙY˜\ÙTÞ[X›ÛËˆØ[›ÛšXØ[›Ü˜ÙYÞ[X›ÛËˆÚ]Ø[›ÛšXØ[›Ü˜ÙYÞ[X›ÛËŸHœ›ÛH‹‹Ù›Ü˜ÙY\Þ[X›ÛÈ‚š[\ÜÈ’S‘ÖÔ“ÑÕ”ÕÓÔ’QÒS‹ÛÛ™šYÝ\™Yš[™Ö[š\›Û›Y[Hœ›ÛH‹‹Øš[™ÞY[š\›Û›Y[‚š[\ÜÈ™\ÛÛ™T™Y\Ô[[YT›ÛÝHœ›ÛH‹‹Ü™Y\Ë\[[YK\›ÛÝ‚š[\ÜÂˆT‘PÕÕQWÐÓÓ“‘PÕSÓ—ÒS‘VÒÑVKˆ\™XÝ˜YRÙ^\ÜXÙKˆ›Ü›X[^™Q\™XÝ˜YPÛÛ›™XÝ[Û’YŸHœ›ÛH‹‹Ù\™XÝ]˜YKZÙ^\ÜXÙH‚š[\ÜÂˆT‘PÕÕQWÕRSS‘×ÓRS—ÕRÑWÔ“Ñ’UÔUS×ÑQUSˆT‘PÕÕQWÕ“ÓSQWÑPÕÔ—ÑQUSˆ›Ü›X[\ÙQ\™XÝ˜YU˜Z[[™ÓZ[•ZÙT›Ùš]˜][Ëˆ›Ü›X[\ÙQ\™XÝ˜YU›Û[YQ˜XÝÜ‹ŸHœ›ÛH‹‹Ù\™XÝ]˜YKXÛÛÜ™[˜][Ûˆ‚š[\ÜÂˆÙ][[YP›ÛÝÝ˜\Ù^\ËˆUTÕÔ‘QT×ÔÐÒSPWÕ‘T”ÒSÓ‹ˆ•S•SQWÐ“ÓÕÕTÓPT’ÑT—ÕÔÑPÓÓ‘ËŸHœ›ÛH‹‹Ü™Y\Ë\[[YKX›ÛÝÝ˜\‚‚‹ÊŠ‚ˆ
+ˆ™\Ù]H[‹\›ØÙ\ÜÈZYÜ˜][ÛˆÝX\™Ë‚ˆ
+‚ˆ
+ˆUTÕ™HØ[YžH[žHÛÙH]]Ú\\ÈH™Y\ÈÙ^\ÜXÙBˆ
+ˆ
+“TÒSÈ›\ÚŠKK™ËˆH™\Ù]Qˆ[™›\ÚQˆ[œÝ[›Ý]\Ë‚ˆ
+‚ˆ
+ˆ^XÚ]™\Ù]]ÈØ[\È[[YYX][HÛÈH›ØÙ\ÜË[ØØ[ˆ
+ˆ]™SZYÜ˜][ÛœÔ[Š
+XX\šÙ\ˆ\ÈÛX\™Y™Y›Ü™HH™]ÈØÚ[XH[‹ˆBˆ
+ˆÚ[™ÛKY›YÚ›ÛZ\ÙH]Ù[ˆ\È™]Z[™YÛ›HÚ[HH[ˆ\È[ˆ›YÚÛÂˆ
+ˆ[ˆ^\›˜[™Y\È™\ÝÜ™KÝÚ\HØ[ˆ[ÛÈ™H]XÝY[™™\^YYØY™[K‚ˆ
+‹Â‹ÊŠ‚ˆ
+ˆÜ›ÜÜË[[Ù[K\ØÛÜHÛØ[\ØÚ[™ÈÝX\™‚ˆ
+‚ˆ
+ˆ[ˆ™^šœÈ]ˆXXÚ›Ý]H[™HØ[ˆØY]ÈÝÛˆÛÜHÙˆ\È[Ù[KÛÈBˆ
+ˆZ[ˆ[Ù[K[]™[]ZYÜ˜][Û”[”›ÛZ\ÙX\È“ÕÚ\™Y™]ÙY[ˆ›Ý]\Ë‚ˆ
+ˆ\š[™ÈHÝ\\\œÝÞ™[œÈÙˆ›Ý]\ÈXXÚØ]ÈZ\ˆÝÛˆ[›ÛZ\ÙBˆ
+ˆ[™][˜ÚYH•SŒ8¡¤ŒŒˆZYÜ˜][ÛˆÛÛ˜Ý\œ™[H
+ØœÙ\™YˆM\˜[[ˆ
+ˆ[œÊKÝ\š[™ÈH]™[ÛÜ[™š\[™È™X[[YKXÞXÛHXY[™\Ë‚ˆ
+‚ˆ
+ˆÚ\Ý[™ÈH[‹Y›YÚ›ÛZ\ÙHÛÈÛØ˜[\ÈXZÙ\È]™\žH[Ù[HØÛÜBˆ
+ˆÛØ[\ØÙHÛÈHÚ[™ÛH^XÝ][Ûˆ8 %HYHÚ[™ÛKY›YÚHÛÛ[Y[[‚ˆ
+ˆ[“ZYÜ˜][ÛœÊ
+H[Ø^\È[[™Y‚ˆ
+‹Â˜ÛÛœÝÛØ˜[ZYÜ˜][Û‘ÝX\™H™\ÛÛ™T™Y\Ô[[YT›ÛÝ
+
+H\È[šÛ›ÝÛˆ\ÈÂˆ×ÛZYÜ˜][Û—Ü[—Ü›ÛZ\ÙOÎˆ›ÛZ\ÙOZYÜ˜][Û”[”™\Ý[ˆ[ˆ×ØÛÝ™\˜YÙWÜ™\Z\—ÙÛ™OÎˆ›ÛÛX[‚ˆ×ØÛÝ™\˜YÙWÜ™\Z\—Ùš[™Ù\œš[ÎˆÝš[™È[ˆ×ØÛÝ™\˜YÙWÜ™\Z\—Ü›ÛZ\ÙOÎˆ›ÛZ\ÙOÛÝ™\˜YÙT™\Z\”™\Ý[ˆ[ŸB‚™[˜Ý[ÛˆÙ]ZYÜ˜][Û”[”›ÛZ\ÙJ
+HÂˆ™]\›ˆÛØ˜[ZYÜ˜][Û‘ÝX\™—×ÛZYÜ˜][Û—Ü[—Ü›ÛZ\ÙHÏÈ[ŸB™[˜Ý[ÛˆÙ]ZYÜ˜][Û”[”›ÛZ\ÙJˆˆ›ÛZ\ÙOZYÜ˜][Û”[”™\Ý[ˆ[ŠHÂˆÛØ˜[ZYÜ˜][Û‘ÝX\™—×ÛZYÜ˜][Û—Ü[—Ü›ÛZ\ÙHHŸB‚™^Ü[˜Ý[Ûˆ™\Ù]ZYÜ˜][Û”[”Ý]J
+Nˆ›ÚYÂˆÙ]ZYÜ˜][Û”[”›ÛZ\ÙJ[
+BˆËÈÛX\ˆHÛ™K\ÚÝXYÛ›ÜÝXÈÙ]ÛÈÜÝ\™\Ù]›ÛÝÙÜÈ\™H[Z]YˆËÈYØZ[ˆ
+K™Ëˆ˜[™XYH]]\Ý‹Ü\˜]Ü—ÜÝÜYÛ›Ý\™Y
+K‚ˆ[œÝ\™P›ÛÝÝ˜\XYË˜ÛX\Š
+BˆËÈ[ÝÈÛÝ™\˜YÙH™\Z\ˆÈ[ˆYØZ[ˆY\ˆHˆ›\ÚÛÈœ™\ÚÛÛ›™XÝ[ÛœÂˆËÈÙ]Z\ˆY]Y]HØØY™›Û[™Ë‚ˆÛØ˜[ZYÜ˜][Û‘ÝX\™—×ØÛÝ™\˜YÙWÜ™\Z\—ÙÛ™HH˜[ÙBˆÛØ˜[ZYÜ˜][Û‘ÝX\™—×ØÛÝ™\˜YÙWÜ™\Z\—Ùš[™Ù\œš[H[ˆÛØ˜[ZYÜ˜][Û‘ÝX\™—×ØÛÝ™\˜YÙWÜ™\Z\—Ü›ÛZ\ÙHH[ˆÊ™\ÛÛ™T™Y\Ô[[YT›ÛÝ
+
+H\È[šÛ›ÝÛˆ\È™XÛÜ™Ýš[™Ë[šÛ›ÝÛŠK—×ÝŒÙ]›ÛÝÝX\™Û™HH˜[ÙBˆËÈH\ÝXÝ]™KÚ[\Ü™\Ù]Ø[È\È™Y›Ü™H™\^Z[™ÈZYÜ˜][ÛœËˆÛX\‚ˆËÈÛ›HHY[\Ý[ÙYYXÛÛ\]HX\šÙ\ˆÛÈH^\Ý[™È™\Ù]›Ý]\ÈØ[‚ˆËÈ[ˆZ\ˆ[˜Ú[™ÙY[”™TÝ\\
+
+HÝ\YØZ[ˆY\ˆHœ™\ÚØÚ[XK‚ˆÊÛØ˜[\È\È\[ÙˆÛØ˜[\È	ˆÈ×ØÝ×Ü™WÜÝ\\ÙÛ™OÎˆ›ÛÛX[ˆJK—×ØÝ×Ü™WÜÝ\\ÙÛ™HH˜[ÙBˆžHÂˆÙ]ZYÜ˜][ÛœÔ[Š˜[ÙJBˆHØ]ÚÂˆËÈÙ]ZYÜ˜][ÛœÔ[ˆ\ÈH\™HÙ]\ŽÈ˜Z[\™H\™H\È›Û‹Y˜][‚ˆBŸBš[\ÜÈÙ]˜\ÙPÛÛ›™XÝ[ÛÜ™Y[X[Ë\H˜\ÙPÛÛ›™XÝ[Û’YHœ›ÛH‹‹Ø˜\ÙKXÛÛ›™XÝ[Û‹XÜ™Y[X[È‚‚š[\™˜XÙHZYÜ˜][ÛˆÂˆ˜[YOÎˆÝš[™Âˆ\ØÜš\[ÛÎˆÝš[™Âˆ™\œÚ[ÛŽˆ[X™\‚ˆ\ˆ
+ÛY[ˆ[žJHOˆ›ÛZ\ÙO›ÚY‚ˆÝÛŽˆ
+ÛY[ˆ[žJHOˆ›ÛZ\ÙO›ÚY‚ŸB‚š[\™˜XÙHZYÜ˜][Û”[”™\Ý[ÂˆÝXØÙ\ÜÎˆ›ÛÛX[‚ˆY\ÜØYÙNˆÝš[™Âˆ™\œÚ[ÛŽˆ[X™\‚ˆ]X˜\ÙRX[Îˆ™XÛÜ™Ýš[™ËÝš[™Ï‚ŸB‚™^Ü[\™˜XÙHÛÝ™\˜YÙT™\Z\”™\Ý[ÂˆÝ]\Îˆ˜ÛÛ\]YˆœÚÚ\Yˆ˜\ÞH‚ˆš[™Ù\œš[ˆÝš[™ÂˆÛÛ›™XÝ[ÛœÎˆ[X™\‚ŸB‚˜\Þ[˜È[˜Ý[ÛˆØYÛÛ›™XÝ[ÛœÑ›Ü“XZ[[˜[˜ÙSZYÜ˜][ÛŠÛY[ˆ[žJNˆ›ÛZ\ÙO[žV×OˆÂˆÛÛœÝÚ[™^YYË˜]ÒÙ^\ËÙ][™ÜÒÙ^\ËÛXœÝÛ™YY×HH]ØZ]›ÛZ\ÙK˜[
+ÂˆÛY[œÛY[X™\œÊ˜ÛÛ›™XÝ[ÛœÈŠK˜Ø]Ú
+
+
+HOˆ×JKˆØØ[”™Y\ÒÙ^\ÊÛY[˜ÛÛ›™XÝ[ÛŽŠˆŠKˆØØ[”™Y\ÒÙ^\ÊÛY[œÙ][™ÜÎ˜ÛÛ›™XÝ[ÛŽŠˆŠKˆÛY[œÛY[X™\œÊ˜ÛÛ›™XÝ[ÛœÎÛXœÝÛ™YŠK˜Ø]Ú
+
+
+HOˆ×JKˆJBˆÛÛœÝÛXœÝÛ™\ÈH™]ÈÙ]
+
+ÛXœÝÛ™YYÈ×JK›X\
+Ýš[™ÊJBˆÛÛœÝYÈH™]ÈÙ]Ýš[™ÏŠ
+[™^YYÈ×JK›X\
+Ýš[™ÊJBˆ›Üˆ
+ÛÛœÝÙ^HÙˆ˜]ÒÙ^\ÊHYË˜Y
+Ýš[™ÊÙ^JKœ™\XÙJ×˜ÛÛ›™XÝ[ÛŽ‹ËˆŠJBˆ›Üˆ
+ÛÛœÝÙ^HÙˆÙ][™ÜÒÙ^\ÊHYË˜Y
+Ýš[™ÊÙ^JKœ™\XÙJ×œÙ][™ÜÎ˜ÛÛ›™XÝ[ÛŽ‹ËˆŠJB‚ˆËÈHÛXœÝÛ™H\ÈH\˜X›HÜ\˜]Ü‹Y[]HÛÛ˜XÝˆÛX[ˆÝ[HZ\œ›ÜœÂˆËÈYžHÛ\ˆ[]H]È™Y›Ü™H™XZ[[™ÈHØ[›ÛšXØ[[™^‚ˆ]ØZ]›ÛZ\ÙK˜[
+\œ˜^K™œ›ÛJÛXœÝÛ™\ÊK›X\
+
+Y
+HO‚ˆÛY[™[
+ÛÛ›™XÝ[ÛŽ‰ÚYXÙ][™ÜÎ˜ÛÛ›™XÝ[ÛŽ‰ÚYX
+K˜Ø]Ú
+
+
+HOˆ
+Kˆ
+JB‚ˆÛÛœÝÛÛ›™XÝ[ÛœÈH]ØZ]›ÛZ\ÙK˜[
+\œ˜^K™œ›ÛJYÊBˆ™š[\Š
+Y
+HOˆY	‰ˆ]ÛXœÝÛ™\Ëš\ÊY
+JBˆ›X\
+\Þ[˜È
+Y
+HOˆÂˆÛÛœÝÜ˜]ËÙ][™Ü×HH]ØZ]›ÛZ\ÙK˜[
+ÂˆÛY[šÙ][
+ÛÛ›™XÝ[ÛŽ‰ÚYX
+K˜Ø]Ú
+
+
+HOˆ
+ßJJKˆÛY[šÙ][
+Ù][™ÜÎ˜ÛÛ›™XÝ[ÛŽ‰ÚYX
+K˜Ø]Ú
+
+
+HOˆ
+ßJJKˆJBˆÛÛœÝY\™ÙYHÈ‹‹ŠÙ][™ÜÈßJK‹‹Š˜]ÈßJKYBˆ™]\›ˆY\™ÙY›˜[YH	‰ˆY\™ÙY™^Ú[™ÙHÈY\™ÙYˆ[ˆJJBˆ™]\›ˆÛÛ›™XÝ[ÛœË™š[\Š›ÛÛX[ŠBŸB‚‹ËÈ“ÕNˆH[‹Y›YÚÛØ[\ØÚ[™È›ÛZ\ÙH›ÝÈ]™\ÈÛˆÛØ˜[\È
+ÙYB‹ËÈÛØ˜[ZYÜ˜][Û‘ÝX\™X›Ý™JHÛÈ]\ÈÚ\™YXÜ›ÜÜÈ[]ˆ[Ù[HØÛÜ\Ë‚‚˜ÛÛœÝZYÜ˜][ÛœÎˆZYÜ˜][Û–×HHÂˆÂˆ˜[YNˆŒKZ[š]X[\ØÚ[XH‹ˆ™\œÚ[ÛŽˆKˆ\ˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŒHŠBˆËÈ[š]X[^™HÙ]Ù^\ÈÚ]Ý][\HÝš[™ÜÈHÙ]È\™HÜ™X]Y[\HÛˆš\œÝ\ÙBˆÛÛœÝÙ^\ÈHÂˆ˜ÛÛ›™XÝ[ÛœÎ˜[‹˜ÛÛ›™XÝ[ÛœÎ˜žXš]‹˜ÛÛ›™XÝ[ÛœÎ˜š[™Þ‹˜ÛÛ›™XÝ[ÛœÎœ[Û™^‹˜ÛÛ›™XÝ[ÛœÎ›Ü˜[™Ù^‹ˆ˜ÛÛ›™XÝ[ÛœÎ˜XÝ]™H‹˜ÛÛ›™XÝ[ÛœÎš[˜XÝ]™H‹ˆ˜Y\Î˜[‹˜Y\Î›Ü[ˆ‹˜Y\Î˜ÛÜÙY‹˜Y\Îœ[™[™È‹ˆœÜÚ][ÛœÎ˜[‹œÜÚ][ÛœÎ›Ü[ˆ‹œÜÚ][ÛœÎ˜ÛÜÙY‹ˆ\Ù\œÎ˜[‹œÙ\ÜÚ[ÛœÎ˜[‹œ™\Ù]Î˜[‹œ™\Ù]Ý\\Î˜[‹ˆœÝ˜]YÚY\Î˜[‹œÝ˜]YÚY\Î˜XÝ]™H‹ˆ›[Ûš]Üš[™Î™]™[È‹›ÙÜÎœÞ\Ý[H‹›ÙÜÎ˜Y\È‹›ÙÜÎ™\œ›ÜœÈ‚ˆBˆËÈ[š]X[^™HXXÚÙ]\È[\H
+Û‰ÝY[\HÝš[™ÜÊBˆ›Üˆ
+ÛÛœÝÙ^HÙˆÙ^\ÊHÂˆËÈ\ÝÜ™X]HHÙ^HÝXÝ\™HžHÙ][™ÈHX\šÙ\‚ˆ]ØZ]ÛY[œÙ]
+Ú[™^‰ÚÙ^_Xš[š]X[^™YŠBˆBˆÛÛœÛÛK›ÙÊ–ÝŒHZYÜ˜][ÛˆNˆ[š]X[ØÚ[XHÜ™X]YŠBˆKˆÝÛŽˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[™[
+—ÜØÚ[XWÝ™\œÚ[ÛˆŠBˆKˆKˆÂˆ˜[YNˆŒ‹XÛÛ›™XÝ[Û‹[X[˜YÙ[Y[‹ˆ™\œÚ[ÛŽˆ‹ˆ\ˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŒˆŠBˆ]ØZ]ÛY[œÙ]
+—ØÛÛ›™XÝ[Ûœ×Ú[™^Y‹YHŠBˆ]ØZ]ÛY[šÙ]
+˜ÛÛ›™XÝ[ÛœÎ›Y]Y]H‹ÂˆÝ[ØÛÛ™šYÝ\™YˆŒ‹ˆÝ[ØXÝ]™NˆŒ‹ˆÝ[Ù\œ›ÜœÎˆŒ‹ˆ\ÝÜÞ[˜Îˆ™]È]J
+KÒTÓÔÝš[™Ê
+KˆJBˆ›Üˆ
+ÛÛœÝ^Ú[™ÙHÙˆÈ˜žXš]‹˜š[™Þ‹œ[Û™^‹›Ü˜[™Ù^—JHÂˆ]ØZ]ÛY[šÙ]
+^Ú[™ÙN‰Ù^Ú[™Ù_N›Y]Y]XÂˆ˜[YNˆ^Ú[™ÙKˆ\WØØ[×Ý\ÙYˆŒ‹ˆ\WÜ˜]WÛ[Z]ˆŒ‹ˆ\ÝÝ\]Yˆ™]È]J
+KÒTÓÔÝš[™Ê
+KˆJBˆBˆÛÛœÛÛK›ÙÊ–ÝŒHZYÜ˜][ÛˆŽˆÛÛ›™XÝ[ÛˆX[˜YÙ[Y[ÝXÝ\™HÜ™X]YŠBˆKˆÝÛŽˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[™[
+—ØÛÛ›™XÝ[Ûœ×Ú[™^YŠBˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŒHŠBˆKˆKˆÂˆ˜[YNˆŒË]˜YK\ÜÚ][ÛœË\ØÚ[XH‹ˆ™\œÚ[ÛŽˆËˆ\ˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŒÈŠBˆ]ØZ]ÛY[œÙ]
+—Ý˜Y\×Ú[š]X[^™Y‹YHŠBˆ]ØZ]ÛY[šÙ]
+˜Y\Î›Y]Y]H‹ÂˆÝ[Ý˜Y\ÎˆŒ‹Ý[ÛÜ[ŽˆŒ‹Ý[ØÛÜÙYˆŒ‹ˆÝ[ÝÚ[ŽˆŒ‹Ý[ÛÜÜÎˆŒ‹Ý[Ü›Ùš]ˆŒ‹ˆ]™×Ü›Ùš]ˆŒ‹Ú[—Ü˜]NˆŒ‹\ÝÝ˜YWÝ[YNˆˆ‹ˆJBˆ]ØZ]ÛY[šÙ]
+œÜÚ][ÛœÎ›Y]Y]H‹ÂˆÝ[ÜÜÚ][ÛœÎˆŒ‹Ý[ÛÜ[—ÜÜÚ][ÛœÎˆŒ‹Ý[ØÛÜÙYÜÜÚ][ÛœÎˆŒ‹ˆÝ[ØÛÛ˜XÝÎˆŒ‹Ý[ØÛÛ]\˜[ˆŒ‹Ý[Ü›ˆŒ‹]™×Û]™\˜YÙNˆŒ‹ˆJBˆ]ØZ]ÛY[œÙ]
+˜Y\Î˜ÛÝ[\Ž›Ü[ˆ‹ŒŠBˆ]ØZ]ÛY[œÙ]
+˜Y\Î˜ÛÝ[\Ž˜ÛÜÙY‹ŒŠBˆ]ØZ]ÛY[œÙ]
+˜Y\Î˜ÛÝ[\Žœ[™[™È‹ŒŠBˆ]ØZ]ÛY[œÙ]
+œÜÚ][ÛœÎ˜ÛÝ[\Ž›Ü[ˆ‹ŒŠBˆ]ØZ]ÛY[œÙ]
+œÜÚ][ÛœÎ˜ÛÝ[\Ž˜ÛÜÙY‹ŒŠBˆÛÛœÛÛK›ÙÊ–ÝŒHZYÜ˜][ÛˆÎˆ˜YH[™ÜÚ][ÛˆØÚ[X\ÈÜ™X]YŠBˆKˆÝÛŽˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[™[
+—Ý˜Y\×Ú[š]X[^™YŠBˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŒˆŠBˆKˆKˆÂˆ˜[YNˆŒ\™\Ù]\Ý˜]YÞK[X[˜YÙ[Y[‹ˆ™\œÚ[ÛŽˆˆ\ˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŠBˆ]ØZ]ÛY[œÙ]
+—Ü™\Ù]×Ú[š]X[^™Y‹YHŠBˆ]ØZ]ÛY[šÙ]
+œ™\Ù]Î›Y]Y]H‹ÂˆÝ[Ü™\Ù]ÎˆŒ‹Ý[ØXÝ]™NˆŒ‹Ý[Ú[˜XÝ]™NˆŒ‹ˆÝ[Ü[œÎˆŒ‹]™×ÜÝXØÙ\Ü×Ü˜]NˆŒ‹ˆJBˆ]ØZ]ÛY[šÙ]
+œÝ˜]YÚY\Î›Y]Y]H‹ÂˆÝ[ÜÝ˜]YÚY\ÎˆŒ‹Ý[ØXÝ]™WÜÝ˜]YÚY\ÎˆŒ‹ˆÝ[Ø˜XÚÝ\ÝÎˆŒ‹]™×ÝÚ[—Ü˜]NˆŒ‹]™×Ü›Ùš]Ù˜XÝÜŽˆŒ‹ˆJBˆËÈÙ]È\™HÜ™X]Y^š[HÛˆš\œÝ™X[[œÙ\È]›ÚY[\HXÙZÛ\ˆY[X™\œË‚ˆ]ØZ]ÛY[œÙ]
+œÝ˜]YÚY\Î˜ÛÝ[\Ž˜XÝ]™H‹ŒŠBˆ]ØZ]ÛY[œÙ]
+œÝ˜]YÚY\Î˜ÛÝ[\Žœ]\ÙY‹ŒŠBˆ]ØZ]ÛY[œÙ]
+œÝ˜]YÚY\Î˜ÛÝ[\ŽœÝÜY‹ŒŠBˆÛÛœÛÛK›ÙÊ–ÝŒHZYÜ˜][Ûˆˆ™\Ù][™Ý˜]YÞHX[˜YÙ[Y[Ü™X]YŠBˆKˆÝÛŽˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[™[
+—Ü™\Ù]×Ú[š]X[^™YŠBˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŒÈŠBˆKˆKˆÂˆ˜[YNˆŒK]\Ù\‹X]][XØ][Ûˆ‹ˆ™\œÚ[ÛŽˆKˆ\ˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹HŠBˆ]ØZ]ÛY[œÙ]
+—Ø]]Ú[š]X[^™Y‹YHŠBˆ]ØZ]ÛY[šÙ]
+\Ù\œÎ›Y]Y]H‹ÂˆÝ[Ý\Ù\œÎˆŒH‹Ý[ØXÝ]™WÜÙ\ÜÚ[ÛœÎˆŒ‹ˆ\ÝÛÙÚ[Žˆ™]È]J
+KÒTÓÔÝš[™Ê
+KˆJBˆ]ØZ]ÛY[šÙ]
+œÙ\ÜÚ[ÛœÎ›Y]Y]H‹ÂˆÝ[ÜÙ\ÜÚ[ÛœÎˆŒ‹XÝ]™WÜÙ\ÜÚ[ÛœÎˆŒ‹^\™YÜÙ\ÜÚ[ÛœÎˆŒ‹ˆJBˆÛÛœÝYZ[’YH˜YZ[‹LH‚ˆ]ØZ]ÛY[šÙ]
+\Ù\Ž‰ØYZ[’YXÂˆYˆYZ[’Y\Ù\›˜[YNˆ˜YZ[ˆ‹[XZ[ˆ˜YZ[˜Y[™ËY[™Ú[™K›ØØ[‹ˆ›ÛNˆ˜YZ[ˆ‹Ü™X]YØ]ˆ™]È]J
+KÒTÓÔÝš[™Ê
+Kˆ\ÝÛÙÚ[Žˆ™]È]J
+KÒTÓÔÝš[™Ê
+KÝ]\Îˆ˜XÝ]™H‹\WÚÙ^\×ØÛÝ[ˆŒ‹ˆJBˆ]ØZ]ÛY[œØY
+\Ù\œÎ˜[‹YZ[’Y
+Bˆ]ØZ]ÛY[œØY
+\Ù\œÎ˜YZ[ˆ‹YZ[’Y
+BˆÛÛœÛÛK›ÙÊ–ÝŒHZYÜ˜][ÛˆNˆ\Ù\ˆ]][XØ][ÛˆÞ\Ý[HÜ™X]YŠBˆKˆÝÛŽˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[™[
+—Ø]]Ú[š]X[^™YŠBˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŠBˆKˆKˆÂˆ˜[YNˆŒ‹[[Ûš]Üš[™Ë[ÙÙÚ[™È‹ˆ™\œÚ[ÛŽˆ‹ˆ\ˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ˆŠBˆ]ØZ]ÛY[œÙ]
+—Û[Ûš]Üš[™×Ú[š]X[^™Y‹YHŠBˆ]ØZ]ÛY[šÙ]
+›[Ûš]Üš[™Î›Y]Y]H‹ÂˆÝ[Ù]™[ÎˆŒ‹Üš]XØ[Ù]™[ÎˆŒ‹Ø\›š[™×Ù]™[ÎˆŒ‹ˆ[™›×Ù]™[ÎˆŒ‹\ÝÙ]™[Ý[YNˆ™]È]J
+KÒTÓÔÝš[™Ê
+KˆJBˆ]ØZ]ÛY[šÙ]
+œÞ\Ý[NšX[‹ÂˆÝ]\ÎˆšX[H‹\[YWÜÙXÛÛ™ÎˆŒ‹Y[[ÜžWÝ\ØYÙNˆŒ‹ˆÜWÝ\ØYÙNˆŒ‹\ÝØÚXÚÎˆ™]È]J
+KÒTÓÔÝš[™Ê
+KˆJBˆ]ØZ]ÛY[šÙ]
+œÞ\Ý[Nœ\™›Ü›X[˜ÙH‹Âˆ]™×Ü™\ÜÛœÙWÝ[YNˆŒ‹˜Y\×Ü\—ÛZ[]NˆŒ‹ˆ\WØØ[×Ü\—ÛZ[]NˆŒ‹\œ›Üœ×Ü\—ÚÝ\ŽˆŒ‹ˆJBˆ]ØZ]ÛY[œÙ]
+›ÙÜÎœÞ\Ý[N˜ÛÝ[\ˆ‹ŒŠBˆ]ØZ]ÛY[œÙ]
+›ÙÜÎ˜Y\Î˜ÛÝ[\ˆ‹ŒŠBˆ]ØZ]ÛY[œÙ]
+›ÙÜÎ™\œ›ÜœÎ˜ÛÝ[\ˆ‹ŒŠBˆÛÛœÛÛK›ÙÊ–ÝŒHZYÜ˜][ÛˆŽˆ[Ûš]Üš[™È[™ÙÙÚ[™ÈÞ\Ý[HÜ™X]YŠBˆKˆÝÛŽˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[™[
+—Û[Ûš]Üš[™×Ú[š]X[^™YŠBˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹HŠBˆKˆKˆÂˆ˜[YNˆŒËXØXÚK[Ü[Z^˜][Ûˆ‹ˆ™\œÚ[ÛŽˆËˆ\ˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ÈŠBˆ]ØZ]ÛY[œÙ]
+—ØØXÚWÛÜ[Z^™Y‹YHŠBˆ]ØZ]ÛY[šÙ]
+˜ØXÚN˜ÛÛ™šYÈ‹ÂˆÛÛ›™XÝ[Û—ØØXÚWÝˆŒÍŒ‹˜YWØØXÚWÝˆŒN‹ˆÜÚ][Û—ØØXÚWÝˆŽL‹Ý˜]YÞWØØXÚWÝˆÌŒ‹[Ûš]Üš[™×ØØXÚWÝˆŒÌ‹ˆJBˆ]ØZ]ÛY[šÙ]
+˜ØXÚNœÝ]È‹ÂˆÝ[Ú]ÎˆŒ‹Ý[ÛZ\ÜÙ\ÎˆŒ‹]Ü˜]NˆŒ‹Ý[Ù]šXÝ[ÛœÎˆŒ‹ˆJBˆËÈÙ]È\™HÜ™X]Y^š[HÛˆš\œÝ™X[[œÙ\È]›ÚY[\HXÙZÛ\ˆY[X™\œË‚ˆÛÛœÛÛK›ÙÊ–ÝŒHZYÜ˜][ÛˆÎˆØXÚHÜ[Z^˜][ÛˆÜ™X]YŠBˆKˆÝÛŽˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[™[
+—ØØXÚWÛÜ[Z^™YŠBˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ˆŠBˆKˆKˆÂˆ˜[YNˆŒ\\™›Ü›X[˜ÙK[Ü[Z^˜][ÛœÈ‹ˆ™\œÚ[ÛŽˆˆ\ˆ\Þ[˜È
+ÛY[ˆ[žJHOˆÂˆ]ØZ]ÛY[œÙ]
+—ÜØÚ[XWÝ™\œÚ[Ûˆ‹ŽŠBˆ]ØZ]ÛY[œÙ]
+—ÝÜÛXÚY\×ÜÙ]‹YHŠBˆ]ØZ]ÛY[šÙ]
+œÞ\Ý[N˜ÛÛ™šYÈ‹Âˆ]X˜\ÙWÝ\Nˆœ™Y\È‹[š]X[^™YØ]ˆ™]È]J
+KÒTÓÔÝš[™Ê
+Kˆ™\œÚ[ÛŽˆŒËŒˆ‹[š\›Û›Y[ˆœ›ÙXÝ[Ûˆ‹Ù×Û]™[ˆš[™›È‹ˆJBˆ]ØZ]ÛY[šÙ]
+µÛ­4òÚ$z{-®éÜj×xport async function runMigrations(): Promise<MigrationRunResult> {
   // Coalesce concurrent callers onto a single in-flight execution. Do not cache
   // a resolved promise: Redis can be restored or wiped independently of this
   // Node process, and initRedis() must then be able to replay missing schema.
