@@ -253,6 +253,22 @@ describe("production installation and Kilo deployment contract", () => {
       .toContain("onlyBuiltDependencies:")
   })
 
+  it("keeps the Chisel Work recovery proxy-aware and credential-free", async () => {
+    const [helper, runbook] = await Promise.all([
+      readFile(path.join(process.cwd(), "scripts/connect-remote-chisel.sh"), "utf8"),
+      readFile(path.join(process.cwd(), "docs/REMOTE-CHISEL-WORKMODE.md"), "utf8"),
+    ])
+
+    expect(helper).toContain('PROXY="$(read_env HTTP_PROXY)"')
+    expect(helper).toContain('--proxy "$PROXY"')
+    expect(helper).toContain('SERVER_URL="$(read_env CTS_CHISEL_ENDPOINT)"')
+    expect(helper).toContain('FINGERPRINT="$(read_env CTS_CHISEL_FINGERPRINT)"')
+    expect(helper).not.toMatch(/^SERVER_URL="https?:\/\//m)
+    expect(runbook).toContain("Activation and SSH must run in the same shell/tool process")
+    expect(runbook).toContain("Resolved incident: process-local proxy (2026-08-27)")
+    execFileSync("bash", ["-n", "scripts/connect-remote-chisel.sh"], { cwd: process.cwd() })
+  })
+
   it("retries a missing Next BUILD_ID only after compilation reached page collection", () => {
     const classifierUrl = pathToFileURL(
       path.join(process.cwd(), "scripts", "next-build-race-classifier.mjs"),
