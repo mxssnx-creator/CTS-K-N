@@ -87,6 +87,8 @@ interface CompactStats {
   liveOpenOrders: number
   liveEntryOrders: number
   liveControlOrders: number
+  liveOrdersDataAvailable: boolean
+  liveOrdersSnapshotError: string
   liveOpenSymbols: number
   liveExcludedUntrackedPositions: number
   liveExcludedUntrackedOrders: number
@@ -253,6 +255,8 @@ const EMPTY: CompactStats = {
   liveOpenOrders: 0,
   liveEntryOrders: 0,
   liveControlOrders: 0,
+  liveOrdersDataAvailable: false,
+  liveOrdersSnapshotError: "",
   liveOpenSymbols: 0,
   liveExcludedUntrackedPositions: 0,
   liveExcludedUntrackedOrders: 0,
@@ -910,6 +914,8 @@ export function StatisticsOverviewV2() {
           liveOpenOrders:   Number(liveExec.openOrders) || 0,
           liveEntryOrders:  Number(liveExec.entryOrders) || 0,
           liveControlOrders: Number(liveExec.controlOrders) || 0,
+          liveOrdersDataAvailable: liveExec.ordersDataAvailable === true,
+          liveOrdersSnapshotError: String(liveExec.ordersSnapshotError || ""),
           liveOpenSymbols:  Number(liveExec.openSymbols) || 0,
           liveExcludedUntrackedPositions: Number(liveExec.excludedUntrackedPositions) || 0,
           liveExcludedUntrackedOrders: Number(liveExec.excludedUntrackedOrders) || 0,
@@ -1610,14 +1616,18 @@ export function StatisticsOverviewV2() {
             </div>
             <div
               className="flex flex-col gap-0.5"
-              title={`${stats.liveOpenOrders} CTS-tracked exchange orders on ${stats.liveOpenSymbols} positioned symbols: ${stats.liveEntryOrders} entry and ${stats.liveControlOrders} control. Excluded as unrelated: ${stats.liveExcludedUntrackedOrders} orders and ${stats.liveExcludedUntrackedPositions} positions.`}
+              title={stats.liveOrdersDataAvailable
+                ? `${stats.liveOpenOrders} CTS-tracked exchange orders on ${stats.liveOpenSymbols} positioned symbols: ${stats.liveEntryOrders} entry and ${stats.liveControlOrders} control. Excluded as unrelated: ${stats.liveExcludedUntrackedOrders} orders and ${stats.liveExcludedUntrackedPositions} positions.`
+                : `Venue order snapshot unavailable${stats.liveOrdersSnapshotError ? `: ${stats.liveOrdersSnapshotError}` : "."}`}
             >
               <span className="text-muted-foreground">Open orders</span>
               <span className="font-semibold text-cyan-700 tabular-nums">
-                {fmt(stats.liveOpenOrders)}
-                <span className="ml-1 text-[9px] font-normal text-muted-foreground">
-                  {fmt(stats.liveEntryOrders)}E/{fmt(stats.liveControlOrders)}C
-                </span>
+                {stats.liveOrdersDataAvailable ? fmt(stats.liveOpenOrders) : "n/a"}
+                {stats.liveOrdersDataAvailable && (
+                  <span className="ml-1 text-[9px] font-normal text-muted-foreground">
+                    {fmt(stats.liveEntryOrders)}E/{fmt(stats.liveControlOrders)}C
+                  </span>
+                )}
               </span>
             </div>
             <div

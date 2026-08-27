@@ -129,6 +129,30 @@ repository helper intentionally contains no deployment-specific values.
 | SSH key rejection | the owner-only key or server authorization differs | stop and verify the managed key path and server authorization |
 | Banner succeeds but a bounded remote command times out | transport works; the remote command or service is unhealthy | diagnose only the explicitly authorized service through the same tunnel |
 
+## Recovery record: broker-cancelled activation (2026-08-27)
+
+A later Work session reproduced a different local failure class: the managed
+activation was cancelled by the network approval broker before Chisel ran.
+The old PID file then referenced a dead process and a later shell correctly
+received `connection refused` on the process-local port. This does **not**
+indicate a server-side `chisel-server` failure and must not be repaired by
+reusing the PID, calling SSH directly, disabling fingerprint checks, or
+copying managed credentials into another client.
+
+The durable recovery sequence is:
+
+1. start a fresh bounded tool process;
+2. source the managed activation once in that process;
+3. require the pinned `CTS_SSH_BANNER_OK` SSH banner in the same process;
+4. continue with remote diagnostics/deployment only if the banner succeeds;
+5. if the broker cancels activation again, record `broker cancelled before
+   execution`, stop remote mutations, and retry only from a later authorized
+   process.
+
+Stale PID/listener state is diagnostic only in Work. The activation script is
+the sole owner of listener creation, while banner success—not a PID file or an
+old Chisel log line—is the authorization and liveness gate for remote work.
+
 ## Persistent Linux client service
 
 This section applies only to a normal persistent Linux client, not ChatGPT

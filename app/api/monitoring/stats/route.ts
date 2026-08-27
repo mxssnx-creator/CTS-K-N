@@ -54,6 +54,8 @@ export async function GET(request: NextRequest) {
     let excludedUntrackedPositions = 0
     let excludedUntrackedOrders = 0
     let exchangeSnapshotsComplete = 0
+    let positionsSnapshotsAvailable = 0
+    let ordersSnapshotsAvailable = 0
     let accountingPending = 0
     let dailyPnlTimestampUnknown = 0
     const positionSourceCounts = { real: 0, simulated: 0, unknown: 0 }
@@ -80,6 +82,8 @@ export async function GET(request: NextRequest) {
       excludedUntrackedPositions += nonNegativeInteger(ledger.excludedUntrackedPositions)
       excludedUntrackedOrders += nonNegativeInteger(ledger.excludedUntrackedOrders)
       if (ledger.exchange?.complete === true) exchangeSnapshotsComplete++
+      if (ledger.positionsDataAvailable) positionsSnapshotsAvailable++
+      if (ledger.ordersDataAvailable) ordersSnapshotsAvailable++
       accountingPending += ledger.accountingPending
       dailyPnlTimestampUnknown += ledger.dailyPnlTimestampUnknown
       positionSourceCounts.real += ledger.sourceCounts.real
@@ -141,6 +145,8 @@ export async function GET(request: NextRequest) {
         snapshotsComplete: exchangeSnapshotsComplete,
         snapshotsTotal: ledgers.length,
         complete: ledgers.length > 0 && exchangeSnapshotsComplete === ledgers.length,
+        positionsDataAvailable: ledgers.length > 0 && positionsSnapshotsAvailable === ledgers.length,
+        ordersDataAvailable: ledgers.length > 0 && ordersSnapshotsAvailable === ledgers.length,
       },
       statistics: {
         ...stats,

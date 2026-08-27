@@ -540,6 +540,8 @@ export function ActiveConnectionCard({
     liveOpenOrderSymbols: number
     liveEntryOrders: number
     liveControlOrders: number
+    liveOrdersDataAvailable: boolean
+    liveOrdersSnapshotError: string
     liveOpenSymbols: number
     liveExcludedUntrackedPositions: number
     liveExcludedUntrackedOrders: number
@@ -1455,6 +1457,8 @@ export function ActiveConnectionCard({
           liveOpenOrderSymbols:  data?.liveExecution?.openOrderSymbols || 0,
           liveEntryOrders:       data?.liveExecution?.entryOrders || 0,
           liveControlOrders:     data?.liveExecution?.controlOrders || 0,
+          liveOrdersDataAvailable: data?.liveExecution?.ordersDataAvailable === true,
+          liveOrdersSnapshotError: String(data?.liveExecution?.ordersSnapshotError || ""),
           liveOpenSymbols:       data?.liveExecution?.openSymbols || 0,
           liveExcludedUntrackedPositions: data?.liveExecution?.excludedUntrackedPositions || 0,
           liveExcludedUntrackedOrders: data?.liveExecution?.excludedUntrackedOrders || 0,
@@ -2035,9 +2039,11 @@ export function ActiveConnectionCard({
       },
       {
         label: "Open ord",
-        value: prehistoricStats?.liveOpenOrders ?? 0,
-        title: `CTS-tracked exchange orders across ${prehistoricStats?.liveOpenOrderSymbols ?? 0} symbols: ${prehistoricStats?.liveEntryOrders ?? 0} entry and ${prehistoricStats?.liveControlOrders ?? 0} control. Excluded as unrelated: ${prehistoricStats?.liveExcludedUntrackedOrders ?? 0} orders.`,
-        tone: (prehistoricStats?.liveOpenOrders ?? 0) > 0 ? "text-cyan-700 dark:text-cyan-400" : undefined,
+        value: prehistoricStats?.liveOrdersDataAvailable ? prehistoricStats.liveOpenOrders : "n/a",
+        title: prehistoricStats?.liveOrdersDataAvailable
+          ? `CTS-tracked exchange orders across ${prehistoricStats.liveOpenOrderSymbols} symbols: ${prehistoricStats.liveEntryOrders} entry and ${prehistoricStats.liveControlOrders} control. Excluded as unrelated: ${prehistoricStats.liveExcludedUntrackedOrders} orders.`
+          : `Venue order snapshot unavailable${prehistoricStats?.liveOrdersSnapshotError ? `: ${prehistoricStats.liveOrdersSnapshotError}` : "."}`,
+        tone: prehistoricStats?.liveOrdersDataAvailable && prehistoricStats.liveOpenOrders > 0 ? "text-cyan-700 dark:text-cyan-400" : undefined,
       },
       {
         label: "Live sym",
@@ -2234,9 +2240,11 @@ export function ActiveConnectionCard({
       },
       {
         label: "Open ord",
-        value: prehistoricStats?.liveOpenOrders ?? 0,
-        title: `CTS-tracked exchange orders across ${prehistoricStats?.liveOpenOrderSymbols ?? 0} symbols: ${prehistoricStats?.liveEntryOrders ?? 0} entry and ${prehistoricStats?.liveControlOrders ?? 0} control. Excluded as unrelated: ${prehistoricStats?.liveExcludedUntrackedOrders ?? 0} orders.`,
-        tone: (prehistoricStats?.liveOpenOrders ?? 0) > 0 ? "text-cyan-700 dark:text-cyan-400" : undefined,
+        value: prehistoricStats?.liveOrdersDataAvailable ? prehistoricStats.liveOpenOrders : "n/a",
+        title: prehistoricStats?.liveOrdersDataAvailable
+          ? `CTS-tracked exchange orders across ${prehistoricStats.liveOpenOrderSymbols} symbols: ${prehistoricStats.liveEntryOrders} entry and ${prehistoricStats.liveControlOrders} control. Excluded as unrelated: ${prehistoricStats.liveExcludedUntrackedOrders} orders.`
+          : `Venue order snapshot unavailable${prehistoricStats?.liveOrdersSnapshotError ? `: ${prehistoricStats.liveOrdersSnapshotError}` : "."}`,
+        tone: prehistoricStats?.liveOrdersDataAvailable && prehistoricStats.liveOpenOrders > 0 ? "text-cyan-700 dark:text-cyan-400" : undefined,
       },
       {
         label: "Live sym",

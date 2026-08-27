@@ -223,6 +223,8 @@ export async function GET(request: Request) {
           openOrders: exchangeSnapshot.ordersStatus.available ? exchangeSnapshot.openOrders : 0,
           ordersDataAvailable: exchangeSnapshot.ordersStatus.available &&
             exchangeSnapshot.tracking.attributionComplete,
+          positionsSnapshotStatus: exchangeSnapshot.positionsStatus,
+          ordersSnapshotStatus: exchangeSnapshot.ordersStatus,
           // Connection-level USDT roll-ups. `marginUsd` is the canonical
           // "USDT" figure (used balance = notional / leverage); we
           // expose `volumeUsd` alongside it for the leveraged-notional

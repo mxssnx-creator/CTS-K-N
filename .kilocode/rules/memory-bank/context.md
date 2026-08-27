@@ -2188,3 +2188,44 @@ credentials are present.
   the uncommitted source changes, and deployment-contract verification has no
   deployment URL. Do not commit, push, open a PR, merge, or deploy this
   worktree until every required gate is rerun successfully.
+
+## Session 2026-08-27 — aggregate controls, netted generations and X02 continuation
+
+- [x] Merged and deployed PR #245 as `main@67ac89953bec607e8a909152a01ebf2ffea048cb`.
+  It serializes aggregate SL/TP lifecycle mutations, separates benign missing-
+  order lookup pressure from venue-write cooldown, applies a close barrier and
+  terminal cleanup, and projects one aggregate physical-slot control pair to
+  every owning Set without creating overlapping venue orders.
+- [x] Merged and deployed PR #246 as `main@96060c8406212a182d65f273430ff576bb2b5696`.
+  It reconciles exact newest netted-slot generations before protection. In the
+  32-symbol X02 reproduction, the active BTC short ledger fell from 350 rows to
+  144 rows and exactly matched the 0.0144 BTC venue quantity; one aggregate
+  owner retained local SL and TP venue IDs. Full validation was 239/239 suites,
+  1,579/1,579 tests, TypeScript, ESLint and the 42-page production build.
+- [x] Verified owner-only checkpoints:
+  `/workspace/backups/CTS-K-N/20260827T-control-orders-recovery`,
+  `/workspace/backups/CTS-K-N/20260827T-live-slot-turnover-recovery`,
+  `/var/backups/cts-kn/20260827T-control-order-deploy-67ac899`,
+  `/var/backups/cts-kn/20260827T-slot-generation-deploy-96060c8`, and the X02
+  pre-test baseline `/var/backups/cts-kn/20260827T-x02-32symbol-onehour`.
+- [ ] X02 is deliberately Live-off (`is_live_trade`, `live_trade_requested`
+  and `live_trade_enabled` were last verified false) while venue order snapshot
+  availability and shared-control coverage are incomplete. Do not re-enable
+  the 32-symbol minimum-volume soak until `/api/exchange/live-summary` reports
+  an authoritative order snapshot and the one-owner coverage is complete.
+- [ ] The requested one-hour X02 run is not complete. Current evidence is not
+  profitable (unrealized PnL was negative and closed accounting incomplete),
+  so `minStep=3` must not be promoted to a systemwide default.
+- [x] A follow-up local patch preserves an explicit X02 operator Live-off state
+  across production credential reinjection/restart, refreshes active real live
+  rows and Set-control coverage even while the heavyweight Stats projection is
+  stale, and exposes order-snapshot availability/errors through canonical
+  Stats/Tracking/Monitoring APIs and the main UI instead of displaying a false
+  zero. Checkpoint:
+  `/workspace/backups/CTS-K-N/20260827T-x02-restart-order-snapshot`.
+- [ ] Remote continuation is blocked before execution by the Work network
+  approval broker. Repeated managed activation attempts were cancelled before
+  Chisel ran; a stale process-local PID/listener must not be reused. Resume only
+  with managed activation plus the pinned harmless SSH banner in the same
+  process, then checkpoint, deploy merged `main`, restart and continue the X02
+  soak. `docs/REMOTE-CHISEL-WORKMODE.md` records this recovery class.

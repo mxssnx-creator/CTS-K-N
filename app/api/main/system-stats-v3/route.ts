@@ -154,6 +154,8 @@ export async function GET() {
     const excludedUntrackedPositions = executionRows.reduce((sum, row) => sum + row.summary.excludedUntrackedPositions, 0)
     const excludedUntrackedOrders = executionRows.reduce((sum, row) => sum + row.summary.excludedUntrackedOrders, 0)
     const exchangeSnapshotsComplete = executionRows.filter((row) => row.summary.exchange.complete).length
+    const exchangePositionSnapshotsAvailable = executionRows.filter((row) => row.summary.positionsDataAvailable).length
+    const exchangeOrderSnapshotsAvailable = executionRows.filter((row) => row.summary.ordersDataAvailable).length
     const lastHourTrades = executionRows.reduce((sum, row) => sum + row.summary.lastHourTrades, 0)
     const topConnections = executionRows
       .filter((row) => row.summary.lastHourTrades > 0 || row.summary.totalTrades > 0)
@@ -290,6 +292,8 @@ export async function GET() {
         snapshotsComplete: exchangeSnapshotsComplete,
         snapshotsTotal: executionRows.length,
         complete: executionRows.length > 0 && exchangeSnapshotsComplete === executionRows.length,
+        positionsDataAvailable: executionRows.length > 0 && exchangePositionSnapshotsAvailable === executionRows.length,
+        ordersDataAvailable: executionRows.length > 0 && exchangeOrderSnapshotsAvailable === executionRows.length,
       },
       workflowOverview: {
         ...workflow.overview,

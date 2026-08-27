@@ -29,6 +29,10 @@ export interface LiveExecutionSummary {
   openOrderSymbols: number
   entryOrders: number
   controlOrders: number
+  positionsDataAvailable: boolean
+  ordersDataAvailable: boolean
+  positionsSnapshotError: string | null
+  ordersSnapshotError: string | null
   excludedUntrackedPositions: number
   excludedUntrackedOrders: number
   closedPositions: number
@@ -211,6 +215,10 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
     openOrderSymbols: exchange.ordersStatus.available ? exchange.openOrderSymbols : 0,
     entryOrders: exchange.ordersStatus.available ? exchange.entryOrders : 0,
     controlOrders: exchange.ordersStatus.available ? exchange.controlOrders : 0,
+    positionsDataAvailable: exchange.positionsStatus.available,
+    ordersDataAvailable: exchange.ordersStatus.available,
+    positionsSnapshotError: exchange.positionsStatus.error,
+    ordersSnapshotError: exchange.ordersStatus.error,
     excludedUntrackedPositions: exchange.positionsStatus.available
       ? exchange.tracking?.venuePositionsExcluded ?? 0
       : 0,
