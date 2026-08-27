@@ -870,8 +870,12 @@ interface LivePosition {
     protectionMode: "exchange_control" | "hybrid_control_system" | "system_close" | "system_close_fallback"
     aggregateProtectionOwner: boolean
     aggregateProtectionKey?: string
+    /** Position that owns the shared venue SL/TP pair for this physical slot. */
+    aggregateProtectionLeaderId?: string
     stopLossOrderId?: string
     takeProfitOrderId?: string
+    stopLossPrice?: number
+    takeProfitPrice?: number
     systemProtectionLegs: ProtectionOrderLeg[]
     updatedAt: number
   }>
@@ -6891,11 +6895,24 @@ function exactProtectionSetKeys(pos: LivePosition): string[] {
   ].filter(Boolean))]
 }
 
-function refreshControlOrderSetCoverage(pos: LivePosition): void {
+function refreshControlOrderSetCoverage(
+  pos: LivePosition,
+  sharedVenueProtection?: {
+    leaderId: string
+    stopLossOrderId?: string
+    takeProfitOrderId?: string
+    stopLossPrice?: number
+    takeProfitPrice?: number
+  },
+): void {
   const desired = computeDesiredProtectionPrices(pos)
   const systemLegs = new Set(pos.systemProtectionLegs || [])
-  const stopLossCovered = !(desired.desiredSl > 0) || Boolean(pos.stopLossOrderId) || systemLegs.has("stop_loss")
-  const takeProfitCovered = !(desired.desiredTp > 0) || Boolean(pos.takeProfitOrderId) || systemLegs.has("take_profit")
+  const effectiveStopLossOrderId = sharedVenueProtection?.stopLossOrderId || pos.stopLossOrderId
+  const effectiveTakeProfitOrderId = sharedVenueProtection?.takeProfitOrderId || pos.takeProfitOrderId
+  const effectiveStopLossPrice = Number(sharedVenueProtection?.stopLossPrice || pos.stopLossPrice || 0)
+  const effectiveTakeProfitPrice = Number(sharedVenueProtection?.takeProfitPrice || pos.takeProfitPrice || 0)
+  const stopLossCovered = !(desired.desiredSl > 0) || Boolean(effectiveStopLossOrderId) || systemLegs.has("stop_loss")
+  const takeProfitCovered = !(desired.desiredTp > 0) || Boolean(effectiveTakeProfitOrderId) || systemLegs.has("take_profit")
   const coverage: NonNullable<LivePosition["controlOrderSetCoverage"]> = {}
   const updatedAt = Date.now()
   for (const setKey of exactProtectionSetKeys(pos)) {
@@ -6904,13 +6921,87 @@ function refreshControlOrderSetCoverage(pos: LivePosition): void {
       protectionMode: pos.protectionMode || "system_close_fallback",
       aggregateProtectionOwner: pos.aggregateProtectionOwner === true,
       ...(pos.aggregateProtectionKey ? { aggregateProtectionKey: pos.aggregateProtectionKey } : {}),
-      ...(pos.stopLossOrderId ? { stopLossOrderId: pos.stopLossOrderId } : {}),
-      ...(pos.takeProfitOrderId ? { takeProfitOrderId: pos.takeProfitOrderId } : {}),
+      ...(sharedVenueProtection?.leaderId
+        ? { aggregateProtectionLeaderId: sharedVenueProtection.leaderId }
+        : {}),
+      ...(effectiveStopLossOrderId ? { stopLossOrderId: effectiveStopLossOrderId } : {}),
+      ...(effectiveTakeProfitOrderId ? { takeProfitOrderId: effectiveTakeProfitOrderId } : {}),
+      ...(effectiveStopLossPrice > 0 ? { stopLossPrice: effectiveStopLossPrice } : {}),
+      ...(effectiveTakeProfitPrice > 0 ? { takeProfitPrice: effectiveTakeProfitPrice } : {}),
       systemProtectionLegs: [...systemLegs],
       updatedAt,
     }
   }
   pos.controlOrderSetCoverage = coverage
+}
+
+function inheritedAggregateVenueProtection(pos: LivePosition): {
+  leaderId: string
+  stopLossOrderId?: string
+  takeProfitOrderId?: string
+  stopLossPrice?: number
+  takeProfitPrice?: number
+} | undefined {
+  if (pos.aggregateProtectionOwner !== false || !pos.aggregateProtectionKey) return undefined
+  const entry = Object.values(pos.controlOrderSetCoverage || {}).find((coverage) =>
+    coverage.aggregateProtectionOwner === false
+    && coverage.aggregateProtectionKey === pos.aggregateProtectionKey
+    && Boolean(coverage.aggregateProtectionLeaderId),
+  )
+  if (!entry?.aggregateProtectionLeaderId) return undefined
+  return {
+    leaderId: entry.aggregateProtectionLeaderId,
+    ...(entry.stopLossOrderId ? { stopLossOrderId: entry.stopLossOrderId } : {}),
+    ...(entry.takeProfitOrderId ? { takeProfitOrderId: entry.takeProfitOrderId } : {}),
+    ...(Number(entry.stopLossPrice || 0) > 0 ? { stopLossPrice: Number(entry.stopLossPrice) } : {}),
+    ...(Number(entry.takeProfitPrice || 0) > 0 ? { takeProfitPrice: Number(entry.takeProfitPrice) } : {}),
+  }
+}
+
+function projectAggregateMemberCoverage(
+  position: LivePosition,
+  leader: LivePosition,
+  plan: AggregateProtectionPlan,
+): boolean {
+  const comparableCoverage = (coverage: LivePosition["controlOrderSetCoverage"]) =>
+    Object.fromEntries(Object.entries(coverage || {}).map(([setKey, value]) => [setKey, {
+      ...value,
+      updatedAt: 0,
+    }]))
+  const before = JSON.stringify({
+    aggregateProtectionOwner: position.aggregateProtectionOwner,
+    aggregateProtectionKey: position.aggregateProtectionKey,
+    aggregateProtectionMemberCount: position.aggregateProtectionMemberCount,
+    aggregateProtectionQuantity: position.aggregateProtectionQuantity,
+    protectionMode: position.protectionMode,
+    systemProtectionLegs: position.systemProtectionLegs,
+    controlOrderSetCoverage: comparableCoverage(position.controlOrderSetCoverage),
+  })
+  position.aggregateProtectionOwner = false
+  position.aggregateProtectionKey = plan.key
+  position.aggregateProtectionMemberCount = plan.memberIds.length
+  position.aggregateProtectionQuantity = plan.venueQuantity
+  position.systemProtectionLegs = configuredSystemProtectionLegs(position)
+  position.protectionMode = leader.stopLossOrderId || leader.takeProfitOrderId
+    ? "hybrid_control_system"
+    : "system_close_fallback"
+  refreshControlOrderSetCoverage(position, {
+    leaderId: leader.id,
+    ...(leader.stopLossOrderId ? { stopLossOrderId: leader.stopLossOrderId } : {}),
+    ...(leader.takeProfitOrderId ? { takeProfitOrderId: leader.takeProfitOrderId } : {}),
+    ...(Number(leader.stopLossPrice || 0) > 0 ? { stopLossPrice: Number(leader.stopLossPrice) } : {}),
+    ...(Number(leader.takeProfitPrice || 0) > 0 ? { takeProfitPrice: Number(leader.takeProfitPrice) } : {}),
+  })
+  const after = JSON.stringify({
+    aggregateProtectionOwner: position.aggregateProtectionOwner,
+    aggregateProtectionKey: position.aggregateProtectionKey,
+    aggregateProtectionMemberCount: position.aggregateProtectionMemberCount,
+    aggregateProtectionQuantity: position.aggregateProtectionQuantity,
+    protectionMode: position.protectionMode,
+    systemProtectionLegs: position.systemProtectionLegs,
+    controlOrderSetCoverage: comparableCoverage(position.controlOrderSetCoverage),
+  })
+  return before !== after
 }
 
 function reserveProtectionCapacity(
@@ -7128,6 +7219,29 @@ async function updateProtectionOrders(
   const desiredTp = Number.isFinite(Number(options.desiredPricesOverride?.desiredTp))
     ? Math.max(0, Number(options.desiredPricesOverride?.desiredTp))
     : computedProtectionPrices.desiredTp
+
+  // A non-owner row is protected by the one aggregate venue pair for its
+  // physical symbol/direction slot. Its own SL/TP remain active as engine-side
+  // Set triggers, but it must never independently cancel or place reduce-only
+  // orders: doing so creates a create/demote loop and can over-reduce the
+  // venue-netted quantity. Aggregate reconciliation is the sole venue writer.
+  if (pos.aggregateProtectionOwner === false && pos.aggregateProtectionKey) {
+    pos.systemProtectionLegs = configuredSystemProtectionLegs(pos)
+    const shared = inheritedAggregateVenueProtection(pos)
+    pos.protectionMode = shared?.stopLossOrderId || shared?.takeProfitOrderId
+      ? "hybrid_control_system"
+      : "system_close_fallback"
+    refreshControlOrderSetCoverage(pos, shared)
+    result.changed = true
+    pushStep(
+      pos,
+      "aggregate_member_protection_deferred",
+      true,
+      `[${reason}] ${pos.aggregateProtectionKey} venue controls owned by ${shared?.leaderId || "aggregate coordinator"}; Set trigger remains system-side`,
+    )
+    return result
+  }
+
   let capacityBudget = protectionCapacityBudgetOf(liveOrderIds)
   if (!capacityBudget && isBingXCapacityConnector(connector)) {
     const capacitySnapshot = await fetchLiveOrderIdSet(connector)
@@ -7726,6 +7840,27 @@ function configuredSystemProtectionLegs(position: LivePosition): ProtectionOrder
   return legs
 }
 
+function initialAggregateProtectionCoordination(
+  position: LivePosition,
+  currentPositions: readonly LivePosition[],
+): { deferred: boolean; slot: string; memberCount: number } {
+  const direction = resolveLivePositionDirection(position)
+  const slot = direction ? aggregateProtectionSlot(position.symbol, direction) : ""
+  if (!direction || !slot) return { deferred: false, slot, memberCount: 0 }
+  const activeStatuses = new Set(["open", "filled", "partially_filled"])
+  const byId = new Map<string, LivePosition>()
+  for (const candidate of [position, ...currentPositions]) {
+    const candidateDirection = resolveLivePositionDirection(candidate)
+    if (!candidateDirection) continue
+    if (aggregateProtectionSlot(candidate.symbol, candidateDirection) !== slot) continue
+    if (!activeStatuses.has(String(candidate.status || "").toLowerCase())) continue
+    if (Number(candidate.executedQuantity || 0) <= 0) continue
+    if (!isExchangeLifecyclePosition(candidate, position.connectionId)) continue
+    byId.set(candidate.id, candidate)
+  }
+  return { deferred: byId.size > 1, slot, memberCount: byId.size }
+}
+
 async function demoteAggregateProtectionMember(
   connector: any,
   position: LivePosition,
@@ -7935,6 +8070,23 @@ async function reconcileAggregateProtectionBook(
     if (metadataChanged || protectionResult.changed) {
       leader.updatedAt = Date.now()
       await savePosition(leader)
+      result.changedPositions++
+    }
+    // Project the leader's confirmed venue IDs into every exact Set's
+    // coverage record without copying them into the member's top-level fields.
+    // Top-level IDs confer cancellation ownership; coverage IDs are read-only
+    // proof that this Set is protected by the shared physical-slot guard.
+    for (const member of members) {
+      if (member.id === leader.id) continue
+      if (!projectAggregateMemberCoverage(member, leader, plan)) continue
+      member.updatedAt = Date.now()
+      pushStep(
+        member,
+        "aggregate_protection_coverage",
+        true,
+        `${plan.key} venue SL=${leader.stopLossOrderId || "system"} TP=${leader.takeProfitOrderId || "system"} owner=${leader.id}`,
+      )
+      await savePosition(member)
       result.changedPositions++
     }
     if (protectionResult.slPlaced || protectionResult.tpPlaced) result.rearmedLeaders++
@@ -10119,6 +10271,11 @@ export async function executeLivePosition(
         reason: `fill via=${fill.status}`,
         extra: { orderId: livePosition.orderId, attempts: placeAttempt },
       })
+      // Persist the authoritative fill before protection coordination. Parallel
+      // Set entries for the same symbol/direction can now see one another and
+      // elect one aggregate venue owner instead of each arming a full-size
+      // SL/TP pair before the canonical reconcile pass runs.
+      await savePosition(livePosition)
       // Arm SL/TP immediately after an authoritative inline/polled fill.
       // A fixed venue-settling sleep delayed every healthy order by two
       // seconds and left the freshly opened position unnecessarily
@@ -10165,7 +10322,14 @@ export async function executeLivePosition(
     // ALWAYS be armed at the same price the strategy assigned (rounded
     // identically), with no duplicate inline computation that could
     // drift out of sync with the rest of the file.
-    if (livePosition.executedQuantity > 0) {
+    const initialAggregate = livePosition.executedQuantity > 0
+      ? initialAggregateProtectionCoordination(
+          livePosition,
+          await getLivePositions(connectionId).catch(() => []),
+        )
+      : { deferred: false, slot: "", memberCount: 0 }
+
+    if (livePosition.executedQuantity > 0 && !initialAggregate.deferred) {
       if (typeof exchangeConnector.getPosition === "function") {
         try {
           // Pass direction so hedge-mode accounts return the correct slot.
@@ -10418,6 +10582,38 @@ export async function executeLivePosition(
           protectionMode: livePosition.protectionMode,
           systemProtectionLegs: livePosition.systemProtectionLegs,
           controlOrderCapacity: livePosition.controlOrderCapacity,
+        },
+      )
+    } else if (livePosition.executedQuantity > 0 && initialAggregate.deferred) {
+      // The venue nets same-symbol/same-direction fills into one physical
+      // quantity. Leave this Set's exact trigger handling active system-side
+      // and let the canonical aggregate pass arm one outer pair for the full
+      // slot. Placing here would create one full-quantity pair per Set and the
+      // next pass would immediately cancel all but one.
+      livePosition.aggregateProtectionOwner = false
+      livePosition.aggregateProtectionKey = initialAggregate.slot
+      livePosition.aggregateProtectionMemberCount = initialAggregate.memberCount
+      livePosition.systemProtectionLegs = configuredSystemProtectionLegs(livePosition)
+      livePosition.protectionMode = "system_close_fallback"
+      refreshControlOrderSetCoverage(livePosition)
+      queueAggregateProtectionFinalization(connectionId, initialAggregate.slot)
+      pushStep(
+        livePosition,
+        "place_sl_tp",
+        true,
+        `deferred to aggregate ${initialAggregate.slot}; ${initialAggregate.memberCount} Set rows share one venue pair`,
+      )
+      await savePosition(livePosition)
+      await logProgressionEvent(
+        connectionId,
+        "live_trading",
+        "info",
+        `SL/TP delegated to aggregate protection for ${realPosition.symbol}`,
+        {
+          livePositionId: livePosition.id,
+          aggregateProtectionKey: initialAggregate.slot,
+          aggregateProtectionMemberCount: initialAggregate.memberCount,
+          systemProtectionLegs: livePosition.systemProtectionLegs,
         },
       )
     } else {
@@ -10759,9 +10955,10 @@ async function settleControlOrdersBeforeSystemClose(
     if (filledObservation?.source === "system_close") action.appliedFilledQuantity = applied.cumulativeApplied
   }
 
-  if (authoritative.ok && authoritative.quantity <= Math.max(1e-12, initialQuantity * 1e-8)) {
-    return { decision: "exchange_closed", authoritativeQuantity: 0, detail: "authoritative exchange quantity is zero" }
-  }
+  // A flat position does not by itself prove response-lost control writes are
+  // settled. Continue through owned-order cancellation and authoritative
+  // open-order absence below before allowing terminal archival; otherwise a
+  // stale reduce-only trigger can survive and close the next CTS entry.
 
   const activeControlIds = observations
     .filter((item) => item.source === "control_order" && isActiveControlOrderStatus(controlOrderStatus(item.order)))
@@ -11758,9 +11955,21 @@ export async function closeLivePosition(
     position.systemCloseRetry = undefined
     position.pendingQuantityMutation = undefined
     position.pendingAccumulation = undefined
+    position.pendingProtectionOrders = undefined
+    position.stopLossOrderId = undefined
+    position.takeProfitOrderId = undefined
+    position.stopLossPrice = 0
+    position.takeProfitPrice = 0
+    position.stopLossArmedQuantity = 0
+    position.takeProfitArmedQuantity = 0
+    position.protectionArmedQuantity = 0
+    position.systemProtectionLegs = []
+    position.protectionMode = undefined
+    position.controlOrderSetCoverage = undefined
     position.aggregateProtectionMutationRequestedAt = undefined
     position.aggregateProtectionMutationReason = undefined
     position.aggregateProtectionOwner = false
+    position.aggregateProtectionQuantity = 0
     position.closeReason = closeReason
     // Persist the actual exit price so the stats route and trade-history
     // table can show the real close price without needing to back-derive
@@ -15141,7 +15350,13 @@ export async function syncLiveFromPseudo(
           // filled or cancelled on the venue and needs re-arming.
           const currentSlPct = typeof livePos.stopLoss === "number" ? livePos.stopLoss : undefined
           const currentTpPct = typeof livePos.takeProfit === "number" ? livePos.takeProfit : undefined
-          const ordersMissing = !livePos.stopLossOrderId || !livePos.takeProfitOrderId
+          const aggregateMember =
+            livePos.aggregateProtectionOwner === false && Boolean(livePos.aggregateProtectionKey)
+          // Aggregate members intentionally do not own top-level venue IDs.
+          // Their Set coverage points at the leader pair and their exact
+          // triggers remain system-side, so missing local IDs are not a heal
+          // signal. Treating them as one caused per-tick re-arm/demote churn.
+          const ordersMissing = !aggregateMember && (!livePos.stopLossOrderId || !livePos.takeProfitOrderId)
           // CRITICAL: Guard against division by zero and NaN propagation.
           // currentSlPct/tpPct could be 0, negative, or NaN. Use safe division with
           // explicit isFinite checks to prevent crashes on trailing stop updates.
@@ -15211,6 +15426,9 @@ export const __liveStageTest = {
     return (await evalLockLua(client, RELEASE_LOCK_LUA, key, [token])) === 1
   },
   computeDesiredProtectionPrices,
+  initialAggregateProtectionCoordination,
+  projectAggregateMemberCoverage,
+  refreshControlOrderSetCoverage,
   aggregateProtectionMutationIsInFlight,
   isTerminalSystemCloseOrder,
   classifySystemCloseFailure,

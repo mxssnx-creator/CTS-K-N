@@ -1518,8 +1518,11 @@ export async function GET(
         protected: boolean
         protectionMode: string
         aggregateProtectionOwner: boolean
+        aggregateProtectionLeaderId?: string
         stopLossOrderId?: string
         takeProfitOrderId?: string
+        stopLossPrice?: number
+        takeProfitPrice?: number
         systemProtectionLegs: string[]
         updatedAt: number
       }>
@@ -1669,8 +1672,17 @@ export async function GET(
                   protected: coverage.protected === true,
                   protectionMode: String(coverage.protectionMode || "unknown"),
                   aggregateProtectionOwner: coverage.aggregateProtectionOwner === true,
+                  ...(coverage.aggregateProtectionLeaderId
+                    ? { aggregateProtectionLeaderId: String(coverage.aggregateProtectionLeaderId) }
+                    : {}),
                   ...(coverage.stopLossOrderId ? { stopLossOrderId: String(coverage.stopLossOrderId) } : {}),
                   ...(coverage.takeProfitOrderId ? { takeProfitOrderId: String(coverage.takeProfitOrderId) } : {}),
+                  ...(Number(coverage.stopLossPrice || 0) > 0
+                    ? { stopLossPrice: Number(coverage.stopLossPrice) }
+                    : {}),
+                  ...(Number(coverage.takeProfitPrice || 0) > 0
+                    ? { takeProfitPrice: Number(coverage.takeProfitPrice) }
+                    : {}),
                   systemProtectionLegs: Array.isArray(coverage.systemProtectionLegs)
                     ? coverage.systemProtectionLegs.map(String)
                     : [],

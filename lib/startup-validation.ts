@@ -170,22 +170,25 @@ async function validateRedisConnection(): Promise<{ status: "ok" | "warning" | "
 
 async function validateDatabaseSchema(): Promise<{ status: "ok" | "warning" | "error"; message: string }> {
   try {
-    const { initRedis, getSettings } = await import("@/lib/redis-db")
+    const { initRedis, getRedisClient } = await import("@/lib/redis-db")
     await initRedis()
-    
-    // Check for required top-level keys
-    const requiredKeys = ["progression_state", "strategies", "connections"]
-    
-    // Validate that schema migrations have run
-    const migrationVersion = await getSettings("_migration_version")
-    if (!migrationVersion) {
+
+    // Redis migrations persist their authoritative version as a scalar key.
+    // `getSettings("_migration_version")` reads an unrelated settings hash and
+    // therefore reported an uninitialised schema even while `_schema_version`
+    // was current. Read the same durable key used by the migration runner and
+    // installer verification so readiness cannot contradict deployment health.
+    const client = getRedisClient()
+    const rawVersion = await client.get("_schema_version").catch(() => null)
+    const migrationVersion = Number(rawVersion)
+    if (!Number.isFinite(migrationVersion) || migrationVersion <= 0) {
       return {
         status: "warning",
         message: "Database schema has not been initialized - migrations may need to run",
       }
     }
 
-    return { status: "ok", message: `Database schema valid (migration version: ${migrationVersion})` }
+    return { status: "ok", message: `Database schema valid (migration version: ${Math.floor(migrationVersion)})` }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error"
     return { status: "error", message: `Database schema validation failed: ${message}` }
@@ -219,17 +222,17 @@ async function validateSystemTime(): Promise<{ status: "ok" | "warning" | "error
       const serverTime = new Date(dateHeader).getTime()
       const drift = Math.abs(localTime - serverTime)
       
-      if (drift > 5000) {
-        return {
-          status: "warning",
-          message: `System clock is skewed by ${drift}ms - BingX API may fail with timestamp errors`,
-        }
-      }
-      
       if (drift > 60000) {
         return {
           status: "error",
           message: `System clock is severely skewed by ${drift}ms - BingX API will fail`,
+        }
+      }
+
+      if (drift > 5000) {
+        return {
+          status: "warning",
+          message: `System clock is skewed by ${drift}ms - BingX API may fail with timestamp errors`,
         }
       }
     }

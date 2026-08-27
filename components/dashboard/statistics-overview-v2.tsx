@@ -141,6 +141,7 @@ interface CompactStats {
     orderId?: string
     stopLossOrderId?: string
     takeProfitOrderId?: string
+    sharedControlProtection: boolean
     // Lifecycle
     status: string
     createdAt: number
@@ -539,7 +540,7 @@ function ExchangePositionRow({
           </div>
           <div className="flex flex-col">
             <span className="text-muted-foreground text-[9px]">
-              TP{lp.takeProfitOrderId && " ✓"}
+              TP{lp.takeProfitOrderId && (lp.sharedControlProtection ? " ✓ shared" : " ✓")}
             </span>
             <span className="font-mono tabular-nums text-emerald-700">
               {lp.takeProfitPrice || "—"}
@@ -548,7 +549,7 @@ function ExchangePositionRow({
           {/* SL */}
           <div className="flex flex-col">
             <span className="text-muted-foreground text-[9px]">
-              SL{lp.stopLossOrderId && " ✓"}
+              SL{lp.stopLossOrderId && (lp.sharedControlProtection ? " ✓ shared" : " ✓")}
             </span>
             <span className="font-mono tabular-nums text-red-700">
               {lp.stopLossPrice || "—"}
@@ -954,6 +955,17 @@ export function StatisticsOverviewV2() {
                   : marginUsd > 0
                     ? Math.round((unrealizedPnl / marginUsd) * 10000) / 100
                     : 0
+                const coverageRows = Array.isArray(p.controlOrderSetCoverage)
+                  ? p.controlOrderSetCoverage
+                  : []
+                const sharedSl = coverageRows.find((coverage: any) => coverage?.stopLossOrderId)
+                const sharedTp = coverageRows.find((coverage: any) => coverage?.takeProfitOrderId)
+                const effectiveStopLossOrderId = p.stopLossOrderId || sharedSl?.stopLossOrderId
+                const effectiveTakeProfitOrderId = p.takeProfitOrderId || sharedTp?.takeProfitOrderId
+                const sharedControlProtection = Boolean(
+                  (!p.stopLossOrderId && sharedSl?.stopLossOrderId)
+                  || (!p.takeProfitOrderId && sharedTp?.takeProfitOrderId),
+                )
                 return {
                   id:                    String(p.id || ""),
                   symbol:                String(p.symbol || ""),
@@ -969,11 +981,12 @@ export function StatisticsOverviewV2() {
                   liquidationDistancePct: Number(p.liquidationDistancePct) || 0,
                   unrealizedPnl,
                   roiPct,
-                  stopLossPrice:         Number(p.stopLossPrice)   || 0,
-                  takeProfitPrice:       Number(p.takeProfitPrice) || 0,
+                  stopLossPrice:         Number(p.stopLossPrice) || Number(sharedSl?.stopLossPrice) || 0,
+                  takeProfitPrice:       Number(p.takeProfitPrice) || Number(sharedTp?.takeProfitPrice) || 0,
                   orderId:               p.orderId ? String(p.orderId) : undefined,
-                  stopLossOrderId:       p.stopLossOrderId ? String(p.stopLossOrderId) : undefined,
-                  takeProfitOrderId:     p.takeProfitOrderId ? String(p.takeProfitOrderId) : undefined,
+                  stopLossOrderId:       effectiveStopLossOrderId ? String(effectiveStopLossOrderId) : undefined,
+                  takeProfitOrderId:     effectiveTakeProfitOrderId ? String(effectiveTakeProfitOrderId) : undefined,
+                  sharedControlProtection,
                   status:                String(p.status || "open"),
                   createdAt:             Number(p.createdAt) || 0,
                   updatedAt:             Number(p.updatedAt) || 0,
