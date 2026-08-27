@@ -7567,6 +7567,144 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "102")
     },
   },
+  {
+    version: 104,
+    name: "104-minimum-executable-volumes-and-set-protection",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const minimumChannelFactor = "1"
+      const protectionEnabled = "1"
+      let settingsHashesUpdated = 0
+      let directStatesUpdated = 0
+
+      // Main, Preset and Signal retain their identity factor of 1. Together
+      // with SYSTEM_VOLUME_FACTOR_MULTIPLIER this is the smallest system
+      // request; order-quantity.ts then raises only to an exchange lot or
+      // notional floor. Do not reduce independent Block/DCA multipliers here:
+      // they represent a separately evaluated strategy leg, not its base lot.
+      const channelPatch: Record<string, string> = {
+        base_volume_factor: minimumChannelFactor,
+        volume_factor: minimumChannelFactor,
+        baseVolumeFactor: minimumChannelFactor,
+        live_volume_factor: minimumChannelFactor,
+        volume_factor_live: minimumChannelFactor,
+        mainVolumeFactor: minimumChannelFactor,
+        mainTradeVolumeFactor: minimumChannelFactor,
+        main_trade_volume_factor: minimumChannelFactor,
+        preset_volume_factor: minimumChannelFactor,
+        volume_factor_preset: minimumChannelFactor,
+        presetVolumeFactor: minimumChannelFactor,
+        presetTradeVolumeFactor: minimumChannelFactor,
+        preset_trade_volume_factor: minimumChannelFactor,
+        signal_volume_factor: minimumChannelFactor,
+        volume_factor_signal: minimumChannelFactor,
+        signalVolumeFactor: minimumChannelFactor,
+        signalTradeVolumeFactor: minimumChannelFactor,
+        signal_trade_volume_factor: minimumChannelFactor,
+        // Protection is an execution safety requirement for every real Set.
+        // These aliases are mirrored because older engine workers read one of
+        // them during recovery; none of them enables a live engine by itself.
+        control_orders: protectionEnabled,
+        control_orders_enabled: protectionEnabled,
+        controlOrdersEnabled: protectionEnabled,
+        useControlOrders: protectionEnabled,
+        use_control_orders: protectionEnabled,
+        minimumExecutableVolumeVersion: "1",
+        setProtectionCoverageVersion: "1",
+        updated_at: now,
+      }
+
+      const connectionIds = new Set<string>()
+      for (const connection of await loadConnectionsForMaintenanceMigration(client)) {
+        const connectionId = normalizeDirectTradeConnectionId(connection?.id)
+        if (connectionId) connectionIds.add(connectionId)
+      }
+      for (const key of await scanRedisKeys(client, "connection:*")) {
+        const connectionId = normalizeDirectTradeConnectionId(String(key).slice("connection:".length))
+        if (connectionId) connectionIds.add(connectionId)
+      }
+
+      const settingsHashes = new Set<string>([
+        "app_settings",
+        "settings:app_settings",
+        "settings:all_settings",
+      ])
+      for (const connectionId of connectionIds) {
+        settingsHashes.add(`connection:${connectionId}`)
+        settingsHashes.add(`settings:connection:${connectionId}`)
+        settingsHashes.add(`connection_settings:${connectionId}`)
+        settingsHashes.add(`settings:connection_settings:${connectionId}`)
+        settingsHashes.add(`settings:trade_engine_state:${connectionId}`)
+      }
+
+      for (const key of settingsHashes) {
+        const current = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        await client.hset(key, channelPatch)
+        // connection:{id}.connection_settings is a legacy recovery mirror and
+        // otherwise could reintroduce a larger factor after a worker restart.
+        if (
+          key.startsWith("connection:")
+          && typeof current.connection_settings === "string"
+          && current.connection_settings.trim().startsWith("{")
+        ) {
+          try {
+            await client.hset(key, {
+              connection_settings: JSON.stringify({
+                ...JSON.parse(current.connection_settings),
+                ...channelPatch,
+              }),
+            })
+          } catch {
+            // Keep malformed recovery evidence intact; canonical hashes above
+            // remain authoritative and fail closed for live dispatch.
+          }
+        }
+        settingsHashesUpdated++
+      }
+
+      // Direct Trade is intentionally the only channel whose public factor can
+      // fall below one. Set both historical aliases because route hydration
+      // gives volumeFactor precedence over minVolFactor.
+      const directStateKeys = new Set<string>([directTradeKeyspace().state])
+      for (const connectionId of connectionIds) directStateKeys.add(directTradeKeyspace(connectionId).state)
+      for (const key of await scanRedisKeys(client, "direct_trade:connection:*:state")) directStateKeys.add(String(key))
+      for (const key of directStateKeys) {
+        const raw = await client.get(key).catch(() => null)
+        if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+        try {
+          const state = JSON.parse(raw) as Record<string, unknown>
+          await client.set(key, JSON.stringify({
+            ...state,
+            minVolFactor: DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+            volumeFactor: DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
+            volumeFactorDefaultsVersion: 2,
+            minimumExecutableVolumeVersion: 1,
+            setProtectionCoverageVersion: 1,
+            minimumExecutableVolumeUpdatedAt: now,
+          }))
+          directStatesUpdated++
+        } catch {
+          // Do not discard unreadable crash-recovery payloads.
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        systemwide_minimum_executable_volume: "exchange-floor-after-system-factor-v1",
+        systemwide_channel_volume_factor: minimumChannelFactor,
+        direct_trade_volume_factor: String(DIRECT_TRADE_VOLUME_FACTOR_DEFAULT),
+        set_protection_requirement: "every-executed-set-lineage-v1",
+        set_protection_control_orders_enabled: protectionEnabled,
+        minimum_executable_volume_settings_hashes_updated: String(settingsHashesUpdated),
+        minimum_executable_volume_direct_states_updated: String(directStatesUpdated),
+        schema_version: "104",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // Never restore a larger volume or disable protection on rollback.
+      await client.set("_schema_version", "103")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {
