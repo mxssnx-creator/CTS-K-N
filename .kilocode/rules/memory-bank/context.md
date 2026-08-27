@@ -3,13 +3,13 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
-## One-hour X02 audit and continuity release candidate (2026-08-27; authoritative)
+## System-statistics and complete-dispatch release candidate (2026-08-27; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
-  `fix/control-orders-complete-20260826`. Local source commit `6bd7b8b` is a
-  linear child of GitHub `main@ec3be83`; the final report/build/safety follow-up
-  remains uncommitted until the last checkpoint. Do not reset or split this
-  shared release candidate.
+  `fix/control-orders-complete-20260826`. The exact validated source head is
+  `6af0933` (`fix: dispatch every eligible live set`), a linear child of report
+  commit `6849e48`, CTS-only statistics commit `6bd7b8b`, and GitHub
+  `main@ec3be83`. Do not reset or split this release candidate.
 - The read-only X02 observer captured 241 samples from
   2026-08-26T23:30:06Z through 2026-08-27T00:30:43Z. Health was HTTP 200 for
   241/241 samples, but the deployed Direct worker had only 196/241 healthy
@@ -28,23 +28,26 @@ Total output lines: 1636
   position management independent. Direct Performance Stats cancel superseded
   browser polls and show `—`, never fake `+0.0000`, for types without a settled
   close.
-- Main coordination still calculates/evaluates/publishes every Set, but
-  physical exchange/paper side effects have a non-configurable hard ceiling of
-  four Sets per symbol/cycle. A family-interleaved cursor is persisted per
-  symbol in Redis, so deferred Normal/Trailing/Block/DCA rows resume fairly
-  after subsequent cycles or restart without an unbounded order/event-loop
-  burst.
-- Current exact gates are green: 231/231 Unit suites and 1,503/1,503 tests,
+- Main coordination calculates, evaluates, publishes, and physically dispatches
+  every unique policy-enabled Set without a hidden per-symbol sampling budget.
+  Deduplication, execution-family settings, durable Set identity, exchange rate
+  controls, CTS ownership, and per-Set control coverage remain authoritative.
+- Current exact local gates are green: 231/231 Unit suites and 1,503/1,503 tests,
   4/4 Integration suites and 61/61 tests, TypeScript, ESLint, 42/42 static
-  pages, 348/348 complete Next traces, Kilo 37/37 with schema v103, mutation-free
-  Linux install preflight, and zero secret findings. The Next wrapper now
+  pages, 348/348 complete Next traces, Kilo 37/37 with schema v103,
+  mutation-free Linux install preflight, and a 1,537-file zero-finding secret
+  scan. The Next wrapper now
   retries a missing BUILD_ID only after successful compile/page collection;
   source and type failures remain fail-closed.
+- A local standalone HTTP smoke was attempted after the fresh build, but the
+  automation network broker denied the localhost request. It must not be
+  represented as passed. Repeat read-only UI/API checks through the managed
+  production path after the checked head is merged and deployed.
 - Verified checkpoints:
   `/workspace/backups/CTS-K-N/20260827T005156Z-pre-next-build-retry-fix` and
-  `/workspace/backups/CTS-K-N/20260827T010152Z-pre-main-dispatch-safety`.
-  Both contain complete bundle/patch/untracked/status/SHA evidence with
-  owner-only permissions.
+  `/workspace/backups/CTS-K-N/20260827T011939Z-precommit-dispatch-complete`.
+  They contain complete bundle/patch/untracked/status/SHA evidence with
+  owner-only permissions; SHA checks and Git bundle verification pass.
 - Publish only through a green, head-bound GitHub PR, then use the managed
   Chisel activation and pinned localhost SSH banner before a fresh server
   checkpoint and atomic deployment of merged `main`. X01/Mainnet and every
