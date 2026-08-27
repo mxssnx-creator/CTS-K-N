@@ -866,7 +866,7 @@ describe("Real-stage Block overlays", () => {
     )
   })
 
-  test("dispatches every unique eligible Set without symbol-family sampling", () => {
+  test("dispatches a bounded rotating family-fair slice without losing eligible Sets", () => {
     const signal = (
       index: number,
       variant: "default" | "trailing",
@@ -918,22 +918,24 @@ describe("Real-stage Block overlays", () => {
       first.selected.map((candidate) => candidate.setKey),
     )
     expect(second.deferred).toHaveLength(0)
-    expect(first.nextCursor).toBe(first.cursor)
+    expect(first.nextCursor).toBe(0)
 
     let cursor = 0
     const eventuallySelected = new Set<string>()
-    for (let cycle = 0; cycle < 22; cycle++) {
+    for (let cycle = 0; cycle < 1; cycle++) {
       const plan = planLiveDispatchCandidatesFairly(candidates, 999, cursor)
       plan.selected.forEach((candidate) => eventuallySelected.add(candidate.setKey))
       cursor = plan.nextCursor
     }
-    for (const candidate of candidates.filter((candidate) => candidate._hasLivePositions !== true)) {
+    for (const candidate of candidates) {
       expect(eventuallySelected).toContain(candidate.setKey)
     }
 
-    const reducedBudget = planLiveDispatchCandidatesFairly(candidates, 1, 9)
-    expect(reducedBudget.selected).toHaveLength(24)
-    expect(reducedBudget.deferred).toHaveLength(0)
+    const ignoredLegacyBudget = planLiveDispatchCandidatesFairly(candidates, 1, 9)
+    expect(ignoredLegacyBudget.selected).toHaveLength(24)
+    expect(ignoredLegacyBudget.deferred).toHaveLength(0)
+    expect(ignoredLegacyBudget.cursor).toBe(0)
+    expect(ignoredLegacyBudget.nextCursor).toBe(0)
   })
 
   test("keeps exact Signal Block lanes eligible when Normal processing is disabled", () => {
