@@ -2229,3 +2229,38 @@ credentials are present.
   with managed activation plus the pinned harmless SSH banner in the same
   process, then checkpoint, deploy merged `main`, restart and continue the X02
   soak. `docs/REMOTE-CHISEL-WORKMODE.md` records this recovery class.
+
+## Session 2026-08-27 — merged main, X02 runtime configuration and verification boundary
+
+- [x] GitHub PR #247 (`Preserve X02 live intent and refresh venue stats`) is
+  merged into `main` as `6b8f8046808d7b3399a10c495ccfef82b34cc2f5`. The
+  canonical checkout `/workspace/CTS-K-N` is clean and matches `origin/main`.
+- [x] The authorized X02 runtime configuration was applied on the remote
+  service before the current Work process lost network approval: connection,
+  Main, Preset and Signal flags were enabled in Live mode; the 32-symbol basket
+  and all configured strategy/indication families were retained; Direct Trade
+  was set to the explicit 300-position capacity with per-symbol and
+  per-direction ceilings of 300. This is an X02 Prod-VST runtime change, not a
+  GitHub source change. X01/Mainnet and Bybit were not mutated.
+- [x] The three managed services (`cts-kn.service`,
+  `cts-kn-direct-trade.service`, `cts-kn-scheduler.service`) were restarted and
+  reported active; the health endpoint was healthy and X02 direct-trade logs
+  showed live entry attempts. Exchange order snapshots still reported BingX
+  `100410` cooldown during the last read, so open-order counts remained
+  explicitly unavailable (`ordersDataAvailable=false`) rather than a false
+  zero. No one-hour full-basket soak or positive-default promotion is claimed.
+- [x] Minimum sizing remains fail-closed and venue-authoritative: shared
+  channel factors use identity minimum `1`, the system execution multiplier is
+  `0.2`, Direct Trade's minimum factor is `0.1`, and exchange quantity/notional
+  rules can only raise an executable order to the venue floor. Control-order
+  capacity (`BINGX_CONTROL_ORDER_LIMIT=200`) and per-Set lineage/reconciliation
+  are intentionally preserved; no artificial symbol/position fan-out cap was
+  reintroduced.
+- [ ] A fresh managed Chisel activation was attempted in this Work process but
+  the network approval broker cancelled it before Chisel execution. The
+  process-local forward therefore refused connections and no further remote
+  mutation, soak, restart, reinstall, or UI/API live check is authorized until
+  a later activation succeeds with the pinned SSH banner in the same process.
+- [x] Owner-only recovery checkpoint for this context update:
+  `/workspace/backups/CTS-K-N/20260827T075621Z-pre-context-update` (bundle,
+  status/HEAD, patch, untracked archive, SHA-256 manifest and verification).
