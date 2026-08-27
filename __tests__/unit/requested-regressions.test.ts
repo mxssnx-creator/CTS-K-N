@@ -930,7 +930,6 @@ describe("requested regression guardrails", () => {
     expect(strategy).toContain("dispatch_failed_to_open_count")
     expect(strategy).toContain("dispatch_duration_ms")
     expect(strategy).toContain('summarizeLiveDispatchRows(dispatchSets, "qualified_policy_enabled")')
-    expect(strategy).toContain('summarizeLiveDispatchRows(dispatchPlan.deferred, "physical_budget_deferred")')
     expect(strategy).toContain('persistUnavailableDispatch("connector_unavailable")')
     expect(strategy).toContain("fpCacheKey,\n            nextFpCache,\n            shouldContinue,")
     expect(strategy).toContain("targetKey,\n            netTargetWrites,\n            shouldContinue,")

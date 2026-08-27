@@ -3,69 +3,61 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
-## One-hour X02 audit and bounded-dispatch release candidate (2026-08-27; authoritative)
+## Bounded-dispatch, schema-v104, and X02 audit release candidate (2026-08-27; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
-  `fix/control-orders-complete-20260826`. The exact safety-corrected source head
-  is `e1cdba3` (`fix: bound and rotate live set dispatch`), a linear child of
-  report commit `6849e48`, CTS-only statistics commit `6bd7b8b`, and GitHub
-  `main@ec3be83`. Intermediate local commit `6af0933` removed the physical
-  dispatch ceiling; it was never pushed or deployed and is neutralized by
-  `e1cdba3`. Do not reset or split this release candidate.
+  `fix/control-orders-complete-20260826`. Schema-v104 protection commit
+  `bb20668` is being merged with GitHub `main@a8b7d90`. Safety commit `e1cdba3`
+  remains authoritative for physical Main dispatch: every Set is calculated,
+  evaluated, and published, while at most four family-interleaved Sets per
+  symbol/cycle create paper or exchange side effects; a persisted cursor
+  resumes deferred Sets fairly after restart.
+- GitHub PR #235 merged an unbounded physical-dispatch tree as `a8b7d90`. It is
+  not deployed to the self-hosted server. Never deploy `a8b7d90` alone; PR #236
+  must first carry the bounded corrective merge, pass every reported check, and
+  merge with exact-head binding.
+- Schema v104 migrates every known Main/Preset/Signal channel factor to the
+  minimum system identity factor, Direct Trade to its canonical 0.1 default,
+  and enables control-order protection aliases without enabling a live engine.
 - The read-only X02 observer captured 241 samples from
   2026-08-26T23:30:06Z through 2026-08-27T00:30:43Z. Health was HTTP 200 for
-  241/241 samples, but the deployed Direct worker had only 196/241 healthy
-  progress samples, progress-age p95 47.993 s, and repeated expected projection
-  lease conflicts counted as errors. The durable settled exchange subset was
-  -2.15 USDT with classic PF 0.73876063; no new entry and no new settled result
-  occurred during the hour. No configuration is Mainnet-qualified.
+  241/241 samples. The durable settled exchange subset was -2.15 USDT with
+  classic PF 0.73876063; no new entry and no new settled result occurred during
+  the hour. No configuration is Mainnet-qualified.
 - Sanitized evidence is under
   `docs/reports/20260826T233006Z-x02-vst-one-hour/`: Markdown, JSON, 241-row
   runtime CSV, 22-row engine CSV, 29-row step CSV, and verified SHA-256 sums.
   PF coordinate remains unavailable unless every settled row has a positive
   PositionCost denominator; pending/open rows never enter realized PnL/PF.
-- The Direct worker fix makes historical recalculation single-flight and
-  asynchronous, backs off expected 409 lease conflicts without inflating the
-  error window, persists progress while projection runs, and keeps live
-  position management independent. Direct Performance Stats cancel superseded
-  browser polls and show `—`, never fake `+0.0000`, for types without a settled
-  close.
-- Main coordination calculates, evaluates, and publishes every policy-enabled
-  Set. Physical exchange/paper side effects are capped at four Sets per symbol
-  and coordinator cycle, family-interleaved, and resumed with a persisted
-  per-symbol cursor. Deferred rows remain visible and are visited on subsequent
-  cycles; this prevents unbounded venue/event-loop bursts while retaining full
-  Set coverage, durable identity, CTS ownership, and execution-family policy.
-- Current exact full local gates after the safety correction are green:
-  231/231 Unit suites and 1,503/1,503 tests,
-  4/4 Integration suites and 61/61 tests, TypeScript, ESLint, 42/42 static
-  pages, 348/348 complete Next traces, Kilo 37/37 with schema v103,
-  mutation-free Linux install preflight, and a 1,537-file zero-finding secret
-  scan. The Next wrapper now
-  retries a missing BUILD_ID only after successful compile/page collection;
-  source and type failures remain fail-closed. The two exact dispatch
-  regression suites are additionally green (234/234 tests).
-- The isolated `.next-prod` build is green with 42 pages and 348 traces. The
-  32-symbol standalone preview did not start because workspace cleanup removed
-  the documented local Redis test binary; no app server or exchange action was
-  started. Restore an isolated Redis binary and repeat this paper-only gate.
-- Managed Chisel reached the pinned banner and produced a fully verified remote
-  checkpoint earlier in this run. Subsequent requests were disconnected by the
-  Work network broker after about 16 seconds before approval completed. Treat
-  this as a transient platform/network blocker, never as permission to use
-  direct SSH or an alternate proxy.
-- Verified checkpoints:
-  `/workspace/backups/CTS-K-N/20260827T005156Z-pre-next-build-retry-fix` and
-  `/workspace/backups/CTS-K-N/20260827T013133Z-pre-safety-correction-570d838`
-  plus
-  `/workspace/backups/CTS-K-N/20260827T013341Z-precommit-bounded-dispatch`.
-  They contain complete bundle/patch/untracked/status/SHA evidence with
-  owner-only permissions; SHA checks and Git bundle verification pass.
-- Publish only through a green, head-bound GitHub PR, then use the managed
-  Chisel activation and pinned localhost SSH banner before a fresh server
-  checkpoint and atomic deployment of merged `main`. X01/Mainnet and every
-  Bybit connection remain read-only; any X02 write must use virtual minimum
-  volume, unique ownership IDs and complete owned-object cleanup.
+- Direct historical recalculation is single-flight/asynchronous, expected 409
+  projection lease conflicts back off without inflating the error window, and
+  live position management stays independent. Direct Performance Stats cancel
+  superseded polls and show `—`, never fake zero, without a settled close.
+- The pre-reconciliation full gates were green: 231/231 Unit suites and
+  1,503/1,503 tests, 4/4 Integration suites and 61/61 tests, TypeScript, ESLint,
+  42 pages, 348 complete Next traces, mutation-free Linux preflight, recreation
+  verification, and a 1,537-file zero-finding secret scan. Repeat all affected
+  gates on the resolved v104/main merge before updating PR #236.
+- The isolated `.next-prod` build is green. The 32-symbol standalone preview
+  did not start because workspace cleanup removed the documented local Redis
+  test binary; no app server or exchange action started. Restore isolated Redis
+  before claiming this paper-only gate.
+- Managed Chisel and the pinned SSH banner are healthy. The release bundle was
+  transferred as 14 individually hashed segments and passed total SHA-256 plus
+  `git bundle verify` remotely. Self-hosted production remains clean on
+  `main@ec3be83`; core services and liveness/readiness were active/HTTP 200 at
+  the last read-only check.
+- Verified checkpoints include
+  `/workspace/backups/CTS-K-N/20260827T013133Z-pre-safety-correction-570d838`,
+  `/workspace/backups/CTS-K-N/20260827T013341Z-precommit-bounded-dispatch`,
+  `/workspace/backups/CTS-K-N/20260827T013719Z-prepush-a715ab1`, and
+  `/workspace/backups/CTS-K-N/20260827T014653Z-premerge-github-main-a8b7d90`.
+  All include owner-only bundle/patch/untracked/status/SHA evidence and passed
+  bundle/hash verification.
+- X01/Mainnet and every Bybit connection remain read-only. Any X02 write uses
+  virtual minimum volume, unique ownership IDs, hard safety limits, and complete
+  owned-object cleanup. No profit or Mainnet qualification may be inferred from
+  this negative/incomplete hour.
 
 ## Control-order release publication checkpoint (2026-08-26; latest handoff)
 
