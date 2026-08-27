@@ -9,7 +9,6 @@ import {
 import {
   collectActivePositionCountsBySymbol,
   isPositionCountStrategySet,
-  LIVE_DISPATCH_HARD_MAX_PER_SYMBOL,
   limitLiveDispatchCandidatesFairly,
   planLiveDispatchCandidatesFairly,
   resolveBlockNormalProfitFactor,
@@ -867,7 +866,7 @@ describe("Real-stage Block overlays", () => {
     )
   })
 
-  test("dispatches a bounded rotating family-fair slice without losing eligible Sets", () => {
+  test("dispatches every unique eligible Set without symbol-family sampling", () => {
     const signal = (
       index: number,
       variant: "default" | "trailing",
@@ -908,36 +907,33 @@ describe("Real-stage Block overlays", () => {
     const second = planLiveDispatchCandidatesFairly(candidates, 999, first.nextCursor)
 
     expect(limitLiveDispatchCandidatesFairly(candidates, 999)).toEqual(first.selected)
-    expect(LIVE_DISPATCH_HARD_MAX_PER_SYMBOL).toBe(4)
-    expect(first.selected).toHaveLength(4)
-    expect(first.deferred).toHaveLength(20)
+    expect(first.selected).toHaveLength(24)
+    expect(first.deferred).toHaveLength(0)
     expect(first.familyCount).toBe(2)
-    expect(first.budget).toBe(4)
+    expect(first.budget).toBe(24)
     expect(first.selected.some((candidate) => candidate.trailingProfile?.mode === "signal_dynamic")).toBe(true)
     expect(first.selected.filter((candidate) => candidate._hasLivePositions === true)).toHaveLength(2)
-    expect(new Set(first.selected.map((candidate) => candidate.setKey)).size).toBe(4)
-    expect(second.selected.map((candidate) => candidate.setKey)).not.toEqual(
+    expect(new Set(first.selected.map((candidate) => candidate.setKey)).size).toBe(24)
+    expect(second.selected.map((candidate) => candidate.setKey)).toEqual(
       first.selected.map((candidate) => candidate.setKey),
     )
-    expect(second.deferred).toHaveLength(20)
-    expect(first.nextCursor).toBe(4)
+    expect(second.deferred).toHaveLength(0)
+    expect(first.nextCursor).toBe(first.cursor)
 
     let cursor = 0
     const eventuallySelected = new Set<string>()
-    for (let cycle = 0; cycle < 6; cycle++) {
+    for (let cycle = 0; cycle < 22; cycle++) {
       const plan = planLiveDispatchCandidatesFairly(candidates, 999, cursor)
       plan.selected.forEach((candidate) => eventuallySelected.add(candidate.setKey))
       cursor = plan.nextCursor
     }
-    for (const candidate of candidates) {
+    for (const candidate of candidates.filter((candidate) => candidate._hasLivePositions !== true)) {
       expect(eventuallySelected).toContain(candidate.setKey)
     }
 
     const reducedBudget = planLiveDispatchCandidatesFairly(candidates, 1, 9)
-    expect(reducedBudget.selected).toHaveLength(1)
-    expect(reducedBudget.deferred).toHaveLength(23)
-    expect(reducedBudget.cursor).toBe(9)
-    expect(reducedBudget.nextCursor).toBe(10)
+    expect(reducedBudget.selected).toHaveLength(24)
+    expect(reducedBudget.deferred).toHaveLength(0)
   })
 
   test("keeps exact Signal Block lanes eligible when Normal processing is disabled", () => {
