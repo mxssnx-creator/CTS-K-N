@@ -3,13 +3,15 @@ Total output lines: 1636
 
 # Active Context: CTS-K-N Trading System (main project)
 
-## System-statistics and complete-dispatch release candidate (2026-08-27; authoritative)
+## One-hour X02 audit and bounded-dispatch release candidate (2026-08-27; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch
-  `fix/control-orders-complete-20260826`. The exact validated source head is
-  `6af0933` (`fix: dispatch every eligible live set`), a linear child of report
-  commit `6849e48`, CTS-only statistics commit `6bd7b8b`, and GitHub
-  `main@ec3be83`. Do not reset or split this release candidate.
+  `fix/control-orders-complete-20260826`. The exact safety-corrected source head
+  is `e1cdba3` (`fix: bound and rotate live set dispatch`), a linear child of
+  report commit `6849e48`, CTS-only statistics commit `6bd7b8b`, and GitHub
+  `main@ec3be83`. Intermediate local commit `6af0933` removed the physical
+  dispatch ceiling; it was never pushed or deployed and is neutralized by
+  `e1cdba3`. Do not reset or split this release candidate.
 - The read-only X02 observer captured 241 samples from
   2026-08-26T23:30:06Z through 2026-08-27T00:30:43Z. Health was HTTP 200 for
   241/241 samples, but the deployed Direct worker had only 196/241 healthy
@@ -28,24 +30,35 @@ Total output lines: 1636
   position management independent. Direct Performance Stats cancel superseded
   browser polls and show `—`, never fake `+0.0000`, for types without a settled
   close.
-- Main coordination calculates, evaluates, publishes, and physically dispatches
-  every unique policy-enabled Set without a hidden per-symbol sampling budget.
-  Deduplication, execution-family settings, durable Set identity, exchange rate
-  controls, CTS ownership, and per-Set control coverage remain authoritative.
-- Current exact local gates are green: 231/231 Unit suites and 1,503/1,503 tests,
+- Main coordination calculates, evaluates, and publishes every policy-enabled
+  Set. Physical exchange/paper side effects are capped at four Sets per symbol
+  and coordinator cycle, family-interleaved, and resumed with a persisted
+  per-symbol cursor. Deferred rows remain visible and are visited on subsequent
+  cycles; this prevents unbounded venue/event-loop bursts while retaining full
+  Set coverage, durable identity, CTS ownership, and execution-family policy.
+- Current exact full local gates after the safety correction are green:
+  231/231 Unit suites and 1,503/1,503 tests,
   4/4 Integration suites and 61/61 tests, TypeScript, ESLint, 42/42 static
   pages, 348/348 complete Next traces, Kilo 37/37 with schema v103,
   mutation-free Linux install preflight, and a 1,537-file zero-finding secret
   scan. The Next wrapper now
   retries a missing BUILD_ID only after successful compile/page collection;
-  source and type failures remain fail-closed.
-- A local standalone HTTP smoke was attempted after the fresh build, but the
-  automation network broker denied the localhost request. It must not be
-  represented as passed. Repeat read-only UI/API checks through the managed
-  production path after the checked head is merged and deployed.
+  source and type failures remain fail-closed. The two exact dispatch
+  regression suites are additionally green (234/234 tests).
+- The isolated `.next-prod` build is green with 42 pages and 348 traces. The
+  32-symbol standalone preview did not start because workspace cleanup removed
+  the documented local Redis test binary; no app server or exchange action was
+  started. Restore an isolated Redis binary and repeat this paper-only gate.
+- Managed Chisel reached the pinned banner and produced a fully verified remote
+  checkpoint earlier in this run. Subsequent requests were disconnected by the
+  Work network broker after about 16 seconds before approval completed. Treat
+  this as a transient platform/network blocker, never as permission to use
+  direct SSH or an alternate proxy.
 - Verified checkpoints:
   `/workspace/backups/CTS-K-N/20260827T005156Z-pre-next-build-retry-fix` and
-  `/workspace/backups/CTS-K-N/20260827T011939Z-precommit-dispatch-complete`.
+  `/workspace/backups/CTS-K-N/20260827T013133Z-pre-safety-correction-570d838`
+  plus
+  `/workspace/backups/CTS-K-N/20260827T013341Z-precommit-bounded-dispatch`.
   They contain complete bundle/patch/untracked/status/SHA evidence with
   owner-only permissions; SHA checks and Git bundle verification pass.
 - Publish only through a green, head-bound GitHub PR, then use the managed
