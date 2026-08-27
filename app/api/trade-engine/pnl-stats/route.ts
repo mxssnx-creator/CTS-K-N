@@ -12,6 +12,7 @@ import {
 } from "@/lib/live-position-pnl"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { isRealExchangePosition } from "@/lib/live-position-source"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
 
@@ -40,6 +41,11 @@ interface PnLStats {
   accounting_complete: boolean
   accounting_coverage_percent: number
   open_positions: number
+  open_set_lifecycles: number
+  open_exchange_positions: number | null
+  open_positions_source: "cts_exchange_snapshot" | "live_position_ledger_fallback"
+  excluded_untracked_positions: number
+  excluded_untracked_orders: number
   total_pnl: number
   total_pnl_percent: number
   realized_pnl: number
@@ -185,6 +191,11 @@ function emptyStats(): PnLStats {
     accounting_complete: true,
     accounting_coverage_percent: 100,
     open_positions: 0,
+    open_set_lifecycles: 0,
+    open_exchange_positions: null,
+    open_positions_source: "live_position_ledger_fallback",
+    excluded_untracked_positions: 0,
+    excluded_untracked_orders: 0,
     total_pnl: 0,
     total_pnl_percent: 0,
     realized_pnl: 0,
@@ -243,9 +254,10 @@ export async function GET(request: NextRequest) {
     // Read the canonical Redis lifecycle ledgers instead, which also includes
     // current open positions and therefore keeps realised and live PnL on the
     // same authoritative calculation path.
-    const [openLedger, closedLedger] = await Promise.all([
+    const [openLedger, closedLedger, executionSummary] = await Promise.all([
       getLivePositions(connectionId),
       getClosedLivePositions(connectionId, CLOSED_ANALYTICS_LIMIT),
+      getLiveExecutionSummary(connectionId),
     ])
 
     const byId = new Map<string, any>()
@@ -274,9 +286,15 @@ export async function GET(request: NextRequest) {
       .sort((left, right) => timestampOf(closedAtOf(right)) - timestampOf(closedAtOf(left)))
     const closedPositions = closedHistory.slice(0, CLOSED_HISTORY_LIMIT)
     const openPositions = positions.filter((position) => isLiveOpenStatus(position?.status))
+    const exchangeOpenAvailable =
+      executionSummary.exchange.positionsStatus.available &&
+      executionSummary.exchange.tracking.attributionComplete
+    const authoritativeOpenPositions = exchangeOpenAvailable
+      ? executionSummary.openPositions
+      : openPositions.length
 
     let realizedPnl = 0
-    let unrealizedPnl = 0
+    let unrealizedPnl = exchangeOpenAvailable ? executionSummary.unrealizedPnl : 0
     let totalMargin = 0
     let totalWinPnL = 0
     let totalLossPnL = 0
@@ -372,8 +390,15 @@ export async function GET(request: NextRequest) {
     }
 
     for (const pos of openPositions) {
-      const pnl = resolveUnrealizedPnl(pos)
-      if (pnl !== undefined && Number.isFinite(pnl)) unrealizedPnl += pnl
+      // Multiple independent Set lifecycles can legitimately aggregate into
+      // one net venue slot. The exchange returns PnL for that slot, so adding
+      // the same venue PnL from every Set row multiplies the headline result.
+      // Use lifecycle PnL only while the CTS-attributed venue snapshot is
+      // unavailable; otherwise the exchange snapshot is authoritative.
+      if (!exchangeOpenAvailable) {
+        const pnl = resolveUnrealizedPnl(pos)
+        if (pnl !== undefined && Number.isFinite(pnl)) unrealizedPnl += pnl
+      }
       const margin = resolvePositionMargin(pos)
       if (margin !== undefined) totalMargin += margin
     }
@@ -398,13 +423,24 @@ export async function GET(request: NextRequest) {
       : 100
 
     const stats: PnLStats = {
-      total_positions: closedPositions.length + openPositions.length,
+      total_positions: closedPositions.length + authoritativeOpenPositions,
       closed_positions: closedPositions.length,
       settled_closed_positions: totalTrades,
       accounting_pending: accountingPending,
       accounting_complete: accountingPending === 0,
       accounting_coverage_percent: parseFloat(accountingCoveragePercent.toFixed(2)),
-      open_positions: openPositions.length,
+      open_positions: authoritativeOpenPositions,
+      open_set_lifecycles: openPositions.length,
+      open_exchange_positions: exchangeOpenAvailable ? executionSummary.openPositions : null,
+      open_positions_source: exchangeOpenAvailable
+        ? "cts_exchange_snapshot"
+        : "live_position_ledger_fallback",
+      excluded_untracked_positions: exchangeOpenAvailable
+        ? executionSummary.excludedUntrackedPositions
+        : 0,
+      excluded_untracked_orders: executionSummary.exchange.ordersStatus.available
+        ? executionSummary.excludedUntrackedOrders
+        : 0,
       total_pnl: parseFloat(effectivePnl.toFixed(8)),
       total_pnl_percent: totalMargin > 0 ? parseFloat(((effectivePnl / totalMargin) * 100).toFixed(2)) : 0,
       realized_pnl: parseFloat(realizedPnl.toFixed(8)),
