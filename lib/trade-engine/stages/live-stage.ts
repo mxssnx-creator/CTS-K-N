@@ -7830,7 +7830,10 @@ interface AggregateProtectionBookResult {
   changedPositions: number
   rearmedLeaders: number
   ownershipMismatches: number
+  closedMemberIds: Set<string>
 }
+
+const AGGREGATE_SLOT_GENERATION_GRACE_MS = 5_000
 
 function configuredSystemProtectionLegs(position: LivePosition): ProtectionOrderLeg[] {
   const { desiredSl, desiredTp } = computeDesiredProtectionPrices(position)
@@ -7961,6 +7964,7 @@ async function reconcileAggregateProtectionBook(
     changedPositions: 0,
     rearmedLeaders: 0,
     ownershipMismatches: 0,
+    closedMemberIds: new Set<string>(),
   }
   if (!connector) return result
 
@@ -7995,9 +7999,64 @@ async function reconcileAggregateProtectionBook(
   })
   result.plans = buildAggregateProtectionPlans(planCandidates, venueCandidates)
   const positionsById = new Map(candidates.map((position) => [position.id, position]))
+  const venueMarkBySlot = new Map<string, number>()
+  for (const position of exchangePositions) {
+    const rawQuantity = Number(position?.size ?? position?.positionAmt ?? position?.quantity ?? 0)
+    const direction = normalizeExchangePositionDirection(position?.positionSide, position?.side, rawQuantity)
+    if (!direction) continue
+    venueMarkBySlot.set(
+      aggregateProtectionSlot(position?.symbol, direction),
+      Number(position?.markPrice ?? position?.indexPrice ?? position?.lastPrice ?? position?.entryPrice ?? 0) || 0,
+    )
+  }
 
   for (const plan of result.plans) {
     const members = plan.memberIds.map((id) => positionsById.get(id)).filter((value): value is LivePosition => Boolean(value))
+    const staleMembers = plan.staleMemberIds
+      .map((id) => positionsById.get(id))
+      .filter((value): value is LivePosition => Boolean(value))
+
+    if (plan.ownershipMatches && staleMembers.length > 0) {
+      // A physical slot can close and re-open between snapshots. In that
+      // case the venue quantity is fully explained by the newest complete CTS
+      // fills, while older Set rows belong to the prior slot generation. Give
+      // recent fills one reconciliation window before retiring anything; if
+      // the relation is still exact, archive only the superseded logical rows
+      // without submitting another venue reduction.
+      const cutoff = Date.now() - AGGREGATE_SLOT_GENERATION_GRACE_MS
+      if (staleMembers.some((member) => Number(member.createdAt || 0) > cutoff)) {
+        result.ownershipMismatches++
+        for (const member of [...members, ...staleMembers]) {
+          if (await demoteAggregateProtectionMember(
+            connector,
+            member,
+            plan,
+            `${plan.key} slot generation settling; system=${plan.reportedSystemQuantity} venue=${plan.venueQuantity}`,
+            liveOrderIds,
+          )) result.changedPositions++
+        }
+        continue
+      }
+
+      const closePrice = venueMarkBySlot.get(plan.key) || 0
+      for (let offset = 0; offset < staleMembers.length; offset += 8) {
+        const batch = staleMembers.slice(offset, offset + 8)
+        const closed = await Promise.all(batch.map(async (member) => {
+          const terminal = await closeLivePosition(
+            connectionId,
+            member.id,
+            closePrice,
+            undefined,
+            "exchange_reconciliation",
+          )
+          if (terminal?.status !== "closed") return false
+          Object.assign(member, terminal)
+          result.closedMemberIds.add(member.id)
+          return true
+        }))
+        result.changedPositions += closed.filter(Boolean).length
+      }
+    }
     if (!plan.ownershipMatches) {
       result.ownershipMismatches++
       for (const member of members) {
@@ -8005,7 +8064,7 @@ async function reconcileAggregateProtectionBook(
           connector,
           member,
           plan,
-          `${plan.key} system=${plan.systemQuantity} venue=${plan.venueQuantity}; CTS controls removed and independent venue quantity preserved`,
+          `${plan.key} system=${plan.reportedSystemQuantity} venue=${plan.venueQuantity}; CTS controls removed and independent venue quantity preserved`,
           liveOrderIds,
         )) result.changedPositions++
       }
@@ -12847,6 +12906,7 @@ export async function reconcileLivePositions(
       liveOrderIds,
     )
     summary.protectionRearmed += aggregateProtection.rearmedLeaders
+    summary.closed += aggregateProtection.closedMemberIds.size
 
     // ── Per-position worker (parallelisable) ─────────���───────────────
     // Each iteration is independent at the venue + Redis layer:
@@ -12917,6 +12977,13 @@ export async function reconcileLivePositions(
 
     const processOne = async (pos: typeof openPositions[number]): Promise<PosDelta> => {
       const delta: PosDelta = { reconciled: 1, updated: 0, closed: 0, errors: 0, protectionRearmed: 0 }
+      if (aggregateProtection.closedMemberIds.has(pos.id)) {
+        // The aggregate pass already moved this superseded Set row to the
+        // terminal archive. Never let the stale in-memory snapshot reinsert it
+        // into the open index later in this same sync cycle.
+        delta.reconciled = 0
+        return delta
+      }
       try {
         const mapKey = `${normSym(pos.symbol)}|${pos.direction}`
         const logicalSlotKey = `${mapKey}|${liveExecutionSlot(pos)}`
