@@ -749,4 +749,45 @@ describe("migrations 080–104 exact Set indexes and current engine defaults", (
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  test("keeps non-hash connection metadata intact while migrating schema 104", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-104-wrongtype-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+    }
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      await client.sadd("connections", "bingx-x01")
+      await client.hset("connection:bingx-x01", {
+        id: "bingx-x01",
+        name: "BingX X01",
+        exchange: "bingx",
+      })
+      await client.set("connection:bingx-x01:tombstoned_at", "2026-08-27T00:00:00.000Z")
+      await client.set("settings:all_settings", "legacy-settings-evidence")
+      await client.set("_schema_version", "103")
+      await client.set("_migrations_run", "true")
+
+      const migrations = await import("@/lib/redis-migrations")
+      migrations.resetMigrationRunState()
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 104 })
+
+      expect(await client.get("_schema_version")).toBe("104")
+      expect(await client.get("connection:bingx-x01:tombstoned_at"))
+        .toBe("2026-08-27T00:00:00.000Z")
+      expect(await client.get("settings:all_settings")).toBe("legacy-settings-evidence")
+      expect(await client.hget("connection:bingx-x01", "minimumExecutableVolumeVersion")).toBe("1")
+      expect(await client.hget("connection_settings:bingx-x01", "control_orders_enabled")).toBe("1")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

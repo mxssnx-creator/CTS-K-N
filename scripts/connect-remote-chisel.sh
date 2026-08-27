@@ -9,8 +9,8 @@
 set -Eeuo pipefail
 umask 077
 
-SERVER_URL="http://152.53.114.112:8090"
-FINGERPRINT="Q0MxL4WHKwM2JbRy6/6fAUee3600R7pPo1CKov8/EPc="
+SERVER_URL=""
+FINGERPRINT=""
 REMOTE_USER="root"
 REMOTE_PORT="22"
 LOCAL_HOST="127.0.0.1"
@@ -34,6 +34,8 @@ the resulting local forward. With no trailing SSH arguments it opens an
 interactive root shell.
 
 Required:
+  --server-url URL        Chisel server URL (or CTS_CHISEL_ENDPOINT)
+  --fingerprint VALUE     pinned fingerprint (or CTS_CHISEL_FINGERPRINT)
   --ssh-key PATH          SSH private key for the server
   --known-hosts PATH      known_hosts containing [127.0.0.1]:2222
   --auth-file PATH        file containing the Chisel auth value (owner-only)
@@ -41,8 +43,6 @@ Required:
 
 Options:
   --proxy URL             process-local HTTP/SOCKS proxy (default: HTTP_PROXY)
-  --server-url URL        Chisel server URL
-  --fingerprint VALUE     expected Chisel server fingerprint
   --user NAME             remote SSH user (default: root)
   --port PORT             remote port behind the forward (default: 22)
   --local-port PORT       local forward port (default: 2222)
@@ -141,6 +141,17 @@ done
 [[ -n "$PROXY" ]] || PROXY="$(read_env http_proxy)"
 [[ -n "$PROXY" ]] || {
   echo "No process-local HTTP/SOCKS proxy found." >&2
+  exit 2
+}
+
+[[ -n "$SERVER_URL" ]] || SERVER_URL="$(read_env CTS_CHISEL_ENDPOINT)"
+[[ -n "$SERVER_URL" ]] || {
+  echo "Missing Chisel endpoint; use CTS_CHISEL_ENDPOINT or --server-url." >&2
+  exit 2
+}
+[[ -n "$FINGERPRINT" ]] || FINGERPRINT="$(read_env CTS_CHISEL_FINGERPRINT)"
+[[ -n "$FINGERPRINT" ]] || {
+  echo "Missing Chisel fingerprint; use CTS_CHISEL_FINGERPRINT or --fingerprint." >&2
   exit 2
 }
 

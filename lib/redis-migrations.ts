@@ -7619,10 +7619,10 @@ const migrations: Migration[] = [
         const connectionId = normalizeDirectTradeConnectionId(connection?.id)
         if (connectionId) connectionIds.add(connectionId)
       }
-      for (const key of await scanRedisKeys(client, "connection:*")) {
-        const connectionId = normalizeDirectTradeConnectionId(String(key).slice("connection:".length))
-        if (connectionId) connectionIds.add(connectionId)
-      }
+      // connection:* also contains string metadata such as
+      // connection:{id}:tombstoned_at. The maintenance loader above returns
+      // only materialized connection hashes; scanning every namespaced key
+      // would turn metadata suffixes into fake IDs and HSET a string key.
 
       const settingsHashes = new Set<string>([
         "app_settings",
@@ -7638,8 +7638,20 @@ const migrations: Migration[] = [
       }
 
       for (const key of settingsHashes) {
-        const current = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
-        await client.hset(key, channelPatch)
+        let current: Record<string, string>
+        try {
+          current = ((await client.hgetall(key)) || {}) as Record<string, string>
+        } catch {
+          // Preserve incompatible legacy evidence instead of coercing or
+          // deleting it during a live migration.
+          continue
+        }
+        try {
+          await client.hset(key, channelPatch)
+        } catch (error) {
+          if (/WRONGTYPE/i.test(String((error as Error)?.message || error))) continue
+          throw error
+        }
         // connection:{id}.connection_settings is a legacy recovery mirror and
         // otherwise could reintroduce a larger factor after a worker restart.
         if (

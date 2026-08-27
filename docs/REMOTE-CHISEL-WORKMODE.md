@@ -93,6 +93,31 @@ The checked invariant is: managed activation plus pinned localhost SSH in one
 process. A missing listener in a later process is expected and is repaired by
 fresh managed activation, not by reusing stale PID or proxy data.
 
+## Resolved incident: process-local proxy (2026-08-27)
+
+A raw Chisel client invocation failed with `network is unreachable` even
+though the managed endpoint and remote service were healthy. The failure was
+local: the manually started client did not use the HTTP proxy assigned to that
+specific Work process. The durable project resolution is:
+
+1. source the managed activation at the start of every remote operation;
+2. let activation pass that process's `HTTP_PROXY` to `chisel client --proxy`;
+3. run the pinned SSH banner and every follow-up SSH command in the same tool
+   process;
+4. reactivate in each later process instead of reusing a background PID or
+   localhost listener.
+
+This matches Chisel's official client contract: `--proxy` accepts an HTTP
+CONNECT or SOCKS5 proxy, while reconnects and keepalives belong to that client
+process. See the upstream
+[Chisel README](https://github.com/jpillora/chisel/blob/master/README.md#usage).
+
+After using the managed sequence, the pinned tunnel connected, strict SSH host
+verification passed, the harmless banner returned, and the remote
+`chisel-server.service` was confirmed active and enabled. Endpoint, auth,
+fingerprint, private key, and host key remain owner-only runtime inputs; the
+repository helper intentionally contains no deployment-specific values.
+
 ## Failure classification
 
 | Last reliable evidence | Meaning | Safe action |
