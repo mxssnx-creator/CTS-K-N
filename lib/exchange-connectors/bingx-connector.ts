@@ -1875,7 +1875,8 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   /**
-   * Detect a 109429/109421/"rate limit" failure message and extend the
+   * Detect a rolling-order (109429) or endpoint-frequency (100410) limit
+   * failure message and extend the
    * shared cooldown. Extracted so every call path that can observe a
    * rate-limit rejection (reads via `bingxRateLimitedCall` and the
    * order-mutating methods that call this directly from their own catch
@@ -1885,25 +1886,37 @@ export class BingXConnector extends BaseExchangeConnector {
     // NOTE: 109421 ("order does not exist") is deliberately NOT matched
     // here — it is a business response, not a rate limit. It is counted
     // separately via recordBingxOrderNotFound().
+    const lowerError = errorMsg.toLowerCase()
+    const isEndpointFrequencyLimit =
+      errorMsg.includes("100410") ||
+      lowerError.includes("trigger frequency limit") ||
+      lowerError.includes("disabled period")
     const isRateLimit =
+      isEndpointFrequencyLimit ||
       errorMsg.includes("109429") ||
-      errorMsg.toLowerCase().includes("rate limit")
+      lowerError.includes("rate limit")
     if (!isRateLimit) return
 
-    // BingX's 480 s rolling window must fully clear. The parsed retry-after
-    // hint can be slightly short of the true window, so force a floor of
-    // 510 s (window + 30 s buffer). A shorter cooldown would expire while
-    // the window still holds the original errors and immediately re-trip.
-    const MIN_COOLDOWN_MS = 510_000
+    // 109429 covers BingX's 480 s rolling order window and needs the full
+    // 510 s safety floor. 100410 is a distinct per-endpoint disabled period;
+    // forcing that shorter limit into the 510 s bucket unnecessarily stalls
+    // every private call. Honour its absolute unblock timestamp plus a small
+    // transport buffer instead.
+    const ROLLING_WINDOW_COOLDOWN_MS = 510_000
+    const ENDPOINT_FALLBACK_COOLDOWN_MS = 60_000
+    const UNBLOCK_BUFFER_MS = 2_000
     const bingxDelay = ErrorHandler.parseBingXRetryAfter(errorMsg)
-    const candidate = bingxDelay !== null ? Math.max(bingxDelay, MIN_COOLDOWN_MS) : MIN_COOLDOWN_MS
+    const candidate = isEndpointFrequencyLimit
+      ? (bingxDelay ?? ENDPOINT_FALLBACK_COOLDOWN_MS) + UNBLOCK_BUFFER_MS
+      : Math.max(bingxDelay ?? 0, ROLLING_WINDOW_COOLDOWN_MS)
     const retryTs = Date.now() + candidate
     if (retryTs > BingXConnector.bingxRateLimitUntil) {
       BingXConnector.bingxRateLimitUntil = retryTs
     }
     const remaining = BingXConnector.bingxRateLimitUntil - Date.now()
     console.warn(
-      `[v0] [BingXConnector] ${operation}: BingX rate-limit (109429/109421) ` +
+      `[v0] [BingXConnector] ${operation}: BingX rate-limit ` +
+      `(${isEndpointFrequencyLimit ? "100410 endpoint" : "109429 rolling"}) ` +
       `observed — global cooldown set for ${remaining}ms`,
     )
   }
