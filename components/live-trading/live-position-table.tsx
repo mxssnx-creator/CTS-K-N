@@ -38,6 +38,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import type { LivePositionView, ProtectionUpdate } from "@/components/live-trading/live-trading-types"
+import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import {
   absoluteStopLoss,
   absoluteTakeProfit,
@@ -53,6 +54,7 @@ import {
   positionMark,
   positionPnl,
   positionQuantity,
+  positionTrailingDistancePercent,
 } from "@/components/live-trading/live-trading-format"
 
 type PositionSort = "pnl" | "newest" | "symbol" | "margin"
@@ -83,6 +85,13 @@ function statusTone(status: string): string {
 function protectionPriceString(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return ""
   return String(Number(value.toPrecision(12)))
+}
+
+function securityStatusTone(status: string, required: boolean): string {
+  if (!required || status === "unsupported") return "border-border bg-muted/40 text-muted-foreground"
+  if (status === "armed") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+  if (status === "pending" || status === "system_close") return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+  return "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
 }
 
 function timestamp(value: unknown): number {
@@ -120,11 +129,7 @@ export function LivePositionTable({
       protectionPosition.manualProtectionOverride?.trailingEnabled === true ||
       protectionPosition.trailingActive === true,
     )
-    setTrailingDistancePct(String(
-      protectionPosition.manualProtectionOverride?.trailingDistancePct ??
-      protectionPosition.trailingProfile?.stopRatio ??
-      0.5,
-    ))
+    setTrailingDistancePct(String(positionTrailingDistancePercent(protectionPosition)))
     setValidationError(null)
   }, [protectionPosition])
 
@@ -172,6 +177,10 @@ export function LivePositionTable({
     }
     if (take !== null && (!Number.isFinite(take) || take <= 0)) {
       setValidationError("Take profit must be a positive price.")
+      return
+    }
+    if (take === null) {
+      setValidationError("Take profit is required for every live row. Use Restore strategy defaults to recover the assigned target.")
       return
     }
     if (stop === null && !trailingEnabled) {
@@ -313,6 +322,7 @@ export function LivePositionTable({
                   const sl = absoluteStopLoss(position)
                   const tp = absoluteTakeProfit(position)
                   const trailing = position.manualProtectionOverride?.trailingEnabled === true || position.trailingActive === true
+                  const security = resolveEffectiveSecurityStop(position)
                   const status = String(position.status || "open").toLowerCase()
                   const isBusy = busyId === position.id
 
@@ -349,13 +359,23 @@ export function LivePositionTable({
                         <div className={`text-[9px] tabular-nums ${roi >= 0 ? "text-emerald-600/80 dark:text-emerald-400/80" : "text-rose-600/80 dark:text-rose-400/80"}`}>{formatPercent(roi)}</div>
                       </TableCell>
                       <TableCell className="py-1.5">
-                        <div className="grid grid-cols-[20px_1fr] gap-x-1 font-mono text-[10px] tabular-nums">
+                        <div className="grid grid-cols-[24px_1fr] gap-x-1 font-mono text-[10px] tabular-nums">
                           <span className="text-rose-500">SL</span><span>{formatPrice(trailing ? position.trailingStopPrice || sl : sl)}</span>
                           <span className="text-emerald-500">TP</span><span>{formatPrice(tp)}</span>
+                          <span className="text-sky-500">SEC</span><span>{formatPrice(security.price)}</span>
                         </div>
                         <div className="mt-0.5 flex gap-1">
-                          {trailing ? <Badge variant="outline" className="h-4 border-sky-500/30 px-1 text-[8px]">Trail {position.manualProtectionOverride?.trailingDistancePct ?? ""}%</Badge> : null}
+                          {trailing ? <Badge variant="outline" className="h-4 border-sky-500/30 px-1 text-[8px]">Trail {positionTrailingDistancePercent(position)}%</Badge> : null}
                           {position.manualProtectionOverride ? <Badge variant="outline" className="h-4 border-amber-500/30 px-1 text-[8px]">Manual</Badge> : null}
+                          <Badge
+                            variant="outline"
+                            className={`h-4 px-1 text-[8px] ${securityStatusTone(security.status, security.required)}`}
+                            title={security.required
+                              ? `Slot security stop: ${security.status}${security.orderId ? ` · ${security.orderId}` : ""}`
+                              : "This connector does not require/support a slot close-all stop"}
+                          >
+                            Security {security.required ? security.status.replaceAll("_", " ") : "n/a"}
+                          </Badge>
                         </div>
                       </TableCell>
                       <TableCell className="py-1.5">
@@ -420,7 +440,7 @@ export function LivePositionTable({
               {protectionPosition?.symbol} protection
             </DialogTitle>
             <DialogDescription className="text-xs">
-              Values are persisted and reconciled through reduce-only control orders. Strategy defaults can be restored at any time.
+              Values are persisted as exact-quantity row controls. A separate farther slot security stop is coordinated automatically and is not loosened here.
             </DialogDescription>
           </DialogHeader>
 
@@ -432,6 +452,31 @@ export function LivePositionTable({
                 <div><span className="text-muted-foreground">Mark</span><div className="font-mono font-semibold">{formatPrice(positionMark(protectionPosition))}</div></div>
               </div>
 
+              {(() => {
+                const security = resolveEffectiveSecurityStop(protectionPosition)
+                return (
+                  <div className="grid gap-1.5 rounded-md border bg-muted/10 p-2 text-[10px] sm:grid-cols-3">
+                    <div>
+                      <span className="text-muted-foreground">Row stop order</span>
+                      <div className="truncate font-mono" title={protectionPosition.stopLossOrderId || ""}>{protectionPosition.stopLossOrderId || "missing"}</div>
+                      <div className="text-[9px] text-muted-foreground">Qty {formatQuantity(protectionPosition.stopLossArmedQuantity)}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Row target order</span>
+                      <div className="truncate font-mono" title={protectionPosition.takeProfitOrderId || ""}>{protectionPosition.takeProfitOrderId || "missing"}</div>
+                      <div className="text-[9px] text-muted-foreground">Qty {formatQuantity(protectionPosition.takeProfitArmedQuantity)}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Slot security</span>
+                      <div className={`font-semibold ${security.status === "armed" ? "text-emerald-600 dark:text-emerald-400" : security.required ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"}`}>
+                        {security.required ? security.status.replaceAll("_", " ") : "unsupported"} · {formatPrice(security.price)}
+                      </div>
+                      <div className="text-[9px] text-muted-foreground">Tick {formatPrice(protectionPosition.priceTick)}</div>
+                    </div>
+                  </div>
+                )
+              })()}
+
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="live-stop-loss" className="flex items-center gap-1 text-xs"><ArrowDownToLine className="size-3 text-rose-500" /> Stop loss price</Label>
@@ -440,8 +485,8 @@ export function LivePositionTable({
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="live-take-profit" className="flex items-center gap-1 text-xs"><ArrowUpFromLine className="size-3 text-emerald-500" /> Take profit price</Label>
-                  <Input id="live-take-profit" type="number" min="0" step="any" value={takeProfitPrice} onChange={(event) => setTakeProfitPrice(event.target.value)} className="h-8 font-mono text-xs" placeholder="Optional" />
-                  <p className="text-[9px] text-muted-foreground">Clear to remove the fixed target while keeping stop or trailing protection active.</p>
+                  <Input id="live-take-profit" type="number" min="0" step="any" value={takeProfitPrice} onChange={(event) => setTakeProfitPrice(event.target.value)} className="h-8 font-mono text-xs" placeholder="Required" />
+                  <p className="text-[9px] text-muted-foreground">Every live row retains an exact-quantity target. Use Restore strategy defaults to recover the assigned target.</p>
                 </div>
               </div>
 
@@ -492,7 +537,7 @@ export function LivePositionTable({
           <DialogHeader className="gap-1">
             <DialogTitle className="flex items-center gap-2 text-base text-rose-600 dark:text-rose-400"><CircleStop className="size-4" /> Close position · {closePosition?.symbol}</DialogTitle>
             <DialogDescription className="text-xs">
-              A coordinated reduce-only close is submitted. The row remains visible until the exchange confirms zero open quantity.
+              Row TP/SL and the slot security stop are settled first, then a coordinated reduce-only close is submitted. The row remains visible until the exchange confirms the resulting quantity.
             </DialogDescription>
           </DialogHeader>
           {closePosition ? (

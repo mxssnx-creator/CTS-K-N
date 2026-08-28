@@ -3,7 +3,11 @@ import { PseudoPositionManager } from "@/lib/trade-engine/pseudo-position-manage
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { normalizeTradeDirection, resolveConsistentTradeDirection } from "@/lib/trade-direction"
-import { resolveRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
+import {
+  resolveConfirmedPositionQuantity,
+  resolveRealizedPnl,
+  resolveUnrealizedPnl,
+} from "@/lib/live-position-pnl"
 
 /**
  * Live Positions API
@@ -199,7 +203,7 @@ async function getLivePositions(connectionId: string): Promise<Position[]> {
 function normaliseLivePosition(raw: Record<string, any>): Position | null {
   const entryPrice = parseFloat(raw.entryPrice || raw.entry_price || "0")
   const currentPrice = parseFloat(raw.currentPrice || raw.current_price || raw.entryPrice || raw.entry_price || "0")
-  const quantity = parseFloat(raw.executedQuantity || raw.executed_quantity || raw.quantity || "0")
+  const quantity = resolveConfirmedPositionQuantity(raw) ?? 0
   const notional = entryPrice * quantity
   const direction = resolveConsistentTradeDirection(raw.direction, raw.side)
   if (!direction) return null

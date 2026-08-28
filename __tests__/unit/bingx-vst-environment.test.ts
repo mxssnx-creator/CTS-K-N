@@ -236,6 +236,85 @@ describe("BingX Prod-VST connector contract", () => {
     expect(requests.every(({ url }) => !url.href.includes("demo-api-secret"))).toBe(true)
   })
 
+  test("places one hedge-only full-position security stop without a wire quantity", async () => {
+    const requests: URL[] = []
+    global.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      requests.push(url)
+      const method = String(init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase()
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/order" && method === "POST") {
+        return Response.json({ code: 0, data: { order: { orderId: "security-stop-1" } } })
+      }
+      throw new Error(`Unexpected request: ${method} ${url.pathname}`)
+    }) as typeof fetch
+
+    const connector = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+    ;(connector as any).getSdkTradeService = jest.fn(async () => null)
+
+    expect(connector.getCapabilities()).toContain("position_close_all_stop")
+    await expect(connector.placeStopOrder("BTCUSDT", "sell", 0.004, 58_000, "stop_loss", {
+      positionSide: "LONG",
+      hedgeMode: true,
+      reduceOnly: true,
+      closePosition: true,
+      clientOrderId: "cts-security-stop-1",
+    })).resolves.toMatchObject({ success: true, orderId: "security-stop-1" })
+
+    const orderRequest = requests.find((url) => url.pathname === "/openApi/swap/v2/trade/order")
+    expect(orderRequest?.searchParams.get("type")).toBe("STOP_MARKET")
+    expect(orderRequest?.searchParams.get("closePosition")).toBe("true")
+    expect(orderRequest?.searchParams.get("quantity")).toBeNull()
+    expect(orderRequest?.searchParams.get("reduceOnly")).toBeNull()
+    expect(orderRequest?.searchParams.get("positionSide")).toBe("LONG")
+  })
+
+  test("fails closed for unsupported close-all stop modes and excludes the capability from spot", async () => {
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+
+    const connector = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+    await expect(connector.placeStopOrder("BTCUSDT", "sell", 0.004, 58_000, "take_profit", {
+      positionSide: "LONG",
+      hedgeMode: true,
+      closePosition: true,
+    })).resolves.toMatchObject({ success: false, error: expect.stringContaining("STOP_MARKET") })
+    await expect(connector.placeStopOrder("BTCUSDT", "sell", 0.004, 58_000, "stop_loss", {
+      hedgeMode: false,
+      closePosition: true,
+    })).resolves.toMatchObject({ success: false, error: expect.stringContaining("hedgeMode=true") })
+
+    const spot = new BingXConnector({
+      apiKey: "demo-api-key",
+      apiSecret: "demo-api-secret",
+      isTestnet: true,
+      apiType: "spot",
+      contractType: "spot",
+    })
+    expect(spot.getCapabilities()).not.toContain("position_close_all_stop")
+  })
+
   test("fails closed instead of claiming a VST one-way mode mutation", async () => {
     global.fetch = jest.fn(async (input: string | URL | Request) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)

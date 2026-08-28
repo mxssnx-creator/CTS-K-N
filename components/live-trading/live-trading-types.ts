@@ -30,6 +30,10 @@ export interface LivePositionView {
   leverage?: number
   marginType?: string
   volumeUsd?: number
+  quantityStep?: number
+  quantityPrecision?: number
+  pricePrecision?: number
+  priceTick?: number
   unrealizedPnL?: number
   unrealized_pnl?: number
   unrealizedRoi?: number
@@ -38,6 +42,8 @@ export interface LivePositionView {
   takeProfit?: number
   stopLossPrice?: number
   takeProfitPrice?: number
+  dcaTakeProfitPrice?: number
+  securityStopPrice?: number
   trailingActive?: boolean
   trailingStopPrice?: number
   trailingProfile?: {
@@ -70,6 +76,35 @@ export interface LivePositionView {
   orderId?: string
   stopLossOrderId?: string
   takeProfitOrderId?: string
+  securityStopOrderId?: string
+  stopLossArmedQuantity?: number
+  takeProfitArmedQuantity?: number
+  securityStopArmedQuantity?: number
+  protectionArmedQuantity?: number
+  stopLossAbsenceConfirmations?: number
+  takeProfitAbsenceConfirmations?: number
+  securityStopAbsenceConfirmations?: number
+  securityStopRequired?: boolean
+  securityStopStatus?: "armed" | "pending" | "unsupported" | "ownership_mismatch" | "system_close" | "invalid_range" | "capacity_blocked"
+  protectionMode?: "exchange_control" | "hybrid_control_system" | "system_close" | "system_close_fallback"
+  systemProtectionLegs?: Array<"stop_loss" | "take_profit">
+  aggregateProtectionOwner?: boolean
+  aggregateProtectionKey?: string
+  aggregateProtectionMemberCount?: number
+  controlOrderSetCoverage?: Record<string, {
+    protected?: boolean
+    protectionMode?: string
+    aggregateProtectionOwner?: boolean
+    aggregateProtectionLeaderId?: string
+    stopLossOrderId?: string
+    takeProfitOrderId?: string
+    securityStopOrderId?: string
+    stopLossPrice?: number
+    takeProfitPrice?: number
+    securityStopPrice?: number
+    securityStopRequired?: boolean
+    securityStopStatus?: string
+  }>
   createdAt?: number | string
   updatedAt?: number | string
   exchangeData?: Record<string, unknown>

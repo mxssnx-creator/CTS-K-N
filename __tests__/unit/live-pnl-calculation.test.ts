@@ -14,6 +14,7 @@ import {
   isRealizedPnlAccountingPending,
   openPnl,
   resolveRealizedPnl,
+  resolvePositionMargin,
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
 import { calculateLivePositionStatistics } from "@/lib/live-position-statistics"
@@ -83,6 +84,33 @@ describe("live PnL calculation contract", () => {
     expect(resolveRealizedPnl(closed)).toBe(19)
     expect(closedPnl(closed)).toBe(19)
     expect(derivePositionRoi(closed, resolveRealizedPnl(closed), true)).toBe(95)
+  })
+
+  it("uses confirmed partial size instead of the larger requested size in PnL and margin", () => {
+    const partial = {
+      status: "partially_filled",
+      direction: "long",
+      quantity: 10,
+      executedQuantity: 2,
+      averageExecutionPrice: 100,
+      markPrice: 110,
+      leverage: 10,
+    }
+
+    expect(resolveUnrealizedPnl(partial)).toBe(20)
+    expect(resolvePositionMargin(partial)).toBe(20)
+    expect(derivePositionRoi(partial, resolveUnrealizedPnl(partial))).toBe(100)
+    expect(resolveUnrealizedPnl({
+      ...partial,
+      status: "pending",
+      executedQuantity: 0,
+    })).toBeUndefined()
+    expect(resolvePositionMargin({
+      ...partial,
+      status: "pending",
+      executedQuantity: 0,
+      marginUsd: 200,
+    })).toBeUndefined()
   })
 
   it("uses either exchange unrealized-PnL casing consistently in aggregate statistics", () => {

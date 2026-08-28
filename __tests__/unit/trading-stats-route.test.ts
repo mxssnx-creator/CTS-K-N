@@ -77,6 +77,7 @@ describe("trading statistics route", () => {
         status: " CLOSING_PARTIAL ",
         executionMode: "live",
         symbol: "ETHUSDT",
+        executedQuantity: 1,
         unrealizedPnL: 3,
       },
       {
@@ -84,6 +85,16 @@ describe("trading statistics route", () => {
         status: "open",
         executionMode: "live",
         symbol: "SOLUSDT",
+        executedQuantity: 1,
+      },
+      {
+        id: "pending-request-only",
+        status: "pending_fill",
+        executionMode: "live",
+        orderId: "pending-entry",
+        symbol: "XRPUSDT",
+        quantity: 100,
+        unrealizedPnL: -999,
       },
       {
         id: "paper",

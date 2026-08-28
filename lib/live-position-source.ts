@@ -1,4 +1,4 @@
-import { resolvePositionQuantity } from "@/lib/live-position-pnl"
+import { resolveConfirmedPositionQuantity } from "@/lib/live-position-pnl"
 
 export type LivePositionSource = "real" | "simulated" | "unknown"
 
@@ -63,7 +63,7 @@ export function isExecutedRealExchangePosition(
   return Boolean(
     position &&
     isRealExchangePosition(position) &&
-    (resolvePositionQuantity(position, true) ?? 0) > 0,
+    (resolveConfirmedPositionQuantity(position, true) ?? 0) > 0,
   )
 }
 

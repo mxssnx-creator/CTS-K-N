@@ -162,6 +162,11 @@ export interface PlaceOrderOptions {
   positionSide?: "LONG" | "SHORT"
   hedgeMode?: boolean
   clientOrderId?: string
+  /**
+   * Venue-native full-position conditional close. The wire request must omit
+   * quantity so the venue follows the physical position as its size changes.
+   */
+  closePosition?: boolean
 }
 
 export abstract class BaseExchangeConnector {
@@ -394,6 +399,12 @@ export abstract class BaseExchangeConnector {
   ): Promise<{ success: boolean; orderId?: string; error?: string }> {
     // Mark `kind` as intentionally consumed — base impl is exchange-agnostic.
     void kind
+    if (options.closePosition) {
+      return {
+        success: false,
+        error: "closePosition stop orders require a connector with native full-position protection",
+      }
+    }
     return this.placeOrder(symbol, closeSide, quantity, triggerPrice, "limit", options)
   }
 

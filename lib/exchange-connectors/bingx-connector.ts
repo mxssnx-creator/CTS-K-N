@@ -781,7 +781,17 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   getCapabilities(): string[] {
-    return ["futures", "perpetual_futures", "leverage", "hedge_mode", "cross_margin"]
+    if (this.credentials.apiType === "spot" || this.credentials.contractType === "spot") {
+      return ["spot"]
+    }
+    return [
+      "futures",
+      "perpetual_futures",
+      "leverage",
+      "hedge_mode",
+      "cross_margin",
+      "position_close_all_stop",
+    ]
   }
 
   async testConnection(): Promise<ExchangeConnectorResult> {
@@ -1475,6 +1485,17 @@ export class BingXConnector extends BaseExchangeConnector {
         return { success: false, error: `Invalid trigger price: ${triggerPrice}` }
       }
 
+      const closePosition = options.closePosition === true
+      if (closePosition && kind !== "stop_loss") {
+        return { success: false, error: "closePosition is only supported for STOP_MARKET security stops" }
+      }
+      if (closePosition && (options.hedgeMode !== true || !options.positionSide)) {
+        return {
+          success: false,
+          error: "closePosition security stops require hedgeMode=true and an explicit LONG/SHORT positionSide",
+        }
+      }
+
       const roundedQty = Math.round(quantity * 1e6) / 1e6
       const qtyStr = roundedQty.toFixed(6).replace(/\.?0+$/, "")
       const stopRounded = Math.round(triggerPrice * 1e8) / 1e8
@@ -1493,13 +1514,14 @@ export class BingXConnector extends BaseExchangeConnector {
         symbol: bingxSymbol,
         side: closeSide.toUpperCase(),
         type: orderType,
-        quantity: qtyStr,
         stopPrice: stopStr,
         // workingType=MARK_PRICE prevents wick-driven false triggers
         // on thin tickers; matches BingX's own UI default for SL/TP.
         workingType: "MARK_PRICE",
         timestamp: this.getTimestamp(),
       }
+      if (closePosition) params.closePosition = "true"
+      else params.quantity = qtyStr
       if (hedgeMode) params.positionSide = positionSide
       // BingX hedge-mode rule: `reduceOnly` is NOT allowed when
       // `positionSide` is set — the venue rejects with
@@ -1510,7 +1532,7 @@ export class BingXConnector extends BaseExchangeConnector {
       // the matching side), so omitting reduceOnly is safe and correct.
       // In one-way mode we still need reduceOnly to prevent the order
       // from accidentally flipping the position to the opposite side.
-      if (!hedgeMode && options.reduceOnly !== false) {
+      if (!closePosition && !hedgeMode && options.reduceOnly !== false) {
         params.reduceOnly = "true"
       }
       if (options.clientOrderId) params.clientOrderID = options.clientOrderId
@@ -1559,7 +1581,7 @@ export class BingXConnector extends BaseExchangeConnector {
       }
 
       this.log(
-        `Placing ${orderType} ${closeSide} ${qtyStr} ${bingxSymbol} @ stop=${stopStr}` +
+        `Placing ${orderType} ${closeSide} ${closePosition ? "ALL" : qtyStr} ${bingxSymbol} @ stop=${stopStr}` +
           `${hedgeMode ? ` posSide=${positionSide} [hedge, reduceOnly implicit]` : " [one-way, reduceOnly]"}`,
       )
 
@@ -1643,7 +1665,7 @@ export class BingXConnector extends BaseExchangeConnector {
         }
         const sideMismatch = String(data.code) === "80014"
           || /position.*side/i.test(String(data.msg || ""))
-        if (sideMismatch && hedgeMode) {
+        if (sideMismatch && hedgeMode && !closePosition) {
           this.log("Retrying stop order without positionSide (one-way account)")
           delete params.positionSide
           params.reduceOnly = "true"

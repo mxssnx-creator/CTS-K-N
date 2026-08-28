@@ -22,6 +22,7 @@ import { buildConnectionStageOverview } from "@/lib/connection-stage-overview"
 import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
 import {
   isRealizedPnlAccountingPending,
+  resolveConfirmedPositionQuantity,
   resolveRealizedPnl,
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
@@ -34,6 +35,7 @@ import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-polic
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import { getOpenLivePositionReadModels } from "@/lib/live-position-read-model"
+import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -76,6 +78,27 @@ function positiveInteger(...values: unknown[]): number {
   for (const value of values) {
     const parsed = Number(value)
     if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed)
+  }
+  return 0
+}
+
+function positiveNumber(...values: unknown[]): number {
+  for (const value of values) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  return 0
+}
+
+function timestampMilliseconds(...values: unknown[]): number {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue
+    const numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric < 10_000_000_000 ? numeric * 1000 : numeric
+    }
+    const parsed = Date.parse(String(value))
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
   }
   return 0
 }
@@ -321,6 +344,12 @@ async function responseFromVolatileStatsSnapshot(
           : {}),
         ...(coverage.stopLossOrderId ? { stopLossOrderId: String(coverage.stopLossOrderId) } : {}),
         ...(coverage.takeProfitOrderId ? { takeProfitOrderId: String(coverage.takeProfitOrderId) } : {}),
+        ...(coverage.securityStopOrderId ? { securityStopOrderId: String(coverage.securityStopOrderId) } : {}),
+        ...(Number(coverage.securityStopPrice || 0) > 0
+          ? { securityStopPrice: Number(coverage.securityStopPrice) }
+          : {}),
+        securityStopRequired: coverage.securityStopRequired === true,
+        ...(coverage.securityStopStatus ? { securityStopStatus: String(coverage.securityStopStatus) } : {}),
         systemProtectionLegs: Array.isArray(coverage.systemProtectionLegs)
           ? coverage.systemProtectionLegs.map(String)
           : [],
@@ -339,21 +368,26 @@ async function responseFromVolatileStatsSnapshot(
         const row = position as Record<string, any>
         const id = String(row.id || "")
         const coverage = freshCoverage(row)
+        const security = resolveEffectiveSecurityStop({ ...row, controlOrderSetCoverage: coverage })
         return {
           ...(previousById.get(id) || {}),
           id,
           symbol: String(row.symbol || "").toUpperCase(),
           direction: String(row.direction || "").toLowerCase(),
           status: String(row.status || "").toLowerCase(),
-          quantity: Number(row.executedQuantity ?? row.quantity) || 0,
+          quantity: resolveConfirmedPositionQuantity(row) ?? 0,
           orderId: row.orderId ? String(row.orderId) : undefined,
           stopLossOrderId: row.stopLossOrderId ? String(row.stopLossOrderId) : undefined,
           takeProfitOrderId: row.takeProfitOrderId ? String(row.takeProfitOrderId) : undefined,
+          securityStopOrderId: security.orderId || undefined,
+          securityStopPrice: security.price,
+          securityStopRequired: security.required,
+          securityStopStatus: security.status,
           controlOrderSetCoverage: coverage,
           protectedSetCount: coverage.filter((entry) => entry.protected).length,
           unprotectedSetCount: coverage.filter((entry) => !entry.protected).length,
           updatedAt: Number(row.updatedAt || 0) || 0,
-          syncedAt: Number(row.exchangeData?.syncedAt || 0) || 0,
+          syncedAt: timestampMilliseconds(row.exchangeData?.syncedAt, row.syncedAt),
         }
       })
       if (liveOverlay.aggregate && typeof liveOverlay.aggregate === "object") {
@@ -364,6 +398,21 @@ async function responseFromVolatileStatsSnapshot(
         liveOverlay.aggregate.unprotectedControlOrderSets = currentCoverageRows.filter(
           (entry) => !entry.protected,
         ).length
+        const securitySlots = new Map<string, { required: boolean; armed: boolean }>()
+        for (const position of activeLiveRows) {
+          const row = position as Record<string, any>
+          const coverage = freshCoverage(row)
+          const security = resolveEffectiveSecurityStop({ ...row, controlOrderSetCoverage: coverage })
+          const key = `${String(row.symbol || "").toUpperCase().replace(/[-/_:]/g, "")}|${String(row.direction || row.side || "").toLowerCase()}`
+          const prior = securitySlots.get(key) || { required: false, armed: false }
+          securitySlots.set(key, {
+            required: prior.required || security.required,
+            armed: prior.armed || security.armed,
+          })
+        }
+        liveOverlay.aggregate.securityStopsRequired = [...securitySlots.values()].filter((slot) => slot.required).length
+        liveOverlay.aggregate.securityStopsArmed = [...securitySlots.values()].filter((slot) => slot.required && slot.armed).length
+        liveOverlay.aggregate.securityStopsMissing = [...securitySlots.values()].filter((slot) => slot.required && !slot.armed).length
       }
     }
     // These acknowledgement objects are written by the settings/engine owner
@@ -739,7 +788,7 @@ function aggregateOrdersBySymbol(
       const created = Number(pos.createdAt ?? pos.opened_at ?? 0) || 0
       const closedAt = Number(pos.closedAt ?? pos.updatedAt ?? 0) || 0
       if (created > 0 && closedAt > created) sumHoldMs += closedAt - created
-      const qty = Number(pos.executedQuantity ?? pos.quantity ?? 0) || 0
+      const qty = resolveConfirmedPositionQuantity(pos, true) ?? 0
       const avgP = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
       const notional = qty * avgP
       sumVolumeUsd += notional
@@ -1548,6 +1597,7 @@ export async function GET(
       orderId?: string
       stopLossOrderId?: string
       takeProfitOrderId?: string
+      securityStopOrderId?: string
     }> = []
     const livePositionSetRelations: Array<{
       id: string
@@ -1570,10 +1620,14 @@ export async function GET(
       // ── Risk-management levels ───────────────────────────────────────
       stopLossPrice: number
       takeProfitPrice: number
+      securityStopPrice: number
+      securityStopRequired: boolean
+      securityStopStatus: string
       // ── Exchange order references ─────────────────────────��──────────
       orderId?: string
       stopLossOrderId?: string
       takeProfitOrderId?: string
+      securityStopOrderId?: string
       // ── Lifecycle ────────────────────────────────────────────────────
       status: string
       createdAt: number
@@ -1594,8 +1648,12 @@ export async function GET(
         aggregateProtectionLeaderId?: string
         stopLossOrderId?: string
         takeProfitOrderId?: string
+        securityStopOrderId?: string
         stopLossPrice?: number
         takeProfitPrice?: number
+        securityStopPrice?: number
+        securityStopRequired: boolean
+        securityStopStatus?: string
         systemProtectionLegs: string[]
         updatedAt: number
       }>
@@ -1628,6 +1686,7 @@ export async function GET(
               orderId: pos.orderId ? String(pos.orderId) : undefined,
               stopLossOrderId: pos.stopLossOrderId ? String(pos.stopLossOrderId) : undefined,
               takeProfitOrderId: pos.takeProfitOrderId ? String(pos.takeProfitOrderId) : undefined,
+              securityStopOrderId: pos.securityStopOrderId ? String(pos.securityStopOrderId) : undefined,
             })
             if (!isOpenLiveExposureStatus(status)) continue
             if (!isExecutedRealExchangePosition(pos)) continue
@@ -1636,7 +1695,7 @@ export async function GET(
             const dir = String(pos.direction || "").trim().toLowerCase()
             if (!sym || (dir !== "long" && dir !== "short")) continue
 
-            const qty = Number(pos.executedQuantity || pos.quantity) || 0
+            const qty = resolveConfirmedPositionQuantity(pos) ?? 0
             const px  = Number(pos.averageExecutionPrice || pos.entryPrice) || 0
             const volumeUsd = qty > 0 && px > 0 ? Math.round(qty * px * 100) / 100 : 0
 
@@ -1676,16 +1735,19 @@ export async function GET(
             //    side details so the UI can render full Position
             //    Details (leverage, margin at risk, liq distance,
             //    SL/TP levels, ROI) WITHOUT a second API round-trip.
-            const leverage = Math.max(1, Number(pos.leverage) || 1)
-            const marginType: "cross" | "isolated" =
-              (pos.exchangeData?.marginType as "cross" | "isolated") ||
-              (pos.marginType as "cross" | "isolated") ||
-              "cross"
+            const leverage = Math.max(1, positiveNumber(pos.leverage, pos.exchangeData?.leverage) || 1)
+            const marginMode = String(pos.exchangeData?.marginType || pos.marginType || "cross").toLowerCase()
+            const marginType: "cross" | "isolated" = marginMode === "isolated" ? "isolated" : "cross"
             const markPrice = Math.round(
-              (Number(pos.exchangeData?.markPrice) || 0) * 1e8,
+              positiveNumber(
+                pos.exchangeData?.markPrice,
+                pos.markPrice,
+                pos.currentPrice,
+                pos.current_price,
+              ) * 1e8,
             ) / 1e8
             const liquidationPrice = Math.round(
-              (Number(pos.exchangeData?.liquidationPrice) || 0) * 1e8,
+              positiveNumber(pos.exchangeData?.liquidationPrice, pos.liquidationPrice) * 1e8,
             ) / 1e8
             const unrealizedPnl = Math.round(effectiveUnrealizedPnl(pos) * 100) / 100
             // Actual margin at risk = exposure / leverage (not
@@ -1709,6 +1771,8 @@ export async function GET(
               liquidationDistancePct = Math.round(raw * 10000) / 100
             }
 
+            const security = resolveEffectiveSecurityStop(pos)
+
             livePositionSetRelations.push({
               id: String(pos.id || ""),
               symbol: sym,
@@ -1725,14 +1789,22 @@ export async function GET(
               unrealizedPnl,
               roiPct,
               stopLossPrice:   Math.round((Number(pos.stopLossPrice)   || 0) * 1e8) / 1e8,
-              takeProfitPrice: Math.round((Number(pos.takeProfitPrice) || 0) * 1e8) / 1e8,
+              takeProfitPrice: Math.round(positiveNumber(
+                pos.manualProtectionOverride?.takeProfitPrice,
+                pos.dcaTakeProfitPrice,
+                pos.takeProfitPrice,
+              ) * 1e8) / 1e8,
+              securityStopPrice: Math.round(security.price * 1e8) / 1e8,
+              securityStopRequired: security.required,
+              securityStopStatus: security.status,
               orderId:            pos.orderId            ? String(pos.orderId)            : undefined,
               stopLossOrderId:    pos.stopLossOrderId    ? String(pos.stopLossOrderId)    : undefined,
               takeProfitOrderId:  pos.takeProfitOrderId  ? String(pos.takeProfitOrderId)  : undefined,
+              securityStopOrderId: security.orderId || undefined,
               status,
               createdAt: Number(pos.createdAt) || 0,
               updatedAt: Number(pos.updatedAt) || 0,
-              syncedAt:  Number(pos.exchangeData?.syncedAt) || 0,
+              syncedAt: timestampMilliseconds(pos.exchangeData?.syncedAt, pos.syncedAt),
               realPositionId: pos.realPositionId ? String(pos.realPositionId) : undefined,
               setKeys,
               controlOrderSetCoverage: Object.entries(
@@ -1751,11 +1823,19 @@ export async function GET(
                     : {}),
                   ...(coverage.stopLossOrderId ? { stopLossOrderId: String(coverage.stopLossOrderId) } : {}),
                   ...(coverage.takeProfitOrderId ? { takeProfitOrderId: String(coverage.takeProfitOrderId) } : {}),
+                  ...(coverage.securityStopOrderId ? { securityStopOrderId: String(coverage.securityStopOrderId) } : {}),
                   ...(Number(coverage.stopLossPrice || 0) > 0
                     ? { stopLossPrice: Number(coverage.stopLossPrice) }
                     : {}),
                   ...(Number(coverage.takeProfitPrice || 0) > 0
                     ? { takeProfitPrice: Number(coverage.takeProfitPrice) }
+                    : {}),
+                  ...(Number(coverage.securityStopPrice || 0) > 0
+                    ? { securityStopPrice: Number(coverage.securityStopPrice) }
+                    : {}),
+                  securityStopRequired: coverage.securityStopRequired === true,
+                  ...(coverage.securityStopStatus
+                    ? { securityStopStatus: String(coverage.securityStopStatus) }
                     : {}),
                   systemProtectionLegs: Array.isArray(coverage.systemProtectionLegs)
                     ? coverage.systemProtectionLegs.map(String)
@@ -1826,6 +1906,22 @@ export async function GET(
       (sum, position) => sum + position.controlOrderSetCoverage.filter((row) => row.protected).length,
       0,
     )
+    const liveSecuritySlots = new Map<string, { required: boolean; armed: boolean }>()
+    for (const position of livePositionSetRelations) {
+      const key = `${position.symbol}|${position.direction}`
+      const prior = liveSecuritySlots.get(key) || { required: false, armed: false }
+      liveSecuritySlots.set(key, {
+        required: prior.required || position.securityStopRequired,
+        armed: prior.armed || (
+          Boolean(position.securityStopOrderId)
+          && String(position.securityStopStatus || "").toLowerCase() === "armed"
+          && position.securityStopPrice > 0
+        ),
+      })
+    }
+    const liveSecurityStopsRequired = [...liveSecuritySlots.values()].filter((slot) => slot.required).length
+    const liveSecurityStopsArmed = [...liveSecuritySlots.values()].filter((slot) => slot.required && slot.armed).length
+    const liveSecurityStopsMissing = [...liveSecuritySlots.values()].filter((slot) => slot.required && !slot.armed).length
     const nowMsAgg = Date.now()
     // Per-symbol position groupings (long/short + USD totals) — surfaced as
     // `openPositions.live.bySymbol` so the dashboard can render
@@ -3579,7 +3675,7 @@ export async function GET(
       // Build per-position history rows (cap at 500 for response payload)
       for (const pos of settledClosedParsed) {
         const pnl = effectiveRealizedPnl(pos)
-        const qty = Number(pos.executedQuantity ?? pos.quantity ?? 0) || 0
+        const qty = resolveConfirmedPositionQuantity(pos, true) ?? 0
         const avgP = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
         // Skip rejected / zero-fill positions that have no valid entry data.
         // These are orders that were placed but never filled (qty=0 or price=0).
@@ -4754,10 +4850,14 @@ export async function GET(
             // Risk management
             stopLossPrice:   p.stopLossPrice,
             takeProfitPrice: p.takeProfitPrice,
+            securityStopPrice: p.securityStopPrice,
+            securityStopRequired: p.securityStopRequired,
+            securityStopStatus: p.securityStopStatus,
             // Exchange references
             orderId:            p.orderId,
             stopLossOrderId:    p.stopLossOrderId,
             takeProfitOrderId:  p.takeProfitOrderId,
+            securityStopOrderId: p.securityStopOrderId,
             // Lifecycle
             status:        p.status,
             createdAt:     p.createdAt,
@@ -4850,6 +4950,9 @@ export async function GET(
               controlOrderSets: liveControlOrderSets,
               protectedControlOrderSets: liveProtectedControlOrderSets,
               unprotectedControlOrderSets: Math.max(0, liveControlOrderSets - liveProtectedControlOrderSets),
+              securityStopsRequired: liveSecurityStopsRequired,
+              securityStopsArmed: liveSecurityStopsArmed,
+              securityStopsMissing: liveSecurityStopsMissing,
             },
             // Per-symbol position groupings (count of long/short positions +
             // USD totals, sorted by descending size). Lets the dashboard
@@ -5156,6 +5259,9 @@ export async function GET(
             markPrice:     p.markPrice,
             stopLossPrice:   p.stopLossPrice,
             takeProfitPrice: p.takeProfitPrice,
+            securityStopPrice: p.securityStopPrice,
+            securityStopRequired: p.securityStopRequired,
+            securityStopStatus: p.securityStopStatus,
           })),
         },
       },

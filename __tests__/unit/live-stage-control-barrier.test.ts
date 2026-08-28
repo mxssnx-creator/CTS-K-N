@@ -142,6 +142,13 @@ describe("executing Live-stage control barriers", () => {
     expect(__liveStageTest.selectVenueTickerPrice({ bid: 0, ask: 0, last: 0.01 }, "long")).toBe(0.01)
   })
 
+  test("rounds row TP/SL to venue ticks without loosening the strategy boundary", () => {
+    expect(__liveStageTest.normalizeProtectionTriggerPrice(95.11, 0.1, "long", "stop_loss")).toBe(95.2)
+    expect(__liveStageTest.normalizeProtectionTriggerPrice(105.19, 0.1, "long", "take_profit")).toBe(105.1)
+    expect(__liveStageTest.normalizeProtectionTriggerPrice(105.19, 0.1, "short", "stop_loss")).toBe(105.1)
+    expect(__liveStageTest.normalizeProtectionTriggerPrice(95.11, 0.1, "short", "take_profit")).toBe(95.2)
+  })
+
   test("projects pseudo trailing stops into the live fill price domain", () => {
     expect(__liveStageTest.translatePseudoTrailingStopPrice(98, 100, 0.01)).toBeCloseTo(0.0098, 12)
     expect(__liveStageTest.translatePseudoTrailingStopPrice(0.0098, 0, 0.01)).toBeCloseTo(0.0098, 12)
@@ -259,6 +266,12 @@ describe("executing Live-stage control barriers", () => {
       trailingStopPrice: 101,
       dcaTakeProfitPrice: 103,
     }))).toEqual({ desiredSl: 101, desiredTp: 103 })
+
+    expect(__liveStageTest.readAbsoluteProtectionPrices(livePosition({
+      stopLoss: 5,
+      takeProfit: 10,
+      manualProtectionOverride: { stopLossPrice: null, takeProfitPrice: null, updatedAt: 1 },
+    }))).toEqual({ desiredSl: 95, desiredTp: 110.00000000000001 })
   })
 
   test("keeps explicit sub-one-percent pseudo protection values in percent units", () => {
@@ -379,6 +392,55 @@ describe("executing Live-stage control barriers", () => {
     )
   })
 
+  test("places security as one hedge-side close-all stop without quantity retry", async () => {
+    const placeStopOrder = jest.fn(async () => ({ success: true, orderId: "slot-security" }))
+    const exchange = connector({ placeStopOrder })
+
+    await expect(__liveStageTest.placeProtectionOrder(
+      exchange,
+      "BTCUSDT",
+      "sell",
+      1.25,
+      94,
+      "SecurityStop",
+      "long",
+      "cts-security-slot",
+    )).resolves.toEqual({ orderId: "slot-security", armedQuantity: 1.25 })
+
+    expect(placeStopOrder).toHaveBeenCalledTimes(1)
+    expect(placeStopOrder).toHaveBeenCalledWith(
+      "BTCUSDT",
+      "sell",
+      1.25,
+      94,
+      "stop_loss",
+      expect.objectContaining({
+        clientOrderId: "cts-security-slot",
+        closePosition: true,
+        hedgeMode: true,
+        positionSide: "LONG",
+      }),
+    )
+    expect(placeStopOrder.mock.calls[0][5]).not.toHaveProperty("reduceOnly")
+
+    placeStopOrder.mockReset()
+    placeStopOrder.mockResolvedValue({
+      success: false,
+      error: "BingX stop order error (code=110424): available amount of 0.4 BTC",
+    })
+    await expect(__liveStageTest.placeProtectionOrder(
+      exchange,
+      "BTCUSDT",
+      "sell",
+      1.25,
+      94,
+      "SecurityStop",
+      "long",
+      "cts-security-no-quantity-retry",
+    )).resolves.toEqual({ orderId: null, armedQuantity: 0 })
+    expect(placeStopOrder).toHaveBeenCalledTimes(1)
+  })
+
   test("tracks stop-loss and take-profit armed quantities independently", () => {
     const position = livePosition({
       takeProfitOrderId: "tp-1",
@@ -405,7 +467,7 @@ describe("executing Live-stage control barriers", () => {
     expect(position.protectionArmedQuantity).toBe(1)
   })
 
-  test("clears silently missing protection ids and their covered quantities", () => {
+  test("requires two authoritative absences before clearing protection ids and quantities", () => {
     const position = livePosition({
       takeProfitOrderId: "tp-1",
       takeProfitPrice: 110,
@@ -418,6 +480,13 @@ describe("executing Live-stage control barriers", () => {
     __liveStageTest.clearMissingProtectionOrderIds(position, new Set(["tp-1"]), result)
 
     expect(result.changed).toBe(true)
+    expect(position.stopLossOrderId).toBe("sl-1")
+    expect(position.stopLossAbsenceConfirmations).toBe(1)
+    expect(position.stopLossArmedQuantity).toBe(0.4)
+
+    result.changed = false
+    __liveStageTest.clearMissingProtectionOrderIds(position, new Set(["tp-1"]), result)
+    expect(result.changed).toBe(true)
     expect(position.stopLossOrderId).toBeUndefined()
     expect(position.stopLossPrice).toBe(0)
     expect(position.stopLossArmedQuantity).toBe(0)
@@ -428,9 +497,42 @@ describe("executing Live-stage control barriers", () => {
     result.changed = false
     __liveStageTest.clearMissingProtectionOrderIds(position, new Set(), result)
     expect(result.changed).toBe(true)
+    expect(position.takeProfitOrderId).toBe("tp-1")
+    expect(position.takeProfitAbsenceConfirmations).toBe(1)
+
+    result.changed = false
+    __liveStageTest.clearMissingProtectionOrderIds(position, new Set(), result)
+    expect(result.changed).toBe(true)
     expect(position.takeProfitOrderId).toBeUndefined()
     expect(position.takeProfitArmedQuantity).toBe(0)
     expect(position.protectionArmedQuantity).toBe(0)
+  })
+
+  test("does not cancel-replace a drifted row control after only one missing snapshot", async () => {
+    const position = livePosition({
+      stopLoss: 4,
+      takeProfit: 0,
+      stopLossOrderId: "possibly-filled-sl",
+      stopLossPrice: 95,
+      stopLossArmedQuantity: 1,
+      stopLossLastArmedAt: 0,
+      priceTick: 0.1,
+    })
+    const exchange = connector({
+      placeStopOrder: jest.fn(async () => ({ success: true, orderId: "must-not-duplicate" })),
+    })
+
+    await expect(__liveStageTest.updateProtectionOrders(
+      exchange,
+      position,
+      "first_absence",
+      new Set(),
+    )).resolves.toMatchObject({ changed: true, slPlaced: false })
+
+    expect(position.stopLossOrderId).toBe("possibly-filled-sl")
+    expect(position.stopLossAbsenceConfirmations).toBe(1)
+    expect(exchange.cancelOrder).not.toHaveBeenCalled()
+    expect(exchange.placeStopOrder).not.toHaveBeenCalled()
   })
 
   test("keeps every non-empty venue and client id alias in the liveness snapshot", async () => {
@@ -502,6 +604,84 @@ describe("executing Live-stage control barriers", () => {
     expect(__liveStageTest.physicalAccumulationCount(setKeys, blockLegs)).toBe(2)
   })
 
+  test("keeps DCA and Special quantity independent from additive Block targets", async () => {
+    const plan = await __liveStageTest.resolveAccumulationPlan(
+      "connection-control-test",
+      livePosition({
+        initialExecutedQuantity: 1,
+        blockBaseQuantity: 1,
+        // Two units were added by a non-Block lane.
+        executedQuantity: 3,
+        quantity: 3,
+        blockLegs: [],
+      }),
+      {
+        setVariant: "block",
+        setKey: "BTCUSDT:signal:long#block:2#independent",
+        blockVolumeRatio: 0.5,
+      },
+      100,
+    )
+
+    expect(plan).toMatchObject({
+      variant: "block",
+      blockCount: 2,
+      blockBaseQuantity: 1,
+      blockConfirmedAddQuantity: 0,
+      blockTargetAddQuantity: 1,
+      blockTargetQuantity: 2,
+      addQty: 1,
+    })
+  })
+
+  test("subtracts only confirmed Block fills at every count", async () => {
+    const existing = livePosition({
+      initialExecutedQuantity: 2,
+      blockBaseQuantity: 2,
+      executedQuantity: 9,
+      quantity: 9,
+      // Six additional units may exist for unrelated adjustments; only the
+      // confirmed two-unit Block leg consumes this Count-3 target.
+      blockLegs: [{ quantity: 2 }],
+    })
+    const plan = await __liveStageTest.resolveAccumulationPlan(
+      "connection-control-test",
+      existing,
+      {
+        setVariant: "block",
+        setKey: "BTCUSDT:signal:long#block:3#independent",
+        blockVolumeRatio: 1,
+      },
+      100,
+    )
+
+    expect(plan).toMatchObject({
+      blockBaseQuantity: 2,
+      blockConfirmedAddQuantity: 2,
+      blockTargetAddQuantity: 6,
+      blockTargetQuantity: 8,
+      addQty: 4,
+    })
+  })
+
+  test("grows the immutable Block base with cumulative fills from only the original entry", () => {
+    const position = livePosition({
+      initialExecutedQuantity: 0.4,
+      blockBaseQuantity: 0.4,
+      executedQuantity: 2.4,
+      quantity: 3,
+      blockLegs: [{ quantity: 1 }],
+      dcaLegs: [{ quantity: 1 }],
+    })
+
+    expect(__liveStageTest.reconcileInitialEntryBaseQuantity(position, 1)).toBe(true)
+    expect(position.initialExecutedQuantity).toBe(1)
+    expect(position.blockBaseQuantity).toBe(1)
+    expect(__liveStageTest.reconcileInitialEntryBaseQuantity(position, 0.8)).toBe(false)
+    expect(position.initialExecutedQuantity).toBe(1)
+    expect(position.blockBaseQuantity).toBe(1)
+  })
+
   test("accepts only explicit exchange directions and never defaults malformed state", () => {
     expect(normalizeLiveTradeDirection("LONG")).toBe("long")
     expect(normalizeLiveTradeDirection(undefined, "sell")).toBe("short")
@@ -541,11 +721,37 @@ describe("executing Live-stage control barriers", () => {
       livePosition({ pendingReduction: { clientOrderId: "reduce-pending" } }),
     )).toBe(true)
     expect(__liveStageTest.aggregateProtectionMutationIsInFlight(
+      livePosition({ pendingAccumulation: { clientOrderId: "add-pending" } }),
+    )).toBe(true)
+    expect(__liveStageTest.aggregateProtectionMutationIsInFlight(
+      livePosition({ aggregateProtectionMutationRequestedAt: 1 }),
+    )).toBe(true)
+    expect(__liveStageTest.aggregateProtectionMutationIsInFlight(
       livePosition({ status: "filled" }),
     )).toBe(false)
   })
 
-  test("defers individual initial controls when Sets share one physical slot", () => {
+  test("recovers only an authoritatively settled and abandoned aggregate hand-off", () => {
+    const now = 100_000
+    expect(__liveStageTest.aggregateProtectionMutationIsAbandoned(livePosition({
+      aggregateProtectionMutationRequestedAt: 1,
+      aggregateProtectionMutationSettledAt: now - 60_000,
+    }), now)).toBe(true)
+    expect(__liveStageTest.aggregateProtectionMutationIsAbandoned(livePosition({
+      aggregateProtectionMutationRequestedAt: 1,
+      aggregateProtectionMutationSettledAt: now - 59_999,
+    }), now)).toBe(false)
+    expect(__liveStageTest.aggregateProtectionMutationIsAbandoned(livePosition({
+      aggregateProtectionMutationRequestedAt: 1,
+      aggregateProtectionMutationSettledAt: now - 60_000,
+      pendingReduction: { clientOrderId: "still-active" },
+    }), now)).toBe(false)
+    expect(__liveStageTest.aggregateProtectionMutationIsAbandoned(livePosition({
+      aggregateProtectionMutationRequestedAt: 1,
+    }), now)).toBe(false)
+  })
+
+  test("never defers individual row controls when Sets share one physical slot", () => {
     const tracking = {
       system_tracking_id: "sys-connection-control-test-control-test",
       connection_tracking_id: "conn-connection-control-test",
@@ -558,13 +764,13 @@ describe("executing Live-stage control barriers", () => {
       memberCount: 1,
     })
     expect(__liveStageTest.initialAggregateProtectionCoordination(second, [first, second])).toMatchObject({
-      deferred: true,
+      deferred: false,
       slot: "BTCUSDT|long",
       memberCount: 2,
     })
   })
 
-  test("projects shared venue IDs into each Set without transferring cancellation ownership", () => {
+  test("projects only the shared security stop while retaining each Set's row controls", () => {
     const leader = livePosition({
       id: "leader",
       setKey: "set-leader",
@@ -573,14 +779,20 @@ describe("executing Live-stage control barriers", () => {
       stopLossOrderId: "venue-sl",
       takeProfitOrderId: "venue-tp",
       takeProfitPrice: 110,
+      securityStopOrderId: "venue-security",
+      securityStopPrice: 89,
+      securityStopRequired: true,
+      securityStopStatus: "armed",
     })
     const member = livePosition({
       id: "member",
       setKey: "set-member",
       stopLoss: 4,
       takeProfit: 8,
-      stopLossOrderId: undefined,
-      takeProfitOrderId: undefined,
+      stopLossOrderId: "member-sl",
+      takeProfitOrderId: "member-tp",
+      stopLossPrice: 96,
+      takeProfitPrice: 108,
     })
     expect(__liveStageTest.projectAggregateMemberCoverage(member, leader, {
       key: "BTCUSDT|long",
@@ -594,20 +806,81 @@ describe("executing Live-stage control barriers", () => {
       ownershipMatches: true,
       desiredStopLoss: 95,
       desiredTakeProfit: 110,
+      outerStopLoss: 95,
+      maximumStopRange: 5,
+      securityStopGap: 0.5,
+      securityStopPrice: 89,
     })).toBe(true)
-    expect(member.stopLossOrderId).toBeUndefined()
-    expect(member.takeProfitOrderId).toBeUndefined()
-    expect(member.protectionMode).toBe("hybrid_control_system")
+    expect(member.stopLossOrderId).toBe("member-sl")
+    expect(member.takeProfitOrderId).toBe("member-tp")
+    expect(member.protectionMode).toBe("exchange_control")
     expect(member.controlOrderSetCoverage?.["set-member"]).toMatchObject({
       protected: true,
       aggregateProtectionOwner: false,
       aggregateProtectionLeaderId: "leader",
-      stopLossOrderId: "venue-sl",
-      takeProfitOrderId: "venue-tp",
-      stopLossPrice: 95,
-      takeProfitPrice: 110,
-      systemProtectionLegs: ["stop_loss", "take_profit"],
+      stopLossOrderId: "member-sl",
+      takeProfitOrderId: "member-tp",
+      stopLossPrice: 96,
+      takeProfitPrice: 108,
+      securityStopOrderId: "venue-security",
+      securityStopPrice: 89,
+      securityStopRequired: true,
+      securityStopStatus: "armed",
+      systemProtectionLegs: [],
     })
+  })
+
+  test("attributes a missing filled row control to its exact Set before aggregate inference", async () => {
+    const older = livePosition({
+      id: "row-older",
+      createdAt: 1,
+      executedQuantity: 1,
+      quantity: 1,
+      stopLossOrderId: "older-sl",
+      takeProfitOrderId: "older-tp",
+      stopLossArmedQuantity: 1,
+      takeProfitArmedQuantity: 1,
+    })
+    const newer = livePosition({
+      id: "row-newer",
+      createdAt: 2,
+      executedQuantity: 1,
+      quantity: 1,
+      stopLossOrderId: "newer-sl",
+      takeProfitOrderId: "newer-tp",
+      stopLossArmedQuantity: 1,
+      takeProfitArmedQuantity: 1,
+    })
+    const exchange = connector({
+      getOrder: jest.fn(async (_symbol: string, orderId: string) => orderId === "newer-sl"
+        ? { orderId, status: "filled", filledQty: 0.4, filledPrice: 94 }
+        : { orderId, status: "open", filledQty: 0 }),
+    })
+    const aggregateResult = {
+      plans: [],
+      changedPositions: 0,
+      rearmedLeaders: 0,
+      ownershipMismatches: 0,
+      closedMemberIds: new Set<string>(),
+    }
+
+    await expect(__liveStageTest.settleFilledRowControlsAcrossMembers(
+      "connection-control-test",
+      exchange,
+      [older, newer],
+      new Set(["older-sl", "older-tp", "newer-tp"]),
+      aggregateResult,
+      async () => undefined,
+    )).resolves.toBe(true)
+
+    expect(older.executedQuantity).toBe(1)
+    expect(older.stopLossOrderId).toBe("older-sl")
+    expect(newer.executedQuantity).toBe(0.6)
+    expect(newer.stopLossOrderId).toBeUndefined()
+    expect(newer.takeProfitOrderId).toBe("newer-tp")
+    expect(newer.partialOrderExecutions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ orderId: "newer-sl", appliedQuantity: 0.4 }),
+    ]))
   })
 
   test("restores protection only after a partial system-close order is terminal", () => {

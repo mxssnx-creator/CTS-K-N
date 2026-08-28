@@ -7,6 +7,7 @@ import { useExchange } from "@/lib/exchange-context"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
 import { PerformanceTiers } from "@/components/dashboard/performance-tiers"
 import { useDashboardEvents } from "@/lib/dashboard-events"
+import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 
 interface CompactStats {
   indicationCycles: number
@@ -112,6 +113,9 @@ interface CompactStats {
   liveControlOrderSets: number
   liveProtectedControlOrderSets: number
   liveUnprotectedControlOrderSets: number
+  liveSecurityStopsRequired: number
+  liveSecurityStopsArmed: number
+  liveSecurityStopsMissing: number
   // ── Per-position exchange details + mirroring coordination ───────
   // Each entry carries the FULL exchange Position Details (leverage,
   // margin at risk, liquidation distance, SL/TP levels, ROI) plus
@@ -139,10 +143,14 @@ interface CompactStats {
     // Risk management levels
     stopLossPrice: number
     takeProfitPrice: number
+    securityStopPrice: number
+    securityStopRequired: boolean
+    securityStopStatus: string
     // Exchange references (optional — may not be surfaced by all connectors)
     orderId?: string
     stopLossOrderId?: string
     takeProfitOrderId?: string
+    securityStopOrderId?: string
     sharedControlProtection: boolean
     // Lifecycle
     status: string
@@ -276,6 +284,9 @@ const EMPTY: CompactStats = {
   liveControlOrderSets: 0,
   liveProtectedControlOrderSets: 0,
   liveUnprotectedControlOrderSets: 0,
+  liveSecurityStopsRequired: 0,
+  liveSecurityStopsArmed: 0,
+  liveSecurityStopsMissing: 0,
   livePositions: [],
   liveResolution: { pseudo: 0, realFallback: 0, unresolved: 0 },
   performanceTiers: {
@@ -544,7 +555,7 @@ function ExchangePositionRow({
           </div>
           <div className="flex flex-col">
             <span className="text-muted-foreground text-[9px]">
-              TP{lp.takeProfitOrderId && (lp.sharedControlProtection ? " ✓ shared" : " ✓")}
+              TP{lp.takeProfitOrderId ? " ✓ row" : ""}
             </span>
             <span className="font-mono tabular-nums text-emerald-700">
               {lp.takeProfitPrice || "—"}
@@ -553,10 +564,18 @@ function ExchangePositionRow({
           {/* SL */}
           <div className="flex flex-col">
             <span className="text-muted-foreground text-[9px]">
-              SL{lp.stopLossOrderId && (lp.sharedControlProtection ? " ✓ shared" : " ✓")}
+              SL{lp.stopLossOrderId ? " ✓ row" : ""}
             </span>
             <span className="font-mono tabular-nums text-red-700">
               {lp.stopLossPrice || "—"}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground text-[9px]">
+              Security {lp.securityStopRequired ? lp.securityStopStatus.replaceAll("_", " ") : "n/a"}
+            </span>
+            <span className={`font-mono tabular-nums ${lp.securityStopStatus === "armed" ? "text-emerald-700" : lp.securityStopRequired ? "text-red-700" : "text-muted-foreground"}`}>
+              {lp.securityStopPrice || "—"}
             </span>
           </div>
           {/* Exchange refs */}
@@ -939,6 +958,9 @@ export function StatisticsOverviewV2() {
           liveControlOrderSets: Number(opLive.aggregate?.controlOrderSets) || 0,
           liveProtectedControlOrderSets: Number(opLive.aggregate?.protectedControlOrderSets) || 0,
           liveUnprotectedControlOrderSets: Number(opLive.aggregate?.unprotectedControlOrderSets) || 0,
+          liveSecurityStopsRequired: Number(opLive.aggregate?.securityStopsRequired) || 0,
+          liveSecurityStopsArmed: Number(opLive.aggregate?.securityStopsArmed) || 0,
+          liveSecurityStopsMissing: Number(opLive.aggregate?.securityStopsMissing) || 0,
           // Mirroring coordination payload: each live position row
           // normalized to a COMPLETE shape (every numeric field
           // coerced to a finite number, optional strings kept as-is).
@@ -961,17 +983,7 @@ export function StatisticsOverviewV2() {
                   : marginUsd > 0
                     ? Math.round((unrealizedPnl / marginUsd) * 10000) / 100
                     : 0
-                const coverageRows = Array.isArray(p.controlOrderSetCoverage)
-                  ? p.controlOrderSetCoverage
-                  : []
-                const sharedSl = coverageRows.find((coverage: any) => coverage?.stopLossOrderId)
-                const sharedTp = coverageRows.find((coverage: any) => coverage?.takeProfitOrderId)
-                const effectiveStopLossOrderId = p.stopLossOrderId || sharedSl?.stopLossOrderId
-                const effectiveTakeProfitOrderId = p.takeProfitOrderId || sharedTp?.takeProfitOrderId
-                const sharedControlProtection = Boolean(
-                  (!p.stopLossOrderId && sharedSl?.stopLossOrderId)
-                  || (!p.takeProfitOrderId && sharedTp?.takeProfitOrderId),
-                )
+                const security = resolveEffectiveSecurityStop(p)
                 return {
                   id:                    String(p.id || ""),
                   symbol:                String(p.symbol || ""),
@@ -987,12 +999,16 @@ export function StatisticsOverviewV2() {
                   liquidationDistancePct: Number(p.liquidationDistancePct) || 0,
                   unrealizedPnl,
                   roiPct,
-                  stopLossPrice:         Number(p.stopLossPrice) || Number(sharedSl?.stopLossPrice) || 0,
-                  takeProfitPrice:       Number(p.takeProfitPrice) || Number(sharedTp?.takeProfitPrice) || 0,
+                  stopLossPrice:         Number(p.stopLossPrice) || 0,
+                  takeProfitPrice:       Number(p.takeProfitPrice) || 0,
+                  securityStopPrice:     security.price,
+                  securityStopRequired:  security.required,
+                  securityStopStatus:    security.status,
                   orderId:               p.orderId ? String(p.orderId) : undefined,
-                  stopLossOrderId:       effectiveStopLossOrderId ? String(effectiveStopLossOrderId) : undefined,
-                  takeProfitOrderId:     effectiveTakeProfitOrderId ? String(effectiveTakeProfitOrderId) : undefined,
-                  sharedControlProtection,
+                  stopLossOrderId:       p.stopLossOrderId ? String(p.stopLossOrderId) : undefined,
+                  takeProfitOrderId:     p.takeProfitOrderId ? String(p.takeProfitOrderId) : undefined,
+                  securityStopOrderId:   security.orderId || undefined,
+                  sharedControlProtection: false,
                   status:                String(p.status || "open"),
                   createdAt:             Number(p.createdAt) || 0,
                   updatedAt:             Number(p.updatedAt) || 0,
@@ -1641,6 +1657,15 @@ export function StatisticsOverviewV2() {
             </div>
             <div
               className="flex flex-col gap-0.5"
+              title={`${stats.liveSecurityStopsArmed}/${stats.liveSecurityStopsRequired} physical symbol/direction slots have the required farther close-all security stop armed.`}
+            >
+              <span className="text-muted-foreground">Security stops</span>
+              <span className={`font-semibold tabular-nums ${stats.liveSecurityStopsMissing > 0 ? "text-red-600" : "text-emerald-600"}`}>
+                {fmt(stats.liveSecurityStopsArmed)}/{fmt(stats.liveSecurityStopsRequired)}
+              </span>
+            </div>
+            <div
+              className="flex flex-col gap-0.5"
               title={`${stats.liveDispatchAttempted} latest dispatch attempts; ${stats.liveDispatchDeferred} suppressed or unavailable candidates; ${stats.liveDispatchAvgAttemptMs.toFixed(1)}ms average per attempt.`}
             >
               <span className="text-muted-foreground">Failed / next / time</span>
@@ -1656,6 +1681,7 @@ export function StatisticsOverviewV2() {
             rendered when there's something to warn about. */}
         {(stats.liveNearLiquidation > 0 || stats.liveStaleSync > 0 ||
           stats.liveUnprotectedControlOrderSets > 0 ||
+          stats.liveSecurityStopsMissing > 0 ||
           (stats.liveConsolidatedSetsTotal > stats.livePositions.length && stats.livePositions.length > 0)) && (
           <div className="mt-1 flex items-center gap-3 flex-wrap text-[9px]">
             {stats.liveNearLiquidation > 0 && (
@@ -1681,6 +1707,14 @@ export function StatisticsOverviewV2() {
                 title={`${stats.liveProtectedControlOrderSets}/${stats.liveControlOrderSets} exact Set lineages have current exchange-control or system-fallback protection coverage.`}
               >
                 {stats.liveUnprotectedControlOrderSets} Sets unprotected
+              </span>
+            )}
+            {stats.liveSecurityStopsMissing > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300 font-semibold"
+                title={`${stats.liveSecurityStopsMissing} required physical-slot security stop${stats.liveSecurityStopsMissing === 1 ? " is" : "s are"} not armed.`}
+              >
+                {stats.liveSecurityStopsMissing} security missing
               </span>
             )}
             {stats.liveConsolidatedSetsTotal > stats.livePositions.length && stats.livePositions.length > 0 && (

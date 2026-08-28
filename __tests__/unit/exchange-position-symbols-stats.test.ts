@@ -57,6 +57,16 @@ describe("exchange-position symbol statistics", () => {
         status: " CLOSING_PARTIAL ",
         executionMode: "live",
         symbol: "BTCUSDT",
+        executedQuantity: 1,
+      },
+      {
+        id: "pending-request-only",
+        status: "pending_fill",
+        executionMode: "live",
+        orderId: "pending-entry",
+        symbol: "BTCUSDT",
+        quantity: 5,
+        unrealizedPnL: -999,
       },
       {
         id: "paper-open",

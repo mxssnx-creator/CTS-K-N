@@ -1,11 +1,65 @@
 import {
   auditVstSoakExecutionRelations,
   auditVstSoakCounters,
+  deriveVstSoakProtectionBand,
   normalizeVstSoakCounterSnapshot,
   rankVstSoakSymbolLiquidity,
 } from "@/lib/bingx-vst-soak-audit"
 
 describe("BingX Prod-VST soak accounting audit", () => {
+  test("derives liquidation-safe long and short row/security bands", () => {
+    expect(deriveVstSoakProtectionBand({
+      direction: "long",
+      entryPrice: 100,
+      liquidationPrice: 80,
+      priceTick: 0.1,
+    })).toMatchObject({
+      source: "liquidation",
+      riskDistance: 20,
+      initialStopPrice: 88,
+      ratchetedStopPrice: 90,
+      staleStopPrice: 89,
+      takeProfitPrice: 112,
+      securityStopPrice: 86.8,
+    })
+    expect(deriveVstSoakProtectionBand({
+      direction: "short",
+      entryPrice: 100,
+      liquidationPrice: 120,
+      priceTick: 0.1,
+    })).toMatchObject({
+      source: "liquidation",
+      initialStopPrice: 112,
+      ratchetedStopPrice: 110,
+      staleStopPrice: 111,
+      takeProfitPrice: 88,
+      securityStopPrice: 113.2,
+    })
+  })
+
+  test("uses the documented fallback when VST omits liquidation and rejects unsafe ranges", () => {
+    expect(deriveVstSoakProtectionBand({
+      direction: "long",
+      entryPrice: 100,
+      liquidationPrice: 0,
+      priceTick: 0.1,
+    })).toMatchObject({
+      source: "fallback",
+      riskDistance: 8,
+      initialStopPrice: 95.2,
+      ratchetedStopPrice: 96,
+      staleStopPrice: 95.6,
+      takeProfitPrice: 104.8,
+      securityStopPrice: 94.7,
+    })
+    expect(() => deriveVstSoakProtectionBand({
+      direction: "long",
+      entryPrice: 100,
+      liquidationPrice: 99,
+      priceTick: 0.1,
+    })).toThrow("exceed 12 ticks")
+  })
+
   test("selects currently executable VST books instead of assuming mainnet liquidity", () => {
     const ranked = rankVstSoakSymbolLiquidity([
       { symbol: "BTC-USDT", bid: 99.9, ask: 100.1, last: 100 },
@@ -139,16 +193,29 @@ describe("BingX Prod-VST soak accounting audit", () => {
       direction: index % 2 === 0 ? "long" as const : "short" as const,
       tradePath,
       quantityStep: 0.001,
+      priceTick: 0.1,
       entry: { orderId: `${index}-entry`, submittedQuantity: 0.01, filledQuantity: 0.01, filledPrice: 100, volumeUsd: 1, status: "FILLED" },
       accumulation: { orderId: `${index}-acc`, submittedQuantity: 0.01, filledQuantity: 0.01, filledPrice: 101, volumeUsd: 1.01, status: "FILLED" },
       close: { orderId: `${index}-close`, submittedQuantity: 0.02, filledQuantity: 0.02, filledPrice: 102, volumeUsd: 2.04, status: "FILLED" },
       protection: {
         orderId: `${index}-stop`,
         takeProfitOrderId: `${index}-take-profit`,
+        securityStopOrderId: `${index}-security`,
         requireTakeProfit: true,
+        requireSecurity: true,
+        stopPrice: index % 2 === 0 ? 95 : 105,
+        takeProfitPrice: index % 2 === 0 ? 105 : 95,
+        securityStopPrice: index % 2 === 0 ? 90 : 110,
+        stopLossQuantity: 0.02,
+        takeProfitQuantity: 0.02,
+        securityStopArmedQuantity: 0.02,
+        securityCloseAll: true,
         observedOpen: true,
+        securityObservedOpen: true,
         cancelled: true,
+        securityCancelled: true,
         observedCancelled: true,
+        securityObservedCancelled: true,
       },
       positionQuantityAfterEntry: 0.01,
       positionQuantityAfterAccumulation: 0.02,
@@ -161,7 +228,7 @@ describe("BingX Prod-VST soak accounting audit", () => {
       success: true,
       uniqueOrderIds: true,
       partialFillsObserved: 0,
-      totals: { exposureOrders: 8, closeOrders: 4, protectionOrders: 8 },
+      totals: { exposureOrders: 8, closeOrders: 4, protectionOrders: 12 },
     })
     expect(audit.mismatches).toEqual([])
   })
@@ -174,6 +241,7 @@ describe("BingX Prod-VST soak accounting audit", () => {
         direction: "long",
         tradePath: "direct-trade",
         quantityStep: 0.001,
+        priceTick: 0.1,
         entry: { orderId: "duplicate", submittedQuantity: 0.02, filledQuantity: 0.01, filledPrice: 100, status: "FILLED" },
         accumulation: { orderId: "duplicate", submittedQuantity: 0.01, filledQuantity: 0.01, filledPrice: 100, status: "NEW" },
         close: { orderId: "close", submittedQuantity: 0.02, filledQuantity: 0.01, filledPrice: 100, status: "FILLED" },
@@ -194,6 +262,51 @@ describe("BingX Prod-VST soak accounting audit", () => {
       expect.stringContaining("close relation"),
       expect.stringContaining("final relation"),
       expect.stringContaining("not unique"),
+    ]))
+  })
+
+  test("rejects a tick-aligned security stop that is not the required 10% row range farther", () => {
+    const audit = auditVstSoakExecutionRelations({
+      expectedTradePaths: ["main-trade"],
+      cycles: [{
+        symbol: "BTCUSDT",
+        direction: "long",
+        tradePath: "main-trade",
+        quantityStep: 0.001,
+        priceTick: 0.1,
+        entry: { orderId: "entry", submittedQuantity: 0.01, filledQuantity: 0.01, filledPrice: 100, status: "FILLED" },
+        accumulation: { orderId: "acc", submittedQuantity: 0.01, filledQuantity: 0.01, filledPrice: 100, status: "FILLED" },
+        close: { orderId: "close", submittedQuantity: 0.02, filledQuantity: 0.02, filledPrice: 100, status: "FILLED" },
+        protection: {
+          orderId: "stop",
+          takeProfitOrderId: "tp",
+          securityStopOrderId: "security",
+          requireTakeProfit: true,
+          requireSecurity: true,
+          stopPrice: 95,
+          takeProfitPrice: 105,
+          securityStopPrice: 94.9,
+          stopLossQuantity: 0.02,
+          takeProfitQuantity: 0.02,
+          securityStopArmedQuantity: 0.02,
+          securityCloseAll: true,
+          observedOpen: true,
+          securityObservedOpen: true,
+          cancelled: true,
+          securityCancelled: true,
+          observedCancelled: true,
+          securityObservedCancelled: true,
+        },
+        positionQuantityAfterEntry: 0.01,
+        positionQuantityAfterAccumulation: 0.02,
+        positionQuantityAfterClose: 0,
+        flatAfter: true,
+      }],
+    })
+
+    expect(audit.success).toBe(false)
+    expect(audit.mismatches).toEqual(expect.arrayContaining([
+      expect.stringContaining("requiredSecurityGap=0.5"),
     ]))
   })
 

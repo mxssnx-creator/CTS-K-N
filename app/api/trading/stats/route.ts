@@ -5,7 +5,7 @@ import { getLivePositions, getClosedLivePositions } from "@/lib/trade-engine/sta
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { resolveSettledRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
-import { isRealExchangePosition } from "@/lib/live-position-source"
+import { isExecutedRealExchangePosition, isRealExchangePosition } from "@/lib/live-position-source"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
@@ -71,7 +71,9 @@ function buildStats(positions: any[]): TradeStats {
   const closed = positions.filter((p) => String(p?.status || "").trim().toLowerCase() === "closed")
   // Rejected/cancelled/error rows are terminal outcomes, not current market
   // exposure. Counting every non-closed record as open inflated live PnL.
-  const open = positions.filter((p) => isLiveOpenStatus(p.status))
+  const open = positions.filter((p) =>
+    isLiveOpenStatus(p.status) && isExecutedRealExchangePosition(p),
+  )
   const settled = closed
     .map((position) => ({ position, pnl: resolveSettledRealizedPnl(position) }))
     .filter((entry): entry is { position: any; pnl: number } => entry.pnl !== undefined)
@@ -146,7 +148,9 @@ export async function GET(request: Request) {
     const closedPositions = realPositions
       .filter((position) => String(position?.status || "").trim().toLowerCase() === "closed")
       .sort((left, right) => lifecycleTimestamp(right) - lifecycleTimestamp(left))
-    const openPositions = realPositions.filter((position) => isLiveOpenStatus(position?.status))
+    const openPositions = realPositions.filter((position) =>
+      isLiveOpenStatus(position?.status) && isExecutedRealExchangePosition(position),
+    )
     const now = Date.now()
     const last32hCutoff = now - 32 * 60 * 60 * 1000
 

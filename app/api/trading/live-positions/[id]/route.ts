@@ -156,20 +156,30 @@ export async function PATCH(
     // at the authoritative API boundary so a direct request can never leave a
     // live position without either a fixed SL or an active trailing stop.
     const previousManual = position.manualProtectionOverride
-    const previousManualHasStop = previousManual &&
-      Object.prototype.hasOwnProperty.call(previousManual, "stopLossPrice")
     const previousManualStop = Number(previousManual?.stopLossPrice)
     const strategyOrExchangeStop = Number(position.stopLossPrice) > 0 ||
       Number(position.stopLoss) > 0 ||
       Number(position.assignedStopLoss) > 0
     const effectiveFixedStop = stopLoss.provided
-      ? stopLoss.value != null && stopLoss.value > 0
-      : previousManualHasStop
-        ? Number.isFinite(previousManualStop) && previousManualStop > 0
-        : strategyOrExchangeStop
+      ? (stopLoss.value != null && stopLoss.value > 0) || strategyOrExchangeStop
+      : (Number.isFinite(previousManualStop) && previousManualStop > 0) || strategyOrExchangeStop
     if (!effectiveFixedStop && !trailingEnabled) {
       return NextResponse.json(
         { success: false, error: "Keep a stop loss or enable trailing protection" },
+        { status: 400 },
+      )
+    }
+    const previousManualTarget = Number(previousManual?.takeProfitPrice)
+    const strategyOrExchangeTarget = Number(position.takeProfitPrice) > 0 ||
+      Number(position.dcaTakeProfitPrice) > 0 ||
+      Number(position.takeProfit) > 0 ||
+      Number(position.assignedTakeProfit) > 0
+    const effectiveFixedTarget = takeProfit.provided
+      ? (takeProfit.value != null && takeProfit.value > 0) || strategyOrExchangeTarget
+      : (Number.isFinite(previousManualTarget) && previousManualTarget > 0) || strategyOrExchangeTarget
+    if (!effectiveFixedTarget) {
+      return NextResponse.json(
+        { success: false, error: "Keep a take profit target or restore strategy protection" },
         { status: 400 },
       )
     }

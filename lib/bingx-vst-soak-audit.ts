@@ -46,6 +46,7 @@ export interface VstSoakExecutionCycle {
   direction: "long" | "short"
   tradePath: string
   quantityStep: number
+  priceTick?: number
   entry?: VstSoakExecutionOrder
   accumulation?: VstSoakExecutionOrder
   close?: VstSoakExecutionOrder
@@ -56,11 +57,38 @@ export interface VstSoakExecutionCycle {
   protection?: {
     orderId?: string
     takeProfitOrderId?: string
+    securityStopOrderId?: string
     requireTakeProfit?: boolean
+    requireSecurity?: boolean
+    stopPrice?: number
+    takeProfitPrice?: number
+    securityStopPrice?: number
+    stopLossQuantity?: number
+    takeProfitQuantity?: number
+    securityStopArmedQuantity?: number
+    securityCloseAll?: boolean
     observedOpen?: boolean
+    securityObservedOpen?: boolean
     cancelled?: boolean
+    securityCancelled?: boolean
     observedCancelled?: boolean
+    securityObservedCancelled?: boolean
   }
+}
+
+export interface VstSoakProtectionBand {
+  direction: "long" | "short"
+  source: "liquidation" | "fallback"
+  entryPrice: number
+  liquidationPrice: number
+  priceTick: number
+  riskDistance: number
+  securityStopGap: number
+  initialStopPrice: number
+  ratchetedStopPrice: number
+  staleStopPrice: number
+  takeProfitPrice: number
+  securityStopPrice: number
 }
 
 export interface VstSoakExecutionAudit {
@@ -129,6 +157,108 @@ function finiteNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function roundDownToTick(value: number, tick: number): number {
+  return Number((Math.floor((value + tick * 1e-9) / tick) * tick).toPrecision(15))
+}
+
+function roundUpToTick(value: number, tick: number): number {
+  return Number((Math.ceil((value - tick * 1e-9) / tick) * tick).toPrecision(15))
+}
+
+/**
+ * Build a deterministic, venue-tick-safe protection band for a destructive
+ * Prod-VST lifecycle. A real liquidation boundary is authoritative when it
+ * exists. Demo positions that omit it use a deliberately wide fallback range
+ * so the harness can still prove order coordination without placing a trigger
+ * near the current book.
+ */
+export function deriveVstSoakProtectionBand(input: {
+  direction: "long" | "short"
+  entryPrice: number
+  liquidationPrice?: number | null
+  priceTick: number
+}): VstSoakProtectionBand {
+  const direction = effectiveCycleDirection(input.direction)
+  const entryPrice = finiteNumber(input.entryPrice)
+  const priceTick = finiteNumber(input.priceTick)
+  const liquidationPrice = finiteNumber(input.liquidationPrice)
+  if (!direction) throw new Error("VST protection band requires an explicit long or short direction")
+  if (!(entryPrice > 0) || !(priceTick > 0)) {
+    throw new Error("VST protection band requires a positive entry price and exact venue price tick")
+  }
+
+  const liquidationDistance = liquidationPrice > 0
+    ? direction === "long"
+      ? entryPrice - liquidationPrice
+      : liquidationPrice - entryPrice
+    : 0
+  if (liquidationPrice > 0 && !(liquidationDistance > priceTick * 12)) {
+    throw new Error(
+      `VST liquidation distance must exceed 12 ticks; received ${liquidationDistance / priceTick}`,
+    )
+  }
+  const source = liquidationPrice > 0 ? "liquidation" as const : "fallback" as const
+  const riskDistance = source === "liquidation"
+    ? liquidationDistance
+    : Math.max(entryPrice * 0.08, priceTick * 40)
+  // Production security coordination adds 10% of the largest independent
+  // entry-to-row-SL range, not 10% of the full liquidation/fallback range.
+  const securityStopGap = Math.max(priceTick * 2, riskDistance * 0.6 * 0.1)
+
+  const adversePrice = (distance: number) => direction === "long"
+    ? roundDownToTick(entryPrice - distance, priceTick)
+    : roundUpToTick(entryPrice + distance, priceTick)
+  const favorablePrice = (distance: number) => direction === "long"
+    ? roundUpToTick(entryPrice + distance, priceTick)
+    : roundDownToTick(entryPrice - distance, priceTick)
+  const initialStopPrice = adversePrice(riskDistance * 0.6)
+  const ratchetedStopPrice = adversePrice(riskDistance * 0.5)
+  const staleStopPrice = adversePrice(riskDistance * 0.55)
+  const takeProfitPrice = favorablePrice(riskDistance * 0.6)
+  const securityStopPrice = direction === "long"
+    ? roundDownToTick(initialStopPrice - securityStopGap, priceTick)
+    : roundUpToTick(initialStopPrice + securityStopGap, priceTick)
+  const epsilon = priceTick * 1e-7
+  const relationSafe = direction === "long"
+    ? securityStopPrice <= initialStopPrice - priceTick + epsilon
+      && initialStopPrice < staleStopPrice
+      && staleStopPrice < ratchetedStopPrice
+      && ratchetedStopPrice < entryPrice
+      && takeProfitPrice > entryPrice
+    : securityStopPrice >= initialStopPrice + priceTick - epsilon
+      && initialStopPrice > staleStopPrice
+      && staleStopPrice > ratchetedStopPrice
+      && ratchetedStopPrice > entryPrice
+      && takeProfitPrice < entryPrice
+  const liquidationSafe = source === "fallback" || (direction === "long"
+    ? securityStopPrice >= liquidationPrice + priceTick * 2 - epsilon
+    : securityStopPrice <= liquidationPrice - priceTick * 2 + epsilon)
+  if (!(securityStopPrice > 0) || !(takeProfitPrice > 0) || !relationSafe || !liquidationSafe) {
+    throw new Error("VST protection band cannot produce distinct, liquidation-safe tick prices")
+  }
+
+  return {
+    direction,
+    source,
+    entryPrice,
+    liquidationPrice,
+    priceTick,
+    riskDistance,
+    securityStopGap,
+    initialStopPrice,
+    ratchetedStopPrice,
+    staleStopPrice,
+    takeProfitPrice,
+    securityStopPrice,
+  }
+}
+
+function isTickAligned(value: number, tick: number): boolean {
+  if (!(value > 0) || !(tick > 0)) return false
+  const ticks = value / tick
+  return Math.abs(ticks - Math.round(ticks)) <= 1e-7
+}
+
 function terminalFillStatus(value: unknown): boolean {
   const normalized = String(value || "").toLowerCase().replace(/[^a-z]/g, "")
   return normalized.includes("filled") || normalized.includes("cancel")
@@ -182,25 +312,77 @@ export function auditVstSoakExecutionRelations(input: {
       if (index < 2) totals.exposureOrders++
       else totals.closeOrders++
     }
-    if (cycle.protection?.orderId) {
-      orderIds.push(String(cycle.protection.orderId))
-      totals.protectionOrders++
-    }
-    if (cycle.protection?.takeProfitOrderId) {
-      orderIds.push(String(cycle.protection.takeProfitOrderId))
+    for (const protectionOrderId of [
+      cycle.protection?.orderId,
+      cycle.protection?.takeProfitOrderId,
+      cycle.protection?.securityStopOrderId,
+    ]) {
+      if (!protectionOrderId) continue
+      orderIds.push(String(protectionOrderId))
       totals.protectionOrders++
     }
     if (
       !cycle.protection?.orderId
       || (cycle.protection.requireTakeProfit === true && !cycle.protection.takeProfitOrderId)
+      || cycle.protection.requireSecurity !== true
+      || !cycle.protection.securityStopOrderId
       || cycle.protection.observedOpen !== true
+      || cycle.protection.securityObservedOpen !== true
       || cycle.protection.cancelled !== true
+      || cycle.protection.securityCancelled !== true
       || cycle.protection.observedCancelled !== true
+      || cycle.protection.securityObservedCancelled !== true
     ) mismatches.push(`${label} protection: open/cancel/absence coordination failed`)
 
+    const protectionQuantity = finiteNumber(cycle.positionQuantityAfterAccumulation)
+    const protectionTolerance = Math.max(Math.abs(finiteNumber(cycle.quantityStep)) / 2, 1e-12)
+    for (const [leg, quantity] of [
+      ["stop-loss", cycle.protection?.stopLossQuantity],
+      ["take-profit", cycle.protection?.takeProfitQuantity],
+      ["security", cycle.protection?.securityStopArmedQuantity],
+    ] as const) {
+      if (!(finiteNumber(quantity) > 0) || Math.abs(finiteNumber(quantity) - protectionQuantity) > protectionTolerance) {
+        mismatches.push(`${label} ${leg} quantity: expected ${protectionQuantity}, received ${finiteNumber(quantity)}`)
+      }
+    }
+    if (cycle.protection?.securityCloseAll !== true) {
+      mismatches.push(`${label} security: close-all position coverage was not confirmed`)
+    }
+    const priceTick = finiteNumber(cycle.priceTick)
+    const stopPrice = finiteNumber(cycle.protection?.stopPrice)
+    const takeProfitPrice = finiteNumber(cycle.protection?.takeProfitPrice)
+    const securityStopPrice = finiteNumber(cycle.protection?.securityStopPrice)
     const entryFilled = finiteNumber(cycle.entry?.filledQuantity)
     const accumulationFilled = finiteNumber(cycle.accumulation?.filledQuantity)
     const closeFilled = finiteNumber(cycle.close?.filledQuantity)
+    const totalExposureFill = entryFilled + accumulationFilled
+    const averageEntryPrice = totalExposureFill > 0
+      ? (
+          entryFilled * finiteNumber(cycle.entry?.filledPrice)
+          + accumulationFilled * finiteNumber(cycle.accumulation?.filledPrice)
+        ) / totalExposureFill
+      : 0
+    if (!(priceTick > 0) || ![stopPrice, takeProfitPrice, securityStopPrice].every((price) => isTickAligned(price, priceTick))) {
+      mismatches.push(`${label} protection prices are missing or not aligned to the exact venue tick`)
+    } else {
+      const maximumStopRange = Math.abs(averageEntryPrice - stopPrice)
+      const requiredSecurityGap = Math.max(priceTick * 2, maximumStopRange * 0.1)
+      const pricesOrdered = direction === "long"
+        ? securityStopPrice <= stopPrice - requiredSecurityGap + priceTick * 1e-7
+          && stopPrice < averageEntryPrice
+          && takeProfitPrice > averageEntryPrice
+        : securityStopPrice >= stopPrice + requiredSecurityGap - priceTick * 1e-7
+          && stopPrice > averageEntryPrice
+          && takeProfitPrice < averageEntryPrice
+      if (!(averageEntryPrice > 0) || !pricesOrdered) {
+        mismatches.push(
+          `${label} protection relation is invalid ` +
+          `(security=${securityStopPrice}, stop=${stopPrice}, entry=${averageEntryPrice}, ` +
+          `takeProfit=${takeProfitPrice}, requiredSecurityGap=${requiredSecurityGap})`,
+        )
+      }
+    }
+
     const afterEntry = finiteNumber(cycle.positionQuantityAfterEntry)
     const afterAccumulation = finiteNumber(cycle.positionQuantityAfterAccumulation)
     const afterClose = finiteNumber(cycle.positionQuantityAfterClose)
