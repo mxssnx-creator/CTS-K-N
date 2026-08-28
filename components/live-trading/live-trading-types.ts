@@ -85,7 +85,7 @@ export interface LivePositionView {
   takeProfitAbsenceConfirmations?: number
   securityStopAbsenceConfirmations?: number
   securityStopRequired?: boolean
-  securityStopStatus?: "armed" | "pending" | "unsupported" | "ownership_mismatch" | "system_close" | "invalid_range" | "capacity_blocked"
+  securityStopStatus?: "armed" | "pending" | "unsupported" | "ownership_mismatch" | "system_close" | "invalid_range" | "capacity_blocked" | "quantity_mismatch"
   protectionMode?: "exchange_control" | "hybrid_control_system" | "system_close" | "system_close_fallback"
   systemProtectionLegs?: Array<"stop_loss" | "take_profit">
   aggregateProtectionOwner?: boolean

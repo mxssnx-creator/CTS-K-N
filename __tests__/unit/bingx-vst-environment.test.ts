@@ -236,7 +236,7 @@ describe("BingX Prod-VST connector contract", () => {
     expect(requests.every(({ url }) => !url.href.includes("demo-api-secret"))).toBe(true)
   })
 
-  test("places one hedge-only full-position security stop without a wire quantity", async () => {
+  test("places one hedge-side full-position security stop with exact wire quantity", async () => {
     const requests: URL[] = []
     global.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
@@ -266,19 +266,18 @@ describe("BingX Prod-VST connector contract", () => {
       positionSide: "LONG",
       hedgeMode: true,
       reduceOnly: true,
-      closePosition: true,
       clientOrderId: "cts-security-stop-1",
     })).resolves.toMatchObject({ success: true, orderId: "security-stop-1" })
 
     const orderRequest = requests.find((url) => url.pathname === "/openApi/swap/v2/trade/order")
     expect(orderRequest?.searchParams.get("type")).toBe("STOP_MARKET")
-    expect(orderRequest?.searchParams.get("closePosition")).toBe("true")
-    expect(orderRequest?.searchParams.get("quantity")).toBeNull()
+    expect(orderRequest?.searchParams.get("closePosition")).toBeNull()
+    expect(orderRequest?.searchParams.get("quantity")).toBe("0.004")
     expect(orderRequest?.searchParams.get("reduceOnly")).toBeNull()
     expect(orderRequest?.searchParams.get("positionSide")).toBe("LONG")
   })
 
-  test("fails closed for unsupported close-all stop modes and excludes the capability from spot", async () => {
+  test("fails closed for quantityless closePosition stops and excludes the capability from spot", async () => {
     global.fetch = jest.fn(async (input: string | URL | Request) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
       if (url.pathname === "/openApi/swap/v2/server/time") {
@@ -295,15 +294,11 @@ describe("BingX Prod-VST connector contract", () => {
       contractType: "usdt-perpetual",
       positionMode: "hedge",
     })
-    await expect(connector.placeStopOrder("BTCUSDT", "sell", 0.004, 58_000, "take_profit", {
+    await expect(connector.placeStopOrder("BTCUSDT", "sell", 0.004, 58_000, "stop_loss", {
       positionSide: "LONG",
       hedgeMode: true,
       closePosition: true,
-    })).resolves.toMatchObject({ success: false, error: expect.stringContaining("STOP_MARKET") })
-    await expect(connector.placeStopOrder("BTCUSDT", "sell", 0.004, 58_000, "stop_loss", {
-      hedgeMode: false,
-      closePosition: true,
-    })).resolves.toMatchObject({ success: false, error: expect.stringContaining("hedgeMode=true") })
+    })).resolves.toMatchObject({ success: false, error: expect.stringContaining("exact aggregate position quantity") })
 
     const spot = new BingXConnector({
       apiKey: "demo-api-key",

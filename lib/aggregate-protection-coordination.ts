@@ -12,7 +12,7 @@ export interface AggregateProtectionCandidate {
   desiredTakeProfit: number
   createdAt?: number
   quantityStep?: number
-  /** Prefer the row already owning the slot-level close-all security stop. */
+  /** Prefer the row already owning the slot-level aggregate security stop. */
   hasSecurityStopOrder?: boolean
   /** Keep ownership stable while a response-lost security submission resolves. */
   hasPendingSecurityStop?: boolean
@@ -44,7 +44,7 @@ export interface AggregateProtectionPlan {
   maximumStopRange: number
   /** Requested distance between the outer row stop and security stop. */
   securityStopGap: number
-  /** Tick-normalized, liquidation-safe close-all security stop; zero means fail closed. */
+  /** Tick-normalized, liquidation-safe full-slot security stop; zero means fail closed. */
   securityStopPrice: number
 }
 
@@ -107,7 +107,7 @@ function securityStopForRows(
   const ticks = rows.map((row) => finitePositive(row.priceTick))
 
   // A guessed decimal precision is unsafe for a real trigger. Every row in a
-  // physical slot must carry the venue's exact tick before a close-all stop is
+  // physical slot must carry the venue's exact tick before a full-slot stop is
   // eligible to arm.
   if (!(outer > 0) || !(maximumStopRange > 0) || ticks.some((tick) => !(tick > 0))) {
     return { outerStopLoss: outer, maximumStopRange, securityStopGap: 0, securityStopPrice: 0 }
@@ -145,7 +145,7 @@ function securityStopForRows(
 
 /**
  * Every logical row owns an exact-quantity venue SL and TP. This coordinator
- * only elects the owner and boundary for a separate close-all security stop
+ * only elects the owner and boundary for a separate full-slot security stop
  * covering the complete system-owned physical symbol/direction slot.
  */
 export function buildAggregateProtectionPlans(

@@ -3961,7 +3961,9 @@ describe("requested regression guardrails", () => {
     expect(reconcileBlock).not.toContain("allowQuantityOverrideAbovePosition: true")
     expect(reconcileBlock).toContain('"SecurityStop"')
     expect(reconcileBlock).toContain("plan.venueQuantity")
-    expect(liveStage).toContain('...(closePosition ? { closePosition: true } : { reduceOnly: true })')
+    expect(liveStage).toContain('reduceOnly: true,')
+    expect(liveStage).toContain("securityStopQuantityDrifted(")
+    expect(liveStage).toContain("leader.securityStopArmedQuantity = placement.armedQuantity")
     expect(liveStage).toContain(
       'await prepareProtectionSubmission(livePosition, "stopLoss", slPrice, livePosition.executedQuantity)',
     )

@@ -99,7 +99,7 @@ interface CycleReport {
     stopLossQuantity: number
     takeProfitQuantity: number
     securityStopArmedQuantity: number
-    securityCloseAll: boolean
+    securityQuantityBacked: boolean
     observedOpen: boolean
     securityObservedOpen: boolean
     cancelled: boolean
@@ -136,10 +136,6 @@ function sleep(ms: number): Promise<void> {
 function finite(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
-}
-
-function bool(value: unknown): boolean {
-  return value === true || value === 1 || value === "1" || String(value || "").toLowerCase() === "true"
 }
 
 function normalizeSymbol(value: unknown): string {
@@ -1350,14 +1346,15 @@ async function main(): Promise<void> {
         ])
         const replacementObservedOpen = Boolean(replacementStopOrder)
         const securityReplacementObservedOpen = Boolean(replacementSecurityOrder)
-        const securityCloseAll = bool(replacementSecurityOrder?.closePosition)
-          && !(orderQuantityOf(replacementSecurityOrder) > 0)
+        const securityStopArmedQuantity = orderQuantityOf(replacementSecurityOrder)
+        const securityQuantityBacked = securityStopArmedQuantity > 0
+          && Math.abs(securityStopArmedQuantity - quantity) <= Math.max(quantityStep / 2, 1e-12)
         if (
           !initialStopCancelled
           || !initialSecurityCancelled
           || !replacementObservedOpen
           || !securityReplacementObservedOpen
-          || !securityCloseAll
+          || !securityQuantityBacked
         ) {
           throw new Error("Live-stage row/security trailing replacements were not authoritatively observed on BingX VST")
         }
@@ -1422,8 +1419,8 @@ async function main(): Promise<void> {
           securityStopPrice: Number(afterRatchet?.securityStopPrice || 0),
           stopLossQuantity: orderQuantityOf(replacementStopOrder),
           takeProfitQuantity: orderQuantityOf(takeProfitOrder),
-          securityStopArmedQuantity: Number(afterRatchet?.securityStopArmedQuantity || 0),
-          securityCloseAll,
+          securityStopArmedQuantity,
+          securityQuantityBacked,
           observedOpen: true,
           securityObservedOpen: securityReplacementObservedOpen,
           cancelled: replacementCancellation.success === true && takeProfitCancellation.success === true,
@@ -1604,7 +1601,7 @@ async function main(): Promise<void> {
             securityStopPrice,
             "stop_loss",
             {
-              closePosition: true,
+              reduceOnly: true,
               positionSide: direction.toUpperCase() as "LONG" | "SHORT",
               hedgeMode: true,
               clientOrderId: safeClientId("ctsvstsec", runSuffix, index),
@@ -1661,8 +1658,10 @@ async function main(): Promise<void> {
           if (securityCancellation.success && securityObservedCancelled) trackedControlOrders.delete(securityStopOrderId)
           const observedOpen = Boolean(stopOrder) && Boolean(takeProfitOrder)
           const securityObservedOpen = Boolean(securityOrder)
-          const securityCloseAll = bool(securityOrder?.closePosition)
-            && !(orderQuantityOf(securityOrder) > 0)
+          const securityStopArmedQuantity = orderQuantityOf(securityOrder)
+          const securityQuantityBacked = securityStopArmedQuantity > 0
+            && Math.abs(securityStopArmedQuantity - cycle.positionQuantityAfterAccumulation)
+              <= Math.max(finite(rules.quantityStep) / 2, 1e-12)
           const cancelled = stopCancellation.success === true && takeProfitCancellation.success === true
           const securityCancelled = securityCancellation.success === true
           const observedCancelled = stopObservedCancelled && takeProfitObservedCancelled
@@ -1677,8 +1676,8 @@ async function main(): Promise<void> {
             securityStopPrice,
             stopLossQuantity: orderQuantityOf(stopOrder),
             takeProfitQuantity: orderQuantityOf(takeProfitOrder),
-            securityStopArmedQuantity: cycle.positionQuantityAfterAccumulation,
-            securityCloseAll,
+            securityStopArmedQuantity,
+            securityQuantityBacked,
             observedOpen,
             securityObservedOpen,
             cancelled,
@@ -1687,7 +1686,7 @@ async function main(): Promise<void> {
             securityObservedCancelled,
           }
           if (
-            !observedOpen || !securityObservedOpen || !securityCloseAll
+            !observedOpen || !securityObservedOpen || !securityQuantityBacked
             || !cancelled || !securityCancelled
             || !observedCancelled || !securityObservedCancelled
           ) {
@@ -1695,7 +1694,7 @@ async function main(): Promise<void> {
               `Protection coordination failed (rowsOpen=${observedOpen}, securityOpen=${securityObservedOpen}, ` +
               `rowsCancelled=${cancelled}, securityCancelled=${securityCancelled}, ` +
               `rowsAbsent=${observedCancelled}, securityAbsent=${securityObservedCancelled}, ` +
-              `securityCloseAll=${securityCloseAll})`,
+              `securityQuantityBacked=${securityQuantityBacked})`,
             )
           }
         }
