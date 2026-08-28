@@ -61,7 +61,7 @@ function candidateScore(value: SecurityStopCandidate): number {
   const isArmed = Boolean(value.orderId) && value.price > 0 && value.status === "armed"
   if (isArmed) return 100
   if (value.status === "pending") return 80
-  if (["capacity_blocked", "ownership_mismatch", "invalid_range", "system_close"].includes(value.status)) return 70
+  if (["capacity_blocked", "ownership_mismatch", "invalid_range", "system_close", "quantity_mismatch"].includes(value.status)) return 70
   if (value.required) return 50
   if (value.orderId || value.price > 0 || value.status) return 20
   return 0

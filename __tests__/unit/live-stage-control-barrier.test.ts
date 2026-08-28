@@ -392,7 +392,7 @@ describe("executing Live-stage control barriers", () => {
     )
   })
 
-  test("places security as one hedge-side close-all stop without quantity retry", async () => {
+  test("places security as one exact aggregate-quantity hedge-side stop", async () => {
     const placeStopOrder = jest.fn(async () => ({ success: true, orderId: "slot-security" }))
     const exchange = connector({ placeStopOrder })
 
@@ -416,18 +416,18 @@ describe("executing Live-stage control barriers", () => {
       "stop_loss",
       expect.objectContaining({
         clientOrderId: "cts-security-slot",
-        closePosition: true,
+        reduceOnly: true,
         hedgeMode: true,
         positionSide: "LONG",
       }),
     )
-    expect(placeStopOrder.mock.calls[0][5]).not.toHaveProperty("reduceOnly")
+    expect(placeStopOrder.mock.calls[0][5]).not.toHaveProperty("closePosition")
 
     placeStopOrder.mockReset()
-    placeStopOrder.mockResolvedValue({
+    placeStopOrder.mockResolvedValueOnce({
       success: false,
       error: "BingX stop order error (code=110424): available amount of 0.4 BTC",
-    })
+    }).mockResolvedValueOnce({ success: true, orderId: "slot-security-adjusted" })
     await expect(__liveStageTest.placeProtectionOrder(
       exchange,
       "BTCUSDT",
@@ -436,9 +436,18 @@ describe("executing Live-stage control barriers", () => {
       94,
       "SecurityStop",
       "long",
-      "cts-security-no-quantity-retry",
-    )).resolves.toEqual({ orderId: null, armedQuantity: 0 })
-    expect(placeStopOrder).toHaveBeenCalledTimes(1)
+      "cts-security-quantity-retry",
+    )).resolves.toEqual({ orderId: "slot-security-adjusted", armedQuantity: 0.4 })
+    expect(placeStopOrder).toHaveBeenCalledTimes(2)
+    expect(placeStopOrder.mock.calls[1][2]).toBe(0.4)
+  })
+
+  test("detects aggregate security quantity drift at venue-step tolerance", () => {
+    expect(__liveStageTest.securityStopQuantityDrifted(2, 2, 0.0005)).toBe(false)
+    expect(__liveStageTest.securityStopQuantityDrifted(1.9996, 2, 0.0005)).toBe(false)
+    expect(__liveStageTest.securityStopQuantityDrifted(1.9994, 2, 0.0005)).toBe(true)
+    expect(__liveStageTest.securityStopQuantityDrifted(0, 2, 0.0005)).toBe(true)
+    expect(__liveStageTest.securityStopQuantityDrifted(Number.NaN, 2, 0.0005)).toBe(true)
   })
 
   test("tracks stop-loss and take-profit armed quantities independently", () => {

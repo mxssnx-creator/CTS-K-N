@@ -765,14 +765,14 @@ interface LivePosition {
   takeProfitPrice?: number
   stopLossOrderId?: string
   takeProfitOrderId?: string
-  /** One venue-native close-all safety stop per physical symbol/direction slot. */
+  /** One exact-aggregate-quantity safety stop per physical symbol/direction slot. */
   securityStopOrderId?: string
   securityStopPrice?: number
   securityStopLastArmedAt?: number
   securityStopArmedQuantity?: number
   securityStopAbsenceConfirmations?: number
   securityStopRequired?: boolean
-  securityStopStatus?: "armed" | "pending" | "unsupported" | "ownership_mismatch" | "system_close" | "invalid_range" | "capacity_blocked"
+  securityStopStatus?: "armed" | "pending" | "unsupported" | "ownership_mismatch" | "system_close" | "invalid_range" | "capacity_blocked" | "quantity_mismatch"
   stopLossAbsenceConfirmations?: number
   takeProfitAbsenceConfirmations?: number
   // Epoch-ms timestamps of the last successful SL/TP placement on the venue.
@@ -1026,14 +1026,14 @@ interface LivePosition {
   /**
    * Per exact Strategy-Set protection projection. Exchange venues net physical
    * exposure by symbol/direction. Every row owns exact-quantity SL/TP orders;
-   * one elected row additionally owns the slot's farther close-all stop.
+   * one elected row additionally owns the slot's farther quantity-backed stop.
    */
   controlOrderSetCoverage?: Record<string, {
     protected: boolean
     protectionMode: "exchange_control" | "hybrid_control_system" | "system_close" | "system_close_fallback"
     aggregateProtectionOwner: boolean
     aggregateProtectionKey?: string
-    /** Position that owns the shared close-all security stop for this physical slot. */
+    /** Position that owns the shared aggregate-quantity security stop for this physical slot. */
     aggregateProtectionLeaderId?: string
     stopLossOrderId?: string
     takeProfitOrderId?: string
@@ -5210,7 +5210,7 @@ async function rearmProtectionAfterQuantityMutation(
   ) {
     // Restore this exact logical row immediately from the authoritative
     // post-mutation quantity. The aggregate finalizer then restores the other
-    // rows and elects the one dynamic close-all security stop for the slot.
+    // rows and elects the one dynamic aggregate-quantity security stop for the slot.
     // This keeps an accepted-but-unconfirmed accumulation from removing venue
     // protection from the quantity that is already known to be open.
     await updateProtectionOrders(connector, position, reason, null, options).catch((error) => {
@@ -6343,7 +6343,6 @@ async function placeProtectionOrder(
     // order creates 110424 and can leave the position unprotected.
     let effectiveQty = quantity
 
-    const closePosition = orderLabel === "SecurityStop"
     const kind: "stop_loss" | "take_profit" =
       orderLabel === "TakeProfit" ? "take_profit" : "stop_loss"
 
@@ -6356,10 +6355,10 @@ async function placeProtectionOrder(
       return Number.isFinite(n) && n > 0 ? n : null
     }
 
-    // Persist the exact hedge-side contract on every control. SecurityStop is
-    // a close-all conditional and therefore sends `closePosition=true`
-    // without reduceOnly/quantity on the BingX wire; row SL/TP keeps explicit
-    // reduce-only quantity ownership.
+    // Persist the exact hedge-side contract on every control. Row SL/TP owns
+    // one logical row quantity; SecurityStop owns the complete authoritative
+    // venue slot quantity. BingX hedge mode makes reduce-only implicit through
+    // the opposite close side plus LONG/SHORT positionSide.
     // Bounded — a hanging placeStopOrder would block the per-position sync
     // loop and stall every other position's heal/close work behind it. A
     // timeout is delivery-ambiguous, however: retain the exact promise and
@@ -6387,7 +6386,7 @@ async function placeProtectionOrder(
           triggerPrice,
           kind,
           {
-            ...(closePosition ? { closePosition: true } : { reduceOnly: true }),
+            reduceOnly: true,
             hedgeMode: true,
             positionSide: positionDirection === "long" ? "LONG" : "SHORT",
             ...(clientOrderId ? { clientOrderId } : {}),
@@ -6440,7 +6439,7 @@ async function placeProtectionOrder(
     // second retry also fails with 110424, the position has likely been
     // externally closed or fully consumed by the other protection leg — treat
     // it as success (reconcile will verify).
-    if (!result?.success && !closePosition) {
+    if (!result?.success) {
       const is110424 = (msg: string) => msg.includes("110424") || /available amount/i.test(msg)
       let attempt = 0
       while (!result?.success && is110424(String(result?.error || "")) && attempt < 2) {
@@ -8251,6 +8250,13 @@ function securityStopPriceDrifted(current: unknown, desired: number, tick: numbe
   return Math.abs(existing - desired) >= tick / 2
 }
 
+function securityStopQuantityDrifted(current: unknown, desired: number, tolerance: number): boolean {
+  const existing = Number(current)
+  const normalizedTolerance = Math.max(1e-12, Number(tolerance) || 0)
+  if (!(desired > 0) || !Number.isFinite(existing) || !(existing > 0)) return true
+  return Math.abs(existing - desired) > normalizedTolerance
+}
+
 async function cancelSlotOwnedControls(
   connector: any,
   position: LivePosition,
@@ -8709,7 +8715,7 @@ async function settleFilledRowControlsAcrossMembers(
 }
 
 /**
- * Reconcile exact row SL/TP orders, then one farther close-all security stop
+ * Reconcile exact row SL/TP orders, then one farther aggregate-quantity security stop
  * per system-owned physical symbol/direction slot.
  */
 async function reconcileAggregateProtectionBook(
@@ -9071,11 +9077,16 @@ async function reconcileAggregateProtectionBook(
         const recovered = await recoverEntryOrderByClientId(connector, leader.symbol, pending.clientOrderId)
         const recoveredId = firstNonEmptyIdentifier(recovered?.orderId, recovered?.id)
         if (recoveredId) {
+          const recoveredQuantity = controlOrderRequestedQuantity(recovered, 0)
           leader.securityStopOrderId = recoveredId
           leader.securityStopPrice = pending.triggerPrice
-          leader.securityStopArmedQuantity = pending.quantity
+          leader.securityStopArmedQuantity = recoveredQuantity
           leader.securityStopLastArmedAt = Date.now()
-          leader.securityStopStatus = "armed"
+          leader.securityStopStatus = securityStopQuantityDrifted(
+            recoveredQuantity,
+            plan.venueQuantity,
+            plan.quantityTolerance,
+          ) ? "quantity_mismatch" : "armed"
           delete leader.pendingProtectionOrders?.securityStop
         } else if (liveOrderIds === null || liveOrderIds.has(pending.clientOrderId)) {
           pendingBlocksPlacement = true
@@ -9094,7 +9105,14 @@ async function reconcileAggregateProtectionBook(
       if (
         leader.securityStopOrderId
         && !pendingBlocksPlacement
-        && securityStopPriceDrifted(leader.securityStopPrice, plan.securityStopPrice, Number(leader.priceTick || 0))
+        && (
+          securityStopPriceDrifted(leader.securityStopPrice, plan.securityStopPrice, Number(leader.priceTick || 0))
+          || securityStopQuantityDrifted(
+            leader.securityStopArmedQuantity,
+            plan.venueQuantity,
+            plan.quantityTolerance,
+          )
+        )
       ) {
         const cancelled = await cancelProtectionOrder(
           connector,
@@ -9141,12 +9159,14 @@ async function reconcileAggregateProtectionBook(
           if (placement.orderId && !["PRICE_CROSSED", "QUOTA_EXCEEDED", "position_exhausted"].includes(placement.orderId)) {
             leader.securityStopOrderId = placement.orderId
             leader.securityStopPrice = plan.securityStopPrice
-            // The wire intentionally omits quantity; this records the exact
-            // authoritative slot size at arm time for coverage/audit.
-            leader.securityStopArmedQuantity = plan.venueQuantity
+            leader.securityStopArmedQuantity = placement.armedQuantity
             leader.securityStopLastArmedAt = Date.now()
             leader.securityStopAbsenceConfirmations = 0
-            leader.securityStopStatus = "armed"
+            leader.securityStopStatus = securityStopQuantityDrifted(
+              placement.armedQuantity,
+              plan.venueQuantity,
+              plan.quantityTolerance,
+            ) ? "quantity_mismatch" : "armed"
             delete leader.pendingProtectionOrders?.securityStop
             result.rearmedLeaders++
           } else if (placement.orderId === "QUOTA_EXCEEDED") {
@@ -9171,8 +9191,11 @@ async function reconcileAggregateProtectionBook(
           if (capacityBudget) leader.controlOrderCapacity = capacityBudget.snapshot()
         }
       } else if (leader.securityStopOrderId && !pendingBlocksPlacement) {
-        leader.securityStopStatus = "armed"
-        leader.securityStopArmedQuantity = plan.venueQuantity
+        leader.securityStopStatus = securityStopQuantityDrifted(
+          leader.securityStopArmedQuantity,
+          plan.venueQuantity,
+          plan.quantityTolerance,
+        ) ? "quantity_mismatch" : "armed"
       } else if (pendingBlocksPlacement) {
         leader.securityStopStatus = "pending"
       }
@@ -10479,7 +10502,7 @@ export async function executeLivePosition(
 
     // Load the exact venue grids before a real order can leave the process.
     // Quantity precision alone is insufficient for a security trigger: the
-    // slot-level close-all stop must be representable on the exact price tick.
+    // slot-level full-quantity stop must be representable on the exact price tick.
     const liveInstrumentRules = await loadExchangeQuantityRules(
       realPosition.symbol,
       exchangeConnector,
@@ -11460,7 +11483,7 @@ export async function executeLivePosition(
       // Persist the authoritative fill before protection coordination. Parallel
       // Set entries for the same symbol/direction can now see one another.
       // Every row still arms exact-quantity SL/TP; aggregate reconciliation
-      // only elects the separate close-all security-stop owner.
+      // only elects the separate aggregate-quantity security-stop owner.
       await savePosition(livePosition)
       // Arm SL/TP immediately after an authoritative inline/polled fill.
       // A fixed venue-settling sleep delayed every healthy order by two
@@ -11814,7 +11837,7 @@ export async function executeLivePosition(
     if (livePosition.status === "filled") livePosition.status = "open"
 
     // Persist the confirmed row controls, then immediately reconcile the
-    // physical slot so its single close-all security stop is not deferred to
+    // physical slot so its single aggregate-quantity security stop is not deferred to
     // a later scheduler tick.
     if (livePosition.executedQuantity > 0 && typeof exchangeConnector.getPositions === "function") {
       await savePosition(livePosition)
@@ -14416,7 +14439,7 @@ export async function reconcileLivePositions(
           }
 
           // Each row's exact-quantity venue SL/TP and the slot's separate
-          // close-all security stop were coordinated above. Per-position
+          // full-slot security stop were coordinated above. Per-position
           // lifecycle checks remain independent and may still issue a system close.
 
           const crossed = await checkAndForceCloseOnSltpCross(
@@ -16835,6 +16858,7 @@ export const __liveStageTest = {
   sweepOrphanProtectionOrders,
   fetchLiveOrderIdSet,
   placeProtectionOrder,
+  securityStopQuantityDrifted,
   updateProtectionOrders,
   protectionLegArmedQuantity,
   setProtectionLegArmedQuantity,

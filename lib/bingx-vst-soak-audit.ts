@@ -66,7 +66,8 @@ export interface VstSoakExecutionCycle {
     stopLossQuantity?: number
     takeProfitQuantity?: number
     securityStopArmedQuantity?: number
-    securityCloseAll?: boolean
+    /** True only when the venue-visible security order quantity covers the full slot. */
+    securityQuantityBacked?: boolean
     observedOpen?: boolean
     securityObservedOpen?: boolean
     cancelled?: boolean
@@ -345,8 +346,8 @@ export function auditVstSoakExecutionRelations(input: {
         mismatches.push(`${label} ${leg} quantity: expected ${protectionQuantity}, received ${finiteNumber(quantity)}`)
       }
     }
-    if (cycle.protection?.securityCloseAll !== true) {
-      mismatches.push(`${label} security: close-all position coverage was not confirmed`)
+    if (cycle.protection?.securityQuantityBacked !== true) {
+      mismatches.push(`${label} security: exact aggregate-quantity coverage was not confirmed`)
     }
     const priceTick = finiteNumber(cycle.priceTick)
     const stopPrice = finiteNumber(cycle.protection?.stopPrice)
