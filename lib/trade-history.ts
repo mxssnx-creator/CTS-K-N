@@ -463,8 +463,8 @@ export function classifyLocalTradeHistorySnapshot(
   const manualProtection = position.manualProtectionOverride && typeof position.manualProtectionOverride === "object"
     ? position.manualProtectionOverride
     : null
-  const manualHasStop = manualProtection && Object.prototype.hasOwnProperty.call(manualProtection, "stopLossPrice")
-  const manualHasTarget = manualProtection && Object.prototype.hasOwnProperty.call(manualProtection, "takeProfitPrice")
+  const manualHasStop = firstPositive(manualProtection?.stopLossPrice) > 0
+  const manualHasTarget = firstPositive(manualProtection?.takeProfitPrice) > 0
   const rawIntent = String(position.executionIntent || "").trim().toLowerCase()
   const executionIntent =
     rawIntent === "main" || rawIntent === "preset" || rawIntent === "signal"
@@ -504,7 +504,7 @@ export function classifyLocalTradeHistorySnapshot(
       : firstPositive(position.stopLossPrice)) || undefined,
     takeProfitPrice: (manualHasTarget
       ? firstPositive(manualProtection.takeProfitPrice)
-      : firstPositive(position.takeProfitPrice)) || undefined,
+      : firstPositive(position.dcaTakeProfitPrice, position.takeProfitPrice)) || undefined,
     trailingActive: manualProtection?.trailingEnabled === true || position.trailingActive === true || position.trailingActive === "true" || position.trailingActive === "1",
     trailingStopPrice: firstPositive(position.trailingStopPrice) || undefined,
     blockCount: firstPositive(position.blockCount) || undefined,

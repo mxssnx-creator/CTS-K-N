@@ -4,7 +4,7 @@ import { getLivePositions, getClosedLivePositions } from "@/lib/trade-engine/sta
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { resolveSettledRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-position-pnl"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
-import { isRealExchangePosition } from "@/lib/live-position-source"
+import { isExecutedRealExchangePosition, isRealExchangePosition } from "@/lib/live-position-source"
 
 export const dynamic = "force-dynamic"
 
@@ -143,7 +143,7 @@ export async function GET(request: Request) {
           source: "exchange_live_positions" as const,
         }
         const isClosed = String((pos as any).status || "").trim().toLowerCase() === "closed"
-        const isOpen = isLiveOpenStatus((pos as any).status)
+        const isOpen = isLiveOpenStatus((pos as any).status) && isExecutedRealExchangePosition(pos)
         if (!isClosed && !isOpen) continue
         current.livePositions += 1
         if (isClosed) {

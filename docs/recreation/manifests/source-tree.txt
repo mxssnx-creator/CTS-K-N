@@ -177,6 +177,7 @@ __tests__/unit/live-stage-redis-position-lock.test.ts
 __tests__/unit/live-trade-block-clearance.test.ts
 __tests__/unit/live-trading-analytics.test.ts
 __tests__/unit/live-trading-dashboard-contract.test.ts
+__tests__/unit/live-trading-format.test.ts
 __tests__/unit/logistics-workflow.test.ts
 __tests__/unit/main-indication-settings.test.ts
 __tests__/unit/main-indications-stats-route.test.ts
@@ -240,6 +241,7 @@ __tests__/unit/runtime-log-throttle.test.ts
 __tests__/unit/runtime-telemetry-compatibility.test.ts
 __tests__/unit/runtime-telemetry-interval.test.ts
 __tests__/unit/security-hardening-encryption.test.ts
+__tests__/unit/security-stop-projection.test.ts
 __tests__/unit/serialized-response-swr.test.ts
 __tests__/unit/settings-backup.test.ts
 __tests__/unit/settings-continuity.test.ts
@@ -1272,6 +1274,7 @@ lib/runtime-startup-state.ts
 lib/runtime-telemetry.ts
 lib/safe-response-parser.ts
 lib/security-hardening.ts
+lib/security-stop-projection.ts
 lib/serialized-response-swr.ts
 lib/server-continuity-runner.ts
 lib/sets-compaction.ts

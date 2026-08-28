@@ -68,6 +68,76 @@ export function resolvePositionQuantity(
     )
 }
 
+const EXECUTION_PROVING_STATUSES = new Set([
+  "open",
+  "filled",
+  "partially_filled",
+  "simulated",
+  "closing",
+  "closing_partial",
+  "closed",
+])
+
+function absolutePositiveNumeric(value: unknown): number | undefined {
+  const parsed = firstFiniteNumeric(value)
+  return parsed !== undefined && Math.abs(parsed) > 0 ? Math.abs(parsed) : undefined
+}
+
+/**
+ * Resolve only venue- or ledger-confirmed execution. `quantity` is the entry
+ * request on current live rows, so it may be used as a legacy fallback only
+ * after the lifecycle itself proves that a fill occurred. Pending, placed,
+ * rejected, and error intents with requested quantity must remain unexecuted.
+ */
+export function resolveConfirmedPositionQuantity(
+  position: Record<string, any>,
+  lifetime = false,
+): number | undefined {
+  const status = String(position.status || "").trim().toLowerCase()
+  const fills = Array.isArray(position.fills) ? position.fills : []
+  const fillQuantity = fills.reduce((sum: number, fill: unknown) => {
+    const quantity = absolutePositiveNumeric(record(fill).quantity)
+    return sum + (quantity ?? 0)
+  }, 0)
+  const exchange = record(position.exchangeData)
+  const exchangeQuantity = absolutePositiveNumeric(
+    firstFiniteNumeric(
+      exchange.quantity,
+      exchange.positionAmt,
+      exchange.contracts,
+      exchange.size,
+    ),
+  )
+  const current = firstPositiveNumeric(position.executedQuantity, exchangeQuantity)
+  const closed = firstPositiveNumeric(position.closedQuantity)
+  const total = firstPositiveNumeric(position.totalExecutedQuantity)
+  const reconstructedLifetime = (current ?? 0) + (closed ?? 0)
+
+  if (lifetime) {
+    return firstPositiveNumeric(
+      total,
+      reconstructedLifetime,
+      fillQuantity,
+      closed,
+      current,
+      EXECUTION_PROVING_STATUSES.has(status) ? position.quantity : undefined,
+    )
+  }
+
+  if (status === "closed") {
+    return firstPositiveNumeric(total, closed, fillQuantity, current)
+  }
+  const reconstructedOpen = total !== undefined && closed !== undefined
+    ? Math.max(0, total - closed)
+    : undefined
+  return firstPositiveNumeric(
+    current,
+    reconstructedOpen,
+    fillQuantity > 0 ? Math.max(0, fillQuantity - (closed ?? 0)) : undefined,
+    EXECUTION_PROVING_STATUSES.has(status) ? position.quantity : undefined,
+  )
+}
+
 /**
  * Resolve the capital actually at risk for a position. Quote-currency PnL is
  * never multiplied by leverage; leverage only converts notional into margin
@@ -78,6 +148,11 @@ export function resolvePositionMargin(
   position: Record<string, any>,
   lifetime = false,
 ): number | undefined {
+  // A locally calculated/requested margin is not exposure until execution is
+  // confirmed. Resolve quantity first so pending/rejected intents cannot leak
+  // requested capital into ROI or overview totals through an explicit margin.
+  const quantity = resolveConfirmedPositionQuantity(position, lifetime)
+  if (!quantity) return undefined
   const exchange = record(position.exchangeData)
   const explicitMargin = firstPositiveNumeric(
     position.marginUsd,
@@ -92,7 +167,6 @@ export function resolvePositionMargin(
   )
   if (explicitMargin !== undefined) return explicitMargin
 
-  const quantity = resolvePositionQuantity(position, lifetime)
   const entry = resolveEntryPrice(position)
   const leverage = Math.max(1, firstPositiveNumeric(position.leverage, exchange.leverage) ?? 1)
   return entry && quantity ? (entry * quantity) / leverage : undefined
@@ -203,7 +277,7 @@ function calculateFallbackPnl(
   lifetimeQuantity: boolean,
 ): number | undefined {
   const direction = resolvePositionDirection(position)
-  const quantity = resolvePositionQuantity(position, lifetimeQuantity)
+  const quantity = resolveConfirmedPositionQuantity(position, lifetimeQuantity)
   const entry = resolveEntryPrice(position)
   if (!direction || !quantity || !entry || !currentPrice) return undefined
   const gross = quantity * (direction === "short" ? entry - currentPrice : currentPrice - entry)

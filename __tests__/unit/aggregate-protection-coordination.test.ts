@@ -8,6 +8,8 @@ describe("aggregate venue protection coordination", () => {
         symbol: "BTCUSDT",
         direction: "long",
         quantity: 0.2,
+        entryPrice: 100,
+        priceTick: 0.1,
         desiredStopLoss: 99,
         desiredTakeProfit: 103,
         createdAt: 2,
@@ -17,11 +19,13 @@ describe("aggregate venue protection coordination", () => {
         symbol: "BTC-USDT",
         direction: "long",
         quantity: 0.3,
+        entryPrice: 100,
+        priceTick: 0.1,
         desiredStopLoss: 98,
         desiredTakeProfit: 105,
         createdAt: 1,
-        hasStopLossOrder: true,
-        hasTakeProfitOrder: true,
+        hasSecurityStopOrder: true,
+        hasPendingSecurityStop: true,
       },
     ], [{ symbol: "BTC-USDT", direction: "long", quantity: 0.5 }])
 
@@ -36,6 +40,10 @@ describe("aggregate venue protection coordination", () => {
       ownershipMatches: true,
       desiredStopLoss: 98,
       desiredTakeProfit: 105,
+      outerStopLoss: 98,
+      maximumStopRange: 2,
+      securityStopGap: 0.2,
+      securityStopPrice: 97.8,
     })
   })
 
@@ -46,6 +54,8 @@ describe("aggregate venue protection coordination", () => {
         symbol: "SOLUSDT",
         direction: "short",
         quantity: 1,
+        entryPrice: 100,
+        priceTick: 0.1,
         desiredStopLoss: 102,
         desiredTakeProfit: 97,
       },
@@ -54,6 +64,8 @@ describe("aggregate venue protection coordination", () => {
         symbol: "SOLUSDT",
         direction: "short",
         quantity: 1,
+        entryPrice: 100,
+        priceTick: 0.1,
         desiredStopLoss: 104,
         desiredTakeProfit: 95,
       },
@@ -62,6 +74,10 @@ describe("aggregate venue protection coordination", () => {
     expect(plan).toMatchObject({
       desiredStopLoss: 104,
       desiredTakeProfit: 95,
+      outerStopLoss: 104,
+      maximumStopRange: 4,
+      securityStopGap: 0.4,
+      securityStopPrice: 104.4,
       ownershipMatches: true,
     })
   })
@@ -86,7 +102,7 @@ describe("aggregate venue protection coordination", () => {
     })
   })
 
-  test("retains the newest complete CTS slot generation when the venue quantity shrank", () => {
+  test("never guesses Set ownership from an ambiguous aggregate quantity shrink", () => {
     const [plan] = buildAggregateProtectionPlans([
       {
         id: "old-a",
@@ -127,14 +143,14 @@ describe("aggregate venue protection coordination", () => {
     ], [{ symbol: "BTCUSDT", direction: "short", quantity: 0.0002 }])
 
     expect(plan).toMatchObject({
-      memberIds: ["new-a", "new-b"],
-      staleMemberIds: ["old-a", "old-b"],
+      memberIds: ["new-a", "new-b", "old-a", "old-b"],
+      staleMemberIds: [],
       reportedSystemQuantity: 0.0004,
-      systemQuantity: 0.0002,
+      systemQuantity: 0.0004,
       venueQuantity: 0.0002,
-      ownershipMatches: true,
-      desiredStopLoss: 103,
-      desiredTakeProfit: 97,
+      ownershipMatches: false,
+      desiredStopLoss: 105,
+      desiredTakeProfit: 95,
     })
   })
 
@@ -168,5 +184,120 @@ describe("aggregate venue protection coordination", () => {
       venueQuantity: 0.5,
       ownershipMatches: false,
     })
+  })
+
+  test("uses the largest independent row range for the additive security gap", () => {
+    const [plan] = buildAggregateProtectionPlans([
+      {
+        id: "near",
+        symbol: "BTCUSDT",
+        direction: "long",
+        quantity: 1,
+        entryPrice: 100,
+        desiredStopLoss: 98,
+        desiredTakeProfit: 104,
+        priceTick: 0.1,
+      },
+      {
+        id: "wide",
+        symbol: "BTCUSDT",
+        direction: "long",
+        quantity: 1,
+        entryPrice: 120,
+        desiredStopLoss: 110,
+        desiredTakeProfit: 130,
+        priceTick: 0.1,
+      },
+    ], [{ symbol: "BTCUSDT", direction: "long", quantity: 2 }])
+
+    expect(plan).toMatchObject({
+      outerStopLoss: 98,
+      maximumStopRange: 10,
+      securityStopGap: 1,
+      securityStopPrice: 97,
+    })
+  })
+
+  test("clamps long and short security stops inside the closest liquidation boundary", () => {
+    const [longPlan] = buildAggregateProtectionPlans([{
+      id: "long",
+      symbol: "BTCUSDT",
+      direction: "long",
+      quantity: 1,
+      entryPrice: 100,
+      liquidationPrice: 88.9,
+      desiredStopLoss: 90,
+      desiredTakeProfit: 110,
+      priceTick: 0.1,
+    }], [{ symbol: "BTCUSDT", direction: "long", quantity: 1 }])
+    const [shortPlan] = buildAggregateProtectionPlans([{
+      id: "short",
+      symbol: "ETHUSDT",
+      direction: "short",
+      quantity: 1,
+      entryPrice: 100,
+      liquidationPrice: 110.8,
+      desiredStopLoss: 110,
+      desiredTakeProfit: 90,
+      priceTick: 0.1,
+    }], [{ symbol: "ETHUSDT", direction: "short", quantity: 1 }])
+
+    expect(longPlan.securityStopPrice).toBe(89.1)
+    expect(shortPlan.securityStopPrice).toBe(110.6)
+  })
+
+  test("fails closed when no tick-safe liquidation interval exists", () => {
+    const [longPlan] = buildAggregateProtectionPlans([{
+      id: "long",
+      symbol: "BTCUSDT",
+      direction: "long",
+      quantity: 1,
+      entryPrice: 100,
+      liquidationPrice: 89.8,
+      desiredStopLoss: 90,
+      desiredTakeProfit: 110,
+      priceTick: 0.1,
+    }], [{ symbol: "BTCUSDT", direction: "long", quantity: 1 }])
+    const [shortPlan] = buildAggregateProtectionPlans([{
+      id: "short",
+      symbol: "ETHUSDT",
+      direction: "short",
+      quantity: 1,
+      entryPrice: 100,
+      liquidationPrice: 110.1,
+      desiredStopLoss: 110,
+      desiredTakeProfit: 90,
+      priceTick: 0.1,
+    }], [{ symbol: "ETHUSDT", direction: "short", quantity: 1 }])
+
+    expect(longPlan.securityStopPrice).toBe(0)
+    expect(shortPlan.securityStopPrice).toBe(0)
+  })
+
+  test("refuses to guess security trigger precision when any row lacks a price tick", () => {
+    const [plan] = buildAggregateProtectionPlans([
+      {
+        id: "exact",
+        symbol: "BTCUSDT",
+        direction: "long",
+        quantity: 1,
+        entryPrice: 100,
+        desiredStopLoss: 90,
+        desiredTakeProfit: 110,
+        priceTick: 0.1,
+      },
+      {
+        id: "unknown",
+        symbol: "BTCUSDT",
+        direction: "long",
+        quantity: 1,
+        entryPrice: 100,
+        desiredStopLoss: 91,
+        desiredTakeProfit: 109,
+      },
+    ], [{ symbol: "BTCUSDT", direction: "long", quantity: 2 }])
+
+    expect(plan.securityStopPrice).toBe(0)
+    expect(plan.securityStopGap).toBe(0)
   })
 })

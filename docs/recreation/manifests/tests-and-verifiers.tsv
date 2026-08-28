@@ -153,6 +153,7 @@ unit	__tests__/unit/live-stage-redis-position-lock.test.ts
 unit	__tests__/unit/live-trade-block-clearance.test.ts
 unit	__tests__/unit/live-trading-analytics.test.ts
 unit	__tests__/unit/live-trading-dashboard-contract.test.ts
+unit	__tests__/unit/live-trading-format.test.ts
 unit	__tests__/unit/logistics-workflow.test.ts
 unit	__tests__/unit/main-indication-settings.test.ts
 unit	__tests__/unit/main-indications-stats-route.test.ts
@@ -216,6 +217,7 @@ unit	__tests__/unit/runtime-log-throttle.test.ts
 unit	__tests__/unit/runtime-telemetry-compatibility.test.ts
 unit	__tests__/unit/runtime-telemetry-interval.test.ts
 unit	__tests__/unit/security-hardening-encryption.test.ts
+unit	__tests__/unit/security-stop-projection.test.ts
 unit	__tests__/unit/serialized-response-swr.test.ts
 unit	__tests__/unit/settings-backup.test.ts
 unit	__tests__/unit/settings-continuity.test.ts

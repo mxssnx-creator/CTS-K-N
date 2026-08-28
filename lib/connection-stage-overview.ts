@@ -218,6 +218,7 @@ export interface StageOverviewInput {
       orderId?: string
       stopLossOrderId?: string
       takeProfitOrderId?: string
+      securityStopOrderId?: string
     }>
     ordersPlaced?: number
   }
@@ -282,7 +283,7 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
     const entryOrderId = String(position?.orderId || "").trim()
     if (entryOrderId && pendingStatuses.has(status)) pendingEntryIds.add(entryOrderId)
     if (exposedStatuses.has(status)) {
-      for (const value of [position?.stopLossOrderId, position?.takeProfitOrderId]) {
+      for (const value of [position?.stopLossOrderId, position?.takeProfitOrderId, position?.securityStopOrderId]) {
         const id = String(value || "").trim()
         if (id) controlOrderIds.add(id)
       }

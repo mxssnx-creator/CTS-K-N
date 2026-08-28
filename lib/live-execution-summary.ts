@@ -12,7 +12,7 @@ import {
   type LivePositionSource,
 } from "@/lib/live-position-source"
 import {
-  resolvePositionQuantity,
+  resolveConfirmedPositionQuantity,
   resolveSettledRealizedPnl,
 } from "@/lib/live-position-pnl"
 import {
@@ -101,7 +101,7 @@ function isExecutedLivePosition(position: LivePositionReadModel): boolean {
   }
   // Simulated and unknown rows still require positive executed quantity; they
   // are exposed only in their own diagnostic lanes, never headline live PnL.
-  return (resolvePositionQuantity(position as Record<string, any>, true) ?? 0) > 0
+  return (resolveConfirmedPositionQuantity(position as Record<string, any>, true) ?? 0) > 0
 }
 
 function realizedValues(positions: LivePositionReadModel[]): number[] {

@@ -120,6 +120,28 @@ describe("live position operator actions", () => {
     expect(mockRecalculateAndApplySLTP).not.toHaveBeenCalled()
   })
 
+  test("rejects a request when no effective take-profit target exists", async () => {
+    mockGetLivePositions.mockResolvedValue([{
+      ...BASE_POSITION,
+      takeProfit: 0,
+      takeProfitPrice: 0,
+      assignedTakeProfit: 0,
+    }])
+
+    const response = await PATCH(patchRequest({
+      connectionId: "connection-1",
+      stopLossPrice: 99,
+    }), params)
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      success: false,
+      error: "Keep a take profit target or restore strategy protection",
+    })
+    expect(mockGetConnector).not.toHaveBeenCalled()
+    expect(mockRecalculateAndApplySLTP).not.toHaveBeenCalled()
+  })
+
   test("rejects a long stop above the current authoritative mark", async () => {
     const response = await PATCH(patchRequest({
       connectionId: "connection-1",

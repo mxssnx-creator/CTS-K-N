@@ -1,4 +1,5 @@
 import type { LivePositionView } from "@/components/live-trading/live-trading-types"
+import { resolveConfirmedPositionQuantity } from "@/lib/live-position-pnl"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 export function finite(value: unknown): number {
@@ -26,10 +27,11 @@ export function positionMark(position: LivePositionView): number {
 }
 
 export function positionQuantity(position: LivePositionView): number {
-  return finite(position.executedQuantity ?? position.quantity)
+  return resolveConfirmedPositionQuantity(position as Record<string, any>) ?? 0
 }
 
 export function positionPnl(position: LivePositionView): number {
+  if (positionQuantity(position) <= 0) return 0
   return finite(
     position.unrealizedPnL ??
       position.unrealized_pnl ??
@@ -39,6 +41,7 @@ export function positionPnl(position: LivePositionView): number {
 }
 
 export function positionMargin(position: LivePositionView): number {
+  if (positionQuantity(position) <= 0) return 0
   const explicit = finite(position.exchangeData?.marginUsd)
   if (explicit > 0) return explicit
   const notional = finite(position.volumeUsd) || positionEntry(position) * positionQuantity(position)
@@ -47,9 +50,8 @@ export function positionMargin(position: LivePositionView): number {
 
 export function absoluteStopLoss(position: LivePositionView): number {
   const manual = position.manualProtectionOverride
-  if (manual && Object.prototype.hasOwnProperty.call(manual, "stopLossPrice")) {
-    return finite(manual.stopLossPrice)
-  }
+  const manualPrice = finite(manual?.stopLossPrice)
+  if (manualPrice > 0) return manualPrice
   const stored = finite(position.stopLossPrice)
   if (stored > 0) return stored
   const entry = positionEntry(position)
@@ -64,9 +66,10 @@ export function absoluteStopLoss(position: LivePositionView): number {
 
 export function absoluteTakeProfit(position: LivePositionView): number {
   const manual = position.manualProtectionOverride
-  if (manual && Object.prototype.hasOwnProperty.call(manual, "takeProfitPrice")) {
-    return finite(manual.takeProfitPrice)
-  }
+  const manualPrice = finite(manual?.takeProfitPrice)
+  if (manualPrice > 0) return manualPrice
+  const dcaTarget = finite(position.dcaTakeProfitPrice)
+  if (dcaTarget > 0) return dcaTarget
   const stored = finite(position.takeProfitPrice)
   if (stored > 0) return stored
   const entry = positionEntry(position)
@@ -77,6 +80,14 @@ export function absoluteTakeProfit(position: LivePositionView): number {
   return direction === "long"
     ? entry * (1 + distance)
     : entry * (1 - distance)
+}
+
+/** Stored trailing profiles use a ratio; operator overrides use percentage. */
+export function positionTrailingDistancePercent(position: LivePositionView): number {
+  const manual = finite(position.manualProtectionOverride?.trailingDistancePct)
+  if (manual > 0) return manual
+  const profileRatio = finite(position.trailingProfile?.stopRatio)
+  return profileRatio > 0 ? profileRatio * 100 : 0.5
 }
 
 export function formatMoney(value: unknown, currency = "USDT"): string {

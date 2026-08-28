@@ -837,7 +837,8 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("real?.sizeMultiplier ?? existing.sizeMultiplier")
     expect(liveStage).toContain("calculateBlockRemainingAddQuantity(")
     expect(liveStage).toContain("calculateConfirmedBlockAddQuantity(existing.blockLegs)")
-    expect(liveStage).toContain("Count 1 + Count 2 + Count 3 reaches the")
+    expect(liveStage).toContain("immutable general/Base quantity")
+    expect(liveStage).toContain("Only confirmed Block legs consume that")
     expect(liveStage).toContain("targetSatisfied: blockTargetSatisfied")
     expect(liveStage).toContain("appliedFilledQuantity")
     expect(liveStage).toContain("exact fill deferred to reconciliation")
@@ -3946,15 +3947,21 @@ describe("requested regression guardrails", () => {
     }
   })
 
-  test("SL/TP sizing is fill-bounded except for an ownership-verified aggregate override", () => {
+  test("each row SL/TP stays fill-bounded while the separate security stop follows the slot", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const reconcileStart = liveStage.indexOf("async function reconcileAggregateProtectionBook(")
+    const reconcileEnd = liveStage.indexOf("async function finalizeQueuedAggregateProtection", reconcileStart)
+    const reconcileBlock = liveStage.slice(reconcileStart, reconcileEnd)
 
     expect(liveStage).toContain(
       "const rawEffectiveQty = pos.executedQuantity > 0 ? pos.executedQuantity : (pos.quantity ?? 0)",
     )
-    expect(liveStage).toContain("options.allowQuantityOverrideAbovePosition === true")
-    expect(liveStage).toContain("? requestedOverride")
-    expect(liveStage).toContain(": Math.min(rawEffectiveQty, requestedOverride)")
+    expect(reconcileBlock).toContain('"row_exact_guard"')
+    expect(reconcileBlock).toContain("{ allowPendingAccumulation: true }")
+    expect(reconcileBlock).not.toContain("allowQuantityOverrideAbovePosition: true")
+    expect(reconcileBlock).toContain('"SecurityStop"')
+    expect(reconcileBlock).toContain("plan.venueQuantity")
+    expect(liveStage).toContain('...(closePosition ? { closePosition: true } : { reduceOnly: true })')
     expect(liveStage).toContain(
       'await prepareProtectionSubmission(livePosition, "stopLoss", slPrice, livePosition.executedQuantity)',
     )
@@ -3963,17 +3970,27 @@ describe("requested regression guardrails", () => {
     )
   })
 
-  test("aggregate venue controls settle before any member changes physical quantity", () => {
+  test("row and security controls settle before any member changes physical quantity", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
 
     expect(liveStage).toContain("async function requestAggregateProtectionSlotMutation(")
     expect(liveStage).toContain("aggregateProtectionMutationRequestedAt = Date.now()")
+    expect(liveStage).toContain("aggregateProtectionMutationSettledAt = settledAt")
+    expect(liveStage).toContain("aggregateProtectionMutationIsAbandoned(")
+    expect(liveStage).toContain("Number(position.aggregateProtectionMutationRequestedAt || 0) > 0")
     expect(liveStage).toContain("if (!await requestAggregateProtectionSlotMutation(connector, position, reason)) return false")
     expect(liveStage).toContain("const aggregateReady = await requestAggregateProtectionSlotMutation(")
     expect(liveStage).toContain("const mutationRequested = members.some((member) =>")
-    expect(liveStage).toContain("aggregate pair paused for a CTS quantity mutation")
-    expect(liveStage).toContain("CTS controls removed and independent venue quantity preserved")
+    expect(liveStage).toContain("settleSlotControlsWithoutGuess(")
+    expect(liveStage).toContain('"QuantityMutation"')
+    expect(liveStage).toContain('"OwnershipMismatch"')
+    expect(liveStage).toContain("row SL/TP remain independent")
+    expect(liveStage).toContain("settleSecurityStopAcrossMembers(")
     expect(liveStage).toContain("await rearmProtectionAfterQuantityMutation(")
+    expect(liveStage).toContain("const initialProtection = computeDesiredProtectionPrices(livePosition)")
+    expect(liveStage).toContain('initialProtection.desiredSl,')
+    expect(liveStage).toContain('initialProtection.desiredTp,')
+    expect(liveStage).toContain('instrumentRulesSource: "bingx_contracts"')
   })
 
   test("Statistics exposes Main indications, real-order analytics, and a top time range", () => {

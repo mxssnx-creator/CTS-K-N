@@ -1,10 +1,14 @@
 import {
   isRealizedPnlAccountingPending,
-  resolvePositionQuantity,
+  resolveConfirmedPositionQuantity,
   resolveRealizedPnl,
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
+import {
+  collectArmedSecurityStopOrderIds,
+  resolveEffectiveSecurityStop,
+} from "@/lib/security-stop-projection"
 
 export type LiveStrategySource = "direct-trade" | "main-trade" | "preset-trade" | "signal-trade" | "unknown"
 
@@ -43,6 +47,9 @@ export interface LivePositionStatistics extends LivePositionStatisticsLane {
     venueLegsQuantityCovered: number
     venueLegsQuantityUnknown: number
     venueLegsQuantityDrifted: number
+    securityStopsRequired: number
+    securityStopsArmed: number
+    securityStopsMissing: number
   }
   relationIntegrity: {
     success: boolean
@@ -68,13 +75,15 @@ function rounded(value: number, precision = 12): number {
 function strategySource(position: Record<string, any>): LiveStrategySource {
   const intent = String(position.executionIntent || position.source || "").toLowerCase()
   if (intent.includes("direct")) return "direct-trade"
-  if (position.presetId || intent.includes("preset")) return "preset-trade"
+  if (intent.includes("signal")) return "signal-trade"
+  if (intent.includes("preset")) return "preset-trade"
+  if (intent.includes("main")) return "main-trade"
   if (
     String(position.indicationType || "").toLowerCase() === "signal"
     || position.signalRisk
-    || intent.includes("signal")
   ) return "signal-trade"
-  if (position.setKey || position.parentSetKey || intent.includes("main")) return "main-trade"
+  if (position.presetId) return "preset-trade"
+  if (position.setKey || position.parentSetKey) return "main-trade"
   return "unknown"
 }
 
@@ -107,11 +116,11 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
   const isClosed = status === "closed"
   const isOpen = isLiveOpenStatus(status) && !isClosed
   const accountingPending = isClosed && isRealizedPnlAccountingPending(position)
-  const executed = Math.max(0, resolvePositionQuantity(position) ?? 0)
+  const executed = Math.max(0, resolveConfirmedPositionQuantity(position) ?? 0)
   const closedQuantity = Math.max(0, finite(position.closedQuantity))
   const totalExecuted = Math.max(
     0,
-    resolvePositionQuantity(position, true) ?? 0,
+    resolveConfirmedPositionQuantity(position, true) ?? 0,
     isClosed ? executed : executed + closedQuantity,
   )
   const entryPrice = Math.max(0, finite(position.averageExecutionPrice ?? position.entryPrice))
@@ -156,7 +165,7 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
     lifetimeVolumeUsd,
     openVolumeUsd,
     realizedPnl: accountingPending ? 0 : resolveRealizedPnl(position) ?? 0,
-    unrealizedPnl: isOpen
+    unrealizedPnl: isOpen && executed > 0
       ? resolveUnrealizedPnl(position) ?? 0
       : 0,
     fees: fills.reduce((sum: number, fill: any) => sum + Math.max(0, finite(fill?.fee)), 0),
@@ -190,8 +199,8 @@ function hasPositiveProtectionValue(...values: unknown[]): boolean {
 function configuredProtectionLegs(position: Record<string, any>): Set<ProtectionLeg> {
   const legs = new Set<ProtectionLeg>()
   const manual = position.manualProtectionOverride || {}
-  const hasManualSl = Object.prototype.hasOwnProperty.call(manual, "stopLossPrice")
-  const hasManualTp = Object.prototype.hasOwnProperty.call(manual, "takeProfitPrice")
+  const hasManualSl = hasPositiveProtectionValue(manual.stopLossPrice)
+  const hasManualTp = hasPositiveProtectionValue(manual.takeProfitPrice)
   const hasStopLoss = position.trailingActive === true
     ? hasPositiveProtectionValue(position.trailingStopPrice)
     : hasManualSl
@@ -239,7 +248,7 @@ function venueProtectionQuantityState(
   if (!isLiveOpenStatus(position.status)) return null
   const orderId = leg === "stop_loss" ? position.stopLossOrderId : position.takeProfitOrderId
   if (!String(orderId || "").trim()) return null
-  const expected = Math.max(0, resolvePositionQuantity(position) ?? 0)
+  const expected = Math.max(0, resolveConfirmedPositionQuantity(position) ?? 0)
   if (!(expected > 0)) return null
   const specific = leg === "stop_loss"
     ? position.stopLossArmedQuantity
@@ -255,27 +264,39 @@ function venueProtectionQuantityState(
     : "drifted"
 }
 
+function effectiveSecurityProtection(position: Record<string, any>): {
+  required: boolean
+  orderId: string
+  price: number
+  status: string
+  armed: boolean
+} {
+  return resolveEffectiveSecurityStop(position)
+}
+
 function positionRelationMismatches(position: Record<string, any>, index: number): string[] {
   const id = String(position.id || `index-${index}`)
   const label = `${id}/${String(position.symbol || "missing")}/${String(position.direction || position.side || "missing")}`
   const mismatches: string[] = []
   const status = String(position.status || "").trim().toLowerCase()
-  const executed = finite(position.executedQuantity ?? position.quantity)
+  const executed = Math.max(0, resolveConfirmedPositionQuantity(position) ?? 0)
+  const lifetime = Math.max(0, resolveConfirmedPositionQuantity(position, true) ?? 0)
+  const rawExecuted = finite(position.executedQuantity)
   const closed = finite(position.closedQuantity)
-  const total = finite(position.totalExecutedQuantity)
+  const rawTotal = finite(position.totalExecutedQuantity)
   const tolerance = quantityTolerance(position)
   if (!position.id || !position.symbol || !["long", "short"].includes(String(position.direction || position.side || "").toLowerCase())) {
     mismatches.push(`${label}: identity relation is incomplete`)
   }
-  if (executed < -tolerance || closed < -tolerance || total < -tolerance) {
+  if (rawExecuted < -tolerance || closed < -tolerance || rawTotal < -tolerance) {
     mismatches.push(`${label}: negative quantity relation`)
   }
   if (status === "closed") {
-    if (total > 0 && (Math.abs(executed - total) > tolerance || Math.abs(closed - total) > tolerance)) {
-      mismatches.push(`${label}: closed quantity ${executed}/${closed} != lifetime ${total}`)
+    if (lifetime > 0 && (Math.abs(executed - lifetime) > tolerance || Math.abs(closed - lifetime) > tolerance)) {
+      mismatches.push(`${label}: closed quantity ${executed}/${closed} != lifetime ${lifetime}`)
     }
-  } else if (total > 0 && Math.abs(total - (Math.max(0, executed) + Math.max(0, closed))) > tolerance) {
-    mismatches.push(`${label}: open+closed quantity ${executed + closed} != lifetime ${total}`)
+  } else if (rawTotal > 0 && Math.abs(rawTotal - (Math.max(0, executed) + Math.max(0, closed))) > tolerance) {
+    mismatches.push(`${label}: open+closed quantity ${executed + closed} != lifetime ${rawTotal}`)
   }
   const fillQuantity = (Array.isArray(position.fills) ? position.fills : [])
     .reduce((sum: number, fill: any) => sum + Math.max(0, finite(fill?.quantity)), 0)
@@ -284,15 +305,15 @@ function positionRelationMismatches(position: Record<string, any>, index: number
     : [])
     .reduce((sum: number, adjustment: any) => sum + Math.max(0, finite(adjustment?.quantity)), 0)
   const accountedQuantity = fillQuantity + adjustmentQuantity
-  if (total > 0 && Math.abs(accountedQuantity - total) > tolerance) {
+  if (lifetime > 0 && Math.abs(accountedQuantity - lifetime) > tolerance) {
     mismatches.push(
-      `${label}: fill quantity ${fillQuantity} + exchange adjustment ${adjustmentQuantity} != lifetime ${total}`,
+      `${label}: fill quantity ${fillQuantity} + exchange adjustment ${adjustmentQuantity} != lifetime ${lifetime}`,
     )
   }
   const terminalWithoutFillLedger = new Set(["error", "rejected", "cancelled", "canceled"])
   const simulated = usesSimulatedSystemLifecycle(position)
   if (
-    total > tolerance &&
+    lifetime > tolerance &&
     accountedQuantity <= tolerance &&
     !simulated &&
     !terminalWithoutFillLedger.has(status)
@@ -337,8 +358,24 @@ function positionRelationMismatches(position: Record<string, any>, index: number
         mismatches.push(`${label}: ${legLabel} venue quantity ${finite(armed)} != open quantity ${Math.max(0, executed)}`)
       }
     }
+    const security = effectiveSecurityProtection(position)
+    if (security.required) {
+      const armed = security.armed
+      if (!armed) mismatches.push(`${label}: required slot security stop is not armed`)
+      const rowStop = finite(position.stopLossPrice)
+      const direction = String(position.direction || position.side || "").toLowerCase()
+      if (armed && rowStop > 0) {
+        if (direction === "long" && !(security.price < rowStop)) {
+          mismatches.push(`${label}: long security stop ${security.price} is not farther than row stop ${rowStop}`)
+        }
+        if (direction === "short" && !(security.price > rowStop)) {
+          mismatches.push(`${label}: short security stop ${security.price} is not farther than row stop ${rowStop}`)
+        }
+      }
+    }
   }
-  const orderIds = [position.orderId, position.stopLossOrderId, position.takeProfitOrderId]
+  const effectiveSecurity = effectiveSecurityProtection(position)
+  const orderIds = [position.orderId, position.stopLossOrderId, position.takeProfitOrderId, effectiveSecurity.orderId]
     .map((value) => String(value || "").trim())
     .filter(Boolean)
   if (new Set(orderIds).size !== orderIds.length) mismatches.push(`${label}: entry/protection order IDs are not unique`)
@@ -349,7 +386,10 @@ export function calculateLivePositionStatistics(
   positions: readonly Record<string, any>[],
 ): LivePositionStatistics {
   const aggregate = emptyLane()
-  const bySource: Record<string, LivePositionStatisticsLane> = {}
+  const bySource: Record<string, LivePositionStatisticsLane> = Object.fromEntries(
+    ["direct-trade", "main-trade", "preset-trade", "signal-trade", "unknown"]
+      .map((source) => [source, emptyLane()]),
+  )
   const byVariant: Record<string, LivePositionStatisticsLane> = {}
   const byIndicationType: Record<string, LivePositionStatisticsLane> = {}
   const mismatches: string[] = []
@@ -362,7 +402,27 @@ export function calculateLivePositionStatistics(
     venueLegsQuantityCovered: 0,
     venueLegsQuantityUnknown: 0,
     venueLegsQuantityDrifted: 0,
+    securityStopsRequired: 0,
+    securityStopsArmed: 0,
+    securityStopsMissing: 0,
   }
+  const securitySlots = new Map<string, {
+    symbol: string
+    direction: string
+    required: boolean
+    armed: boolean
+    orderId: string
+    price: number
+    armedOrderIds: Set<string>
+    rows: Array<{
+      id: string
+      entry: number
+      stop: number
+      tick: number
+      liquidation: number
+    }>
+  }>()
+  const exclusiveOrderOwners = new Map<string, Set<string>>()
   let wins = 0
   let losses = 0
   let breakeven = 0
@@ -375,6 +435,18 @@ export function calculateLivePositionStatistics(
     addBucket(byVariant, strategyVariant(position), measures)
     addBucket(byIndicationType, String(position.indicationType || "unknown"), measures)
     mismatches.push(...positionRelationMismatches(position, index))
+    const rowLabel = String(position.id || `index-${index}`)
+    for (const [kind, value] of [
+      ["entry", position.orderId],
+      ["stop-loss", position.stopLossOrderId],
+      ["take-profit", position.takeProfitOrderId],
+    ] as const) {
+      const orderId = String(value || "").trim()
+      if (!orderId) continue
+      const owners = exclusiveOrderOwners.get(orderId) || new Set<string>()
+      owners.add(`${rowLabel}:${kind}`)
+      exclusiveOrderOwners.set(orderId, owners)
+    }
     if (measures.closed > 0 && measures.accountingPending === 0) {
       if (measures.realizedPnl > 0) wins++
       else if (measures.realizedPnl < 0) losses++
@@ -400,7 +472,110 @@ export function calculateLivePositionStatistics(
       if (quantityState === "unknown") protection.venueLegsQuantityUnknown++
       if (quantityState === "drifted") protection.venueLegsQuantityDrifted++
     }
+    if (isLiveOpenStatus(position.status) && measures.openQuantity > 0) {
+      const security = effectiveSecurityProtection(position)
+      const symbol = String(position.symbol || "").toUpperCase().replace(/[-/_:]/g, "")
+      const direction = String(position.direction || position.side || "").toLowerCase()
+      const key = `${symbol}|${direction}`
+      const prior = securitySlots.get(key) || {
+        symbol,
+        direction,
+        required: false,
+        armed: false,
+        orderId: "",
+        price: 0,
+        armedOrderIds: new Set<string>(),
+        rows: [],
+      }
+      for (const orderId of collectArmedSecurityStopOrderIds(position)) {
+        prior.armedOrderIds.add(orderId)
+      }
+      securitySlots.set(key, {
+        ...prior,
+        required: prior.required || security.required,
+        armed: prior.armed || security.armed,
+        orderId: prior.armed ? prior.orderId : security.armed ? security.orderId : prior.orderId || security.orderId,
+        price: prior.armed ? prior.price : security.armed ? security.price : prior.price || security.price,
+        rows: [...prior.rows, {
+          id: rowLabel,
+          entry: finite(position.averageExecutionPrice ?? position.entryPrice),
+          stop: finite(position.stopLossPrice),
+          tick: finite(position.priceTick),
+          liquidation: finite(position.liquidationPrice ?? position.exchangeData?.liquidationPrice),
+        }],
+      })
+    }
   })
+  for (const [orderId, owners] of exclusiveOrderOwners) {
+    if (owners.size > 1) {
+      mismatches.push(`order ${orderId}: exclusive entry/row control is shared by ${[...owners].sort().join(", ")}`)
+    }
+  }
+  const securityOrderSlots = new Map<string, Set<string>>()
+  for (const [key, security] of securitySlots) {
+    if (!security.required) continue
+    protection.securityStopsRequired++
+    if (security.armed) protection.securityStopsArmed++
+    else protection.securityStopsMissing++
+    if (!security.armed) continue
+
+    if (security.armedOrderIds.size !== 1) {
+      mismatches.push(`slot ${key}: expected one security order, found ${security.armedOrderIds.size}`)
+    }
+    for (const orderId of security.armedOrderIds) {
+      const securitySlotsForOrder = securityOrderSlots.get(orderId) || new Set<string>()
+      securitySlotsForOrder.add(key)
+      securityOrderSlots.set(orderId, securitySlotsForOrder)
+      if (exclusiveOrderOwners.has(orderId)) {
+        mismatches.push(`slot ${key}: security order ${orderId} is also used by an entry/row control`)
+      }
+    }
+
+    const completeRows = security.rows.filter((row) => row.entry > 0 && row.stop > 0)
+    if (completeRows.length !== security.rows.length || completeRows.length === 0) {
+      mismatches.push(`slot ${key}: security range cannot be verified for every open row`)
+      continue
+    }
+    const ticks = security.rows.map((row) => row.tick)
+    if (ticks.some((tick) => !(tick > 0))) {
+      mismatches.push(`slot ${key}: security range has no authoritative price tick for every open row`)
+      continue
+    }
+    const priceTick = Math.max(...ticks)
+    const outerStop = security.direction === "long"
+      ? Math.min(...completeRows.map((row) => row.stop))
+      : Math.max(...completeRows.map((row) => row.stop))
+    const maximumRange = Math.max(...completeRows.map((row) => Math.abs(row.entry - row.stop)))
+    const requiredGap = Math.max(priceTick * 2, maximumRange * 0.1)
+    const actualGap = security.direction === "long"
+      ? outerStop - security.price
+      : security.price - outerStop
+    const tolerance = Math.max(1e-12, priceTick * 1e-8)
+    if (actualGap + tolerance < requiredGap) {
+      mismatches.push(
+        `slot ${key}: security gap ${actualGap} < required ${requiredGap} from maximum row range ${maximumRange}`,
+      )
+    }
+
+    const liquidations = security.rows.map((row) => row.liquidation).filter((value) => value > 0)
+    if (liquidations.length > 0 && security.direction === "long") {
+      const floor = Math.max(...liquidations) + priceTick * 2
+      if (security.price + tolerance < floor) {
+        mismatches.push(`slot ${key}: long security stop ${security.price} is not liquidation-safe above ${floor}`)
+      }
+    }
+    if (liquidations.length > 0 && security.direction === "short") {
+      const ceiling = Math.min(...liquidations) - priceTick * 2
+      if (security.price - tolerance > ceiling) {
+        mismatches.push(`slot ${key}: short security stop ${security.price} is not liquidation-safe below ${ceiling}`)
+      }
+    }
+  }
+  for (const [orderId, slots] of securityOrderSlots) {
+    if (slots.size > 1) {
+      mismatches.push(`security order ${orderId}: shared across physical slots ${[...slots].sort().join(", ")}`)
+    }
+  }
   const decisive = wins + losses
   return {
     ...aggregate,
