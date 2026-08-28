@@ -3972,6 +3972,20 @@ describe("requested regression guardrails", () => {
     )
   })
 
+  test("the authenticated VST preflight supplies authoritative control quantities and venue grids", () => {
+    const soak = read("scripts/run-bingx-vst-live-soak.ts")
+    const fixtureStart = soak.indexOf("const trackingFixtures = TRADE_PATHS.map")
+    const fixtureEnd = soak.indexOf("const trackingStatistics", fixtureStart)
+    const fixture = soak.slice(fixtureStart, fixtureEnd)
+
+    expect(fixtureStart).toBeGreaterThanOrEqual(0)
+    expect(fixture).toContain("priceTick: 0.1")
+    expect(fixture).toContain("quantityStep: 0.001")
+    expect(fixture).toContain("stopLossArmedQuantity: 0.01")
+    expect(fixture).toContain("takeProfitArmedQuantity: 0.01")
+    expect(fixture).toContain("securityStopArmedQuantity: 0.01")
+  })
+
   test("row and security controls settle before any member changes physical quantity", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
 
