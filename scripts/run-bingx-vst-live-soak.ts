@@ -1184,9 +1184,10 @@ async function main(): Promise<void> {
     report.soakStartedAt = new Date(soakStartedMs).toISOString()
     // The exact 20-minute run is a sustained workload, not four sparse smoke
     // calls: execute four rounds across all four paths (16 complete position
-    // lifecycles / 80 venue order submissions). Alternate DCA and Block on
-    // every path so each progression is exercised twice per path. Explicit
-    // short safety runs retain one cycle per path.
+    // lifecycles / 96 venue submissions, or 128 with the engine-trailing
+    // replacement proof enabled). Alternate DCA and Block on every path so
+    // each progression is exercised twice per path. Explicit short safety
+    // runs retain one cycle per path.
     const plannedCycleCount = requestedDuration === EXACT_DURATION_MS
       ? EXACT_LIVE_CYCLE_COUNT
       : Math.max(
@@ -1208,9 +1209,7 @@ async function main(): Promise<void> {
         : tradePath.progression === "dca" ? "block" : "dca"
       return {
         symbol: soakSymbols[index % soakSymbols.length],
-        direction: (index + Math.floor(index / soakSymbols.length)) % 2 === 0
-          ? "long" as const
-          : "short" as const,
+        direction: auditModule.vstSoakDirectionForCycle(index, soakSymbols.length),
         tradePath,
         progression,
         scheduledOffsetMs: Math.round(requestedDuration * (index / plannedCycleCount)),
@@ -1559,9 +1558,10 @@ async function main(): Promise<void> {
           throw new Error("Initial live-stage row/security protections were not visible on BingX VST")
         }
 
-        // The engine's active-trailing replacement guard is intentionally
-        // short but non-zero (200 ms). Crossing it here proves the ordinary
-        // replacement path rather than a no-op rate-limit branch.
+        // Cross the row stop's short active-trailing guard (200 ms) before
+        // advancing the ratchet. The aggregate security stop separately
+        // honours BingX's one-second same-order mutation window; the bounded
+        // reconciliation loop below observes that deferred replacement.
         await sleep(260)
         await liveStageModule.syncLiveFromPseudo(connectionId, {
           id: `pseudo-${positionId}`,
@@ -1575,23 +1575,33 @@ async function main(): Promise<void> {
           trailing_active: "1",
           trailing_stop_price: String(ratchetedStopPrice),
         }, connector)
-        await liveStageModule.reconcileLivePositions(connectionId, connector, {
-          skipSimulatedSweep: true,
-          skipOrphanAdoption: true,
-          reconcileMode: true,
-        })
-        const afterRatchet = (await liveStageModule.getLivePositions(connectionId))
-          .find((position: any) => position.id === positionId)
-        replacementStopOrderId = String(afterRatchet?.stopLossOrderId || "")
-        replacementSecurityStopOrderId = String(afterRatchet?.securityStopOrderId || "")
-        const retainedTakeProfitOrderId = String(afterRatchet?.takeProfitOrderId || "")
-        const persistedRatchet = Number(afterRatchet?.trailingStopPrice || 0)
-        const stopReplaced = Boolean(replacementStopOrderId) && replacementStopOrderId !== initialStopOrderId
-        const securityStopReplaced = Boolean(replacementSecurityStopOrderId)
-          && replacementSecurityStopOrderId !== initialSecurityStopOrderId
-        const takeProfitRetained = retainedTakeProfitOrderId === takeProfitOrderId
-        const ratchetPersisted = Math.abs(persistedRatchet - ratchetedStopPrice) <=
-          Math.max(1e-8, Math.abs(ratchetedStopPrice) * 1e-8)
+        let afterRatchet: any = null
+        let stopReplaced = false
+        let securityStopReplaced = false
+        let takeProfitRetained = false
+        let ratchetPersisted = false
+        const replacementDeadline = Date.now() + 5_000
+        do {
+          await liveStageModule.reconcileLivePositions(connectionId, connector, {
+            skipSimulatedSweep: true,
+            skipOrphanAdoption: true,
+            reconcileMode: true,
+          })
+          afterRatchet = (await liveStageModule.getLivePositions(connectionId))
+            .find((position: any) => position.id === positionId)
+          replacementStopOrderId = String(afterRatchet?.stopLossOrderId || "")
+          replacementSecurityStopOrderId = String(afterRatchet?.securityStopOrderId || "")
+          const retainedTakeProfitOrderId = String(afterRatchet?.takeProfitOrderId || "")
+          const persistedRatchet = Number(afterRatchet?.trailingStopPrice || 0)
+          stopReplaced = Boolean(replacementStopOrderId) && replacementStopOrderId !== initialStopOrderId
+          securityStopReplaced = Boolean(replacementSecurityStopOrderId)
+            && replacementSecurityStopOrderId !== initialSecurityStopOrderId
+          takeProfitRetained = retainedTakeProfitOrderId === takeProfitOrderId
+          ratchetPersisted = Math.abs(persistedRatchet - ratchetedStopPrice) <=
+            Math.max(1e-8, Math.abs(ratchetedStopPrice) * 1e-8)
+          if (stopReplaced && securityStopReplaced && takeProfitRetained && ratchetPersisted) break
+          await sleep(250)
+        } while (Date.now() < replacementDeadline)
         if (
           !stopReplaced ||
           !securityStopReplaced ||

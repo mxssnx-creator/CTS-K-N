@@ -7048,6 +7048,11 @@ function priceDrifted(current: number | undefined, desired: number, tolerance = 
 // bypass all cooldowns and always place immediately.
 const MIN_REARM_MS = 30_000
 const TRAILING_REARM_MS = 200
+// BingX rejects a second mutation of the same security-stop order inside one
+// second (code 109201). Keep the still-live, wider security stop in place for
+// a small margin beyond that venue window, then let the next authoritative
+// reconcile cancel-confirm-replace it. Quantity drift bypasses this delay.
+const SECURITY_STOP_PRICE_REARM_MS = 1_250
 
 // ── System-close-only flag, micro-cached ─────────────────────────────
 //
@@ -8267,6 +8272,18 @@ function securityStopQuantityDrifted(current: unknown, desired: number, toleranc
   return Math.abs(existing - desired) > normalizedTolerance
 }
 
+function securityStopPriceRearmDeferred(
+  position: Pick<LivePosition, "securityStopOrderId" | "securityStopLastArmedAt">,
+  priceDrifted: boolean,
+  quantityDrifted: boolean,
+  now = Date.now(),
+): boolean {
+  if (!position.securityStopOrderId || !priceDrifted || quantityDrifted) return false
+  const armedAt = Number(position.securityStopLastArmedAt)
+  if (!(armedAt > 0) || !Number.isFinite(now)) return false
+  return now - armedAt < SECURITY_STOP_PRICE_REARM_MS
+}
+
 async function cancelSlotOwnedControls(
   connector: any,
   position: LivePosition,
@@ -9117,34 +9134,43 @@ async function reconcileAggregateProtectionBook(
         }
       }
 
+      const securityPriceNeedsRearm = securityStopPriceDrifted(
+        leader.securityStopPrice,
+        plan.securityStopPrice,
+        Number(leader.priceTick || 0),
+      )
+      const securityQuantityNeedsRearm = securityStopQuantityDrifted(
+        leader.securityStopArmedQuantity,
+        plan.venueQuantity,
+        plan.quantityTolerance,
+      )
       if (
         leader.securityStopOrderId
         && !pendingBlocksPlacement
-        && (
-          securityStopPriceDrifted(leader.securityStopPrice, plan.securityStopPrice, Number(leader.priceTick || 0))
-          || securityStopQuantityDrifted(
-            leader.securityStopArmedQuantity,
-            plan.venueQuantity,
-            plan.quantityTolerance,
-          )
-        )
+        && (securityPriceNeedsRearm || securityQuantityNeedsRearm)
       ) {
-        await mutationGuard?.()
-        const cancelled = await cancelProtectionOrder(
-          connector,
-          leader.symbol,
-          leader.securityStopOrderId,
-          "SecurityRearm",
-          leader.connectionId,
-        )
-        if (cancelled) {
-          leader.securityStopOrderId = undefined
-          leader.securityStopPrice = 0
-          leader.securityStopArmedQuantity = 0
-          leader.securityStopLastArmedAt = undefined
-        } else {
-          pendingBlocksPlacement = true
-          leader.securityStopStatus = "pending"
+        if (!securityStopPriceRearmDeferred(
+          leader,
+          securityPriceNeedsRearm,
+          securityQuantityNeedsRearm,
+        )) {
+          await mutationGuard?.()
+          const cancelled = await cancelProtectionOrder(
+            connector,
+            leader.symbol,
+            leader.securityStopOrderId,
+            "SecurityRearm",
+            leader.connectionId,
+          )
+          if (cancelled) {
+            leader.securityStopOrderId = undefined
+            leader.securityStopPrice = 0
+            leader.securityStopArmedQuantity = 0
+            leader.securityStopLastArmedAt = undefined
+          } else {
+            pendingBlocksPlacement = true
+            leader.securityStopStatus = "pending"
+          }
         }
       }
 
@@ -17416,6 +17442,7 @@ export const __liveStageTest = {
   fetchLiveOrderIdSet,
   placeProtectionOrder,
   securityStopQuantityDrifted,
+  securityStopPriceRearmDeferred,
   updateProtectionOrders,
   protectionLegArmedQuantity,
   setProtectionLegArmedQuantity,

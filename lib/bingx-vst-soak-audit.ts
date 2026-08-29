@@ -161,6 +161,34 @@ export function evaluateVstSoakOrderHeadroom(
 }
 
 /**
+ * Alternate directions globally and for each reused symbol.
+ *
+ * An odd symbol count already flips a symbol's direction on the next pass;
+ * adding a round offset in that case accidentally biases a 16-cycle run
+ * (five symbols produced 10 Long / 6 Short). Even symbol counts need the
+ * explicit round flip because their natural index parity is unchanged.
+ */
+export function vstSoakDirectionForCycle(
+  cycleIndex: unknown,
+  symbolCount: unknown,
+): "long" | "short" {
+  const parsedIndex = Number(cycleIndex)
+  const parsedSymbolCount = Number(symbolCount)
+  if (
+    !Number.isFinite(parsedIndex)
+    || parsedIndex < 0
+    || !Number.isFinite(parsedSymbolCount)
+    || parsedSymbolCount < 1
+  ) {
+    throw new Error("VST soak direction planning requires a non-negative cycle and positive symbol count")
+  }
+  const index = Math.floor(parsedIndex)
+  const count = Math.floor(parsedSymbolCount)
+  const roundFlip = count % 2 === 0 ? Math.floor(index / count) : 0
+  return (index + roundFlip) % 2 === 0 ? "long" : "short"
+}
+
+/**
  * Rank demo symbols by the currently executable bid/ask spread.
  *
  * Prod-VST has an independent, occasionally thin matching book.  Mainnet
