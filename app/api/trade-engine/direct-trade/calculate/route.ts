@@ -48,6 +48,7 @@ import {
   directTradeKeyspace,
   normalizeDirectTradeConnectionId,
 } from "@/lib/direct-trade-keyspace"
+import { yieldToEventLoop } from "@/lib/bounded-concurrency"
 
 const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
@@ -124,6 +125,41 @@ function stopLossRatios(
 }
 
 type EvaluatedDirectTradeConfig = Awaited<ReturnType<typeof evaluateDirectTradeSets>>[number]
+
+/**
+ * Preserve the exact evaluator ordering while bounding each synchronous CPU
+ * slice to one entry/exit/TP lane. A maximum grid previously evaluated a whole
+ * strategy plan in one uninterrupted turn; that starved the Direct-Trade
+ * heartbeat route and Redis lease-renewal timer long enough for the recovery
+ * supervisor to kill healthy workers.
+ *
+ * Splitting at existing independent axes does not change any calculation or
+ * share state between Sets. It merely gives the Node event loop a macrotask
+ * turn between deterministic slices.
+ */
+async function evaluateDirectTradePlanCooperatively(
+  input: Parameters<typeof evaluateDirectTradeSets>[0],
+): Promise<EvaluatedDirectTradeConfig[]> {
+  const result: EvaluatedDirectTradeConfig[] = []
+  for (const entryTactic of input.entryTactics) {
+    for (const exitTactic of input.exitTactics) {
+      for (const [takeProfitIndex, takeprofit] of input.tpRange.entries()) {
+        await yieldToEventLoop()
+        result.push(...evaluateDirectTradeSets({
+          ...input,
+          entryTactics: [entryTactic],
+          exitTactics: [exitTactic],
+          tpRange: [takeprofit],
+          takeProfitPositionCostRatios: input.takeProfitPositionCostRatios
+            ? [input.takeProfitPositionCostRatios[takeProfitIndex]]
+            : undefined,
+        }))
+      }
+    }
+  }
+  await yieldToEventLoop()
+  return result
+}
 
 type CalculationAxisBucket = {
   evaluated: number
@@ -760,26 +796,34 @@ export async function POST(request: NextRequest) {
     const executionCandidates: Array<{ index: number; score: number; signalKey: string | null }> = []
     let nextConfigIndex = 0
     const appendEvaluatedConfigs = async (rows: EvaluatedDirectTradeConfig[]) => {
-      for (const config of rows) {
-        summaryAccumulator.append(config)
-        statisticsAccumulator.append(config)
-        if (config.valid) {
-          executionCandidates.push({
-            index: nextConfigIndex,
-            score: Number.isFinite(config.score) ? config.score : 0,
-            signalKey: typeof config.entrySignalKey === "string" && config.entrySignalKey ? config.entrySignalKey : null,
-          })
+      // Projection, summary aggregation and statistics indexing are also CPU
+      // work. Bound those loops so a large plan cannot reintroduce event-loop
+      // starvation after the evaluator itself has yielded.
+      const batchSize = 256
+      for (let start = 0; start < rows.length; start += batchSize) {
+        const batch = rows.slice(start, start + batchSize)
+        const compactRows: EvaluatedDirectTradeConfig[] = []
+        for (const config of batch) {
+          summaryAccumulator.append(config)
+          statisticsAccumulator.append(config)
+          if (config.valid) {
+            executionCandidates.push({
+              index: nextConfigIndex,
+              score: Number.isFinite(config.score) ? config.score : 0,
+              signalKey: typeof config.entrySignalKey === "string" && config.entrySignalKey ? config.entrySignalKey : null,
+            })
+          }
+          nextConfigIndex++
+          // Count 1..N is fully aggregated above and the selected Block lane is
+          // already present on the stored row. Do not duplicate a large nested
+          // object twelve times inside every Redis config; the compact calculation
+          // summary owns the complete count-indexed audit view.
+          const { blockEvaluations: _blockEvaluations, ...compact } = config
+          compactRows.push(compact as EvaluatedDirectTradeConfig)
         }
-        nextConfigIndex++
+        await configStoreWriter.append(compactRows)
+        await yieldToEventLoop()
       }
-      // Count 1..N is fully aggregated above and the selected Block lane is
-      // already present on the stored row. Do not duplicate a large nested
-      // object twelve times inside every Redis config; the compact calculation
-      // summary owns the complete count-indexed audit view.
-      await configStoreWriter.append(rows.map((config) => {
-        const { blockEvaluations: _blockEvaluations, ...compact } = config
-        return compact as EvaluatedDirectTradeConfig
-      }))
     }
     // CPU-bound set evaluation is deterministic JavaScript. Sequential symbol
     // draining avoids retaining four symbol grids at once; public history is
@@ -866,7 +910,7 @@ export async function POST(request: NextRequest) {
             })
           }
               for (const plan of plans) {
-                const evaluated = evaluateDirectTradeSets({
+                const evaluated = await evaluateDirectTradePlanCooperatively({
                   symbol,
                   direction,
                   signalDirection: plan.signalDirection,
