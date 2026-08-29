@@ -54,6 +54,7 @@ import {
 import { readOrderSettlement, setupLiveOrderMarginAndLeverage } from "@/lib/live-order-service"
 import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
 import {
+  isConnectionMainProcessing,
   isConnectionLiveTradeEnabled,
   isConnectionPresetTradeEnabled,
   isConnectionSignalTradeEnabled,
@@ -170,12 +171,23 @@ import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import {
   auditProtectionSlotOrders,
   isConnectionOwnedProtectionOrderForSlot,
+  isProtectionControlOrderForSlot,
   normalizeProtectionSlotSymbol,
   protectionOrderIdentifiers,
   protectionOrderVenueId,
   type ProtectionSlotDirection,
   type ProtectionSlotOrderAudit,
 } from "@/lib/protection-slot-order-audit"
+import {
+  connectionTrackingId,
+  isConnectionOwnedClientOrderId,
+  isExactSystemPositionOwner,
+} from "@/lib/system-order-ownership"
+import {
+  auditLiveEntryProtectionAdmission,
+  type LiveEntryProtectionAdmissionAudit,
+} from "@/lib/live-entry-protection-admission"
+import { recordLivePositionLifetimeContribution } from "@/lib/live-position-lifetime-summary"
 
 interface LiveInstrumentRules {
   quantityStep: number
@@ -335,6 +347,8 @@ const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
 const SIGNAL_ADMISSION_LOCK_TTL_MS = 15_000
 const SIGNAL_ADMISSION_WAIT_MS = 2_000
+const ENTRY_PROTECTION_ADMISSION_LOCK_TTL_MS = 180_000
+const ENTRY_PROTECTION_ADMISSION_WAIT_MS = 3_000
 const SIGNAL_CAPACITY_NOTICE_INTERVAL_MS = 30_000
 const SIGNAL_CAPACITY_NOTICE_MAX_CONNECTIONS = 128
 type LiveExecutionIntent = "main" | "preset" | "signal"
@@ -835,6 +849,7 @@ interface LivePosition {
   presetProfitFactor?: number
   closeReason?: string
   closePrice?: number
+  closeOrderId?: string
   // ── Race condition prevention (Redis-backed mutation lock) ──
   // version: Incremented by Redis-guarded mutation helpers. Callers that need
   // compare-and-set semantics must use mutatePositionWithVersionCheck() so the
@@ -1319,7 +1334,7 @@ async function recordFillCountersOnce(
 }
 
 function makeConnectionTrackingId(connectionId: string): string {
-  return `conn-${connectionId}`
+  return connectionTrackingId(connectionId)
 }
 
 function makeSystemTrackingId(connectionId: string): string {
@@ -1327,13 +1342,7 @@ function makeSystemTrackingId(connectionId: string): string {
 }
 
 function isSystemTrackedLivePosition(position: Partial<LivePosition> | any, connectionId: string): boolean {
-  const systemTrackingId = String(position?.system_tracking_id ?? position?.systemTrackingId ?? "").trim()
-  const connectionTrackingId = String(position?.connection_tracking_id ?? position?.connectionTrackingId ?? "").trim()
-  return (
-    systemTrackingId.startsWith(`sys-${connectionId}-`) &&
-    systemTrackingId.length > `sys-${connectionId}-`.length &&
-    connectionTrackingId === makeConnectionTrackingId(connectionId)
-  )
+  return isExactSystemPositionOwner(position, connectionId)
 }
 
 function isExchangeLifecyclePosition(position: Partial<LivePosition> | any, connectionId: string): boolean {
@@ -2834,6 +2843,19 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
         closedIndexKey,
         position.id,
       )
+      await recordLivePositionLifetimeContribution(
+        client,
+        position.connectionId,
+        position as unknown as Record<string, any>,
+      ).catch((error) => {
+        logRuntimeWarning(
+          `live-lifetime-summary:${position.connectionId}`,
+          60_000,
+          `${LOG_PREFIX} lifetime summary contribution failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        )
+      })
       await client.set(`live:positions:${position.connectionId}:moved:${position.id}`, String(Date.now())).catch(() => null)
       await client.expire(`live:positions:${position.connectionId}:moved:${position.id}`, 60 * 60).catch(() => 0)
       for (const setKey of liveSetLineageKeys) {
@@ -4036,6 +4058,34 @@ async function accumulateIntoLivePosition(
     lockId,
     POSITION_MUTATION_LOCK_TTL_MS,
   )
+  let entryProtectionAdmissionLease: EntryProtectionAdmissionLease | null = null
+
+  const verifyProtection = async (reason: string): Promise<boolean> => {
+    const direction = resolveLivePositionDirection(existing)
+    if (!direction) return false
+    const decision = await verifyConnectionProtectionAndPersistHalt({
+      connectionId: connId,
+      symbol: existing.symbol,
+      direction,
+      connector,
+      reason,
+    })
+    if (decision.safe) {
+      pushStep(
+        existing,
+        "quantity_protection_verified",
+        true,
+        `${reason}: exact row TP/SL and slot security controls are authoritative`,
+      )
+    } else {
+      const violations = decision.violations.slice(0, 8).join(",") || "unknown"
+      existing.statusReason =
+        `${reason}: protection is not authoritative; new exposure halted (${violations})`
+      pushStep(existing, "quantity_protection_halt", false, existing.statusReason)
+    }
+    await savePosition(existing).catch(() => undefined)
+    return decision.safe
+  }
 
   try {
     const storedDirection = resolveLivePositionDirection(existing)
@@ -4053,6 +4103,21 @@ async function accumulateIntoLivePosition(
     existing.accumulatedSetKeys ||= []
     if (!connector || typeof connector.placeOrder !== "function") {
       pushStep(existing, "accumulate_skip", false, "exchange connector unavailable — accumulation deferred")
+      await savePosition(existing)
+      return existing
+    }
+
+    entryProtectionAdmissionLease = await acquireEntryProtectionAdmissionLease(
+      connId,
+      `accumulation:${existing.id}`,
+    )
+    if (!entryProtectionAdmissionLease) {
+      pushStep(
+        existing,
+        "accumulate_deferred",
+        false,
+        "connection-wide protection admission is busy — accumulation deferred",
+      )
       await savePosition(existing)
       return existing
     }
@@ -4099,6 +4164,7 @@ async function accumulateIntoLivePosition(
           existing.pendingAccumulation = undefined
           await savePosition(existing)
         }
+        await verifyProtection("accumulation_recovered")
         return existing
       }
       const liveOrderIds = await fetchLiveOrderIdSet(connector)
@@ -4118,12 +4184,14 @@ async function accumulateIntoLivePosition(
         pushStep(existing, "accumulation_submission_wait", true, `tracking pending clientOrderId=${pending.clientOrderId}`)
         await savePosition(existing)
         await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_tracking_wait")
+        await verifyProtection("accumulation_tracking_wait")
         return existing
       }
       pending.absenceConfirmations = Number(pending.absenceConfirmations || 0) + 1
       if (pending.absenceConfirmations < 2) {
         await savePosition(existing)
         await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_absence_wait")
+        await verifyProtection("accumulation_absence_wait")
         return existing
       }
       pushStep(existing, "accumulation_submission_absent", false, `clientOrderId=${pending.clientOrderId} confirmed absent; retry allowed`)
@@ -4147,6 +4215,11 @@ async function accumulateIntoLivePosition(
       existing.pendingAccumulation = undefined
       await savePosition(existing)
     }
+
+    // A clean authoritative snapshot is required before any risk increase.
+    // This also safely clears a stale halt after a previous ambiguous action
+    // has been fully reconciled; time alone never clears it.
+    if (!await verifyProtection("pre_accumulation_admission")) return existing
 
     // Live OFF is an entry/mutation gate, not a license to reinterpret an
     // already confirmed venue position as paper. A pending accumulation is
@@ -4221,6 +4294,7 @@ async function accumulateIntoLivePosition(
       if (!(plan.addQty > 0)) {
         pushStep(existing, "special_plan_refresh", true, "target quantity already satisfied; protection/time contract refreshed")
         await rearmProtectionAfterQuantityMutation(connector, existing, "special_plan_refresh")
+        await verifyProtection("special_plan_refresh")
         return existing
       }
     }
@@ -4295,6 +4369,7 @@ async function accumulateIntoLivePosition(
     // the currently protected position completely untouched.
     if (!await settleControlOrdersBeforeQuantityMutation(connector, existing, "accumulation")) {
       await savePosition(existing)
+      await verifyProtection("accumulation_control_settlement")
       return existing
     }
 
@@ -4393,6 +4468,7 @@ async function accumulateIntoLivePosition(
       pushStep(existing, "accumulate_order_unconfirmed", false, `tracking by clientOrderId until authoritative recovery: ${orderRes?.error || "no order id"}`)
       await savePosition(existing)
       await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_unconfirmed")
+      await verifyProtection("accumulation_unconfirmed")
       return existing
     }
     if (existing.pendingAccumulation) existing.pendingAccumulation.orderId = String(orderId)
@@ -4425,6 +4501,7 @@ async function accumulateIntoLivePosition(
       pushStep(existing, "accumulate_fill_pending", true, `orderId=${orderId}; exact fill deferred to reconciliation`)
       await savePosition(existing)
       await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_fill_pending")
+      await verifyProtection("accumulation_fill_pending")
       return existing
     }
 
@@ -4543,6 +4620,12 @@ async function accumulateIntoLivePosition(
     if (!mutated) {
       pushStep(existing, "accumulate_fill_pending", false, "stale version; exact fill deferred to reconciliation")
       await savePosition(existing)
+      await reconcilePendingAccumulationAndRearm(
+        connector,
+        existing,
+        "accumulation_stale_version",
+      )
+      await verifyProtection("accumulation_stale_version")
       return existing
     }
     Object.assign(existing, mutated)
@@ -4578,6 +4661,7 @@ async function accumulateIntoLivePosition(
         existing.pendingAccumulation = undefined
         await savePosition(existing)
       }
+      await verifyProtection("accumulation_partial_fill")
       return existing
     }
     await recordPositionAdjustmentProgression(
@@ -4609,15 +4693,18 @@ async function accumulateIntoLivePosition(
       )
     }
     await rearmProtectionAfterQuantityMutation(connector, existing, "accumulate_rearm")
+    await verifyProtection("accumulation_complete")
   } catch (err) {
     pushStep(existing, "accumulate_error", false, err instanceof Error ? err.message : String(err))
     try {
       await savePosition(existing)
       await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_error_rearm")
+      await verifyProtection("accumulation_error_rearm")
     } catch {
       /* best-effort; canonical reconcile retries the durable pending action */
     }
   } finally {
+    await entryProtectionAdmissionLease?.release().catch(() => undefined)
     stopPositionLockLeaseRefresh()
     await releasePositionMutationLock(connId, existing.id, lockId).catch(() => false)
   }
@@ -4818,10 +4905,50 @@ async function reduceCombinedPosCountPosition(
     lockId,
     POSITION_MUTATION_LOCK_TTL_MS,
   )
+  let entryProtectionAdmissionLease: EntryProtectionAdmissionLease | null = null
+
+  const verifyReductionProtection = async (reason: string): Promise<boolean> => {
+    const decision = await verifyConnectionProtectionAndPersistHalt({
+      connectionId,
+      symbol: position.symbol,
+      direction,
+      connector,
+      reason,
+    })
+    if (!decision.safe) {
+      const violations = decision.violations.slice(0, 8).join(",") || "unknown"
+      position.statusReason =
+        `${reason}: protection is not authoritative; new exposure halted (${violations})`
+      pushStep(position, "quantity_protection_halt", false, position.statusReason)
+    } else {
+      pushStep(
+        position,
+        "quantity_protection_verified",
+        true,
+        `${reason}: reduced quantity and all exact controls are authoritative`,
+      )
+    }
+    await savePosition(position).catch(() => undefined)
+    return decision.safe
+  }
 
   try {
     const fresh = await readLivePositionSnapshot(getRedisClient(), connectionId, position.id)
     if (fresh) Object.assign(position, fresh)
+    entryProtectionAdmissionLease = await acquireEntryProtectionAdmissionLease(
+      connectionId,
+      `poscounts-reduce:${position.id}`,
+    )
+    if (!entryProtectionAdmissionLease) {
+      pushStep(
+        position,
+        "poscounts_reduce_deferred",
+        false,
+        "connection-wide protection admission is busy — reduction deferred",
+      )
+      await savePosition(position)
+      return position
+    }
     const side: "buy" | "sell" = direction === "long" ? "sell" : "buy"
     const hadPendingReduction = !!position.pendingReduction
 
@@ -4873,6 +5000,7 @@ async function reduceCombinedPosCountPosition(
           pushStep(position, "poscounts_reduce_wait", true, `clientOrderId=${pending.clientOrderId}; authoritative order state pending`)
           await savePosition(position)
           await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_tracking_wait")
+          await verifyReductionProtection("poscounts_reduce_tracking_wait")
           return position
         }
         pending.absenceConfirmations = Number(pending.absenceConfirmations || 0) + 1
@@ -4881,6 +5009,7 @@ async function reduceCombinedPosCountPosition(
           position.pendingReduction = pending
           await savePosition(position)
           await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_absence_wait")
+          await verifyReductionProtection("poscounts_reduce_absence_wait")
           return position
         }
         position.pendingReduction = undefined
@@ -4893,6 +5022,7 @@ async function reduceCombinedPosCountPosition(
         pushStep(position, "poscounts_reduce_wait", true, `order=${pending.orderId || pending.clientOrderId} status=${status}; no duplicate submitted`)
         await savePosition(position)
         await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_active_wait")
+        await verifyReductionProtection("poscounts_reduce_active_wait")
         return position
       }
       position.pendingReduction = undefined
@@ -4914,11 +5044,13 @@ async function reduceCombinedPosCountPosition(
       if (hadPendingReduction) {
         await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_already_reconciled")
       }
+      await verifyReductionProtection("poscounts_reduce_already_reconciled")
       return position
     }
 
     if (!await settleControlOrdersBeforeQuantityMutation(connector, position, "poscounts_reduce")) {
       await savePosition(position)
+      await verifyReductionProtection("poscounts_reduce_control_settlement")
       return position
     }
 
@@ -4929,6 +5061,7 @@ async function reduceCombinedPosCountPosition(
       position.posCountsSetQuantities = allocatePositionSetQuantities(position, currentQuantity, targetMemberKeys)
       await savePosition(position)
       await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_changed_during_barrier")
+      await verifyReductionProtection("poscounts_reduce_changed_during_barrier")
       return position
     }
 
@@ -4941,6 +5074,15 @@ async function reduceCombinedPosCountPosition(
     if (!(reductionExecutable.quantity > 0)) {
       pushStep(position, "poscounts_reduce_wait", true, "ratio reduction is below the exchange quantity step")
       await savePosition(position)
+      // The control barrier may already have cancelled row TP/SL before the
+      // rounded reduce-only delta became non-executable. Restore protection
+      // immediately; returning here without re-arm left a real position bare.
+      await rearmProtectionAfterQuantityMutation(
+        connector,
+        position,
+        "poscounts_reduce_below_step_rearm",
+      )
+      await verifyReductionProtection("poscounts_reduce_below_step_rearm")
       return position
     }
     const reductionQuantity = reductionExecutable.quantity
@@ -4990,6 +5132,7 @@ async function reduceCombinedPosCountPosition(
       pushStep(position, "poscounts_target_reduce", false, `${response?.error || "submission unconfirmed"}; durable clientOrderId retained`)
       await savePosition(position)
       await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_unconfirmed")
+      await verifyReductionProtection("poscounts_reduce_unconfirmed")
       return position
     }
 
@@ -5031,10 +5174,12 @@ async function reduceCombinedPosCountPosition(
     if (!terminal) {
       pushStep(position, "poscounts_reduce_wait", true, `orderId=${orderId}; partial=${applied.cumulativeApplied}/${pending.requestedQuantity}`)
       await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_partial_wait")
+      await verifyReductionProtection("poscounts_reduce_partial_wait")
       return position
     }
 
     await rearmProtectionAfterQuantityMutation(connector, position, "poscounts_partial_rearm")
+    await verifyReductionProtection("poscounts_reduce_complete")
     return position
   } catch (error) {
     pushStep(
@@ -5045,11 +5190,13 @@ async function reduceCombinedPosCountPosition(
     )
     try {
       await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_error_rearm")
+      await verifyReductionProtection("poscounts_reduce_error_rearm")
     } catch {
       await savePosition(position).catch(() => undefined)
     }
     return position
   } finally {
+    await entryProtectionAdmissionLease?.release().catch(() => undefined)
     stopLease()
     await releasePositionMutationLock(connectionId, position.id, lockId).catch(() => false)
   }
@@ -6090,15 +6237,13 @@ async function batchPollOrderFills(
  *   2. A by-id cancel can return failure for a transient reason (network
  *      blip, brief 429) and the engine cannot afford to keep retrying
  *      indefinitely. The sweep doubles as a retry on the next tick.
- *   3. An operator may have placed a manual reduce-only leg that the
- *      engine never knew about. Once the position is gone, that order
- *      can only ever cause "exchange control orders chaos" — it has no
- *      position to reduce, and the next entry on the same symbol would
- *      see it as an unexpected closer.
+ *   3. A response-lost CTS placement can be recovered by its exact durable
+ *      connection-scoped client id even when the venue id was not persisted.
  *
- * We filter conservatively to ONLY reduce-only orders matching the
- * close direction so the sweep never touches another strategy's open
- * orders on the same symbol.
+ * Direction/type filters are necessary but never sufficient ownership.
+ * Cancellation requires an exact venue id already persisted on this row or
+ * an exact connection-watermarked client id from this row's durable history.
+ * Manual and third-party orders are always preserved.
  */
 async function sweepOrphanProtectionOrders(
   connector: any,
@@ -6159,14 +6304,21 @@ async function sweepOrphanProtectionOrders(
     if (value) ownedOrderIds.add(String(value))
   }
   for (const pending of Object.values(position.pendingProtectionOrders || {})) {
-    if (pending?.clientOrderId) ownedClientOrderIds.add(String(pending.clientOrderId))
+    if (
+      pending?.clientOrderId &&
+      isConnectionOwnedClientOrderId(pending.clientOrderId, position.connectionId)
+    ) {
+      ownedClientOrderIds.add(String(pending.clientOrderId))
+    }
   }
   const clientOrderHistory = (position.exchangeData as any)?.clientOrderIds
   if (Array.isArray(clientOrderHistory)) {
     for (const entry of clientOrderHistory) {
       if (entry?.kind === "stop_loss" || entry?.kind === "take_profit") {
         const value = entry?.clientOrderId ?? entry?.id
-        if (value) ownedClientOrderIds.add(String(value))
+        if (value && isConnectionOwnedClientOrderId(value, position.connectionId)) {
+          ownedClientOrderIds.add(String(value))
+        }
       }
     }
   }
@@ -6609,7 +6761,7 @@ function protectionCapacityBudgetOf(liveOrderIds?: Set<string> | null): ControlO
 
 async function fetchLiveOrderIdSet(
   connector: any,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; forceRefresh?: boolean } = {},
 ): Promise<LiveOrderIdSet | null> {
   if (!connector || typeof connector.getOpenOrders !== "function") return null
   try {
@@ -6621,7 +6773,7 @@ async function fetchLiveOrderIdSet(
     // On timeout we degrade gracefully to drift-only reconciliation.
     const timeoutMs = Math.max(1, Math.min(25_000, Number(options.timeoutMs || 25_000)))
     const orders = (await withTimeout(
-      connector.getOpenOrders() as Promise<any>,
+      connector.getOpenOrders(undefined, { forceRefresh: options.forceRefresh === true }) as Promise<any>,
       timeoutMs,
       "getOpenOrders(reconcile-tick)",
     )) as any[] | undefined
@@ -9445,7 +9597,7 @@ async function readAuthoritativeProtectionOrders(
     throw new Error("Exact-slot reconciliation requires a venue open-order snapshot")
   }
   const orders = await withTimeout(
-    connector.getOpenOrders(symbol) as Promise<any>,
+    connector.getOpenOrders(symbol, { forceRefresh: true }) as Promise<any>,
     25_000,
     "getOpenOrders(exact-protection-slot)",
   )
@@ -9509,6 +9661,264 @@ function assertEligibleProtectionSlotRows(members: readonly LivePosition[]): voi
       throw new Error("Exact-slot reconciliation blocked by an in-flight quantity mutation")
     }
   }
+}
+
+interface EntryProtectionAdmissionDecision {
+  safe: boolean
+  violations: string[]
+  audit: LiveEntryProtectionAdmissionAudit
+  observedControlOrders: number
+  availableControlOrders: number
+}
+
+interface EntryProtectionAdmissionLease {
+  key: string
+  token: string
+  release: () => Promise<void>
+}
+
+function entryProtectionAdmissionLockKeyOf(connectionId: string): string {
+  return `live:entry-protection-admission:${connectionId}`
+}
+
+function entryProtectionHaltKeyOf(connectionId: string): string {
+  return `live:entry-protection-halt:${connectionId}`
+}
+
+/**
+ * Serialize every risk-increasing quantity mutation with fresh entries. The
+ * lease is connection-wide because venue TP/SL capacity and physical hedge
+ * slots are account resources, not independent per-position resources.
+ */
+async function acquireEntryProtectionAdmissionLease(
+  connectionId: string,
+  purpose: string,
+  waitMs: number = ENTRY_PROTECTION_ADMISSION_WAIT_MS,
+): Promise<EntryProtectionAdmissionLease | null> {
+  const client = getRedisClient() as any
+  const key = entryProtectionAdmissionLockKeyOf(connectionId)
+  const token = `${purpose}:${process.pid}:${Date.now()}:${nanoid(10)}`
+  const deadline = Date.now() + Math.max(0, waitMs)
+  do {
+    const acquired = await client.set(
+      key,
+      token,
+      { NX: true, PX: ENTRY_PROTECTION_ADMISSION_LOCK_TTL_MS } as any,
+    ).catch(() => null)
+    if (acquired === "OK" || acquired === true) {
+      const stopLease = startRedisLockLeaseRefresh(
+        client,
+        key,
+        token,
+        ENTRY_PROTECTION_ADMISSION_LOCK_TTL_MS,
+      )
+      let released = false
+      return {
+        key,
+        token,
+        release: async () => {
+          if (released) return
+          released = true
+          stopLease()
+          await evalLockLua(client, RELEASE_LOCK_LUA, key, [token]).catch(() => 0)
+        },
+      }
+    }
+    if (Date.now() >= deadline) break
+    await new Promise<void>((resolve) => setTimeout(resolve, 75))
+  } while (Date.now() < deadline)
+  return null
+}
+
+/**
+ * One authoritative, connection-wide gate immediately before any venue
+ * mutation. Independent Set evaluation remains untouched; execution is
+ * admitted only when every already-open CTS row has its own exact SL/TP,
+ * every net symbol/direction slot has one exact full-quantity security stop,
+ * and the venue position quantity is fully explained by exact CTS ownership.
+ * Foreign orders are never adopted or cancelled.
+ */
+async function auditEntryProtectionBeforeVenueMutation(input: {
+  connectionId: string
+  candidateId?: string
+  symbol: string
+  direction: ProtectionSlotDirection
+  connector: any
+  requireCapacity?: boolean
+}): Promise<EntryProtectionAdmissionDecision> {
+  const [positions, venuePositions, openOrders] = await Promise.all([
+    getLivePositions(input.connectionId),
+    readAuthoritativeProtectionPositions(input.connector),
+    readAuthoritativeProtectionOrders(input.connector),
+  ])
+  const liveOrderIds = new Set<string>()
+  for (const order of openOrders) {
+    for (const identifier of protectionOrderIdentifiers(order)) {
+      if (identifier) liveOrderIds.add(identifier)
+    }
+  }
+
+  const audit = auditLiveEntryProtectionAdmission({
+    connectionId: input.connectionId,
+    candidateId: input.candidateId,
+    symbol: input.symbol,
+    direction: input.direction,
+    positions,
+    venuePositions,
+    liveOrderIds,
+  })
+  const violations = [...audit.violations]
+  const activeOwnedRows = positions.filter((position) =>
+    String(position.id || "") !== String(input.candidateId || "")
+    && isExchangeLifecyclePosition(position, input.connectionId)
+    && Number(position.executedQuantity || 0) > 0,
+  )
+  const slots = new Map<string, LivePosition[]>()
+  for (const position of activeOwnedRows) {
+    const direction = resolveLivePositionDirection(position)
+    if (!direction) {
+      violations.push("owned_row_direction_missing")
+      continue
+    }
+    const key = aggregateProtectionSlot(position.symbol, direction)
+    const members = slots.get(key) || []
+    members.push(position)
+    slots.set(key, members)
+  }
+
+  for (const members of slots.values()) {
+    const direction = resolveLivePositionDirection(members[0])
+    if (!direction) {
+      violations.push("owned_slot_direction_missing")
+      continue
+    }
+    const venueRows = exactProtectionVenueRows(
+      venuePositions,
+      members[0].symbol,
+      direction,
+    )
+    if (venueRows.length !== 1) {
+      violations.push("owned_slot_venue_cardinality_mismatch")
+      continue
+    }
+    const plan = buildExactProtectionSlotPlan(members, venueRows[0])
+    if (!plan || !plan.ownershipMatches || !(plan.securityStopPrice > 0)) {
+      violations.push("owned_slot_aggregate_plan_invalid")
+      continue
+    }
+    const slotAudit = auditProtectionSlotOrders({
+      connectionId: input.connectionId,
+      symbol: members[0].symbol,
+      direction,
+      members,
+      plan,
+      openOrders,
+    })
+    if (!slotAudit.complete) {
+      violations.push("owned_slot_controls_incomplete")
+      violations.push(...slotAudit.violations.map((violation) => `owned_slot_${violation}`))
+      if (slotAudit.orphanOrders.length > 0) violations.push("owned_slot_orphan_controls_present")
+    }
+    if (slotAudit.externalOrUnknownSlotControlOrdersPreserved > 0) {
+      violations.push("owned_slot_external_controls_present")
+    }
+  }
+
+  if (
+    !audit.physicalSlotAlreadyExists
+    && openOrders.some((order) => isProtectionControlOrderForSlot(
+      order,
+      input.symbol,
+      input.direction,
+    ))
+  ) {
+    violations.push("candidate_slot_open_controls_present")
+  }
+
+  const observedControlOrders = isBingXCapacityConnector(input.connector)
+    ? countUniqueBingXControlOrders(openOrders)
+    : 0
+  const availableControlOrders = isBingXCapacityConnector(input.connector)
+    ? Math.max(0, BINGX_CONTROL_ORDER_LIMIT - observedControlOrders)
+    : Number.MAX_SAFE_INTEGER
+  if (
+    input.requireCapacity !== false
+    && availableControlOrders < audit.requiredNewControlOrders
+  ) {
+    violations.push("control_order_capacity_reserve_insufficient")
+  }
+
+  return {
+    safe: violations.length === 0,
+    violations: [...new Set(violations)],
+    audit,
+    observedControlOrders,
+    availableControlOrders,
+  }
+}
+
+/**
+ * Persist the connection-wide exposure halt whenever an authoritative audit
+ * cannot prove the complete row-TP/SL + slot-security contract. A later
+ * recovery cycle may clear the halt only by producing a fully clean audit;
+ * elapsed time or a process restart is never treated as proof of safety.
+ */
+async function verifyConnectionProtectionAndPersistHalt(input: {
+  connectionId: string
+  symbol: string
+  direction: ProtectionSlotDirection
+  connector: any
+  reason: string
+}): Promise<EntryProtectionAdmissionDecision> {
+  const client = getRedisClient() as any
+  let decision: EntryProtectionAdmissionDecision
+  try {
+    decision = await auditEntryProtectionBeforeVenueMutation({
+      connectionId: input.connectionId,
+      symbol: input.symbol,
+      direction: input.direction,
+      connector: input.connector,
+      requireCapacity: false,
+    })
+  } catch (error) {
+    decision = {
+      safe: false,
+      violations: ["authoritative_protection_snapshot_unavailable"],
+      audit: {
+        safe: false,
+        violations: ["authoritative_protection_snapshot_unavailable"],
+        ownedActiveRows: 0,
+        ownedExecutedRows: 0,
+        physicalSlotRows: 0,
+        systemSlotQuantity: 0,
+        venueSlotQuantity: 0,
+        physicalSlotAlreadyExists: false,
+        requiredNewControlOrders: 0,
+      },
+      observedControlOrders: 0,
+      availableControlOrders: 0,
+    }
+    console.warn(
+      `${LOG_PREFIX} ${input.reason} protection verification failed: ` +
+      `${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+
+  const haltKey = entryProtectionHaltKeyOf(input.connectionId)
+  if (decision.safe) {
+    await client.del(haltKey).catch(() => 0)
+  } else {
+    await client.setex(
+      haltKey,
+      24 * 60 * 60,
+      JSON.stringify({
+        at: Date.now(),
+        reason: input.reason,
+        violations: decision.violations.slice(0, 24),
+      }),
+    ).catch(() => {})
+  }
+  return decision
 }
 
 /**
@@ -10377,6 +10787,96 @@ export async function executeLivePosition(
   let liveOrderLockToken: string | null = null
   let signalCapacityReserved = false
   let exchangeSubmissionStarted = false
+  const entryProtectionAdmissionLockKey = `live:entry-protection-admission:${connectionId}`
+  const entryProtectionHaltKey = `live:entry-protection-halt:${connectionId}`
+  let entryProtectionAdmissionLockToken: string | null = null
+  let stopEntryProtectionAdmissionLeaseRefresh: (() => void) | null = null
+  const releaseEntryProtectionAdmissionLock = async (): Promise<void> => {
+    stopEntryProtectionAdmissionLeaseRefresh?.()
+    stopEntryProtectionAdmissionLeaseRefresh = null
+    const token = entryProtectionAdmissionLockToken
+    entryProtectionAdmissionLockToken = null
+    if (!token) return
+    await evalLockLua(
+      client,
+      RELEASE_LOCK_LUA,
+      entryProtectionAdmissionLockKey,
+      [token],
+    ).catch(() => 0)
+  }
+  const acquireEntryProtectionAdmissionLock = async (): Promise<boolean> => {
+    if (entryProtectionAdmissionLockToken) return true
+    const deadline = Date.now() + ENTRY_PROTECTION_ADMISSION_WAIT_MS
+    const token = `entry-admission:${process.pid}:${Date.now()}:${nanoid(10)}`
+    do {
+      const acquired = await client.set(
+        entryProtectionAdmissionLockKey,
+        token,
+        { NX: true, PX: ENTRY_PROTECTION_ADMISSION_LOCK_TTL_MS } as any,
+      ).catch(() => null)
+      if (acquired === "OK") {
+        entryProtectionAdmissionLockToken = token
+        stopEntryProtectionAdmissionLeaseRefresh = startRedisLockLeaseRefresh(
+          client,
+          entryProtectionAdmissionLockKey,
+          token,
+          ENTRY_PROTECTION_ADMISSION_LOCK_TTL_MS,
+        )
+        return true
+      }
+      if (Date.now() >= deadline) break
+      await new Promise<void>((resolve) => setTimeout(resolve, 75))
+    } while (Date.now() < deadline)
+    return false
+  }
+  const rollbackEntryWithoutCompleteProtection = async (
+    reason: string,
+    violations: readonly string[],
+  ): Promise<void> => {
+    livePosition.statusReason = reason
+    pushStep(
+      livePosition,
+      "entry_protection_rollback",
+      false,
+      `${reason}; codes=${violations.slice(0, 8).join(",") || "unknown"}`,
+    )
+    await savePosition(livePosition).catch(() => {})
+    const closed = await closeLivePosition(
+      connectionId,
+      livePosition.id,
+      0,
+      exchangeConnector,
+      "entry_protection_contract_incomplete",
+    ).catch(() => null)
+    if (closed && String(closed.status || "") === "closed") {
+      Object.assign(livePosition, closed)
+      await client.del(entryProtectionHaltKey).catch(() => 0)
+      return
+    }
+
+    // Do not permit another entry after an exact-owned rollback could not be
+    // confirmed. Existing reconciliation/close processing remains active;
+    // only new exposure is halted until an operator audit clears this key.
+    await client.setex(
+      entryProtectionHaltKey,
+      24 * 60 * 60,
+      JSON.stringify({ at: Date.now(), reason: "entry_protection_rollback_unconfirmed" }),
+    ).catch(() => {})
+    livePosition.statusReason =
+      "Entry protection rollback could not be confirmed; new entries halted for reconciliation"
+    await savePosition(livePosition).catch(() => {})
+    await logProgressionEvent(
+      connectionId,
+      "live_trading",
+      "error",
+      livePosition.statusReason,
+      {
+        symbol: realPosition.symbol,
+        direction: realPosition.direction,
+        violations: [...violations].slice(0, 16),
+      },
+    ).catch(() => {})
+  }
   const abortSuperseded = async (): Promise<boolean> => {
     // Once a venue request may have left this process, cancellation would be
     // unsafe: the response can race the settings event. Continue durable
@@ -11212,62 +11712,6 @@ export async function executeLivePosition(
       await VolumeCalculator.logVolumeCalculation(connectionId, realPosition.symbol, volumeResult).catch(() => {})
     }
 
-    // ── Step 4: Configure margin type, then leverage, on exchange ─────────
-    // These calls must not be parallelized. On BingX and several other futures
-    // venues leverage is scoped by the currently selected margin mode; a
-    // concurrent update can therefore acknowledge both requests yet execute
-    // the entry with stale venue state. The shared helper also joins the
-    // connector's FIFO/cooldown lane and fails closed before placeOrder.
-    const marginTypeSetting = (connSettings.margin_type as "cross" | "isolated") || "cross"
-    livePosition.marginType = marginTypeSetting
-    try {
-      const configured = await setupLiveOrderMarginAndLeverage(
-        exchangeConnector,
-        realPosition.symbol,
-        { marginType: marginTypeSetting, leverage: livePosition.leverage },
-      )
-      pushStep(
-        livePosition,
-        "set_margin_type",
-        true,
-        configured.marginConfigured ? `margin=${configured.marginType}` : "connector has no margin-mode endpoint",
-      )
-      pushStep(
-        livePosition,
-        "set_leverage",
-        true,
-        configured.leverageConfigured ? `leverage=${livePosition.leverage}` : "leverage=1 or connector has no leverage endpoint",
-      )
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      livePosition.status = "error"
-      livePosition.statusReason = `Exchange entry preflight failed before placement: ${reason}`
-      pushStep(livePosition, "set_margin_type", false, livePosition.statusReason)
-      pushStep(livePosition, "set_leverage", false, livePosition.statusReason)
-      await savePosition(livePosition)
-      await Promise.all([
-        incrementMetric(connectionId, "live_orders_failed_count"),
-        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
-        logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
-          symbol: realPosition.symbol,
-          direction: realPosition.direction,
-          marginType: marginTypeSetting,
-          leverage: livePosition.leverage,
-        }),
-      ])
-      if (liveOrderLockToken) {
-        await releaseLock(
-          connectionId,
-          realPosition.symbol,
-          realPosition.direction + _lockDirSuffix,
-          liveOrderLockToken,
-        ).catch(() => {})
-      }
-      return livePosition
-    }
-    if (await abortSuperseded()) return livePosition
-
-
     // ── Step 5: Place entry order with retry ─────────────────────����─────────
     const exchangeSide: "buy" | "sell" = realPosition.direction === "long" ? "buy" : "sell"
 
@@ -11310,15 +11754,6 @@ export async function executeLivePosition(
       isTruthyFlag: reCheckTruthy,
     } = await import("@/lib/connection-state-utils")
     const freshSettings = (await reCheckConn(connectionId)) || {}
-    const positionMode = String((freshSettings as any).position_mode || (freshSettings as any).positionMode || "").toLowerCase()
-    const hedgeMode = positionMode.includes("hedge") || positionMode.includes("dual")
-    const entryOrderOptions = hedgeMode
-      ? {
-          hedgeMode: true,
-          positionSide: (realPosition.direction === "long" ? "LONG" : "SHORT") as "LONG" | "SHORT",
-          clientOrderId: orderTrace.exchangeTrackingId,
-        }
-      : { hedgeMode: false, clientOrderId: orderTrace.exchangeTrackingId }
     const freshMainModeEnabled = reCheckMainEnabled(freshSettings)
     const freshPresetModeEnabled = reCheckPresetEnabled(freshSettings)
     const freshExecutionIntent: LiveExecutionIntent = isSignalPosition
@@ -11329,7 +11764,8 @@ export async function executeLivePosition(
     const freshReadinessIntent = readinessIntentForExecution(freshSettings, freshExecutionIntent)
     const freshReadiness = evaluateRealTradeReadiness(freshSettings, freshReadinessIntent)
     const supervisedSmokeId = await client.get("live_order_smoke:active").catch(() => null)
-    const isStillLive = freshReadiness.canPlaceRealOrders && !supervisedSmokeId
+    const engineProcessing = isConnectionMainProcessing(freshSettings)
+    const isStillLive = freshReadiness.canPlaceRealOrders && engineProcessing && !supervisedSmokeId
     if (await abortSuperseded()) return livePosition
     
     const isTestnetConnection = reCheckTruthy(freshSettings.is_testnet)
@@ -11347,10 +11783,16 @@ export async function executeLivePosition(
     if (!isStillLive) {
       livePosition.status = "rejected"
       livePosition.executionMode = "blocked"
-      livePosition.executionBlockCode = freshReadiness.blockCode || undefined
-      livePosition.executionBlockReason = freshReadiness.blockReason || undefined
+      livePosition.executionBlockCode = !engineProcessing
+        ? "engine_processing_stopped"
+        : freshReadiness.blockCode || undefined
+      livePosition.executionBlockReason = !engineProcessing
+        ? "Connection processing is stopped"
+        : freshReadiness.blockReason || undefined
       livePosition.statusReason = supervisedSmokeId
         ? `Exchange order blocked before placement: supervised live-order smoke ${supervisedSmokeId} owns the account gate`
+        : !engineProcessing
+          ? "Exchange order blocked before placement: connection processing is stopped"
         : `Exchange order blocked before placement (${freshReadiness.blockCode || "unknown"}): ${freshReadiness.blockReason}`
       pushStep(livePosition, "entry", false, livePosition.statusReason)
       await savePosition(livePosition)
@@ -11372,6 +11814,200 @@ export async function executeLivePosition(
       }
       return livePosition
     }
+
+    const existingEntryProtectionHalt = await client.get(entryProtectionHaltKey).catch(() => null)
+    if (existingEntryProtectionHalt) {
+      livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = "entry_protection_halted"
+      livePosition.executionBlockReason = "A prior entry could not prove complete venue protection"
+      livePosition.statusReason =
+        "Exchange order blocked before placement: entry protection halt requires reconciliation"
+      pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await incrementMetric(connectionId, "live_orders_blocked_count")
+      return livePosition
+    }
+
+    if (!await acquireEntryProtectionAdmissionLock()) {
+      livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = "entry_protection_admission_busy"
+      livePosition.executionBlockReason = "Another entry is completing its venue protection contract"
+      livePosition.statusReason =
+        "Exchange order deferred: connection-wide protection admission is busy"
+      pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await incrementMetric(connectionId, "live_orders_deferred_count")
+      return livePosition
+    }
+
+    // Re-read the durable switches after acquiring the account-wide lease.
+    // This closes the stop/start race while the caller waited behind another
+    // entry and ensures Signal cannot continue after the engine is stopped.
+    const lockedSettings = (await reCheckConn(connectionId)) || {}
+    const lockedMainModeEnabled = reCheckMainEnabled(lockedSettings)
+    const lockedPresetModeEnabled = reCheckPresetEnabled(lockedSettings)
+    const lockedExecutionIntent: LiveExecutionIntent = isSignalPosition
+      ? "signal"
+      : lockedPresetModeEnabled && !lockedMainModeEnabled
+        ? "preset"
+        : "main"
+    const lockedReadiness = evaluateRealTradeReadiness(
+      lockedSettings,
+      readinessIntentForExecution(lockedSettings, lockedExecutionIntent),
+    )
+    if (!isConnectionMainProcessing(lockedSettings) || !lockedReadiness.canPlaceRealOrders) {
+      livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = !isConnectionMainProcessing(lockedSettings)
+        ? "engine_processing_stopped"
+        : lockedReadiness.blockCode || "live_readiness_changed"
+      livePosition.executionBlockReason = !isConnectionMainProcessing(lockedSettings)
+        ? "Connection processing stopped while entry waited for admission"
+        : lockedReadiness.blockReason
+      livePosition.statusReason =
+        `Exchange order blocked after admission lock: ${livePosition.executionBlockReason}`
+      pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await incrementMetric(connectionId, "live_orders_blocked_count")
+      return livePosition
+    }
+
+    let entryAdmission: EntryProtectionAdmissionDecision
+    try {
+      entryAdmission = await auditEntryProtectionBeforeVenueMutation({
+        connectionId,
+        candidateId: livePosition.id,
+        symbol: realPosition.symbol,
+        direction: realPosition.direction,
+        connector: exchangeConnector,
+      })
+    } catch (error) {
+      entryAdmission = {
+        safe: false,
+        violations: ["authoritative_admission_snapshot_unavailable"],
+        audit: {
+          safe: false,
+          violations: ["authoritative_admission_snapshot_unavailable"],
+          ownedActiveRows: 0,
+          ownedExecutedRows: 0,
+          physicalSlotRows: 0,
+          systemSlotQuantity: 0,
+          venueSlotQuantity: 0,
+          physicalSlotAlreadyExists: false,
+          requiredNewControlOrders: 3,
+        },
+        observedControlOrders: 0,
+        availableControlOrders: 0,
+      }
+      console.warn(
+        `${LOG_PREFIX} entry protection admission snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (!entryAdmission.safe) {
+      const codes = entryAdmission.violations.slice(0, 8).join(",")
+      livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = "entry_protection_admission_failed"
+      livePosition.executionBlockReason = codes || "protection_contract_incomplete"
+      livePosition.statusReason =
+        `Exchange order blocked before any venue mutation: protection admission failed (${codes || "unknown"})`
+      livePosition.controlOrderCapacity = {
+        limit: isBingXCapacityConnector(exchangeConnector)
+          ? BINGX_CONTROL_ORDER_LIMIT
+          : Number.MAX_SAFE_INTEGER,
+        observedOpen: entryAdmission.observedControlOrders,
+        reserved: entryAdmission.audit.requiredNewControlOrders,
+        available: entryAdmission.availableControlOrders,
+        exhausted: entryAdmission.availableControlOrders < entryAdmission.audit.requiredNewControlOrders,
+      }
+      pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await Promise.all([
+        incrementMetric(connectionId, "live_orders_blocked_count"),
+        logProgressionEvent(
+          connectionId,
+          "live_trading",
+          "warning",
+          livePosition.statusReason,
+          {
+            symbol: realPosition.symbol,
+            direction: realPosition.direction,
+            violations: entryAdmission.violations,
+            ownedRows: entryAdmission.audit.ownedExecutedRows,
+            requiredControls: entryAdmission.audit.requiredNewControlOrders,
+            availableControls: entryAdmission.availableControlOrders,
+          },
+        ),
+      ])
+      return livePosition
+    }
+    pushStep(
+      livePosition,
+      "entry_protection_admission",
+      true,
+      `ownedRows=${entryAdmission.audit.ownedExecutedRows}; controlsAvailable=${entryAdmission.availableControlOrders}; controlsReserved=${entryAdmission.audit.requiredNewControlOrders}`,
+    )
+
+    const positionMode = String(
+      (lockedSettings as any).position_mode
+      || (lockedSettings as any).positionMode
+      || "",
+    ).toLowerCase()
+    const hedgeMode = positionMode.includes("hedge") || positionMode.includes("dual")
+    const entryOrderOptions = hedgeMode
+      ? {
+          hedgeMode: true,
+          positionSide: (realPosition.direction === "long" ? "LONG" : "SHORT") as "LONG" | "SHORT",
+          clientOrderId: orderTrace.exchangeTrackingId,
+        }
+      : { hedgeMode: false, clientOrderId: orderTrace.exchangeTrackingId }
+
+    // Margin/leverage are physical-slot venue mutations. They belong after
+    // exact ownership, control coverage, capacity, and stopped-engine gates.
+    const marginTypeSetting = (
+      (lockedSettings as any).margin_type as "cross" | "isolated"
+    ) || "cross"
+    livePosition.marginType = marginTypeSetting
+    try {
+      const configured = await setupLiveOrderMarginAndLeverage(
+        exchangeConnector,
+        realPosition.symbol,
+        { marginType: marginTypeSetting, leverage: livePosition.leverage },
+      )
+      pushStep(
+        livePosition,
+        "set_margin_type",
+        true,
+        configured.marginConfigured ? `margin=${configured.marginType}` : "connector has no margin-mode endpoint",
+      )
+      pushStep(
+        livePosition,
+        "set_leverage",
+        true,
+        configured.leverageConfigured ? `leverage=${livePosition.leverage}` : "leverage=1 or connector has no leverage endpoint",
+      )
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      livePosition.status = "error"
+      livePosition.statusReason = `Exchange entry preflight failed before placement: ${reason}`
+      pushStep(livePosition, "set_margin_type", false, livePosition.statusReason)
+      pushStep(livePosition, "set_leverage", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await Promise.all([
+        incrementMetric(connectionId, "live_orders_failed_count"),
+        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+        logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
+          symbol: realPosition.symbol,
+          direction: realPosition.direction,
+          marginType: marginTypeSetting,
+          leverage: livePosition.leverage,
+        }),
+      ])
+      return livePosition
+    }
+    if (await abortSuperseded()) return livePosition
 
     // Persist the idempotency key before the request can leave this process.
     // A crash or response timeout can therefore recover the exact venue order
@@ -12382,8 +13018,54 @@ export async function executeLivePosition(
           controlOrderCapacity: livePosition.controlOrderCapacity,
         },
       )
+
+      const rowQuantityTolerance = Math.max(
+        1e-10,
+        Number(livePosition.quantityStep || 0) / 2,
+        Number(livePosition.executedQuantity || 0) * 1e-8,
+      )
+      const rowProtectionComplete = Boolean(slVenueOrderId && tpVenueOrderId)
+        && Math.abs(
+          protectionLegArmedQuantity(livePosition, "stop_loss")
+          - Number(livePosition.executedQuantity || 0)
+        ) <= rowQuantityTolerance
+        && Math.abs(
+          protectionLegArmedQuantity(livePosition, "take_profit")
+          - Number(livePosition.executedQuantity || 0)
+        ) <= rowQuantityTolerance
+      if (!rowProtectionComplete) {
+        await rollbackEntryWithoutCompleteProtection(
+          "Initial entry did not receive its exact-quantity venue Stop Loss and Take Profit",
+          [
+            ...(!slVenueOrderId ? ["entry_stop_loss_missing"] : []),
+            ...(!tpVenueOrderId ? ["entry_take_profit_missing"] : []),
+            "entry_row_protection_quantity_unverified",
+          ],
+        )
+        return livePosition
+      }
     } else {
       pushStep(livePosition, "place_sl_tp", false, "skipped — no fill yet")
+      // A response-ambiguous market entry may already have reached the venue.
+      // Never open another row behind it. Reconciliation keeps recovering this
+      // exact client/order id and will arm protection as soon as quantity is
+      // authoritative; the halt expires only as a last-resort operator guard.
+      await client.setex(
+        entryProtectionHaltKey,
+        24 * 60 * 60,
+        JSON.stringify({ at: Date.now(), reason: "entry_fill_unconfirmed" }),
+      ).catch(() => {})
+      livePosition.statusReason =
+        "Entry fill is unconfirmed; new entries halted until exact recovery and protection reconciliation"
+      await savePosition(livePosition)
+      await logProgressionEvent(
+        connectionId,
+        "live_trading",
+        "error",
+        livePosition.statusReason,
+        { symbol: realPosition.symbol, direction: realPosition.direction },
+      ).catch(() => {})
+      return livePosition
     }
 
     // ── Step 8: Sync with exchange for position data ──────────────���────────
@@ -12422,6 +13104,7 @@ export async function executeLivePosition(
     // Persist the confirmed row controls, then immediately reconcile the
     // physical slot so its single aggregate-quantity security stop is not deferred to
     // a later scheduler tick.
+    let initialSecurityReconcileFailed = false
     if (livePosition.executedQuantity > 0 && typeof exchangeConnector.getPositions === "function") {
       await savePosition(livePosition)
       try {
@@ -12433,20 +13116,22 @@ export async function executeLivePosition(
         const venueSnapshotOk = typeof exchangeConnector.getLastPositionsSnapshotStatus === "function"
           ? exchangeConnector.getLastPositionsSnapshotStatus()?.ok === true
           : Array.isArray(venueRows)
-        if (venueSnapshotOk && Array.isArray(venueRows)) {
-          const rowsById = new Map(allRows.map((row) => [row.id, row]))
-          rowsById.set(livePosition.id, livePosition)
-          await reconcileAggregateProtectionBook(
-            connectionId,
-            exchangeConnector,
-            [...rowsById.values()],
-            venueRows,
-            orderIds,
-          )
-          const refreshed = await readLivePositionSnapshot(client, connectionId, livePosition.id)
-          if (refreshed) Object.assign(livePosition, refreshed)
+        if (!venueSnapshotOk || !Array.isArray(venueRows) || orderIds === null) {
+          throw new Error("authoritative position/order snapshot unavailable for initial security stop")
         }
+        const rowsById = new Map(allRows.map((row) => [row.id, row]))
+        rowsById.set(livePosition.id, livePosition)
+        await reconcileAggregateProtectionBook(
+          connectionId,
+          exchangeConnector,
+          [...rowsById.values()],
+          venueRows,
+          orderIds,
+        )
+        const refreshed = await readLivePositionSnapshot(client, connectionId, livePosition.id)
+        if (refreshed) Object.assign(livePosition, refreshed)
       } catch (error) {
+        initialSecurityReconcileFailed = true
         pushStep(
           livePosition,
           "initial_security_reconcile",
@@ -12454,6 +13139,40 @@ export async function executeLivePosition(
           error instanceof Error ? error.message : String(error),
         )
       }
+    }
+
+    if (livePosition.executedQuantity > 0) {
+      let finalAdmission: EntryProtectionAdmissionDecision | null = null
+      try {
+        finalAdmission = await auditEntryProtectionBeforeVenueMutation({
+          connectionId,
+          symbol: realPosition.symbol,
+          direction: realPosition.direction,
+          connector: exchangeConnector,
+          requireCapacity: false,
+        })
+      } catch (error) {
+        console.warn(
+          `${LOG_PREFIX} post-entry protection verification failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+      if (initialSecurityReconcileFailed || !finalAdmission?.safe) {
+        await rollbackEntryWithoutCompleteProtection(
+          "Post-entry venue audit could not prove row TP/SL plus full-slot security protection",
+          [
+            ...(initialSecurityReconcileFailed ? ["entry_security_reconcile_failed"] : []),
+            ...(finalAdmission?.violations || ["post_entry_authoritative_audit_unavailable"]),
+          ],
+        )
+        return livePosition
+      }
+      await client.del(entryProtectionHaltKey).catch(() => 0)
+      pushStep(
+        livePosition,
+        "entry_protection_verified",
+        true,
+        `rowControls=2; securityControls=1; ownedRows=${finalAdmission.audit.ownedExecutedRows}`,
+      )
     }
 
     // ── ENTRY SUMMARY — one log line showing the complete entry state ────────
@@ -12574,6 +13293,8 @@ export async function executeLivePosition(
     }
     if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
     return livePosition
+  } finally {
+    await releaseEntryProtectionAdmissionLock()
   }
 }
 
@@ -13227,6 +13948,24 @@ export async function closeLivePosition(
   try {
     const position = await readLivePositionSnapshot(client, connectionId, livePositionId)
     if (!position) return null
+    // A symbol/direction or exchange-position id is not ownership on a shared
+    // account.  Refuse before taking a mutation lock, changing local status,
+    // cancelling controls, or sending a reduce-only order.
+    if (!isSystemTrackedLivePosition(position, connectionId)) {
+      await logProgressionEvent(
+        connectionId,
+        "live_trading",
+        "warning",
+        `Blocked close for unowned lifecycle row ${position.symbol || "unknown"}`,
+        {
+          positionId: position.id,
+          requestedConnectionId: connectionId,
+          persistedConnectionId: position.connectionId,
+          reason: "exact_system_connection_ownership_required",
+        },
+      ).catch(() => {})
+      return position
+    }
     const resolvedDirection = resolveLivePositionDirection(position)
     if (!resolvedDirection) {
       position.statusReason = "exchange_close_blocked_invalid_direction"
@@ -13244,6 +13983,9 @@ export async function closeLivePosition(
     position.direction = resolvedDirection
     position.side ??= resolvedDirection
     const originalStatus = position.status
+    let confirmedCloseOrderId = String(
+      position.closeOrderId || position.pendingSystemAction?.orderId || "",
+    ).trim()
 
     // Once an ambiguous close delivery has been proved absent, keep the
     // position protected and avoid entering the mutation/cancellation path at
@@ -13536,6 +14278,7 @@ export async function closeLivePosition(
 
           if (r && typeof r === "object" && r.success === true) {
             action.orderId = r.orderId != null || r.id != null ? String(r.orderId ?? r.id) : action.orderId
+            if (action.orderId) confirmedCloseOrderId = String(action.orderId)
             action.phase = "system_verify"
             action.updatedAt = Date.now()
             position.pendingSystemAction = action
@@ -13636,6 +14379,7 @@ export async function closeLivePosition(
           orderId: action?.orderId,
           clientOrderId: action?.clientOrderId,
         })
+        if (action?.orderId) confirmedCloseOrderId = String(action.orderId)
         if (action) action.appliedFilledQuantity = observed.cumulativeApplied
         if (authoritative.quantity > 1e-12) {
           // A terminal partial market close leaves a real residual exposure.
@@ -13768,14 +14512,15 @@ export async function closeLivePosition(
       return position
     }
 
-    // ── Orphan-sweep safety net ───────────────────────────────────────��
-    // After the recorded-id cancels, scan the venue for ANY reduce-only
-    // order matching this symbol + close-side and cancel it. Catches:
+    // ── Exact-owned orphan-sweep safety net ────────────────────────────
+    // After the recorded-id cancels, scan the venue for CTS-watermarked
+    // reduce-only orders matching this row and close side. Catches:
     //   • by-id cancels that just failed transiently (we get a free retry)
     //   • protection ids that were never persisted (place-success → crash
     //     → restart finds no id in Redis)
-    //   • operator-placed manual reduce-only legs the engine never knew
-    //     about — which become orphans the moment the position closes.
+    //   • response-lost CTS protection placements recovered by the durable
+    //     connection-scoped client id.
+    // Manual/foreign orders never enter the cancellation allow-list.
     // Best-effort; we never let sweep failures block the close pipeline.
     if (exchangeConnector) {
       const sweepCloseSide: "buy" | "sell" =
@@ -13863,6 +14608,16 @@ export async function closeLivePosition(
       position.posCountsSetQuantities = allocatePositionSetQuantities(position, 0, position.accumulatedSetKeys || [])
     }
     position.pendingReduction = undefined
+    const ledgerCloseOrderId = [...(position.partialOrderExecutions || [])]
+      .reverse()
+      .find((execution) =>
+        ["system_close", "control_order"].includes(execution.source)
+        && Number(execution.cumulativeFilledQuantity || execution.appliedQuantity || 0) > 0
+        && String(execution.orderId || "").trim().length > 0,
+      )?.orderId
+    position.closeOrderId = String(
+      confirmedCloseOrderId || ledgerCloseOrderId || position.closeOrderId || "",
+    ).trim() || undefined
     position.pendingSystemAction = undefined
     position.systemCloseRetry = undefined
     position.pendingQuantityMutation = undefined
@@ -15176,6 +15931,9 @@ export async function reconcileLivePositions(
           const actualFilledQuantity = isSharedSecurityFill
             ? Math.min(qty, rawActualFilledQuantity * securityAllocationRatio)
             : rawActualFilledQuantity
+          if (actualOrderId && actualFilledQuantity > 0) {
+            pos.closeOrderId = actualOrderId
+          }
           const appliedSettlement = isSharedSecurityFill && bestSettlement
             ? apportionedSettlement(bestSettlement, actualFilledQuantity, securityAllocationRatio)
             : bestSettlement
@@ -16239,6 +16997,10 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         // RC3: Re-check position exists after async context switch
         // Another thread might have deleted it during our awaits
         if (!position || !position.id) return
+        // Foreign/manual rows are observation-only.  They cannot participate
+        // in fill recovery, protection placement, cancellation, or system
+        // close merely because they share a symbol and direction.
+        if (!isSystemTrackedLivePosition(position, connectionId)) return
         
         // RC1: Skip if already closed or locked
         if (
