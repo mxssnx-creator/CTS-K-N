@@ -73,7 +73,7 @@ TRAIL_ARM = 0.0032
 TRAIL_GIVE = 0.0016
 TIME_STOP_S = 21600
 MAX_HOLD_S = 21600
-SCRATCH_S = 90
+SCRATCH_S = 600
 SCRATCH_MIN = 0.0016
 SCAN_S = 0.20
 KLINE_EVERY = 2.4
@@ -316,6 +316,7 @@ class Pulse:
         self.upnl = 0.0
         self.halted = False
         self.halt_reason: Optional[str] = None
+        self._pre_pause_halt: Optional[str] = None
         self.volume_factor = 1.0
         self.regime = "neutral"
         self.consec_loss = 0
@@ -360,6 +361,7 @@ class Pulse:
         self._stats_force = False
         self.last_scan_io = False
         self.ignored_foreign = 0
+        self.dca_fail_cd: Dict[str, float] = {}
         self.track_prefix = TAG
         self.boot_ts = time.time()
         self.seen_fill_cids: set = set()
@@ -732,10 +734,6 @@ class Pulse:
     def order_cid(self, o: Dict[str, Any]) -> str:
         return str(o.get("clientOrderID") or o.get("clientOrderId") or "")
 
-    def our_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
-        rows = self.list_orders(symbol)
-        return [o for o in rows if self.cid_ours(self.order_cid(o))]
-
     def parse_track(self, cid: str) -> Optional[Dict[str, Any]]:
         if not self.cid_ours(cid):
             return None
@@ -818,20 +816,27 @@ class Pulse:
             self.start_eq = self.equity
         self.last_bal = time.time()
         if os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
+            if self.halt_reason and self.halt_reason not in ("paused", "stopped"):
+                self._pre_pause_halt = self.halt_reason
             self.halted = True
             self.halt_reason = "stopped"
         elif os.path.exists(PAUSE_PATH):
+            if self.halt_reason and self.halt_reason not in ("paused", "stopped"):
+                self._pre_pause_halt = self.halt_reason
             self.halted = True
             self.halt_reason = "paused"
         elif self.start_eq > 0 and self.equity > 0 and (self.start_eq - self.equity) / self.start_eq >= DD_HALT:
             self.halted = True
             self.halt_reason = "drawdown halt"
+            self._pre_pause_halt = None
         elif self.equity < 0.8:
             self.halted = True
             self.halt_reason = f"equity {self.equity:.4f} below min"
+            self._pre_pause_halt = None
         elif self.equity >= 0.8 and self.start_eq > 0 and (self.start_eq - self.equity) / max(self.start_eq, 1e-9) < DD_HALT * 0.6:
             self.halted = False
             self.halt_reason = None
+            self._pre_pause_halt = None
 
     def bump(self, kind: str = "tick") -> None:
         self.last_event = kind
@@ -1150,14 +1155,37 @@ class Pulse:
 
     def our_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         rows = self.list_orders(symbol)
-        ours = [o for o in rows if self.cid_ours(self.order_cid(o))]
-        return ours
+        return [o for o in rows if self.cid_ours(self.order_cid(o))]
+
+    def _oid_in_book(self, order_id: str) -> bool:
+        oid = str(order_id or "")
+        if not oid:
+            return False
+        for p in self.open.values():
+            if oid in (
+                str(p.sl_oid or ""),
+                str(p.tp_oid or ""),
+                str(getattr(p, "sec_sl_oid", "") or ""),
+                str(getattr(p, "sec_tp_oid", "") or ""),
+                str(getattr(p, "order_id", "") or ""),
+            ):
+                return True
+        return False
 
     def cancel_order(self, symbol: str, order_id: str, cid: str = "") -> bool:
         if not order_id:
             return True
+        cid = str(cid or "")
+        if not cid:
+            for o in self.list_orders(symbol):
+                if str(o.get("orderId") or o.get("orderID") or "") == str(order_id):
+                    cid = self.order_cid(o)
+                    break
         if cid and not self.cid_ours(cid):
             log(f"SKIP cancel foreign {symbol} cid={cid[:24]}", every=20.0, key=f"skipc:{symbol}")
+            return False
+        if not cid and not self._oid_in_book(order_id):
+            log(f"SKIP cancel unknown {symbol} oid={order_id}", every=20.0, key=f"skipu:{symbol}")
             return False
         r = self.api.delete("/openApi/swap/v2/trade/order", {"symbol": symbol, "orderId": order_id})
         if self.ok(r):
@@ -1343,8 +1371,11 @@ class Pulse:
         close_side = "SELL" if pos.side == "LONG" else "BUY"
         cid = self.cid(cid_ch, pos=pos)
         c = self.contracts.get(pos.symbol)
-        if time.time() < self.ctrl_skip.get("__order_cap__", 0) or time.time() < self.ctrl_skip.get(pos.symbol, 0):
+        if time.time() < self.ctrl_skip.get("__order_cap__", 0):
             return (pos.sl_oid if is_sl else pos.tp_oid) or ""
+        have_this = (pos.sl_oid if is_sl else pos.tp_oid) or ""
+        if have_this and time.time() < self.ctrl_skip.get(pos.symbol, 0):
+            return have_this
         if (self.px.get(pos.symbol) or 0) <= 0 and (self.last_px.get(pos.symbol) or 0) <= 0:
             self.refresh_px_one(pos.symbol)
         price = self.clamp_ctrl_price(pos, "sl" if is_sl else "tp", price)
@@ -1529,9 +1560,27 @@ class Pulse:
             return c[4]
         return ""
 
+    def _order_is_sl(self, o: Dict[str, Any]) -> bool:
+        k = self._cid_kind(o)
+        if k in ("s", "u"):
+            return True
+        if k in ("t", "v"):
+            return False
+        return str(o.get("type") or "") in SL_TYPES
+
+    def _order_is_tp(self, o: Dict[str, Any]) -> bool:
+        k = self._cid_kind(o)
+        if k in ("t", "v"):
+            return True
+        if k in ("s", "u"):
+            return False
+        return str(o.get("type") or "") in TP_TYPES
+
     def place_ctrl_pair(self, pos: Position) -> None:
         """One HTTP batch: overall SL + TP. Fallback to two single posts."""
-        if time.time() < self.ctrl_skip.get("__order_cap__", 0) or time.time() < self.ctrl_skip.get(pos.symbol, 0):
+        if time.time() < self.ctrl_skip.get("__order_cap__", 0):
+            return
+        if time.time() < self.ctrl_skip.get(pos.symbol, 0) and pos.sl_oid and pos.tp_oid:
             return
         want_sl, want_tp, _, _ = self.desired_sl_tp(pos)
         sl_b = self._ctrl_body(pos, "sl", want_sl)
@@ -1579,11 +1628,13 @@ class Pulse:
         pos.ctrl_verified = pos.controls_ok
 
     def ensure_controls(self, pos: Position) -> None:
-        if time.time() < self.ctrl_skip.get("__order_cap__", 0) or time.time() < self.ctrl_skip.get(pos.symbol, 0):
+        now = time.time()
+        if now < self.ctrl_skip.get("__order_cap__", 0):
             return
-        if time.time() < self.ctrl_skip.get(pos.symbol, 0) and pos.sl_oid and pos.tp_oid and getattr(pos, "ctrl_verified", False):
+        have_both = bool((pos.sl_oid or getattr(pos, "sec_sl_oid", "")) and (pos.tp_oid or getattr(pos, "sec_tp_oid", "")))
+        if have_both and now < self.ctrl_skip.get(pos.symbol, 0) and getattr(pos, "ctrl_verified", False):
             return
-        if self.api.path_cd.get("/openApi/swap/v2/trade/order", 0) > time.time() and pos.sl_oid and pos.tp_oid:
+        if self.api.path_cd.get("/openApi/swap/v2/trade/order", 0) > time.time() and have_both:
             return
         want_sl, want_tp, sec_sl, sec_tp = self.desired_sl_tp(pos)
         pos.sec_sl, pos.sec_tp = sec_sl, sec_tp
@@ -1613,8 +1664,8 @@ class Pulse:
             return
         # Empty REST is not "no orders" — never drop live oids.
         side = pos.side
-        sls = [o for o in orders if str(o.get("type")) in SL_TYPES and str(o.get("positionSide") or "").upper() == side]
-        tps = [o for o in orders if str(o.get("type")) in TP_TYPES and str(o.get("positionSide") or "").upper() == side]
+        sls = [o for o in orders if self._order_is_sl(o) and str(o.get("positionSide") or "").upper() == side]
+        tps = [o for o in orders if self._order_is_tp(o) and str(o.get("positionSide") or "").upper() == side]
 
         def qty_ok(o: Dict[str, Any]) -> bool:
             try:
@@ -1674,7 +1725,8 @@ class Pulse:
             if have_oid and live_have and not can_replace:
                 return have_oid
             if have_oid and live_have:
-                self.cancel_order(pos.symbol, have_oid)
+                cid = self.order_cid(live_rows[0]) if live_rows else ""
+                self.cancel_order(pos.symbol, have_oid, cid)
             oid = self.place_ctrl(pos, "sec-sl" if is_sl else "sec-tp", want)
             if oid:
                 self.ctrl_skip[f"sync:{pos.symbol}"] = now + 12.0
@@ -1770,9 +1822,6 @@ class Pulse:
         data = (r.get("data") or {}).get("order") or r.get("data") or {}
         px = float(data.get("avgPrice") or data.get("price") or 0) or (self.px.get(pos.symbol) or pos.entry)
         return True, px
-        data = (r.get("data") or {}).get("order") or r.get("data") or {}
-        exit_px = float(data.get("avgPrice") or data.get("price") or 0) or (self.px.get(pos.symbol) or pos.entry)
-        return True, exit_px
 
     def occupying(self, sym: str, side: str = "", pack: str = "", set_id: str = "") -> bool:
         """Max 1 position per symbol, and per (symbol, direction, pack, Set)."""
@@ -2824,6 +2873,8 @@ class Pulse:
         for pos in list(self.open.values()):
             if emitted >= 1:
                 break
+            if time.time() < self.dca_fail_cd.get(pos.symbol, 0):
+                continue
             if self.missing_controls(pos):
                 self.ensure_controls(pos)
                 if self.missing_controls(pos):
@@ -2863,8 +2914,9 @@ class Pulse:
             self.did_io = True
             if not self.ok(r):
                 self.errors += 1
-                self.last_error = f"dca {pos.symbol} n={row['n']} {r.get('msg')}"[:240]
-                log(f"DCA FAIL {pos.symbol} #{row['n']} {r.get('msg')}")
+                self.last_error = f"dca {pos.symbol} n={row['n']} cooling"
+                self.dca_fail_cd[pos.symbol] = time.time() + 25.0
+                log(f"DCA FAIL {pos.symbol} #{row['n']} {r.get('msg')}", every=20.0, key=f"dcaf:{pos.symbol}")
                 self.dca_last_emit = time.time()
                 continue
             data = (r.get("data") or {}).get("order") or r.get("data") or {}
@@ -3423,11 +3475,11 @@ class Pulse:
         pc["scale"] = "1.00=neutral (0 after 1×PositionCost) · 1.10=+1×PositionCost"
         return {
             "running": not self.halted,
-            "mode": "VST_DEMO" if "vst" in BASE else "LIVE_MAINNET",
+            "mode": "VST_DEMO" if "x02" in CONN_SHORT else "LIVE_MAINNET",
             "connection": CONN_SHORT,
-            "connType": "vst" if "vst" in BASE else "live",
-            "unit": "VST" if "vst" in BASE else "USDT",
-            "exchange": "BingX VST" if "vst" in BASE else "BingX",
+            "connType": "vst" if "x02" in CONN_SHORT else "live",
+            "unit": "VST" if "x02" in CONN_SHORT else "USDT",
+            "exchange": "BingX VST" if "x02" in CONN_SHORT else "BingX",
             "startedAt": self.started,
             "now": time.time(),
             "uptimeS": age,
@@ -3746,9 +3798,13 @@ class Pulse:
                 overall_ok = False
         range_ok = True
         for p in self.open.values():
-            sl_f, tp_f, sl_lo, sl_hi = self.opt_fracs(p)
-            dist = abs((getattr(p, "sec_sl", 0) or p.sl) - p.entry) / p.entry if p.entry else 0
-            if dist > sl_hi * 2.2 and not p.trail_armed:
+            if not p.entry:
+                continue
+            sl_px = float(getattr(p, "sec_sl", 0) or p.sl or 0)
+            tp_px = float(getattr(p, "sec_tp", 0) or p.tp or 0)
+            if sl_px > 0 and not self.sl_legal(p, sl_px):
+                range_ok = False
+            if tp_px > 0 and not self.tp_legal(p, tp_px):
                 range_ok = False
         self.record_test("qa-ctrl-overall", overall_ok or cooling, f"open={len(self.open)} overall={int(overall_ok)} miss={missing}")
         self.record_test("qa-ctrl-range", range_ok or not self.open, f"range ok={int(range_ok)}")
@@ -3790,6 +3846,13 @@ class Pulse:
         self.record_test("qa-cid", self.cid_ours(sample) and sample.startswith(TAG), sample)
         other = "Gx02oig060308000aaaaa" if TAG.lower() == "gx01" else "Gx01oig060308000aaaaa"
         self.record_test("qa-cid-foreign", not self.cid_ours(other) and not self.cid_ours("ctsbingxx02secbtc") and not self.cid_ours(""), other)
+        sl_o = {"clientOrderID": TAG + "uig060308000aaaa", "type": "TRIGGER_MARKET", "positionSide": "LONG"}
+        tp_o = {"clientOrderID": TAG + "vig060308000aaaa", "type": "TRIGGER_MARKET", "positionSide": "LONG"}
+        self.record_test(
+            "qa-ctrl-kind",
+            self._order_is_sl(sl_o) and self._order_is_tp(tp_o) and not self._order_is_sl(tp_o) and not self._order_is_tp(sl_o),
+            f"tag={TAG}",
+        )
         snap_ind = self.indications.snapshot()
         self.record_test("qa-ind-on", bool(snap_ind.get("enabled")), f"syms={snap_ind.get('symbols')} lanes={len(snap_ind.get('primary') or [])}")
         ind_n = len(getattr(self.indications, "last", {}) or {})
@@ -3903,6 +3966,8 @@ class Pulse:
         paused = os.path.exists(PAUSE_PATH)
         stopped = os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL)
         if stopped:
+            if self.halt_reason and self.halt_reason not in ("paused", "stopped"):
+                self._pre_pause_halt = self.halt_reason
             self.halted = True
             self.halt_reason = "stopped"
             self.priority_controls()
@@ -3911,6 +3976,8 @@ class Pulse:
             return
         if paused:
             self.halted = True
+            if self.halt_reason and self.halt_reason not in ("paused", "stopped"):
+                self._pre_pause_halt = self.halt_reason
             self.halt_reason = "paused"
             self.refresh_tickers()
             self.seed_px_bars()
@@ -3920,8 +3987,20 @@ class Pulse:
             time.sleep(0.4)
             return
         if self.halt_reason in ("paused", "stopped"):
-            self.halted = False
-            self.halt_reason = None
+            pre = getattr(self, "_pre_pause_halt", None)
+            self._pre_pause_halt = None
+            if pre:
+                self.halted = True
+                self.halt_reason = pre
+            elif self.equity and self.equity < 0.8:
+                self.halted = True
+                self.halt_reason = f"equity {self.equity:.4f} below min"
+            elif self.start_eq > 0 and self.equity > 0 and (self.start_eq - self.equity) / self.start_eq >= DD_HALT:
+                self.halted = True
+                self.halt_reason = "drawdown halt"
+            else:
+                self.halted = False
+                self.halt_reason = None
         self.cycle += 1
         self.did_io = False
         self.refresh_tickers()

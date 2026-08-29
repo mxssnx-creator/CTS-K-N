@@ -24,6 +24,43 @@ SLOTS = [
 TYPE_TO_ID = {l["type"]: l["id"] for l in LANES}
 ID_TO_LANE = {l["id"]: l for l in LANES}
 
+DETAIL_KEYS = (
+    "coord",
+    "pulse",
+    "indications",
+    "engine",
+    "variants",
+    "exits",
+    "block",
+    "dca",
+    "api",
+    "coverage",
+    "klinesTf",
+    "tests",
+    "signals",
+    "prices",
+    "regime",
+    "cycle",
+    "scanMs",
+    "rssMb",
+    "lastError",
+    "activityPerMin",
+    "leverage",
+    "useMaxLeverage",
+    "leverageMap",
+    "slPct",
+    "tpPct",
+    "targetNotional",
+    "volumeFactor",
+    "cts",
+    "pfCost",
+    "profitFactor",
+    "pf",
+    "pfNeutral",
+    "pfPlus1xCost",
+    "pfScale",
+)
+
 
 def parse_val(v: str):
     v = (v or "").strip()
@@ -73,9 +110,45 @@ def stats_path(conn: str) -> str:
     return os.path.join(DIR, f"stats-{conn}.json")
 
 
+def slim_for_ui(st: dict) -> dict:
+    """Keep switch/UI payloads small: open book + progress, not 500-tile dumps."""
+    out = dict(st or {})
+    opens = out.get("open") or []
+    open_syms = [p.get("symbol") for p in opens if p.get("symbol")]
+    px = out.get("prices") or {}
+    if isinstance(px, dict):
+        out["prices"] = {s: px[s] for s in open_syms if s in px}
+    syms = out.get("symbols") or []
+    if isinstance(syms, list):
+        out["symbolCount"] = out.get("symbolCount") or len(syms)
+        keep = list(dict.fromkeys([*open_syms, *syms]))[:64]
+        out["symbols"] = keep
+    ind = dict(out.get("indications") or {})
+    if ind:
+        prim = ind.get("primary") or []
+        if isinstance(prim, list) and len(prim) > 12:
+            ind = dict(ind)
+            ind["primary"] = prim[:12]
+            out["indications"] = ind
+    block = dict(out.get("block") or {})
+    if block:
+        lanes = block.get("lanes") or []
+        if isinstance(lanes, list) and len(lanes) > 8:
+            block = dict(block)
+            block["laneCount"] = len(lanes)
+            block["lanes"] = lanes[:8]
+            out["block"] = block
+    if isinstance(out.get("signals"), list):
+        out["signals"] = out["signals"][:8]
+    closed = out.get("closed") or []
+    if isinstance(closed, list) and len(closed) > 40:
+        out["closed"] = closed[:40]
+    return out
+
+
 def stamp_stats(st: dict, conn: str) -> dict:
     lane = ID_TO_LANE.get(conn) or {}
-    out = dict(st or {})
+    out = slim_for_ui(st or {})
     out["connection"] = conn
     out["connType"] = lane.get("type") or out.get("connType") or ("vst" if "x02" in conn else "live")
     out["unit"] = lane.get("unit") or out.get("unit")
@@ -169,11 +242,33 @@ def load_stats(conn: str) -> dict:
     return load_json(stats_path(conn))
 
 
+def _sets_lane(lane: dict, st: dict) -> dict:
+    sets = st.get("sets") or {}
+    prog = sets.get("progress") or {}
+    return {
+        "type": lane["type"],
+        "id": lane["id"],
+        "label": lane["label"],
+        "progress": prog,
+        "activeCount": sets.get("activeCount") or 0,
+        "setCount": sets.get("setCount") or 0,
+        "ready": bool(sets.get("ready") or prog.get("ready")),
+        "histFills": sets.get("histFills") or 0,
+        "running": bool(st.get("running")),
+        "halted": bool(st.get("halted")),
+    }
+
+
 def lane_summary(lane: dict) -> dict:
     st = load_stats(lane["id"])
     gp = sum(c.get("pnl") or 0 for c in (st.get("closed") or []) if (c.get("pnl") or 0) > 0)
     gl = abs(sum(c.get("pnl") or 0 for c in (st.get("closed") or []) if (c.get("pnl") or 0) < 0))
     pf = (gp / gl) if gl > 0 else (99 if gp > 0 else 0)
+    sets = st.get("sets") or {}
+    prog = sets.get("progress") or {}
+    eng = st.get("engine") or {}
+    cov = (st.get("coverage") or {}).get("controls") or {}
+    pc = st.get("pfCost") or {}
     return {
         "type": lane["type"],
         "id": lane["id"],
@@ -197,7 +292,31 @@ def lane_summary(lane: dict) -> dict:
         "errors": st.get("errors") or 0,
         "alive": bool(st),
         "paused": bool(st.get("paused")) or os.path.exists(os.path.join(DIR, f"PAUSE-{lane['id']}")),
+        "progressPct": prog.get("pct"),
+        "progressPhase": prog.get("phase"),
+        "progressDetail": prog.get("detail"),
+        "progressReady": bool(prog.get("ready")),
+        "hotMs": eng.get("hotMs") if eng.get("hotMs") is not None else st.get("scanMs"),
+        "pfCost": pc.get("ratio"),
+        "controlsOk": cov.get("ok") or 0,
+        "controlsMissing": cov.get("missing") or 0,
+        "controlsSecurity": cov.get("security") or 0,
+        "symbolCount": st.get("symbolCount") or len(st.get("symbols") or []),
+        "lastError": str(st.get("lastError") or "")[:160],
+        "trackPrefix": eng.get("trackPrefix"),
+        "cycle": st.get("cycle"),
     }
+
+
+def _pick_detail(lane_defs: list) -> tuple:
+    loaded = [(lane, load_stats(lane["id"])) for lane in lane_defs]
+    for lane, st in loaded:
+        if st and st.get("running") and not st.get("halted"):
+            return lane, st
+    for lane, st in loaded:
+        if st:
+            return lane, st
+    return lane_defs[0], {}
 
 
 def merge_overall() -> dict:
@@ -207,8 +326,10 @@ def merge_overall() -> dict:
     tests = []
     wins = losses = errors = 0
     running_any = False
+    stats_by_id = {}
     for lane in LANES:
         st = load_stats(lane["id"])
+        stats_by_id[lane["id"]] = st
         if not st:
             continue
         running_any = running_any or bool(st.get("running") and not st.get("halted"))
@@ -235,7 +356,11 @@ def merge_overall() -> dict:
     pc = last_n_cost_pf(list(reversed(closed)), 15, POSITION_COST_PCT_DEFAULT)
     pc["minPf"] = 1.1
     pc["pass"] = bool(pc["count"] < 8 or pc["ratio"] + 1e-9 >= 1.1)
-    return {
+    detail_lane, detail_st = _pick_detail(LANES)
+    sets_lanes = [_sets_lane(l, stats_by_id.get(l["id"]) or {}) for l in LANES]
+    sets = dict(detail_st.get("sets") or {})
+    sets["lanes"] = sets_lanes
+    out = {
         "running": running_any,
         "mode": "OVERALL",
         "connection": "overall",
@@ -250,14 +375,16 @@ def merge_overall() -> dict:
         "available": live.get("available") or 0,
         "usedMargin": 0,
         "unrealized": (live.get("unrealized") or 0) + (vst.get("unrealized") or 0),
-        "sessionPnl": live.get("sessionPnl") or 0,
+        "sessionPnl": (live.get("sessionPnl") or 0) + (vst.get("sessionPnl") or 0),
+        "sessionPnlLive": live.get("sessionPnl") or 0,
+        "sessionPnlVst": vst.get("sessionPnl") or 0,
         "pnlPct": 0,
         "drawdownPct": 0,
         "wins": wins,
         "losses": losses,
         "winRate": round(wr, 1),
         "openCount": len(opens),
-        "maxOpen": 16,
+        "maxOpen": 0,
         "open": opens,
         "closed": closed[:80],
         "tests": tests[-24:],
@@ -272,14 +399,18 @@ def merge_overall() -> dict:
         "pfNeutral": 1.0,
         "pfPlus1xCost": 1.1,
         "pfScale": "1.00=neutral · 1.10=+1×PositionCost",
-        "coord": None,
-        "pulse": None,
-        "indications": None,
-        "engine": None,
-        "variants": None,
-        "sets": None,
-        "exits": None,
+        "detailConn": detail_lane.get("id"),
+        "detailType": detail_lane.get("type"),
+        "sets": sets,
     }
+    for k in DETAIL_KEYS:
+        if k == "tests":
+            continue
+        if k in ("pfCost", "profitFactor", "pf", "pfNeutral", "pfPlus1xCost", "pfScale"):
+            continue
+        if detail_st.get(k) is not None:
+            out[k] = detail_st.get(k)
+    return slim_for_ui(out)
 
 
 def connections_blob() -> dict:
@@ -293,6 +424,8 @@ def connections_blob() -> dict:
                 "blurb": "All desks in parallel",
                 "running": any(l["running"] and not l["halted"] for l in lanes),
                 "openCount": sum(l["openCount"] for l in lanes),
+                "halted": all(l["halted"] or not l["running"] for l in lanes),
+                "progressReady": all(bool(l.get("progressReady")) for l in lanes) if lanes else False,
             },
             *[
                 {
@@ -307,6 +440,15 @@ def connections_blob() -> dict:
                     "equity": l["equity"],
                     "openCount": l["openCount"],
                     "alive": l["alive"],
+                    "progressPct": l.get("progressPct"),
+                    "progressPhase": l.get("progressPhase"),
+                    "progressReady": l.get("progressReady"),
+                    "hotMs": l.get("hotMs"),
+                    "pfCost": l.get("pfCost"),
+                    "controlsOk": l.get("controlsOk"),
+                    "controlsMissing": l.get("controlsMissing"),
+                    "symbolCount": l.get("symbolCount"),
+                    "haltReason": l.get("haltReason"),
                 }
                 for l in lanes
             ],
@@ -359,11 +501,65 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(connections_blob())
             return
         if path in ("/results-export.json", "/results-export", "/results-export.md"):
-            cid = conn if conn != "overall" else "bingx-x02"
             ext = ".md" if path.endswith(".md") else ".json"
+            if conn == "overall":
+                live = load_stats("bingx-x01")
+                vst = load_stats("bingx-x02")
+                blob = {
+                    "conn": "overall",
+                    "connType": "overall",
+                    "live": {
+                        "connection": "bingx-x01",
+                        "openCount": live.get("openCount") or 0,
+                        "equity": live.get("equity"),
+                        "pfCost": live.get("pfCost"),
+                        "open": live.get("open") or [],
+                        "closed": live.get("closed") or [],
+                    },
+                    "vst": {
+                        "connection": "bingx-x02",
+                        "openCount": vst.get("openCount") or 0,
+                        "equity": vst.get("equity"),
+                        "pfCost": vst.get("pfCost"),
+                        "open": vst.get("open") or [],
+                        "closed": vst.get("closed") or [],
+                    },
+                }
+                raw = json.dumps(blob, separators=(",", ":")).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Disposition", 'attachment; filename="pulse-results-overall.json"')
+                self.send_header("Content-Length", str(len(raw)))
+                self._cors()
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            cid = conn
             p = os.path.join(DIR, f"results-export-{cid}{ext}")
             if not os.path.exists(p):
-                self._json({"ok": False, "detail": "no export yet"}, 404)
+                st = load_stats(cid)
+                if not st:
+                    self._json({"ok": False, "detail": "no export yet"}, 404)
+                    return
+                raw = json.dumps({
+                    "conn": cid,
+                    "connType": "vst" if "x02" in cid else "live",
+                    "openCount": st.get("openCount") or 0,
+                    "equity": st.get("equity"),
+                    "pfCost": st.get("pfCost"),
+                    "open": st.get("open") or [],
+                    "closed": st.get("closed") or [],
+                    "sets": st.get("sets"),
+                    "block": st.get("block"),
+                    "coverage": st.get("coverage"),
+                }, separators=(",", ":")).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Disposition", f'attachment; filename="pulse-results-{cid}.json"')
+                self.send_header("Content-Length", str(len(raw)))
+                self._cors()
+                self.end_headers()
+                self.wfile.write(raw)
                 return
             raw = open(p, "rb").read()
             self.send_response(200)

@@ -9,7 +9,7 @@
   "trailArmPct": 0.3,
   "trailGivePct": 0.1,
   "timeStopS": 21600,
-  "scratchS": 90,
+  "scratchS": 600,
   "scratchMinPct": 0.16,
   "scanS": 0.2,
   "cooldownS": 9,

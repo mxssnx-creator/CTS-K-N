@@ -119,6 +119,8 @@
   "exitMinHoldS": 45,
   "exitIgnoreTp": true,
   "exitBestOf": true,
+  "scratchS": 600,
+  "exitTimeOn": false,
   "dcaMaxSteps": 4,
   "dcaCooldownSeconds": 30,
   "dcaBreakevenProfitPct": 0.2,
