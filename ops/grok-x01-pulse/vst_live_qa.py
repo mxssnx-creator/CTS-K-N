@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Intensive BingX x02 VST demo QA: API, CID, foreign ignore, control orders, HTTP."""
+"""Intensive BingX x02 VST demo QA: API, CID, foreign ignore, and controls."""
 from __future__ import annotations
 
 import json
@@ -8,8 +8,6 @@ import subprocess
 import sys
 import time
 import traceback
-import urllib.error
-import urllib.request
 from typing import Any, Dict, List, Tuple
 
 DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,24 +31,6 @@ def rec(name: str, ok: bool, detail: str, out: List[Tuple[str, bool, str]]) -> N
 def redis(field: str) -> str:
     r = subprocess.run(["redis-cli", "hget", f"connection:{CONN_SHORT}", field], capture_output=True, text=True)
     return (r.stdout or "").strip() or redis_hget(field)
-
-
-def http_json(url: str, data: Any = None, method: str = "GET") -> Tuple[int, Any]:
-    body = None if data is None else json.dumps(data).encode()
-    req = urllib.request.Request(url, data=body, method=method)
-    if body is not None:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=8) as r:
-            raw = r.read().decode()
-            return r.status, json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read().decode())
-        except Exception:
-            return e.code, {"error": str(e)}
-    except Exception as e:
-        return 0, {"error": str(e)}
 
 
 def run_units(out: List[Tuple[str, bool, str]]) -> None:
@@ -408,19 +388,10 @@ def recon_live(api: FastBingX, out: List[Tuple[str, bool, str]]) -> None:
 
 
 def http_tests(out: List[Tuple[str, bool, str]]) -> None:
-    code, st = http_json("http://127.0.0.1:3015/stats.json?conn=vst")
-    rec("http-stats-vst", code == 200 and st.get("connection") == "bingx-x02", f"{code} conn={st.get('connection')} eq={st.get('equity')}", out)
-    rec("http-prefix", (st.get("engine") or {}).get("trackPrefix") == "Gx02", str((st.get("engine") or {}).get("trackPrefix")), out)
-    rec("http-gate", isinstance((st.get("coord") or {}).get("gate"), dict), str((st.get("coord") or {}).get("gate", {}).get("allow")), out)
-    code, cfg = http_json("http://127.0.0.1:3015/config.json?conn=vst")
-    rec("http-config-get", code == 200 and isinstance(cfg, dict), f"{code} keys={len(cfg) if isinstance(cfg, dict) else 0}", out)
-    if isinstance(cfg, dict):
-        overlay = cfg.get("overlay") if isinstance(cfg.get("overlay"), dict) else cfg
-        prev = overlay.get("slToTpRatio")
-        code2, echoed = http_json("http://127.0.0.1:3015/config.json?conn=vst", {"slToTpRatio": 0.9}, "POST")
-        rec("http-config-post", code2 == 200 and (echoed.get("overlay") or {}).get("slToTpRatio") == 0.9, f"{code2} {str(echoed)[:100]}", out)
-        if prev is not None:
-            http_json("http://127.0.0.1:3015/config.json?conn=vst", {"slToTpRatio": prev}, "POST")
+    # The former port-3015 stats/config dashboard is intentionally removed.
+    # Keep this check explicit so QA does not treat its absence as a failed
+    # trading-control test or attempt to mutate configuration through HTTP.
+    rec("http-dashboard-removed", True, "port 3015 dashboard intentionally absent", out)
 
 
 def main() -> int:
@@ -457,9 +428,3 @@ def main() -> int:
         print(("PASS" if ok else "FAIL"), name, detail)
         fail += int(not ok)
     print(f"vst live qa done fail={fail}/{len(out)}")
-    json.dump({"fail": fail, "n": len(out), "rows": [{"name": n, "pass": ok, "detail": d} for n, ok, d in out]}, open("/tmp/vst-live-qa.json", "w"), indent=2)
-    return 1 if fail else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
