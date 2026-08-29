@@ -166,6 +166,16 @@ import {
   buildAggregateProtectionPlans,
   type AggregateProtectionPlan,
 } from "@/lib/aggregate-protection-coordination"
+import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
+import {
+  auditProtectionSlotOrders,
+  isConnectionOwnedProtectionOrderForSlot,
+  normalizeProtectionSlotSymbol,
+  protectionOrderIdentifiers,
+  protectionOrderVenueId,
+  type ProtectionSlotDirection,
+  type ProtectionSlotOrderAudit,
+} from "@/lib/protection-slot-order-audit"
 
 interface LiveInstrumentRules {
   quantityStep: number
@@ -8724,6 +8734,7 @@ async function reconcileAggregateProtectionBook(
   positions: LivePosition[],
   exchangePositions: any[],
   liveOrderIds: Set<string> | null,
+  mutationGuard?: () => void | Promise<void>,
 ): Promise<AggregateProtectionBookResult> {
   const result: AggregateProtectionBookResult = {
     plans: [],
@@ -8748,8 +8759,9 @@ async function reconcileAggregateProtectionBook(
         || Boolean(position.pendingProtectionOrders?.stopLoss?.clientOrderId)
         || Boolean(position.pendingProtectionOrders?.takeProfit?.clientOrderId)
         || Boolean(position.pendingProtectionOrders?.securityStop?.clientOrderId)
-      )
+    )
     if (!terminalRowCleanup) continue
+    await mutationGuard?.()
     const settled = await cancelSlotOwnedControls(connector, position, true, "RowFillResume")
     position.status = "closing_partial"
     position.statusReason = settled
@@ -8840,6 +8852,7 @@ async function reconcileAggregateProtectionBook(
   const securitySupported = supportsPositionSecurityStop(connector)
 
   for (const plan of result.plans) {
+    await mutationGuard?.()
     const members = plan.memberIds.map((id) => positionsById.get(id)).filter((value): value is LivePosition => Boolean(value))
     const allSlotMembers = members
 
@@ -9011,6 +9024,7 @@ async function reconcileAggregateProtectionBook(
     // Each row keeps its own exact quantity and desired trigger pair.
     let rowClosed = false
     for (const member of members) {
+      await mutationGuard?.()
       const row = await updateProtectionOrders(
         connector,
         member,
@@ -9033,6 +9047,7 @@ async function reconcileAggregateProtectionBook(
     let securityHandoffBlocked = false
     for (const member of members) {
       if (member.id === leader.id) continue
+      await mutationGuard?.()
       await settleSlotControlsWithoutGuess(
         connector,
         member,
@@ -9114,6 +9129,7 @@ async function reconcileAggregateProtectionBook(
           )
         )
       ) {
+        await mutationGuard?.()
         const cancelled = await cancelProtectionOrder(
           connector,
           leader.symbol,
@@ -9140,6 +9156,7 @@ async function reconcileAggregateProtectionBook(
           leader.securityStopStatus = "capacity_blocked"
           leader.controlOrderCapacity = capacityBudget?.snapshot()
         } else {
+          await mutationGuard?.()
           const clientOrderId = await prepareProtectionSubmission(
             leader,
             "securityStop",
@@ -9177,6 +9194,7 @@ async function reconcileAggregateProtectionBook(
             leader.securityStopStatus = "system_close"
             delete leader.pendingProtectionOrders?.securityStop
             for (const member of members) {
+              await mutationGuard?.()
               await closeLivePosition(
                 connectionId,
                 member.id,
@@ -9227,6 +9245,545 @@ async function reconcileAggregateProtectionBook(
     }
   }
   return result
+}
+
+type SanitizedProtectionSlotOrderAudit = Omit<
+  ProtectionSlotOrderAudit,
+  "orphanOrders" | "expectedOrderIds"
+> & {
+  orphanOrderCount: number
+}
+
+export interface LiveProtectionSlotReconciliationReport {
+  schemaVersion: 1
+  connectionId: string
+  symbol: string
+  direction: ProtectionSlotDirection
+  environment: string
+  dryRun: boolean
+  localRows: number
+  localQuantity: number
+  venueQuantity: number
+  quantityTolerance: number
+  ownershipMatches: boolean
+  before: SanitizedProtectionSlotOrderAudit
+  actions: {
+    aggregateChangedPositions: number
+    aggregateRearmedOrders: number
+    aggregateOwnershipMismatches: number
+    orphanCancelAttempts: number
+    orphanCancelsSucceeded: number
+    blockedReason: string | null
+  }
+  after: SanitizedProtectionSlotOrderAudit | null
+  success: boolean
+}
+
+export interface LiveProtectionSlotReconciliationRequest {
+  symbol: string
+  direction: ProtectionSlotDirection
+  apply?: boolean
+  expectedEnvironment?: "prod-vst" | "prod-live"
+  maxOrphanCancellations?: number
+  /** Host-level guard, used by the X02 operator to recheck inactive units. */
+  assertMutationAllowed?: () => void | Promise<void>
+}
+
+function sanitizeProtectionSlotAudit(audit: ProtectionSlotOrderAudit): SanitizedProtectionSlotOrderAudit {
+  return {
+    expectedComplete: audit.expectedComplete,
+    complete: audit.complete,
+    rowCount: audit.rowCount,
+    expectedControlOrderCount: audit.expectedControlOrderCount,
+    observedExpectedControlOrderCount: audit.observedExpectedControlOrderCount,
+    exactStopLossOrders: audit.exactStopLossOrders,
+    exactTakeProfitOrders: audit.exactTakeProfitOrders,
+    exactSecurityOrders: audit.exactSecurityOrders,
+    connectionOwnedSlotControlOrders: audit.connectionOwnedSlotControlOrders,
+    externalOrUnknownSlotControlOrdersPreserved: audit.externalOrUnknownSlotControlOrdersPreserved,
+    orphanOrderCount: audit.orphanOrders.length,
+    violations: [...audit.violations],
+  }
+}
+
+function exactProtectionSlotRows(
+  positions: readonly LivePosition[],
+  connectionId: string,
+  symbol: string,
+  direction: ProtectionSlotDirection,
+): LivePosition[] {
+  const normalizedSymbol = normalizeProtectionSlotSymbol(symbol)
+  return positions.filter((position) =>
+    isSystemTrackedLivePosition(position, connectionId)
+    && String(position.status || "").toLowerCase() !== "simulated"
+    && normalizeProtectionSlotSymbol(position.symbol) === normalizedSymbol
+    && resolveLivePositionDirection(position) === direction,
+  )
+}
+
+function exactProtectionVenueRows(
+  positions: readonly Record<string, any>[],
+  symbol: string,
+  direction: ProtectionSlotDirection,
+): Record<string, any>[] {
+  const normalizedSymbol = normalizeProtectionSlotSymbol(symbol)
+  return positions.filter((position) => {
+    const rawQuantity = Number(position?.size ?? position?.positionAmt ?? position?.quantity ?? 0)
+    return Math.abs(rawQuantity) > 0
+      && normalizeProtectionSlotSymbol(position?.symbol) === normalizedSymbol
+      && normalizeExchangePositionDirection(position?.positionSide, position?.side, rawQuantity) === direction
+  })
+}
+
+function exactProtectionVenueQuantity(position: Record<string, any>): number {
+  return Math.abs(Number(position?.size ?? position?.positionAmt ?? position?.quantity ?? 0))
+}
+
+function buildExactProtectionSlotPlan(
+  members: readonly LivePosition[],
+  venuePosition: Record<string, any>,
+): AggregateProtectionPlan | null {
+  if (members.length === 0) return null
+  const direction = resolveLivePositionDirection(members[0])
+  if (!direction) return null
+  const venueQuantity = exactProtectionVenueQuantity(venuePosition)
+  const venueEntryPrice = Number(venuePosition?.entryPrice ?? venuePosition?.avgPrice ?? 0) || 0
+  const venueLiquidationPrice = Number(venuePosition?.liquidationPrice ?? venuePosition?.liqPrice ?? 0) || 0
+  const plans = buildAggregateProtectionPlans(
+    members.map((position) => {
+      const desired = computeDesiredProtectionPrices(position)
+      const priceTick = Number(position.priceTick || 0)
+      return {
+        id: position.id,
+        symbol: position.symbol,
+        direction,
+        quantity: Number(position.executedQuantity || 0),
+        entryPrice: Number(position.averageExecutionPrice || position.entryPrice || venueEntryPrice || 0),
+        liquidationPrice: Number(
+          position.liquidationPrice
+          || position.exchangeData?.liquidationPrice
+          || venueLiquidationPrice
+          || 0,
+        ),
+        priceTick,
+        desiredStopLoss: normalizeProtectionTriggerPrice(
+          desired.desiredSl,
+          priceTick,
+          direction,
+          "stop_loss",
+        ),
+        desiredTakeProfit: normalizeProtectionTriggerPrice(
+          desired.desiredTp,
+          priceTick,
+          direction,
+          "take_profit",
+        ),
+        createdAt: Number(position.createdAt || 0),
+        quantityStep: Number(position.quantityStep || 0),
+        hasSecurityStopOrder: Boolean(position.securityStopOrderId),
+        hasPendingSecurityStop: Boolean(position.pendingProtectionOrders?.securityStop),
+      }
+    }),
+    [{
+      symbol: String(venuePosition?.symbol || members[0].symbol),
+      direction,
+      quantity: venueQuantity,
+    }],
+  )
+  return plans.length === 1 ? plans[0] : null
+}
+
+async function readAuthoritativeProtectionPositions(connector: any): Promise<Record<string, any>[]> {
+  if (!connector || typeof connector.getPositions !== "function") {
+    throw new Error("Exact-slot reconciliation requires a venue position snapshot")
+  }
+  const positions = await withTimeout(
+    connector.getPositions() as Promise<any>,
+    EXCHANGE_TIMEOUT_GET_POSITIONS_MS,
+    "getPositions(exact-protection-slot)",
+  )
+  const status = typeof connector.getLastPositionsSnapshotStatus === "function"
+    ? connector.getLastPositionsSnapshotStatus()
+    : { ok: Array.isArray(positions) }
+  if (!Array.isArray(positions) || status?.ok !== true) {
+    throw new Error("Exact-slot reconciliation requires an authoritative venue position snapshot")
+  }
+  return positions
+}
+
+async function readAuthoritativeProtectionOrders(
+  connector: any,
+  symbol?: string,
+): Promise<Record<string, any>[]> {
+  if (!connector || typeof connector.getOpenOrders !== "function") {
+    throw new Error("Exact-slot reconciliation requires a venue open-order snapshot")
+  }
+  const orders = await withTimeout(
+    connector.getOpenOrders(symbol) as Promise<any>,
+    25_000,
+    "getOpenOrders(exact-protection-slot)",
+  )
+  const status = typeof connector.getLastOpenOrdersSnapshotStatus === "function"
+    ? connector.getLastOpenOrdersSnapshotStatus()
+    : { ok: Array.isArray(orders) }
+  if (!Array.isArray(orders) || status?.ok !== true) {
+    throw new Error("Exact-slot reconciliation requires an authoritative venue open-order snapshot")
+  }
+  return orders
+}
+
+function protectionSlotMemberIds(members: readonly LivePosition[]): string[] {
+  return members.map((member) => member.id).sort()
+}
+
+function protectionSlotExpectedOrderIds(members: readonly LivePosition[]): Set<string> {
+  return new Set(members.flatMap((member) => [
+    member.stopLossOrderId,
+    member.takeProfitOrderId,
+    member.securityStopOrderId,
+  ].map((value) => String(value || "").trim()).filter(Boolean)))
+}
+
+function sameStringSet(left: Set<string>, right: Set<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value))
+}
+
+function assertStableProtectionSlotRows(
+  before: readonly LivePosition[],
+  after: readonly LivePosition[],
+  quantityTolerance: number,
+): void {
+  if (protectionSlotMemberIds(before).join("|") !== protectionSlotMemberIds(after).join("|")) {
+    throw new Error("Exact-slot membership changed during reconciliation")
+  }
+  const beforeQuantity = before.reduce((sum, member) => sum + Number(member.executedQuantity || 0), 0)
+  const afterQuantity = after.reduce((sum, member) => sum + Number(member.executedQuantity || 0), 0)
+  if (Math.abs(beforeQuantity - afterQuantity) > quantityTolerance) {
+    throw new Error("Exact-slot local quantity changed during reconciliation")
+  }
+}
+
+function assertEligibleProtectionSlotRows(members: readonly LivePosition[]): void {
+  const activeStatuses = new Set(["open", "filled", "partially_filled"])
+  if (members.length === 0) throw new Error("No CTS-owned live rows exist for the exact slot")
+  for (const member of members) {
+    if (!activeStatuses.has(String(member.status || "").toLowerCase())) {
+      throw new Error("Exact-slot reconciliation blocked by a non-active local lifecycle row")
+    }
+    if (!(Number(member.executedQuantity || 0) > 0)) {
+      throw new Error("Exact-slot reconciliation blocked by a non-positive local row quantity")
+    }
+    if (
+      member.pendingSystemAction
+      || member.pendingQuantityMutation
+      || member.pendingReduction
+      || member.pendingAccumulation
+      || Number(member.aggregateProtectionMutationRequestedAt || 0) > 0
+    ) {
+      throw new Error("Exact-slot reconciliation blocked by an in-flight quantity mutation")
+    }
+  }
+}
+
+/**
+ * Reconcile one CTS-owned physical symbol/direction slot only. The caller must
+ * keep the runtime in maintenance. Account-wide rows and every foreign order
+ * are excluded before the aggregate coordinator runs; orphan cancellation is
+ * allowed only after all expected row SL/TP pairs and the one full-slot
+ * security stop are authoritatively open.
+ */
+export async function reconcileLiveProtectionSlot(
+  connectionId: string,
+  connector: any,
+  request: LiveProtectionSlotReconciliationRequest,
+): Promise<LiveProtectionSlotReconciliationReport> {
+  const symbol = normalizeProtectionSlotSymbol(request.symbol)
+  const direction = request.direction
+  const apply = request.apply === true
+  if (!connectionId || !symbol || !["long", "short"].includes(direction)) {
+    throw new Error("Exact-slot reconciliation requires connection, symbol, and long/short direction")
+  }
+  const environment = bingXEnvironmentInfo(connector)?.environment || "unknown"
+  if (request.expectedEnvironment && environment !== request.expectedEnvironment) {
+    throw new Error(`Exact-slot reconciliation expected ${request.expectedEnvironment}, received ${environment}`)
+  }
+
+  await initRedis()
+  const client = getRedisClient() as any
+  const lockKey = `live_sync_lock:${connectionId}`
+  const lockToken = `slot-reconcile:${process.pid}:${Date.now()}:${nanoid(12)}`
+  const lockTtlMs = 180_000
+  const acquired = await client.set(lockKey, lockToken, { NX: true, PX: lockTtlMs } as any)
+  if (acquired !== "OK" && acquired !== true) {
+    throw new Error("Exact-slot reconciliation blocked because the live-sync lock is busy")
+  }
+  const stopLockRefresh = startRedisLockLeaseRefresh(client, lockKey, lockToken, lockTtlMs)
+
+  const assertMutationAllowed = async (): Promise<void> => {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.reason !== "marker_present") {
+      throw new Error("Exact-slot reconciliation requires the runtime maintenance marker")
+    }
+    await request.assertMutationAllowed?.()
+    const currentToken = await client.get(lockKey)
+    if (String(currentToken || "") !== lockToken) {
+      throw new Error("Exact-slot reconciliation lost its live-sync lock")
+    }
+  }
+
+  try {
+    await assertMutationAllowed()
+    const allPositions = await getLivePositions(connectionId)
+    const slotRows = exactProtectionSlotRows(allPositions, connectionId, symbol, direction)
+    assertEligibleProtectionSlotRows(slotRows)
+    for (const member of slotRows) {
+      if (await client.get(positionMutationLockKey(connectionId, member.id))) {
+        throw new Error("Exact-slot reconciliation blocked by a live-position mutation lock")
+      }
+    }
+
+    const venuePositions = await readAuthoritativeProtectionPositions(connector)
+    const slotVenuePositions = exactProtectionVenueRows(venuePositions, symbol, direction)
+    if (slotVenuePositions.length !== 1) {
+      throw new Error("Exact-slot reconciliation requires exactly one authoritative venue slot")
+    }
+    const venuePosition = slotVenuePositions[0]
+    const venueQuantity = exactProtectionVenueQuantity(venuePosition)
+    const localQuantity = slotRows.reduce((sum, member) => sum + Number(member.executedQuantity || 0), 0)
+    const quantityTolerance = Math.max(
+      1e-10,
+      venueQuantity * 1e-8,
+      ...slotRows.map((member) => Number(member.quantityStep || 0) / 2),
+    )
+    const ownershipMatches = venueQuantity > 0
+      && Math.abs(localQuantity - venueQuantity) <= quantityTolerance
+    if (!ownershipMatches) {
+      throw new Error("Exact-slot reconciliation refused ambiguous local/venue quantity ownership")
+    }
+
+    const liveOrderIds = await fetchLiveOrderIdSet(connector)
+    if (liveOrderIds === null) {
+      throw new Error("Exact-slot reconciliation requires authoritative venue order identifiers")
+    }
+    const openOrders = await readAuthoritativeProtectionOrders(connector)
+    const beforePlan = buildExactProtectionSlotPlan(slotRows, venuePosition)
+    if (!beforePlan || !beforePlan.ownershipMatches) {
+      throw new Error("Exact-slot reconciliation could not build an owned aggregate plan")
+    }
+    const beforeAudit = auditProtectionSlotOrders({
+      connectionId,
+      symbol,
+      direction,
+      members: slotRows,
+      plan: beforePlan,
+      openOrders,
+    })
+    const report: LiveProtectionSlotReconciliationReport = {
+      schemaVersion: 1,
+      connectionId,
+      symbol,
+      direction,
+      environment,
+      dryRun: !apply,
+      localRows: slotRows.length,
+      localQuantity,
+      venueQuantity,
+      quantityTolerance,
+      ownershipMatches,
+      before: sanitizeProtectionSlotAudit(beforeAudit),
+      actions: {
+        aggregateChangedPositions: 0,
+        aggregateRearmedOrders: 0,
+        aggregateOwnershipMismatches: 0,
+        orphanCancelAttempts: 0,
+        orphanCancelsSucceeded: 0,
+        blockedReason: null,
+      },
+      after: null,
+      success: beforeAudit.complete,
+    }
+    if (!apply) return report
+
+    await assertMutationAllowed()
+    const aggregateResult = await reconcileAggregateProtectionBook(
+      connectionId,
+      connector,
+      slotRows,
+      slotVenuePositions,
+      liveOrderIds,
+      assertMutationAllowed,
+    )
+    report.actions.aggregateChangedPositions = aggregateResult.changedPositions
+    report.actions.aggregateRearmedOrders = aggregateResult.rearmedLeaders
+    report.actions.aggregateOwnershipMismatches = aggregateResult.ownershipMismatches
+
+    const afterAggregateRows = exactProtectionSlotRows(
+      await getLivePositions(connectionId),
+      connectionId,
+      symbol,
+      direction,
+    )
+    assertEligibleProtectionSlotRows(afterAggregateRows)
+    assertStableProtectionSlotRows(slotRows, afterAggregateRows, quantityTolerance)
+    const afterAggregateVenueRows = exactProtectionVenueRows(
+      await readAuthoritativeProtectionPositions(connector),
+      symbol,
+      direction,
+    )
+    if (afterAggregateVenueRows.length !== 1) {
+      throw new Error("Exact venue slot changed during aggregate reconciliation")
+    }
+    const afterAggregateVenueQuantity = exactProtectionVenueQuantity(afterAggregateVenueRows[0])
+    if (Math.abs(afterAggregateVenueQuantity - venueQuantity) > quantityTolerance) {
+      throw new Error("Exact venue quantity changed during aggregate reconciliation")
+    }
+    const afterAggregatePlan = buildExactProtectionSlotPlan(
+      afterAggregateRows,
+      afterAggregateVenueRows[0],
+    )
+    if (
+      !afterAggregatePlan
+      || !afterAggregatePlan.ownershipMatches
+      || !(afterAggregatePlan.securityStopPrice > 0)
+    ) {
+      throw new Error("Exact-slot aggregate security plan is not safely armable")
+    }
+    const afterAggregateOrders = await readAuthoritativeProtectionOrders(connector, symbol)
+    let afterAudit = auditProtectionSlotOrders({
+      connectionId,
+      symbol,
+      direction,
+      members: afterAggregateRows,
+      plan: afterAggregatePlan,
+      openOrders: afterAggregateOrders,
+    })
+    report.after = sanitizeProtectionSlotAudit(afterAudit)
+    if (!afterAudit.expectedComplete) {
+      report.actions.blockedReason = "expected_controls_incomplete"
+      report.success = false
+      return report
+    }
+
+    const maxOrphanCancellations = Math.max(
+      0,
+      Math.min(8, Math.floor(Number(request.maxOrphanCancellations ?? 4))),
+    )
+    if (afterAudit.orphanOrders.length > maxOrphanCancellations) {
+      report.actions.blockedReason = "orphan_limit_exceeded"
+      report.success = false
+      return report
+    }
+
+    if (afterAudit.orphanOrders.length > 0) {
+      await assertMutationAllowed()
+      const cleanupRows = exactProtectionSlotRows(
+        await getLivePositions(connectionId),
+        connectionId,
+        symbol,
+        direction,
+      )
+      assertStableProtectionSlotRows(afterAggregateRows, cleanupRows, quantityTolerance)
+      if (!sameStringSet(
+        afterAudit.expectedOrderIds,
+        protectionSlotExpectedOrderIds(cleanupRows),
+      )) {
+        throw new Error("Exact-slot expected control ownership changed before orphan cleanup")
+      }
+      const cleanupVenueRows = exactProtectionVenueRows(
+        await readAuthoritativeProtectionPositions(connector),
+        symbol,
+        direction,
+      )
+      if (
+        cleanupVenueRows.length !== 1
+        || Math.abs(exactProtectionVenueQuantity(cleanupVenueRows[0]) - venueQuantity) > quantityTolerance
+      ) {
+        throw new Error("Exact venue ownership changed before orphan cleanup")
+      }
+
+      // The symbol-scoped snapshot uses a separate connector cache key and is
+      // therefore a fresh race check after the aggregate placement snapshot.
+      const cleanupOrders = await readAuthoritativeProtectionOrders(connector, symbol)
+      afterAudit = auditProtectionSlotOrders({
+        connectionId,
+        symbol,
+        direction,
+        members: cleanupRows,
+        plan: afterAggregatePlan,
+        openOrders: cleanupOrders,
+      })
+      if (!afterAudit.expectedComplete || afterAudit.orphanOrders.length > maxOrphanCancellations) {
+        throw new Error("Exact-slot control ownership changed before orphan cleanup")
+      }
+
+      for (const orphan of afterAudit.orphanOrders) {
+        await assertMutationAllowed()
+        if (
+          !isConnectionOwnedProtectionOrderForSlot(
+            orphan.order,
+            connectionId,
+            symbol,
+            direction,
+          )
+          || protectionOrderVenueId(orphan.order) !== orphan.orderId
+          || [...protectionOrderIdentifiers(orphan.order)].some((id) => afterAudit.expectedOrderIds.has(id))
+        ) {
+          throw new Error("Orphan cancellation allow-list changed during exact-slot cleanup")
+        }
+        report.actions.orphanCancelAttempts++
+        if (await cancelProtectionOrder(
+          connector,
+          symbol,
+          orphan.orderId,
+          "ExactSlotOrphan",
+          connectionId,
+        )) {
+          report.actions.orphanCancelsSucceeded++
+        }
+      }
+    }
+
+    await assertMutationAllowed()
+    const finalRows = exactProtectionSlotRows(
+      await getLivePositions(connectionId),
+      connectionId,
+      symbol,
+      direction,
+    )
+    assertStableProtectionSlotRows(afterAggregateRows, finalRows, quantityTolerance)
+    const finalVenueRows = exactProtectionVenueRows(
+      await readAuthoritativeProtectionPositions(connector),
+      symbol,
+      direction,
+    )
+    if (
+      finalVenueRows.length !== 1
+      || Math.abs(exactProtectionVenueQuantity(finalVenueRows[0]) - venueQuantity) > quantityTolerance
+    ) {
+      throw new Error("Exact venue ownership changed during final protection audit")
+    }
+    const finalPlan = buildExactProtectionSlotPlan(finalRows, finalVenueRows[0])
+    if (!finalPlan || !finalPlan.ownershipMatches || !(finalPlan.securityStopPrice > 0)) {
+      throw new Error("Final exact-slot security plan is invalid")
+    }
+    const finalAudit = auditProtectionSlotOrders({
+      connectionId,
+      symbol,
+      direction,
+      members: finalRows,
+      plan: finalPlan,
+      openOrders: await readAuthoritativeProtectionOrders(connector, symbol),
+    })
+    report.after = sanitizeProtectionSlotAudit(finalAudit)
+    report.success = finalAudit.complete
+    if (!report.success && !report.actions.blockedReason) {
+      report.actions.blockedReason = "final_control_audit_failed"
+    }
+    return report
+  } finally {
+    stopLockRefresh()
+    await evalLockLua(client, RELEASE_LOCK_LUA, lockKey, [lockToken]).catch(() => 0)
+  }
 }
 
 function aggregateProtectionPhysicalMutationIsInFlight(position: LivePosition): boolean {

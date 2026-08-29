@@ -189,6 +189,7 @@ unit	__tests__/unit/progression-live-snapshot.test.ts
 unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
+unit	__tests__/unit/protection-slot-order-audit.test.ts
 unit	__tests__/unit/pseudo-position-close-idempotency.test.ts
 unit	__tests__/unit/pseudo-position-semantics.test.ts
 unit	__tests__/unit/pull-agent-install-script.test.ts
@@ -214,6 +215,7 @@ unit	__tests__/unit/run-with-env-lifecycle.test.ts
 unit	__tests__/unit/runtime-boot-id.test.ts
 unit	__tests__/unit/runtime-concurrency-profile.test.ts
 unit	__tests__/unit/runtime-log-throttle.test.ts
+unit	__tests__/unit/runtime-maintenance.test.ts
 unit	__tests__/unit/runtime-telemetry-compatibility.test.ts
 unit	__tests__/unit/runtime-telemetry-interval.test.ts
 unit	__tests__/unit/security-hardening-encryption.test.ts
@@ -271,3 +273,4 @@ unit	__tests__/unit/trend-indication.test.ts
 unit	__tests__/unit/trend-wiring.test.ts
 unit	__tests__/unit/volume-calculator-variants.test.ts
 unit	__tests__/unit/volume-identity-systemwide.test.ts
+unit	__tests__/unit/x02-slot-protection-operator.test.ts

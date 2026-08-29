@@ -14,8 +14,8 @@ AWS_LAMBDA_FUNCTION_NAME	platform-provided	no	no	5	lib/connections-file-storage.
 BACKUP_PATH	application-runtime	no	yes	2	.env.example,lib/auto-backup.ts
 BASE_POSITION_SYMBOL_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 BASE_URL	test-or-operator-tool	no	no	11	__tests__/unit/requested-regressions.test.ts,scripts/bingx-comprehensive-test.mjs,scripts/diagnose-stats.mjs,scripts/init-engine-and-verify.mjs,scripts/smoke-routes-test.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs
-BINGX_API_KEY	test-or-operator-tool	yes	yes	7	.env.example,__tests__/unit/bingx-vst-migration.test.ts,__tests__/unit/env-credential-loading.test.ts,scripts/add-bingx-credentials.js,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts,scripts/standalone-bingx-live-diagnostic.mjs
-BINGX_API_SECRET	test-or-operator-tool	yes	yes	7	.env.example,__tests__/unit/bingx-vst-migration.test.ts,__tests__/unit/env-credential-loading.test.ts,scripts/add-bingx-credentials.js,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts,scripts/standalone-bingx-live-diagnostic.mjs
+BINGX_API_KEY	test-or-operator-tool	yes	yes	8	.env.example,__tests__/unit/bingx-vst-migration.test.ts,__tests__/unit/env-credential-loading.test.ts,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/add-bingx-credentials.js,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts,scripts/standalone-bingx-live-diagnostic.mjs
+BINGX_API_SECRET	test-or-operator-tool	yes	yes	8	.env.example,__tests__/unit/bingx-vst-migration.test.ts,__tests__/unit/env-credential-loading.test.ts,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/add-bingx-credentials.js,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts,scripts/standalone-bingx-live-diagnostic.mjs
 BINGX_APIKEY	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 BINGX_ENVIRONMENT	application-runtime	no	yes	7	.env.example,__tests__/unit/bingx-vst-migration.test.ts,lib/bingx-environment.ts,lib/redis-runtime-bootstrap.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts
 BINGX_PUBLIC_FALLBACK_ORIGIN	application-runtime	no	yes	7	.env.example,__tests__/unit/bingx-public-api.test.ts,lib/bingx-public-api.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/run-bingx-vst-live-soak.ts,scripts/run-special-vst-5d-validation.ts,scripts/stress-bingx-public-32.mjs
@@ -29,14 +29,14 @@ BINGX_STRESS_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/stress-bingx-publi
 BINGX_VST_ORIGIN	application-runtime	no	yes	5	.env.example,__tests__/unit/bingx-vst-environment.test.ts,lib/bingx-environment.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_REAUDIT_REPORT	test-or-operator-tool	no	no	1	scripts/audit-bingx-vst-soak-settlements.ts
 BINGX_VST_SOAK_ALLOW_SHORT	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
-BINGX_VST_SOAK_CONFIRM	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
+BINGX_VST_SOAK_CONFIRM	application-runtime	no	no	3	__tests__/unit/runtime-maintenance.test.ts,lib/live-order-service.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_CYCLES	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_ENGINE_TRAILING_UPDATE	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_ORIGIN	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_PREFLIGHT_ONLY	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
-BINGX_X02_API_KEY	test-or-operator-tool	yes	yes	4	.env.example,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts
-BINGX_X02_API_SECRET	test-or-operator-tool	yes	yes	4	.env.example,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/run-bingx-vst-live-soak.ts
+BINGX_X02_API_KEY	test-or-operator-tool	yes	yes	6	.env.example,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/reconcile-bingx-x02-protection-slot.ts,scripts/run-bingx-vst-live-soak.ts
+BINGX_X02_API_SECRET	test-or-operator-tool	yes	yes	6	.env.example,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/reconcile-bingx-x02-protection-slot.ts,scripts/run-bingx-vst-live-soak.ts
 BYBIT_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
 BYBIT_API_SECRET	test-or-operator-tool	yes	yes	1	.env.example
 CF_PAGES	application-runtime	no	no	1	lib/deployment-runtime.ts
@@ -85,6 +85,7 @@ CTS_REDIS_VERSION	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REMOTE_INSTALL_TEST_ROOT	application-runtime	no	no	2	__tests__/unit/install-deployment-contract.test.ts,app/api/install/remote/route.ts
 CTS_REQUIRE_LIVE_TRADE_READY	test-or-operator-tool	no	yes	2	.env.example,scripts/production-deploy-init.mjs
 CTS_RUNTIME_BOOT_ID	application-runtime	no	no	5	__tests__/unit/requested-regressions.test.ts,__tests__/unit/runtime-boot-id.test.ts,lib/runtime-boot-id.ts,scripts/start-development.mjs,scripts/start-production.mjs
+CTS_RUNTIME_DIR	test-or-operator-tool	no	no	3	__tests__/unit/runtime-maintenance.test.ts,scripts/direct-trade-supervisor.mjs,scripts/start-production.mjs
 CTS_RUNTIME_STARTED_AT	application-runtime	no	no	4	__tests__/unit/runtime-boot-id.test.ts,lib/runtime-boot-id.ts,scripts/start-development.mjs,scripts/start-production.mjs
 CTS_STRATEGY_GC_CRITICAL_INTERVAL_MS	test-or-operator-tool	no	yes	1	.env.example
 CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS	test-or-operator-tool	no	yes	2	.env.example,scripts/run-dev-preview-check.mjs
@@ -431,3 +432,4 @@ VOLATILE_STATE_OWNER_FRESH_MS	application-runtime	no	no	1	lib/redis-db.ts
 VOLATILE_STATE_STALE_MS	application-runtime	no	no	1	lib/redis-db.ts
 WATCHPACK_POLLING	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/run-dev-preview-check.mjs
 WORKERS_CI	application-runtime	no	no	1	lib/deployment-runtime.ts
+X02_SLOT_PROTECTION_CONFIRM	test-or-operator-tool	no	no	1	scripts/reconcile-bingx-x02-protection-slot.ts

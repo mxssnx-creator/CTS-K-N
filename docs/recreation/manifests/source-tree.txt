@@ -213,6 +213,7 @@ __tests__/unit/progression-live-snapshot.test.ts
 __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
+__tests__/unit/protection-slot-order-audit.test.ts
 __tests__/unit/pseudo-position-close-idempotency.test.ts
 __tests__/unit/pseudo-position-semantics.test.ts
 __tests__/unit/pull-agent-install-script.test.ts
@@ -238,6 +239,7 @@ __tests__/unit/run-with-env-lifecycle.test.ts
 __tests__/unit/runtime-boot-id.test.ts
 __tests__/unit/runtime-concurrency-profile.test.ts
 __tests__/unit/runtime-log-throttle.test.ts
+__tests__/unit/runtime-maintenance.test.ts
 __tests__/unit/runtime-telemetry-compatibility.test.ts
 __tests__/unit/runtime-telemetry-interval.test.ts
 __tests__/unit/security-hardening-encryption.test.ts
@@ -295,6 +297,7 @@ __tests__/unit/trend-indication.test.ts
 __tests__/unit/trend-wiring.test.ts
 __tests__/unit/volume-calculator-variants.test.ts
 __tests__/unit/volume-identity-systemwide.test.ts
+__tests__/unit/x02-slot-protection-operator.test.ts
 app/active-exchange/layout.tsx
 app/active-exchange/page.tsx
 app/additional/chat-history/page.tsx
@@ -1246,6 +1249,7 @@ lib/progression-limits-manager.ts
 lib/progression-live-snapshot.ts
 lib/progression-scope.ts
 lib/progression-state-manager.ts
+lib/protection-slot-order-audit.ts
 lib/pseudo-position-costs.ts
 lib/pseudo-positions-coordinator.ts
 lib/quickstart-bootstrap-state.ts
@@ -1269,6 +1273,7 @@ lib/route-presentation.ts
 lib/runtime-boot-id.ts
 lib/runtime-concurrency-profile.ts
 lib/runtime-log-throttle.ts
+lib/runtime-maintenance.ts
 lib/runtime-parallelism.ts
 lib/runtime-startup-state.ts
 lib/runtime-telemetry.ts
@@ -1467,6 +1472,7 @@ scripts/prod-restart-manager.sh
 scripts/production-deploy-init.mjs
 scripts/quickstart-live-trading.js
 scripts/rebuild-live-order-counters.mjs
+scripts/reconcile-bingx-x02-protection-slot.ts
 scripts/redis-persistence-cleanup.mjs
 scripts/regression/direct-trade-cycle-serialization.test.mjs
 scripts/regression/live-stage-simulated-protection.test.ts
