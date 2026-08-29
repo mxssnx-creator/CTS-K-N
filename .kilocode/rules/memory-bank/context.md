@@ -1,5 +1,72 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## X02 shared-symbol close-race hardening (2026-08-29; authoritative)
+
+- Canonical checkout: `/workspace/CTS-K-N`, branch
+  `fix/x02-shared-symbol-race-20260829`, based exactly on GitHub merged
+  `main@8a52c30adcb70e722c45f74a1591860f085c7c59` (PR #255), tree
+  `152ec6dc18874f9e1c40fce933fe3223bc65eda9`. X02 currently runs that exact
+  merged revision. Do not deploy this follow-up worktree until its own GitHub
+  PR is green and merged.
+- PR #255 fixed BingX 109201 security-stop trailing replacement: price-only
+  aggregate security rearm waits 1,250 ms, quantity drift remains immediate,
+  and the authenticated engine probe observes deferred replacement for up to
+  five seconds. The first post-deploy Direct+DCA cycle proved that fix: entry,
+  accumulation, complete row SL/TP plus full-slot security, trailing ratchet
+  replacement and stale-ratchet rejection all completed without 109201.
+- That cycle was excluded from PnL/evaluation results because two non-CTS BTC
+  controls appeared before its reduce-only close. The ownership guard stopped
+  immediately instead of mutating them. Controlled cleanup finished after the
+  external activity cleared, and two independent owner-only reads confirmed
+  the exact shared baseline: 96 active positions, 192 open orders, no BTC
+  position/order, and zero CTS soak controls. Main, Preset and Signal did not
+  execute in that aborted run; never attribute its result to those engines.
+- The follow-up hardening requires a stable one-second symbol-order quiet
+  window before entry, accumulation, protection and close. The close allowlist
+  contains only the exact tracked full-slot security order. Row SL/TP controls
+  are cancelled and confirmed absent, but aggregate security remains live
+  through the reduce-only close and is cancelled only after the owned position
+  is authoritatively flat. Exception cleanup now follows the same order:
+  wait for external orders to clear, verify exact owned quantity, close while
+  protections remain armed, and cancel controls only after no owned exposure
+  remains. Ambiguous or persistent external state leaves protection armed and
+  fails closed.
+- `BINGX_VST_SOAK_EXCLUDE_SYMBOLS` accepts a validated comma/space-separated
+  candidate list. The next X02 run must exclude the observed-contested
+  `BTCUSDT` slot and use every remaining executable unoccupied symbol. The
+  exclusion and occupied-book filters are reported, unsupported candidates
+  are rejected, and direction planning is tested for 4, 5, 6, 7 and 8 symbols
+  with eight Long/eight Short cycles and both directions for every reused
+  symbol.
+- Final local source gates on this worktree are green: TypeScript;
+  repository-wide ESLint; 244/244 Jest suites and 1,646/1,646 tests; focused
+  protection/runtime/regression tests
+  228/228; a first-attempt Next 15.5.18 production build with 42 pages and 348
+  complete traces; and the deep production-artifact audit across all 47 page
+  surfaces, both connection dialogs, 32-symbol QuickStart, settings backup
+  round-trip, volume/signal hot reload, Long/Short independence and scoped
+  statistics with zero real exchange orders. The Direct 32-symbol/48-hour
+  matrix evaluated 960,512 independent Sets and selected 100. The Block audit
+  evaluated 1,419,264 independent Count-1..12 rows with zero identity
+  mismatches and retained the non-compounding formula
+  `target = base + base × count × volumeRatio`.
+- Verified owner-only checkpoints already bracketing this continuation include
+  `/workspace/backups/CTS-K-N/20260829T050806Z-pre-shared-symbol-race-fix` and
+  remote `/var/backups/cts-kn/20260829T045824Z-pre-pr255-live-soak`. X02 remains
+  maintenance-gated: main/scheduler/Direct services and the recovery timer are
+  inactive, the marker is present, and port 3002 is closed. Re-attest all of
+  those conditions before every remote mutation.
+- Next sequence: regenerate and verify recreation manifests; run security,
+  Kilo and install preflights; create a fresh complete pre-commit checkpoint;
+  commit and publish the exact tree through the selected GitHub integration;
+  merge only after every required check is green; checkpoint and atomically
+  deploy that merged `main`; rerun authenticated preflight with BTC excluded;
+  take another server checkpoint; then complete the exact 20-minute/16-cycle
+  max-safe Prod-VST soak across Direct, Main, Preset and Signal with DCA and
+  Block on every path. Finish with settlement/counter/control/account audits
+  and verified local/server backups. X01/Mainnet and every Bybit connection
+  remain read-only. No synthetic or VST result is a profitability guarantee.
+
 ## X02 security-stop trailing replacement release (2026-08-29; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch

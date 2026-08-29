@@ -4,6 +4,7 @@ import {
   deriveVstSoakProtectionBand,
   evaluateVstSoakOrderHeadroom,
   normalizeVstSoakCounterSnapshot,
+  parseVstSoakExcludedSymbols,
   rankVstSoakSymbolLiquidity,
   vstSoakDirectionForCycle,
 } from "@/lib/bingx-vst-soak-audit"
@@ -115,7 +116,7 @@ describe("BingX Prod-VST soak accounting audit", () => {
     })
   })
 
-  test.each([4, 5, 6, 8])(
+  test.each([4, 5, 6, 7, 8])(
     "balances 16 cycles and flips each reused symbol with %i executable symbols",
     (symbolCount) => {
       const cycles = Array.from({ length: 16 }, (_, index) => ({
@@ -134,6 +135,15 @@ describe("BingX Prod-VST soak accounting audit", () => {
   test("rejects invalid direction-plan coordinates", () => {
     expect(() => vstSoakDirectionForCycle(-1, 5)).toThrow("non-negative cycle")
     expect(() => vstSoakDirectionForCycle(0, 0)).toThrow("positive symbol count")
+  })
+
+  test("parses deterministic comma/space separated VST symbol exclusions", () => {
+    expect(parseVstSoakExcludedSymbols(" btc-usdt, ETH/USDT  btc_usdt\nSOL:USDT ")).toEqual([
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+    ])
+    expect(parseVstSoakExcludedSymbols(undefined)).toEqual([])
   })
 
   test("reconciles exact count, per-symbol, and fill-volume deltas", () => {
@@ -255,6 +265,7 @@ describe("BingX Prod-VST soak accounting audit", () => {
         takeProfitQuantity: 0.02,
         securityStopArmedQuantity: 0.02,
         securityQuantityBacked: true,
+        securityRetainedThroughClose: true,
         observedOpen: true,
         securityObservedOpen: true,
         cancelled: true,
@@ -335,6 +346,7 @@ describe("BingX Prod-VST soak accounting audit", () => {
           takeProfitQuantity: 0.02,
           securityStopArmedQuantity: 0.02,
           securityQuantityBacked: true,
+          securityRetainedThroughClose: true,
           observedOpen: true,
           securityObservedOpen: true,
           cancelled: true,

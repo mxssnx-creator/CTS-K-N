@@ -33,6 +33,7 @@ BINGX_VST_SOAK_CONFIRM	application-runtime	no	no	3	__tests__/unit/runtime-mainte
 BINGX_VST_SOAK_CYCLES	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_ENGINE_TRAILING_UPDATE	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
+BINGX_VST_SOAK_EXCLUDE_SYMBOLS	test-or-operator-tool	no	no	2	__tests__/unit/runtime-maintenance.test.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_ORIGIN	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_PREFLIGHT_ONLY	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_X02_API_KEY	test-or-operator-tool	yes	yes	7	.env.example,__tests__/unit/runtime-maintenance.test.ts,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/reconcile-bingx-x02-protection-slot.ts,scripts/run-bingx-vst-live-soak.ts

@@ -68,6 +68,8 @@ export interface VstSoakExecutionCycle {
     securityStopArmedQuantity?: number
     /** True only when the venue-visible security order quantity covers the full slot. */
     securityQuantityBacked?: boolean
+    /** True only when security remained venue-visible until the close phase began. */
+    securityRetainedThroughClose?: boolean
     observedOpen?: boolean
     securityObservedOpen?: boolean
     cancelled?: boolean
@@ -186,6 +188,24 @@ export function vstSoakDirectionForCycle(
   const count = Math.floor(parsedSymbolCount)
   const roundFlip = count % 2 === 0 ? Math.floor(index / count) : 0
   return (index + roundFlip) % 2 === 0 ? "long" : "short"
+}
+
+/**
+ * Parse the operator-controlled list of symbols that must not be touched by
+ * an authenticated VST soak. Accept comma and/or whitespace separators,
+ * normalize the same separators used elsewhere by the connector, and retain
+ * first-seen order so the resulting report is deterministic.
+ */
+export function parseVstSoakExcludedSymbols(value: unknown): string[] {
+  const seen = new Set<string>()
+  const parsed: string[] = []
+  for (const token of String(value ?? "").split(/[,\s]+/)) {
+    const symbol = token.trim().toUpperCase().replace(/[-/_:]/g, "")
+    if (!symbol || seen.has(symbol)) continue
+    seen.add(symbol)
+    parsed.push(symbol)
+  }
+  return parsed
 }
 
 /**
@@ -398,6 +418,7 @@ export function auditVstSoakExecutionRelations(input: {
       || (cycle.protection.requireTakeProfit === true && !cycle.protection.takeProfitOrderId)
       || cycle.protection.requireSecurity !== true
       || !cycle.protection.securityStopOrderId
+      || cycle.protection.securityRetainedThroughClose !== true
       || cycle.protection.observedOpen !== true
       || cycle.protection.securityObservedOpen !== true
       || cycle.protection.cancelled !== true
