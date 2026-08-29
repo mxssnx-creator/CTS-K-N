@@ -16,6 +16,9 @@ RUNTIME=""
 SERVICE_USER=""
 COOLDOWN_SECONDS="${CTS_RECOVERY_COOLDOWN_SECONDS:-120}"
 CRON_STALE_SECONDS="${CTS_RECOVERY_CRON_STALE_SECONDS:-150}"
+BOOT_GRACE_SECONDS="${CTS_RECOVERY_BOOT_GRACE_SECONDS:-180}"
+DIRECT_STALE_SAMPLES="${CTS_RECOVERY_DIRECT_STALE_SAMPLES:-3}"
+DIRECT_SAMPLE_DELAY_SECONDS="${CTS_RECOVERY_DIRECT_SAMPLE_DELAY_SECONDS:-2}"
 
 usage() {
   echo "Usage: runtime-recovery.sh --name NAME --port PORT --runtime-dir PATH --runtime systemd|pm2 [--service-user USER]" >&2
@@ -44,6 +47,11 @@ valid_name "$APP_NAME" && valid_port "$APP_PORT" && valid_runtime_dir "$RUNTIME_
 [[ "$COOLDOWN_SECONDS" =~ ^[0-9]+$ ]] || COOLDOWN_SECONDS=120
 [[ "$CRON_STALE_SECONDS" =~ ^[0-9]+$ ]] || CRON_STALE_SECONDS=150
 (( CRON_STALE_SECONDS >= 90 )) || CRON_STALE_SECONDS=90
+[[ "$BOOT_GRACE_SECONDS" =~ ^[0-9]+$ ]] || BOOT_GRACE_SECONDS=180
+[[ "$DIRECT_STALE_SAMPLES" =~ ^[0-9]+$ ]] || DIRECT_STALE_SAMPLES=3
+(( DIRECT_STALE_SAMPLES >= 2 && DIRECT_STALE_SAMPLES <= 5 )) || DIRECT_STALE_SAMPLES=3
+[[ "$DIRECT_SAMPLE_DELAY_SECONDS" =~ ^[0-9]+$ ]] || DIRECT_SAMPLE_DELAY_SECONDS=2
+(( DIRECT_SAMPLE_DELAY_SECONDS >= 1 && DIRECT_SAMPLE_DELAY_SECONDS <= 5 )) || DIRECT_SAMPLE_DELAY_SECONDS=2
 
 # A deliberate `service-control stop` creates this marker. Self-healing must
 # never turn a maintenance stop into an unexpected live restart.
@@ -87,6 +95,48 @@ service_active() {
   fi
 }
 
+service_wrapper() {
+  case "$1" in
+    "$APP_NAME") printf '%s' "$RUNTIME_DIR/start-app.sh" ;;
+    "$APP_NAME-scheduler") printf '%s' "$RUNTIME_DIR/start-scheduler.sh" ;;
+    "$APP_NAME-direct-trade") printf '%s' "$RUNTIME_DIR/start-direct-trade.sh" ;;
+    *) return 1 ;;
+  esac
+}
+
+wrapper_ready() {
+  local wrapper
+  wrapper="$(service_wrapper "$1" 2>/dev/null || true)"
+  [[ -n "$wrapper" && -f "$wrapper" && -x "$wrapper" ]]
+}
+
+service_age_seconds() {
+  local service="$1" monotonic="" uptime_us=""
+  if [[ "$RUNTIME" != "systemd" ]]; then
+    printf '%s' "$BOOT_GRACE_SECONDS"
+    return 0
+  fi
+  # ExecMainStart is the strongest evidence. ActiveEnter covers services whose
+  # manager does not expose it; StateChange also gives a useful lower bound for
+  # a failed/activating unit. Values are monotonic microseconds since boot.
+  for property in ExecMainStartTimestampMonotonic ActiveEnterTimestampMonotonic StateChangeTimestampMonotonic; do
+    monotonic="$(systemctl show "$service" --property="$property" --value 2>/dev/null || true)"
+    [[ "$monotonic" =~ ^[0-9]+$ && "$monotonic" -gt 0 ]] && break
+  done
+  [[ "$monotonic" =~ ^[0-9]+$ && "$monotonic" -gt 0 ]] || { printf '%s' 0; return 0; }
+  uptime_us="$(awk '{ printf "%.0f", $1 * 1000000 }' /proc/uptime 2>/dev/null || true)"
+  [[ "$uptime_us" =~ ^[0-9]+$ && "$uptime_us" -ge "$monotonic" ]] \
+    || { printf '%s' 0; return 0; }
+  printf '%s' $(( (uptime_us - monotonic) / 1000000 ))
+}
+
+in_boot_grace() {
+  local age
+  age="$(service_age_seconds "$1")"
+  [[ "$age" =~ ^[0-9]+$ ]] || age=0
+  (( age < BOOT_GRACE_SECONDS ))
+}
+
 # The app's init-status view is deliberately small and reads only persisted
 # coordinator hashes.  That gives this root-owned supervisor a safe, local
 # view of completed cron work without granting it Redis or exchange access.
@@ -122,6 +172,14 @@ read_cron_health() {
 
 restart_service() {
   local service="$1" reason="$2"
+  if ! wrapper_ready "$service"; then
+    echo "[runtime-recovery] restart blocked for $service: runtime wrapper is missing or not executable ($reason)"
+    return 0
+  fi
+  if in_boot_grace "$service"; then
+    echo "[runtime-recovery] boot grace active for $service ($reason)"
+    return 0
+  fi
   if ! can_restart "$service"; then
     echo "[runtime-recovery] cooldown active for $service ($reason)"
     return 0
@@ -162,10 +220,10 @@ if ! service_active "$direct_service"; then
   exit 0
 fi
 
-status="$(curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/api/trade-engine/direct-trade/status?aggregate=1" || true)"
-[[ -n "$status" ]] || { restart_service "$direct_service" "Direct-Trade status unavailable"; exit 0; }
-
-read -r direct_required direct_healthy < <(
+read_direct_health() {
+  local status
+  status="$(curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/api/trade-engine/direct-trade/status?aggregate=1" 2>/dev/null || true)"
+  [[ -n "$status" ]] || { printf '%s\n' '1 0 0 0'; return 1; }
   printf '%s' "$status" | node -e '
     let raw = "";
     process.stdin.on("data", (chunk) => { raw += chunk; });
@@ -173,16 +231,46 @@ read -r direct_required direct_healthy < <(
       try {
         const status = JSON.parse(raw);
         const required = status?.state?.enabled === true || Number(status?.openPositions || 0) > 0;
-        process.stdout.write(`${required ? "1" : "0"} ${status?.processor?.isHealthy === true ? "1" : "0"}` + String.fromCharCode(10));
-      } catch { process.stdout.write("1 0" + String.fromCharCode(10)); }
+        const heartbeatHealthy = status?.processor?.heartbeatHealthy === true || status?.processor?.isHealthy === true;
+        const progressHealthy = status?.processor?.progressHealthy !== false;
+        const recalculationInFlight = Array.isArray(status?.connections)
+          && status.connections.some((entry) => entry?.required === true && entry?.processor?.recalculationInFlight === true);
+        process.stdout.write([
+          required ? "1" : "0",
+          heartbeatHealthy ? "1" : "0",
+          progressHealthy ? "1" : "0",
+          recalculationInFlight ? "1" : "0",
+        ].join(" ") + String.fromCharCode(10));
+      } catch { process.stdout.write("1 0 0 0" + String.fromCharCode(10)); }
     });
   '
-)
+}
 
-if [[ "$direct_required" == "1" && "$direct_healthy" != "1" ]]; then
-  if [[ "$direct_recovery_requested" == "1" ]]; then
-    restart_service "$direct_service" "Direct-Trade continuity requested recovery"
-  else
-    restart_service "$direct_service" "Direct-Trade heartbeat is stale"
+read -r direct_required direct_heartbeat_healthy direct_progress_healthy direct_recalculation_in_flight \
+  < <(read_direct_health || true)
+
+if [[ "$direct_required" == "1" && "$direct_heartbeat_healthy" == "1" ]]; then
+  if [[ "$direct_progress_healthy" != "1" ]]; then
+    echo "[runtime-recovery] Direct-Trade heartbeat is fresh; progress is degraded without restart"
   fi
+  exit 0
+fi
+
+if [[ "$direct_required" == "1" ]]; then
+  stale_samples=1
+  recalculation_seen="$direct_recalculation_in_flight"
+  for (( sample=2; sample<=DIRECT_STALE_SAMPLES; sample++ )); do
+    sleep "$DIRECT_SAMPLE_DELAY_SECONDS"
+    read -r sample_required sample_heartbeat sample_progress sample_recalculation < <(read_direct_health || true)
+    [[ "$sample_recalculation" == "1" ]] && recalculation_seen=1
+    if [[ "$sample_required" != "1" || "$sample_heartbeat" == "1" ]]; then
+      echo "[runtime-recovery] Direct-Trade heartbeat recovered during confirmation sampling"
+      exit 0
+    fi
+    stale_samples=$((stale_samples + 1))
+  done
+  reason="Direct-Trade heartbeat stale for $stale_samples consecutive samples"
+  [[ "$direct_recovery_requested" == "1" ]] && reason="$reason; continuity requested recovery"
+  [[ "$recalculation_seen" == "1" ]] && reason="$reason; recalculation was in flight"
+  restart_service "$direct_service" "$reason"
 fi
