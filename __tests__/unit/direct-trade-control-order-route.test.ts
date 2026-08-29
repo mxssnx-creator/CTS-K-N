@@ -7,6 +7,15 @@ jest.mock("@/lib/live-order-service", () => ({
   ),
 }))
 
+// This suite exercises the leased gateway payload and reconciliation logic.
+// Production readiness is covered independently; enable the guarded branch
+// here so those existing transport assertions remain reachable.
+jest.mock("@/lib/direct-trade-live-readiness", () => ({
+  DIRECT_TRADE_LIVE_EXECUTION_READY: true,
+  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE: "test_not_blocked",
+  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON: "test not blocked",
+}))
+
 function resetInlineRedisGlobals() {
   delete (globalThis as any).__redis_data
   delete (globalThis as any).__redis_load_promise
@@ -19,6 +28,16 @@ function resetInlineRedisGlobals() {
 
 const token = "direct-trade-processor-token-0123456789"
 const instanceId = "direct-worker-test"
+
+function watermarkedControl(connectionId: string, suffix: string): string {
+  return `cts${connectionId.replace(/[^A-Za-z0-9]/g, "").slice(0, 8).toLowerCase()}${suffix}`
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .slice(0, 48)
+}
+
+function directState(connectionId: string, positions: Record<string, unknown>[], enabled = true) {
+  return JSON.stringify({ enabled, liveMode: enabled, connectionId, positions })
+}
 
 function request(body: Record<string, unknown>, suppliedToken = token) {
   return new Request("http://localhost/api/trade-engine/direct-trade/order", {
@@ -67,13 +86,19 @@ describe("Direct-Trade leased control-order route", () => {
       import("@/lib/redis-db"),
     ])
     const redis = getRedisClient()
+    const openControlId = watermarkedControl("bingx-x01", "dtopen1")
+    const closeControlId = watermarkedControl("bingx-x01", "dtclose1")
     await redis.set("direct_trade:connection:bingx-x01:processor:lease", instanceId)
-    await redis.set("direct_trade:connection:bingx-x01:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
+    await redis.set("direct_trade:connection:bingx-x01:state", directState("bingx-x01", [
+      { id: "dt_BTCUSDT_long_1m_1", connectionId: "bingx-x01", symbol: "BTCUSDT", direction: "long", openControlId },
+      { id: "dt_BTCUSDT_long_1", connectionId: "bingx-x01", symbol: "BTCUSDT", direction: "long", closeControlId },
+    ]))
 
     const opened = await POST(request({
       kind: "open",
       instanceId,
       positionId: "dt_BTCUSDT_long_1m_1",
+      controlId: openControlId,
       connectionId: "bingx-x01",
       symbol: "BTCUSDT",
       positionDirection: "long",
@@ -96,6 +121,7 @@ describe("Direct-Trade leased control-order route", () => {
       kind: "close",
       instanceId,
       positionId: "dt_BTCUSDT_long_1",
+      controlId: closeControlId,
       connectionId: "bingx-x01",
       symbol: "BTCUSDT",
       positionDirection: "long",
@@ -106,7 +132,7 @@ describe("Direct-Trade leased control-order route", () => {
       side: "short",
       positionDirection: "long",
       reduceOnly: true,
-      clientOrderId: expect.stringMatching(/^dt-close-/),
+      clientOrderId: closeControlId,
     }))
   })
 
@@ -129,8 +155,15 @@ describe("Direct-Trade leased control-order route", () => {
       settledAt: Date.now(),
       fills: [],
     }
+    const closeControlId = watermarkedControl("bingx-x02", "dtclosesettlement")
     await redis.set("direct_trade:connection:bingx-x02:processor:lease", instanceId)
-    await redis.set("direct_trade:connection:bingx-x02:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x02" }))
+    await redis.set("direct_trade:connection:bingx-x02:state", directState("bingx-x02", [{
+      id: "dt_BTCUSDT_long_settlement",
+      connectionId: "bingx-x02",
+      symbol: "BTCUSDT",
+      direction: "long",
+      closeControlId,
+    }]))
     placeLiveOrderMock.mockResolvedValueOnce({
       success: true,
       mode: "live",
@@ -147,6 +180,7 @@ describe("Direct-Trade leased control-order route", () => {
       kind: "close",
       instanceId,
       positionId: "dt_BTCUSDT_long_settlement",
+      controlId: closeControlId,
       connectionId: "bingx-x02",
       symbol: "BTCUSDT",
       positionDirection: "long",
@@ -166,14 +200,22 @@ describe("Direct-Trade leased control-order route", () => {
       import("@/lib/redis-db"),
     ])
     const redis = getRedisClient()
+    const legacyControlId = watermarkedControl("bingx-x02", "dtopen_short_5m+15m")
+      .replace(/\+/g, "_")
     await redis.set("direct_trade:connection:bingx-x02:processor:lease", instanceId)
-    await redis.set("direct_trade:connection:bingx-x02:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x02" }))
+    await redis.set("direct_trade:connection:bingx-x02:state", directState("bingx-x02", [{
+      id: "dt_XRPUSDT_short_5m+15m_1234",
+      connectionId: "bingx-x02",
+      symbol: "XRPUSDT",
+      direction: "short",
+      openControlId: legacyControlId,
+    }]))
 
     const response = await POST(request({
       kind: "open",
       instanceId,
       positionId: "dt_XRPUSDT_short_5m+15m_1234",
-      controlId: "dtopen_dt_XRPUSDT_short_5m+15m_1234",
+      controlId: legacyControlId,
       connectionId: "bingx-x02",
       symbol: "XRPUSDT",
       positionDirection: "short",
@@ -183,7 +225,7 @@ describe("Direct-Trade leased control-order route", () => {
 
     expect(response.status).toBe(200)
     expect(placeLiveOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
-      clientOrderId: "dtopen_dt_XRPUSDT_short_5m_15m_1234",
+      clientOrderId: legacyControlId,
     }))
   })
 
@@ -193,8 +235,15 @@ describe("Direct-Trade leased control-order route", () => {
       import("@/lib/redis-db"),
     ])
     const redis = getRedisClient()
+    const blockControlId = watermarkedControl("bingx-x01", "dtblk_stable_1")
     await redis.set("direct_trade:connection:bingx-x01:processor:lease", instanceId)
-    await redis.set("direct_trade:connection:bingx-x01:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
+    await redis.set("direct_trade:connection:bingx-x01:state", directState("bingx-x01", [{
+      id: "dt_BTCUSDT_long_1",
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      direction: "long",
+      blockPendingControlId: blockControlId,
+    }]))
     placeLiveOrderMock.mockResolvedValueOnce({
       success: true,
       mode: "live",
@@ -212,7 +261,7 @@ describe("Direct-Trade leased control-order route", () => {
       stage: "block",
       instanceId,
       positionId: "dt_BTCUSDT_long_1",
-      controlId: "dtblk_stable_1",
+      controlId: blockControlId,
       connectionId: "bingx-x01",
       symbol: "BTCUSDT",
       positionDirection: "long",
@@ -269,7 +318,19 @@ describe("Direct-Trade leased control-order route", () => {
     const redis = getRedisClient()
     const control = "dtopen_persisted_1"
     await redis.set("direct_trade:connection:bingx-x01:processor:lease", instanceId)
-    await redis.set("direct_trade:connection:bingx-x01:state", JSON.stringify({ enabled: false, liveMode: false, connectionId: "bingx-x01" }))
+    await redis.set("direct_trade:connection:bingx-x01:state", directState("bingx-x01", [{
+      id: "dt_BTCUSDT_long_persisted",
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      direction: "long",
+      openControlId: control,
+    }, {
+      id: "dt_BTCUSDT_long_fresh",
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      direction: "long",
+      openControlId: "dtopen_not_persisted",
+    }], false))
     await redis.set(
       `live:direct_order_control:${encodeURIComponent("bingx-x01")}:${encodeURIComponent(control)}`,
       JSON.stringify({ version: 1, state: "acknowledged" }),
