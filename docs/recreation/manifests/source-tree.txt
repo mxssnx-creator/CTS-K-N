@@ -1397,7 +1397,6 @@ ops/grok-x01-pulse/indication_engine.py
 ops/grok-x01-pulse/modules.py
 ops/grok-x01-pulse/overlay.json
 ops/grok-x01-pulse/position_cost.py
-ops/grok-x01-pulse/pulse_http.py
 ops/grok-x01-pulse/pulse_trader.py
 package.json
 pages/_document.tsx
