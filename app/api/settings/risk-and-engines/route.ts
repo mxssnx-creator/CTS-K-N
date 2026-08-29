@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getAllConnections, withSharedPersistenceLease } from "@/lib/redis-db"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 export async function GET() {
@@ -46,6 +47,14 @@ export async function GET() {
 async function handlePost(request: NextRequest) {
   try {
     const body = await request.json()
+    const maintenance = getRuntimeMaintenanceState()
+    if (
+      maintenance.active
+      && body?.engines
+      && Object.values(body.engines).some((value) => value === true || value === "true" || value === "1")
+    ) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
     await initRedis()
     const client = getRedisClient()
 

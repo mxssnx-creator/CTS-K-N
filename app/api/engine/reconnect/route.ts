@@ -3,6 +3,7 @@ import { initRedis, getRedisClient, getAllConnections } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { clearMarginCooldown } from "@/lib/trade-engine/stages/live-stage"
 import { hasConnectionCredentials, isConnectionMainProcessing, isTruthyFlag } from "@/lib/connection-state-utils"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -27,6 +28,11 @@ export const dynamic = "force-dynamic"
 export async function POST(request: Request) {
   const startedAt = Date.now()
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
+
     await initRedis()
     const client = getRedisClient()
 

@@ -11,6 +11,7 @@ import { buildMissingTradeEngineWorkerDiagnostic } from "@/lib/trade-engine-work
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { SystemLogger } from "@/lib/system-logger"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 // POST toggle connection active status (inserted/enabled) - INDEPENDENT from Settings
 // When enabling, also triggers engine start for this connection
@@ -62,6 +63,13 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
     const isDashboardEnabled = body?.is_enabled_dashboard !== undefined
       ? parseBooleanInput(body?.is_enabled_dashboard)
       : parseBooleanInput(body?.enabled)
+    const explicitlyRequestsEnable =
+      !(hasActiveInserted && !isActiveInserted) &&
+      (hasDashboardEnabled ? isDashboardEnabled : hasActiveInserted && isActiveInserted)
+    const maintenance = getRuntimeMaintenanceState()
+    if (explicitlyRequestsEnable && maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
 
     await initRedis()
     let connection = await getConnection(connectionId)

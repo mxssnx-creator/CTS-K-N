@@ -3,6 +3,7 @@ import { initRedis, getRedisClient, updateConnectionState } from "@/lib/redis-db
 import { BASE_CONNECTION_CREDENTIALS } from "@/lib/base-connection-credentials"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 
@@ -18,6 +19,10 @@ export async function POST(request: Request) {
       { success: false, error: authorization.error },
       { status: authorization.status },
     )
+  }
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.active) {
+    return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
   }
   try {
     await initRedis()

@@ -5,6 +5,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
 import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { isTruthyFlag } from "@/lib/boolean-utils"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 
@@ -13,6 +14,11 @@ export async function POST(
   { params }: { params: Promise<{ id: string; presetTypeId: string }> },
 ) {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
+
     const { id: connectionId, presetTypeId } = await params
 
     console.log("[v0] Starting preset coordination engine:", { connectionId, presetTypeId })

@@ -7,6 +7,7 @@ import {
   CooperativeTaskTimeoutError,
   runCooperativeTaskWithTimeout,
 } from "@/lib/cooperative-task-timeout"
+import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -64,6 +65,15 @@ async function runCronTask(
 export async function GET(request: Request) {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.active) {
+    return NextResponse.json({
+      success: true,
+      skipped: true,
+      reason: "runtime_maintenance_stop",
+      maintenance: true,
+    })
+  }
 
   return withSharedPersistenceLease("cron:server-continuity", async () => {
   const startedAt = Date.now()

@@ -3,6 +3,7 @@ import { getTradeEngine } from "@/lib/trade-engine"
 import { initRedis, getRedisClient, getActiveConnectionsForEngine, withSharedPersistenceLease } from "@/lib/redis-db"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -14,6 +15,11 @@ export const dynamic = "force-dynamic"
  */
 async function handlePost() {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
+
     invalidateTradeEngineStatusCache()
     await initRedis()
     const client = getRedisClient()

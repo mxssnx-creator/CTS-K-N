@@ -36,6 +36,7 @@
 // else can fail.
 import "@/lib/error-handler"
 import { isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 
 // Guard against double-execution across HMR / module re-evaluation. Failed
 // startup attempts are not cached: a long-lived Node process retries after one
@@ -123,11 +124,19 @@ async function runDeterministicBoot(): Promise<void> {
     throw err
   }
 
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.active) {
+    console.warn(
+      `[v0] [Instrumentation] runtime maintenance stop is active (${maintenance.reason}); ` +
+        "trade-engine auto-start and in-process continuity remain disabled",
+    )
+  }
+
   // Production Node processes should be self-contained: initialize the
   // auto-start/healing sweep and continuity runner by default so explicit UI
   // actions and persisted running intent work without a separate worker env flag.
   // Serverless/edge safety is handled inside the imported runners.
-  if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART !== "1") {
+  if (!maintenance.active && process.env.DISABLE_TRADE_ENGINE_AUTOSTART !== "1") {
     try {
       const { recordStartupPhase } = await import("@/lib/startup-diagnostics")
       await recordStartupPhase("auto_start_running")
@@ -138,12 +147,12 @@ async function runDeterministicBoot(): Promise<void> {
       await recordStartupError(err, "initializeTradeEngineAutoStart").catch(() => {})
       console.error("[v0] [Instrumentation] auto-start init failed (continuing):", err instanceof Error ? err.message : err)
     }
-  } else {
+  } else if (!maintenance.active) {
     console.warn("[v0] [Instrumentation] trade-engine auto-start disabled by DISABLE_TRADE_ENGINE_AUTOSTART=1")
     console.warn("[v0] [Instrumentation] background trade-engine auto-start skipped; explicit UI actions and continuity sweeps can start/reconcile engines")
   }
 
-  if (process.env.DISABLE_IN_PROCESS_CONTINUITY !== "1") {
+  if (!getRuntimeMaintenanceState().active && process.env.DISABLE_IN_PROCESS_CONTINUITY !== "1") {
     try {
       const { startServerContinuityRunner } = await import("@/lib/server-continuity-runner")
       startServerContinuityRunner()
@@ -154,7 +163,7 @@ async function runDeterministicBoot(): Promise<void> {
       await recordStartupError(err, "startServerContinuityRunner").catch(() => {})
       console.error("[v0] [Instrumentation] continuity runner failed (continuing):", err instanceof Error ? err.message : err)
     }
-  } else {
+  } else if (!getRuntimeMaintenanceState().active) {
     console.warn("[v0] [Instrumentation] in-process continuity disabled by DISABLE_IN_PROCESS_CONTINUITY=1")
     console.warn("[v0] [Instrumentation] background in-process continuity skipped; deployment cron or UI-triggered reconciliation remains available")
   }

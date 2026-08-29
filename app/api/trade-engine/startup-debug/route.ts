@@ -2,10 +2,16 @@ import { NextResponse } from "next/server"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadConnections, loadSettings } from "@/lib/file-storage"
 import { SystemLogger } from "@/lib/system-logger"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 export async function GET() {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
+
     console.log("[v0] [DEBUG] Trade Engine Manual Startup Endpoint")
 
     const coordinator = getGlobalTradeEngineCoordinator()

@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getAllConnections, updateConnection, initRedis } from "@/lib/redis-db"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -17,6 +18,10 @@ export async function POST(request: NextRequest) {
       { success: false, error: authorization.error },
       { status: authorization.status },
     )
+  }
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.active) {
+    return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
   }
 
   try {

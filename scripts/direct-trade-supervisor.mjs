@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
+import { lstatSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -14,6 +15,7 @@ const pollMs = Math.max(1_000, Math.min(15_000, Number(process.env.CTS_DIRECT_TR
 const workerHeapMb = Math.max(128, Math.min(2_048, Number(process.env.CTS_DIRECT_TRADE_WORKER_HEAP_MB) || 256))
 const children = new Map()
 let stopping = false
+let maintenanceObserved = false
 
 function log(message) {
   console.log(`[${new Date().toISOString()}] [Direct-Trade Supervisor] ${message}`)
@@ -22,6 +24,17 @@ function log(message) {
 function validConnectionId(value) {
   const id = typeof value === "string" ? value.trim() : ""
   return /^[A-Za-z0-9._:-]{1,160}$/.test(id) ? id : null
+}
+
+function runtimeMaintenanceActive() {
+  const runtimeDir = path.resolve(process.env.CTS_RUNTIME_DIR || path.join(process.cwd(), ".cts-runtime"))
+  const markerPath = path.join(runtimeDir, "maintenance-stop")
+  try {
+    lstatSync(markerPath)
+    return true
+  } catch (error) {
+    return error?.code !== "ENOENT"
+  }
 }
 
 function startWorker(connectionId) {
@@ -96,6 +109,15 @@ async function desiredConnections() {
 }
 
 async function reconcile() {
+  if (runtimeMaintenanceActive()) {
+    if (!maintenanceObserved) log("runtime maintenance stop is active; suppressing all connection workers")
+    maintenanceObserved = true
+    for (const connectionId of [...children.keys()]) stopWorker(connectionId)
+    return
+  }
+  if (maintenanceObserved) log("runtime maintenance stop cleared; resuming worker reconciliation")
+  maintenanceObserved = false
+
   const desired = await desiredConnections()
   // Recovery owns priority. Every scope with non-terminal positions gets a
   // worker, as does a terminal live row whose exact exchange settlement is

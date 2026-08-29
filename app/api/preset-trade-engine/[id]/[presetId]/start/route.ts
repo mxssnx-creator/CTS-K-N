@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 export async function POST(
@@ -7,6 +8,11 @@ export async function POST(
   { params }: { params: Promise<{ id: string; presetId: string }> }
 ) {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
+
     const { id: connectionId, presetId } = await params
     
     await SystemLogger.logTradeEngine(

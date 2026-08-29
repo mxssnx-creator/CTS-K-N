@@ -8,6 +8,7 @@
  */
 
 import { isServerlessDeploymentRuntime, hasExplicitServerlessForegroundOptIn } from "./deployment-runtime"
+import { getRuntimeMaintenanceState } from "./runtime-maintenance"
 
 async function loadRedisDb() {
   return import("./redis-db")
@@ -58,6 +59,7 @@ function shouldArmInProcessMonitor(): boolean {
   // default. Serverless/edge deployments still use the awaited healing sweep
   // and deployment cron because timers are not durable after responses return.
   if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART === "1") return false
+  if (getRuntimeMaintenanceState().active) return false
   return !isServerlessDeploymentRuntime()
 }
 
@@ -151,6 +153,15 @@ async function processQueuedEngineRefreshRequests(
  * recurring timer in long-lived/dedicated worker modes.
  */
 export async function initializeTradeEngineAutoStart(): Promise<void> {
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.active) {
+    stopConnectionMonitoring()
+    console.warn(
+      `[v0] [Auto-Start] Initialization skipped — runtime maintenance stop is active (${maintenance.reason})`,
+    )
+    return
+  }
+
   if (autoStartInitialized) {
     console.warn("[v0] [Auto-Start] Already initialized, skipping")
     if (!autoStartTimer && shouldArmInProcessMonitor()) {
@@ -228,6 +239,16 @@ export async function runTradeEngineHealingSweep(
   options: boolean | HealingSweepOptions,
 ): Promise<HealingSweepResult> {
   const normalized = normalizeHealingSweepOptions(options)
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.active) {
+    stopConnectionMonitoring()
+    return {
+      startedCount: 0,
+      eligibleCount: 0,
+      skipped: "runtime_maintenance_stop",
+      error: `Runtime maintenance stop is active (${maintenance.reason}).`,
+    }
+  }
 
   if (healingSweepInFlight) {
     return healingSweepInFlight.finally(() => {
@@ -245,6 +266,17 @@ export async function runTradeEngineHealingSweep(
 
 async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOptions): Promise<HealingSweepResult> {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      stopConnectionMonitoring()
+      return {
+        startedCount: 0,
+        eligibleCount: 0,
+        skipped: "runtime_maintenance_stop",
+        error: `Runtime maintenance stop is active (${maintenance.reason}).`,
+      }
+    }
+
     const { checkProductionReadiness } = await import("./production-readiness")
     const readiness = await checkProductionReadiness({ requireConnectionCredentials: false })
     if (!readiness.ready) {

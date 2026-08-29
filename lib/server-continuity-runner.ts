@@ -16,6 +16,7 @@
 import { createInternalCronRequest } from "@/lib/cron-auth"
 import { getEngineTimings } from "@/lib/engine-timings"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 
 type ContinuityGlobal = typeof globalThis & {
   __cts_continuity_runner?: {
@@ -54,12 +55,14 @@ function shouldSkipInProcessTimers(): boolean {
   // default. Serverless/edge deployments still use deployment cron because
   // in-process timers are not durable after responses return.
   if (process.env.DISABLE_IN_PROCESS_CONTINUITY === "1") return true
+  if (getRuntimeMaintenanceState().active) return true
   return isServerlessDeploymentRuntime()
 }
 
 export async function enqueueContinuityIndicationJob(): Promise<void> {
   const state = g.__cts_continuity_runner
   if (!state || state.indicationInFlight) return
+  if (getRuntimeMaintenanceState().active) return
   // An explicit auto-start disable means the operator/test harness will choose
   // when the first manager generation begins. Starting the portable fallback
   // anyway made a long pre-warm silently launch a second Base→Main→Real matrix
@@ -85,6 +88,7 @@ export async function enqueueContinuityIndicationJob(): Promise<void> {
 export async function enqueueContinuityAutoStartJob(): Promise<void> {
   const state = g.__cts_continuity_runner
   if (!state || state.autoStartInFlight) return
+  if (getRuntimeMaintenanceState().active) return
   if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART === "1") return
   state.autoStartInFlight = true
   try {
@@ -105,6 +109,7 @@ export async function enqueueContinuityAutoStartJob(): Promise<void> {
 export async function enqueueContinuityLiveRecoveryJob(): Promise<void> {
   const state = g.__cts_continuity_runner
   if (!state || state.liveRecoveryInFlight) return
+  if (getRuntimeMaintenanceState().active) return
   state.liveRecoveryInFlight = true
   try {
     const { runLivePositionRecoverySweep } = await import("@/app/api/cron/sync-live-positions/route")
@@ -136,6 +141,7 @@ export async function enqueueContinuityLiveRecoveryJob(): Promise<void> {
 
 /** One portable minute tick for indication generation and intent healing. */
 export async function enqueueContinuityMinuteJob(): Promise<void> {
+  if (getRuntimeMaintenanceState().active) return
   const startedAt = Date.now()
   await Promise.all([
     enqueueContinuityAutoStartJob(),
@@ -172,6 +178,13 @@ export function startServerContinuityRunner(): void {
 
   const state = g.__cts_continuity_runner
   if (state.started) return
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.active) {
+    console.warn(
+      `[v0] [Continuity] Server runner suppressed — runtime maintenance stop is active (${maintenance.reason})`,
+    )
+    return
+  }
   state.started = true
 
   if (shouldSkipInProcessTimers()) {

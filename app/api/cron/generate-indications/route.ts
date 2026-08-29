@@ -37,6 +37,7 @@ import {
   getCanonicalPipelineAdmission,
   type CanonicalPipelineAdmission,
 } from "@/lib/canonical-pipeline-admission"
+import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -462,6 +463,18 @@ async function acknowledgeProcessedSettingsGeneration(
 export async function GET(request: Request) {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.active) {
+    return NextResponse.json({
+      success: true,
+      generated: 0,
+      connections: 0,
+      skipped: true,
+      reason: "runtime_maintenance_stop",
+      maintenance: true,
+      timestamp: Date.now(),
+    })
+  }
 
   // ── Same-process guard ──────────────────────────────────────────────────────
   if (_cronInFlight) {

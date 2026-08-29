@@ -275,12 +275,12 @@ export function QuickstartTestProcedureDialog() {
       const data = await res.json().catch(() => ({}))
       const duration = Date.now() - startTime
 
-      if (res.ok || data.success) {
+      if (res.ok && data.success !== false) {
         return { ...step, status: "success", result: data, duration }
       } else {
         return {
           ...step,
-          status: "warning",
+          status: "error",
           result: data,
           duration,
           error: data.error || `HTTP ${res.status}`,

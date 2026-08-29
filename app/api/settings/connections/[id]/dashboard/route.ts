@@ -4,6 +4,7 @@ import { parseBooleanInput } from "@/lib/boolean-utils"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 // Legacy alias for dashboard state. The primary UI uses toggle-dashboard, but
 // this route follows the same durable generation/refresh contract so older
@@ -17,6 +18,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: "Missing required is_dashboard_active flag" }, { status: 400 })
     }
     const enabled = parseBooleanInput(body.is_dashboard_active)
+    const maintenance = getRuntimeMaintenanceState()
+    if (enabled && maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
 
     await initRedis()
     const connection = await getConnection(id)

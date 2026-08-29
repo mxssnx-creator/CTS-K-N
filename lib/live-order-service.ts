@@ -17,6 +17,11 @@ import type { ExchangeConnection } from "@/lib/types"
 import { resolveExecutableQuantity } from "@/lib/order-quantity"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
+import {
+  getRuntimeMaintenanceState,
+  RUNTIME_MAINTENANCE_STOP_CODE,
+  RUNTIME_MAINTENANCE_STOP_MESSAGE,
+} from "@/lib/runtime-maintenance"
 
 export const LIVE_ORDER_REDIS_KEYS = {
   orderIntent: "settings:orders (via getSettings/setSettings('orders'))",
@@ -59,6 +64,37 @@ export interface PlaceLiveOrderInput {
   positionDirection?: LiveOrderDirection
   reduceOnly?: boolean
   clientOrderId?: string
+}
+
+const VST_SOAK_CONFIRMATION = "I understand Prod-VST places authenticated orders with virtual funds"
+const APPROVED_BINGX_VST_ORIGINS = new Set([
+  "https://open-api-vst.bingx.com",
+  "https://open-api-vst.bingx.pro",
+])
+
+function isAuthorizedMaintenanceVstSoakExposure(input: PlaceLiveOrderInput): boolean {
+  const connection = input.connection as Record<string, unknown> | null | undefined
+  const connectionId = String(input.connectionId || "")
+  const exchange = String(connection?.exchange || connection?.exchange_type || "").toLowerCase()
+  const testnet = isTruthyFlag(connection?.is_testnet) || isTruthyFlag(connection?.demo_mode)
+  let environment: Record<string, unknown> | null = null
+  try {
+    environment = input.connector?.getEnvironmentInfo?.() || null
+  } catch {
+    return false
+  }
+  return (
+    process.env.BINGX_VST_SOAK_CONFIRM === VST_SOAK_CONFIRMATION &&
+    /^bingx-vst-soak-[A-Za-z0-9_-]+$/.test(connectionId) &&
+    exchange.includes("bingx") &&
+    testnet &&
+    input.connector != null &&
+    environment?.environment === "prod-vst" &&
+    APPROVED_BINGX_VST_ORIGINS.has(String(environment?.baseUrl || "").replace(/\/$/, "")) &&
+    environment?.isDemo === true &&
+    environment?.usesVirtualFunds === true &&
+    input.safetyPayload?.confirmLiveOrderPlacement === true
+  )
 }
 
 const DIRECT_ORDER_CONTROL_TTL_SECONDS = 60 * 60 * 24 * 30
@@ -1234,6 +1270,18 @@ export async function persistLiveOrderPosition(input: { connectionId: string; sy
 }
 
 export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
+  const maintenance = getRuntimeMaintenanceState()
+  if (
+    maintenance.active &&
+    input.reduceOnly !== true &&
+    !isAuthorizedMaintenanceVstSoakExposure(input)
+  ) {
+    throw Object.assign(new Error(RUNTIME_MAINTENANCE_STOP_MESSAGE), {
+      statusCode: 503,
+      mode: RUNTIME_MAINTENANCE_STOP_CODE,
+    })
+  }
+
   validateLiveOrderQuantity(input)
   const connection = input.connection || await loadLiveOrderConnection(input.connectionId)
   const symbol = normalizeOrderSymbol(input.symbol)

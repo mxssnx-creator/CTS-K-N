@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { initRedis, getAllConnections, updateConnection, getRedisClient, setSettings } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -19,6 +20,10 @@ export const dynamic = "force-dynamic"
  */
 export async function POST(request: Request) {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
     const body = await request.json().catch(() => ({}))
     const { api_key, api_secret, exchange = "bingx" } = body
 

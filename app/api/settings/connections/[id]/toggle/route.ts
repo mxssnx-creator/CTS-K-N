@@ -3,6 +3,7 @@ import { SystemLogger } from "@/lib/system-logger"
 import { initRedis, getConnection, updateConnection } from "@/lib/redis-db"
 import { parseBooleanInput, toRedisFlag } from "@/lib/boolean-utils"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 // POST toggle connection enabled status
 // NOTE: Trade engines DO NOT start here
@@ -16,6 +17,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const connectionId = id
     const body = await request.json()
     const isEnabled = parseBooleanInput(body?.is_enabled)
+    const maintenance = getRuntimeMaintenanceState()
+    if (isEnabled && maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
 
     console.log("[v0] [Toggle] Toggling connection enabled:", connectionId, "enabled:", isEnabled)
 

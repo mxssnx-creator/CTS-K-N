@@ -6,6 +6,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
 import { getTradeEngine } from "@/lib/trade-engine"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { toRedisFlag } from "@/lib/boolean-utils"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 import {
   DEFAULT_TRAILING_VARIANTS,
@@ -43,6 +44,7 @@ import {
   CANONICAL_FORCED_SYMBOLS,
   withCanonicalForcedSymbols,
 } from "@/lib/forced-symbols"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -51,6 +53,27 @@ const FALLBACK_SYMBOLS = [
   "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT", "INJUSDT",
   "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
 ]
+
+const RUNTIME_ENABLE_FIELDS = [
+  "is_enabled",
+  "is_active",
+  "is_enabled_dashboard",
+  "is_live_trade",
+  "live_trade_enabled",
+  "live_trade_requested",
+  "is_preset_trade",
+  "preset_trade_requested",
+  "is_signal_trade",
+  "signal_trade_enabled",
+  "signal_trade_requested",
+] as const
+
+function requestsRuntimeEnable(...records: unknown[]): boolean {
+  return records.some((record) =>
+    record != null
+    && typeof record === "object"
+    && RUNTIME_ENABLE_FIELDS.some((field) => isTruthyFlag((record as Record<string, unknown>)[field])))
+}
 
 // Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below.
 export const dynamic = "force-dynamic"
@@ -567,6 +590,11 @@ export async function PUT(
   try {
     const { id } = await params
     const body = await request.json()
+    const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active && requestsRuntimeEnable(body, incomingSettings)) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
 
     await initRedis()
     const connection = await getConnection(id)
@@ -577,7 +605,6 @@ export async function PUT(
 
     // Merge settings with existing (like PATCH does)
     const currentSettings = parseStoredConnectionSettings(connection.connection_settings)
-    const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
     const mergedSettings = normalizeUnlimitedPipeline(normalizeIdentityVolumeFactors(
       mergeConnectionSettings(currentSettings, incomingSettings),
     ))
@@ -718,6 +745,10 @@ export async function PATCH(
   try {
     const { id } = await params
     const requestSettings = await request.json() as Record<string, any>
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active && requestsRuntimeEnable(requestSettings)) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
     const incomingIndicationChannels = requestSettings.indication_channels
     const settings: Record<string, any> = { ...requestSettings }
     delete settings.indication_channels

@@ -442,7 +442,9 @@ export function DashboardActiveConnectionsManager() {
       updateActiveConnections(prev => prev.map(ac =>
         ac.connectionId === connectionId ? { ...ac, isActive: currentState } : ac
       ))
-      toast.error("Failed to update connection status")
+      toast.error("Failed to update connection status", {
+        description: error instanceof Error ? error.message : "Unknown error",
+      })
     } finally {
       setTogglingIds(prev => {
         const next = new Set(prev)
