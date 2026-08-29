@@ -55,14 +55,29 @@ interface SystemHealth {
     enabled: boolean
     protocol: string
     endpoint: string
-    heartbeat: string
+    heartbeat: string | null
   }
 }
 
 async function readData<T>(response: Response): Promise<T | null> {
   if (!response.ok) return null
   const payload = await response.json()
-  return (payload?.data ?? payload) as T
+  const data = payload?.data ?? payload
+  // Several control-plane endpoints use an envelope whose operational state
+  // is top-level while the measured fields live under `data`. Preserve that
+  // state when unwrapping; dropping it made StateBadge call toLowerCase() on
+  // undefined and crashed the whole advanced-monitor page.
+  if (
+    data &&
+    typeof data === "object" &&
+    payload &&
+    typeof payload === "object" &&
+    !("status" in data) &&
+    typeof payload.status === "string"
+  ) {
+    return { ...data, status: payload.status } as T
+  }
+  return data as T
 }
 
 function MetricTile({ label, value, tone = "primary" }: { label: string; value: string | number; tone?: "primary" | "info" | "success" | "warning" }) {
@@ -81,8 +96,9 @@ function MetricTile({ label, value, tone = "primary" }: { label: string; value: 
   )
 }
 
-function StateBadge({ state }: { state: string }) {
-  const normalized = state.toLowerCase()
+function StateBadge({ state }: { state?: string | null }) {
+  const displayedState = state || "unknown"
+  const normalized = displayedState.toLowerCase()
   const className = normalized === "healthy" || normalized === "completed" || normalized === "active"
     ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
     : normalized === "degraded" || normalized === "running"
@@ -91,7 +107,7 @@ function StateBadge({ state }: { state: string }) {
         ? "border-destructive/30 bg-destructive/10 text-destructive"
         : "border-border bg-muted text-muted-foreground"
 
-  return <Badge variant="outline" className={className}>{state}</Badge>
+  return <Badge variant="outline" className={className}>{displayedState}</Badge>
 }
 
 export default function MonitoringAdvancedPage() {
@@ -203,7 +219,7 @@ export default function MonitoringAdvancedPage() {
             <div className="flex flex-wrap gap-x-6 gap-y-2 border-t pt-3 text-xs text-muted-foreground">
               <span>Protocol: <strong className="font-mono text-foreground">{systemHealth.sse.protocol}</strong></span>
               <span>Endpoint: <strong className="font-mono text-foreground">{systemHealth.sse.endpoint}</strong></span>
-              <span>Heartbeat: <strong className="font-mono text-foreground">{systemHealth.sse.heartbeat}</strong></span>
+              <span>Heartbeat: <strong className="font-mono text-foreground">{systemHealth.sse.heartbeat || "bounded reconnect"}</strong></span>
             </div>
           </CardContent>
         </Card>
