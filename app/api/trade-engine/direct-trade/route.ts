@@ -64,6 +64,12 @@ import {
   directTradeKeyspace,
   normalizeDirectTradeConnectionId,
 } from "@/lib/direct-trade-keyspace"
+import {
+  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
+  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
+  DIRECT_TRADE_LIVE_EXECUTION_READY,
+  directTradeLiveExecutionReadiness,
+} from "@/lib/direct-trade-live-readiness"
 
 const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
@@ -817,6 +823,7 @@ export async function GET(request: NextRequest) {
       connectionId,
       exchange: exchange || null,
       state,
+      liveExecutionReadiness: directTradeLiveExecutionReadiness(),
       stats,
       // The full historic grid is deliberately not returned here. Its compact
       // evaluation totals and paged Statistics read model live alongside it;
@@ -904,6 +911,12 @@ export async function POST(request: NextRequest) {
       if (newState.liveMode && !newState.connectionId) {
         return NextResponse.json({ error: "Select a live exchange connection before starting Direct-Trade live execution" }, { status: 409 })
       }
+      if (newState.liveMode && !DIRECT_TRADE_LIVE_EXECUTION_READY) {
+        return NextResponse.json({
+          error: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
+          code: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
+        }, { status: 409 })
+      }
       await setState(newState, scopeConnectionId || newState.connectionId)
       return NextResponse.json({ success: true, state: newState, message: "Direct-Trade started" })
     }
@@ -921,6 +934,12 @@ export async function POST(request: NextRequest) {
         : currentState.connectionId
       if (liveMode && !connectionId) {
         return NextResponse.json({ error: "Select a live exchange connection before enabling Direct-Trade live execution" }, { status: 409 })
+      }
+      if (liveMode && !DIRECT_TRADE_LIVE_EXECUTION_READY) {
+        return NextResponse.json({
+          error: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
+          code: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
+        }, { status: 409 })
       }
       const newState: DirectTradeState = {
         ...currentState,
