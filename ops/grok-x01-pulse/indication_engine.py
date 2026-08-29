@@ -52,7 +52,7 @@ class SignalEval:
 class Indication:
     symbol: str
     direction: str
-    mode: str  # multi_source_consensus | direct_source
+    mode: str  # multi_source_consensus | direct_source | tf_combined | direct_tf
     confidence: float
     strength: float
     agreement: float
@@ -65,6 +65,8 @@ class Indication:
     votes_short: int
     primary: bool
     t: float
+    timeframe: str = ""
+    kind: str = "state"
 
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
@@ -81,7 +83,31 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "takeProfitMaxPct": 5.0,
     "extraSources": True,
     "positionCostPct": 0.1,
+    "tf1m": True,
+    "tf5m": True,
+    "tf15m": True,
+    "tfCombined": True,
+    "tfMinAgree": 2,
+    "typeState": True,
+    "typeDirection": True,
+    "typeMove": True,
+    "typeActive": True,
+    "typeCommon": True,
+    "typeSignals": True,
+    "dirRange": 10,
+    "dirMinChange": 0.001,
+    "moveRange": 10,
+    "moveMinChange": 0.001,
+    "activeOutbreak": [3, 5, 10],
+    "activeThreshold": 1.0,
+    "activeNoise": 0.0005,
+    "activeMovePct": 0.5,
+    "activeVolatilityWeight": 0.3,
 }
+
+TIMEFRAMES = ("1m", "5m", "15m")
+TF_SECONDS = {"1m": 60.0, "5m": 300.0, "15m": 900.0}
+TF_WEIGHT = {"1m": 0.85, "5m": 1.0, "15m": 1.2}
 
 
 def ema(values: List[float], period: int) -> float:
@@ -137,9 +163,10 @@ def recent_return(closes: List[float], periods: int) -> float:
     return cur / prev - 1.0 if prev > 0 else 0.0
 
 
-def bars_to_candles(bars: List[List[float]], now: Optional[float] = None) -> List[Candle]:
+def bars_to_candles(bars: List[List[float]], now: Optional[float] = None, period_s: float = 60.0) -> List[Candle]:
     now = now or time.time()
     n = len(bars)
+    step = period_s if period_s > 0 else 60.0
     out: List[Candle] = []
     for i, b in enumerate(bars):
         if len(b) < 5:
@@ -147,7 +174,7 @@ def bars_to_candles(bars: List[List[float]], now: Optional[float] = None) -> Lis
         o, h, l, c, v = (float(b[0]), float(b[1]), float(b[2]), float(b[3]), float(b[4]))
         if o <= 0 or c <= 0 or h <= 0 or l <= 0:
             continue
-        out.append(Candle(now - (n - 1 - i) * 60.0, o, h, l, c, v))
+        out.append(Candle(now - (n - 1 - i) * step, o, h, l, c, v))
     return out
 
 
@@ -366,6 +393,403 @@ def low_stop_consensus(
     return direction, contributors, risk
 
 
+def _closes(bars: List[List[float]]) -> List[float]:
+    return [float(b[3]) for b in bars if len(b) >= 4 and float(b[3]) > 0]
+
+
+def _dir_of(pxs: List[float]) -> float:
+    if len(pxs) < 2 or pxs[0] <= 0:
+        return 0.0
+    return (pxs[-1] - pxs[0]) / pxs[0]
+
+
+def _pct(from_px: float, to_px: float) -> float:
+    if from_px <= 0:
+        return 0.0
+    return ((to_px - from_px) / from_px) * 100.0
+
+
+def ema_series(values: List[float], period: int) -> List[float]:
+    if not values:
+        return []
+    alpha = 2.0 / (period + 1)
+    out = [values[0]]
+    for v in values[1:]:
+        out.append(v * alpha + out[-1] * (1.0 - alpha))
+    return out
+
+
+def evaluate_independent_directions(
+    signed: List[float],
+    *,
+    min_evidence: int = 1,
+    min_agreement: float = 0.0,
+) -> Dict[str, Any]:
+    """CTS directional-evaluation: Long and Short scored independently. Tie = none."""
+    ev = [float(v) for v in signed if v == v and v != 0]
+    def lane(sign: str) -> Dict[str, Any]:
+        aligned = [v for v in ev if (v > 0 if sign == "long" else v < 0)]
+        score = sum(abs(v) for v in aligned)
+        n = len(aligned)
+        total = max(1, len(ev))
+        agr = n / total
+        avg = score / max(1, n)
+        ok = n >= min_evidence and agr >= min_agreement and score > 0
+        return {"direction": sign, "evidence": n, "agreement": agr, "score": score, "avg": avg, "ok": ok}
+    long = lane("long")
+    short = lane("short")
+    selected = None
+    if long["ok"] and short["ok"]:
+        if long["score"] != short["score"]:
+            selected = "long" if long["score"] > short["score"] else "short"
+    elif long["ok"]:
+        selected = "long"
+    elif short["ok"]:
+        selected = "short"
+    return {"long": long, "short": short, "selected": selected, "margin": abs(long["score"] - short["score"])}
+
+
+def _kind_indication(
+    symbol: str,
+    kind: str,
+    direction: str,
+    strength: float,
+    px: float,
+    settings: Dict[str, Any],
+    sources: List[str],
+    *,
+    sl_pct: Optional[float] = None,
+    tp_pct: Optional[float] = None,
+    agreement: float = 1.0,
+    timeframe: str = "1m",
+    mode: Optional[str] = None,
+    conf: Optional[float] = None,
+) -> Indication:
+    sl_min = float(settings.get("stopLossMinPct", 0.2))
+    sl_max = float(settings.get("stopLossMaxPct", 1.5))
+    sl = clamp(sl_pct if sl_pct is not None else sl_min * 1.4, sl_min, sl_max)
+    rr = float(settings.get("takeProfitRewardRisk", 1.8))
+    tp = clamp(tp_pct if tp_pct is not None else sl * rr, sl * 1.1, float(settings.get("takeProfitMaxPct", 5.0)))
+    confidence = conf if conf is not None else clamp(0.52 + min(0.47, strength * 0.9), 0.5, 0.99)
+    now = time.time()
+    return Indication(
+        symbol=symbol,
+        direction=direction,
+        mode=mode or kind,
+        confidence=confidence,
+        strength=clamp(strength, 0.0, 1.0),
+        agreement=clamp(agreement, 0.0, 1.0),
+        stop_loss_pct=sl,
+        take_profit_pct=tp,
+        reward_risk=tp / sl if sl else rr,
+        last_price=px,
+        sources=sources,
+        votes_long=1 if direction == "long" else 0,
+        votes_short=1 if direction == "short" else 0,
+        primary=False,
+        t=now,
+        timeframe=timeframe,
+        kind=kind,
+    )
+
+
+def evaluate_direction(symbol: str, closes: List[float], settings: Dict[str, Any]) -> Optional[Indication]:
+    """CTS Direction: two equal windows, opposite sign, independent Long/Short on the new window."""
+    rng = max(4, int(settings.get("dirRange") or 10))
+    if len(closes) < rng * 2:
+        return None
+    first = closes[-(rng * 2) : -rng]
+    second = closes[-rng:]
+    d1 = _dir_of(first)
+    d2 = _dir_of(second)
+    min_ch = float(settings.get("dirMinChange") or 0.001)
+    if abs(d1) < min_ch or abs(d2) < min_ch:
+        return None
+    if d1 * d2 >= 0:
+        return None
+    steps = [second[i] - second[i - 1] for i in range(1, len(second))]
+    ev = evaluate_independent_directions(steps, min_evidence=1, min_agreement=0.5)
+    want = "long" if d2 > 0 else "short"
+    if ev["selected"] and ev["selected"] != want:
+        return None
+    strength = clamp(abs(d1) + abs(d2), 0.0, 1.0)
+    agr = float((ev.get(want) or {}).get("agreement") or 1.0)
+    return _kind_indication(
+        symbol, "direction", want, strength, closes[-1], settings, [f"dir:{rng}"],
+        agreement=agr, mode="direction",
+    )
+
+
+def evaluate_move(symbol: str, closes: List[float], settings: Dict[str, Any]) -> Optional[Indication]:
+    """CTS Move: same-window displacement, independent direction agrees with the net move."""
+    rng = max(4, int(settings.get("moveRange") or 10))
+    if len(closes) < rng:
+        return None
+    window = closes[-rng:]
+    d = _dir_of(window)
+    min_ch = float(settings.get("moveMinChange") or 0.001)
+    if abs(d) < min_ch:
+        return None
+    steps = [window[i] - window[i - 1] for i in range(1, len(window))]
+    ev = evaluate_independent_directions(steps, min_evidence=1, min_agreement=0.45)
+    want = "long" if d > 0 else "short"
+    if ev["selected"] and ev["selected"] != want:
+        return None
+    strength = clamp(abs(d) * 25.0, 0.0, 1.0)
+    agr = float((ev.get(want) or {}).get("agreement") or 1.0)
+    return _kind_indication(
+        symbol, "move", want, strength, closes[-1], settings, [f"move:{rng}"],
+        agreement=agr, mode="move",
+    )
+
+
+def _avg_abs_move_pct(values: List[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    tot = n = 0.0
+    for i in range(1, len(values)):
+        tot += abs(_pct(values[i - 1], values[i]))
+        n += 1
+    return tot / n if n else 0.0
+
+
+def _dir_agree(values: List[float], direction: str) -> float:
+    if len(values) < 2:
+        return 0.0
+    aligned = 0
+    for i in range(1, len(values)):
+        mv = values[i] - values[i - 1]
+        if (direction == "long" and mv > 0) or (direction == "short" and mv < 0):
+            aligned += 1
+    return aligned / max(1, len(values) - 1)
+
+
+def _mae_pct(values: List[float], direction: str) -> float:
+    if len(values) < 2:
+        return 0.0
+    extreme = values[0]
+    maximum = 0.0
+    for v in values[1:]:
+        if direction == "long":
+            extreme = max(extreme, v)
+            maximum = max(maximum, max(0.0, -_pct(extreme, v)))
+        else:
+            extreme = min(extreme, v)
+            maximum = max(maximum, max(0.0, _pct(extreme, v)))
+    return maximum
+
+
+def _range_pct(values: List[float]) -> float:
+    if not values or values[0] <= 0:
+        return 0.0
+    return ((max(values) - min(values)) / values[0]) * 100.0
+
+
+def evaluate_active_range(symbol: str, closes: List[float], rng: int, settings: Dict[str, Any]) -> Optional[Indication]:
+    """CTS Active/Outbreak for one range: current window vs previous equal window."""
+    rng = max(2, int(rng))
+    need = rng * 2 + 1
+    if len(closes) < need:
+        return None
+    sample = closes[-need:]
+    previous = sample[: rng + 1]
+    current = sample[rng:]
+    newest = current[-1]
+    signed = _pct(current[0], newest)
+    price_chg = abs(signed)
+    threshold = max(0.01, float(settings.get("activeMovePct") or 0.5))
+    if price_chg + 1e-12 < threshold:
+        return None
+    direction = "long" if signed >= 0 else "short"
+    steps_pct = [_pct(current[i], current[i + 1]) for i in range(len(current) - 1)]
+    ev = evaluate_independent_directions(steps_pct, min_evidence=1, min_agreement=0.45)
+    if ev["selected"] and ev["selected"] != direction:
+        return None
+    prev_act = _avg_abs_move_pct(previous)
+    cur_act = _avg_abs_move_pct(current)
+    activity_ratio = cur_act / max(prev_act, 1e-6)
+    min_act = max(0.0, float(settings.get("activeThreshold") or 1.0))
+    if activity_ratio + 1e-12 < min_act:
+        return None
+    ref = sample[:-1]
+    ref_hi, ref_lo = max(ref), min(ref)
+    breakout = max(0.0, _pct(ref_hi, newest)) if direction == "long" else max(0.0, -_pct(ref_lo, newest))
+    noise = max(0.0, float(settings.get("activeNoise") or 0.05))
+    if noise <= 0.02:
+        noise *= 100.0
+    if breakout + 1e-12 < noise:
+        return None
+    agr = _dir_agree(current, direction)
+    tail_n = max(2, int(len(current) * 0.5 + 0.999))
+    tail_agr = _dir_agree(current[-tail_n:], direction)
+    if tail_agr < 0.5:
+        return None
+    mae = _mae_pct(current, direction)
+    if mae > max(noise, price_chg * 1.0):
+        return None
+    vol_w = clamp(float(settings.get("activeVolatilityWeight") or 0.3), 0.0, 1.0)
+    cost = max(0.02, float(settings.get("positionCostPct") or 0.1))
+    vol_risk = max(cost * 2.0, cur_act * (0.75 + vol_w * 0.75))
+    sl = clamp(max(cost * 2.0, vol_risk), float(settings.get("stopLossMinPct", 0.2)), float(settings.get("stopLossMaxPct", 1.5)))
+    tp = clamp(max(cost * 3.0, price_chg * 1.25, sl * 1.1), sl * 1.1, float(settings.get("takeProfitMaxPct", 5.0)))
+    n_move = price_chg / threshold
+    n_brk = breakout / max(noise, 0.01)
+    acc = max(0.0, activity_ratio - min_act)
+    score = max(
+        0.0,
+        1.0
+        + (n_move * 0.34 + n_brk * 0.2 + acc * (0.18 + vol_w * 0.22) + agr * 0.14 + tail_agr * 0.14)
+        - (mae / max(price_chg, 0.01)) * 0.25,
+    )
+    conf = clamp(
+        0.2
+        + min(1.0, n_move / 2) * 0.25
+        + min(1.0, n_brk / 2) * 0.2
+        + min(1.0, activity_ratio / max(1.0, min_act * 2)) * 0.2
+        + agr * 0.1
+        + tail_agr * 0.05,
+        0.0,
+        0.99,
+    )
+    if conf < float(settings.get("minimumConfidence", 0.6)) * 0.85:
+        return None
+    return _kind_indication(
+        symbol, "active", direction, clamp(score / 4.0, 0, 1), newest, settings,
+        [f"active:{rng}", f"brk:{breakout:.3f}", f"act:{activity_ratio:.2f}"],
+        sl_pct=sl, tp_pct=tp, agreement=agr, mode=f"outbreak:{rng}", conf=conf,
+    )
+
+
+def evaluate_active(symbol: str, closes: List[float], settings: Dict[str, Any]) -> Optional[Indication]:
+    outbreaks = settings.get("activeOutbreak") or [3, 5, 10]
+    best: Optional[Indication] = None
+    for raw in outbreaks:
+        cand = evaluate_active_range(symbol, closes, int(raw), settings)
+        if cand and (best is None or cand.confidence > best.confidence):
+            best = cand
+    return best
+
+
+def evaluate_active_all(symbol: str, closes: List[float], settings: Dict[str, Any]) -> List[Indication]:
+    """Independent Active indication per outbreak range (3 / 5 / 10)."""
+    out: List[Indication] = []
+    for raw in (settings.get("activeOutbreak") or [3, 5, 10]):
+        cand = evaluate_active_range(symbol, closes, int(raw), settings)
+        if cand:
+            out.append(cand)
+    return out
+
+
+def bollinger(closes: List[float], period: int = 20) -> Optional[Tuple[float, float, float]]:
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    mid = sum(window) / period
+    var = sum((x - mid) ** 2 for x in window) / period
+    sd = var ** 0.5
+    return mid + 2 * sd, mid, mid - 2 * sd
+
+
+def evaluate_common(symbol: str, candles: List[Candle], settings: Dict[str, Any]) -> Optional[Indication]:
+    """CTS Common / indication-stage: RSI + MACD + EMA + Bollinger, independent of State."""
+    if len(candles) < 26:
+        return None
+    closes = [c.close for c in candles]
+    latest = candles[-1]
+    r = rsi(closes, 14)
+    macd_fast = ema_series(closes, 12)
+    macd_slow = ema_series(closes, 26)
+    macd_line = [a - b for a, b in zip(macd_fast, macd_slow)]
+    signal_line = ema_series(macd_line, 9)
+    macd = macd_line[-1]
+    macd_sig = signal_line[-1] if signal_line else 0.0
+    hist = macd - macd_sig
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
+    ema200 = ema(closes, 200) if len(closes) >= 80 else ema50
+    bb = bollinger(closes, 20)
+    buy = sell = 0
+    if r < 30:
+        buy += 1
+    if r > 70:
+        sell += 1
+    if hist > 0 and macd > macd_sig:
+        buy += 1
+    if hist < 0 and macd < macd_sig:
+        sell += 1
+    if ema20 > ema50:
+        buy += 1
+    if ema20 < ema50:
+        sell += 1
+    if bb:
+        upper, mid, lower = bb
+        if latest.close <= lower:
+            buy += 1
+        if latest.close >= upper:
+            sell += 1
+    if buy == sell:
+        return None
+    direction = "long" if buy > sell else "short"
+    strength = max(buy, sell) / 4.0
+    if strength < float(settings.get("minimumStrength", 0.2)):
+        return None
+    conf = clamp(0.5 + strength * 0.45, 0.5, 0.99)
+    if conf < float(settings.get("minimumConfidence", 0.6)) * 0.9:
+        return None
+    return _kind_indication(
+        symbol, "common", direction, strength, latest.close, settings,
+        [f"rsi:{r:.1f}", f"macd:{hist:.5f}", "ema", "bb"],
+        agreement=strength, mode="rsi-macd-ema-bb", conf=conf,
+    )
+
+
+def combine_timeframes(
+    tf_evals: List[SignalEval],
+    min_agree: int,
+    settings: Dict[str, Any],
+) -> Optional[Tuple[str, List[SignalEval], Dict[str, float]]]:
+    """Independent TF votes folded into one comprehensive Indication."""
+    if len(tf_evals) < max(2, int(min_agree)):
+        return None
+    by = {"long": [e for e in tf_evals if e.direction == "long"], "short": [e for e in tf_evals if e.direction == "short"]}
+    long_w = sum(vote_weight(e, settings) for e in by["long"])
+    short_w = sum(vote_weight(e, settings) for e in by["short"])
+    total = long_w + short_w
+    if total <= 0 or long_w == short_w:
+        return None
+    direction = "long" if long_w > short_w else "short"
+    winners = by[direction]
+    if len(winners) < max(2, int(min_agree)):
+        return None
+    win_w = long_w if direction == "long" else short_w
+    agreement = win_w / total
+    ordered = sorted(winners, key=lambda e: (e.stop_loss_pct, -e.confidence))
+    sl = clamp(
+        sum(e.stop_loss_pct * vote_weight(e, settings) for e in ordered) / (sum(vote_weight(e, settings) for e in ordered) or 1e-12),
+        float(settings["stopLossMinPct"]),
+        float(settings["stopLossMaxPct"]),
+    )
+    rr = clamp(sum(e.reward_risk * vote_weight(e, settings) for e in winners) / win_w, 1.1, 5.0)
+    tp = clamp(
+        max(sl * rr, sum(e.take_profit_pct for e in ordered) / len(ordered)),
+        sl * 1.05,
+        float(settings["takeProfitMaxPct"]),
+    )
+    confidence = clamp(
+        agreement * 0.5 + sum(e.confidence for e in winners) / len(winners) * 0.5,
+        0.5,
+        0.99,
+    )
+    risk = {
+        "stopLossPct": sl,
+        "takeProfitPct": tp,
+        "rewardRisk": tp / sl if sl else rr,
+        "agreement": agreement,
+        "confidence": confidence,
+    }
+    return direction, winners, risk
+
+
 class ExtraBook:
     """Public 1m klines from Binance / Bybit — independent Signal lanes."""
 
@@ -458,6 +882,31 @@ class IndicationBook:
         s["stopLossAtrMultiplier"] = float(overlay.get("indAtrMult", s["stopLossAtrMultiplier"]))
         s["takeProfitRewardRisk"] = float(overlay.get("indRewardRisk", s["takeProfitRewardRisk"]))
         s["extraSources"] = bool(overlay.get("indExtraSources", s["extraSources"]))
+        s["tf1m"] = bool(overlay.get("tf1m", True))
+        s["tf5m"] = bool(overlay.get("tf5m", True))
+        s["tf15m"] = bool(overlay.get("tf15m", True))
+        s["tfCombined"] = bool(overlay.get("tfCombined", True))
+        s["tfMinAgree"] = int(overlay.get("tfMinAgree") or 2)
+        for key, ovk in (
+            ("typeState", "indTypeState"),
+            ("typeDirection", "indTypeDirection"),
+            ("typeMove", "indTypeMove"),
+            ("typeActive", "indTypeActive"),
+            ("typeCommon", "indTypeCommon"),
+            ("typeSignals", "indTypeSignals"),
+        ):
+            if ovk in overlay:
+                s[key] = bool(overlay.get(ovk))
+        s["dirRange"] = int(overlay.get("indDirRange") or s.get("dirRange") or 10)
+        s["moveRange"] = int(overlay.get("indMoveRange") or s.get("moveRange") or 10)
+        outbreaks = overlay.get("activeOutbreakRanges") or overlay.get("indActiveOutbreak")
+        if isinstance(outbreaks, (list, tuple)) and outbreaks:
+            s["activeOutbreak"] = [int(x) for x in outbreaks]
+        s["activeThreshold"] = float(overlay.get("indActiveThreshold") or s.get("activeThreshold") or 1.0)
+        noise = overlay.get("noise") or overlay.get("indActiveNoise") or s.get("activeNoise") or 0.0005
+        s["activeNoise"] = float(noise)
+        s["activeMovePct"] = float(overlay.get("indActiveMovePct") or overlay.get("activeMovePct") or 0.5)
+        s["activeVolatilityWeight"] = float(overlay.get("volWeight") or overlay.get("activeVolatilityWeight") or 0.3)
 
     def process(
         self,
@@ -469,21 +918,45 @@ class IndicationBook:
         sl_pct: float = 0.0048,
         tp_pct: float = 0.0075,
         want_extra: bool = False,
+        bars_by_tf: Optional[Dict[str, List[List[float]]]] = None,
     ) -> List[Indication]:
         if not self.settings.get("enabled", True):
             self.last[symbol] = []
             return []
-        candles = bars_to_candles(bars)
+        tf_map: Dict[str, List[List[float]]] = dict(bars_by_tf or {})
+        if bars and "1m" not in tf_map:
+            tf_map["1m"] = bars
         evals: List[SignalEval] = []
-        e = evaluate_signal_candles("bingx-swap", "BingX Swap", candles, self.settings)
-        if e:
-            evals.append(e)
-        ta = evaluate_ta_pack(candles, self.settings)
-        if ta:
-            evals.append(ta)
-        loc = evaluate_pulse_local(pulse_dir, pulse_conf, px or (candles[-1].close if candles else 0), self.settings, sl_pct, tp_pct)
-        if loc:
-            evals.append(loc)
+        tf_evals: List[SignalEval] = []
+        for tf in TIMEFRAMES:
+            flag = f"tf{tf}"
+            if not self.settings.get(flag, True):
+                continue
+            rows = tf_map.get(tf) or []
+            if len(rows) < 20:
+                continue
+            candles = bars_to_candles(rows, period_s=TF_SECONDS[tf])
+            ev = evaluate_signal_candles(
+                f"bingx-{tf}",
+                f"BingX {tf}",
+                candles,
+                self.settings,
+                weight=TF_WEIGHT[tf],
+            )
+            if ev:
+                evals.append(ev)
+                tf_evals.append(ev)
+            if tf == "1m":
+                loc = evaluate_pulse_local(
+                    pulse_dir,
+                    pulse_conf,
+                    px or (candles[-1].close if candles else 0),
+                    self.settings,
+                    sl_pct,
+                    tp_pct,
+                )
+                if loc:
+                    evals.append(loc)
         if self.settings.get("extraSources") and want_extra:
             for src, name in (("binance-usdm", "Binance USD-M"), ("bybit-linear", "Bybit Linear")):
                 extra = EXTRA.get(src, symbol)
@@ -492,10 +965,35 @@ class IndicationBook:
                     evals.append(ev)
         self.evals[symbol] = evals
         indications: List[Indication] = []
-        # Direct source lanes (CTS: every website source remains independent)
-        ordered = sorted(evals, key=lambda e: (e.stop_loss_pct, -e.confidence, -e.strength, e.source_id))
         now = time.time()
-        for i, ev in enumerate(ordered):
+        # Independent TF lanes stay first-class
+        for ev in tf_evals:
+            tf = ev.source_id.split("-")[-1] if "-" in ev.source_id else ""
+            indications.append(
+                Indication(
+                    symbol=symbol,
+                    direction=ev.direction,
+                    mode="direct_tf",
+                    confidence=ev.confidence,
+                    strength=ev.strength,
+                    agreement=1.0,
+                    stop_loss_pct=ev.stop_loss_pct,
+                    take_profit_pct=ev.take_profit_pct,
+                    reward_risk=ev.reward_risk,
+                    last_price=ev.last_price,
+                    sources=[ev.source_id],
+                    votes_long=1 if ev.direction == "long" else 0,
+                    votes_short=1 if ev.direction == "short" else 0,
+                    primary=False,
+                    t=now,
+                    timeframe=tf,
+                    kind="signals",
+                )
+            )
+        # Non-TF direct sources
+        others = [e for e in evals if not str(e.source_id).startswith("bingx-")]
+        ordered = sorted(others, key=lambda e: (e.stop_loss_pct, -e.confidence, -e.strength, e.source_id))
+        for ev in ordered:
             indications.append(
                 Indication(
                     symbol=symbol,
@@ -511,13 +1009,41 @@ class IndicationBook:
                     sources=[ev.source_id],
                     votes_long=1 if ev.direction == "long" else 0,
                     votes_short=1 if ev.direction == "short" else 0,
-                    primary=i == 0,
+                    primary=False,
                     t=now,
+                    timeframe="1m",
+                    kind="signals",
                 )
             )
+        if self.settings.get("tfCombined", True):
+            comb = combine_timeframes(tf_evals, int(self.settings.get("tfMinAgree") or 2), self.settings)
+            if comb:
+                direction, contrib, risk = comb
+                indications.append(
+                    Indication(
+                        symbol=symbol,
+                        direction=direction,
+                        mode="tf_combined",
+                        confidence=risk["confidence"],
+                        strength=sum(e.strength for e in contrib) / len(contrib),
+                        agreement=risk["agreement"],
+                        stop_loss_pct=risk["stopLossPct"],
+                        take_profit_pct=risk["takeProfitPct"],
+                        reward_risk=risk["rewardRisk"],
+                        last_price=sum(e.last_price for e in contrib) / len(contrib),
+                        sources=[e.source_id for e in contrib],
+                        votes_long=sum(1 for e in tf_evals if e.direction == "long"),
+                        votes_short=sum(1 for e in tf_evals if e.direction == "short"),
+                        primary=True,
+                        t=now,
+                        timeframe="combined",
+                        kind="state",
+                    )
+                )
         cons = low_stop_consensus(evals, self.settings)
         if cons:
             direction, contrib, risk = cons
+            has_tf = any(i.mode == "tf_combined" for i in indications)
             indications.append(
                 Indication(
                     symbol=symbol,
@@ -533,36 +1059,111 @@ class IndicationBook:
                     sources=[e.source_id for e in contrib],
                     votes_long=sum(1 for e in evals if e.direction == "long"),
                     votes_short=sum(1 for e in evals if e.direction == "short"),
-                    primary=True,
+                    primary=not has_tf,
                     t=now,
+                    timeframe="multi",
+                    kind="state",
                 )
             )
+        closes = _closes(tf_map.get("1m") or bars or [])
+        if self.settings.get("typeDirection", True) and closes:
+            drow = evaluate_direction(symbol, closes, self.settings)
+            if drow:
+                indications.append(drow)
+        if self.settings.get("typeMove", True) and closes:
+            mrow = evaluate_move(symbol, closes, self.settings)
+            if mrow:
+                indications.append(mrow)
+        if self.settings.get("typeActive", True) and closes:
+            indications.extend(evaluate_active_all(symbol, closes, self.settings))
+        if self.settings.get("typeCommon", True):
+            c1 = bars_to_candles(tf_map.get("1m") or bars or [], period_s=60.0)
+            crow = evaluate_common(symbol, c1, self.settings)
+            if crow:
+                indications.append(crow)
+        if not self.settings.get("typeSignals", True):
+            indications = [i for i in indications if i.kind != "signals"]
+        if not self.settings.get("typeState", True):
+            indications = [i for i in indications if i.kind != "state"]
+        if not self.settings.get("typeCommon", True):
+            indications = [i for i in indications if i.kind != "common"]
         self.last[symbol] = indications
         return indications
 
     def primary(self, symbol: str) -> Optional[Indication]:
         rows = self.last.get(symbol) or []
+        if not rows:
+            return None
+        for mode in ("tf_combined", "multi_source_consensus"):
+            for i in rows:
+                if i.mode == mode and i.kind == "state":
+                    return i
+        ranked = sorted(rows, key=lambda e: (e.kind == "state", e.confidence, -e.stop_loss_pct), reverse=True)
+        return ranked[0]
+
+    def best(self, symbol: str) -> Optional[Indication]:
+        """Highest-confidence independent type (State / Direction / Move / Active / Common / Signals)."""
+        rows = [i for i in (self.last.get(symbol) or []) if i.confidence >= float(self.settings.get("minimumConfidence", 0.6)) * 0.9]
+        if not rows:
+            rows = list(self.last.get(symbol) or [])
+        if not rows:
+            return None
+        order = {"state": 5, "signals": 4, "active": 3, "direction": 2, "move": 2, "common": 1}
+        rows.sort(key=lambda e: (e.confidence, order.get(e.kind, 0), -e.stop_loss_pct), reverse=True)
+        return rows[0]
+
+    def match(self, symbol: str, reason: str) -> Optional[Indication]:
+        rows = self.last.get(symbol) or []
+        low = (reason or "").lower()
         for i in rows:
-            if i.mode == "multi_source_consensus":
+            token = f"ind:{i.kind}"
+            if token in low or i.kind in low.split(":") or i.mode in low:
                 return i
-        return rows[0] if rows else None
+        return self.best(symbol)
 
     def snapshot(self) -> Dict[str, Any]:
         primaries = []
         for s, rows in self.last.items():
             p = self.primary(s)
             if p:
-                primaries.append(asdict(p))
+                rec = asdict(p)
+                primaries.append(rec)
         primaries.sort(key=lambda r: r["confidence"], reverse=True)
+        types = {}
+        for rows in self.last.values():
+            for i in rows:
+                types[i.kind] = types.get(i.kind, 0) + 1
         return {
             "enabled": bool(self.settings.get("enabled")),
+            "types": {
+                "state": bool(self.settings.get("typeState", True)),
+                "direction": bool(self.settings.get("typeDirection", True)),
+                "move": bool(self.settings.get("typeMove", True)),
+                "active": bool(self.settings.get("typeActive", True)),
+                "common": bool(self.settings.get("typeCommon", True)),
+                "signals": bool(self.settings.get("typeSignals", True)),
+            },
+            "typeHits": types,
             "minSources": self.settings.get("minimumSourceSignals"),
             "minAgreement": self.settings.get("minimumAgreement"),
             "minConfidence": self.settings.get("minimumConfidence"),
             "extraSources": bool(self.settings.get("extraSources")),
+            "tf1m": bool(self.settings.get("tf1m", True)),
+            "tf5m": bool(self.settings.get("tf5m", True)),
+            "tf15m": bool(self.settings.get("tf15m", True)),
+            "tfCombined": bool(self.settings.get("tfCombined", True)),
+            "tfMinAgree": int(self.settings.get("tfMinAgree") or 2),
             "symbols": len(self.last),
+            "processed": sorted(self.last.keys()),
             "lanes": {s: [e.source_id for e in v] for s, v in self.evals.items()},
-            "primary": primaries[:16],
+            "primary": primaries,
+            "tf": {
+                s: {
+                    "independent": [i.timeframe for i in rows if i.mode == "direct_tf"],
+                    "combined": next((i.direction for i in rows if i.mode == "tf_combined"), None),
+                }
+                for s, rows in self.last.items()
+            },
         }
 
 
@@ -597,8 +1198,111 @@ def self_test() -> List[Tuple[str, bool, str]]:
     ]
     cons = low_stop_consensus(evals, st)
     t3 = (cons is not None and cons[0] == "long" and cons[2]["agreement"] >= 0.6, f"cons={cons[0] if cons else None} agr={cons[2]['agreement'] if cons else 0:.2f}")
+    # Independent TFs: 1m up, 5m up, 15m up → combined long
+    book = IndicationBook()
+    book.settings["minimumConfidence"] = 0.5
+    book.settings["minimumStrength"] = 0.05
+    book.settings["minimumSourceSignals"] = 2
+    tf_bars = {"1m": up, "5m": up, "15m": up}
+    rows = book.process("AAA-USDT", up, bars_by_tf=tf_bars)
+    modes = {r.mode for r in rows}
+    comb = next((r for r in rows if r.mode == "tf_combined"), None)
+    tfs = [r.timeframe for r in rows if r.mode == "direct_tf"]
+    t4 = ("tf_combined" in modes and comb is not None and comb.direction == "long", f"modes={sorted(modes)} tfs={tfs} dir={comb.direction if comb else None}")
+    # Disagree: 1m up vs 5m/15m down → combined short if min_agree=2
+    book.settings["tfMinAgree"] = 2
+    rows2 = book.process("BBB-USDT", up, bars_by_tf={"1m": up, "5m": down, "15m": down})
+    comb2 = next((r for r in rows2 if r.mode == "tf_combined"), None)
+    t5 = (comb2 is not None and comb2.direction == "short" and comb2.votes_short >= 2, f"dir={comb2.direction if comb2 else None} vs={comb2.votes_short if comb2 else 0} vl={comb2.votes_long if comb2 else 0}")
+    # Independence: 1m-only still produces a 1m lane without combined
+    rows3 = book.process("CCC-USDT", up, bars_by_tf={"1m": up, "5m": [], "15m": []})
+    t6 = (any(r.mode == "direct_tf" and r.timeframe == "1m" for r in rows3) and not any(r.mode == "tf_combined" for r in rows3), f"modes={[r.mode+':'+r.timeframe for r in rows3]}")
+    # Direction: down then up reversal
+    rev = []
+    for i in range(12):
+        c = base * (1 - i * 0.004)
+        rev.append([c, c * 1.0004, c * 0.9996, c, 800])
+    for i in range(12):
+        c = base * (0.952 + i * 0.005)
+        rev.append([c, c * 1.0004, c * 0.9996, c, 900])
+    st2 = dict(DEFAULT_SETTINGS)
+    st2["dirRange"] = 8
+    st2["dirMinChange"] = 0.001
+    st2["minimumConfidence"] = 0.4
+    drow = evaluate_direction("REV-USDT", [b[3] for b in rev], st2)
+    t7 = (drow is not None and drow.direction == "long" and drow.kind == "direction", f"dir={drow.direction if drow else None} str={drow.strength if drow else 0:.3f}")
+    # Move: persistent up
+    mrow = evaluate_move("MOV-USDT", [b[3] for b in up], st2)
+    t8 = (mrow is not None and mrow.direction == "long" and mrow.kind == "move", f"move={mrow.direction if mrow else None}")
+    # Move must not require reversal (same-dir)
+    t8b = (mrow is not None, "move-same-dir")
+    # Active outbreak: quiet then sharp breakout
+    act_px = [100.0] * 12
+    for i in range(8):
+        act_px.append(100.0 + i * 0.02)
+    for i in range(6):
+        act_px.append(100.16 + (i + 1) * 1.2)
+    st3 = dict(DEFAULT_SETTINGS)
+    st3["activeOutbreak"] = [3, 5, 10]
+    st3["activeMovePct"] = 0.3
+    st3["activeThreshold"] = 1.0
+    st3["activeNoise"] = 0.05
+    st3["minimumConfidence"] = 0.3
+    arows = evaluate_active_all("ACT-USDT", act_px, st3)
+    t9 = (len(arows) >= 1 and all(r.kind == "active" and r.direction == "long" for r in arows), f"n={len(arows)} dirs={[r.mode for r in arows]}")
+    # Common: oversold then bounce-shaped rsi via steep drop
+    drop = []
+    px = 100.0
+    for i in range(40):
+        px *= 0.992
+        drop.append(Candle(i, px * 1.001, px * 1.002, px * 0.998, px, 1000))
+    crow = evaluate_common("COM-USDT", drop, st2)
+    t10 = (crow is None or crow.kind == "common", f"common={crow.direction if crow else None} {crow.mode if crow else 'none'}")
+    # Type flags: disable state → no consensus/combined
+    book.settings["typeState"] = False
+    book.settings["typeSignals"] = True
+    book.settings["typeDirection"] = True
+    book.settings["typeMove"] = True
+    book.settings["typeActive"] = True
+    book.settings["typeCommon"] = True
+    rows4 = book.process("FLG-USDT", up, bars_by_tf={"1m": up, "5m": up, "15m": up})
+    kinds4 = {r.kind for r in rows4}
+    t11 = ("state" not in kinds4 and ("signals" in kinds4 or "move" in kinds4), f"kinds={sorted(kinds4)}")
+    # best() prefers highest confidence independent of State when State off
+    b = book.best("FLG-USDT")
+    t12 = (b is not None and b.kind != "state", f"best={b.kind if b else None} c={b.confidence if b else 0:.2f}")
+    # Independent Long vs Short: mixed evidence does not copy one side
+    split = evaluate_independent_directions([0.2, 0.1, -0.4, -0.3, -0.2], min_evidence=1, min_agreement=0.3)
+    t13 = (split["selected"] == "short" and split["long"]["ok"] and split["short"]["ok"], f"sel={split['selected']} L={split['long']['score']:.2f} S={split['short']['score']:.2f}")
+    no_rev = evaluate_direction("FLAT-USDT", [b[3] for b in up], st2)
+    t14 = (no_rev is None, f"dir-on-trend={no_rev.direction if no_rev else None}")
+    quiet = evaluate_active_all("Q-USDT", [100.0 + i * 0.0001 for i in range(40)], st3)
+    t15 = (len(quiet) == 0, f"quiet n={len(quiet)}")
     return [
         ("ind-eval-long", t1[0], t1[1]),
         ("ind-eval-short", t2[0], t2[1]),
         ("ind-consensus", t3[0], t3[1]),
+        ("ind-tf-combined", t4[0], t4[1]),
+        ("ind-tf-majority", t5[0], t5[1]),
+        ("ind-tf-independent", t6[0], t6[1]),
+        ("ind-direction-reversal", t7[0], t7[1]),
+        ("ind-move-same-dir", t8[0] and t8b[0], t8[1]),
+        ("ind-active-outbreak", t9[0], t9[1]),
+        ("ind-common-ta", t10[0], t10[1]),
+        ("ind-type-flags", t11[0], t11[1]),
+        ("ind-best-independent", t12[0], t12[1]),
+        ("ind-dir-lanes-independent", t13[0], t13[1]),
+        ("ind-direction-needs-reversal", t14[0], t14[1]),
+        ("ind-active-quiet-skip", t15[0], t15[1]),
     ]
+
+
+if __name__ == "__main__":
+    rows = self_test()
+    bad = 0
+    for name, ok, detail in rows:
+        print(("PASS" if ok else "FAIL"), name, detail)
+        bad += int(not ok)
+    print("indication_engine", "ok" if not bad else f"fail={bad}")
+    raise SystemExit(1 if bad else 0)
+

@@ -66,7 +66,7 @@ class Coordinator:
         self.prev_window = 25
         self.main_eval = 5
         self.real_eval = 3
-        self.min_step = 3
+        self.min_step = 8
         self.max_sl_ratio = 2.5
         self.trailing_min_step = 6
         self.pos_count_vol_ratio = 0.05
@@ -114,7 +114,7 @@ class Coordinator:
         self.prev_window = int(ov.get("prevPosWindow") or coord.get("prevPosWindow") or 25)
         self.main_eval = int(coord.get("mainEvalPosCount") or 5)
         self.real_eval = int(coord.get("realEvalPosCount") or 3)
-        self.min_step = int(ov.get("minStep") or coord.get("minStep") or 3)
+        self.min_step = int(ov.get("minStep") or coord.get("minStep") or 6)
         self.max_sl_ratio = float(ov.get("maxStopLossRatio") or coord.get("maxStopLossRatio") or 2.5)
         self.trailing_min_step = int(ov.get("trailingMinStep") or coord.get("trailingMinStep") or 6)
         self.pos_count_vol_ratio = float(ov.get("posCountsVolumeRatio") or coord.get("posCountsVolumeRatio") or cts.get("posCountsVolumeRatio") or 0.05)
@@ -159,12 +159,12 @@ class Coordinator:
                 pnls.append(float(getattr(row, "pnl", 0) or 0))
         last_w = self.axes["last"].max_window
         prev_w = min(self.prev_window, self.axes["prev"].max_window * 2)
-        last_pf = profit_factor(pnls[-last_w:]) if pnls else 1.0
-        prev_pf = profit_factor(pnls[-prev_w:]) if pnls else 1.0
         cost = last_n_cost_pf(closed_rows, self.pf_window, self.position_cost_pct)
+        last_cost = last_n_cost_pf(closed_rows, last_w, self.position_cost_pct)
+        prev_cost = last_n_cost_pf(closed_rows, prev_w, self.position_cost_pct)
         metrics: Dict[str, float] = {
-            "lastPf": round(last_pf, 3),
-            "prevPf": round(prev_pf, 3),
+            "lastPf": round(float(last_cost["ratio"]), 3),
+            "prevPf": round(float(prev_cost["ratio"]), 3),
             "consecLoss": float(consec),
             "last15Ratio": cost["ratio"],
             "last15R": cost["avgR"],
@@ -172,6 +172,8 @@ class Coordinator:
             "classicPf15": cost["classicPf"],
             "costPct": cost["costPct"],
             "minPf": self.min_pf,
+            "pfNeutral": 1.0,
+            "pfPlus1x": 1.1,
         }
         allow = True
         sample_ok = cost["count"] >= min(8, self.pf_window)
@@ -179,16 +181,16 @@ class Coordinator:
             if cost["ratio"] + 1e-9 < self.min_pf:
                 allow = False
                 reasons.append(
-                    f"last {int(cost['count'])} ratio {cost['ratio']:.2f}<{self.min_pf:.2f} (1.00=flat 1.10=+1×cost)"
+                    f"last {int(cost['count'])} PF {cost['ratio']:.2f}<{self.min_pf:.2f} (1.00=neutral 1.10=+1×cost)"
                 )
-        if self.axes["prev"].enabled and len(pnls) >= self.prev_min_count:
+        if self.axes["prev"].enabled and sample_ok and int(prev_cost["count"]) >= self.prev_min_count:
             floor = self.min_pf * 0.85
-            if prev_pf + 1e-9 < floor and cost["ratio"] + 1e-9 < floor:
+            if prev_cost["ratio"] + 1e-9 < floor and cost["ratio"] + 1e-9 < floor:
                 allow = False
-                reasons.append(f"prev PF {prev_pf:.2f}<{floor:.2f}")
+                reasons.append(f"prev PF {prev_cost['ratio']:.2f}<{floor:.2f} (cost-scale)")
         if self.axes["pause"].enabled:
             pause_n = self.axes["pause"].max_window
-            if consec >= max(2, pause_n // 2) or consec_loss(pnls[-pause_n:]) >= pause_n:
+            if consec >= pause_n or consec_loss(pnls[-pause_n:]) >= pause_n:
                 allow = False
                 reasons.append(f"pause {consec}/{pause_n}")
         self.last = {"allow": allow, "reasons": reasons, "metrics": metrics}
@@ -243,6 +245,8 @@ class Coordinator:
             "minPf": self.min_pf,
             "pfWindow": self.pf_window,
             "positionCostPct": self.position_cost_pct,
+            "pfNeutral": 1.0,
+            "pfPlus1xCost": 1.1,
             "noise": self.noise,
             "volWeight": self.vol_weight,
             "outbreak": self.outbreak,

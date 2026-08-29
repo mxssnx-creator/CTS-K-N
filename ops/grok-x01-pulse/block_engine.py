@@ -214,17 +214,20 @@ class BlockBook:
         pf = (gp / gl) if gl > 0 else (2.0 if gp > 0 else 1.0)
         return pf, len(ring)
 
-    def pf_decision(self, lane: BlockLane, count: int) -> Dict[str, Any]:
+    def pf_decision(self, lane: BlockLane, count: int, intern_pf: float = 1.0) -> Dict[str, Any]:
         inc = calculate_block_volume_increment_ratio(count, self.volume_ratio)
         configured = calculate_block_minimum_profit_factor(self.default_min_pf, self.pf_ratio, inc)
         normal = self.normal_pf(lane)
         observed, n = self.observed_pf(lane, count)
         cold = n < self.min_samples
+        intern = float(intern_pf or 1.0)
         if cold:
-            observed = normal
-            effective = max(self.default_min_pf, normal)
+            observed = intern if intern > 0 else 1.0
+            effective = configured if count > 1 else min(float(self.default_min_pf or 1.2), 1.12)
+            passes = observed + 1e-9 >= effective
         else:
             effective = calculate_block_effective_minimum_profit_factor(configured, normal)
+            passes = observed + 1e-9 >= effective
         return {
             "coldStart": cold,
             "sampleCount": n,
@@ -232,15 +235,16 @@ class BlockBook:
             "normalProfitFactor": normal,
             "configuredMinimumProfitFactor": configured,
             "effectiveMinimumProfitFactor": effective,
-            "passesProfitFactor": observed >= effective,
+            "passesProfitFactor": passes,
             "comparisonAvailable": not cold,
+            "internPf": round(intern, 4),
         }
 
     def next_order_qty(self, lane: BlockLane, count: int) -> float:
         f = self.formula(lane.base_qty, count)
         return max(0.0, f["targetAddQty"] - lane.confirmed_add)
 
-    def evaluate_counts(self, lane: BlockLane, live_n: int) -> List[Dict[str, Any]]:
+    def evaluate_counts(self, lane: BlockLane, live_n: int, intern_pf: float = 1.0) -> List[Dict[str, Any]]:
         """Evaluate every 1..maxStack independently + active overlay. No emission here."""
         rows = []
         if not self.enabled or not lane.active or lane.base_qty <= 0:
@@ -250,8 +254,8 @@ class BlockBook:
             f = self.formula(lane.base_qty, n)
             paused = lane.pause_remaining.get(n, 0) > 0 or now < lane.pause_until.get(n, 0)
             sat = bool(lane.satisfied.get(n)) or lane.confirmed_add + 1e-12 >= f["targetAddQty"]
-            pf = self.pf_decision(lane, n)
-            requested = 0.0 if sat or paused else max(0.0, f["targetAddQty"] - lane.confirmed_add)
+            pf = self.pf_decision(lane, n, intern_pf=intern_pf)
+            requested = 0.0 if sat or paused or not pf["passesProfitFactor"] else max(0.0, f["targetAddQty"] - lane.confirmed_add)
             rows.append({
                 "setKey": f"{lane.symbol}:{lane.side.lower()}#block:{n}",
                 "blockCount": n,
@@ -267,10 +271,10 @@ class BlockBook:
         if self.active_live and live_n >= 1:
             n = min(self.max_stack, max(1, live_n))
             f = self.formula(lane.base_qty, n)
-            pf = self.pf_decision(lane, n)
+            pf = self.pf_decision(lane, n, intern_pf=intern_pf)
             paused = lane.pause_remaining.get(n, 0) > 0 or now < lane.pause_until.get(n, 0)
             sat = bool(lane.satisfied.get(n)) or lane.confirmed_add + 1e-12 >= f["targetAddQty"]
-            requested = 0.0 if sat or paused else max(0.0, f["targetAddQty"] - lane.confirmed_add)
+            requested = 0.0 if sat or paused or not pf["passesProfitFactor"] else max(0.0, f["targetAddQty"] - lane.confirmed_add)
             rows.append({
                 "setKey": f"{lane.symbol}:{lane.side.lower()}#block:active:{n}",
                 "blockCount": n,
@@ -332,6 +336,13 @@ class BlockBook:
         )
         self.save()
 
+    def pause_count(self, lane: BlockLane, n: int, seconds: float = 120.0) -> None:
+        """Halt a count after an exchange hard-fail (max position / size). Independent of PF pause."""
+        n = int(n)
+        lane.pause_until[n] = time.time() + max(8.0, float(seconds))
+        lane.pause_remaining[n] = max(int(lane.pause_remaining.get(n, 0)), max(1, self.pause_ratio))
+        self.save()
+
     def on_parent_close(self, symbol: str, side: str, pnl: float) -> None:
         k = self.key(symbol, side)
         lane = self.lanes.get(k)
@@ -361,7 +372,7 @@ class BlockBook:
         for lane in self.lanes.values():
             if not lane.active and not lane.legs:
                 continue
-            rows = self.evaluate_counts(lane, live_n=1 if lane.active else 0)
+            rows = self.evaluate_counts(lane, live_n=1 if lane.active else 0, intern_pf=1.2)
             lanes.append({
                 "symbol": lane.symbol,
                 "side": lane.side,
@@ -386,9 +397,21 @@ class BlockBook:
                     for r in rows if r["kind"] == "regular"
                 ],
             })
+        catalog = []
+        for n in range(1, max(1, int(self.max_stack)) + 1):
+            f = self.formula(1.0, n)
+            catalog.append({
+                "n": n,
+                "inc": f["volumeIncrement"],
+                "targetAdd": round(f["targetAddQty"], 8),
+                "targetBlock": round(f["targetBlockQty"], 8),
+                "minPF": round(f["blockMinPF"], 4),
+            })
         return {
             "enabled": self.enabled,
             "maxStack": self.max_stack,
+            "countN": len(catalog),
+            "allCounts": catalog,
             "volumeRatio": self.volume_ratio,
             "profitFactorRatio": self.pf_ratio,
             "pauseCountRatio": self.pause_ratio,

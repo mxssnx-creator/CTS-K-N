@@ -55,12 +55,12 @@ UA = "grok-x01-pulse/2.0"
 
 # CTS connector numbers (UID / IP)
 LIMITS = {
-    "public": (8.0, 12.0),
-    "private": (2.4, 4.0),
-    "order": (1.6, 2.5),
+    "public": (12.0, 20.0),
+    "private": (5.0, 10.0),
+    "order": (2.4, 5.0),
 }
 
-RATE_CODES = {100410, 100421, 109421, 109429, 100429}
+RATE_CODES = {100410, 100421, 109421, 109429, 100429, 101209}
 
 
 class TokenBucket:
@@ -93,18 +93,25 @@ class ErrorLog:
         self.lock = threading.Lock()
         self.ring: Deque[Dict[str, Any]] = deque(maxlen=80)
         self.n = 0
+        self._last: Dict[str, float] = {}
 
     def write(self, kind: str, **kw: Any) -> None:
         rec = {"t": round(time.time(), 3), "kind": kind}
         rec.update(kw)
         self.ring.appendleft(rec)
         self.n += 1
+        if kind in ("api", "rate-limit", "ws-session"):
+            key = kind + str(kw.get("code") or kw.get("msg") or "")[:48]
+            now = time.time()
+            if now - self._last.get(key, 0.0) < 8.0:
+                return
+            self._last[key] = now
         line = dumps(rec) + "\n"
         with self.lock:
             try:
                 with open(self.path, "a") as f:
                     f.write(line)
-                if self.n % 200 == 0:
+                if self.n % 80 == 0:
                     self._rotate()
             except Exception:
                 pass
@@ -112,7 +119,7 @@ class ErrorLog:
     def _rotate(self) -> None:
         try:
             import os
-            if os.path.getsize(self.path) < 400_000:
+            if os.path.getsize(self.path) < 120_000:
                 return
             with open(self.path, "rb") as f:
                 f.seek(-min(160_000, os.path.getsize(self.path)), 2)
@@ -170,15 +177,41 @@ class PriceHub:
             enable_multithread=True,
         )
         self.ok = True
-        for i, s in enumerate(self.symbols[:50]):
+        for i, s in enumerate(self.symbols):
             ws.send(dumps({"id": f"{i}-t", "reqType": "sub", "dataType": f"{s}@ticker"}))
+            if i and i % 80 == 0:
+                time.sleep(0.04)
         ws.settimeout(15)
         while not self.stop:
             raw = ws.recv()
             if raw is None:
                 break
+            if isinstance(raw, (bytes, bytearray)) and raw[:2] != b"\x1f\x8b":
+                try:
+                    txt = raw.decode("utf-8", "ignore")
+                except Exception:
+                    txt = ""
+            elif isinstance(raw, str):
+                txt = raw
+            else:
+                txt = ""
+            if txt.lower() in ("ping", "pong"):
+                try:
+                    ws.send("Pong")
+                except Exception:
+                    break
+                self.last_msg = time.time()
+                continue
             data = _decode_ws(raw)
             if data is None:
+                continue
+            if isinstance(data, dict) and data.get("ping") is not None:
+                try:
+                    ping = data.get("ping")
+                    ws.send(dumps({"pong": ping if ping not in (True, False) else int(time.time() * 1000)}))
+                except Exception:
+                    break
+                self.last_msg = time.time()
                 continue
             self.last_msg = time.time()
             self.n += 1
@@ -240,10 +273,10 @@ class FastBingX:
         if httpx is not None:
             self.http = httpx.Client(
                 base_url=self.base,
-                timeout=httpx.Timeout(4.5, connect=2.5),
+                timeout=httpx.Timeout(2.0, connect=1.0),
                 headers={"User-Agent": UA, "X-BX-APIKEY": key},
                 http2=False,
-                limits=httpx.Limits(max_connections=24, max_keepalive_connections=12, keepalive_expiry=20),
+                limits=httpx.Limits(max_connections=32, max_keepalive_connections=16, keepalive_expiry=30),
             )
         else:
             import urllib.request
@@ -251,6 +284,7 @@ class FastBingX:
         self.px: Dict[str, float] = {}
         self.chg: Dict[str, float] = {}
         self.hub = PriceHub(self._on_px, err, ws_url=ws_url)
+        self.on_event = None
         self.stats = {"rest": 0, "ws": 0, "wait": 0.0, "rl": 0, "err": 0, "asyncN": 0, "asyncP50": 0.0}
         self.bridge = AsyncBridge(self.base, {"User-Agent": UA}, err)
 
@@ -260,6 +294,12 @@ class FastBingX:
     def _on_px(self, symbol: str, px: float) -> None:
         self.px[symbol] = px
         self.stats["ws"] += 1
+        cb = getattr(self, "on_event", None)
+        if cb:
+            try:
+                cb("tick")
+            except Exception:
+                pass
 
     def _lane(self, path: str, method: str) -> str:
         if "/trade/order" in path or "/trade/batchOrders" in path or "/trade/closePosition" in path:
@@ -276,14 +316,17 @@ class FastBingX:
         sig = hmac.new(self.secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
         return qs + "&signature=" + sig
 
-    def _take(self, lane: str, path: str = "") -> None:
+    def _take(self, lane: str, path: str = "") -> bool:
         now = time.time()
         until = self.path_cd.get(path, 0.0)
-        gate = max(self.cooldown_until, until)
+        gate = until
+        if lane == "order":
+            gate = max(self.cooldown_until, until)
         if now < gate:
-            time.sleep(min(3.0, gate - now))
+            return False
         w = self.buckets[lane].take()
         self.stats["wait"] += w
+        return True
 
     def _trip(self, path: str, body: Dict[str, Any]) -> None:
         code = body.get("code")
@@ -292,17 +335,21 @@ class FastBingX:
             return
         self.stats["rl"] += 1
         wait = 1.2
-        m = re.search(r"unblocked after (\d{10,})", msg)
+        m = re.search(r"(?:unblocked after|retry after time:\s*)(\d{10,})", msg)
         if m:
-            until = int(m.group(1)) / 1000.0
-            wait = max(0.8, min(120.0, until - time.time() + 0.2))
+            raw = int(m.group(1))
+            until = raw / 1000.0 if raw > 10_000_000_000 else float(raw)
+            wait = max(0.8, min(900.0, until - time.time() + 0.4))
             self.path_cd[path] = time.time() + wait
-        self.cooldown_until = max(self.cooldown_until, time.time() + min(wait, 8.0))
+        else:
+            self.path_cd[path] = time.time() + 8.0
+        self.cooldown_until = max(self.cooldown_until, time.time() + min(wait, 12.0))
         self.err.write("rate-limit", path=path, code=code, msg=msg[:180], wait=round(wait, 2))
 
     def _req(self, method: str, path: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         lane = self._lane(path, method)
-        self._take(lane, path)
+        if not self._take(lane, path):
+            return {"code": 101209, "msg": "cooling", "error": True, "cooled": True}
         params: Dict[str, Any] = {"timestamp": str(int(time.time() * 1000)), "recvWindow": str(RECV)}
         if extra:
             for k, v in extra.items():

@@ -215,10 +215,18 @@ def merge_overall() -> dict:
         "symbols": [],
         "now": __import__("time").time(),
         "pfCost": pc,
+        "profitFactor": pc.get("ratio"),
+        "pf": pc.get("ratio"),
+        "pfNeutral": 1.0,
+        "pfPlus1xCost": 1.1,
+        "pfScale": "1.00=neutral · 1.10=+1×PositionCost",
         "coord": vst_st.get("coord") or live_st.get("coord"),
         "pulse": vst_st.get("pulse") or live_st.get("pulse"),
         "indications": vst_st.get("indications") or live_st.get("indications"),
         "engine": vst_st.get("engine") or live_st.get("engine"),
+        "variants": vst_st.get("variants") or live_st.get("variants"),
+        "sets": vst_st.get("sets") or live_st.get("sets"),
+        "exits": vst_st.get("exits") or live_st.get("exits"),
     }
 
 
@@ -296,6 +304,22 @@ class Handler(SimpleHTTPRequestHandler):
         conn = resolve_conn(qs(self.path).get("conn", ""))
         if path in ("/connections.json", "/connections"):
             self._json(connections_blob())
+            return
+        if path in ("/results-export.json", "/results-export", "/results-export.md"):
+            cid = conn if conn != "overall" else "bingx-x02"
+            ext = ".md" if path.endswith(".md") else ".json"
+            p = os.path.join(DIR, f"results-export-{cid}{ext}")
+            if not os.path.exists(p):
+                self._json({"ok": False, "detail": "no export yet"}, 404)
+                return
+            raw = open(p, "rb").read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown" if ext == ".md" else "application/json")
+            self.send_header("Content-Disposition", f'attachment; filename="pulse-results-{cid}{ext}"')
+            self.send_header("Content-Length", str(len(raw)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(raw)
             return
         if path in ("/config.json", "/config"):
             if conn == "overall":
