@@ -7,6 +7,7 @@ import { authorizeAdminBearer } from "@/lib/admin-auth"
 import type { ExchangeConnection } from "@/lib/types"
 
 const LOG_PREFIX = "[v0] [LiveOrdersTest]"
+const LEGACY_MUTATION_TESTS_DISABLED = true
 
 /**
  * Normalize an exchange-native symbol to the canonical ccxt slash form
@@ -244,29 +245,17 @@ export async function POST(req: NextRequest) {
     const ordersTest = await testGetOpenOrders(connector)
     tests.push(ordersTest)
 
-    // Test 5: Test market order placement (if enabled)
-    const marketOrderTest = await testMarketOrderPlacement(connector, connection)
-    tests.push(marketOrderTest)
-
-    // Test 6: Test stop loss order
-    const slOrderTest = await testStopLossOrder(connector, connection)
-    tests.push(slOrderTest)
-
-    // Test 7: Verify order creation
-    const verifyOrderTest = await testVerifyOrderCreation(connector)
-    tests.push(verifyOrderTest)
-
-    // Test 8: Test order cancellation
-    const cancelOrderTest = await testOrderCancellation(connector)
-    tests.push(cancelOrderTest)
-
-    // Test 9: Test limit order placement
-    const limitOrderTest = await testLimitOrderPlacement(connector)
-    tests.push(limitOrderTest)
-
-    // Test 10: Test control order lifecycle (place + cancel)
-    const controlOrderTest = await testControlOrderLifecycle(connector)
-    tests.push(controlOrderTest)
+    // This legacy endpoint is read-only. Its historical mutation tests selected
+    // arbitrary account positions/orders by symbol and could therefore affect
+    // operator or third-party activity on a shared account. The only supported
+    // mutation test is the supervised, globally-flat, exact-ID lifecycle at
+    // `/api/admin/live-order-smoke`.
+    tests.push({
+      testName: "Mutation Safety",
+      success: true,
+      duration: 0,
+      details: "Read-only diagnostics complete; live mutations are isolated to /api/admin/live-order-smoke",
+    })
 
     const report: FullTestReport = {
       connectionId,
@@ -286,7 +275,7 @@ export async function POST(req: NextRequest) {
       `${LOG_PREFIX} Test complete: ${report.summary.passed}/${report.summary.totalTests} passed`
     )
 
-    return NextResponse.json(report)
+    return NextResponse.json({ ...report, mode: "read_only_diagnostics" })
   } catch (error) {
     console.error(`${LOG_PREFIX} Test error:`, error)
     return NextResponse.json(
@@ -420,6 +409,14 @@ async function testMarketOrderPlacement(
   connection: ExchangeConnection
 ): Promise<TestResult> {
   const start = Date.now()
+  if (LEGACY_MUTATION_TESTS_DISABLED) {
+    return {
+      testName: "Market Order Placement",
+      success: false,
+      duration: Date.now() - start,
+      details: "Disabled: use the supervised exact-ID live-order smoke",
+    }
+  }
   try {
     // Get balances first
     const connResult = await connector.testConnection()
@@ -530,6 +527,14 @@ async function testStopLossOrder(
   connection: ExchangeConnection
 ): Promise<TestResult> {
   const start = Date.now()
+  if (LEGACY_MUTATION_TESTS_DISABLED) {
+    return {
+      testName: "Stop Loss Order",
+      success: false,
+      duration: Date.now() - start,
+      details: "Disabled: use the supervised exact-ID live-order smoke",
+    }
+  }
   try {
     // Get a position to set SL for
     const positions = await connector.getPositions()
@@ -718,6 +723,14 @@ async function testVerifyOrderCreation(connector: any): Promise<TestResult> {
 
 async function testOrderCancellation(connector: any): Promise<TestResult> {
   const start = Date.now()
+  if (LEGACY_MUTATION_TESTS_DISABLED) {
+    return {
+      testName: "Order Cancellation",
+      success: false,
+      duration: Date.now() - start,
+      details: "Disabled: arbitrary account-order cancellation is prohibited",
+    }
+  }
   try {
     // Get open orders first
     const orders = await connector.getOpenOrders()
@@ -795,6 +808,14 @@ async function testOrderCancellation(connector: any): Promise<TestResult> {
 
 async function testLimitOrderPlacement(connector: any): Promise<TestResult> {
   const start = Date.now()
+  if (LEGACY_MUTATION_TESTS_DISABLED) {
+    return {
+      testName: "Limit Order Placement",
+      success: false,
+      duration: Date.now() - start,
+      details: "Disabled: use the supervised exact-ID live-order smoke",
+    }
+  }
   try {
     // Get current price to place limit order below market
     const connResult = await connector.testConnection()
@@ -890,6 +911,14 @@ async function testLimitOrderPlacement(connector: any): Promise<TestResult> {
 
 async function testControlOrderLifecycle(connector: any): Promise<TestResult> {
   const start = Date.now()
+  if (LEGACY_MUTATION_TESTS_DISABLED) {
+    return {
+      testName: "Control Order Lifecycle",
+      success: false,
+      duration: Date.now() - start,
+      details: "Disabled: use the supervised exact-ID live-order smoke",
+    }
+  }
   try {
     // Get positions first
     const positions = await connector.getPositions()
