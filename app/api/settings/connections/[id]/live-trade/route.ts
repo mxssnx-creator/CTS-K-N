@@ -15,6 +15,7 @@ import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { evaluateRealTradeReadiness, hasUsableLiveCredentials } from "@/lib/real-trade-gates"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 /**
  * POST /api/settings/connections/[id]/live-trade
@@ -59,6 +60,10 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
       )
     }
     const isLiveTrade = parseBooleanInput(rawFlag)
+    const maintenance = getRuntimeMaintenanceState()
+    if (isLiveTrade && maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
 
     if (isLiveTrade && process.env.NODE_ENV === "production") {
       // Global infrastructure must be healthy, but credentials are evaluated

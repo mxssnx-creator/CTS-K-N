@@ -16,6 +16,7 @@ import {
   isTruthyFlag,
 } from "@/lib/connection-state-utils"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 
@@ -84,6 +85,11 @@ function patchIndicationProcessorCaches(coordinator: any) {
  */
 async function handlePost(request: NextRequest) {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
+
     invalidateTradeEngineStatusCache()
     console.log("[v0] [Trade Engine] Starting Global Trade Engine Coordinator (independent of connections)")
     

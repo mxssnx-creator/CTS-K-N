@@ -13,6 +13,7 @@ import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { SystemLogger } from "@/lib/system-logger"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -33,6 +34,10 @@ export async function POST(
       )
     }
     const requested = parseBooleanInput(rawFlag)
+    const maintenance = getRuntimeMaintenanceState()
+    if (requested && maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
     if (requested && process.env.NODE_ENV === "production") {
       const production = await checkProductionReadiness({ requireConnectionCredentials: false })
       if (!production.ready) {

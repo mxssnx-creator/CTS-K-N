@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 
@@ -13,6 +14,11 @@ export const dynamic = "force-dynamic"
  */
 export async function POST(request: NextRequest) {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
+
     let force = false
     let clearCache = false
     try {

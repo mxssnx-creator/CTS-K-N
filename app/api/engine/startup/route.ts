@@ -8,12 +8,18 @@ import { TradeEngineManager } from "@/lib/trade-engine/engine-manager"
 import { getSettings, setSettings, initRedis, getAssignedAndEnabledConnections } from "@/lib/redis-db"
 import { loadMarketDataForEngine } from "@/lib/market-data-loader"
 import { validateProductionStartup } from "@/lib/startup-validation"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
 
 export async function POST(request: NextRequest) {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
+
     // Run comprehensive startup validation
     const validation = await validateProductionStartup()
     if (!validation.passed) {

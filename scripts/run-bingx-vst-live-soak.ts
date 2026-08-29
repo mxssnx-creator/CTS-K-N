@@ -98,6 +98,7 @@ interface CycleReport {
     securityStopPrice: number
     stopLossQuantity: number
     takeProfitQuantity: number
+    rowProtectionQuantityBacked: boolean
     securityStopArmedQuantity: number
     securityQuantityBacked: boolean
     observedOpen: boolean
@@ -405,14 +406,66 @@ async function main(): Promise<void> {
   let initialAccount: { positions: any[]; orders: any[] } | null = null
   let soakSymbols: SoakSymbol[] = []
   const trackedControlOrders = new Map<string, SoakSymbol>()
+  const allOwnedControlOrderIds = new Set<string>()
+  const confirmedAbsentControlOrderIds = new Set<string>()
   const trackedVenueOrderIds = new Map<string, { symbol: SoakSymbol; kind: string }>()
-  const trackedExposureSymbols = new Set<SoakSymbol>()
+  const ownedExposureBySlot = new Map<string, {
+    symbol: SoakSymbol
+    direction: "long" | "short"
+    quantity: number
+    quantityStep: number
+  }>()
   let abortRequested = false
   process.once("SIGINT", () => { abortRequested = true })
   process.once("SIGTERM", () => { abortRequested = true })
 
   const assertNotAborted = () => {
     if (abortRequested) throw new Error("Soak interrupted; controlled cleanup requested")
+  }
+
+  const ownedExposureKey = (symbol: SoakSymbol, direction: "long" | "short") =>
+    `${symbol}:${direction}`
+
+  const trackControlOrder = (orderId: unknown, symbol: SoakSymbol, kind: string) => {
+    const normalizedOrderId = String(orderId || "")
+    if (!normalizedOrderId) return
+    allOwnedControlOrderIds.add(normalizedOrderId)
+    trackedVenueOrderIds.set(normalizedOrderId, { symbol, kind })
+    if (!confirmedAbsentControlOrderIds.has(normalizedOrderId)) {
+      trackedControlOrders.set(normalizedOrderId, symbol)
+    }
+  }
+
+  const markControlOrderAbsent = (orderId: string) => {
+    if (!orderId) return
+    confirmedAbsentControlOrderIds.add(orderId)
+    trackedControlOrders.delete(orderId)
+  }
+
+  const adjustOwnedExposure = (
+    symbol: SoakSymbol,
+    direction: "long" | "short",
+    quantity: number,
+    reduceOnly: boolean,
+    quantityStep = 0,
+  ) => {
+    const key = ownedExposureKey(symbol, direction)
+    const current = ownedExposureBySlot.get(key)
+    const previousQuantity = finite(current?.quantity)
+    const nextQuantity = reduceOnly
+      ? Math.max(0, previousQuantity - Math.abs(finite(quantity)))
+      : previousQuantity + Math.abs(finite(quantity))
+    const effectiveStep = Math.max(finite(current?.quantityStep), finite(quantityStep))
+    if (nextQuantity <= Math.max(effectiveStep / 2, 1e-12)) {
+      ownedExposureBySlot.delete(key)
+      return
+    }
+    ownedExposureBySlot.set(key, {
+      symbol,
+      direction,
+      quantity: nextQuantity,
+      quantityStep: effectiveStep,
+    })
   }
 
   const snapshotCounters = async (connectionId: string, normalize: any) => normalize({
@@ -451,21 +504,52 @@ async function main(): Promise<void> {
     }) || null
   }
 
-  const waitForQuantity = async (
+  const waitForExclusiveOwnedQuantity = async (
     symbol: SoakSymbol,
     direction: "long" | "short",
-    predicate: (quantity: number) => boolean,
+    expectedQuantity: number,
+    quantityStep: number,
     timeoutMs = 20_000,
   ): Promise<number> => {
     const deadline = Date.now() + timeoutMs
+    const tolerance = Math.max(quantityStep / 2, 1e-12)
     let observed = 0
     do {
       assertNotAborted()
-      observed = quantityOf(await positionLeg(symbol, direction))
-      if (predicate(observed)) return observed
+      const rows = await connector.getPositions(symbol)
+      assertSnapshotHealthy("positions")
+      const active = activePositions(rows).filter((row: any) => normalizeSymbol(row?.symbol) === symbol)
+      const conflicting = active.find((row: any) => positionDirectionOf(row) !== direction)
+      if (conflicting) {
+        throw new Error(`${symbol}: another position direction appeared during the owned VST lifecycle`)
+      }
+      observed = active
+        .filter((row: any) => positionDirectionOf(row) === direction)
+        .reduce((sum: number, row: any) => sum + quantityOf(row), 0)
+      if (Math.abs(observed - expectedQuantity) <= tolerance) return observed
+      if (observed > expectedQuantity + tolerance) {
+        throw new Error(
+          `${symbol}/${direction}: venue quantity ${observed} exceeds owned quantity ${expectedQuantity}; ` +
+          "refusing to mutate shared exposure",
+        )
+      }
       await sleep(400)
     } while (Date.now() < deadline)
-    throw new Error(`Timed out waiting for ${symbol} position quantity; last=${observed}`)
+    throw new Error(
+      `Timed out waiting for exact owned ${symbol}/${direction} quantity; ` +
+      `expected=${expectedQuantity} last=${observed}`,
+    )
+  }
+
+  const assertNoOpenOrdersForSymbol = async (symbol: SoakSymbol, phase: string) => {
+    const rows = await connector.getOpenOrders(symbol)
+    assertSnapshotHealthy("orders")
+    if (rows.length > 0) {
+      throw new Error(
+        `${symbol}: ${rows.length} pre-existing or concurrent open order(s) detected before ${phase}; ` +
+        "refusing a shared-account mutation",
+      )
+    }
   }
 
   const waitForOpenOrderRecord = async (
@@ -513,47 +597,122 @@ async function main(): Promise<void> {
   const cleanup = async () => {
     if (!connector) return false
     const cleanupErrors: string[] = []
-    for (const [orderId, symbol] of trackedControlOrders) {
+    for (const [orderId, symbol] of [...trackedControlOrders.entries()]) {
+      let cancellationError = ""
       try {
         const result = await connector.cancelOrder(symbol, orderId)
-        if (!result?.success) cleanupErrors.push(`cancel ${symbol}/${orderId}: ${result?.error || "failed"}`)
+        if (!result?.success) cancellationError = String(result?.error || "failed")
       } catch (error) {
-        cleanupErrors.push(`cancel ${symbol}/${orderId}: ${errorText(error)}`)
+        cancellationError = errorText(error)
+      }
+      try {
+        const absent = await waitForOrderVisibility(symbol, orderId, false)
+        if (absent) markControlOrderAbsent(orderId)
+        else cleanupErrors.push(`cancel ${symbol}/${orderId}: ${cancellationError || "order remained open"}`)
+      } catch (error) {
+        cleanupErrors.push(`cancel ${symbol}/${orderId}: ${cancellationError || errorText(error)}`)
       }
     }
-    trackedControlOrders.clear()
-    for (const symbol of trackedExposureSymbols) {
+    for (const exposure of [...ownedExposureBySlot.values()]) {
       try {
-        const rows = await connector.getPositions(symbol)
+        const { symbol, direction, quantity, quantityStep } = exposure
+        const [rows, openOrders] = await Promise.all([
+          connector.getPositions(symbol),
+          connector.getOpenOrders(symbol),
+        ])
         assertSnapshotHealthy("positions")
-        for (const row of activePositions(rows)) {
-          const quantity = quantityOf(row)
-          if (!(quantity > 0)) continue
-          const residualDirection = positionDirectionOf(row)
-          if (!residualDirection) {
-            throw new Error(`${symbol}: residual position direction is missing or contradictory`)
-          }
-          const positionSide = residualDirection.toUpperCase() as "LONG" | "SHORT"
-          const closeSide = positionSide === "LONG" ? "sell" : "buy"
-          const result = await connector.placeOrder(symbol, closeSide, quantity, undefined, "market", {
-            reduceOnly: true,
-            positionSide,
-            hedgeMode: true,
-            clientOrderId: safeClientId("ctsvstcleanup", runSuffix, Date.now() % 1_000_000),
-          })
-          if (!result?.success) cleanupErrors.push(`flatten ${symbol}/${positionSide}: ${result?.error || "failed"}`)
+        assertSnapshotHealthy("orders")
+        if (openOrders.length > 0) {
+          throw new Error(
+            `${symbol}: ${openOrders.length} open order(s) remain; refusing an ambiguous shared-account close`,
+          )
         }
+        const active = activePositions(rows)
+          .filter((candidate: any) => normalizeSymbol(candidate?.symbol) === symbol)
+        const conflicting = active.find((candidate: any) => positionDirectionOf(candidate) !== direction)
+        if (conflicting) {
+          throw new Error(`${symbol}: a conflicting position direction prevents safe owned cleanup`)
+        }
+        const venueQuantityBefore = active
+          .filter((candidate: any) => positionDirectionOf(candidate) === direction)
+          .reduce((sum: number, candidate: any) => sum + quantityOf(candidate), 0)
+        const tolerance = Math.max(quantityStep / 2, 1e-12)
+        if (venueQuantityBefore <= tolerance) {
+          // A tracked SL/security order may already have closed the owned
+          // exposure before cleanup. No residual quantity exists to submit.
+          ownedExposureBySlot.delete(ownedExposureKey(symbol, direction))
+          continue
+        }
+        if (Math.abs(venueQuantityBefore - quantity) > tolerance) {
+          throw new Error(
+            `${symbol}/${direction}: venue quantity ${venueQuantityBefore} does not exactly match ` +
+            `owned quantity ${quantity}; refusing to close shared exposure`,
+          )
+        }
+        const closeQuantity = quantity
+        const positionSide = direction.toUpperCase() as "LONG" | "SHORT"
+        const closeSide = direction === "long" ? "sell" : "buy"
+        const result = await connector.placeOrder(symbol, closeSide, closeQuantity, undefined, "market", {
+          reduceOnly: true,
+          positionSide,
+          hedgeMode: true,
+          clientOrderId: safeClientId("ctsvstcleanup", runSuffix, Date.now() % 1_000_000),
+        })
+        if (!result?.success) {
+          cleanupErrors.push(`close-owned ${symbol}/${positionSide}: ${result?.error || "failed"}`)
+          continue
+        }
+
+        const cleanupOrderId = String(result?.orderId || result?.id || "")
+        if (cleanupOrderId) {
+          trackedVenueOrderIds.set(cleanupOrderId, { symbol, kind: "exception-cleanup-close" })
+        }
+        let settledQuantity = 0
+        for (let attempt = 0; attempt < 4 && settledQuantity <= tolerance; attempt++) {
+          if (attempt > 0) await sleep(500)
+          const settlement = cleanupOrderId
+            ? await connector.getOrderSettlement(symbol, cleanupOrderId).catch(() => null)
+            : null
+          settledQuantity = Math.abs(finite(settlement?.filledQuantity))
+        }
+        const rowsAfter = await connector.getPositions(symbol)
+        assertSnapshotHealthy("positions")
+        const rowAfter = activePositions(rowsAfter).find((candidate: any) =>
+          normalizeSymbol(candidate?.symbol) === symbol && positionDirectionOf(candidate) === direction)
+        const observedDecrease = Math.max(0, venueQuantityBefore - quantityOf(rowAfter))
+        const confirmedClosed = Math.min(closeQuantity, Math.max(settledQuantity, observedDecrease))
+        if (confirmedClosed + tolerance < closeQuantity) {
+          cleanupErrors.push(
+            `close-owned ${symbol}/${positionSide}: confirmed=${confirmedClosed} expected=${closeQuantity}`,
+          )
+          continue
+        }
+        adjustOwnedExposure(symbol, direction, confirmedClosed, true, quantityStep)
       } catch (error) {
-        cleanupErrors.push(`flatten ${symbol}: ${errorText(error)}`)
+        cleanupErrors.push(`close-owned ${exposure.symbol}/${exposure.direction}: ${errorText(error)}`)
       }
     }
     await sleep(800)
     try {
       const finalSnapshot = await accountSnapshot()
       const residualPositions = finalSnapshot.positions.filter((row: any) => soakSymbols.includes(normalizeSymbol(row?.symbol) as SoakSymbol))
-      const residualOrders = finalSnapshot.orders.filter((row: any) => soakSymbols.includes(normalizeSymbol(row?.symbol) as SoakSymbol))
-      if (residualPositions.length || residualOrders.length) {
-        cleanupErrors.push(`residual soak state: positions=${residualPositions.length}, orders=${residualOrders.length}`)
+      const residualOwnedOrders = finalSnapshot.orders.filter((row: any) =>
+        allOwnedControlOrderIds.has(orderIdOf(row)))
+      const remainingOwnedExposure = [...ownedExposureBySlot.values()]
+        .reduce((sum, exposure) => sum + exposure.quantity, 0)
+      report.cleanupExternalResiduals = {
+        selectedSymbolPositions: residualPositions.length,
+        selectedSymbolOrders: finalSnapshot.orders
+          .filter((row: any) => soakSymbols.includes(normalizeSymbol(row?.symbol) as SoakSymbol)).length,
+      }
+      report.cleanupOwnedResiduals = {
+        exposureQuantity: remainingOwnedExposure,
+        controlOrders: residualOwnedOrders.length,
+      }
+      if (remainingOwnedExposure > 1e-12 || residualOwnedOrders.length > 0) {
+        cleanupErrors.push(
+          `residual owned soak state: quantity=${remainingOwnedExposure}, orders=${residualOwnedOrders.length}`,
+        )
       }
       if (initialAccount) {
         const baselineDifference = accountStateDifference(initialAccount, finalSnapshot, soakSymbols)
@@ -1093,19 +1252,60 @@ async function main(): Promise<void> {
       const filledQuantity = finite(result?.fill?.filledQty)
       const filledPrice = finite(result?.fill?.filledPrice)
       const orderId = String(result?.orderId || "")
-      if (!(filledQuantity > 0) || !(filledPrice > 0) || !orderId || orderId === "N/A") {
+      const validOrderId = Boolean(orderId && orderId !== "N/A")
+      if (filledQuantity > 0) {
+        // Record exchange exposure before replay assertions. If an assertion
+        // fails, exception cleanup must still retain the exact owned quantity.
+        adjustOwnedExposure(
+          input.symbol,
+          input.positionDirection,
+          filledQuantity,
+          input.reduceOnly,
+          finite(rulesBySymbol.get(input.symbol)?.quantityStep),
+        )
+      }
+      if (validOrderId) trackedVenueOrderIds.set(orderId, { symbol: input.symbol, kind: input.source })
+      if (
+        !(filledQuantity > 0)
+        || !(filledPrice > 0)
+        || !validOrderId
+        || result?.pendingReconciliation === true
+        || !terminalStatus(result?.fill?.status)
+      ) {
         throw new Error(`${input.controlId}: terminal authoritative fill was not reconciled`)
+      }
+      const recordUnexpectedReplayFill = (candidate: any, kind: string) => {
+        const candidateOrderId = String(candidate?.orderId || "")
+        const candidateQuantity = finite(candidate?.fill?.filledQty)
+        if (
+          candidate?.success === true
+          && candidateOrderId
+          && candidateOrderId !== "N/A"
+          && candidateOrderId !== orderId
+          && candidateQuantity > 0
+        ) {
+          adjustOwnedExposure(
+            input.symbol,
+            input.positionDirection,
+            candidateQuantity,
+            input.reduceOnly,
+            finite(rulesBySymbol.get(input.symbol)?.quantityStep),
+          )
+          trackedVenueOrderIds.set(candidateOrderId, { symbol: input.symbol, kind })
+        }
       }
       let idempotentReplay = false
       let conflictingReplayRejected: boolean | null = null
       if (input.tradePath === "direct-trade") {
         const replay = await serviceModule.placeLiveOrder(payload)
         if (replay?.idempotentReplay !== true || String(replay?.orderId || "") !== orderId) {
+          recordUnexpectedReplayFill(replay, `${input.source}-unexpected-replay`)
           throw new Error(`${input.controlId}: idempotent replay did not return the same venue order`)
         }
         idempotentReplay = true
         try {
-          await serviceModule.placeLiveOrder({ ...payload, quantity: input.quantity * 2 })
+          const conflictingReplay = await serviceModule.placeLiveOrder({ ...payload, quantity: input.quantity * 2 })
+          recordUnexpectedReplayFill(conflictingReplay, `${input.source}-unexpected-conflict-replay`)
           conflictingReplayRejected = false
         } catch (conflict: any) {
           conflictingReplayRejected = Number(conflict?.statusCode) === 409
@@ -1115,7 +1315,6 @@ async function main(): Promise<void> {
           throw new Error(`${input.controlId}: conflicting durable replay was not rejected before exchange execution`)
         }
       }
-      trackedVenueOrderIds.set(orderId, { symbol: input.symbol, kind: input.source })
       return {
         controlId: input.controlId,
         orderId,
@@ -1258,6 +1457,12 @@ async function main(): Promise<void> {
         if (!initiallyArmed?.stopLossOrderId || !initiallyArmed?.takeProfitOrderId) {
           throw new Error("Live-stage did not arm initial VST row stop-loss and take-profit")
         }
+        initialStopOrderId = String(initiallyArmed.stopLossOrderId)
+        takeProfitOrderId = String(initiallyArmed.takeProfitOrderId)
+        initialSecurityStopOrderId = String(initiallyArmed.securityStopOrderId || "")
+        trackControlOrder(initialStopOrderId, symbol, "trailing-static-replaced")
+        trackControlOrder(takeProfitOrderId, symbol, "take-profit-cancelled")
+        trackControlOrder(initialSecurityStopOrderId, symbol, "security-static-replaced")
         await liveStageModule.reconcileLivePositions(connectionId, connector, {
           skipSimulatedSweep: true,
           skipOrphanAdoption: true,
@@ -1271,12 +1476,9 @@ async function main(): Promise<void> {
         if (!initialStopOrderId || !takeProfitOrderId || !initialSecurityStopOrderId) {
           throw new Error("Live-stage did not arm the complete row SL/TP plus slot security-stop set")
         }
-        trackedControlOrders.set(initialStopOrderId, symbol)
-        trackedControlOrders.set(takeProfitOrderId, symbol)
-        trackedControlOrders.set(initialSecurityStopOrderId, symbol)
-        trackedVenueOrderIds.set(initialStopOrderId, { symbol, kind: "trailing-static-replaced" })
-        trackedVenueOrderIds.set(takeProfitOrderId, { symbol, kind: "take-profit-cancelled" })
-        trackedVenueOrderIds.set(initialSecurityStopOrderId, { symbol, kind: "security-static-replaced" })
+        trackControlOrder(initialStopOrderId, symbol, "trailing-static-replaced")
+        trackControlOrder(takeProfitOrderId, symbol, "take-profit-cancelled")
+        trackControlOrder(initialSecurityStopOrderId, symbol, "security-static-replaced")
         const [initialStopOrder, takeProfitOrder, initialSecurityOrder] = await Promise.all([
           waitForOpenOrderRecord(symbol, initialStopOrderId),
           waitForOpenOrderRecord(symbol, takeProfitOrderId),
@@ -1331,12 +1533,8 @@ async function main(): Promise<void> {
             `takeProfitRetained=${takeProfitRetained}, ratchetPersisted=${ratchetPersisted})`,
           )
         }
-        trackedControlOrders.delete(initialStopOrderId)
-        trackedControlOrders.delete(initialSecurityStopOrderId)
-        trackedControlOrders.set(replacementStopOrderId, symbol)
-        trackedControlOrders.set(replacementSecurityStopOrderId, symbol)
-        trackedVenueOrderIds.set(replacementStopOrderId, { symbol, kind: "trailing-ratcheted-cancelled" })
-        trackedVenueOrderIds.set(replacementSecurityStopOrderId, { symbol, kind: "security-ratcheted-cancelled" })
+        trackControlOrder(replacementStopOrderId, symbol, "trailing-ratcheted-cancelled")
+        trackControlOrder(replacementSecurityStopOrderId, symbol, "security-ratcheted-cancelled")
         const [
           initialStopCancelled,
           initialSecurityCancelled,
@@ -1351,6 +1549,12 @@ async function main(): Promise<void> {
         const replacementObservedOpen = Boolean(replacementStopOrder)
         const securityReplacementObservedOpen = Boolean(replacementSecurityOrder)
         const securityStopArmedQuantity = orderQuantityOf(replacementSecurityOrder)
+        const stopLossQuantity = orderQuantityOf(replacementStopOrder)
+        const takeProfitQuantity = orderQuantityOf(takeProfitOrder)
+        const rowProtectionQuantityBacked = stopLossQuantity > 0
+          && takeProfitQuantity > 0
+          && Math.abs(stopLossQuantity - quantity) <= Math.max(quantityStep / 2, 1e-12)
+          && Math.abs(takeProfitQuantity - quantity) <= Math.max(quantityStep / 2, 1e-12)
         const securityQuantityBacked = securityStopArmedQuantity > 0
           && Math.abs(securityStopArmedQuantity - quantity) <= Math.max(quantityStep / 2, 1e-12)
         if (
@@ -1358,10 +1562,13 @@ async function main(): Promise<void> {
           || !initialSecurityCancelled
           || !replacementObservedOpen
           || !securityReplacementObservedOpen
+          || !rowProtectionQuantityBacked
           || !securityQuantityBacked
         ) {
           throw new Error("Live-stage row/security trailing replacements were not authoritatively observed on BingX VST")
         }
+        markControlOrderAbsent(initialStopOrderId)
+        markControlOrderAbsent(initialSecurityStopOrderId)
 
         // A stale asynchronous pseudo tick must never loosen an already
         // ratcheted exchange stop. The live-stage has an early and a locked
@@ -1409,9 +1616,9 @@ async function main(): Promise<void> {
         if (!replacementCancelled || !takeProfitCancelled || !securityReplacementCancelled) {
           throw new Error("Trailing probe cleanup could not authoritatively cancel row/security protections")
         }
-        trackedControlOrders.delete(replacementStopOrderId)
-        trackedControlOrders.delete(takeProfitOrderId)
-        trackedControlOrders.delete(replacementSecurityStopOrderId)
+        markControlOrderAbsent(replacementStopOrderId)
+        markControlOrderAbsent(takeProfitOrderId)
+        markControlOrderAbsent(replacementSecurityStopOrderId)
         return {
           orderId: replacementStopOrderId,
           takeProfitOrderId,
@@ -1421,8 +1628,9 @@ async function main(): Promise<void> {
           stopPrice: Number(afterRatchet?.stopLossPrice || ratchetedStopPrice),
           takeProfitPrice,
           securityStopPrice: Number(afterRatchet?.securityStopPrice || 0),
-          stopLossQuantity: orderQuantityOf(replacementStopOrder),
-          takeProfitQuantity: orderQuantityOf(takeProfitOrder),
+          stopLossQuantity,
+          takeProfitQuantity,
+          rowProtectionQuantityBacked,
           securityStopArmedQuantity,
           securityQuantityBacked,
           observedOpen: true,
@@ -1447,6 +1655,20 @@ async function main(): Promise<void> {
           },
         }
       } finally {
+        // Re-read the durable live-stage record before removing the probe.
+        // This captures any control created immediately before an exception,
+        // including a security replacement whose caller did not receive a
+        // successful return value.
+        try {
+          const persisted = (await liveStageModule.getLivePositions(connectionId))
+            .find((position: any) => position.id === positionId)
+          trackControlOrder(persisted?.stopLossOrderId, symbol, "trailing-finally-stop")
+          trackControlOrder(persisted?.takeProfitOrderId, symbol, "trailing-finally-take-profit")
+          trackControlOrder(persisted?.securityStopOrderId, symbol, "trailing-finally-security")
+        } catch {
+          // The outer cleanup still retains every ID observed before this
+          // point and will fail closed if the symbol is not exclusive.
+        }
         // The probe uses an isolated temporary Redis instance. Remove its
         // artificial strategy record eagerly so a later cycle can only match
         // its own pseudo position, even if the harness is expanded to reuse a
@@ -1483,6 +1705,9 @@ async function main(): Promise<void> {
       report.cycles.push(cycle)
       try {
         const rules = rulesBySymbol.get(symbol)
+        const quantityStep = finite(rules?.quantityStep)
+        await waitForExclusiveOwnedQuantity(symbol, direction, 0, quantityStep)
+        await assertNoOpenOrdersForSymbol(symbol, "cycle entry")
         const ticker = await connector.getTicker(symbol)
         const marketPrice = finite(ticker?.last || ticker?.ask || ticker?.bid)
         if (!(marketPrice > 0)) throw new Error(`No current price for ${symbol}`)
@@ -1504,12 +1729,13 @@ async function main(): Promise<void> {
           source: `${tradePath.id}-vst-soak-entry`,
           tradePath: tradePath.id,
         })
-        trackedExposureSymbols.add(symbol)
-        cycle.positionQuantityAfterEntry = await waitForQuantity(
+        cycle.positionQuantityAfterEntry = await waitForExclusiveOwnedQuantity(
           symbol,
           direction,
-          (quantity) => quantity >= cycle.entry!.filledQuantity * 0.99,
+          cycle.entry.filledQuantity,
+          quantityStep,
         )
+        await assertNoOpenOrdersForSymbol(symbol, "cycle accumulation")
 
         cycle.accumulation = await placeManagedOrder({
           symbol,
@@ -1526,11 +1752,13 @@ async function main(): Promise<void> {
           tradePath: tradePath.id,
         })
         const cumulativeFill = cycle.entry.filledQuantity + cycle.accumulation.filledQuantity
-        cycle.positionQuantityAfterAccumulation = await waitForQuantity(
+        cycle.positionQuantityAfterAccumulation = await waitForExclusiveOwnedQuantity(
           symbol,
           direction,
-          (quantity) => quantity >= cumulativeFill * 0.99,
+          cumulativeFill,
+          quantityStep,
         )
+        await assertNoOpenOrdersForSymbol(symbol, "protection placement")
 
         const pricePrecision = Math.max(0, Math.min(12, rules.pricePrecision))
         const priceTick = finite(rules.priceTick)
@@ -1564,10 +1792,10 @@ async function main(): Promise<void> {
             pricePrecision,
             priceTick,
             quantityPrecision: finite(rules.quantityPrecision),
-            quantityStep: finite(rules.quantityStep),
+            quantityStep,
             liquidationPrice,
             protectionBand,
-            quantity: cycle.positionQuantityAfterAccumulation,
+            quantity: cumulativeFill,
             entry: cycle.entry,
             accumulation: cycle.accumulation,
           })
@@ -1585,23 +1813,29 @@ async function main(): Promise<void> {
           const stopLoss = await connector.placeStopOrder(
             symbol,
             protectionSide,
-            cycle.positionQuantityAfterAccumulation,
+            cumulativeFill,
             stopPrice,
             "stop_loss",
             rowProtectionOptions(safeClientId("ctsvstsl", runSuffix, index)),
           )
+          if (stopLoss?.success && stopLoss?.orderId) {
+            trackControlOrder(stopLoss.orderId, symbol, "stop-loss-cancelled")
+          }
           const takeProfit = await connector.placeStopOrder(
             symbol,
             protectionSide,
-            cycle.positionQuantityAfterAccumulation,
+            cumulativeFill,
             takeProfitPrice,
             "take_profit",
             rowProtectionOptions(safeClientId("ctsvsttp", runSuffix, index)),
           )
+          if (takeProfit?.success && takeProfit?.orderId) {
+            trackControlOrder(takeProfit.orderId, symbol, "take-profit-cancelled")
+          }
           const securityStop = await connector.placeStopOrder(
             symbol,
             protectionSide,
-            cycle.positionQuantityAfterAccumulation,
+            cumulativeFill,
             securityStopPrice,
             "stop_loss",
             {
@@ -1611,16 +1845,8 @@ async function main(): Promise<void> {
               clientOrderId: safeClientId("ctsvstsec", runSuffix, index),
             },
           )
-          for (const [kind, result] of [
-            ["stop-loss", stopLoss],
-            ["take-profit", takeProfit],
-            ["security-stop", securityStop],
-          ] as const) {
-            if (result?.success && result?.orderId) {
-              const orderId = String(result.orderId)
-              trackedControlOrders.set(orderId, symbol)
-              trackedVenueOrderIds.set(orderId, { symbol, kind: `${kind}-cancelled` })
-            }
+          if (securityStop?.success && securityStop?.orderId) {
+            trackControlOrder(securityStop.orderId, symbol, "security-stop-cancelled")
           }
           if (
             !stopLoss?.success || !stopLoss?.orderId
@@ -1657,15 +1883,21 @@ async function main(): Promise<void> {
               ? waitForOrderVisibility(symbol, securityStopOrderId, false)
               : Promise.resolve(false),
           ])
-          if (stopCancellation.success && stopObservedCancelled) trackedControlOrders.delete(protectionOrderId)
-          if (takeProfitCancellation.success && takeProfitObservedCancelled) trackedControlOrders.delete(takeProfitOrderId)
-          if (securityCancellation.success && securityObservedCancelled) trackedControlOrders.delete(securityStopOrderId)
+          if (stopCancellation.success && stopObservedCancelled) markControlOrderAbsent(protectionOrderId)
+          if (takeProfitCancellation.success && takeProfitObservedCancelled) markControlOrderAbsent(takeProfitOrderId)
+          if (securityCancellation.success && securityObservedCancelled) markControlOrderAbsent(securityStopOrderId)
           const observedOpen = Boolean(stopOrder) && Boolean(takeProfitOrder)
           const securityObservedOpen = Boolean(securityOrder)
+          const stopLossQuantity = orderQuantityOf(stopOrder)
+          const takeProfitQuantity = orderQuantityOf(takeProfitOrder)
           const securityStopArmedQuantity = orderQuantityOf(securityOrder)
+          const rowProtectionQuantityBacked = stopLossQuantity > 0
+            && takeProfitQuantity > 0
+            && Math.abs(stopLossQuantity - cumulativeFill) <= Math.max(quantityStep / 2, 1e-12)
+            && Math.abs(takeProfitQuantity - cumulativeFill) <= Math.max(quantityStep / 2, 1e-12)
           const securityQuantityBacked = securityStopArmedQuantity > 0
-            && Math.abs(securityStopArmedQuantity - cycle.positionQuantityAfterAccumulation)
-              <= Math.max(finite(rules.quantityStep) / 2, 1e-12)
+            && Math.abs(securityStopArmedQuantity - cumulativeFill)
+              <= Math.max(quantityStep / 2, 1e-12)
           const cancelled = stopCancellation.success === true && takeProfitCancellation.success === true
           const securityCancelled = securityCancellation.success === true
           const observedCancelled = stopObservedCancelled && takeProfitObservedCancelled
@@ -1678,8 +1910,9 @@ async function main(): Promise<void> {
             stopPrice,
             takeProfitPrice,
             securityStopPrice,
-            stopLossQuantity: orderQuantityOf(stopOrder),
-            takeProfitQuantity: orderQuantityOf(takeProfitOrder),
+            stopLossQuantity,
+            takeProfitQuantity,
+            rowProtectionQuantityBacked,
             securityStopArmedQuantity,
             securityQuantityBacked,
             observedOpen,
@@ -1690,7 +1923,8 @@ async function main(): Promise<void> {
             securityObservedCancelled,
           }
           if (
-            !observedOpen || !securityObservedOpen || !securityQuantityBacked
+            !observedOpen || !securityObservedOpen
+            || !rowProtectionQuantityBacked || !securityQuantityBacked
             || !cancelled || !securityCancelled
             || !observedCancelled || !securityObservedCancelled
           ) {
@@ -1698,14 +1932,20 @@ async function main(): Promise<void> {
               `Protection coordination failed (rowsOpen=${observedOpen}, securityOpen=${securityObservedOpen}, ` +
               `rowsCancelled=${cancelled}, securityCancelled=${securityCancelled}, ` +
               `rowsAbsent=${observedCancelled}, securityAbsent=${securityObservedCancelled}, ` +
+              `rowQuantityBacked=${rowProtectionQuantityBacked}, ` +
               `securityQuantityBacked=${securityQuantityBacked})`,
             )
           }
         }
 
-        const authoritativePosition = await positionLeg(symbol, direction)
-        const closeQuantity = quantityOf(authoritativePosition)
-        if (!(closeQuantity > 0)) throw new Error("Authoritative close quantity is zero")
+        const closeQuantity = await waitForExclusiveOwnedQuantity(
+          symbol,
+          direction,
+          cumulativeFill,
+          quantityStep,
+        )
+        await assertNoOpenOrdersForSymbol(symbol, "owned reduce-only close")
+        if (!(closeQuantity > 0)) throw new Error("Owned close quantity is zero")
         cycle.close = await placeManagedOrder({
           symbol,
           side: direction === "long" ? "short" : "long",
@@ -1720,10 +1960,11 @@ async function main(): Promise<void> {
           source: `${tradePath.id}-vst-soak-close`,
           tradePath: tradePath.id,
         })
-        cycle.positionQuantityAfterClose = await waitForQuantity(
+        cycle.positionQuantityAfterClose = await waitForExclusiveOwnedQuantity(
           symbol,
           direction,
-          (quantity) => quantity <= Math.max(finite(rules.quantityStep) / 2, 1e-12),
+          0,
+          quantityStep,
         )
         const symbolOpenOrders = await connector.getOpenOrders(symbol)
         assertSnapshotHealthy("orders")

@@ -130,7 +130,6 @@ export function QuickstartFullSystemTestDialog() {
       })
     }
     setOverallProgress(10)
-    await waitForStageAck("startup", 30000).catch((err) => addLog("error", `Startup stage acknowledgement failed: ${err}`))
 
     // Phase 2: Quickstart Initialization
     setPhases(prev => {
@@ -140,11 +139,15 @@ export function QuickstartFullSystemTestDialog() {
     })
     addLog("step", "2. Starting quickstart engine initialization")
     try {
-      const quickstartInit = await fetch('/api/trade-engine/quick-start', { 
+      const quickstartResponse = await fetch('/api/trade-engine/quick-start', {
         method: 'POST',
         signal: AbortSignal.timeout(30000)
-      }).then(r => r.json())
-      addLog(quickstartInit.success ? "success" : "info", `Quickstart initialized: ${quickstartInit.success ? '✅ OK' : '⚠️ Already running'}`)
+      })
+      const quickstartInit = await quickstartResponse.json().catch(() => ({}))
+      if (!quickstartResponse.ok || quickstartInit.success === false) {
+        throw new Error(quickstartInit.error || `Quickstart failed (HTTP ${quickstartResponse.status})`)
+      }
+      addLog("success", "Quickstart initialized: ✅ OK")
       setPhases(prev => {
         const next = [...prev]
         next[1].status = "success"
@@ -158,9 +161,25 @@ export function QuickstartFullSystemTestDialog() {
         next[1].status = "error"
         return next
       })
+      setOverallProgress(20)
+      setTestDuration(`${((Date.now() - startTime) / 1000).toFixed(1)}s (failed)`)
+      setIsRunning(false)
+      return
     }
     setOverallProgress(20)
-    await waitForStageAck("recoordination_complete", 30000).catch((err) => addLog("error", `Recoordination acknowledgement failed: ${err}`))
+    try {
+      await waitForStageAck("recoordination_complete", 30000)
+    } catch (err) {
+      addLog("error", `Recoordination acknowledgement failed: ${err}`)
+      setPhases(prev => {
+        const next = [...prev]
+        next[1].status = "error"
+        return next
+      })
+      setTestDuration(`${((Date.now() - startTime) / 1000).toFixed(1)}s (failed)`)
+      setIsRunning(false)
+      return
+    }
 
     // Phase 3: Engine Startup
     setPhases(prev => {
@@ -170,11 +189,15 @@ export function QuickstartFullSystemTestDialog() {
     })
     addLog("step", "2.5 Starting trade engine service")
     try {
-      const engineStart = await fetch('/api/trade-engine/start', { 
+      const engineStartResponse = await fetch('/api/trade-engine/start', {
         method: 'POST',
         signal: AbortSignal.timeout(15000)
-      }).then(r => r.json())
-      addLog(engineStart.success ? "success" : "info", `Engine start status: ${engineStart.success ? '✅ Running' : '⚠️ Already running'}`)
+      })
+      const engineStart = await engineStartResponse.json().catch(() => ({}))
+      if (!engineStartResponse.ok || engineStart.success === false) {
+        throw new Error(engineStart.error || `Engine start failed (HTTP ${engineStartResponse.status})`)
+      }
+      addLog("success", "Engine start status: ✅ Running")
       setPhases(prev => {
         const next = [...prev]
         next[2].status = "success"
@@ -188,10 +211,26 @@ export function QuickstartFullSystemTestDialog() {
         next[2].status = "error"
         return next
       })
+      setOverallProgress(25)
+      setTestDuration(`${((Date.now() - startTime) / 1000).toFixed(1)}s (failed)`)
+      setIsRunning(false)
+      return
     }
     setOverallProgress(25)
     addLog("info", "Waiting for startup stage acknowledgement...")
-    await waitForStageAck("startup", 30000).catch((err) => addLog("error", `Engine startup acknowledgement failed: ${err}`))
+    try {
+      await waitForStageAck("startup", 30000)
+    } catch (err) {
+      addLog("error", `Engine startup acknowledgement failed: ${err}`)
+      setPhases(prev => {
+        const next = [...prev]
+        next[2].status = "error"
+        return next
+      })
+      setTestDuration(`${((Date.now() - startTime) / 1000).toFixed(1)}s (failed)`)
+      setIsRunning(false)
+      return
+    }
 
     // Phase 4: Prehistoric Processing Monitoring
     setPhases(prev => {

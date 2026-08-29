@@ -2,9 +2,15 @@ import { NextResponse } from "next/server"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { initRedis, getAssignedAndEnabledConnections, getAllConnections, getSettings, getRedisClient } from "@/lib/redis-db"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 async function handleStartAll() {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json({ ...runtimeMaintenanceJson(maintenance), results: [] }, { status: 503 })
+    }
+
     const coordinator = getGlobalTradeEngineCoordinator()
     
     if (!coordinator) {

@@ -33,6 +33,7 @@ import {
   sameOrderedSymbols,
 } from "@/lib/quickstart-change-detection"
 import { canRetainQuickStartPrehistoricCoverage } from "@/lib/quickstart-bootstrap-state"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
@@ -248,6 +249,10 @@ async function handlePost(request: Request) {
     const body = await request.json().catch(() => ({}))
     const action = body.action || "enable"
     const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
+    const maintenance = getRuntimeMaintenanceState()
+    if (action !== "disable" && maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
     
     await initRedis()
     if (action !== "disable" && process.env.NODE_ENV === "production") {

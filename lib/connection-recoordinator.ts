@@ -47,6 +47,7 @@ import {
   normalizeBaseVolumeFactor,
   normalizeIdentityVolumeFactor,
 } from "@/lib/constants"
+import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 
 const inFlightRecoordinations = new Map<string, Promise<void>>()
 const inFlightSettingsCommits = new Map<string, Promise<unknown>>()
@@ -1260,6 +1261,27 @@ export async function recoordinateAfterSettingsChange(
         )
         // Non-fatal — engine will pick up changes via the durable settings event.
       }
+    }
+
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      const wasRunning = coordinator.isEngineRunning(id)
+      if (wasRunning) {
+        await coordinator.stopEngine(id, { operatorRequested: false })
+      }
+      console.warn(
+        `[v0] [${opts.logTag}] Runtime recoordination suppressed for ${id} — ` +
+          `maintenance stop is active (${maintenance.reason})`,
+      )
+      return makeCompletion({
+        progressRecoordinationRequired: requiresProgressRecoordination,
+        progressionChanged,
+        progressionReason,
+        refreshQueued: refreshIsDurablyPending(),
+        refreshStatus,
+        appliedLocally: wasRunning,
+        queuedForOwner: false,
+      })
     }
 
     const wasRunningBeforeApply = coordinator.isEngineRunning(id)

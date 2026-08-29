@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import process from "node:process"
+import { lstatSync } from "node:fs"
+import path from "node:path"
 import { pathToFileURL } from "node:url"
 
 export const MINUTE_INTERVAL_MS = 60_000
@@ -9,6 +11,17 @@ export const CRON_PATHS = [
   "/api/cron/sync-live-positions",
   "/api/cron/direct-trade-continuity",
 ]
+
+export function runtimeMaintenanceActive(env = process.env, cwd = process.cwd()) {
+  const runtimeDir = path.resolve(env.CTS_RUNTIME_DIR || path.join(cwd, ".cts-runtime"))
+  const markerPath = path.join(runtimeDir, "maintenance-stop")
+  try {
+    lstatSync(markerPath)
+    return true
+  } catch (error) {
+    return error?.code !== "ENOENT"
+  }
+}
 
 function isLoopback(hostname) {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"
@@ -140,7 +153,16 @@ export async function main() {
   let failed = false
   do {
     const tickStarted = Date.now()
-    const summary = await runSchedulerTick({ ...config, signal: lifecycle.signal })
+    const summary = runtimeMaintenanceActive()
+      ? {
+          ok: true,
+          skipped: true,
+          reason: "runtime_maintenance_stop",
+          startedAt: new Date(tickStarted).toISOString(),
+          durationMs: 0,
+          results: [],
+        }
+      : await runSchedulerTick({ ...config, signal: lifecycle.signal })
     failed ||= !summary.ok
     console.log(JSON.stringify({ type: "minute_scheduler_tick", ...summary }))
     if (config.once || lifecycle.signal.aborted) break

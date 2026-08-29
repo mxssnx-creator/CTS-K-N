@@ -10,6 +10,7 @@ import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 /**
  * Preset mode is a mode of the connection's single shared engine. Disabling it
@@ -32,6 +33,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       )
     }
     const presetTradeRequested = parseBooleanInput(rawFlag)
+    const maintenance = getRuntimeMaintenanceState()
+    if (presetTradeRequested && maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
 
     if (presetTradeRequested && process.env.NODE_ENV === "production") {
       const readiness = await checkProductionReadiness({ requireConnectionCredentials: false })

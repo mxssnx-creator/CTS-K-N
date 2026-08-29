@@ -7,6 +7,7 @@ import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/eng
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { parseBooleanInput } from "@/lib/boolean-utils"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 /**
  * POST /api/settings/connections/[id]/enable
@@ -25,6 +26,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     const shouldEnable = parseBooleanInput(body.shouldEnable)
     const skipTest = parseBooleanInput(body.skipTest)
+    const maintenance = getRuntimeMaintenanceState()
+    if (shouldEnable && maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
 
     console.log(`[v0] [Enable Connection] ${id}: shouldEnable=${shouldEnable}, skipTest=${skipTest}`)
     await initRedis()

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { getAllConnections, initRedis, updateConnection } from "@/lib/redis-db"
+import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -10,6 +11,10 @@ export const dynamic = "force-dynamic"
  */
 export async function POST(request: Request) {
   try {
+    const maintenance = getRuntimeMaintenanceState()
+    if (maintenance.active) {
+      return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
+    }
     await initRedis()
     const allConnections = await getAllConnections()
 

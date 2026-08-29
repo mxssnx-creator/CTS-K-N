@@ -60,6 +60,7 @@ import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
 import { hasExplicitServerlessForegroundOptIn, isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "./deployment-runtime"
 import { isTruthyFlag } from "./connection-state-utils"
 import { resolveDistributedEngineRuntime } from "./distributed-engine-runtime"
+import { getRuntimeMaintenanceState } from "./runtime-maintenance"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
 export { TradeEngine, type TradeEngineConfig, TRADE_SERVICE_NAME } from "./trade-engine/trade-engine"
@@ -128,6 +129,21 @@ export class GlobalTradeEngineCoordinator {
     totalCycles: 0,
     avgCycleDuration: 0,
     lastMetricsUpdate: new Date(),
+  }
+
+  /**
+   * Host maintenance is an absolute start/restart veto. The check is repeated
+   * at each public chokepoint so a marker created after process boot still
+   * prevents a watchdog, API request, or queued refresh from resurrecting an
+   * engine. Stop paths intentionally remain available.
+   */
+  private runtimeMaintenanceBlocks(context: string): boolean {
+    const maintenance = getRuntimeMaintenanceState()
+    if (!maintenance.active) return false
+    console.warn(
+      `[v0] [Coordinator] ${context} skipped — runtime maintenance stop is active (${maintenance.reason})`,
+    )
+    return true
   }
 
   /**
@@ -222,6 +238,7 @@ export class GlobalTradeEngineCoordinator {
    * coordinator or after production Redis has not restored the global state yet.
    */
   private async isGlobalCoordinatorEnabled(context: string): Promise<boolean> {
+    if (this.runtimeMaintenanceBlocks(context)) return false
     try {
       const { getRedisClient, initRedis } = await import("@/lib/redis-db")
       await initRedis()
@@ -292,6 +309,8 @@ export class GlobalTradeEngineCoordinator {
    * PHASE 1 FIX: Added startup lock to prevent duplicate engines
    */
   async startEngine(connectionId: string, config: EngineConfig, options: StartEngineOptions = {}): Promise<boolean> {
+    if (this.runtimeMaintenanceBlocks(`startEngine(${connectionId})`)) return false
+
     const forceLocalTakeover = options.forceLocalTakeover === true || config.allowInProcessStart === true
     const explicitForegroundAllowed = hasExplicitServerlessForegroundOptIn()
 
@@ -1012,6 +1031,8 @@ export class GlobalTradeEngineCoordinator {
    * Trade request/effective flags.
    */
   async startAll(): Promise<void> {
+    if (this.runtimeMaintenanceBlocks("startAll")) return
+
     try {
       console.log("[v0] [Coordinator] Starting global trade engine...")
       
@@ -1621,6 +1642,8 @@ export class GlobalTradeEngineCoordinator {
    * resume-triggered starts pass the global-intent guard.
    */
   async resume(options: { force?: boolean } = {}): Promise<void> {
+    if (this.runtimeMaintenanceBlocks("resume")) return
+
     console.log("[v0] [Coordinator] RESUMING global trade engine - publishing running intent...")
 
     try {
@@ -1879,6 +1902,23 @@ export class GlobalTradeEngineCoordinator {
     let healthCheckRunning = false
 
     const executeHealthCheck = async (connectionId?: string) => {
+      const maintenance = getRuntimeMaintenanceState()
+      if (maintenance.active) {
+        const runningConnectionIds = [...this.engineManagers.entries()]
+          .filter(([, manager]) => manager.isEngineRunning)
+          .map(([id]) => id)
+        if (runningConnectionIds.length > 0) {
+          console.warn(
+            `[v0] [Coordinator] runtime maintenance stop became active (${maintenance.reason}); ` +
+              `stopping ${runningConnectionIds.length} local engine(s)`,
+          )
+          await Promise.allSettled(runningConnectionIds.map((id) =>
+            this.stopEngine(id, { operatorRequested: false })))
+        }
+        this.isGloballyRunning = false
+        this.stallEscalation.clear()
+        return
+      }
       await this.drainQueuedRefreshRequestsNow(connectionId)
       if (!(await this.isGlobalCoordinatorEnabled("watchdog"))) {
         this.stallEscalation.clear()

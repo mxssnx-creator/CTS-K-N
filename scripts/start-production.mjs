@@ -9,6 +9,7 @@ import { basename, dirname, resolve } from "node:path"
 import process from "node:process"
 
 const projectRoot = resolve(process.cwd())
+const runtimeDir = resolve(process.env.CTS_RUNTIME_DIR || resolve(projectRoot, ".cts-runtime"))
 const configuredDistDir = process.env.NEXT_DIST_DIR || ".next"
 const distDir = resolve(projectRoot, configuredDistDir)
 const distName = basename(distDir)
@@ -36,6 +37,7 @@ const env = {
   HOSTNAME: hostname,
   CTS_RUNTIME_BOOT_ID: runtimeBootId,
   CTS_RUNTIME_STARTED_AT: runtimeStartedAt,
+  CTS_RUNTIME_DIR: runtimeDir,
 }
 
 const [command, args, label] = existsSync(standaloneServer)
