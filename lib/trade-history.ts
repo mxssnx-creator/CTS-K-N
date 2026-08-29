@@ -2,6 +2,7 @@ import {
   isRealizedPnlAccountingPending,
   requiresVenueAccountingForPricePair,
 } from "@/lib/live-position-pnl"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 /** Bounded transport page; the durable history itself is never truncated. */
 export const TRADE_HISTORY_PAGE_SIZE = 500
@@ -323,6 +324,7 @@ export interface LocalTradeHistorySnapshotClassification {
     | "no_executed_quantity"
     | "missing_identity"
     | "missing_entry_price"
+    | "invalid_direction"
     | "missing_exit_and_pnl"
     | "venue_accounting_incomplete"
     | "venue_accounting_required"
@@ -403,9 +405,10 @@ export function classifyLocalTradeHistorySnapshot(
     return { disposition: "unresolved_trade", reason: "missing_entry_price", row: null }
   }
 
-  const direction: "long" | "short" = String(position.direction ?? position.side).toLowerCase().includes("short")
-    ? "short"
-    : "long"
+  const direction = normalizeTradeDirection(position.direction, position.side)
+  if (!direction) {
+    return { disposition: "unresolved_trade", reason: "invalid_direction", row: null }
+  }
   const exchangeData = position.exchangeData && typeof position.exchangeData === "object" ? position.exchangeData : {}
   const positionId = String(
     exchangeData.exchangePositionId ?? exchangeData.positionId ?? position.exchangePositionId ?? "",

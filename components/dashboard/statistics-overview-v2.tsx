@@ -8,6 +8,7 @@ import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/
 import { PerformanceTiers } from "@/components/dashboard/performance-tiers"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 interface CompactStats {
   indicationCycles: number
@@ -968,7 +969,15 @@ export function StatisticsOverviewV2() {
           // `lp.leverage.toFixed(...)` without any defensive guard,
           // even when the server omits newer fields.
           livePositions: (Array.isArray(opLive.positions)
-            ? opLive.positions.map((p: any) => {
+            ? opLive.positions.flatMap((p: any) => {
+                const direction = normalizeTradeDirection(
+                  p.direction,
+                  p.positionSide,
+                  p.side,
+                )
+                // An unknown side is an integrity error, not an implicit Long.
+                // Keep it out of side-sensitive controls and operator totals.
+                if (!direction) return []
                 const leverage = Math.max(1, Number(p.leverage) || 1)
                 const volumeUsd = Number(p.volumeUsd) || 0
                 // Derive margin at risk if server didn't compute it
@@ -984,10 +993,10 @@ export function StatisticsOverviewV2() {
                     ? Math.round((unrealizedPnl / marginUsd) * 10000) / 100
                     : 0
                 const security = resolveEffectiveSecurityStop(p)
-                return {
+                return [{
                   id:                    String(p.id || ""),
                   symbol:                String(p.symbol || ""),
-                  direction:             (p.direction === "short" ? "short" : "long") as "long" | "short",
+                  direction,
                   volumeUsd,
                   quantity:              Number(p.quantity) || 0,
                   leverage,
@@ -1017,7 +1026,7 @@ export function StatisticsOverviewV2() {
                   mirroredSetCount:      Number(p.mirroredSetCount) || (Array.isArray(p.mirroredSets) ? p.mirroredSets.length : 0),
                   mirroredSets:          Array.isArray(p.mirroredSets) ? p.mirroredSets : [],
                   resolution:            (p.resolution === "real-fallback" || p.resolution === "unresolved" ? p.resolution : "pseudo") as "pseudo" | "real-fallback" | "unresolved",
-                }
+                }]
               })
             : []
           )

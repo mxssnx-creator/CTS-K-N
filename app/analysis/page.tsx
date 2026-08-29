@@ -13,6 +13,7 @@ import type { SymbolAnalysis } from "@/lib/position-calculator"
 import { CalculationDemo } from "@/components/analysis/calculation-demo"
 import { TrendingUp, TrendingDown, Activity, DollarSign, Clock, Target } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 interface ActivePosition {
   id: string
@@ -97,20 +98,28 @@ export default function AnalysisPage() {
         const data = await res.json()
         return Array.isArray(data.data) ? data.data : Array.isArray(data.positions) ? data.positions : []
       }))
-      setActivePositions(payloads.flat().map((position: any) => ({
-        ...position,
-        id: String(position.id || position.positionId || ""),
-        symbol: String(position.symbol || "—"),
-        direction: String(position.direction || position.side || "long").toLowerCase() === "short" ? "short" : "long",
-        entry_price: Number(position.entry_price ?? position.entryPrice ?? position.averageExecutionPrice ?? 0),
-        current_price: Number(position.current_price ?? position.currentPrice ?? position.markPrice ?? position.entryPrice ?? 0),
-        quantity: Number(position.quantity ?? position.executedQuantity ?? 0),
-        leverage: Number(position.leverage ?? 1),
-        unrealized_pnl: Number(position.unrealized_pnl ?? position.unrealizedPnL ?? 0),
-        unrealized_pnl_percent: Number(position.unrealized_pnl_percent ?? position.unrealizedRoi ?? position.roi ?? 0),
-        created_at: String(position.created_at ?? position.createdAt ?? position.openedAt ?? ""),
-        connection_id: String(position.connection_id ?? position.connectionId ?? ""),
-      })))
+      setActivePositions(payloads.flat().flatMap((position: any) => {
+        const direction = normalizeTradeDirection(
+          position.direction,
+          position.positionSide,
+          position.side,
+        )
+        if (!direction) return []
+        return [{
+          ...position,
+          id: String(position.id || position.positionId || ""),
+          symbol: String(position.symbol || "—"),
+          direction,
+          entry_price: Number(position.entry_price ?? position.entryPrice ?? position.averageExecutionPrice ?? 0),
+          current_price: Number(position.current_price ?? position.currentPrice ?? position.markPrice ?? position.entryPrice ?? 0),
+          quantity: Number(position.quantity ?? position.executedQuantity ?? 0),
+          leverage: Number(position.leverage ?? 1),
+          unrealized_pnl: Number(position.unrealized_pnl ?? position.unrealizedPnL ?? 0),
+          unrealized_pnl_percent: Number(position.unrealized_pnl_percent ?? position.unrealizedRoi ?? position.roi ?? 0),
+          created_at: String(position.created_at ?? position.createdAt ?? position.openedAt ?? ""),
+          connection_id: String(position.connection_id ?? position.connectionId ?? ""),
+        }]
+      }))
     } catch (error) {
       console.error("[v0] Failed to fetch positions:", error)
     } finally {

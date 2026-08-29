@@ -164,6 +164,27 @@ describe("BingX-backed trade history", () => {
     })
   })
 
+  test("keeps executed rows with an unknown direction out of signed PnL statistics", () => {
+    const snapshot = {
+      id: "local-invalid-direction",
+      status: "closed",
+      symbol: "ETHUSDT",
+      direction: "sideways",
+      executedQuantity: 2,
+      averageExecutionPrice: 100,
+      closePrice: 95,
+      createdAt: 1_700_000_000_000,
+      closedAt: 1_700_000_060_000,
+    }
+
+    expect(classifyLocalTradeHistorySnapshot(snapshot)).toMatchObject({
+      disposition: "unresolved_trade",
+      reason: "invalid_direction",
+      row: null,
+    })
+    expect(normalizeLocalTradeHistoryRow(snapshot)).toBeNull()
+  })
+
   test("recognizes a profitable BingX one-way-mode close without guessing zero-PnL opens", () => {
     expect(normalizeBingXClosedOrder({
       symbol: "ETH-USDT",

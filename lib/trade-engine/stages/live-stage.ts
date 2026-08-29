@@ -6948,6 +6948,13 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
   // that would cause NaN or Infinity propagation in SL/TP calculations.
   if (!Number.isFinite(fillPrice) || fillPrice <= 0) return { desiredSl: 0, desiredTp: 0 }
 
+  // Protection is a side-sensitive exchange mutation. Never let an unknown or
+  // malformed direction fall through the ternaries below as an implicit short.
+  // A redundant valid side/positionSide may still recover a legacy row through
+  // the canonical resolver; otherwise reconciliation must repair the row first.
+  const direction = resolveLivePositionDirection(pos)
+  if (!direction) return { desiredSl: 0, desiredTp: 0 }
+
   normalizeLivePositionProtection(pos)
 
   // ── Trailing stop: use the ratcheted absolute price directly ────────────────
@@ -6977,7 +6984,7 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
     const slPct = Number.isFinite(rawSlPct) && rawSlPct > 0 ? (rawSlPct / 100) : 0
     desiredSl =
       slPct > 0
-        ? pos.direction === "long"
+        ? direction === "long"
           ? fillPrice * (1 - slPct)
           : fillPrice * (1 + slPct)
         : 0
@@ -6995,7 +7002,7 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
     : Number.isFinite(dcaTp) && dcaTp > 0
       ? dcaTp
       : tpPct > 0
-        ? pos.direction === "long"
+        ? direction === "long"
           ? fillPrice * (1 + tpPct)
           : fillPrice * (1 - tpPct)
         : 0
