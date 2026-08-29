@@ -75,12 +75,30 @@ describe("event stream stability", () => {
     expect(source).toContain("isServerlessDeploymentRuntime")
     expect(source).toContain("serverlessCloseTimer")
     expect(source).toContain("maxDuration = 10")
+    expect(source).toContain('enqueue("retry: 1000')
     expect(source.indexOf("cleanup = () => {")).toBeLessThan(
       source.indexOf("broadcaster.registerClient"),
     )
     expect(source.indexOf("broadcaster.registerClient")).toBeLessThan(
       source.indexOf("broadcaster.getHistory"),
     )
+  })
+
+  test("native EventSource reconnect is not duplicated or reported as a failure", () => {
+    const client = readFileSync(join(process.cwd(), "lib/sse-client.ts"), "utf8")
+    expect(client).toContain("source?.readyState === EventSource.CONNECTING")
+    expect(client.indexOf("source?.readyState === EventSource.CONNECTING")).toBeLessThan(
+      client.indexOf("console.error('[SSE] Connection error')"),
+    )
+
+    for (const file of [
+      "components/dashboard/quickstart-test-procedure-dialog.tsx",
+      "components/dashboard/quickstart-full-system-test-dialog.tsx",
+      "components/dashboard/engine-progression-test-dialog.tsx",
+    ]) {
+      const dialog = readFileSync(join(process.cwd(), file), "utf8")
+      expect(dialog).toContain("source.readyState === EventSource.CONNECTING")
+    }
   })
 
   test("server-side switches emit canonical cross-tab updates without returning secrets", () => {
