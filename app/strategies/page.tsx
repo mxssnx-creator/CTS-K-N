@@ -251,10 +251,16 @@ export default function StrategiesPage() {
 
    if (isLoading) {
      return (
-       <div className="flex flex-1 items-center justify-center">
-         <div className="text-center">
-           <div className="animate-spin rounded-full h-8 w-8 border b-2 border-slate-400 border-t-cyan-600 mx-auto mb-4"></div>
-           <p className="text-muted-foreground">Loading strategies...</p>
+       <div className="flex min-h-0 flex-1 flex-col">
+         <PageHeader
+           title="Strategies"
+           description="Advanced filtering, coordination analysis, and performance metrics"
+         />
+         <div className="flex flex-1 items-center justify-center" role="status" aria-live="polite">
+           <div className="text-center">
+             <div className="animate-spin rounded-full h-8 w-8 border-2 border-muted border-t-primary mx-auto mb-4"></div>
+             <p className="text-muted-foreground">Loading strategies...</p>
+           </div>
          </div>
        </div>
      )
