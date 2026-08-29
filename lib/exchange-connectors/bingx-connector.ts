@@ -2151,11 +2151,14 @@ export class BingXConnector extends BaseExchangeConnector {
     })
   }
 
-  async getOpenOrders(symbol?: string): Promise<any[]> {
+  async getOpenOrders(
+    symbol?: string,
+    options: { forceRefresh?: boolean } = {},
+  ): Promise<any[]> {
     const cacheKey = this.openOrdersCacheKey(symbol)
     const cached = BingXConnector.openOrdersSnapshotCache.get(cacheKey)
     const now = Date.now()
-    if (cached && now - cached.at < BingXConnector.openOrdersSnapshotTtlMs) {
+    if (!options.forceRefresh && cached && now - cached.at < BingXConnector.openOrdersSnapshotTtlMs) {
       this.lastOpenOrdersSnapshotStatus = { ok: true, at: cached.at, error: "cache" }
       return cached.orders.map((order) => ({ ...order }))
     }

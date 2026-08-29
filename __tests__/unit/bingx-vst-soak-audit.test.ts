@@ -1,6 +1,7 @@
 import {
   auditVstSoakExecutionRelations,
   auditVstSoakCounters,
+  classifyVstSoakExternalProtectionOrder,
   deriveVstSoakProtectionBand,
   evaluateVstSoakOrderHeadroom,
   normalizeVstSoakCounterSnapshot,
@@ -94,19 +95,19 @@ describe("BingX Prod-VST soak accounting audit", () => {
     ]))
   })
 
-  test("reserves one shared-account order beyond the complete protection set", () => {
-    expect(evaluateVstSoakOrderHeadroom(196, 200)).toEqual({
+  test("reserves a coexisting external SL/TP pair and one extra shared-account order", () => {
+    expect(evaluateVstSoakOrderHeadroom(194, 200)).toEqual({
       limit: 200,
-      observedOpenOrders: 196,
+      observedOpenOrders: 194,
       maxConcurrentControlOrders: 3,
-      safetyReserve: 1,
-      requiredHeadroom: 4,
-      availableHeadroom: 4,
+      safetyReserve: 3,
+      requiredHeadroom: 6,
+      availableHeadroom: 6,
       safe: true,
     })
-    expect(evaluateVstSoakOrderHeadroom(197, 200)).toMatchObject({
-      requiredHeadroom: 4,
-      availableHeadroom: 3,
+    expect(evaluateVstSoakOrderHeadroom(195, 200)).toMatchObject({
+      requiredHeadroom: 6,
+      availableHeadroom: 5,
       safe: false,
     })
     expect(evaluateVstSoakOrderHeadroom("invalid", 200)).toMatchObject({
@@ -114,6 +115,71 @@ describe("BingX Prod-VST soak accounting audit", () => {
       availableHeadroom: 0,
       safe: false,
     })
+  })
+
+  test("permits only exact-slot external reduce-only conditional protections", () => {
+    const slot = {
+      symbol: "ETHUSDT",
+      direction: "long" as const,
+      ownedQuantity: 0.02,
+      quantityStep: 0.001,
+    }
+    const stop = {
+      orderId: "external-stop",
+      symbol: "ETH-USDT",
+      type: "STOP_MARKET",
+      side: "SELL",
+      positionSide: "LONG",
+      closePosition: true,
+      quantity: 0,
+    }
+    const takeProfit = {
+      ...stop,
+      orderId: "external-tp",
+      type: "TAKE-PROFIT-MARKET",
+      closePosition: false,
+      reduceOnly: true,
+      quantity: 0.02,
+    }
+
+    expect(classifyVstSoakExternalProtectionOrder(stop, slot)).toMatchObject({
+      allowed: true,
+      reason: "protective_reduce_only",
+      type: "STOP_MARKET",
+    })
+    expect(classifyVstSoakExternalProtectionOrder(takeProfit, slot)).toMatchObject({
+      allowed: true,
+      reason: "protective_reduce_only",
+      type: "TAKE_PROFIT_MARKET",
+    })
+    expect(classifyVstSoakExternalProtectionOrder({
+      ...stop,
+      orderId: "external-short-stop",
+      side: "BUY",
+      positionSide: "SHORT",
+    }, { ...slot, direction: "short" })).toMatchObject({
+      allowed: true,
+      reason: "protective_reduce_only",
+    })
+    expect(classifyVstSoakExternalProtectionOrder({ ...stop, orderId: "" }, slot).reason)
+      .toBe("missing_order_identity")
+    expect(classifyVstSoakExternalProtectionOrder({ ...stop, symbol: "SOLUSDT" }, slot).reason)
+      .toBe("symbol_mismatch")
+    expect(classifyVstSoakExternalProtectionOrder({ ...stop, type: "MARKET" }, slot).reason)
+      .toBe("unsupported_order_type")
+    expect(classifyVstSoakExternalProtectionOrder({ ...stop, positionSide: "SHORT" }, slot).reason)
+      .toBe("position_side_mismatch")
+    expect(classifyVstSoakExternalProtectionOrder({ ...stop, side: "BUY" }, slot).reason)
+      .toBe("close_side_mismatch")
+    expect(classifyVstSoakExternalProtectionOrder({
+      ...stop,
+      closePosition: false,
+      reduceOnly: false,
+    }, slot).reason).toBe("not_reduce_only")
+    expect(classifyVstSoakExternalProtectionOrder({
+      ...takeProfit,
+      quantity: 0.021,
+    }, slot).reason).toBe("quantity_exceeds_owned")
   })
 
   test.each([4, 5, 6, 7, 8])(

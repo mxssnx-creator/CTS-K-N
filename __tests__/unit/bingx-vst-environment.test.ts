@@ -377,6 +377,52 @@ describe("BingX Prod-VST connector contract", () => {
     expect(requests.filter((request) => request.pathname === "/openApi/swap/v2/trade/openOrders")).toHaveLength(2)
   })
 
+  test("bypasses the dashboard open-order cache for an explicit safety snapshot", async () => {
+    let externalOrderVersion = 1
+    let openOrderRequests = 0
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname === "/openApi/swap/v2/server/time") {
+        return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/trade/openOrders") {
+        openOrderRequests += 1
+        return Response.json({
+          code: 0,
+          data: {
+            orders: [{
+              orderId: `external-${externalOrderVersion}`,
+              symbol: "ETH-USDT",
+            }],
+          },
+        })
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`)
+    }) as typeof fetch
+
+    const connector = new BingXConnector({
+      apiKey: "demo-safety-key",
+      apiSecret: "demo-safety-secret",
+      isTestnet: true,
+      apiType: "perpetual_futures",
+      contractType: "usdt-perpetual",
+      positionMode: "hedge",
+    })
+
+    await expect(connector.getOpenOrders("ETHUSDT")).resolves.toEqual([
+      expect.objectContaining({ orderId: "external-1" }),
+    ])
+    externalOrderVersion = 2
+    await expect(connector.getOpenOrders("ETHUSDT")).resolves.toEqual([
+      expect.objectContaining({ orderId: "external-1" }),
+    ])
+    await expect(connector.getOpenOrders("ETHUSDT", { forceRefresh: true })).resolves.toEqual([
+      expect.objectContaining({ orderId: "external-2" }),
+    ])
+    expect(openOrderRequests).toBe(2)
+    expect(connector.getLastOpenOrdersSnapshotStatus()).toMatchObject({ ok: true, error: "" })
+  })
+
   test("isolates private open-order snapshots between X01 and X02 in one process", async () => {
     const openOrderAccounts: string[] = []
     global.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {

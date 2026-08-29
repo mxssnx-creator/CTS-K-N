@@ -120,7 +120,10 @@ export interface VstSoakSymbolLiquidity {
 }
 
 export const VST_SOAK_MAX_CONCURRENT_CONTROL_ORDERS = 3
-export const VST_SOAK_MIN_SHARED_ORDER_RESERVE = 1
+// Shared X02 can run an independent protection controller which contributes
+// one reduce-only SL and one reduce-only TP after CTS opens a slot. Preserve
+// capacity for that pair plus one unrelated concurrent account order.
+export const VST_SOAK_MIN_SHARED_ORDER_RESERVE = 3
 
 export interface VstSoakOrderHeadroom {
   limit: number
@@ -133,8 +136,9 @@ export interface VstSoakOrderHeadroom {
 }
 
 /**
- * Reserve enough shared-account order capacity for the complete SL/TP/security
- * set plus one concurrent external order. Invalid observations fail closed.
+ * Reserve enough shared-account order capacity for the complete CTS
+ * SL/TP/security set, a coexisting external reduce-only SL/TP pair, and one
+ * additional concurrent account order. Invalid observations fail closed.
  */
 export function evaluateVstSoakOrderHeadroom(
   observedOpenOrders: unknown,
@@ -160,6 +164,95 @@ export function evaluateVstSoakOrderHeadroom(
     availableHeadroom,
     safe: availableHeadroom >= requiredHeadroom,
   }
+}
+
+export type VstSoakExternalProtectionReason =
+  | "protective_reduce_only"
+  | "invalid_slot"
+  | "missing_order_identity"
+  | "symbol_mismatch"
+  | "unsupported_order_type"
+  | "position_side_mismatch"
+  | "close_side_mismatch"
+  | "not_reduce_only"
+  | "quantity_exceeds_owned"
+
+export interface VstSoakExternalProtectionClassification {
+  allowed: boolean
+  reason: VstSoakExternalProtectionReason
+  symbol: string
+  type: string
+  side: string
+  positionSide: string
+  quantity: number
+  reduceOnly: boolean
+}
+
+function normalizedSymbol(value: unknown): string {
+  return String(value ?? "").trim().toUpperCase().replace(/[-/_:]/g, "")
+}
+
+function enabledFlag(value: unknown): boolean {
+  if (value === true || value === 1) return true
+  return ["true", "1", "yes"].includes(String(value ?? "").trim().toLowerCase())
+}
+
+/**
+ * Classify a non-CTS order that appeared on a currently CTS-owned VST slot.
+ *
+ * This intentionally accepts only conditional, reduce-only close controls.
+ * It never grants ownership and never permits cancellation; the classification
+ * merely proves that an exact CTS reduce-only close cannot increase or reverse
+ * exposure if an independent protection controller wins the close race.
+ */
+export function classifyVstSoakExternalProtectionOrder(
+  order: Record<string, unknown>,
+  slot: {
+    symbol: string
+    direction: "long" | "short"
+    ownedQuantity: number
+    quantityStep: number
+  },
+): VstSoakExternalProtectionClassification {
+  const symbol = normalizedSymbol(order.symbol)
+  const type = String(order.type ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_")
+  const side = String(order.side ?? "").trim().toUpperCase()
+  const positionSide = String(order.positionSide ?? order.direction ?? "").trim().toUpperCase()
+  const quantity = Math.abs(finiteNumber(
+    order.origQty ?? order.quantity ?? order.orderQty ?? order.qty ?? order.size,
+  ))
+  const reduceOnly = enabledFlag(order.reduceOnly) || enabledFlag(order.closePosition)
+  const result = (allowed: boolean, reason: VstSoakExternalProtectionReason) => ({
+    allowed,
+    reason,
+    symbol,
+    type,
+    side,
+    positionSide,
+    quantity,
+    reduceOnly,
+  })
+  const expectedSymbol = normalizedSymbol(slot.symbol)
+  const ownedQuantity = finiteNumber(slot.ownedQuantity)
+  const quantityStep = Math.abs(finiteNumber(slot.quantityStep))
+  if (!expectedSymbol || !(ownedQuantity > 0) || !["long", "short"].includes(slot.direction)) {
+    return result(false, "invalid_slot")
+  }
+  const identity = String(order.orderId ?? order.orderID ?? order.id ?? "").trim()
+  if (!identity) return result(false, "missing_order_identity")
+  if (symbol !== expectedSymbol) return result(false, "symbol_mismatch")
+  if (!["STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET"].includes(type)) {
+    return result(false, "unsupported_order_type")
+  }
+  const expectedPositionSide = slot.direction.toUpperCase()
+  if (positionSide !== expectedPositionSide) return result(false, "position_side_mismatch")
+  const expectedCloseSide = slot.direction === "long" ? "SELL" : "BUY"
+  if (side !== expectedCloseSide) return result(false, "close_side_mismatch")
+  if (!reduceOnly) return result(false, "not_reduce_only")
+  if (quantity > ownedQuantity + Math.max(quantityStep / 2, 1e-12)) {
+    return result(false, "quantity_exceeds_owned")
+  }
+  return result(true, "protective_reduce_only")
 }
 
 /**
