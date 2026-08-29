@@ -64,6 +64,8 @@ export interface PlaceLiveOrderInput {
   positionDirection?: LiveOrderDirection
   reduceOnly?: boolean
   clientOrderId?: string
+  /** Exact Direct-Trade ledger row owning this control id. */
+  positionId?: string
 }
 
 const VST_SOAK_CONFIRMATION = "I understand Prod-VST places authenticated orders with virtual funds"
@@ -107,6 +109,7 @@ interface DirectOrderControlRecord {
   state: DirectOrderControlState
   connectionId: string
   clientOrderId: string
+  positionId?: string
   exchangeClientOrderId: string
   symbol: string
   direction: LiveOrderDirection
@@ -276,6 +279,7 @@ export function exchangeClientOrderIdForControl(clientOrderId: string): string {
 }
 
 function directOrderFingerprint(input: {
+  positionId?: string
   symbol: string
   direction: LiveOrderDirection
   positionDirection: LiveOrderDirection
@@ -284,6 +288,7 @@ function directOrderFingerprint(input: {
   orderType: "market" | "limit"
 }): string {
   return JSON.stringify([
+    String(input.positionId || ""),
     input.symbol,
     input.direction,
     input.positionDirection,
@@ -1322,6 +1327,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     ? {
         version: 1,
         fingerprint: directOrderFingerprint({
+          positionId: input.positionId,
           symbol,
           direction,
           positionDirection,
@@ -1335,6 +1341,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
         state: "submitting",
         connectionId: input.connectionId,
         clientOrderId,
+        positionId: String(input.positionId || "") || undefined,
         exchangeClientOrderId: exchangeClientOrderIdForControl(clientOrderId),
         symbol,
         direction,

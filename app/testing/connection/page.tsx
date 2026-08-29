@@ -138,13 +138,6 @@ export default function ConnectionTestingPage() {
       />
       <div className="flex-1 overflow-auto">
         <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold mb-2">Connection Testing</h1>
-        <p className="text-muted-foreground">
-          Test exchange API connections with various operations
-        </p>
-      </div>
-
       <Tabs defaultValue="config" className="space-y-6">
         <TabsList>
           <TabsTrigger value="config">Configuration</TabsTrigger>

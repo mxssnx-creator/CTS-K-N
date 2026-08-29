@@ -100,6 +100,17 @@ function orderIdOf(order: any): string {
   return String(order?.orderId ?? order?.orderID ?? order?.id ?? "")
 }
 
+function clientOrderIdOf(order: any): string {
+  return String(
+    order?.clientOrderId
+    ?? order?.clientOrderID
+    ?? order?.client_order_id
+    ?? order?.client_oid
+    ?? order?.clOrdId
+    ?? "",
+  )
+}
+
 function nonZeroPositions(rows: any[]): any[] {
   return (Array.isArray(rows) ? rows : []).filter((row) => quantityOf(row) > 0)
 }
@@ -136,7 +147,7 @@ async function authoritativeAccountSnapshot(connector: SmokeConnector): Promise<
 }> {
   const [positions, orders] = await Promise.all([
     connector.getPositions(),
-    connector.getOpenOrders(),
+    (connector as any).getOpenOrders(undefined, { forceRefresh: true }),
   ])
   const positionStatus = connector.getLastPositionsSnapshotStatus?.()
   const orderStatus = connector.getLastOpenOrdersSnapshotStatus?.()
@@ -281,6 +292,9 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
 
   let targetPosition: any | null = null
   let hedgeMode = !/one[_-]?way|single/i.test(credentials.positionMode || "")
+  let baselineAuthoritativelyFlat = false
+  let smokeOpenSubmissionStarted = false
+  const smokeOwnedClientOrderIds = new Set<string>()
 
   const persist = async () => {
     report.finishedAt = new Date().toISOString()
@@ -316,6 +330,7 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
     if (preflight.positions.length > 0 || preflight.orders.length > 0) {
       throw new Error(`Account is not globally flat (positions=${preflight.positions.length}, orders=${preflight.orders.length})`)
     }
+    baselineAuthoritativelyFlat = true
 
     report.rules = await fetchBingXInstrumentRules(symbol, fetch, report.baseUrl || undefined)
     const ticker = await connector.getTicker(symbol)
@@ -347,7 +362,9 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
     }
 
     const openClientId = `cts-smoke-open-${Date.now().toString(36)}`
+    smokeOwnedClientOrderIds.add(openClientId)
     const openStarted = Date.now()
+    smokeOpenSubmissionStarted = true
     const open = await connector.placeOrder(symbol, "buy", report.quantity, undefined, "market", {
       clientOrderId: openClientId,
       positionSide: "LONG",
@@ -371,19 +388,23 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
     const entryPrice = Number(targetPosition.entryPrice ?? targetPosition.avgPrice ?? marketPrice) || marketPrice
     const stopPrice = roundPrice(entryPrice * 0.95, report.rules.pricePrecision)
     const takeProfitPrice = roundPrice(entryPrice * 1.05, report.rules.pricePrecision)
+    const stopLossClientId = `cts-smoke-sl-${Date.now().toString(36)}`
+    const takeProfitClientId = `cts-smoke-tp-${Date.now().toString(36)}`
+    smokeOwnedClientOrderIds.add(stopLossClientId)
+    smokeOwnedClientOrderIds.add(takeProfitClientId)
     const protectionStarted = Date.now()
     const [stopLoss, takeProfit] = await Promise.all([
       connector.placeStopOrder(symbol, "sell", liveQuantity, stopPrice, "stop_loss", {
         reduceOnly: true,
         positionSide: "LONG",
         hedgeMode,
-        clientOrderId: `cts-smoke-sl-${Date.now().toString(36)}`,
+        clientOrderId: stopLossClientId,
       }),
       connector.placeStopOrder(symbol, "sell", liveQuantity, takeProfitPrice, "take_profit", {
         reduceOnly: true,
         positionSide: "LONG",
         hedgeMode,
-        clientOrderId: `cts-smoke-tp-${Date.now().toString(36)}`,
+        clientOrderId: takeProfitClientId,
       }),
     ])
     report.timingMs.protectionRequests = Date.now() - protectionStarted
@@ -403,12 +424,14 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
     }
     report.checks.controlOrdersCancelled = true
 
+    const closeClientId = `cts-smoke-close-${Date.now().toString(36)}`
+    smokeOwnedClientOrderIds.add(closeClientId)
     const closeStarted = Date.now()
     const close = await connector.placeOrder(symbol, "sell", liveQuantity, undefined, "market", {
       reduceOnly: true,
       positionSide: "LONG",
       hedgeMode,
-      clientOrderId: `cts-smoke-close-${Date.now().toString(36)}`,
+      clientOrderId: closeClientId,
     })
     report.timingMs.closeRequest = Date.now() - closeStarted
     report.transport.close = connector.getLastOperationTransport?.("placeOrder") || null
@@ -432,12 +455,16 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
   } catch (error) {
     report.errors.push(error instanceof Error ? error.message : String(error))
   } finally {
-    // Discover exposure regardless of order acknowledgement. This handles the
-    // classic "exchange accepted, client timed out" failure safely.
+    // Cleanup is allowed only when an authoritative globally-flat baseline was
+    // established and this smoke actually attempted its own entry. A failed
+    // preflight must never close or cancel an operator/third-party position.
     try {
-      const targetRows = await connector.getPositions(symbol)
-      const residual = nonZeroPositions(targetRows).find((row) => symbolOf(row) === symbol) || null
-      if (residual) {
+      const mayCleanSmokeExposure = baselineAuthoritativelyFlat && smokeOpenSubmissionStarted
+      const targetRows = mayCleanSmokeExposure ? await connector.getPositions(symbol) : []
+      const residual = mayCleanSmokeExposure
+        ? nonZeroPositions(targetRows).find((row) => symbolOf(row) === symbol) || null
+        : null
+      if (residual && mayCleanSmokeExposure) {
         const residualQty = quantityOf(residual)
         const residualDirection = resolveAuthoritativeTradeDirection(
           [residual.positionSide, residual.direction],
@@ -446,19 +473,41 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
         if (!residualDirection) {
           throw new Error("Residual position has no valid Long/Short direction; automatic cleanup refused")
         }
+        const quantityTolerance = Math.max(
+          Number(report.rules?.quantityStep || 0) / 2,
+          report.quantity * 1e-8,
+          1e-12,
+        )
+        if (
+          residualDirection !== "long"
+          || residualQty > report.quantity + quantityTolerance
+        ) {
+          throw new Error(
+            "Residual slot quantity/direction is not fully attributable to the smoke; automatic cleanup refused",
+          )
+        }
         const direction = residualDirection.toUpperCase() as "LONG" | "SHORT"
         const closeSide = direction === "LONG" ? "sell" : "buy"
+        const cleanupClientId = `cts-smoke-cleanup-${Date.now().toString(36)}`
+        smokeOwnedClientOrderIds.add(cleanupClientId)
         await connector.placeOrder(symbol, closeSide, residualQty, undefined, "market", {
           reduceOnly: true,
           positionSide: direction,
           hedgeMode,
-          clientOrderId: `cts-smoke-cleanup-${Date.now().toString(36)}`,
+          clientOrderId: cleanupClientId,
         })
         await waitForTargetPosition(connector, symbol, false, 8_000)
       }
 
-      const targetOrders = await connector.getOpenOrders(symbol)
-      const cancelResults = await Promise.all((targetOrders || []).map(async (order: any) => {
+      const smokeOwnedVenueOrderIds = new Set(Object.values(report.orderIds).filter(Boolean))
+      const targetOrders = mayCleanSmokeExposure
+        ? await (connector as any).getOpenOrders(symbol, { forceRefresh: true })
+        : []
+      const ownedResidualOrders = (targetOrders || []).filter((order: any) =>
+        smokeOwnedVenueOrderIds.has(orderIdOf(order))
+        || smokeOwnedClientOrderIds.has(clientOrderIdOf(order)),
+      )
+      const cancelResults = await Promise.all(ownedResidualOrders.map(async (order: any) => {
         const id = orderIdOf(order)
         return id ? connector.cancelOrder(symbol, id) : { success: false, error: "missing order id" }
       }))

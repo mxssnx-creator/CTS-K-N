@@ -34,6 +34,7 @@ function waitForStageAck(stages: EngineStageAckStage | EngineStageAckStage[], ti
       } catch { /* heartbeat/history */ }
     }
     source.onerror = () => {
+      if (source.readyState === EventSource.CONNECTING) return
       clearTimeout(timer)
       source.close()
       reject(new Error("stage acknowledgement stream error"))

@@ -1,6 +1,7 @@
 const mockGetOpen = jest.fn()
 const mockGetClosed = jest.fn()
 const mockGetExchange = jest.fn()
+const mockGetLifetime = jest.fn()
 
 jest.mock("@/lib/live-position-read-model", () => ({
   getOpenLivePositionReadModels: (...args: unknown[]) => mockGetOpen(...args),
@@ -11,6 +12,11 @@ jest.mock("@/lib/live-position-read-model", () => ({
 
 jest.mock("@/lib/exchange-live-state-summary", () => ({
   getExchangeLiveStateSummary: (...args: unknown[]) => mockGetExchange(...args),
+}))
+
+jest.mock("@/lib/live-position-lifetime-summary", () => ({
+  getLivePositionLifetimeSummary: (...args: unknown[]) => mockGetLifetime(...args),
+  lifetimeLaneDerived: () => ({ winRate: null, profitFactor: null, averageRealizedRoi: null }),
 }))
 
 const {
@@ -24,6 +30,54 @@ describe("live execution summary", () => {
     clearLiveExecutionSummaryCache()
     mockGetOpen.mockResolvedValue([])
     mockGetClosed.mockResolvedValue([])
+    const emptyLane = {
+      terminalRows: 0,
+      executedRows: 0,
+      closedTrades: 0,
+      settledClosedTrades: 0,
+      accountingPending: 0,
+      rejectedRows: 0,
+      errorRows: 0,
+      cancelledRows: 0,
+      realizedPnl: 0,
+      grossProfit: 0,
+      grossLoss: 0,
+      wins: 0,
+      losses: 0,
+      breakEven: 0,
+      lifetimeVolumeUsd: 0,
+      realizedRoiTotal: 0,
+      realizedRoiCount: 0,
+      longTrades: 0,
+      shortTrades: 0,
+      longRealizedPnl: 0,
+      shortRealizedPnl: 0,
+      under60Seconds: 0,
+      under5Minutes: 0,
+      closeOrderIdPresent: 0,
+      closeOrderIdMissing: 0,
+      entryAccountingComplete: 0,
+      entryAccountingPending: 0,
+    }
+    mockGetLifetime.mockResolvedValue({
+      schemaVersion: 0,
+      connectionId: "bingx-real",
+      generatedAt: 0,
+      updatedAt: 0,
+      lanes: {
+        all: { ...emptyLane },
+        real: { ...emptyLane },
+        simulated: { ...emptyLane },
+        unknown: { ...emptyLane },
+      },
+      coverage: {
+        terminalIndexRows: 1,
+        uniqueTerminalIndexRows: 1,
+        indexedContributions: 0,
+        missingPositionSnapshots: 0,
+        complete: false,
+      },
+    })
     mockGetExchange.mockResolvedValue({
       connectionId: "bingx-real",
       source: "unavailable",
@@ -225,7 +279,10 @@ describe("live execution summary", () => {
     expect(summary.ordersSnapshotError).toBeNull()
     expect(summary.unrealizedPnl).toBe(4.5)
     expect(summary.openVolumeUsd).toBe(75)
-    expect(summary.complete).toBe(true)
+    // Current venue state is authoritative, but overall reporting remains
+    // explicitly incomplete until the terminal lifetime ledger is covered.
+    expect(summary.statisticsScope).toBe("recent_window")
+    expect(summary.complete).toBe(false)
   })
 
   test("keeps an unavailable exchange snapshot explicitly incomplete", async () => {
@@ -237,6 +294,76 @@ describe("live execution summary", () => {
     expect(summary.ordersDataAvailable).toBe(false)
     expect(summary.positionsSnapshotError).toBe("not mocked")
     expect(summary.ordersSnapshotError).toBe("not mocked")
+  })
+
+  test("uses complete real lifetime accounting instead of the recent window", async () => {
+    const lifetime = await mockGetLifetime()
+    lifetime.coverage = {
+      terminalIndexRows: 20,
+      uniqueTerminalIndexRows: 20,
+      indexedContributions: 20,
+      missingPositionSnapshots: 0,
+      complete: true,
+    }
+    Object.assign(lifetime.lanes.real, {
+      terminalRows: 20,
+      executedRows: 14,
+      closedTrades: 12,
+      settledClosedTrades: 12,
+      accountingPending: 0,
+      realizedPnl: -3,
+      grossProfit: 7,
+      grossLoss: 10,
+      wins: 5,
+      losses: 6,
+      breakEven: 1,
+      lifetimeVolumeUsd: 900,
+    })
+    mockGetLifetime.mockResolvedValue(lifetime)
+    mockGetClosed.mockResolvedValue([{
+      id: "recent-outlier",
+      status: "closed",
+      executionMode: "live",
+      orderId: "entry-recent",
+      totalExecutedQuantity: 1,
+      averageExecutionPrice: 10,
+      realizedPnL: 999,
+      realizedPnlComplete: true,
+    }])
+    mockGetExchange.mockResolvedValue({
+      connectionId: "bingx-real",
+      source: "exchange-api",
+      complete: true,
+      positionsStatus: { available: true, fetchedAt: Date.now(), error: null },
+      ordersStatus: { available: true, fetchedAt: Date.now(), error: null },
+      openPositions: 0,
+      openPositionSymbols: 0,
+      longPositions: 0,
+      shortPositions: 0,
+      positionQuantity: 0,
+      positionNotionalUsd: 0,
+      unrealizedPnl: 0,
+      positionsBySymbol: [],
+      openOrders: 0,
+      openOrderSymbols: 0,
+      entryOrders: 0,
+      controlOrders: 0,
+      ordersBySymbol: [],
+      generatedAt: Date.now(),
+    })
+
+    const summary = await getLiveExecutionSummary("bingx-lifetime")
+
+    expect(summary.statisticsScope).toBe("lifetime")
+    expect(summary.totalTrades).toBe(12)
+    expect(summary.settledClosedPositions).toBe(12)
+    expect(summary.realizedPnl).toBe(-3)
+    expect(summary.wins).toBe(5)
+    expect(summary.losses).toBe(6)
+    expect(summary.breakEven).toBe(1)
+    expect(summary.winRate).toBeCloseTo(5 / 11 * 100)
+    expect(summary.lifetimeVolumeUsd).toBe(900)
+    expect(summary.complete).toBe(true)
   })
 
   test("returns null performance metrics when no settled exchange result exists", async () => {

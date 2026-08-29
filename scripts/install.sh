@@ -1226,17 +1226,17 @@ write_runtime_wrappers() {
   cat > "$RUNTIME_DIR/start-app.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec env CTS_RUNTIME_DIR=${RUNTIME_DIR@Q} NODE_OPTIONS="--max-old-space-size=$app_heap_mb --max-semi-space-size=128 --expose-gc" ${bun_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/start-production.mjs
+exec env CTS_RUNTIME_DIR=${RUNTIME_DIR@Q} CTS_RUNTIME_INSTANCE_ID=${APP_NAME@Q} NODE_OPTIONS="--max-old-space-size=$app_heap_mb --max-semi-space-size=128 --expose-gc" ${bun_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/start-production.mjs
 EOF
   cat > "$RUNTIME_DIR/start-scheduler.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec env CTS_RUNTIME_DIR=${RUNTIME_DIR@Q} NODE_OPTIONS="--max-old-space-size=$scheduler_heap_mb --max-semi-space-size=64" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/run-minute-scheduler.mjs
+exec env CTS_RUNTIME_DIR=${RUNTIME_DIR@Q} CTS_RUNTIME_INSTANCE_ID=${APP_NAME@Q} NODE_OPTIONS="--max-old-space-size=$scheduler_heap_mb --max-semi-space-size=64" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/run-minute-scheduler.mjs
 EOF
   cat > "$RUNTIME_DIR/start-direct-trade.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec env CTS_RUNTIME_DIR=${RUNTIME_DIR@Q} NODE_OPTIONS="--max-old-space-size=128 --max-semi-space-size=32" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/direct-trade-supervisor.mjs --port ${APP_PORT@Q}
+exec env CTS_RUNTIME_DIR=${RUNTIME_DIR@Q} CTS_RUNTIME_INSTANCE_ID=${APP_NAME@Q} NODE_OPTIONS="--max-old-space-size=128 --max-semi-space-size=32" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/direct-trade-supervisor.mjs --port ${APP_PORT@Q}
 EOF
   cat > "$RUNTIME_DIR/start-recovery.sh" <<EOF
 #!/usr/bin/env bash
@@ -1377,6 +1377,8 @@ EOF
 Description=CTS-K-N production application and trade-engine owner
 After=network-online.target redis-server.service redis.service $APP_NAME-redis.service
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 $(if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then printf 'Requires=%s-redis.service\n' "$APP_NAME"; fi)
 
 [Service]
@@ -1404,6 +1406,8 @@ EOF
 Description=CTS-K-N portable 60-second scheduler
 After=network-online.target $APP_NAME.service
 Requires=$APP_NAME.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -1426,6 +1430,8 @@ EOF
 Description=CTS-K-N Direct-Trade leased processor
 After=network-online.target $APP_NAME.service
 Requires=$APP_NAME.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

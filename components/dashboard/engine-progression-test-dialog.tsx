@@ -226,6 +226,7 @@ function waitForStageAck(
       } catch { /* ignore non-json heartbeat/history frames */ }
     }
     source.onerror = () => {
+      if (source.readyState === EventSource.CONNECTING) return
       clearTimeout(timer)
       source.close()
       reject(new Error("stage acknowledgement stream error"))

@@ -111,6 +111,8 @@ interface DirectTradeState {
   prevPosMinCount: number
   evalPosCount: number
   trailingEnabled: boolean
+  liveExecutionReady?: boolean
+  liveExecutionBlockReason?: string | null
 }
 
 interface DirectTradeStats {
@@ -450,6 +452,10 @@ export function DirectTradeSection() {
   }
 
   const handleToggleLive = async () => {
+    if (!state.liveMode && state.liveExecutionReady === false) {
+      setCalculationError(state.liveExecutionBlockReason || "Direct-Trade live execution is not ready")
+      return
+    }
     const nextLiveMode = !state.liveMode
     setState((current) => ({ ...current, liveMode: nextLiveMode }))
     try {
@@ -465,7 +471,8 @@ export function DirectTradeSection() {
       const data = await res.json()
       if (!res.ok || !data.state) throw new Error(data.error || "Live mode update failed")
       setState(data.state)
-    } catch {
+    } catch (error) {
+      setCalculationError(error instanceof Error ? error.message : "Live mode update failed")
       setState((current) => ({ ...current, liveMode: !nextLiveMode }))
     }
   }
@@ -659,9 +666,16 @@ export function DirectTradeSection() {
               <Switch
                 checked={state.liveMode}
                 onCheckedChange={handleToggleLive}
+                disabled={state.liveExecutionReady === false}
+                title={state.liveExecutionBlockReason || undefined}
                 className="data-[state=checked]:bg-red-500"
               />
             </div>
+            {state.liveExecutionReady === false && (
+              <span className="max-w-xl text-xs text-amber-700">
+                Live entry disabled: {state.liveExecutionBlockReason}
+              </span>
+            )}
 
             {/* Start/Stop */}
             <Button

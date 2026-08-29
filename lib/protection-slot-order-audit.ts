@@ -167,6 +167,24 @@ function orderMatchesSlot(
   return closeSide === (direction === "long" ? "sell" : "buy")
 }
 
+/**
+ * Read-only slot classifier used by entry admission. It intentionally makes
+ * no ownership claim: any reduce/control order in a previously empty physical
+ * slot can affect the first position opened there, so admission must preserve
+ * it and refuse the new entry instead of cancelling or adopting it.
+ */
+export function isProtectionControlOrderForSlot(
+  order: Record<string, any>,
+  symbol: string,
+  direction: ProtectionSlotDirection,
+): boolean {
+  return orderMatchesSlot(
+    order,
+    normalizeProtectionSlotSymbol(symbol),
+    direction,
+  )
+}
+
 export function isConnectionOwnedProtectionOrderForSlot(
   order: Record<string, any>,
   connectionId: string,
@@ -269,6 +287,15 @@ export function auditProtectionSlotOrders(input: {
     let valid = true
     if (!orderMatchesSlot(matched.order, symbol, input.direction)) {
       addViolation(violations, `${options.violationPrefix}_slot_mismatch`)
+      valid = false
+    }
+    if (!isConnectionOwnedProtectionOrderForSlot(
+      matched.order,
+      input.connectionId,
+      symbol,
+      input.direction,
+    )) {
+      addViolation(violations, `${options.violationPrefix}_connection_owner_mismatch`)
       valid = false
     }
     if (protectionOrderKind(matched.order) !== options.kind) {

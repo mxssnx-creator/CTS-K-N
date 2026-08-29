@@ -17,7 +17,7 @@ describe("Direct-Trade authoritative exchange status", () => {
 
   afterEach(() => resetInlineRedisGlobals())
 
-  test("excludes pending live settlements and requires heartbeat plus lifecycle progress", async () => {
+  test("excludes pending live settlements and reports stale progress without killing a fresh heartbeat", async () => {
     const [{ GET }, { getRedisClient }, { directTradeKeyspace, DIRECT_TRADE_CONNECTION_INDEX_KEY }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/status/route"),
       import("@/lib/redis-db"),
@@ -34,7 +34,7 @@ describe("Direct-Trade authoritative exchange status", () => {
     await redis.del(...cleanupKeys)
 
     try {
-      const staleTick = new Date(Date.now() - 30_000).toISOString()
+      const staleTick = new Date(Date.now() - 90_000).toISOString()
       const freshHeartbeat = new Date().toISOString()
       await redis.sadd(DIRECT_TRADE_CONNECTION_INDEX_KEY, "bingx-x02")
       await redis.set(keys.state, JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x02" }))
@@ -87,11 +87,12 @@ describe("Direct-Trade authoritative exchange status", () => {
         success: true,
         closedPositions: 3,
         accountingPending: 2,
-        processorHealthy: false,
+        processorHealthy: true,
         processor: {
-          isHealthy: false,
+          isHealthy: true,
           heartbeatHealthy: true,
           progressHealthy: false,
+          degraded: true,
           lastTick: freshHeartbeat,
           lastProgressAt: staleTick,
           tickCount: 12,
@@ -109,11 +110,13 @@ describe("Direct-Trade authoritative exchange status", () => {
         .then((response) => response.json())
       expect(aggregate).toMatchObject({
         success: true,
-        processorHealthy: false,
+        processorHealthy: true,
+        processorProgressHealthy: false,
         accountingPending: 2,
         connections: [{
           connectionId: "bingx-x02",
-          healthy: false,
+          healthy: true,
+          degraded: true,
           accountingPending: 2,
           processor: { lastTick: freshHeartbeat, lastProgressAt: staleTick, tickCount: 12 },
         }],

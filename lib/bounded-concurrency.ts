@@ -34,7 +34,15 @@ export function concurrencyFromEnv(
   return clampConcurrency(undefined, fallback, maximum, itemCount)
 }
 
-async function yieldToEventLoop(): Promise<void> {
+/**
+ * Yield one macrotask turn so timers, HTTP heartbeats, lock renewals and
+ * socket callbacks can run between CPU-heavy deterministic batches.
+ *
+ * `Promise.resolve()` is only a microtask yield and does not unblock timers.
+ * Keep this helper shared so calculation routes do not accidentally use the
+ * weaker primitive while trying to remain responsive.
+ */
+export async function yieldToEventLoop(): Promise<void> {
   if (typeof setImmediate === "function") {
     await new Promise<void>((resolve) => setImmediate(resolve))
     return

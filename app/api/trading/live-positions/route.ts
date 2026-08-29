@@ -16,6 +16,10 @@ import {
 } from "@/lib/live-position-pnl"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 import { getLivePositionSource, type LivePositionSource } from "@/lib/live-position-source"
+import {
+  lifetimeLaneDerived,
+  readLivePositionLifetimeSummary,
+} from "@/lib/live-position-lifetime-summary"
 
 export const dynamic = "force-dynamic"
 
@@ -179,6 +183,9 @@ function toLivePositionView(pos: any): Record<string, unknown> {
         0,
       )
       : 0,
+    partialOrderExecutionCount: Array.isArray(pos.partialOrderExecutions)
+      ? pos.partialOrderExecutions.length
+      : 0,
     unrealizedRoi: pos.unrealizedRoi,
     liquidationPrice: pos.liquidationPrice,
     stopLoss: pos.stopLoss,
@@ -246,6 +253,8 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     pendingSystemAction,
     pendingQuantityMutation,
     closePrice: pos.closePrice ?? pos.exitPrice,
+    closeReason: pos.closeReason,
+    closeOrderId: pos.closeOrderId ?? pos.exchangeData?.closeOrderId,
     createdAt: pos.createdAt,
     updatedAt: pos.updatedAt,
     closedAt: pos.closedAt,
@@ -331,17 +340,18 @@ async function buildLivePositionsResponse(request: Request) {
 
   try {
     await initRedis()
+    const client = getRedisClient()
 
-    const [open, closed, connection] = await Promise.all([
+    const [open, closed, connection, lifetimeSummary] = await Promise.all([
       getLivePositions(connectionId),
       getClosedLivePositions(connectionId, closedLimit),
       getConnection(connectionId).catch(() => null),
+      readLivePositionLifetimeSummary(client, connectionId),
     ])
 
     // Fallback: also read positions stored under alternate key patterns.
     // New writers should maintain live:position:live:{connectionId}:index so this path
     // remains bounded; legacy unindexed data falls back to bounded SCAN only.
-    const client = getRedisClient()
     const { keys: altKeys, partialLegacyScan } = await getAlternateLivePositionKeys(client, connectionId)
     const altPositions: any[] = []
     const seenIds = new Set<string>([...open.map((p) => p.id!).filter(Boolean), ...closed.map((p) => p.id!).filter(Boolean)])
@@ -396,6 +406,15 @@ async function buildLivePositionsResponse(request: Request) {
       averageROI: 0,
       winRate: allStats.winRate,
     }
+    const lifetime = {
+      ...lifetimeSummary,
+      lanes: Object.fromEntries(
+        Object.entries(lifetimeSummary.lanes).map(([lane, values]) => [lane, {
+          ...values,
+          ...lifetimeLaneDerived(values),
+        }]),
+      ),
+    }
 
     const positionViews = all.map(toLivePositionView)
     const viewsById = new Map(positionViews.map((position) => [String(position.id), position]))
@@ -433,6 +452,16 @@ async function buildLivePositionsResponse(request: Request) {
       },
       stats: {
         ...legacyStats,
+        scope: "recent_operational_window",
+        window: {
+          returnedOpenRows: open.length,
+          returnedClosedRows: closed.length,
+          requestedClosedLimit: closedLimit,
+          terminalIndexRows: lifetimeSummary.coverage.terminalIndexRows,
+          truncated:
+            lifetimeSummary.coverage.uniqueTerminalIndexRows > closed.length,
+        },
+        lifetime,
         all: allStats,
         real: computeStats(realPositions),
         simulated: computeStats(simulatedPositions),
@@ -450,6 +479,8 @@ async function buildLivePositionsResponse(request: Request) {
         credentialsValid: liveReadiness.credentialsValid,
         durableCoordinationReady: liveReadiness.durableCoordinationReady,
         positionOrderRelationIntegrity: realExchangeStatistics.relationIntegrity,
+        lifetimeStatisticsComplete: lifetimeSummary.coverage.complete,
+        lifetimeStatisticsCoverage: lifetimeSummary.coverage,
         realExchangeDataComplete: realPositions.length > 0 || !liveTradeEnabled,
         message: liveTradeEnabled
           ? "Real exchange positions are separated from simulated/paper positions and use exchange-synced order/position identifiers when available."

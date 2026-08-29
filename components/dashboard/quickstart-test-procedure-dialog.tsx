@@ -35,6 +35,9 @@ function waitForStageAck(stages: EngineStageAckStage | EngineStageAckStage[], ti
       } catch { /* heartbeat/history */ }
     }
     source.onerror = () => {
+      // A bounded serverless SSE stream closes cleanly before the platform
+      // timeout. EventSource enters CONNECTING and resumes the wait itself.
+      if (source.readyState === EventSource.CONNECTING) return
       clearTimeout(timer)
       source.close()
       reject(new Error("stage acknowledgement stream error"))

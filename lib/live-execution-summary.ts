@@ -19,6 +19,11 @@ import {
   getExchangeLiveStateSummary,
   type ExchangeLiveStateSummary,
 } from "@/lib/exchange-live-state-summary"
+import {
+  getLivePositionLifetimeSummary,
+  lifetimeLaneDerived,
+  type LivePositionLifetimeSummary,
+} from "@/lib/live-position-lifetime-summary"
 
 export interface LiveExecutionSummary {
   connectionId: string
@@ -57,6 +62,10 @@ export interface LiveExecutionSummary {
   largestWin: number | null
   largestLoss: number | null
   sourceCounts: Record<LivePositionSource, number>
+  statisticsScope: "lifetime" | "recent_window"
+  lifetime: LivePositionLifetimeSummary & {
+    derived: Record<LivePositionSource | "all", ReturnType<typeof lifetimeLaneDerived>>
+  }
   coverage: {
     openRows: number
     closedRows: number
@@ -130,10 +139,11 @@ function timestampOf(position: LivePositionReadModel): number {
 }
 
 async function buildSummary(connectionId: string): Promise<LiveExecutionSummary> {
-  const [openRows, closedRows, exchange] = await Promise.all([
+  const [openRows, closedRows, exchange, lifetime] = await Promise.all([
     getOpenLivePositionReadModels(connectionId, LIVE_POSITION_OPEN_READ_LIMIT),
     getClosedLivePositionReadModels(connectionId, LIVE_POSITION_CLOSED_READ_LIMIT),
     getExchangeLiveStateSummary(connectionId),
+    getLivePositionLifetimeSummary(connectionId),
   ])
 
   // The open compatibility index may still contain a terminal row while a
@@ -167,6 +177,22 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
   const breakEven = realized.filter((value) => value === 0)
   const settledClosedPositions = realized.length
   const accountingPending = Math.max(real.accountingPending, real.closed - settledClosedPositions)
+  const lifetimeReal = lifetime.lanes.real
+  const useLifetime = lifetime.coverage.complete
+  const headlineClosedPositions = useLifetime ? lifetimeReal.closedTrades : real.closed
+  const headlineSettledClosedPositions = useLifetime
+    ? lifetimeReal.settledClosedTrades
+    : settledClosedPositions
+  const headlineAccountingPending = useLifetime
+    ? lifetimeReal.accountingPending
+    : accountingPending
+  const headlineRealizedPnl = useLifetime
+    ? lifetimeReal.realizedPnl
+    : real.realizedPnl
+  const headlineWins = useLifetime ? lifetimeReal.wins : wins.length
+  const headlineLosses = useLifetime ? lifetimeReal.losses : losses.length
+  const headlineBreakEven = useLifetime ? lifetimeReal.breakEven : breakEven.length
+  const headlineDecisive = headlineWins + headlineLosses
   const utcDayStart = new Date()
   utcDayStart.setUTCHours(0, 0, 0, 0)
   const utcDayStartMs = utcDayStart.getTime()
@@ -203,7 +229,7 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
 
   return {
     connectionId,
-    totalPositions: real.closed + authoritativeOpenPositions,
+    totalPositions: headlineClosedPositions + authoritativeOpenPositions,
     openPositions: authoritativeOpenPositions,
     openSymbols: exchange.positionsStatus.available ? exchange.openPositionSymbols : new Set(
       lanes.real
@@ -225,35 +251,49 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
     excludedUntrackedOrders: exchange.ordersStatus.available
       ? exchange.tracking?.venueOrdersExcluded ?? 0
       : 0,
-    closedPositions: real.closed,
-    settledClosedPositions,
-    accountingPending,
+    closedPositions: headlineClosedPositions,
+    settledClosedPositions: headlineSettledClosedPositions,
+    accountingPending: headlineAccountingPending,
     // A closed lifecycle is one executed position result. Pending settlement
     // remains a trade, but never contributes fabricated zero PnL.
-    totalTrades: real.closed,
-    realizedPnl: real.realizedPnl,
+    totalTrades: headlineClosedPositions,
+    realizedPnl: headlineRealizedPnl,
     unrealizedPnl: authoritativeUnrealizedPnl,
-    effectivePnl: real.realizedPnl + authoritativeUnrealizedPnl,
+    effectivePnl: headlineRealizedPnl + authoritativeUnrealizedPnl,
     dailyRealizedPnl,
     dailyPnlTimestampUnknown,
     lastHourTrades,
     lastHourRealizedPnl,
-    lifetimeVolumeUsd: real.lifetimeVolumeUsd,
+    lifetimeVolumeUsd: useLifetime ? lifetimeReal.lifetimeVolumeUsd : real.lifetimeVolumeUsd,
     openVolumeUsd: authoritativeOpenVolumeUsd,
-    wins: wins.length,
-    losses: losses.length,
-    breakEven: breakEven.length,
-    winRate: wins.length + losses.length > 0
-      ? (wins.length / (wins.length + losses.length)) * 100
+    wins: headlineWins,
+    losses: headlineLosses,
+    breakEven: headlineBreakEven,
+    winRate: headlineDecisive > 0
+      ? (headlineWins / headlineDecisive) * 100
       : null,
-    avgWin: average(wins),
-    avgLoss: average(losses),
-    largestWin: wins.length > 0 ? Math.max(...wins) : null,
-    largestLoss: losses.length > 0 ? Math.min(...losses) : null,
+    avgWin: useLifetime
+      ? lifetimeReal.wins > 0 ? lifetimeReal.grossProfit / lifetimeReal.wins : null
+      : average(wins),
+    avgLoss: useLifetime
+      ? lifetimeReal.losses > 0 ? -(lifetimeReal.grossLoss / lifetimeReal.losses) : null
+      : average(losses),
+    largestWin: useLifetime ? null : wins.length > 0 ? Math.max(...wins) : null,
+    largestLoss: useLifetime ? null : losses.length > 0 ? Math.min(...losses) : null,
     sourceCounts: {
-      real: real.positions,
-      simulated: simulated.positions,
-      unknown: unknown.positions,
+      real: useLifetime ? lifetime.lanes.real.executedRows + real.open : real.positions,
+      simulated: useLifetime ? lifetime.lanes.simulated.executedRows + simulated.open : simulated.positions,
+      unknown: useLifetime ? lifetime.lanes.unknown.executedRows + unknown.open : unknown.positions,
+    },
+    statisticsScope: useLifetime ? "lifetime" : "recent_window",
+    lifetime: {
+      ...lifetime,
+      derived: {
+        all: lifetimeLaneDerived(lifetime.lanes.all),
+        real: lifetimeLaneDerived(lifetime.lanes.real),
+        simulated: lifetimeLaneDerived(lifetime.lanes.simulated),
+        unknown: lifetimeLaneDerived(lifetime.lanes.unknown),
+      },
     },
     coverage: {
       openRows: openRows.length,
@@ -271,9 +311,9 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
     exchange,
     complete:
       exchange.complete &&
-      accountingPending === 0 &&
+      headlineAccountingPending === 0 &&
       openRows.length < LIVE_POSITION_OPEN_READ_LIMIT &&
-      closedRows.length < LIVE_POSITION_CLOSED_READ_LIMIT,
+      lifetime.coverage.complete,
     generatedAt: Date.now(),
   }
 }

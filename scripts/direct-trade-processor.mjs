@@ -87,6 +87,11 @@ const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 22
 const DIRECT_TRADE_PROCESSOR_HEARTBEAT_INTERVAL_MS = 1_500
 const DIRECT_TRADE_CONTROL_REQUEST_TIMEOUT_MS = 10_000
 const DIRECT_TRADE_MAX_LIVE_CLOSE_ACTIONS_PER_CYCLE = 1
+// Defense in depth with the API gateway: Direct live entries stay disabled
+// until this processor owns native row TP/SL, full-slot security protection,
+// and cross-engine physical-slot attribution. Existing live rows still run
+// recovery/close handling; paper and historical evaluation are unaffected.
+const DIRECT_TRADE_LIVE_EXECUTION_READY = false
 const DIRECT_TRADE_RECALC_STALE_GRACE_MS = 30 * 60 * 1_000
 const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"]
 
@@ -155,6 +160,19 @@ function normalizeDirectTradeConfig(config) {
     takeprofit: protection.takeprofit,
     stoploss: protection.stoploss,
   }
+}
+
+function watermarkedDirectTradeControlId(connectionId, value, fallback = "dtcontrol") {
+  const connection = String(connectionId || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 8)
+    .toLowerCase() || "x"
+  const prefix = `cts${connection}`
+  const raw = String(value || fallback)
+  if (raw.toLowerCase().startsWith(prefix)) {
+    return normalizeDirectTradeControlId(raw, `${prefix}${fallback}`)
+  }
+  return normalizeDirectTradeControlId(`${prefix}${raw}`, `${prefix}${fallback}`)
 }
 
 function normalizeLoadedDirectTradePosition(position) {
@@ -1250,10 +1268,9 @@ async function submitOrReconcileOpening(position, reconcileOnly = false) {
     // Older persisted IDs can contain timeframe separators such as `5m+15m`.
     // Canonicalize before retrying so recovery does not remain stuck at the
     // gateway's identifier validation boundary.
-    position.openControlId = normalizeDirectTradeControlId(
-      position.openControlId,
-      `dtopen_${position.id}`,
-    )
+    position.openControlId = position.openControlId
+      ? normalizeDirectTradeControlId(position.openControlId, `dtopen_${position.id}`)
+      : watermarkedDirectTradeControlId(connectionId, `dtopen_${position.id}`)
     await rateLimiter.acquire()
     position.openAttemptedAt = position.openAttemptedAt || new Date().toISOString()
     const orderResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
@@ -1376,6 +1393,13 @@ function canOpenPosition(config) {
 
 async function openPosition(config) {
   config = normalizeDirectTradeConfig(config)
+  if (state.liveMode && !DIRECT_TRADE_LIVE_EXECUTION_READY) {
+    log(
+      "error",
+      "Direct-Trade live entry blocked: unified exact TP/SL/security protection is not production-ready",
+    )
+    return null
+  }
   const posId = `dt_${config.symbol}_${config.direction}_${config.timeframe}_${Date.now()}`
   const isDca = (config.strategyType || "standard") === "dca"
   const dcaProfile = normalizeDirectDcaProfile(config.dcaProfile || state.dcaProfile)
@@ -1488,7 +1512,10 @@ async function openPosition(config) {
   position.blockAddedQuantity = blockSizing.blockAddedQuantity
   position.targetBlockQuantity = blockSizing.targetBlockQuantity
   position.quantity = blockSizing.blockBaseQuantity
-  position.openControlId = normalizeDirectTradeControlId(`dtopen_${posId}`)
+  position.openControlId = watermarkedDirectTradeControlId(
+    position.connectionId || state.connectionId,
+    `dtopen_${posId}`,
+  )
   position.openRequestedQuantity = blockSizing.blockBaseQuantity
   position.openRequestedPrice = marketPrice
 
@@ -1562,12 +1589,15 @@ async function addDirectTradeBlockLeg(position, config) {
         return false
       }
       const controlGeneration = Math.max(0, Math.floor(Number(position.blockControlGeneration) || 0))
-      const stableControlId = normalizeDirectTradeControlId(
-        hasPendingControl
-          ? position.blockPendingControlId
-          : `dtblk_${String(position.id).slice(-25)}_${nextCount}_${controlGeneration}`,
-        `dtblk_${String(position.id).slice(-25)}_${nextCount}_${controlGeneration}`,
-      )
+      const stableControlId = hasPendingControl
+        ? normalizeDirectTradeControlId(
+            position.blockPendingControlId,
+            `dtblk_${String(position.id).slice(-25)}_${nextCount}_${controlGeneration}`,
+          )
+        : watermarkedDirectTradeControlId(
+            position.connectionId || state.connectionId,
+            `dtblk_${String(position.id).slice(-25)}_${nextCount}_${controlGeneration}`,
+          )
       appliedControlId = stableControlId
       if (!hasPendingControl) {
         position.blockPendingCount = nextCount
@@ -1791,12 +1821,15 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
       }
       await rateLimiter.acquire()
       const controlGeneration = Math.max(0, Math.floor(Number(position.dcaControlGeneration) || 0))
-      const stableControlId = normalizeDirectTradeControlId(
-        hasPendingControl
-          ? position.dcaPendingControlId
-          : `dtdca_${String(position.id).slice(-24)}_${nextStep}_${controlGeneration}`,
-        `dtdca_${String(position.id).slice(-24)}_${nextStep}_${controlGeneration}`,
-      )
+      const stableControlId = hasPendingControl
+        ? normalizeDirectTradeControlId(
+            position.dcaPendingControlId,
+            `dtdca_${String(position.id).slice(-24)}_${nextStep}_${controlGeneration}`,
+          )
+        : watermarkedDirectTradeControlId(
+            connectionId,
+            `dtdca_${String(position.id).slice(-24)}_${nextStep}_${controlGeneration}`,
+          )
       appliedControlId = stableControlId
       if (!hasPendingControl) {
         position.dcaPendingControlStep = nextStep
@@ -2315,7 +2348,10 @@ async function closePosition(pos, exitPrice, reason) {
       if (pos.closeControlId && Date.now() - Date.parse(pos.closeLastCheckedAt || "") < closeRecheckMs) return false
       const generation = Math.max(0, Math.floor(Number(pos.closeGeneration) || 0))
       if (!pos.closeControlId) {
-        pos.closeControlId = normalizeDirectTradeControlId(`dtclose_${pos.id}_${generation}`)
+        pos.closeControlId = watermarkedDirectTradeControlId(
+          pos.connectionId || state.connectionId,
+          `dtclose_${pos.id}_${generation}`,
+        )
         pos.closeRequestedQuantity = realizedQuantity
         pos.closeRequestedPrice = realizedExitPrice
         pos.closeReason = reason

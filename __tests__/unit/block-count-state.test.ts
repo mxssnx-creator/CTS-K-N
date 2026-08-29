@@ -1,5 +1,7 @@
 import {
   advanceBlockCountPausesOnPositionClose,
+  BLOCK_COUNT_MAX,
+  BLOCK_COUNT_MIN,
   buildBlockLegState,
   calculateBlockAddQuantity,
   calculateBlockEffectiveMinimumProfitFactor,
@@ -208,10 +210,10 @@ describe("independent Block count lifecycle", () => {
   })
 
   test.each([0.25, 0.75, 1, 1.5, 3])(
-    "applies ratio %s generically to every valid Block count 1 through 10",
+    "applies ratio %s generically to every valid Block count 1 through 12",
     (ratio) => {
       const positionBase = 2.4
-      for (let blockCount = 1; blockCount <= 10; blockCount++) {
+      for (let blockCount = BLOCK_COUNT_MIN; blockCount <= BLOCK_COUNT_MAX; blockCount++) {
         expect(calculateBlockAddQuantity(positionBase, blockCount, ratio)).toBeCloseTo(
           positionBase * (blockCount * ratio),
           8,
@@ -223,6 +225,35 @@ describe("independent Block count lifecycle", () => {
       }
     },
   )
+
+  test.each(["long", "short"] as const)(
+    "keeps every sequential %s Count delta additive to the immutable base",
+    (_direction) => {
+      const base = 0.037
+      const ratio = 0.65
+      let confirmedAdd = 0
+      for (let count = BLOCK_COUNT_MIN; count <= BLOCK_COUNT_MAX; count++) {
+        const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd)
+        expect(delta).toBeCloseTo(base * ratio, 12)
+        confirmedAdd += delta
+        expect(base + confirmedAdd).toBeCloseTo(base * (1 + count * ratio), 12)
+      }
+    },
+  )
+
+  test("out-of-order independent Counts add only the unreached absolute target", () => {
+    const base = 3
+    const ratio = 0.4
+    let confirmedAdd = 0
+    const deltas = [5, 2, 12, 11].map((count) => {
+      const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd)
+      confirmedAdd += delta
+      return delta
+    })
+
+    expect(deltas).toEqual([6, 0, 8.4, 0])
+    expect(base + confirmedAdd).toBeCloseTo(calculateBlockTargetQuantity(base, 12, ratio), 12)
+  })
 
   test("combines mirrored Real/Live activity without double-counting and caps each direction independently", () => {
     expect(resolveMirroredActiveBlockCount({

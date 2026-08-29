@@ -62,6 +62,10 @@ export async function GET(request: NextRequest) {
               connectionId,
               timestamp: new Date().toISOString(),
             }
+            // Keep the intentional serverless rollover gap short. EventSource
+            // applies this retry value to its own reconnect without creating a
+            // parallel client-side retry loop.
+            enqueue("retry: 1000\n\n")
             // This is a named event because SSEClient resolves its connect()
             // promise from the `connected` listener. Generic data-only output
             // left clients stuck in CONNECTING even though bytes were flowing.
