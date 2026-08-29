@@ -3,6 +3,12 @@ import { NextRequest, NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { directOrderControlKey, placeLiveOrder, type LiveOrderDirection } from "@/lib/live-order-service"
 import { directTradeKeyspace } from "@/lib/direct-trade-keyspace"
+import { isConnectionOwnedClientOrderId } from "@/lib/system-order-ownership"
+import {
+  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
+  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
+  DIRECT_TRADE_LIVE_EXECUTION_READY,
+} from "@/lib/direct-trade-live-readiness"
 
 export const dynamic = "force-dynamic"
 
@@ -31,6 +37,28 @@ function controlId(value: unknown, kind: string, positionId: string): string | n
     .replace(/[^A-Za-z0-9_-]+/g, "_")
     .slice(0, 48)
   return /^[A-Za-z0-9_-]{3,48}$/.test(candidate) ? candidate : null
+}
+
+function positionControlIds(position: Record<string, any>): Set<string> {
+  const ids = new Set<string>()
+  for (const value of [
+    position.openControlId,
+    position.blockPendingControlId,
+    position.dcaPendingControlId,
+    position.closeControlId,
+    position.lastAppliedCloseControlId,
+  ]) {
+    const id = safeText(value)
+    if (id) ids.add(id)
+  }
+  for (const collection of [position.positionLegs, position.blockLegs, position.dcaLegs]) {
+    if (!Array.isArray(collection)) continue
+    for (const leg of collection) {
+      const id = safeText(leg?.controlId)
+      if (id) ids.add(id)
+    }
+  }
+  return ids
 }
 
 /**
@@ -98,15 +126,52 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Direct-Trade processor lease is not held" }, { status: 409 })
     }
     const state = stateRaw ? JSON.parse(stateRaw) : {}
+    const statePosition = Array.isArray(state?.positions)
+      ? state.positions.find((position: any) => String(position?.id || "") === positionId)
+      : null
+    if (
+      !statePosition
+      || String(state?.connectionId || "") !== connectionId
+      || String(statePosition?.connectionId || connectionId) !== connectionId
+      || safeText(statePosition?.symbol, 40).toUpperCase() !== symbol
+      || direction(statePosition?.direction) !== positionDirection
+      || !positionControlIds(statePosition).has(clientOrderId)
+    ) {
+      return NextResponse.json({
+        success: false,
+        error: "Direct-Trade order is not owned by the exact persisted position/control",
+      }, { status: 409 })
+    }
+
+    const durableControlExists = Boolean(
+      await client.get(directOrderControlKey(connectionId, clientOrderId)),
+    )
+    if (
+      kind === "open"
+      && !DIRECT_TRADE_LIVE_EXECUTION_READY
+      && !(reconcileOnly && durableControlExists)
+    ) {
+      return NextResponse.json({
+        success: false,
+        error: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
+        code: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
+      }, { status: 409 })
+    }
+    if (
+      !isConnectionOwnedClientOrderId(clientOrderId, connectionId)
+      && !(reconcileOnly && durableControlExists)
+    ) {
+      return NextResponse.json({
+        success: false,
+        error: "Direct-Trade control id is missing the exact connection watermark",
+      }, { status: 409 })
+    }
     if (kind === "open" && (!state?.enabled || !state?.liveMode || state?.connectionId !== connectionId)) {
       // Stop blocks every new exposure immediately. It must not, however,
       // prevent a durable ACK from being reconciled after the operator stops
       // the worker. `reconcileOnly` is accepted only when the exact control id
       // already exists, so this branch can never place a fresh order.
-      const durableControlExists = reconcileOnly
-        ? Boolean(await client.get(directOrderControlKey(connectionId, clientOrderId)))
-        : false
-      if (!durableControlExists) {
+      if (!reconcileOnly || !durableControlExists) {
         return NextResponse.json({ success: false, error: "Direct-Trade live entry is not currently authorised for this connection" }, { status: 409 })
       }
     }
@@ -125,6 +190,7 @@ export async function POST(request: NextRequest) {
       orderType: "market",
       reduceOnly: kind === "close",
       clientOrderId,
+      positionId,
       // Direct Trade owns the position-stage rows itself. The shared live
       // service still owns connector safety, precision, audit and counters.
       persistPosition: false,
