@@ -274,6 +274,22 @@ describe("executing Live-stage control barriers", () => {
     }))).toEqual({ desiredSl: 95, desiredTp: 110.00000000000001 })
   })
 
+  test("fails closed instead of treating an unknown protection direction as short", () => {
+    expect(__liveStageTest.readAbsoluteProtectionPrices(livePosition({
+      direction: "sideways",
+      side: "unknown",
+      stopLoss: 5,
+      takeProfit: 10,
+    }))).toEqual({ desiredSl: 0, desiredTp: 0 })
+
+    expect(__liveStageTest.readAbsoluteProtectionPrices(livePosition({
+      direction: "unknown",
+      side: "SELL",
+      stopLoss: 5,
+      takeProfit: 10,
+    }))).toEqual({ desiredSl: 105, desiredTp: 90 })
+  })
+
   test("keeps explicit sub-one-percent pseudo protection values in percent units", () => {
     expect(__liveStageTest.resolvePseudoProtectionPercents({
       protection_coordinate: "absolute_pct",
