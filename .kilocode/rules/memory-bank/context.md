@@ -2264,3 +2264,83 @@ credentials are present.
 - [x] Owner-only recovery checkpoint for this context update:
   `/workspace/backups/CTS-K-N/20260827T075621Z-pre-context-update` (bundle,
   status/HEAD, patch, untracked archive, SHA-256 manifest and verification).
+
+## Session 2026-08-29 — runtime maintenance gate publication checkpoint
+
+- [x] The canonical checkout is clean on
+  `fix/runtime-maintenance-gate-20260828@c5c6f258c9815fd65c6ff74327264b4ed5bc66df`,
+  exactly one commit ahead of `origin/main@695649401baf4a49ce9237d07fefcdb488e855e0`
+  with no remote-only commits and no open GitHub pull request at the start of
+  this gate.
+- [x] The source state was captured and verified before gate-related changes
+  in `/workspace/backups/CTS-K-N/backup-gate-active-2026-08-29T000328Z`.
+  Its Git bundle contains both the active branch and `main`; the worktree
+  patch, untracked-file archive/list, HEAD/status records and SHA-256 manifest
+  all verified successfully. This checkpoint must remain local unless source-
+  archive upload is explicitly authorized.
+- [x] The first complete validation pass succeeded for the frozen offline
+  install, diff check, source syntax, security scan, TypeScript, ESLint,
+  242/242 Jest suites with 1,630/1,630 tests, the production build with 348
+  validated traces, Kilo preflight and Linux install preflight.
+- [x] Recreation verification initially found 99 stale byte-count/SHA-256
+  entries for the existing runtime-maintenance commit. The tracked recreation
+  manifests were regenerated, their diff was verified, and every validation
+  gate then passed on the final worktree before commit.
+- [ ] Publication still requires non-interactive GitHub write authentication
+  in this workspace. Never bypass the all-green gate or publish source through
+  Drive; Drive receives only the final validation report and its checksum.
+
+## Session 2026-08-29 — exact X02 slot-protection reconciliation gate
+
+- [x] GitHub PR #252 is merged as
+  `main@17e42661d5684da505e9db5a0e2d33230cb13a04` with tree
+  `0386e36e589a78054eed7f79e8c6254a7ad8efd8`, and that exact revision is
+  deployed at `/opt/cts-kn` on X02. The production runtime maintenance gate,
+  VST ownership ledger and hardened 20-minute/16-cycle soak are therefore
+  already in merged source.
+- [x] A read-only CTS ownership audit isolated one owned BTCUSDT-long physical
+  slot: two local rows total 0.0002 BTC and the venue quantity is also 0.0002.
+  Four CTS controls were open: one row had its exact SL/TP plus a 0.0001
+  security stop, while the other row had no SL/TP and an extra untracked
+  duplicate 0.0001 security stop existed. All other account positions/orders
+  are shared external state and must not be cancelled, adopted or flattened.
+- [x] The new exact-slot operator implementation filters one
+  connection+symbol+direction before calling aggregate reconciliation,
+  requires exact local/venue ownership and authoritative order snapshots,
+  holds the shared Redis live-sync lock, rejects position/quantity mutations,
+  rechecks the host maintenance marker plus inactive services before each
+  major mutation, audits every row's exact-quantity SL/TP and the one
+  full-slot security stop, and only then permits up to four exact
+  `ctsbingxx02` orphan-control cancellations. It cannot invoke account-wide
+  reconciliation and cannot use X01 credentials.
+- [x] Validation on the uncommitted operator worktree is green: focused
+  protection/block/volume/stats/UI gate 19/19 suites and 380/380 tests; full
+  gate 244/244 suites and 1,637/1,637 tests; TypeScript; complete ESLint;
+  source syntax and diff checks; 1,560-file secret scan with zero findings;
+  mutation-free Linux install preflight; 37/37 Kilo checks at schema v104;
+  and the production build on attempt 1 with 42 generated pages and 348
+  complete trace files.
+- [x] Recreated owner-only local checkpoints at
+  `/workspace/backups/CTS-K-N/20260829T011023Z-pre-slot-protection-reconcile`
+  and
+  `/workspace/backups/CTS-K-N/20260829T012918Z-post-slot-reconcile-implementation`.
+  Each contains the complete bundle, binary patches, untracked archive/list,
+  HEAD/status/refs and verified SHA-256 manifest. The deployed pre-change
+  checkpoint is
+  `/var/backups/cts-kn/20260829T010613Z-pre-failclosed-restore` with a complete
+  hardlinked deployment, verified source bundle, valid 661,262,847-byte Redis
+  RDB, units/state and verified manifest.
+- [x] X02 is currently fail-closed: the maintenance marker is present, the
+  main/scheduler/direct services are inactive, port 3002 is closed, and the
+  recovery timer is intentionally paused. A separate interactive root session
+  removed the marker and restarted services three times during continuation;
+  it has made no further start since 01:20:59 UTC but remains connected with a
+  deleted old-deployment cwd. Re-attest this state before every remote action.
+- [ ] No slot repair, orphan cancellation, new live entry, long soak or account
+  cleanup has been executed by this continuation yet. First commit/publish the
+  exact-slot code through a reviewed green PR, merge it to GitHub `main`, take
+  a fresh remote checkpoint, deploy only that merged revision, run a read-only
+  dry-run, and apply only if the competing session remains quiescent and the
+  exact BTC ownership/capacity assertions still pass. The max-safe-symbol
+  20-minute/16-cycle Prod-VST soak remains conditional on sufficient free
+  symbols/control headroom and must end with zero CTS-owned test residuals.
