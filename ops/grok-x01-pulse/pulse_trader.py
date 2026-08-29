@@ -1454,6 +1454,17 @@ class Pulse:
         has_tp = bool(pos.tp_oid or getattr(pos, "sec_tp_oid", ""))
         return not (has_sl and has_tp)
 
+    def entries_blocked(self) -> bool:
+        if time.time() < self.ctrl_skip.get("__order_cap__", 0):
+            return True
+        if time.time() - float(getattr(self, "boot_ts", 0) or 0) < 25.0:
+            return True
+        if int(getattr(self, "_order_est", 0) or 0) >= 196:
+            return True
+        if getattr(self, "control_orders", True) and any(self.missing_controls(p) for p in self.open.values()):
+            return True
+        return False
+
     def controls_illegal(self, pos: Position) -> bool:
         if self.missing_controls(pos):
             return True
@@ -1813,11 +1824,7 @@ class Pulse:
         return None
 
     def place(self, sym: str, direction: int, reason: str, conf: float) -> None:
-        if time.time() < self.ctrl_skip.get("__order_cap__", 0):
-            return
-        if time.time() - float(getattr(self, "boot_ts", 0) or 0) < 25.0:
-            return
-        if int(getattr(self, "_order_est", 0) or 0) >= 198:
+        if self.entries_blocked():
             return
         if self.halted or os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
             return
@@ -1998,6 +2005,8 @@ class Pulse:
         if getattr(self, "control_orders", True):
             pos.ctrl_verified = False
             self.place_ctrl_pair(pos)
+            if pos.sl_oid and pos.tp_oid:
+                self._order_est = int(getattr(self, "_order_est", 0) or 0) + 2
             if self.missing_controls(pos):
                 self.ensure_controls(pos)
             if self.missing_controls(pos):
@@ -2602,6 +2611,8 @@ class Pulse:
         """CTS Block Live: add-on only against an existing same-side parent."""
         if self.halted or not self.block.enabled or not self.strat_block:
             return
+        if self.entries_blocked():
+            return
         if self.available < 3.0:
             return
         if time.time() - self.block_last_emit < max(12.0, STAGGER_S * 8):
@@ -2786,6 +2797,8 @@ class Pulse:
         """Independent CTS DCA adds — own distances/mults/PF, not Block."""
         if not getattr(self.dca, "enabled", False) or self.halted:
             return
+        if self.entries_blocked():
+            return
         if time.time() - getattr(self, "dca_last_emit", 0) < 0.35:
             return
         emitted = 0
@@ -2919,16 +2932,9 @@ class Pulse:
     def maybe_entries(self) -> None:
         if self.halted:
             return
-        if time.time() < self.ctrl_skip.get("__order_cap__", 0):
+        if self.entries_blocked():
             self.priority_controls()
             return
-        if int(getattr(self, "_order_est", 0) or 0) >= 198:
-            self.priority_controls()
-            return
-        if getattr(self, "control_orders", True) and any(self.missing_controls(p) for p in self.open.values()):
-            self.priority_controls()
-            if any(self.missing_controls(p) for p in self.open.values()):
-                return
         rows = self.strategy_closes()
         consec = 0
         for c in reversed(rows):
@@ -3020,6 +3026,8 @@ class Pulse:
         placed = 0
         skipped = 0
         for conf, s, d, why in ranked:
+            if self.entries_blocked():
+                break
             pack = "indications" if str(why).startswith("ind:") else "general"
             if self.sets.enabled and self.sets.use_historic_gate and self.sets.progress.ready:
                 if not intern.get(pack):
@@ -3036,7 +3044,7 @@ class Pulse:
                 placed += 1
             else:
                 skipped += 1
-            if placed >= 8 or (slot_cap > 0 and len(self.open) >= slot_cap):
+            if placed >= (1 if int(getattr(self, "_order_est", 0) or 0) >= 180 else 4) or (slot_cap > 0 and len(self.open) >= slot_cap):
                 break
         if placed == 0 and ranked and (time.time() - self.skip_log.get("entry0", 0) > 30):
             log(f"ENTRY none n={len(ranked)} skip={skipped} intern={intern} cap={slot_cap} open={len(self.open)}", every=30.0, key="entry0")
