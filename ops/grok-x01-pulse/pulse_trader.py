@@ -1954,6 +1954,8 @@ class Pulse:
                 self.errors += 1
                 self.last_error = f"order {sym} {msg}"[:240]
                 log(f"ORDER FAIL {sym} {side} {msg}")
+                low = str(msg or "").lower()
+                self.cooldown[sym] = time.time() + (45.0 if "cooling" in low else 12.0)
                 return
         data = (r.get("data") or {}).get("order") or r.get("data") or {}
         avg = float(data.get("avgPrice") or data.get("price") or px) or px
@@ -3067,6 +3069,16 @@ class Pulse:
         rows = r.get("data") or []
         if not isinstance(rows, list):
             return
+        live_n = 0
+        for p in rows:
+            try:
+                if abs(float(p.get("positionAmt") or p.get("availableAmt") or 0)) > 1e-12:
+                    live_n += 1
+            except Exception:
+                pass
+        if live_n == 0 and self.open:
+            log("ADOPT skip empty rest", every=20.0, key="adopt-empty")
+            return
         live = set()
         foreign = set()
         for p in rows:
@@ -3146,9 +3158,18 @@ class Pulse:
                 if self.missing_controls(rec_pos):
                     self.ensure_controls(rec_pos)
         for sym in list(self.open):
-            if sym not in live:
-                log(f"DROP stale local {sym}")
-                self.open.pop(sym, None)
+            pos = self.open.get(sym)
+            if not pos or pos.symbol in live:
+                continue
+            age = time.time() - float(pos.opened_at or 0)
+            if age < 180.0:
+                continue
+            if pos.sl_oid or pos.tp_oid or getattr(pos, "sec_sl_oid", "") or getattr(pos, "sec_tp_oid", ""):
+                if not self._exchange_flat(pos):
+                    continue
+            log(f"DROP stale local {sym} age={age:.0f}s")
+            self.open.pop(sym, None)
+            self.cooldown[sym] = time.time() + 90.0
         self.ignored_foreign = len(foreign)
         ours_live = {k.split(":")[0] for k in live if k not in {x.split(":")[0] for x in foreign}}
         book_syms = set(self.open)
