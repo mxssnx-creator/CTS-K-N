@@ -10,11 +10,16 @@ import {
   directTradeKeyspace,
   normalizeDirectTradeConnectionId,
 } from "@/lib/direct-trade-keyspace"
+import { directTradeLiveExecutionReadiness } from "@/lib/direct-trade-live-readiness"
 
 export const dynamic = "force-dynamic"
 
-const PROCESSOR_HEARTBEAT_STALE_MS = 7_000
-const PROCESSOR_PROGRESS_STALE_MS = 20_000
+// A 1.5s worker heartbeat uses a bounded 2.5s HTTP request. Three or four
+// delayed acknowledgements during history publication are degraded telemetry,
+// not proof that the lease owner died. Keep the restart-grade heartbeat gate
+// comfortably above that transport budget; progress remains a separate signal.
+const PROCESSOR_HEARTBEAT_STALE_MS = 20_000
+const PROCESSOR_PROGRESS_STALE_MS = 60_000
 
 function parseStoredJson<T>(raw: string | null, fallback: T): T {
   if (!raw) return fallback
@@ -43,6 +48,7 @@ function processorRuntimeStatus(
   processor: any
   heartbeatHealthy: boolean
   progressHealthy: boolean
+  heartbeatAgeMs: number | null
   healthy: boolean
   progressAgeMs: number | null
 } {
@@ -62,11 +68,15 @@ function processorRuntimeStatus(
       lastTick: lastHeartbeatAt,
       lastHeartbeatAt,
       lastProgressAt,
+      heartbeatAgeMs,
       progressAgeMs,
     } : null,
     heartbeatHealthy,
     progressHealthy,
-    healthy: heartbeatHealthy && progressHealthy,
+    // Recovery must act on a stale dedicated heartbeat, never on slow useful
+    // work alone. `progressHealthy` remains visible as a degraded-work signal.
+    healthy: heartbeatHealthy,
+    heartbeatAgeMs,
     progressAgeMs,
   }
 }
@@ -77,6 +87,7 @@ function publicProcessorStatus(processor: any): Record<string, unknown> | null {
     lastTick: typeof processor.lastTick === "string" ? processor.lastTick : null,
     lastHeartbeatAt: typeof processor.lastHeartbeatAt === "string" ? processor.lastHeartbeatAt : null,
     lastProgressAt: typeof processor.lastProgressAt === "string" ? processor.lastProgressAt : null,
+    heartbeatAgeMs: Number.isFinite(Number(processor.heartbeatAgeMs)) ? Math.max(0, Number(processor.heartbeatAgeMs)) : null,
     progressAgeMs: Number.isFinite(Number(processor.progressAgeMs)) ? Math.max(0, Number(processor.progressAgeMs)) : null,
     lifecycleCycleCount: Math.max(0, Math.floor(Number(processor.lifecycleCycleCount) || 0)),
     tickCount: Math.max(0, Math.floor(Number(processor.tickCount) || 0)),
@@ -136,6 +147,9 @@ export async function GET(request: Request) {
           connectionId,
           required,
           healthy,
+          heartbeatHealthy: !required || runtime.heartbeatHealthy,
+          progressHealthy: !required || runtime.progressHealthy,
+          degraded: required && runtime.heartbeatHealthy && !runtime.progressHealthy,
           openPositions,
           accountingPending,
           state,
@@ -145,6 +159,8 @@ export async function GET(request: Request) {
       const scopedConnections = connections.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
       const required = scopedConnections.some((entry) => entry.required)
       const healthy = scopedConnections.every((entry) => entry.healthy)
+      const heartbeatHealthy = scopedConnections.every((entry) => entry.heartbeatHealthy)
+      const progressHealthy = scopedConnections.every((entry) => entry.progressHealthy)
       return NextResponse.json({
         success: true,
         aggregate: true,
@@ -153,7 +169,13 @@ export async function GET(request: Request) {
         accountingPending: scopedConnections.reduce((sum, entry) => sum + entry.accountingPending, 0),
         processorRequired: required,
         processorHealthy: healthy,
-        processor: { isHealthy: healthy },
+        processorProgressHealthy: progressHealthy,
+        processor: {
+          isHealthy: healthy,
+          heartbeatHealthy,
+          progressHealthy,
+          degraded: required && heartbeatHealthy && !progressHealthy,
+        },
         connections: scopedConnections,
       })
     }
@@ -218,7 +240,7 @@ export async function GET(request: Request) {
       || accountingPending > 0
     const processorHeartbeatHealthy = processorRuntime.heartbeatHealthy
     const processorProgressHealthy = processorRuntime.progressHealthy
-    const processorHealthy = !processorRequired || processorRuntime.healthy
+    const processorHealthy = !processorRequired || processorRuntime.heartbeatHealthy
 
     const rollingStats = {
       last12Pos: calculateRollingPF(closedPositions.slice(-12)),
@@ -255,7 +277,12 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       success: true,
-      state,
+      state: state ? {
+        ...state,
+        liveExecutionReady: directTradeLiveExecutionReadiness().ready,
+        liveExecutionBlockReason: directTradeLiveExecutionReadiness().blockReason,
+      } : state,
+      liveExecutionReadiness: directTradeLiveExecutionReadiness(),
       stats: responseStats,
       activeConfigs: Math.max(0, Number(calculation?.evaluatedSets) || executionConfigs.length),
       validConfigs: Math.max(0, Number(calculation?.validSets) || executionConfigs.length),
@@ -279,13 +306,15 @@ export async function GET(request: Request) {
         lastHeartbeatAt: latestProcessor.lastHeartbeatAt,
         lastProgressAt: latestProcessor.lastProgressAt,
         progressAgeMs: latestProcessor.progressAgeMs,
+        heartbeatAgeMs: latestProcessor.heartbeatAgeMs,
         lifecycleCycleCount: latestProcessor.lifecycleCycleCount || 0,
         tickCount: latestProcessor.tickCount,
         errorsLast5min: latestProcessor.errorsLast5min || 0,
         historyPolicy: latestProcessor.historyPolicy || null,
         heartbeatHealthy: processorHeartbeatHealthy,
         progressHealthy: processorProgressHealthy,
-        isHealthy: processorRuntime.healthy,
+        isHealthy: processorRuntime.heartbeatHealthy,
+        degraded: processorRequired && processorRuntime.heartbeatHealthy && !processorProgressHealthy,
       } : null,
       recovery: recoveryRequestRaw ? (() => {
         try {
