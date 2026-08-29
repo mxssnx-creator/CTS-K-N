@@ -14,7 +14,7 @@ export const fetchCache = "force-no-store"
 const LOCK_KEY = "cron:direct-trade-continuity:lock"
 const MINUTE_DEDUP_PREFIX = "cron:direct-trade-continuity:minute"
 const DIAGNOSTIC_KEY = "system:coordination:direct-trade-continuity"
-const PROCESSOR_STALE_MS = 7_000
+const PROCESSOR_STALE_MS = 20_000
 
 function source(request: Request): string {
   if (request.headers.get("x-cron-source")) return String(request.headers.get("x-cron-source"))
@@ -133,6 +133,10 @@ export async function GET(request: Request) {
             reason: processor ? "stale-heartbeat" : "missing-heartbeat",
             source: source(request),
           }), { NX: true, EX: 120 }).catch(() => null)
+        } else if (healthy) {
+          // Do not leave a recovered scope looking restartable for the full
+          // request TTL. This key is diagnostic only and is connection-scoped.
+          await client.del(keys.recoveryRequest).catch(() => 0)
         }
         return {
           connectionId,
