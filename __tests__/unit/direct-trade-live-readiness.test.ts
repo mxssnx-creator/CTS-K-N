@@ -30,4 +30,22 @@ describe("Direct-Trade production live readiness", () => {
       ).toBe(true)
     }
   })
+
+  test("hydrates positions before syncing and settles blocked legacy openings without retry storms", () => {
+    const processor = fs.readFileSync(
+      path.join(process.cwd(), "scripts/direct-trade-processor.mjs"),
+      "utf8",
+    )
+    const loadState = processor.slice(
+      processor.indexOf("async function loadState"),
+      processor.indexOf("// ─── Entry Signal Check"),
+    )
+
+    expect(loadState).toContain("if (Array.isArray(result?.positions)) positions =")
+    expect(loadState).not.toMatch(/await refreshActiveSignals\(\)\s*return/)
+    expect(processor).toContain('"quarantined_live_readiness"')
+    expect(processor).toContain('startsWith("quarantined_")')
+    expect(processor).toContain("lastLiveReadinessWarningAt >= 60_000")
+    expect(processor).toContain("no durable exchange order acknowledgement exists")
+  })
 })
