@@ -92,6 +92,8 @@ const DIRECT_TRADE_MAX_LIVE_CLOSE_ACTIONS_PER_CYCLE = 1
 // and cross-engine physical-slot attribution. Existing live rows still run
 // recovery/close handling; paper and historical evaluation are unaffected.
 const DIRECT_TRADE_LIVE_EXECUTION_READY = false
+const DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON =
+  "unified exact TP/SL/security protection is not production-ready"
 const DIRECT_TRADE_RECALC_STALE_GRACE_MS = 30 * 60 * 1_000
 const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"]
 
@@ -495,6 +497,7 @@ let lastPersistAt = 0
 let lastStateRefreshAt = 0
 let lastStandbyWarningAt = 0
 let lastHeartbeatWarningAt = 0
+let lastLiveReadinessWarningAt = 0
 let lifecycleCycleCount = 0
 let lastProgressAt = 0
 let stateDirty = false
@@ -971,6 +974,32 @@ function markOpeningFailed(position, reason) {
   log("warn", `Opening ${position.direction} ${position.symbol} ended without a position`, position.openFailureReason)
 }
 
+function durableOpeningOrderId(position) {
+  return [position?.exchangeOrderId, position?.openOrderId, position?.orderId]
+    .map((value) => String(value || "").trim())
+    .find((value) => value && value !== "N/A") || null
+}
+
+async function failOrQuarantineBlockedOpening(position, reason, quarantineState) {
+  const orderId = durableOpeningOrderId(position)
+  if (!orderId) {
+    markOpeningFailed(position, `${reason}; no durable exchange order acknowledgement exists`)
+  } else {
+    position.openState = quarantineState
+    position.openLastError = String(reason).slice(0, 300)
+    position.openLastCheckedAt = new Date().toISOString()
+    position.openQuarantinedAt = position.openQuarantinedAt || position.openLastCheckedAt
+    stateDirty = true
+    log(
+      "warn",
+      `Opening reconciliation quarantined for ${position.symbol}; exchange order ${orderId} remains untouched`,
+      position.openLastError,
+    )
+  }
+  await persistState()
+  return false
+}
+
 function applyEntryOrderSettlement(position, orderResult, orderId = null) {
   const settlement = orderResult?.settlement
   const exactOrderId = String(settlement?.orderId || orderId || "").trim()
@@ -1263,6 +1292,16 @@ async function submitOrReconcileOpening(position, reconcileOnly = false) {
     await persistState()
     return false
   }
+  if (
+    !DIRECT_TRADE_LIVE_EXECUTION_READY
+    && (position.mode === "live" || (state.liveMode && position.mode !== "simulated"))
+  ) {
+    return failOrQuarantineBlockedOpening(
+      position,
+      `Direct-Trade live opening blocked: ${DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON}`,
+      "quarantined_live_readiness",
+    )
+  }
 
   try {
     // Older persisted IDs can contain timeframe separators such as `5m+15m`.
@@ -1333,16 +1372,22 @@ async function submitOrReconcileOpening(position, reconcileOnly = false) {
     return finalized
   } catch (err) {
     if (err.message?.includes("429")) rateLimiter.backoff(3_000)
+    const openingError = String(err.message || err)
     // While enabled, the exact same control id is retried and the service
     // reconciles it. After Stop, a 409 means no durable control reached the
     // service, so cancelling this never-submitted opening is safe.
-    if (!state.enabled && String(err.message || err).includes("not currently authorised")) {
-      markOpeningFailed(position, "Entry was stopped before its durable exchange control was created")
-      await persistState()
-      return false
+    if (
+      openingError.includes("not owned by the exact persisted position/control")
+      || (!state.enabled && openingError.includes("not currently authorised"))
+    ) {
+      return failOrQuarantineBlockedOpening(
+        position,
+        "Entry control is not exactly owned by this persisted Direct-Trade position",
+        "quarantined_exact_ownership",
+      )
     }
     position.openState = "pending_reconciliation"
-    position.openLastError = String(err.message || err).slice(0, 300)
+    position.openLastError = openingError.slice(0, 300)
     stateDirty = true
     log("warn", `Opening reconciliation deferred for ${position.symbol}`, position.openLastError)
     trackError()
@@ -1353,6 +1398,7 @@ async function submitOrReconcileOpening(position, reconcileOnly = false) {
 async function processOpeningPositions() {
   const opening = positions.filter((position) => position.status === "opening")
   for (const position of opening) {
+    if (String(position.openState || "").startsWith("quarantined_")) continue
     if (Date.now() - Date.parse(position.openLastCheckedAt || "") < 1_000) continue
     await submitOrReconcileOpening(position, !state.enabled)
   }
@@ -1394,10 +1440,10 @@ function canOpenPosition(config) {
 async function openPosition(config) {
   config = normalizeDirectTradeConfig(config)
   if (state.liveMode && !DIRECT_TRADE_LIVE_EXECUTION_READY) {
-    log(
-      "error",
-      "Direct-Trade live entry blocked: unified exact TP/SL/security protection is not production-ready",
-    )
+    if (Date.now() - lastLiveReadinessWarningAt >= 60_000) {
+      lastLiveReadinessWarningAt = Date.now()
+      log("warn", `Direct-Trade live entry blocked: ${DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON}`)
+    }
     return null
   }
   const posId = `dt_${config.symbol}_${config.direction}_${config.timeframe}_${Date.now()}`
@@ -2893,7 +2939,10 @@ async function loadState(includeExecution = false) {
     if (!includeExecution && remoteCalculationVersion && remoteCalculationVersion !== calculationVersion) {
       calculationVersion = remoteCalculationVersion
       await refreshActiveSignals()
-      return
+      // Startup hydration must continue through stats/positions even when the
+      // compact calculation generation changed. Returning here used to leave
+      // the worker's local positions at [], and its first processor sync then
+      // overwrote the durable ledger with that empty array.
     }
     if (Array.isArray(result?.executionConfigs)) {
       configs = result.executionConfigs.map(normalizeDirectTradeConfig)
