@@ -117,6 +117,49 @@ export interface VstSoakSymbolLiquidity {
   eligible: boolean
 }
 
+export const VST_SOAK_MAX_CONCURRENT_CONTROL_ORDERS = 3
+export const VST_SOAK_MIN_SHARED_ORDER_RESERVE = 1
+
+export interface VstSoakOrderHeadroom {
+  limit: number
+  observedOpenOrders: number
+  maxConcurrentControlOrders: number
+  safetyReserve: number
+  requiredHeadroom: number
+  availableHeadroom: number
+  safe: boolean
+}
+
+/**
+ * Reserve enough shared-account order capacity for the complete SL/TP/security
+ * set plus one concurrent external order. Invalid observations fail closed.
+ */
+export function evaluateVstSoakOrderHeadroom(
+  observedOpenOrders: unknown,
+  limit: unknown = 200,
+): VstSoakOrderHeadroom {
+  const parsedLimit = Number(limit)
+  const effectiveLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
+    ? Math.floor(parsedLimit)
+    : 200
+  const parsedObserved = Number(observedOpenOrders)
+  const observed = Number.isFinite(parsedObserved) && parsedObserved >= 0
+    ? Math.floor(parsedObserved)
+    : effectiveLimit
+  const requiredHeadroom = VST_SOAK_MAX_CONCURRENT_CONTROL_ORDERS
+    + VST_SOAK_MIN_SHARED_ORDER_RESERVE
+  const availableHeadroom = Math.max(0, effectiveLimit - observed)
+  return {
+    limit: effectiveLimit,
+    observedOpenOrders: observed,
+    maxConcurrentControlOrders: VST_SOAK_MAX_CONCURRENT_CONTROL_ORDERS,
+    safetyReserve: VST_SOAK_MIN_SHARED_ORDER_RESERVE,
+    requiredHeadroom,
+    availableHeadroom,
+    safe: availableHeadroom >= requiredHeadroom,
+  }
+}
+
 /**
  * Rank demo symbols by the currently executable bid/ask spread.
  *

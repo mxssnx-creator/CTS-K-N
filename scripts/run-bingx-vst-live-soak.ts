@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto"
+import { spawnSync } from "node:child_process"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
 const VST_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
@@ -43,6 +45,11 @@ const TRADE_PATHS = [
   { id: "main-trade", progression: "block", orderPrefix: "mt" },
   { id: "preset-trade", progression: "dca", orderPrefix: "pt" },
   { id: "signal-trade", progression: "block", orderPrefix: "st" },
+] as const
+const GUARDED_UNITS = [
+  "cts-kn.service",
+  "cts-kn-scheduler.service",
+  "cts-kn-direct-trade.service",
 ] as const
 
 type SoakSymbol = typeof SYMBOL_CANDIDATES[number]
@@ -246,6 +253,25 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function inactiveUnit(unit: string): boolean {
+  const result = spawnSync("systemctl", ["is-active", unit], {
+    encoding: "utf8",
+    timeout: 5_000,
+  })
+  return String(result.stdout || "").trim() === "inactive"
+}
+
+function assertSoakHostGuard(): void {
+  const maintenance = getRuntimeMaintenanceState()
+  if (maintenance.reason !== "marker_present") {
+    throw new Error("BingX X02 Prod-VST soak requires the runtime maintenance marker")
+  }
+  const activeUnits = GUARDED_UNITS.filter((unit) => !inactiveUnit(unit))
+  if (activeUnits.length > 0) {
+    throw new Error("BingX X02 Prod-VST soak requires all trading services to be inactive")
+  }
+}
+
 async function main(): Promise<void> {
   const runStartedMs = Date.now()
   const runId = randomUUID()
@@ -258,8 +284,8 @@ async function main(): Promise<void> {
   const reportDir = join(process.cwd(), ".agent-logs")
   const reportPath = join(reportDir, `bingx-vst-soak-${new Date(runStartedMs).toISOString().replace(/[:.]/g, "-")}.json`)
   const network: NetworkObservation[] = []
-  const apiKey = String(process.env.BINGX_X02_API_KEY || process.env.BINGX_API_KEY || "").trim()
-  const apiSecret = String(process.env.BINGX_X02_API_SECRET || process.env.BINGX_API_SECRET || "").trim()
+  const apiKey = String(process.env.BINGX_X02_API_KEY || "").trim()
+  const apiSecret = String(process.env.BINGX_X02_API_SECRET || "").trim()
   const preflightOnly = process.env.BINGX_VST_SOAK_PREFLIGHT_ONLY === "1"
   const requestedDuration = finite(process.env.BINGX_VST_SOAK_DURATION_MS) || EXACT_DURATION_MS
   const allowShort = process.env.BINGX_VST_SOAK_ALLOW_SHORT === "1"
@@ -328,6 +354,16 @@ async function main(): Promise<void> {
   }
   if (!preflightOnly && requestedDuration !== EXACT_DURATION_MS && !allowShort) {
     report.errors.push(`The authenticated soak must run exactly ${EXACT_DURATION_MS}ms unless BINGX_VST_SOAK_ALLOW_SHORT=1 is explicit`)
+    await persistReport()
+    console.error(`[bingx-vst-soak] BLOCKED report=${reportPath}`)
+    process.exitCode = 2
+    return
+  }
+  try {
+    assertSoakHostGuard()
+  } catch (error) {
+    report.errors.push(errorText(error))
+    report.cleanupComplete = true
     await persistReport()
     console.error(`[bingx-vst-soak] BLOCKED report=${reportPath}`)
     process.exitCode = 2
@@ -826,6 +862,38 @@ async function main(): Promise<void> {
     report.preflight.accountFlat = initialAccount.positions.length === 0 && initialAccount.orders.length === 0
     report.preflight.initialPositions = initialAccount.positions.length
     report.preflight.initialOpenOrders = initialAccount.orders.length
+    const initialOrderHeadroom = auditModule.evaluateVstSoakOrderHeadroom(
+      initialAccount.orders.length,
+      capacityModule.BINGX_CONTROL_ORDER_LIMIT,
+    )
+    report.preflight.controlOrderHeadroom = initialOrderHeadroom
+    if (!preflightOnly && !initialOrderHeadroom.safe) {
+      throw new Error(
+        `Shared BingX account has ${initialOrderHeadroom.availableHeadroom} open-order slots; ` +
+        `${initialOrderHeadroom.requiredHeadroom} are required for SL/TP/security plus reserve`,
+      )
+    }
+    const assertSharedAccountOrderHeadroom = async (phase: string) => {
+      const orders = await connector.getOpenOrders()
+      assertSnapshotHealthy("orders")
+      const headroom = auditModule.evaluateVstSoakOrderHeadroom(
+        orders.length,
+        capacityModule.BINGX_CONTROL_ORDER_LIMIT,
+      )
+      report.monitoring.push({
+        at: new Date().toISOString(),
+        phase,
+        openOrderCount: orders.length,
+        controlOrderHeadroom: headroom,
+      })
+      if (!headroom.safe) {
+        throw new Error(
+          `${phase}: shared BingX account has ${headroom.availableHeadroom} open-order slots; ` +
+          `${headroom.requiredHeadroom} are required`,
+        )
+      }
+      return headroom
+    }
     report.preflight.baselinePositions = initialAccount.positions.map(sanitizedPosition)
     report.preflight.baselineOpenOrders = initialAccount.orders.map((order: any) => ({
       symbol: normalizeSymbol(order?.symbol),
@@ -1105,6 +1173,8 @@ async function main(): Promise<void> {
       return
     }
 
+    assertSoakHostGuard()
+    await assertSharedAccountOrderHeadroom("before_position_mode")
     const positionMode = await connector.setPositionMode(true)
     if (!positionMode.success) throw new Error(`Could not enable hedge mode: ${positionMode.error || "unknown"}`)
     report.preflight.hedgeMode = true
@@ -1179,6 +1249,7 @@ async function main(): Promise<void> {
       while (Date.now() < target) {
         assertNotAborted()
         if (Date.now() >= nextMonitorAt) {
+          assertSoakHostGuard()
           const snapshot = await accountSnapshot()
           report.monitoring.push({
             at: new Date().toISOString(),
@@ -1704,6 +1775,8 @@ async function main(): Promise<void> {
       }
       report.cycles.push(cycle)
       try {
+        assertSoakHostGuard()
+        await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_entry`)
         const rules = rulesBySymbol.get(symbol)
         const quantityStep = finite(rules?.quantityStep)
         await waitForExclusiveOwnedQuantity(symbol, direction, 0, quantityStep)
@@ -1736,6 +1809,8 @@ async function main(): Promise<void> {
           quantityStep,
         )
         await assertNoOpenOrdersForSymbol(symbol, "cycle accumulation")
+        assertSoakHostGuard()
+        await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_accumulation`)
 
         cycle.accumulation = await placeManagedOrder({
           symbol,
@@ -1759,6 +1834,8 @@ async function main(): Promise<void> {
           quantityStep,
         )
         await assertNoOpenOrdersForSymbol(symbol, "protection placement")
+        assertSoakHostGuard()
+        await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_protection`)
 
         const pricePrecision = Math.max(0, Math.min(12, rules.pricePrecision))
         const priceTick = finite(rules.priceTick)
@@ -2301,4 +2378,7 @@ void main()
     console.error(`[bingx-vst-soak] fatal: ${errorText(error)}`)
     process.exitCode = 1
   })
-  .finally(() => clearInterval(executionKeepAlive))
+  .finally(() => {
+    clearInterval(executionKeepAlive)
+    setImmediate(() => process.exit(process.exitCode ?? 0))
+  })

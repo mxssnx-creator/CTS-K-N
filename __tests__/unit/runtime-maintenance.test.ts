@@ -172,12 +172,16 @@ describe("runtime maintenance stop", () => {
   })
 
   test("wires the host marker through boot and every managed runtime", async () => {
-    const [instrumentation, productionStart, scheduler, directSupervisor, installer] = await Promise.all([
+    const [instrumentation, productionStart, scheduler, directSupervisor, installer, serviceControl, soak, operator, packageJson] = await Promise.all([
       readFile(path.join(process.cwd(), "instrumentation.ts"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/start-production.mjs"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/run-minute-scheduler.mjs"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/direct-trade-supervisor.mjs"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/install.sh"), "utf8"),
+      readFile(path.join(process.cwd(), "scripts/service-control.sh"), "utf8"),
+      readFile(path.join(process.cwd(), "scripts/run-bingx-vst-live-soak.ts"), "utf8"),
+      readFile(path.join(process.cwd(), "scripts/reconcile-bingx-x02-protection-slot.ts"), "utf8"),
+      readFile(path.join(process.cwd(), "package.json"), "utf8"),
     ])
 
     expect(instrumentation).toContain("getRuntimeMaintenanceState")
@@ -186,6 +190,38 @@ describe("runtime maintenance stop", () => {
     expect(scheduler).toContain("runtime_maintenance_stop")
     expect(directSupervisor).toContain("suppressing all connection workers")
     expect(installer).toContain("CTS_RUNTIME_DIR=${RUNTIME_DIR@Q}")
+    expect(installer).toContain('run_root chmod 750 "$RUNTIME_DIR"')
+    expect(installer).toContain('run_as_service test -e "$RUNTIME_DIR/maintenance-stop"')
+    expect(installer).toContain('run_root install -d -m 0700 -o "$SERVICE_USER" -g "$service_group" "$PROJECT_ROOT/.agent-logs"')
+    expect(installer).toContain('run_as_service test -w "$PROJECT_ROOT/.agent-logs"')
+    expect(serviceControl).toContain('run_root chgrp "$service_group" "$RUNTIME_DIR/maintenance-stop"')
+    expect(serviceControl).toContain('run_root chmod 640 "$RUNTIME_DIR/maintenance-stop"')
+    expect(soak).toContain("assertSoakHostGuard()")
+    expect(soak).toContain("evaluateVstSoakOrderHeadroom")
+    expect(soak).toContain('await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_protection`)')
+    expect(soak).toContain('String(process.env.BINGX_X02_API_KEY || "")')
+    expect(soak).not.toContain("process.env.BINGX_X02_API_KEY || process.env.BINGX_API_KEY")
+    expect(soak).toContain("setImmediate(() => process.exit(process.exitCode ?? 0))")
+    expect(operator).toContain("setImmediate(() => process.exit(process.exitCode ?? 0))")
+    expect(JSON.parse(packageJson).scripts["test:bingx:vst:soak"]).toContain(
+      "--env-file-if-exists=.env.production.local",
+    )
+    expect(JSON.parse(packageJson).scripts["test:bingx:vst:preflight"]).toContain(
+      "--env-file-if-exists=.env.production.local",
+    )
+
+    const entryGuard = soak.indexOf('await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_entry`)')
+    const entryOrder = soak.indexOf("cycle.entry = await placeManagedOrder", entryGuard)
+    const accumulationGuard = soak.indexOf('await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_accumulation`)')
+    const accumulationOrder = soak.indexOf("cycle.accumulation = await placeManagedOrder", accumulationGuard)
+    const protectionGuard = soak.indexOf('await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_protection`)')
+    const protectionPlacement = soak.indexOf("const stopLoss = await connector.placeStopOrder", protectionGuard)
+    expect(entryGuard).toBeGreaterThan(-1)
+    expect(entryOrder).toBeGreaterThan(entryGuard)
+    expect(accumulationGuard).toBeGreaterThan(entryOrder)
+    expect(accumulationOrder).toBeGreaterThan(accumulationGuard)
+    expect(protectionGuard).toBeGreaterThan(accumulationOrder)
+    expect(protectionPlacement).toBeGreaterThan(protectionGuard)
   })
 
   test("keeps the VST soak ownership-scoped on a shared account", async () => {

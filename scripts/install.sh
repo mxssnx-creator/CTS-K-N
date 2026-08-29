@@ -1283,11 +1283,18 @@ prepare_runtime_permissions() {
   run_root chmod 640 "$ENV_FILE"
   run_root chown -R "$install_owner:$service_group" "$RUNTIME_DIR" "$PROJECT_ROOT/.next"
   run_root chmod -R g+rX "$RUNTIME_DIR" "$PROJECT_ROOT/.next"
+  run_root chmod 750 "$RUNTIME_DIR"
+  if [[ -e "$RUNTIME_DIR/maintenance-stop" ]]; then
+    run_root chmod 640 "$RUNTIME_DIR/maintenance-stop"
+    run_as_service test -e "$RUNTIME_DIR/maintenance-stop" \
+      || fatal "Service user cannot inspect the runtime maintenance marker"
+  fi
   # Next's production fetch/image cache is the only writable area beneath the
   # immutable build. Keep executable code read-only to the service identity.
   run_root install -d -m 0750 -o "$SERVICE_USER" -g "$service_group" "$PROJECT_ROOT/.next/cache"
   run_root chown -R "$SERVICE_USER:$service_group" "$PROJECT_ROOT/.next/cache"
   run_root chmod -R u+rwX,g+rX,o-rwx "$PROJECT_ROOT/.next/cache"
+  run_root install -d -m 0700 -o "$SERVICE_USER" -g "$service_group" "$PROJECT_ROOT/.agent-logs"
   run_root chown -R "$SERVICE_USER:$service_group" "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data"
   run_as_service test -r "$PROJECT_ROOT/package.json" || fatal "Service user cannot read the checkout"
   run_as_service test -r "$PROJECT_ROOT/tsconfig.json" || fatal "Service user cannot read tsconfig.json"
@@ -1296,6 +1303,7 @@ prepare_runtime_permissions() {
   run_as_service test -x "$RUNTIME_DIR/start-recovery.sh" || fatal "Service user cannot execute the recovery wrapper"
   run_as_service test -r "$ENV_FILE" || fatal "Service user cannot read the production environment"
   run_as_service test -w "$PROJECT_ROOT/.next/cache" || fatal "Service user cannot write the Next runtime cache"
+  run_as_service test -w "$PROJECT_ROOT/.agent-logs" || fatal "Service user cannot write operator reports"
   ok "Runtime artifacts are owned by the unprivileged service identity"
 }
 

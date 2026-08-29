@@ -2344,3 +2344,58 @@ credentials are present.
   exact BTC ownership/capacity assertions still pass. The max-safe-symbol
   20-minute/16-cycle Prod-VST soak remains conditional on sufficient free
   symbols/control headroom and must end with zero CTS-owned test residuals.
+
+## Session 2026-08-29 — PR #253 deployment, exact repair and soak-capacity hardening
+
+- [x] GitHub PR #253 (`Fix exact X02 slot protection reconciliation`) passed
+  both Vercel checks and the Dev Preview Smoke workflow, then merged as
+  `main@41ef9a46e762b8b0c32921aec6ca85184086115c` with exact tree
+  `8303a013d19b7457d72c7984b41239f3b26ca198`. That exact commit/tree and a
+  348-server-trace production build are deployed at `/opt/cts-kn`; the prior
+  revision remains at
+  `/opt/cts-kn-rollback-pr253-20260829T020725Z-17e4266`.
+- [x] Complete owner-only checkpoints bracket the deploy and exact order
+  mutation. The key remote restore points are
+  `/var/backups/cts-kn/20260829T015650Z-pre-pr253-deploy`,
+  `/var/backups/cts-kn/20260829T021521Z-post-pr253-deploy-pre-slot-reconcile`,
+  `/var/backups/cts-kn/20260829T022944Z-pre-exact-btc-orphan-cancel`, and
+  `/var/backups/cts-kn/20260829T023254Z-post-exact-btc-protection-repair-pre-soak`.
+  Every checkpoint has a complete hardlinked deployment, verified source
+  bundle, valid Redis RDB, unit/environment state and a clean SHA-256 manifest.
+- [x] The exact X02 BTCUSDT-long apply revalidated two CTS rows and local/venue
+  ownership, retained two external controls, cancelled exactly one
+  CTS-prefixed orphan, and finished with five authoritative owned controls:
+  two exact row SLs, two exact row TPs and one full-slot security stop. A fresh
+  independent dry audit returned complete with zero violations/orphans and no
+  lingering live-sync lock. No X01, Bybit, other symbol or external order was
+  mutated.
+- [x] The deployed runtime directory initially prevented the unprivileged
+  service identity from traversing the maintenance marker. X02 was repaired to
+  `root:cts-kn` with directory mode 750 and marker mode 640, preserving
+  read/traverse without group write. Main, scheduler, Direct and recovery timer
+  remain inactive; the marker remains present and port 3002 remains closed.
+- [x] The authenticated Prod-VST preflight passed all four execution-path
+  topology gates, ten independent indication families, 39,328 possible Sets,
+  13,715 evaluation configurations, Block/DCA families, per-source statistics,
+  security-stop tracking and 198/199/200 capacity-boundary calculations. It
+  found four executable empty symbols, but only three shared-account order
+  slots were free; the required SL/TP/security set needs three and must retain
+  one spare. The 20-minute live soak was therefore correctly not started.
+- [x] Safety hardening is implemented on
+  `fix/x02-soak-runtime-safety-20260829`: X02-only soak credentials, internal
+  marker/inactive-service checks, a tested four-slot minimum before position
+  mode and every entry/accumulation/protection phase, deterministic one-shot
+  exit, production-env package commands, persistent marker permissions and an
+  owner-only operator report directory. Focused gates pass 5/5 suites (52
+  tests), the user-requested protection/Block/DCA/volume/stats/UI slice passes
+  23/23 suites (170 tests), and the complete gate passes 244/244 suites with
+  1,638/1,638 tests, TypeScript, full ESLint, source/shell syntax, a 1,560-file
+  secret scan with zero findings, mutation-free Linux install preflight, 37/37
+  Kilo checks at schema v104, 1,552-file recreation verification, and the
+  production build on attempt 1 with 42 static pages and 348 complete server
+  traces. GitHub review/merge, redeploy and a fresh capacity preflight remain
+  required before any live soak.
+- [x] The safety-hardening edit series is recoverable from owner-only local
+  checkpoint
+  `/workspace/backups/CTS-K-N/20260829T023627Z-pre-soak-runtime-hardening`,
+  whose bundle and SHA-256 manifest verified successfully.
