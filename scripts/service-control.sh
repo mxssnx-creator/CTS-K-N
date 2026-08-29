@@ -189,8 +189,14 @@ pm2_start_or_restart() {
 # Manual stops are an explicit maintenance action. The recovery supervisor
 # respects this marker so it cannot restart a service the operator stopped.
 if [[ "$ACTION" == "stop" ]]; then
+  service_group="$(id -gn "$SERVICE_USER")"
+  run_root chgrp "$service_group" "$RUNTIME_DIR"
+  run_root chmod 750 "$RUNTIME_DIR"
   run_root touch "$RUNTIME_DIR/maintenance-stop"
-  run_root chmod 600 "$RUNTIME_DIR/maintenance-stop"
+  run_root chgrp "$service_group" "$RUNTIME_DIR/maintenance-stop"
+  run_root chmod 640 "$RUNTIME_DIR/maintenance-stop"
+  run_as_service test -e "$RUNTIME_DIR/maintenance-stop" \
+    || { echo "Service user cannot inspect the runtime maintenance marker" >&2; exit 1; }
 else
   run_root rm -f -- "$RUNTIME_DIR/maintenance-stop"
 fi

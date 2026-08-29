@@ -2,6 +2,7 @@ import {
   auditVstSoakExecutionRelations,
   auditVstSoakCounters,
   deriveVstSoakProtectionBand,
+  evaluateVstSoakOrderHeadroom,
   normalizeVstSoakCounterSnapshot,
   rankVstSoakSymbolLiquidity,
 } from "@/lib/bingx-vst-soak-audit"
@@ -89,6 +90,28 @@ describe("BingX Prod-VST soak accounting audit", () => {
       expect.objectContaining({ symbol: "BTCUSDT", eligible: false, spreadBps: Number.POSITIVE_INFINITY }),
       expect.objectContaining({ symbol: "SOLUSDT", eligible: false, spreadBps: Number.POSITIVE_INFINITY }),
     ]))
+  })
+
+  test("reserves one shared-account order beyond the complete protection set", () => {
+    expect(evaluateVstSoakOrderHeadroom(196, 200)).toEqual({
+      limit: 200,
+      observedOpenOrders: 196,
+      maxConcurrentControlOrders: 3,
+      safetyReserve: 1,
+      requiredHeadroom: 4,
+      availableHeadroom: 4,
+      safe: true,
+    })
+    expect(evaluateVstSoakOrderHeadroom(197, 200)).toMatchObject({
+      requiredHeadroom: 4,
+      availableHeadroom: 3,
+      safe: false,
+    })
+    expect(evaluateVstSoakOrderHeadroom("invalid", 200)).toMatchObject({
+      observedOpenOrders: 200,
+      availableHeadroom: 0,
+      safe: false,
+    })
   })
 
   test("reconciles exact count, per-symbol, and fill-volume deltas", () => {

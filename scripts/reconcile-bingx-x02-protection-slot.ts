@@ -154,7 +154,13 @@ async function main(): Promise<void> {
   if (!payload.success) process.exitCode = 1
 }
 
-void main().catch((error) => {
-  console.error(sanitizedFailure(error))
-  process.exitCode = 1
-})
+const executionKeepAlive = setInterval(() => undefined, 1_000)
+void main()
+  .catch((error) => {
+    console.error(sanitizedFailure(error))
+    process.exitCode = 1
+  })
+  .finally(() => {
+    clearInterval(executionKeepAlive)
+    setImmediate(() => process.exit(process.exitCode ?? 0))
+  })
