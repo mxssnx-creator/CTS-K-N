@@ -1,5 +1,83 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## X02 external-protection coexistence follow-up (2026-08-29; authoritative)
+
+- GitHub PR #256 (`Keep VST security armed through shared-account closes`) is
+  merged as `main@2431b4c61360dd249b34bc528ceef84da12d4c12`, exact tree
+  `1de85f15cbcbcf7383986e18d637cb75368c0b8d`, and that revision is deployed
+  at `/opt/cts-kn` with 348 complete server traces. X02 remains maintenance
+  gated: the marker is present, regular trading services/timers are inactive,
+  and port 3002 is closed.
+- The authenticated post-deploy preflight was read-only and green. It observed
+  a changing shared external baseline of 96 positions/192 controls, excluded
+  contested `BTCUSDT`, and selected the six safe unoccupied books ETH, BCH,
+  SOL, LINK, DOGE and ADA. All four path topologies passed independently:
+  10 indication families, 39,328 possible Sets, 13,715 evaluation
+  configurations, 12,160,000 Direct direction configurations, 4,800 generated
+  Main strategies, 24 Preset indication types, four Preset strategy types,
+  35 Signal sources, 162 Signal configurations, exact 198/199/200 control
+  capacity boundaries, complete execution relations and four-of-four armed
+  synthetic security-stop records.
+- The first exact 20-minute attempt stopped safely in cycle 1 (Direct+DCA,
+  ETH Long) and is excluded from PnL/evaluation attribution. CTS filled exactly
+  0.002 ETH, proved row SL/TP plus full-slot security and the production
+  trailing replacement/stale-update rejection, then cancelled only its row
+  SL/TP before close. An independent controller added one reduce-only SL and
+  one reduce-only TP; the PR #256 quiet guard refused to trade through or
+  cancel those external controls. Exception cleanup retained the full-quantity
+  CTS security stop and failed closed instead of guessing ownership.
+- A separate guarded exact-slot reconciliation used three stable account
+  snapshots, proved that the physical ETH quantity exactly equalled the two
+  CTS fills, and verified that both non-CTS rows were conditional reduce-only
+  protections for the same direction. One exact CTS reduce-only close flattened
+  the slot; only the CTS security control was explicitly cancelled afterward.
+  The venue retired the two external controls when the position became flat.
+  Final CTS residual positions/controls were zero and external cancellation by
+  CTS was zero. The wider account independently changed to 94 positions/188
+  controls during this interval and is treated only as external state.
+- Follow-up source is isolated on
+  `fix/x02-external-protection-coexistence-20260829`, based exactly on merged
+  PR #256. The VST harness now classifies but never adopts/cancels a stable
+  external conditional SL/TP only when it is reduce-only, exact symbol and
+  position side, opposite close side, non-oversized, and accompanied by an
+  exact CTS-owned venue quantity. Any market/limit exposure order, changing
+  identity set, wrong side/direction/symbol, missing ID or quantity drift still
+  blocks. Required CTS security must remain visible throughout the close
+  window, external observations are count-only in schema-v5 reports, and
+  post-close restoration still requires zero symbol positions/orders.
+- Safety reads now explicitly bypass the connector's normal 15-second
+  dashboard open-order cache and poll fresh venue state at less than two reads
+  per second. Shared capacity reserves six slots: three CTS controls, the
+  observed external SL/TP pair, and one additional safety slot. Exception
+  cleanup uses the same exact-slot policy and recognizes a protection that wins
+  the close race without cancelling controls before authoritative flatness.
+- Current local gates are green: TypeScript, repository-wide ESLint, 244/244
+  Jest suites with 1,648/1,648 tests, focused coexistence/connector/runtime
+  regressions 44/44, a first-attempt Next 15.5.18 build with 42 pages and 348
+  complete traces, and the deep production audit across all 47 UI surfaces,
+  dialogs, overview/stat relationships, settings backup, 32 symbols, independent
+  Long/Short state, volume/signal hot reload and 35 Signal sources with zero
+  exchange orders. The Direct 32-symbol/48-hour matrix evaluated 960,512
+  independent Sets (22,467 valid); the separate Block audit evaluated
+  1,419,264 independent Count-1..12 rows with zero identity mismatches and the
+  additive, non-compounding formula `target = base + base × count × volumeRatio`.
+- Verified recovery points include local
+  `/workspace/backups/CTS-K-N/20260829T062522Z-pre-external-protection-coexistence-fix`
+  and remote
+  `/var/backups/cts-kn/20260829T061746Z-pre-pr256-vst-owned-slot-reconcile` plus
+  `/var/backups/cts-kn/20260829T062233Z-post-pr256-vst-owned-slot-reconcile`.
+  They contain complete source/deployment state, valid Redis snapshots and
+  clean SHA-256 verification.
+- Next sequence: regenerate recreation manifests; run release security, Kilo
+  and mutation-free install gates; create a complete pre-commit checkpoint;
+  publish through a reviewed green GitHub PR and merge only its exact head;
+  checkpoint and atomically deploy merged main; rerun authenticated preflight
+  against the then-current external baseline; then repeat the exact
+  20-minute/16-cycle max-safe Prod-VST soak across Direct, Main, Preset and
+  Signal with DCA and Block on every path. Finish with settlement, counters,
+  controls, stats, baseline and zero-residual audits plus final local/server
+  backups. X01/Mainnet and every Bybit connection remain read-only.
+
 ## X02 shared-symbol close-race hardening (2026-08-29; authoritative)
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch

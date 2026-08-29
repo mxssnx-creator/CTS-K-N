@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { classifyVstSoakExternalProtectionOrder } from "@/lib/bingx-vst-soak-audit"
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
@@ -39,7 +40,10 @@ const ORDER_DETAIL_AUDIT_SPACING_MS = 600
 const MAX_VST_SOAK_SPREAD_BPS = 75
 const SYMBOL_ORDER_QUIET_MS = 1_000
 const SYMBOL_ORDER_WAIT_TIMEOUT_MS = 20_000
-const SYMBOL_ORDER_POLL_MS = 250
+// Safety reads bypass the normal 15-second connector cache. Stay below two
+// authoritative open-order reads per second while still obtaining multiple
+// independent snapshots for every quiet window.
+const SYMBOL_ORDER_POLL_MS = 600
 const SYMBOL_CANDIDATES = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT",
 ] as const
@@ -138,6 +142,12 @@ interface CycleReport {
   positionQuantityAfterAccumulation?: number
   positionQuantityAfterClose?: number
   maxUnexpectedOpenOrdersAfterClose?: number
+  externalProtectionOrders: {
+    beforeAccumulation: number
+    beforeProtection: number
+    beforeClose: number
+    maxObserved: number
+  }
   flatAfter: boolean
   errors: string[]
 }
@@ -301,7 +311,7 @@ async function main(): Promise<void> {
   const verifyEngineTrailingUpdate = process.env.BINGX_VST_SOAK_ENGINE_TRAILING_UPDATE === "1"
 
   const report: any = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     runId,
     environment: "prod-vst",
     baseUrl: VST_ORIGIN,
@@ -316,6 +326,11 @@ async function main(): Promise<void> {
     excludedSymbols: [] as SoakSymbol[],
     symbols: [] as SoakSymbol[],
     tradePaths: TRADE_PATHS.map((path) => ({ ...path })),
+    externalControlPolicy: {
+      acceptedClass: "stable_same-slot_reduce-only-conditional-protection",
+      externalOrdersAdopted: 0,
+      externalOrdersCancelledByHarness: 0,
+    },
     preflight: {},
     cycles: [] as CycleReport[],
     monitoring: [] as any[],
@@ -528,7 +543,7 @@ async function main(): Promise<void> {
   const accountSnapshot = async () => {
     const [positions, orders] = await Promise.all([
       connector.getPositions(),
-      connector.getOpenOrders(),
+      connector.getOpenOrders(undefined, { forceRefresh: true }),
     ])
     assertSnapshotHealthy("positions")
     assertSnapshotHealthy("orders")
@@ -595,18 +610,32 @@ async function main(): Promise<void> {
    * A single empty snapshot is insufficient on the shared X02 account: an
    * external order can be submitted immediately around that read. Require a
    * stable quiet window and allow only explicitly tracked CTS control IDs.
-   * Errors intentionally disclose counts rather than shared-account IDs.
+   * A caller that already proved exact CTS ownership may additionally tolerate
+   * a stable set of external conditional protections. Those rows remain
+   * external: they are never adopted or cancelled, and any exposure-adding or
+   * quantity-ambiguous order still blocks the mutation. Errors intentionally
+   * disclose counts rather than shared-account IDs.
    */
   const waitForSymbolOrderQuiet = async (
     symbol: SoakSymbol,
     phase: string,
     options: {
       allowedOwnedOrderIds?: Iterable<string>
+      externalProtectionSlot?: {
+        direction: "long" | "short"
+        ownedQuantity: number
+        quantityStep: number
+      }
       timeoutMs?: number
       quietMs?: number
       ignoreAbort?: boolean
     } = {},
-  ): Promise<{ rows: any[]; maxUnexpectedOrderCount: number }> => {
+  ): Promise<{
+    rows: any[]
+    maxUnexpectedOrderCount: number
+    externalProtectionOrderCount: number
+    maxExternalProtectionOrderCount: number
+  }> => {
     const allowedOwnedOrderIds = new Set(
       [...(options.allowedOwnedOrderIds || [])].map((orderId) => String(orderId || "")).filter(Boolean),
     )
@@ -621,24 +650,94 @@ async function main(): Promise<void> {
     let quietSince = 0
     let lastUnexpectedOrderCount = 0
     let maxUnexpectedOrderCount = 0
+    let stableExternalSignature: string | null = null
+    let lastExternalProtectionOrderCount = 0
+    let maxExternalProtectionOrderCount = 0
     do {
       if (!options.ignoreAbort) assertNotAborted()
-      const rows = await connector.getOpenOrders(symbol)
+      const rows = await connector.getOpenOrders(symbol, { forceRefresh: true })
       assertSnapshotHealthy("orders")
-      const unexpectedOrderCount = rows.filter((row: any) =>
-        !allowedOwnedOrderIds.has(orderIdOf(row))).length
+      const visibleOrderIds = new Set(rows.map(orderIdOf).filter(Boolean))
+      const missingRequiredOwnedOrders = [...allowedOwnedOrderIds]
+        .filter((orderId) => !visibleOrderIds.has(orderId))
+      if (missingRequiredOwnedOrders.length > 0) {
+        throw new Error(
+          `${symbol}: ${missingRequiredOwnedOrders.length} required CTS control order(s) ` +
+          `disappeared before ${phase}`,
+        )
+      }
+      const externalProtectionRows: any[] = []
+      const unsafeRows = rows.filter((row: any) => {
+        const orderId = orderIdOf(row)
+        if (orderId && allowedOwnedOrderIds.has(orderId)) return false
+        // A CTS ID that was not explicitly allowed must never be reclassified
+        // as external merely because it also has a protective shape.
+        if (!orderId || allOwnedControlOrderIds.has(orderId)) return true
+        if (!options.externalProtectionSlot) return true
+        const classification = classifyVstSoakExternalProtectionOrder(row, {
+          symbol,
+          ...options.externalProtectionSlot,
+        })
+        if (!classification.allowed) return true
+        externalProtectionRows.push(row)
+        return false
+      })
+      if (externalProtectionRows.length > 0) {
+        const positionRows = await connector.getPositions(symbol)
+        assertSnapshotHealthy("positions")
+        const active = activePositions(positionRows)
+          .filter((row: any) => normalizeSymbol(row?.symbol) === symbol)
+        const conflicting = active.find((row: any) =>
+          positionDirectionOf(row) !== options.externalProtectionSlot?.direction)
+        if (conflicting) {
+          throw new Error(`${symbol}: external protection coexistence found a conflicting position direction`)
+        }
+        const observedQuantity = active.reduce(
+          (sum: number, row: any) => sum + quantityOf(row),
+          0,
+        )
+        const expectedQuantity = finite(options.externalProtectionSlot?.ownedQuantity)
+        const tolerance = Math.max(finite(options.externalProtectionSlot?.quantityStep) / 2, 1e-12)
+        if (Math.abs(observedQuantity - expectedQuantity) > tolerance) {
+          throw new Error(
+            `${symbol}: external protection coexistence requires exact CTS quantity; ` +
+            `expected=${expectedQuantity} observed=${observedQuantity}`,
+          )
+        }
+      }
+      const unexpectedOrderCount = unsafeRows.length
       lastUnexpectedOrderCount = unexpectedOrderCount
       maxUnexpectedOrderCount = Math.max(maxUnexpectedOrderCount, unexpectedOrderCount)
+      lastExternalProtectionOrderCount = externalProtectionRows.length
+      maxExternalProtectionOrderCount = Math.max(
+        maxExternalProtectionOrderCount,
+        externalProtectionRows.length,
+      )
       if (unexpectedOrderCount === 0) {
-        if (quietSince === 0) quietSince = Date.now()
-        if (Date.now() - quietSince >= quietMs) return { rows, maxUnexpectedOrderCount }
+        const externalSignature = externalProtectionRows.map(orderIdOf).sort().join("|")
+        if (stableExternalSignature !== externalSignature) {
+          stableExternalSignature = externalSignature
+          quietSince = Date.now()
+        } else if (quietSince === 0) {
+          quietSince = Date.now()
+        }
+        if (Date.now() - quietSince >= quietMs) {
+          return {
+            rows,
+            maxUnexpectedOrderCount,
+            externalProtectionOrderCount: externalProtectionRows.length,
+            maxExternalProtectionOrderCount,
+          }
+        }
       } else {
         quietSince = 0
+        stableExternalSignature = null
       }
       await sleep(SYMBOL_ORDER_POLL_MS)
     } while (Date.now() < deadline)
     throw new Error(
-      `${symbol}: ${lastUnexpectedOrderCount} unexpected open order(s) did not clear before ${phase}; ` +
+      `${symbol}: ${lastUnexpectedOrderCount} unsafe open order(s) did not clear before ${phase} ` +
+      `(protectiveExternal=${lastExternalProtectionOrderCount}); ` +
       "refusing a shared-account mutation",
     )
   }
@@ -650,11 +749,11 @@ async function main(): Promise<void> {
   ): Promise<any | null> => {
     const deadline = Date.now() + timeoutMs
     do {
-      const rows = await connector.getOpenOrders(symbol)
+      const rows = await connector.getOpenOrders(symbol, { forceRefresh: true })
       assertSnapshotHealthy("orders")
       const order = rows.find((row: any) => orderIdOf(row) === orderId)
       if (order) return order
-      await sleep(300)
+      await sleep(SYMBOL_ORDER_POLL_MS)
     } while (Date.now() < deadline)
     return null
   }
@@ -664,11 +763,11 @@ async function main(): Promise<void> {
     const deadline = Date.now() + 10_000
     let exists = false
     do {
-      const rows = await connector.getOpenOrders(symbol)
+      const rows = await connector.getOpenOrders(symbol, { forceRefresh: true })
       assertSnapshotHealthy("orders")
       exists = rows.some((row: any) => orderIdOf(row) === orderId)
       if (exists === shouldExist) return true
-      await sleep(300)
+      await sleep(SYMBOL_ORDER_POLL_MS)
     } while (Date.now() < deadline)
     return false
   }
@@ -724,11 +823,29 @@ async function main(): Promise<void> {
     for (const exposure of [...ownedExposureBySlot.values()]) {
       try {
         const { symbol, direction, quantity, quantityStep } = exposure
+        const tolerance = Math.max(quantityStep / 2, 1e-12)
+        const preQuietRows = await connector.getPositions(symbol)
+        assertSnapshotHealthy("positions")
+        const preQuietQuantity = activePositions(preQuietRows)
+          .filter((candidate: any) =>
+            normalizeSymbol(candidate?.symbol) === symbol
+            && positionDirectionOf(candidate) === direction)
+          .reduce((sum: number, candidate: any) => sum + quantityOf(candidate), 0)
         const allowedOwnedOrderIds = activeOwnedControlIdsForSymbol(symbol)
-        await waitForSymbolOrderQuiet(symbol, "exception cleanup close", {
-          allowedOwnedOrderIds,
-          ignoreAbort: true,
-        })
+        // If an armed protection already flattened the slot, skip the order
+        // window and let the authoritative zero-position branch below retire
+        // CTS controls. Ambiguous non-zero quantities still fail closed.
+        if (Math.abs(preQuietQuantity - quantity) <= tolerance) {
+          await waitForSymbolOrderQuiet(symbol, "exception cleanup close", {
+            allowedOwnedOrderIds,
+            externalProtectionSlot: {
+              direction,
+              ownedQuantity: quantity,
+              quantityStep,
+            },
+            ignoreAbort: true,
+          })
+        }
         const rows = await connector.getPositions(symbol)
         assertSnapshotHealthy("positions")
         const active = activePositions(rows)
@@ -740,7 +857,6 @@ async function main(): Promise<void> {
         const venueQuantityBefore = active
           .filter((candidate: any) => positionDirectionOf(candidate) === direction)
           .reduce((sum: number, candidate: any) => sum + quantityOf(candidate), 0)
-        const tolerance = Math.max(quantityStep / 2, 1e-12)
         if (venueQuantityBefore <= tolerance) {
           // A tracked SL/security order may already have closed the owned
           // exposure before cleanup. No residual quantity exists to submit.
@@ -994,7 +1110,7 @@ async function main(): Promise<void> {
       )
     }
     const assertSharedAccountOrderHeadroom = async (phase: string) => {
-      const orders = await connector.getOpenOrders()
+      const orders = await connector.getOpenOrders(undefined, { forceRefresh: true })
       assertSnapshotHealthy("orders")
       const headroom = auditModule.evaluateVstSoakOrderHeadroom(
         orders.length,
@@ -1899,6 +2015,12 @@ async function main(): Promise<void> {
         quantityStep: finite(rulesBySymbol.get(symbol)?.quantityStep),
         priceTick: finite(rulesBySymbol.get(symbol)?.priceTick),
         requestedEntryQuantity: 0,
+        externalProtectionOrders: {
+          beforeAccumulation: 0,
+          beforeProtection: 0,
+          beforeClose: 0,
+          maxObserved: 0,
+        },
         flatAfter: false,
         errors: [],
       }
@@ -1937,7 +2059,19 @@ async function main(): Promise<void> {
           cycle.entry.filledQuantity,
           quantityStep,
         )
-        await waitForSymbolOrderQuiet(symbol, "cycle accumulation")
+        const accumulationWindow = await waitForSymbolOrderQuiet(symbol, "cycle accumulation", {
+          externalProtectionSlot: {
+            direction,
+            ownedQuantity: cycle.entry.filledQuantity,
+            quantityStep,
+          },
+        })
+        cycle.externalProtectionOrders.beforeAccumulation =
+          accumulationWindow.externalProtectionOrderCount
+        cycle.externalProtectionOrders.maxObserved = Math.max(
+          cycle.externalProtectionOrders.maxObserved,
+          accumulationWindow.maxExternalProtectionOrderCount,
+        )
         assertSoakHostGuard()
         await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_accumulation`)
 
@@ -1962,7 +2096,19 @@ async function main(): Promise<void> {
           cumulativeFill,
           quantityStep,
         )
-        await waitForSymbolOrderQuiet(symbol, "protection placement")
+        const protectionWindow = await waitForSymbolOrderQuiet(symbol, "protection placement", {
+          externalProtectionSlot: {
+            direction,
+            ownedQuantity: cumulativeFill,
+            quantityStep,
+          },
+        })
+        cycle.externalProtectionOrders.beforeProtection =
+          protectionWindow.externalProtectionOrderCount
+        cycle.externalProtectionOrders.maxObserved = Math.max(
+          cycle.externalProtectionOrders.maxObserved,
+          protectionWindow.maxExternalProtectionOrderCount,
+        )
         assertSoakHostGuard()
         await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_protection`)
 
@@ -2141,9 +2287,19 @@ async function main(): Promise<void> {
 
         if (!cycle.protection) throw new Error("Owned close lacks an armed security stop")
         const retainedSecurityStopOrderId = cycle.protection.securityStopOrderId
-        await waitForSymbolOrderQuiet(symbol, "owned reduce-only close", {
+        const closeWindow = await waitForSymbolOrderQuiet(symbol, "owned reduce-only close", {
           allowedOwnedOrderIds: [retainedSecurityStopOrderId],
+          externalProtectionSlot: {
+            direction,
+            ownedQuantity: cumulativeFill,
+            quantityStep,
+          },
         })
+        cycle.externalProtectionOrders.beforeClose = closeWindow.externalProtectionOrderCount
+        cycle.externalProtectionOrders.maxObserved = Math.max(
+          cycle.externalProtectionOrders.maxObserved,
+          closeWindow.maxExternalProtectionOrderCount,
+        )
         const closeQuantity = await waitForExclusiveOwnedQuantity(
           symbol,
           direction,
