@@ -155,6 +155,16 @@ export class SSEClient {
         })
 
         this.eventSource.onerror = () => {
+          const source = this.eventSource
+          // EventSource reports a clean server EOF through `onerror` and then
+          // transitions to CONNECTING while it performs its native retry. The
+          // serverless route intentionally rolls over before its worker limit,
+          // so closing this source and scheduling a second retry caused noisy
+          // false alarms, avoidable downtime, and reconnect churn every 8s.
+          if (source?.readyState === EventSource.CONNECTING && this.shouldReconnect) {
+            this.isConnecting = true
+            return
+          }
           console.error('[SSE] Connection error')
           this.isConnecting = false
           this.emit('error', { message: 'SSE connection error' })
