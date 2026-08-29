@@ -1043,12 +1043,18 @@ export default function StatisticsPage() {
 
   if (isLoading) {
     return (
-      <div className="space-y-4 p-4">
-        <StatisticsSectionNav />
-        <div className="flex items-center justify-center min-h-[50vh]">
-          <div className="text-center space-y-3">
-            <div className="animate-spin rounded-full h-8 w-8 border-2 border-muted border-t-primary mx-auto"></div>
-            <div className="text-sm text-muted-foreground">Loading statistics&hellip;</div>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <PageHeader
+          title="Advanced Statistics & Analytics"
+          description="Measured exchange performance, classic realised PF, PositionCost coordinates and runtime diagnostics"
+        />
+        <div className="space-y-4 p-4">
+          <StatisticsSectionNav />
+          <div className="flex items-center justify-center min-h-[50vh]" role="status" aria-live="polite">
+            <div className="text-center space-y-3">
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-muted border-t-primary mx-auto"></div>
+              <div className="text-sm text-muted-foreground">Loading statistics&hellip;</div>
+            </div>
           </div>
         </div>
       </div>
