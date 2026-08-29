@@ -5343,11 +5343,20 @@ export async function savePosition(position: any): Promise<void> {
   // legacy `position:${id}` hash form is preserved for non-live positions.
   if (String(id).startsWith("live:")) {
     const liveKey = `live:position:${id}`
+    const TERMINAL_LIVE_STATUSES = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+    const isTerminalLivePosition = TERMINAL_LIVE_STATUSES.has(String(position.status || "").toLowerCase())
     try {
-      // Persist JSON snapshot (7 day TTL)
-      await client.set(liveKey, JSON.stringify(position), ({ ex: 7 * 24 * 60 * 60 } as any))
+      // Open snapshots are refreshed continuously. Terminal history is
+      // durable: expiring it after seven days made lifetime stats impossible
+      // to rebuild and left thousands of archive ids without a snapshot.
+      await client.set(
+        liveKey,
+        JSON.stringify(position),
+        isTerminalLivePosition ? undefined : { EX: 7 * 24 * 60 * 60 },
+      )
     } catch {
-      // Some adapters don't support EX option — fall back to set only
+      // Some adapters do not support expiration options; retaining the
+      // snapshot is safer than dropping accounting history.
       await client.set(liveKey, JSON.stringify(position))
     }
 
@@ -5399,8 +5408,7 @@ export async function savePosition(position: any): Promise<void> {
 	    // into the else-branch below which RE-ADDED them to the open index on
 	    // every save. That kept dead positions in the sync loop forever
 	    // (observed: tracked=16 statuses={"rejected":16} re-synced every tick).
-    const TERMINAL_LIVE_STATUSES = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
-    if (TERMINAL_LIVE_STATUSES.has(String(position.status))) {
+    if (isTerminalLivePosition) {
       try {
         await moveRedisListMembershipToHead(
           client,
@@ -5412,6 +5420,19 @@ export async function savePosition(position: any): Promise<void> {
           ...position,
           connectionId: connId,
         }).catch(() => {})
+        try {
+          const { recordLivePositionLifetimeContribution } = await import("./live-position-lifetime-summary")
+          await recordLivePositionLifetimeContribution(client, connId, {
+            ...position,
+            connectionId: connId,
+          })
+        } catch (error) {
+          console.warn(
+            `[v0] [Redis] Lifetime contribution failed for ${connId}/${id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          )
+        }
         // Mark moved so closeLivePosition can detect duplicate increments
         await client.set(`live:positions:${connId}:moved:${id}`, String(Date.now())).catch(() => null)
         await client.expire(`live:positions:${connId}:moved:${id}`, 60 * 60).catch(() => 0)
