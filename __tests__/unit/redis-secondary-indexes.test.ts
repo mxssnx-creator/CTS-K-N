@@ -50,6 +50,38 @@ describe("redis-db secondary indexes", () => {
     await expect(client.smembers("idx:strategies")).resolves.toEqual(["strat-1"])
   })
 
+  it("keeps terminal live snapshots durable and records one lifetime contribution", async () => {
+    const redisDb = await loadRedisDb()
+    const client = redisDb.getRedisClient()
+    const id = "live:conn-live:BTCUSDT:long:closed"
+
+    await redisDb.savePosition({
+      id,
+      connectionId: "conn-live",
+      symbol: "BTCUSDT",
+      direction: "long",
+      status: "closed",
+      executionMode: "live",
+      orderId: "entry-1",
+      closeOrderId: "close-1",
+      averageExecutionPrice: 100,
+      totalExecutedQuantity: 1,
+      realizedPnL: 2,
+      realizedPnlComplete: true,
+    })
+
+    await expect(client.ttl(`live:position:${id}`)).resolves.toBe(-1)
+    await expect(client.lrange("live:positions:conn-live:closed", 0, -1)).resolves.toEqual([id])
+    await expect(client.hlen("live:positions:conn-live:lifetime:contributions")).resolves.toBe(1)
+    await expect(client.hgetall("live:positions:conn-live:lifetime:summary")).resolves.toMatchObject({
+      schemaVersion: "1",
+      terminalIndexRows: "1",
+      uniqueTerminalIndexRows: "1",
+      "real.closedTrades": "1",
+      "real.realizedPnl": "2",
+    })
+  })
+
   it("uses secondary index sets for collection and connection reads", async () => {
     const redisDb = await loadRedisDb()
     const client = redisDb.getRedisClient()
