@@ -5,6 +5,7 @@ import {
   evaluateVstSoakOrderHeadroom,
   normalizeVstSoakCounterSnapshot,
   rankVstSoakSymbolLiquidity,
+  vstSoakDirectionForCycle,
 } from "@/lib/bingx-vst-soak-audit"
 
 describe("BingX Prod-VST soak accounting audit", () => {
@@ -112,6 +113,27 @@ describe("BingX Prod-VST soak accounting audit", () => {
       availableHeadroom: 0,
       safe: false,
     })
+  })
+
+  test.each([4, 5, 6, 8])(
+    "balances 16 cycles and flips each reused symbol with %i executable symbols",
+    (symbolCount) => {
+      const cycles = Array.from({ length: 16 }, (_, index) => ({
+        symbol: index % symbolCount,
+        direction: vstSoakDirectionForCycle(index, symbolCount),
+      }))
+      expect(cycles.filter((cycle) => cycle.direction === "long")).toHaveLength(8)
+      expect(cycles.filter((cycle) => cycle.direction === "short")).toHaveLength(8)
+      for (let symbol = 0; symbol < symbolCount; symbol++) {
+        const directions = new Set(cycles.filter((cycle) => cycle.symbol === symbol).map((cycle) => cycle.direction))
+        expect(directions).toEqual(new Set(["long", "short"]))
+      }
+    },
+  )
+
+  test("rejects invalid direction-plan coordinates", () => {
+    expect(() => vstSoakDirectionForCycle(-1, 5)).toThrow("non-negative cycle")
+    expect(() => vstSoakDirectionForCycle(0, 0)).toThrow("positive symbol count")
   })
 
   test("reconciles exact count, per-symbol, and fill-volume deltas", () => {

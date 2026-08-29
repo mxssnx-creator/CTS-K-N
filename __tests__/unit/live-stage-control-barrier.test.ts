@@ -450,6 +450,30 @@ describe("executing Live-stage control barriers", () => {
     expect(__liveStageTest.securityStopQuantityDrifted(Number.NaN, 2, 0.0005)).toBe(true)
   })
 
+  test("defers only price-only security rearm through the BingX duplicate-order window", () => {
+    const now = 10_000
+    const position = livePosition({
+      securityStopOrderId: "security-live",
+      securityStopLastArmedAt: now - 1_249,
+    })
+
+    expect(__liveStageTest.securityStopPriceRearmDeferred(position, true, false, now)).toBe(true)
+    expect(__liveStageTest.securityStopPriceRearmDeferred(
+      { ...position, securityStopLastArmedAt: now - 1_250 },
+      true,
+      false,
+      now,
+    )).toBe(false)
+    expect(__liveStageTest.securityStopPriceRearmDeferred(position, true, true, now)).toBe(false)
+    expect(__liveStageTest.securityStopPriceRearmDeferred(position, false, false, now)).toBe(false)
+    expect(__liveStageTest.securityStopPriceRearmDeferred(
+      { ...position, securityStopOrderId: undefined },
+      true,
+      false,
+      now,
+    )).toBe(false)
+  })
+
   test("tracks stop-loss and take-profit armed quantities independently", () => {
     const position = livePosition({
       takeProfitOrderId: "tp-1",

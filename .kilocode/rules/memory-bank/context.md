@@ -1,7 +1,60 @@
-Warning: truncated output (original token count: 57454)
-Total output lines: 1636
-
 # Active Context: CTS-K-N Trading System (main project)
+
+## X02 security-stop trailing replacement release (2026-08-29; authoritative)
+
+- Canonical checkout: `/workspace/CTS-K-N`, branch
+  `fix/x02-security-stop-trailing-replacement-20260829`, based exactly on
+  GitHub merged `main@4347665675302668a4ffcdfc18404333ad404442` (PR #254).
+  The deployed X02 tree is still that merged PR #254 revision while this
+  follow-up fix completes publication; do not deploy the unmerged worktree.
+- PR #253 repaired complete row protection and aggregate slot-security
+  ownership. PR #254 added X02-only credential and host guards, owner-only
+  reports, maintenance/service barriers, a four-order minimum capacity gate,
+  safe cleanup and exact full-source deployment. The deployed BTCUSDT Long
+  audit is clean: both CTS rows have exact SL and TP controls, the slot has one
+  full-quantity security stop, external controls were preserved, and the dry
+  ownership audit has zero violations, orphans, mismatches or rearms.
+- The first authorized post-PR254 live cycle was Direct Trade with DCA. It
+  safely opened, accumulated, armed row SL/TP and aggregate security control,
+  and cleaned its owned exposure and orders back to zero without changing the
+  external baseline. It then exposed BingX code 109201: replacing the slot
+  security stop inside the venue's one-second same-order mutation window made
+  the optional engine-trailing proof fail. No Main, Preset or Signal live cycle
+  completed in that aborted run, so its result must not be attributed to those
+  engines or treated as a profitability result.
+- The pending source fix keeps the still-live aggregate security stop during a
+  price-only rearm for 1,250 ms, then lets authoritative reconciliation perform
+  cancel-confirm-replace. Quantity drift bypasses the delay. The live probe now
+  observes the bounded deferred replacement for up to five seconds, retains TP,
+  verifies the durable trailing ratchet and rejects a stale looser ratchet.
+  The 16-cycle planner is also balanced for 4, 5, 6 or 8 executable symbols:
+  eight Long and eight Short cycles, with both directions seen by every reused
+  symbol.
+- Exact local gates on this worktree are green: TypeScript; repository-wide
+  ESLint; 244/244 Jest suites and 1,644/1,644 tests; focused protection tests
+  65/65; a first-attempt Next 15.5.18 production build with 42 pages and 348
+  complete traces; five-route UI smoke; Kilo preflight 37/37 at schema v104;
+  and a 1,560-file secret scan with zero findings. The 32-symbol/48-hour Direct
+  matrix evaluated 960,512 Sets. The separate Block comparison evaluated
+  1,419,264 independent Count-1..12 rows with zero identity mismatches and the
+  exact non-compounding target `base + base × count × volumeRatio`.
+- Verified owner-only local checkpoints include
+  `/workspace/backups/CTS-K-N/20260829T035413Z-pre-security-trailing-fix` and
+  `/workspace/backups/CTS-K-N/20260829T040855Z-security-trailing-green-prebuild`.
+  Both contain a complete Git bundle, binary worktree patch, untracked archive
+  and list, HEAD/status/refs evidence, verified SHA-256 manifest and successful
+  bundle verification. Remote full checkpoints through
+  `/var/backups/cts-kn/20260829T035321Z-post-trailing-soak-failure-clean` retain
+  the merged source, environment hashes, systemd state and verified Redis RDB.
+- Next sequence: regenerate and verify recreation manifests; create another
+  full pre-commit checkpoint; commit and publish the exact tree through a new
+  GitHub PR; wait for every check; merge only the reviewed head; checkpoint the
+  server; deploy only green merged `main`; rerun authenticated preflight and
+  capacity checks; then complete the max-safe 20-minute, 16-cycle X02 Prod-VST
+  soak across Direct, Main, Preset and Signal with DCA and Block on each path.
+  Finish with exact owned-object cleanup, account/control/statistics audits and
+  verified local/server backups. X01/Mainnet and every Bybit connection remain
+  read-only throughout.
 
 ## Complete-dispatch, schema-v104, and X02 audit release (2026-08-27; authoritative)
 
