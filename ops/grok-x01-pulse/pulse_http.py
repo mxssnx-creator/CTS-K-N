@@ -70,12 +70,64 @@ def cts_path(conn: str) -> str:
 
 
 def stats_path(conn: str) -> str:
-    p = os.path.join(DIR, f"stats-{conn}.json")
-    if os.path.exists(p):
-        return p
-    if conn == "bingx-x02" and os.path.exists(os.path.join(DIR, "stats.json")):
-        return os.path.join(DIR, "stats.json")
-    return p
+    return os.path.join(DIR, f"stats-{conn}.json")
+
+
+def stamp_stats(st: dict, conn: str) -> dict:
+    lane = ID_TO_LANE.get(conn) or {}
+    out = dict(st or {})
+    out["connection"] = conn
+    out["connType"] = lane.get("type") or out.get("connType") or ("vst" if "x02" in conn else "live")
+    out["unit"] = lane.get("unit") or out.get("unit")
+    out["exchange"] = lane.get("exchange") or out.get("exchange")
+    paused = bool(out.get("paused")) or os.path.exists(os.path.join(DIR, f"PAUSE-{conn}"))
+    out["paused"] = paused
+    if paused:
+        out["halted"] = True
+        out["running"] = False
+        out["haltReason"] = out.get("haltReason") or "paused"
+    return out
+
+
+def _touch(path: str) -> None:
+    with open(path, "a"):
+        pass
+
+
+def _unlink(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def apply_control(conn: str, action: str) -> tuple:
+    action = (action or "").lower().strip()
+    if action not in ("start", "stop", "pause", "resume"):
+        return False, "unknown action"
+    if conn not in ("", "overall") and conn not in ID_TO_LANE:
+        return False, "unknown conn"
+    ids = [l["id"] for l in LANES] if conn in ("", "overall") else [conn]
+    notes = []
+    for cid in ids:
+        pause = os.path.join(DIR, f"PAUSE-{cid}")
+        stop = os.path.join(DIR, f"STOP-{cid}")
+        unit = f"grok-pulse@{cid}"
+        if action == "pause":
+            _unlink(stop)
+            _touch(pause)
+            notes.append(f"{cid} paused")
+        elif action in ("start", "resume"):
+            _unlink(pause)
+            _unlink(stop)
+            p = subprocess.run(["systemctl", "start", unit], capture_output=True, text=True, timeout=25)
+            notes.append(f"{cid} start rc={p.returncode}")
+        elif action == "stop":
+            _unlink(pause)
+            _touch(stop)
+            p = subprocess.run(["systemctl", "stop", unit], capture_output=True, text=True, timeout=25)
+            notes.append(f"{cid} stop rc={p.returncode}")
+    return True, "; ".join(notes)
 
 
 def load_json(path: str) -> dict:
@@ -144,6 +196,7 @@ def lane_summary(lane: dict) -> dict:
         "rssMb": st.get("rssMb"),
         "errors": st.get("errors") or 0,
         "alive": bool(st),
+        "paused": bool(st.get("paused")) or os.path.exists(os.path.join(DIR, f"PAUSE-{lane['id']}")),
     }
 
 
@@ -179,8 +232,6 @@ def merge_overall() -> dict:
     live = next((x for x in lanes if x["type"] == "live"), {})
     vst = next((x for x in lanes if x["type"] == "vst"), {})
     wr = (wins / (wins + losses) * 100) if (wins + losses) else 0
-    vst_st = load_stats("bingx-x02")
-    live_st = load_stats("bingx-x01")
     pc = last_n_cost_pf(list(reversed(closed)), 15, POSITION_COST_PCT_DEFAULT)
     pc["minPf"] = 1.1
     pc["pass"] = bool(pc["count"] < 8 or pc["ratio"] + 1e-9 >= 1.1)
@@ -212,6 +263,7 @@ def merge_overall() -> dict:
         "tests": tests[-24:],
         "errors": errors,
         "halted": not running_any,
+        "paused": any(bool(x.get("paused")) for x in lanes),
         "symbols": [],
         "now": __import__("time").time(),
         "pfCost": pc,
@@ -220,13 +272,13 @@ def merge_overall() -> dict:
         "pfNeutral": 1.0,
         "pfPlus1xCost": 1.1,
         "pfScale": "1.00=neutral · 1.10=+1×PositionCost",
-        "coord": vst_st.get("coord") or live_st.get("coord"),
-        "pulse": vst_st.get("pulse") or live_st.get("pulse"),
-        "indications": vst_st.get("indications") or live_st.get("indications"),
-        "engine": vst_st.get("engine") or live_st.get("engine"),
-        "variants": vst_st.get("variants") or live_st.get("variants"),
-        "sets": vst_st.get("sets") or live_st.get("sets"),
-        "exits": vst_st.get("exits") or live_st.get("exits"),
+        "coord": None,
+        "pulse": None,
+        "indications": None,
+        "engine": None,
+        "variants": None,
+        "sets": None,
+        "exits": None,
     }
 
 
@@ -251,6 +303,7 @@ def connections_blob() -> dict:
                     "blurb": l["exchange"],
                     "running": l["running"] and not l["halted"],
                     "halted": l["halted"],
+                    "paused": l.get("paused"),
                     "equity": l["equity"],
                     "openCount": l["openCount"],
                     "alive": l["alive"],
@@ -324,13 +377,13 @@ class Handler(SimpleHTTPRequestHandler):
         if path in ("/config.json", "/config"):
             if conn == "overall":
                 self._json({
+                    "cts": None,
+                    "overlay": None,
                     "conn": "overall",
                     "lanes": [
                         {"type": l["type"], "id": l["id"], "cts": load_cts(l["id"]), "overlay": load_overlay(l["id"])}
                         for l in LANES
                     ],
-                    "cts": load_cts("bingx-x02"),
-                    "overlay": load_overlay("bingx-x02"),
                 })
                 return
             self._json({"cts": load_cts(conn), "overlay": load_overlay(conn), "conn": conn})
@@ -341,28 +394,33 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             st = load_stats(conn)
             if not st:
-                self._json({"running": False, "connection": conn, "mode": "OFFLINE", "open": [], "closed": []})
+                self._json(stamp_stats({"running": False, "mode": "OFFLINE", "open": [], "closed": [], "halted": True}, conn))
                 return
-            self._json(st)
+            self._json(stamp_stats(st, conn))
             return
         return super().do_GET()
 
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        if path not in ("/config.json", "/config"):
-            self.send_error(404)
-            return
-        conn = resolve_conn(qs(self.path).get("conn", "vst"))
-        if conn == "overall":
-            self._json({"ok": False, "detail": "pick Live or VST to save overlay"}, 400)
-            return
+        conn = resolve_conn(qs(self.path).get("conn", ""))
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b"{}"
         try:
             body = json.loads(raw.decode() or "{}")
         except Exception:
             self.send_error(400, "invalid json")
+            return
+        if path in ("/control.json", "/control"):
+            action = str((body or {}).get("action") or "").lower().strip()
+            ok, detail = apply_control(conn or "overall", action)
+            self._json({"ok": ok, "detail": detail, "conn": conn or "overall", "action": action}, 200 if ok else 400)
+            return
+        if path not in ("/config.json", "/config"):
+            self.send_error(404)
+            return
+        if conn == "overall" or not conn:
+            self._json({"ok": False, "detail": "pick Live or VST to save overlay"}, 400)
             return
         overlay = body.get("overlay") if isinstance(body, dict) else None
         if not isinstance(overlay, dict):

@@ -39,6 +39,7 @@ DIR = "/opt/grok-x01-pulse"
 STATS_PATH = os.path.join(DIR, f"stats-{CONN_SHORT}.json")
 TRADES_PATH = os.path.join(DIR, f"trades-{CONN_SHORT}.jsonl")
 STOP_PATH = os.path.join(DIR, f"STOP-{CONN_SHORT}")
+PAUSE_PATH = os.path.join(DIR, f"PAUSE-{CONN_SHORT}")
 STOP_ALL = os.path.join(DIR, "STOP")
 LOG_PATH = os.path.join(DIR, f"pulse-{CONN_SHORT}.log")
 BLOCK_PATH = os.path.join(DIR, f"block-state-{CONN_SHORT}.json")
@@ -315,6 +316,7 @@ class Pulse:
         self.upnl = 0.0
         self.halted = False
         self.halt_reason: Optional[str] = None
+        self.volume_factor = 1.0
         self.regime = "neutral"
         self.consec_loss = 0
         self.wins = 0
@@ -572,8 +574,12 @@ class Pulse:
         p = max(0, int(c.qprec if c else 6))
         return f"{float(q):.{p}f}"
 
+    def sized_notional(self) -> float:
+        vf = max(0.05, float(getattr(self, "volume_factor", 1.0) or 1.0))
+        return max(0.2, float(TARGET_NOTIONAL) * vf)
+
     def notional_cap(self) -> float:
-        return max(float(TARGET_NOTIONAL), 2.0)
+        return max(self.sized_notional(), 2.0)
 
     def max_book_notional(self) -> float:
         """CTS block can stack 1 + max_stack × volume_ratio times the pulse parent."""
@@ -603,7 +609,7 @@ class Pulse:
     def size_qty(self, c: Contract, px: float) -> float:
         if px <= 0:
             return 0.0
-        want = max(TARGET_NOTIONAL / px, float(c.min_usdt or 0) / px if c.min_usdt else 0.0)
+        want = max(self.sized_notional() / px, float(c.min_usdt or 0) / px if c.min_usdt else 0.0)
         try:
             want *= self.coord.size_mult(len(self.open))
         except Exception:
@@ -811,13 +817,19 @@ class Pulse:
         if self.start_eq <= 0:
             self.start_eq = self.equity
         self.last_bal = time.time()
-        if self.start_eq > 0 and self.equity > 0 and (self.start_eq - self.equity) / self.start_eq >= DD_HALT:
+        if os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
+            self.halted = True
+            self.halt_reason = "stopped"
+        elif os.path.exists(PAUSE_PATH):
+            self.halted = True
+            self.halt_reason = "paused"
+        elif self.start_eq > 0 and self.equity > 0 and (self.start_eq - self.equity) / self.start_eq >= DD_HALT:
             self.halted = True
             self.halt_reason = "drawdown halt"
         elif self.equity < 0.8:
             self.halted = True
             self.halt_reason = f"equity {self.equity:.4f} below min"
-        elif self.equity >= 0.8 and self.halt_reason in (None, "drawdown halt") and self.start_eq > 0 and (self.start_eq - self.equity) / max(self.start_eq, 1e-9) < DD_HALT * 0.6:
+        elif self.equity >= 0.8 and self.start_eq > 0 and (self.start_eq - self.equity) / max(self.start_eq, 1e-9) < DD_HALT * 0.6:
             self.halted = False
             self.halt_reason = None
 
@@ -1826,7 +1838,7 @@ class Pulse:
     def place(self, sym: str, direction: int, reason: str, conf: float) -> None:
         if self.entries_blocked():
             return
-        if self.halted or os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
+        if self.halted or os.path.exists(STOP_PATH) or os.path.exists(PAUSE_PATH) or os.path.exists(STOP_ALL):
             return
         if time.time() < self.cooldown.get("__book__", 0):
             return
@@ -2286,6 +2298,10 @@ class Pulse:
             self.overlay_mtime = 0.0
         if ov.get("targetNotional"):
             TARGET_NOTIONAL = float(ov["targetNotional"])
+        try:
+            self.volume_factor = max(0.05, min(10.0, float(ov.get("volumeFactor") or 1.0)))
+        except Exception:
+            self.volume_factor = 1.0
         self.use_max_leverage = True
         USE_MAX_LEVERAGE = True
         if ov.get("leverage"):
@@ -2479,6 +2495,7 @@ class Pulse:
     def pulse_snapshot(self) -> Dict[str, Any]:
         return {
             "targetNotional": TARGET_NOTIONAL,
+            "volumeFactor": float(getattr(self, "volume_factor", 1.0) or 1.0),
             "leverage": LEVERAGE,
             "useMaxLeverage": True,
             "leverageMap": dict(getattr(self, "lev_map", {})),
@@ -2619,7 +2636,7 @@ class Pulse:
             return
         if time.time() - self.block_last_emit < max(12.0, STAGGER_S * 8):
             return
-        if os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
+        if os.path.exists(STOP_PATH) or os.path.exists(PAUSE_PATH) or os.path.exists(STOP_ALL):
             return
         if time.time() < self.cooldown.get("__book__", 0):
             return
@@ -3439,6 +3456,8 @@ class Pulse:
             "slPct": SL_PCT * 100,
             "tpPct": TP_PCT * 100,
             "targetNotional": TARGET_NOTIONAL,
+            "volumeFactor": float(getattr(self, "volume_factor", 1.0) or 1.0),
+            "paused": os.path.exists(PAUSE_PATH),
             "activityPerMin": round(per_min, 2),
             "consecLoss": self.consec_loss,
             "errors": self.errors,
@@ -3881,13 +3900,28 @@ class Pulse:
 
     def _one_cycle(self) -> None:
         sd_notify("WATCHDOG=1")
-        if os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL):
+        paused = os.path.exists(PAUSE_PATH)
+        stopped = os.path.exists(STOP_PATH) or os.path.exists(STOP_ALL)
+        if stopped:
             self.halted = True
-            self.halt_reason = "STOP file"
-            self.flatten_all("stop-file")
+            self.halt_reason = "stopped"
+            self.priority_controls()
             self.write_stats(force=True)
-            time.sleep(2)
+            time.sleep(0.4)
             return
+        if paused:
+            self.halted = True
+            self.halt_reason = "paused"
+            self.refresh_tickers()
+            self.seed_px_bars()
+            self.priority_controls()
+            self.manage()
+            self.write_stats(force=True)
+            time.sleep(0.4)
+            return
+        if self.halt_reason in ("paused", "stopped"):
+            self.halted = False
+            self.halt_reason = None
         self.cycle += 1
         self.did_io = False
         self.refresh_tickers()
