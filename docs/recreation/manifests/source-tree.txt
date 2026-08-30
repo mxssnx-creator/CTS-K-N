@@ -214,6 +214,7 @@ __tests__/unit/preset-pseudo-trailing-resilience.test.ts
 __tests__/unit/preset-type-config.test.ts
 __tests__/unit/preset-types-persistence.test.ts
 __tests__/unit/production-continuity.test.ts
+__tests__/unit/production-start-shutdown.test.ts
 __tests__/unit/progression-live-snapshot.test.ts
 __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts

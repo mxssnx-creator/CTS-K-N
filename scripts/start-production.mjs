@@ -27,6 +27,10 @@ const nodeRuntime = process.env.CTS_NODE_BIN || (process.versions.bun ? "node" :
 const runtimeStartedAt = process.env.CTS_RUNTIME_STARTED_AT || new Date().toISOString()
 const runtimeBootId = process.env.CTS_RUNTIME_BOOT_ID ||
   `prod_${Date.now()}_${process.pid}_${randomUUID().slice(0, 12)}`
+const shutdownGraceMs = Math.max(
+  1_000,
+  Math.min(40_000, Number(process.env.CTS_SHUTDOWN_GRACE_MS || 30_000)),
+)
 const env = {
   ...process.env,
   // `next start` reads this variable to locate a non-default build directory.
@@ -52,20 +56,46 @@ const child = spawn(command, args, {
   stdio: "inherit",
 })
 
+let requestedShutdownSignal = null
+let shutdownTimer = null
+
+function childIsRunning() {
+  return child.exitCode === null && child.signalCode === null
+}
+
+function requestShutdown(signal) {
+  if (requestedShutdownSignal) return
+  requestedShutdownSignal = signal
+  if (childIsRunning()) child.kill(signal)
+  shutdownTimer = setTimeout(() => {
+    if (!childIsRunning()) return
+    console.warn(
+      `[production-start] runtime did not exit within ${shutdownGraceMs}ms after ${signal}; forcing termination`,
+    )
+    child.kill("SIGKILL")
+  }, shutdownGraceMs)
+}
+
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {
-    if (!child.killed) child.kill(signal)
+    requestShutdown(signal)
   })
 }
 
 child.once("error", (error) => {
+  if (shutdownTimer) clearTimeout(shutdownTimer)
   console.error(`[production-start] failed: ${error.message}`)
   process.exitCode = 1
 })
 child.once("exit", (code, signal) => {
+  if (shutdownTimer) clearTimeout(shutdownTimer)
   console.log(
     `[production-start] runtime exited code=${code ?? "none"} signal=${signal || "none"}`,
   )
+  if (requestedShutdownSignal) {
+    process.exitCode = 0
+    return
+  }
   if (signal) {
     process.exitCode = signal === "SIGTERM" || signal === "SIGINT" ? 0 : 1
     return
