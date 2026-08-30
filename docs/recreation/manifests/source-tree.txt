@@ -90,6 +90,7 @@ __tests__/unit/connection-scope-ui-contract.test.ts
 __tests__/unit/connection-secret-status.test.ts
 __tests__/unit/connection-settings-merge-clamp.test.ts
 __tests__/unit/connection-stage-overview.test.ts
+__tests__/unit/connection-symbol-aliases.test.ts
 __tests__/unit/connection-symbols.test.ts
 __tests__/unit/connection-test-stored-credentials.test.ts
 __tests__/unit/control-order-capacity.test.ts
@@ -1063,6 +1064,7 @@ lib/connection-state-helpers.ts
 lib/connection-state-manager.ts
 lib/connection-state-utils.ts
 lib/connection-state.tsx
+lib/connection-symbol-aliases.ts
 lib/connection-symbols.ts
 lib/connection-test-scheduler.ts
 lib/connection-utils.ts

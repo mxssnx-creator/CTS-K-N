@@ -48,6 +48,7 @@ import {
   normalizeIdentityVolumeFactor,
 } from "@/lib/constants"
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
+import { normalizeSymbolAliasesInPatch } from "@/lib/connection-symbol-aliases"
 
 const inFlightRecoordinations = new Map<string, Promise<void>>()
 const inFlightSettingsCommits = new Map<string, Promise<unknown>>()
@@ -375,44 +376,6 @@ function stringifyHashPatch(patch: Record<string, any>): Record<string, string> 
   return out
 }
 
-function normalizeSymbolAliasesInPatch(patch: Record<string, any>): Record<string, any> {
-  const symbolFields = ["selected_symbols", "force_symbols", "active_symbols", "symbols"] as const
-  if (!symbolFields.some((field) => Object.prototype.hasOwnProperty.call(patch, field))) return patch
-
-  const parse = (value: unknown): string[] => {
-    const normalize = (values: unknown[]) =>
-      Array.from(new Set(values.map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean)))
-    if (Array.isArray(value)) return normalize(value)
-    if (typeof value !== "string" || !value.trim()) return []
-    try {
-      const decoded = JSON.parse(value)
-      if (Array.isArray(decoded)) return normalize(decoded)
-    } catch {
-      // Legacy comma/newline separated values are accepted during migration.
-    }
-    return normalize(value.split(/[\n,|]/))
-  }
-
-  const symbols = symbolFields
-    .map((field) => parse(patch[field]))
-    .find((candidate) => candidate.length > 0)
-  if (!symbols) return patch
-
-  const serialized = JSON.stringify(symbols)
-  return {
-    ...patch,
-    selected_symbols: serialized,
-    force_symbols: serialized,
-    active_symbols: serialized,
-    symbols: serialized,
-    symbol_count: String(symbols.length),
-    config_set_symbols_total:
-      patch.config_set_symbols_total === undefined
-        ? String(symbols.length)
-        : patch.config_set_symbols_total,
-  }
-}
-
 /**
  * Persist and propagate a Main Connection runtime-settings change. This is the
  * route-facing helper for settings saves that affect running engines: it writes
@@ -442,8 +405,19 @@ export async function applyMainConnectionSettingsChange(
     // connection-settings mirror coherent in the same guarded commit; leaving
     // a stale `selected_symbols` next to a fresh `force_symbols` made restart
     // recoordination fall back to an older basket under load.
+    const marketContext = {
+      marketType:
+        (opts.connectionPatch as Record<string, unknown> | undefined)?.market_type ??
+        (opts.connectionPatch as Record<string, unknown> | undefined)?.asset_class ??
+        before.market_type ??
+        before.asset_class,
+      exchange:
+        (opts.connectionPatch as Record<string, unknown> | undefined)?.exchange ??
+        before.exchange,
+    }
     const settingsPatch = normalizeSymbolAliasesInPatch(
       normalizeIdentityVolumeFields(opts.settingsPatch || {}),
+      marketContext,
     )
     const redis = getRedisClient()
     const sharedLockToken = typeof getRedisBackend === "function" && getRedisBackend() === "redis-network"
@@ -461,6 +435,7 @@ export async function applyMainConnectionSettingsChange(
       normalizeIdentityVolumeFields({
         ...(opts.connectionPatch || {}),
       }),
+      marketContext,
     )
     if (effectiveConnectionPatch.connection_settings !== undefined) {
       const parseSettings = (value: unknown): Record<string, any> => {
@@ -526,6 +501,7 @@ export async function applyMainConnectionSettingsChange(
       if (!additional?.settingsKey || Object.keys(additional.settingsPatch || {}).length === 0) continue
       const normalizedAdditionalPatch = normalizeSymbolAliasesInPatch(
         normalizeIdentityVolumeFields(additional.settingsPatch),
+        marketContext,
       )
       if (stateGuardedBundle) {
         const hashPatch = stringifyHashPatch(normalizedAdditionalPatch)
@@ -543,6 +519,7 @@ export async function applyMainConnectionSettingsChange(
 
     const tradeEngineStatePatch = normalizeSymbolAliasesInPatch(
       normalizeIdentityVolumeFields(opts.tradeEngineStatePatch || {}),
+      marketContext,
     )
     if (Object.keys(tradeEngineStatePatch).length > 0) {
       const { buildProgressionScope } = await import("@/lib/progression-scope")

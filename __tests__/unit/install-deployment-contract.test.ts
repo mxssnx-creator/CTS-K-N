@@ -213,6 +213,13 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toMatch(
       /rollback_after_failed_verification\(\) \{[\s\S]*?warn "Final verification failed"[\s\S]*?stop_runtime/,
     )
+    expect(installer).toContain("restore_runtime_access_after_rollback()")
+    expect(installer).toMatch(
+      /mv "\$BUILD_BACKUP" "\$PROJECT_ROOT\/\.next"[\s\S]*?restore_runtime_access_after_rollback[\s\S]*?start_runtime/,
+    )
+    expect(installer).toContain('run_root chown "$install_owner:$service_group" "$ENV_FILE"')
+    expect(installer).toContain('run_root chmod 640 "$ENV_FILE"')
+    expect(installer).toContain('run_as_service test -r "$ENV_FILE"')
     expect(installer).toMatch(/production-deploy-init\.mjs" \\\n\s+\|\| return 1/)
     expect(installer).toMatch(/run-minute-scheduler\.mjs" --once \\\n\s+\|\| return 1/)
     const vercel = JSON.parse(vercelConfig)

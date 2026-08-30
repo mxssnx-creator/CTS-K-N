@@ -993,6 +993,7 @@ export async function PATCH(
           resolvedSymbolsForSettings = resolved
           merged.active_symbols = resolved
           merged.force_symbols = resolved
+          merged.selected_symbols = resolved
           merged.symbols = resolved
           merged.symbol_count = resolved.length
           merged.symbol_order = finalSymbolOrder
@@ -1006,6 +1007,7 @@ export async function PATCH(
           // settings appear to reset during recoordination.
           ;(merged as Record<string, unknown>).active_symbols = resolved
           ;(merged as Record<string, unknown>).force_symbols = resolved
+          ;(merged as Record<string, unknown>).selected_symbols = resolved
           ;(merged as Record<string, unknown>).symbol_count = resolved.length
           ;(merged as Record<string, unknown>).symbol_source = resolutionSource
           // 3. Invalidate the running engine's in-memory symbol cache so the
