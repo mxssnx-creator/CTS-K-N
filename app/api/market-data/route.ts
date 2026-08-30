@@ -10,6 +10,7 @@ import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { normalizeForexSymbol } from "@/lib/forex-market"
 import { calculateObservedSpread } from "@/lib/position-cost"
 import { normalizeMarketSymbol, normalizeMarketType, type MarketType } from "@/lib/market-types"
+import { marketDataKey } from "@/lib/market-data-keys"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -190,9 +191,10 @@ async function readEngineSnapshot(
   exchange: string,
   interval: string,
   marketType: MarketType,
+  connectionId?: string,
 ): Promise<MarketSnapshot | null> {
   const client = getRedisClient()
-  const hash = await client.hgetall(`market_data:${symbol}`).catch(() => ({}))
+  const hash = await client.hgetall(marketDataKey(symbol, "", connectionId)).catch(() => ({}))
   if (hash && Object.keys(hash).length > 0) {
     const snapshot = normalizeSnapshot(
       hash as Record<string, unknown>,
@@ -206,7 +208,7 @@ async function readEngineSnapshot(
   }
 
   for (const suffix of ["1s", interval, "1m"]) {
-    const raw = await client.get(`market_data:${symbol}:${suffix}`).catch(() => null)
+    const raw = await client.get(marketDataKey(symbol, suffix, connectionId)).catch(() => null)
     if (!raw) continue
     try {
       const envelope = JSON.parse(String(raw)) as Record<string, unknown>
@@ -291,8 +293,9 @@ async function fetchSnapshot(
   interval: string,
   connector: Awaited<ReturnType<typeof createReadOnlyConnector>> | null,
   marketType: MarketType,
+  connectionId?: string,
 ): Promise<MarketSnapshot> {
-  const cached = await readEngineSnapshot(symbol, exchange, interval, marketType)
+  const cached = await readEngineSnapshot(symbol, exchange, interval, marketType, connectionId)
   if (cached?.realtime) return cached
 
   if (connector) {
@@ -357,20 +360,30 @@ export async function GET(request: NextRequest) {
     const requestedSymbol = request.nextUrl.searchParams.get("symbol")
     const exchange = normalizeExchange(request.nextUrl.searchParams.get("exchange"))
     const interval = request.nextUrl.searchParams.get("interval") || "1m"
-    const connectionId = request.nextUrl.searchParams.get("connectionId")
+    const connectionId =
+      request.nextUrl.searchParams.get("connectionId") ||
+      request.nextUrl.searchParams.get("connection_id")
     await initRedis()
     const connection = await resolveConnection(connectionId, exchange)
     if (connectionId && !connection) {
       return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
     }
     const resolvedExchange = normalizeExchange(connection?.exchange || exchange)
+    const resolvedConnectionId = String(connection?.id || connectionId || "").trim() || undefined
     const marketType = normalizeMarketType(connection?.market_type || connection?.asset_class, resolvedExchange)
     const symbol = marketType === "forex"
       ? normalizeForexSymbol(requestedSymbol || "EURUSD")
       : normalizeMarketSymbol(requestedSymbol || "BTCUSDT", marketType)
     if (!symbol) return NextResponse.json({ success: false, error: "A valid symbol is required" }, { status: 400 })
     const connector = await createReadOnlyConnector(connection, resolvedExchange).catch(() => null)
-    const data = await fetchSnapshot(symbol, resolvedExchange, interval, connector, marketType)
+    const data = await fetchSnapshot(
+      symbol,
+      resolvedExchange,
+      interval,
+      connector,
+      marketType,
+      resolvedConnectionId,
+    )
 
     return NextResponse.json({
       success: true,
@@ -416,9 +429,11 @@ export async function POST(request: NextRequest) {
     const requestedExchange = normalizeExchange(body.exchange)
     const interval = String(body.interval || "1m")
     const connectionId =
-      typeof body.connectionId === "string" && body.connectionId.trim()
+      (typeof body.connectionId === "string" && body.connectionId.trim()
         ? body.connectionId.trim()
-        : null
+        : typeof body.connection_id === "string" && body.connection_id.trim()
+          ? body.connection_id.trim()
+          : null)
 
     await initRedis()
     const connection = await resolveConnection(connectionId, requestedExchange)
@@ -426,6 +441,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
     }
     const exchange = normalizeExchange(connection?.exchange || requestedExchange)
+    const resolvedConnectionId = String(connection?.id || connectionId || "").trim() || undefined
     const marketType = normalizeMarketType(connection?.market_type || connection?.asset_class, exchange)
     const symbols = requestedSymbols.map((symbol) => marketType === "forex"
       ? normalizeForexSymbol(symbol)
@@ -434,7 +450,14 @@ export async function POST(request: NextRequest) {
     const snapshots = await mapWithConcurrency(
       symbols,
       MARKET_READ_CONCURRENCY,
-      (symbol) => fetchSnapshot(symbol, exchange, interval, connector, marketType),
+      (symbol) => fetchSnapshot(
+        symbol,
+        exchange,
+        interval,
+        connector,
+        marketType,
+        resolvedConnectionId,
+      ),
     )
     const data = Object.fromEntries(snapshots.map((snapshot) => [snapshot.symbol, snapshot]))
     const available = snapshots.filter((snapshot) => snapshot.available).length

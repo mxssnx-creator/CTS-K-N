@@ -81,9 +81,13 @@ interface StatsResponse {
       auto:           number
       total:          number
     }
-    strategies: { base: number; main: number; real: number; live: number; total: number
-                  baseEvaluated: number; mainEvaluated: number; realEvaluated: number }
+    strategies: {
+      base: number; main: number; real: number; live: number; total: number
+      baseEvaluated: number; mainEvaluated: number; realEvaluated: number
+      mainBaseInput?: number; mainPassedParents?: number; realLogicalPassed?: number
+    }
   }
+  stageEvalPercent?: { base: number; main: number; real: number; live?: number }
   strategyDetail: { base: StratDetail; main: StratDetail; real: StratDetail; live?: StratDetail }
   liveExecution?: LiveExecution
   windows: {
@@ -135,14 +139,25 @@ function SectionCard({ children, className = "" }: { children: React.ReactNode; 
 // ─── StratCard ────────────────────────────────────────────────────────────────
 
 function StratCard({
-  label, count, evaluated, evaluatedOf, detail, accentCls, bgCls,
+  label, count, evaluated, evaluatedOf, stagePercent, detail, accentCls, bgCls,
 }: {
   label: string; count: number; evaluated: number; evaluatedOf: number
+  stagePercent?: number
   detail?: StratDetail; accentCls: string; bgCls: string
 }) {
-  const evalPct = evaluatedOf > 0
-    ? Math.round((evaluated / evaluatedOf) * 1000) / 10
-    : (detail?.evalPct ?? 0)
+  const evalPct = Math.min(
+    100,
+    Math.max(
+      0,
+      stagePercent !== undefined
+        ? stagePercent
+        : evaluatedOf > 0
+          ? Math.round((evaluated / evaluatedOf) * 1000) / 10
+          : (detail?.evalPct ?? 0),
+    ),
+  )
+  const parentLabel = label === "Main" ? "Base" : label === "Real" ? "Main" : label === "Live" ? "Real" : "parent"
+  const outcomeLabel = label === "Live" ? "rows mirrored" : "sets passed"
 
   return (
     <div className={`rounded-md border p-2.5 space-y-2 ${bgCls}`}>
@@ -154,12 +169,12 @@ function StratCard({
       {evaluatedOf > 0 && (
         <div className="space-y-0.5">
           <div className="flex justify-between text-[10px] text-muted-foreground">
-            <span>% eval of {label === "Main" ? "Base" : "Main"}</span>
+            <span>% eval of {parentLabel}</span>
             <span className="font-medium">{evalPct.toFixed(1)}%</span>
           </div>
           <Progress value={Math.min(100, evalPct)} className="h-1" />
           <div className="text-[9px] text-muted-foreground text-right">
-            {fmt(evaluated)} / {fmt(evaluatedOf)}
+            {fmt(evaluated)} / {fmt(evaluatedOf)} {outcomeLabel}
           </div>
         </div>
       )}
@@ -551,8 +566,15 @@ export function QuickstartComprehensiveLogDialog() {
                 <StratCard
                   label="Main"
                   count={bd?.strategies.main || 0}
-                  evaluated={bd?.strategies.mainEvaluated || 0}
-                  evaluatedOf={bd?.strategies.base || 0}
+                  evaluated={firstFiniteMetric(
+                    bd?.strategies.mainPassedParents,
+                    stats?.strategyRows?.main?.valid,
+                  )}
+                  evaluatedOf={firstFiniteMetric(
+                    bd?.strategies.mainBaseInput,
+                    stats?.strategyRows?.base?.valid,
+                  )}
+                  stagePercent={stats?.stageEvalPercent?.main}
                   detail={sd?.main}
                   accentCls="text-yellow-600 dark:text-yellow-400"
                   bgCls="bg-yellow-50/40 dark:bg-yellow-950/20 border-yellow-200/50 dark:border-yellow-800/30"
@@ -561,8 +583,15 @@ export function QuickstartComprehensiveLogDialog() {
                 <StratCard
                   label="Real"
                   count={bd?.strategies.real || 0}
-                  evaluated={bd?.strategies.realEvaluated || 0}
-                  evaluatedOf={bd?.strategies.main || 0}
+                  evaluated={firstFiniteMetric(
+                    bd?.strategies.realLogicalPassed,
+                    sd?.real?.passed,
+                  )}
+                  evaluatedOf={firstFiniteMetric(
+                    bd?.strategies.realEvaluated,
+                    sd?.real?.evaluated,
+                  )}
+                  stagePercent={stats?.stageEvalPercent?.real}
                   detail={sd?.real}
                   accentCls="text-green-600 dark:text-green-400"
                   bgCls="bg-green-50/40 dark:bg-green-950/20 border-green-200/50 dark:border-green-800/30"
@@ -571,9 +600,14 @@ export function QuickstartComprehensiveLogDialog() {
                 {/* 4th tier — Live exchange execution. Mirrors Real's shape with extra metrics. */}
                 <StratCard
                   label="Live"
-                  count={firstFiniteMetric(bd?.strategies.live, stats?.liveExecution?.positionsCreated)}
-                  evaluated={firstFiniteMetric(stats?.liveExecution?.ordersFilled, sd?.live?.passed)}
-                  evaluatedOf={firstFiniteMetric(stats?.liveExecution?.ordersPlaced, sd?.live?.evaluated)}
+                  count={firstFiniteMetric(
+                    stats?.strategyRows?.live?.mirrored,
+                    bd?.strategies.live,
+                    stats?.liveExecution?.positionsCreated,
+                  )}
+                  evaluated={firstFiniteMetric(stats?.strategyRows?.live?.mirrored)}
+                  evaluatedOf={firstFiniteMetric(stats?.strategyRows?.live?.total)}
+                  stagePercent={stats?.stageEvalPercent?.live}
                   detail={sd?.live}
                   accentCls="text-amber-600 dark:text-amber-400"
                   bgCls="bg-amber-50/40 dark:bg-amber-950/20 border-amber-200/50 dark:border-amber-800/30"

@@ -1,8 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getMarketData, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
+import { getConnection, getMarketData, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { auditLogger } from "@/lib/audit-logger"
 import { apiErrorHandler, ApiError } from "@/lib/api-error-handler"
 import { SystemLogger } from "@/lib/system-logger"
+import { marketDataKey } from "@/lib/market-data-keys"
+import { normalizeMarketSymbol, normalizeMarketType } from "@/lib/market-types"
+import { normalizeForexSymbol, forexNotionalUsd } from "@/lib/forex-market"
 
 // API Category - used in all responses for type tracking
 const API_CATEGORY = "trading.orders"
@@ -115,16 +118,31 @@ function extractCurrentPrice(marketData: any): number | null {
   return null
 }
 
-async function getCurrentMarketPrice(symbol: string): Promise<number | null> {
-  const normalizedSymbol = symbol.toUpperCase()
-  const marketData = await getMarketData(normalizedSymbol, "1m").catch(() => null)
+async function getCurrentMarketPrice(symbol: string, connectionId: string): Promise<number | null> {
+  // Minimal paper/test adapters may not expose connection storage. They still
+  // get the exact connection-scoped market-data read below; absence of the
+  // optional metadata only means the symbol is treated as crypto here.
+  const connection = typeof getConnection === "function"
+    ? await getConnection(connectionId).catch(() => null)
+    : null
+  const marketType = normalizeMarketType(
+    (connection as any)?.market_type || (connection as any)?.asset_class,
+    (connection as any)?.exchange,
+  )
+  const normalizedSymbol = marketType === "forex"
+    ? normalizeForexSymbol(symbol)
+    : normalizeMarketSymbol(symbol, "crypto")
+  const marketData = await getMarketData(normalizedSymbol, "1s", connectionId).catch(() => null)
   const cachedPrice = extractCurrentPrice(marketData)
   if (cachedPrice) return cachedPrice
 
   const client = getRedisClient()
   if (!client) return null
 
-  const closeRaw = await client.hget(`market_data:${normalizedSymbol}`, "close").catch(() => null)
+  const closeRaw = await client.hget(
+    marketDataKey(normalizedSymbol, "", connectionId),
+    "close",
+  ).catch(() => null)
   const hashPrice = Number.parseFloat(String(closeRaw ?? ""))
   return Number.isFinite(hashPrice) && hashPrice > 0 ? hashPrice : null
 }
@@ -155,14 +173,35 @@ async function validateOrder(order: any): Promise<{ valid: boolean; error?: stri
   // the submitted price; market orders must have a current Redis price so they
   // cannot bypass notional risk controls as unbounded or dust-sized orders.
   const orderType = order.order_type?.toLowerCase()
-  const notionalPrice = orderType === "market" ? await getCurrentMarketPrice(order.symbol) : order.price
+  const notionalPrice = orderType === "market"
+    ? await getCurrentMarketPrice(order.symbol, String(order.connection_id || ""))
+    : order.price
 
   if (orderType === "market" && !notionalPrice) {
     return { valid: false, error: "Current market price unavailable for market order notional validation" }
   }
 
   if (notionalPrice && order.quantity) {
-    const orderValue = notionalPrice * order.quantity
+    const connection = typeof getConnection === "function"
+      ? await getConnection(String(order.connection_id || "")).catch(() => null)
+      : null
+    const marketType = normalizeMarketType(
+      (connection as any)?.market_type || (connection as any)?.asset_class,
+      (connection as any)?.exchange,
+    )
+    const quantityUnit = String((connection as any)?.quantity_unit || "").toLowerCase()
+    const orderValue = marketType === "forex" && quantityUnit !== "base_units" && quantityUnit !== "contracts"
+      ? forexNotionalUsd(
+          order.quantity,
+          notionalPrice,
+          order.symbol,
+          Number((connection as any)?.lot_size) > 0 ? Number((connection as any).lot_size) : undefined,
+          Number((connection as any)?.quote_to_usd_rate) > 0 ? Number((connection as any).quote_to_usd_rate) : undefined,
+        )
+      : notionalPrice * order.quantity
+    if (marketType === "forex" && !(orderValue > 0)) {
+      return { valid: false, error: "Forex quote-currency conversion unavailable for order notional validation" }
+    }
     if (orderValue > ORDER_LIMITS.MAX_AMOUNT_USDT) {
       return { valid: false, error: `Order value exceeds limit of $${ORDER_LIMITS.MAX_AMOUNT_USDT}` }
     }
@@ -272,7 +311,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Order validation
-    const validation = await validateOrder({ quantity, price, order_type, side, symbol })
+    const validation = await validateOrder({ quantity, price, order_type, side, symbol, connection_id })
     if (!validation.valid) {
       console.warn(`Order validation failed: ${validation.error}`)
       return NextResponse.json(

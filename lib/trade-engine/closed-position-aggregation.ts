@@ -1,3 +1,6 @@
+import { resolvePositionNotionalUsd } from "@/lib/live-position-pnl"
+import { normalizeTradeDirection } from "@/lib/trade-direction"
+
 export interface ClosedPositionLike {
   direction?: string
   side?: string
@@ -64,7 +67,11 @@ export function calculateClosedPositionSignedPricePct(position: ClosedPositionLi
 
   const pnl = finiteNumber(position.realizedPnL, position.realized_pnl, position.pnl)
   const quantity = Math.abs(finiteNumber(position.executedQuantity, position.quantity))
-  const notional = finiteNumber(position.volumeUsd) || (entryPrice > 0 && quantity > 0 ? entryPrice * quantity : 0)
+  const notional = finiteNumber(position.volumeUsd) || resolvePositionNotionalUsd(
+    position as Record<string, any>,
+    quantity,
+    entryPrice,
+  )
   return notional > 0 ? (pnl / notional) * 100 : Number.NaN
 }
 
@@ -127,4 +134,3 @@ export function aggregateLastXClosedPositions(
     winRate: count > 0 ? round((wins / count) * 100, 1) : 0,
   }
 }
-import { normalizeTradeDirection } from "@/lib/trade-direction"

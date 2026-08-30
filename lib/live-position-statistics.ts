@@ -1,6 +1,8 @@
 import {
   isRealizedPnlAccountingPending,
   resolveConfirmedPositionQuantity,
+  resolvePositionLifetimeVolumeUsd,
+  resolvePositionNotionalUsd,
   resolveRealizedPnl,
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
@@ -124,32 +126,14 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
     isClosed ? executed : executed + closedQuantity,
   )
   const entryPrice = Math.max(0, finite(position.averageExecutionPrice ?? position.entryPrice))
-  const fills = Array.isArray(position.fills) ? position.fills : []
-  const exchangeQuantityAdjustments = Array.isArray(position.exchangeQuantityAdjustments)
-    ? position.exchangeQuantityAdjustments
-    : []
-  const fillVolume = fills.reduce(
-    (sum: number, fill: any) => sum + Math.max(0, finite(fill?.quantity)) * Math.max(0, finite(fill?.price)),
-    0,
-  )
-  const adjustmentQuantity = exchangeQuantityAdjustments.reduce(
-    (sum: number, adjustment: any) => sum + Math.max(0, finite(adjustment?.quantity)),
-    0,
-  )
-  const adjustmentVolume = exchangeQuantityAdjustments.reduce(
-    (sum: number, adjustment: any) => sum + Math.max(0, finite(adjustment?.quantity)) * Math.max(0, finite(adjustment?.price)),
-    0,
-  )
-  const accountedQuantity = fills.reduce(
-    (sum: number, fill: any) => sum + Math.max(0, finite(fill?.quantity)),
-    0,
-  ) + adjustmentQuantity
-  const quantityTolerance = Math.max(1e-10, Math.abs(finite(position.quantityStep)) / 2)
-  const lifetimeVolumeUsd = accountedQuantity > 0 && Math.abs(accountedQuantity - totalExecuted) <= quantityTolerance
-    ? fillVolume + adjustmentVolume
-    : totalExecuted * entryPrice
+  const lifetimeVolumeUsd = totalExecuted > 0
+    ? resolvePositionLifetimeVolumeUsd(position)
+    : 0
   const openQuantity = isOpen ? executed : 0
-  const openVolumeUsd = openQuantity * entryPrice
+  const openVolumeUsd = openQuantity > 0
+    ? resolvePositionNotionalUsd(position, openQuantity, entryPrice)
+    : 0
+  const fills = Array.isArray(position.fills) ? position.fills : []
   return {
     positions: 1,
     filled: totalExecuted > 0 ? 1 : 0,

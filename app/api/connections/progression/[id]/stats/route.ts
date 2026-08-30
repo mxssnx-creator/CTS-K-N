@@ -22,7 +22,11 @@ import { buildConnectionStageOverview } from "@/lib/connection-stage-overview"
 import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
 import {
   isRealizedPnlAccountingPending,
+  isForexPosition,
   resolveConfirmedPositionQuantity,
+  resolvePositionLifetimeVolumeUsd,
+  resolvePositionMargin,
+  resolvePositionNotionalUsd,
   resolveRealizedPnl,
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
@@ -791,9 +795,10 @@ function aggregateOrdersBySymbol(
       if (created > 0 && closedAt > created) sumHoldMs += closedAt - created
       const qty = resolveConfirmedPositionQuantity(pos, true) ?? 0
       const avgP = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
-      const notional = qty * avgP
+      const notional = resolvePositionLifetimeVolumeUsd(pos)
       sumVolumeUsd += notional
-      if (notional > 0) sumRoe += pnl / notional
+      const margin = resolvePositionMargin(pos, true) ?? 0
+      if (margin > 0) sumRoe += pnl / margin
       cnt++
     }
     return { sumPnl, sumGrossProfit, sumGrossLoss, sumHoldMs, sumVolumeUsd, sumRoe, count: cnt }
@@ -1607,6 +1612,10 @@ export async function GET(
       direction: "long" | "short"
       // ── Exchange exposure (the ONLY authoritative real-money figures) ──
       volumeUsd: number
+      marketType: "crypto" | "forex"
+      volumeKind: "base" | "lots"
+      lotSize?: number
+      quoteToUsdRate?: number
       quantity: number
       leverage: number
       marginType: "cross" | "isolated"
@@ -1699,7 +1708,14 @@ export async function GET(
 
             const qty = resolveConfirmedPositionQuantity(pos) ?? 0
             const px  = Number(pos.averageExecutionPrice || pos.entryPrice) || 0
-            const volumeUsd = qty > 0 && px > 0 ? Math.round(qty * px * 100) / 100 : 0
+            const volumeUsd = qty > 0 && px > 0
+              ? Math.round(resolvePositionNotionalUsd(pos, qty, px) * 100) / 100
+              : 0
+            const forex = isForexPosition(pos)
+            const marketType = forex ? "forex" as const : "crypto" as const
+            const volumeKind = String(pos.volumeKind ?? pos.volume_kind ?? "").trim().toLowerCase() === "lots" || forex
+              ? "lots" as const
+              : "base" as const
 
             const joinKey = `${sym}:${dir}`
             let setKeys: Array<{ setKey: string; count: number }> = []
@@ -1780,6 +1796,10 @@ export async function GET(
               symbol: sym,
               direction: dir as "long" | "short",
               volumeUsd,
+              marketType,
+              volumeKind,
+              lotSize: forex ? positiveNumber(pos.lotSize, pos.lot_size) || undefined : undefined,
+              quoteToUsdRate: forex ? positiveNumber(pos.quoteToUsdRate, pos.quote_to_usd_rate) || undefined : undefined,
               quantity: Math.round(qty * 1e8) / 1e8,
               leverage,
               marginType,
@@ -3686,7 +3706,7 @@ export async function GET(
         if (qty <= 0 || avgP <= 0) continue
         const created = Number(pos.createdAt ?? 0) || 0
         const closedAt = Number(pos.closedAt ?? pos.updatedAt ?? 0) || 0
-        const notional = qty * avgP
+        const notional = resolvePositionLifetimeVolumeUsd(pos)
         const pnlPct = notional > 0 ? Math.round((pnl / notional) * 10000) / 100 : 0
         const holdMin = created > 0 && closedAt > created ? Math.round((closedAt - created) / 60_000) : 0
         const sym = String(pos.symbol || "").trim().toUpperCase()
@@ -3918,15 +3938,19 @@ export async function GET(
     // live evalPct = sets dispatched this cycle / real sets available for dispatch
     const _liveDispatched = stratCounts.live || 0
     const _liveBase       = stratCounts.real  || 0
+    // Main's filter denominator is the Base pool that actually passed the
+    // independent Base gate, not the raw Base rows emitted before that gate.
+    // Physical Main fan-out is intentionally reported separately and must not
+    // affect this logical parent pass rate.
+    const mainFunnelInput = strategyRows.base.valid > 0 ? strategyRows.base.valid : activeMainInput
+    const mainFunnelPassed = strategyRows.base.valid > 0 ? strategyRows.main.valid : activeMainPassedParents
     const stageEvalPercent = {
       base: strategyRows.base.total > 0
         ? _pct(strategyRows.base.valid, strategyRows.base.total)
         : _pct(_baseEvaluated, _baseOutput),
-      main: strategyRows.base.total > 0
-        ? _pct(strategyRows.main.valid, strategyRows.base.total)
-        : activeMainInput > 0
-          ? _pct(activeMainPassedParents, activeMainInput)
-          : _pct(_mainParentsPassed || Math.min(_mainOutput, _mainInput), _mainInput),
+      main: mainFunnelInput > 0
+        ? _pct(mainFunnelPassed, mainFunnelInput)
+        : 0,
       real: activeRealInput > 0 && activeRealPassedSeen
         ? _pct(activeRealPassed, activeRealInput)
         : _pct(_realLogicalPassed || Math.min(_realOutput, _realInput), _realInput),
@@ -4880,6 +4904,10 @@ export async function GET(
             direction:     p.direction,
             // Exchange exposure
             volumeUsd:     p.volumeUsd,
+            marketType:    p.marketType,
+            volumeKind:    p.volumeKind,
+            lotSize:       p.lotSize,
+            quoteToUsdRate: p.quoteToUsdRate,
             quantity:      p.quantity,
             leverage:      p.leverage,
             marginType:    p.marginType,

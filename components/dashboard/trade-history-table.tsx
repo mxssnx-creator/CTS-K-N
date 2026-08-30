@@ -344,7 +344,16 @@ export function TradeHistoryTable({
                       </div>
                       <div className="text-right font-mono text-muted-foreground">{trade.entryPrice > 0 ? money(trade.entryPrice, trade.entryPrice < 10 ? 4 : 2) : "—"}</div>
                       <div className="text-right font-mono text-muted-foreground">{trade.exitPrice > 0 ? money(trade.exitPrice, trade.exitPrice < 10 ? 4 : 2) : "—"}</div>
-                      <div className="text-right font-mono">{money(finite(trade.volumeUsd), 2)}</div>
+                      <div className="text-right font-mono" title={trade.marketType === "forex" || trade.volumeKind === "lots" ? `${finite(trade.quantity)} Forex lots · USD notional` : "Base-unit quantity · USD notional"}>
+                        {trade.marketType === "forex" || trade.volumeKind === "lots" ? (
+                          <>
+                            <div>{finite(trade.quantity).toLocaleString("en-US", { maximumFractionDigits: 4 })} lots</div>
+                            <div className="text-[9px] text-muted-foreground">
+                              {finite(trade.volumeUsd) > 0 ? money(finite(trade.volumeUsd), 2) : "USD conversion pending"}
+                            </div>
+                          </>
+                        ) : money(finite(trade.volumeUsd), 2)}
+                      </div>
                       <div className="text-right font-mono text-amber-600">{money(Math.abs(finite(trade.fees)), 4)}</div>
                       <div className={`text-right font-mono font-semibold ${isWin ? "text-emerald-600" : isLoss ? "text-rose-600" : "text-muted-foreground"}`}>
                         {pnl > 0 ? "+" : ""}{money(pnl, 2)}

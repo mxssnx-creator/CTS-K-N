@@ -50,6 +50,37 @@ function sharedCacheSet(key: string, value: { data: any; timestamp: number }) {
   SHARED_MARKET_DATA_CACHE.set(key, value)
 }
 
+function resolveCyclePositionCostPercent(
+  symbol: string,
+  marketData: any,
+  configuredPercent: unknown,
+): number {
+  const configured = normalizePositionCostPercent(configuredPercent)
+  const forex = marketData?.marketType === "forex" || isForexSymbol(symbol)
+  if (!forex) return configured
+  const ticker = marketData?.ticker && typeof marketData.ticker === "object"
+    ? marketData.ticker
+    : marketData
+  const reported = Number(ticker?.positionCostPercent ?? ticker?.position_cost_percent)
+  const bid = Number(ticker?.bid)
+  const ask = Number(ticker?.ask)
+  const quote = bid > 0 && ask >= bid
+    ? {
+        bid,
+        ask,
+        last: Number(ticker?.last ?? marketData?.close ?? marketData?.price) || undefined,
+        timestamp: Number(ticker?.timestamp) || undefined,
+        marketType: "forex" as const,
+      }
+    : null
+  if (Number.isFinite(reported) && reported > 0) {
+    // The loader stores the connector's spread-aware result. Preserve it,
+    // while retaining a manually configured PositionCost floor if it is wider.
+    return normalizePositionCostPercent(Math.max(configured, reported))
+  }
+  return effectivePositionCostPercent(configured, quote, symbol, { marketType: "forex" })
+}
+
 // CRITICAL FIX: Monkey-patch the Map prototype to handle undefined 'this' context
 // This ensures that even if 'this.marketDataCache' is undefined, calling .get() won't crash
 const originalMapGet = Map.prototype.get
@@ -124,6 +155,9 @@ import {
 } from "@/lib/active-outbreak-indication"
 import { evaluateIndependentDirections } from "@/lib/directional-evaluation"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import { isForexSymbol } from "@/lib/forex-market"
+import { effectivePositionCostPercent, normalizePositionCostPercent } from "@/lib/position-cost"
+import { marketDataKey } from "@/lib/market-data-keys"
 
 // Pre-import modules at module load time (not per-call)
 import { initRedis, getRedisClient, getMarketData, saveIndication, getSettings, getAppSettings, storeIndications } from "@/lib/redis-db"
@@ -428,9 +462,10 @@ export function invalidateIndicationSettingsCache(connectionId?: string): void {
  * Module-level market data fetcher with caching
  * Completely avoids any `this` context issues by using module-level state
  */
-async function getMarketDataCachedModule(symbol: string): Promise<any> {
+async function getMarketDataCachedModule(symbol: string, connectionId?: string): Promise<any> {
+  const cacheKey = marketDataKey(symbol, "", connectionId)
   const now = Date.now()
-  const cached = MODULE_MARKET_DATA_CACHE.get(symbol)
+  const cached = MODULE_MARKET_DATA_CACHE.get(cacheKey)
 
   if (cached && now - cached.timestamp < MODULE_CACHE_TTL) {
     return cached.data
@@ -439,16 +474,19 @@ async function getMarketDataCachedModule(symbol: string): Promise<any> {
   try {
     await initRedis()
     // CRITICAL: getMarketData requires (symbol, interval) - use "1m" for real-time trading
-    const rawData = await getMarketData(symbol, "1m")
+    const rawData = await getMarketData(symbol, "1m", connectionId)
 
     if (!rawData) {
       return null
     }
 
-    const latest = Array.isArray(rawData) ? rawData[0] : rawData
+    const latestCandle = Array.isArray(rawData?.candles) ? rawData.candles.at(-1) : null
+    const latest = latestCandle
+      ? { ...rawData, ...latestCandle }
+      : Array.isArray(rawData) ? rawData.at(-1) : rawData
 
     if (latest) {
-      moduleCacheSet(symbol, { data: latest, timestamp: now })
+      moduleCacheSet(cacheKey, { data: latest, timestamp: now })
       return latest
     }
     return null
@@ -731,6 +769,14 @@ export class IndicationProcessor {
    */
   private lastLoggedCandleCount: Map<string, number> = new Map()
 
+  /**
+   * True only after a realtime pass has published a usable, connection-scoped
+   * snapshot for the symbol. The shared pipeline consults this marker when a
+   * pass returns no new representative rows, so an empty result can never
+   * accidentally make StrategyProcessor evaluate stale Redis rows.
+   */
+  private realtimeSnapshotReady: Map<string, boolean> = new Map()
+
   constructor(connectionId: string) {
     this.connectionId = connectionId
     // CRITICAL: Force assignment to shared cache in case class field initialization failed
@@ -741,6 +787,15 @@ export class IndicationProcessor {
     if (!this.settingsCache) {
       this.settingsCache = SHARED_SETTINGS_CACHE
     }
+  }
+
+  /**
+   * Whether the most recent realtime pass for this processor instance
+   * completed a non-empty strategy snapshot. Historical replay does not
+   * change this state.
+   */
+  public isRealtimeSnapshotReady(symbol: string): boolean {
+    return this.realtimeSnapshotReady.get(symbol) === true
   }
 
   /**
@@ -790,13 +845,17 @@ export class IndicationProcessor {
       const client = getRedisClient()
 
       // Priority 1: raw candles array (250 candles from market-data-loader)
-      const candlesRaw = await client.get(`market_data:${symbol}:candles`)
+      const candlesRaw = await client.get(marketDataKey(symbol, "candles", this.connectionId))
       if (candlesRaw) {
         // Redis returns strings; parse directly without re-stringify
         const candles = typeof candlesRaw === "string" ? JSON.parse(candlesRaw) : candlesRaw
         if (Array.isArray(candles) && candles.length > 0) {
           if (candles.length < MINIMUM_STAGE_HISTORY_CANDLES) {
-            const historicTail = await getHistoricCandleTail(symbol, MINIMUM_STAGE_HISTORY_CANDLES)
+            const historicTail = await getHistoricCandleTail(
+              symbol,
+              MINIMUM_STAGE_HISTORY_CANDLES,
+              this.connectionId,
+            )
             if (historicTail.length >= MINIMUM_STAGE_HISTORY_CANDLES) {
               const merged = mergeHistoricTailWithRealtime(historicTail, candles)
               this._parsedCandlesCache.set(symbol, { candles: merged, ts: Date.now() })
@@ -815,8 +874,8 @@ export class IndicationProcessor {
       // `:1s`. We try `:1s` first and fall back to `:1m` for one
       // transition release so partial deploys don't lose data.
       const marketDataRaw =
-        (await client.get(`market_data:${symbol}:1s`)) ??
-        (await client.get(`market_data:${symbol}:1m`))
+        (await client.get(marketDataKey(symbol, "1s", this.connectionId))) ??
+        (await client.get(marketDataKey(symbol, "1m", this.connectionId)))
       if (marketDataRaw) {
         // Redis returns strings; parse directly without re-stringify
         const marketDataObj = typeof marketDataRaw === "string" ? JSON.parse(marketDataRaw) : marketDataRaw
@@ -828,7 +887,7 @@ export class IndicationProcessor {
 
       // Priority 3: hash (single latest data point from redis-db.saveMarketData / getMarketData)
       // CRITICAL: getMarketData requires (symbol, interval) - use "1m" for trading
-      const rawData = await getMarketData(symbol, "1m")
+      const rawData = await getMarketData(symbol, "1m", this.connectionId)
       if (rawData) {
         const arr = Array.isArray(rawData) ? rawData : [rawData]
         console.log(`[v0] [PrehistoricIndication] Using hash fallback for ${symbol}: ${arr.length} data point(s)`)
@@ -1042,6 +1101,7 @@ export class IndicationProcessor {
     shouldContinue?: () => boolean,
   ): Promise<any[]> {
     const isHistorical = typeof asOfMs === "number" && Number.isFinite(asOfMs)
+    if (!isHistorical) this.realtimeSnapshotReady.set(symbol, false)
     const isCurrent = (): boolean => {
       try {
         return shouldContinue?.() !== false
@@ -1072,18 +1132,19 @@ export class IndicationProcessor {
           connectionId: this.connectionId,
         })
         if (!isCurrent()) return []
-        SHARED_MARKET_DATA_CACHE.delete(symbol)
+        SHARED_MARKET_DATA_CACHE.delete(`${this.connectionId}:${symbol}`)
         
         // Spec §7: prefer the new :1s envelope, fall back to legacy :1m.
         const directData =
-          (await client.get(`market_data:${symbol}:1s`)) ??
-          (await client.get(`market_data:${symbol}:1m`))
+          (await client.get(marketDataKey(symbol, "1s", this.connectionId))) ??
+          (await client.get(marketDataKey(symbol, "1m", this.connectionId)))
         if (directData) {
           try {
             const parsed = typeof directData === 'string' ? JSON.parse(directData) : directData
             if (parsed && parsed.candles && parsed.candles.length > 0) {
               const latestCandle = parsed.candles[parsed.candles.length - 1]
               marketData = {
+                ...parsed,
                 symbol,
                 price: latestCandle.close,
                 open: latestCandle.open,
@@ -1093,7 +1154,7 @@ export class IndicationProcessor {
                 volume: latestCandle.volume,
                 timestamp: new Date(latestCandle.timestamp).toISOString(),
               }
-              sharedCacheSet(symbol, { data: marketData, timestamp: Date.now() })
+              sharedCacheSet(`${this.connectionId}:${symbol}`, { data: marketData, timestamp: Date.now() })
             }
           } catch (e) {
             // ignore
@@ -1101,10 +1162,10 @@ export class IndicationProcessor {
         }
         
         if (!marketData) {
-          const hashData = await client.hgetall(`market_data:${symbol}`)
+          const hashData = await client.hgetall(marketDataKey(symbol, "", this.connectionId))
           if (hashData && Object.keys(hashData).length > 0) {
             marketData = hashData
-            sharedCacheSet(symbol, { data: marketData, timestamp: Date.now() })
+            sharedCacheSet(`${this.connectionId}:${symbol}`, { data: marketData, timestamp: Date.now() })
           }
         }
         
@@ -1128,13 +1189,13 @@ export class IndicationProcessor {
           connectionId: this.connectionId,
         })
         this._parsedCandlesCache.delete(symbol)
-        SHARED_MARKET_DATA_CACHE.delete(symbol)
+        SHARED_MARKET_DATA_CACHE.delete(`${this.connectionId}:${symbol}`)
         candles = await this.getHistoricalCandles(symbol)
         if (candles.length >= MINIMUM_STAGE_HISTORY_CANDLES) {
           const client = getRedisClient()
           const refreshed =
-            (await client.get(`market_data:${symbol}:1s`)) ??
-            (await client.get(`market_data:${symbol}:1m`))
+            (await client.get(marketDataKey(symbol, "1s", this.connectionId))) ??
+            (await client.get(marketDataKey(symbol, "1m", this.connectionId)))
           if (refreshed) {
             try {
               const parsed = typeof refreshed === "string" ? JSON.parse(refreshed) : refreshed
@@ -1142,6 +1203,7 @@ export class IndicationProcessor {
               if (latest) {
                 marketData = {
                   ...marketData,
+                  ...parsed,
                   symbol,
                   price: latest.close,
                   open: latest.open,
@@ -1156,6 +1218,12 @@ export class IndicationProcessor {
           }
         }
       }
+
+      const positionCostPct = resolveCyclePositionCostPercent(
+        symbol,
+        marketData,
+        indicationSettings.positionCost,
+      )
 
       // Preserve the complete loaded series solely for offline forward
       // grading. The live calculation below still receives the causal slice
@@ -1232,20 +1300,20 @@ export class IndicationProcessor {
       )
       const defaultMultiRangeCoordination = calculateMultiRangeCoordination({
         pricesOldestFirst,
-        positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+        positionCostPct,
         config: indicationSettings.defaultCoordination,
         rangeUnit: "samples",
       })
       const directionPostChangeCoordination = calculateMultiRangeCoordination({
         pricesOldestFirst,
-        positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+        positionCostPct,
         config: indicationSettings.defaultCoordination,
         requireDirectionChange: indicationSettings.directionPostChangeOnly !== false,
         rangeUnit: "samples",
       })
       const commonMultiRangeCoordination = calculateMultiRangeCoordination({
         pricesOldestFirst,
-        positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+        positionCostPct,
         config: indicationSettings.commonCoordination,
         rangeUnit: "minutes",
       })
@@ -1375,7 +1443,7 @@ export class IndicationProcessor {
                 lastPartRatio: 0.5,
                 factorMultiplier: 1,
                 volatilityWeight: Number(indicationSettings.activeVolatilityWeight) || 0.3,
-                positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+                positionCostPct,
                 stopLossPositionCostRatios: parseNumericSettingList(
                   indicationSettings.activeStopLossPositionCostRatios,
                   DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
@@ -1483,7 +1551,7 @@ export class IndicationProcessor {
                   drawdownFactor,
                   lastSituationRatio,
                   activeSituationRatio,
-                  positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+                  positionCostPct,
                   minAgreement: Number(indicationSettings.trendMinAgreement) || DEFAULT_TREND_MIN_AGREEMENT,
                 })
                 if (signal && (!best || signal.signalScore > best.signalScore)) best = signal
@@ -1496,7 +1564,7 @@ export class IndicationProcessor {
 
         const adaptiveTpRange = buildAdaptiveTrendTpRange({
           pricesOldestFirst: prices,
-          positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+          positionCostPct,
           minMultiplier: Number(indicationSettings.trendTpMinMultiplier) || DEFAULT_TREND_TP_MIN_MULTIPLIER,
           maxFactor: Number(indicationSettings.trendTpMaxFactor) || DEFAULT_TREND_TP_MAX_FACTOR,
           step: Number(indicationSettings.trendTpStep) || DEFAULT_TREND_TP_STEP,
@@ -1521,7 +1589,7 @@ export class IndicationProcessor {
               indicationSettings.trendRangeSteps,
               DEFAULT_TREND_RANGE_STEPS,
             ),
-            positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+            positionCostPct,
             minAgreement: Number(indicationSettings.trendMinAgreement) || DEFAULT_TREND_MIN_AGREEMENT,
             higherRangeDrawdownScale:
               Number(indicationSettings.trendHigherRangeDrawdownScale) ||
@@ -1730,11 +1798,19 @@ export class IndicationProcessor {
       // persists its own bounded Set lane and returns the raw indication here
       // so the canonical counters, strategy flow and lineage use the same item.
       if (!isHistorical) {
+        // Signal providers are remote and deliberately numerous. Waiting for
+        // every provider here made the canonical indication → pseudo-position
+        // → strategy pipeline inherit the slowest provider wave, starving the
+        // realtime watchdog and making a healthy engine look stuck. The Signal
+        // module owns a single-flight/cache per connection+symbol; starting a
+        // background cycle preserves complete source coverage while a finished
+        // snapshot is consumed on the next realtime pass.
         const signalIndications = await processSignalIndications({
           connectionId: this.connectionId,
           symbol,
           settings: indicationSettings.signalSettings,
-          positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+          positionCostPct,
+          waitForCompletion: false,
         }).catch((error) => {
           console.warn(
             `[v0] [IndicationProcessor] Signal processing failed for ${symbol}:`,
@@ -1935,8 +2011,11 @@ export class IndicationProcessor {
         } catch { /* non-critical — falls back to cumulative indCounts */ }
       }
 
-      return isCurrent() ? strategyIndications : []
+      const snapshotReady = !isHistorical && strategyIndications.length > 0 && isCurrent()
+      if (!isHistorical) this.realtimeSnapshotReady.set(symbol, snapshotReady)
+      return snapshotReady || (isHistorical && isCurrent()) ? strategyIndications : []
     } catch (error) {
+      if (!isHistorical) this.realtimeSnapshotReady.set(symbol, false)
       console.error(`[v0] [IndicationProcessor] Error in processIndication for ${symbol}:`, error)
       return []
     }
@@ -1944,7 +2023,8 @@ export class IndicationProcessor {
 
   private async getLatestMarketDataCached(symbol: string): Promise<any> {
     // CRITICAL FIX: Use module-level SHARED_MARKET_DATA_CACHE directly, never this.marketDataCache
-    const cached = SHARED_MARKET_DATA_CACHE.get(symbol)
+    const cacheKey = `${this.connectionId}:${symbol}`
+    const cached = SHARED_MARKET_DATA_CACHE.get(cacheKey)
     const now = Date.now()
     
     if (cached && (now - cached.timestamp) < SHARED_CACHE_TTL) {
@@ -1954,23 +2034,41 @@ export class IndicationProcessor {
     // Fetch fresh data from Redis using dynamic import to avoid any stale references
     try {
       const { getMarketData, getClient, initRedis } = await import("@/lib/redis-db")
+      await initRedis()
+      const client = getClient()
+      // Prefer the canonical envelope because it carries market type and the
+      // broker's live bid/ask-derived PositionCost alongside the candle tail.
+      // Reading only the legacy latest-candle hash would silently drop Forex
+      // spread metadata and make the strategy fall back to a static cost.
+      const rawEnvelope =
+        (await client.get(marketDataKey(symbol, "1s", this.connectionId))) ??
+        (await client.get(marketDataKey(symbol, "1m", this.connectionId)))
+      if (rawEnvelope) {
+        try {
+          const parsed = typeof rawEnvelope === "string" ? JSON.parse(rawEnvelope) : rawEnvelope
+          if (parsed && typeof parsed === "object" && Array.isArray(parsed.candles) && parsed.candles.length > 0) {
+            sharedCacheSet(cacheKey, { data: parsed, timestamp: now })
+            return parsed
+          }
+        } catch {
+          // Fall through to the compatibility readers below.
+        }
+      }
       // getMarketData requires both symbol and interval - use 1m as default for real-time trading
-      const data = await getMarketData(symbol, "1m")
+      const data = await getMarketData(symbol, "1m", this.connectionId)
       
       // If no data from interval key, try direct Redis access as fallback
       if (!data) {
-        await initRedis()
-        const client = getClient()
         // Spec §7: read the canonical :1s envelope first, fall back
         // to the legacy :1m suffix while the migration is in flight.
         const rawData =
-          (await client.get(`market_data:${symbol}:1s`)) ??
-          (await client.get(`market_data:${symbol}:1m`))
+          (await client.get(marketDataKey(symbol, "1s", this.connectionId))) ??
+          (await client.get(marketDataKey(symbol, "1m", this.connectionId)))
         if (rawData) {
           try {
             const parsed = JSON.parse(rawData)
             if (parsed && parsed.candles && parsed.candles.length > 0) {
-              sharedCacheSet(symbol, { data: parsed, timestamp: now })
+              sharedCacheSet(cacheKey, { data: parsed, timestamp: now })
               return parsed
             }
           } catch (parseErr) {
@@ -1979,15 +2077,15 @@ export class IndicationProcessor {
         }
         
         // Try hash key as last resort
-        const hashData = await client.hgetall(`market_data:${symbol}`)
+        const hashData = await client.hgetall(marketDataKey(symbol, "", this.connectionId))
         if (hashData && Object.keys(hashData).length > 0) {
-          sharedCacheSet(symbol, { data: hashData, timestamp: now })
+          sharedCacheSet(cacheKey, { data: hashData, timestamp: now })
           return hashData
         }
       }
       
       if (data) {
-        sharedCacheSet(symbol, { data, timestamp: now })
+        sharedCacheSet(cacheKey, { data, timestamp: now })
       }
       return data
     } catch (e) {

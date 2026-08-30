@@ -43,6 +43,8 @@ import {
   DEFAULT_FOREX_POSITIONS_AVERAGE,
   DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
   DEFAULT_FOREX_SPREAD_MULTIPLIER,
+  isForexBridgeSelected,
+  isValidForexBridgeUrl,
 } from "./forex-market"
 import { normalizeMarketType } from "./market-types"
 import { BLOCK_COUNT_MAX } from "./block-count-state"
@@ -7746,17 +7748,38 @@ const migrations: Migration[] = [
         if (isForex) forexConnections++
         else cryptoConnections++
 
+        // Preserve an explicit private terminal selection. The official
+        // InstaForex HTTP surfaces remain read-only, but a separately hosted
+        // authenticated MT4/MT5 bridge is a supported, operator-selected
+        // transport. A migration must never turn that selection into REST or
+        // delete its credentials while normalizing the market metadata.
+        const bridgeSelected = isForex && isForexBridgeSelected(connection)
+        const accountId = String(connection.account_id || connection.api_key || "").trim()
+        const accountPassword = String(
+          connection.account_password ||
+            connection.trading_password ||
+            connection.trader_password ||
+            connection.mt5_password ||
+            "",
+        ).trim()
+        const bridgeUrl = String(connection.bridge_url || "").trim()
+        const bridgeConfigured = bridgeSelected &&
+          /^[0-9]{4,12}$/.test(accountId) &&
+          accountPassword.length > 0 &&
+          isValidForexBridgeUrl(bridgeUrl)
+
         const defaults: Record<string, string> = isForex
           ? {
               market_type: "forex",
               asset_class: "forex",
               api_type: "forex",
               contract_type: "forex",
-              connection_method: "rest",
-              connection_library: "native-http",
-              execution_mode: "read_only",
-              read_only: "1",
-              execution_supported: "0",
+              connection_method: bridgeSelected ? "bridge" : "rest",
+              connection_library: bridgeSelected ? "mt5-bridge" : "native-http",
+              execution_mode: bridgeSelected ? "mt5_bridge" : "read_only",
+              forex_execution_mode: bridgeSelected ? "mt5_bridge" : "read_only",
+              read_only: bridgeConfigured ? "0" : "1",
+              execution_supported: bridgeConfigured ? "1" : "0",
               volume_kind: "lots",
               quantity_unit: "lots",
               position_cost_mode: "spread_plus_buffer",
@@ -7799,12 +7822,38 @@ const migrations: Migration[] = [
           if (Object.keys(current).length === 0 && key.startsWith("connection_settings:")) continue
           const patch: Record<string, string> = {}
           for (const [field, value] of Object.entries(defaults)) {
-            // InstaForex's published endpoints are read-only. Force the
-            // safety boundary even when an older row contains bridge-shaped
-            // execution settings; crypto rows retain explicit operator values.
+            // Forex metadata is canonicalized, while crypto rows only receive
+            // missing defaults. Explicit bridge fields are retained below.
             if (isForex || current[field] === undefined || current[field] === "") patch[field] = value
           }
-          if (isForex) {
+          const effectiveCurrent = { ...connection, ...current }
+          const effectiveBridgeSelected = isForex && isForexBridgeSelected(effectiveCurrent)
+          const effectiveAccountId = String(effectiveCurrent.account_id || effectiveCurrent.api_key || "").trim()
+          const effectivePassword = String(
+            effectiveCurrent.account_password ||
+              effectiveCurrent.trading_password ||
+              effectiveCurrent.trader_password ||
+              effectiveCurrent.mt5_password ||
+              "",
+          ).trim()
+          const effectiveBridgeUrl = String(effectiveCurrent.bridge_url || "").trim()
+          const effectiveBridgeConfigured = effectiveBridgeSelected &&
+            /^[0-9]{4,12}$/.test(effectiveAccountId) &&
+            effectivePassword.length > 0 &&
+            isValidForexBridgeUrl(effectiveBridgeUrl)
+          if (isForex && effectiveBridgeSelected) {
+            // A bridge can be selected but incomplete. Keep the selection for
+            // the settings UI while leaving the execution gate fail-closed.
+            Object.assign(patch, {
+              connection_method: "bridge",
+              connection_library: "mt5-bridge",
+              execution_mode: "mt5_bridge",
+              forex_execution_mode: "mt5_bridge",
+              read_only: effectiveBridgeConfigured ? "0" : "1",
+              execution_supported: effectiveBridgeConfigured ? "1" : "0",
+            })
+          }
+          if (isForex && !effectiveBridgeSelected) {
             await client.hdel(
               key,
               "account_password",

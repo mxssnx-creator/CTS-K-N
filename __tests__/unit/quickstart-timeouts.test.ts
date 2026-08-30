@@ -60,6 +60,8 @@ describe("QuickStart timeout and maximum-symbol contract", () => {
     expect(runner).toContain('process.argv.includes("--max-symbols")')
     expect(soak).toContain('rounds % 10 === 0 && RUNTIME_MODE !== "production"')
     expect(uiVerifier).toContain("const UI_MAX_SYMBOLS = 32")
+    expect(uiVerifier).toContain("RESUME_PROGRESSION_TIMEOUT_MS")
+    expect(uiVerifier).toContain("Math.min(configuredResumeTimeout, 300_000)")
     expect(uiVerifier).toContain("timeoutMs: QUICKSTART_UI_TIMEOUT_MS")
     expect(uiVerifier).toContain("liveTrade: false")
     expect(uiVerifier).toContain("A real exchange position appeared during the UI paper test")

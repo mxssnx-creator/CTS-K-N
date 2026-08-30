@@ -376,6 +376,7 @@ export class BingXConnector extends BaseExchangeConnector {
   private normalizePositions(rows: any[]): any[] {
     return rows.map((position: any) => ({
       ...position,
+      positionId: position.positionId ?? position.positionID ?? position.id,
       positionAmt: position.positionAmt ?? position.contracts ?? position.positionSize ?? 0,
       contracts: position.positionAmt ?? position.contracts ?? position.positionSize ?? 0,
       size: position.positionAmt ?? position.contracts ?? position.positionSize ?? 0,

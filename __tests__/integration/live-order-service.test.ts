@@ -1290,7 +1290,7 @@ describe("live-order-service integration accounting", () => {
     )
   })
 
-  test("flattens a just-filled position when the second protection order is rejected", async () => {
+  test("fails closed when a conditional protection order is rejected without an exact position ticket", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
       getCapabilities: jest.fn(() => ["futures"]),
@@ -1323,11 +1323,11 @@ describe("live-order-service integration accounting", () => {
       persistPosition: false,
       updateCounters: false,
     })).rejects.toMatchObject({
-      mode: "live_protection_placement_failed_flattened",
-      statusCode: 502,
+      mode: "live_protection_placement_failed_unflattened",
+      statusCode: 503,
     })
     expect(connector.cancelOrder).toHaveBeenCalledWith("ETHUSDT", "orphan-sl-1")
-    expect(connector.placeOrder).toHaveBeenCalledTimes(2)
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
   })
 
   test("verifies native Forex SL/TP on the exact terminal position before recording the fill", async () => {
@@ -1386,7 +1386,7 @@ describe("live-order-service integration accounting", () => {
     expect(connector.getPosition).toHaveBeenCalledWith("EURUSD", "long")
   })
 
-  test("flattens a native Forex entry when the terminal does not confirm both controls", async () => {
+  test("refuses a symbol-only emergency close when the terminal does not confirm both controls", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
       getCapabilities: jest.fn(() => ["forex", "native_position_sl_tp", "broker_managed_margin_leverage"]),
@@ -1433,9 +1433,22 @@ describe("live-order-service integration accounting", () => {
       persistPosition: false,
       updateCounters: false,
     })).rejects.toMatchObject({
-      mode: "live_protection_verification_failed_flattened",
-      statusCode: 502,
+      mode: "live_protection_verification_failed_unflattened",
+      statusCode: 503,
     })
-    expect(connector.closePosition).toHaveBeenCalledWith("EURUSD", "long")
+    expect(connector.closePosition).not.toHaveBeenCalled()
+    expect(connector.placeOrder).toHaveBeenCalledTimes(2)
+    expect(connector.placeOrder).toHaveBeenNthCalledWith(
+      2,
+      "EURUSD",
+      "sell",
+      0.1,
+      undefined,
+      "market",
+      expect.objectContaining({
+        reduceOnly: true,
+        positionTicket: 43,
+      }),
+    )
   })
 })

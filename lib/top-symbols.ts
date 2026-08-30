@@ -18,6 +18,8 @@
 //                     concurrency=8 keeps total latency < 2s for 20 symbols.
 
 import { fetchBingXPublic } from "@/lib/bingx-public-api"
+import { getDefaultSymbolsForMarket } from "@/lib/market-types"
+import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
 
 export type SortKey = "volume" | "volatility" | "volatility_1h"
 export type Ticker = { symbol: string; priceChangePercent: number; volume: number; atr1h?: number }
@@ -40,7 +42,12 @@ const FALLBACK: Record<string, string> = {
   okx: "BTCUSDT",
   pionex: "BTCUSDT",
   orangex: "BTCUSDT",
+  instaforex: "EURUSD",
+  instafx: "EURUSD",
+  forex: "EURUSD",
 }
+
+const SAFE_FOREX_SYMBOLS = getDefaultSymbolsForMarket("forex")
 
 const SAFE_MAJORS = [
   "BTCUSDT",  "ETHUSDT",  "SOLUSDT",  "BNBUSDT",  "XRPUSDT",
@@ -158,11 +165,102 @@ async function enrich1hAtr(
   return results
 }
 
+async function fetchInstaForexTopSymbols(
+  limit: number,
+  sort: SortKey,
+): Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }> {
+  const safeLimit = Math.max(1, Math.min(50, Math.floor(limit) || 1))
+  let listedSymbols: string[] = []
+  try {
+    const response = await fetch("https://quotes.instaforex.com/api/quotesList", {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (response.ok) {
+      const payload: any = await response.json()
+      const rows = Array.isArray(payload?.quotesList)
+        ? payload.quotesList
+        : Array.isArray(payload?.quotes)
+          ? payload.quotes
+          : []
+      listedSymbols = rows
+        .filter((row: any) => {
+          const group = String(row?.group?.name ?? row?.group ?? "").trim().toLowerCase()
+          return !group || group === "forex" || group === "fx"
+        })
+        .map((row: any) => normalizeForexSymbol(row?.symbol ?? row?.name))
+        .filter((symbol: string) => isForexSymbol(symbol))
+    }
+  } catch {
+    // The deterministic major list below keeps a temporary quote-list outage
+    // from wiping a saved Forex symbol basket.
+  }
+
+  const candidates = Array.from(new Set([...listedSymbols, ...SAFE_FOREX_SYMBOLS]))
+    .filter(isForexSymbol)
+    .slice(0, 50)
+  let quotes = new Map<string, any>()
+  if (candidates.length > 0) {
+    try {
+      const url = new URL("https://quotes.instaforex.com/api/quotesTick")
+      url.searchParams.set("q", candidates.join(",").toLowerCase())
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (response.ok) {
+        const payload: any = await response.json()
+        const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.quotes) ? payload.quotes : []
+        quotes = new Map(rows.map((row: any) => [normalizeForexSymbol(row?.symbol), row]))
+      }
+    } catch {
+      // Return the listed major instruments with zero volatility if ticks are
+      // temporarily unavailable; no fabricated price is used for trading.
+    }
+  }
+
+  let tickers = candidates.map((symbol, index) => {
+    const quote = quotes.get(symbol) || {}
+    const priceChangePercent = Math.abs(Number(quote.change24h ?? quote.change) || 0)
+    return {
+      symbol,
+      priceChangePercent,
+      // InstaForex's public quote schema does not publish 24h volume. Keep
+      // this zero rather than treating a price field as volume; list order is
+      // the documented fallback for the volume sort.
+      volume: 0,
+      __order: index,
+    }
+  })
+  if (sort === "volatility" || sort === "volatility_1h") {
+    tickers.sort((left, right) => right.priceChangePercent - left.priceChangePercent || left.__order - right.__order)
+  } else {
+    tickers.sort((left, right) => left.__order - right.__order)
+  }
+  const selected = tickers.slice(0, safeLimit).map(({ __order: _order, ...ticker }) => ticker)
+  const fallback = SAFE_FOREX_SYMBOLS.slice(0, safeLimit).map((symbol, index) => ({
+    symbol,
+    priceChangePercent: 0,
+    volume: 0,
+    __order: index,
+  }))
+  const output = selected.length > 0 ? selected : fallback.map(({ __order: _order, ...ticker }) => ticker)
+  return {
+    symbol: output[0]?.symbol || "EURUSD",
+    priceChangePercent: output[0]?.priceChangePercent || 0,
+    symbols: output,
+  }
+}
+
 async function fetchTopSymbolsUncached(
   exchange: string,
   limit = 1,
   sort: SortKey = "volume",
 ): Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }> {
+  const safeLimit = Math.max(1, Math.min(50, Math.floor(limit) || 1))
+  if (exchange === "instaforex" || exchange === "instafx" || exchange === "forex") {
+    return fetchInstaForexTopSymbols(safeLimit, sort)
+  }
   // For volatility_1h we first fetch a larger pool (top-100 by volume) to
   // narrow candidates before making one kline request per symbol.
   // MIN_VOLUME_USDT filters out newly listed micro-caps and wash-traded coins
@@ -186,8 +284,6 @@ async function fetchTopSymbolsUncached(
       symbols:            topN,
     }
   }
-  const safeLimit = Math.max(1, Math.min(50, Math.floor(limit) || 1))
-
   let tickers: Ticker[] = []
 
   try {
@@ -311,8 +407,9 @@ export async function fetchTopSymbols(
   limit = 1,
   sort: SortKey = "volume",
 ): Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }> {
+  const normalizedExchange = String(exchange || "").trim().toLowerCase()
   const requested = Math.max(1, Math.min(50, Math.floor(limit) || 1))
-  const cacheKey = `${String(exchange || "").toLowerCase()}:${sort}`
+  const cacheKey = `${normalizedExchange}:${sort}`
   const cached = cache.get(cacheKey)
   if (
     cached &&
@@ -340,7 +437,7 @@ export async function fetchTopSymbols(
     }
   }
 
-  const request = fetchTopSymbolsUncached(exchange, requested, sort)
+  const request = fetchTopSymbolsUncached(normalizedExchange, requested, sort)
     .then((result) => {
       const previous = cache.get(cacheKey)
       const symbols =

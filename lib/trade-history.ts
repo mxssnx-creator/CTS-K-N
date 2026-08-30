@@ -1,7 +1,15 @@
 import {
+  isForexPosition,
   isRealizedPnlAccountingPending,
   requiresVenueAccountingForPricePair,
+  resolvePositionLifetimeVolumeUsd,
 } from "@/lib/live-position-pnl"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  forexPriceMovePnlUsd,
+  forexQuoteToUsdRate,
+  isForexSymbol,
+} from "@/lib/forex-market"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 /** Bounded transport page; the durable history itself is never truncated. */
@@ -27,6 +35,10 @@ export interface TradeHistoryRow {
   holdMinutes: number
   source: "exchange" | "local"
   environment: "exchange" | "simulated"
+  marketType?: "crypto" | "forex"
+  volumeKind?: "base" | "lots"
+  lotSize?: number
+  quoteToUsdRate?: number
   executionIntent?: "main" | "preset" | "signal"
   orderId?: string
   closeOrderId?: string
@@ -168,6 +180,11 @@ export function statisticsHistoryTupleToTradingPosition(
     max_profit: Math.max(0, realizedPnl),
     max_loss: Math.min(0, realizedPnl),
     trailing_enabled: trailingActive === 1,
+    ...(isForexSymbol(symbol) && {
+      market_type: "forex" as const,
+      quantity_unit: "lots" as const,
+      lot_size: DEFAULT_FOREX_LOT_SIZE,
+    }),
   }
   return position as import("./trading").TradingPosition
 }
@@ -326,6 +343,7 @@ export interface LocalTradeHistorySnapshotClassification {
     | "missing_entry_price"
     | "invalid_direction"
     | "missing_exit_and_pnl"
+    | "missing_usd_conversion"
     | "venue_accounting_incomplete"
     | "venue_accounting_required"
   row: TradeHistoryRow | null
@@ -409,6 +427,8 @@ export function classifyLocalTradeHistorySnapshot(
   if (!direction) {
     return { disposition: "unresolved_trade", reason: "invalid_direction", row: null }
   }
+  const symbol = normalizeSymbol(position.symbol)
+  const forex = isForexPosition({ ...position, symbol })
   const exchangeData = position.exchangeData && typeof position.exchangeData === "object" ? position.exchangeData : {}
   const positionId = String(
     exchangeData.exchangePositionId ?? exchangeData.positionId ?? position.exchangePositionId ?? "",
@@ -450,9 +470,30 @@ export function classifyLocalTradeHistorySnapshot(
   }
 
   const derivedGross = exitPrice > 0
-    ? direction === "short"
-      ? (entryPrice - exitPrice) * quantity
-      : (exitPrice - entryPrice) * quantity
+    ? forex
+      ? forexPriceMovePnlUsd(
+          direction,
+          quantity,
+          entryPrice,
+          exitPrice,
+          symbol,
+          firstPositive(
+            position.lotSize,
+            position.lot_size,
+            exchangeData.lotSize,
+            exchangeData.lot_size,
+            DEFAULT_FOREX_LOT_SIZE,
+          ),
+          firstPositive(
+            position.quoteToUsdRate,
+            position.quote_to_usd_rate,
+            exchangeData.quoteToUsdRate,
+            exchangeData.quote_to_usd_rate,
+          ) || undefined,
+        )
+      : direction === "short"
+        ? (entryPrice - exitPrice) * quantity
+        : (exitPrice - entryPrice) * quantity
     : 0
   const fillFees = Array.isArray(position.fills)
     ? position.fills.reduce((sum: number, fill: any) => sum + Math.abs(finite(fill?.fee)), 0)
@@ -460,7 +501,16 @@ export function classifyLocalTradeHistorySnapshot(
   const fees = Math.abs(firstFinite(position.fees, position.totalFees, fillFees))
   const grossPnl = hasStoredPnl ? storedPnl : derivedGross
   const realizedPnl = position.grossPnl !== undefined ? grossPnl - fees : grossPnl
-  const volumeUsd = firstPositive(position.volumeUsd, entryPrice * quantity)
+  const volumeUsd = forex
+    ? resolvePositionLifetimeVolumeUsd({
+        ...position,
+        symbol,
+        marketType: "forex",
+        totalExecutedQuantity: position.totalExecutedQuantity ?? quantity,
+        executedQuantity: position.executedQuantity ?? quantity,
+        quantity,
+      })
+    : firstPositive(position.volumeUsd, entryPrice * quantity)
   const openedAt = normalizeTimestamp(position.createdAt ?? position.openedAt ?? position.timestamp)
   const closedAt = normalizeTimestamp(position.closedAt ?? position.closeTimestamp ?? position.updatedAt)
   const manualProtection = position.manualProtectionOverride && typeof position.manualProtectionOverride === "object"
@@ -476,7 +526,7 @@ export function classifyLocalTradeHistorySnapshot(
 
   const row: TradeHistoryRow = {
     id: String(position.id),
-    symbol: normalizeSymbol(position.symbol),
+    symbol,
     direction,
     entryPrice,
     exitPrice,
@@ -491,6 +541,25 @@ export function classifyLocalTradeHistorySnapshot(
     holdMinutes: openedAt > 0 && closedAt >= openedAt ? (closedAt - openedAt) / 60_000 : 0,
     source: "local",
     environment,
+    marketType: forex ? "forex" : "crypto",
+    volumeKind: forex ? "lots" : "base",
+    lotSize: forex
+      ? firstPositive(
+          position.lotSize,
+          position.lot_size,
+          exchangeData.lotSize,
+          exchangeData.lot_size,
+          DEFAULT_FOREX_LOT_SIZE,
+        )
+      : undefined,
+    quoteToUsdRate: forex
+      ? firstPositive(
+          position.quoteToUsdRate,
+          position.quote_to_usd_rate,
+          exchangeData.quoteToUsdRate,
+          exchangeData.quote_to_usd_rate,
+        ) || undefined
+      : undefined,
     executionIntent,
     orderId: String(position.orderId ?? exchangeData.orderId ?? "") || undefined,
     closeOrderId: closeOrderId || undefined,
@@ -520,6 +589,18 @@ export function classifyLocalTradeHistorySnapshot(
     return {
       disposition: "unresolved_trade",
       reason: accountingPending ? "venue_accounting_incomplete" : "missing_exit_and_pnl",
+      row,
+    }
+  }
+  if (forex && exitPrice > 0 && !forexQuoteToUsdRate(
+    symbol,
+    exitPrice,
+    row.quoteToUsdRate,
+  )) {
+    row.accountingQuality = "exchange_required"
+    return {
+      disposition: "unresolved_trade",
+      reason: "missing_usd_conversion",
       row,
     }
   }

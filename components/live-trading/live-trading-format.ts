@@ -1,5 +1,9 @@
 import type { LivePositionView } from "@/components/live-trading/live-trading-types"
-import { resolveConfirmedPositionQuantity } from "@/lib/live-position-pnl"
+import {
+  isForexPosition,
+  resolveConfirmedPositionQuantity,
+  resolvePositionNotionalUsd,
+} from "@/lib/live-position-pnl"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 
 export function finite(value: unknown): number {
@@ -44,7 +48,15 @@ export function positionMargin(position: LivePositionView): number {
   if (positionQuantity(position) <= 0) return 0
   const explicit = finite(position.exchangeData?.marginUsd)
   if (explicit > 0) return explicit
-  const notional = finite(position.volumeUsd) || positionEntry(position) * positionQuantity(position)
+  const storedNotional = finite(position.volumeUsd)
+  const resolvedNotional = resolvePositionNotionalUsd(
+    position as Record<string, any>,
+    positionQuantity(position),
+    positionEntry(position),
+  )
+  const notional = isForexPosition(position as Record<string, any>)
+    ? resolvedNotional || storedNotional
+    : storedNotional || resolvedNotional
   return notional / Math.max(1, finite(position.leverage) || 1)
 }
 

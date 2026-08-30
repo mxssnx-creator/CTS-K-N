@@ -4,7 +4,7 @@
  * NOW: 100% Redis-backed, no SQL
  */
 
-import { getRedisClient, getAppSettings, getSettings, createPosition as redisCreatePosition } from "@/lib/redis-db"
+import { getRedisClient, getAppSettings, createPosition as redisCreatePosition } from "@/lib/redis-db"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { emitPositionUpdate } from "@/lib/broadcast-helpers"
@@ -24,6 +24,8 @@ import {
 } from "@/lib/special-strategy"
 import { DEFAULT_FOREX_LOT_SIZE, DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
+import { tradingPairKey } from "@/lib/trading-pair-keys"
+import { connectionTrackingId } from "@/lib/system-order-ownership"
 
 const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
 const POSITION_CLOSE_LOCK_TTL_MS = 60_000
@@ -520,9 +522,11 @@ export class PseudoPositionManager {
         const rawLeverage = _getMaxLev(_conn?.exchange)
         const { accountBalance, maxLeverage } =
           await VolumeCalculator.resolveBalanceAndLeverage(this.connectionId, rawLeverage)
-        const tradingPair = await getSettings(`trading_pair:${params.symbol}`)
+        let tradingPair = await getRedisClient()
+          .hgetall(tradingPairKey(params.symbol, this.connectionId))
+          .catch(() => ({} as Record<string, unknown>))
         const exchangeMinVolume = tradingPair?.min_order_size
-          ? parseFloat(tradingPair.min_order_size)
+          ? parseFloat(String(tradingPair.min_order_size))
           : undefined
         const calculated = VolumeCalculator.calculatePositionVolume({
           positionCostPercent: canonicalPositionCostPercent,
@@ -606,6 +610,9 @@ export class PseudoPositionManager {
         strategy_config_id: params.strategyConfigId || "",
         // System tracking ID — marks this as a system-created position
         system_tracking_id: systemTrackingId,
+        // Second watermark binds the lifecycle row to the exact connection;
+        // a generic `sys-` prefix alone is not sufficient on shared accounts.
+        connection_tracking_id: connectionTrackingId(this.connectionId),
         entry_price: String(params.entryPrice),
         current_price: String(params.entryPrice),
         quantity: String(finalVolume),

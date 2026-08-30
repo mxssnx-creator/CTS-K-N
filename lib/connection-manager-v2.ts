@@ -8,6 +8,10 @@ import { initRedis, getAllConnections, getConnection, updateConnection, createCo
 import { SystemLogger } from "@/lib/system-logger"
 import type { MarketType } from "@/lib/market-types"
 import {
+  DEFAULT_FOREX_LOT_SIZE,
+  DEFAULT_FOREX_POSITIONS_AVERAGE,
+  DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+  DEFAULT_FOREX_SPREAD_MULTIPLIER,
   isForexBridgeSelected,
   isValidForexBridgeUrl,
   resolveForexExecutionMode,
@@ -36,6 +40,15 @@ export interface ConnectionV2 {
   quotes_base_url?: string
   charts_url?: string
   account_server?: string
+  quantity_unit?: "base_units" | "lots" | "contracts" | string
+  lot_size?: number | string
+  position_cost_percent?: number | string
+  spread_buffer_pips?: number | string
+  spread_multiplier?: number | string
+  positions_average?: number | string
+  average_count?: number | string
+  max_spread_pips?: number | string
+  spread_mode?: string
   execution_mode?: string
   forex_execution_mode?: "read_only" | "mt5_bridge" | string
   read_only?: boolean
@@ -77,6 +90,15 @@ export interface ConnectionCreateInput {
   quotes_base_url?: string
   charts_url?: string
   account_server?: string
+  quantity_unit?: "base_units" | "lots" | "contracts" | string
+  lot_size?: number | string
+  position_cost_percent?: number | string
+  spread_buffer_pips?: number | string
+  spread_multiplier?: number | string
+  positions_average?: number | string
+  average_count?: number | string
+  max_spread_pips?: number | string
+  spread_mode?: string
   execution_mode?: string
   forex_execution_mode?: "read_only" | "mt5_bridge" | string
   connection_library?: string
@@ -103,6 +125,15 @@ export interface ConnectionUpdateInput {
   quotes_base_url?: string
   charts_url?: string
   account_server?: string
+  quantity_unit?: "base_units" | "lots" | "contracts" | string
+  lot_size?: number | string
+  position_cost_percent?: number | string
+  spread_buffer_pips?: number | string
+  spread_multiplier?: number | string
+  positions_average?: number | string
+  average_count?: number | string
+  max_spread_pips?: number | string
+  spread_mode?: string
   execution_mode?: string
   forex_execution_mode?: "read_only" | "mt5_bridge" | string
   connection_method?: "rest" | "websocket" | "hybrid" | "bridge"
@@ -216,6 +247,15 @@ export class ConnectionManagerV2 {
         quotes_base_url: input.quotes_base_url,
         charts_url: input.charts_url,
         account_server: input.account_server,
+        quantity_unit: isInstaForex ? "lots" : input.quantity_unit,
+        lot_size: isInstaForex ? (input.lot_size ?? DEFAULT_FOREX_LOT_SIZE) : input.lot_size,
+        position_cost_percent: isInstaForex ? (input.position_cost_percent ?? 0.1) : input.position_cost_percent,
+        spread_buffer_pips: isInstaForex ? (input.spread_buffer_pips ?? DEFAULT_FOREX_SPREAD_BUFFER_PIPS) : input.spread_buffer_pips,
+        spread_multiplier: isInstaForex ? (input.spread_multiplier ?? DEFAULT_FOREX_SPREAD_MULTIPLIER) : input.spread_multiplier,
+        positions_average: isInstaForex ? (input.positions_average ?? input.average_count ?? DEFAULT_FOREX_POSITIONS_AVERAGE) : input.positions_average,
+        average_count: isInstaForex ? (input.average_count ?? input.positions_average ?? DEFAULT_FOREX_POSITIONS_AVERAGE) : input.average_count,
+        max_spread_pips: isInstaForex ? (input.max_spread_pips ?? 3) : input.max_spread_pips,
+        spread_mode: isInstaForex ? (input.spread_mode ?? "exchange") : input.spread_mode,
         execution_mode: isInstaForex ? forexExecutionMode : input.execution_mode,
         forex_execution_mode: isInstaForex ? forexExecutionMode : undefined,
         read_only: isInstaForex ? !bridgeSelected : input.read_only,
@@ -281,6 +321,15 @@ export class ConnectionManagerV2 {
             ? (isValidForexBridgeUrl(input.bridge_url ?? (conn as any).bridge_url) ? (input.bridge_url ?? (conn as any).bridge_url) : undefined)
             : "",
           terminal_path: bridgeSelected ? (input.terminal_path ?? (conn as any).terminal_path) : "",
+          quantity_unit: "lots",
+          lot_size: input.lot_size ?? (conn as any).lot_size ?? DEFAULT_FOREX_LOT_SIZE,
+          position_cost_percent: input.position_cost_percent ?? (conn as any).position_cost_percent ?? 0.1,
+          spread_buffer_pips: input.spread_buffer_pips ?? (conn as any).spread_buffer_pips ?? DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+          spread_multiplier: input.spread_multiplier ?? (conn as any).spread_multiplier ?? DEFAULT_FOREX_SPREAD_MULTIPLIER,
+          positions_average: input.positions_average ?? input.average_count ?? (conn as any).positions_average ?? (conn as any).average_count ?? DEFAULT_FOREX_POSITIONS_AVERAGE,
+          average_count: input.average_count ?? input.positions_average ?? (conn as any).average_count ?? (conn as any).positions_average ?? DEFAULT_FOREX_POSITIONS_AVERAGE,
+          max_spread_pips: input.max_spread_pips ?? (conn as any).max_spread_pips ?? 3,
+          spread_mode: input.spread_mode ?? (conn as any).spread_mode ?? "exchange",
           read_only: !bridgeSelected,
           is_testnet: false,
         } : {}),

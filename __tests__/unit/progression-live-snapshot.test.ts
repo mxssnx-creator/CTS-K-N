@@ -231,7 +231,9 @@ describe("volatile progression stats overlay", () => {
         real: { valid: 1, evaluated: 2, active: 1, activeExactRows: 1 },
         live: { total: 1, mirrored: 1, active: 1 },
       },
-      stageEvalPercent: { base: 75, main: 25, real: 50, live: 100 },
+      // Main evaluates the Base-valid pool (3), not the raw Base output (4).
+      // The logical parent pass rate is therefore 1/3 = 33.3%.
+      stageEvalPercent: { base: 75, main: 33.3, real: 50, live: 100 },
       connectionStageOverview: {
         base: { total: 2, valid: 1 },
         main: { valid: 1, overall: 2, additional: 1 },

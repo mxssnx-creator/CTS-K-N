@@ -22,6 +22,7 @@ import {
   liveClosedAnalyticsDataKey,
   liveClosedAnalyticsTimeKey,
 } from "./live-position-analytics-archive"
+import { marketDataKey } from "./market-data-keys"
 import {
   LIVE_CLOSED_INDEX_LIMIT,
   LIVE_TERMINAL_RETENTION_SECONDS,
@@ -5278,7 +5279,7 @@ export async function bumpSettingsVersion(): Promise<number> {
 
 // ========== Market Data Operations ==========
 
-export async function getMarketData(symbol: string, interval: string): Promise<any | null> {
+export async function getMarketData(symbol: string, interval: string, connectionId?: string): Promise<any | null> {
   // ── Spec §7 migration: 1s is the canonical timeframe ─────────────
   //
   // The market-data loader was migrated to write only the `:1s`
@@ -5290,10 +5291,10 @@ export async function getMarketData(symbol: string, interval: string): Promise<a
   // "1s" instead of "1m", which all known readers ignore.
   await initRedis()
   const client = getClient()
-  const primary = await client.get(`market_data:${symbol}:${interval}`)
+  const primary = await client.get(marketDataKey(symbol, interval, connectionId))
   let data = primary
   if (!data && interval !== "1s") {
-    data = await client.get(`market_data:${symbol}:1s`)
+    data = await client.get(marketDataKey(symbol, "1s", connectionId))
   }
   if (!data) return null
   try {
@@ -5303,11 +5304,17 @@ export async function getMarketData(symbol: string, interval: string): Promise<a
   }
 }
 
-export async function setMarketData(symbol: string, interval: string, data: any, ttlSeconds?: number): Promise<void> {
+export async function setMarketData(
+  symbol: string,
+  interval: string,
+  data: any,
+  ttlSeconds?: number,
+  connectionId?: string,
+): Promise<void> {
   await initRedis()
   const client = getClient()
   const finalTtl = ttlSeconds ?? 300
-  await client.set(`market_data:${symbol}:${interval}`, JSON.stringify(data), { EX: finalTtl })
+  await client.set(marketDataKey(symbol, interval, connectionId), JSON.stringify(data), { EX: finalTtl })
 }
 
 // ========== Position Operations ==========
@@ -6600,9 +6607,9 @@ export async function getRedisStats(): Promise<{
   }
 }
 
-export async function saveMarketData(symbol: string, timeframe: string, data: any): Promise<void> {
+export async function saveMarketData(symbol: string, timeframe: string, data: any, connectionId?: string): Promise<void> {
   const client = getRedisClient()
-  const key = `market_data:${symbol}:${timeframe}`
+  const key = marketDataKey(symbol, timeframe, connectionId)
   await client.set(key, JSON.stringify(data))
   // Set 24 hour TTL for market data
   await client.expire(key, 86400)

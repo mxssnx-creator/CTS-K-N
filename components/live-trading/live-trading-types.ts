@@ -29,7 +29,26 @@ export interface LivePositionView {
   quantity?: number
   leverage?: number
   marginType?: string
+  marketType?: "crypto" | "forex"
+  volumeKind?: "base" | "lots"
+  lotSize?: number
+  quoteToUsdRate?: number
   volumeUsd?: number
+  lifetimeVolumeUsd?: number
+  lifetime_volume_usd?: number
+  positionCostPct?: number
+  positionCostPercent?: number
+  configuredPositionCostPct?: number
+  spreadBufferPips?: number
+  spreadMultiplier?: number
+  quoteBid?: number
+  quoteAsk?: number
+  spreadPrice?: number
+  spreadPips?: number
+  spreadBps?: number
+  spreadPercent?: number
+  spreadSource?: string
+  quoteTimestamp?: number
   quantityStep?: number
   quantityPrecision?: number
   pricePrecision?: number

@@ -16,9 +16,10 @@ const CACHE_TTL = 500
 /**
  * Get market data with caching
  */
-async function getCachedMarketData(symbol: string): Promise<any> {
+async function getCachedMarketData(symbol: string, connectionId?: string): Promise<any> {
+  const cacheKey = connectionId ? `${connectionId}:${symbol}` : symbol
   const now = Date.now()
-  const cached = MARKET_DATA_CACHE.get(symbol)
+  const cached = MARKET_DATA_CACHE.get(cacheKey)
   
   if (cached && now - cached.timestamp < CACHE_TTL) {
     return cached.data
@@ -26,12 +27,15 @@ async function getCachedMarketData(symbol: string): Promise<any> {
   
   try {
     await initRedis()
-    const rawData = await getMarketData(symbol, "1m")
+    const rawData = await getMarketData(symbol, "1m", connectionId)
     if (!rawData) return null
     
-    const latest = Array.isArray(rawData) ? rawData[0] : rawData
+    const latestCandle = Array.isArray(rawData?.candles) ? rawData.candles.at(-1) : null
+    const latest = latestCandle
+      ? { ...rawData, ...latestCandle }
+      : Array.isArray(rawData) ? rawData.at(-1) : rawData
     if (latest) {
-      MARKET_DATA_CACHE.set(symbol, { data: latest, timestamp: now })
+      MARKET_DATA_CACHE.set(cacheKey, { data: latest, timestamp: now })
     }
     return latest
   } catch (error) {
@@ -45,7 +49,7 @@ async function getCachedMarketData(symbol: string): Promise<any> {
  */
 export async function generateIndications(symbol: string, connectionId: string): Promise<any[]> {
   try {
-    const marketData = await getCachedMarketData(symbol)
+    const marketData = await getCachedMarketData(symbol, connectionId)
     if (!marketData) {
       return []
     }

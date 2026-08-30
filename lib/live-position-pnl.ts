@@ -202,12 +202,15 @@ function resolveEntryPrice(position: Record<string, any>): number | undefined {
   )
 }
 
-function isForexPosition(position: Record<string, any>): boolean {
+export function isForexPosition(position: Record<string, any>): boolean {
   const exchange = record(position.exchangeData)
   const marketType = String(
     position.marketType ?? position.market_type ?? exchange.marketType ?? exchange.market_type ?? "",
   ).trim().toLowerCase()
-  return marketType === "forex" || marketType === "fx" || isForexSymbol(
+  const volumeKind = String(
+    position.volumeKind ?? position.volume_kind ?? exchange.volumeKind ?? exchange.volume_kind ?? "",
+  ).trim().toLowerCase()
+  return marketType === "forex" || marketType === "fx" || volumeKind === "lots" || isForexSymbol(
     position.symbol ?? position.exchangeSymbol ?? exchange.symbol,
   )
 }
@@ -217,8 +220,12 @@ function resolveForexLotSize(position: Record<string, any>): number {
   return firstPositiveNumeric(
     position.lotSize,
     position.lot_size,
+    position.contractSize,
+    position.contract_size,
     exchange.lotSize,
     exchange.lot_size,
+    exchange.contractSize,
+    exchange.contract_size,
     DEFAULT_FOREX_LOT_SIZE,
   ) ?? DEFAULT_FOREX_LOT_SIZE
 }
@@ -231,6 +238,102 @@ function resolveForexQuoteToUsdRate(position: Record<string, any>): number | und
     exchange.quoteToUsdRate,
     exchange.quote_to_usd_rate,
   )
+}
+
+/**
+ * Resolve one position's USD exposure using its market contract. Crypto
+ * quantities are base units; Forex quantities are InstaForex lots and need
+ * the configured lot size plus quote-currency conversion for cross pairs.
+ * Pending/request-only rows intentionally resolve to zero through the
+ * confirmed-quantity gate instead of leaking requested size into reports.
+ */
+export function resolvePositionNotionalUsd(
+  position: Record<string, any>,
+  quantity?: number,
+  price?: number,
+): number {
+  const exchange = record(position.exchangeData)
+  const resolvedQuantity = quantity === undefined
+    ? resolveConfirmedPositionQuantity(position) ?? (
+      String(position.status || "").trim() ? undefined : resolvePositionQuantity(position)
+    )
+    : firstFiniteNumeric(quantity)
+  const resolvedPrice = price === undefined
+    ? resolveMarkPrice(position) ?? resolveEntryPrice(position)
+    : firstFiniteNumeric(price)
+  if (!(resolvedQuantity && resolvedQuantity > 0) || !(resolvedPrice && resolvedPrice > 0)) return 0
+  if (isForexPosition(position)) {
+    return forexNotionalUsd(
+      resolvedQuantity,
+      resolvedPrice,
+      position.symbol ?? position.exchangeSymbol ?? exchange.symbol,
+      resolveForexLotSize(position),
+      resolveForexQuoteToUsdRate(position),
+    )
+  }
+  return resolvedQuantity * resolvedPrice
+}
+
+/**
+ * Resolve the USD volume for the complete filled lifecycle. Exact fill and
+ * exchange-adjustment ledgers win because they preserve partial-fill prices;
+ * persisted lifetime/current volume is only a compatibility fallback for
+ * older rows. All paths use the same Forex lot and conversion rules.
+ */
+export function resolvePositionLifetimeVolumeUsd(position: Record<string, any>): number {
+  const totalQuantity = resolveConfirmedPositionQuantity(position, true) ?? 0
+  if (!(totalQuantity > 0)) return 0
+
+  const fills = Array.isArray(position.fills) ? position.fills : []
+  const adjustments = Array.isArray(position.exchangeQuantityAdjustments)
+    ? position.exchangeQuantityAdjustments
+    : []
+  const ledgerRows = [...fills, ...adjustments]
+  const ledgerQuantity = ledgerRows.reduce((sum: number, row: unknown) => {
+    const value = record(row)
+    return sum + (absolutePositiveNumeric(
+      value.quantity ?? value.qty ?? value.executedQty,
+    ) ?? 0)
+  }, 0)
+  const quantityTolerance = Math.max(
+    1e-10,
+    Math.abs(firstFiniteNumeric(position.quantityStep, position.quantity_step) ?? 0) / 2,
+  )
+  const ledgerHasExactPrices = ledgerRows.length > 0 && ledgerRows.every((row) => {
+    const value = record(row)
+    return (absolutePositiveNumeric(value.quantity ?? value.qty ?? value.executedQty) ?? 0) > 0 &&
+      (firstPositiveNumeric(value.price, value.fillPrice, value.executionPrice) ?? 0) > 0
+  })
+  if (
+    ledgerHasExactPrices &&
+    Math.abs(ledgerQuantity - totalQuantity) <= quantityTolerance
+  ) {
+    return ledgerRows.reduce((sum: number, row: unknown) => {
+      const value = record(row)
+      const rowQuantity = absolutePositiveNumeric(value.quantity ?? value.qty ?? value.executedQty) ?? 0
+      const rowPrice = firstPositiveNumeric(value.price, value.fillPrice, value.executionPrice) ?? 0
+      return sum + resolvePositionNotionalUsd(position, rowQuantity, rowPrice)
+    }, 0)
+  }
+
+  const persistedLifetime = firstPositiveNumeric(
+    position.lifetimeVolumeUsd,
+    position.lifetime_volume_usd,
+  )
+  if (persistedLifetime !== undefined) return persistedLifetime
+
+  // Older Forex rows persisted `lots * price` in volumeUsd. Re-derive their
+  // notional from the market contract instead of exposing that crypto-style
+  // value as USD. Crypto keeps the durable current-volume compatibility path.
+  if (!isForexPosition(position)) {
+    const persistedCurrent = firstPositiveNumeric(
+      position.volumeUsd,
+      position.volume_usd,
+    )
+    if (persistedCurrent !== undefined) return persistedCurrent
+  }
+
+  return resolvePositionNotionalUsd(position, totalQuantity, resolveEntryPrice(position))
 }
 
 function resolveMarkPrice(position: Record<string, any>): number | undefined {

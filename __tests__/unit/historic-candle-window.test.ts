@@ -95,4 +95,18 @@ describe("historic chunk window", () => {
     expect(result.map((c) => c.timestamp)).toEqual([4000, 5000, 6000])
     expect(redis.lrange).toHaveBeenCalledWith("market_data:BTCUSDT:history:chunks", 1, 2)
   })
+
+  test("keeps historic reads in the connection-owned namespace", async () => {
+    const result = await getHistoricCandleWindow("EURUSD", {
+      afterMs: 3000,
+      beforeMs: 6000,
+      limit: 1,
+      warmup: 1,
+      connectionId: "instaforex-demo",
+    })
+
+    expect(result.pending.map((c) => c.timestamp)).toEqual([4000])
+    expect(redis.get).toHaveBeenCalledWith("market_data:instaforex-demo:EURUSD:history:meta")
+    expect(redis.lrange).toHaveBeenCalledWith("market_data:instaforex-demo:EURUSD:history:chunks", 0, 2)
+  })
 })

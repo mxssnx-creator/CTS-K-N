@@ -1263,6 +1263,70 @@ describe("historic runtime generation stability", () => {
     expect(processStrategy).not.toHaveBeenCalled()
   })
 
+  test("a fresh empty realtime result still advances the scoped strategy fast path", async () => {
+    const processStrategy = jest.fn(async () => ({
+      strategiesEvaluated: 2,
+      liveReady: 1,
+    }))
+
+    const result = await runIndStratCycle(
+      "realtime-snapshot-reuse",
+      "BTCUSDT",
+      "realtime",
+      {
+        indication: {
+          processIndication: async () => [],
+          isRealtimeSnapshotReady: () => true,
+        } as any,
+        strategy: { processStrategy } as any,
+        realtime: {
+          updateOpenPseudoPositionsForSymbol: jest.fn(async () => 0),
+        } as any,
+        enableStrategyFlow: true,
+      },
+    )
+
+    expect(result).toMatchObject({
+      indicationCount: 0,
+      strategiesEvaluated: 2,
+      liveReady: 1,
+    })
+    expect(processStrategy).toHaveBeenCalledWith(
+      "BTCUSDT",
+      [],
+      false,
+      expect.any(Function),
+      "realtime",
+    )
+  })
+
+  test("an empty realtime result without a fresh snapshot cannot reuse stale strategy rows", async () => {
+    const processStrategy = jest.fn(async () => ({
+      strategiesEvaluated: 1,
+      liveReady: 1,
+    }))
+
+    const result = await runIndStratCycle(
+      "realtime-snapshot-stale",
+      "BTCUSDT",
+      "realtime",
+      {
+        indication: {
+          processIndication: async () => [],
+          isRealtimeSnapshotReady: () => false,
+        } as any,
+        strategy: { processStrategy } as any,
+        realtime: {
+          updateOpenPseudoPositionsForSymbol: jest.fn(async () => 0),
+        } as any,
+        enableStrategyFlow: true,
+      },
+    )
+
+    expect(result.strategiesEvaluated).toBe(0)
+    expect(processStrategy).not.toHaveBeenCalled()
+  })
+
   test("the shared historic pipeline forwards isolated mode and skips live handling", async () => {
     const processStrategy = jest.fn(async () => ({
       strategiesEvaluated: 3,

@@ -1614,7 +1614,7 @@ describe("Real-stage Block overlays", () => {
     await getRedisClient().del(`strategy_block_pf_stats:${scopedConnectionId}`)
   })
 
-  test("materializes all 35 Signal source × symbol × direction × overall Block lanes independently", async () => {
+  test("materializes all crypto Signal source × symbol × direction × overall Block lanes independently", async () => {
     const scopedConnectionId = `${connectionId}-all-signal-sources`
     const coordinator = new StrategyCoordinator(scopedConnectionId) as any
     coordinator._coordinationSettings.variants.block = true
@@ -1622,7 +1622,11 @@ describe("Real-stage Block overlays", () => {
     coordinator._coordinationSettings.blockVolumeRatio = 1.5
     coordinator._coordinationSettings.blockProfitFactorRatio = 0.8
     coordinator._coordinationSettings.blockPauseCountRatio = 1
-    const sourceIds = SIGNAL_SOURCE_DEFINITIONS.map((definition) => definition.id)
+    // This fixture uses BTCUSDT. Forex-only sources are intentionally not
+    // eligible for a crypto symbol and must not create phantom Block lanes.
+    const sourceIds = SIGNAL_SOURCE_DEFINITIONS
+      .filter((definition) => definition.assetClass !== "forex")
+      .map((definition) => definition.id)
     expect(sourceIds).toHaveLength(35)
     const signalRisk = {
       stopLossPct: 0.35,
@@ -1655,8 +1659,8 @@ describe("Real-stage Block overlays", () => {
     ) as StrategySet[]
 
     // General strategy: 2 physical directions × (direction + overall) × 2 counts.
-    // Signal: 35 sources × 2 physical directions × (direction + overall) × 2 counts.
-    expect(overlays).toHaveLength(8 + (35 * 2 * 2 * 2))
+    // Signal: 35 crypto sources × 2 physical directions × (direction + overall) × 2 counts.
+    expect(overlays).toHaveLength(8 + (sourceIds.length * 2 * 2 * 2))
     expect(new Set(overlays.map((set) => set.setKey)).size).toBe(overlays.length)
     expect(new Set(
       overlays
@@ -1674,7 +1678,7 @@ describe("Real-stage Block overlays", () => {
 
     const stats = await getRedisClient().hgetall(`strategy_block_pf_stats:${scopedConnectionId}`)
     const snapshot = JSON.parse(stats["s:BTCUSDT:scoped_snapshot"])
-    expect(Object.keys(snapshot.lanes).filter((key) => key.startsWith("signal:"))).toHaveLength(35 * 3)
+    expect(Object.keys(snapshot.lanes).filter((key) => key.startsWith("signal:"))).toHaveLength(sourceIds.length * 3)
     expect(snapshot.lanes["signal:binance-usdm:overall"].calculated).toBe(4)
     await getRedisClient().del(`strategy_block_pf_stats:${scopedConnectionId}`)
   })

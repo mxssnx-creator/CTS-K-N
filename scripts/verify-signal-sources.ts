@@ -12,6 +12,7 @@ import {
   SIGNAL_SOURCE_DEFINITIONS,
   signalSourceSupportsSymbol,
 } from "@/lib/signal-source-registry"
+import { isForexSymbol } from "@/lib/forex-market"
 
 const symbol = String(process.env.SIGNAL_PROBE_SYMBOL || "BTCUSDT")
   .toUpperCase()
@@ -48,7 +49,7 @@ async function probe(source: (typeof SIGNAL_SOURCE_DEFINITIONS)[number]): Promis
     const response = await fetch(request.url, {
       ...request.init,
       headers: {
-        Accept: "application/json",
+        Accept: "application/json, text/xml, application/xml",
         ...(request.init?.headers || {}),
       },
       signal: controller.signal,
@@ -64,10 +65,22 @@ async function probe(source: (typeof SIGNAL_SOURCE_DEFINITIONS)[number]): Promis
       }
     }
     const contentType = response.headers.get("content-type") || ""
-    if (contentType && !contentType.toLowerCase().includes("json")) {
+    const normalizedContentType = contentType.toLowerCase()
+    if (
+      contentType &&
+      !normalizedContentType.includes("json") &&
+      !normalizedContentType.includes("xml") &&
+      !normalizedContentType.includes("text/plain")
+    ) {
       throw new Error(`unexpected_content_type_${contentType.split(";")[0]}`)
     }
-    const payload = await response.json()
+    const body = await response.text()
+    let payload: unknown = body
+    try {
+      payload = body ? JSON.parse(body) : null
+    } catch {
+      // XML is the normal response format for InstaForex Charts.
+    }
     const candles = source.parse(payload)
     return {
       sourceId: source.id,
@@ -123,6 +136,7 @@ async function main(): Promise<void> {
     mode: "public-market-data-read-only",
     symbol,
     registrySources: SIGNAL_SOURCE_DEFINITIONS.length,
+    compatibleAssetClass: sourceAssetClass(symbol),
     compatibleSources: sources.length,
     reachableSources: reachable.length,
     failedSources: results.length - reachable.length,
@@ -132,6 +146,10 @@ async function main(): Promise<void> {
   }
   process.stdout.write(`${JSON.stringify(output, null, 2)}\n`)
   if (strict && reachable.length !== sources.length) process.exitCode = 1
+}
+
+function sourceAssetClass(value: string): "crypto" | "forex" {
+  return isForexSymbol(value) ? "forex" : "crypto"
 }
 
 main().catch((error) => {

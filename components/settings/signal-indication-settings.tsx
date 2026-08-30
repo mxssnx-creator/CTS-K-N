@@ -15,7 +15,8 @@ import { toast } from "@/lib/simple-toast"
 interface SourceDescriptor {
   id: string
   name: string
-  market: "perpetual" | "futures" | "spot" | "aggregator"
+  market: "perpetual" | "futures" | "spot" | "aggregator" | "forex"
+  assetClass?: "crypto" | "forex"
   priority: 1 | 2 | 3
   timeframeMinutes: number
   officialDocs: string
@@ -74,6 +75,7 @@ interface SignalSettings {
   requestTimeoutMs: number
   concurrency: number
   minimumSourceSignals: number
+  minimumSourceSignalsForex: number
   minimumAgreement: number
   minimumConfidence: number
   minimumStrength: number
@@ -307,7 +309,8 @@ export function SignalIndicationSettings() {
               ["requestIntervalSeconds", "Request interval (seconds)", 30, 3600, 30],
               ["concurrency", "HTTP concurrency", 1, 10, 1],
               ["requestTimeoutMs", "Request timeout (ms)", 500, 10000, 100],
-              ["minimumSourceSignals", "Minimum agreeing sources", 2, 20, 1],
+              ["minimumSourceSignals", "Crypto agreeing sources", 2, 20, 1],
+              ["minimumSourceSignalsForex", "Forex agreeing sources", 1, 20, 1],
               ["minimumAgreement", "Minimum agreement", 0.5, 1, 0.05],
               ["minimumConfidence", "Minimum confidence", 0.5, 0.99, 0.01],
               ["minimumStrength", "Minimum signal strength", 0.05, 0.95, 0.05],
@@ -339,7 +342,7 @@ export function SignalIndicationSettings() {
             <div>
               <div className="font-medium">Source coverage is independent</div>
               <p className="mt-0.5 text-muted-foreground">
-                The 35-source registry counts different public websites only. Each source uses the configured symbols-per-source cap, ordered by 12h volatility, while Signal Config/Sets orders remain unlimited.
+                The registry contains 35 crypto feeds and one official InstaForex Charts feed. Each compatible source uses the configured symbols-per-source cap, ordered by 12h volatility, while Signal Config/Sets orders remain unlimited.
               </p>
             </div>
             <div>
@@ -348,7 +351,7 @@ export function SignalIndicationSettings() {
                 <Badge variant="outline" className="text-[10px]">Best quality first</Badge>
               </div>
               <p className="mt-0.5 text-muted-foreground">
-                Up to {settings.maxPositionsTotal} active physical Signal source-base positions across Long and Short; Signal Configs/Sets orders are not capped by this setting.
+                Up to {settings.maxPositionsTotal} active physical Signal source-base positions across Long and Short; Signal Configs/Sets orders are not capped by this setting. Forex uses its explicit {settings.minimumSourceSignalsForex}-source broker quorum.
                 Most volatile 12h symbols are processed first, then lower SL/drawdown (when available), consensus quality, confidence, agreement, strength, and reward/risk determine admission order.
               </p>
             </div>

@@ -33,6 +33,7 @@ import {
   netMovePctAfterPositionCost,
 } from "@/lib/main-trade-profit-factor"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import { isForexSymbol } from "@/lib/forex-market"
 
 export type SignalDirection = "long" | "short"
 export type SignalPerformanceDirection = SignalDirection | "overall"
@@ -72,6 +73,8 @@ export interface SignalIndicationSettings {
   requestTimeoutMs: number
   concurrency: number
   minimumSourceSignals: number
+  /** InstaForex has one authoritative broker OHLC feed; keep its quorum explicit. */
+  minimumSourceSignalsForex: number
   minimumAgreement: number
   minimumConfidence: number
   minimumStrength: number
@@ -172,6 +175,13 @@ export interface ProcessSignalIndicationsOptions {
   fetchImpl?: typeof fetch
   sourceCursor?: number
   persist?: boolean
+  /**
+   * Start or reuse the production source cycle without waiting for remote
+   * providers to finish. The completed, cached snapshot is returned on a
+   * later call. Explicit adapter/test calls always remain synchronous unless
+   * they opt into this mode themselves.
+   */
+  waitForCompletion?: boolean
 }
 
 export interface SignalSettingsResponse {
@@ -280,6 +290,7 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   requestTimeoutMs: 2500,
   concurrency: 10,
   minimumSourceSignals: 3,
+  minimumSourceSignalsForex: 1,
   minimumAgreement: 0.6,
   minimumConfidence: 0.6,
   minimumStrength: 0.2,
@@ -403,6 +414,15 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
       20,
     )),
   )
+  const minimumSourceSignalsForex = Math.min(
+    maxSourcesPerCycle,
+    Math.round(boundedNumber(
+      raw.minimumSourceSignalsForex,
+      DEFAULT_SIGNAL_INDICATION_SETTINGS.minimumSourceSignalsForex,
+      1,
+      20,
+    )),
+  )
   const legacyCacheIntervalSeconds = Number(raw.cacheTtlMs) / 1000
   const requestIntervalSeconds = Math.round(boundedNumber(
     raw.requestIntervalSeconds,
@@ -464,6 +484,7 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     requestTimeoutMs: Math.round(boundedNumber(raw.requestTimeoutMs, 2500, 500, 10_000)),
     concurrency: Math.round(boundedNumber(raw.concurrency, 10, 1, 10)),
     minimumSourceSignals,
+    minimumSourceSignalsForex,
     minimumAgreement: boundedNumber(raw.minimumAgreement, 0.6, 0.5, 1),
     minimumConfidence: boundedNumber(raw.minimumConfidence, 0.6, 0.5, 0.99),
     minimumStrength: boundedNumber(raw.minimumStrength, 0.2, 0.05, 0.95),
@@ -1610,17 +1631,29 @@ async function fetchSourceCandles(input: {
       const response = await input.fetchImpl(request.url, {
         ...request.init,
         headers: {
-          Accept: "application/json",
+          Accept: "application/json, text/xml, application/xml",
           ...(request.init?.headers || {}),
         },
         signal: controller.signal,
       })
       if (!response.ok) throw new Error(`http_${response.status}`)
       const contentType = response.headers.get("content-type") || ""
-      if (contentType && !contentType.toLowerCase().includes("json")) {
+      const normalizedContentType = contentType.toLowerCase()
+      if (
+        contentType &&
+        !normalizedContentType.includes("json") &&
+        !normalizedContentType.includes("xml") &&
+        !normalizedContentType.includes("text/plain")
+      ) {
         throw new Error(`unexpected_content_type_${contentType.split(";")[0]}`)
       }
-      const payload = await response.json()
+      const body = await response.text()
+      let payload: unknown = body
+      try {
+        payload = body ? JSON.parse(body) : null
+      } catch {
+        // XML sources, notably InstaForex Charts, are parsed by their adapter.
+      }
       const candles = input.source.parse(payload).slice(-input.settings.candleLimit)
       if (candles.length < 20) throw new Error(`insufficient_candles_${candles.length}`)
       await updateSourceHealth(input.client, input.connectionId, input.source, {
@@ -1671,11 +1704,21 @@ function selectSources(
   )
 }
 
+function minimumSourceSignalsForSymbol(
+  settings: SignalIndicationSettings,
+  symbol: string,
+): number {
+  return isForexSymbol(symbol)
+    ? settings.minimumSourceSignalsForex
+    : settings.minimumSourceSignals
+}
+
 function lowStopConsensus(
   evaluations: SignalSourceEvaluation[],
   settings: SignalIndicationSettings,
+  requiredSourceSignals = settings.minimumSourceSignals,
 ): { direction: SignalDirection; contributors: SignalSourceEvaluation[]; risk: SignalRisk } | null {
-  if (evaluations.length < settings.minimumSourceSignals) return null
+  if (evaluations.length < requiredSourceSignals) return null
   const voteWeight = (evaluation: SignalSourceEvaluation) => {
     const lowStopBonus = 1 + 0.2 * (1 - evaluation.stopLossPct / settings.stopLossMaxPct)
     return evaluation.weight * evaluation.confidence * evaluation.strength * lowStopBonus
@@ -1692,7 +1735,7 @@ function lowStopConsensus(
   const contributors = byDirection[direction]
   const winningWeight = direction === "long" ? longWeight : shortWeight
   const agreement = winningWeight / totalWeight
-  if (contributors.length < settings.minimumSourceSignals || agreement < settings.minimumAgreement) return null
+  if (contributors.length < requiredSourceSignals || agreement < settings.minimumAgreement) return null
 
   const orderedByStop = [...contributors].sort(
     (left, right) => left.stopLossPct - right.stopLossPct || right.confidence - left.confidence,
@@ -2017,6 +2060,7 @@ async function processSignalIndicationsUncached(
     86400,
   ).catch(() => 0)
   const sources = selectSources(settings, options.symbol, sourceCursor)
+  const requiredSourceSignals = minimumSourceSignalsForSymbol(settings, options.symbol)
   const fetchImpl = options.fetchImpl ?? fetch
   const simulatedSourceData =
     !options.fetchImpl &&
@@ -2091,7 +2135,7 @@ async function processSignalIndicationsUncached(
     return decision.allowed ? evaluation : null
   }))).filter((evaluation): evaluation is SignalSourceEvaluation => Boolean(evaluation))
 
-  const consensus = lowStopConsensus(allowedEvaluations, settings)
+  const consensus = lowStopConsensus(allowedEvaluations, settings, requiredSourceSignals)
   const indications: any[] = []
   // Every website source remains an independent Signal lane. Source and
   // source×symbol diagnostics do not suppress another exact configuration;
@@ -2132,6 +2176,7 @@ async function processSignalIndicationsUncached(
           selectedSourceCount: sources.length,
           evaluatedSourceCount: evaluated.length,
           allowedSourceCount: allowedEvaluations.length,
+          requiredSourceSignals,
         },
       },
     })
@@ -2183,6 +2228,7 @@ async function processSignalIndicationsUncached(
             selectedSourceCount: sources.length,
             evaluatedSourceCount: evaluated.length,
             allowedSourceCount: allowedEvaluations.length,
+            requiredSourceSignals,
             performanceProbe: consensusDecision.probe,
           },
         },
@@ -2198,6 +2244,7 @@ async function processSignalIndicationsUncached(
       performanceAllowedSources: allowedEvaluations.map((evaluation) => evaluation.sourceId),
       direction: indications[0]?.metadata?.direction ?? null,
       sourceRegistrySize: SIGNAL_SOURCE_DEFINITIONS.length,
+      requiredSourceSignals,
     }).catch(() => {})
   }
   return indications
@@ -2207,11 +2254,13 @@ export async function processSignalIndications(
   options: ProcessSignalIndicationsOptions,
 ): Promise<any[]> {
   const settings = normalizeSignalIndicationSettings(options.settings)
+  const waitForCompletion = options.waitForCompletion !== false
   // Explicit fetch implementations are test/diagnostic calls and deliberately
   // bypass the production cycle cache so every requested adapter is exercised.
-  if (options.fetchImpl || options.persist === false || !settings.enabled) {
+  if (options.fetchImpl || options.persist === false) {
     return processSignalIndicationsUncached({ ...options, settings })
   }
+  if (!settings.enabled) return []
   const now = options.now ?? Date.now()
   const settingsFingerprint = JSON.stringify({
     directExecutionEnabled: settings.directExecutionEnabled,
@@ -2222,6 +2271,7 @@ export async function processSignalIndications(
     positionSelectionMode: settings.positionSelectionMode,
     requestIntervalSeconds: settings.requestIntervalSeconds,
     minimumSourceSignals: settings.minimumSourceSignals,
+    minimumSourceSignalsForex: settings.minimumSourceSignalsForex,
     minimumAgreement: settings.minimumAgreement,
     minimumConfidence: settings.minimumConfidence,
     minimumStrength: settings.minimumStrength,
@@ -2237,7 +2287,7 @@ export async function processSignalIndications(
   const cached = CYCLE_CACHE.get(key)
   if (cached && cached.expiresAt > now) return cached.indications
   const inflight = CYCLE_INFLIGHT.get(key)
-  if (inflight) return inflight
+  if (inflight) return waitForCompletion ? inflight : []
 
   while (CYCLE_CACHE.size >= CYCLE_CACHE_MAX) {
     const oldest = CYCLE_CACHE.keys().next().value
@@ -2257,8 +2307,16 @@ export async function processSignalIndications(
     })
     .finally(() => {
       if (CYCLE_INFLIGHT.get(key) === promise) CYCLE_INFLIGHT.delete(key)
-    })
+  })
   CYCLE_INFLIGHT.set(key, promise)
+  if (!waitForCompletion) {
+    // The source cycle owns its own AbortController/timeouts and the shared
+    // in-flight map prevents a second realtime symbol tick from launching a
+    // duplicate provider fan-out. Keep the rejection observed while allowing
+    // the canonical indication/strategy pipeline to continue immediately.
+    void promise.catch(() => {})
+    return []
+  }
   return promise
 }
 

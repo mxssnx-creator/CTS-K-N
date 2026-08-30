@@ -289,15 +289,15 @@ function FragmentRow({ row, expanded, onToggle }: { row: TradeHistoryRow; expand
         </TableCell>
         <TableCell className="py-1.5 font-mono text-[10px] tabular-nums">{formatPrice(row.entryPrice)} <span className="text-muted-foreground">→</span> {formatPrice(row.exitPrice)}</TableCell>
         <TableCell className="py-1.5">
-          <div className="font-mono text-[10px]">{formatQuantity(row.quantity)}</div>
-          <div className="text-[9px] text-muted-foreground">{formatMoney(row.volumeUsd)}</div>
+          <div className="font-mono text-[10px]">{formatQuantity(row.quantity)} {row.marketType === "forex" || row.volumeKind === "lots" ? "lots" : "units"}</div>
+          <div className="text-[9px] text-muted-foreground">{formatMoney(row.volumeUsd, row.marketType === "forex" ? "USD" : "USDT")}</div>
         </TableCell>
         <TableCell className="py-1.5">
-          <div className={`font-semibold tabular-nums ${pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatMoney(pnl)}</div>
+          <div className={`font-semibold tabular-nums ${pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatMoney(pnl, row.marketType === "forex" ? "USD" : "USDT")}</div>
           <div className={`text-[9px] ${pnl >= 0 ? "text-emerald-600/80 dark:text-emerald-400/80" : "text-rose-600/80 dark:text-rose-400/80"}`}>{formatPercent(row.pnlPct)}</div>
         </TableCell>
         <TableCell className="py-1.5">
-          <div className="text-[10px]">{formatMoney(row.fees)}</div>
+          <div className="text-[10px]">{formatMoney(row.fees, row.marketType === "forex" ? "USD" : "USDT")}</div>
           <div className="text-[9px] text-muted-foreground">{formatHoldMinutes(row.holdMinutes)}</div>
         </TableCell>
         <TableCell className="py-1.5">

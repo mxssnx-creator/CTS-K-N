@@ -6,6 +6,7 @@ import {
 import {
   derivePositionRoi,
   resolveConfirmedPositionQuantity,
+  resolvePositionLifetimeVolumeUsd,
   resolveSettledRealizedPnl,
 } from "@/lib/live-position-pnl"
 import {
@@ -134,15 +135,6 @@ function truthy(value: unknown): boolean {
   return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase())
 }
 
-function entryPrice(position: Record<string, any>): number {
-  return Math.max(0, finite(
-    position.averageExecutionPrice
-    ?? position.entryPrice
-    ?? position.entry_price
-    ?? position.exchangeData?.entryPrice,
-  ))
-}
-
 /** Build one idempotent terminal-row contribution. Requested-only intents do
  * not count as trades because confirmed lifetime quantity is mandatory. */
 export function buildLivePositionLifetimeContribution(
@@ -168,9 +160,7 @@ export function buildLivePositionLifetimeContribution(
     position.closedAt ?? position.closed_at ?? position.updatedAt ?? position.updated_at,
   )
   const holdingMs = openedAt > 0 && closedAt >= openedAt ? closedAt - openedAt : 0
-  const volumeUsd = executed
-    ? Math.max(0, finite(position.lifetimeVolumeUsd) || entryPrice(position) * quantity)
-    : 0
+  const volumeUsd = executed ? resolvePositionLifetimeVolumeUsd(position) : 0
   const roi = settledPnl === undefined
     ? undefined
     : derivePositionRoi(position, settledPnl, true)

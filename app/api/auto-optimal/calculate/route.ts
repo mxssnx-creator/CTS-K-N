@@ -2,9 +2,18 @@ import { type NextRequest, NextResponse } from "next/server"
 import { v4 as uuidv4 } from "uuid"
 import DatabaseManager from "@/lib/database"
 import { EntityTypes, ConfigSubTypes } from "@/lib/core/entity-types"
-import { getSettings, setSettings, getMarketData } from "@/lib/redis-db"
+import { getConnection, getSettings, setSettings, getMarketData } from "@/lib/redis-db"
 import { aggregateCostNormalizedResults } from "@/lib/profit-factor"
-import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import {
+  effectivePositionCostPercent,
+  normalizePositionCostPercent,
+  POSITION_COST_PERCENT_DEFAULT,
+} from "@/lib/position-cost"
+import { fetchDirectTradeMinuteHistory } from "@/lib/direct-trade-market-history"
+import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
+import { isForcedSimulation } from "@/lib/real-trade-gates"
+import { getDefaultSymbolsForMarket, normalizeMarketSymbol, normalizeMarketType } from "@/lib/market-types"
+import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
 
 interface SimulationResult {
   takeprofit: number
@@ -42,6 +51,8 @@ export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest) {
   try {
     const config = await request.json()
+    const connectionId = String(config.connection_id || config.connectionId || "").trim()
+    const connection = connectionId ? await getConnection(connectionId).catch(() => null) : null
     const positionCostPercent = normalizePositionCostPercent(
       config.positionCostPercent ?? config.position_cost_pct ?? POSITION_COST_PERCENT_DEFAULT,
     )
@@ -52,6 +63,7 @@ export async function POST(request: NextRequest) {
     
     await dbManager.insert(EntityTypes.CONFIG, ConfigSubTypes.AUTO_OPTIMAL, {
       id: configId,
+      connection_id: connectionId || undefined,
       name: `Auto Config ${new Date().toISOString()}`,
       symbol_mode: config.symbol_mode,
       exchange_order_by: config.exchange_order_by,
@@ -78,8 +90,19 @@ export async function POST(request: NextRequest) {
 
     console.log(`[v0] Auto-optimal config created: ${configId}`)
 
-    const symbols = await getSymbolsForCalculation(config)
-    const historicalData = await fetchHistoricalData(symbols, config.calculation_days || 30)
+    const symbols = await getSymbolsForCalculation(config, connection)
+    const historicalData = await fetchHistoricalData(
+      symbols,
+      config.calculation_days || 30,
+      connectionId,
+      connection,
+    )
+    const positionCostBySymbol = await resolvePositionCostBySymbol(
+      symbols,
+      positionCostPercent,
+      connectionId,
+      connection,
+    )
     
     const paramCombinations = generateParameterCombinations({ ...config, positionCostPercent })
     console.log(`[v0] Testing ${paramCombinations.length} parameter combinations`)
@@ -87,7 +110,7 @@ export async function POST(request: NextRequest) {
     const results: SimulationResult[] = []
     
     for (const params of paramCombinations) {
-      const trades = simulateTrades(historicalData, params)
+      const trades = simulateTrades(historicalData, { ...params, positionCostBySymbol })
       const metrics = calculateMetrics(trades)
       
       if (meetsCriteria(metrics, config)) {
@@ -103,7 +126,7 @@ export async function POST(request: NextRequest) {
     results.sort((a, b) => b.profitFactor - a.profitFactor)
     const topResults = results.slice(0, 20)
     
-    await saveResults(configId, topResults)
+    await saveResults(configId, topResults, connectionId)
     
     console.log(`[v0] Auto-optimal calculation complete: ${topResults.length} results found`)
 
@@ -114,55 +137,158 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function getSymbolsForCalculation(config: any): Promise<string[]> {
-  const symbols = await getSettings("active_symbols")
-  if (symbols && Array.isArray(symbols)) {
-    return symbols.slice(0, config.symbol_limit || 10)
-  }
-  return ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+async function getSymbolsForCalculation(config: any, connection: any): Promise<string[]> {
+  const marketType = normalizeMarketType(
+    config.market_type || config.asset_class || connection?.market_type || connection?.asset_class,
+    config.exchange || connection?.exchange,
+  )
+  const sources = [
+    config.symbols,
+    config.active_symbols,
+    connection?.active_symbols,
+    connection?.activeSymbols,
+  ]
+  const symbols = Array.from(new Set(sources.flatMap((source) => {
+    const values = Array.isArray(source)
+      ? source
+      : typeof source === "string"
+        ? source.split(/[\s,|;]+/)
+        : []
+    return values.map((value: unknown) => marketType === "forex"
+      ? normalizeForexSymbol(value)
+      : normalizeMarketSymbol(value, "crypto"))
+      .filter((symbol: string) => marketType === "forex" ? isForexSymbol(symbol) : /^[A-Z0-9]{2,30}$/.test(symbol))
+  })))
+  if (symbols.length > 0) return symbols.slice(0, Math.max(1, Number(config.symbol_limit) || 10))
+  return marketType === "forex"
+    ? getDefaultSymbolsForMarket("forex").slice(0, Math.max(1, Number(config.symbol_limit) || 10))
+    : ["BTCUSDT", "ETHUSDT", "SOLUSDT"].slice(0, Math.max(1, Number(config.symbol_limit) || 3))
 }
 
-async function fetchHistoricalData(symbols: string[], days: number): Promise<Map<string, any[]>> {
+async function fetchHistoricalData(
+  symbols: string[],
+  days: number,
+  connectionId: string,
+  connection: any,
+): Promise<Map<string, any[]>> {
   const dataBySymbol = new Map<string, any[]>()
   const cutoffTime = Date.now() - days * 24 * 60 * 60 * 1000
-  
+  const marketType = normalizeMarketType(
+    connection?.market_type || connection?.asset_class,
+    connection?.exchange,
+  )
+  const exchange = String(connection?.exchange || "").trim().toLowerCase().replace(/[^a-z]/g, "")
+
   for (const symbol of symbols) {
-    const marketData = await getMarketData(symbol, "1m")
-    if (marketData && marketData.candles && Array.isArray(marketData.candles)) {
-      const filteredCandles = marketData.candles.filter((c: any) => 
-        new Date(c.timestamp).getTime() >= cutoffTime
-      )
-      dataBySymbol.set(symbol, filteredCandles)
-    } else {
-      dataBySymbol.set(symbol, generateMockHistoricalData(days))
+    const canonical = marketType === "forex" ? normalizeForexSymbol(symbol) : normalizeMarketSymbol(symbol, "crypto")
+    const scopedData = connectionId ? await getMarketData(canonical, "1s", connectionId).catch(() => null) : null
+    const cached = Array.isArray(scopedData?.candles) ? scopedData.candles : []
+    let filteredCandles = cached.filter((c: any) => {
+      const timestamp = new Date(c.timestamp ?? c.time).getTime()
+      return Number.isFinite(timestamp) && timestamp >= cutoffTime
+    })
+
+    if (filteredCandles.length < 40 && !isForcedSimulation()) {
+      const venue = exchange.includes("instaforex") || exchange.includes("instafx")
+        ? "instaforex"
+        : exchange.includes("bingx")
+          ? "bingx"
+          : exchange.includes("bybit")
+            ? "bybit"
+            : ""
+      if (venue) {
+        const history = await fetchDirectTradeMinuteHistory(venue, canonical, Math.max(1 / 60, days * 24)).catch(() => [])
+        filteredCandles = history
+          .map((c) => ({ timestamp: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }))
+          .filter((c) => c.timestamp >= cutoffTime)
+      } else if (connectionId) {
+        const connector = await exchangeConnectorFactory.getOrCreateConnector(connectionId)
+        const history = connector ? await connector.getOHLCV(canonical, "1m", Math.min(5_000, Math.max(100, days * 24 * 60))).catch(() => null) : null
+        filteredCandles = (history || [])
+          .map((c: any) => ({
+            timestamp: Number(c.timestamp),
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+            volume: Number(c.volume || 0),
+          }))
+          .filter((c: any) => c.timestamp >= cutoffTime)
+      }
     }
+    if (filteredCandles.length === 0 && isForcedSimulation()) {
+      filteredCandles = generateMockHistoricalData(days, canonical, marketType)
+    }
+    dataBySymbol.set(canonical, filteredCandles)
   }
-  
+
   return dataBySymbol
 }
 
-function generateMockHistoricalData(days: number): any[] {
+function generateMockHistoricalData(days: number, symbol: string, marketType: "crypto" | "forex"): any[] {
   const data = []
   const now = Date.now()
-  const basePrice = 50000
-  
+  const forexBase: Record<string, number> = {
+    EURUSD: 1.08,
+    GBPUSD: 1.27,
+    USDJPY: 150,
+    USDCHF: 0.9,
+    AUDUSD: 0.66,
+    USDCAD: 1.36,
+    NZDUSD: 0.61,
+    EURGBP: 0.85,
+  }
+  const cryptoBase: Record<string, number> = { BTCUSDT: 65_000, ETHUSDT: 3_200, SOLUSDT: 145 }
+  const basePrice = marketType === "forex" ? forexBase[symbol] || 1 : cryptoBase[symbol] || 100
+  const amplitude = marketType === "forex" ? 0.0015 : 0.01
+
   for (let i = 0; i < days * 24 * 60; i++) {
     const timestamp = new Date(now - (days * 24 * 60 - i) * 60 * 1000)
-    const noise = (Math.random() - 0.5) * 0.02
-    const trend = Math.sin(i / 1000) * 0.1
-    const price = basePrice * (1 + trend + noise)
-    
+    const trend = Math.sin(i / 97) * amplitude + Math.cos(i / 251) * amplitude * 0.6
+    const price = basePrice * (1 + trend + i * amplitude / Math.max(1, days * 24 * 60) / 10)
+    const barRange = basePrice * amplitude * 0.8
     data.push({
       timestamp,
-      open: price * (1 + (Math.random() - 0.5) * 0.005),
-      high: price * (1 + Math.random() * 0.01),
-      low: price * (1 - Math.random() * 0.01),
+      open: price,
+      high: price + barRange,
+      low: Math.max(0.000001, price - barRange),
       close: price,
-      volume: Math.random() * 1000000,
+      volume: marketType === "forex" ? 1_000 : 1_000_000,
     })
   }
-  
+
   return data
+}
+
+async function resolvePositionCostBySymbol(
+  symbols: string[],
+  configuredPercent: number,
+  connectionId: string,
+  connection: any,
+): Promise<Record<string, number>> {
+  const result: Record<string, number> = Object.fromEntries(symbols.map((symbol) => [symbol, configuredPercent]))
+  const marketType = normalizeMarketType(
+    connection?.market_type || connection?.asset_class,
+    connection?.exchange,
+  )
+  if (!connectionId || marketType !== "forex") return result
+  const connector = await exchangeConnectorFactory.getOrCreateConnector(connectionId).catch(() => null)
+  if (!connector) return result
+  for (const symbol of symbols) {
+    const canonical = normalizeForexSymbol(symbol)
+    const ticker = await connector.getTicker(canonical).catch(() => null)
+    result[symbol] = effectivePositionCostPercent(
+      configuredPercent,
+      ticker,
+      canonical,
+      {
+        marketType: "forex",
+        spreadBufferPips: Number(connection?.spread_buffer_pips),
+        spreadMultiplier: Number(connection?.spread_multiplier),
+      },
+    )
+  }
+  return result
 }
 
 function generateParameterCombinations(config: any): any[] {
@@ -215,7 +341,7 @@ function simulateTrades(historicalData: Map<string, any[]>, params: any): Trade[
       const entrySignal = checkEntrySignal(candles, i)
       
       if (entrySignal) {
-      const trade = simulateTrade(symbol, candles, i, params)
+        const trade = simulateTrade(symbol, candles, i, entrySignal, params)
         if (trade) {
           trades.push(trade)
           i += Math.min(120, candles.length - i - 1)
@@ -228,8 +354,8 @@ function simulateTrades(historicalData: Map<string, any[]>, params: any): Trade[
   return trades
 }
 
-function checkEntrySignal(candles: any[], index: number): boolean {
-  if (index < 20) return false
+function checkEntrySignal(candles: any[], index: number): "long" | "short" | null {
+  if (index < 20) return null
   
   const recentCloses = candles.slice(index - 20, index).map((c: any) => c.close || c.price)
   const currentClose = candles[index].close || candles[index].price
@@ -237,17 +363,32 @@ function checkEntrySignal(candles: any[], index: number): boolean {
   const sma = recentCloses.reduce((sum: number, p: number) => sum + p, 0) / recentCloses.length
   const priceChange = (currentClose - sma) / sma
   
-  return Math.abs(priceChange) > 0.005
+  if (!(sma > 0) || !Number.isFinite(priceChange)) return null
+  if (priceChange > 0.005) return "long"
+  if (priceChange < -0.005) return "short"
+  return null
 }
 
-function simulateTrade(symbol: string, candles: any[], entryIndex: number, params: any): Trade | null {
-  const entryPrice = candles[entryIndex].close || candles[entryIndex].price
-  const entryTime = new Date(candles[entryIndex].timestamp)
+function simulateTrade(
+  symbol: string,
+  candles: any[],
+  signalIndex: number,
+  side: "long" | "short",
+  params: any,
+): Trade | null {
+  // A signal observed on a closed candle enters at the next candle's open.
+  // This prevents the optimizer from using the signal candle's close as both
+  // evidence and an executable fill.
+  const entryIndex = signalIndex + 1
+  if (entryIndex >= candles.length) return null
+  const entryCandle = candles[entryIndex]
+  const entryPrice = Number(entryCandle.open || entryCandle.close || entryCandle.price || 0)
+  if (!(entryPrice > 0)) return null
+  const entryTime = new Date(entryCandle.timestamp)
   
-  const side: "long" | "short" = Math.random() > 0.5 ? "long" : "short"
-  
-  const tpPercent = params.takeprofit / 100
-  const slPercent = params.stoploss / 100
+  const tpPercent = Number(params.takeprofit) / 100
+  const slPercent = Number(params.stoploss) / 100
+  if (!(tpPercent > 0) || !(slPercent > 0)) return null
   
   const tpPrice = side === "long" 
     ? entryPrice * (1 + tpPercent) 
@@ -260,45 +401,56 @@ function simulateTrade(symbol: string, candles: any[], entryIndex: number, param
   let exitTime = entryTime
   let highestPrice = entryPrice
   let lowestPrice = entryPrice
+  let exitReason = "timeout"
   
   const maxDuration = 120
   
-  for (let i = entryIndex + 1; i < candles.length && i - entryIndex < maxDuration; i++) {
-    const currentPrice = candles[i].close || candles[i].price
+  for (let i = entryIndex; i < candles.length && i - entryIndex < maxDuration; i++) {
+    const candle = candles[i]
+    const currentPrice = Number(candle.close || candle.price || 0)
+    const high = Number(candle.high || currentPrice)
+    const low = Number(candle.low || currentPrice)
+    if (!(currentPrice > 0) || !(high >= low) || !(low > 0)) continue
     
     if (side === "long") {
-      if (currentPrice >= tpPrice) {
-        exitPrice = tpPrice
-        exitTime = new Date(candles[i].timestamp)
+      // OHLC does not reveal intra-bar ordering. Use stop-first to avoid
+      // turning a candle that touched both controls into a false winner.
+      if (low <= slPrice) {
+        exitPrice = slPrice
+        exitTime = new Date(candle.timestamp)
+        exitReason = "stoploss"
         break
       }
-      if (currentPrice <= slPrice) {
-        exitPrice = slPrice
-        exitTime = new Date(candles[i].timestamp)
+      if (high >= tpPrice) {
+        exitPrice = tpPrice
+        exitTime = new Date(candle.timestamp)
+        exitReason = "takeprofit"
         break
       }
       
-      if (params.trailing_enabled && currentPrice > highestPrice) {
-        highestPrice = currentPrice
+      if (params.trailing_enabled && high > highestPrice) {
+        highestPrice = high
         const newSl = highestPrice * (1 - slPercent * 0.5)
         if (newSl > slPrice) {
           slPrice = newSl
         }
       }
     } else {
-      if (currentPrice <= tpPrice) {
-        exitPrice = tpPrice
-        exitTime = new Date(candles[i].timestamp)
+      if (high >= slPrice) {
+        exitPrice = slPrice
+        exitTime = new Date(candle.timestamp)
+        exitReason = "stoploss"
         break
       }
-      if (currentPrice >= slPrice) {
-        exitPrice = slPrice
-        exitTime = new Date(candles[i].timestamp)
+      if (low <= tpPrice) {
+        exitPrice = tpPrice
+        exitTime = new Date(candle.timestamp)
+        exitReason = "takeprofit"
         break
       }
       
-      if (params.trailing_enabled && currentPrice < lowestPrice) {
-        lowestPrice = currentPrice
+      if (params.trailing_enabled && low < lowestPrice) {
+        lowestPrice = low
         const newSl = lowestPrice * (1 + slPercent * 0.5)
         if (newSl < slPrice) {
           slPrice = newSl
@@ -308,14 +460,16 @@ function simulateTrade(symbol: string, candles: any[], entryIndex: number, param
     
     if (i === candles.length - 1 || i - entryIndex >= maxDuration - 1) {
       exitPrice = currentPrice
-      exitTime = new Date(candles[i].timestamp)
+      exitTime = new Date(candle.timestamp)
     }
   }
   
   const grossProfitLoss = side === "long"
     ? ((exitPrice - entryPrice) / entryPrice) * 100
     : ((entryPrice - exitPrice) / entryPrice) * 100
-  const positionCostPercent = normalizePositionCostPercent(params.positionCostPercent ?? POSITION_COST_PERCENT_DEFAULT)
+  const positionCostPercent = normalizePositionCostPercent(
+    params.positionCostBySymbol?.[symbol] ?? params.positionCostPercent ?? POSITION_COST_PERCENT_DEFAULT,
+  )
   // Auto-Optimal ranks only closed simulated trades. Deduct the configured
   // position cost once, so zero-gross moves cannot look profitable in PF.
   const profitLoss = grossProfitLoss - positionCostPercent
@@ -392,7 +546,7 @@ function calculateDrawdown(trades: Trade[]): { maxDrawdown: number; maxDrawdownD
   for (const trade of sortedTrades) {
     cumulativePnL += trade.profit_loss
     
-    if (cumulativePnL > peak) {
+    if (cumulativePnL >= peak) {
       if (currentDrawdownStart) {
         const duration = (trade.exit_time.getTime() - currentDrawdownStart.getTime()) / (1000 * 60 * 60)
         maxDrawdownDuration = Math.max(maxDrawdownDuration, duration)
@@ -403,9 +557,18 @@ function calculateDrawdown(trades: Trade[]): { maxDrawdown: number; maxDrawdownD
       if (!currentDrawdownStart) {
         currentDrawdownStart = trade.exit_time
       }
-      const drawdown = ((peak - cumulativePnL) / peak) * 100
+      // cumulativePnL is already expressed in percentage points, so dividing
+      // by a zero/negative peak creates NaN or an inverted drawdown. Keep the
+      // metric finite and aligned with the PnL coordinate.
+      const drawdown = Math.max(0, peak - cumulativePnL)
       maxDrawdown = Math.max(maxDrawdown, drawdown)
     }
+  }
+
+  if (currentDrawdownStart && sortedTrades.length > 0) {
+    const lastExit = sortedTrades[sortedTrades.length - 1].exit_time.getTime()
+    const duration = (lastExit - currentDrawdownStart.getTime()) / (1000 * 60 * 60)
+    maxDrawdownDuration = Math.max(maxDrawdownDuration, Math.max(0, duration))
   }
   
   return { maxDrawdown, maxDrawdownDuration }
@@ -424,12 +587,13 @@ function meetsCriteria(metrics: any, config: any): boolean {
   return metrics.totalTrades >= 5
 }
 
-async function saveResults(configId: string, results: SimulationResult[]): Promise<void> {
-  const existingResults = (await getSettings("auto_optimal_results")) || {}
+async function saveResults(configId: string, results: SimulationResult[], connectionId = ""): Promise<void> {
+  const resultKey = connectionId ? `auto_optimal_results:${connectionId}` : "auto_optimal_results:unscoped"
+  const existingResults = (await getSettings(resultKey)) || {}
   existingResults[configId] = {
     configId,
     results,
     calculatedAt: new Date().toISOString(),
   }
-  await setSettings("auto_optimal_results", existingResults)
+  await setSettings(resultKey, existingResults)
 }

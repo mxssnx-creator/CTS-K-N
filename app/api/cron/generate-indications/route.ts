@@ -38,14 +38,28 @@ import {
   type CanonicalPipelineAdmission,
 } from "@/lib/canonical-pipeline-admission"
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
+import { marketDataKey } from "@/lib/market-data-keys"
+import {
+  getDefaultSymbolsForMarket,
+  normalizeMarketSymbol,
+  normalizeMarketType,
+  type MarketType,
+} from "@/lib/market-types"
+import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
+import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
 export const revalidate = 0
 export const fetchCache = "force-no-store"
 
-// Fallback symbols if no market data is available in Redis
+// Fallback symbols if no market data is available in Redis. These are used
+// only for explicit paper/simulation runs; a live connection with no current
+// quote is skipped instead of receiving a fabricated price.
 const FALLBACK_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+const FOREX_FALLBACK_SYMBOLS = getDefaultSymbolsForMarket("forex")
+const CRYPTO_MARKET_DATA_MAX_AGE_MS = 90_000
+const FOREX_MARKET_DATA_MAX_AGE_MS = 180_000
 
 function isExpectedHistoricHandoff(error: unknown): boolean {
   const candidate = error as { name?: unknown; message?: unknown } | null
@@ -77,12 +91,14 @@ function resolveCronWorkBudgetMs(): number {
 const volatileSymbolCache = new Map<string, { symbol: string; ts: number }>()
 const CACHE_TTL = 60_000
 
-function normalizeSymbolList(value: unknown): string[] {
+function normalizeSymbolList(value: unknown, marketType: MarketType = "crypto"): string[] {
   const out: string[] = []
   const push = (v: unknown) => {
     if (typeof v !== "string") return
-    const sym = v.trim().toUpperCase()
-    if (/^[A-Z0-9]{2,30}$/.test(sym)) out.push(sym)
+    const sym = marketType === "forex"
+      ? normalizeForexSymbol(v)
+      : normalizeMarketSymbol(v, "crypto")
+    if (marketType === "forex" ? isForexSymbol(sym) : /^[A-Z0-9]{2,30}$/.test(sym)) out.push(sym)
   }
 
   if (Array.isArray(value)) {
@@ -110,32 +126,51 @@ function normalizeSymbolList(value: unknown): string[] {
 // CRITICAL: Never HTTP-self-fetch from a route handler — it deadlocks the dev server
 // and hangs on Vercel when the request context is unavailable. Call the shared lib fn
 // directly so resolution happens in-process with zero network overhead.
-async function getMostVolatileSymbol(exchange: string): Promise<string> {
+async function getMostVolatileSymbol(exchange: string, marketType: MarketType): Promise<string> {
   // Acceptance/dev paper runs must be deterministic and offline. The normal
   // production path still ranks current public-exchange volatility.
-  if (isForcedSimulation()) return FALLBACK_SYMBOLS[0]
-  const cached = volatileSymbolCache.get(exchange)
+  if (isForcedSimulation()) return marketType === "forex" ? FOREX_FALLBACK_SYMBOLS[0] : FALLBACK_SYMBOLS[0]
+  const cacheKey = `${exchange}:${marketType}`
+  const cached = volatileSymbolCache.get(cacheKey)
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.symbol
 
   try {
     const result = await fetchTopSymbols(exchange, 1, "volatility")
-    if (result?.symbol) {
-      volatileSymbolCache.set(exchange, { symbol: result.symbol, ts: Date.now() })
-      return result.symbol
+    const symbol = marketType === "forex"
+      ? normalizeForexSymbol(result?.symbol)
+      : normalizeMarketSymbol(result?.symbol, "crypto")
+    if (symbol && (marketType === "forex" ? isForexSymbol(symbol) : /^[A-Z0-9]{2,30}$/.test(symbol))) {
+      volatileSymbolCache.set(cacheKey, { symbol, ts: Date.now() })
+      return symbol
     }
   } catch {
     // fall through to fallback
   }
 
-  return FALLBACK_SYMBOLS[0]
+  return marketType === "forex" ? FOREX_FALLBACK_SYMBOLS[0] : FALLBACK_SYMBOLS[0]
 }
 
-async function getMarketDataForSymbol(symbol: string, client: any): Promise<{
-  close: number; open: number; high: number; low: number; volume: number
-} | null> {
+interface CronMarketData {
+  close: number
+  open: number
+  high: number
+  low: number
+  volume: number
+  bid?: number
+  ask?: number
+  updatedAt?: number
+  marketType?: MarketType
+}
+
+async function getMarketDataForSymbol(
+  symbol: string,
+  client: any,
+  connectionId: string,
+): Promise<CronMarketData | null> {
   try {
+    const key = marketDataKey(symbol, "", connectionId)
     // Try hash first (written by market-data fetcher)
-    const hashData = await client.hgetall(`market_data:${symbol}`)
+    const hashData = await client.hgetall(key)
     if (hashData && Object.keys(hashData).length > 0) {
       const close = parseFloat(hashData.close || hashData.c || "0")
       if (close > 0) {
@@ -145,12 +180,16 @@ async function getMarketDataForSymbol(symbol: string, client: any): Promise<{
           high:   parseFloat(hashData.high   || hashData.h || String(close)),
           low:    parseFloat(hashData.low    || hashData.l || String(close)),
           volume: parseFloat(hashData.volume || hashData.v || "0"),
+          bid: parseFloat(hashData.bid || "0") || undefined,
+          ask: parseFloat(hashData.ask || "0") || undefined,
+          updatedAt: Number(hashData.updated_at || hashData.timestamp || 0) || undefined,
+          marketType: hashData.market_type === "forex" ? "forex" : "crypto",
         }
       }
     }
 
     // Try string key (JSON)
-    const stringData = await client.get(`market_data:${symbol}`)
+    const stringData = await client.get(key)
     if (stringData) {
       const parsed = typeof stringData === "string" ? JSON.parse(stringData) : stringData
       const close = parseFloat(parsed?.close || parsed?.c || "0")
@@ -161,6 +200,10 @@ async function getMarketDataForSymbol(symbol: string, client: any): Promise<{
           high:   parseFloat(parsed?.high   || parsed?.h || String(close)),
           low:    parseFloat(parsed?.low    || parsed?.l || String(close)),
           volume: parseFloat(parsed?.volume || parsed?.v || "0"),
+          bid: parseFloat(parsed?.bid || "0") || undefined,
+          ask: parseFloat(parsed?.ask || "0") || undefined,
+          updatedAt: Number(parsed?.updatedAt || parsed?.updated_at || parsed?.timestamp || 0) || undefined,
+          marketType: parsed?.marketType === "forex" || parsed?.market_type === "forex" ? "forex" : "crypto",
         }
       }
     }
@@ -171,94 +214,200 @@ async function getMarketDataForSymbol(symbol: string, client: any): Promise<{
   }
 }
 
-/**
- * Fetch real price from BingX public API as fallback for market data
- */
-async function fetchLivePriceFromExchange(symbol: string): Promise<{
-  close: number; open: number; high: number; low: number; volume: number
-} | null> {
+/** Fetch a current quote from the configured venue only. */
+async function fetchLivePriceFromExchange(
+  symbol: string,
+  exchange: string,
+  marketType: MarketType,
+  connectionId: string,
+): Promise<CronMarketData | null> {
   if (isForcedSimulation()) return null
-  try {
-    // BingX public ticker endpoint — no auth required
-    const bingxSymbol = symbol.replace("USDT", "-USDT")
-    const res = await fetchBingXPublic(
-      `/openApi/swap/v2/quote/ticker?symbol=${bingxSymbol}`,
-      { cache: "no-store" },
-      { timeoutMs: 4000 },
-    )
-    if (res.ok) {
-      const data = await res.json()
-      const ticker = Array.isArray(data?.data) ? data.data[0] : data?.data
-      if (ticker?.lastPrice) {
-        const close = parseFloat(ticker.lastPrice)
-        return {
-          close,
-          open:  parseFloat(ticker.openPrice || String(close)),
-          high:  parseFloat(ticker.highPrice  || String(close)),
-          low:   parseFloat(ticker.lowPrice   || String(close * 0.99)),
-          volume: parseFloat(ticker.quoteAssetVolume || ticker.volume || "0"),
-        }
+  const compactExchange = exchange.toLowerCase().replace(/[^a-z]/g, "")
+  const venue = compactExchange.includes("instaforex") || compactExchange.includes("instafx")
+    ? "instaforex"
+    : compactExchange.includes("bingx")
+      ? "bingx"
+      : compactExchange.includes("bybit")
+        ? "bybit"
+        : compactExchange.includes("binance")
+          ? "binance"
+          : compactExchange
+
+  if (marketType === "forex") {
+    if (!isForexSymbol(symbol) || venue !== "instaforex") return null
+    try {
+      const connector = await exchangeConnectorFactory.getOrCreateConnector(connectionId)
+      const ticker = connector ? await connector.getTicker(normalizeForexSymbol(symbol)) : null
+      const bid = Number(ticker?.bid || 0)
+      const ask = Number(ticker?.ask || 0)
+      const last = Number(ticker?.last || 0)
+      const close = last > 0 ? last : bid > 0 && ask > 0 ? (bid + ask) / 2 : 0
+      if (!(close > 0) || !(bid > 0) || !(ask >= bid)) return null
+      return {
+        close,
+        open: close,
+        high: Math.max(close, ask),
+        low: Math.min(close, bid),
+        volume: 0,
+        bid,
+        ask,
+        updatedAt: Number(ticker?.timestamp || Date.now()),
+        marketType: "forex",
       }
+    } catch {
+      return null
     }
-  } catch {
-    // non-critical
   }
 
-  // Binance public API as secondary fallback
+  if (!["bingx", "bybit", "binance"].includes(venue)) return null
   try {
-    const res = await fetch(
-      `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
-      { signal: AbortSignal.timeout(4000), cache: "no-store" }
-    )
-    if (res.ok) {
-      const data = await res.json()
-      const close = parseFloat(data.lastPrice || "0")
-      if (close > 0) {
-        return {
-          close,
-          open:  parseFloat(data.openPrice || String(close)),
-          high:  parseFloat(data.highPrice  || String(close * 1.01)),
-          low:   parseFloat(data.lowPrice   || String(close * 0.99)),
-          volume: parseFloat(data.quoteAssetVolume || data.volume || "0"),
+    if (venue === "bingx") {
+      // BingX public ticker endpoint — no auth required
+      const bingxSymbol = symbol.replace("USDT", "-USDT")
+      const res = await fetchBingXPublic(
+        `/openApi/swap/v2/quote/ticker?symbol=${bingxSymbol}`,
+        { cache: "no-store" },
+        { timeoutMs: 4000 },
+      )
+      if (res.ok) {
+        const data = await res.json()
+        const ticker = Array.isArray(data?.data) ? data.data[0] : data?.data
+        if (ticker?.lastPrice) {
+          const close = parseFloat(ticker.lastPrice)
+          return {
+            close,
+            open:  parseFloat(ticker.openPrice || String(close)),
+            high:  parseFloat(ticker.highPrice  || String(close)),
+            low:   parseFloat(ticker.lowPrice   || String(close * 0.99)),
+            volume: parseFloat(ticker.quoteAssetVolume || ticker.volume || "0"),
+            updatedAt: Date.now(),
+            marketType: "crypto",
+          }
+        }
+      }
+    }
+
+    if (venue === "bybit") {
+      const url = new URL("https://api.bybit.com/v5/market/tickers")
+      url.searchParams.set("category", "linear")
+      url.searchParams.set("symbol", symbol)
+      const res = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(4000),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const ticker = Array.isArray(data?.result?.list) ? data.result.list[0] : null
+        const close = parseFloat(ticker?.lastPrice || "0")
+        if (close > 0) {
+          return {
+            close,
+            open: parseFloat(ticker?.prevPrice24h || String(close)),
+            high: parseFloat(ticker?.highPrice24h || String(close)),
+            low: parseFloat(ticker?.lowPrice24h || String(close)),
+            volume: parseFloat(ticker?.turnover24h || ticker?.volume24h || "0"),
+            updatedAt: Date.now(),
+            marketType: "crypto",
+          }
+        }
+      }
+    }
+
+    if (venue === "binance") {
+      const res = await fetch(
+        `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`,
+        { signal: AbortSignal.timeout(4000), cache: "no-store" },
+      )
+      if (res.ok) {
+        const data = await res.json()
+        const close = parseFloat(data.lastPrice || "0")
+        if (close > 0) {
+          return {
+            close,
+            open: parseFloat(data.openPrice || String(close)),
+            high: parseFloat(data.highPrice || String(close * 1.01)),
+            low: parseFloat(data.lowPrice || String(close * 0.99)),
+            volume: parseFloat(data.quoteAssetVolume || data.volume || "0"),
+            updatedAt: Date.now(),
+            marketType: "crypto",
+          }
         }
       }
     }
   } catch {
-    // non-critical
+    // A missing current quote is handled by the caller as an unavailable
+    // symbol. It must never be replaced with data from another venue.
   }
 
   return null
 }
 
+function createForcedSimulationCandle(symbol: string, previous?: CronMarketData | null): CronMarketData {
+  const previousClose = Number(previous?.close || 0)
+  let hash = 0
+  for (let index = 0; index < symbol.length; index += 1) {
+    hash = (hash * 31 + symbol.charCodeAt(index)) % 100_000
+  }
+  const base = previousClose > 0 ? previousClose : 1 + (hash % 5_000) / 100
+  const bucket = Math.floor(Date.now() / 1_000)
+  const phase = (bucket + hash) % 17
+  const drift = (phase - 8) / 10_000
+  const close = Math.max(0.0001, base * (1 + drift))
+  const spread = Math.max(0.0001, Math.abs(drift) + 0.001)
+  return {
+    close,
+    open: base,
+    high: Math.max(base, close) * (1 + spread / 2),
+    low: Math.min(base, close) * (1 - spread / 2),
+    volume: Math.max(1, base * 1_000),
+    updatedAt: Date.now(),
+    marketType: previous?.marketType,
+  }
+}
+
 async function ensureCurrentMarketDataCandle(
   symbol: string,
   client: any,
+  connectionId: string,
+  connection: Record<string, any>,
 ): Promise<any | null> {
-  let marketData = await getMarketDataForSymbol(symbol, client)
-  if (!marketData) marketData = await fetchLivePriceFromExchange(symbol)
-
-  if (!marketData) {
-    const prevRaw = await client.hget(`market_data:${symbol}`, "close").catch(() => null)
-    const prevClose = prevRaw ? Number(prevRaw) : NaN
-    let base = Number.isFinite(prevClose) && prevClose > 0 ? prevClose : null
-    if (base === null) {
-      let h = 0
-      for (let i = 0; i < symbol.length; i++) h = (h * 31 + symbol.charCodeAt(i)) % 100000
-      base = 1 + (h % 5000) / 100
+  const marketType = normalizeMarketType(
+    connection.market_type ?? connection.asset_class,
+    connection.exchange,
+  )
+  const canonicalSymbol = marketType === "forex"
+    ? normalizeForexSymbol(symbol)
+    : normalizeMarketSymbol(symbol, "crypto")
+  const existing = await getMarketDataForSymbol(canonicalSymbol, client, connectionId)
+  const maxAge = marketType === "forex" ? FOREX_MARKET_DATA_MAX_AGE_MS : CRYPTO_MARKET_DATA_MAX_AGE_MS
+  const existingUpdatedAt = Number(existing?.updatedAt || 0)
+  if (existing && existingUpdatedAt > 0 && Date.now() - existingUpdatedAt <= maxAge) {
+    return {
+      symbol: canonicalSymbol,
+      open: existing.open,
+      high: existing.high,
+      low: existing.low,
+      close: existing.close,
+      price: existing.close,
+      volume: existing.volume,
+      timestamp: existingUpdatedAt,
+      bid: existing.bid,
+      ask: existing.ask,
     }
-    const drift = (Math.random() - 0.5) * 0.024
-    const open = base
-    const close = Math.max(0.0001, base * (1 + drift))
-    const spread = Math.abs(drift) + Math.random() * 0.025
-    const high = Math.max(open, close) * (1 + spread / 2)
-    const low = Math.min(open, close) * (1 - spread / 2)
-    const volume = base * 1000 * (0.5 + Math.random() * 2)
-    marketData = { close, open, high, low, volume }
   }
+
+  let marketData = await fetchLivePriceFromExchange(
+    canonicalSymbol,
+    String(connection.exchange || ""),
+    marketType,
+    connectionId,
+  )
+  if (!marketData && isForcedSimulation()) marketData = createForcedSimulationCandle(canonicalSymbol, existing)
+  if (!marketData) return null
 
   const now = Date.now()
   const candle = {
-    symbol,
+    symbol: canonicalSymbol,
     open: marketData.open,
     high: marketData.high,
     low: marketData.low,
@@ -266,21 +415,26 @@ async function ensureCurrentMarketDataCandle(
     price: marketData.close,
     volume: marketData.volume,
     timestamp: now,
+    ...(marketData.bid && marketData.ask ? { bid: marketData.bid, ask: marketData.ask } : {}),
   }
 
   const pipeline = client.multi()
-  pipeline.hset(`market_data:${symbol}`, {
+  const hashKey = marketDataKey(canonicalSymbol, "", connectionId)
+  const secondKey = marketDataKey(canonicalSymbol, "1s", connectionId)
+  pipeline.hset(hashKey, {
     close: String(candle.close),
     open: String(candle.open),
     high: String(candle.high),
     low: String(candle.low),
     volume: String(candle.volume),
-    symbol,
+    symbol: canonicalSymbol,
+    ...(candle.bid && candle.ask ? { bid: String(candle.bid), ask: String(candle.ask) } : {}),
+    market_type: marketType,
     updated_at: String(now),
   })
-  pipeline.expire(`market_data:${symbol}`, 3600)
-  pipeline.set(`market_data:${symbol}:1s`, JSON.stringify({ symbol, candles: [candle], timestamp: now }))
-  pipeline.expire(`market_data:${symbol}:1s`, 3600)
+  pipeline.expire(hashKey, 3600)
+  pipeline.set(secondKey, JSON.stringify({ symbol: canonicalSymbol, candles: [candle], timestamp: now, marketType }))
+  pipeline.expire(secondKey, 3600)
   await pipeline.exec().catch(() => {})
   return candle
 }
@@ -289,6 +443,7 @@ async function runCronPipelineForSymbol(
   connectionId: string,
   symbol: string,
   client: any,
+  connection: Record<string, any>,
   deps: {
     indication: IndicationProcessor
     realtime: RealtimeProcessor
@@ -298,7 +453,20 @@ async function runCronPipelineForSymbol(
   shouldContinue: () => boolean,
 ): Promise<PipelineCycleResult> {
   if (!shouldContinue()) throw new CronWorkCancelledError()
-  await ensureCurrentMarketDataCandle(symbol, client)
+  const candle = await ensureCurrentMarketDataCandle(symbol, client, connectionId, connection)
+  if (!candle) {
+    return {
+      symbol,
+      mode: "realtime",
+      indicationCount: 0,
+      indicationTypeCounts: {},
+      pseudoUpdates: 0,
+      strategiesEvaluated: 0,
+      liveReady: 0,
+      durationMs: 0,
+      error: "market_data_unavailable",
+    }
+  }
   if (!shouldContinue()) throw new CronWorkCancelledError()
   return runIndStratCycle(connectionId, symbol, "realtime", {
     indication: deps.indication,
@@ -598,7 +766,11 @@ export async function GET(request: Request) {
 
     for (const connection of activeConnections) {
       assertCronWorkActive()
-      const exchangeName = (connection.exchange || "bingx").toLowerCase()
+      const exchangeName = String(connection.exchange || "bingx").trim().toLowerCase()
+      const marketType = normalizeMarketType(
+        connection.market_type ?? connection.asset_class,
+        exchangeName,
+      )
       const progKey = `progression:${connection.id}`
       const [
         baseBeforeRaw,
@@ -635,16 +807,25 @@ export async function GET(request: Request) {
         // arrays, JSON arrays, comma/pipe/semicolon-delimited strings, and a
         // single legacy symbol string. Bad tokens are dropped before they can
         // create invalid market_data keys or exchange ticker calls.
-        symbolsRaw = normalizeSymbolList(connection.active_symbols)
+        symbolsRaw = normalizeSymbolList(
+          connection.active_symbols ?? connection.activeSymbols,
+          marketType,
+        )
       } catch { symbolsRaw = [] }
 
       let primarySymbol = symbolsRaw[0]
       if (!primarySymbol) {
         // Avoid O(N) client.keys scan — probe well-known symbols in-order via cheap HGET
         // (each is one O(1) round-trip bounded by the number of candidates, not keyspace size).
-        for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT"]) {
+        const probeSymbols = marketType === "forex"
+          ? FOREX_FALLBACK_SYMBOLS
+          : FALLBACK_SYMBOLS
+        for (const sym of probeSymbols) {
           try {
-            const close = await client.hget(`market_data:${sym}`, "close").catch(() => null)
+            const close = await client.hget(
+              marketDataKey(sym, "", connection.id),
+              "close",
+            ).catch(() => null)
             if (close && parseFloat(close) > 0) {
               primarySymbol = sym
               break
@@ -654,7 +835,7 @@ export async function GET(request: Request) {
       }
 
       if (!primarySymbol) {
-        primarySymbol = await getMostVolatileSymbol(exchangeName)
+        primarySymbol = await getMostVolatileSymbol(exchangeName, marketType)
       }
 
       // A missing active-symbol basket must remain one-symbol by default.
@@ -702,7 +883,8 @@ export async function GET(request: Request) {
 
         if (historicChunk.length > 0) {
           await runBounded(historicChunk, Math.min(2, historicChunk.length), (symbol) =>
-            ensureCurrentMarketDataCandle(symbol, client).finally(() => touchCronProgress(connection.id)),
+            ensureCurrentMarketDataCandle(symbol, client, connection.id, connection)
+              .finally(() => touchCronProgress(connection.id)),
           )
           const engineState = (await client.hgetall(`trade_engine_state:${connection.id}`).catch(() => ({}))) || {}
           const rangeHoursRaw = Number(
@@ -795,7 +977,7 @@ export async function GET(request: Request) {
       for (let c = 0; c < cyclesPerCron; c++) {
         assertCronWorkActive()
         // Process symbols for this cycle with bounded concurrency.
-        // Each call touches distinct market_data:{symbol} and
+        // Each call touches distinct market_data:{connectionId}:{symbol} and
         // indications:{conn}:{type}:latest keys so there is no key collision.
         // The progression:{conn} hincrby writes are atomic per-key operations so
         // concurrent increments are safe (the Redis emulator serialises them).
@@ -815,6 +997,7 @@ export async function GET(request: Request) {
             connection.id,
             symbol,
             client,
+            connection,
             pipelineDeps,
             cronWorkActive,
           )

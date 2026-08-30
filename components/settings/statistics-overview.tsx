@@ -102,6 +102,10 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
                 {indicationCounts.totalPossibleSets.toLocaleString()}
               </span>
             </div>
+            <div className="mt-2 text-xs text-muted-foreground">
+              Signal coverage: {indicationCounts.settings.enabledSignalSources} total sources
+              (35 crypto + 1 Forex) with independent crypto/Forex quorum and Set counts.
+            </div>
           </div>
         </CardContent>
       </Card>

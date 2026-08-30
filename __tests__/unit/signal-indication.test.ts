@@ -383,7 +383,7 @@ describe("Signal indication persistence and independent performance gates", () =
     }
     expect(mockHashes.get("indications_active:conn-a")?.["BTCUSDT:signal"]).toBe("4")
     expect(mockHashes.get("indication_sets_active:conn-a")?.["BTCUSDT:signal"]).toBe("4")
-    expect(JSON.parse(mockStrings.get("signal:cycle:conn-a:BTCUSDT") || "{}").sourceRegistrySize).toBe(35)
+    expect(JSON.parse(mockStrings.get("signal:cycle:conn-a:BTCUSDT") || "{}").sourceRegistrySize).toBe(36)
     const candidateRank = JSON.parse(
       mockHashes.get("signal:candidate_rank:conn-a")?.BTCUSDT || "{}",
     )
@@ -487,6 +487,76 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(initRedis).toHaveBeenCalledTimes(3)
   })
 
+  test("can publish a complete provider cycle in the background without blocking realtime callers", async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    const previousFetch = globalThis.fetch
+    const rows = exchangeRows("long")
+    let resolveResponse: ((response: Response) => void) | undefined
+    const fetchPromise = new Promise<Response>((resolve) => {
+      resolveResponse = resolve
+    })
+    const fetchMock = jest.fn(() => fetchPromise) as unknown as typeof fetch
+    process.env.NODE_ENV = "production"
+    globalThis.fetch = fetchMock
+
+    try {
+      const settings = normalizeSignalIndicationSettings({
+        minimumSourceSignals: 1,
+        minimumAgreement: 0.5,
+        minimumConfidence: 0.5,
+        minimumStrength: 0.05,
+        sources: {
+          "binance-usdm": { enabled: true, weight: 1 },
+        },
+      })
+      for (const sourceId of Object.keys(settings.sources)) {
+        settings.sources[sourceId].enabled = sourceId === "binance-usdm"
+      }
+
+      const first = await processSignalIndications({
+        connectionId: "conn-background-signal",
+        symbol: "BTCUSDT",
+        settings,
+        now: 1_800_000_000_000,
+        waitForCompletion: false,
+      })
+      expect(first).toEqual([])
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      const second = await processSignalIndications({
+        connectionId: "conn-background-signal",
+        symbol: "BTCUSDT",
+        settings,
+        now: 1_800_000_000_001,
+        waitForCompletion: false,
+      })
+      expect(second).toEqual([])
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      resolveResponse?.(new Response(JSON.stringify(rows), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      const completed = await processSignalIndications({
+        connectionId: "conn-background-signal",
+        symbol: "BTCUSDT",
+        settings,
+        now: 1_800_000_000_002,
+        waitForCompletion: false,
+      })
+      expect(completed.length).toBeGreaterThan(0)
+      expect(completed.every((item) => item.type === "signal")).toBe(true)
+    } finally {
+      globalThis.fetch = previousFetch
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = previousNodeEnv
+    }
+  })
+
   test("enforces a configurable Signal request interval with a hard 30-second minimum", () => {
     expect(normalizeSignalIndicationSettings({}).requestIntervalSeconds).toBe(30)
     expect(normalizeSignalIndicationSettings({ requestIntervalSeconds: 1 }).requestIntervalSeconds).toBe(30)
@@ -558,9 +628,10 @@ describe("Signal indication persistence and independent performance gates", () =
         now: 1_800_000_000_000,
       })
 
-      expect(indications).toHaveLength(SIGNAL_SOURCE_DEFINITIONS.length + 1)
+      const cryptoSourceCount = SIGNAL_SOURCE_DEFINITIONS.filter((source) => source.assetClass !== "forex").length
+      expect(indications).toHaveLength(cryptoSourceCount + 1)
       expect(indications.filter((item) => item.metadata?.mode === "direct_source")).toHaveLength(
-        SIGNAL_SOURCE_DEFINITIONS.length,
+        cryptoSourceCount,
       )
       const consensus = indications.find((item) => item.metadata?.mode === "multi_source_consensus")
       expect(consensus).toEqual(expect.objectContaining({
@@ -569,11 +640,11 @@ describe("Signal indication persistence and independent performance gates", () =
         direction: "long",
       }))
       expect(consensus.metadata.signal).toEqual(expect.objectContaining({
-        selectedSourceCount: SIGNAL_SOURCE_DEFINITIONS.length,
-        evaluatedSourceCount: SIGNAL_SOURCE_DEFINITIONS.length,
-        allowedSourceCount: SIGNAL_SOURCE_DEFINITIONS.length,
+        selectedSourceCount: cryptoSourceCount,
+        evaluatedSourceCount: cryptoSourceCount,
+        allowedSourceCount: cryptoSourceCount,
       }))
-      expect(consensus.metadata.signal.sourceIds).toHaveLength(SIGNAL_SOURCE_DEFINITIONS.length)
+      expect(consensus.metadata.signal.sourceIds).toHaveLength(cryptoSourceCount)
       expect(consensus.metadata.signal.sourceIds).toEqual(
         expect.arrayContaining(["bingx-swap", "binance-usdm", "bybit-linear", "okx-swap"]),
       )
@@ -725,13 +796,13 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(settings.performanceDisableBelowPnl).toBe(0)
   })
 
-  test("defaults all 35 sources, physical capacity 350 and best-first admission", () => {
+  test("defaults all 36 registry sources, physical capacity 350 and best-first admission", () => {
     const defaults = normalizeSignalIndicationSettings({})
     const clamped = normalizeSignalIndicationSettings({
       maxPositionsTotal: 9_999,
       positionSelectionMode: "fifo",
     })
-    expect(defaults.maxSourcesPerCycle).toBe(35)
+    expect(defaults.maxSourcesPerCycle).toBe(36)
     expect(defaults.maxPositionsTotal).toBe(350)
     expect(defaults.positionSelectionMode).toBe("best_first")
     expect(clamped.maxPositionsTotal).toBe(350)

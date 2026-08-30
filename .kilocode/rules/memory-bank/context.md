@@ -2,76 +2,91 @@
 
 ## Forex/InstaForex and high-volume safety continuation (2026-08-30; current)
 
-- Current checkout is `/workspace/CTS-K-N` on branch
-  `codex/forex-instaforex-20260829`, based on the existing local follow-up
-  revision `f58d2c3`. This worktree contains the complete Forex/InstaForex,
-  volume/exposure, protection, Direct-Trade, UI/API, statistics, Redis
-  retention, and test-harness changes. No commit, GitHub push/PR/merge, Chisel
-  remote write, deployment, or exchange mutation has been performed yet.
-- Forex support is coordinated through the same signal/strategy and live-order
-  contracts as crypto. InstaForex uses official REST/quotes/charts endpoints
-  for read-only account, quote, spread, PositionCost, and history data. Live
-  Forex execution is explicitly bridge-only; the checked-in bridge is MT5 and
-  rejects non-loopback binds without a token, requires trading opt-in, bounds
-  lots/total lots, validates direction-aware SL/TP, and post-verifies every
-  ticket. The supplied attachment is MT4 information; it was not persisted,
-  logged, committed, or sent to the MT5 bridge. MT4 live execution still needs
-  a compatible MT4 EA/bridge.
-- Volume calculation now uses authoritative venue balance and aggregate
-  position snapshots, active broker spread/PositionCost, Forex lot/contract
-  conversion, a higher Forex average-count default, bounded caches, and a
-  hard live exposure ceiling. Every physical increase re-reads aggregate
-  exposure and rounds down; fallback balance, ambiguous symbol/direction,
-  partial fills, missing tickets, or missing exact SL/TP fail closed. Exact
-  row SL/TP plus aggregate security protection remains armed through closes.
-  The legacy direct connector order probe is retired, and the supervised
-  smoke path is restricted to BingX Prod-VST virtual funds; X01/Mainnet and
-  Bybit remain read-only.
+- Canonical checkout is `/workspace/CTS-K-N` on branch
+  `codex/forex-instaforex-final-20260830`, with the intended
+  Forex/InstaForex, volume/exposure, protection, Direct-Trade, UI/API,
+  statistics, Redis-retention, and soak-verifier changes committed and
+  reconciled with remote `main`. The local tree is clean; GitHub publication,
+  reviewed PR merge, and deployment remain pending. No real/mainnet order has
+  been used.
+- Forex uses the same indication/strategy/live-position contracts as crypto,
+  with explicit `market_type`/asset-class routing, canonical pair keys,
+  quote-currency conversion, lot units, higher average-count defaults, and
+  broker-tick spread in effective PositionCost. InstaForex official
+  Client/Quotes/Charts HTTP surfaces are read-only for account, history,
+  quotes, spread, and OHLC data. Mutation is available only through an
+  explicitly selected, private MT5 bridge; exact terminal tickets, bounded
+  lots/exposure, direction-aware SL/TP, bridge opt-in, and post-close ticket
+  verification are required. No MT4 attachment or plaintext terminal data was
+  persisted or sent to the bridge.
+- Volume calculation uses authoritative venue balance and aggregate position
+  snapshots, active broker spread/PositionCost, Forex lot/contract conversion,
+  a higher Forex average-count default, bounded caches, and a hard live
+  exposure ceiling. Every physical increase re-reads aggregate exposure and
+  rounds down; fallback balance, ambiguous symbol/direction, partial fills,
+  missing tickets, or missing exact SL/TP fail closed. Exact row SL/TP plus one
+  aggregate symbol+direction security control remains armed through closes.
+  Block volume is additive from the base value (`base + base × count × ratio`)
+  and each count/variant remains independently evaluated. X01/Mainnet remains
+  read-only.
 - Reset DB’s QuickStart path now sends same-origin cookies and the server
   accepts an authenticated admin session through `authorizeAdminRequest`;
   bearer automation remains supported. Direct-Trade intentionally continues
   to return `direct_native_protection_not_ready` for live entries while paper
   evaluation remains available. Its preflight now treats that 409 as the
   expected safety result and then verifies the paper lifecycle.
-- Stats/indications/processing/detailed-log APIs use canonical scoped symbols
-  rather than the stale 536-symbol catalog. Settings, connection cards,
-  dialogs, Forex/crypto selectors, historic sources, and live update paths
-  carry the coordinated connection fields. Redis inspection is read-only and
-  uses SCAN/TTL; the current local snapshot reported 296 keys, no volume index
-  growth/oversize, and `unboundedFamilies: []`. Fixed-size strategy-detail
-  hashes and bounded log lists remain visible as finite no-expiry families.
-- Final local verification after the current changes: 250/250 Jest suites,
-  1,704/1,704 tests; TypeScript; repository-wide ESLint; source syntax;
-  zero-finding release-secret scan; Python bridge compile; direct live
-  preflight with 409 block + paper history 48h + 47 healthy ticks + zero
-  exchange orders; and `git diff --check`. The production build passed with
-  348 complete Next traces. An explicit single-process local inline-paper
-  server returned 200 for root/health/init/database/persistence endpoints,
-  passed the 20-request progression E2E, and passed the local deployment
-  contract at schema v105. The normal production start correctly refuses
-  missing shared Redis configuration. `agent-browser` was unavailable, so
-  browser-skill verification was replaced by same-namespace HTTP/E2E checks.
-- BingX Prod-VST authenticated soak preflight was run in preflight-only mode
-  and safely blocked because the required server-side X02 credentials were not
-  configured. No VST order was sent. Evidence is under the local ignored
-  `.agent-logs/` directory; no credential values are present in reports.
-- Verified owner-only checkpoints created during this continuation include
-  `/workspace/backups/CTS-K-N/20260830T041000Z-pre-test-guard-fix`,
-  `/workspace/backups/CTS-K-N/20260830T041500Z-pre-smoke-bypass-fix`,
-  `/workspace/backups/CTS-K-N/20260830T043000Z-pre-direct-preflight-contract`,
-  and `/workspace/backups/CTS-K-N/20260830T044500Z-pre-handoff-context`.
-  Each contains a complete Git bundle, binary worktree patch, safe untracked
-  archive/list, HEAD/status/refs evidence, verified SHA-256 sums, and
-  successful bundle verification.
-- Next handoff: create the final post-context checkpoint, publish the exact
-  tested tree using the selected GitHub integration, wait for required checks,
-  merge only the reviewed head, then use the managed Chisel path for a remote
-  backup and merged-main deployment if that path is available. Re-run only
-  read-only production UI/API/Redis checks. An authenticated X02 Prod-VST
-  lifecycle may be run only with explicitly supplied server-side credentials,
-  maintenance/service barriers, virtual-funds host verification, exact
-  position ownership, and complete cleanup; do not enable X01/Mainnet or
-  MT4/MT5 live execution from the attached plaintext information.
+- Order safety remains ownership- and watermark-scoped: only system-owned
+  positions/orders with stable tracking IDs may be adopted or mutated;
+  independent/external orders are preserved and cause fail-closed behavior.
+- Stats and dialogs distinguish logical stage evaluation from physical
+  materialized fan-out: Base-valid → Main-parent pass → logical Real pass →
+  Live mirrored/executable rows. Current-cycle, historic, outcome, direction,
+  symbol, market-type, spread/PositionCost, TP/SL, order-control, and signal
+  source values use scoped canonical snapshots rather than stale global rows.
+  Background Signal work is single-flight and bounded; exhaustive CPU work is
+  single-flight, cooperatively yielding, and runtime-concurrency capped so a
+  slow max-symbol matrix is not retried on top of itself.
+- The max-symbol UI verifier now uses a finite workload-aware post-resume
+  liveness window (default 240 seconds, configurable and capped at 300
+  seconds). This fixes a verifier false negative observed while a legitimate
+  32-symbol exhaustive cycle took about 156 seconds; it does not change engine
+  concurrency or order execution. Generated `scripts/__pycache__/` output was
+  quarantined recoverably; only `lib/market-data-keys.ts` and
+  `lib/trading-pair-keys.ts` remain intended untracked files.
+- Validation completed on the current tree: unit 245/245 suites and
+  1,652/1,652 tests; integration 4/4 suites and 66/66 tests; e2e 1/1 test
+  (the optional live-load check was skipped because localhost:3002 was not
+  running); TypeScript; ESLint; source syntax; release-secret scan
+  1,606 files/0 findings; signal registry 36 sources with no authenticated or
+  order requests; volatile cleanup; and recreation-manifest regeneration plus
+  verification. The production Next build passed with 42 generated routes
+  and 348 complete traces.
+- The 120-second single-symbol production paper soak passed 60 rounds with
+  zero real-exchange orders, crash recovery, 209 ms steady API p95, heap
+  growth 235,650 KiB within budget, and 2,103 non-inventory keys against a
+  5,000 allowance. The 240-second 32-symbol production paper engine soak
+  passed 120 rounds with 5,832 logical Main/Real evaluations, 4,825 physical
+  Real rows, 321 ms steady API p95, 583 stable key growth, bounded memory, and
+  zero real-exchange orders. The post-fix 32-symbol UI paper workflow passed
+  47 page surfaces, QuickStart, settings backup/hot reload, volume hot
+  reload, independent Long/Short checks, all global lifecycle controls,
+  position/order relation integrity, and zero real positions/orders.
+- Read-only Chisel health passed on 2026-08-30: `CTS_SSH_BANNER_OK`,
+  `chisel-server.service` active and enabled. No remote restart, deployment,
+  backup mutation, credential read, or exchange mutation was performed.
+- Verified owner-only checkpoints bracketing the final work include
+  `/workspace/backups/CTS-K-N/20260830T085500Z-pre-ui-resume-timeout`,
+  `/workspace/backups/CTS-K-N/20260830T090000Z-pre-regression-guard-test`,
+  `/workspace/backups/CTS-K-N/20260830T091500Z-pre-card-accounting-test`,
+  `/workspace/backups/CTS-K-N/20260830T101500Z-pre-generated-cleanup`, and
+  `/workspace/backups/CTS-K-N/20260830T104500Z-pre-context-update`. Each
+  includes a complete Git bundle, binary worktree/index patches, untracked
+  archive/list, HEAD/status/refs evidence, and verified SHA-256 sums.
+- Next handoff: create the final pre-publication checkpoint, publish this exact
+  tested commit through the selected GitHub integration, wait for required
+  checks, merge only the reviewed head, then verify merged-main ancestry and
+  re-run read-only site checks. Keep all runtime previews paper-only; do not
+  enable X01/Mainnet or claim profitable performance from synthetic/VST data.
 
 ## X02 external-protection coexistence follow-up (2026-08-29; authoritative)
 

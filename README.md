@@ -160,12 +160,14 @@ jobs. Both share the same durable Redis state.
   Block Count 1..12 Sets. Stage rows are exhaustive; bounded rotating work
   batches control latency without becoming a row or configuration ceiling.
 - Signal is a default-enabled Common indication engine. It normalizes 35
-  documented public one-minute OHLCV feeds, derives a low-stop consensus
-  locally, and enters the same Main → Real → Live lineage as every other
-  indication. Each connection has an independent Signal switch alongside Main
-  Live Trade. Every enabled source compatible with a symbol is processed each
-  cycle; bounded HTTP concurrency controls in-flight work without sampling or
-  truncating the configured source space.
+  documented crypto one-minute OHLCV feeds plus one documented InstaForex
+  Charts M1 feed, derives a low-stop consensus locally, and enters the same
+  Main → Real → Live lineage as every other indication. Each connection has an
+  independent Signal switch alongside Main Live Trade. Every enabled source
+  compatible with a symbol is processed each cycle; bounded HTTP concurrency
+  controls in-flight work without sampling or truncating the configured source
+  space. Crypto and Forex quorum counts are independent, so the single
+  broker-authoritative Forex feed can produce its own one-source consensus.
 - Regular Block ladders use normal Base-derived Sets only; Pos-Count Sets do
   not recursively create Blocks. The separate Real-active Block calculation
   still counts Pos-Count positions in its per-symbol, per-direction activity.

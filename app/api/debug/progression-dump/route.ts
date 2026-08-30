@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
     const [indKeys, stratKeys, mktKeys, posKeys] = await Promise.all([
       client.keys(`indications:${id}:*`).catch(() => [] as string[]),
       client.keys(`strategies:${id}:*`).catch(() => [] as string[]),
-      client.keys(`market_data:*`).catch(() => [] as string[]),
+      client.keys(`market_data:${id}:*`).catch(() => [] as string[]),
       client.smembers(`pseudo_positions:${id}`).catch(() => [] as string[]),
     ])
 

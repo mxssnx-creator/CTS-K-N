@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient, getAllConnections } from "@/lib/redis-db"
+import { marketDataKey } from "@/lib/market-data-keys"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -34,9 +35,13 @@ export async function GET() {
     }
 
     // 2. CHECK HISTORIC DATA
-    const marketData = await client.hgetall("market_data:BTCUSDT")
+    const marketDataConnectionId = String(bingxConn?.id || connections[0]?.id || "")
+    const marketData = marketDataConnectionId
+      ? await client.hgetall(marketDataKey("BTCUSDT", "", marketDataConnectionId))
+      : {}
     verification.components.historic_data = {
-      status: marketData ? "LOADED" : "MISSING",
+      status: Object.keys(marketData || {}).length > 0 ? "LOADED" : "MISSING",
+      connection_id: marketDataConnectionId || null,
       btcusdt_records: Object.keys(marketData || {}).length,
     }
 

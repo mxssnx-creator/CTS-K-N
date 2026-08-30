@@ -93,15 +93,24 @@ export class AutoIndicationEngine {
    * Load 8-hour historical market data (Redis-based)
    */
   private async load8HourData(symbol: string): Promise<Array<{ price: number; timestamp: Date; volume?: number }>> {
-    const cachedData = await getMarketData(symbol, "1m")
-    if (!cachedData || !Array.isArray(cachedData.data)) {
+    const cachedData = await getMarketData(symbol, "1m", this.connectionId)
+    const rows = Array.isArray(cachedData?.candles)
+      ? cachedData.candles
+      : Array.isArray(cachedData?.data)
+        ? cachedData.data
+        : Array.isArray(cachedData)
+          ? cachedData
+          : cachedData
+            ? [cachedData]
+            : []
+    if (rows.length === 0) {
       return []
     }
     const eightHoursAgo = Date.now() - 8 * 60 * 60 * 1000
-    return cachedData.data
+    return rows
       .filter((item: any) => new Date(item.timestamp).getTime() > eightHoursAgo)
       .map((item: any) => ({
-        price: item.price,
+        price: Number(item.price ?? item.close ?? item.c ?? 0),
         timestamp: new Date(item.timestamp),
         volume: item.volume,
       }))
