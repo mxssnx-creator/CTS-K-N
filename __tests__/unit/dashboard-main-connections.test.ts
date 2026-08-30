@@ -115,6 +115,21 @@ describe("Main Connections dashboard contracts", () => {
     expect(globalControls).toContain('new CustomEvent("engine-state-changed"')
   })
 
+  test("Signal indication stats are additive and share Main processing", () => {
+    const activeCard = read("components/dashboard/active-connection-card.tsx")
+    const signalToggle = read("app/api/settings/connections/[id]/signal-toggle/route.ts")
+
+    expect(activeCard).toContain("mainSignalIndicationsEnabled")
+    expect(activeCard).toContain("/active-indications")
+    expect(activeCard).toContain("const signalStatsVisible = signalMode || mainSignalIndicationsEnabled === true")
+    expect(activeCard).toContain("if (signalStatsVisible) {")
+    expect(activeCard).toContain("title: \"Shared realtime cycles attributed to Signal; no second processor is started.\"")
+    expect(activeCard).not.toContain("dedicatedChannelOnlyOverview")
+    expect(signalToggle).toContain("resolveDistributedEngineRuntime")
+    expect(signalToggle).toContain("const sharedEngineRunning =")
+    expect(signalToggle).toContain("if (requested && !sharedEngineRunning)")
+  })
+
   test("volume controls use the engine default and versioned hot-reload acknowledgements", () => {
     const activeCard = read("components/dashboard/active-connection-card.tsx")
     const volumeRoute = read("app/api/settings/connections/[id]/volume/route.ts")

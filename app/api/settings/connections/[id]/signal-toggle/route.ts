@@ -10,6 +10,7 @@ import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { SystemLogger } from "@/lib/system-logger"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
@@ -113,11 +114,10 @@ export async function POST(
     }
 
     const coordinator = getGlobalTradeEngineCoordinator()
-    let engineStatus: "running" | "queued" | "stopped" | "error" =
-      coordinator.isEngineRunning(connectionId) ? "running" : "stopped"
+    const redis = getRedisClient()
     let engineStartedNow = false
     if (requested) {
-      await getRedisClient().hset("trade_engine:global", {
+      await redis.hset("trade_engine:global", {
         status: "running",
         desired_status: "running",
         operator_intent: "running",
@@ -129,7 +129,36 @@ export async function POST(
         updated_at: changedAt,
       }).catch(() => undefined)
     }
-    if (requested && !coordinator.isEngineRunning(connectionId)) {
+
+    // A route bundle may not share the in-memory coordinator with the worker
+    // that owns this connection. Read the durable running flag + both legacy
+    // and scoped runtime hashes before deciding whether a start is needed.
+    // This is the idempotency boundary for Signal: enabling the channel while
+    // Main Signal indications already run must not restart or fork processing.
+    const [runningHint, rawRuntimeState, settingsRuntimeState, scopedRuntimeState, scopedSettingsRuntimeState, globalRuntimeState] =
+      await Promise.all([
+        redis.get(`engine_is_running:${connectionId}`).catch(() => null),
+        redis.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+        redis.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+        redis.hgetall(`trade_engine_state:${connectionId}:main`).catch(() => ({} as Record<string, string>)),
+        redis.hgetall(`settings:trade_engine_state:${connectionId}:main`).catch(() => ({} as Record<string, string>)),
+        redis.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
+      ])
+    const distributedRuntime = resolveDistributedEngineRuntime({
+      runningHint,
+      states: [
+        rawRuntimeState,
+        settingsRuntimeState,
+        scopedRuntimeState,
+        scopedSettingsRuntimeState,
+      ],
+      globalState: globalRuntimeState,
+      connectionEnabled: true,
+    })
+    const sharedEngineRunning = coordinator.isEngineRunning(connectionId) || distributedRuntime.running
+    let engineStatus: "running" | "queued" | "stopped" | "error" =
+      sharedEngineRunning ? "running" : "stopped"
+    if (requested && !sharedEngineRunning) {
       const localStartAllowed =
         process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
         process.env.NEXT_RUNTIME !== "edge" &&
