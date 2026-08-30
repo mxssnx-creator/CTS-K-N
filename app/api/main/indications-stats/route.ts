@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
-import { scanRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 
@@ -44,12 +43,60 @@ function toTimestamp(value: unknown): string | null {
   return new Date(parsed).toISOString()
 }
 
+function parseRows(raw: unknown): Record<string, unknown>[] {
+  if (typeof raw !== "string" || !raw.trim()) return []
+  try {
+    const parsed = JSON.parse(raw)
+    const values = Array.isArray(parsed) ? parsed : [parsed]
+    return values.filter((value): value is Record<string, unknown> =>
+      Boolean(value) && typeof value === "object" && !Array.isArray(value),
+    )
+  } catch {
+    return []
+  }
+}
+
+async function readTypeSnapshot(client: any, connectionId: string, type: IndicationType) {
+  const baseKey = `indications:${connectionId}:${type}`
+  const countKey = `${baseKey}:count`
+  const evaluatedKey = `${baseKey}:evaluated`
+  const latestKey = `${baseKey}:latest`
+
+  // The evaluator stores a bounded list at the base key while the statistics
+  // tracker stores durable counters/latest samples beside it. Read those
+  // exact keys directly; scanning a 500k+ key Redis database for every UI
+  // poll made this endpoint take 10–15 seconds and frequently time out.
+  const [snapshotRaw, latestRaw, countRaw, evaluatedRaw, listRaw] = await Promise.all([
+    client.get(baseKey).catch(() => null),
+    client.get(latestKey).catch(() => null),
+    client.get(countKey).catch(() => null),
+    client.get(evaluatedKey).catch(() => null),
+    typeof client.lrange === "function"
+      ? client.lrange(baseKey, 0, 999).catch(() => [])
+      : Promise.resolve([]),
+  ])
+
+  const directRows = parseRows(snapshotRaw)
+  const listRows = Array.isArray(listRaw)
+    ? listRaw.flatMap((value: unknown) => parseRows(value))
+    : []
+  // A string snapshot and the list representation are alternate storage
+  // shapes, never additive. Prefer the exact JSON snapshot when present.
+  const rows = directRows.length > 0 ? directRows : listRows
+  const latestRows = parseRows(latestRaw)
+  const countHint = finiteNumber(countRaw) ?? finiteNumber(evaluatedRaw) ?? 0
+
+  return { rows, latest: latestRows[0] || null, countHint }
+}
+
 /**
  * Current Main indication snapshots, scoped to an optional connection.
  *
- * Only exact `indications:{connectionId}:{type}` JSON keys are consumed.
- * Count/latest/prehistoric metadata keys share this namespace but have other
- * Redis types or payload shapes and must never fail the whole statistics API.
+ * The evaluator has two bounded storage shapes in the wild: a JSON snapshot
+ * at `indications:{connectionId}:{type}` and a Redis list at that same key.
+ * Durable `:count`, `:evaluated`, and `:latest` keys sit beside both shapes.
+ * Read those known keys directly so a dashboard poll is independent of the
+ * total Redis keyspace size.
  */
 export async function GET(request: Request) {
   const stats = emptyStats()
@@ -60,56 +107,50 @@ export async function GET(request: Request) {
     const requestedConnectionId = String(
       params.get("connectionId") || params.get("connection_id") || "",
     ).trim()
-    const pattern = requestedConnectionId
-      ? `indications:${requestedConnectionId}:*`
-      : "indications:*"
     const connectionIds = new Set<string>()
     let malformedSnapshots = 0
 
-    for (const key of await scanRedisKeys(client, pattern)) {
-      const match = /^indications:([^:]+):([^:]+)$/.exec(String(key))
-      if (!match) continue
-      const [, connectionId, rawType] = match
-      if (requestedConnectionId && connectionId !== requestedConnectionId) continue
-      if (!INDICATION_TYPES.includes(rawType as IndicationType)) continue
+    // Without a connection filter there is no bounded key index for this
+    // legacy route. Keep the response deterministic and cheap; the dashboard
+    // and analytics surfaces always provide their selected connection id.
+    if (requestedConnectionId) {
+      const snapshots = await Promise.all(
+        INDICATION_TYPES.map((type) => readTypeSnapshot(client, requestedConnectionId, type)),
+      )
+      snapshots.forEach(({ rows, latest, countHint }, index) => {
+        const type = INDICATION_TYPES[index]
+        const aggregate = stats[type]
+        if (rows.length > 0 || countHint > 0 || latest) connectionIds.add(requestedConnectionId)
+        aggregate.count = rows.length > 0 ? rows.length : countHint
 
-      const raw = await client.get(key).catch(() => null)
-      if (typeof raw !== "string" || !raw.trim()) continue
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(raw)
-      } catch {
-        malformedSnapshots++
-        continue
-      }
-      const rows = Array.isArray(parsed) ? parsed : [parsed]
-      connectionIds.add(connectionId)
-      const aggregate = stats[rawType as IndicationType]
+        for (const row of rows) {
+          const strength = finiteNumber(
+            row.signal_strength ?? row.rawSignalStrength ?? row.signalScore ?? row.strength,
+          )
+          if (strength !== null) {
+            aggregate.signalStrengthSum += strength
+            aggregate.signalStrengthSamples++
+          }
 
-      for (const candidate of rows) {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue
-        const row = candidate as Record<string, unknown>
-        aggregate.count++
+          const pf = finiteNumber(row.profit_factor ?? row.profitFactor)
+          if (pf !== null) {
+            aggregate.profitFactorSum += pf
+            aggregate.profitFactorSamples++
+          }
 
-        const strength = finiteNumber(
-          row.signal_strength ?? row.rawSignalStrength ?? row.signalScore ?? row.strength,
+          const rowTimestamp = toTimestamp(row.timestamp ?? row.updated_at ?? row.created_at)
+          if (rowTimestamp && (!aggregate.lastTrigger || rowTimestamp > aggregate.lastTrigger)) {
+            aggregate.lastTrigger = rowTimestamp
+          }
+        }
+
+        const latestTimestamp = latest && toTimestamp(
+          latest.timestamp ?? latest.updated_at ?? latest.created_at,
         )
-        if (strength !== null) {
-          aggregate.signalStrengthSum += strength
-          aggregate.signalStrengthSamples++
+        if (latestTimestamp && (!aggregate.lastTrigger || latestTimestamp > aggregate.lastTrigger)) {
+          aggregate.lastTrigger = latestTimestamp
         }
-
-        const pf = finiteNumber(row.profit_factor ?? row.profitFactor)
-        if (pf !== null) {
-          aggregate.profitFactorSum += pf
-          aggregate.profitFactorSamples++
-        }
-
-        const rowTimestamp = toTimestamp(row.timestamp ?? row.updated_at ?? row.created_at)
-        if (rowTimestamp && (!aggregate.lastTrigger || rowTimestamp > aggregate.lastTrigger)) {
-          aggregate.lastTrigger = rowTimestamp
-        }
-      }
+      })
     }
 
     const indications = Object.fromEntries(INDICATION_TYPES.map((type) => {
@@ -138,7 +179,7 @@ export async function GET(request: Request) {
       indications,
       diagnostics: {
         malformedSnapshots,
-        source: "current-indication-snapshots",
+        source: "durable-indication-counters",
       },
     })
   } catch (error) {
