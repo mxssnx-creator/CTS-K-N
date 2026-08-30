@@ -560,12 +560,13 @@ export function QuickstartConnectionControls() {
                   <li>Progression logs and engine_progression counters</li>
                   <li>Set caches, preset-sets, fingerprint cache</li>
                   <li>Indications and strategies snapshots</li>
-                  <li>Tracking entries, live positions, trade history</li>
+                  <li>Tracking entries, closed live positions, trade history</li>
                   <li>Engine state, metrics, and runtime breadcrumbs</li>
                 </ul>
                 <p className="text-xs">
                   <strong>Preserved:</strong> exchange credentials
-                  (connections), app settings, migration markers.
+                  (connections), open live-position recovery records, app
+                  settings, migration markers.
                 </p>
                 <div className="space-y-1.5 pt-2">
                   <label htmlFor="reset-admin-secret" className="text-xs font-medium">
