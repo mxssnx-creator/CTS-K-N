@@ -190,6 +190,11 @@ describe("runtime maintenance stop", () => {
     expect(scheduler).toContain("runtime_maintenance_stop")
     expect(directSupervisor).toContain("suppressing all connection workers")
     expect(installer).toContain("CTS_RUNTIME_DIR=${RUNTIME_DIR@Q}")
+    expect(installer).toContain('test_runtime_dir="$(mktemp -d "$RUNTIME_DIR/install-test-runtime.XXXXXX")"')
+    expect(installer).toContain('env CTS_RUNTIME_DIR="$test_runtime_dir"')
+    expect(installer).toMatch(
+      /env CTS_RUNTIME_DIR="\$test_runtime_dir"[\s\\]+pnpm exec jest[\s\S]*?rm -rf -- "\$test_runtime_dir"/,
+    )
     expect(installer).toContain('run_root chmod 750 "$RUNTIME_DIR"')
     expect(installer).toContain('run_as_service test -e "$RUNTIME_DIR/maintenance-stop"')
     expect(installer).toContain('run_root install -d -m 0700 -o "$SERVICE_USER" -g "$service_group" "$PROJECT_ROOT/.agent-logs"')
