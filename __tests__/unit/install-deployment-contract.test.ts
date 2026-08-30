@@ -203,6 +203,12 @@ describe("production installation and Kilo deployment contract", () => {
     expect(productionInit).toContain("Direct-Trade processor did not publish a fresh leased heartbeat")
     expect(productionInit).toContain("CTS_REQUIRE_LIVE_TRADE_READY === \"1\"")
     expect(productionInit).toContain("/api/connections/${encodeURIComponent(connectionId)}/engine-states")
+    expect(installer).toMatch(
+      /wait_for_health 90 \|\| return 1[\s\S]*?rm -f -- "\$RUNTIME_DIR\/maintenance-stop"[\s\S]*?production-deploy-init\.mjs/,
+    )
+    expect(installer).toMatch(
+      /rollback_after_failed_verification\(\) \{[\s\S]*?warn "Final verification failed"[\s\S]*?stop_runtime/,
+    )
     expect(installer).toMatch(/production-deploy-init\.mjs" \\\n\s+\|\| return 1/)
     expect(installer).toMatch(/run-minute-scheduler\.mjs" --once \\\n\s+\|\| return 1/)
     const vercel = JSON.parse(vercelConfig)
