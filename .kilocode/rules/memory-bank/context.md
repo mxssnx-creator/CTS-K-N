@@ -1,5 +1,64 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Shared Signal overview and runtime idempotency release (2026-08-30; authoritative continuation)
+
+- The Signal/Main dashboard and runtime fix is merged through GitHub PR #280 as
+  `3ffd29aea6c5ba73d4cabba1d89081fbcee16641` on `main` (PR head
+  `98b183e9c9152b871d29b16e52676a63c9b65666`; validated tree from the reviewed
+  branch). The canonical checkout is `/workspace/CTS-K-N`; local `main` and
+  `origin/main` were fetched and aligned to the merged revision after the
+  merge. The reviewed branch is closed/merged; no uncommitted source changes
+  remain.
+- Main Signal indications now remain the single shared indication processor.
+  The Main Connections card reads the scoped active-indications profile,
+  keeps the usual Main overview tiles, and adds Signal cycles/sets/open/
+  closed/WinRate/PF12/DDT12/PnL12 when the Main Signal profile is active even
+  if the separate Signal execution slider is off. Enabling that slider while
+  Main Signal is already active only projects the additional stats; it does
+  not start a second processor. Disabling the slider does not stop the shared
+  Main indication work. Scoped indication writes emit the existing dashboard
+  event and immediately refresh the profile/statistics read model.
+- Signal enablement now checks the in-memory coordinator plus durable,
+  distributed running flags and legacy/scoped runtime hashes before enqueueing
+  a local start. This closes the cross-worker duplicate-start race while
+  preserving shared-engine stop semantics. Mainnet/X01, Bybit and unrelated
+  exchange rows remain read-only; no live exchange order is authorized by this
+  UI/statistics change.
+- Local validation completed: `pnpm test:unit` (251 suites, 1,693 tests),
+  `pnpm typecheck`, repository-wide `pnpm lint`, install preflight, recreation
+  manifest generation/verification, and release-secret scan (1,616 files,
+  zero findings). The production-style max-symbol UI/process soak passed 47
+  page surfaces and 32 symbols, including Signal source registry/defaults,
+  Main toggle/hot reload, restart/crash recovery, settings backup round-trip,
+  and lifecycle checks; it reported zero real exchange positions and zero
+  exchange order submissions. The full integration run had one pre-existing
+  300 ms timing assertion under machine contention; the affected functional
+  live-dispatch test passed in isolation.
+- GitHub Dev Preview Smoke for PR #280 passed. The PR's `cts-k-n` preview
+  deployment reached READY. A stale `cts-v` status remained pending because
+  the connected Vercel account no longer exposes a matching `cts-v` project;
+  it was not used as an exchange or production acceptance target. Post-merge
+  `main` deployments were triggered and are tracked by their GitHub statuses;
+  production deployment must still be verified from merged green `main`.
+- Verified owner-only recovery checkpoints for this continuation are
+  `/workspace/backups/CTS-K-N/20260830T215137Z-pre-signal-overview-fix`,
+  `/workspace/backups/CTS-K-N/20260830T221000Z-pre-recreation-manifest-refresh`,
+  `/workspace/backups/CTS-K-N/20260830T222000Z-precommit-signal-overview-fix`,
+  `/workspace/backups/CTS-K-N/20260830T223000Z-premerge-signal-overview-fix`,
+  and `/workspace/backups/CTS-K-N/20260830T225500Z-postmerge-signal-overview-fix`.
+  Each completed checkpoint includes a complete Git bundle, binary worktree
+  patch, untracked archive/list, HEAD/status evidence, verified SHA-256
+  manifest, bundle verification, and owner-only permissions.
+- Managed Chisel remote access remains blocked by the approval broker. Earlier
+  and current attempts used only `/workspace/.network-clients/activate-cts.sh`
+  and were cancelled before Chisel executed; no alternate SSH/proxy/VPN was
+  used. Therefore no remote install, restart, Redis/database mutation,
+  authenticated UI action, live X02 cycle, Mainnet order, or Bybit order was
+  performed in this continuation. The next authorized remote step is a fresh
+  managed activation attempt, followed by a read-only service/environment/
+  Redis checkpoint and deployment of this merged `main` only if the pinned
+  tunnel banner succeeds.
+
 ## Direct-Trade X02 Prod-VST lifecycle release (2026-08-30; authoritative)
 
 - The functional release is merged through GitHub PR #278 as
