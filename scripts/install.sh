@@ -1569,6 +1569,17 @@ verify_and_restart() {
   local base_url="http://127.0.0.1:$APP_PORT" before_id after_id
   wait_for_health 90 || return 1
 
+  # install_systemd_runtime/install_pm2_runtime start every managed owner while
+  # the host maintenance marker is still present. The application itself can
+  # therefore pass its health check, but deployment initialization is also
+  # intentionally blocked by that same marker. Release the gate only after the
+  # new app is healthy and the old runtime has been stopped; the supervised
+  # workers then use the normal persisted live/simulation gates while init and
+  # the post-deploy checks run. Any later failure calls stop_runtime again and
+  # restores the marker before returning an error.
+  rm -f -- "$RUNTIME_DIR/maintenance-stop"
+  ok "Released the maintenance marker for deployment initialization after app health passed"
+
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
     env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" DEPLOYMENT_URL="$base_url" node "$PROJECT_ROOT/scripts/production-deploy-init.mjs" \
     || return 1
@@ -1613,8 +1624,11 @@ verify_and_restart() {
 
 rollback_after_failed_verification() {
   warn "Final verification failed"
+  # A verification failure must leave every managed owner stopped and the
+  # fail-closed maintenance marker armed, including a clean install that has
+  # no previous .next artifact to restore.
+  stop_runtime
   if [[ -n "$BUILD_BACKUP" && -d "$BUILD_BACKUP" ]]; then
-    stop_runtime
     if [[ -d "$PROJECT_ROOT/.next" ]]; then
       mv "$PROJECT_ROOT/.next" "$RUNTIME_DIR/failed-next-$(date -u +%Y%m%dT%H%M%SZ)"
     fi
