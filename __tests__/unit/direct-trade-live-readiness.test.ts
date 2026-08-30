@@ -29,6 +29,8 @@ describe("Direct-Trade production live readiness", () => {
         || source.includes("liveExecutionReady"),
       ).toBe(true)
     }
+    const dashboard = sources.at(-1) || ""
+    expect(dashboard).toContain("state.liveExecutionReady === false && !state.liveMode")
   })
 
   test("hydrates positions before syncing and settles blocked legacy openings without retry storms", () => {

@@ -28,10 +28,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AlertCircle, Lock, Zap } from "lucide-react"
 import { useDashboardEvents, type DashboardEventPayload } from "@/lib/dashboard-events"
 import { isMaskedOrEmptyConnectionSecret } from "@/lib/connection-secrets"
+import { normalizeMarketType, marketTypeLabel } from "@/lib/market-types"
 
 const toBooleanFlag = (value: unknown): boolean => value === true || value === 1 || value === "1" || value === "true"
 
 const EXCHANGES: Record<string, { name: string; subtypes: string[] }> = {
+  instaforex: { name: "InstaForex", subtypes: ["forex"] },
   bybit: { name: "Bybit", subtypes: ["perpetual", "futures", "spot", "options"] },
   bingx: { name: "BingX", subtypes: ["perpetual", "spot"] },
   pionex: { name: "Pionex", subtypes: ["spot"] },
@@ -47,11 +49,13 @@ const EXCHANGES: Record<string, { name: string; subtypes: string[] }> = {
 
 const CONNECTION_METHODS = [
   { value: "rest", label: "REST API" },
+  { value: "library", label: "Library SDK" },
   { value: "websocket", label: "WebSocket" },
   { value: "hybrid", label: "Hybrid (REST + WS)" },
 ]
 
 const CONNECTION_LIBRARIES = [
+  { value: "native-http", label: "Native HTTP (read-only)" },
   { value: "native", label: "Native" },
   { value: "sdk", label: "bingx-api" },
   { value: "ccxt", label: "CCXT" },
@@ -60,6 +64,7 @@ const CONNECTION_LIBRARIES = [
 ]
 
 const EXCHANGE_CONNECTION_METHODS: Record<string, string[]> = {
+  instaforex: ["rest"],
   bybit: ["rest", "websocket", "hybrid"],
   bingx: ["library", "rest", "websocket"],
   binance: ["rest", "websocket", "hybrid"],
@@ -83,23 +88,33 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
   const [showTestLog, setShowTestLog] = useState(false)
   const [showSecrets, setShowSecrets] = useState(false)
   const [btcPrice, setBtcPrice] = useState<string | null>(null)
+  const isForex = normalizeMarketType(connection.market_type || connection.asset_class, connection.exchange) === "forex"
   const [formData, setFormData] = useState({
     api_key: connection.api_key || "",
+    account_id: connection.account_id || (isForex ? connection.api_key || "" : ""),
     api_secret: connection.api_secret || "",
     api_passphrase: connection.api_passphrase || "",
+    symbol_suffix: connection.symbol_suffix || "",
     margin_type: connection.margin_type || "cross",
     position_mode: connection.position_mode || "hedge",
-    is_testnet: connection.id === "bingx-x02" || toBooleanFlag(connection.is_testnet),
-    connection_method: connection.connection_method || (String(connection.exchange).toLowerCase() === "bingx" ? "library" : "rest"),
-    connection_library: connection.connection_library || (String(connection.exchange).toLowerCase() === "bingx" ? "sdk" : "native"),
-    api_type: connection.api_type || "perpetual",
+    is_testnet: isForex ? false : connection.id === "bingx-x02" || toBooleanFlag(connection.is_testnet),
+    connection_method: isForex ? "rest" : connection.connection_method || (String(connection.exchange).toLowerCase() === "bingx" ? "library" : "rest"),
+    connection_library: isForex ? "native-http" : connection.connection_library || (String(connection.exchange).toLowerCase() === "bingx" ? "sdk" : "native"),
+    api_type: isForex ? "forex" : connection.api_type || "perpetual",
     api_subtype: connection.api_subtype || "perpetual",
     is_live_trade: connection.is_live_trade ?? false,
+    market_type: isForex ? "forex" : "crypto",
   })
+  const credentialReady = isForex
+    ? /^[0-9]{4,12}$/.test(formData.account_id.trim())
+    : Boolean(formData.api_key.trim() && formData.api_secret.trim())
+  const connectionReady = credentialReady
 
   const handleTestConnection = async () => {
-    if (!formData.api_key || !formData.api_secret) {
-      toast.error("Please enter API Key and API Secret")
+    if (!connectionReady) {
+      toast.error(isForex
+        ? "Please enter a valid numeric InstaForex account id/login"
+        : "Please enter API Key and API Secret")
       return
     }
 
@@ -111,7 +126,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
     try {
       console.log("[v0] [Test Connection] Using configured settings:", {
         exchange: connection.exchange,
-        api_type: connection.api_type,
+        api_type: isForex ? "forex" : connection.api_type,
         api_subtype: formData.api_subtype,
         connection_method: formData.connection_method,
         connection_library: formData.connection_library,
@@ -123,23 +138,34 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           exchange: connection.exchange,
-          api_type: formData.api_type,
+          api_type: isForex ? "forex" : formData.api_type,
           api_subtype: formData.api_subtype,
-          connection_method: formData.connection_method,
-          connection_library: formData.connection_library,
-          ...(!isMaskedOrEmptyConnectionSecret(formData.api_key) ? { api_key: formData.api_key } : {}),
-          ...(!isMaskedOrEmptyConnectionSecret(formData.api_secret) ? { api_secret: formData.api_secret } : {}),
+          connection_method: isForex ? "rest" : formData.connection_method,
+          connection_library: isForex ? "native-http" : formData.connection_library,
+          ...(isForex
+            ? {
+                account_id: formData.account_id,
+                api_key: formData.account_id,
+                market_type: "forex",
+                execution_mode: "read_only",
+                read_only: true,
+                execution_supported: false,
+              }
+            : {}),
+          ...(!isForex && !isMaskedOrEmptyConnectionSecret(formData.api_key) ? { api_key: formData.api_key } : {}),
+          ...(!isForex && !isMaskedOrEmptyConnectionSecret(formData.api_secret) ? { api_secret: formData.api_secret } : {}),
           ...(!isMaskedOrEmptyConnectionSecret(formData.api_passphrase) ? { api_passphrase: formData.api_passphrase } : {}),
-          is_testnet: connection.id === "bingx-x02" || formData.is_testnet,
+          is_testnet: isForex ? false : connection.id === "bingx-x02" || formData.is_testnet,
         }),
       })
 
       let logs = [
         `[${new Date().toLocaleTimeString()}] Starting connection test...\n`,
         `Exchange: ${connection.exchange.toUpperCase()} (${exchangeName})\n`,
-        `API Type: ${formData.api_type} | Subtype: ${formData.api_subtype}\n`,
+        `Market: ${isForex ? "Forex" : "Crypto"}\n`,
+        `API Type: ${isForex ? "forex" : formData.api_type} | Subtype: ${formData.api_subtype}\n`,
         `Connection: ${formData.connection_method.toUpperCase()} | Library: ${formData.connection_library}\n`,
-        `Testnet: ${formData.is_testnet ? "Yes" : "No"}\n`,
+        `Testnet: ${isForex ? "No (broker)" : formData.is_testnet ? "Yes" : "No"}\n`,
         `Margin: ${formData.margin_type} | Position: ${formData.position_mode}\n`,
         `---\n`,
       ]
@@ -169,7 +195,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
         logs.push(`✓ BTC Price: $${observedBtcPrice}`)
       }
 
-      logs.push(`\n✓ Connection test PASSED - Ready to trade!`)
+      logs.push(`\n✓ Connection test PASSED - ${isForex ? "Forex data verified (official HTTP API; read-only)" : "Ready to trade!"}`)
       setTestLog(logs)
       toast.success("Connection test passed!")
     } catch (error) {
@@ -177,7 +203,8 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
       let logs = [
         `[${new Date().toLocaleTimeString()}] Starting connection test...\n`,
         `Exchange: ${connection.exchange.toUpperCase()} (${exchangeName})\n`,
-        `API Type: ${connection.api_type} | Subtype: ${formData.api_subtype}\n`,
+        `Market: ${isForex ? "Forex" : "Crypto"}\n`,
+        `API Type: ${isForex ? "forex" : connection.api_type} | Subtype: ${formData.api_subtype}\n`,
         `Connection: ${formData.connection_method.toUpperCase()} | Library: ${formData.connection_library}\n`,
         `---\n`,
         `✗ Error: ${errorMsg}`,
@@ -199,15 +226,23 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          api_key: formData.api_key,
-          api_secret: formData.api_secret,
+          api_key: isForex ? formData.account_id : formData.api_key,
+          api_secret: isForex ? "" : formData.api_secret,
+          ...(isForex ? { account_id: formData.account_id, market_type: "forex", asset_class: "forex" } : {}),
           api_passphrase: formData.api_passphrase,
           margin_type: formData.margin_type,
           position_mode: formData.position_mode,
-          is_testnet: formData.is_testnet,
-          connection_method: formData.connection_method,
-          connection_library: formData.connection_library,
-          api_subtype: formData.api_subtype,
+          is_testnet: isForex ? false : formData.is_testnet,
+          connection_method: isForex ? "rest" : formData.connection_method,
+          connection_library: isForex ? "native-http" : formData.connection_library,
+          api_type: isForex ? "forex" : formData.api_type,
+          api_subtype: isForex ? "forex" : formData.api_subtype,
+          ...(isForex ? {
+            symbol_suffix: formData.symbol_suffix,
+            execution_mode: "read_only",
+            read_only: true,
+            execution_supported: false,
+          } : {}),
         }),
       })
 
@@ -232,12 +267,30 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex gap-3">
           <AlertCircle className="h-4 w-4 shrink-0 text-amber-900 mt-0.5" />
           <div className="text-sm text-amber-900">
-            <p className="font-semibold mb-1">Update API Credentials</p>
-            <p className="text-xs">Change your API keys here if needed</p>
+            <p className="font-semibold mb-1">{isForex ? "Update InstaForex Account" : "Update API Credentials"}</p>
+            <p className="text-xs">{isForex ? "The official HTTP integration reads account and market data only; order execution is unavailable." : "Change your API keys here if needed"}</p>
           </div>
         </div>
 
-        <div className="space-y-2">
+        {isForex ? (
+          <div className="space-y-2">
+            <Label className="font-medium flex items-center gap-2">
+              <Lock className="h-4 w-4" />
+              InstaForex Account ID / Login
+            </Label>
+            <Input
+              inputMode="numeric"
+              value={formData.account_id}
+              onChange={(e) => setFormData({ ...formData, account_id: e.target.value.replace(/\D/g, "") })}
+              placeholder="Numeric account login"
+              disabled={loading}
+              className="bg-background"
+            />
+            <p className="text-xs text-muted-foreground">Use the numeric account login accepted by InstaForex. The published Client/Quotes/Charts APIs supply account and market data only; order execution is unavailable.</p>
+          </div>
+        ) : (
+          <>
+          <div className="space-y-2">
           <Label className="font-medium flex items-center gap-2">
             <Lock className="h-4 w-4" />
             API Key
@@ -259,7 +312,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
               {showSecrets ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
-        </div>
+          </div>
 
         <div className="space-y-2">
           <Label className="font-medium flex items-center gap-2">
@@ -275,6 +328,8 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             className="bg-background"
           />
         </div>
+          </>
+        )}
 
         <div className="space-y-2">
           <Label className="font-medium">API Passphrase (Optional)</Label>
@@ -293,6 +348,11 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
         {/* Connection Configuration Section */}
         <div className="border-b pb-4">
           <h4 className="font-semibold text-sm mb-3">Connection Configuration</h4>
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Market type:</span>
+            <Badge variant="outline">{marketTypeLabel(isForex ? "forex" : "crypto")}</Badge>
+            {isForex && <Badge className="bg-amber-100 text-amber-900">REST read-only · no order execution</Badge>}
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label className="font-medium text-xs">API Subtype</Label>
@@ -312,7 +372,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
 
             <div className="space-y-2">
               <Label className="font-medium text-xs">Connection Method</Label>
-              <Select value={formData.connection_method} onValueChange={(value) => setFormData({ ...formData, connection_method: value })}>
+              <Select value={isForex ? "rest" : formData.connection_method} onValueChange={(value) => setFormData({ ...formData, connection_method: isForex ? "rest" : value, connection_library: isForex ? "native-http" : formData.connection_library })} disabled={isForex}>
                 <SelectTrigger disabled={loading} className="bg-background text-sm">
                   <SelectValue />
                 </SelectTrigger>
@@ -326,22 +386,38 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
               </Select>
             </div>
 
-            <div className="space-y-2">
-              <Label className="font-medium text-xs">Connection Library</Label>
-              <Select value={formData.connection_library} onValueChange={(value) => setFormData({ ...formData, connection_library: value })}>
+                <div className="space-y-2">
+                  <Label className="font-medium text-xs">Connection Library</Label>
+              <Select value={isForex ? "native-http" : formData.connection_library} onValueChange={(value) => setFormData({ ...formData, connection_library: isForex ? "native-http" : value })} disabled={isForex}>
                 <SelectTrigger disabled={loading} className="bg-background text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="native">Native</SelectItem>
-                  <SelectItem value="ccxt">CCXT</SelectItem>
-                  <SelectItem value="exchange-lib">Exchange-specific SDK</SelectItem>
-                  <SelectItem value="custom">Custom Implementation</SelectItem>
+                  {isForex && <SelectItem value="native-http">Official HTTP (read-only)</SelectItem>}
+                  {!isForex && <>
+                    <SelectItem value="native">Native</SelectItem>
+                    <SelectItem value="ccxt">CCXT</SelectItem>
+                    <SelectItem value="exchange-lib">Exchange-specific SDK</SelectItem>
+                    <SelectItem value="custom">Custom Implementation</SelectItem>
+                  </>}
                 </SelectContent>
               </Select>
             </div>
           </div>
         </div>
+
+        {isForex && (
+          <div className="space-y-3 border-b pb-4">
+            <div>
+              <h4 className="font-semibold text-sm">Forex transport</h4>
+              <p className="text-xs text-muted-foreground mt-1">Official InstaForex REST/Quotes/Charts data; account and history reads are supported, while order execution is unavailable.</p>
+            </div>
+            <div className="space-y-2">
+              <Label className="font-medium text-xs">Broker symbol suffix (optional)</Label>
+              <Input value={formData.symbol_suffix} onChange={(e) => setFormData({ ...formData, symbol_suffix: e.target.value })} placeholder="e.g. .fx or .m" disabled={loading} />
+            </div>
+          </div>
+        )}
 
         {/* Trading Settings Section */}
         <div className="border-b pb-4">
@@ -349,7 +425,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label className="font-medium">Margin Type</Label>
-              <Select value={formData.margin_type} onValueChange={(value) => setFormData({ ...formData, margin_type: value })}>
+              <Select value={formData.margin_type} onValueChange={(value) => setFormData({ ...formData, margin_type: value })} disabled={isForex}>
                 <SelectTrigger disabled={loading} className="bg-background">
                   <SelectValue />
                 </SelectTrigger>
@@ -362,7 +438,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
 
             <div className="space-y-2">
               <Label className="font-medium">Position Mode</Label>
-              <Select value={formData.position_mode} onValueChange={(value) => setFormData({ ...formData, position_mode: value })}>
+              <Select value={formData.position_mode} onValueChange={(value) => setFormData({ ...formData, position_mode: value })} disabled={isForex}>
                 <SelectTrigger disabled={loading} className="bg-background">
                   <SelectValue />
                 </SelectTrigger>
@@ -378,9 +454,9 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
         <div className="flex items-center justify-between border-b pb-4">
           <div>
             <Label className="font-medium">Use Testnet</Label>
-            <p className="text-xs text-muted-foreground mt-1">{formData.is_testnet ? "Testnet" : "Live"}</p>
+            <p className="text-xs text-muted-foreground mt-1">{isForex ? "Read-only HTTP account data" : formData.is_testnet ? "Testnet" : "Live"}</p>
           </div>
-          <Switch checked={connection.id === "bingx-x02" || formData.is_testnet} onCheckedChange={(checked) => setFormData({ ...formData, is_testnet: connection.id === "bingx-x02" || checked })} disabled={loading || connection.id === "bingx-x02"} />
+          <Switch checked={isForex ? false : connection.id === "bingx-x02" || formData.is_testnet} onCheckedChange={(checked) => setFormData({ ...formData, is_testnet: connection.id === "bingx-x02" || checked })} disabled={loading || connection.id === "bingx-x02" || isForex} />
         </div>
 
         <div className="border-t pt-4 space-y-3">
@@ -390,7 +466,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
           </div>
 
           {!showTestLog && (
-            <Button onClick={handleTestConnection} disabled={testing || !formData.api_key || !formData.api_secret || loading} className="w-full bg-orange-600 hover:bg-orange-700">
+            <Button onClick={handleTestConnection} disabled={testing || !connectionReady || loading} className="w-full bg-orange-600 hover:bg-orange-700">
               {testing ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -498,6 +574,8 @@ export default function ExchangeConnectionManager() {
         })
         .map((c: any) => ({
           ...c,
+          market_type: normalizeMarketType(c.market_type || c.asset_class, c.exchange),
+          asset_class: normalizeMarketType(c.market_type || c.asset_class, c.exchange),
           is_enabled: toBooleanFlag(c.is_enabled),
           is_inserted: toBooleanFlag(c.is_inserted),
           is_active_inserted: toBooleanFlag(c.is_active_inserted),
@@ -510,9 +588,13 @@ export default function ExchangeConnectionManager() {
           volume_factor: MIN_VOLUME_FACTOR,
           margin_type: c.margin_type || "cross",
           position_mode: c.position_mode || "hedge",
-          api_type: c.api_type || "perpetual_futures",
-          connection_method: c.connection_method || (String(c.exchange).toLowerCase() === "bingx" ? "library" : "rest"),
-          connection_library: c.connection_library || (String(c.exchange).toLowerCase() === "bingx" ? "sdk" : "native"),
+          api_type: normalizeMarketType(c.market_type || c.asset_class, c.exchange) === "forex" ? "forex" : c.api_type || "perpetual_futures",
+          connection_method: normalizeMarketType(c.market_type || c.asset_class, c.exchange) === "forex"
+            ? "rest"
+            : c.connection_method || (String(c.exchange).toLowerCase() === "bingx" ? "library" : "rest"),
+          connection_library: normalizeMarketType(c.market_type || c.asset_class, c.exchange) === "forex"
+            ? "native-http"
+            : c.connection_library || (String(c.exchange).toLowerCase() === "bingx" ? "sdk" : "native"),
         } as Connection))
 
       setConnections(validConnections)

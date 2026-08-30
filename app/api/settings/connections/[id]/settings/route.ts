@@ -885,7 +885,7 @@ export async function PATCH(
     // `connection_settings`. But the engine's `getSymbols()` reads the
     // ACTIVE list from the connection object's `active_symbols` (and the
     // `trade_engine_state:{id}` hash) — it never looks at
-    // `connection_settings.symbols`. So without this bridge a saved symbol
+    // `connection_settings.symbols`. Without mirroring this selection a saved symbol
     // selection silently never reached the engine.
     //
     // Behaviour:

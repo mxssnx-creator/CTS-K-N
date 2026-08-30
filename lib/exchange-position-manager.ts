@@ -6,8 +6,10 @@
  * Logs actual exchange live positions for history and statistics.
  */
 
-import { initRedis, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
+import { initRedis, getRedisClient, getSettings, getConnection, setSettings } from "@/lib/redis-db"
 import { VolumeCalculator } from "./volume-calculator"
+import { forexNotionalUsd } from "@/lib/forex-market"
+import { normalizeMarketType, type MarketType } from "@/lib/market-types"
 
 export interface ExchangePositionCreateParams {
   connectionId: string
@@ -29,6 +31,10 @@ export interface ExchangePositionCreateParams {
   trailStop?: number
   tradeMode: "preset" | "main"
   indicationType?: string
+  marketType?: MarketType | string
+  lotSize?: number
+  quoteToUsdRate?: number
+  positionTicket?: number
   // ── Set lineage (optional, mirrored from the upstream Real position
   //    when the real position descends from a coordinated Main Set) ────
   // These tags travel from Strategy-Coordinator (Main) → Real → Live
@@ -75,20 +81,57 @@ export class ExchangePositionManager {
     try {
       await initRedis()
       const client = getRedisClient()
-
-      const volumeResult = await VolumeCalculator.calculateVolumeForConnection(
-        params.connectionId,
-        params.symbol,
-        params.entryPrice,
-        {
-          tradeMode: params.tradeMode,
-          indicationType: params.indicationType,
-        },
+      const connection = await getConnection(params.connectionId).catch(() => null)
+      const marketType = normalizeMarketType(
+        params.marketType ?? connection?.market_type ?? connection?.asset_class,
+        connection?.exchange,
       )
+      const configuredLotSize = Number(
+        params.lotSize ?? connection?.lot_size,
+      )
+      const lotSize = configuredLotSize > 0 ? configuredLotSize : undefined
+      const requestedQuantity = Math.abs(Number(params.quantity))
+      let finalQuantity = requestedQuantity
+      let finalLeverage = Number(params.leverage)
+      let finalVolumeUsd = 0
 
-      const finalQuantity = volumeResult.volume
-      const finalVolumeUsd = volumeResult.volumeUsd ?? 0
-      const finalLeverage = volumeResult.leverage
+      // The exchange fill is authoritative. Recalculating a fresh quantity
+      // here used to overwrite the actual filled amount and could turn a
+      // small safe order into a larger synthetic position in the history
+      // ledger. Only legacy callers that provide no usable quantity use the
+      // shared calculator as a default.
+      if (!(finalQuantity > 0) || !(Number(params.entryPrice) > 0)) {
+        const volumeResult = await VolumeCalculator.calculateVolumeForConnection(
+          params.connectionId,
+          params.symbol,
+          params.entryPrice,
+          {
+            tradeMode: params.tradeMode,
+            indicationType: params.indicationType,
+            marketType,
+            lotSize,
+            quoteToUsdRate: params.quoteToUsdRate,
+          },
+        )
+        finalQuantity = Math.abs(Number(volumeResult.volume || volumeResult.finalVolume || 0))
+        finalLeverage = Number(params.leverage) > 0 ? Number(params.leverage) : volumeResult.leverage
+      }
+      if (!(finalLeverage > 0)) finalLeverage = 1
+      finalVolumeUsd = marketType === "forex"
+        ? forexNotionalUsd(
+            finalQuantity,
+            params.entryPrice,
+            params.symbol,
+            lotSize,
+            params.quoteToUsdRate ?? (Number(connection?.quote_to_usd_rate) || undefined),
+          )
+        : finalQuantity * Number(params.entryPrice)
+      if (!(finalVolumeUsd > 0) && Number(params.volumeUsd) > 0) {
+        // Keep a caller-provided legacy value only when the canonical market
+        // conversion is unavailable; never replace a valid calculated
+        // notional with a stale requested-volume estimate.
+        finalVolumeUsd = Number(params.volumeUsd)
+      }
 
       // Compute used balance (margin) alongside the leveraged notional
       // so post-trade stats and dashboards can dimension by either
@@ -103,6 +146,9 @@ export class ExchangePositionManager {
         base_pseudo_position_id: params.basePseudoPositionId || null,
         exchange_id: params.exchangeId,
         exchange_order_id: params.exchangeOrderId || null,
+        position_ticket: Number.isInteger(Number(params.positionTicket)) && Number(params.positionTicket) > 0
+          ? Number(params.positionTicket)
+          : null,
         symbol: params.symbol,
         side: params.side,
         // Keep an explicit direction mirror for legacy readers. Newer code
@@ -116,6 +162,9 @@ export class ExchangePositionManager {
         volume_usd: finalVolumeUsd,
         margin_usd: Math.round(marginUsd * 100) / 100,
         leverage: finalLeverage,
+        market_type: marketType,
+        quantity_unit: marketType === "forex" ? "lots" : "base_units",
+        lot_size: marketType === "forex" ? (lotSize || undefined) : undefined,
         takeprofit: params.takeprofit || null,
         stoploss: params.stoploss || null,
         trailing_enabled: params.trailingEnabled || false,

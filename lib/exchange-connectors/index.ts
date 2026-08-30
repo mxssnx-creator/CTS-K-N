@@ -53,7 +53,15 @@ export async function createExchangeConnector(
   // could otherwise create a simulated connector in non-prod or fail in prod.
   if (normalizedExchange.includes("bingx")) normalizedExchange = "bingx"
   else if (normalizedExchange.includes("bybit")) normalizedExchange = "bybit"
+  else if (normalizedExchange.includes("instaforex") || normalizedExchange.includes("instafx")) normalizedExchange = "instaforex"
   const supported = EXCHANGE_API_TYPES[normalizedExchange]
+
+  if (normalizedExchange === "instaforex") {
+    credentials.apiType = credentials.apiType || "forex"
+    credentials.contractType = credentials.contractType || "forex"
+    credentials.marketType = "forex"
+    credentials.isTestnet = false
+  }
   
   // Convert API type to what this exchange accepts
   credentials.apiType = convertApiType(credentials.apiType, supported)
@@ -75,7 +83,11 @@ export async function createExchangeConnector(
     api_key: credentials.apiKey,
     api_secret: credentials.apiSecret,
   })
-  const shouldUseSim = forceSim || (!hasRealCredentials && (!isProduction || allowProdSim))
+  const isInstaForex = normalizedExchange === "instaforex"
+  // InstaForex's supported HTTP surface is intentionally read-only. A
+  // quote-only or account-read connector must not be replaced with a paper
+  // connector merely because it has no crypto-style API secret.
+  const shouldUseSim = forceSim || (!isInstaForex && !hasRealCredentials && (!isProduction || allowProdSim))
   if (shouldUseSim) {
     try {
       const { SimulatedConnector } = await import("./simulated-connector")
@@ -88,7 +100,7 @@ export async function createExchangeConnector(
       )
     }
   }
-  if (!hasRealCredentials) {
+  if (!hasRealCredentials && !isInstaForex) {
     throw new Error(
       `Valid ${exchange} credentials are required because production simulation is not enabled`,
     )
@@ -127,6 +139,10 @@ export async function createExchangeConnector(
       const { OKXConnector } = await import("./okx-connector")
       return new OKXConnector(credentials, "okx")
     }
+    case "instaforex": {
+      const { InstaForexConnector } = await import("./instaforex-connector")
+      return new InstaForexConnector(credentials, "instaforex")
+    }
     default:
       // Unknown exchange — fallback to SimulatedConnector only outside production.
       // In production, fail closed so operators see the unsupported exchange
@@ -139,7 +155,7 @@ export async function createExchangeConnector(
           // fall through to explicit unsupported error
         }
       }
-      throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: bybit, bingx, pionex, orangex, binance, okx`)
+      throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: bybit, bingx, pionex, orangex, binance, okx, instaforex`)
   }
 }
 

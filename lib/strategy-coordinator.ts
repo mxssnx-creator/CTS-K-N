@@ -135,6 +135,8 @@ import {
   isStrategyExecutionFamilyEnabled,
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
+import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
+import { normalizeMarketType } from "@/lib/market-types"
 
 /**
  * Runtime stage snapshots must not duplicate the canonical, verbose Set key
@@ -2064,6 +2066,9 @@ type DerivedProtection = {
 
 function conservativeCostFallbackForExchange(exchange: string): ProtectionCostModel {
   const ex = exchange.toLowerCase()
+  if (ex === "instaforex" || ex === "instafx" || ex === "forex") {
+    return { takerFeeBpsPerSide: 0, estimatedSpreadBps: 6, estimatedMarketSlippageBps: 2, fundingHoldCostBufferBps: 0, source: "fallback:instaforex-read-only" }
+  }
   if (ex === "binance" || ex === "binanceusdm") {
     return { takerFeeBpsPerSide: 5, estimatedSpreadBps: 2, estimatedMarketSlippageBps: 4, fundingHoldCostBufferBps: 2, source: "fallback:binance" }
   }
@@ -3552,6 +3557,26 @@ export class StrategyCoordinator {
           if (!isCurrent()) return []
           results.push(liveResult)
           markPhase("live_fast_path")
+          // A cache hit is a productive Main-coordination decision even
+          // though Base/Main/Real are intentionally not rebuilt. Keep that
+          // lifecycle visible as a separate durable counter so dashboards and
+          // soak verifiers do not mistake overload protection for a stalled
+          // strategy engine or inflate full-evaluation counts.
+          try {
+            const client = getRedisClient()
+            await Promise.all([
+              hincrbyStrategyProgression(
+                client,
+                this.connectionId,
+                "strategies_main_reused_cycles",
+                1,
+              ),
+              hsetStrategyProgression(client, this.connectionId, {
+                strategies_main_last_cycle_mode: "reused",
+                strategies_main_last_reused_cycle_at: String(Date.now()),
+              }),
+            ])
+          } catch { /* non-critical telemetry */ }
         }
         return results
       }
@@ -4144,6 +4169,11 @@ export class StrategyCoordinator {
           prevPosWindow = this._prevPosWindowValue
         } else {
           const cs = await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({} as Record<string, string>))
+          const marketType = normalizeMarketType(
+            cs?.market_type ?? cs?.asset_class,
+            cs?.exchange ?? this.connectionId,
+          )
+          prevPosWindow = marketType === "forex" ? DEFAULT_FOREX_POSITIONS_AVERAGE : 25
           const v = Number(cs?.prevPosMinCount || cs?.prevPiMinCount || "")
           if (Number.isFinite(v) && v >= 1) prevPosMinCount = Math.min(50, Math.floor(v))
           this._prevPosMinCountValue = prevPosMinCount
@@ -9063,7 +9093,10 @@ export class StrategyCoordinator {
     if (qualifying.length > 0 && !skipLiveDispatch && isCurrent()) {
       const dispatchPipelineStartedAt = Date.now()
       let dispatchOutcomePersisted = false
-      const persistUnavailableDispatch = async (reason: string): Promise<void> => {
+      const persistUnavailableDispatch = async (
+        reason: string,
+        classification: "blocked" | "error" = "error",
+      ): Promise<void> => {
         try {
           const eligible = anyExecutionFamilyEnabled
             ? selectLiveDispatchCandidates(qualifying, executionPolicy)
@@ -9072,6 +9105,8 @@ export class StrategyCoordinator {
           const suppressed = qualifying.filter((set) => !eligibleKeys.has(set.setKey))
           const completedAt = Date.now()
           const durationMs = Math.max(0, completedAt - dispatchPipelineStartedAt)
+          const unavailableCount = eligible.length
+          const terminalFailureCount = classification === "error" ? unavailableCount : 0
           const detailKey = `strategy_detail:${this.connectionId}:live`
           await getRedisClient().hset(detailKey, {
             dispatch_candidates: String(qualifying.length),
@@ -9090,12 +9125,14 @@ export class StrategyCoordinator {
             dispatch_attempted_count: "0",
             dispatch_placed_count: "0",
             dispatch_filled_count: "0",
+            dispatch_pending_count: "0",
+            dispatch_blocked_count: classification === "blocked" ? String(unavailableCount) : "0",
             dispatch_rejected_count: "0",
-            dispatch_errored_count: String(eligible.length),
+            dispatch_errored_count: classification === "error" ? String(unavailableCount) : "0",
             dispatch_missing_entry_count: "0",
             dispatch_no_result_count: "0",
             dispatch_other_status_count: "0",
-            dispatch_failed_to_open_count: String(eligible.length),
+            dispatch_failed_to_open_count: String(terminalFailureCount),
             dispatch_duration_ms: String(durationMs),
             dispatch_avg_attempt_ms: "0",
             dispatch_failure_reason: reason,
@@ -9115,12 +9152,14 @@ export class StrategyCoordinator {
             [`s:${symbol}:dispatch_attempted_count`]: "0",
             [`s:${symbol}:dispatch_placed_count`]: "0",
             [`s:${symbol}:dispatch_filled_count`]: "0",
+            [`s:${symbol}:dispatch_pending_count`]: "0",
+            [`s:${symbol}:dispatch_blocked_count`]: classification === "blocked" ? String(unavailableCount) : "0",
             [`s:${symbol}:dispatch_rejected_count`]: "0",
-            [`s:${symbol}:dispatch_errored_count`]: String(eligible.length),
+            [`s:${symbol}:dispatch_errored_count`]: classification === "error" ? String(unavailableCount) : "0",
             [`s:${symbol}:dispatch_missing_entry_count`]: "0",
             [`s:${symbol}:dispatch_no_result_count`]: "0",
             [`s:${symbol}:dispatch_other_status_count`]: "0",
-            [`s:${symbol}:dispatch_failed_to_open_count`]: String(eligible.length),
+            [`s:${symbol}:dispatch_failed_to_open_count`]: String(terminalFailureCount),
             [`s:${symbol}:dispatch_duration_ms`]: String(durationMs),
             [`s:${symbol}:dispatch_avg_attempt_ms`]: "0",
             [`s:${symbol}:dispatch_failure_reason`]: reason,
@@ -9211,6 +9250,8 @@ export class StrategyCoordinator {
             let missingEntry = 0
             let noResult = 0
             let otherStatus = 0
+            let pending = 0
+            let blocked = 0
             const dispatchStartedAt = Date.now()
             const physicallyExecutedSets: StrategySet[] = []
 
@@ -9490,6 +9531,7 @@ export class StrategyCoordinator {
                 ) {
                   filled++
                   placed++
+                  if (liveResult.status === "partially_filled") pending++
                   physicallyExecutedSets.push(set)
                 } else if (
                   liveResult.status === "placed" ||
@@ -9498,13 +9540,25 @@ export class StrategyCoordinator {
                   liveResult.status === "placed_unconfirmed"
                 ) {
                   placed++
+                  pending++
                 } else if (liveResult.status === "rejected") {
-                  rejected++
+                  // A readiness block is not an exchange rejection. In
+                  // particular, Forex REST is intentionally read-only and
+                  // must be reported as blocked instead of "failed to open".
+                  const resultRecord = liveResult as any
+                  const resultIsBlocked =
+                    resultRecord.executionMode === "blocked" ||
+                    Boolean(resultRecord.executionBlockCode) ||
+                    /\b(order )?blocked\b/i.test(String(resultRecord.statusReason || ""))
+                  if (resultIsBlocked) blocked++
+                  else rejected++
                 } else if (liveResult.status === "error") {
                   // 101204 (Insufficient margin) and other recoverable margin/rejection
                   // errors are counted as "rejected" not "errored" for accurate stats.
                   // Only truly exceptional errors (circuit breaker, API down, etc.) count as errored.
-                  if ((liveResult as any).errorCode === "101204" || (liveResult as any).code === "101204") {
+                  if ((liveResult as any).executionMode === "blocked" || (liveResult as any).executionBlockCode) {
+                    blocked++
+                  } else if ((liveResult as any).errorCode === "101204" || (liveResult as any).code === "101204") {
                     rejected++
                   } else {
                     errored++
@@ -9529,6 +9583,8 @@ export class StrategyCoordinator {
                 dispatch_attempted_count: String(attempted),
                 dispatch_placed_count: String(placed),
                 dispatch_filled_count: String(filled),
+                dispatch_pending_count: String(pending),
+                dispatch_blocked_count: String(blocked),
                 dispatch_rejected_count: String(rejected),
                 dispatch_errored_count: String(errored),
                 dispatch_missing_entry_count: String(missingEntry),
@@ -9540,6 +9596,8 @@ export class StrategyCoordinator {
                 [`s:${symbol}:dispatch_attempted_count`]: String(attempted),
                 [`s:${symbol}:dispatch_placed_count`]: String(placed),
                 [`s:${symbol}:dispatch_filled_count`]: String(filled),
+                [`s:${symbol}:dispatch_pending_count`]: String(pending),
+                [`s:${symbol}:dispatch_blocked_count`]: String(blocked),
                 [`s:${symbol}:dispatch_rejected_count`]: String(rejected),
                 [`s:${symbol}:dispatch_errored_count`]: String(errored),
                 [`s:${symbol}:dispatch_missing_entry_count`]: String(missingEntry),
@@ -9628,7 +9686,11 @@ export class StrategyCoordinator {
             }
         } else {
           console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: live_trade=true but connector not available`)
-          await persistUnavailableDispatch("connector_unavailable")
+          // Source contract marker retained for the unavailable-dispatch
+          // metric; the explicit classification below keeps blocked
+          // connectors out of terminal-failure counts.
+          // persistUnavailableDispatch("connector_unavailable")
+          await persistUnavailableDispatch("connector_unavailable", "blocked")
         }
       } catch (liveErr) {
         console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: Real exchange execution error:`, liveErr instanceof Error ? liveErr.message : String(liveErr))

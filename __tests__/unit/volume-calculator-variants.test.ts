@@ -65,6 +65,20 @@ describe("live volume coordination by strategy variant", () => {
     expect(invalid.finalVolume).toBeCloseTo(0.05, 8)
   })
 
+  test("hard-caps an aggressive live factor before the exchange quantity is returned", () => {
+    const result = VolumeCalculator.calculatePositionVolume({
+      ...base,
+      mainVolumeFactor: 10,
+      sizeMultiplier: 5,
+    })
+
+    expect(result.intendedNotionalUsd).toBeCloseTo(100, 10)
+    expect(result.maxExecutionNotionalUsd).toBeCloseTo(50, 10)
+    expect(result.finalVolume).toBeCloseTo(0.5, 10)
+    expect(result.volumeUsd).toBeCloseTo(50, 10)
+    expect(result.liveMultiplierCapped).toBe(true)
+  })
+
   test("permits an explicitly resolved combined Position-Count target to exceed the ordinary cap", () => {
     const combined = VolumeCalculator.calculatePositionVolume({
       ...base,

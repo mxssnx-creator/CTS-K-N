@@ -2,12 +2,16 @@ const strings = new Map<string, string>()
 const hashes = new Map<string, Record<string, any>>()
 const lists = new Map<string, string[]>()
 const sets = new Map<string, Set<string>>()
+const sortedSets = new Map<string, Map<string, number>>()
+const cancelledVenueOrderIds = new Set<string>()
+const venueQuantityOverrides = new Map<string, number>()
 const mockRecordLiveOrderProgression = jest.fn(async () => true)
 const mockReadOrderSettlement = jest.fn(async () => null as any)
 const mockCalculateVolumeForConnection = jest.fn(async () => ({
   finalVolume: 0.01,
   volume: 0.01,
   leverage: 10,
+  maxExecutionNotionalUsd: 50,
   volumeAdjusted: false,
 }))
 
@@ -19,6 +23,8 @@ const connection: Record<string, any> = {
   api_secret: "abcdefghijklmnopqrstuvwxyz",
   is_live_trade: "1",
   live_trade_requested: "1",
+  is_assigned: "1",
+  is_enabled_dashboard: "1",
   is_preset_trade: "0",
   is_testnet: "0",
   position_mode: "hedge",
@@ -32,6 +38,10 @@ const fakeRedis = {
     return "OK"
   },
   async get(key: string) { return strings.get(key) ?? null },
+  async setex(key: string, _seconds: number, value: any) {
+    strings.set(key, String(value))
+    return "OK"
+  },
   async del(...keys: string[]) {
     let deleted = 0
     for (const key of keys) {
@@ -44,6 +54,7 @@ const fakeRedis = {
   },
   async expire() { return 1 },
   async pexpire() { return 1 },
+  async pExpire(key: string, seconds: number) { return fakeRedis.pexpire(key, seconds) },
   async persist() { return 1 },
   async hset(key: string, fieldOrObject: any, value?: any) {
     const hash = hashes.get(key) || {}
@@ -52,7 +63,20 @@ const fakeRedis = {
     hashes.set(key, hash)
     return 1
   },
-  async hgetall(key: string) { return { ...(hashes.get(key) || {}) } },
+  async hgetall(key: string) {
+    const stored = hashes.get(key) || {}
+    if (key.startsWith("settings:trading_pair:")) {
+      return {
+        quantityStep: "0.000001",
+        quantityPrecision: "6",
+        minQuantity: "0.000001",
+        pricePrecision: "2",
+        priceTick: "0.01",
+        ...stored,
+      }
+    }
+    return { ...stored }
+  },
   async hget(key: string, field: string) { return hashes.get(key)?.[field] ?? null },
   async hdel(key: string, ...fields: string[]) {
     const hash = hashes.get(key)
@@ -66,6 +90,12 @@ const fakeRedis = {
     return deleted
   },
   async hincrby(key: string, field: string, delta: number) {
+    const hash = hashes.get(key) || {}
+    hash[field] = String((Number(hash[field]) || 0) + Number(delta || 0))
+    hashes.set(key, hash)
+    return Number(hash[field])
+  },
+  async hincrbyfloat(key: string, field: string, delta: number) {
     const hash = hashes.get(key) || {}
     hash[field] = String((Number(hash[field]) || 0) + Number(delta || 0))
     hashes.set(key, hash)
@@ -111,20 +141,56 @@ const fakeRedis = {
   async scard(key: string) {
     return sets.get(key)?.size || 0
   },
+  async zadd(key: string, score: number, member: string) {
+    const sorted = sortedSets.get(key) || new Map<string, number>()
+    const existed = sorted.has(String(member))
+    sorted.set(String(member), Number(score))
+    sortedSets.set(key, sorted)
+    return existed ? 0 : 1
+  },
+  async zrangebyscore(key: string, min: number | string, max: number | string) {
+    const lower = min === "-inf" ? Number.NEGATIVE_INFINITY : Number(min)
+    const upper = max === "+inf" ? Number.POSITIVE_INFINITY : Number(max)
+    return [...(sortedSets.get(key) || new Map<string, number>()).entries()]
+      .filter(([, score]) => score >= lower && score <= upper)
+      .sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]))
+      .map(([member]) => member)
+  },
+  async zremrangebyscore(key: string, min: number | string, max: number | string) {
+    const lower = min === "-inf" ? Number.NEGATIVE_INFINITY : Number(min)
+    const upper = max === "+inf" ? Number.POSITIVE_INFINITY : Number(max)
+    const sorted = sortedSets.get(key) || new Map<string, number>()
+    let removed = 0
+    for (const [member, score] of sorted.entries()) {
+      if (score >= lower && score <= upper) {
+        sorted.delete(member)
+        removed++
+      }
+    }
+    sortedSets.set(key, sorted)
+    return removed
+  },
   multi() {
     const operations: Array<() => Promise<any>> = []
     const pipeline: any = {}
     for (const method of [
+      "get",
       "sadd",
       "srem",
       "expire",
       "persist",
+      "hget",
+      "hgetall",
       "hincrby",
+      "hincrbyfloat",
       "hset",
       "hdel",
+      "lrange",
       "lpush",
       "ltrim",
       "del",
+      "zadd",
+      "zremrangebyscore",
     ] as const) {
       pipeline[method] = (...args: any[]) => {
         operations.push(() => (fakeRedis as any)[method](...args))
@@ -136,10 +202,128 @@ const fakeRedis = {
   },
 }
 
+function persistedActiveRows(): Array<Record<string, any>> {
+  const ids = lists.get(`live:positions:${connection.id}`) || []
+  return ids.flatMap((id) => {
+    const raw = strings.get(`live:position:${id}`)
+    const hash = hashes.get(`live_positions:${connection.id}:${id}`)
+    if (!raw && !hash) return []
+    try {
+      const decode = (value: any): any => {
+        if (typeof value !== "string") return value
+        try { return JSON.parse(value) } catch { return value }
+      }
+      const row = raw
+        ? JSON.parse(raw) as Record<string, any>
+        : Object.fromEntries(Object.entries(hash || {}).map(([key, value]) => [key, decode(value)]))
+      return ["open", "filled", "partially_filled", "closing", "closing_partial"].includes(String(row.status || "").toLowerCase()) &&
+        Number(row.executedQuantity || 0) > 0
+        ? [row]
+        : []
+    } catch {
+      return []
+    }
+  })
+}
+
+function venuePositionSnapshot(): Array<Record<string, any>> {
+  const slots = new Map<string, Record<string, any>>()
+  for (const row of persistedActiveRows()) {
+    const direction = String(row.direction || row.side || "").toLowerCase() === "short" ? "short" : "long"
+    const symbol = String(row.symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+    const key = `${symbol}:${direction}`
+    const existing = slots.get(key)
+    const quantity = Number(row.executedQuantity || 0)
+    if (!existing) {
+      slots.set(key, {
+        symbol: row.symbol,
+        positionSide: direction === "long" ? "LONG" : "SHORT",
+        positionAmt: quantity,
+        entryPrice: Number(row.averageExecutionPrice || row.entryPrice || 100),
+        markPrice: 100,
+        liquidationPrice: direction === "short" ? 150 : 50,
+      })
+      continue
+    }
+    const before = Number(existing.positionAmt || 0)
+    existing.positionAmt = before + quantity
+    existing.entryPrice = before > 0
+      ? ((Number(existing.entryPrice || 100) * before) + (Number(row.averageExecutionPrice || row.entryPrice || 100) * quantity)) / (before + quantity)
+      : Number(row.averageExecutionPrice || row.entryPrice || 100)
+  }
+  for (const [key, quantity] of venueQuantityOverrides.entries()) {
+    const existing = slots.get(key)
+    if (!(quantity > 0)) {
+      slots.delete(key)
+      continue
+    }
+    if (existing) existing.positionAmt = quantity
+  }
+  return [...slots.values()]
+}
+
+function venueOpenOrderSnapshot(): Array<Record<string, any>> {
+  const orders: Array<Record<string, any>> = []
+  for (const row of persistedActiveRows()) {
+    const direction = String(row.direction || row.side || "").toLowerCase() === "short" ? "short" : "long"
+    const side = direction === "long" ? "sell" : "buy"
+    const positionSide = direction === "long" ? "LONG" : "SHORT"
+    const tracked = (kind: string) => {
+      const entries = Array.isArray(row.exchangeData?.clientOrderIds) ? row.exchangeData.clientOrderIds : []
+      const entry = [...entries].reverse().find((item: any) => item?.kind === kind)
+      return entry?.clientOrderId || undefined
+    }
+    const add = (id: unknown, clientOrderId: unknown, type: string, quantity: unknown, trigger: unknown) => {
+      if (!id) return
+      if (cancelledVenueOrderIds.has(String(id)) || (clientOrderId && cancelledVenueOrderIds.has(String(clientOrderId)))) return
+      orders.push({
+        id: String(id),
+        clientOrderId: clientOrderId ? String(clientOrderId) : undefined,
+        symbol: row.symbol,
+        side,
+        positionSide,
+        type,
+        origQty: Number(quantity || 0),
+        stopPrice: Number(trigger || 0),
+        reduceOnly: true,
+      })
+    }
+    add(row.stopLossOrderId, tracked("stop_loss"), "STOP_MARKET", row.stopLossArmedQuantity || row.executedQuantity, row.stopLossPrice)
+    add(row.takeProfitOrderId, tracked("take_profit"), "TAKE_PROFIT_MARKET", row.takeProfitArmedQuantity || row.executedQuantity, row.takeProfitPrice)
+    add(row.securityStopOrderId, tracked("security_stop"), "STOP_MARKET", row.securityStopArmedQuantity || row.executedQuantity, row.securityStopPrice)
+  }
+  return orders
+}
+
 let firstEntryRequestAt = 0
 let protectionRequestTimes: number[] = []
-const placeOrder = jest.fn(async (symbol: string) => {
+const placeOrder = jest.fn(async (
+  symbol: string,
+  side?: string,
+  quantity?: number,
+  _price?: number,
+  _type?: string,
+  options: Record<string, any> = {},
+) => {
   if (firstEntryRequestAt === 0) firstEntryRequestAt = performance.now()
+  const explicitPositionSide = String(options.positionSide || "").toLowerCase()
+  const normalizedSide = String(side || "").toLowerCase()
+  const direction = explicitPositionSide === "short" || explicitPositionSide === "sell"
+    ? "short"
+    : explicitPositionSide === "long" || explicitPositionSide === "buy"
+      ? "long"
+      : normalizedSide === "sell" ? "short" : "long"
+  const normalizedSymbol = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+  const venueKey = `${normalizedSymbol}:${direction}`
+  if (options.reduceOnly === true) {
+    const current = venuePositionSnapshot().find((row) =>
+      String(row.symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "") === normalizedSymbol &&
+      String(row.positionSide || "").toLowerCase() === direction,
+    )
+    venueQuantityOverrides.set(venueKey, Math.max(0, Number(current?.positionAmt || 0) - Math.abs(Number(quantity || 0))))
+  } else {
+    venueQuantityOverrides.delete(venueKey)
+  }
   return {
     success: true,
     orderId: `bingx-entry-${symbol}`,
@@ -148,11 +332,13 @@ const placeOrder = jest.fn(async (symbol: string) => {
     filledPrice: 100,
   }
 })
-const placeStopOrder = jest.fn(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string) => {
+const placeStopOrder = jest.fn(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string, options: any = {}) => {
   protectionRequestTimes.push(performance.now())
+  const clientOrderId = options?.clientOrderId
   return {
     success: true,
-    orderId: `bingx-${kind}-${symbol}`,
+    orderId: `bingx-${kind}-${symbol}-${clientOrderId || placeStopOrder.mock.calls.length}`,
+    ...(clientOrderId ? { clientOrderId } : {}),
   }
 })
 const applySelectedPresetToRealPosition = jest.fn(async (_connectionId: string, position: Record<string, any>) => ({
@@ -170,7 +356,10 @@ const recordingConnector = {
   getTicker: jest.fn(async () => ({ bid: 99.9, ask: 100, last: 100 })),
   placeOrder,
   placeStopOrder,
-  cancelOrder: jest.fn(async () => ({ success: true })),
+  cancelOrder: jest.fn(async (_symbol: string, orderId: string) => {
+    cancelledVenueOrderIds.add(String(orderId))
+    return { success: true }
+  }),
   setLeverage: jest.fn(async () => ({ success: true })),
   setMarginType: jest.fn(async () => ({ success: true })),
   getPosition: jest.fn(async () => ({
@@ -181,6 +370,11 @@ const recordingConnector = {
     unrealizedPnl: 0,
     marginType: "cross",
   })),
+  getPositions: jest.fn(async () => venuePositionSnapshot()),
+  getLastPositionsSnapshotStatus: jest.fn(() => ({ ok: true })),
+  getOpenOrders: jest.fn(async () => venueOpenOrderSnapshot()),
+  getLastOpenOrdersSnapshotStatus: jest.fn(() => ({ ok: true })),
+  getCapabilities: jest.fn(() => ["position_close_all_stop"]),
 }
 
 jest.mock("@/lib/redis-db", () => ({
@@ -300,12 +494,16 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     hashes.clear()
     lists.clear()
     sets.clear()
+    sortedSets.clear()
+    cancelledVenueOrderIds.clear()
+    venueQuantityOverrides.clear()
     jest.clearAllMocks()
     mockReadOrderSettlement.mockResolvedValue(null)
     mockCalculateVolumeForConnection.mockImplementation(async () => ({
       finalVolume: 0.01,
       volume: 0.01,
       leverage: 10,
+      maxExecutionNotionalUsd: 50,
       volumeAdjusted: false,
     }))
     firstEntryRequestAt = 0
@@ -320,19 +518,29 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         filledPrice: 100,
       }
     })
-    placeStopOrder.mockImplementation(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string) => {
+    placeStopOrder.mockImplementation(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string, options: any = {}) => {
       protectionRequestTimes.push(performance.now())
-      return { success: true, orderId: `bingx-${kind}-${symbol}` }
+      const clientOrderId = options?.clientOrderId
+      return {
+        success: true,
+        orderId: `bingx-${kind}-${symbol}-${clientOrderId || placeStopOrder.mock.calls.length}`,
+        ...(clientOrderId ? { clientOrderId } : {}),
+      }
     })
     recordingConnector.getTicker.mockImplementation(async () => ({ bid: 99.9, ask: 100, last: 100 }))
-    recordingConnector.getPosition.mockImplementation(async () => ({
+    recordingConnector.getPosition.mockImplementation(async (_symbol: string, direction?: string) => ({
       positionAmt: 0.01,
       entryPrice: 100,
       markPrice: 100,
-      liquidationPrice: 50,
+      liquidationPrice: String(direction || "").toLowerCase() === "short" ? 150 : 50,
       unrealizedPnl: 0,
       marginType: "cross",
     }))
+    recordingConnector.getPositions.mockImplementation(async () => venuePositionSnapshot())
+    recordingConnector.getLastPositionsSnapshotStatus.mockImplementation(() => ({ ok: true }))
+    recordingConnector.getOpenOrders.mockImplementation(async () => venueOpenOrderSnapshot())
+    recordingConnector.getLastOpenOrdersSnapshotStatus.mockImplementation(() => ({ ok: true }))
+    recordingConnector.getCapabilities.mockImplementation(() => ["position_close_all_stop"])
     connection.is_live_trade = "1"
     connection.live_trade_requested = "1"
     connection.is_preset_trade = "0"
@@ -391,7 +599,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       averageExecutionPrice: 100,
     })
     expect(result.status).not.toBe("simulated")
-    expect(placeStopOrder).toHaveBeenCalledTimes(2)
+    expect(placeStopOrder).toHaveBeenCalledTimes(3)
     expect(firstEntryRequestAt - dispatchStartedAt).toBeLessThan(300)
     expect(Math.max(...protectionRequestTimes) - dispatchStartedAt).toBeLessThan(1_000)
     expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
@@ -434,7 +642,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       averageExecutionPrice: 100,
     })
     expect(result.statusReason).toContain("filled_via_settlement_price_guard")
-    expect(placeStopOrder).toHaveBeenCalledTimes(2)
+    expect(placeStopOrder).toHaveBeenCalledTimes(3)
     expect(placeStopOrder.mock.calls.every((call) => Number(call[3]) < 200)).toBe(true)
   })
 
@@ -518,12 +726,12 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       assignedStopLoss: 0.45,
       assignedTakeProfit: 1.05,
     })
-    expect(placeStopOrder).toHaveBeenCalledTimes(2)
+    expect(placeStopOrder).toHaveBeenCalledTimes(3)
     for (const call of placeStopOrder.mock.calls) {
       expect(call[1]).toBe("sell")
       expect(call[2]).toBeCloseTo(result.executedQuantity, 10)
     }
-    expect(placeStopOrder.mock.calls.map((call) => call[4]).sort()).toEqual(["stop_loss", "take_profit"])
+    expect(placeStopOrder.mock.calls.map((call) => call[4]).sort()).toEqual(["stop_loss", "stop_loss", "take_profit"])
   })
 
   test("keeps normal and trailing Signal positions in independent parallel simulation lanes", async () => {
@@ -777,6 +985,16 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       unrealizedPnl: 0,
       marginType: "cross",
     }))
+    recordingConnector.getPositions.mockImplementation(async () => venueQuantity > 0
+      ? [{
+          symbol: "BTCUSDT",
+          positionSide: "LONG",
+          positionAmt: venueQuantity,
+          entryPrice: 100,
+          markPrice: 100,
+          liquidationPrice: 50,
+        }]
+      : [])
     const signalRisk = {
       stopLossPct: 0.4,
       takeProfitPct: 1,
@@ -1014,6 +1232,16 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       unrealizedPnl: 0,
       marginType: "cross",
     }))
+    recordingConnector.getPositions.mockImplementation(async () => venueQuantity > 0
+      ? [{
+          symbol: "BTCUSDT",
+          positionSide: "LONG",
+          positionAmt: venueQuantity,
+          entryPrice: 100,
+          markPrice: 100,
+          liquidationPrice: 50,
+        }]
+      : [])
 
     const parent = await executeLivePosition(connection.id, {
       id: "mixed-direction-parent",
@@ -1095,6 +1323,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     ])
     const rearmed = placeStopOrder.mock.calls
       .filter((call) => call[5]?.positionSide === "LONG")
+      .filter((call) => call[5]?.clientOrderId?.includes("sec") !== true)
       .slice(-2)
     expect(rearmed).toHaveLength(2)
     expect(rearmed.every((call) =>
@@ -1104,6 +1333,12 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     )).toBe(true)
     expect(rearmed.find((call) => call[4] === "stop_loss")?.[3]).toBeCloseTo(99.65, 10)
     expect(rearmed.find((call) => call[4] === "take_profit")?.[3]).toBeCloseTo(100.9, 10)
+    const securityRearmed = placeStopOrder.mock.calls
+      .filter((call) => call[5]?.positionSide === "LONG")
+      .filter((call) => call[5]?.clientOrderId?.includes("sec"))
+      .at(-1)
+    expect(securityRearmed?.[2]).toBeCloseTo(0.02, 10)
+    expect(securityRearmed?.[3]).toBeCloseTo(99.61, 10)
 
     // Reproduce a process restart where the legacy JSON mirror was not
     // available and only Redis' string-valued canonical hash survived.
@@ -1292,6 +1527,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         volume: quantity,
         exchangeMinVolume: 0.001,
         leverage: 10,
+        maxExecutionNotionalUsd: 50,
         volumeAdjusted: false,
       }
     })
@@ -1474,9 +1710,9 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     })
     expect(result.stopLossOrderId).toEqual(expect.any(String))
     expect(result.takeProfitOrderId).toEqual(expect.any(String))
-    expect(recordingConnector.cancelOrder).toHaveBeenCalledTimes(2)
-    expect(placeStopOrder).toHaveBeenCalledTimes(4)
-    for (const call of placeStopOrder.mock.calls.slice(-2)) {
+    expect(recordingConnector.cancelOrder).toHaveBeenCalledTimes(3)
+    expect(placeStopOrder).toHaveBeenCalledTimes(6)
+    for (const call of placeStopOrder.mock.calls.slice(-3)) {
       expect(call[2]).toBeCloseTo(0.01, 12)
       expect(call[5]).toMatchObject({ positionSide: "LONG" })
     }
@@ -1554,6 +1790,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         volume: quantity,
         exchangeMinVolume: 0.001,
         leverage: 10,
+        maxExecutionNotionalUsd: 50,
         volumeAdjusted: false,
       }
     })
@@ -1654,15 +1891,24 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       targetQuantity: 0.01,
       positionQuantityBefore: 0.02,
     })
-    expect(recordingConnector.cancelOrder).toHaveBeenCalledTimes(2)
-    expect(placeStopOrder).toHaveBeenCalledTimes(2)
-    for (const call of placeStopOrder.mock.calls) {
+    expect(recordingConnector.cancelOrder).toHaveBeenCalledTimes(3)
+    expect(placeStopOrder).toHaveBeenCalledTimes(3)
+    const retainedRowControls = placeStopOrder.mock.calls.filter((call) => call[5]?.clientOrderId?.includes("sec") !== true)
+    const retainedSecurityControl = placeStopOrder.mock.calls.filter((call) => call[5]?.clientOrderId?.includes("sec"))
+    expect(retainedRowControls).toHaveLength(2)
+    expect(retainedSecurityControl).toHaveLength(1)
+    for (const call of retainedRowControls) {
       expect(call[2]).toBeCloseTo(0.01, 12)
       expect(call[5]).toMatchObject({
         reduceOnly: true,
         positionSide: "LONG",
       })
     }
+    expect(retainedSecurityControl[0][2]).toBeCloseTo(0.02, 12)
+    expect(retainedSecurityControl[0][5]).toMatchObject({
+      reduceOnly: true,
+      positionSide: "LONG",
+    })
   })
 
   test("keeps same-symbol Long/Short Block batches independent with exact add volumes", async () => {
@@ -1690,10 +1936,28 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       positionAmt: venueQuantity[direction],
       entryPrice: 100,
       markPrice: 100,
-      liquidationPrice: 50,
+      liquidationPrice: direction === "short" ? 150 : 50,
       unrealizedPnl: 0,
       marginType: "cross",
     }))
+    recordingConnector.getPositions.mockImplementation(async () => [
+      venueQuantity.long > 0 ? {
+        symbol: "BTCUSDT",
+        positionSide: "LONG",
+        positionAmt: venueQuantity.long,
+        entryPrice: 100,
+        markPrice: 100,
+        liquidationPrice: 50,
+      } : null,
+      venueQuantity.short > 0 ? {
+        symbol: "BTCUSDT",
+        positionSide: "SHORT",
+        positionAmt: venueQuantity.short,
+        entryPrice: 100,
+        markPrice: 100,
+        liquidationPrice: 150,
+      } : null,
+    ].filter(Boolean))
     const base = {
       connectionId: connection.id,
       symbol: "BTCUSDT",
@@ -1752,7 +2016,6 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         blockVolumeRatio: 0.75,
       } as any, recordingConnector),
     ])
-
     expect(longAfterBlock.id).toBe(longParent.id)
     expect(shortAfterBlock.id).toBe(shortParent.id)
     expect(longAfterBlock.executedQuantity).toBeCloseTo(0.015, 12)
@@ -2108,6 +2371,16 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         unrealizedPnl: 0,
         marginType: "cross",
       })),
+      getPositions: jest.fn(async () => venueQuantity > 0
+        ? [{
+            symbol: "BTCUSDT",
+            positionSide: "LONG",
+            positionAmt: venueQuantity,
+            entryPrice: 100,
+            markPrice: 100,
+            liquidationPrice: 50,
+          }]
+        : []),
       getOrderDetails: jest.fn(async (
         _symbol: string,
         _orderId: string | undefined,
@@ -2430,14 +2703,15 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     let activeStops = 0
     let peakActiveStops = 0
     const completedStops: string[] = []
-    placeStopOrder.mockImplementation(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string) => {
+    placeStopOrder.mockImplementation(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string, options: Record<string, any> = {}) => {
       protectionRequestTimes.push(performance.now())
       activeStops++
       peakActiveStops = Math.max(peakActiveStops, activeStops)
       await new Promise((resolve) => setTimeout(resolve, 20))
-      completedStops.push(`${symbol}:${kind}`)
+      const clientOrderId = options?.clientOrderId || `${kind}-${placeStopOrder.mock.calls.length}`
+      completedStops.push(`${symbol}:${kind}:${clientOrderId}`)
       activeStops--
-      return { success: true, orderId: `bingx-${kind}-${symbol}` }
+      return { success: true, orderId: `bingx-${kind}-${symbol}-${clientOrderId}`, clientOrderId }
     })
 
     const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
@@ -2459,8 +2733,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     ))
 
     expect(results.every((position) => position.status === "open")).toBe(true)
-    expect(completedStops).toHaveLength(8)
-    expect(new Set(completedStops).size).toBe(8)
+    expect(completedStops).toHaveLength(12)
+    expect(new Set(completedStops).size).toBe(12)
     expect(peakActiveStops).toBeLessThanOrEqual(6)
     expect(activeStops).toBe(0)
     expect(performance.now() - startedAt).toBeLessThan(1_000)

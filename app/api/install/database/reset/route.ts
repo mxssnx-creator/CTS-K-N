@@ -2,11 +2,20 @@ import { type NextRequest, NextResponse } from "next/server"
 import { flushAll, initRedis } from "@/lib/redis-db"
 import { runMigrations, resetMigrationRunState } from "@/lib/redis-migrations"
 import { stopAllProgressionsBeforeReset } from "@/lib/db-reset-helper"
+import { authorizeAdminRequest } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 export async function POST(request: NextRequest) {
+  const authorization = await authorizeAdminRequest(request)
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
+
   try {
     console.log("[v0] Resetting Redis database...")
 

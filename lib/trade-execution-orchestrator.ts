@@ -29,6 +29,21 @@ export interface SignalEvaluation {
   confidence: number
   indicatorScores: Record<string, number>
   reasons: string[]
+  /** Optional exact protection values supplied by the strategy coordinator. */
+  stopLossPrice?: number
+  takeProfitPrice?: number
+  stopLossPercent?: number
+  takeProfitPercent?: number
+  protectionStopLossPercent?: number
+  protectionTakeProfitPercent?: number
+}
+
+function positiveFinite(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  return undefined
 }
 
 export class TradeExecutionOrchestrator {
@@ -104,7 +119,7 @@ export class TradeExecutionOrchestrator {
       this.log(`  Calculated size: ${size}`)
 
       // Step 6: Place order with retry logic
-      const orderResult = await this.placeOrderWithRetry(connectionId, connection, symbol, "long", size)
+      const orderResult = await this.placeOrderWithRetry(connectionId, connection, symbol, "long", size, signal)
 
       if (!orderResult.success) {
         return {
@@ -290,6 +305,7 @@ export class TradeExecutionOrchestrator {
     symbol: string,
     direction: "long" | "short",
     size: number,
+    signal: SignalEvaluation,
     maxAttempts: number = 1,
   ): Promise<any> {
     const clientOrderId = `legacy-entry-${connectionId}-${symbol}-${Date.now()}`
@@ -304,6 +320,26 @@ export class TradeExecutionOrchestrator {
           side: direction,
           quantity: size,
           orderType: "market",
+          // Keep this legacy path under the same exact protection contract as
+          // the main engine. Missing values deliberately fail closed for a
+          // real venue; paper evaluation remains unaffected.
+          requireProtection: true,
+          stopLossPrice: positiveFinite(signal.stopLossPrice, (connection as any)?.stop_loss_price, (connection as any)?.stopLossPrice),
+          takeProfitPrice: positiveFinite(signal.takeProfitPrice, (connection as any)?.take_profit_price, (connection as any)?.takeProfitPrice),
+          protectionStopLossPercent: positiveFinite(
+            signal.protectionStopLossPercent,
+            signal.stopLossPercent,
+            (connection as any)?.default_stop_loss_percent,
+            (connection as any)?.stop_loss_percent,
+            (connection as any)?.stopLossPercent,
+          ),
+          protectionTakeProfitPercent: positiveFinite(
+            signal.protectionTakeProfitPercent,
+            signal.takeProfitPercent,
+            (connection as any)?.default_take_profit_percent,
+            (connection as any)?.take_profit_percent,
+            (connection as any)?.takeProfitPercent,
+          ),
           persistPosition: false,
           updateCounters: false,
           source: "legacy-trade-execution-orchestrator",

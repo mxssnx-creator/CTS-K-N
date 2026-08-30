@@ -6,19 +6,39 @@ import { MIN_VOLUME_FACTOR } from "@/lib/constants"
 
 import { initRedis, getAllConnections, getConnection, updateConnection, createConnection, deleteConnection } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
+import type { MarketType } from "@/lib/market-types"
+import {
+  isForexBridgeSelected,
+  isValidForexBridgeUrl,
+  resolveForexExecutionMode,
+} from "@/lib/forex-market"
 
 // Modern Connection Types with v2 Schema (matches Redis storage)
 export interface ConnectionV2 {
   id: string
   name: string
   exchange: string
-  api_type: "spot" | "perpetual_futures" | "inverse_futures"
-  connection_method: "rest" | "websocket" | "hybrid"
-  connection_library: "rest" | "ws" | "library"
+  api_type: "spot" | "perpetual_futures" | "inverse_futures" | "forex" | string
+  connection_method: "rest" | "websocket" | "hybrid" | "bridge"
+  connection_library: string
   authentication_type: "api_key_secret" | "oauth2" | "webhook"
   api_key: string
   api_secret: string
   api_passphrase?: string
+  account_id?: string
+  account_password?: string
+  bridge_token?: string
+  bridge_url?: string
+  terminal_path?: string
+  market_type?: MarketType
+  asset_class?: MarketType
+  api_base_url?: string
+  quotes_base_url?: string
+  charts_url?: string
+  account_server?: string
+  execution_mode?: string
+  forex_execution_mode?: "read_only" | "mt5_bridge" | string
+  read_only?: boolean
   margin_type: "isolated" | "cross"
   position_mode: "one_way" | "hedge"
   is_testnet: boolean
@@ -41,11 +61,26 @@ export interface ConnectionV2 {
 export interface ConnectionCreateInput {
   name: string
   exchange: string
-  api_type: "spot" | "perpetual_futures" | "inverse_futures"
-  connection_method: "rest" | "websocket" | "hybrid"
+  api_type: "spot" | "perpetual_futures" | "inverse_futures" | "forex" | string
+  connection_method: "rest" | "websocket" | "hybrid" | "bridge"
   api_key: string
   api_secret: string
   api_passphrase?: string
+  account_id?: string
+  account_password?: string
+  bridge_token?: string
+  bridge_url?: string
+  terminal_path?: string
+  market_type?: MarketType
+  asset_class?: MarketType
+  api_base_url?: string
+  quotes_base_url?: string
+  charts_url?: string
+  account_server?: string
+  execution_mode?: string
+  forex_execution_mode?: "read_only" | "mt5_bridge" | string
+  connection_library?: string
+  read_only?: boolean
   margin_type: "isolated" | "cross"
   position_mode: "one_way" | "hedge"
   is_testnet: boolean
@@ -57,6 +92,22 @@ export interface ConnectionUpdateInput {
   api_key?: string
   api_secret?: string
   api_passphrase?: string
+  account_id?: string
+  account_password?: string
+  bridge_token?: string
+  bridge_url?: string
+  terminal_path?: string
+  market_type?: MarketType
+  asset_class?: MarketType
+  api_base_url?: string
+  quotes_base_url?: string
+  charts_url?: string
+  account_server?: string
+  execution_mode?: string
+  forex_execution_mode?: "read_only" | "mt5_bridge" | string
+  connection_method?: "rest" | "websocket" | "hybrid" | "bridge"
+  connection_library?: string
+  read_only?: boolean
   margin_type?: "isolated" | "cross"
   position_mode?: "one_way" | "hedge"
   is_testnet?: boolean
@@ -134,20 +185,43 @@ export class ConnectionManagerV2 {
       await this.initialize()
 
       const now = new Date().toISOString()
+      const exchangeName = String(input.exchange || "").trim().toLowerCase().replace(/[^a-z]/g, "")
+      const isInstaForex = exchangeName === "instaforex" || exchangeName === "instafx" || input.market_type === "forex" || input.asset_class === "forex"
+      const forexExecutionMode = isInstaForex
+        ? resolveForexExecutionMode(input as any)
+        : undefined
+      const bridgeSelected = isInstaForex && forexExecutionMode === "mt5_bridge" && isForexBridgeSelected({
+        ...input,
+        forex_execution_mode: forexExecutionMode,
+      })
       const conn: ConnectionV2 = {
         id: `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         name: input.name,
         exchange: input.exchange,
         api_type: input.api_type,
-        connection_method: input.connection_method,
-        connection_library: "rest",
+        connection_method: isInstaForex ? (bridgeSelected ? "bridge" : "rest") : input.connection_method,
+        connection_library: isInstaForex ? (bridgeSelected ? "mt5-bridge" : "native-http") : (input.connection_library || "rest"),
         authentication_type: "api_key_secret",
-        api_key: input.api_key,
-        api_secret: input.api_secret,
+        api_key: isInstaForex ? (input.account_id || input.api_key) : input.api_key,
+        api_secret: isInstaForex ? "" : input.api_secret,
         api_passphrase: input.api_passphrase,
+        account_id: input.account_id,
+        account_password: isInstaForex && bridgeSelected ? input.account_password : undefined,
+        bridge_token: isInstaForex && bridgeSelected ? input.bridge_token : undefined,
+        bridge_url: isInstaForex && bridgeSelected && isValidForexBridgeUrl(input.bridge_url) ? input.bridge_url : undefined,
+        terminal_path: isInstaForex && bridgeSelected ? input.terminal_path : undefined,
+        market_type: isInstaForex ? "forex" : input.market_type,
+        asset_class: isInstaForex ? "forex" : (input.asset_class || input.market_type),
+        api_base_url: input.api_base_url,
+        quotes_base_url: input.quotes_base_url,
+        charts_url: input.charts_url,
+        account_server: input.account_server,
+        execution_mode: isInstaForex ? forexExecutionMode : input.execution_mode,
+        forex_execution_mode: isInstaForex ? forexExecutionMode : undefined,
+        read_only: isInstaForex ? !bridgeSelected : input.read_only,
         margin_type: input.margin_type,
         position_mode: input.position_mode,
-        is_testnet: input.is_testnet,
+        is_testnet: isInstaForex ? false : input.is_testnet,
         is_enabled: "0",
         is_enabled_dashboard: "0",
         is_live_trade: "0",
@@ -180,8 +254,36 @@ export class ConnectionManagerV2 {
         throw new Error(`Connection not found: ${id}`)
       }
 
+      const exchangeName = String(conn.exchange || "").trim().toLowerCase().replace(/[^a-z]/g, "")
+      const isInstaForex = exchangeName === "instaforex" || exchangeName === "instafx" || input.market_type === "forex" || input.asset_class === "forex"
+      const forexExecutionMode = isInstaForex
+        ? resolveForexExecutionMode({ ...(conn as any), ...(input as any) })
+        : undefined
+      const bridgeSelected = isInstaForex && forexExecutionMode === "mt5_bridge" && isForexBridgeSelected({
+        ...(conn as any),
+        ...input,
+        forex_execution_mode: forexExecutionMode,
+      })
       const normalizedInput = {
         ...input,
+        ...(isInstaForex ? {
+          api_key: input.account_id || input.api_key || (conn as any).account_id || (conn as any).api_key,
+          api_secret: "",
+          market_type: "forex",
+          asset_class: "forex",
+          connection_method: bridgeSelected ? "bridge" : "rest",
+          connection_library: bridgeSelected ? "mt5-bridge" : "native-http",
+          execution_mode: forexExecutionMode,
+          forex_execution_mode: forexExecutionMode,
+          account_password: bridgeSelected ? (input.account_password ?? (conn as any).account_password) : "",
+          bridge_token: bridgeSelected ? (input.bridge_token ?? (conn as any).bridge_token) : "",
+          bridge_url: bridgeSelected
+            ? (isValidForexBridgeUrl(input.bridge_url ?? (conn as any).bridge_url) ? (input.bridge_url ?? (conn as any).bridge_url) : undefined)
+            : "",
+          terminal_path: bridgeSelected ? (input.terminal_path ?? (conn as any).terminal_path) : "",
+          read_only: !bridgeSelected,
+          is_testnet: false,
+        } : {}),
         ...(input.volume_factor !== undefined ? { volume_factor: MIN_VOLUME_FACTOR } : {}),
       }
       const updated = {

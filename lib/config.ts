@@ -50,6 +50,18 @@ export const EXCHANGE_CONFIGS = {
     status: "active",
     capabilities: ["futures", "perpetual_futures", "leverage"],
   },
+  instaforex: {
+    id: "instaforex",
+    name: "InstaForex (Forex)",
+    displayName: "InstaForex",
+    type: "Forex",
+    api_type: "forex",
+    api_key: "",
+    api_secret: "",
+    docs: "https://www.instaforex.com/client_cabinet_api",
+    status: "active",
+    capabilities: ["forex", "quotes", "ohlcv", "account_read", "open_trades", "closed_trades", "broker_spread", "position_cost", "read_only"],
+  },
   binance: {
     id: "binance",
     name: "Binance",

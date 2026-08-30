@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -227,7 +228,7 @@ async function getRealIndications(connectionId: string): Promise<Indication[]> {
 
     // ── Fallback: legacy indication:config:* keys ────────────────────────────
     const configPattern = `indication:${connectionId}:config:*`
-    const allKeys: string[] = await (client.keys(configPattern) as Promise<string[]>).catch(() => [])
+    const allKeys: string[] = await scanRedisKeys(client, configPattern).catch(() => [])
     // This fallback is also used by configuration-inspection screens during
     // upgrades. Never turn its response into a hidden top-500 view: every
     // exact type/name/config/direction lane must remain visible. Bound only

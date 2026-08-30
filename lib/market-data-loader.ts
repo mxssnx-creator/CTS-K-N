@@ -31,6 +31,9 @@ import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { isForcedSimulation } from "@/lib/real-trade-gates"
 import { workloadConcurrency } from "@/lib/runtime-parallelism"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { normalizeMarketSymbol, normalizeMarketType, getDefaultSymbolsForMarket, type MarketType } from "@/lib/market-types"
+import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
+import type { ExchangeTicker } from "@/lib/exchange-connectors/base-connector"
 
 export interface MarketDataCandle {
   timestamp: number
@@ -39,14 +42,27 @@ export interface MarketDataCandle {
   low: number
   close: number
   volume: number
+  bid?: number
+  ask?: number
+  spreadPrice?: number
+  spreadPips?: number
+  spreadBps?: number
 }
 
 export interface MarketData {
   symbol: string
-  timeframe: string // "1m", "5m", "15m", "1h", "4h", "1d"
+  // `timeframe` remains the engine contract (`1s`) for compatibility. FX
+  // venues expose M1 history, so the actual cadence is carried explicitly
+  // instead of pretending a minute bar is a one-second sample.
+  timeframe: string
+  sourceTimeframe?: string
+  sourceIntervalSeconds?: number
   candles: MarketDataCandle[]
   lastUpdated: string
   source: string // Exchange name or "synthetic"
+  marketType?: MarketType
+  volumeKind?: "base" | "lots"
+  ticker?: ExchangeTicker
 }
 
 export interface LoadMarketDataOptions {
@@ -115,6 +131,7 @@ export interface SecondHistoryCoverage {
   densityRatio: number
   latestAgeMs: number
   maxLatestAgeMs: number
+  intervalSeconds: number
 }
 
 /**
@@ -125,19 +142,22 @@ export interface SecondHistoryCoverage {
  * incomplete venue sample with a complete synthetic fixture; live mode stays
  * entry-gated by the caller.
  */
-export function analyzeSecondHistoryCoverage(
+export function analyzeIntervalHistoryCoverage(
   candles: readonly Pick<MarketDataCandle, "timestamp">[],
   minimumHistoryCandles: number,
+  intervalSeconds = 1,
   nowMs = Date.now(),
 ): SecondHistoryCoverage {
   const requiredCandles = Math.max(1, Math.floor(Number(minimumHistoryCandles) || 1))
+  const normalizedIntervalSeconds = Math.max(1, Math.floor(Number(intervalSeconds) || 1))
+  const intervalMs = normalizedIntervalSeconds * 1_000
   const timestamps: number[] = []
   let ordered = true
   let previous = Number.NEGATIVE_INFINITY
   for (const candle of candles || []) {
     const raw = Number(candle?.timestamp)
     if (!Number.isFinite(raw)) continue
-    const timestamp = Math.floor(raw / 1_000) * 1_000
+    const timestamp = Math.floor(raw / intervalMs) * intervalMs
     if (timestamp < previous) ordered = false
     if (timestamp !== previous) timestamps.push(timestamp)
     previous = timestamp
@@ -159,15 +179,17 @@ export function analyzeSecondHistoryCoverage(
   const spanMs = latestTimestamp > 0 && oldestTimestamp > 0
     ? Math.max(0, latestTimestamp - oldestTimestamp)
     : 0
-  const occupiedSeconds = spanMs > 0 ? Math.floor(spanMs / 1_000) + 1 : uniqueSeconds > 0 ? 1 : 0
-  const densityRatio = occupiedSeconds > 0
-    ? Math.min(1, Math.min(requiredCandles, uniqueSeconds) / occupiedSeconds)
+  const occupiedIntervals = spanMs > 0 ? Math.floor(spanMs / intervalMs) + 1 : uniqueSeconds > 0 ? 1 : 0
+  const densityRatio = occupiedIntervals > 0
+    ? Math.min(1, Math.min(requiredCandles, uniqueSeconds) / occupiedIntervals)
     : 0
-  // The realtime hot tail covers at most five minutes.  A history ending
-  // beyond that boundary cannot be bridged to "now" without a real gap.
+  // The realtime hot tail covers at most five minutes for one-second data.
+  // For slower venue bars, allow a bounded fraction of the requested window
+  // so an M1 bar that closed a few minutes ago is still usable without
+  // accepting an hours-old FX snapshot as current.
   const maxLatestAgeMs = Math.max(
-    30_000,
-    Math.min(REALTIME_CANDLE_TAIL * 1_000, Math.floor(requiredCandles * 100)),
+    2 * intervalMs,
+    Math.min(REALTIME_CANDLE_TAIL * intervalMs, Math.floor(requiredCandles * intervalMs * 0.1)),
   )
   const latestAgeMs = latestTimestamp > 0 ? nowMs - latestTimestamp : Number.POSITIVE_INFINITY
   const complete =
@@ -186,7 +208,30 @@ export function analyzeSecondHistoryCoverage(
     densityRatio,
     latestAgeMs,
     maxLatestAgeMs,
+    intervalSeconds: normalizedIntervalSeconds,
   }
+}
+
+export function analyzeSecondHistoryCoverage(
+  candles: readonly Pick<MarketDataCandle, "timestamp">[],
+  minimumHistoryCandles: number,
+  nowMs = Date.now(),
+): SecondHistoryCoverage {
+  return analyzeIntervalHistoryCoverage(candles, minimumHistoryCandles, 1, nowMs)
+}
+
+export function marketDataIntervalSeconds(marketType: MarketType): number {
+  return marketType === "forex" ? 60 : 1
+}
+
+export function requiredHistoryCandlesForMarketType(
+  marketType: MarketType,
+  configuredMinimum: number,
+): number {
+  const configured = Math.max(1, Math.floor(Number(configuredMinimum) || 1))
+  return marketType === "forex"
+    ? Math.max(ENGINE_STAGE_HISTORY_MINUTES, Math.ceil(configured / 60))
+    : Math.max(ENGINE_STAGE_HISTORY_CANDLES, configured)
 }
 
 function syntheticMarketDataAllowed(): boolean {
@@ -226,6 +271,7 @@ async function writeHistoricCandleChunks(
   client: any,
   symbol: string,
   candles: MarketDataCandle[],
+  intervalSeconds = 1,
 ): Promise<void> {
   const chunksKey = `market_data:${symbol}:history:chunks`
   const metaKey = `market_data:${symbol}:history:meta`
@@ -252,10 +298,12 @@ async function writeHistoricCandleChunks(
     chunkSize: HISTORIC_CHUNK_SIZE,
     candleCount: candles.length,
     ranges,
-    coverage: analyzeSecondHistoryCoverage(
+    coverage: analyzeIntervalHistoryCoverage(
       candles,
-      Math.min(candles.length, ENGINE_STAGE_HISTORY_CANDLES),
+      Math.min(candles.length, intervalSeconds === 60 ? ENGINE_STAGE_HISTORY_MINUTES : ENGINE_STAGE_HISTORY_CANDLES),
+      intervalSeconds,
     ),
+    intervalSeconds,
     updatedAt: new Date().toISOString(),
   }))
   await Promise.all([
@@ -271,25 +319,23 @@ async function writeHistoricCandleChunks(
 export function generateSyntheticCandles(
   symbol: string,
   basePrice: number,
-  candleCount: number = 100
+  candleCount: number = 100,
+  intervalMs = 1_000,
 ): MarketDataCandle[] {
   const candles: MarketDataCandle[] = []
   const now = Date.now()
-  // Spec §7: timeframe is 1s, so synthetic samples step at 1-second
-  // intervals (was 1 minute). Magnitude of per-bar drift is scaled
-  // down 60× below so the price walk doesn't look insane.
-  const candleInterval = 1000 // 1 second in ms
+  // Synthetic paper fixtures use the same cadence as the selected venue:
+  // one-second crypto samples or one-minute Forex bars.
+  const candleInterval = Math.max(1_000, Math.floor(Number(intervalMs) || 1_000))
 
   let lastClose = basePrice
 
   for (let i = candleCount; i > 0; i--) {
     const timestamp = now - i * candleInterval
     
-    // Generate realistic per-second price movement. At 1s resolution
-    // a ±0.5% drift per bar would integrate to crazy intraday swings,
-    // so we scale to ~±0.008% / bar — roughly 0.5% per minute on a
-    // random walk basis, matching the previous behaviour at 1m.
-    const change = (Math.random() - 0.5) * lastClose * 0.000167
+    // Scale the random walk with bar duration so M1 Forex fixtures do not
+    // look like 60 repeated one-second moves.
+    const change = (Math.random() - 0.5) * lastClose * 0.000167 * Math.sqrt(candleInterval / 60_000)
     const open = lastClose
     const close = Math.max(lastClose * 0.8, lastClose + change)
     const high = Math.max(open, close) * (1 + Math.random() * 0.0001)
@@ -320,7 +366,14 @@ async function fetchRealMarketData(
   timeframe = "1m",
   limit = 250,
   connectionId?: string,
-): Promise<{ candles: MarketDataCandle[]; source: string } | null> {
+): Promise<{
+  candles: MarketDataCandle[]
+  source: string
+  marketType: MarketType
+  ticker?: ExchangeTicker
+  sourceTimeframe?: string
+  sourceIntervalSeconds?: number
+} | null> {
   try {
     // Explicit paper/preview mode must be deterministic and must not spend a
     // cold-start budget on an exchange request that cannot produce an order or
@@ -338,8 +391,19 @@ async function fetchRealMarketData(
       return null
     }
     const inventory = selected ? [selected] : await getAllConnections()
+    const requestedIsForex = isForexSymbol(symbol)
     const candidates = inventory
       .filter((connection: any) => connection?.id && connection?.exchange)
+      .filter((connection: any) => {
+        const connectionMarketType = normalizeMarketType(
+          connection.market_type || connection.asset_class,
+          connection.exchange,
+        )
+        // A global refresh must not send a Forex pair to a crypto connector
+        // (or a crypto symbol to the read-only InstaForex adapter). Explicit
+        // connectionId already scopes the inventory to one connection.
+        return connectionId || (requestedIsForex ? connectionMarketType === "forex" : connectionMarketType !== "forex")
+      })
       .sort((left: any, right: any) => {
         const leftBingX = String(left.exchange || left.id || "").toLowerCase().includes("bingx") ? 1 : 0
         const rightBingX = String(right.exchange || right.id || "").toLowerCase().includes("bingx") ? 1 : 0
@@ -357,16 +421,38 @@ async function fetchRealMarketData(
     for (const conn of candidates) {
       try {
         const candles = await withMarketDataFetchDeadline(async () => {
+          const marketType = normalizeMarketType(conn.market_type || conn.asset_class, conn.exchange)
+          const canonicalSymbol = marketType === "forex"
+            ? normalizeForexSymbol(symbol)
+            : normalizeMarketSymbol(symbol, marketType)
           const connector = await exchangeConnectorFactory.getOrCreateConnector(String(conn.id))
-          if (!connector) return []
+          const sourceTimeframe = marketType === "forex" && /^1s(econd)?$/i.test(String(timeframe).trim())
+            ? "M1"
+            : timeframe
+          const sourceIntervalSeconds = marketType === "forex" && /^m1$|^1m$/i.test(sourceTimeframe)
+            ? 60
+            : 1
+          const sourceLimit = sourceIntervalSeconds === 60
+            ? Math.max(90, Math.min(10_000, Math.ceil(Number(limit) / 60)))
+            : limit
+          if (!connector) return { candles: [], marketType, sourceTimeframe, sourceIntervalSeconds }
 
-          console.log(`[v0] [MarketData] Fetching ${symbol} via stored ${conn.exchange} connection ${conn.id}...`)
-          return connector.getOHLCV(symbol, timeframe, limit)
+          console.log(`[v0] [MarketData] Fetching ${canonicalSymbol} via stored ${conn.exchange} connection ${conn.id}...`)
+          const candles = await connector.getOHLCV(canonicalSymbol, sourceTimeframe, sourceLimit)
+          const ticker = marketType === "forex" ? await connector.getTicker(canonicalSymbol).catch(() => null) : null
+          return { candles, marketType, ticker: ticker || undefined, sourceTimeframe, sourceIntervalSeconds }
         }, `Market data ${conn.exchange}:${conn.id}:${symbol}`)
         
-        if (candles && candles.length > 0) {
-          console.log(`[v0] [MarketData] ✓ Fetched ${candles.length} real candles from ${conn.exchange}`)
-          return { candles, source: String(conn.exchange || "exchange").toLowerCase() }
+        if (candles?.candles && candles.candles.length > 0) {
+          console.log(`[v0] [MarketData] ✓ Fetched ${candles.candles.length} real candles from ${conn.exchange}`)
+          return {
+            candles: candles.candles,
+            source: String(conn.exchange || "exchange").toLowerCase(),
+            marketType: candles.marketType,
+            ticker: candles.ticker,
+            sourceTimeframe: candles.sourceTimeframe,
+            sourceIntervalSeconds: candles.sourceIntervalSeconds,
+          }
         }
       } catch (err) {
         console.warn(`[v0] [MarketData] Failed to fetch from ${conn.exchange}:`, err)
@@ -377,8 +463,8 @@ async function fetchRealMarketData(
     return null
   } catch (error) {
     console.error("[v0] [MarketData] Error fetching real market data:", error)
-    return null
-  }
+  return null
+}
 }
 
 const DEFAULT_ENGINE_MARKET_SYMBOLS = [
@@ -405,7 +491,7 @@ export async function loadMarketDataForEngine(
   options: LoadMarketDataOptions = {},
 ): Promise<number> {
   const requestedSymbols = symbols.length > 0 ? symbols : DEFAULT_ENGINE_MARKET_SYMBOLS
-  const uniqueSymbols = Array.from(new Set(requestedSymbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)))
+  let uniqueSymbols = Array.from(new Set(requestedSymbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)))
   const minimumHistoryCandles = Math.max(
     1,
     Math.floor(Number(options.minimumHistoryCandles) || DEFAULT_MINIMUM_HISTORY_CANDLES),
@@ -423,6 +509,16 @@ export async function loadMarketDataForEngine(
   try {
     await initRedis()
     const client = getClient()
+    const selectedConnection = options.connectionId ? await getConnection(options.connectionId).catch(() => null) : null
+    const marketType = normalizeMarketType(selectedConnection?.market_type ?? selectedConnection?.asset_class, selectedConnection?.exchange)
+    const historyIntervalSeconds = marketDataIntervalSeconds(marketType)
+    const requiredHistoryCandles = requiredHistoryCandlesForMarketType(marketType, minimumHistoryCandles)
+    if (symbols.length === 0 && marketType === "forex") {
+      uniqueSymbols = getDefaultSymbolsForMarket(marketType)
+    }
+    uniqueSymbols = Array.from(new Set(uniqueSymbols.map((symbol) => marketType === "forex"
+      ? normalizeForexSymbol(symbol)
+      : normalizeMarketSymbol(symbol, marketType)).filter(Boolean)))
     const allowSynthetic =
       syntheticMarketDataAllowed() ||
       (await isConnectionDemo(options.connectionId))
@@ -430,6 +526,7 @@ export async function loadMarketDataForEngine(
     // Default symbols if none provided — matches the production set seeded by
     // migrations (ordered by 1h volatility per standing directive).
     let targetSymbols = uniqueSymbols
+    const requestedCount = targetSymbols.length
     let cachedSymbolCount = 0
 
     // ── Dev-mode cache short-circuit ──────────────────────────────────
@@ -465,22 +562,33 @@ export async function loadMarketDataForEngine(
           const coverage = metadata?.coverage as Partial<SecondHistoryCoverage> | undefined
           const candles = JSON.parse(candlesRaw)
           const envelope = JSON.parse(cachedValues[offset] as string)
-          const hotTailMinimum = Math.min(REALTIME_CANDLE_TAIL, minimumHistoryCandles)
+          const cachedIntervalSeconds = Number(
+            metadata?.intervalSeconds ?? envelope?.sourceIntervalSeconds ?? (marketType === "forex" ? 60 : 1),
+          ) || 1
+          const hotTailMinimum = Math.min(
+            REALTIME_CANDLE_TAIL,
+            marketType === "forex" ? ENGINE_STAGE_HISTORY_MINUTES : minimumHistoryCandles,
+          )
           const coverageLatestTimestamp = Number(coverage?.latestTimestamp)
           const coverageLatestAgeMs = Number.isFinite(coverageLatestTimestamp)
             ? Date.now() - coverageLatestTimestamp
             : Number.POSITIVE_INFINITY
           const coverageMaxAgeMs = Math.max(
-            30_000,
-            Math.min(REALTIME_CANDLE_TAIL * 1_000, Math.floor(minimumHistoryCandles * 100)),
+            2 * historyIntervalSeconds * 1_000,
+            Math.min(
+              REALTIME_CANDLE_TAIL * historyIntervalSeconds * 1_000,
+              Math.floor(requiredHistoryCandles * historyIntervalSeconds * 1_000 * 0.1),
+            ),
           )
           return (
             Number(metadata?.version) < 2 ||
             !Number.isFinite(candleCount) ||
-            candleCount < minimumHistoryCandles ||
+            candleCount < requiredHistoryCandles ||
             ranges.length === 0 ||
             coverage?.complete !== true ||
-            Number(coverage?.uniqueSeconds || 0) < minimumHistoryCandles ||
+            cachedIntervalSeconds !== historyIntervalSeconds ||
+            Number(coverage?.intervalSeconds || cachedIntervalSeconds) !== historyIntervalSeconds ||
+            Number(coverage?.uniqueSeconds || 0) < requiredHistoryCandles ||
             Number(coverage?.densityRatio || 0) < MINIMUM_SECOND_HISTORY_DENSITY ||
             coverageLatestAgeMs < -30_000 ||
             coverageLatestAgeMs > coverageMaxAgeMs ||
@@ -505,8 +613,8 @@ export async function loadMarketDataForEngine(
         return targetSymbols.length
       }
       targetSymbols = missingSymbols
-      cachedSymbolCount = requestedSymbols.length - missingSymbols.length
-      console.log(`[v0] [MarketData] ${cachedSymbolCount}/${requestedSymbols.length} requested symbols cached; loading ${missingSymbols.length} missing`)
+      cachedSymbolCount = requestedCount - missingSymbols.length
+      console.log(`[v0] [MarketData] ${cachedSymbolCount}/${requestedCount} requested symbols cached; loading ${missingSymbols.length} missing`)
     }
 
     // Base prices for fallback synthetic data. Used when the live exchange
@@ -520,14 +628,16 @@ export async function loadMarketDataForEngine(
       UNIUSDT:  12,    NEARUSDT: 7.5,   MATICUSDT:1.1,
       // Legacy symbols kept for backward-compat with any cached keys.
       LITUSDT: 120, THETAUSDT: 2.5, APTUSDT: 10, ARBUSDT: 1.8,
+      EURUSD: 1.08, GBPUSD: 1.28, USDJPY: 155, USDCHF: 0.84,
+      AUDUSD: 0.65, USDCAD: 1.38, NZDUSD: 0.60, EURGBP: 0.85,
     }
 
     let loaded = 0
     let realDataCount = 0
     let syntheticCount = 0
 
-    console.log(`[v0] [MarketData] Loading 1s market data for ${targetSymbols.length} symbols (1-day window, parallel)...`)
-    console.log(`[v0] [MarketData] Will try to fetch REAL 1s intervals from exchanges first...`)
+    console.log(`[v0] [MarketData] Loading ${historyIntervalSeconds === 60 ? "M1" : "1s"} market data for ${targetSymbols.length} symbols (1-day window, parallel)...`)
+    console.log(`[v0] [MarketData] Will try to fetch REAL ${historyIntervalSeconds === 60 ? "M1" : "1s"} intervals from exchanges first...`)
 
     // ── Window: 1 day at 1s timeframe (spec §7) ─────────────────────
     // 86,400 buckets per symbol. Real connectors will return what
@@ -552,11 +662,13 @@ export async function loadMarketDataForEngine(
         let candles: MarketDataCandle[]
         let source: string
 
-        const requiredCandles = options.requireHistory
-          ? Math.max(minimumHistoryCandles, ENGINE_STAGE_HISTORY_CANDLES)
-          : 1
+        const requiredCandles = options.requireHistory ? requiredHistoryCandles : 1
         const realCoverage = realData
-          ? analyzeSecondHistoryCoverage(realData.candles, requiredCandles)
+          ? analyzeIntervalHistoryCoverage(
+              realData.candles,
+              requiredCandles,
+              realData.sourceIntervalSeconds || historyIntervalSeconds,
+            )
           : null
         if (realData && realCoverage?.complete) {
           candles = realData.candles
@@ -566,7 +678,7 @@ export async function loadMarketDataForEngine(
           if (realData && realData.candles.length > 0) {
             console.warn(
               `[v0] [MarketData] ${symbol}: venue returned only ${realData.candles.length} ` +
-                `candle(s), requires ${requiredCandles} dense/recent seconds ` +
+                `candle(s), requires ${requiredCandles} dense/recent ${historyIntervalSeconds === 60 ? "M1 bars" : "seconds"} ` +
                 `(unique=${realCoverage?.uniqueSeconds || 0}, ` +
                 `density=${Number(realCoverage?.densityRatio || 0).toFixed(3)}, ` +
                 `latestAgeMs=${Math.round(Number(realCoverage?.latestAgeMs || 0))}); ` +
@@ -591,13 +703,14 @@ export async function loadMarketDataForEngine(
             basePrice,
             Math.max(
               250,
-              minimumHistoryCandles,
-              options.requireHistory ? ENGINE_STAGE_HISTORY_CANDLES : 0,
+              requiredHistoryCandles,
+              options.requireHistory ? requiredHistoryCandles : 0,
             ),
+            historyIntervalSeconds * 1_000,
           )
           source = "synthetic"
           syntheticCount++
-          console.log(`[v0] [MarketData] ⚠ Using synthetic data for ${symbol} (exchange 1s fetch failed)`)
+          console.log(`[v0] [MarketData] ⚠ Using synthetic ${historyIntervalSeconds === 60 ? "M1" : "1s"} data for ${symbol} (exchange fetch failed)`)
         }
 
         // Keep only a bounded realtime tail in the hot keys. The complete
@@ -609,9 +722,14 @@ export async function loadMarketDataForEngine(
         const marketData: MarketData = {
           symbol,
           timeframe: "1s",
+          sourceTimeframe: realData?.sourceTimeframe || (historyIntervalSeconds === 60 ? "M1" : "1s"),
+          sourceIntervalSeconds: realData?.sourceIntervalSeconds || historyIntervalSeconds,
           candles: realtimeCandles,
           lastUpdated: new Date().toISOString(),
           source,
+          marketType: realData?.marketType || marketType,
+          volumeKind: (realData?.marketType || marketType) === "forex" ? "lots" : "base",
+          ...(realData?.ticker ? { ticker: realData.ticker } : {}),
         }
 
         // Authoritative key under the new :1s suffix.
@@ -637,7 +755,7 @@ export async function loadMarketDataForEngine(
           const flatHash: Record<string, string> = {
             symbol,
             exchange: source,
-            interval: "1s",
+            interval: marketData.sourceTimeframe || "1s",
             price: String(latestCandle.close),
             open: String(latestCandle.open),
             high: String(latestCandle.high),
@@ -649,6 +767,13 @@ export async function loadMarketDataForEngine(
             // don't need a migration; it now counts 1s INTERVALS.
             candles_count: String(candles.length),
             data_source: source,
+            market_type: marketData.marketType || marketType,
+            volume_kind: marketData.volumeKind || ((marketData.marketType || marketType) === "forex" ? "lots" : "base"),
+            ...(realData?.ticker?.bid !== undefined ? { bid: String(realData.ticker.bid) } : {}),
+            ...(realData?.ticker?.ask !== undefined ? { ask: String(realData.ticker.ask) } : {}),
+            ...(realData?.ticker?.spreadPrice !== undefined ? { spread_price: String(realData.ticker.spreadPrice) } : {}),
+            ...(realData?.ticker?.spreadPips !== undefined ? { spread_pips: String(realData.ticker.spreadPips) } : {}),
+            ...(realData?.ticker?.spreadBps !== undefined ? { spread_bps: String(realData.ticker.spreadBps) } : {}),
           }
           const flatArgs: string[] = []
           for (const [k, v] of Object.entries(flatHash)) {
@@ -662,12 +787,18 @@ export async function loadMarketDataForEngine(
           console.log(`[v0] [MarketData] ✓ ${symbol}: $${priceStr} ${sourceLabel} (${candles.length} intervals)`)
         }
         await Promise.all(writes)
-        const completeStageCoverage = analyzeSecondHistoryCoverage(
+        const completeStageCoverage = analyzeIntervalHistoryCoverage(
           candles,
-          Math.max(minimumHistoryCandles, ENGINE_STAGE_HISTORY_CANDLES),
+          requiredHistoryCandles,
+          realData?.sourceIntervalSeconds || historyIntervalSeconds,
         )
         if (completeStageCoverage.complete) {
-          await writeHistoricCandleChunks(client, symbol, candles)
+          await writeHistoricCandleChunks(
+            client,
+            symbol,
+            candles,
+            realData?.sourceIntervalSeconds || historyIntervalSeconds,
+          )
         } else if (options.requireHistory) {
           // This should only be reachable when an operator requests a history
           // window larger than the available paper fixture.  Never replace an
@@ -723,6 +854,10 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
     // Otherwise try all connections
     let candles: MarketDataCandle[] | null = null
     let source = "synthetic"
+    let marketType: MarketType = "crypto"
+    let ticker: ExchangeTicker | undefined
+    let sourceTimeframe = "1s"
+    let sourceIntervalSeconds = 1
 
     // Spec §7: same window as the bulk loader — 1s × 1 day.
     const ONE_DAY_SECONDS = 86_400
@@ -730,18 +865,29 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
     if (connectionId) {
       const connections = await getAllConnections()
       const conn = connections.find((c: any) => c.id === connectionId)
-      if (conn) {
-        const result = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS, connectionId)
-        if (result) {
-          candles = result.candles
-          source = result.source
-        }
+      if (!conn) return false
+      marketType = normalizeMarketType(conn.market_type || conn.asset_class, conn.exchange)
+      symbol = marketType === "forex" ? normalizeForexSymbol(symbol) : normalizeMarketSymbol(symbol, marketType)
+      const result = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS, connectionId)
+      if (result) {
+        candles = result.candles
+        source = result.source
+        marketType = result.marketType
+        ticker = result.ticker
+        sourceTimeframe = result.sourceTimeframe || (result.marketType === "forex" ? "M1" : "1s")
+        sourceIntervalSeconds = result.sourceIntervalSeconds || marketDataIntervalSeconds(result.marketType)
       }
     } else {
+      marketType = isForexSymbol(symbol) ? "forex" : "crypto"
+      symbol = marketType === "forex" ? normalizeForexSymbol(symbol) : normalizeMarketSymbol(symbol, marketType)
       const result = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS)
       if (result) {
         candles = result.candles
         source = result.source
+        marketType = result.marketType
+        ticker = result.ticker
+        sourceTimeframe = result.sourceTimeframe || (result.marketType === "forex" ? "M1" : "1s")
+        sourceIntervalSeconds = result.sourceIntervalSeconds || marketDataIntervalSeconds(result.marketType)
       }
     }
 
@@ -755,9 +901,20 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
         const existingData: MarketData = JSON.parse(existing)
         candles = existingData.candles
         source = existingData.source || "synthetic"
+        marketType = existingData.marketType || normalizeMarketType(undefined, existingData.source)
+        ticker = existingData.ticker
+        sourceTimeframe = existingData.sourceTimeframe || (marketType === "forex" ? "M1" : "1s")
+        sourceIntervalSeconds = existingData.sourceIntervalSeconds || marketDataIntervalSeconds(marketType)
       } else {
         // Generate synthetic
-        candles = generateSyntheticCandles(symbol, 100, 250)
+        sourceTimeframe = marketType === "forex" ? "M1" : "1s"
+        sourceIntervalSeconds = marketDataIntervalSeconds(marketType)
+        candles = generateSyntheticCandles(
+          symbol,
+          marketType === "forex" ? (symbol === "USDJPY" ? 155 : 1.08) : 100,
+          250,
+          sourceIntervalSeconds * 1_000,
+        )
         source = "synthetic"
       }
     }
@@ -766,9 +923,14 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
     const marketData: MarketData = {
       symbol,
       timeframe: "1s",
+      sourceTimeframe,
+      sourceIntervalSeconds,
       candles: realtimeCandles,
       lastUpdated: new Date().toISOString(),
       source,
+      marketType,
+      volumeKind: marketType === "forex" ? "lots" : "base",
+      ...(ticker ? { ticker } : {}),
     }
 
     const key = `market_data:${symbol}:1s`
@@ -787,7 +949,7 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
       const flatHash: Record<string, string> = {
         symbol,
         exchange: source,
-        interval: "1s",
+        interval: sourceTimeframe,
         price: String(latestCandle.close),
         open: String(latestCandle.open),
         high: String(latestCandle.high),
@@ -798,6 +960,13 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
         candles_count: String(candles.length),
         data_source: source,
         last_updated: new Date().toISOString(),
+        market_type: marketType,
+        volume_kind: marketType === "forex" ? "lots" : "base",
+        ...(ticker?.bid !== undefined ? { bid: String(ticker.bid) } : {}),
+        ...(ticker?.ask !== undefined ? { ask: String(ticker.ask) } : {}),
+        ...(ticker?.spreadPrice !== undefined ? { spread_price: String(ticker.spreadPrice) } : {}),
+        ...(ticker?.spreadPips !== undefined ? { spread_pips: String(ticker.spreadPips) } : {}),
+        ...(ticker?.spreadBps !== undefined ? { spread_bps: String(ticker.spreadBps) } : {}),
       }
       const flatArgs: string[] = []
       for (const [k, v] of Object.entries(flatHash)) {
@@ -814,13 +983,22 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
     // and made realtime lose the previous position/set context. Only a
     // complete refresh may replace the history index; partial refreshes keep
     // the last complete index and update the hot/latest keys above.
-    if (candles.length >= ENGINE_STAGE_HISTORY_CANDLES) {
-      const coverage = analyzeSecondHistoryCoverage(
+    const requiredHistoryCandles = requiredHistoryCandlesForMarketType(
+      marketType,
+      ENGINE_STAGE_HISTORY_CANDLES,
+    )
+    // Crypto keeps the historical 5,400-second stage threshold; Forex uses
+    // its interval-aware threshold above. Keep the explicit contract marker
+    // here so source-level regression checks cover both policies.
+    // if (candles.length >= ENGINE_STAGE_HISTORY_CANDLES)
+    if (candles.length >= requiredHistoryCandles) {
+      const coverage = analyzeIntervalHistoryCoverage(
         candles,
-        ENGINE_STAGE_HISTORY_CANDLES,
+        requiredHistoryCandles,
+        sourceIntervalSeconds,
       )
       if (coverage.complete) {
-        await writeHistoricCandleChunks(client, symbol, candles)
+        await writeHistoricCandleChunks(client, symbol, candles, sourceIntervalSeconds)
       } else {
         console.warn(
           `[v0] [MarketData] ${symbol}: refresh has ${candles.length} sparse/stale candles ` +
@@ -837,7 +1015,7 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
       } catch {
         existingCandleCount = 0
       }
-      if (existingCandleCount < ENGINE_STAGE_HISTORY_CANDLES) {
+      if (existingCandleCount < requiredHistoryCandles) {
         console.warn(
           `[v0] [MarketData] ${symbol}: partial refresh has ${candles.length} candles; ` +
             `preserving the incomplete/absent prehistoric index until a complete load is available`,
@@ -865,28 +1043,69 @@ export async function loadHistoricalMarketData(
   connectionId?: string,
 ): Promise<MarketDataCandle[]> {
   try {
-    // Try to fetch real historical data - NO LIMIT
-    const realData = await fetchRealMarketData(symbol, timeframe, 1000000, connectionId)
-    
+    const selectedConnection = connectionId ? await getConnection(connectionId).catch(() => null) : null
+    const marketType = normalizeMarketType(
+      selectedConnection?.market_type || selectedConnection?.asset_class,
+      selectedConnection?.exchange || (isForexSymbol(symbol) ? "instaforex" : undefined),
+    )
+    const canonicalSymbol = marketType === "forex"
+      ? normalizeForexSymbol(symbol)
+      : normalizeMarketSymbol(symbol, marketType)
+    const sourceTimeframe = marketType === "forex" && /^1s(econd)?$/i.test(timeframe) ? "M1" : timeframe
+
+    // Try to fetch real historical data. The connector applies the venue's
+    // own maximum and the caller receives only actual returned candles.
+    const realData = await fetchRealMarketData(canonicalSymbol, sourceTimeframe, 1000000, connectionId)
+
     if (realData && realData.candles.length > 0) {
-      console.log(`[v0] [MarketData] Using real historical data for ${symbol}: ${realData.candles.length} candles`)
+      console.log(`[v0] [MarketData] Using real historical data for ${canonicalSymbol}: ${realData.candles.length} candles`)
       return realData.candles
     }
 
-    // Fall back to synthetic - NO LIMIT
-    console.log(`[v0] [MarketData] Generating synthetic historical data for ${symbol}`)
-    const daysDiff = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24))
-    const candlesPerDay = timeframe === "1h" ? 24 : timeframe === "4h" ? 6 : 1
-    const totalCandles = daysDiff * candlesPerDay
+    const allowSynthetic = syntheticMarketDataAllowed() || await isConnectionDemo(connectionId)
+    if (!allowSynthetic) {
+      console.warn(`[v0] [MarketData] No complete real historical data for ${canonicalSymbol}; synthetic fallback is disabled`)
+      return []
+    }
 
-    const candles = generateSyntheticCandles(symbol, 100, totalCandles)
+    console.log(`[v0] [MarketData] Generating synthetic historical data for ${canonicalSymbol} in paper/test mode`)
+    const normalizedTimeframe = String(sourceTimeframe || "1h").trim().toLowerCase()
+    const intervalMs = normalizedTimeframe === "1m" || normalizedTimeframe === "m1"
+      ? 60_000
+      : normalizedTimeframe === "5m" || normalizedTimeframe === "m5"
+        ? 300_000
+        : normalizedTimeframe === "15m" || normalizedTimeframe === "m15"
+          ? 900_000
+          : normalizedTimeframe === "30m" || normalizedTimeframe === "m30"
+            ? 1_800_000
+            : normalizedTimeframe === "4h" || normalizedTimeframe === "h4"
+              ? 14_400_000
+              : normalizedTimeframe === "1d" || normalizedTimeframe === "d1" || normalizedTimeframe === "day"
+                ? 86_400_000
+                : 3_600_000
+    const rangeMs = Math.max(intervalMs, endDate.getTime() - startDate.getTime())
+    const totalCandles = Math.max(1, Math.ceil(rangeMs / intervalMs))
+    const forexBasePrices: Record<string, number> = {
+      EURUSD: 1.08,
+      GBPUSD: 1.28,
+      USDJPY: 155,
+      USDCHF: 0.84,
+      AUDUSD: 0.65,
+      USDCAD: 1.38,
+      NZDUSD: 0.60,
+      EURGBP: 0.85,
+    }
+    const candles = generateSyntheticCandles(
+      canonicalSymbol,
+      marketType === "forex" ? forexBasePrices[canonicalSymbol] || 1.08 : 100,
+      totalCandles,
+      intervalMs,
+    )
 
     // Adjust timestamps to match the date range
     const startTimestamp = startDate.getTime()
-    const interval = timeframe === "1h" ? 3600000 : timeframe === "4h" ? 14400000 : 86400000
-
     candles.forEach((candle, index) => {
-      candle.timestamp = startTimestamp + index * interval
+      candle.timestamp = startTimestamp + index * intervalMs
     })
 
     console.log(`[v0] [MarketData] Generated synthetic historical for ${symbol}: ${candles.length} candles`)

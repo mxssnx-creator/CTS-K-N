@@ -88,7 +88,8 @@
     "db:migrate": "node scripts/run-managed-db-migrate.mjs",
     "redis:local:start": "bash scripts/local-redis.sh start",
     "redis:local:status": "bash scripts/local-redis.sh status",
-    "redis:local:stop": "bash scripts/local-redis.sh stop"
+    "redis:local:stop": "bash scripts/local-redis.sh stop",
+    "redis:retention:inspect": "node --import tsx scripts/inspect-redis-retention.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

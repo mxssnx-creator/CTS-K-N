@@ -11,7 +11,10 @@
  *
  * SECONDARY EXCHANGES (available as templates for manual setup):
  * - Binance, OKX, GateIO, KuCoin, MEXC, Bitget, Huobi
+ * - InstaForex (official REST data plus optional private terminal bridge)
  */
+
+import type { MarketType } from "@/lib/market-types"
 
 export interface ConnectionPredefinition {
   id: string
@@ -34,6 +37,7 @@ export interface ConnectionPredefinition {
   ccxtSupported: boolean
   apiKey?: string
   apiSecret?: string
+  marketType?: MarketType
 }
 
 export interface ExchangeConnection {
@@ -59,6 +63,9 @@ export interface ExchangeConnection {
   api_capabilities: any[]
   rate_limits: any | null
   volume_factor: number
+  market_type?: MarketType
+  asset_class?: MarketType
+  account_id?: string
   created_at: string
   updated_at: string
 }
@@ -78,6 +85,7 @@ export const EXCHANGE_API_TYPES: Record<string, string[]> = {
   huobi: ["spot", "perpetual", "margin", "futures"], // Spot, Linear Swap, Inverse Swap, Margin
   kraken: ["spot", "futures"], // Spot, Futures
   coinbase: ["spot", "advanced"], // Spot, Advanced Trade API
+  instaforex: ["forex"], // Official Client API + quotes/charts; read-only
 }
 
 export const EXCHANGE_LIBRARY_PACKAGES: Record<string, string> = {
@@ -94,11 +102,13 @@ export const EXCHANGE_LIBRARY_PACKAGES: Record<string, string> = {
   huobi: "huobi-api",
   kraken: "kraken-python",
   coinbase: "coinbase-advanced-py",
+  instaforex: "native-http",
 }
 
 // Connection Methods
 export const CONNECTION_METHODS = {
   rest: { label: "REST API", description: "Standard HTTP REST API connection" },
+  bridge: { label: "Private terminal bridge", description: "Authenticated MT4/MT5 bridge for order and native SL/TP execution" },
   library: { label: "Library SDK", description: "Official Exchange Library SDK" },
   websocket: { label: "WebSocket", description: "Real-time WebSocket connection" },
   hybrid: { label: "Hybrid", description: "Combined REST + WebSocket for optimal performance" },
@@ -111,6 +121,7 @@ export const API_SUBTYPES = {
   futures: { label: "Futures", description: "Time-limited futures contracts", icon: "📅" },
   margin: { label: "Margin", description: "Margin trading with leverage", icon: "📈" },
   derivatives: { label: "Derivatives", description: "General derivatives trading", icon: "📊" },
+  forex: { label: "Forex", description: "Foreign-exchange instruments", icon: "💱" },
 }
 
 // Exchange subtype support
@@ -128,6 +139,7 @@ export const EXCHANGE_SUBTYPES: Record<string, string[]> = {
   huobi: ["spot", "perpetual", "margin"],
   kraken: ["spot", "futures"],
   coinbase: ["spot"],
+  instaforex: ["forex"],
 }
 
 // Exchange connection method support
@@ -145,10 +157,36 @@ export const EXCHANGE_CONNECTION_METHODS: Record<string, string[]> = {
   huobi: ["rest", "library", "websocket"],
   kraken: ["rest", "library", "websocket"],
   coinbase: ["rest", "library"],
+  // Official REST remains read-only; order execution requires the explicit
+  // private bridge transport and never falls back to HTTP mutations.
+  instaforex: ["rest", "bridge"],
 }
 
 // Metadata-only connection templates. Credentials are injected server-side.
 export const CONNECTION_PREDEFINITIONS: ConnectionPredefinition[] = [
+  {
+    id: "instaforex-x01",
+    name: "InstaForex X01",
+    displayName: "InstaForex X01 (Forex)",
+    description: "InstaForex broker quotes, charts, account/trade history, and broker-spread PositionCost through official REST; optional private MT4/MT5 bridge for native order protection.",
+    exchange: "instaforex",
+    apiTypes: ["forex"],
+    apiType: "forex",
+    connectionMethod: "rest",
+    connectionLibrary: "native-http",
+    libraryPackage: "native-http",
+    marginType: "cross",
+    positionMode: "one_way",
+    maxLeverage: 1,
+    contractType: "forex",
+    documentationUrl: "https://www.instaforex.com/client_cabinet_api",
+    testnetSupported: false,
+    defaultTestnet: false,
+    ccxtSupported: false,
+    marketType: "forex",
+    apiKey: "",
+    apiSecret: "",
+  },
   {
     id: "bingx-x01",
     name: "BingX X01",
@@ -426,6 +464,8 @@ export function getPredefinedAsExchangeConnections(): ExchangeConnection[] {
     api_capabilities: [],
     rate_limits: null,
     volume_factor: 1.0,
+    market_type: pred.marketType || (pred.exchange === "instaforex" ? "forex" : "crypto"),
+    asset_class: pred.marketType || (pred.exchange === "instaforex" ? "forex" : "crypto"),
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }))

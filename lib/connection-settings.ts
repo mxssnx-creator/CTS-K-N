@@ -13,6 +13,13 @@ import { recoordinateAfterSettingsChange } from "./connection-recoordinator"
 import { toRedisFlag } from "./boolean-utils"
 import { normalizeIdentityVolumeFactor } from "./constants"
 import { CANONICAL_FORCED_SYMBOLS, withCanonicalForcedSymbols } from "./forced-symbols"
+import { normalizeMarketType, type MarketType } from "./market-types"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  DEFAULT_FOREX_POSITIONS_AVERAGE,
+  DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+  DEFAULT_FOREX_SPREAD_MULTIPLIER,
+} from "./forex-market"
 
 function deepMergeSettings(
   current: ConnectionSettings,
@@ -64,6 +71,19 @@ export interface ConnectionSettings {
     useTrailingStop: boolean
     enableAutoExit: boolean
   }
+
+  // Market-specific normalization and friction controls. Forex uses a
+  // deliberately higher average window and the live broker spread.
+  market?: {
+    marketType: MarketType
+    averageCount: number
+    spreadMode: "exchange" | "configured"
+    maxSpreadPips: number
+    lotSize: number
+    quoteSource: "exchange" | "configured"
+    spreadBufferPips: number
+    spreadMultiplier: number
+  }
 }
 
 export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
@@ -91,6 +111,37 @@ export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId
     useTrailingStop: true,
     enableAutoExit: false,
   },
+  market: {
+    marketType: "crypto",
+    averageCount: 25,
+    spreadMode: "exchange",
+    maxSpreadPips: 0,
+    lotSize: 1,
+    quoteSource: "exchange",
+    spreadBufferPips: 0,
+    spreadMultiplier: 1,
+  },
+}
+
+const DEFAULT_FOREX_MARKET_SETTINGS: NonNullable<ConnectionSettings["market"]> = {
+  marketType: "forex",
+  averageCount: DEFAULT_FOREX_POSITIONS_AVERAGE,
+  spreadMode: "exchange",
+  maxSpreadPips: 3,
+  lotSize: DEFAULT_FOREX_LOT_SIZE,
+  quoteSource: "exchange",
+  spreadBufferPips: DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+  spreadMultiplier: DEFAULT_FOREX_SPREAD_MULTIPLIER,
+}
+
+function defaultsForMarket(marketType: MarketType): Omit<ConnectionSettings, "connectionId"> {
+  return {
+    ...DEFAULT_CONNECTION_SETTINGS,
+    market: {
+      ...(marketType === "forex" ? DEFAULT_FOREX_MARKET_SETTINGS : DEFAULT_CONNECTION_SETTINGS.market!),
+      marketType,
+    },
+  }
 }
 
 function stringifyHashValue(value: unknown): string | undefined {
@@ -167,6 +218,27 @@ function extractEngineSettingsMirror(settings: Record<string, unknown>): Record<
     if (settings.margin_mode !== undefined) flat.margin_mode = marginType
   }
 
+  const market = settings.market && typeof settings.market === "object"
+    ? settings.market as Record<string, unknown>
+    : {}
+  const marketType = String(settings.market_type ?? market.marketType ?? "").trim().toLowerCase()
+  if (marketType === "crypto" || marketType === "forex") {
+    flat.market_type = marketType
+    flat.asset_class = marketType
+  }
+  const averageCount = Number(settings.average_count ?? settings.averageCount ?? market.averageCount)
+  if (Number.isFinite(averageCount) && averageCount > 0) flat.average_count = String(Math.max(1, Math.min(600, Math.floor(averageCount))))
+  const spreadMode = String(settings.spread_mode ?? settings.spreadMode ?? market.spreadMode ?? "").trim().toLowerCase()
+  if (spreadMode === "exchange" || spreadMode === "configured") flat.spread_mode = spreadMode
+  const maxSpreadPips = Number(settings.max_spread_pips ?? settings.maxSpreadPips ?? market.maxSpreadPips)
+  if (Number.isFinite(maxSpreadPips) && maxSpreadPips >= 0) flat.max_spread_pips = String(Math.min(100, maxSpreadPips))
+  const lotSize = Number(settings.lot_size ?? settings.lotSize ?? market.lotSize)
+  if (Number.isFinite(lotSize) && lotSize > 0) flat.lot_size = String(Math.min(10_000_000, lotSize))
+  const spreadBufferPips = Number(settings.spread_buffer_pips ?? settings.spreadBufferPips ?? market.spreadBufferPips)
+  if (Number.isFinite(spreadBufferPips) && spreadBufferPips >= 0) flat.spread_buffer_pips = String(Math.min(100, spreadBufferPips))
+  const spreadMultiplier = Number(settings.spread_multiplier ?? settings.spreadMultiplier ?? market.spreadMultiplier)
+  if (Number.isFinite(spreadMultiplier) && spreadMultiplier >= 0) flat.spread_multiplier = String(Math.min(20, spreadMultiplier))
+
   return flat
 }
 
@@ -182,6 +254,14 @@ function extractConnectionTopLevelMirror(flat: Record<string, string>): Record<s
     "is_live_trade",
     "position_mode",
     "margin_type",
+    "market_type",
+    "asset_class",
+    "average_count",
+    "spread_mode",
+    "max_spread_pips",
+    "lot_size",
+    "spread_buffer_pips",
+    "spread_multiplier",
   ]) {
     if (flat[key] !== undefined) patch[key] = flat[key]
   }
@@ -248,16 +328,27 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
     await initRedis()
     const client = await getRedisClient()
     const key = `settings:connection:${connectionId}`
+    const connection = await getConnection(connectionId).catch(() => null)
+    const marketType = normalizeMarketType(connection?.market_type ?? connection?.asset_class, connection?.exchange)
+    const defaults = defaultsForMarket(marketType)
     
     const existing = await client.get(key)
     if (existing) {
-      return JSON.parse(existing)
+      const parsed = JSON.parse(existing) as Partial<ConnectionSettings> & Record<string, unknown>
+      const merged = deepMergeSettings({ connectionId, ...defaults } as ConnectionSettings, parsed)
+      merged.connectionId = connectionId
+      merged.market = {
+        ...(defaults.market || DEFAULT_CONNECTION_SETTINGS.market!),
+        ...(parsed.market || {}),
+        marketType,
+      }
+      return merged
     }
 
     // Initialize with defaults for this connection
     const newSettings: ConnectionSettings = {
       connectionId,
-      ...DEFAULT_CONNECTION_SETTINGS,
+      ...defaults,
     }
     
     await client.set(key, JSON.stringify(newSettings))
@@ -266,7 +357,7 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
     console.error(`Failed to get connection settings for ${connectionId}:`, error)
     return {
       connectionId,
-      ...DEFAULT_CONNECTION_SETTINGS,
+      ...defaultsForMarket(normalizeMarketType(undefined, undefined)),
     }
   }
 }
@@ -390,12 +481,14 @@ export async function getConnectionTradingSettings(connectionId: string) {
 export async function resetConnectionSettings(connectionId: string): Promise<ConnectionSettings> {
   const lockKey = `settings:lock:${connectionId}`
   const LOCK_TTL = 5
-  const newSettings: ConnectionSettings = {
-    connectionId,
-    ...DEFAULT_CONNECTION_SETTINGS,
-  }
+  let newSettings: ConnectionSettings
   try {
     await initRedis()
+    const connection = await getConnection(connectionId).catch(() => null)
+    newSettings = {
+      connectionId,
+      ...defaultsForMarket(normalizeMarketType(connection?.market_type ?? connection?.asset_class, connection?.exchange)),
+    }
     const client = await getRedisClient()
     const key = `settings:connection:${connectionId}`
     const locked = await client.set(lockKey, String(Date.now()), { NX: true, EX: LOCK_TTL })
@@ -474,6 +567,19 @@ export function validateConnectionSettings(settings: Partial<ConnectionSettings>
     ) {
       return false
     }
+  }
+  if (settings.market) {
+    const market = settings.market
+    if (
+      !Number.isFinite(market.averageCount) || market.averageCount < 1 || market.averageCount > 600 ||
+      !Number.isFinite(market.maxSpreadPips) || market.maxSpreadPips < 0 || market.maxSpreadPips > 100 ||
+      !Number.isFinite(market.lotSize) || market.lotSize <= 0 || market.lotSize > 10_000_000 ||
+      !Number.isFinite(market.spreadBufferPips) || market.spreadBufferPips < 0 || market.spreadBufferPips > 100 ||
+      !Number.isFinite(market.spreadMultiplier) || market.spreadMultiplier < 0 || market.spreadMultiplier > 20 ||
+      !["crypto", "forex"].includes(market.marketType) ||
+      !["exchange", "configured"].includes(market.spreadMode) ||
+      !["exchange", "configured"].includes(market.quoteSource)
+    ) return false
   }
   return true
 }

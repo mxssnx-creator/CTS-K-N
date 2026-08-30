@@ -33,11 +33,28 @@ import {
 } from "@/lib/constants"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  DEFAULT_FOREX_POSITIONS_AVERAGE,
+  forexNotionalUsd,
+} from "@/lib/forex-market"
+import { normalizeMarketType, type MarketType } from "@/lib/market-types"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import {
   normalizeExchangeQuantityRules,
+  roundQuantityDown,
   resolveExecutableQuantity,
 } from "@/lib/order-quantity"
+
+/** Hard upper bound for one live/VST position relative to its PositionCost budget. */
+export const MAX_LIVE_POSITION_COST_MULTIPLIER = 5
+
+/**
+ * Volume calculations are diagnostics, not trading state. Keep a useful
+ * audit window without creating one Redis detail key per calculation forever.
+ */
+export const VOLUME_CALC_LOG_RETENTION_SECONDS = 30 * 24 * 60 * 60
+export const VOLUME_CALC_LOG_INDEX_LIMIT = 500
 
 interface VolumeCalculationParams {
   baseVolumeFactor?: number
@@ -57,6 +74,12 @@ interface VolumeCalculationParams {
   exchangeMinNotionalUsdt?: number
   quantityStep?: number
   quantityPrecision?: number
+  marketType?: MarketType
+  lotSize?: number
+  /** Canonical pair key used for USD notional conversion of Forex lots. */
+  symbol?: string
+  /** Quote-currency → USD rate for cross pairs, when available. */
+  quoteToUsdRate?: number
 
   // ── LIVE-only channel factor (pseudo positions retain channel identity) ──
   //
@@ -107,7 +130,7 @@ interface VolumeCalculationParams {
   allowUnboundedVariantMultiplier?: boolean
 }
 
-interface VolumeCalculationResult {
+export interface VolumeCalculationResult {
   calculatedVolume?: number
   finalVolume?: number
   leverage: number
@@ -135,9 +158,20 @@ interface VolumeCalculationResult {
   volumeBalanceEffective?: number
   /** Explicit global post-factor execution ratio, surfaced to UI/statistics. */
   systemVolumeFactor?: number
+  /** True when sizing used the emergency balance fallback instead of venue data. */
+  balanceIsFallback?: boolean
   quantityStep?: number
   quantityPrecision?: number
   exchangeMinQuantity?: number
+  volumeKind?: "base" | "lots"
+  lotSize?: number
+  /** False means Forex sizing was refused because USD conversion was absent. */
+  conversionAvailable?: boolean
+  conversionSource?: string
+  /** Maximum USD notional approved for this live/VST execution. */
+  maxExecutionNotionalUsd?: number
+  /** True when a channel/variant aggregate was reduced to the hard cap. */
+  liveMultiplierCapped?: boolean
 }
 
 
@@ -152,7 +186,7 @@ export class VolumeCalculator {
    * notional at 10x leverage → $0.50 margin. At $3 notional BingX returns
    * code=101204 (Insufficient margin) on pairs like XRP, SOL, BNB.
    */
-  private static readonly UNIVERSAL_MIN_NOTIONAL_USD = 5
+  static readonly UNIVERSAL_MIN_NOTIONAL_USD = 5
 
   /**
    * Fetch account balance and compute the leverage safety cap.
@@ -166,34 +200,70 @@ export class VolumeCalculator {
   static async resolveBalanceAndLeverage(
     connectionId: string,
     rawLeverage: number,
-  ): Promise<{ accountBalance: number; maxLeverage: number }> {
+  ): Promise<{ accountBalance: number; maxLeverage: number; balanceIsFallback: boolean }> {
     // Fetch balance — default $10,000 so the leverage cap is benign when
     // the exchange API is unreachable or the connection has no real key.
     let balance = 10000
+    let balanceIsFallback = true
     try {
       const cachedBalance = await getSettings(`connection_balance:${connectionId}`)
       if (cachedBalance?.balance && parseFloat(String(cachedBalance.balance)) > 0) {
         balance = parseFloat(String(cachedBalance.balance))
+        // Old cache entries predate the provenance marker. Treat them as
+        // unverified rather than allowing a stale/default balance to authorize
+        // a live order. A fresh connector read below is the only path that can
+        // explicitly mark the value authoritative.
+        const fallbackMarker = cachedBalance.is_fallback ?? cachedBalance.isFallback
+        balanceIsFallback = fallbackMarker === undefined
+          ? true
+          : isTruthyFlag(fallbackMarker)
       } else {
         const connection = await getConnection(connectionId)
-        if (
-          connection?.api_key &&
-          connection?.api_secret &&
-          !connection.api_key.includes("PLACEHOLDER") &&
-          connection.api_key.length >= 20
-        ) {
+        const connectionMarketType = normalizeMarketType(
+          connection?.market_type ?? connection?.asset_class,
+          connection?.exchange,
+        )
+        const connectionAccountId = String(connection?.account_id ?? connection?.api_key ?? "").trim()
+        const canReadBalance = connectionMarketType === "forex"
+          ? /^[0-9]{4,12}$/.test(connectionAccountId)
+          : Boolean(
+              connection?.api_key &&
+              connection?.api_secret &&
+              !connection.api_key.includes("PLACEHOLDER") &&
+              connection.api_key.length >= 20,
+            )
+        if (canReadBalance) {
           const { createExchangeConnector } = await import("@/lib/exchange-connectors")
           const connector = await createExchangeConnector(connection.exchange, {
-            apiKey: connection.api_key,
-            apiSecret: connection.api_secret,
+            apiKey: connectionMarketType === "forex" ? connectionAccountId : connection.api_key || "",
+            apiSecret: connectionMarketType === "forex" ? "" : connection.api_secret || "",
+            apiPassphrase: connectionMarketType === "forex" ? connection.api_passphrase : undefined,
+            accountId: connectionMarketType === "forex" ? connectionAccountId : undefined,
+            accountPassword: connectionMarketType === "forex" ? connection.account_password : undefined,
+            accountServer: connectionMarketType === "forex" ? connection.account_server : undefined,
+            bridgeUrl: connectionMarketType === "forex" ? connection.bridge_url : undefined,
+            bridgeToken: connectionMarketType === "forex" ? connection.bridge_token : undefined,
+            terminalPath: connectionMarketType === "forex" ? connection.terminal_path : undefined,
+            apiBaseUrl: connection.api_base_url,
+            quotesBaseUrl: connection.quotes_base_url,
+            chartsUrl: connection.charts_url,
+            executionMode: connectionMarketType === "forex" ? connection.execution_mode : undefined,
+            forexExecutionMode: connectionMarketType === "forex" ? connection.forex_execution_mode : undefined,
+            connectionMethod: connectionMarketType === "forex" ? connection.connection_method : undefined,
+            connectionLibrary: connectionMarketType === "forex" ? connection.connection_library : undefined,
+            readOnly: connectionMarketType === "forex"
+              ? connection.read_only === true || connection.read_only === "1" || connection.read_only === "true"
+              : undefined,
             apiType: connection.api_type,
             contractType: connection.contract_type,
+            marketType: connectionMarketType,
             isTestnet: isTruthyFlag(connection.is_testnet),
           })
           try {
             const result = await connector.getBalance()
             if (result?.success && result?.balance && result.balance > 0) {
               balance = result.balance
+              balanceIsFallback = false
             }
           } catch {
             // getBalance threw (e.g. 100421 timestamp error) — use the $10k default.
@@ -207,8 +277,14 @@ export class VolumeCalculator {
         await setSettings(`connection_balance:${connectionId}`, {
           balance,
           updated_at: new Date().toISOString(),
-          is_fallback: balance === 10000,
+          is_fallback: balanceIsFallback,
         })
+        // setSettings writes a hash and therefore cannot carry SET's EX
+        // option. Apply the TTL explicitly so a crashed process cannot leave
+        // an unbounded balance-cache key behind.
+        await getRedisClient()
+          .expire(`settings:connection_balance:${connectionId}`, 90)
+          .catch(() => 0)
         // Optionally refresh the cache in the background after 90 s to avoid
         // every worker racing for the balance on the same expiry boundary.
         setTimeout(async () => {
@@ -225,7 +301,7 @@ export class VolumeCalculator {
     // No balance-based leverage cap — operator policy is always-max-leverage.
     // The exchange setLeverage call clamps to the per-symbol bracket and the
     // 101204 auto-halve retry handles any remaining margin rejections.
-    return { accountBalance: balance, maxLeverage: rawLeverage }
+    return { accountBalance: balance, maxLeverage: rawLeverage, balanceIsFallback }
   }
 
   /**
@@ -257,6 +333,10 @@ export class VolumeCalculator {
       exchangeMinNotionalUsdt = 0,
       quantityStep,
       quantityPrecision,
+      marketType: requestedMarketType = "crypto",
+      lotSize,
+      symbol,
+      quoteToUsdRate,
       tradeMode,
       mainVolumeFactor,
       presetVolumeFactor,
@@ -265,6 +345,24 @@ export class VolumeCalculator {
       sizeMultiplier,
       allowUnboundedVariantMultiplier = false,
     } = params
+
+    const marketType = normalizeMarketType(requestedMarketType)
+    const isForex = marketType === "forex"
+    const resolvedLotSize = isForex
+      ? Math.max(1, Number(lotSize) || DEFAULT_FOREX_LOT_SIZE)
+      : 1
+    const configuredMinimum = Math.max(0, Number(exchangeMinVolume) || 0)
+    const forexMinimumLots = isForex ? Math.max(0.01, configuredMinimum) : 0
+    const forexLotStep = isForex
+      ? Math.max(0.00000001, Number(quantityStep) > 0 ? Number(quantityStep) : 0.01)
+      : 0
+    const forexLotPrecision = isForex
+      ? Math.max(0, Math.min(8, Number.isFinite(Number(quantityPrecision)) && Number(quantityPrecision) >= 0 ? Math.floor(Number(quantityPrecision)) : 2))
+      : 0
+    const forexNotionalPerLot = isForex && symbol
+      ? forexNotionalUsd(1, currentPrice, symbol, resolvedLotSize, quoteToUsdRate)
+      : 0
+    const forexConversionAvailable = !isForex || (Boolean(symbol) && forexNotionalPerLot > 0)
 
     // Keep the unit conversion at the boundary. Internally all sizing uses a
     // fraction of balance, while settings and stats use UI percent values.
@@ -284,7 +382,7 @@ export class VolumeCalculator {
     const quantityRules = normalizeExchangeQuantityRules({
       quantityStep,
       quantityPrecision,
-      minQuantity: exchangeMinVolume,
+      minQuantity: isForex ? forexMinimumLots : exchangeMinVolume,
       minNotionalUsdt: exchangeMinNotionalUsdt,
     })
 
@@ -340,11 +438,117 @@ export class VolumeCalculator {
     const exchangeNotionalMinVolume = currentPrice > 0 && exchangeMinNotionalUsdt > 0
       ? exchangeMinNotionalUsdt / currentPrice
       : 0
-    const effectiveMin = Math.max(
-      exchangeMinVolume || 0,
-      exchangeNotionalMinVolume,
-      universalMinFromNotional,
-    )
+    const effectiveMin = isForex
+      ? (forexConversionAvailable ? forexMinimumLots : 0)
+      : Math.max(
+          exchangeMinVolume || 0,
+          exchangeNotionalMinVolume,
+          universalMinFromNotional,
+        )
+
+    const roundForexLotsUp = (raw: number): number => {
+      if (!isForex) return raw
+      const safeRaw = Number.isFinite(raw) && raw > 0 ? raw : 0
+      const stepped = Math.ceil((Math.max(safeRaw, forexMinimumLots) - Number.EPSILON) / forexLotStep) * forexLotStep
+      return Number(Math.max(forexMinimumLots, stepped).toFixed(forexLotPrecision))
+    }
+
+    const executableQuantity = (raw: number): { quantity: number; adjusted: boolean; reason?: string } => {
+      if (!isForex) {
+        return resolveExecutableQuantity(
+          raw,
+          currentPrice,
+          quantityRules,
+          { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
+        )
+      }
+      if (!forexConversionAvailable) {
+        return {
+          quantity: 0,
+          adjusted: true,
+          reason: `Forex USD conversion rate unavailable for ${symbol}; refusing to synthesize a lot quantity`,
+        }
+      }
+      const quantity = roundForexLotsUp(raw)
+      return {
+        quantity,
+        adjusted: quantity !== raw,
+        reason: quantity !== raw
+          ? `Forex volume rounded up to ${quantity.toFixed(forexLotPrecision)} lots on a ${forexLotStep.toFixed(forexLotPrecision)}-lot step`
+          : undefined,
+      }
+    }
+
+    const volumeNotional = (quantity: number): number =>
+      isForex
+        ? forexNotionalUsd(Math.max(0, Number(quantity) || 0), currentPrice, symbol, resolvedLotSize, quoteToUsdRate)
+        : Math.max(0, Number(quantity) || 0) * currentPrice
+
+    /**
+     * Round a live/VST quantity down to the approved notional ceiling. Venue
+     * minimums may round an entry upward, but they must never enlarge a live
+     * order beyond the risk budget. If the minimum itself does not fit, fail
+     * closed with quantity zero so the caller can record a blocked entry.
+     */
+    const executableQuantityAtMost = (
+      raw: number,
+      maxNotionalUsd: number,
+    ): { quantity: number; adjusted: boolean; reason?: string } => {
+      if (!(maxNotionalUsd > 0) || !(currentPrice > 0)) {
+        return { quantity: 0, adjusted: true, reason: "Live exposure ceiling is unavailable" }
+      }
+      const safeRaw = Number.isFinite(raw) && raw > 0 ? raw : 0
+      const minimum = isForex
+        ? roundForexLotsUp(effectiveMin)
+        : resolveExecutableQuantity(
+            Math.max(effectiveMin, 0),
+            currentPrice,
+            quantityRules,
+            { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
+          ).quantity
+      const maxQuantity = isForex
+        ? roundQuantityDown(maxNotionalUsd / Math.max(forexNotionalPerLot, Number.EPSILON), {
+            quantityStep: forexLotStep,
+            quantityPrecision: forexLotPrecision,
+          })
+        : roundQuantityDown(maxNotionalUsd / currentPrice, quantityRules)
+      if (!(maxQuantity > 0) || maxQuantity + Number.EPSILON < minimum) {
+        return {
+          quantity: 0,
+          adjusted: true,
+          reason: `Live exposure ceiling ${maxNotionalUsd.toFixed(2)} USD is below the executable minimum`,
+        }
+      }
+
+      // Preserve the normal entry-rounding contract while the requested
+      // quantity is already below the ceiling. Only a quantity that actually
+      // crosses the ceiling must be rounded down; otherwise a harmless
+      // 0.545-lot request would become 0.54 lots even though 0.55 still fits
+      // inside the approved notional budget.
+      const crossesCeiling = safeRaw > maxQuantity + Number.EPSILON
+      const candidate = crossesCeiling
+        ? (isForex
+            ? roundQuantityDown(maxQuantity, {
+                quantityStep: forexLotStep,
+                quantityPrecision: forexLotPrecision,
+              })
+            : roundQuantityDown(maxQuantity, quantityRules))
+        : executableQuantity(safeRaw).quantity
+      if (!(candidate > 0) || candidate + Number.EPSILON < minimum || volumeNotional(candidate) > maxNotionalUsd + 1e-8) {
+        return {
+          quantity: 0,
+          adjusted: true,
+          reason: `Live quantity cannot satisfy the ${maxNotionalUsd.toFixed(2)} USD exposure ceiling after venue rounding`,
+        }
+      }
+      return {
+        quantity: candidate,
+        adjusted: candidate !== raw,
+        reason: candidate !== raw
+          ? `live/VST quantity capped at ${volumeNotional(candidate).toFixed(2)} USD (${MAX_LIVE_POSITION_COST_MULTIPLIER}x PositionCost budget)`
+          : undefined,
+      }
+    }
 
     /**
      * Final clamp: never return less than `effectiveMin`, never NaN,
@@ -354,14 +558,19 @@ export class VolumeCalculator {
     const clampUp = (raw: number): { final: number; adjusted: boolean; reason?: string } => {
       const safeRaw = Number.isFinite(raw) && raw > 0 ? raw : 0
       if (effectiveMin > 0 && safeRaw < effectiveMin) {
-        const usingUniversalFallback = exchangeMinVolume <= 0
+        const usingUniversalFallback = !isForex && exchangeMinVolume <= 0
+        const minimumLabel = isForex
+          ? `Forex minimum ${forexMinimumLots.toFixed(forexLotPrecision)} lots`
+          : usingUniversalFallback
+            ? `universal $${VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD} notional fallback`
+            : "exchange minimum"
         return {
           final: effectiveMin,
           adjusted: true,
           reason:
             safeRaw <= 0
-              ? `Sizing math yielded ${raw} — clamped up to enforced minimum ${effectiveMin.toFixed(8)} (${usingUniversalFallback ? `universal $${VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD} notional fallback` : "exchange minimum"}).`
-              : `Calculated volume ${safeRaw.toFixed(8)} was below ${usingUniversalFallback ? `universal $${VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD} notional fallback` : "exchange minimum"} ${effectiveMin.toFixed(8)} — clamped up to minimum order size.`,
+              ? `Sizing math yielded ${raw} — clamped up to enforced minimum ${effectiveMin.toFixed(isForex ? forexLotPrecision : 8)} (${minimumLabel}).`
+              : `Calculated volume ${safeRaw.toFixed(8)} was below ${minimumLabel} ${effectiveMin.toFixed(isForex ? forexLotPrecision : 8)} — clamped up to minimum order size.`,
         }
       }
       return { final: safeRaw, adjusted: false }
@@ -414,16 +623,25 @@ export class VolumeCalculator {
       const positionSizeUsd = applySystemVolumeFactor(
         positionCostNotionalUsd * liveEngineFactor * variantMult,
       )
-      const calculatedVolume = currentPrice > 0 ? positionSizeUsd / currentPrice : 0
-      const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(calculatedVolume)
-      const executable = resolveExecutableQuantity(
-        clampedFinal,
-        currentPrice,
-        quantityRules,
-        { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
-      )
+      const maxExecutionNotionalUsd = (tradeMode === "main" || tradeMode === "preset")
+        ? positionCostNotionalUsd * MAX_LIVE_POSITION_COST_MULTIPLIER
+        : undefined
+      const calculatedVolume = currentPrice > 0 && forexConversionAvailable
+        ? positionSizeUsd / (isForex ? forexNotionalPerLot : currentPrice)
+        : 0
+      const executionNotional = maxExecutionNotionalUsd
+        ? Math.min(positionSizeUsd, maxExecutionNotionalUsd)
+        : positionSizeUsd
+      const executionVolume = currentPrice > 0 && forexConversionAvailable
+        ? executionNotional / (isForex ? forexNotionalPerLot : currentPrice)
+        : 0
+      const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(executionVolume)
+      const executable = maxExecutionNotionalUsd
+        ? executableQuantityAtMost(clampedFinal, maxExecutionNotionalUsd)
+        : executableQuantity(clampedFinal)
+      const capAdjusted = Boolean(maxExecutionNotionalUsd && positionSizeUsd > maxExecutionNotionalUsd)
       const final = executable.quantity
-      const adjusted = clampedAdjusted || executable.adjusted
+      const adjusted = clampedAdjusted || executable.adjusted || capAdjusted
       const reason = [clampReason, executable.reason].filter(Boolean).join("; ") || undefined
 
       // Surface multiplier provenance in the adjustment reason only when
@@ -455,12 +673,12 @@ export class VolumeCalculator {
         calculatedVolume,
         finalVolume: final,
         volume: final,
-        volumeUsd: final * currentPrice,
+        volumeUsd: volumeNotional(final),
         leverage,
         volumeAdjusted: adjusted || Boolean(factorReason || signalFactorReason || variantReason || systemReason),
         adjustmentReason: composedReason,
         intendedNotionalUsd: positionSizeUsd,
-        exchangeMinNotionalUsd: effectiveMin * currentPrice,
+        exchangeMinNotionalUsd: volumeNotional(effectiveMin),
         accountBalance,
         positionCost: resolvedPositionCostFraction,
         positionCostPercent: resolvedPositionCostPercent,
@@ -473,6 +691,14 @@ export class VolumeCalculator {
         quantityStep: quantityRules.quantityStep,
         quantityPrecision: quantityRules.quantityPrecision,
         exchangeMinQuantity: quantityRules.minQuantity,
+        volumeKind: isForex ? "lots" : "base",
+        lotSize: isForex ? resolvedLotSize : undefined,
+        conversionAvailable: forexConversionAvailable,
+        conversionSource: isForex && symbol
+          ? (quoteToUsdRate && quoteToUsdRate > 0 ? "provided_quote_to_usd" : "pair_price_or_quote")
+          : undefined,
+        maxExecutionNotionalUsd,
+        liveMultiplierCapped: capAdjusted,
       }
     }
 
@@ -502,24 +728,35 @@ export class VolumeCalculator {
       riskVariantMultiplier,
     )
     const positionSize = adjustedRisk / (riskPercentage / 100)
-    const rawVolume = positionSize / (currentPrice * calculatedLeverage)
+    const rawVolume = currentPrice > 0 && forexConversionAvailable
+      ? positionSize / ((isForex ? forexNotionalPerLot : currentPrice) * calculatedLeverage)
+      : 0
 
-    const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(rawVolume)
-    const executable = resolveExecutableQuantity(
-      clampedFinal,
-      currentPrice,
-      quantityRules,
-      { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
-    )
+    const riskPositionCostBudget = (accountBalance * (riskPercentage / 100)) / positionsAverage
+    const maxExecutionNotionalUsd = (tradeMode === "main" || tradeMode === "preset")
+      ? riskPositionCostBudget * MAX_LIVE_POSITION_COST_MULTIPLIER
+      : undefined
+    const rawExecutionNotional = volumeNotional(rawVolume)
+    const executionNotional = maxExecutionNotionalUsd
+      ? Math.min(rawExecutionNotional, maxExecutionNotionalUsd)
+      : rawExecutionNotional
+    const executionVolume = currentPrice > 0 && forexConversionAvailable
+      ? executionNotional / (isForex ? forexNotionalPerLot : currentPrice)
+      : 0
+    const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(executionVolume)
+    const executable = maxExecutionNotionalUsd
+      ? executableQuantityAtMost(clampedFinal, maxExecutionNotionalUsd)
+      : executableQuantity(clampedFinal)
+    const capAdjusted = Boolean(maxExecutionNotionalUsd && rawExecutionNotional > maxExecutionNotionalUsd)
     const final = executable.quantity
-    const adjusted = clampedAdjusted || executable.adjusted
+    const adjusted = clampedAdjusted || executable.adjusted || capAdjusted
     const reason = [clampReason, executable.reason].filter(Boolean).join("; ") || undefined
 
     return {
       calculatedVolume: rawVolume,
       finalVolume: final,
       volume: final,
-      volumeUsd: final * currentPrice,
+      volumeUsd: volumeNotional(final),
       leverage: calculatedLeverage,
       positionSize,
       volumeAdjusted: adjusted || liveEngineFactor !== 1 || riskVariantMultiplier !== 1 || systemVolumeFactor !== 1,
@@ -532,8 +769,8 @@ export class VolumeCalculator {
           : undefined,
       ].filter(Boolean).join(" | ") || undefined,
       riskAmount: adjustedRisk,
-      intendedNotionalUsd: rawVolume * currentPrice,
-      exchangeMinNotionalUsd: effectiveMin * currentPrice,
+      intendedNotionalUsd: volumeNotional(rawVolume),
+      exchangeMinNotionalUsd: volumeNotional(effectiveMin),
       accountBalance,
       positionCost: resolvedPositionCostFraction || undefined,
       positionCostPercent: resolvedPositionCostPercent || undefined,
@@ -546,6 +783,14 @@ export class VolumeCalculator {
         quantityStep: quantityRules.quantityStep,
         quantityPrecision: quantityRules.quantityPrecision,
         exchangeMinQuantity: quantityRules.minQuantity,
+        volumeKind: isForex ? "lots" : "base",
+        lotSize: isForex ? resolvedLotSize : undefined,
+        conversionAvailable: forexConversionAvailable,
+      conversionSource: isForex && symbol
+          ? (quoteToUsdRate && quoteToUsdRate > 0 ? "provided_quote_to_usd" : "pair_price_or_quote")
+          : undefined,
+      maxExecutionNotionalUsd,
+      liveMultiplierCapped: capAdjusted,
     }
   }
 
@@ -737,6 +982,12 @@ export class VolumeCalculator {
       sizeMultiplier?: number
       /** See VolumeCalculationParams; reserved for a physical combined target. */
       allowUnboundedVariantMultiplier?: boolean
+      /** Live bid/ask-aware PositionCost supplied by the market boundary. */
+      positionCostPercentOverride?: number
+      marketType?: MarketType
+      lotSize?: number
+      /** Quote-currency → USD rate for cross-pair Forex sizing. */
+      quoteToUsdRate?: number
       // Live-stage margin retries can ask for a concrete leverage target
       // after an exchange-side leverage reduction. This keeps quantity
       // sizing coupled to the new margin target instead of blindly
@@ -766,7 +1017,9 @@ export class VolumeCalculator {
       if (connection) {
         const CONN_FIELDS_TO_OVERLAY = [
           "exchangePositionCost", "exchange_position_cost", "positionCost",
+          "position_cost_percent", "positionCostPercent",
           "positions_average", "positionsAverage",
+          "average_count", "averageCount", "market_type", "asset_class", "lot_size", "lotSize",
           "live_volume_factor", "preset_volume_factor", "signal_volume_factor", "volume_step_ratio",
           "leveragePercentage", "useMaximalLeverage",
         ] as const
@@ -782,18 +1035,29 @@ export class VolumeCalculator {
       // this AFTER all overlays; the old order calculated it before direct
       // connection/canonical settings were merged, producing default-sized live
       // orders despite saved operator sizing.
+      const marketType = normalizeMarketType(
+        options.marketType ?? settings.market_type ?? settings.asset_class,
+        connection?.exchange,
+      )
       const positionCostRaw =
+        options.positionCostPercentOverride ??
         settings.exchangePositionCost ??
         settings.positionCost ??
         settings.exchange_position_cost ??
+        settings.position_cost_percent ??
+        settings.positionCostPercent ??
         POSITION_COST_PERCENT_DEFAULT
       const clampedPositionCostPercent = normalizePositionCostPercent(positionCostRaw)
 
       // ── Positions-average resolution ─────────────────────────────────
       const positionsAverage = (() => {
-        const raw = parseFloat(String(settings.positions_average ?? settings.positionsAverage ?? "2"))
-        return Number.isFinite(raw) && raw > 0 ? raw : 2
+        const fallback = marketType === "forex" ? DEFAULT_FOREX_POSITIONS_AVERAGE : 2
+        const raw = parseFloat(String(settings.positions_average ?? settings.positionsAverage ?? settings.average_count ?? fallback))
+        return Number.isFinite(raw) && raw > 0 ? Math.min(600, raw) : fallback
       })()
+      const lotSize = marketType === "forex"
+        ? Math.max(1, Number(options.lotSize ?? settings.lot_size ?? settings.lotSize ?? connection?.lot_size) || DEFAULT_FOREX_LOT_SIZE)
+        : undefined
 
       // Resolve effective leverage:
       //   useMaximalLeverage (default true)  → exchange predefinition max
@@ -816,7 +1080,7 @@ export class VolumeCalculator {
 
       // Delegate balance-fetch + leverage-cap to the helper method so the
       // logic lives in its own clean scope (no let mutation, no TDZ risk).
-      const { accountBalance, maxLeverage } =
+      const { accountBalance, maxLeverage, balanceIsFallback } =
         await VolumeCalculator.resolveBalanceAndLeverage(connectionId, rawLeverage)
 
       // ── Exchange minimum order size from Redis trading-pair metadata ─
@@ -898,12 +1162,17 @@ export class VolumeCalculator {
         // Variant multiplier forwarded from the callsite (Block/DCA sizing).
         sizeMultiplier: options.sizeMultiplier,
         allowUnboundedVariantMultiplier: options.allowUnboundedVariantMultiplier === true,
+        marketType,
+        lotSize,
+        symbol,
+        quoteToUsdRate: options.quoteToUsdRate,
       })
 
       result.accountBalance = steppedBalance.sizingBalance
       result.volumeBalanceEffective = steppedBalance.sizingBalance
       result.volumeBalanceAnchor = steppedBalance.anchorBalance
       result.volumeStepRatio = volumeStepRatio
+      result.balanceIsFallback = balanceIsFallback
 
       return result
     } catch (error) {
@@ -938,6 +1207,7 @@ export class VolumeCalculator {
         intended_notional_usd: calculation.intendedNotionalUsd,
         exchange_min_notional_usd: calculation.exchangeMinNotionalUsd,
         account_balance: calculation.accountBalance,
+        balance_is_fallback: calculation.balanceIsFallback === true,
         position_cost: calculation.positionCost,
         position_cost_percent: calculation.positionCostPercent,
         positions_average: calculation.positionsAverage,
@@ -950,8 +1220,12 @@ export class VolumeCalculator {
         quantity_step: calculation.quantityStep,
         quantity_precision: calculation.quantityPrecision,
         exchange_min_quantity: calculation.exchangeMinQuantity,
+        volume_kind: calculation.volumeKind,
+        lot_size: calculation.lotSize,
+        max_execution_notional_usd: calculation.maxExecutionNotionalUsd,
+        live_multiplier_capped: calculation.liveMultiplierCapped === true,
         created_at: new Date().toISOString(),
-      }))
+      }), { EX: VOLUME_CALC_LOG_RETENTION_SECONDS })
 
       // Store in Redis list instead of sorted set (Upstash doesn't support zadd)
       const volumeCalcsKey = `volume_calcs:${connectionId}`
@@ -959,18 +1233,32 @@ export class VolumeCalculator {
       
       const existing = await client.get(volumeCalcsKey)
       if (existing) {
-        try { volumeCalcs = JSON.parse(existing) } catch { volumeCalcs = [] }
+        try {
+          const parsed = JSON.parse(existing)
+          volumeCalcs = Array.isArray(parsed)
+            ? parsed.map((value) => String(value)).filter(Boolean)
+            : []
+        } catch { volumeCalcs = [] }
       }
       
       // Prepend new entry
       volumeCalcs.unshift(logId)
       
-      // Trim to max 500 entries
-      if (volumeCalcs.length > 500) {
-        volumeCalcs = volumeCalcs.slice(0, 500)
+      // Trim the index and eagerly delete detail keys that just fell out of
+      // it. The detail TTL remains the safety net for orphaned/legacy keys.
+      const evictedLogIds = volumeCalcs.length > VOLUME_CALC_LOG_INDEX_LIMIT
+        ? volumeCalcs.slice(VOLUME_CALC_LOG_INDEX_LIMIT)
+        : []
+      if (evictedLogIds.length > 0) {
+        await client.del(...evictedLogIds.map((id) => `volume_calc:${connectionId}:${id}`)).catch(() => 0)
+        volumeCalcs = volumeCalcs.slice(0, VOLUME_CALC_LOG_INDEX_LIMIT)
       }
       
-      await client.set(volumeCalcsKey, JSON.stringify(volumeCalcs))
+      await client.set(
+        volumeCalcsKey,
+        JSON.stringify(volumeCalcs),
+        { EX: VOLUME_CALC_LOG_RETENTION_SECONDS },
+      )
     } catch (error) {
       console.error("[v0] Failed to log volume calculation:", error)
     }
@@ -990,7 +1278,12 @@ export class VolumeCalculator {
       
       let logIds: string[] = []
       if (existing) {
-        try { logIds = JSON.parse(existing) } catch { logIds = [] }
+        try {
+          const parsed = JSON.parse(existing)
+          logIds = Array.isArray(parsed)
+            ? parsed.map((value) => String(value)).filter(Boolean)
+            : []
+        } catch { logIds = [] }
       }
       
       if (!logIds || logIds.length === 0) return []

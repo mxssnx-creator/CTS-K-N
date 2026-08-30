@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import {
   buildDirectTradeOverview48h,
   resolveDirectTradeSettledExchangePnlUsdt,
@@ -11,6 +11,8 @@ import {
   normalizeDirectTradeConnectionId,
 } from "@/lib/direct-trade-keyspace"
 import { directTradeLiveExecutionReadiness } from "@/lib/direct-trade-live-readiness"
+import { normalizeMarketType } from "@/lib/market-types"
+import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 
 export const dynamic = "force-dynamic"
 
@@ -180,8 +182,14 @@ export async function GET(request: Request) {
       })
     }
     const connectionId = normalizeDirectTradeConnectionId(params.get("connectionId"))
+    if (!connectionId) {
+      return NextResponse.json(
+        { success: false, error: "A valid connectionId is required" },
+        { status: 400 },
+      )
+    }
     const keys = directTradeKeyspace(connectionId)
-    const [stateRaw, statsRaw, positionsRaw, openPositionStageRaw, processorRaw, processorHeartbeatRaw, configStatusRaw, calculationRaw, progressRaw, recoveryRequestRaw] = await Promise.all([
+    const [stateRaw, statsRaw, positionsRaw, openPositionStageRaw, processorRaw, processorHeartbeatRaw, configStatusRaw, calculationRaw, progressRaw, recoveryRequestRaw, connection] = await Promise.all([
       client.get(keys.state),
       client.get(keys.stats),
       client.get(keys.positions),
@@ -192,6 +200,7 @@ export async function GET(request: Request) {
       client.get(keys.calculation),
       client.get(keys.calculationProgress),
       client.get(keys.recoveryRequest),
+      getConnection(connectionId).catch(() => null),
     ])
 
     const state = parseStoredJson<any>(stateRaw, null)
@@ -210,6 +219,19 @@ export async function GET(request: Request) {
     const processorRuntime = processorRuntimeStatus(processor, processorHeartbeatRaw)
     const latestProcessor = processorRuntime.processor
     const configStatus = parseStoredJson<Record<string, any>>(configStatusRaw, {})
+    const marketType = normalizeMarketType(
+      state?.marketType ?? connection?.market_type ?? connection?.asset_class,
+      connection?.exchange,
+    )
+    const settlementAsset = String(
+      state?.settlementAsset ?? connection?.settlement_asset ?? connection?.last_test_settlement_asset ??
+      (marketType === "forex" ? "account_currency" : "USDT"),
+    ).trim() || (marketType === "forex" ? "account_currency" : "USDT")
+    const positionsAverage = Number(
+      state?.positionsAverage ?? connection?.positions_average ?? connection?.average_count ??
+      (marketType === "forex" ? DEFAULT_FOREX_POSITIONS_AVERAGE : 2),
+    )
+    const positionCostPct = Number(state?.positionCostPercent ?? connection?.position_cost_percent ?? 0.1)
     if (!hasIndexedCounts) {
       const executionConfigsRaw = await client.get(keys.executionConfigs)
       const storedExecutionConfigs = parseStoredJson<unknown>(executionConfigsRaw, [])
@@ -277,6 +299,11 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       success: true,
+      marketType,
+      settlementAsset,
+      volumeUnit: marketType === "forex" ? "lots" : "base_units",
+      positionsAverage: Number.isFinite(positionsAverage) && positionsAverage > 0 ? positionsAverage : marketType === "forex" ? DEFAULT_FOREX_POSITIONS_AVERAGE : 2,
+      positionCostPct: Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1,
       state: state ? {
         ...state,
         liveExecutionReady: directTradeLiveExecutionReadiness().ready,

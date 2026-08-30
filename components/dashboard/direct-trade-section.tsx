@@ -666,7 +666,10 @@ export function DirectTradeSection() {
               <Switch
                 checked={state.liveMode}
                 onCheckedChange={handleToggleLive}
-                disabled={state.liveExecutionReady === false}
+                // A stale persisted live flag must remain switchable back to
+                // paper mode even while new live entries are fail-closed.
+                // Only the unsafe direction (paper -> live) is disabled.
+                disabled={state.liveExecutionReady === false && !state.liveMode}
                 title={state.liveExecutionBlockReason || undefined}
                 className="data-[state=checked]:bg-red-500"
               />

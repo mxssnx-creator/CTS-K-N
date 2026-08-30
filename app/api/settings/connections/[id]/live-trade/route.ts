@@ -88,7 +88,7 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
     // When enabling Live, check credentials. Inject predefined creds for base connections.
     let apiKey = (connection.api_key || connection.apiKey || "") as string
     let apiSecret = (connection.api_secret || connection.apiSecret || "") as string
-    let hasCredentials = hasUsableLiveCredentials({ api_key: apiKey, api_secret: apiSecret })
+    let hasCredentials = hasUsableLiveCredentials({ ...connection, api_key: apiKey, api_secret: apiSecret })
 
     let liveTradeBlockedReason = ""
     let liveTradeBlockCode: string | null = null
@@ -102,7 +102,7 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
         const creds = BASE_CONNECTION_CREDENTIALS[connectionId as keyof typeof BASE_CONNECTION_CREDENTIALS]
         apiKey = creds.apiKey
         apiSecret = creds.apiSecret
-        hasCredentials = hasUsableLiveCredentials({ api_key: apiKey, api_secret: apiSecret })
+        hasCredentials = hasUsableLiveCredentials({ ...connection, api_key: apiKey, api_secret: apiSecret })
         injectedCredentials = true
         console.log(`[v0] [LiveTrade] Injected predefined credentials for ${connName}`)
       }

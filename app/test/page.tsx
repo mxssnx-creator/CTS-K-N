@@ -47,7 +47,7 @@ export default function TestPage() {
 
         <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
           <p className="text-sm text-blue-900 dark:text-blue-100">
-            <strong>System Status:</strong> AuthGuard is functioning correctly with a default admin user. The blank preview issue is unrelated to authentication.
+            <strong>System Status:</strong> Authentication is backed by the server session. Protected actions require a valid signed-in user.
           </p>
         </div>
       </div>

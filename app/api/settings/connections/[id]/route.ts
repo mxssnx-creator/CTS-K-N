@@ -9,6 +9,16 @@ import {
   normalizeIdentityVolumeFactor,
 } from "@/lib/constants"
 import { BINGX_PROD_VST_ORIGIN } from "@/lib/bingx-environment"
+import { normalizeExchangeId, normalizeMarketType } from "@/lib/market-types"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  DEFAULT_FOREX_POSITIONS_AVERAGE,
+  DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+  DEFAULT_FOREX_SPREAD_MULTIPLIER,
+  isForexBridgeSelected,
+  isValidForexBridgeUrl,
+  normalizeForexExecutionMode,
+} from "@/lib/forex-market"
 
 export const dynamic = "force-dynamic"
 
@@ -37,6 +47,15 @@ const CHANNEL_VOLUME_KEYS = new Set([
   "baseVolumeFactorPreset",
   "baseVolumeFactorSignal",
 ])
+
+function truthy(value: unknown): boolean {
+  return value === true || value === 1 || value === "1" || value === "true"
+}
+
+function finiteBounded(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback
+}
 
 function enforceImmutableConnectionIdentity(id: string, body: Record<string, any>): void {
   if (id !== "bingx-x02") return
@@ -87,6 +106,83 @@ function changedConnectionPatchFields(
     if (JSON.stringify(existing[field]) !== JSON.stringify(value)) fields.push(`connection_settings.${field}`)
   }
   return fields
+}
+
+function normalizeForexPatch(patch: Record<string, any>, current: Record<string, any>): { patch: Record<string, any>; error?: string } {
+  const normalized = { ...patch }
+  const requestedMode = patch.forex_execution_mode ?? patch.forexExecutionMode ?? patch.execution_mode ?? patch.connection_method ??
+    current.forex_execution_mode ?? current.forexExecutionMode ?? current.execution_mode ?? current.connection_method
+  const forexExecutionMode = normalizeForexExecutionMode(requestedMode)
+  const bridgeSelected = forexExecutionMode === "mt5_bridge" && isForexBridgeSelected({
+    ...current,
+    ...patch,
+    forex_execution_mode: forexExecutionMode,
+  })
+  const accountId = String(
+    normalized.account_id ??
+    normalized.api_key ??
+    current.account_id ??
+    current.api_key ??
+    "",
+  ).trim()
+  if (!/^[0-9]{4,12}$/.test(accountId)) {
+    return { patch: normalized, error: "A numeric InstaForex account id/login is required" }
+  }
+  normalized.market_type = "forex"
+  normalized.asset_class = "forex"
+  normalized.api_type = "forex"
+  normalized.contract_type = "forex"
+  normalized.account_id = accountId
+  normalized.api_key = accountId
+  normalized.api_secret = ""
+  normalized.quantity_unit = "lots"
+  normalized.connection_method = bridgeSelected ? "bridge" : "rest"
+  normalized.connection_library = bridgeSelected ? "mt5-bridge" : "native-http"
+  normalized.forex_execution_mode = bridgeSelected ? "mt5_bridge" : "read_only"
+  normalized.execution_mode = normalized.forex_execution_mode
+  normalized.read_only = !bridgeSelected
+  normalized.execution_supported = bridgeSelected
+  normalized.is_testnet = false
+  normalized.lot_size = finiteBounded(normalized.lot_size ?? current.lot_size, DEFAULT_FOREX_LOT_SIZE, 1, 10_000_000)
+  normalized.position_cost_percent = finiteBounded(normalized.position_cost_percent ?? current.position_cost_percent, 0.1, 0.02, 1)
+  normalized.spread_buffer_pips = finiteBounded(normalized.spread_buffer_pips ?? current.spread_buffer_pips, DEFAULT_FOREX_SPREAD_BUFFER_PIPS, 0, 100)
+  normalized.spread_multiplier = finiteBounded(normalized.spread_multiplier ?? current.spread_multiplier, DEFAULT_FOREX_SPREAD_MULTIPLIER, 0, 20)
+  const positionsAverage = Math.round(finiteBounded(
+    normalized.positions_average ??
+    normalized.average_count ??
+    current.positions_average ??
+    current.average_count,
+    DEFAULT_FOREX_POSITIONS_AVERAGE,
+    1,
+    600,
+  ))
+  normalized.positions_average = positionsAverage
+  normalized.average_count = positionsAverage
+  normalized.max_spread_pips = finiteBounded(normalized.max_spread_pips ?? current.max_spread_pips, 3, 0, 100)
+  const accountPassword = String(
+    normalized.account_password ?? normalized.trader_password ?? normalized.mt5_password ??
+    current.account_password ?? current.trader_password ?? current.mt5_password ?? "",
+  ).trim()
+  const bridgeUrl = String(normalized.bridge_url ?? normalized.bridgeUrl ?? current.bridge_url ?? "").trim()
+  if (bridgeSelected && (!accountPassword || !isValidForexBridgeUrl(bridgeUrl))) {
+    return { patch: normalized, error: "Private InstaForex bridge requires a trader password and a valid HTTP(S) bridge URL" }
+  }
+  normalized.account_server = String(normalized.account_server ?? normalized.server ?? current.account_server ?? "").trim()
+  // REST is intentionally read-only. Clear bridge-only material when an
+  // operator switches an existing row back to REST.
+  normalized.account_password = bridgeSelected ? accountPassword : ""
+  normalized.trading_password = ""
+  normalized.trader_password = ""
+  normalized.mt5_password = ""
+  normalized.bridge_url = bridgeSelected ? bridgeUrl : ""
+  normalized.bridge_token = bridgeSelected
+    ? String(normalized.bridge_token ?? normalized.bridgeToken ?? current.bridge_token ?? "").trim()
+    : ""
+  normalized.terminal_path = bridgeSelected
+    ? String(normalized.terminal_path ?? normalized.terminalPath ?? current.terminal_path ?? "").trim()
+    : ""
+  if (!bridgeSelected) normalized.account_server = ""
+  return { patch: normalized }
 }
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -224,6 +320,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       preserveMaskedConnectionSecrets(body, connection),
     )
     enforceImmutableConnectionIdentity(id, sanitizedBody)
+    const normalizedExchange = normalizeExchangeId(sanitizedBody.exchange ?? connection.exchange)
+    const isInstaForex = normalizedExchange === "instaforex" || normalizedExchange === "instafx"
+    const marketType = isInstaForex
+      ? "forex"
+      : normalizeMarketType(sanitizedBody.market_type ?? sanitizedBody.asset_class ?? connection.market_type ?? connection.asset_class, normalizedExchange)
+    if (marketType === "forex" && !isInstaForex) {
+      return NextResponse.json({ error: "Forex connections currently support InstaForex read-only data only" }, { status: 400 })
+    }
+    if (marketType === "forex") {
+      const normalizedForex = normalizeForexPatch(sanitizedBody, connection)
+      if (normalizedForex.error) {
+        return NextResponse.json({ error: normalizedForex.error }, { status: 400 })
+      }
+      Object.assign(sanitizedBody, normalizedForex.patch)
+    }
     delete sanitizedBody.id
     delete sanitizedBody.created_at
 
@@ -281,6 +392,21 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       preserveMaskedConnectionSecrets(body, connection),
     )
     enforceImmutableConnectionIdentity(id, sanitizedBody)
+    const normalizedExchange = normalizeExchangeId(sanitizedBody.exchange ?? connection.exchange)
+    const isInstaForex = normalizedExchange === "instaforex" || normalizedExchange === "instafx"
+    const marketType = isInstaForex
+      ? "forex"
+      : normalizeMarketType(sanitizedBody.market_type ?? sanitizedBody.asset_class ?? connection.market_type ?? connection.asset_class, normalizedExchange)
+    if (marketType === "forex" && !isInstaForex) {
+      return NextResponse.json({ error: "Forex connections currently support InstaForex read-only data only" }, { status: 400 })
+    }
+    if (marketType === "forex") {
+      const normalizedForex = normalizeForexPatch(sanitizedBody, connection)
+      if (normalizedForex.error) {
+        return NextResponse.json({ error: normalizedForex.error }, { status: 400 })
+      }
+      Object.assign(sanitizedBody, normalizedForex.patch)
+    }
     delete sanitizedBody.id
     delete sanitizedBody.created_at
 

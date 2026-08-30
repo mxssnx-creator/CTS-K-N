@@ -3,7 +3,7 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react"
 
 interface User {
-  id: number
+  id: number | string
   username: string
   email: string
   role: string
@@ -21,44 +21,85 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>({
-    id: 1,
-    username: "Administrator",
-    email: "mxssnx@gmail.com",
-    role: "admin",
-  })
-  const [token, setToken] = useState<string | null>("admin-token-disabled")
-  const [isLoading, setIsLoading] = useState(false) // Initialize to false - user is always logged in
+  const [user, setUser] = useState<User | null>(null)
+  // The server keeps the JWT in an HTTP-only cookie. This state is only a
+  // response token for compatibility with existing consumers; it is never
+  // used as a browser credential or treated as proof of authentication.
+  const [token, setToken] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    // User is pre-initialized as admin, so loading is complete immediately
-    setIsLoading(false)
+    let cancelled = false
+    void fetch("/api/auth/me", {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}))
+        if (!cancelled && response.ok && payload?.success && payload?.data?.user) {
+          setUser(payload.data.user)
+        }
+      })
+      .catch(() => {
+        // An unavailable session endpoint is treated as signed out. Protected
+        // mutations still enforce authentication on the server.
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const login = async (email: string, password: string) => {
-    setUser({
-      id: 1,
-      username: "Administrator",
-      email: "mxssnx@gmail.com",
-      role: "admin",
-    })
-    setToken("admin-token-disabled")
-    return { success: true }
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload?.success || !payload?.data?.user) {
+        return { success: false, error: payload?.error || "Login failed" }
+      }
+      setUser(payload.data.user)
+      setToken(typeof payload.data.token === "string" ? payload.data.token : null)
+      return { success: true }
+    } catch {
+      return { success: false, error: "Login service unavailable" }
+    }
   }
 
   const register = async (username: string, email: string, password: string) => {
-    setUser({
-      id: 1,
-      username: "Administrator",
-      email: "mxssnx@gmail.com",
-      role: "admin",
-    })
-    setToken("admin-token-disabled")
-    return { success: true }
+    try {
+      const response = await fetch("/api/auth/register", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, email, password }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload?.success || !payload?.data?.user) {
+        return { success: false, error: payload?.error || "Registration failed" }
+      }
+      setUser(payload.data.user)
+      setToken(typeof payload.data.token === "string" ? payload.data.token : null)
+      return { success: true }
+    } catch {
+      return { success: false, error: "Registration service unavailable" }
+    }
   }
 
   const logout = () => {
-    // User remains logged in as admin
+    void fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    }).catch(() => undefined)
+    setUser(null)
+    setToken(null)
   }
 
   return (

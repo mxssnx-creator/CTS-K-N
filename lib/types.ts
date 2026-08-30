@@ -3,6 +3,17 @@ export interface ExchangeConnection {
   user_id?: number
   name: string
   exchange: string
+  market_type?: "crypto" | "forex" | string
+  asset_class?: "crypto" | "forex" | string
+  account_id?: string
+  account_server?: string
+  account_password?: string
+  account_password_configured?: boolean
+  bridge_token_configured?: boolean
+  bridge_configured?: boolean
+  bridge_url?: string
+  bridge_token?: string
+  terminal_path?: string
   exchange_id?: number | null
   api_type: string
   contract_type?: string // usdt-perpetual, coin-perpetual, spot
@@ -12,6 +23,22 @@ export interface ExchangeConnection {
   api_key: string
   api_secret: string
   api_passphrase?: string
+  symbol_suffix?: string
+  quantity_unit?: "base_units" | "lots" | "contracts" | string
+  api_base_url?: string
+  quotes_base_url?: string
+  charts_url?: string
+  lot_size?: number | string
+  position_cost_percent?: number | string
+  spread_buffer_pips?: number | string
+  spread_multiplier?: number | string
+  positions_average?: number | string
+  average_count?: number | string
+  max_spread_pips?: number | string
+  volume_kind?: string
+  execution_mode?: string
+  forex_execution_mode?: "read_only" | "mt5_bridge" | string
+  read_only?: boolean | string
   credentials_configured?: boolean
   api_key_configured?: boolean
   api_secret_configured?: boolean
@@ -22,6 +49,7 @@ export interface ExchangeConnection {
   volume_factor?: number
   last_test_status?: string
   last_test_balance?: number
+  last_test_settlement_asset?: string
   last_test_error?: string
   last_test_log?: string[]
   last_test_timestamp?: string

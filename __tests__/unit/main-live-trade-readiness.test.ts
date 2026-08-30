@@ -2,6 +2,7 @@ import {
   evaluateRealTradeReadiness,
   getRealTradeBlockReason,
   hasUsableLiveCredentials,
+  hasUsableForexExecutionConfig,
   isBingXVirtualFundsDemo,
 } from "@/lib/real-trade-gates"
 
@@ -289,5 +290,20 @@ describe("Main Trade Engine live execution readiness", () => {
         writable: true,
       })
     }
+  })
+
+  test("accepts a private Forex bridge when the legacy execution_mode alias is the selected mode", () => {
+    const forex = {
+      exchange: "instaforex",
+      market_type: "forex",
+      account_id: "12345678",
+      account_password: "terminal-password-for-test-only",
+      bridge_url: "http://127.0.0.1:8765",
+      execution_mode: "mt5_bridge",
+      connection_method: "bridge",
+      read_only: false,
+    }
+
+    expect(hasUsableForexExecutionConfig(forex)).toBe(true)
   })
 })

@@ -28,6 +28,19 @@ function direction(value: unknown): LiveOrderDirection | null {
   return normalized === "long" || normalized === "short" ? normalized : null
 }
 
+const DIRECT_FOREX_CODES = new Set([
+  "AUD", "CAD", "CHF", "CNH", "CZK", "DKK", "EUR", "GBP", "HKD",
+  "HUF", "JPY", "MXN", "NOK", "NZD", "PLN", "RUB", "SEK", "SGD",
+  "TRY", "USD", "XAG", "XAU", "ZAR",
+])
+
+function isDirectTradeSymbol(value: string): boolean {
+  if (/^[A-Z0-9]{2,20}USDT$/.test(value)) return true
+  if (!/^[A-Z]{6}$/.test(value)) return false
+  return DIRECT_FOREX_CODES.has(value.slice(0, 3))
+    && DIRECT_FOREX_CODES.has(value.slice(3))
+}
+
 function controlId(value: unknown, kind: string, positionId: string): string | null {
   // Timeframe-combination position IDs can contain `+` (for example
   // `5m+15m`). Canonicalize those legacy IDs instead of rejecting a durable
@@ -91,7 +104,10 @@ export async function POST(request: NextRequest) {
     const stage = body?.stage === "block" || body?.stage === "dca" ? "accumulation" : "entry"
 
     const symbol = safeText(body?.symbol, 40).toUpperCase()
-    const validSymbol = /^[A-Z0-9]{2,20}USDT$/.test(symbol)
+    // The gateway is shared by crypto and Forex. Keep malformed/unsupported
+    // symbols out at the API boundary while allowing compact broker pairs
+    // such as EURUSD and XAUUSD to reach the selected Forex connector.
+    const validSymbol = isDirectTradeSymbol(symbol)
     if (!kind || !instanceId || !connectionId || !positionId || !positionDirection || !validSymbol || !Number.isFinite(quantity) || quantity <= 0 || !clientOrderId) {
       return NextResponse.json({ success: false, error: "Invalid Direct-Trade control order" }, { status: 400 })
     }
@@ -189,6 +205,27 @@ export async function POST(request: NextRequest) {
       price: Number.isFinite(price) && price > 0 ? price : undefined,
       orderType: "market",
       reduceOnly: kind === "close",
+      // If live entry is enabled in a future rollout, Direct-Trade must still
+      // carry exact direction-aware controls into the shared service. The
+      // current readiness gate remains fail-closed until ownership is unified.
+      requireProtection: kind === "open",
+      stopLossPrice: Number.isFinite(Number(body?.stopLossPrice)) && Number(body?.stopLossPrice) > 0
+        ? Number(body.stopLossPrice)
+        : undefined,
+      takeProfitPrice: Number.isFinite(Number(body?.takeProfitPrice)) && Number(body?.takeProfitPrice) > 0
+        ? Number(body.takeProfitPrice)
+        : undefined,
+      protectionStopLossPercent: Number.isFinite(Number(body?.protectionStopLossPercent ?? body?.stopLossPercent))
+        && Number(body?.protectionStopLossPercent ?? body?.stopLossPercent) > 0
+        ? Number(body?.protectionStopLossPercent ?? body?.stopLossPercent)
+        : undefined,
+      protectionTakeProfitPercent: Number.isFinite(Number(body?.protectionTakeProfitPercent ?? body?.takeProfitPercent))
+        && Number(body?.protectionTakeProfitPercent ?? body?.takeProfitPercent) > 0
+        ? Number(body?.protectionTakeProfitPercent ?? body?.takeProfitPercent)
+        : undefined,
+      positionTicket: Number.isInteger(Number(body?.positionTicket)) && Number(body?.positionTicket) > 0
+        ? Number(body.positionTicket)
+        : undefined,
       clientOrderId,
       positionId,
       // Direct Trade owns the position-stage rows itself. The shared live

@@ -82,6 +82,14 @@ export class RateLimiter {
       requestsPerMinute: 100,
       maxConcurrent: 3,
     },
+    instaforex: {
+      // Keep the read-only Client API and public quote feed well below the
+      // broker's documented request budget; account reads are never fanned
+      // out unboundedly by the engine.
+      requestsPerSecond: 2,
+      requestsPerMinute: 60,
+      maxConcurrent: 2,
+    },
   }
 
   constructor(exchange: string) {

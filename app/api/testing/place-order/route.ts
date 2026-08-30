@@ -5,6 +5,11 @@ import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 
+function positiveFinite(value: unknown): number | undefined {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
 export async function POST(req: NextRequest) {
   try {
     const authorization = authorizeAdminBearer(req.headers.get("authorization"))
@@ -31,6 +36,15 @@ export async function POST(req: NextRequest) {
       side,
       quantity: Number(quantity),
       leverage: Number(leverage),
+      // The diagnostic entry route must exercise the same direction-aware
+      // protection contract as every other real-entry route. In paper mode
+      // this remains a no-op; on a real venue missing controls fail closed.
+      requireProtection: true,
+      stopLossPrice: positiveFinite(body.stopLossPrice),
+      takeProfitPrice: positiveFinite(body.takeProfitPrice),
+      protectionStopLossPercent: positiveFinite(body.protectionStopLossPercent ?? body.stopLossPercent),
+      protectionTakeProfitPercent: positiveFinite(body.protectionTakeProfitPercent ?? body.takeProfitPercent),
+      positionTicket: positiveFinite(body.positionTicket),
       safetyPayload: body,
       source: "testing-place-order",
     })

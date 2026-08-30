@@ -11,6 +11,13 @@ import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 
 interface CompactStats {
+  marketType: "crypto" | "forex"
+  settlementAsset: string
+  volumeUnit: "base_units" | "lots"
+  positionsAverage: number
+  positionCostPct: number
+  spreadSource: "broker_tick" | "exchange_tick" | "not_applicable"
+  positionCostSource: "configured_floor_plus_live_spread" | "configured_only"
   indicationCycles: number
   indicationsTotal: number
   strategiesTotal: number
@@ -95,6 +102,8 @@ interface CompactStats {
   liveExcludedUntrackedPositions: number
   liveExcludedUntrackedOrders: number
   liveFailedToOpen: number
+  liveDispatchPending: number
+  liveDispatchBlocked: number
   liveDispatchAttempted: number
   liveDispatchDeferred: number
   liveDispatchDurationMs: number
@@ -220,6 +229,13 @@ type ActiveProgressingRow = { sets: number; trackings: number; positions: number
 type ActiveProgressingByName = Record<string, ActiveProgressingRow>
 
 const EMPTY: CompactStats = {
+  marketType: "crypto",
+  settlementAsset: "USDT",
+  volumeUnit: "base_units",
+  positionsAverage: 2,
+  positionCostPct: 0.1,
+  spreadSource: "not_applicable",
+  positionCostSource: "configured_only",
   indicationCycles: 0,
   indicationsTotal: 0,
   strategiesTotal: 0,
@@ -270,6 +286,8 @@ const EMPTY: CompactStats = {
   liveExcludedUntrackedPositions: 0,
   liveExcludedUntrackedOrders: 0,
   liveFailedToOpen: 0,
+  liveDispatchPending: 0,
+  liveDispatchBlocked: 0,
   liveDispatchAttempted: 0,
   liveDispatchDeferred: 0,
   liveDispatchDurationMs: 0,
@@ -862,9 +880,26 @@ export function StatisticsOverviewV2() {
         const opPseudo = op.pseudo || {}
         const opReal   = op.real   || {}
         const opLive   = op.live   || {}
+        const responseVolumeConfig = d.volumeConfig || {}
+        const responseMarketType = d.marketType === "forex" || responseVolumeConfig.marketType === "forex" ? "forex" : "crypto"
+        const responseSettlementAsset = String(
+          d.settlementAsset || responseVolumeConfig.settlementAsset || (responseMarketType === "forex" ? "account_currency" : "USDT"),
+        )
+        const responseVolumeUnit = responseMarketType === "forex" ? "lots" : "base_units"
 
         if (!mounted || requestSeq !== statsFetchSeqRef.current) return
         setStats({
+          marketType: responseMarketType,
+          settlementAsset: responseSettlementAsset,
+          volumeUnit: responseVolumeUnit,
+          positionsAverage: Number(d.positionsAverage ?? responseVolumeConfig.positionsAverage) > 0
+            ? Number(d.positionsAverage ?? responseVolumeConfig.positionsAverage)
+            : responseMarketType === "forex" ? 24 : 2,
+          positionCostPct: Number(d.positionCostPct ?? responseVolumeConfig.positionCostPct) > 0
+            ? Number(d.positionCostPct ?? responseVolumeConfig.positionCostPct)
+            : 0.1,
+          spreadSource: responseMarketType === "forex" ? "broker_tick" : "not_applicable",
+          positionCostSource: responseMarketType === "forex" ? "configured_floor_plus_live_spread" : "configured_only",
           indicationCycles: d.realtime?.indicationCycles || 0,
           indicationsTotal: d.realtime?.indicationsTotal || 0,
           strategiesTotal:  d.realtime?.strategiesTotal  || 0,
@@ -940,6 +975,8 @@ export function StatisticsOverviewV2() {
           liveExcludedUntrackedPositions: Number(liveExec.excludedUntrackedPositions) || 0,
           liveExcludedUntrackedOrders: Number(liveExec.excludedUntrackedOrders) || 0,
           liveFailedToOpen: Number(liveExec.dispatchOutcome?.failedToOpen) || 0,
+          liveDispatchPending: Number(liveExec.dispatchOutcome?.pending) || 0,
+          liveDispatchBlocked: Number(liveExec.dispatchOutcome?.blocked) || 0,
           liveDispatchAttempted: Number(liveExec.dispatchOutcome?.attempted) || 0,
           liveDispatchDeferred: Number(liveExec.dispatchDeferredCount) || 0,
           liveDispatchDurationMs: Number(liveExec.dispatchOutcome?.durationMsMax) || 0,
@@ -1115,6 +1152,19 @@ export function StatisticsOverviewV2() {
   return (
     <Card className="border-primary/10 bg-card/50">
       <CardContent className="p-3">
+        <div
+          className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/40 pb-2 text-[10px] text-muted-foreground"
+          title="These labels are the normalized accounting inputs used by this connection's independent engine scope. Forex PositionCost is widened by the live broker bid/ask spread when a quote is available."
+        >
+          <span className="font-semibold uppercase tracking-wide text-foreground">
+            {stats.marketType === "forex" ? "Forex" : "Crypto"}
+          </span>
+          <span>Settlement: <span className="font-medium text-foreground">{stats.settlementAsset}</span></span>
+          <span>Volume: <span className="font-medium text-foreground">{stats.volumeUnit}</span></span>
+          <span>Average count: <span className="font-medium text-foreground tabular-nums">{stats.positionsAverage}</span></span>
+          <span>PositionCost floor: <span className="font-medium text-foreground tabular-nums">{stats.positionCostPct.toFixed(3)}%</span></span>
+          {stats.marketType === "forex" && <span>Spread: <span className="font-medium text-foreground">{stats.spreadSource === "broker_tick" ? "live broker tick" : "unavailable"}</span></span>}
+        </div>
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-10 text-xs">
           <div className="flex flex-col gap-0.5">
             <span className="text-muted-foreground">Ind Cycles</span>
@@ -1675,11 +1725,11 @@ export function StatisticsOverviewV2() {
             </div>
             <div
               className="flex flex-col gap-0.5"
-              title={`${stats.liveDispatchAttempted} latest dispatch attempts; ${stats.liveDispatchDeferred} suppressed or unavailable candidates; ${stats.liveDispatchAvgAttemptMs.toFixed(1)}ms average per attempt.`}
+              title={`${stats.liveDispatchAttempted} latest dispatch attempts; ${stats.liveDispatchPending} pending fills; ${stats.liveDispatchBlocked} blocked without an exchange request; ${stats.liveDispatchDeferred} deferred candidates; ${stats.liveDispatchAvgAttemptMs.toFixed(1)}ms average per attempt.`}
             >
-              <span className="text-muted-foreground">Failed / next / time</span>
-              <span className={`font-semibold tabular-nums ${stats.liveFailedToOpen > 0 ? "text-red-600" : "text-emerald-600"}`}>
-                {fmt(stats.liveFailedToOpen)} / {fmt(stats.liveDispatchDeferred)} / {Math.round(stats.liveDispatchDurationMs)}ms
+              <span className="text-muted-foreground">Failed / pending / blocked</span>
+              <span className={`font-semibold tabular-nums ${stats.liveFailedToOpen > 0 ? "text-red-600" : stats.liveDispatchBlocked > 0 ? "text-orange-600" : stats.liveDispatchPending > 0 ? "text-amber-600" : "text-emerald-600"}`}>
+                {fmt(stats.liveFailedToOpen)} / {fmt(stats.liveDispatchPending)} / {fmt(stats.liveDispatchBlocked)}
               </span>
             </div>
           </div>

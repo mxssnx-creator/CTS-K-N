@@ -4,6 +4,7 @@ import { DEFAULT_MAIN_INDICATION_SETTINGS } from "@/lib/main-indication-settings
 import { DEFAULT_COMMON_INDICATION_SETTINGS } from "@/lib/common-indicator-config"
 import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
+import type { MarketType } from "@/lib/market-types"
 
 const DATA_DIR =
   process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
@@ -36,6 +37,10 @@ export interface Connection {
   user_id: number
   name: string
   exchange: string
+  market_type?: MarketType
+  asset_class?: MarketType
+  account_id?: string
+  account_server?: string
   exchange_id: number | null
   api_type: string
   connection_method: string
@@ -43,6 +48,21 @@ export interface Connection {
   api_key: string
   api_secret: string
   api_passphrase?: string
+  symbol_suffix?: string
+  quantity_unit?: "base_units" | "lots" | "contracts" | string
+  lot_size?: number | string
+  position_cost_percent?: number | string
+  spread_buffer_pips?: number | string
+  spread_multiplier?: number | string
+  positions_average?: number | string
+  average_count?: number | string
+  max_spread_pips?: number | string
+  volume_kind?: string
+  execution_mode?: string
+  read_only?: boolean | string
+  api_base_url?: string
+  quotes_base_url?: string
+  charts_url?: string
   margin_type: string
   position_mode: string
   is_testnet: boolean

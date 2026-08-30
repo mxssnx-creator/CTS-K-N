@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getRedisClient, getConnection, initRedis } from "@/lib/redis-db"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 
 export const dynamic = "force-dynamic"
 export async function GET(req: NextRequest) {
@@ -137,30 +138,29 @@ export async function GET(req: NextRequest) {
     }
 
     // ── 4b. Resolve the real configured symbol count ─────────────────────────────
-    // Previously this was hard-coded to 1, so the dashboard always showed "1"
-    // even when quickstart enabled 10 symbols. Read the connection's
-    // active_symbols (JSON string[]) and fall back to the progression hash's
-    // symbol list if present.
+    // A generic connection.symbols field can be the complete exchange catalog
+    // (for example 536 markets) while the active worker owns a much smaller
+    // basket. Keep this route on the same semantic-field precedence as the
+    // status route so all dashboard tiles report the actual scope.
     let symbolCount = 0
+    let symbolCountSource = "none"
     try {
       const conn = (await getConnection(connectionId).catch(() => null)) as Record<string, any> | null
-      const rawSymbols = conn?.force_symbols ?? conn?.active_symbols ?? conn?.symbols
-      const parseSymbols = (raw: unknown): string[] => {
-        if (Array.isArray(raw)) return raw.map(String).map((s) => s.trim()).filter(Boolean)
-        if (typeof raw !== "string" || raw.trim().length === 0) return []
-        try {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed)) return parsed.map(String).map((s) => s.trim()).filter(Boolean)
-        } catch {
-          // Legacy connection hashes may use a comma-separated string.
-        }
-        return raw.split(/[\n,|]/).map((s) => s.trim()).filter(Boolean)
-      }
-      symbolCount = parseSymbols(rawSymbols).length
+      const resolved = resolveCanonicalSymbols(
+        progHash,
+        conn,
+        baseDetail,
+        realDetail,
+      )
+      symbolCount = resolved.count
+      symbolCountSource = resolved.source
       // Fallback: progression hash may track the processed-symbol count.
       if (symbolCount === 0) {
         const ps = parseInt(progHash.symbols_total || progHash.symbol_count || "0", 10)
-        if (Number.isFinite(ps) && ps > 0) symbolCount = ps
+        if (Number.isFinite(ps) && ps > 0) {
+          symbolCount = ps
+          symbolCountSource = "progression_scalar"
+        }
       }
     } catch {
       // non-critical — leave at 0 if unavailable
@@ -238,6 +238,7 @@ export async function GET(req: NextRequest) {
       },
       metadata: {
         symbolCount,
+        symbolCountSource,
       },
     })
   } catch (error) {

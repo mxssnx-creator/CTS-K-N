@@ -236,6 +236,10 @@ async function flushLogBuffer(logKey: string): Promise<void> {
       (async () => {
         await client.lpush(logKey, ...toFlush)
         await client.ltrim(logKey, 0, MAX_LOGS_PER_CONNECTION - 1)
+        // The list is bounded by count, but it must also age out when a
+        // connection is retired. Refreshing this rolling TTL keeps abandoned
+        // connection namespaces from becoming permanent Redis keys.
+        await client.expire(logKey, LOG_RETENTION_HOURS * 60 * 60)
       })(),
       new Promise((_, reject) => setTimeout(() => reject(new Error("progression log flush timeout")), LOG_FLUSH_TIMEOUT_MS)),
     ])
