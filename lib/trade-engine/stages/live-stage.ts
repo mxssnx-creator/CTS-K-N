@@ -58,6 +58,11 @@ import {
   resolveLiveOrderExposureCeiling,
   setupLiveOrderMarginAndLeverage,
 } from "@/lib/live-order-service"
+import {
+  LIVE_CLOSED_INDEX_LIMIT,
+  LIVE_TERMINAL_RETENTION_SECONDS,
+  liveRetentionSecondsForStatus,
+} from "@/lib/redis-retention"
 import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
 import {
   isConnectionMainProcessing,
@@ -2003,9 +2008,9 @@ async function getSimulatedPositionStageRows(connectionId: string): Promise<Live
 function updateSimulatedPositionStageRow(position: LivePosition): void {
   const stage = simulatedPositionStages.get(position.connectionId)
   if (!stage) return
-  const terminal = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+  const terminal = liveRetentionSecondsForStatus(position.status) !== null
   const index = stage.positions.findIndex((candidate: LivePosition) => candidate.id === position.id)
-  if (terminal.has(String(position.status || "").toLowerCase())) {
+  if (terminal) {
     if (index >= 0) stage.positions.splice(index, 1)
   } else if (index >= 0) {
     stage.positions[index] = position
@@ -3021,9 +3026,9 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   const jsonKey = `live:position:${position.id}`
     const openIndexKey = `live:positions:${position.connectionId}`
     const closedIndexKey = `live:positions:${position.connectionId}:closed`
-    const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+    const terminalRetentionSeconds = liveRetentionSecondsForStatus(position.status)
+    const incomingTerminal = terminalRetentionSeconds !== null
   try {
-    const incomingTerminal = terminalStatuses.has(String(position.status || "").toLowerCase())
     if (!incomingTerminal) {
       // A close path can finish while an older mark/protection snapshot is
       // still awaiting Redis I/O. Never let that stale non-terminal writer
@@ -3039,7 +3044,13 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     await client.hset(posKey, {
       ...position,
     } as any)
-    await client.set(jsonKey, JSON.stringify(position)).catch(() => null)
+    await client.set(
+      jsonKey,
+      JSON.stringify(position),
+      incomingTerminal
+        ? { EX: terminalRetentionSeconds || LIVE_TERMINAL_RETENTION_SECONDS }
+        : undefined,
+    ).catch(() => null)
     // Keep the in-process Paper Stage coherent without rereading hundreds of
     // unrelated rows on the next 280 ms lifecycle tick. The durable hash above
     // remains authoritative; this is only a short-lived read projection.
@@ -3093,7 +3104,7 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     // points at a durable position state; reserveSignalPositionCapacity writes
     // a conservative pre-reservation before its first save to cover crashes.
     await updateSignalAdmissionIndexes(client, position)
-    if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
+    if (incomingTerminal) {
       // Remove only our own slot mapping. A replacement position may have
       // acquired the same slot after this one moved to terminal state; a plain
       // DEL would then erase the newer owner's O(1) index.
@@ -3106,6 +3117,7 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
         closedIndexKey,
         position.id,
       )
+      await client.ltrim(closedIndexKey, 0, LIVE_CLOSED_INDEX_LIMIT - 1).catch(() => undefined)
       await recordLivePositionLifetimeContribution(
         client,
         position.connectionId,
@@ -3192,12 +3204,23 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     await keepDurable(liveSetIndexKey)
     await keepDurable(openIndexKey)
     await keepDurable(closedIndexKey)
-    await keepDurable(posKey)
-    await keepDurable(jsonKey)
+    if (incomingTerminal) {
+      await client.expire(
+        posKey,
+        terminalRetentionSeconds || LIVE_TERMINAL_RETENTION_SECONDS,
+      ).catch(() => 0)
+      await client.expire(
+        jsonKey,
+        terminalRetentionSeconds || LIVE_TERMINAL_RETENTION_SECONDS,
+      ).catch(() => 0)
+    } else {
+      await keepDurable(posKey)
+      await keepDurable(jsonKey)
+    }
     await syncActiveBlockCountIndex(client, position)
-    // Closed snapshots and their connection index are durable. APIs page the
-    // index in bounded batches, so retaining the complete audit trail does not
-    // increase one request's memory footprint.
+    // The connection index is durable and capped; terminal snapshots are
+    // retained for the bounded audit window above while aggregate history is
+    // written to the lifetime/analytics archives before expiry.
     // The full InlineLocalRedis checkpoint is intentionally minute-batched to
     // avoid multi-megabyte disk writes in hot engine cycles. Journal only
     // lifecycle/quantity changes here, so any position state already exposed
@@ -17937,7 +17960,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     // entries can persist indefinitely (observed: 16 "rejected" re-synced
     // every tick). Move them to the closed archive here so the sync loop
     // only ever processes genuinely live positions.
-    const TERMINAL_SYNC_STATUSES = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+    const TERMINAL_SYNC_STATUSES = new Set(["closed", "rejected", "cancelled", "canceled", "expired", "error"])
     const stuckTerminal = allOpenRaw.filter((p) => TERMINAL_SYNC_STATUSES.has(String(p.status)))
     if (stuckTerminal.length > 0) {
       try {

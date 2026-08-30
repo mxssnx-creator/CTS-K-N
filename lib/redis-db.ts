@@ -22,6 +22,11 @@ import {
   liveClosedAnalyticsDataKey,
   liveClosedAnalyticsTimeKey,
 } from "./live-position-analytics-archive"
+import {
+  LIVE_CLOSED_INDEX_LIMIT,
+  LIVE_TERMINAL_RETENTION_SECONDS,
+  liveRetentionSecondsForStatus,
+} from "./redis-retention"
 
 /**
  * Redis Database Layer - High Performance Edition v3.0
@@ -943,7 +948,7 @@ export class InlineLocalRedis implements RedisClientLike {
       }
     }
 
-    const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+    const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "expired", "error"])
     let restored = 0
     for (const entry of newest.values()) {
       const position = entry.position as Record<string, unknown>
@@ -968,8 +973,15 @@ export class InlineLocalRedis implements RedisClientLike {
 
       this.data.hashes.set(hashKey, normalizeRedisHash(position))
       this.data.strings.set(jsonKey, JSON.stringify(position))
-      this.data.ttl.delete(hashKey)
-      this.data.ttl.delete(jsonKey)
+      const terminalRetentionSeconds = liveRetentionSecondsForStatus(position.status)
+      if (terminalRetentionSeconds !== null) {
+        const expiresAt = Date.now() + terminalRetentionSeconds * 1000
+        this.data.ttl.set(hashKey, expiresAt)
+        this.data.ttl.set(jsonKey, expiresAt)
+      } else {
+        this.data.ttl.delete(hashKey)
+        this.data.ttl.delete(jsonKey)
+      }
 
       const openIndexKey = `live:positions:${connectionId}`
       const closedIndexKey = `live:positions:${connectionId}:closed`
@@ -977,7 +989,7 @@ export class InlineLocalRedis implements RedisClientLike {
       const closedIds = (this.data.lists.get(closedIndexKey) || []).filter((id) => id !== positionId)
       if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
         this.data.lists.set(openIndexKey, openIds)
-        this.data.lists.set(closedIndexKey, [positionId, ...closedIds])
+        this.data.lists.set(closedIndexKey, [positionId, ...closedIds].slice(0, LIVE_CLOSED_INDEX_LIMIT))
         const analytics = buildLivePositionAnalyticsSnapshot(position)
         if (analytics) {
           const analyticsDataKey = liveClosedAnalyticsDataKey(connectionId)
@@ -5371,16 +5383,18 @@ export async function savePosition(position: any): Promise<void> {
   // legacy `position:${id}` hash form is preserved for non-live positions.
   if (String(id).startsWith("live:")) {
     const liveKey = `live:position:${id}`
-    const TERMINAL_LIVE_STATUSES = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
-    const isTerminalLivePosition = TERMINAL_LIVE_STATUSES.has(String(position.status || "").toLowerCase())
+    const terminalRetentionSeconds = liveRetentionSecondsForStatus(position.status)
+    const isTerminalLivePosition = terminalRetentionSeconds !== null
     try {
       // Open snapshots are refreshed continuously. Terminal history is
-      // durable: expiring it after seven days made lifetime stats impossible
-      // to rebuild and left thousands of archive ids without a snapshot.
+      // retained for a bounded audit window; lifetime/analytics aggregates are
+      // written before this snapshot expires and remain the stats source.
       await client.set(
         liveKey,
         JSON.stringify(position),
-        isTerminalLivePosition ? undefined : { EX: 7 * 24 * 60 * 60 },
+        isTerminalLivePosition
+          ? { EX: terminalRetentionSeconds || LIVE_TERMINAL_RETENTION_SECONDS }
+          : { EX: 7 * 24 * 60 * 60 },
       )
     } catch {
       // Some adapters do not support expiration options; retaining the
@@ -5430,7 +5444,7 @@ export async function savePosition(position: any): Promise<void> {
 	      // best-effort diagnostics/reconciliation index
 	    }
 
-	    // Terminal => move from open index -> closed archive idempotently.
+        // Terminal => move from open index -> bounded closed archive idempotently.
 	    // ALL terminal statuses must leave the open index — previously only
 	    // "closed" was handled, so "rejected"/"cancelled"/"error" positions fell
 	    // into the else-branch below which RE-ADDED them to the open index on
@@ -5444,6 +5458,9 @@ export async function savePosition(position: any): Promise<void> {
           `live:positions:${connId}:closed`,
           id,
         )
+        await client
+          .ltrim(`live:positions:${connId}:closed`, 0, LIVE_CLOSED_INDEX_LIMIT - 1)
+          .catch(() => undefined)
         await archiveClosedLivePositionAnalytics(client, {
           ...position,
           connectionId: connId,

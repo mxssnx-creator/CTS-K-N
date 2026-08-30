@@ -90,6 +90,7 @@ __tests__/unit/connection-scope-ui-contract.test.ts
 __tests__/unit/connection-secret-status.test.ts
 __tests__/unit/connection-settings-merge-clamp.test.ts
 __tests__/unit/connection-stage-overview.test.ts
+__tests__/unit/connection-symbols.test.ts
 __tests__/unit/connection-test-stored-credentials.test.ts
 __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
@@ -107,6 +108,7 @@ __tests__/unit/direct-trade-coordination.test.ts
 __tests__/unit/direct-trade-history-policy.test.ts
 __tests__/unit/direct-trade-indication-stats.test.ts
 __tests__/unit/direct-trade-ledger-recovery.test.ts
+__tests__/unit/direct-trade-live-readiness.test.ts
 __tests__/unit/direct-trade-market-history.test.ts
 __tests__/unit/direct-trade-overview-stats.test.ts
 __tests__/unit/direct-trade-position-capacity.test.ts
@@ -141,6 +143,7 @@ __tests__/unit/exchange-position-symbols-stats.test.ts
 __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
 __tests__/unit/forced-symbols.test.ts
+__tests__/unit/forex-support.test.ts
 __tests__/unit/functional-overview-stage-snapshot.test.ts
 __tests__/unit/futures-connectors-contract.test.ts
 __tests__/unit/health-route-liveness-budget.test.ts
@@ -157,6 +160,7 @@ __tests__/unit/indication-outcome-cost-basis.test.ts
 __tests__/unit/indication-set-type-coordination.test.ts
 __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/install-deployment-contract.test.ts
+__tests__/unit/live-entry-protection-admission.test.ts
 __tests__/unit/live-execution-summary.test.ts
 __tests__/unit/live-order-coordination.test.ts
 __tests__/unit/live-order-preflight.test.ts
@@ -164,6 +168,7 @@ __tests__/unit/live-pnl-calculation.test.ts
 __tests__/unit/live-pos-count-target.test.ts
 __tests__/unit/live-position-actions.test.ts
 __tests__/unit/live-position-analytics-archive.test.ts
+__tests__/unit/live-position-lifetime-summary.test.ts
 __tests__/unit/live-position-lineage-index.test.ts
 __tests__/unit/live-position-read-model.test.ts
 __tests__/unit/live-position-source.test.ts
@@ -235,6 +240,7 @@ __tests__/unit/redis-runtime-root.test.ts
 __tests__/unit/redis-secondary-indexes.test.ts
 __tests__/unit/redis-stats.test.ts
 __tests__/unit/requested-regressions.test.ts
+__tests__/unit/retention-policy.test.ts
 __tests__/unit/run-with-env-lifecycle.test.ts
 __tests__/unit/runtime-boot-id.test.ts
 __tests__/unit/runtime-concurrency-profile.test.ts
@@ -283,6 +289,7 @@ __tests__/unit/strategy-volume-coordination.test.ts
 __tests__/unit/symbol-selection-ownership.test.ts
 __tests__/unit/system-inject-credentials.test.ts
 __tests__/unit/system-monitoring-route.test.ts
+__tests__/unit/system-order-ownership.test.ts
 __tests__/unit/technical-indicators.test.ts
 __tests__/unit/trade-direction.test.ts
 __tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
@@ -670,6 +677,7 @@ app/statistics/layout.tsx
 app/statistics/loading.tsx
 app/statistics/page.tsx
 app/strategies/layout.tsx
+app/strategies/loading.tsx
 app/strategies/page.tsx
 app/structure/layout.tsx
 app/structure/page.tsx
@@ -937,6 +945,7 @@ docs/dca-optimization-7d-2026-08-11.md
 docs/direct-trade-async-scale-48h.json
 docs/direct-trade-block-48h.json
 docs/direct-trade-matrix-48h-16symbols.json
+docs/instaforex.md
 docs/live-order-redis-keys.md
 docs/portable-minute-scheduler.md
 docs/recreation/README.md
@@ -1053,6 +1062,7 @@ lib/connection-state-helpers.ts
 lib/connection-state-manager.ts
 lib/connection-state-utils.ts
 lib/connection-state.tsx
+lib/connection-symbols.ts
 lib/connection-test-scheduler.ts
 lib/connection-utils.ts
 lib/connections-file-storage.ts
@@ -1105,6 +1115,7 @@ lib/direct-trade-indication-stats.ts
 lib/direct-trade-keyspace.ts
 lib/direct-trade-ledger-recovery.cjs
 lib/direct-trade-limits.ts
+lib/direct-trade-live-readiness.ts
 lib/direct-trade-market-history.ts
 lib/direct-trade-overview-stats.ts
 lib/direct-trade-position-capacity.cjs
@@ -1143,6 +1154,7 @@ lib/exchange-connectors/bingx-connector.ts
 lib/exchange-connectors/bybit-connector.ts
 lib/exchange-connectors/factory.ts
 lib/exchange-connectors/index.ts
+lib/exchange-connectors/instaforex-connector.ts
 lib/exchange-connectors/okx-connector.ts
 lib/exchange-connectors/orangex-connector.ts
 lib/exchange-connectors/pionex-connector.ts
@@ -1155,6 +1167,7 @@ lib/exchange-quantity-ledger.ts
 lib/exchanges.ts
 lib/file-storage.ts
 lib/forced-symbols.ts
+lib/forex-market.ts
 lib/functional-overview-stage-snapshot.ts
 lib/global-rate-limiter.ts
 lib/health-check.ts
@@ -1178,6 +1191,7 @@ lib/integration-test-suite.ts
 lib/interval-progression-manager.ts
 lib/kilo-database-client.ts
 lib/leverage-policy.ts
+lib/live-entry-protection-admission.ts
 lib/live-execution-summary.ts
 lib/live-order-coordination.ts
 lib/live-order-counter-keys.ts
@@ -1187,6 +1201,7 @@ lib/live-order-service.ts
 lib/live-order-smoke.ts
 lib/live-position-alt-index.ts
 lib/live-position-analytics-archive.ts
+lib/live-position-lifetime-summary.ts
 lib/live-position-lineage.ts
 lib/live-position-pnl.ts
 lib/live-position-read-model.ts
@@ -1203,6 +1218,7 @@ lib/main-indication-settings.ts
 lib/main-trade-profit-factor.ts
 lib/market-data-fetcher.ts
 lib/market-data-loader.ts
+lib/market-types.ts
 lib/memory-manager.ts
 lib/metric-formatting.ts
 lib/metrics-aggregator.ts
@@ -1264,6 +1280,7 @@ lib/redis-migrations.ts
 lib/redis-operations.ts
 lib/redis-persistence.ts
 lib/redis-procedures.ts
+lib/redis-retention.ts
 lib/redis-runtime-bootstrap.ts
 lib/redis-runtime-root.ts
 lib/redis-scan.ts
@@ -1329,6 +1346,7 @@ lib/symbol-selection-defaults.ts
 lib/system-comprehensive-verifier.ts
 lib/system-diagnostics.ts
 lib/system-logger.ts
+lib/system-order-ownership.ts
 lib/system-resource-metrics.ts
 lib/system-version.ts
 lib/technical-indicators.ts
@@ -1391,13 +1409,37 @@ open-next.config.ts
 ops/grok-x01-pulse/.gitignore
 ops/grok-x01-pulse/README.md
 ops/grok-x01-pulse/bingx_fast.py
+ops/grok-x01-pulse/block-state-bingx-x01.json
+ops/grok-x01-pulse/block-state-bingx-x02.json
 ops/grok-x01-pulse/block_engine.py
 ops/grok-x01-pulse/coord_engine.py
+ops/grok-x01-pulse/cts-settings-bingx-x01.json
+ops/grok-x01-pulse/cts-settings-bingx-x02.json
+ops/grok-x01-pulse/dca_engine.py
+ops/grok-x01-pulse/exit_engine.py
 ops/grok-x01-pulse/indication_engine.py
+ops/grok-x01-pulse/lev-set-bingx-x01.json
+ops/grok-x01-pulse/lev-set-bingx-x02.json
+ops/grok-x01-pulse/lev-set.json
 ops/grok-x01-pulse/modules.py
+ops/grok-x01-pulse/overlay-bingx-x01.json
+ops/grok-x01-pulse/overlay-bingx-x02.json
 ops/grok-x01-pulse/overlay.json
 ops/grok-x01-pulse/position_cost.py
+ops/grok-x01-pulse/pulse-bingx-x01.log
+ops/grok-x01-pulse/pulse-bingx-x02.log
 ops/grok-x01-pulse/pulse_trader.py
+ops/grok-x01-pulse/results-export-bingx-x01.json
+ops/grok-x01-pulse/results-export-bingx-x01.md
+ops/grok-x01-pulse/results-export-bingx-x02.json
+ops/grok-x01-pulse/results-export-bingx-x02.md
+ops/grok-x01-pulse/results-export-x02.json
+ops/grok-x01-pulse/results-export-x02.md
+ops/grok-x01-pulse/risk_variants.py
+ops/grok-x01-pulse/set_engine.py
+ops/grok-x01-pulse/stats_report.py
+ops/grok-x01-pulse/stress_vst.py
+ops/grok-x01-pulse/vst_live_qa.py
 package.json
 pages/_document.tsx
 patches/0001-fix-finalize-prefill-positions-no-exchange-handle.patch
@@ -1446,6 +1488,9 @@ scripts/final-validation-test.mjs
 scripts/generate-recreation-manifests.mjs
 scripts/init-engine-and-verify.mjs
 scripts/inject-bingx-creds.js
+scripts/inspect-redis-aof-key-history.mjs
+scripts/inspect-redis-retention.ts
+scripts/instaforex-mt5-bridge.py
 scripts/install-pull-agent.sh
 scripts/install.sh
 scripts/kill-test-dev-port.mjs
@@ -1471,12 +1516,14 @@ scripts/prod-restart-manager.sh
 scripts/production-deploy-init.mjs
 scripts/quickstart-live-trading.js
 scripts/rebuild-live-order-counters.mjs
+scripts/rebuild-live-position-lifetime-summary.ts
 scripts/reconcile-bingx-x02-protection-slot.ts
 scripts/redis-persistence-cleanup.mjs
 scripts/regression/direct-trade-cycle-serialization.test.mjs
 scripts/regression/live-stage-simulated-protection.test.ts
 scripts/remove-stray-bun-lock.mjs
 scripts/repair-live-position-ledgers.mjs
+scripts/repair-redis-retention.ts
 scripts/restart.sh
 scripts/run-bingx-vst-live-soak.ts
 scripts/run-dev-preview-check.mjs
