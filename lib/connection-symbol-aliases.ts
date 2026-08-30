@@ -40,7 +40,7 @@ function explicitlyClearsForcedSymbols(patch: Record<string, unknown>): boolean 
 /**
  * Keep every persisted symbol alias on one canonical basket.
  *
- * `force_symbols` is the engine\'s durable operator intent and therefore wins
+ * `force_symbols` is the engine's durable operator intent and therefore wins
  * over stale `selected_symbols` snapshots. The requested count is a total
  * basket ceiling, so adding the mandatory quartet can never turn a 32-symbol
  * UI selection into 36 runtime symbols. Forex pairs remain six-character
