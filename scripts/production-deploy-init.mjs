@@ -78,6 +78,14 @@ async function injectCredentials() {
 
 async function verifyLiveTradeReadiness() {
   const required = process.env.CTS_REQUIRE_LIVE_TRADE_READY === "1"
+  const safeSimulation =
+    process.env.FORCE_SIMULATED === "1" ||
+    process.env.FORCE_LIVE === "0" ||
+    process.env.ALLOW_LIVE_ORDER_PLACEMENT === "0"
+  if (safeSimulation) {
+    console.log("[Prod Init] Safe simulation is active; live-trade readiness is intentionally skipped")
+    return { required: false, connectionIds: [], skipped: "safe_simulation" }
+  }
   const summary = await request("/api/system/inject-credentials", { timeoutMs: 30_000 })
   const liveConnectionIds = Array.isArray(summary?.liveTradeReady)
     ? summary.liveTradeReady.filter((value) => typeof value === "string" && value.length > 0)
