@@ -36,6 +36,9 @@ import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import { getOpenLivePositionReadModels } from "@/lib/live-position-read-model"
 import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
+import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
+import { normalizeMarketType } from "@/lib/market-types"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -145,20 +148,17 @@ async function runtimeOnlyStatsResponse(
       requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main",
     ).trim() || "main"
     const scope = buildProgressionScope(connectionId, engineType)
-    const [scopedProgression, legacyProgression, prehistoric, processedSymbols] = await Promise.all([
+    const [scopedProgression, legacyProgression, prehistoric, processedSymbols, engineState] = await Promise.all([
       client.hgetall(scope.progressionKey).catch(() => ({} as Record<string, string>)),
       client.hgetall(scope.legacyProgressionKey).catch(() => ({} as Record<string, string>)),
       client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
       client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
+      client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
     ])
 
-    const explicitSymbols = normalizeSymbolList(
-      (connection as any)?.force_symbols ||
-      (connection as any)?.active_symbols ||
-      (connection as any)?.selected_symbols,
-    )
-    const measuredSymbolCount = explicitSymbols.length > 0
-      ? explicitSymbols.length
+    const canonicalSymbols = resolveCanonicalSymbols(connection, engineState, scopedProgression, legacyProgression, prehistoric)
+    const measuredSymbolCount = canonicalSymbols.count > 0
+      ? canonicalSymbols.count
       : positiveInteger(
           (scopedProgression as any)?.symbol_count,
           (legacyProgression as any)?.symbol_count,
@@ -173,6 +173,7 @@ async function runtimeOnlyStatsResponse(
         engineType: scope.engineType,
         view: "runtime",
         symbolCount: measuredSymbolCount,
+        symbolCountSource: canonicalSymbols.count > 0 ? canonicalSymbols.source : "scalar_fallback",
         runtime: getRuntimeTelemetry(measuredSymbolCount || Number.POSITIVE_INFINITY),
       },
       {
@@ -1026,6 +1027,16 @@ export async function GET(
     const requestedEngineType = statsSearchParams.get("engineType") || statsSearchParams.get("engine_type") || ""
     const connection = await getConnection(connectionId).catch(() => null)
     const engineType = stableString(requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main") || "main"
+    const connectionMarketType = normalizeMarketType(
+      (connection as any)?.market_type ?? (connection as any)?.asset_class,
+      (connection as any)?.exchange,
+    )
+    const defaultPositionsAverage = connectionMarketType === "forex" ? DEFAULT_FOREX_POSITIONS_AVERAGE : 2
+    const settlementAsset = String(
+      (connection as any)?.settlement_asset ??
+      (connection as any)?.last_test_settlement_asset ??
+      (connectionMarketType === "forex" ? "account_currency" : "USDT"),
+    ).trim() || (connectionMarketType === "forex" ? "account_currency" : "USDT")
     const scope = await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
 
     // Read the scoped/active progression snapshot before any fallback hashes.
@@ -1220,17 +1231,8 @@ export async function GET(
     // display misleading totals (e.g. "1/3") when the user selected 1
     // symbol in the Quickstart slot. Fall back to `processed || 1` only
     // when we genuinely have no other source.
-    let symbolsFromArray = 0
-    if (Array.isArray((es as any).symbols)) {
-      symbolsFromArray = (es as any).symbols.length
-    } else if (Array.isArray((es as any).active_symbols)) {
-      symbolsFromArray = (es as any).active_symbols.length
-    } else if (typeof (es as any).active_symbols === "string") {
-      try {
-        const parsed = JSON.parse((es as any).active_symbols)
-        if (Array.isArray(parsed)) symbolsFromArray = parsed.length
-      } catch { /* ignore */ }
-    }
+    const runtimeSymbolResolution = resolveCanonicalSymbols(connection, es, ep, activeProgression, prehistoricHash)
+    const symbolsFromArray = runtimeSymbolResolution.count
     const quickstartSymbols = normalizeSymbolList((es as any).quickstart_symbols)
     const quickstartCount = n((es as any).quickstart_symbol_count)
     const activeSelectionEpoch = String((es as any).symbol_selection_epoch || (es as any).quickstart_symbol_generation || "")
@@ -1241,11 +1243,11 @@ export async function GET(
     // could be clamped to a newly selected 5-symbol basket and displayed as a
     // false, permanently stuck 5/5 before the new worker had processed one.
     if (!prehistoricTotalIsActive) rawHistoricSymbolsProcessed = 0
-    const canonicalSelectedSymbols = normalizeSymbolList(es.selected_symbols)
+    const canonicalSelectedSymbols = resolveCanonicalSymbols(es, ep).symbols
     const activeQuickstartTotal = Math.max(quickstartCount, quickstartSymbols.length)
     const engineProgressSubTotal = ep?.phase === "prehistoric_data" ? n(ep?.sub_total) : 0
     const activeSnapshotSymbolTotal = n(activeProgression.symbol_count)
-    const currentSelectedSymbols = normalizeSymbolList((connection as any)?.force_symbols || (connection as any)?.active_symbols || (connection as any)?.selected_symbols)
+    const currentSelectedSymbols = resolveCanonicalSymbols(connection, es, ep, activeProgression).symbols
     const activeStatsSymbolList = currentSelectedSymbols.length > 0
       ? currentSelectedSymbols
       : canonicalSelectedSymbols.length > 0
@@ -3240,6 +3242,8 @@ export async function GET(
         attempted: readFreshSymbolDispatchCount("dispatch_attempted_count"),
         placed: readFreshSymbolDispatchCount("dispatch_placed_count"),
         filled: readFreshSymbolDispatchCount("dispatch_filled_count"),
+        pending: readFreshSymbolDispatchCount("dispatch_pending_count"),
+        blocked: readFreshSymbolDispatchCount("dispatch_blocked_count"),
         rejected: readFreshSymbolDispatchCount("dispatch_rejected_count"),
         errored: readFreshSymbolDispatchCount("dispatch_errored_count"),
         missingEntry: readFreshSymbolDispatchCount("dispatch_missing_entry_count"),
@@ -4044,6 +4048,11 @@ export async function GET(
       tradeMode: "main" | "preset"
       positionCostPct: number
       positionsAverage: number
+      marketType: "crypto" | "forex"
+      settlementAsset: string
+      volumeUnit: "base_units" | "lots"
+      spreadSource: "broker_tick" | "exchange_tick" | "not_applicable"
+      positionCostSource: "configured_floor_plus_live_spread" | "configured_only"
       source: string
     } = {
       liveVolumeFactor:   1,
@@ -4051,7 +4060,12 @@ export async function GET(
       signalVolumeFactor: 1,
       tradeMode:          "main",
       positionCostPct:    0.1,
-      positionsAverage:   2,
+      positionsAverage:   defaultPositionsAverage,
+      marketType:         connectionMarketType,
+      settlementAsset,
+      volumeUnit:         connectionMarketType === "forex" ? "lots" : "base_units",
+      spreadSource:       connectionMarketType === "forex" ? "broker_tick" : "not_applicable",
+      positionCostSource: connectionMarketType === "forex" ? "configured_floor_plus_live_spread" : "configured_only",
       source:             "default",
     }
     let stageOverviewSettings: Record<string, unknown> = {}
@@ -4091,14 +4105,19 @@ export async function GET(
       const posCostRaw = Number(
         vcSettings.exchangePositionCost ?? vcSettings.positionCost ?? vcSettings.exchange_position_cost ?? "0.1"
       )
-      const posAvgRaw = Number(vcSettings.positions_average ?? vcSettings.positionsAverage ?? "2")
+      const posAvgRaw = Number(vcSettings.positions_average ?? vcSettings.positionsAverage ?? defaultPositionsAverage)
       volumeConfig = {
         liveVolumeFactor:   resolved.mainVolumeFactor,
         presetVolumeFactor: resolved.presetVolumeFactor,
         signalVolumeFactor: resolved.signalVolumeFactor,
         tradeMode:          resolved.tradeMode,
         positionCostPct:    Number.isFinite(posCostRaw) && posCostRaw > 0 ? posCostRaw : 0.1,
-        positionsAverage:   Number.isFinite(posAvgRaw) && posAvgRaw > 0 ? posAvgRaw : 2,
+        positionsAverage:   Number.isFinite(posAvgRaw) && posAvgRaw > 0 ? posAvgRaw : defaultPositionsAverage,
+        marketType:         connectionMarketType,
+        settlementAsset,
+        volumeUnit:         connectionMarketType === "forex" ? "lots" : "base_units",
+        spreadSource:       connectionMarketType === "forex" ? "broker_tick" : "not_applicable",
+        positionCostSource: connectionMarketType === "forex" ? "configured_floor_plus_live_spread" : "configured_only",
         source:             vcConn?.live_volume_factor ? "connection"
                             : (vcSettings.volume_factor_live ? "app_settings" : "default"),
       }
@@ -4201,6 +4220,13 @@ export async function GET(
         connectionId,
         engineType,
         view: "overview",
+        marketType: connectionMarketType,
+        settlementAsset,
+        volumeUnit: volumeConfig.volumeUnit,
+        positionsAverage: volumeConfig.positionsAverage,
+        positionCostPct: volumeConfig.positionCostPct,
+        spreadSource: volumeConfig.spreadSource,
+        volumeConfig,
         strategyRows,
         connectionStageOverview,
         mainIndications,
@@ -4216,12 +4242,22 @@ export async function GET(
     return NextResponse.json({
       success: true,
       connectionId,
+      engineType,
+      marketType: connectionMarketType,
+      settlementAsset,
+      volumeUnit: volumeConfig.volumeUnit,
+      positionsAverage: volumeConfig.positionsAverage,
+      positionCostPct: volumeConfig.positionCostPct,
+      spreadSource: volumeConfig.spreadSource,
       settingsRecoordination,
       statsRecalculation,
 
       historic: {
         symbolsProcessed:       historicSymbolsProcessed,
         symbolsTotal:           historicSymbolsTotal,
+        symbolCountSource:      runtimeSymbolResolution.count > 0
+          ? runtimeSymbolResolution.source
+          : "scalar_fallback",
         candlesLoaded:          historicCandlesLoaded,
         indicatorsCalculated:   historicIndicatorsCalculated,
         cyclesCompleted:        historicCyclesCompleted,
@@ -4639,6 +4675,7 @@ export async function GET(
         const totalCreated = n(progHash.strategies_main_related_created)
         const totalReused  = n(progHash.strategies_main_related_reused)
         const totalCycles  = n(progHash.strategies_main_cycles)
+        const reusedCycles = n(progHash.strategies_main_reused_cycles)
         const reuseDenom   = totalCreated + totalReused
 
         // ── Build per-axis-window arrays from `axis_windows:{id}` ──────��──
@@ -4697,6 +4734,14 @@ export async function GET(
           totalCreated,
           totalReused,
           totalCycles,
+          // A reused cycle deliberately skips the heavyweight Base/Main/Real
+          // matrix and re-runs only the authoritative Live mirror. Keep it
+          // separate from full Main evaluation counts, but expose the sum as
+          // the productive coordination activity used by monitoring.
+          reusedCycles,
+          productiveCycles: totalCycles + reusedCycles,
+          lastCycleMode: progHash.strategies_main_last_cycle_mode || null,
+          lastReusedCycleAt: progHash.strategies_main_last_reused_cycle_at || null,
           reuseRate: reuseDenom > 0 ? Math.round((totalReused / reuseDenom) * 1000) / 10 : 0,
           positionContext: {
             continuous:  n(progHash.strategies_main_ctx_continuous),
@@ -5001,6 +5046,8 @@ export async function GET(
           attempted: 0,
           placed: 0,
           filled: 0,
+          pending: 0,
+          blocked: 0,
           rejected: 0,
           errored: 0,
           missingEntry: 0,

@@ -17,7 +17,7 @@
 export const BASE_EXCHANGES = ["bybit", "bingx"]
 
 // All known exchanges (base + templates)
-export const ALL_EXCHANGES = ["bybit", "bingx", "binance", "okx", "pionex", "orangex", "gateio", "kucoin", "mexc", "bitget", "huobi"]
+export const ALL_EXCHANGES = ["bybit", "bingx", "binance", "okx", "pionex", "orangex", "gateio", "kucoin", "mexc", "bitget", "huobi", "instaforex"]
 
 /**
  * Check if a connection is a BASE connection (one of the 4 primary exchanges)

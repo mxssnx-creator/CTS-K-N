@@ -248,6 +248,16 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
     report.finishedAt = new Date().toISOString()
     return report
   }
+  // Mainnet and X01 are read-only by policy.  Keep the supervised mutation
+  // probe limited to the explicitly approved BingX Prod-VST virtual-funds
+  // account; an opt-in environment variable must never turn this helper into
+  // an uncoordinated mainnet order path.
+  if (!credentials.isTestnet) {
+    report.errors.push("Live-order smoke is restricted to BingX Prod-VST virtual funds; mainnet is read-only")
+    report.finishedAt = new Date().toISOString()
+    report.timingMs.total = Date.now() - startedMs
+    return report
+  }
   if (credentials.apiType === "spot" || credentials.contractType === "spot") {
     report.errors.push("Live smoke requires a BingX perpetual-futures connection")
     report.finishedAt = new Date().toISOString()

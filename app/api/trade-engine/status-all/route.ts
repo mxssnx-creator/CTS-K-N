@@ -5,6 +5,7 @@ import { evaluateRealTradeReadiness, normalizeRealTradeIntent } from "@/lib/real
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 
 function isEnabledFlag(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
@@ -21,21 +22,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Pr
   ]).finally(() => {
     if (timer) clearTimeout(timer)
   })
-}
-
-function parseSymbols(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === "string" && item.length > 0)
-  }
-  if (typeof value === "string" && value.length > 0) {
-    try {
-      const parsed = JSON.parse(value)
-      if (Array.isArray(parsed)) return parseSymbols(parsed)
-    } catch {
-      return value.split(",").map((item) => item.trim()).filter(Boolean)
-    }
-  }
-  return []
 }
 
 type StatusAllGlobal = typeof globalThis & {
@@ -292,25 +278,15 @@ async function buildStatusAllResponse() {
             heartbeatFreshMs: 120_000,
           })
           const isRunning = runtime.running
-          const configuredSymbols = parseSymbols(conn.force_symbols || conn.active_symbols || conn.symbols)
-          const runtimeSymbols = parseSymbols(
-            runtimeState.force_symbols || runtimeState.active_symbols || runtimeState.symbols,
-          )
-          const settingsSymbols = parseSymbols(
-            settingsState.force_symbols || settingsState.active_symbols || settingsState.symbols,
-          )
-          const scopedRuntimeSymbols = parseSymbols(
-            scopedRuntimeState.force_symbols || scopedRuntimeState.active_symbols || scopedRuntimeState.symbols,
-          )
-          const scopedSettingsSymbols = parseSymbols(
-            scopedSettingsState.force_symbols || scopedSettingsState.active_symbols || scopedSettingsState.symbols,
-          )
-          const resolvedSymbols =
-            configuredSymbols.length > 0 ? configuredSymbols :
-              scopedRuntimeSymbols.length > 0 ? scopedRuntimeSymbols :
-                scopedSettingsSymbols.length > 0 ? scopedSettingsSymbols :
-              runtimeSymbols.length > 0 ? runtimeSymbols :
-                settingsSymbols
+              const legacyRuntimeSymbolHints = runtimeState.force_symbols || runtimeState.active_symbols || runtimeState.symbols
+              const resolvedSymbols = resolveCanonicalSymbols(
+                conn,
+                scopedRuntimeState,
+                scopedSettingsState,
+                runtimeState,
+                settingsState,
+                { symbols: legacyRuntimeSymbolHints },
+              ).symbols
           // Redis can briefly exceed the per-read timeout while the final
           // Historic symbol publishes its multi-million-row result. Returning
           // `{running:true,symbols:[]}` for that one poll breaks UI ownership

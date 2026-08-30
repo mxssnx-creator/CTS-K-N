@@ -16,6 +16,12 @@ import { publishEngineEvent } from "@/lib/engine-event-bus"
 const RESTART_REQUIRED_FIELDS = [
   "api_key", "api_secret", "exchange", "is_testnet",
   "api_type", "api_subtype", "progression_epoch",
+  "market_type", "asset_class", "account_id", "api_base_url", "quotes_base_url", "charts_url",
+  // Private Forex bridge identity/configuration changes must rebuild the
+  // connector before the next order. Secret values are never copied into the
+  // event envelope; only the field names are retained.
+  "account_server", "forex_execution_mode", "bridge_url", "terminal_path",
+  "account_password", "bridge_token", "connection_library",
   // Browser/dialog saves must not stop or restart a live engine. Symbol and
   // mode changes are handled by the hot-reload path, which invalidates symbol
   // caches, refreshes per-cycle settings, and lets progression recoordination
@@ -29,6 +35,7 @@ const PROGRESSION_RESTART_FIELDS = [
   "connection_settings", "strategies", "indications", "active_indications",
   "symbols", "active_symbols", "force_symbols", "symbol_count", "symbol_order",
   "is_live_trade", "is_preset_trade", "connection_method", "margin_type", "position_mode",
+  "market_type", "asset_class", "account_server", "execution_mode", "forex_execution_mode", "read_only", "average_count", "averageCount", "spread_mode", "spreadMode", "max_spread_pips", "maxSpreadPips", "lot_size", "lotSize", "spread_buffer_pips", "spreadBufferPips", "spread_multiplier", "spreadMultiplier", "bridge_url", "terminal_path", "connection_library",
   "live_volume_factor", "preset_volume_factor", "signal_volume_factor", "volume_factor_live",
   "volume_factor_preset", "volume_factor_signal", "mainTradeVolumeFactor",
   "presetTradeVolumeFactor", "signalTradeVolumeFactor", "volume_step_ratio", "volume_factor",
@@ -65,6 +72,7 @@ const HOT_RELOAD_FIELDS = [
   "active_indications", "preset_type",
   "symbols", "active_symbols", "force_symbols", "symbol_count", "symbol_order",
   "is_enabled", "is_enabled_dashboard", "is_live_trade", "is_preset_trade", "connection_method",
+  "market_type", "asset_class", "account_server", "execution_mode", "forex_execution_mode", "read_only", "average_count", "averageCount", "spread_mode", "spreadMode", "max_spread_pips", "maxSpreadPips", "lot_size", "lotSize", "spread_buffer_pips", "spreadBufferPips", "spread_multiplier", "spreadMultiplier", "bridge_url", "terminal_path", "connection_library",
   "live_volume_factor", "preset_volume_factor", "signal_volume_factor", "volume_factor_live",
   "volume_factor_preset", "volume_factor_signal", "mainTradeVolumeFactor",
   "presetTradeVolumeFactor", "signalTradeVolumeFactor", "volume_step_ratio", "leveragePercentage",

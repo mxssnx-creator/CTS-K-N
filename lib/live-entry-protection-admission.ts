@@ -66,7 +66,11 @@ function quantityOf(row: Record<string, any>): number {
     row.positionAmt ??
     row.position_amount ??
     row.size ??
-    row.quantity,
+    row.quantity ??
+    row.contracts ??
+    row.positionSize ??
+    row.lots ??
+    row.volume,
   ))
 }
 

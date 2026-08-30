@@ -355,6 +355,16 @@ function strategyRuntimeSample(stats) {
       "evaluation-fallback"
     ),
     mainCycles: finiteNonNegative(coordination.totalCycles, "mainCoordination.totalCycles"),
+    mainReusedCycles: finiteNonNegative(
+      coordination.reusedCycles,
+      "mainCoordination.reusedCycles",
+    ),
+    // Full Main evaluations and Live-only cache hits are separate counters;
+    // both are productive coordination activity, while only the former
+    // rebuilds the expensive Base->Main->Real matrix.
+    mainActivityCycles:
+      finiteNonNegative(coordination.totalCycles, "mainCoordination.totalCycles") +
+      finiteNonNegative(coordination.reusedCycles, "mainCoordination.reusedCycles"),
     mainCreated: finiteNonNegative(coordination.totalCreated, "mainCoordination.totalCreated"),
     mainReused: finiteNonNegative(coordination.totalReused, "mainCoordination.totalReused"),
     realActive: finiteNonNegative(stats?.openPositions?.real?.open, "openPositions.real.open"),
@@ -972,11 +982,11 @@ async function main() {
 
   const productiveRequirementsMet = () => {
     if (!START_SIMULATED_ENGINE || progression.length === 0 || strategyRuntime.length === 0) return !START_SIMULATED_ENGINE
-    const firstMainCycles = strategyRuntime[0]?.mainCycles || 0
-    const finalMainCycles = strategyRuntime.at(-1)?.mainCycles || 0
+    const firstMainActivityCycles = strategyRuntime[0]?.mainActivityCycles || 0
+    const finalMainActivityCycles = strategyRuntime.at(-1)?.mainActivityCycles || 0
     const finalProgression = progression.at(-1)
     return (
-      finalMainCycles - firstMainCycles >= MIN_PRODUCTIVE_CYCLES
+      finalMainActivityCycles - firstMainActivityCycles >= MIN_PRODUCTIVE_CYCLES
       && finalProgression?.historicSymbols === SYMBOLS.length
       && finalProgression?.historicTotal === SYMBOLS.length
     )
@@ -1142,6 +1152,12 @@ async function main() {
     const previousRuntime = strategyRuntime.at(-1)
     if (previousRuntime && runtimeSample.mainCycles < previousRuntime.mainCycles) {
       throw new Error(`Main strategy cycles regressed: ${previousRuntime.mainCycles} -> ${runtimeSample.mainCycles}`)
+    }
+    if (previousRuntime && runtimeSample.mainReusedCycles < previousRuntime.mainReusedCycles) {
+      throw new Error(
+        `Main reused cycles regressed: ${previousRuntime.mainReusedCycles} -> ` +
+        `${runtimeSample.mainReusedCycles}`,
+      )
     }
     for (const variant of [...VARIANT_NAMES, "overall"]) {
       for (const field of ["createdSets", "passedSets", "entriesCount", "positionsCount"]) {
@@ -1520,10 +1536,16 @@ async function main() {
     if (maxCycles <= firstCycles) {
       throw new Error(`System monitoring cycle counters did not advance (${firstCycles} → ${maxCycles})`)
     }
-    const firstMainCycles = strategyRuntime[0]?.mainCycles || 0
-    const finalMainCycles = strategyRuntime.at(-1)?.mainCycles || 0
-    if (finalMainCycles - firstMainCycles < MIN_PRODUCTIVE_CYCLES) {
-      throw new Error(`Main strategy progression advanced only ${finalMainCycles - firstMainCycles} cycles; expected >= ${MIN_PRODUCTIVE_CYCLES}`)
+    const firstMainActivityCycles = strategyRuntime[0]?.mainActivityCycles || 0
+    const finalMainActivityCycles = strategyRuntime.at(-1)?.mainActivityCycles || 0
+    if (finalMainActivityCycles - firstMainActivityCycles < MIN_PRODUCTIVE_CYCLES) {
+      throw new Error(
+        `Main strategy coordination advanced only ` +
+        `${finalMainActivityCycles - firstMainActivityCycles} cycles ` +
+        `(full=${strategyRuntime.at(-1)?.mainCycles || 0}, ` +
+        `reused=${strategyRuntime.at(-1)?.mainReusedCycles || 0}); ` +
+        `expected >= ${MIN_PRODUCTIVE_CYCLES}`,
+      )
     }
     const finalProgression = progression.at(-1)
     if (

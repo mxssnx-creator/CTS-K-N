@@ -14,6 +14,7 @@ import { NextResponse } from "next/server"
 import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import type { PhaseMetrics, ProcessingMetrics } from "@/lib/processing-metrics"
 import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 
 export const dynamic = "force-dynamic"
 
@@ -53,19 +54,6 @@ function timestamp(value: unknown): number {
   }
   const parsed = Date.parse(String(value || ""))
   return Number.isFinite(parsed) ? parsed : 0
-}
-
-function parseSymbols(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean)
-  const text = String(value || "").trim()
-  if (!text) return []
-  try {
-    const parsed = JSON.parse(text)
-    if (Array.isArray(parsed)) return parseSymbols(parsed)
-  } catch {
-    // Legacy connection rows can contain a comma-delimited basket.
-  }
-  return text.split(/[\n,|]/).map((item) => item.trim()).filter(Boolean)
 }
 
 function phase(
@@ -155,14 +143,20 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const configuredSymbols = parseSymbols(
-      connection?.force_symbols ?? connection?.active_symbols ?? connection?.symbols,
-    )
-    const symbolTotal = Math.max(
-      configuredSymbols.length,
-      maxField(prehistoric, "symbols_total"),
-      maxField(allRuntimeHashes, "symbol_count", "symbols_total", "config_set_symbols_total"),
-    )
+    const configuredSymbols = resolveCanonicalSymbols(
+      ...allRuntimeHashes,
+      ...prehistoric,
+      connection,
+    ).symbols
+    // A semantic selection array is authoritative. A scalar from a stale
+    // connection catalog must not expand it back to an exchange-wide count
+    // such as X01's historic 536 markets.
+    const symbolTotal = configuredSymbols.length > 0
+      ? configuredSymbols.length
+      : Math.max(
+          maxField(prehistoric, "symbols_total"),
+          maxField(allRuntimeHashes, "symbol_count", "symbols_total", "config_set_symbols_total"),
+        )
     const historicProcessedRaw = Math.max(
       maxField(prehistoric, "symbols_processed"),
       maxField(allRuntimeHashes, "prehistoric_symbols_processed_count", "config_set_symbols_processed"),

@@ -14,6 +14,7 @@ import { PresetPseudoPositionManager } from "./preset-pseudo-position-manager"
 import { DataSyncManager } from "./data-sync-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
 import { concurrencyFromEnv, mapWithConcurrency } from "./bounded-concurrency"
+import { VolumeCalculator } from "./volume-calculator"
 
 export interface PresetCoordinationConfig {
   connectionId: string
@@ -687,9 +688,6 @@ export class PresetCoordinationEngine {
     // Get current price
     const currentPrice = await this.getCurrentPrice(result.symbol)
 
-    // Calculate position size based on configuration
-    const positionSize = 100 // Default, should be configurable
-
     try {
       // Read the same persisted connection used by the active engine. This
       // legacy coordinator is retained for backwards compatibility, but it
@@ -707,6 +705,35 @@ export class PresetCoordinationEngine {
         connection?.preset_trade_requested === "1"
       if (!presetEnabled) return
 
+      // Preset live orders must use the same PositionCost/lot contract as the
+      // main live stage. The former fixed quantity of 100 was a raw base-unit
+      // guess and could create an oversized order (especially on BTC or when
+      // a Forex result was expressed in lots).
+      const volumeResult = await VolumeCalculator.calculateVolumeForConnection(
+        this.connectionId,
+        result.symbol,
+        currentPrice,
+        {
+          tradeMode: "preset",
+          indicationType: result.indication_type,
+          positionCostPercentOverride: Number(connection.position_cost_percent) > 0
+            ? Number(connection.position_cost_percent)
+            : undefined,
+          marketType: connection.market_type || connection.asset_class,
+          lotSize: Number(connection.lot_size) > 0 ? Number(connection.lot_size) : undefined,
+          quoteToUsdRate: Number(connection.quote_to_usd_rate) > 0
+            ? Number(connection.quote_to_usd_rate)
+            : undefined,
+        },
+      )
+      const positionSize = Number(volumeResult.finalVolume || volumeResult.volume || 0)
+      if (!(positionSize > 0) || volumeResult.conversionAvailable === false) {
+        throw new Error(
+          volumeResult.adjustmentReason
+          || ("Preset live sizing produced no executable quantity for " + result.symbol),
+        )
+      }
+
       const { placeLiveOrder } = await import("@/lib/live-order-service")
       const orderResult = await placeLiveOrder({
         connectionId: this.connectionId,
@@ -720,6 +747,7 @@ export class PresetCoordinationEngine {
         side: signal.direction,
         positionDirection: signal.direction,
         quantity: positionSize,
+        price: currentPrice,
         leverage: 1,
         orderType: "market",
         source: "preset-coordination",
@@ -731,13 +759,28 @@ export class PresetCoordinationEngine {
         // still owns connector safety and authoritative fill parsing.
         persistPosition: false,
         updateCounters: false,
+        marketType: connection.market_type || connection.asset_class,
+        lotSize: Number(connection.lot_size) > 0 ? Number(connection.lot_size) : undefined,
+        quoteToUsdRate: Number(connection.quote_to_usd_rate) > 0
+          ? Number(connection.quote_to_usd_rate)
+          : undefined,
+        // A preset entry is not complete until both controls are accepted.
+        // The shared service derives the exact prices again from the
+        // authoritative fill before arming non-native conditional orders.
+        requireProtection: true,
+        protectionStopLossPercent: Number(result.stoploss_ratio),
+        protectionTakeProfitPercent: Number(result.takeprofit_factor),
       })
 
       if (!orderResult?.success || orderResult.mode !== "live") {
         throw new Error(orderResult?.error || `Preset live order was not executed in live mode (${orderResult?.mode || "unknown"})`)
       }
 
-      const fillPrice = Number(orderResult.fill?.filledPrice || currentPrice) || currentPrice
+      const fillPrice = Number(orderResult.fill?.filledPrice) || 0
+      const filledQuantity = Number(orderResult.fill?.filledQty) || 0
+      if (!(fillPrice > 0) || !(filledQuantity > 0)) {
+        throw new Error("Preset live order returned no authoritative execution fill")
+      }
       const tradeId = this.generateId()
       await sql`
         INSERT INTO preset_real_trades (
@@ -751,7 +794,7 @@ export class PresetCoordinationEngine {
           ${tradeId}, ${this.connectionId}, ${this.presetTypeId},
           ${result.configuration_set_id}, ${result.id},
           ${result.symbol}, ${signal.direction},
-          ${fillPrice}, ${Number(orderResult.fill?.filledQty || positionSize)}, 1,
+          ${fillPrice}, ${filledQuantity}, 1,
           ${result.indication_type}, ${result.takeprofit_factor}, ${result.stoploss_ratio},
           ${result.trailing_enabled}, ${result.trail_start}, ${result.trail_stop},
           'open', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -782,9 +825,12 @@ export class PresetCoordinationEngine {
         symbol: result.symbol,
         side: signal.direction,
         entryPrice: fillPrice,
-        quantity: Number(orderResult.fill?.filledQty || positionSize),
-        volumeUsd: Number(orderResult.fill?.filledQty || positionSize) * fillPrice,
+        quantity: filledQuantity,
+        volumeUsd: filledQuantity * fillPrice,
         leverage: 1,
+        positionTicket: Number(orderResult.protection?.positionTicket) > 0
+          ? Number(orderResult.protection.positionTicket)
+          : undefined,
         takeprofit: tpPrice,
         stoploss: slPrice,
         trailingEnabled: result.trailing_enabled,

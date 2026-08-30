@@ -1,6 +1,7 @@
 const mockClient = {
   lpush: jest.fn(async () => 1),
   ltrim: jest.fn(async () => "OK"),
+  expire: jest.fn(async () => 1),
   lrange: jest.fn(async () => []),
   del: jest.fn(async () => 1),
 }

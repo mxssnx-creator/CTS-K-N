@@ -37,6 +37,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
@@ -107,6 +108,10 @@ export function QuickstartConnectionControls() {
   const [resetResult, setResetResult] = useState<
     { ok: boolean; message: string } | null
   >(null)
+  // Never persist this value.  Most deployments authorize the same-origin
+  // admin session; the optional bearer fallback is for operator-only
+  // deployments that expose ADMIN_SECRET instead.
+  const [resetAdminSecret, setResetAdminSecret] = useState("")
   const [reconnecting, setReconnecting] = useState(false)
   const [reconnectResult, setReconnectResult] = useState<
     { ok: boolean; message: string } | null
@@ -269,13 +274,23 @@ export function QuickstartConnectionControls() {
       const res = await fetch("/api/admin/clear-progressions", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(resetAdminSecret.trim()
+            ? { Authorization: `Bearer ${resetAdminSecret.trim()}` }
+            : {}),
+        },
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data?.success === false) {
         setResetResult({
           ok: false,
-          message: data?.error || data?.details || `Reset failed (HTTP ${res.status})`,
+          message:
+            res.status === 401
+              ? "Unauthorized. Sign in as an admin or enter the configured admin secret below."
+              : res.status === 503
+                ? "Admin authentication is not configured on this server. Set ADMIN_SECRET or enable an admin session."
+                : data?.error || data?.details || `Reset failed (HTTP ${res.status})`,
         })
       } else {
         setResetResult({
@@ -296,10 +311,11 @@ export function QuickstartConnectionControls() {
       })
     } finally {
       setResetting(false)
+      setResetAdminSecret("")
       // Auto-dismiss the success/error chip after 6s.
       setTimeout(() => setResetResult(null), 6000)
     }
-  }, [resetting, loadConnections])
+  }, [resetAdminSecret, resetting, loadConnections])
 
   const handleReconnect = useCallback(async () => {
     if (reconnecting) return
@@ -551,6 +567,24 @@ export function QuickstartConnectionControls() {
                   <strong>Preserved:</strong> exchange credentials
                   (connections), app settings, migration markers.
                 </p>
+                <div className="space-y-1.5 pt-2">
+                  <label htmlFor="reset-admin-secret" className="text-xs font-medium">
+                    Admin secret (optional)
+                  </label>
+                  <Input
+                    id="reset-admin-secret"
+                    type="password"
+                    value={resetAdminSecret}
+                    onChange={(event) => setResetAdminSecret(event.target.value)}
+                    placeholder="Only needed when the admin session is unavailable"
+                    autoComplete="off"
+                    disabled={resetting}
+                    className="h-8 text-xs"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Used once for this request and cleared immediately afterward.
+                  </p>
+                </div>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>

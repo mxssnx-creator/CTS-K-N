@@ -65,6 +65,36 @@ describe("executing Live-stage control barriers", () => {
     expect(__liveStageTest.isActiveLiveSlotStatus("closed")).toBe(false)
   })
 
+  test("caps crypto and Forex accumulation on the total physical PositionCost budget", () => {
+    const crypto = __liveStageTest.admitAccumulationQuantity(
+      livePosition({ executedQuantity: 1, quantity: 1, marketType: "crypto" }),
+      10,
+      100,
+      { quantityStep: 0.1, quantityPrecision: 1, minQuantity: 0.1, minNotionalUsdt: 0 },
+      150,
+    )
+    expect(crypto.quantity).toBeCloseTo(0.5, 10)
+    expect(crypto.currentNotionalUsd).toBeCloseTo(100, 10)
+    expect(crypto.currentNotionalUsd + crypto.quantity * 100).toBeLessThanOrEqual(150 + 1e-8)
+
+    const forex = __liveStageTest.admitAccumulationQuantity(
+      livePosition({
+        symbol: "EURUSD",
+        marketType: "forex",
+        lotSize: 10_000,
+        executedQuantity: 0.1,
+        quantity: 0.1,
+      }),
+      10,
+      1.1,
+      { quantityStep: 0.01, quantityPrecision: 2, minQuantity: 0.01, minNotionalUsdt: 0 },
+      2_200,
+    )
+    expect(forex.quantity).toBeCloseTo(0.1, 10)
+    expect(forex.currentNotionalUsd).toBeCloseTo(1_100, 10)
+    expect(forex.currentNotionalUsd + forex.quantity * 11_000).toBeLessThanOrEqual(2_200 + 1e-8)
+  })
+
   test("keeps observing the same timed-out protection write and accepts its late acknowledgement", async () => {
     const placementPromise = new Promise((resolve) => {
       setTimeout(() => resolve({ success: true, orderId: 123456 }), 10)
@@ -136,7 +166,8 @@ describe("executing Live-stage control barriers", () => {
       askPrice: "0.0101",
       lastPrice: "0.01",
     })
-    expect(ticker).toEqual({ bid: 0.0099, ask: 0.0101, last: 0.01 })
+    expect(ticker).toMatchObject({ bid: 0.0099, ask: 0.0101, last: 0.01 })
+    expect(ticker?.marketType).toBe("crypto")
     expect(__liveStageTest.selectVenueTickerPrice(ticker, "long")).toBe(0.0101)
     expect(__liveStageTest.selectVenueTickerPrice(ticker, "short")).toBe(0.0099)
     expect(__liveStageTest.selectVenueTickerPrice({ bid: 0, ask: 0, last: 0.01 }, "long")).toBe(0.01)

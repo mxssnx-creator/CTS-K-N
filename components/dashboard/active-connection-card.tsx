@@ -532,6 +532,8 @@ export function ActiveConnectionCard({
     liveOrdersFailed: number
     liveOrdersRejected: number
     liveFailedToOpen: number
+    liveDispatchPending: number
+    liveDispatchBlocked: number
     liveDispatchAttempted: number
     liveDispatchDeferred: number
     liveDispatchDurationMs: number
@@ -1449,6 +1451,8 @@ export function ActiveConnectionCard({
           liveOrdersFailed:      data?.liveExecution?.ordersFailed     || 0,
           liveOrdersRejected:    data?.liveExecution?.ordersRejected   || 0,
           liveFailedToOpen:      data?.liveExecution?.dispatchOutcome?.failedToOpen || 0,
+          liveDispatchPending:   data?.liveExecution?.dispatchOutcome?.pending || 0,
+          liveDispatchBlocked:   data?.liveExecution?.dispatchOutcome?.blocked || 0,
           liveDispatchAttempted: data?.liveExecution?.dispatchOutcome?.attempted || 0,
           liveDispatchDeferred:  data?.liveExecution?.dispatchDeferredCount || 0,
           liveDispatchDurationMs: data?.liveExecution?.dispatchOutcome?.durationMsMax || 0,
@@ -2273,6 +2277,26 @@ export function ActiveConnectionCard({
         value: failedToOpen,
         title: "Qualified Sets that failed to open in the latest complete per-symbol dispatch snapshot.",
         tone: "text-red-600 dark:text-red-400",
+      })
+    }
+
+    const liveDispatchPending = prehistoricStats?.liveDispatchPending ?? 0
+    const liveDispatchBlocked = prehistoricStats?.liveDispatchBlocked ?? 0
+    if (liveDispatchPending > 0) {
+      tiles.push({
+        label: "Pending fill",
+        value: liveDispatchPending,
+        title: "Entry orders accepted or submitted but not fully filled yet; these are not failures.",
+        tone: "text-amber-700 dark:text-amber-400",
+      })
+    }
+
+    if (liveDispatchBlocked > 0) {
+      tiles.push({
+        label: "Blocked",
+        value: liveDispatchBlocked,
+        title: "Qualified Sets held back because the live execution transport or readiness gate was unavailable; no exchange order was sent.",
+        tone: "text-orange-700 dark:text-orange-400",
       })
     }
 

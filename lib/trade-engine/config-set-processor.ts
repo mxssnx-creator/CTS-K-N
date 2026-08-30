@@ -8,7 +8,7 @@
 
 import { IndicationConfigManager, IndicationResult, IndicationConfig } from "@/lib/indication-config-manager"
 import { StrategyConfigManager, PseudoPosition, StrategyConfig } from "@/lib/strategy-config-manager"
-import { getRedisClient, initRedis, setSettings, getAppSettings } from "@/lib/redis-db"
+import { getRedisClient, initRedis, setSettings, getAppSettings, getConnection } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
@@ -22,6 +22,7 @@ import {
   mapWithConcurrency,
 } from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
+import { normalizeMarketType } from "@/lib/market-types"
 // Diagnostics must never synchronously write to disk during strategy preparation.
 // Kept opt-in so an operator can isolate a slow Historic phase without adding
 // a hot-path allocation or persistent log volume in ordinary production.
@@ -426,7 +427,20 @@ export class ConfigSetProcessor {
     const effectiveEnd = rangeEnd ?? now
     // Default fallback — 8 hours, matches engine-manager DEFAULT_RANGE_HOURS.
     const effectiveStart = rangeStart ?? new Date(now.getTime() - 8 * 60 * 60 * 1000)
-    const intervalMs = timeframeSec * 1000
+    await initRedis()
+    const connection = await getConnection(this.connectionId).catch(() => null)
+    const marketType = normalizeMarketType(
+      connection?.market_type ?? connection?.asset_class,
+      connection?.exchange,
+    )
+    // InstaForex publishes chart history at M1 granularity. The engine's
+    // default 1-second setting remains valid for crypto, but repeating the
+    // same M1 candle across sixty synthetic 1-second buckets would inflate
+    // historic counts and make FX signals look fresher than they are.
+    const processingTimeframeSec = marketType === "forex"
+      ? Math.max(60, Math.floor(Number(timeframeSec) || 1))
+      : Math.max(1, Math.floor(Number(timeframeSec) || 1))
+    const intervalMs = processingTimeframeSec * 1000
     const runtimeConcurrency = getRuntimeConcurrencyProfile(symbols.length)
 
     // Bounded nested budgets. The former defaults (8 symbols × 8 types ×
@@ -508,11 +522,10 @@ export class ConfigSetProcessor {
     console.log(
       `[v0] [ConfigSetProcessor] ▶ prehistoric start | symbols=${symbols.length} canonicalTotal=${canonicalSymbolsTotal} | ` +
       `range=${effectiveStart.toISOString()} → ${effectiveEnd.toISOString()} | ` +
-      `timeframe=${timeframeSec}s | symbolConcurrency=${SYMBOL_CONCURRENCY} | configTypeConcurrency=${CONFIG_TYPE_CONCURRENCY} | ` +
+      `timeframe=${processingTimeframeSec}s | market=${marketType} | symbolConcurrency=${SYMBOL_CONCURRENCY} | configTypeConcurrency=${CONFIG_TYPE_CONCURRENCY} | ` +
       `configConcurrency=${CONFIG_CONCURRENCY} | persistConcurrency=${PERSIST_CONCURRENCY}`
     )
 
-    await initRedis()
     await assertCurrentSelection()
     const client = getRedisClient()
     const progressionScope = buildProgressionScope(this.connectionId, "main")
@@ -789,7 +802,7 @@ export class ConfigSetProcessor {
       await client.hset(prehistoricKey, {
         range_start: effectiveStart.toISOString(),
         range_end: effectiveEnd.toISOString(),
-        timeframe_seconds: String(timeframeSec),
+        timeframe_seconds: String(processingTimeframeSec),
         ...(ownsCurrentSelection ? {
           symbol_selection_epoch: writerSelectionEpoch,
           symbols_total: String(canonicalSymbolsTotal),
@@ -875,7 +888,14 @@ export class ConfigSetProcessor {
         // requested prehistoric interval from canonical chunks so a cold
         // production start keeps the full range without duplicating it in the
         // realtime envelope.
-        if (candles.length < 1 || candles.length < ENGINE_STAGE_HISTORY_CANDLES) {
+        const requiredHistoryCandles = marketType === "forex"
+          ? Math.max(Math.floor(ENGINE_STAGE_HISTORY_CANDLES / 60), 1)
+          : ENGINE_STAGE_HISTORY_CANDLES
+        const requestedRangeCandles = Math.max(
+          requiredHistoryCandles,
+          Math.ceil(Math.max(0, effectiveEnd.getTime() - effectiveStart.getTime()) / intervalMs),
+        )
+        if (candles.length < requestedRangeCandles) {
           const chunkCandles = await getHistoricCandlesForRange(symbol, {
             startMs: effectiveStart.getTime(),
             endMs: effectiveEnd.getTime(),
@@ -1061,7 +1081,7 @@ export class ConfigSetProcessor {
             mirrorProgressHash({
               prehistoric_symbols_processed_count: String(distinctProcessed),
               prehistoric_current_symbol: symbol,
-              prehistoric_timeframe_seconds: String(timeframeSec),
+              prehistoric_timeframe_seconds: String(processingTimeframeSec),
             }),
             client.hset(prehistoricKey, {
               symbols_processed: String(distinctProcessed),
@@ -1373,7 +1393,7 @@ export class ConfigSetProcessor {
       duration,
       intervalsProcessed: totalIntervalsProcessed,
       missingIntervalsLoaded,
-      timeframeSeconds: timeframeSec,
+      timeframeSeconds: processingTimeframeSec,
       rangeStartMs: effectiveStart.getTime(),
       rangeEndMs: effectiveEnd.getTime(),
     }

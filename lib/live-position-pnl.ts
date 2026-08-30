@@ -1,3 +1,11 @@
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  forexNotionalUsd,
+  forexPriceMovePnlUsd,
+  forexQuoteToUsdRate,
+  isForexSymbol,
+} from "@/lib/forex-market"
+
 /**
  * One canonical PnL projection for live-position API, statistics, and
  * dashboards. Exchange-supplied PnL is authoritative (including zero); a
@@ -169,7 +177,19 @@ export function resolvePositionMargin(
 
   const entry = resolveEntryPrice(position)
   const leverage = Math.max(1, firstPositiveNumeric(position.leverage, exchange.leverage) ?? 1)
-  return entry && quantity ? (entry * quantity) / leverage : undefined
+  if (!entry) return undefined
+  if (isForexPosition(position)) {
+    const symbol = position.symbol ?? position.exchangeSymbol ?? exchange.symbol
+    const notionalUsd = forexNotionalUsd(
+      quantity,
+      entry,
+      symbol,
+      resolveForexLotSize(position),
+      resolveForexQuoteToUsdRate(position),
+    )
+    return notionalUsd > 0 ? notionalUsd / leverage : undefined
+  }
+  return (entry * quantity) / leverage
 }
 
 function resolveEntryPrice(position: Record<string, any>): number | undefined {
@@ -179,6 +199,37 @@ function resolveEntryPrice(position: Record<string, any>): number | undefined {
     position.entry_price,
     position.exchangeData?.averageExecutionPrice,
     position.exchangeData?.entryPrice,
+  )
+}
+
+function isForexPosition(position: Record<string, any>): boolean {
+  const exchange = record(position.exchangeData)
+  const marketType = String(
+    position.marketType ?? position.market_type ?? exchange.marketType ?? exchange.market_type ?? "",
+  ).trim().toLowerCase()
+  return marketType === "forex" || marketType === "fx" || isForexSymbol(
+    position.symbol ?? position.exchangeSymbol ?? exchange.symbol,
+  )
+}
+
+function resolveForexLotSize(position: Record<string, any>): number {
+  const exchange = record(position.exchangeData)
+  return firstPositiveNumeric(
+    position.lotSize,
+    position.lot_size,
+    exchange.lotSize,
+    exchange.lot_size,
+    DEFAULT_FOREX_LOT_SIZE,
+  ) ?? DEFAULT_FOREX_LOT_SIZE
+}
+
+function resolveForexQuoteToUsdRate(position: Record<string, any>): number | undefined {
+  const exchange = record(position.exchangeData)
+  return firstPositiveNumeric(
+    position.quoteToUsdRate,
+    position.quote_to_usd_rate,
+    exchange.quoteToUsdRate,
+    exchange.quote_to_usd_rate,
   )
 }
 
@@ -280,7 +331,30 @@ function calculateFallbackPnl(
   const quantity = resolveConfirmedPositionQuantity(position, lifetimeQuantity)
   const entry = resolveEntryPrice(position)
   if (!direction || !quantity || !entry || !currentPrice) return undefined
-  const gross = quantity * (direction === "short" ? entry - currentPrice : currentPrice - entry)
+  let gross: number
+  if (isForexPosition(position)) {
+    const exchange = record(position.exchangeData)
+    const symbol = position.symbol ?? position.exchangeSymbol ?? exchange.symbol
+    const quoteToUsd = forexQuoteToUsdRate(
+      symbol,
+      currentPrice,
+      resolveForexQuoteToUsdRate(position),
+    )
+    // Cross-pair conversion is mandatory for USD reporting. Do not turn a
+    // missing conversion into a false zero-profit result.
+    if (!quoteToUsd) return undefined
+    gross = forexPriceMovePnlUsd(
+      direction,
+      quantity,
+      entry,
+      currentPrice,
+      symbol,
+      resolveForexLotSize(position),
+      quoteToUsd,
+    )
+  } else {
+    gross = quantity * (direction === "short" ? entry - currentPrice : currentPrice - entry)
+  }
   return gross - resolveKnownPositionCosts(position)
 }
 

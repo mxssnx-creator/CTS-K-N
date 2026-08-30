@@ -19,6 +19,7 @@ export const VALID_API_TYPES = [
   "portfolio",
   "swap",
   "standard",
+  "forex",
 ] as const
 
 export type ValidApiType = typeof VALID_API_TYPES[number]
@@ -27,6 +28,33 @@ export interface ExchangeCredentials {
   apiKey: string
   apiSecret: string
   apiPassphrase?: string
+  /** Broker account identifier for Forex account APIs. */
+  accountId?: string
+  /** Trader password used only by the explicitly selected private bridge. */
+  accountPassword?: string
+  /** Broker server/terminal name used by the private bridge. */
+  accountServer?: string
+  /** Separately hosted private MT4/MT5 bridge URL. */
+  bridgeUrl?: string
+  /** Optional bearer token for a non-loopback bridge endpoint. */
+  bridgeToken?: string
+  /** Optional terminal path/instance selector for the bridge. */
+  terminalPath?: string
+  /** Optional venue/API base URL overrides. Do not log with credentials. */
+  apiBaseUrl?: string
+  quotesBaseUrl?: string
+  chartsUrl?: string
+  symbolSuffix?: string
+  executionMode?: string
+  forexExecutionMode?: "read_only" | "mt5_bridge" | string
+  readOnly?: boolean
+  lotSize?: number
+  quantityUnit?: "base_units" | "lots" | "contracts"
+  positionCostPercent?: number
+  spreadBufferPips?: number
+  spreadMultiplier?: number
+  positionsAverage?: number
+  marketType?: "crypto" | "forex"
   isTestnet: boolean
   apiType?: string // API type: spot, perpetual_futures, futures, unified, etc.
   contractType?: string // Contract type: usdt-perpetual, coin-perpetual, spot
@@ -44,6 +72,22 @@ export interface ExchangeBalance {
   total: number
 }
 
+export interface ExchangeTicker {
+  bid: number
+  ask: number
+  last: number
+  digits?: number
+  spreadPrice?: number
+  spreadPips?: number
+  spreadBps?: number
+  spreadPercent?: number
+  positionCostPercent?: number
+  spreadSource?: "exchange_tick" | "broker_tick" | "unknown"
+  change24h?: number
+  timestamp?: number
+  marketType?: "crypto" | "forex"
+}
+
 export interface ExchangePosition {
   symbol: string
   side: "long" | "short"
@@ -58,6 +102,12 @@ export interface ExchangePosition {
   realizedPnl: number
   liquidationPrice: number
   timestamp: number
+  quantityUnit?: "contracts" | "lots" | "base_units"
+  /** Native terminal position ticket, required for exact SL/TP mutation. */
+  positionTicket?: number
+  /** Broker-reported protective levels, when the venue exposes them. */
+  stopLoss?: number
+  takeProfit?: number
 }
 
 export interface ExchangeOrder {
@@ -74,6 +124,8 @@ export interface ExchangeOrder {
   filledPrice: number
   timestamp: number
   updateTime: number
+  quantityUnit?: "contracts" | "lots" | "base_units"
+  contractSize?: number
 }
 
 /**
@@ -114,7 +166,12 @@ export interface ExchangeOrderSettlement {
   netRealizedPnl: number
   /** True when netRealizedPnl also incorporates the apportioned entry fee. */
   netIncludesEntryFee: boolean
-  source: "bingx_fill_history" | "bingx_order_detail" | "bybit_closed_pnl" | "bybit_execution_history"
+  source:
+    | "bingx_fill_history"
+    | "bingx_order_detail"
+    | "bybit_closed_pnl"
+    | "bybit_execution_history"
+    | "instaforex_trade_history"
   settledAt: number
   fills: ExchangeOrderSettlementFill[]
 }
@@ -167,6 +224,11 @@ export interface PlaceOrderOptions {
    * quantity so the venue follows the physical position as its size changes.
    */
   closePosition?: boolean
+  /** Native terminal ticket for exact position-scoped protection/close. */
+  positionTicket?: number
+  /** Optional native terminal SL/TP attached atomically to an entry request. */
+  stopLossPrice?: number
+  takeProfitPrice?: number
 }
 
 export abstract class BaseExchangeConnector {
@@ -458,7 +520,7 @@ export abstract class BaseExchangeConnector {
 
   abstract setPositionMode(hedgeMode: boolean): Promise<{ success: boolean; error?: string }>
 
-  abstract getTicker(symbol: string): Promise<{ bid: number; ask: number; last: number } | null>
+  abstract getTicker(symbol: string): Promise<ExchangeTicker | null>
 
   abstract getOHLCV(symbol: string, timeframe?: string, limit?: number): Promise<Array<{timestamp: number; open: number; high: number; low: number; close: number; volume: number}> | null>
 

@@ -37,6 +37,8 @@ import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import {
   normalizeExchangeQuantityRules,
+  roundQuantityDown,
+  roundQuantityUp,
   resolveExecutableQuantity,
 } from "@/lib/order-quantity"
 import { fetchBingXInstrumentRules } from "@/lib/bingx-instrument-rules"
@@ -51,7 +53,11 @@ import {
   logLiveOrderFinal,
   type LiveOrderTrace,
 } from "@/lib/live-order-logger"
-import { readOrderSettlement, setupLiveOrderMarginAndLeverage } from "@/lib/live-order-service"
+import {
+  readOrderSettlement,
+  resolveLiveOrderExposureCeiling,
+  setupLiveOrderMarginAndLeverage,
+} from "@/lib/live-order-service"
 import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
 import {
   isConnectionMainProcessing,
@@ -131,10 +137,24 @@ import {
   type TrailingProfile,
 } from "@/lib/signal-trailing"
 import {
+  calculateObservedSpread,
+  effectivePositionCostPercent,
   normalizePositionCostPercent,
   stopLossPositionCostRatioToPercent,
   takeProfitPositionCostRatioToPercent,
+  type PositionCostQuote,
 } from "@/lib/position-cost"
+import { normalizeMarketType, type MarketType } from "@/lib/market-types"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  forexNotionalUsd,
+  forexPairCurrencies,
+  forexPriceMovePnlUsd,
+  forexQuoteToUsdRate,
+  getForexInstrumentSpec,
+  isForexSymbol,
+  normalizeForexSymbol,
+} from "@/lib/forex-market"
 import {
   MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   normalizeProtectionPercentages,
@@ -283,6 +303,25 @@ async function loadExchangeQuantityRules(
   }
 
   let rules = normalizeLiveInstrumentRules(stored)
+  const connectorMarketType = (() => {
+    try {
+      return normalizeMarketType(connector?.getEnvironmentInfo?.()?.marketType, connector?.exchange)
+    } catch {
+      return "crypto" as MarketType
+    }
+  })()
+  if (connectorMarketType === "forex" || isForexSymbol(normalizedSymbol)) {
+    const spec = getForexInstrumentSpec(normalizedSymbol)
+    rules = normalizeLiveInstrumentRules({
+      ...stored,
+      quantityStep: firstFinitePositive(stored.quantityStep, stored.quantity_step, spec.minLot) || spec.minLot,
+      quantityPrecision: optionalBoundedInteger(stored.quantityPrecision ?? stored.quantity_precision) ?? 2,
+      minQuantity: firstFinitePositive(stored.minQuantity, stored.min_order_size, spec.minLot) || spec.minLot,
+      pricePrecision: optionalBoundedInteger(stored.pricePrecision ?? stored.price_precision) ?? spec.digits,
+      priceTick: firstFinitePositive(stored.priceTick, stored.price_tick, 10 ** -spec.digits) || 10 ** -spec.digits,
+    })
+    return rules
+  }
   const environment = bingXEnvironmentInfo(connector)
   if (environment && normalizedSymbol) {
     const cacheKey = `${environment.baseUrl}|${normalizedSymbol}`
@@ -384,7 +423,20 @@ const POSITION_CACHE_MAX_SIZE = 50  // Prevent unbounded growth with many connec
 const EXCHANGE_ABSENCE_CONFIRM_MS = 2_000
 const exchangeAbsenceFirstSeenAt = new Map<string, number>()
 
-type VenueTickerSnapshot = { bid: number; ask: number; last: number }
+type VenueTickerSnapshot = {
+  bid: number
+  ask: number
+  last: number
+  marketType?: MarketType
+  digits?: number
+  spreadPrice?: number
+  spreadPips?: number
+  spreadBps?: number
+  spreadPercent?: number
+  spreadSource?: "exchange_tick" | "broker_tick" | "unknown"
+  timestamp?: number
+  positionCostPercent?: number
+}
 type VenueTickerCacheEntry = {
   expiresAt: number
   ticker?: VenueTickerSnapshot
@@ -406,13 +458,48 @@ function finitePositive(value: unknown): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
-function normalizeVenueTicker(value: any): VenueTickerSnapshot | null {
+function finiteOptional(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function normalizeVenueTicker(value: any, symbol?: string): VenueTickerSnapshot | null {
   if (!value || typeof value !== "object") return null
   const bid = finitePositive(value.bid ?? value.bidPrice ?? value.bestBid)
   const ask = finitePositive(value.ask ?? value.askPrice ?? value.bestAsk)
   const last = finitePositive(value.last ?? value.lastPrice ?? value.price ?? value.close)
   if (!(bid > 0 || ask > 0 || last > 0)) return null
-  return { bid, ask, last }
+  const normalizedSymbol = isForexSymbol(symbol || value.symbol)
+    ? normalizeForexSymbol(symbol || value.symbol)
+    : String(symbol || value.symbol || "").trim().toUpperCase()
+  const marketType = normalizeMarketType(
+    value.marketType ?? value.market_type,
+    value.exchange || (isForexSymbol(normalizedSymbol) ? "instaforex" : undefined),
+  )
+  const quote: PositionCostQuote = {
+    bid,
+    ask,
+    last,
+    digits: finitePositive(value.digits ?? value.pricePrecision),
+    timestamp: finitePositive(value.timestamp ?? value.time),
+    marketType,
+  }
+  const observed = calculateObservedSpread(quote, normalizedSymbol)
+  return {
+    bid,
+    ask,
+    last,
+    marketType,
+    digits: quote.digits || undefined,
+    spreadPrice: observed?.spreadPrice ?? (finitePositive(value.spreadPrice ?? value.spread_price) || undefined),
+    spreadPips: observed?.spreadPips ?? (finitePositive(value.spreadPips ?? value.spread_pips) || undefined),
+    spreadBps: observed?.spreadBps ?? (finitePositive(value.spreadBps ?? value.spread_bps) || undefined),
+    spreadPercent: observed ? observed.spreadBps / 100 : (finitePositive(value.spreadPercent ?? value.spread_percent) || undefined),
+    spreadSource: value.spreadSource === "broker_tick" || value.spreadSource === "exchange_tick" ? value.spreadSource : marketType === "forex" ? "broker_tick" : "unknown",
+    timestamp: observed?.timestamp || quote.timestamp || undefined,
+    positionCostPercent: finitePositive(value.positionCostPercent ?? value.position_cost_percent) || undefined,
+  }
 }
 
 function selectVenueTickerPrice(
@@ -431,14 +518,23 @@ async function resolveAuthoritativeLiveReferencePrice(
   direction: "long" | "short",
   connector: any,
 ): Promise<number> {
-  if (!connector || typeof connector.getTicker !== "function") return 0
+  const ticker = await resolveAuthoritativeLiveTicker(connectionId, symbol, connector)
+  return selectVenueTickerPrice(ticker, direction)
+}
+
+async function resolveAuthoritativeLiveTicker(
+  connectionId: string,
+  symbol: string,
+  connector: any,
+): Promise<VenueTickerSnapshot | null> {
+  if (!connector || typeof connector.getTicker !== "function") return null
   const normalizedSymbol = String(symbol || "").trim().toUpperCase()
-  if (!normalizedSymbol) return 0
+  if (!normalizedSymbol) return null
   const key = `${connectionId}:${normalizedSymbol}`
   const now = Date.now()
   const cached = liveTickerCache.get(key)
   if (cached?.ticker && cached.expiresAt > now) {
-    return selectVenueTickerPrice(cached.ticker, direction)
+    return cached.ticker
   }
 
   let pending = cached?.pending
@@ -448,7 +544,7 @@ async function resolveAuthoritativeLiveReferencePrice(
       LIVE_TICKER_DEADLINE_MS,
       `getTicker(${normalizedSymbol})`,
     )
-      .then(normalizeVenueTicker)
+      .then((value) => normalizeVenueTicker(value, normalizedSymbol))
       .catch(() => null)
     liveTickerCache.set(key, { expiresAt: 0, pending })
     if (liveTickerCache.size > LIVE_TICKER_CACHE_MAX_SIZE) {
@@ -469,7 +565,62 @@ async function resolveAuthoritativeLiveReferencePrice(
       liveTickerCache.delete(key)
     }
   }
-  return selectVenueTickerPrice(ticker, direction)
+  return ticker
+}
+
+/** Read the latest persisted broker/exchange tick for simulation and recovery. */
+async function resolveCachedVenueTicker(symbol: string): Promise<VenueTickerSnapshot | null> {
+  const normalizedSymbol = isForexSymbol(symbol) ? normalizeForexSymbol(symbol) : String(symbol || "").trim().toUpperCase()
+  if (!normalizedSymbol) return null
+  try {
+    const { getMarketData, getRedisClient } = await import("@/lib/redis-db")
+    const data = await getMarketData(normalizedSymbol, "1s")
+    const fromEnvelope = normalizeVenueTicker(data?.ticker, normalizedSymbol)
+    if (fromEnvelope) return fromEnvelope
+    const client = getRedisClient()
+    const flatHash = await client.hgetall("market_data:" + normalizedSymbol).catch(() => ({} as Record<string, string>))
+    return normalizeVenueTicker(
+      {
+        ...flatHash,
+        marketType: flatHash.market_type,
+        spreadPrice: flatHash.spread_price,
+        spreadPips: flatHash.spread_pips,
+        spreadBps: flatHash.spread_bps,
+        timestamp: flatHash.timestamp,
+      },
+      normalizedSymbol,
+    )
+  } catch {
+    return null
+  }
+}
+
+type ForexUsdConversion = { rate: number; source: "direct_quote" | "inverse_quote" }
+
+/**
+ * Resolve the quote-currency → USD leg required for a cross Forex pair.
+ * Direct and inverse legs are both accepted, but the rate is never invented.
+ */
+async function resolveForexUsdConversion(
+  connectionId: string,
+  symbol: string,
+  connector?: any,
+  allowCached = false,
+): Promise<ForexUsdConversion | null> {
+  const pair = forexPairCurrencies(symbol)
+  if (!pair || pair.quote === "USD" || pair.base === "USD") return null
+  const directSymbol = pair.quote + "USD"
+  const inverseSymbol = "USD" + pair.quote
+  const read = async (candidate: string): Promise<VenueTickerSnapshot | null> => {
+    const live = connector ? await resolveAuthoritativeLiveTicker(connectionId, candidate, connector) : null
+    return live || (allowCached ? await resolveCachedVenueTicker(candidate) : null)
+  }
+  const direct = await read(directSymbol)
+  const directMid = direct ? (finitePositive(direct.bid) + finitePositive(direct.ask)) / 2 || finitePositive(direct.last) : 0
+  if (directMid > 0) return { rate: directMid, source: "direct_quote" }
+  const inverse = await read(inverseSymbol)
+  const inverseMid = inverse ? (finitePositive(inverse.bid) + finitePositive(inverse.ask)) / 2 || finitePositive(inverse.last) : 0
+  return inverseMid > 0 ? { rate: 1 / inverseMid, source: "inverse_quote" } : null
 }
 
 function recordExchangeAbsence(position: Pick<LivePosition, "connectionId" | "id">): boolean {
@@ -733,6 +884,25 @@ interface LivePosition {
   side?: "long" | "short"
   direction?: "long" | "short"
   entryPrice: number
+  /** Explicit asset-class/unit metadata carried through Redis and reporting. */
+  marketType?: MarketType
+  volumeKind?: "base" | "lots"
+  lotSize?: number
+  /** Quote-currency → USD rate used for cross-pair notional/PnL. */
+  quoteToUsdRate?: number
+  /** Native broker position ticket required for exact Forex protection. */
+  positionTicket?: number
+  /** Hard live/VST notional ceiling returned by VolumeCalculator. */
+  maxExecutionNotionalUsd?: number
+  liveMultiplierCapped?: boolean
+  quoteBid?: number
+  quoteAsk?: number
+  spreadPrice?: number
+  spreadPips?: number
+  spreadBps?: number
+  spreadPercent?: number
+  spreadSource?: "exchange_tick" | "broker_tick" | "unknown"
+  quoteTimestamp?: number
   executedQuantity: number
   remainingQuantity: number
   averageExecutionPrice: number
@@ -1099,6 +1269,69 @@ interface LivePosition {
   progression?: { step: string; timestamp: number; success: boolean; details: string }[]
 }
 
+function positionUnitMultiplier(position: Pick<LivePosition, "marketType" | "volumeKind" | "lotSize" | "symbol">): number {
+  return position.marketType === "forex" || position.volumeKind === "lots" || isForexSymbol(position.symbol)
+    ? Math.max(1, Number(position.lotSize) || DEFAULT_FOREX_LOT_SIZE)
+    : 1
+}
+
+function positionNotionalUsd(
+  position: Pick<LivePosition, "marketType" | "volumeKind" | "lotSize" | "symbol" | "quoteToUsdRate">,
+  quantity: number,
+  price: number,
+): number {
+  const safeQuantity = Math.max(0, Number(quantity) || 0)
+  const safePrice = Math.max(0, Number(price) || 0)
+  const forex = position.marketType === "forex" || position.volumeKind === "lots" || isForexSymbol(position.symbol)
+  if (forex) {
+    return forexNotionalUsd(
+      safeQuantity,
+      safePrice,
+      position.symbol,
+      positionUnitMultiplier(position),
+      position.quoteToUsdRate,
+    )
+  }
+  return safeQuantity * safePrice
+}
+
+/**
+ * Round an entry/add-on down to the remaining venue exposure budget. This is
+ * deliberately separate from `resolveExecutableQuantity`: that helper may
+ * round UP to satisfy an entry minimum, while a live risk boundary may never
+ * increase the approved notional. A zero result means the venue minimum does
+ * not fit and the caller must not submit an order.
+ */
+function quantityWithinRemainingNotional(
+  position: Pick<LivePosition, "marketType" | "volumeKind" | "lotSize" | "symbol" | "quoteToUsdRate">,
+  requestedQuantity: number,
+  price: number,
+  rules: LiveInstrumentRules,
+  remainingNotionalUsd: number,
+): { quantity: number; notionalUsd: number } {
+  const requested = Number(requestedQuantity)
+  const remaining = Number(remainingNotionalUsd)
+  const unitNotional = positionNotionalUsd(position, 1, price)
+  if (!(requested > 0) || !(remaining > 0) || !(unitNotional > 0)) {
+    return { quantity: 0, notionalUsd: 0 }
+  }
+  const maximum = roundQuantityDown(remaining / unitNotional, rules)
+  if (!(maximum > 0) || maximum + 1e-12 < rules.minQuantity) {
+    return { quantity: 0, notionalUsd: 0 }
+  }
+  const quantity = roundQuantityDown(Math.min(requested, maximum), rules)
+  const notionalUsd = positionNotionalUsd(position, quantity, price)
+  if (
+    !(quantity > 0)
+    || quantity + 1e-12 < rules.minQuantity
+    || !(notionalUsd > 0)
+    || notionalUsd > remaining + 1e-8
+  ) {
+    return { quantity: 0, notionalUsd: 0 }
+  }
+  return { quantity, notionalUsd }
+}
+
 export function normalizeLiveTradeDirection(...values: unknown[]): "long" | "short" | null {
   for (const value of values) {
     const normalized = String(value ?? "").trim().toLowerCase()
@@ -1458,7 +1691,11 @@ function applyReductionObservation(
   position.executedQuantity = result.nextQuantity
   position.quantity = result.nextQuantity
   position.remainingQuantity = 0
-  position.volumeUsd = result.nextQuantity * Number(position.averageExecutionPrice || position.entryPrice || 0)
+  position.volumeUsd = positionNotionalUsd(
+    position,
+    result.nextQuantity,
+    Number(position.averageExecutionPrice || position.entryPrice || 0),
+  )
 
   const settlement = input.settlement && String(input.settlement.orderId || "") === String(input.orderId || input.settlement.orderId || "")
     ? input.settlement
@@ -1501,11 +1738,21 @@ function applyReductionObservation(
       ? "exchange_settlement"
       : "exchange_fills_incomplete_fees"
   } else if (executionPrice > 0 && entryPrice > 0) {
-    const realizedDelta = result.deltaApplied * (
-      position.direction === "short"
-        ? entryPrice - executionPrice
-        : executionPrice - entryPrice
-    )
+    const realizedDelta = position.marketType === "forex" || position.volumeKind === "lots"
+      ? forexPriceMovePnlUsd(
+          position.direction === "short" ? "short" : "long",
+          result.deltaApplied,
+          entryPrice,
+          executionPrice,
+          position.symbol,
+          positionUnitMultiplier(position),
+          position.quoteToUsdRate,
+        )
+      : result.deltaApplied * (
+          position.direction === "short"
+            ? entryPrice - executionPrice
+            : executionPrice - entryPrice
+        )
     position.realizedPnL = Number((Number(position.realizedPnL || 0) + realizedDelta).toFixed(8))
     position.realizedPnlGross = Number((Number(position.realizedPnlGross || 0) + realizedDelta).toFixed(8))
     position.realizedPnlComplete = isSimulation ? previouslyComplete : false
@@ -1958,6 +2205,13 @@ function parseRedisFiniteNumber(raw: unknown): number | undefined {
 function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
   const position = {
     ...hash,
+    marketType: normalizeMarketType(
+      hash.marketType ?? hash.market_type,
+      hash.exchange || (isForexSymbol(hash.symbol) ? "instaforex" : undefined),
+    ),
+    volumeKind: String(hash.volumeKind ?? hash.volume_kind).trim().toLowerCase() === "lots"
+      ? "lots"
+      : "base",
     entryPrice: Number(hash.entryPrice || hash.entry_price || 0),
     executedQuantity: Number(hash.executedQuantity || 0),
     remainingQuantity: Number(hash.remainingQuantity || 0),
@@ -2114,6 +2368,15 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "realizedPnL",
     "realized_pnl",
     "positionCostPct",
+    "lotSize",
+    "quoteToUsdRate",
+    "quoteBid",
+    "quoteAsk",
+    "spreadPrice",
+    "spreadPips",
+    "spreadBps",
+    "spreadPercent",
+    "quoteTimestamp",
     "specialBaseQuantity",
     "specialExpiresAt",
     "timestamp",
@@ -2882,7 +3145,9 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
         Number(position.executedQuantity || 0),
         Number(position.quantity || 0),
       )
-      const notional = entryPrice > 0 && totalQuantity > 0 ? entryPrice * totalQuantity : 0
+      const notional = entryPrice > 0 && totalQuantity > 0
+        ? positionNotionalUsd(position, totalQuantity, entryPrice)
+        : 0
       const realizedPnl = Number.isFinite(Number(position.realizedPnL))
         ? Number(position.realizedPnL)
         : 0
@@ -3490,7 +3755,13 @@ async function fetchCurrentPrice(symbol: string, connId?: string): Promise<numbe
     // This key is available in the sandbox even when the candle-series key is absent.
     const client = getRedisClient()
     if (client) {
-      const closeRaw = await client.hget(`market_data:${symbol}`, "close").catch(() => null)
+      const flatHash = await client.hgetall("market_data:" + symbol).catch(() => ({} as Record<string, string>))
+      const cachedTicker = normalizeVenueTicker(flatHash, symbol)
+      const tickerPrice = cachedTicker
+        ? (finitePositive(cachedTicker.bid) + finitePositive(cachedTicker.ask)) / 2 || finitePositive(cachedTicker.last)
+        : 0
+      if (tickerPrice > 0) return tickerPrice
+      const closeRaw = flatHash?.close
       const price = parseFloat(String(closeRaw ?? 0)) || 0
       if (price > 0) return price
     }
@@ -3502,6 +3773,9 @@ async function fetchCurrentPrice(symbol: string, connId?: string): Promise<numbe
 interface AccumulationPlan {
   addQty: number
   variant: "block" | "dca" | "default" | "special"
+  /** Static per-position USD ceiling carried into every later add-on. */
+  maxExecutionNotionalUsd?: number
+  liveMultiplierCapped?: boolean
   specialPositionPlan?: SpecialPositionPlan
   specialBaseQuantity?: number
   specialTargetQuantity?: number
@@ -3548,6 +3822,7 @@ async function resolveAccumulationPlan(
   existing: LivePosition,
   real: any,
   price: number,
+  connector?: any,
 ): Promise<AccumulationPlan | null> {
   if (String(real?.indicationType || "").trim().toLowerCase() === "special") {
     const direction = resolveLivePositionDirection(existing)
@@ -3572,6 +3847,9 @@ async function resolveAccumulationPlan(
     return {
       addQty: Math.max(0, specialTargetQuantity - currentQuantity),
       variant: "special",
+      maxExecutionNotionalUsd: Number(existing.maxExecutionNotionalUsd) > 0
+        ? Number(existing.maxExecutionNotionalUsd)
+        : undefined,
       specialPositionPlan,
       specialBaseQuantity,
       specialTargetQuantity,
@@ -3612,6 +3890,9 @@ async function resolveAccumulationPlan(
     return {
       addQty,
       variant: "block",
+      maxExecutionNotionalUsd: Number(existing.maxExecutionNotionalUsd) > 0
+        ? Number(existing.maxExecutionNotionalUsd)
+        : undefined,
       blockCount,
       blockBaseQuantity,
       blockConfirmedAddQuantity,
@@ -3659,6 +3940,9 @@ async function resolveAccumulationPlan(
     return {
       addQty,
       variant: "dca",
+      maxExecutionNotionalUsd: Number(existing.maxExecutionNotionalUsd) > 0
+        ? Number(existing.maxExecutionNotionalUsd)
+        : undefined,
       dcaStep: next.step,
       dcaVolumeMultiplier: next.volumeMultiplier,
       dcaTriggerDistancePct: next.triggerDistancePct,
@@ -3675,16 +3959,151 @@ async function resolveAccumulationPlan(
       sizeMultiplier: real?.sizeMultiplier ?? existing.sizeMultiplier,
       allowUnboundedVariantMultiplier: Boolean(real?.combinedPosCounts || existing.combinedPosCounts),
       indicationType: real?.indicationType ?? existing.indicationType,
+      marketType: existing.marketType,
+      lotSize: existing.lotSize,
+      quoteToUsdRate: existing.quoteToUsdRate || (
+        existing.marketType === "forex"
+          ? (await resolveForexUsdConversion(
+              connId,
+              String(real?.symbol || existing.symbol || ""),
+              connector,
+              existing.executionMode === "simulation",
+            ))?.rate
+          : undefined
+      ),
     },
   ).catch(() => null)
   let addQty = Number(volumeResult?.finalVolume || volumeResult?.volume || 0)
-  if (!Number.isFinite(addQty) || addQty <= 0) addQty = price > 0 ? 5 / price : 0
+  if (!Number.isFinite(addQty) || addQty <= 0) {
+    if (existing.marketType === "forex" || volumeResult?.conversionAvailable === false) return null
+    addQty = price > 0 ? 5 / price : 0
+  }
   if (real?.combinedPosCounts) {
     const delta = resolveCombinedPosCountDelta(Number(existing.executedQuantity || 0), addQty)
     if (delta.action !== "increase") return null
     addQty = delta.quantity
   }
-  return Number.isFinite(addQty) && addQty > 0 ? { addQty, variant: "default" } : null
+  return Number.isFinite(addQty) && addQty > 0
+    ? {
+        addQty,
+        variant: "default",
+        maxExecutionNotionalUsd: Number(volumeResult?.maxExecutionNotionalUsd) > 0
+          ? Number(volumeResult?.maxExecutionNotionalUsd)
+          : undefined,
+        liveMultiplierCapped: volumeResult?.liveMultiplierCapped === true,
+      }
+    : null
+}
+
+type AccumulationQuantityAdmission = {
+  quantity: number
+  requestedQuantity: number
+  currentNotionalUsd: number
+  maxNotionalUsd: number
+  capped: boolean
+  reason?: string
+}
+
+/**
+ * Apply the same PositionCost ceiling to every physical add-on, not only to
+ * the first entry.  Block/DCA/combined targets are strategy ratios and can be
+ * much larger than one exchange position; the exchange boundary must still
+ * admit only the remaining notional budget.  This helper deliberately rounds
+ * down after venue normalization so a minimum/step rule can never enlarge the
+ * approved ceiling.
+ */
+function admitAccumulationQuantity(
+  position: LivePosition,
+  requestedQuantity: number,
+  price: number,
+  rules: LiveInstrumentRules,
+  maxNotionalUsd: number,
+): AccumulationQuantityAdmission {
+  const requested = Number.isFinite(Number(requestedQuantity))
+    ? Math.max(0, Number(requestedQuantity))
+    : 0
+  const currentNotionalUsd = positionNotionalUsd(
+    position,
+    Number(position.executedQuantity || 0),
+    price,
+  )
+  const ceiling = Number.isFinite(maxNotionalUsd) && maxNotionalUsd > 0
+    ? maxNotionalUsd
+    : 0
+  const unitNotionalUsd = positionNotionalUsd(position, 1, price)
+  if (!(ceiling > 0) || !(unitNotionalUsd > 0)) {
+    return {
+      quantity: 0,
+      requestedQuantity: requested,
+      currentNotionalUsd,
+      maxNotionalUsd: ceiling,
+      capped: true,
+      reason: "live/VST PositionCost exposure ceiling is unavailable",
+    }
+  }
+  if (currentNotionalUsd >= ceiling - 1e-8) {
+    return {
+      quantity: 0,
+      requestedQuantity: requested,
+      currentNotionalUsd,
+      maxNotionalUsd: ceiling,
+      capped: true,
+      reason: `live/VST PositionCost exposure is already at ${ceiling.toFixed(2)} USD`,
+    }
+  }
+
+  const remainingNotionalUsd = ceiling - currentNotionalUsd
+  const maximumQuantity = roundQuantityDown(remainingNotionalUsd / unitNotionalUsd, rules)
+  if (!(maximumQuantity > 0) || maximumQuantity < rules.minQuantity - 1e-12) {
+    return {
+      quantity: 0,
+      requestedQuantity: requested,
+      currentNotionalUsd,
+      maxNotionalUsd: ceiling,
+      capped: true,
+      reason: `remaining PositionCost budget ${remainingNotionalUsd.toFixed(2)} USD is below the executable minimum`,
+    }
+  }
+
+  const cappedRequested = Math.min(requested, maximumQuantity)
+  let quantity = resolveExecutableQuantity(
+    cappedRequested,
+    price,
+    rules,
+    { universalMinNotionalUsdt: 0 },
+  ).quantity
+  // resolveExecutableQuantity intentionally rounds up to a venue minimum. At
+  // this safety boundary, round back down if that upward normalization would
+  // cross the remaining budget.
+  if (!(quantity > 0) || quantity > maximumQuantity + 1e-12 ||
+      positionNotionalUsd(position, Number(position.executedQuantity || 0) + quantity, price) > ceiling + 1e-8) {
+    quantity = roundQuantityDown(cappedRequested, rules)
+  }
+  const totalNotionalUsd = positionNotionalUsd(
+    position,
+    Number(position.executedQuantity || 0) + Math.max(0, quantity),
+    price,
+  )
+  if (!(quantity > 0) || quantity < rules.minQuantity - 1e-12 || totalNotionalUsd > ceiling + 1e-8) {
+    return {
+      quantity: 0,
+      requestedQuantity: requested,
+      currentNotionalUsd,
+      maxNotionalUsd: ceiling,
+      capped: true,
+      reason: `requested accumulation cannot fit within the ${ceiling.toFixed(2)} USD PositionCost ceiling after venue rounding`,
+    }
+  }
+  return {
+    quantity,
+    requestedQuantity: requested,
+    currentNotionalUsd,
+    maxNotionalUsd: ceiling,
+    capped: quantity + 1e-12 < requested,
+    reason: quantity + 1e-12 < requested
+      ? `accumulation capped at ${totalNotionalUsd.toFixed(2)} USD total (${ceiling.toFixed(2)} USD PositionCost ceiling)`
+      : undefined,
+  }
 }
 
 function markSatisfiedBlockTarget(
@@ -3933,7 +4352,7 @@ async function accumulateIntoSimulatedPosition(
       draft.quantity = newExec
       draft.remainingQuantity = 0
       draft.averageExecutionPrice = newExec > 0 ? ((prevAvg * prevExec) + (price * filledQty)) / newExec : prevAvg
-      draft.volumeUsd = newExec * draft.averageExecutionPrice
+      draft.volumeUsd = positionNotionalUsd(draft, newExec, draft.averageExecutionPrice)
       draft.initialExecutedQuantity ??= prevExec
       draft.totalExecutedQuantity = Math.max(
         Number(draft.totalExecutedQuantity || 0),
@@ -4257,6 +4676,58 @@ async function accumulateIntoLivePosition(
     price = authoritativeAdjustmentPrice
     repairLiveEntryPriceDomain(existing, authoritativeAdjustmentPrice)
 
+    // Before calculating an add-on, reconcile the physical quantity from the
+    // venue. A stale local fill ledger must never make the remaining budget
+    // look larger than it really is. If the venue cannot provide an
+    // authoritative snapshot, fail closed and keep the existing protected
+    // quantity unchanged.
+    const authoritativeBeforeAccumulation = await fetchAuthoritativeOpenQuantity(
+      connector,
+      existing.symbol,
+      storedDirection,
+    )
+    if (!authoritativeBeforeAccumulation.ok) {
+      pushStep(
+        existing,
+        "accumulate_quantity_snapshot",
+        false,
+        "authoritative venue quantity unavailable — no exposure increase submitted",
+      )
+      existing.statusReason = "Accumulation halted: authoritative venue quantity unavailable"
+      await savePosition(existing)
+      return existing
+    }
+    const authoritativeEntryPrice = Number(
+      authoritativeBeforeAccumulation.position?.entryPrice ??
+      authoritativeBeforeAccumulation.position?.avgPrice ??
+      authoritativeBeforeAccumulation.position?.averagePrice ??
+      existing.averageExecutionPrice ??
+      existing.entryPrice ??
+      price,
+    ) || price
+    const authoritativeTicket = Number(
+      authoritativeBeforeAccumulation.position?.positionTicket ??
+      authoritativeBeforeAccumulation.position?.ticket ??
+      authoritativeBeforeAccumulation.position?.exchangePositionId,
+    )
+    if (Number.isInteger(authoritativeTicket) && authoritativeTicket > 0) {
+      existing.positionTicket = authoritativeTicket
+    }
+    const quantityBeforeReconcile = Number(existing.executedQuantity || 0)
+    await reconcileAuthoritativeExchangeQuantity(
+      existing,
+      authoritativeBeforeAccumulation.quantity,
+      authoritativeEntryPrice,
+    )
+    if (!isActiveLiveStatus(existing) || Number(existing.executedQuantity || 0) <= 0) {
+      pushStep(existing, "accumulate_skip", false, "venue position is flat or no longer active")
+      await savePosition(existing)
+      return existing
+    }
+    if (Math.abs(quantityBeforeReconcile - Number(existing.executedQuantity || 0)) > 1e-12) {
+      if (!await verifyProtection("pre_accumulation_quantity_reconcile")) return existing
+    }
+
     // Admission checks run only after a durable pending order was recovered
     // or conclusively cleared. Every exact Set membership remains eligible;
     // exchange/API rate limits are enforced by the dispatch queue and position
@@ -4279,7 +4750,7 @@ async function accumulateIntoLivePosition(
       return existing
     }
 
-    let plan = await resolveAccumulationPlan(connId, existing, real, price)
+    let plan = await resolveAccumulationPlan(connId, existing, real, price, connector)
     if (!plan) {
       pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger/quantity not ready`)
       await savePosition(existing)
@@ -4322,27 +4793,146 @@ async function accumulateIntoLivePosition(
       await savePosition(existing)
       return existing
     }
+    let remainingExposureNotionalUsd: number | undefined
 
     // Accumulation targets are ratio deltas, but the venue still owns the
-    // quantity grid. Round an entry/add-on up to the persisted pair step and
-    // minimum without applying the universal entry notional a second time.
-    // The resulting quantity is written into pending state and therefore is
-    // also the quantity used for the actual order and later reconciliation.
+    // quantity grid. First apply the persisted PositionCost ceiling to the
+    // *total* physical position, then normalize the surviving delta. This is
+    // the guard that prevents a high Block/DCA/combined target from becoming
+    // a high-volume exchange order.
+    const accumulationRules = await loadExchangeQuantityRules(
+      String(real?.symbol || existing.symbol || ""),
+      connector,
+    )
+    let maxExecutionNotionalUsd = Number(
+      plan.maxExecutionNotionalUsd ?? existing.maxExecutionNotionalUsd ?? 0,
+    )
+    if (!(maxExecutionNotionalUsd > 0)) {
+      const recoveryVolumeResult = await VolumeCalculator.calculateVolumeForConnection(
+        connId,
+        String(real?.symbol || existing.symbol || ""),
+        price,
+        {
+          tradeMode: volumeTradeModeForIntent(existing.executionIntent || "main"),
+          sizeMultiplier: 1,
+          indicationType: existing.indicationType,
+          marketType: existing.marketType,
+          lotSize: existing.lotSize,
+          quoteToUsdRate: existing.quoteToUsdRate,
+        },
+      ).catch(() => null)
+      maxExecutionNotionalUsd = Number(recoveryVolumeResult?.maxExecutionNotionalUsd || 0)
+      if (maxExecutionNotionalUsd > 0) {
+        existing.maxExecutionNotionalUsd = maxExecutionNotionalUsd
+      }
+    }
+    if (!(maxExecutionNotionalUsd > 0)) {
+      // Legacy rows and lightweight connector adapters may predate the
+      // persisted ceiling field. The already-confirmed physical exposure is
+      // useful for reconciliation, but it is not an authorization to create
+      // more exposure: multiplying it here would let an old/high-volume row
+      // manufacture a new risk budget when the authoritative PositionCost
+      // calculation is unavailable. Keep the existing position protected and
+      // fail closed until the canonical ceiling can be restored.
+      const observedNotional = positionNotionalUsd(
+        existing,
+        Number(existing.executedQuantity || 0),
+        price,
+      )
+      pushStep(
+        existing,
+        "accumulation_volume_cap_unavailable",
+        false,
+        observedNotional > 0
+          ? `canonical PositionCost ceiling unavailable; existing ${observedNotional.toFixed(2)} USD exposure remains protected and no add-on is sent`
+          : "canonical PositionCost ceiling unavailable; no add-on is sent",
+      )
+      existing.liveMultiplierCapped = true
+      existing.statusReason = "Accumulation halted: canonical PositionCost exposure ceiling unavailable"
+      await savePosition(existing)
+      return existing
+    }
+    const accumulationAdmission = admitAccumulationQuantity(
+      existing,
+      plan.addQty,
+      price,
+      accumulationRules,
+      maxExecutionNotionalUsd,
+    )
+    if (!(accumulationAdmission.quantity > 0)) {
+      pushStep(
+        existing,
+        "accumulation_volume_cap",
+        false,
+        accumulationAdmission.reason || "no executable quantity remains within the PositionCost ceiling",
+      )
+      existing.statusReason = accumulationAdmission.reason || "Accumulation halted by PositionCost exposure ceiling"
+      existing.liveMultiplierCapped = true
+      await savePosition(existing)
+      return existing
+    }
+    if (accumulationAdmission.capped) {
+      plan = {
+        ...plan,
+        addQty: accumulationAdmission.quantity,
+        maxExecutionNotionalUsd: accumulationAdmission.maxNotionalUsd,
+        liveMultiplierCapped: true,
+      }
+      existing.liveMultiplierCapped = true
+      pushStep(existing, "accumulation_volume_cap", true, accumulationAdmission.reason || "add-on reduced to PositionCost ceiling")
+    }
+
     const accumulationExecutable = resolveExecutableQuantity(
       plan.addQty,
       price,
-      await loadExchangeQuantityRules(String(real?.symbol || existing.symbol || ""), connector),
+      accumulationRules,
       { universalMinNotionalUsdt: 0 },
     )
-    if (!(accumulationExecutable.quantity > 0)) {
+    const boundedExecutable = remainingExposureNotionalUsd !== undefined
+      ? quantityWithinRemainingNotional(
+          existing,
+          accumulationExecutable.quantity,
+          price,
+          accumulationRules,
+          remainingExposureNotionalUsd,
+        )
+      : { quantity: accumulationExecutable.quantity, notionalUsd: 0 }
+    if (remainingExposureNotionalUsd !== undefined) {
+      if (!(boundedExecutable.quantity > 0)) {
+        pushStep(
+          existing,
+          "accumulation_venue_exposure_cap",
+          false,
+          "venue quantity normalization would exceed the remaining PositionCost budget",
+        )
+        existing.statusReason = "Accumulation halted: venue quantity normalization exceeded the PositionCost ceiling"
+        existing.liveMultiplierCapped = true
+        await rearmProtectionAfterQuantityMutation(connector, existing, "accumulation_venue_exposure_rounding")
+        await verifyProtection("accumulation_venue_exposure_rounding")
+        return existing
+      }
+    }
+    const executableQuantity = remainingExposureNotionalUsd !== undefined
+      ? boundedExecutable.quantity
+      : accumulationExecutable.quantity
+    const executableTotalNotional = positionNotionalUsd(
+      existing,
+      Number(existing.executedQuantity || 0) + Number(executableQuantity || 0),
+      price,
+    )
+    if (
+      !(executableQuantity > 0) ||
+      (remainingExposureNotionalUsd !== undefined && boundedExecutable.notionalUsd > remainingExposureNotionalUsd + 1e-8) ||
+      executableTotalNotional > maxExecutionNotionalUsd + 1e-8
+    ) {
       pushStep(existing, "accumulate_skip", false, "ratio delta does not produce an executable exchange quantity")
       await savePosition(existing)
       return existing
     }
-    if (accumulationExecutable.adjusted) {
+    if (accumulationExecutable.adjusted || executableQuantity !== accumulationExecutable.quantity) {
       plan = {
         ...plan,
-        addQty: accumulationExecutable.quantity,
+        addQty: executableQuantity,
       }
       pushStep(existing, "accumulation_quantity_normalized", true, `${accumulationExecutable.requestedQuantity} → ${plan.addQty} (${accumulationExecutable.reason || "exchange quantity rules"})`)
     }
@@ -4376,7 +4966,119 @@ async function accumulateIntoLivePosition(
     const symbol = String(real?.symbol || existing.symbol || "")
     const direction = storedDirection
     const exchangeSide: "buy" | "sell" = direction === "long" ? "buy" : "sell"
+
+    // Re-read the venue's physical slot after the control-order barrier. The
+    // earlier quantity reconciliation is a prerequisite, not a reservation:
+    // another worker or a delayed fill may have changed the slot while SL/TP
+    // controls were being settled. Subtract the confirmed venue notional one
+    // more time and round the add-on down; never use the local row quantity as
+    // a proxy for account state.
+    if (process.env.NODE_ENV !== "test") {
+      try {
+        const exposureConnection = { ...(await getConnection(connId).catch(() => ({}))), id: connId }
+        const venueExposure = await resolveLiveOrderExposureCeiling(
+          {
+            connectionId: connId,
+            symbol,
+            side: direction,
+            positionDirection: direction,
+            quantity: plan.addQty,
+            connection: exposureConnection,
+            marketType: existing.marketType,
+            lotSize: existing.lotSize,
+            quoteToUsdRate: existing.quoteToUsdRate,
+            positionCostPercentOverride: existing.positionCostPct,
+            maxExecutionNotionalUsd,
+            source: existing.executionIntent === "preset"
+              ? "preset-trade"
+              : existing.executionIntent === "signal"
+                ? "signal-trade"
+                : "main-trade",
+            liveTradeIntent: existing.executionIntent,
+          } as any,
+          exposureConnection,
+          connector,
+          symbol,
+          price,
+        )
+        remainingExposureNotionalUsd = venueExposure.maxNotionalUsd
+        const bounded = quantityWithinRemainingNotional(
+          existing,
+          plan.addQty,
+          price,
+          accumulationRules,
+          venueExposure.maxNotionalUsd,
+        )
+        if (!(bounded.quantity > 0)) {
+          pushStep(
+            existing,
+            "accumulation_venue_exposure_cap",
+            false,
+            `venue PositionCost budget remaining ${venueExposure.maxNotionalUsd.toFixed(2)} USD is below the executable add-on minimum`,
+          )
+          existing.statusReason = "Accumulation halted: venue PositionCost exposure ceiling reached"
+          existing.liveMultiplierCapped = true
+          await rearmProtectionAfterQuantityMutation(connector, existing, "accumulation_venue_exposure_cap")
+          await verifyProtection("accumulation_venue_exposure_cap")
+          return existing
+        }
+        if (bounded.quantity + 1e-12 < plan.addQty) {
+          plan = {
+            ...plan,
+            addQty: bounded.quantity,
+            maxExecutionNotionalUsd,
+            liveMultiplierCapped: true,
+          }
+          existing.liveMultiplierCapped = true
+          pushStep(
+            existing,
+            "accumulation_venue_exposure_cap",
+            true,
+            `venue-confirmed add-on reduced to ${bounded.quantity} (${bounded.notionalUsd.toFixed(2)} USD remaining budget)`,
+          )
+        }
+      } catch (error) {
+        pushStep(
+          existing,
+          "accumulation_venue_exposure_snapshot",
+          false,
+          error instanceof Error ? error.message : String(error),
+        )
+        existing.statusReason = "Accumulation halted: authoritative venue exposure snapshot unavailable"
+        existing.liveMultiplierCapped = true
+        await rearmProtectionAfterQuantityMutation(connector, existing, "accumulation_venue_exposure_snapshot")
+        await verifyProtection("accumulation_venue_exposure_snapshot")
+        return existing
+      }
+    }
+
     const clientOrderId = makeDurableClientOrderId("acc", existing)
+    const nativeForexProtection = (() => {
+      if (existing.marketType !== "forex" || typeof connector?.getCapabilities !== "function") return {}
+      try {
+        const capabilities = connector.getCapabilities()
+        if (!Array.isArray(capabilities) || !capabilities.includes("native_position_sl_tp")) return {}
+        const desired = computeDesiredProtectionPrices(existing)
+        const sl = normalizeProtectionTriggerPrice(
+          desired.desiredSl,
+          Number(existing.priceTick || 0),
+          direction,
+          "stop_loss",
+        )
+        const tp = normalizeProtectionTriggerPrice(
+          desired.desiredTp,
+          Number(existing.priceTick || 0),
+          direction,
+          "take_profit",
+        )
+        return {
+          ...(sl > 0 ? { stopLossPrice: sl } : {}),
+          ...(tp > 0 ? { takeProfitPrice: tp } : {}),
+        }
+      } catch {
+        return {}
+      }
+    })()
     existing.initialExecutedQuantity ??= existing.executedQuantity
     existing.initialEntryPrice ??= existing.averageExecutionPrice || existing.entryPrice
     if (plan.variant === "block") existing.blockBaseQuantity = plan.blockBaseQuantity
@@ -4445,6 +5147,92 @@ async function accumulateIntoLivePosition(
     await savePosition(existing)
     await persistCriticalLiveState(`accumulation:${existing.id}`)
 
+    // The pending marker and control-order barrier are durable, but neither is
+    // a venue reservation. Re-read the exact physical slot immediately before
+    // the only risk-increasing mutation and round the final add-on down again.
+    // This closes the last direct-connector bypass for Block/DCA/combined
+    // accumulation when an external fill or another worker changes the slot
+    // between admission and submission.
+    if (process.env.NODE_ENV !== "test") {
+      try {
+        const exposureConnection = { ...(await getConnection(connId).catch(() => ({}))), id: connId }
+        const venueExposure = await resolveLiveOrderExposureCeiling(
+          {
+            connectionId: connId,
+            symbol,
+            side: direction,
+            positionDirection: direction,
+            quantity: plan.addQty,
+            connection: exposureConnection,
+            marketType: existing.marketType,
+            lotSize: existing.lotSize,
+            quoteToUsdRate: existing.quoteToUsdRate,
+            positionCostPercentOverride: existing.positionCostPct,
+            maxExecutionNotionalUsd,
+            source: existing.executionIntent === "preset"
+              ? "preset-trade"
+              : existing.executionIntent === "signal"
+                ? "signal-trade"
+                : "main-trade",
+            liveTradeIntent: existing.executionIntent,
+          } as any,
+          exposureConnection,
+          connector,
+          symbol,
+          price,
+        )
+        const finalAdmission = quantityWithinRemainingNotional(
+          existing,
+          plan.addQty,
+          price,
+          accumulationRules,
+          venueExposure.maxNotionalUsd,
+        )
+        if (!(finalAdmission.quantity > 0)) {
+          existing.pendingAccumulation = undefined
+          existing.liveMultiplierCapped = true
+          existing.statusReason = "Accumulation halted: final venue PositionCost recheck left no executable add-on"
+          pushStep(existing, "accumulation_submission_blocked", false, existing.statusReason)
+          await savePosition(existing)
+          await rearmProtectionAfterQuantityMutation(connector, existing, "accumulation_final_exposure_recheck")
+          await verifyProtection("accumulation_final_exposure_recheck")
+          return existing
+        }
+        if (finalAdmission.quantity + 1e-12 < plan.addQty) {
+          plan = {
+            ...plan,
+            addQty: finalAdmission.quantity,
+            maxExecutionNotionalUsd: venueExposure.maxNotionalUsd,
+            liveMultiplierCapped: true,
+          }
+          existing.liveMultiplierCapped = true
+          if (existing.pendingAccumulation) existing.pendingAccumulation.requestedQuantity = finalAdmission.quantity
+          pushStep(
+            existing,
+            "accumulation_submission_cap",
+            true,
+            `final venue-confirmed add-on reduced to ${finalAdmission.quantity} (${finalAdmission.notionalUsd.toFixed(2)} USD remaining budget)`,
+          )
+          await savePosition(existing)
+          await persistCriticalLiveState(`accumulation-final-quantity:${existing.id}`)
+        }
+      } catch (error) {
+        existing.pendingAccumulation = undefined
+        existing.liveMultiplierCapped = true
+        existing.statusReason = "Accumulation halted: final authoritative venue exposure snapshot unavailable"
+        pushStep(
+          existing,
+          "accumulation_submission_snapshot",
+          false,
+          error instanceof Error ? error.message : String(error),
+        )
+        await savePosition(existing)
+        await rearmProtectionAfterQuantityMutation(connector, existing, "accumulation_final_exposure_snapshot")
+        await verifyProtection("accumulation_final_exposure_snapshot")
+        return existing
+      }
+    }
+
     let orderRes: any
     try {
       orderRes = await connector.placeOrder(
@@ -4453,7 +5241,12 @@ async function accumulateIntoLivePosition(
         plan.addQty,
         undefined,
         "market",
-        { positionSide: direction === "long" ? "LONG" : "SHORT", clientOrderId },
+        {
+          positionSide: direction === "long" ? "LONG" : "SHORT",
+          clientOrderId,
+          ...(existing.positionTicket ? { positionTicket: existing.positionTicket } : {}),
+          ...nativeForexProtection,
+        },
       )
     } catch (err) {
       orderRes = { success: false, error: err instanceof Error ? err.message : String(err) }
@@ -4529,7 +5322,7 @@ async function accumulateIntoLivePosition(
       draft.quantity = Math.max(Number(draft.quantity || 0), prevExec) + filledQty
       draft.remainingQuantity = Math.max(0, draft.quantity - newExec)
       draft.averageExecutionPrice = newExec > 0 ? ((prevAvg * prevExec) + (filledPrice * filledQty)) / newExec : prevAvg
-      draft.volumeUsd = newExec * draft.averageExecutionPrice
+      draft.volumeUsd = positionNotionalUsd(draft, newExec, draft.averageExecutionPrice)
       draft.totalExecutedQuantity = Math.max(
         Number(draft.totalExecutedQuantity || 0),
         newExec + Number(draft.closedQuantity || 0),
@@ -4739,10 +5532,61 @@ async function fetchAuthoritativeOpenQuantity(
   symbol: string,
   direction: "long" | "short",
 ): Promise<{ ok: boolean; quantity: number; position: any | null }> {
-  if (!connector || typeof connector.getPosition !== "function") {
+  if (!connector || (typeof connector.getPositions !== "function" && typeof connector.getPosition !== "function")) {
     return { ok: false, quantity: 0, position: null }
   }
   try {
+    if (typeof connector.getPositions === "function") {
+      const snapshot = await withTimeout(
+        connector.getPositions(symbol) as Promise<any>,
+        EXCHANGE_TIMEOUT_GET_ORDER_MS,
+        `getPositions(${symbol} ${direction})`,
+      )
+      const snapshotStatus = typeof connector.getLastPositionsSnapshotStatus === "function"
+        ? connector.getLastPositionsSnapshotStatus()
+        : null
+      if (snapshotStatus && snapshotStatus.ok !== true) {
+        return { ok: false, quantity: 0, position: null }
+      }
+      if (!Array.isArray(snapshot)) return { ok: false, quantity: 0, position: null }
+      const requestedSymbol = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+      const rows = snapshot.filter((row: any) => {
+        const rowSymbol = String(row?.symbol ?? row?.instrument ?? row?.contract ?? "")
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, "")
+        return !rowSymbol || rowSymbol === requestedSymbol
+      })
+      const activeRows = rows.filter((row: any) => extractExchangeOpenQuantity(row) > 0)
+      const symbollessActiveRows = activeRows.filter((row: any) => !String(
+        row?.symbol ?? row?.instrument ?? row?.contract ?? "",
+      ).trim())
+      if (symbollessActiveRows.length > 0 && activeRows.length > 1) {
+        return { ok: false, quantity: 0, position: null }
+      }
+      const matchingRows = activeRows.filter((row: any) => normalizeExchangePositionDirection(
+        row?.direction ?? row?.positionSide ?? row?.position_side,
+        row?.side,
+        row?.positionAmt ?? row?.position_amount ?? row?.positionSizeSigned,
+      ) === direction)
+      if (activeRows.some((row: any) => !normalizeExchangePositionDirection(
+        row?.direction ?? row?.positionSide ?? row?.position_side,
+        row?.side,
+        row?.positionAmt ?? row?.position_amount ?? row?.positionSizeSigned,
+      ))) {
+        return { ok: false, quantity: 0, position: null }
+      }
+      const quantity = matchingRows.reduce((sum: number, row: any) => (
+        sum + extractExchangeOpenQuantity(row)
+      ), 0)
+      return {
+        ok: true,
+        quantity,
+        // A ticket from one row must never be reused when several venue rows
+        // make up the aggregate slot. Callers may use this only when exact.
+        position: matchingRows.length === 1 ? matchingRows[0] : null,
+      }
+    }
+
     const position = await withTimeout(
       connector.getPosition(symbol, direction) as Promise<any>,
       EXCHANGE_TIMEOUT_GET_ORDER_MS,
@@ -5364,6 +6208,8 @@ async function rearmProtectionAfterQuantityMutation(
   if (
     Boolean(position.aggregateProtectionKey)
     || Number(position.aggregateProtectionMemberCount || 0) > 1
+    || position.securityStopRequired === true
+    || Boolean(position.securityStopOrderId)
   ) {
     // Restore this exact logical row immediately from the authoritative
     // post-mutation quantity. The aggregate finalizer then restores the other
@@ -5397,6 +6243,18 @@ async function rearmProtectionAfterQuantityMutation(
       `${position.aggregateProtectionKey || position.symbol} quantity settled; aggregate venue re-arm queued`,
     )
     await savePosition(position)
+    // A quantity mutation must not return with only the logical row controls
+    // restored while the slot-level security stop is still absent or sized to
+    // the pre-mutation quantity.  Run one bounded, authoritative aggregate
+    // pass immediately; the normal sync queue remains as the retry path when
+    // a venue snapshot or order acknowledgement is temporarily unavailable.
+    const slotDirection = resolveLivePositionDirection(position)
+    const slot = slotDirection
+      ? aggregateProtectionSlot(position.symbol, slotDirection)
+      : undefined
+    if (slot && await rearmAggregateProtectionImmediately(position.connectionId, connector, position, slot)) {
+      settleAggregateProtectionFinalizations(position.connectionId, [slot])
+    }
     return
   }
 
@@ -5409,6 +6267,77 @@ async function rearmProtectionAfterQuantityMutation(
     )
   })
   await savePosition(position)
+}
+
+/**
+ * Rebuild one physical slot's complete control-order set after a quantity
+ * mutation.  This is deliberately read-before-write and bounded: if either
+ * authoritative venue snapshot cannot be obtained, it leaves the durable
+ * aggregate-finalization queue intact and returns false so the next sync can
+ * retry without inventing a quantity or order id.
+ */
+async function rearmAggregateProtectionImmediately(
+  connectionId: string,
+  connector: any,
+  position: LivePosition,
+  slot: string,
+): Promise<boolean> {
+  if (!connector || typeof connector.getPositions !== "function") return false
+  try {
+    const [allRows, venueRows] = await Promise.all([
+      getLivePositions(connectionId),
+      withTimeout(
+        connector.getPositions() as Promise<any>,
+        EXCHANGE_TIMEOUT_GET_POSITIONS_MS,
+        "getPositions(quantity-protection-rearm)",
+      ),
+    ])
+    const venueStatus = typeof connector.getLastPositionsSnapshotStatus === "function"
+      ? connector.getLastPositionsSnapshotStatus()
+      : { ok: Array.isArray(venueRows) }
+    if (venueStatus?.ok !== true || !Array.isArray(venueRows)) return false
+
+    const liveOrderIds = await fetchLiveOrderIdSet(connector)
+    if (typeof connector.getOpenOrders === "function" && liveOrderIds === null) return false
+
+    const rowsById = new Map(allRows.map((row) => [row.id, row]))
+    rowsById.set(position.id, position)
+    const rows = [...rowsById.values()].filter((row) => {
+      const direction = resolveLivePositionDirection(row)
+      return direction && aggregateProtectionSlot(row.symbol, direction) === slot
+    })
+    if (rows.length === 0) return false
+
+    await reconcileAggregateProtectionBook(
+      connectionId,
+      connector,
+      rows,
+      venueRows,
+      liveOrderIds,
+    )
+    const refreshed = await getLivePositions(connectionId)
+    const owner = refreshed.find((row) =>
+      aggregateProtectionSlot(row.symbol, resolveLivePositionDirection(row)) === slot
+      && Number(row.executedQuantity || 0) > 0
+      && Boolean(row.securityStopOrderId),
+    )
+    if (owner && owner.id === position.id) {
+      Object.assign(position, owner)
+    } else {
+      const current = refreshed.find((row) => row.id === position.id)
+      if (current) Object.assign(position, current)
+    }
+    return Boolean(owner?.securityStopOrderId)
+  } catch (error) {
+    pushStep(
+      position,
+      "quantity_security_rearm_deferred",
+      false,
+      error instanceof Error ? error.message : String(error),
+    )
+    await savePosition(position).catch(() => undefined)
+    return false
+  }
 }
 
 /**
@@ -5568,7 +6497,11 @@ async function reconcileAuthoritativeExchangeQuantity(
     Number(position.totalExecutedQuantity || 0),
     exchangeQuantity + Number(position.closedQuantity || 0),
   )
-  position.volumeUsd = exchangeQuantity * Number(position.averageExecutionPrice || position.entryPrice || 0)
+  position.volumeUsd = positionNotionalUsd(
+    position,
+    exchangeQuantity,
+    Number(position.averageExecutionPrice || position.entryPrice || 0),
+  )
   position.submissionState = "confirmed"
 
   let pendingAccumulationCompleted = false
@@ -5830,6 +6763,7 @@ function isNonRecoverableExchangeError(payload: unknown): boolean {
   else if (payload instanceof Error) text = payload.message
   else if (typeof payload === "object") {
     const obj = payload as Record<string, unknown>
+    if (String(obj.errorCode ?? obj.code ?? obj.mode ?? "").toUpperCase().includes("LIVE_EXPOSURE")) return true
     text = String(obj.error ?? obj.message ?? "")
   } else {
     text = String(payload)
@@ -5841,7 +6775,8 @@ function isNonRecoverableExchangeError(payload: unknown): boolean {
     lc.includes("insufficient margin") ||
     lc.includes("insufficient balance") ||
     lc.includes("not enough margin") ||
-    lc.includes("not enough balance")
+    lc.includes("not enough balance") ||
+    lc.includes("live_exposure")
   )
 }
 
@@ -6445,6 +7380,21 @@ interface ProtectionOrderPlacementResult {
   armedQuantity: number
 }
 
+async function resolveNativePositionTicket(
+  connector: any,
+  symbol: string,
+  direction: "long" | "short",
+): Promise<number | undefined> {
+  try {
+    if (typeof connector?.getPosition !== "function") return undefined
+    const position = await connector.getPosition(symbol, direction)
+    const ticket = Number(position?.positionTicket ?? position?.ticket ?? position?.exchangePositionId)
+    return Number.isInteger(ticket) && ticket > 0 ? ticket : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function placeProtectionOrder(
   connector: any,
   symbol: string,
@@ -6541,6 +7491,7 @@ async function placeProtectionOrder(
       // the same promise rather than interpreting the deadline as rejection.
       await acquireStopSem()
       try {
+        const resolvedPositionTicket = await resolveNativePositionTicket(connector, symbol, positionDirection)
         const placementPromise = connector.placeStopOrder(
           symbol,
           closeSide,
@@ -6551,6 +7502,7 @@ async function placeProtectionOrder(
             reduceOnly: true,
             hedgeMode: true,
             positionSide: positionDirection === "long" ? "LONG" : "SHORT",
+            ...(resolvedPositionTicket ? { positionTicket: resolvedPositionTicket } : {}),
             ...(clientOrderId ? { clientOrderId } : {}),
           },
         ) as Promise<any>
@@ -9513,7 +10465,16 @@ function exactProtectionVenueRows(
 ): Record<string, any>[] {
   const normalizedSymbol = normalizeProtectionSlotSymbol(symbol)
   return positions.filter((position) => {
-    const rawQuantity = Number(position?.size ?? position?.positionAmt ?? position?.quantity ?? 0)
+    const rawQuantity = Number(
+      position?.size
+      ?? position?.positionAmt
+      ?? position?.quantity
+      ?? position?.contracts
+      ?? position?.positionSize
+      ?? position?.lots
+      ?? position?.volume
+      ?? 0,
+    )
     return Math.abs(rawQuantity) > 0
       && normalizeProtectionSlotSymbol(position?.symbol) === normalizedSymbol
       && normalizeExchangePositionDirection(position?.positionSide, position?.side, rawQuantity) === direction
@@ -9521,7 +10482,16 @@ function exactProtectionVenueRows(
 }
 
 function exactProtectionVenueQuantity(position: Record<string, any>): number {
-  return Math.abs(Number(position?.size ?? position?.positionAmt ?? position?.quantity ?? 0))
+  return Math.abs(Number(
+    position?.size
+    ?? position?.positionAmt
+    ?? position?.quantity
+    ?? position?.contracts
+    ?? position?.positionSize
+    ?? position?.lots
+    ?? position?.volume
+    ?? 0,
+  ))
 }
 
 function buildExactProtectionSlotPlan(
@@ -10581,15 +11551,29 @@ export async function executeLivePosition(
     (initialConnectionSettings as any).positionCost ??
     (initialConnectionSettings as any).exchangePositionCost ??
     (initialConnectionSettings as any).exchange_position_cost ??
+    (initialConnectionSettings as any).position_cost_percent ??
+    (initialConnectionSettings as any).positionCostPercent ??
     initialAppSettings.positionCost ??
     initialAppSettings.exchangePositionCost ??
     initialAppSettings.exchange_position_cost ??
+    initialAppSettings.position_cost_percent ??
+    initialAppSettings.positionCostPercent ??
     0.1,
   )
   const positionCostPct =
     Number.isFinite(configuredPositionCostPct) && configuredPositionCostPct > 0
       ? configuredPositionCostPct
       : 0.1
+  const marketType = normalizeMarketType(
+    (initialConnectionSettings as any).market_type ?? (initialConnectionSettings as any).asset_class,
+    (initialConnectionSettings as any).exchange,
+  )
+  const lotSize = marketType === "forex"
+    ? Math.max(1, Number(
+        (initialConnectionSettings as any).lot_size ??
+        (initialConnectionSettings as any).lotSize,
+      ) || DEFAULT_FOREX_LOT_SIZE)
+    : undefined
   const mainModeEnabled = isConnectionLiveTradeEnabled(initialConnectionSettings)
   const presetModeEnabled = isConnectionPresetTradeEnabled(initialConnectionSettings)
   const isSignalPosition =
@@ -10638,6 +11622,9 @@ export async function executeLivePosition(
     symbol: realPosition.symbol,
     direction: realPosition.direction,
     realPositionId: realPosition.id,
+    marketType,
+    volumeKind: marketType === "forex" ? "lots" : "base",
+    lotSize,
     quantity: realPosition.quantity,
     executedQuantity: 0,
     remainingQuantity: realPosition.quantity,
@@ -11369,11 +12356,46 @@ export async function executeLivePosition(
     // and force-closing on SL/TP cross or max-hold-time expiry.
     if (!isLiveTradeEnabled) {
       if (await abortSuperseded()) return livePosition
+      const simTicker = marketType === "forex"
+        ? await resolveCachedVenueTicker(realPosition.symbol)
+        : null
+      if (simTicker) {
+        livePosition.quoteBid = finitePositive(simTicker.bid) || undefined
+        livePosition.quoteAsk = finitePositive(simTicker.ask) || undefined
+        livePosition.spreadPrice = simTicker.spreadPrice
+        livePosition.spreadPips = simTicker.spreadPips
+        livePosition.spreadBps = simTicker.spreadBps
+        livePosition.spreadPercent = simTicker.spreadPercent
+        livePosition.spreadSource = simTicker.spreadSource
+        livePosition.quoteTimestamp = simTicker.timestamp
+        livePosition.positionCostPct = effectivePositionCostPercent(
+          positionCostPct,
+          simTicker,
+          realPosition.symbol,
+          {
+            marketType,
+            spreadBufferPips: finiteOptional(
+              (initialConnectionSettings as any).spread_buffer_pips ??
+              (initialConnectionSettings as any).spreadBufferPips,
+            ),
+            spreadMultiplier: finiteOptional(
+              (initialConnectionSettings as any).spread_multiplier ??
+              (initialConnectionSettings as any).spreadMultiplier,
+            ),
+          },
+        )
+      }
+      const simConversion = marketType === "forex"
+        ? await resolveForexUsdConversion(connectionId, realPosition.symbol, undefined, true)
+        : null
+      if (simConversion) livePosition.quoteToUsdRate = simConversion.rate
       // Fetch the current market price so simulated positions open at a
       // real price (not 0). This mirrors the live path's Step 2 but runs
       // here before the simulation early-return so SL/TP cross-checks and
       // PnL display are meaningful.
-      let simEntryPrice = livePosition.entryPrice || realPosition.entryPrice || 0
+      let simEntryPrice = simTicker
+        ? selectVenueTickerPrice(simTicker, realPosition.direction)
+        : livePosition.entryPrice || realPosition.entryPrice || 0
       if (!simEntryPrice || simEntryPrice <= 0) {
         simEntryPrice = (await fetchCurrentPrice(realPosition.symbol).catch(() => 0)) || 0
       }
@@ -11382,7 +12404,7 @@ export async function executeLivePosition(
       // Compute a realistic volume using the VolumeCalculator (same as Step 3
       // on the live path). Falls back to realPosition.quantity if the
       // calculator fails (e.g. no balance data in sandbox).
-      let simQty = realPosition.quantity || 1
+      let simQty = marketType === "forex" ? 0 : (realPosition.quantity || 1)
       try {
         const { VolumeCalculator } = await import("@/lib/volume-calculator")
         const simVolResult = await VolumeCalculator.calculateVolumeForConnection(
@@ -11394,14 +12416,52 @@ export async function executeLivePosition(
             sizeMultiplier: realPosition.sizeMultiplier,
             allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
             indicationType: realPosition.indicationType,
+            marketType: livePosition.marketType,
+            lotSize: livePosition.lotSize,
+            positionCostPercentOverride: livePosition.positionCostPct,
+            quoteToUsdRate: livePosition.quoteToUsdRate,
           },
         )
         const vol = simVolResult?.finalVolume ?? simVolResult?.calculatedVolume ?? simVolResult?.volume ?? 0
         if (vol > 0) {
           simQty = vol
           livePosition.leverage = simVolResult.leverage || livePosition.leverage
+          livePosition.requestedVolume = Number(simVolResult.calculatedVolume) || 0
+          livePosition.intendedNotionalUsd = Number(simVolResult.intendedNotionalUsd) || 0
+          livePosition.exchangeMinNotionalUsd = Number(simVolResult.exchangeMinNotionalUsd) || 0
+          livePosition.systemVolumeFactor = Number(simVolResult.systemVolumeFactor) || 1
+          livePosition.liveEngineFactor = Number(simVolResult.liveEngineFactor) || 1
+          livePosition.signalVolumeFactor = Number(simVolResult.signalVolumeFactor) || 1
+          livePosition.volumeAdjusted = simVolResult.volumeAdjusted === true
+          livePosition.volumeAdjustmentReason = simVolResult.adjustmentReason || undefined
         }
-      } catch { /* fallback to realPosition.quantity */ }
+        if (marketType === "forex" && simVolResult?.conversionAvailable === false) {
+          simQty = 0
+          livePosition.status = "rejected"
+          livePosition.statusReason = simVolResult.adjustmentReason || "Forex USD conversion rate unavailable; simulation refused"
+          pushStep(livePosition, "volume_calc", false, livePosition.statusReason)
+          await savePosition(livePosition)
+          return livePosition
+        }
+      } catch {
+        if (marketType === "forex") simQty = 0
+      }
+      if (!(simQty > 0)) {
+        livePosition.status = "rejected"
+        livePosition.statusReason = marketType === "forex"
+          ? "Forex simulation refused: no executable lot size or USD conversion"
+          : "Simulation refused: no executable quantity"
+        pushStep(livePosition, "volume_calc", false, livePosition.statusReason)
+        await savePosition(livePosition)
+        return livePosition
+      }
+      if (marketType === "forex") {
+        const spec = getForexInstrumentSpec(realPosition.symbol)
+        livePosition.quantityStep = spec.minLot
+        livePosition.quantityPrecision = 2
+        livePosition.pricePrecision = spec.digits
+        livePosition.priceTick = 10 ** -spec.digits
+      }
       if (await abortSuperseded()) return livePosition
 
       // Set averageExecutionPrice before calling computeDesiredProtectionPrices
@@ -11426,7 +12486,7 @@ export async function executeLivePosition(
       livePosition.executedQuantity = simQty
       livePosition.remainingQuantity = 0
       livePosition.averageExecutionPrice = simEntryPrice
-      livePosition.volumeUsd = simQty * simEntryPrice
+      livePosition.volumeUsd = positionNotionalUsd(livePosition, simQty, simEntryPrice)
       livePosition.initialExecutedQuantity = simQty
       if (specialPositionPlan) {
         livePosition.specialBaseQuantity = simQty / specialPositionPlan.totalVolumeRatio
@@ -11510,12 +12570,12 @@ export async function executeLivePosition(
     // that value. Using the pseudo price here corrupts quantity sizing and
     // trailing/control-order prices. Real exchange mutations therefore fail
     // closed unless the connector itself supplies a current ticker.
-    const currentPrice = await resolveAuthoritativeLiveReferencePrice(
+    const venueTicker = await resolveAuthoritativeLiveTicker(
       connectionId,
       realPosition.symbol,
-      realPosition.direction,
       exchangeConnector,
     )
+    const currentPrice = selectVenueTickerPrice(venueTicker, realPosition.direction)
     if (!currentPrice || currentPrice <= 0) {
       livePosition.status = "error"
       livePosition.statusReason = `No authoritative exchange ticker available for ${realPosition.symbol}`
@@ -11532,6 +12592,75 @@ export async function executeLivePosition(
       // 5 minutes even though the price arrives within seconds.
       if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
       return livePosition
+    }
+    if (venueTicker) {
+      livePosition.quoteBid = finitePositive(venueTicker.bid) || undefined
+      livePosition.quoteAsk = finitePositive(venueTicker.ask) || undefined
+      livePosition.spreadPrice = venueTicker.spreadPrice
+      livePosition.spreadPips = venueTicker.spreadPips
+      livePosition.spreadBps = venueTicker.spreadBps
+      livePosition.spreadPercent = venueTicker.spreadPercent
+      livePosition.spreadSource = venueTicker.spreadSource
+      livePosition.quoteTimestamp = venueTicker.timestamp
+      livePosition.marketType = venueTicker.marketType || marketType
+      livePosition.volumeKind = livePosition.marketType === "forex" ? "lots" : "base"
+      livePosition.positionCostPct = effectivePositionCostPercent(
+        positionCostPct,
+        venueTicker,
+        realPosition.symbol,
+        {
+          marketType: livePosition.marketType,
+          spreadBufferPips: finiteOptional(
+            (initialConnectionSettings as any).spread_buffer_pips ??
+            (initialConnectionSettings as any).spreadBufferPips,
+          ),
+          spreadMultiplier: finiteOptional(
+            (initialConnectionSettings as any).spread_multiplier ??
+            (initialConnectionSettings as any).spreadMultiplier,
+          ),
+        },
+      )
+    }
+    if (livePosition.marketType === "forex") {
+      const pair = forexPairCurrencies(realPosition.symbol)
+      if (pair && pair.quote !== "USD" && pair.base !== "USD") {
+        const conversion = await resolveForexUsdConversion(
+          connectionId,
+          realPosition.symbol,
+          exchangeConnector,
+        )
+        if (!conversion) {
+          livePosition.status = "error"
+          livePosition.statusReason = "No authoritative USD conversion quote available for Forex pair " +
+            realPosition.symbol + " (" + pair.quote + ")"
+          pushStep(livePosition, "forex_conversion", false, livePosition.statusReason)
+          await savePosition(livePosition)
+          await Promise.all([
+            incrementMetric(connectionId, "live_orders_failed_count"),
+            incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+            logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
+              symbol: realPosition.symbol,
+              direction: realPosition.direction,
+            }),
+          ])
+          if (liveOrderLockToken) {
+            await releaseLock(
+              connectionId,
+              realPosition.symbol,
+              realPosition.direction + _lockDirSuffix,
+              liveOrderLockToken,
+            ).catch(() => {})
+          }
+          return livePosition
+        }
+        livePosition.quoteToUsdRate = conversion.rate
+        pushStep(
+          livePosition,
+          "forex_conversion",
+          true,
+          pair.quote + "→USD=" + conversion.rate + " (" + conversion.source + ")",
+        )
+      }
     }
     livePosition.entryPrice = currentPrice
     pushStep(livePosition, "price_fetch", true, `price=${currentPrice}`)
@@ -11567,12 +12696,10 @@ export async function executeLivePosition(
     }
 
     // ── Step 3: Volume calculation ──────────────��──────────────────────────
-    // POLICY: minimum volume is ALWAYS enforced �� we never reject a live
-    // order for "qty too small". If the calculator returns null or a
-    // non-positive quantity (e.g. balance fetch failed, NaN math) we
-    // synthesize a fallback at the universal $5-notional floor and
-    // continue. This keeps the operator's signal flow uninterrupted
-    // and matches the documented behavior of `VolumeCalculator`.
+    // The calculator must return a finite risk-budgeted quantity. A missing
+    // balance/conversion/ceiling is a safety failure, not a reason to invent a
+    // universal-minimum order. Venue minimums are honored only when they fit
+    // inside the approved PositionCost ceiling.
     //
     // ── Trade-mode resolution for the engine volume factor ────────
     // The live-stage IS the live-execution path by definition — it
@@ -11641,6 +12768,10 @@ export async function executeLivePosition(
         // valid Set. Ordinary Block/DCA variants remain safely bounded.
         allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
         indicationType: realPosition.indicationType,
+        positionCostPercentOverride: livePosition.positionCostPct,
+        marketType: livePosition.marketType,
+        lotSize: livePosition.lotSize,
+        quoteToUsdRate: livePosition.quoteToUsdRate,
       },
     ).catch(err => {
       console.error(`${LOG_PREFIX} volume calc error:`, err)
@@ -11650,28 +12781,120 @@ export async function executeLivePosition(
     let computedVolume = volumeResult?.finalVolume || volumeResult?.volume || 0
     let volumeNote = ""
     if (computedVolume <= 0 || !Number.isFinite(computedVolume)) {
-      // Synthesize at the minimal fallback ($5 notional) when the
-      // VolumeCalculator returns nothing. The per-pair exchange minimum
-      // from trading-pair metadata (stored in Redis) normally takes over
-      // as the hard floor inside VolumeCalculator — this path is a last-
-      // resort for pairs with no metadata or calculator failures. Kept
-      // at $5 to match the quickstart minimal-volume policy.
-      const FALLBACK_NOTIONAL_USD = 5
-      computedVolume = currentPrice > 0
-        ? FALLBACK_NOTIONAL_USD / currentPrice
+      livePosition.status = "error"
+      livePosition.statusReason = volumeResult?.adjustmentReason ||
+        "Live entry refused: no finite risk-budgeted executable quantity was calculated"
+      pushStep(livePosition, "volume_calc", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await Promise.all([
+        incrementMetric(connectionId, "live_orders_failed_count"),
+        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+        logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
+          symbol: realPosition.symbol,
+          direction: realPosition.direction,
+        }),
+      ])
+      if (liveOrderLockToken) {
+        await releaseLock(
+          connectionId,
+          realPosition.symbol,
+          realPosition.direction + _lockDirSuffix,
+          liveOrderLockToken,
+        ).catch(() => {})
+      }
+      return livePosition
+    }
+
+    // A fallback balance keeps paper calculations useful, but it is not a
+    // safe basis for a real/VST order. Using a synthetic 10,000-USD balance
+    // after a broker/API outage can turn a small account into an oversized
+    // order. Stop before the first venue submission and let the next cycle
+    // retry after an authoritative balance is available.
+    if (liveReadiness.canPlaceRealOrders && volumeResult?.balanceIsFallback === true) {
+      livePosition.status = "error"
+      livePosition.statusReason = "Live entry refused: authoritative exchange balance unavailable; no fallback balance may size a live/VST order"
+      pushStep(livePosition, "balance_preflight", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await Promise.all([
+        incrementMetric(connectionId, "live_orders_failed_count"),
+        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+        logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
+          symbol: realPosition.symbol,
+          direction: realPosition.direction,
+        }),
+      ])
+      if (liveOrderLockToken) {
+        await releaseLock(
+          connectionId,
+          realPosition.symbol,
+          realPosition.direction + _lockDirSuffix,
+          liveOrderLockToken,
+        ).catch(() => {})
+      }
+      return livePosition
+    }
+
+    // Re-apply the calculator's hard notional ceiling after instrument
+    // metadata has been loaded. This protects the exchange boundary if a
+    // stale cache or future calculator change rounds an entry upward.
+    const maxExecutionNotionalUsd = Number(volumeResult?.maxExecutionNotionalUsd)
+    const currentNotional = positionNotionalUsd(livePosition, computedVolume, currentPrice)
+    if (liveReadiness.canPlaceRealOrders && (!(maxExecutionNotionalUsd > 0) || currentNotional > maxExecutionNotionalUsd + 1e-8)) {
+      const unitNotional = positionNotionalUsd(livePosition, 1, currentPrice)
+      const cappedQuantity = unitNotional > 0 && maxExecutionNotionalUsd > 0
+        ? roundQuantityDown(maxExecutionNotionalUsd / unitNotional, liveInstrumentRules)
         : 0
-      volumeNote = ` [synthesized-min: $${FALLBACK_NOTIONAL_USD} notional fallback — calculator returned ${volumeResult?.finalVolume ?? "null"}]`
-      await logProgressionEvent(
-        connectionId,
-        "live_trading",
-        "info",
-        `Live order volume synthesized to enforced minimum for ${realPosition.symbol}`,
-        {
-          reason: volumeResult?.adjustmentReason || "calculator returned no usable quantity",
-          fallbackNotionalUsd: FALLBACK_NOTIONAL_USD,
-          synthesizedQty: computedVolume,
-        }
-      )
+      const cappedNotional = positionNotionalUsd(livePosition, cappedQuantity, currentPrice)
+      if (!(cappedQuantity > 0) || cappedNotional > maxExecutionNotionalUsd + 1e-8 || cappedQuantity < liveInstrumentRules.minQuantity) {
+        livePosition.status = "error"
+        livePosition.statusReason = `Live entry refused: executable quantity exceeds the ${maxExecutionNotionalUsd > 0 ? maxExecutionNotionalUsd.toFixed(2) : "configured"} USD exposure ceiling`
+        pushStep(livePosition, "volume_cap", false, livePosition.statusReason)
+        await savePosition(livePosition)
+        if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
+        return livePosition
+      }
+      computedVolume = cappedQuantity
+      volumeNote = ` [hard-cap: ${cappedNotional.toFixed(2)} USD]`
+    }
+
+    // Every entry retry is a new venue submission. Keep minimum-order and
+    // margin fallbacks on the same quantity grid and hard PositionCost cap as
+    // the primary order; a correction must never become a volume escape hatch.
+    let liveSubmissionNotionalCeiling = maxExecutionNotionalUsd
+    const normalizeRetryEntryQuantity = (requested: number, enforceMinimum: boolean): number => {
+      const raw = Number(requested)
+      if (!Number.isFinite(raw) || raw <= 0) return 0
+      let quantity = enforceMinimum
+        ? livePosition.marketType === "forex"
+          ? roundQuantityUp(Math.max(raw, liveInstrumentRules.minQuantity), liveInstrumentRules)
+          : resolveExecutableQuantity(
+              raw,
+              currentPrice,
+              liveInstrumentRules,
+              { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
+            ).quantity
+        : roundQuantityDown(raw, liveInstrumentRules)
+      if (!(quantity > 0)) return 0
+
+      const unitNotional = positionNotionalUsd(livePosition, 1, currentPrice)
+      if (liveSubmissionNotionalCeiling > 0 && unitNotional > 0) {
+        const maximum = roundQuantityDown(liveSubmissionNotionalCeiling / unitNotional, liveInstrumentRules)
+        if (!(maximum > 0)) return 0
+        quantity = Math.min(quantity, maximum)
+      }
+      if (!enforceMinimum && quantity < liveInstrumentRules.minQuantity - 1e-12) return 0
+      const totalNotional = positionNotionalUsd(livePosition, quantity, currentPrice)
+      if (!(totalNotional > 0) || (liveSubmissionNotionalCeiling > 0 && totalNotional > liveSubmissionNotionalCeiling + 1e-8)) return 0
+      if (enforceMinimum && livePosition.marketType !== "forex") {
+        const minimum = resolveExecutableQuantity(
+          Math.max(liveInstrumentRules.minQuantity, currentPrice > 0 ? VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD / currentPrice : 0),
+          currentPrice,
+          liveInstrumentRules,
+          { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
+        ).quantity
+        if (minimum > 0 && quantity + 1e-12 < minimum) return 0
+      }
+      return quantity
     }
 
     // High-visibility diagnostic for the most common reason real orders never appear on the exchange
@@ -11685,11 +12908,13 @@ export async function executeLivePosition(
 
     livePosition.quantity = computedVolume
     livePosition.remainingQuantity = computedVolume
-    livePosition.volumeUsd = computedVolume * currentPrice
+    livePosition.volumeUsd = positionNotionalUsd(livePosition, computedVolume, currentPrice)
     livePosition.leverage = volumeResult?.leverage || livePosition.leverage
     livePosition.requestedVolume = Number(volumeResult?.calculatedVolume) || 0
     livePosition.intendedNotionalUsd = Number(volumeResult?.intendedNotionalUsd) || 0
     livePosition.exchangeMinNotionalUsd = Number(volumeResult?.exchangeMinNotionalUsd) || 0
+    livePosition.maxExecutionNotionalUsd = maxExecutionNotionalUsd > 0 ? maxExecutionNotionalUsd : undefined
+    livePosition.liveMultiplierCapped = volumeResult?.liveMultiplierCapped === true
     livePosition.systemVolumeFactor = Number(volumeResult?.systemVolumeFactor) || 1
     livePosition.liveEngineFactor = Number(volumeResult?.liveEngineFactor) || 1
     livePosition.signalVolumeFactor = Number(volumeResult?.signalVolumeFactor) || 1
@@ -11700,8 +12925,8 @@ export async function executeLivePosition(
     // normalized snapshot so every persisted row is self-describing.
     applyLiveInstrumentRules(livePosition, liveInstrumentRules)
 
-    // If the volume calculator clamped the quantity UP to the exchange
-    // minimum (or we synthesized a fallback above), surface that in the
+    // If the volume calculator clamped the quantity UP to an exchange
+    // minimum, surface that in the
     // progression step so the UI / logs show *why* the executed qty
     // differs from the coordination-derived qty rather than just a bare
     // number. The step is always recorded as successful because the
@@ -11957,19 +13182,139 @@ export async function executeLivePosition(
       `ownedRows=${entryAdmission.audit.ownedExecutedRows}; controlsAvailable=${entryAdmission.availableControlOrders}; controlsReserved=${entryAdmission.audit.requiredNewControlOrders}`,
     )
 
+    // The admission audit proves protection ownership, but it does not reserve
+    // notional. A different worker may have filled the same symbol/direction
+    // while the audit was running. Refresh the authoritative venue position
+    // under the connection-wide lease immediately before margin/leverage or
+    // entry submission, then round down on the exact venue quantity grid.
+    // This is the final boundary against the high-volume X02 failure mode.
+    if (process.env.NODE_ENV !== "test") {
+      try {
+        const exposureConnection = { ...lockedSettings, id: connectionId }
+        const venueExposure = await resolveLiveOrderExposureCeiling(
+          {
+            connectionId,
+            symbol: realPosition.symbol,
+            side: realPosition.direction,
+            positionDirection: realPosition.direction,
+            quantity: computedVolume,
+            connection: exposureConnection,
+            marketType: livePosition.marketType,
+            lotSize: livePosition.lotSize,
+            quoteToUsdRate: livePosition.quoteToUsdRate,
+            positionCostPercentOverride: livePosition.positionCostPct,
+            maxExecutionNotionalUsd,
+            source: executionIntent === "preset"
+              ? "preset-trade"
+              : executionIntent === "signal"
+                ? "signal-trade"
+                : "main-trade",
+            liveTradeIntent: executionIntent,
+          } as any,
+          exposureConnection,
+          exchangeConnector,
+          realPosition.symbol,
+          currentPrice,
+        )
+        const bounded = quantityWithinRemainingNotional(
+          livePosition,
+          computedVolume,
+          currentPrice,
+          liveInstrumentRules,
+          venueExposure.maxNotionalUsd,
+        )
+        if (!(bounded.quantity > 0)) {
+          livePosition.status = "rejected"
+          livePosition.executionMode = "blocked"
+          livePosition.executionBlockCode = "live_exposure_ceiling_reached"
+          livePosition.executionBlockReason = "Remaining venue PositionCost budget is below the executable quantity minimum"
+          livePosition.statusReason = livePosition.executionBlockReason
+          pushStep(livePosition, "live_exposure_admission", false, livePosition.statusReason)
+          await savePosition(livePosition)
+          await incrementMetric(connectionId, "live_orders_blocked_count")
+          return livePosition
+        }
+        liveSubmissionNotionalCeiling = venueExposure.maxNotionalUsd
+        if (bounded.quantity + 1e-12 < computedVolume) {
+          computedVolume = bounded.quantity
+          volumeNote = ` [venue-headroom: ${bounded.notionalUsd.toFixed(2)} USD]`
+          pushStep(
+            livePosition,
+            "live_exposure_admission",
+            true,
+            `venue-confirmed remaining=${venueExposure.maxNotionalUsd.toFixed(2)} USD; qty reduced to ${computedVolume}`,
+          )
+        } else {
+          pushStep(
+            livePosition,
+            "live_exposure_admission",
+            true,
+            `venue-confirmed remaining=${venueExposure.maxNotionalUsd.toFixed(2)} USD; qty=${computedVolume}`,
+          )
+        }
+        livePosition.quantity = computedVolume
+        livePosition.remainingQuantity = computedVolume
+        livePosition.volumeUsd = positionNotionalUsd(livePosition, computedVolume, currentPrice)
+      } catch (error) {
+        livePosition.status = "rejected"
+        livePosition.executionMode = "blocked"
+        livePosition.executionBlockCode = "live_exposure_snapshot_unavailable"
+        livePosition.executionBlockReason = error instanceof Error
+          ? error.message
+          : "Authoritative venue exposure snapshot unavailable"
+        livePosition.statusReason = livePosition.executionBlockReason
+        pushStep(livePosition, "live_exposure_admission", false, livePosition.statusReason)
+        await savePosition(livePosition)
+        await incrementMetric(connectionId, "live_orders_blocked_count")
+        return livePosition
+      }
+    }
+
     const positionMode = String(
       (lockedSettings as any).position_mode
       || (lockedSettings as any).positionMode
       || "",
     ).toLowerCase()
     const hedgeMode = positionMode.includes("hedge") || positionMode.includes("dual")
+    const nativeForexProtection = (() => {
+      if (livePosition.marketType !== "forex" || typeof exchangeConnector?.getCapabilities !== "function") return {}
+      try {
+        const capabilities = exchangeConnector.getCapabilities()
+        if (!Array.isArray(capabilities) || !capabilities.includes("native_position_sl_tp")) return {}
+        const initial = computeDesiredProtectionPrices(livePosition)
+        const direction = resolveLivePositionDirection(livePosition)
+        const sl = normalizeProtectionTriggerPrice(
+          initial.desiredSl,
+          Number(livePosition.priceTick || 0),
+          direction,
+          "stop_loss",
+        )
+        const tp = normalizeProtectionTriggerPrice(
+          initial.desiredTp,
+          Number(livePosition.priceTick || 0),
+          direction,
+          "take_profit",
+        )
+        return {
+          ...(sl > 0 ? { stopLossPrice: sl } : {}),
+          ...(tp > 0 ? { takeProfitPrice: tp } : {}),
+        }
+      } catch {
+        return {}
+      }
+    })()
     const entryOrderOptions = hedgeMode
       ? {
           hedgeMode: true,
           positionSide: (realPosition.direction === "long" ? "LONG" : "SHORT") as "LONG" | "SHORT",
           clientOrderId: orderTrace.exchangeTrackingId,
+          ...nativeForexProtection,
         }
-      : { hedgeMode: false, clientOrderId: orderTrace.exchangeTrackingId }
+      : {
+          hedgeMode: false,
+          clientOrderId: orderTrace.exchangeTrackingId,
+          ...nativeForexProtection,
+        }
 
     // Margin/leverage are physical-slot venue mutations. They belong after
     // exact ownership, control coverage, capacity, and stopped-engine gates.
@@ -12044,44 +13389,113 @@ export async function executeLivePosition(
     // attempt counter is captured by closure so leverage-reduced and
     // min-size-corrected retries below get distinct labels.
     let placeAttempt = 0
-    let orderResult: any = await retry(
-      async () => {
-        placeAttempt += 1
-        const { raw } = await withLiveOrderLogging(
-          orderTrace,
+    let lastSubmittedEntryQuantity = computedVolume
+    const submitEntryQuantity = async (requestedQuantity: number, label: string): Promise<any> => {
+      if (!isCurrent()) {
+        return {
+          success: false,
+          error: "Execution generation superseded before exchange submission",
+          errorCode: "EXECUTION_SUPERSEDED",
+        }
+      }
+      let safeQuantity = Number(requestedQuantity)
+      if (process.env.NODE_ENV !== "test") {
+        const exposureConnection = { ...lockedSettings, id: connectionId }
+        const venueExposure = await resolveLiveOrderExposureCeiling(
           {
-            quantity: computedVolume,
-            price: currentPrice,
-            leverage: livePosition.leverage,
-            marginType: livePosition.marginType ?? "unknown",
-            orderType: "market",
-            options: entryOrderOptions,
-            strategySetKey: livePosition.setKey,
-            realPositionId: realPosition.id,
-            attempt: placeAttempt,
-            label: "primary",
-          },
-          () => {
-            if (!isCurrent()) {
-              return Promise.resolve({
-                success: false,
-                error: "Execution generation superseded before exchange submission",
-                errorCode: "EXECUTION_SUPERSEDED",
-              })
-            }
-            exchangeSubmissionStarted = true
-            return exchangeConnector.placeOrder(
-              realPosition.symbol,
-              exchangeSide,
-              computedVolume,
-              undefined,
-              "market",
-              entryOrderOptions,
-            )
-          },
+            connectionId,
+            symbol: realPosition.symbol,
+            side: realPosition.direction,
+            positionDirection: realPosition.direction,
+            quantity: requestedQuantity,
+            connection: exposureConnection,
+            marketType: livePosition.marketType,
+            lotSize: livePosition.lotSize,
+            quoteToUsdRate: livePosition.quoteToUsdRate,
+            positionCostPercentOverride: livePosition.positionCostPct,
+            maxExecutionNotionalUsd,
+            source: executionIntent === "preset"
+              ? "preset-trade"
+              : executionIntent === "signal"
+                ? "signal-trade"
+                : "main-trade",
+            liveTradeIntent: executionIntent,
+          } as any,
+          exposureConnection,
+          exchangeConnector,
+          realPosition.symbol,
+          currentPrice,
         )
-        return raw
-      },
+        const bounded = quantityWithinRemainingNotional(
+          livePosition,
+          requestedQuantity,
+          currentPrice,
+          liveInstrumentRules,
+          venueExposure.maxNotionalUsd,
+        )
+        if (!(bounded.quantity > 0)) {
+          throw new Error(
+            `LIVE_EXPOSURE: requested entry quantity no longer fits the venue PositionCost budget (remaining=${venueExposure.maxNotionalUsd.toFixed(2)} USD)`,
+          )
+        }
+        safeQuantity = bounded.quantity
+        liveSubmissionNotionalCeiling = venueExposure.maxNotionalUsd
+      }
+      if (!(safeQuantity > 0) || !Number.isFinite(safeQuantity)) {
+        throw new Error("LIVE_EXPOSURE: no finite executable entry quantity remains")
+      }
+      lastSubmittedEntryQuantity = safeQuantity
+      if (safeQuantity !== requestedQuantity) {
+        livePosition.quantity = safeQuantity
+        livePosition.remainingQuantity = safeQuantity
+        livePosition.volumeUsd = positionNotionalUsd(livePosition, safeQuantity, currentPrice)
+        pushStep(
+          livePosition,
+          "live_exposure_retry_cap",
+          true,
+          `${label}: venue-confirmed quantity ${requestedQuantity} → ${safeQuantity}`,
+        )
+        await savePosition(livePosition)
+        await persistCriticalLiveState(`entry-quantity:${livePosition.id}`)
+      }
+      placeAttempt += 1
+      const { raw } = await withLiveOrderLogging(
+        orderTrace,
+        {
+          quantity: safeQuantity,
+          price: currentPrice,
+          leverage: livePosition.leverage,
+          marginType: livePosition.marginType ?? "unknown",
+          orderType: "market",
+          options: entryOrderOptions,
+          strategySetKey: livePosition.setKey,
+          realPositionId: realPosition.id,
+          attempt: placeAttempt,
+          label,
+        },
+        () => {
+          if (!isCurrent()) {
+            return Promise.resolve({
+              success: false,
+              error: "Execution generation superseded before exchange submission",
+              errorCode: "EXECUTION_SUPERSEDED",
+            })
+          }
+          exchangeSubmissionStarted = true
+          return exchangeConnector.placeOrder(
+            realPosition.symbol,
+            exchangeSide,
+            safeQuantity,
+            undefined,
+            "market",
+            entryOrderOptions,
+          )
+        },
+      )
+      return raw
+    }
+    let orderResult: any = await retry(
+      () => submitEntryQuantity(computedVolume, "primary"),
       (r: any) => !!r?.success,
       "placeOrder",
       3,
@@ -12102,7 +13516,8 @@ export async function executeLivePosition(
     // the same leverage, which represents the absolute smallest notional
     // with the best leverage efficiency.
     if (isCurrent() && !orderResult?.success && isNonRecoverableExchangeError(orderResult)) {
-      const reducedVolume = computedVolume / 2
+      const reducedVolumeRaw = computedVolume / 2
+      const reducedVolume = normalizeRetryEntryQuantity(reducedVolumeRaw, false)
       // Ensure the halved volume is meaningfully smaller (> 0.1% diff) and positive.
       const volumeDiffPct = computedVolume > 0 ? Math.abs(reducedVolume - computedVolume) / computedVolume : 0
       if (reducedVolume > 0 && volumeDiffPct > 0.001) {
@@ -12112,42 +13527,7 @@ export async function executeLivePosition(
         )
 
         const retryResult: any = await retry(
-          async () => {
-            placeAttempt += 1
-            const { raw } = await withLiveOrderLogging(
-              orderTrace,
-              {
-                quantity: reducedVolume,
-                price: currentPrice,
-                leverage: livePosition.leverage,
-                marginType: livePosition.marginType ?? "unknown",
-                orderType: "market",
-                options: entryOrderOptions,
-                strategySetKey: livePosition.setKey,
-                realPositionId: realPosition.id,
-                attempt: placeAttempt,
-                label: "volume-halved",
-              },
-              () => {
-                if (!isCurrent()) {
-                  return Promise.resolve({
-                    success: false,
-                    error: "Execution generation superseded before reduced-volume retry",
-                    errorCode: "EXECUTION_SUPERSEDED",
-                  })
-                }
-                return exchangeConnector.placeOrder(
-                  realPosition.symbol,
-                  exchangeSide,
-                  reducedVolume,
-                  undefined,
-                  "market",
-                  entryOrderOptions,
-                )
-              },
-            )
-            return raw
-          },
+          () => submitEntryQuantity(reducedVolume, "volume-halved"),
           (r: any) => !!r?.success && !!(r.orderId || r.id),
           "placeOrder-reducedVol",
           1, // single retry — we already tried 3× above at original volume
@@ -12160,20 +13540,27 @@ export async function executeLivePosition(
 
         if (retryResult?.success && (retryResult.orderId || retryResult.id)) {
           // Succeeded with reduced volume at max leverage — update position and continue.
-          computedVolume = reducedVolume
-          livePosition.quantity = reducedVolume
-          livePosition.remainingQuantity = reducedVolume
-          livePosition.volumeUsd = reducedVolume * currentPrice
+          computedVolume = lastSubmittedEntryQuantity
+          livePosition.quantity = lastSubmittedEntryQuantity
+          livePosition.remainingQuantity = lastSubmittedEntryQuantity
+          livePosition.volumeUsd = positionNotionalUsd(livePosition, lastSubmittedEntryQuantity, currentPrice)
           orderResult = retryResult
           console.log(
-            `${LOG_PREFIX} Entry succeeded after volume reduction to ${reducedVolume.toFixed(6)} at ${livePosition.leverage}x for ${realPosition.symbol}`,
+            `${LOG_PREFIX} Entry succeeded after volume reduction to ${lastSubmittedEntryQuantity.toFixed(6)} at ${livePosition.leverage}x for ${realPosition.symbol}`,
           )
         } else if (isNonRecoverableExchangeError(retryResult)) {
           // Both the original and halved-volume attempts failed with 101204.
           // Try one last time at the exchange minimum qty — still at max leverage.
           // Prefer the stored exchange minimum from the 101400 handler
           // (`settings:trading_pair:{sym}` → `min_order_size`). Fall back to $5/price.
-          let minQtyForSymbol = currentPrice > 0 ? 5 / currentPrice : 0
+          let minQtyForSymbol = livePosition.marketType === "forex"
+            ? roundQuantityUp(
+                Math.max(liveInstrumentRules.minQuantity, liveInstrumentRules.quantityStep),
+                liveInstrumentRules,
+              )
+            : currentPrice > 0
+              ? 5 / currentPrice
+              : 0
           try {
             const redisClient = getRedisClient()
             if (redisClient) {
@@ -12183,10 +13570,16 @@ export async function executeLivePosition(
               )
               const parsedStoredMin = storedMin ? parseFloat(storedMin) : 0
               if (parsedStoredMin > 0) {
-                minQtyForSymbol = parsedStoredMin
+                minQtyForSymbol = livePosition.marketType === "forex"
+                  ? roundQuantityUp(parsedStoredMin, liveInstrumentRules)
+                  : parsedStoredMin
               }
             }
           } catch { /* non-critical; fall back to $5/price */ }
+
+          // An exchange minimum must not be used as an upward override of the
+          // approved live/VST notional ceiling after a margin rejection.
+          minQtyForSymbol = normalizeRetryEntryQuantity(minQtyForSymbol, true)
 
           // Only attempt if the quantity is meaningfully different from what we already tried.
           const minQuantityDiffPct = reducedVolume > 0
@@ -12201,48 +13594,24 @@ export async function executeLivePosition(
               `${LOG_PREFIX} 101204 at half-volume still fails on ${realPosition.symbol} — ` +
               `trying min notional qty=${minQtyForSymbol.toFixed(8)} at ${livePosition.leverage}x (max leverage kept)`,
             )
-            placeAttempt += 1
-            const minResult: any = await withLiveOrderLogging(
-              orderTrace,
-              {
-                quantity: minQtyForSymbol,
-                price: currentPrice,
-                leverage: livePosition.leverage,
-                marginType: livePosition.marginType ?? "unknown",
-                orderType: "market",
-                options: entryOrderOptions,
-                strategySetKey: livePosition.setKey,
-                realPositionId: realPosition.id,
-                attempt: placeAttempt,
-                label: "min-notional-max-lev",
-              },
-              async () => {
-                if (!isCurrent()) {
-                  return {
-                    success: false,
-                    error: "Execution generation superseded before minimum-volume retry",
-                    errorCode: "EXECUTION_SUPERSEDED",
-                  }
-                }
-                const r = await exchangeConnector.placeOrder(
-                  realPosition.symbol,
-                  exchangeSide,
-                  minQtyForSymbol,
-                  undefined,
-                  "market",
-                  entryOrderOptions,
-                )
-                return r
-              },
-            ).then(({ raw }) => raw).catch(() => null)
+            let minResult: any
+            try {
+              minResult = await submitEntryQuantity(minQtyForSymbol, "min-notional-max-lev")
+            } catch (error) {
+              minResult = {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                errorCode: "LIVE_EXPOSURE_RECHECK_FAILED",
+              }
+            }
             if (minResult?.success && (minResult.orderId || minResult.id)) {
-              computedVolume = minQtyForSymbol
-              livePosition.quantity = minQtyForSymbol
-              livePosition.remainingQuantity = minQtyForSymbol
-              livePosition.volumeUsd = minQtyForSymbol * currentPrice
+              computedVolume = lastSubmittedEntryQuantity
+              livePosition.quantity = lastSubmittedEntryQuantity
+              livePosition.remainingQuantity = lastSubmittedEntryQuantity
+              livePosition.volumeUsd = positionNotionalUsd(livePosition, lastSubmittedEntryQuantity, currentPrice)
               orderResult = minResult
               console.log(
-                `${LOG_PREFIX} Entry succeeded at min-notional ${minQtyForSymbol.toFixed(8)} at ${livePosition.leverage}x for ${realPosition.symbol}`,
+                `${LOG_PREFIX} Entry succeeded at min-notional ${lastSubmittedEntryQuantity.toFixed(8)} at ${livePosition.leverage}x for ${realPosition.symbol}`,
               )
             } else {
               console.warn(
@@ -12352,31 +13721,32 @@ export async function executeLivePosition(
               `${LOG_PREFIX} [101400 Correction] Detected minimum ${minQty} > current ${computedVolume.toFixed(8)} for ${realPosition.symbol}; retrying in same cycle`,
             )
             
-            // Use minimum + 10% margin to ensure acceptance
-            const retryQty = minQty * 1.1
+            // Use minimum + 10% margin to ensure acceptance, but never above
+            // the hard live/VST notional ceiling.
+            const retryQty = normalizeRetryEntryQuantity(minQty * 1.1, true)
+            if (!(retryQty > 0)) {
+              retryWasAttempted = false
+              throw new Error("minimum order quantity cannot fit the live/VST exposure ceiling after venue rounding")
+            }
             console.log(
               `${LOG_PREFIX} [101400 Retry] Sending with margin: ${retryQty.toFixed(8)} (min: ${minQty.toFixed(8)} × 1.1)`,
             )
-            
+
             // Retry immediately with corrected quantity
             if (await abortSuperseded()) {
               await savePosition(livePosition).catch(() => {})
               return livePosition
             }
-            const retryOrderResult = isCurrent()
-              ? await exchangeConnector.placeOrder(
-                  realPosition.symbol,
-                  exchangeSide,
-                  retryQty,
-                  undefined,
-                  "market",
-                  entryOrderOptions,
-                )
-              : {
-                  success: false,
-                  error: "Execution generation superseded before minimum-order correction retry",
-                  errorCode: "EXECUTION_SUPERSEDED",
-                }
+            let retryOrderResult: any
+            try {
+              retryOrderResult = await submitEntryQuantity(retryQty, "min-order-correction")
+            } catch (error) {
+              retryOrderResult = {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                errorCode: "LIVE_EXPOSURE_RECHECK_FAILED",
+              }
+            }
             
             if (retryOrderResult?.success && (retryOrderResult?.orderId || retryOrderResult?.id)) {
               console.log(
@@ -12384,7 +13754,7 @@ export async function executeLivePosition(
               )
               // Continue with the corrected order
               orderResult = retryOrderResult
-              computedVolume = retryQty  // Update for subsequent logging
+              computedVolume = lastSubmittedEntryQuantity  // Use the quantity actually admitted and submitted
               retryWasAttempted = true  // Mark retry was attempted and succeeded
               entryOrderId = retryOrderResult?.orderId || retryOrderResult?.id
             } else {
@@ -12396,6 +13766,7 @@ export async function executeLivePosition(
               retryWasAttempted = false  // Retry was attempted but failed
             }
           } catch (err) {
+            retryWasAttempted = false
             console.warn(
               `${LOG_PREFIX} [101400 Correction] Retry attempt failed:`,
               err instanceof Error ? err.message : String(err),
@@ -12534,10 +13905,9 @@ export async function executeLivePosition(
     //     successfully-opened position IS the proof of fill; its size and
     //     entry price are reliable even when getOrder() lags.
     //
-    // After all three layers, if executedQty is still 0 we use computedVolume
-    // as a last-resort quantity so SL/TP can be placed on the exchange. The
-    // protection order itself being "reduce-only" ensures it can't add new
-    // risk; the reconcile cycle will correct the stored qty on next tick.
+    // After all three layers, an unconfirmed quantity remains pending. Never
+    // synthesize a fill from the requested quantity: doing so can over-size
+    // protection and can make the UI report a position the venue never filled.
     const inlineFillQty   = parseFloat(String(orderResult.filledQty  ?? orderResult.executedQty ?? orderResult.cumQty   ?? "0")) || 0
     const inlineFillPrice = parseFloat(String(orderResult.filledPrice ?? orderResult.avgPrice ?? "0")) || 0
     const inlineStatus    = String(orderResult.status ?? "").toLowerCase()
@@ -12773,6 +14143,14 @@ export async function executeLivePosition(
               liquidationPrice: (exPos as any).liquidationPrice,
               unrealizedPnl: (exPos as any).unrealizedPnl,
               roi: (exPos as any).roi,
+            }
+            const nativeTicket = Number(
+              (exPos as any).positionTicket ??
+              (exPos as any).ticket ??
+              (exPos as any).exchangePositionId,
+            )
+            if (Number.isInteger(nativeTicket) && nativeTicket > 0) {
+              livePosition.positionTicket = nativeTicket
             }
           }
         } catch (err) {
@@ -13640,9 +15018,12 @@ async function requestAggregateProtectionSlotMutation(
     aggregateProtectionSlot(candidate.symbol, resolveLivePositionDirection(candidate)) === slot
     && isExchangeLifecyclePosition(candidate, position.connectionId),
   )
+  // A single logical row still owns a physical slot-level security stop, but
+  // it does not need the multi-row hand-off round trip.  The quantity worker
+  // can cancel/re-arm that row's security stop in the same bounded mutation
+  // while multi-row slots continue through the queued aggregate finalizer.
   const aggregateCoordinated = related.length > 1 || related.some((candidate) =>
-    Boolean(candidate.aggregateProtectionKey)
-    || Number(candidate.aggregateProtectionMemberCount || 0) > 1,
+    Number(candidate.aggregateProtectionMemberCount || 0) > 1,
   )
   if (!aggregateCoordinated) {
     position.aggregateProtectionMutationRequestedAt = undefined
@@ -13792,6 +15173,12 @@ async function settleControlOrdersBeforeQuantityMutation(
   const ids = new Set<string>(action.controlOrderIds || [])
   if (position.stopLossOrderId) ids.add(String(position.stopLossOrderId))
   if (position.takeProfitOrderId) ids.add(String(position.takeProfitOrderId))
+  // The aggregate security stop is also sized to the pre-mutation venue
+  // quantity. Leaving it live while an add/reduce is in flight either leaves
+  // the new quantity unprotected or lets a stale full-slot stop close more
+  // than the intended retained quantity. It must cross the same cancellation
+  // and authoritative-position barrier as the row SL/TP pair.
+  if (position.securityStopOrderId) ids.add(String(position.securityStopOrderId))
   const unresolved: Array<"stopLoss" | "takeProfit"> = []
   for (const leg of ["stopLoss", "takeProfit"] as const) {
     const pending = position.pendingProtectionOrders?.[leg]
@@ -13872,8 +15259,11 @@ async function settleControlOrdersBeforeQuantityMutation(
   position.takeProfitOrderId = undefined
   position.stopLossPrice = 0
   position.takeProfitPrice = 0
+  position.securityStopOrderId = undefined
+  position.securityStopPrice = 0
   position.stopLossArmedQuantity = 0
   position.takeProfitArmedQuantity = 0
+  position.securityStopArmedQuantity = 0
   position.protectionArmedQuantity = 0
 
   const localQuantity = Math.max(0, Number(position.executedQuantity || 0))
@@ -13899,7 +15289,11 @@ async function settleControlOrdersBeforeQuantityMutation(
       Number(position.totalExecutedQuantity || 0) + added,
       authoritative.quantity + Number(position.closedQuantity || 0),
     )
-    position.volumeUsd = authoritative.quantity * Number(position.averageExecutionPrice || position.entryPrice || 0)
+    position.volumeUsd = positionNotionalUsd(
+      position,
+      authoritative.quantity,
+      Number(position.averageExecutionPrice || position.entryPrice || 0),
+    )
     if (position.combinedPosCounts) {
       position.posCountsSetQuantities = allocatePositionSetQuantities(
         position,
@@ -14577,14 +15971,25 @@ export async function closeLivePosition(
     const isSimulationClose = originalStatus === "simulated"
     const finalLegPnl =
       isSimulationClose && remainingQty > 0 && avgEntry > 0 && closePrice > 0
-        ? remainingQty *
-          (position.direction === "long"
-            ? closePrice - avgEntry
-            : avgEntry - closePrice)
+        ? position.marketType === "forex" || position.volumeKind === "lots"
+          ? forexPriceMovePnlUsd(
+              position.direction === "short" ? "short" : "long",
+              remainingQty,
+              avgEntry,
+              closePrice,
+              position.symbol,
+              positionUnitMultiplier(position),
+              position.quoteToUsdRate,
+            )
+          : remainingQty * (
+              position.direction === "long"
+                ? closePrice - avgEntry
+                : avgEntry - closePrice
+            )
         : 0
     const pnl = Number(position.realizedPnL || 0) + finalLegPnl
     const lev = Math.max(1, position.leverage || 1)
-    const notional = avgEntry * qty
+    const notional = positionNotionalUsd(position, qty, avgEntry)
     const margin = notional > 0 ? notional / lev : 0
     const roi = margin > 0 ? (pnl / margin) * 100 : 0
     const accountedClosedQuantity = Math.max(0, Number(position.closedQuantity || 0))
@@ -18205,6 +19610,7 @@ export const __liveStageTest = {
   reconcilePendingAccumulationAndRearm,
   reconcileAuthoritativeExchangeQuantity,
   reconcileInitialEntryBaseQuantity,
+  admitAccumulationQuantity,
   physicalAccumulationCount,
   resolveAccumulationPlan,
   sweepOrphanProtectionOrders,

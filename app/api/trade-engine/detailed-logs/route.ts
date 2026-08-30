@@ -7,6 +7,7 @@ import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progressi
 import { SystemLogger } from "@/lib/system-logger"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { normalizeSignalMaxPositions } from "@/lib/signal-position-policy"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 
 function mapPhaseToType(phase: string, level = "info") {
   if (level === "error") return "error"
@@ -43,20 +44,6 @@ function toEpochMs(value: unknown): number {
   if (Number.isFinite(numeric) && numeric > 0) return numeric
   const parsed = Date.parse(String(value))
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
-}
-
-function parseSymbols(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return Array.from(new Set(value.map((item) => String(item).trim().toUpperCase()).filter(Boolean)))
-  }
-  if (typeof value !== "string" || !value.trim()) return []
-  try {
-    const parsed = JSON.parse(value)
-    if (Array.isArray(parsed)) return parseSymbols(parsed)
-  } catch {
-    // Accept legacy comma-separated values.
-  }
-  return Array.from(new Set(value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean)))
 }
 
 type MonitorAlert = {
@@ -401,18 +388,7 @@ export async function GET(request: Request) {
           ? scopedPrehistoricHash
           : legacyPrehistoricHash
 
-        const symbols =
-          parseSymbols((state as any).selected_symbols).length > 0
-            ? parseSymbols((state as any).selected_symbols)
-            : parseSymbols(
-                (state as any).force_symbols ||
-                (state as any).active_symbols ||
-                (state as any).symbols ||
-                conn.selected_symbols ||
-                conn.force_symbols ||
-                conn.active_symbols ||
-                conn.symbols,
-              )
+        const symbols = resolveCanonicalSymbols(state, conn).symbols
 
         const historicSymbolsKey = hasScopedPrehistoric
           ? `${scope.prehistoricKey}:symbols`

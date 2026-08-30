@@ -16,6 +16,7 @@ import { useExchange } from "@/lib/exchange-context"
 import { Badge } from "@/components/ui/badge"
 import type { ExchangeConnection } from "@/lib/types"
 import { CANONICAL_FORCED_BASE_SYMBOLS } from "@/lib/forced-symbols"
+import { marketTypeLabel, normalizeMarketType } from "@/lib/market-types"
 
 interface ExchangeTabProps {
   settings: any
@@ -98,6 +99,7 @@ export function ExchangeTab({
                 <div className="flex items-center gap-2">
                   <span>{conn.name || conn.exchange}</span>
                   <Badge variant="outline" className="text-xs">{conn.exchange}</Badge>
+                  <Badge variant="secondary" className="text-xs">{marketTypeLabel(normalizeMarketType(conn.market_type || conn.asset_class, conn.exchange))}</Badge>
                 </div>
               </SelectItem>
             ))}
@@ -123,6 +125,10 @@ export function ExchangeTab({
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-medium">Active Exchange:</span>
               <Badge variant="secondary">{selectedExchange.toUpperCase()}</Badge>
+              {(() => {
+                const selected = mainConnections.find((connection: any) => connection.id === selectedConnectionId)
+                return selected ? <Badge variant="outline">{marketTypeLabel(normalizeMarketType(selected.market_type || selected.asset_class, selected.exchange))}</Badge> : null
+              })()}
               {/*
                 Scope note — the fields on this page are saved via PUT
                 /api/settings as a single global blob (app_settings hash in

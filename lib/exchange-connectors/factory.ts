@@ -3,6 +3,13 @@ import { createExchangeConnector } from "./index"
 import { getConnection } from "@/lib/redis-db"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import type { Connection } from "@/lib/db-types"
+import { normalizeMarketType } from "@/lib/market-types"
+import { createHash } from "node:crypto"
+import {
+  isForexBridgeSelected,
+  isValidForexBridgeUrl,
+  resolveForexExecutionMode,
+} from "@/lib/forex-market"
 
 export { createExchangeConnector }
 export type { ExchangeCredentials } from "./base-connector"
@@ -47,37 +54,111 @@ export class ExchangeConnectorFactory {
     if (compact.includes("bybit") || String(connection.id || "").toLowerCase().startsWith("bybit")) {
       return "bybit"
     }
+    if (compact.includes("instaforex") || compact.includes("instafx") || String(connection.id || "").toLowerCase().startsWith("instaforex")) {
+      return "instaforex"
+    }
     return raw
   }
 
   private buildCredentials(connection: Connection): ExchangeCredentials {
+    const exchange = this.resolveExchangeName(connection)
+    const isInstaForex = exchange === "instaforex"
+    const marketType = normalizeMarketType(connection.market_type || connection.asset_class, exchange)
+    const accountId = String(connection.account_id || (isInstaForex ? connection.api_key || "" : "")).trim()
+    const forexExecutionMode = isInstaForex ? resolveForexExecutionMode(connection as any) : undefined
+    const bridgeSelected = isInstaForex && forexExecutionMode === "mt5_bridge" && isForexBridgeSelected(connection)
+    const finiteOptional = (value: unknown): number | undefined => {
+      if (value === null || value === undefined || value === "") return undefined
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : undefined
+    }
     return {
-      apiKey: connection.api_key || "",
-      apiSecret: connection.api_secret || "",
-      apiPassphrase: connection.api_passphrase,
-      isTestnet: isTruthyFlag(connection.is_testnet),
-      apiType: connection.api_type,
-      contractType: connection.contract_type,
+      // InstaForex identifies the account by its numeric login. Official REST
+      // remains read-only; mutations are possible only through the explicit,
+      // separately hosted terminal bridge.
+      apiKey: isInstaForex ? accountId : connection.api_key || "",
+      apiSecret: isInstaForex ? "" : connection.api_secret || "",
+      // For InstaForex the optional passphrase is the Client Cabinet API
+      // passkey. It is never used by the private terminal bridge.
+      apiPassphrase: isInstaForex ? String(connection.api_passphrase ?? connection.passphrase ?? "") || undefined : connection.api_passphrase,
+      accountId: accountId || undefined,
+      accountPassword: isInstaForex ? String(connection.account_password ?? connection.trader_password ?? connection.mt5_password ?? "") : undefined,
+      accountServer: isInstaForex ? String(connection.account_server ?? "") || undefined : undefined,
+      bridgeUrl: bridgeSelected && isValidForexBridgeUrl(connection.bridge_url) ? String(connection.bridge_url).trim() : undefined,
+      bridgeToken: bridgeSelected ? String(connection.bridge_token ?? "") || undefined : undefined,
+      terminalPath: bridgeSelected ? String(connection.terminal_path ?? "") || undefined : undefined,
+      forexExecutionMode,
+      apiBaseUrl: connection.api_base_url,
+      quotesBaseUrl: connection.quotes_base_url,
+      chartsUrl: connection.charts_url,
+      positionsAverage: finiteOptional(connection.positions_average ?? connection.average_count),
+      executionMode: isInstaForex ? forexExecutionMode : connection.execution_mode,
+      readOnly: isInstaForex ? !bridgeSelected : isTruthyFlag(connection.read_only),
+      symbolSuffix: connection.symbol_suffix,
+      lotSize: finiteOptional(connection.lot_size),
+      quantityUnit: connection.quantity_unit === "base_units" || connection.quantity_unit === "contracts" || connection.quantity_unit === "lots"
+        ? connection.quantity_unit
+        : undefined,
+      positionCostPercent: finiteOptional(connection.position_cost_percent),
+      spreadBufferPips: finiteOptional(connection.spread_buffer_pips),
+      spreadMultiplier: finiteOptional(connection.spread_multiplier),
+      marketType,
+      isTestnet: isInstaForex ? false : isTruthyFlag(connection.is_testnet),
+      apiType: connection.api_type || (isInstaForex ? "forex" : undefined),
+      contractType: connection.contract_type || (isInstaForex ? "forex" : undefined),
       marginType: connection.margin_type,
-      positionMode: connection.position_mode,
-      connectionMethod: this.resolveExchangeName(connection) === "bingx" ? "library" : connection.connection_method,
-      connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk" : connection.connection_library,
+      positionMode: isInstaForex ? "one_way" : connection.position_mode,
+      connectionMethod: exchange === "bingx" ? "library" : (isInstaForex ? (bridgeSelected ? "bridge" : "rest") : (connection.connection_method || undefined)),
+      connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk" : (isInstaForex ? (bridgeSelected ? "mt5-bridge" : "native-http") : (connection.connection_library || undefined)),
     }
   }
 
   private buildFingerprint(connection: Connection): string {
+    const finiteOrBlank = (value: unknown): number | string => {
+      if (value === null || value === undefined || value === "") return ""
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : ""
+    }
+    const exchange = this.resolveExchangeName(connection)
+    const isInstaForex = exchange === "instaforex"
+    const forexExecutionMode = isInstaForex ? resolveForexExecutionMode(connection as any) : undefined
+    const bridgeSelected = isInstaForex && forexExecutionMode === "mt5_bridge" && isForexBridgeSelected(connection)
+    const secretFingerprint = (value: unknown): string => {
+      const raw = String(value ?? "")
+      return raw ? createHash("sha256").update(raw).digest("hex").slice(0, 16) : ""
+    }
     return JSON.stringify({
-      api_key: connection.api_key || "",
-      api_secret: connection.api_secret || "",
-      api_passphrase: connection.api_passphrase || "",
+      api_key: isInstaForex ? connection.api_key || "" : connection.api_key || "",
+      api_secret: isInstaForex ? "" : connection.api_secret || "",
+      api_passphrase: isInstaForex
+        ? secretFingerprint(connection.api_passphrase ?? connection.passphrase)
+        : connection.api_passphrase || "",
+      account_id: connection.account_id || (this.resolveExchangeName(connection) === "instaforex" ? connection.api_key || "" : ""),
+      market_type: normalizeMarketType(connection.market_type || connection.asset_class, this.resolveExchangeName(connection)),
+      api_base_url: connection.api_base_url || "",
+      quotes_base_url: connection.quotes_base_url || "",
+      charts_url: connection.charts_url || "",
+      account_server: connection.account_server || "",
+      account_password: isInstaForex ? secretFingerprint(connection.account_password ?? connection.trader_password ?? connection.mt5_password) : "",
+      bridge_url: isInstaForex ? connection.bridge_url || "" : "",
+      bridge_token: isInstaForex ? secretFingerprint(connection.bridge_token) : "",
+      terminal_path: isInstaForex ? connection.terminal_path || "" : "",
+      positions_average: finiteOrBlank(connection.positions_average ?? connection.average_count),
+      lot_size: finiteOrBlank(connection.lot_size),
+      position_cost_percent: finiteOrBlank(connection.position_cost_percent),
+      spread_buffer_pips: finiteOrBlank(connection.spread_buffer_pips),
+      spread_multiplier: finiteOrBlank(connection.spread_multiplier),
+      forex_execution_mode: forexExecutionMode || "",
+      execution_mode: isInstaForex ? (forexExecutionMode || "read_only") : (connection.execution_mode || ""),
+      read_only: isInstaForex ? !bridgeSelected : connection.read_only || "",
       is_testnet: isTruthyFlag(connection.is_testnet),
       api_type: connection.api_type || "",
       contract_type: connection.contract_type || "",
       margin_type: connection.margin_type || "",
-      position_mode: connection.position_mode || "",
-      connection_method: this.resolveExchangeName(connection) === "bingx" ? "library" : (connection.connection_method || ""),
-      connection_library: this.resolveExchangeName(connection) === "bingx" ? "sdk" : (connection.connection_library || ""),
-      exchange: this.resolveExchangeName(connection) || "",
+      position_mode: isInstaForex ? "one_way" : (connection.position_mode || ""),
+      connection_method: exchange === "bingx" ? "library" : (isInstaForex ? (bridgeSelected ? "bridge" : "rest") : (connection.connection_method || "")),
+      connection_library: exchange === "bingx" ? "sdk" : (isInstaForex ? (bridgeSelected ? "mt5-bridge" : "native-http") : (connection.connection_library || "")),
+      exchange: exchange || "",
     })
   }
 

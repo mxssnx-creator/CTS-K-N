@@ -38,6 +38,11 @@ const MIN_LIVE_CYCLE_WINDOW_MS = 60_000
 // Keep this below that cap even when the final audit has many completed cycles.
 const ORDER_DETAIL_AUDIT_SPACING_MS = 600
 const MAX_VST_SOAK_SPREAD_BPS = 75
+// The soak is a lifecycle/control-order proof, not a sizing experiment.
+// Keep the complete owned position (entry + one accumulation) below a
+// deliberately small hard notional ceiling even if a caller or venue
+// minimum is mis-sized.
+const DEFAULT_VST_SOAK_POSITION_NOTIONAL_CAP_USD = 25
 const SYMBOL_ORDER_QUIET_MS = 1_000
 const SYMBOL_ORDER_WAIT_TIMEOUT_MS = 20_000
 // Safety reads bypass the normal 15-second connector cache. Stay below two
@@ -304,6 +309,14 @@ async function main(): Promise<void> {
   const preflightOnly = process.env.BINGX_VST_SOAK_PREFLIGHT_ONLY === "1"
   const requestedDuration = finite(process.env.BINGX_VST_SOAK_DURATION_MS) || EXACT_DURATION_MS
   const allowShort = process.env.BINGX_VST_SOAK_ALLOW_SHORT === "1"
+  const maxPositionNotionalUsd = Math.min(
+    DEFAULT_VST_SOAK_POSITION_NOTIONAL_CAP_USD,
+    Math.max(
+      5,
+      finite(process.env.BINGX_VST_SOAK_MAX_POSITION_NOTIONAL_USD)
+        || DEFAULT_VST_SOAK_POSITION_NOTIONAL_CAP_USD,
+    ),
+  )
   // Optional focused proof that the production trailing bridge itself — not
   // merely the venue's conditional-order API — performs a safe
   // cancel-confirm-replace cycle and rejects a subsequently stale ratchet.
@@ -1218,7 +1231,17 @@ async function main(): Promise<void> {
         priceTick,
         minQuantity: rules.minQuantity,
         minNotionalUsdt: rules.minNotionalUsdt,
+        minimumOrderNotionalUsdt: rulesModule.getMinimumBingXSmokeQuantity(rules, marketPrice).notionalUsdt,
         status: rules.status,
+      }
+      const minimum = rulesModule.getMinimumBingXSmokeQuantity(rules, marketPrice)
+      if (minimum.notionalUsdt * 2 > maxPositionNotionalUsd + 1e-8) {
+        throw new Error(
+          symbol + ": venue minimum for entry plus accumulation (" +
+          (minimum.notionalUsdt * 2).toFixed(8) +
+          " USDT) exceeds the hard VST position cap of " +
+          maxPositionNotionalUsd.toFixed(2) + " USDT",
+        )
       }
     }
 
@@ -1460,6 +1483,7 @@ async function main(): Promise<void> {
       plannedProtectionOrders: plannedCycleCount * (verifyEngineTrailingUpdate ? 5 : 3),
       plannedCloseOrders: plannedCycleCount,
       plannedVenueSubmissions: plannedCycleCount * (verifyEngineTrailingUpdate ? 8 : 6),
+      maxPositionNotionalUsd,
       engineTrailingUpdate: verifyEngineTrailingUpdate,
       pathCycles: Object.fromEntries(TRADE_PATHS.map((path) => [
         path.id,
@@ -1519,6 +1543,22 @@ async function main(): Promise<void> {
       source: string
       tradePath: TradePath
     }): Promise<ManagedOrderResult> => {
+      const orderPrice = finite(input.price)
+      if (!input.reduceOnly) {
+        const owned = ownedExposureBySlot.get(ownedExposureKey(input.symbol, input.positionDirection))
+        const existingNotional = finite(owned?.quantity) * orderPrice
+        const requestedNotional = Math.abs(finite(input.quantity)) * orderPrice
+        if (!(orderPrice > 0) || !(requestedNotional > 0)) {
+          throw new Error(input.controlId + ": non-reduce-only VST order has no valid notional")
+        }
+        if (existingNotional + requestedNotional > maxPositionNotionalUsd + 1e-8) {
+          throw new Error(
+            input.controlId + ": requested VST exposure " +
+            (existingNotional + requestedNotional).toFixed(8) +
+            " USDT exceeds hard cap " + maxPositionNotionalUsd.toFixed(2) + " USDT",
+          )
+        }
+      }
       const payload = {
         connectionId,
         symbol: input.symbol,
@@ -1535,6 +1575,7 @@ async function main(): Promise<void> {
         countPositionCreated: input.countPositionCreated,
         countAccumulated: input.countAccumulated,
         source: input.source,
+        maxExecutionNotionalUsd: maxPositionNotionalUsd,
         safetyPayload: {
           confirmLiveOrderPlacement: true,
           source: input.source,

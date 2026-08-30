@@ -211,7 +211,19 @@ async function main() {
   }
   if (!settingsPayload || typeof settingsPayload !== "object") throw new Error("Settings API schema invalid")
 
-  const directTrade = await request("/api/trade-engine/direct-trade/status", { json: true, timeoutMs: 30_000 })
+  const requestedConnectionId = String(process.env.VERIFY_CONNECTION_ID || "").trim()
+  const selectedConnection = requestedConnectionId
+    ? connectionsPayload.connections.find((connection) => String(connection?.id) === requestedConnectionId)
+    : connectionsPayload.connections[0]
+  const connectionId = String(selectedConnection?.id || "")
+  if (requestedConnectionId && !connectionId) {
+    throw new Error(`Requested production preview connection ${requestedConnectionId} is unavailable`)
+  }
+
+  const directTrade = await request(
+    `/api/trade-engine/direct-trade/status?connectionId=${encodeURIComponent(connectionId)}`,
+    { json: true, timeoutMs: 30_000 },
+  )
   if (!directTrade?.success || !directTrade?.stats) {
     throw new Error("Direct-Trade status API schema invalid")
   }
@@ -238,14 +250,6 @@ async function main() {
     throw new Error("Direct-Trade Statistics/Pulse API schema invalid")
   }
 
-  const requestedConnectionId = String(process.env.VERIFY_CONNECTION_ID || "").trim()
-  const selectedConnection = requestedConnectionId
-    ? connectionsPayload.connections.find((connection) => String(connection?.id) === requestedConnectionId)
-    : connectionsPayload.connections[0]
-  const connectionId = String(selectedConnection?.id || "")
-  if (requestedConnectionId && !connectionId) {
-    throw new Error(`Requested production preview connection ${requestedConnectionId} is unavailable`)
-  }
   let history = null
   const progressionReads = []
   if (connectionId) {

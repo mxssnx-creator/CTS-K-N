@@ -4,6 +4,7 @@ import { createExchangeConnector } from "@/lib/exchange-connectors/factory"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 import type { ExchangeConnection } from "@/lib/types"
 
 const LOG_PREFIX = "[v0] [LiveOrdersTest]"
@@ -145,6 +146,51 @@ interface FullTestReport {
   }
 }
 
+/**
+ * Keep the legacy read-only diagnostics aligned with the canonical connector
+ * factory. In particular, an InstaForex connection needs its account/bridge
+ * mode and HTTP endpoint fields; reducing it to crypto API credentials made
+ * the diagnostics report a misleadingly empty or unsupported connection.
+ */
+function diagnosticConnectorCredentials(connection: ExchangeConnection): Record<string, unknown> {
+  const isForex = String(connection.market_type || connection.asset_class || "").toLowerCase() === "forex"
+    || String(connection.exchange || "").toLowerCase().replace(/[^a-z]/g, "").includes("instaforex")
+  return {
+    apiKey: isForex ? (connection.account_id || connection.api_key || "") : connection.api_key,
+    apiSecret: isForex ? "" : connection.api_secret,
+    apiPassphrase: connection.api_passphrase || undefined,
+    accountId: connection.account_id || (isForex ? connection.api_key : undefined),
+    accountPassword: connection.account_password,
+    accountServer: connection.account_server,
+    bridgeUrl: connection.bridge_url,
+    bridgeToken: connection.bridge_token,
+    terminalPath: connection.terminal_path,
+    apiBaseUrl: connection.api_base_url,
+    quotesBaseUrl: connection.quotes_base_url,
+    chartsUrl: connection.charts_url,
+    symbolSuffix: connection.symbol_suffix,
+    lotSize: Number(connection.lot_size) > 0 ? Number(connection.lot_size) : undefined,
+    quantityUnit: connection.quantity_unit === "base_units" || connection.quantity_unit === "contracts" || connection.quantity_unit === "lots"
+      ? connection.quantity_unit
+      : undefined,
+    positionCostPercent: Number(connection.position_cost_percent) > 0 ? Number(connection.position_cost_percent) : undefined,
+    spreadBufferPips: Number(connection.spread_buffer_pips) > 0 ? Number(connection.spread_buffer_pips) : undefined,
+    spreadMultiplier: Number(connection.spread_multiplier) > 0 ? Number(connection.spread_multiplier) : undefined,
+    positionsAverage: Number(connection.positions_average ?? connection.average_count) > 0
+      ? Number(connection.positions_average ?? connection.average_count)
+      : undefined,
+    marketType: isForex ? "forex" : "crypto",
+    executionMode: connection.execution_mode,
+    forexExecutionMode: connection.forex_execution_mode,
+    connectionMethod: connection.connection_method,
+    connectionLibrary: connection.connection_library,
+    readOnly: connection.read_only === true || connection.read_only === "1" || connection.read_only === "true",
+    isTestnet: isTruthyFlag(connection.is_testnet),
+    apiType: connection.api_type,
+    contractType: connection.contract_type,
+  }
+}
+
 export const dynamic = "force-dynamic"
 export async function POST(req: NextRequest) {
   try {
@@ -193,11 +239,36 @@ export async function POST(req: NextRequest) {
       id: connectionId,
       name: connData.name || connectionId,
       exchange: connData.exchange || "unknown",
+      market_type: connData.market_type || connData.asset_class || "crypto",
+      asset_class: connData.asset_class || connData.market_type || "crypto",
+      account_id: connData.account_id || "",
+      account_server: connData.account_server || "",
+      account_password: connData.account_password || "",
+      bridge_url: connData.bridge_url || "",
+      bridge_token: connData.bridge_token || "",
+      terminal_path: connData.terminal_path || "",
       api_key: connData.api_key || "",
       api_secret: connData.api_secret || "",
       api_passphrase: connData.api_passphrase || "",
       api_type: connData.api_type || "",
       contract_type: connData.contract_type || "",
+      connection_method: connData.connection_method || "",
+      connection_library: connData.connection_library || "",
+      symbol_suffix: connData.symbol_suffix || "",
+      api_base_url: connData.api_base_url || "",
+      quotes_base_url: connData.quotes_base_url || "",
+      charts_url: connData.charts_url || "",
+      quantity_unit: connData.quantity_unit || "",
+      lot_size: connData.lot_size || "",
+      position_cost_percent: connData.position_cost_percent || "",
+      spread_buffer_pips: connData.spread_buffer_pips || "",
+      spread_multiplier: connData.spread_multiplier || "",
+      positions_average: connData.positions_average || connData.average_count || "",
+      average_count: connData.average_count || "",
+      execution_mode: connData.execution_mode || "",
+      forex_execution_mode: connData.forex_execution_mode || "",
+      read_only: connData.read_only || "",
+      is_testnet: connData.is_testnet || "0",
     } as any as ExchangeConnection
 
     console.log(`${LOG_PREFIX} Starting live orders test for ${connection.name}`)
@@ -224,14 +295,10 @@ export async function POST(req: NextRequest) {
       } as FullTestReport)
     }
 
-    const connector = await createExchangeConnector(connection.exchange, {
-      apiKey: connection.api_key,
-      apiSecret: connection.api_secret,
-      apiPassphrase: connection.api_passphrase || "",
-      isTestnet: false,
-      apiType: connection.api_type,
-      contractType: connection.contract_type,
-    })
+    const connector = await createExchangeConnector(
+      connection.exchange,
+      diagnosticConnectorCredentials(connection) as any,
+    )
 
     // Test 2: Get balances
     const balanceTest = await testGetBalances(connector)
@@ -292,14 +359,10 @@ async function testConnectorCreation(
 ): Promise<TestResult> {
   const start = Date.now()
   try {
-    const connector = await createExchangeConnector(connection.exchange, {
-      apiKey: connection.api_key,
-      apiSecret: connection.api_secret,
-      apiPassphrase: connection.api_passphrase || "",
-      isTestnet: false,
-      apiType: connection.api_type,
-      contractType: connection.contract_type,
-    })
+    const connector = await createExchangeConnector(
+      connection.exchange,
+      diagnosticConnectorCredentials(connection) as any,
+    )
 
     if (!connector) {
       return {

@@ -3,12 +3,13 @@
 /**
  * Direct-Trade live lifecycle preflight.
  *
- * This is a paper-only contract test. It starts the real Next API and the
- * real Direct-Trade processor, requests Live mode with a deliberately stale
- * paper range, and proves that the worker publishes at least the 48h baseline
- * (or one bounded expansion up to 90h when coverage is sparse) before its
- * realtime ticks continue. FORCE_SIMULATED is forced
- * in the child server, so this test can never submit an exchange order.
+ * This is a paper-only contract test. It starts the real Next API, verifies
+ * that an unsafe Direct-Trade Live request is rejected by the shared native
+ * protection gate, then starts the same configuration in paper mode and
+ * proves that the worker publishes at least the 48h baseline (or one bounded
+ * expansion up to 90h when coverage is sparse) before realtime ticks continue.
+ * FORCE_SIMULATED is forced in the child server, so this test can never submit
+ * an exchange order.
  */
 
 import { spawn } from "node:child_process"
@@ -40,13 +41,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function request(path, options = {}) {
+async function requestRaw(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers: { "content-type": "application/json", ...(options.headers || {}) },
     signal: AbortSignal.timeout(30_000),
   })
   const payload = await response.json().catch(() => ({}))
+  return { response, payload }
+}
+
+async function request(path, options = {}) {
+  const { response, payload } = await requestRaw(path, options)
   if (!response.ok) throw new Error(`${options.method || "GET"} ${path}: HTTP ${response.status} ${JSON.stringify(payload)}`)
   return payload
 }
@@ -64,7 +70,7 @@ async function waitForServer() {
   throw new Error(`Next did not become ready\n${outputTail}`)
 }
 
-async function waitForWarmup() {
+async function waitForWarmup(expectedLiveMode = false) {
   const deadline = Date.now() + 180_000
   let last = null
   while (Date.now() < deadline) {
@@ -75,7 +81,7 @@ async function waitForWarmup() {
     const tickCount = Number(last?.processor?.tickCount || 0)
     const calculationReady = last?.calculationProgress?.status === "ready"
     if (
-      last?.state?.liveMode === true &&
+      last?.state?.liveMode === expectedLiveMode &&
       calculationReady &&
       historyHours >= 48 &&
       historyHours <= 90 &&
@@ -140,33 +146,48 @@ async function main() {
 
   try {
     await waitForServer()
-    const symbols = ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"].slice(0, Math.max(4, symbolCount))
+    const symbols = ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"].slice(0, Math.min(4, Math.max(1, symbolCount)))
+    const startBody = {
+      action: "start",
+      connectionId: testConnectionId,
+      symbolCount,
+      symbols,
+      // Live starts at 48h and may expand to 90h only if the result graph is
+      // too sparse; no evaluation threshold is relaxed.
+      historyHours: 48,
+      timeframes: ["5m"],
+      strategyTypes: ["standard"],
+      entryTactics: ["breakout"],
+      exitTactics: ["bracket"],
+      trailingEnabled: false,
+      minRecentProfitFactor: 0.8,
+      recentEvaluationPositions: 3,
+      minProfitFactor: 4,
+      maxDrawdownTimeMin: 10,
+      activityVolumeRatio: 0,
+      processingIntervalMs: 500,
+    }
+
+    const liveAttempt = await requestRaw("/api/trade-engine/direct-trade", {
+      method: "POST",
+      body: JSON.stringify({ ...startBody, liveMode: true }),
+    })
+    if (
+      liveAttempt.response.status !== 409
+      || liveAttempt.payload?.code !== "direct_native_protection_not_ready"
+    ) {
+      throw new Error(
+        `Unsafe Direct-Trade live request was not blocked as expected: ` +
+        `${liveAttempt.response.status} ${JSON.stringify(liveAttempt.payload)}`,
+      )
+    }
+
     const started = await request("/api/trade-engine/direct-trade", {
       method: "POST",
-      body: JSON.stringify({
-        action: "start",
-        liveMode: true,
-        connectionId: testConnectionId,
-        symbolCount,
-        symbols,
-        // Live starts at 48h and may expand to 90h only if the result graph is
-        // too sparse; no evaluation threshold is relaxed.
-        historyHours: 48,
-        timeframes: ["5m"],
-        strategyTypes: ["standard"],
-        entryTactics: ["breakout"],
-        exitTactics: ["bracket"],
-        trailingEnabled: false,
-        minRecentProfitFactor: 0.8,
-        recentEvaluationPositions: 3,
-        minProfitFactor: 4,
-        maxDrawdownTimeMin: 10,
-        activityVolumeRatio: 0,
-        processingIntervalMs: 500,
-      }),
+      body: JSON.stringify({ ...startBody, liveMode: false }),
     })
-    if (!started?.success || started?.state?.liveMode !== true) {
-      throw new Error(`Could not enter Direct-Trade live lifecycle: ${JSON.stringify(started)}`)
+    if (!started?.success || started?.state?.liveMode !== false) {
+      throw new Error(`Could not enter Direct-Trade paper lifecycle: ${JSON.stringify(started)}`)
     }
 
     worker = spawn(process.execPath, [
@@ -191,11 +212,13 @@ async function main() {
     worker.stdout.on("data", appendTail)
     worker.stderr.on("data", appendTail)
 
-    const status = await waitForWarmup()
+    const status = await waitForWarmup(false)
     console.log(JSON.stringify({
       success: true,
       paperOnly: true,
-      liveLifecycleExercised: true,
+      liveEntryBlocked: true,
+      liveBlockCode: liveAttempt.payload.code,
+      paperLifecycleExercised: true,
       requestedPaperHistoryHours: 48,
       requiredLiveHistoryHours: 48,
       publishedHistoryHours: Number(status.calculation.historyHours),

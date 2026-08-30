@@ -1,5 +1,78 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Forex/InstaForex and high-volume safety continuation (2026-08-30; current)
+
+- Current checkout is `/workspace/CTS-K-N` on branch
+  `codex/forex-instaforex-20260829`, based on the existing local follow-up
+  revision `f58d2c3`. This worktree contains the complete Forex/InstaForex,
+  volume/exposure, protection, Direct-Trade, UI/API, statistics, Redis
+  retention, and test-harness changes. No commit, GitHub push/PR/merge, Chisel
+  remote write, deployment, or exchange mutation has been performed yet.
+- Forex support is coordinated through the same signal/strategy and live-order
+  contracts as crypto. InstaForex uses official REST/quotes/charts endpoints
+  for read-only account, quote, spread, PositionCost, and history data. Live
+  Forex execution is explicitly bridge-only; the checked-in bridge is MT5 and
+  rejects non-loopback binds without a token, requires trading opt-in, bounds
+  lots/total lots, validates direction-aware SL/TP, and post-verifies every
+  ticket. The supplied attachment is MT4 information; it was not persisted,
+  logged, committed, or sent to the MT5 bridge. MT4 live execution still needs
+  a compatible MT4 EA/bridge.
+- Volume calculation now uses authoritative venue balance and aggregate
+  position snapshots, active broker spread/PositionCost, Forex lot/contract
+  conversion, a higher Forex average-count default, bounded caches, and a
+  hard live exposure ceiling. Every physical increase re-reads aggregate
+  exposure and rounds down; fallback balance, ambiguous symbol/direction,
+  partial fills, missing tickets, or missing exact SL/TP fail closed. Exact
+  row SL/TP plus aggregate security protection remains armed through closes.
+  The legacy direct connector order probe is retired, and the supervised
+  smoke path is restricted to BingX Prod-VST virtual funds; X01/Mainnet and
+  Bybit remain read-only.
+- Reset DB’s QuickStart path now sends same-origin cookies and the server
+  accepts an authenticated admin session through `authorizeAdminRequest`;
+  bearer automation remains supported. Direct-Trade intentionally continues
+  to return `direct_native_protection_not_ready` for live entries while paper
+  evaluation remains available. Its preflight now treats that 409 as the
+  expected safety result and then verifies the paper lifecycle.
+- Stats/indications/processing/detailed-log APIs use canonical scoped symbols
+  rather than the stale 536-symbol catalog. Settings, connection cards,
+  dialogs, Forex/crypto selectors, historic sources, and live update paths
+  carry the coordinated connection fields. Redis inspection is read-only and
+  uses SCAN/TTL; the current local snapshot reported 296 keys, no volume index
+  growth/oversize, and `unboundedFamilies: []`. Fixed-size strategy-detail
+  hashes and bounded log lists remain visible as finite no-expiry families.
+- Final local verification after the current changes: 250/250 Jest suites,
+  1,704/1,704 tests; TypeScript; repository-wide ESLint; source syntax;
+  zero-finding release-secret scan; Python bridge compile; direct live
+  preflight with 409 block + paper history 48h + 47 healthy ticks + zero
+  exchange orders; and `git diff --check`. The production build passed with
+  348 complete Next traces. An explicit single-process local inline-paper
+  server returned 200 for root/health/init/database/persistence endpoints,
+  passed the 20-request progression E2E, and passed the local deployment
+  contract at schema v105. The normal production start correctly refuses
+  missing shared Redis configuration. `agent-browser` was unavailable, so
+  browser-skill verification was replaced by same-namespace HTTP/E2E checks.
+- BingX Prod-VST authenticated soak preflight was run in preflight-only mode
+  and safely blocked because the required server-side X02 credentials were not
+  configured. No VST order was sent. Evidence is under the local ignored
+  `.agent-logs/` directory; no credential values are present in reports.
+- Verified owner-only checkpoints created during this continuation include
+  `/workspace/backups/CTS-K-N/20260830T041000Z-pre-test-guard-fix`,
+  `/workspace/backups/CTS-K-N/20260830T041500Z-pre-smoke-bypass-fix`,
+  `/workspace/backups/CTS-K-N/20260830T043000Z-pre-direct-preflight-contract`,
+  and `/workspace/backups/CTS-K-N/20260830T044500Z-pre-handoff-context`.
+  Each contains a complete Git bundle, binary worktree patch, safe untracked
+  archive/list, HEAD/status/refs evidence, verified SHA-256 sums, and
+  successful bundle verification.
+- Next handoff: create the final post-context checkpoint, publish the exact
+  tested tree using the selected GitHub integration, wait for required checks,
+  merge only the reviewed head, then use the managed Chisel path for a remote
+  backup and merged-main deployment if that path is available. Re-run only
+  read-only production UI/API/Redis checks. An authenticated X02 Prod-VST
+  lifecycle may be run only with explicitly supplied server-side credentials,
+  maintenance/service barriers, virtual-funds host verification, exact
+  position ownership, and complete cleanup; do not enable X01/Mainnet or
+  MT4/MT5 live execution from the attached plaintext information.
+
 ## X02 external-protection coexistence follow-up (2026-08-29; authoritative)
 
 - GitHub PR #256 (`Keep VST security armed through shared-account closes`) is
@@ -2597,3 +2670,31 @@ credentials are present.
   checkpoint
   `/workspace/backups/CTS-K-N/20260829T023627Z-pre-soak-runtime-hardening`,
   whose bundle and SHA-256 manifest verified successfully.
+
+## Session 2026-08-30 — active Forex/InstaForex backup gate boundary
+
+- [x] The canonical checkout was found on
+  `codex/forex-instaforex-20260829@f58d2c3caafd6a9bb22a9b9b2af9ef0a8dd27fea`,
+  one commit ahead of and zero commits behind
+  `origin/main@7f117db2a543a36f16e533324b6dd9172acb3f70`.
+- [x] The actively changing Forex/InstaForex worktree was preserved in
+  owner-only verified checkpoints, most recently
+  `/workspace/backups/CTS-K-N/backup-gate-live-2026-08-30T001202Z`. Its
+  complete bundle, binary patch, untracked archive/list, HEAD/status records,
+  Git-bundle verification and SHA-256 manifest all passed. No source archive
+  is authorized for Drive upload.
+- [x] The missing offline pnpm artifact `@hookform/resolvers@3.10.0` was
+  restored from the regular package source. A byte-identical isolated snapshot
+  of patch SHA-256
+  `ddf2e7019ddbd78225b8ac2ae8dfedee077d3bac01d2b43e3dc00536556e198f`
+  then passed frozen offline install, diff/source syntax, TypeScript, ESLint,
+  production build with 348 traces, Kilo preflight and Linux install preflight.
+- [ ] Publication is blocked. Security scanning found a literal-sensitive
+  `account_password` assignment in
+  `components/settings/connection-edit-dialog.tsx`; recreation verification
+  found 210 stale entries; and the complete Jest run failed 2/250 suites and
+  20/1,690 tests (Main live dispatch plus Forex volume sizing). The canonical
+  worktree also continued changing during and after the snapshot. Do not
+  commit, push, open a PR or merge until the edit series is stable, these gates
+  are repaired, manifests are regenerated, and the complete exact-tree gate is
+  rerun successfully.

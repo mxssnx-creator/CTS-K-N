@@ -38,6 +38,13 @@ import {
   INDICATION_PROFILE_TYPES,
 } from "./active-indication-profile"
 import { DEFAULT_BASE_MIN_STEP } from "./constants"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  DEFAULT_FOREX_POSITIONS_AVERAGE,
+  DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+  DEFAULT_FOREX_SPREAD_MULTIPLIER,
+} from "./forex-market"
+import { normalizeMarketType } from "./market-types"
 import { BLOCK_COUNT_MAX } from "./block-count-state"
 import {
   canonicalForcedBaseSymbols,
@@ -7715,6 +7722,126 @@ const migrations: Migration[] = [
     down: async (client: any) => {
       // Never restore a larger volume or disable protection on rollback.
       await client.set("_schema_version", "103")
+    },
+  },
+  {
+    version: 105,
+    name: "105-forex-market-coordination-and-instaforex-defaults",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      let hashesUpdated = 0
+      let forexConnections = 0
+      let cryptoConnections = 0
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+
+      for (const connection of connections) {
+        const id = normalizeDirectTradeConnectionId(connection?.id)
+        if (!id) continue
+        const exchangeName = String(connection.exchange || "").trim().toLowerCase().replace(/[^a-z]/g, "")
+        const isInstaForex = exchangeName === "instaforex" || exchangeName === "instafx"
+        const marketType = isInstaForex
+          ? "forex"
+          : normalizeMarketType(connection.market_type || connection.asset_class, connection.exchange)
+        const isForex = marketType === "forex"
+        if (isForex) forexConnections++
+        else cryptoConnections++
+
+        const defaults: Record<string, string> = isForex
+          ? {
+              market_type: "forex",
+              asset_class: "forex",
+              api_type: "forex",
+              contract_type: "forex",
+              connection_method: "rest",
+              connection_library: "native-http",
+              execution_mode: "read_only",
+              read_only: "1",
+              execution_supported: "0",
+              volume_kind: "lots",
+              quantity_unit: "lots",
+              position_cost_mode: "spread_plus_buffer",
+              spread_source: "broker_tick",
+              spread_mode: "exchange",
+              spread_buffer_pips: String(DEFAULT_FOREX_SPREAD_BUFFER_PIPS),
+              spread_multiplier: String(DEFAULT_FOREX_SPREAD_MULTIPLIER),
+              position_cost_percent: "0.1",
+              max_spread_pips: "3",
+              lot_size: String(DEFAULT_FOREX_LOT_SIZE),
+              positions_average: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+              average_count: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+              is_testnet: "0",
+              updated_at: now,
+            }
+          : {
+              market_type: "crypto",
+              asset_class: "crypto",
+              volume_kind: "base",
+              spread_source: "exchange_tick",
+              position_cost_mode: "configured",
+              spread_mode: "exchange",
+              spread_buffer_pips: "0",
+              spread_multiplier: "1",
+              lot_size: "1",
+              average_count: "25",
+              updated_at: now,
+            }
+
+        const keys = [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]
+        for (const key of keys) {
+          const current = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+          if (Object.keys(current).length === 0 && key.startsWith("connection_settings:")) continue
+          const patch: Record<string, string> = {}
+          for (const [field, value] of Object.entries(defaults)) {
+            // InstaForex's published endpoints are read-only. Force the
+            // safety boundary even when an older row contains bridge-shaped
+            // execution settings; crypto rows retain explicit operator values.
+            if (isForex || current[field] === undefined || current[field] === "") patch[field] = value
+          }
+          if (isForex) {
+            await client.hdel(
+              key,
+              "account_password",
+              "trading_password",
+              "trader_password",
+              "mt5_password",
+              "bridge_url",
+              "bridge_token",
+              "terminal_path",
+            ).catch(() => 0)
+          }
+          if (Object.keys(patch).length === 0) continue
+          try {
+            await client.hset(key, patch)
+            hashesUpdated++
+          } catch (error) {
+            if (!/WRONGTYPE/i.test(String((error as Error)?.message || error))) throw error
+          }
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        forex_market_schema: "v1",
+        forex_connections_normalized: String(forexConnections),
+        crypto_connections_seen: String(cryptoConnections),
+        forex_settings_hashes_updated: String(hashesUpdated),
+        forex_position_cost_contract: "broker_bid_ask_spread_plus_buffer",
+        forex_default_positions_average: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+        forex_default_lot_size: String(DEFAULT_FOREX_LOT_SIZE),
+        schema_version: "105",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // Market metadata and explicit operator choices are retained on rollback;
+      // moving the cursor is the only safe reversible operation.
+      await client.set("_schema_version", "104")
     },
   },
 ]

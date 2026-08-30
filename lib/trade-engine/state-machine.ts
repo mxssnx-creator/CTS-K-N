@@ -8,13 +8,13 @@
  * 4. Track results and progression
  */
 
-import { createExchangeConnector } from "@/lib/exchange-connectors"
+import { ExchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { positionTracker, LivePosition, OrderRecord } from "@/lib/positions/position-tracker"
 import { indicatorCalculator, PriceData } from "@/lib/indicators/calculator"
 import { getRedisClient, getConnection } from "@/lib/redis-db"
 import { placeLiveOrder } from "@/lib/live-order-service"
+import { VolumeCalculator } from "@/lib/volume-calculator"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
-import { isTruthyFlag } from "@/lib/connection-state-utils"
 import {
   attributeSystemTrackedExchangePositions,
   buildSystemExchangeTrackingScope,
@@ -133,22 +133,19 @@ export class TradeEngineStateMachine {
     try {
       this.state = "monitoring"
 
-      // Load real credentials from DB so the connector can make authenticated
-      // calls. Passing empty strings previously caused the factory to return a
-      // SimulatedConnector, which never makes real exchange requests. The
-      // state-machine cycle is used for legacy position tracking and is only
-      // called when the full live-stage pipeline does NOT handle the symbol.
+      // Resolve through the canonical factory so Forex account/bridge fields,
+      // read-only mode, symbol units, and credential fingerprints cannot be
+      // lost on this legacy monitoring route. The state-machine cycle is used
+      // for legacy position tracking and is only called when the full live-
+      // stage pipeline does NOT handle the symbol.
       const connData = await getConnection(this.config.connectionId)
-      const connector = await createExchangeConnector(
-        connData?.exchange || this.config.connectionId,
-        {
-          apiKey:    connData?.api_key    || "",
-          apiSecret: connData?.api_secret || "",
-          apiType:   connData?.api_type,
-          contractType: connData?.contract_type,
-          isTestnet: isTruthyFlag(connData?.is_testnet),
-        },
+      const connector = await ExchangeConnectorFactory.getInstance().getOrCreateConnector(
+        this.config.connectionId,
       )
+      if (!connector) {
+        console.warn(`[v0] [TradeEngine] Connector unavailable for ${this.config.connectionId}; cycle remains fail-closed`)
+        return
+      }
 
       // Get current balance
       const balance = await connector.getBalance()
@@ -283,8 +280,47 @@ export class TradeEngineStateMachine {
         return
       }
 
-      // Place order
-      const quantity = Math.round((availableRisk / 100) * strength * 1000) / 1000
+      // Use the shared PositionCost calculator at the last sizing boundary.
+      // The former percentage-to-raw-units formula could turn a 50% risk
+      // setting into 0.5 BTC regardless of price, balance, lot contract, or
+      // the live exposure ceiling.
+      const ticker = typeof connector?.getTicker === "function"
+        ? await connector.getTicker(symbol)
+        : null
+      const currentPrice = Number(ticker?.last ?? ticker?.ask ?? ticker?.bid) || 0
+      if (!(currentPrice > 0)) {
+        console.log("[v0] [TradeEngine] Buy signal deferred: no authoritative price for " + symbol)
+        this.state = "monitoring"
+        return
+      }
+      const volumeResult = await VolumeCalculator.calculateVolumeForConnection(
+        this.config.connectionId,
+        symbol,
+        currentPrice,
+        {
+          tradeMode: "main",
+          indicationType: "signal",
+          positionCostPercentOverride: Number(connection?.position_cost_percent) > 0
+            ? Number(connection.position_cost_percent)
+            : undefined,
+          marketType: connection?.market_type || connection?.asset_class,
+          lotSize: Number(connection?.lot_size) > 0 ? Number(connection.lot_size) : undefined,
+        },
+      )
+      if (volumeResult.conversionAvailable === false) {
+        console.log("[v0] [TradeEngine] Buy signal deferred: USD conversion unavailable for " + symbol)
+        this.state = "monitoring"
+        return
+      }
+      const signalStrength = Math.max(0.5, Math.min(1, Number(strength) || 0))
+      const quantity = Number(
+        (Number(volumeResult.finalVolume || volumeResult.volume || 0) * signalStrength).toFixed(12),
+      )
+      if (!(quantity > 0)) {
+        console.log("[v0] [TradeEngine] Buy signal deferred: shared sizing returned no executable quantity for " + symbol)
+        this.state = "monitoring"
+        return
+      }
       const result = await placeLiveOrder({
         connectionId: this.config.connectionId,
         connection,
@@ -296,6 +332,12 @@ export class TradeEngineStateMachine {
         persistPosition: false,
         updateCounters: false,
         source: "legacy-trade-engine-state-machine",
+        maxExecutionNotionalUsd: volumeResult.maxExecutionNotionalUsd,
+        marketType: connection?.market_type || connection?.asset_class,
+        lotSize: Number(connection?.lot_size) > 0 ? Number(connection.lot_size) : undefined,
+        requireProtection: true,
+        protectionStopLossPercent: Number(this.config.riskManagement.stopLossPercent),
+        protectionTakeProfitPercent: Number(this.config.riskManagement.takeProfitPercent),
         clientOrderId: `legacy-state-entry-${this.config.connectionId}-${symbol}-${Date.now()}`,
         safetyPayload: {
           confirmLiveOrderPlacement: true,
@@ -304,18 +346,22 @@ export class TradeEngineStateMachine {
       })
 
       if (result.success) {
-        // Record order
+        // Record the authoritative venue result. Requested quantity is only a
+        // sizing intent; recording it after a partial/rounded fill makes the
+        // legacy statistics and exposure tracker grow beyond the real position.
+        const filledQuantity = Number(result.fill?.filledQty) || 0
+        const filledPrice = Number(result.fill?.filledPrice) || 0
         const order: OrderRecord = {
           id: result.orderId || `order-${Date.now()}`,
           connection_id: this.config.connectionId,
           symbol,
           side: "buy",
-          quantity,
-          price: result.fill?.filledPrice || 0,
+          quantity: filledQuantity > 0 ? filledQuantity : quantity,
+          price: filledPrice > 0 ? filledPrice : 0,
           order_type: "market",
-          status: "pending",
-          filled_quantity: result.fill?.filledQty || quantity,
-          filled_price: result.fill?.filledPrice || 0,
+          status: filledQuantity > 0 ? "filled" : "pending",
+          filled_quantity: filledQuantity,
+          filled_price: filledPrice,
           timestamp: Date.now(),
         }
 

@@ -4,6 +4,7 @@
  */
 
 import { initRedis, getRedisClient, getSettings, getAppSettings, setSettings } from "@/lib/redis-db"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 /**
  * Merge cleanup-related settings from both the `app_settings` (main UI
@@ -103,7 +104,7 @@ export class DataCleanupManager {
 
       // Find all closed live positions that haven't been synced to the database yet
       const allConnectionIds: string[] = []
-      const keys = await client.keys("live:positions:*:closed")
+      const keys = await scanRedisKeys(client, "live:positions:*:closed")
       for (const key of keys) {
         const match = key.match(/live:positions:(.+?):closed/)
         if (match && match[1]) {
@@ -193,7 +194,7 @@ export class DataCleanupManager {
       await this.syncLivePositionsToDatabase()
 
       // Clean old closed exchange positions
-      const connectionKeys = await client.keys("exchange_positions:*:closed")
+      const connectionKeys = await scanRedisKeys(client, "exchange_positions:*:closed")
       for (const key of connectionKeys) {
         const closedIds = await client.smembers(key)
         for (const posId of closedIds) {
@@ -220,7 +221,7 @@ export class DataCleanupManager {
       }
 
       // Clean old market data (sorted sets with timestamps)
-      const marketKeys = await client.keys("market_data:*")
+      const marketKeys = await scanRedisKeys(client, "market_data:*")
       for (const key of marketKeys) {
         const removed = await client.zremrangebyscore(key, 0, marketDataCutoff)
         if (typeof removed === "number") {
@@ -229,7 +230,7 @@ export class DataCleanupManager {
       }
 
       // Clean old coordination logs (stored as JSON string arrays via SET, not sorted sets)
-      const coordLogKeys = await client.keys("coord_logs:*")
+      const coordLogKeys = await scanRedisKeys(client, "coord_logs:*")
       for (const key of coordLogKeys) {
         try {
           const raw = await client.get(key)
@@ -248,24 +249,66 @@ export class DataCleanupManager {
         } catch { /* ignore parse errors - skip this key */ }
       }
 
-      // Clean old volume calculation logs (stored as JSON string arrays via SET, not sorted sets)
-      const volumeLogKeys = await client.keys("volume_calcs:*")
-      for (const key of volumeLogKeys) {
+      // Compact volume-calculation indexes by resolving their detail keys.
+      // The index stores log ids (not log objects); treating each id as an
+      // object made the old cleanup pass interpret every entry as 1970 and
+      // erase the history index. Detail keys have a TTL now, while this pass
+      // also removes legacy keys that were created before TTL retention.
+      const volumeIndexRetentionSeconds = 30 * 24 * 60 * 60
+      const volumeIndexKeys = await scanRedisKeys(client, "volume_calcs:*")
+      for (const key of volumeIndexKeys) {
         try {
           const raw = await client.get(key)
-          if (raw) {
-            const logs = JSON.parse(raw)
-            if (Array.isArray(logs)) {
-              const filtered = logs.filter((log: any) => {
-                const ts = new Date(log.timestamp || log.created_at || 0).getTime()
-                return ts > positionCutoff
-              })
-              if (filtered.length < logs.length) {
-                await client.set(key, JSON.stringify(filtered))
-              }
-            }
+          if (!raw) continue
+          const parsed = JSON.parse(raw)
+          if (!Array.isArray(parsed)) {
+            await client.del(key)
+            continue
           }
-        } catch { /* ignore parse errors - skip this key */ }
+          const connectionId = key.slice("volume_calcs:".length)
+          const kept: string[] = []
+          const evicted: string[] = []
+          for (const value of parsed) {
+            const logId = String(value || "").trim()
+            if (!logId) continue
+            const detailKey = `volume_calc:${connectionId}:${logId}`
+            const detailRaw = await client.get(detailKey)
+            if (!detailRaw) {
+              evicted.push(detailKey)
+              continue
+            }
+            let timestamp = 0
+            try {
+              const detail = JSON.parse(detailRaw)
+              timestamp = new Date(detail.created_at || detail.timestamp || 0).getTime()
+            } catch {
+              timestamp = 0
+            }
+            if (timestamp > positionCutoff && kept.length < 500) kept.push(logId)
+            else evicted.push(detailKey)
+          }
+          if (evicted.length > 0) await client.del(...evicted)
+          if (kept.length !== parsed.length || evicted.length > 0) {
+            await client.set(key, JSON.stringify(kept), { EX: volumeIndexRetentionSeconds })
+          } else if ((await client.ttl(key)) < 0) {
+            await client.expire(key, volumeIndexRetentionSeconds)
+          }
+        } catch { /* ignore malformed/expired diagnostic keys */ }
+      }
+
+      // Legacy detail keys are not necessarily reachable from an index (for
+      // example after an interrupted write). Remove only demonstrably old
+      // entries; fresh diagnostics remain untouched and TTL-managed.
+      const volumeDetailKeys = await scanRedisKeys(client, "volume_calc:*")
+      for (const key of volumeDetailKeys) {
+        try {
+          const ttl = await client.ttl(key)
+          if (ttl > 0) continue
+          const raw = await client.get(key)
+          const createdAt = raw ? new Date(JSON.parse(raw)?.created_at || 0).getTime() : 0
+          if (!createdAt || createdAt <= positionCutoff) await client.del(key)
+          else await client.expire(key, volumeIndexRetentionSeconds)
+        } catch { /* ignore malformed/expired diagnostic keys */ }
       }
 
       console.log(`[v0] Cleanup complete: archived ${archivedPositions} positions, cleaned ${cleanedMarketData} market data records`)
@@ -290,7 +333,7 @@ export class DataCleanupManager {
       cleaned += typeof removed === "number" ? removed : 0
 
       // Clean connection-specific symbol market data
-      const symbolKeys = await client.keys(`market_data:${connectionId}:*`)
+      const symbolKeys = await scanRedisKeys(client, `market_data:${connectionId}:*`)
       for (const key of symbolKeys) {
         const r = await client.zremrangebyscore(key, 0, cutoffTime)
         cleaned += typeof r === "number" ? r : 0

@@ -162,6 +162,50 @@ describe("live-order-service integration accounting", () => {
     expect(calls).toEqual(["order"])
   })
 
+  test("aggregates every authoritative venue row before applying the remaining exposure ceiling", async () => {
+    const { resolveLiveOrderExposureCeiling } = await import("@/lib/live-order-service")
+    const priorConfirmation = process.env.BINGX_VST_SOAK_CONFIRM
+    process.env.BINGX_VST_SOAK_CONFIRM = "I understand Prod-VST places authenticated orders with virtual funds"
+    const connector = {
+      getEnvironmentInfo: jest.fn(() => ({
+        environment: "prod-vst",
+        baseUrl: "https://open-api-vst.bingx.com",
+        isDemo: true,
+        usesVirtualFunds: true,
+      })),
+      getPositions: jest.fn(async () => [
+        { symbol: "BTC-USDT", positionSide: "LONG", positionAmt: "0.5", entryPrice: "100" },
+        { symbol: "BTC-USDT", positionSide: "LONG", positionAmt: "0.25", entryPrice: "100" },
+        { symbol: "BTC-USDT", positionSide: "SHORT", positionAmt: "0.1", entryPrice: "100" },
+      ]),
+      getLastPositionsSnapshotStatus: jest.fn(() => ({ ok: true, at: Date.now() })),
+    }
+
+    try {
+      await expect(resolveLiveOrderExposureCeiling(
+        {
+          connectionId: "bingx-vst-soak-aggregate",
+          symbol: "BTCUSDT",
+          side: "long",
+          positionDirection: "long",
+          quantity: 1,
+          connector,
+          connection: { exchange: "bingx", is_testnet: "1" },
+          maxExecutionNotionalUsd: 150,
+          safetyPayload: { confirmLiveOrderPlacement: true },
+        },
+        { exchange: "bingx", is_testnet: "1" },
+        connector,
+        "BTCUSDT",
+        100,
+      )).resolves.toEqual({ maxNotionalUsd: 75, currentNotionalUsd: 75 })
+      expect(connector.getPositions).toHaveBeenCalledWith("BTCUSDT")
+    } finally {
+      if (priorConfirmation === undefined) delete process.env.BINGX_VST_SOAK_CONFIRM
+      else process.env.BINGX_VST_SOAK_CONFIRM = priorConfirmation
+    }
+  })
+
   test("Direct-Trade live order reconciles exchange-only acknowledgements before recording the fill", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
@@ -1183,5 +1227,215 @@ describe("live-order-service integration accounting", () => {
       if (previousAllowProductionSimulated === undefined) delete process.env.ALLOW_PROD_SIMULATED
       else process.env.ALLOW_PROD_SIMULATED = previousAllowProductionSimulated
     }
+  })
+
+  test("requires and records two real conditional controls after an authoritative fill", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      getCapabilities: jest.fn(() => ["futures"]),
+      placeOrder: jest.fn(async () => ({
+        success: true,
+        orderId: "protected-entry-1",
+        status: "filled",
+        filledQty: 1,
+        filledPrice: 100,
+      })),
+      placeStopOrder: jest.fn()
+        .mockResolvedValueOnce({ success: true, orderId: "protected-sl-1" })
+        .mockResolvedValueOnce({ success: true, orderId: "protected-tp-1" }),
+    }
+
+    const result = await placeLiveOrder({
+      connectionId: "conn-protected-entry",
+      symbol: "BTCUSDT",
+      side: "long",
+      quantity: 1,
+      price: 100,
+      connector,
+      connection: { id: "conn-protected-entry", exchange: "bingx", position_mode: "one_way" },
+      stopLossPrice: 95,
+      takeProfitPrice: 110,
+      requireProtection: true,
+      persistPosition: false,
+      updateCounters: false,
+    })
+
+    expect(result).toMatchObject({
+      success: true,
+      fill: { filledQty: 1, filledPrice: 100 },
+      protection: {
+        mode: "conditional",
+        stopLossOrderId: "protected-sl-1",
+        takeProfitOrderId: "protected-tp-1",
+      },
+    })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(connector.placeStopOrder).toHaveBeenNthCalledWith(
+      1,
+      "BTCUSDT",
+      "sell",
+      1,
+      95,
+      "stop_loss",
+      expect.objectContaining({ reduceOnly: true }),
+    )
+    expect(connector.placeStopOrder).toHaveBeenNthCalledWith(
+      2,
+      "BTCUSDT",
+      "sell",
+      1,
+      110,
+      "take_profit",
+      expect.objectContaining({ reduceOnly: true }),
+    )
+  })
+
+  test("flattens a just-filled position when the second protection order is rejected", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      getCapabilities: jest.fn(() => ["futures"]),
+      placeOrder: jest.fn()
+        .mockResolvedValueOnce({
+          success: true,
+          orderId: "unprotected-entry-1",
+          status: "filled",
+          filledQty: 1,
+          filledPrice: 100,
+        })
+        .mockResolvedValueOnce({ success: true, orderId: "emergency-close-1" }),
+      placeStopOrder: jest.fn()
+        .mockResolvedValueOnce({ success: true, orderId: "orphan-sl-1" })
+        .mockResolvedValueOnce({ success: false, error: "venue rejected take-profit" }),
+      cancelOrder: jest.fn(async () => ({ success: true })),
+    }
+
+    await expect(placeLiveOrder({
+      connectionId: "conn-protection-failure",
+      symbol: "ETHUSDT",
+      side: "long",
+      quantity: 1,
+      price: 100,
+      connector,
+      connection: { id: "conn-protection-failure", exchange: "bingx", position_mode: "one_way" },
+      stopLossPrice: 95,
+      takeProfitPrice: 110,
+      requireProtection: true,
+      persistPosition: false,
+      updateCounters: false,
+    })).rejects.toMatchObject({
+      mode: "live_protection_placement_failed_flattened",
+      statusCode: 502,
+    })
+    expect(connector.cancelOrder).toHaveBeenCalledWith("ETHUSDT", "orphan-sl-1")
+    expect(connector.placeOrder).toHaveBeenCalledTimes(2)
+  })
+
+  test("verifies native Forex SL/TP on the exact terminal position before recording the fill", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      getCapabilities: jest.fn(() => ["forex", "native_position_sl_tp", "broker_managed_margin_leverage"]),
+      placeOrder: jest.fn(async () => ({
+        success: true,
+        orderId: "mt5-entry-42",
+        status: "filled",
+        filledQty: 0.1,
+        filledPrice: 1.1,
+      })),
+      getPosition: jest.fn(async () => ({
+        symbol: "EURUSD",
+        side: "long",
+        contracts: 0.1,
+        positionTicket: 42,
+        stopLoss: 1.09,
+        takeProfit: 1.12,
+      })),
+    }
+
+    const result = await placeLiveOrder({
+      connectionId: "conn-native-forex-protection",
+      symbol: "EURUSD",
+      side: "long",
+      quantity: 0.1,
+      price: 1.1,
+      marketType: "forex",
+      lotSize: 10_000,
+      connector,
+      connection: {
+        id: "conn-native-forex-protection",
+        exchange: "instaforex",
+        market_type: "forex",
+        position_mode: "one_way",
+      },
+      stopLossPrice: 1.09,
+      takeProfitPrice: 1.12,
+      requireProtection: true,
+      persistPosition: false,
+      updateCounters: false,
+    })
+
+    expect(result).toMatchObject({
+      success: true,
+      fill: { filledQty: 0.1, filledPrice: 1.1 },
+      protection: {
+        mode: "native",
+        positionTicket: 42,
+        protectionVerified: true,
+      },
+    })
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+    expect(connector.getPosition).toHaveBeenCalledWith("EURUSD", "long")
+  })
+
+  test("flattens a native Forex entry when the terminal does not confirm both controls", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      getCapabilities: jest.fn(() => ["forex", "native_position_sl_tp", "broker_managed_margin_leverage"]),
+      placeOrder: jest.fn(async () => ({
+        success: true,
+        orderId: "mt5-entry-unprotected",
+        status: "filled",
+        filledQty: 0.1,
+        filledPrice: 1.1,
+      })),
+      getPosition: jest.fn(async () => ({
+        symbol: "EURUSD",
+        side: "long",
+        contracts: 0.1,
+        positionTicket: 43,
+        stopLoss: 1.09,
+        takeProfit: 0,
+      })),
+      closePosition: jest.fn(async () => ({
+        success: true,
+        postCloseVerified: true,
+        fullyClosed: true,
+      })),
+    }
+
+    await expect(placeLiveOrder({
+      connectionId: "conn-native-forex-unprotected",
+      symbol: "EURUSD",
+      side: "long",
+      quantity: 0.1,
+      price: 1.1,
+      marketType: "forex",
+      lotSize: 10_000,
+      connector,
+      connection: {
+        id: "conn-native-forex-unprotected",
+        exchange: "instaforex",
+        market_type: "forex",
+        position_mode: "one_way",
+      },
+      stopLossPrice: 1.09,
+      takeProfitPrice: 1.12,
+      requireProtection: true,
+      persistPosition: false,
+      updateCounters: false,
+    })).rejects.toMatchObject({
+      mode: "live_protection_verification_failed_flattened",
+      statusCode: 502,
+    })
+    expect(connector.closePosition).toHaveBeenCalledWith("EURUSD", "long")
   })
 })

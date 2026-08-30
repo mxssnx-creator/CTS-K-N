@@ -1832,7 +1832,16 @@ describe("requested regression guardrails", () => {
       const hincrby = jest.fn().mockResolvedValue(1)
       const hincrbyfloat = jest.fn().mockResolvedValue(1)
       const createExchangeConnector = jest.fn().mockResolvedValue({
-        placeOrder: jest.fn().mockResolvedValue({ success: true, orderId: "order-1" }),
+        placeOrder: jest.fn().mockResolvedValue({
+          success: true,
+          orderId: "order-1",
+          status: "filled",
+          filledQty: 0.001,
+          filledPrice: 100,
+        }),
+        placeStopOrder: jest.fn()
+          .mockResolvedValueOnce({ success: true, orderId: "stop-1" })
+          .mockResolvedValueOnce({ success: true, orderId: "take-1" }),
       })
 
       jest.doMock("@/lib/redis-db", () => ({
@@ -1858,6 +1867,9 @@ describe("requested regression guardrails", () => {
           side: "buy",
           quantity: 0.001,
           leverage: 1,
+          price: 100,
+          stopLossPrice: 95,
+          takeProfitPrice: 105,
         }),
       } as any)
       const payload = await response.json()
@@ -2094,7 +2106,7 @@ describe("requested regression guardrails", () => {
     expect(globalReadyBlock).toContain("migrationsRan = false")
     expect(source).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(source).toContain('import("@/lib/redis-migrations")')
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 104")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 105")
     expect(source).toContain('client.get("_schema_version").catch(() => null)')
   })
 
@@ -3303,6 +3315,8 @@ describe("requested regression guardrails", () => {
     expect(logs).toContain("SystemLogger.getLogs")
     expect(logs).not.toContain('smembers("logs:all")')
     expect(logger).toContain('pipeline.lpush("logs:all:list", logId)')
+    expect(logger).toContain('pipeline.expire("logs:all:list", 604800)')
+    expect(logger).toContain('pipeline.expire(`logs:${category}:list`, 604800)')
     expect(monitoringPage).toContain("[selectedConnectionId]")
   })
 
@@ -3650,6 +3664,7 @@ describe("requested regression guardrails", () => {
     expect(smoke).toContain("accountFlatBefore")
     expect(smoke).toContain("accountFlatAfter")
     expect(smoke).toContain("cleanupComplete")
+    expect(smoke).toContain("mainnet is read-only")
     expect(smoke).toContain('const expectedTransport = report.mainnet ? "bingx-api" : "signed-rest-fallback"')
     expect(smoke).toContain('report.transport.open?.transport === expectedTransport')
     expect(connector).toContain("SDK_ACK_WITHOUT_ORDER_ID")
@@ -3657,6 +3672,7 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain('client.get("live_order_smoke:active")')
     expect(legacyTest).toContain("authorizeAdminBearer")
     expect(testingOrder).toContain("authorizeAdminBearer")
+    expect(read("scripts/direct-place-order.ts")).toContain("Direct connector order placement is disabled")
   })
 
   test("high-frequency indication and Real statistics use bounded hourly rollups", () => {
@@ -3918,7 +3934,7 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain("RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS")
     expect(migrations).toContain("await releaseOwnedRedisLock(client, keys.baseLock, token)")
     expect(migrations).toContain("__v0_devBootGuardDone = false")
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 104")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 105")
     expect(redisDb).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(redisDb).toContain("ensureSharedVolatileStartupCleanup")
     expect(redisDb).toContain("markSharedRuntimeReady")
@@ -4058,6 +4074,26 @@ describe("requested regression guardrails", () => {
     expect(performance).toContain("row.liveEntryEnabled ? \"On\" : \"Calc only\"")
     expect(performance).toContain("row.internalAveragePnlPerSet")
     expect(performance).toContain("Only settled closed executions enter live W/L/BE")
+  })
+
+  test("all legacy and diagnostic entry routes carry the shared protection contract", () => {
+    const stateMachine = read("lib/trade-engine/state-machine.ts")
+    const orchestrator = read("lib/trade-execution-orchestrator.ts")
+    const testingRoute = read("app/api/testing/place-order/route.ts")
+    const directRoute = read("app/api/trade-engine/direct-trade/order/route.ts")
+
+    expect(stateMachine).toContain("ExchangeConnectorFactory.getInstance().getOrCreateConnector")
+    expect(stateMachine).toContain("requireProtection: true")
+    expect(stateMachine).toContain("protectionStopLossPercent")
+    expect(stateMachine).toContain("protectionTakeProfitPercent")
+    expect(orchestrator).toContain("requireProtection: true")
+    expect(orchestrator).toContain("signal.protectionStopLossPercent")
+    expect(orchestrator).toContain("signal.protectionTakeProfitPercent")
+    expect(testingRoute).toContain("requireProtection: true")
+    expect(testingRoute).toContain("body.protectionStopLossPercent")
+    expect(directRoute).toContain("requireProtection: kind === \"open\"")
+    expect(directRoute).toContain("body?.protectionStopLossPercent")
+    expect(directRoute).toContain("body?.protectionTakeProfitPercent")
   })
 
 })

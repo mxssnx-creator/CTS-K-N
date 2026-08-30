@@ -22,6 +22,7 @@ export interface ApiTypeValidation {
  * - Binance: spot, perpetual_futures, futures, margin, portfolio
  * - OKX: unified, spot, perpetual, futures, swap
  * - Pionex: spot, perpetual
+ * - InstaForex: forex (read-only Client API / quotes)
  * etc.
  */
 export function validateApiType(exchange: string, apiType: string): ApiTypeValidation {
@@ -118,6 +119,10 @@ export function validateContractType(exchange: string, subtype: string): ApiType
 function normalizeApiType(exchange: string, apiType: string): string {
   const normalized = apiType.toLowerCase()
 
+  if (exchange === "instaforex" && ["forex", "fx", "foreign_exchange", "foreign-exchange"].includes(normalized)) {
+    return "forex"
+  }
+
   // Universal aliases
   if (normalized === "unified" || normalized === "unified_trading" || normalized === "portfolio") {
     return "unified"
@@ -165,6 +170,10 @@ function normalizeApiType(exchange: string, apiType: string): string {
  */
 function normalizeContractType(exchange: string, contractType: string): string {
   const normalized = contractType.toLowerCase()
+
+  if (exchange === "instaforex" && ["forex", "fx", "foreign_exchange", "foreign-exchange"].includes(normalized)) {
+    return "forex"
+  }
 
   if (normalized === "spot" || normalized === "spotapi" || normalized === "cash") {
     return "spot"
@@ -241,6 +250,10 @@ export function getApiPath(exchange: string, apiType: string): string {
   // paths are not the production trading contract.
   if (exch === "orangex") {
     return "/api/v1"
+  }
+
+  if (exch === "instaforex" || exch === "instafx") {
+    return "/client"
   }
 
   // Default

@@ -77,8 +77,10 @@ async function captureLog(level: "info" | "warn" | "error", args: any[]) {
     await client.hset(logId, logEntry)
     await client.lpush("logs:all:list", logId)
     await client.ltrim("logs:all:list", 0, 4999) // Keep max 5000
+    await client.expire("logs:all:list", 604800) // Keep the bounded index rolling for 7 days
     await client.lpush(`logs:${category}:list`, logId)
     await client.ltrim(`logs:${category}:list`, 0, 999) // Keep max 1000 per category
+    await client.expire(`logs:${category}:list`, 604800) // Keep category indexes rolling for 7 days
     await client.expire(logId, 604800) // 7 days TTL
   } catch (error) {
     // Silently fail to avoid infinite loops

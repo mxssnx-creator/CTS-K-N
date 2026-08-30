@@ -11,12 +11,20 @@ import { BatchProcessor } from "@/lib/batch-processor"
 import { getRateLimiter } from "@/lib/rate-limiter"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { resolveRedisRuntimeRoot } from "@/lib/redis-runtime-root"
+import { hasUsableForexExecutionConfig, isForexConnection } from "@/lib/real-trade-gates"
+import { isForexBridgeSelected } from "@/lib/forex-market"
+
+function finiteOptional(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
 
 type ConnectionCoordinatorRuntimeRoot = typeof globalThis & {
   __connectionCoordinator?: ConnectionCoordinator
 }
 
-export type ConnectionApiType = "rest" | "websocket" | "unified" | "perpetual_futures" | "spot" | "margin"
+export type ConnectionApiType = "rest" | "websocket" | "unified" | "perpetual_futures" | "spot" | "margin" | "forex"
 export type ConnectionStatus = "active" | "inactive" | "error" | "testing" | "paused"
 
 export interface Connection {
@@ -26,6 +34,27 @@ export interface Connection {
   api_key: string
   api_secret: string
   api_passphrase?: string
+  account_id?: string
+  account_password?: string
+  account_server?: string
+  bridge_url?: string
+  bridge_token?: string
+  terminal_path?: string
+  market_type?: "crypto" | "forex" | string
+  asset_class?: "crypto" | "forex" | string
+  api_base_url?: string
+  quotes_base_url?: string
+  charts_url?: string
+  lot_size?: number | string
+  position_cost_percent?: number | string
+  spread_buffer_pips?: number | string
+  spread_multiplier?: number | string
+  positions_average?: number | string
+  average_count?: number | string
+  quantity_unit?: "base_units" | "lots" | "contracts" | string
+  execution_mode?: string
+  forex_execution_mode?: "read_only" | "mt5_bridge" | string
+  read_only?: boolean | string
   api_type: string
   contract_type?: string
   connection_method: string
@@ -197,6 +226,17 @@ export class ConnectionCoordinator {
     const isDashboardEnabled = conn.is_enabled_dashboard === true || conn.is_enabled_dashboard === "true" || conn.is_enabled_dashboard === "1" || conn.is_enabled_dashboard === 1
     if (!isInserted || !isActiveInserted || !isDashboardEnabled) return false
 
+    const market = String(conn.market_type ?? conn.asset_class ?? conn.exchange ?? "").toLowerCase()
+    const isForex = market.includes("forex") || market.includes("insta")
+    if (isForex) {
+      const accountId = String(conn.account_id ?? conn.api_key ?? "").trim()
+      if (!/^[0-9]{4,12}$/.test(accountId)) return false
+      // A selected private bridge is a real execution configuration, not an
+      // official REST health check. Do not report a half-configured bridge as
+      // healthy or silently test it against read-only endpoints.
+      return !isForexBridgeSelected(conn) || hasUsableForexExecutionConfig(conn)
+    }
+
     const key = conn.api_key
     const secret = conn.api_secret
     if (!key || key === "" || key.length < 16) return false
@@ -270,6 +310,29 @@ export class ConnectionCoordinator {
         apiKey: connection.api_key,
         apiSecret: connection.api_secret,
         apiPassphrase: connection.api_passphrase,
+        accountId: connection.account_id || connection.api_key,
+        accountPassword: connection.account_password,
+        accountServer: connection.account_server,
+        bridgeUrl: connection.bridge_url,
+        bridgeToken: connection.bridge_token,
+        terminalPath: connection.terminal_path,
+        apiBaseUrl: connection.api_base_url,
+        quotesBaseUrl: connection.quotes_base_url,
+        chartsUrl: connection.charts_url,
+        executionMode: connection.execution_mode,
+        forexExecutionMode: connection.forex_execution_mode,
+        connectionMethod: connection.connection_method,
+        connectionLibrary: connection.connection_library,
+        readOnly: connection.read_only === true || connection.read_only === "1" || connection.read_only === "true",
+        lotSize: finiteOptional(connection.lot_size),
+        positionCostPercent: finiteOptional(connection.position_cost_percent),
+        spreadBufferPips: finiteOptional(connection.spread_buffer_pips),
+        spreadMultiplier: finiteOptional(connection.spread_multiplier),
+        positionsAverage: finiteOptional(connection.positions_average ?? connection.average_count),
+        quantityUnit: connection.quantity_unit === "base_units" || connection.quantity_unit === "contracts" || connection.quantity_unit === "lots"
+          ? connection.quantity_unit
+          : undefined,
+        marketType: connection.market_type === "forex" || String(connection.exchange).toLowerCase().includes("insta") ? "forex" : "crypto",
         apiType: connection.api_type,
         contractType: connection.contract_type,
         isTestnet: isTruthyFlag(connection.is_testnet),

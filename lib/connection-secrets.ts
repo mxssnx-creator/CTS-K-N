@@ -1,3 +1,10 @@
+import { normalizeMarketType } from "@/lib/market-types"
+import {
+  isForexBridgeSelected,
+  isValidForexBridgeUrl,
+  resolveForexExecutionMode,
+} from "@/lib/forex-market"
+
 const CONNECTION_SECRET_FIELDS = [
   "api_key",
   "api_secret",
@@ -9,6 +16,16 @@ const CONNECTION_SECRET_FIELDS = [
   "secret_key",
   "secretKey",
   "passphrase",
+  "account_password",
+  "accountPassword",
+  "trading_password",
+  "tradingPassword",
+  "trader_password",
+  "traderPassword",
+  "mt5_password",
+  "mt5Password",
+  "bridge_token",
+  "bridgeToken",
 ] as const
 
 const CONNECTION_SECRET_FIELD_SET = new Set<string>(CONNECTION_SECRET_FIELDS)
@@ -26,6 +43,10 @@ export interface ConnectionCredentialStatus {
   api_key_configured: boolean
   api_secret_configured: boolean
   api_passphrase_configured: boolean
+  account_id_configured: boolean
+  account_password_configured: boolean
+  bridge_token_configured: boolean
+  bridge_configured: boolean
 }
 
 /** Public metadata that lets the UI distinguish stored secrets from blanks. */
@@ -37,11 +58,33 @@ export function getConnectionCredentialStatus(
   const apiPassphraseConfigured = isUsableStoredSecret(
     connection.api_passphrase ?? connection.apiPassphrase ?? connection.passphrase,
   )
+  const isForex = normalizeMarketType(
+    connection.market_type ?? connection.asset_class,
+    connection.exchange,
+  ) === "forex"
+  const accountId = String(connection.account_id ?? connection.accountId ?? (isForex ? (connection.api_key ?? connection.apiKey ?? "") : "")).trim()
+  const accountIdConfigured = /^[0-9]{4,12}$/.test(accountId)
+  const accountPasswordConfigured = isUsableStoredSecret(
+    connection.account_password ?? connection.accountPassword ?? connection.trading_password ?? connection.trader_password ?? connection.mt5_password ?? connection.mt5Password,
+  )
+  const bridgeTokenConfigured = isUsableStoredSecret(connection.bridge_token ?? connection.bridgeToken)
+  const bridgeUrl = String(connection.bridge_url ?? connection.bridgeUrl ?? "").trim()
+  const bridgeMode = resolveForexExecutionMode(connection)
+  const bridgeConfigured = isForex &&
+    isForexBridgeSelected(connection) &&
+    bridgeMode === "mt5_bridge" &&
+    accountIdConfigured &&
+    accountPasswordConfigured &&
+    isValidForexBridgeUrl(bridgeUrl)
   return {
-    credentials_configured: apiKeyConfigured && apiSecretConfigured,
+    credentials_configured: isForex ? accountIdConfigured : apiKeyConfigured && apiSecretConfigured,
     api_key_configured: apiKeyConfigured,
     api_secret_configured: apiSecretConfigured,
     api_passphrase_configured: apiPassphraseConfigured,
+    account_id_configured: accountIdConfigured,
+    account_password_configured: accountPasswordConfigured,
+    bridge_token_configured: bridgeTokenConfigured,
+    bridge_configured: bridgeConfigured,
   }
 }
 

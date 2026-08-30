@@ -4,6 +4,16 @@ import { generateConnectionIdFromApiKey, isApiKeyInUse } from "@/lib/connection-
 import { CONNECTION_PREDEFINITIONS } from "@/lib/connection-predefinitions"
 import { API_VERSIONS } from "@/lib/system-version"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
+import { normalizeExchangeId, normalizeMarketType } from "@/lib/market-types"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  DEFAULT_FOREX_POSITIONS_AVERAGE,
+  DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+  DEFAULT_FOREX_SPREAD_MULTIPLIER,
+  isForexBridgeSelected,
+  isValidForexBridgeUrl,
+  normalizeForexExecutionMode,
+} from "@/lib/forex-market"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -18,6 +28,11 @@ function identityVolumeFactor(value: unknown): number {
 
 function truthy(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
+}
+
+function finiteBounded(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback
 }
 
 export async function GET(request: NextRequest) {
@@ -96,19 +111,51 @@ export async function GET(request: NextRequest) {
 export async function POST(request: Request) {
   try {
     const body = await request.json()
-    
+    const normalizedExchange = normalizeExchangeId(body.exchange)
+    const isInstaForex = normalizedExchange === "instaforex" || normalizedExchange === "instafx"
+    const accountId = String(body.account_id ?? body.login ?? (isInstaForex ? body.api_key : "") ?? "").trim()
+    const forexExecutionMode = isInstaForex
+      ? normalizeForexExecutionMode(body.forex_execution_mode ?? body.execution_mode ?? body.connection_method)
+      : "read_only"
+    const bridgeSelected = isInstaForex && forexExecutionMode === "mt5_bridge" && isForexBridgeSelected({
+      ...body,
+      forex_execution_mode: forexExecutionMode,
+    })
+    const accountPassword = isInstaForex
+      ? String(body.account_password ?? body.trader_password ?? body.mt5_password ?? "").trim()
+      : ""
+    const bridgeUrl = isInstaForex ? String(body.bridge_url ?? body.bridgeUrl ?? "").trim() : ""
+    const effectiveApiKey = isInstaForex ? accountId : String(body.api_key ?? "").trim()
+    const effectiveApiSecret = String(body.api_secret ?? "").trim()
     // Validate required fields
-    if (!body.name || !body.exchange || !body.api_key || !body.api_secret) {
+    if (!body.name || !body.exchange || (isInstaForex
+      ? !/^[0-9]{4,12}$/.test(accountId)
+      : !effectiveApiKey || !effectiveApiSecret)) {
       return NextResponse.json(
-        { error: "Missing required fields: name, exchange, api_key, api_secret" },
+        { error: isInstaForex ? "Missing required fields: name, exchange, account_id (InstaForex login)" : "Missing required fields: name, exchange, api_key, api_secret" },
         { status: 400 }
       )
     }
+    if (bridgeSelected && (!accountPassword || !isValidForexBridgeUrl(bridgeUrl))) {
+      return NextResponse.json(
+        { error: "Private InstaForex bridge requires a trader password and a valid HTTP(S) bridge URL" },
+        { status: 400 },
+      )
+    }
 
+    const marketType = isInstaForex
+      ? "forex"
+      : normalizeMarketType(body.market_type ?? body.asset_class, normalizedExchange)
+    if (marketType === "forex" && !isInstaForex) {
+      return NextResponse.json(
+        { error: "Forex connections currently support InstaForex read-only data only" },
+        { status: 400 },
+      )
+    }
     await initRedis()
 
     // Check if API key is already in use
-    const exists = await isApiKeyInUse(body.exchange, body.api_key)
+    const exists = await isApiKeyInUse(normalizedExchange, effectiveApiKey)
     if (exists) {
       return NextResponse.json(
         { 
@@ -120,12 +167,11 @@ export async function POST(request: Request) {
     }
 
     // Generate unique connection ID based on exchange + API key
-    const connectionId = generateConnectionIdFromApiKey(body.exchange, body.api_key)
-    const normalizedExchange = String(body.exchange).toLowerCase().replace(/[^a-z]/g, "")
+    const connectionId = generateConnectionIdFromApiKey(normalizedExchange, effectiveApiKey)
     const isBingX = normalizedExchange.includes("bingx")
     const isProdVstTemplate = body.predefinition_id === "bingx-x02"
-    const connectionMethod = body.connection_method || (isBingX ? "library" : "rest")
-    const connectionLibrary = body.connection_library || (isBingX && connectionMethod === "library" ? "sdk" : "native")
+    const connectionMethod = isInstaForex ? (bridgeSelected ? "bridge" : "rest") : (body.connection_method || (isBingX ? "library" : "rest"))
+    const connectionLibrary = isInstaForex ? (bridgeSelected ? "mt5-bridge" : "native-http") : (body.connection_library || (isBingX && connectionMethod === "library" ? "sdk" : "native"))
     const requestedSettings =
       body.connection_settings && typeof body.connection_settings === "object" && !Array.isArray(body.connection_settings)
         ? body.connection_settings
@@ -150,18 +196,39 @@ export async function POST(request: Request) {
     const connection = {
       id: connectionId,
       name: body.name,
-      exchange: body.exchange,
-      api_key: body.api_key,
-      api_secret: body.api_secret,
+      exchange: normalizedExchange,
+      market_type: marketType,
+      asset_class: marketType,
+      account_id: isInstaForex ? accountId : undefined,
+      account_server: isInstaForex ? (body.account_server ?? body.server ?? undefined) : undefined,
+      account_password: isInstaForex && accountPassword ? accountPassword : undefined,
+      bridge_url: bridgeSelected ? bridgeUrl : undefined,
+      bridge_token: bridgeSelected ? String(body.bridge_token ?? body.bridgeToken ?? "").trim() || undefined : undefined,
+      terminal_path: bridgeSelected ? String(body.terminal_path ?? body.terminalPath ?? "").trim() || undefined : undefined,
+      api_key: effectiveApiKey,
+      api_secret: isInstaForex ? "" : effectiveApiSecret,
       api_passphrase: body.api_passphrase || "",
-      api_type: body.api_type || "perpetual_futures",
+      api_base_url: isInstaForex ? (body.api_base_url || undefined) : undefined,
+      quotes_base_url: isInstaForex ? (body.quotes_base_url || undefined) : undefined,
+      charts_url: isInstaForex ? (body.charts_url || undefined) : undefined,
+      symbol_suffix: isInstaForex ? (body.symbol_suffix || undefined) : undefined,
+      quantity_unit: isInstaForex ? "lots" : undefined,
+      lot_size: isInstaForex ? finiteBounded(body.lot_size, DEFAULT_FOREX_LOT_SIZE, 1, 10_000_000) : undefined,
+      position_cost_percent: isInstaForex ? finiteBounded(body.position_cost_percent, 0.1, 0.02, 1) : undefined,
+      spread_buffer_pips: isInstaForex ? finiteBounded(body.spread_buffer_pips, DEFAULT_FOREX_SPREAD_BUFFER_PIPS, 0, 100) : undefined,
+      spread_multiplier: isInstaForex ? finiteBounded(body.spread_multiplier, DEFAULT_FOREX_SPREAD_MULTIPLIER, 0, 20) : undefined,
+      positions_average: isInstaForex ? Math.round(finiteBounded(body.positions_average ?? body.average_count, DEFAULT_FOREX_POSITIONS_AVERAGE, 1, 600)) : undefined,
+      average_count: isInstaForex ? Math.round(finiteBounded(body.average_count ?? body.positions_average, DEFAULT_FOREX_POSITIONS_AVERAGE, 1, 600)) : undefined,
+      spread_mode: isInstaForex ? (body.spread_mode === "configured" ? "configured" : "exchange") : undefined,
+      max_spread_pips: isInstaForex ? finiteBounded(body.max_spread_pips, 3, 0, 100) : undefined,
+      api_type: isInstaForex ? "forex" : (body.api_type || "perpetual_futures"),
       api_subtype: body.api_type === "unified" ? (body.api_subtype || "perpetual") : undefined,
       connection_method: connectionMethod,
       connection_library: connectionLibrary,
       margin_type: body.margin_type || "cross",
-      position_mode: body.position_mode || "hedge",
-      contract_type: body.contract_type || "usdt-perpetual",
-      is_testnet: isProdVstTemplate || truthy(body.is_testnet),
+      position_mode: isInstaForex ? "one_way" : (body.position_mode || "hedge"),
+      contract_type: isInstaForex ? "forex" : (body.contract_type || "usdt-perpetual"),
+      is_testnet: isInstaForex ? false : (isProdVstTemplate || truthy(body.is_testnet)),
       is_enabled: body.is_enabled === true, // Settings: enabled by default for base connections
       is_inserted: true, // User-created connection is "inserted" (available for use)
       is_dashboard_inserted: false, // Not yet added to Active Connections dashboard
@@ -171,6 +238,10 @@ export async function POST(request: Request) {
       is_predefined: false, // User-created, not predefined template
       is_live_trade: false,
       is_preset_trade: false,
+      forex_execution_mode: isInstaForex ? forexExecutionMode : undefined,
+      execution_mode: isInstaForex ? forexExecutionMode : undefined,
+      read_only: isInstaForex ? !bridgeSelected : undefined,
+      execution_supported: isInstaForex ? bridgeSelected : undefined,
       is_signal_trade: false,
       signal_trade_enabled: false,
       signal_trade_requested: false,
@@ -210,7 +281,7 @@ export async function POST(request: Request) {
 
     // Auto-test the newly created connection (non-blocking)
     let testResult = null
-    if (body.api_key && body.api_secret) {
+    if (isInstaForex ? accountId : (effectiveApiKey && effectiveApiSecret)) {
       try {
         console.log("[v0] [API] Auto-testing newly created connection:", connectionId)
         const testResponse = await fetch(
@@ -239,7 +310,7 @@ export async function POST(request: Request) {
         connection: safePersistedConnection,
         persistenceVerified: true,
         credentialsConfigured: true,
-        autoTest: testResult ? { ran: true, success: testResult.success } : { ran: false, reason: "No API credentials provided" },
+      autoTest: testResult ? { ran: true, success: testResult.success } : { ran: false, reason: isInstaForex ? "No InstaForex account id provided" : "No API credentials provided" },
       },
       { status: 201 }
     )

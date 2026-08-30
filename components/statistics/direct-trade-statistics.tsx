@@ -84,6 +84,11 @@ type CalculationAxisBucket = {
 }
 
 type Status = {
+  marketType?: "crypto" | "forex"
+  settlementAsset?: string
+  volumeUnit?: "base_units" | "lots"
+  positionsAverage?: number
+  positionCostPct?: number
   state?: {
     enabled?: boolean
     liveMode?: boolean
@@ -269,6 +274,9 @@ export function DirectTradeStatistics() {
   const visibleRows = configs
   const stats = status.stats || {}
   const calculation = status.calculation || {}
+  const marketType = status.marketType === "forex" ? "forex" : "crypto"
+  const settlementLabel = status.settlementAsset || (marketType === "forex" ? "account currency" : "USDT")
+  const positionCostPct = Number(status.positionCostPct) > 0 ? Number(status.positionCostPct) : 0.1
   const indicationTypeStats = Array.isArray(status.indicationTypeStats) ? status.indicationTypeStats : []
   const blockRows = Object.entries(calculation.byBlockCount || {})
     .sort(([left], [right]) => Number(left) - Number(right))
@@ -284,6 +292,7 @@ export function DirectTradeStatistics() {
               <Badge variant={status.processor?.isHealthy ? "default" : "secondary"}>{status.processor?.isHealthy ? "Processor healthy" : "Processor idle"}</Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">Independent 5m / 15m / 30m configuration variants across the selected combinations. These counts describe evaluated parameter lineages, not physical positions.</p>
+            <p className="mt-1 text-xs text-muted-foreground">Market: <span className="font-medium text-foreground">{marketType === "forex" ? "Forex" : "Crypto"}</span> · Settlement: <span className="font-medium text-foreground">{settlementLabel}</span> · Volume: <span className="font-medium text-foreground">{status.volumeUnit || (marketType === "forex" ? "lots" : "base_units")}</span> · Average count: <span className="font-medium text-foreground">{Number(status.positionsAverage) > 0 ? Number(status.positionsAverage) : marketType === "forex" ? 24 : 2}</span></p>
           </div>
           <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
@@ -297,7 +306,7 @@ export function DirectTradeStatistics() {
           <Metric
             label={status.state?.liveMode ? "Realized exchange PnL" : "Simulated PnL"}
             value={status.state?.liveMode
-              ? `${Number(stats.totalPnlUsdt || 0) >= 0 ? "+" : ""}${Number(stats.totalPnlUsdt || 0).toFixed(4)} USDT`
+              ? `${Number(stats.totalPnlUsdt || 0) >= 0 ? "+" : ""}${Number(stats.totalPnlUsdt || 0).toFixed(4)} ${settlementLabel}`
               : formatPnl(stats.totalPnl)}
             emphasis={Number(status.state?.liveMode ? stats.totalPnlUsdt : stats.totalPnl) >= 0}
             icon={<Target className="h-4 w-4" />}
@@ -320,7 +329,7 @@ export function DirectTradeStatistics() {
               Momentum, Mean-Reversion, Breakout and Relative remain internally calculated; the Live entry badge is the persisted physical-order gate.
             </p>
           </div>
-          <span className="text-[11px] text-muted-foreground">PF coordinate: 1.00 neutral · 1.10 = +1× PositionCost</span>
+              <span className="text-[11px] text-muted-foreground">PF coordinate: 1.00 neutral · 1.10 = +1× PositionCost ({positionCostPct.toFixed(3)}% per PositionCost unit)</span>
         </div>
         <div className="overflow-auto rounded-md border">
           <table className="w-full min-w-[1120px] text-xs">
@@ -350,7 +359,7 @@ export function DirectTradeStatistics() {
                     {row.closedPositions === 0
                       ? "—"
                       : status.state?.liveMode
-                        ? `${Number(row.netExchangePnlUsdt || 0) >= 0 ? "+" : ""}${Number(row.netExchangePnlUsdt || 0).toFixed(4)} USDT`
+                        ? `${Number(row.netExchangePnlUsdt || 0) >= 0 ? "+" : ""}${Number(row.netExchangePnlUsdt || 0).toFixed(4)} ${settlementLabel}`
                         : formatPnl(row.netPnlPercent)}
                   </td>
                   <td className="p-2 text-right font-mono">{displayAggregatePf(row.profitFactor, row.profitFactorInfinite)}</td>
@@ -465,7 +474,7 @@ export function DirectTradeStatistics() {
           <h2 className="text-sm font-medium">Rolling execution result</h2>
           <div className="mt-3 space-y-2 text-sm">
             <ResultRow label="Accounted closed positions PF" value={stats.profitFactor != null ? Number(stats.profitFactor).toFixed(2) : "—"} />
-            <ResultRow label="Realized PnL (exchange notional)" value={stats.totalPnlUsdt != null ? `${Number(stats.totalPnlUsdt).toFixed(4)} USDT` : "—"} />
+            <ResultRow label={`Realized PnL (exchange ${settlementLabel})`} value={stats.totalPnlUsdt != null ? `${Number(stats.totalPnlUsdt).toFixed(4)} ${settlementLabel}` : "—"} />
             <ResultRow label="PF basis" value={stats.statsPnlBasis === "usdt" ? "exchange notional" : "percentage fallback"} />
             <ResultRow label="Win / loss / break-even" value={`${stats.winCount || 0} / ${stats.lossCount || 0} / ${stats.breakEvenCount || 0}`} />
             <ResultRow label="Confirmed fills / settled / closed" value={`${stats.totalFilled || 0} / ${stats.settledClosedCount || 0} / ${status.closedPositions || 0}`} />

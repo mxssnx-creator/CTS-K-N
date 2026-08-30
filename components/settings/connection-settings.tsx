@@ -27,11 +27,15 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Activity, Database, Power, Trash2, Download, Upload } from "lucide-react"
 import { toast } from "sonner"
+import { normalizeMarketType } from "@/lib/market-types"
 
 export interface ExchangeConnection {
   id: string
   name: string
   exchange: string
+  market_type?: "crypto" | "forex" | string
+  asset_class?: "crypto" | "forex" | string
+  account_id?: string
   api_type: string
   connection_method: string
   authentication_type: string
@@ -119,6 +123,10 @@ export function ConnectionSettings({
           </Card>
         ) : (
           connections.map((conn) => (
+            (() => {
+              const marketType = normalizeMarketType(conn.market_type || conn.asset_class, conn.exchange)
+              const isForex = marketType === "forex"
+              return (
             <Card key={conn.id} className="overflow-hidden border-muted-foreground/15 p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex-1 space-y-1">
@@ -142,10 +150,14 @@ export function ConnectionSettings({
                         Testnet
                       </Badge>
                     )}
+                    <Badge variant={isForex ? "outline" : "secondary"} className={isForex ? "border-amber-300 text-amber-800" : "text-xs"}>
+                      {isForex ? "Forex · read-only" : "Crypto"}
+                    </Badge>
                   </div>
                   <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">
                     <div>Exchange: {conn.exchange}</div>
-                    <div>Type: {conn.api_type}</div>
+                    <div>Type: {isForex ? "forex" : conn.api_type}</div>
+                    {isForex && <div>Account: {conn.account_id || "configured"}</div>}
                     <div>
                       Margin: {conn.margin_type} | Position: {conn.position_mode}
                     </div>
@@ -189,6 +201,8 @@ export function ConnectionSettings({
                 </div>
               </div>
             </Card>
+              )
+            })()
           ))
         )}
       </div>

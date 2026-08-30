@@ -24,6 +24,14 @@ import {
   EXCHANGE_SUBTYPES,
   EXCHANGE_CONNECTION_METHODS,
 } from "@/lib/connection-predefinitions"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  DEFAULT_FOREX_POSITIONS_AVERAGE,
+  DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+  DEFAULT_FOREX_SPREAD_MULTIPLIER,
+  isValidForexBridgeUrl,
+  normalizeForexExecutionMode,
+} from "@/lib/forex-market"
 
 interface AddConnectionDialogProps {
   open: boolean
@@ -38,6 +46,7 @@ const ALL_EXCHANGES = [
   { id: "bingx", name: "BingX" },
   { id: "pionex", name: "Pionex" },
   { id: "orangex", name: "OrangeX" },
+  { id: "instaforex", name: "InstaForex" },
 ]
 
 export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onSuccess, showOnlyEnabled = false }: AddConnectionDialogProps) {
@@ -53,18 +62,41 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
   const [formData, setFormData] = useState({
     name: "",
     exchange: "bybit",
+    market_type: "crypto",
     api_type: "perpetual_futures",
     api_subtype: "perpetual",
     connection_method: "rest",
     connection_library: "native",
     api_key: "",
+    account_id: "",
+    account_password: "",
+    account_server: "",
+    bridge_url: "http://127.0.0.1:8765",
+    bridge_token: "",
+    terminal_path: "",
+    forex_execution_mode: "read_only",
     api_secret: "",
     api_passphrase: "",
+    symbol_suffix: "",
+    lot_size: String(DEFAULT_FOREX_LOT_SIZE),
+    position_cost_percent: "0.1",
+    spread_buffer_pips: String(DEFAULT_FOREX_SPREAD_BUFFER_PIPS),
+    spread_multiplier: String(DEFAULT_FOREX_SPREAD_MULTIPLIER),
+    positions_average: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+    max_spread_pips: "3",
+    spread_mode: "exchange",
     margin_type: "cross",
     position_mode: "hedge",
     is_testnet: false,
   })
   const isProdVstTemplate = selectedTemplate?.id === "bingx-x02"
+  const isForex = formData.market_type === "forex" || formData.exchange === "instaforex"
+  const forexBridgeSelected = isForex && normalizeForexExecutionMode(formData.forex_execution_mode) === "mt5_bridge"
+  const credentialReady = isForex
+    ? /^[0-9]{4,12}$/.test(formData.account_id.trim()) &&
+      (!forexBridgeSelected || (Boolean(formData.account_password.trim()) && isValidForexBridgeUrl(formData.bridge_url)))
+    : Boolean(formData.api_key.trim() && formData.api_secret.trim())
+  const connectionReady = credentialReady
 
   useEffect(() => {
     if (open) {
@@ -83,8 +115,15 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
     const apiTypes = EXCHANGE_API_TYPES[formData.exchange] || []
     setFormData(prev => ({
       ...prev,
+      market_type: prev.exchange === "instaforex" ? "forex" : "crypto",
       ...(apiTypes.length > 0 && !apiTypes.includes(prev.api_type) ? { api_type: apiTypes[0] } : {}),
-      ...(prev.exchange === "bingx"
+      ...(prev.exchange === "instaforex"
+        ? {
+            connection_method: prev.connection_method === "bridge" ? "bridge" : "rest",
+            connection_library: prev.connection_method === "bridge" ? "mt5-bridge" : "native-http",
+            forex_execution_mode: prev.connection_method === "bridge" ? "mt5_bridge" : "read_only",
+          }
+        : prev.exchange === "bingx"
         ? { connection_method: "library", connection_library: "sdk" }
         : prev.connection_library === "sdk"
           ? { connection_library: "native" }
@@ -95,7 +134,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
 
   useEffect(() => {
     // When switching to Advanced tab, show test instructions if credentials are filled
-    if (activeTab === "advanced" && formData.api_key && formData.api_secret && !showTestLog) {
+    if (activeTab === "advanced" && connectionReady && !showTestLog) {
       // Auto-show test log UI to guide user
       setShowTestLog(true)
     }
@@ -103,7 +142,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
     if (activeTab !== "advanced" && showTestLog) {
       setShowTestLog(false)
     }
-  }, [activeTab, formData.api_key, formData.api_secret, showTestLog])
+  }, [activeTab, connectionReady, showTestLog])
 
   useEffect(() => {
     // Update connection method and library based on API type and exchange
@@ -117,7 +156,9 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
 
     // Set default library based on connection method
     let defaultLibrary = "native"
-    if (formData.connection_method === "rest") {
+    if (exchange === "instaforex") {
+      defaultLibrary = formData.connection_method === "bridge" ? "mt5-bridge" : "native-http"
+    } else if (formData.connection_method === "rest") {
       defaultLibrary = "native"
     } else if (formData.connection_method === "websocket") {
       defaultLibrary = "native"
@@ -158,13 +199,29 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
     setFormData({
       name: "",
       exchange: "bybit",
+      market_type: "crypto",
       api_type: "perpetual_futures",
       api_subtype: "perpetual",
       connection_method: "rest",
       connection_library: "native",
       api_key: "",
+      account_id: "",
+      account_password: "",
+      account_server: "",
+      bridge_url: "http://127.0.0.1:8765",
+      bridge_token: "",
+      terminal_path: "",
+      forex_execution_mode: "read_only",
       api_secret: "",
       api_passphrase: "",
+      symbol_suffix: "",
+      lot_size: String(DEFAULT_FOREX_LOT_SIZE),
+      position_cost_percent: "0.1",
+      spread_buffer_pips: String(DEFAULT_FOREX_SPREAD_BUFFER_PIPS),
+      spread_multiplier: String(DEFAULT_FOREX_SPREAD_MULTIPLIER),
+      positions_average: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+      max_spread_pips: "3",
+      spread_mode: "exchange",
       margin_type: "cross",
       position_mode: "hedge",
       is_testnet: false,
@@ -177,13 +234,29 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
     setFormData({
       name: template.displayName,
       exchange: template.exchange,
+      market_type: template.marketType || (template.exchange === "instaforex" ? "forex" : "crypto"),
       api_type: template.apiType,
       api_subtype: "perpetual",
       connection_method: template.connectionMethod,
       connection_library: template.connectionLibrary,
       api_key: template.apiKey || "",
+      account_id: template.exchange === "instaforex" ? (template.apiKey || "") : "",
+      account_password: "",
+      account_server: "",
+      bridge_url: "http://127.0.0.1:8765",
+      bridge_token: "",
+      terminal_path: "",
+      forex_execution_mode: template.exchange === "instaforex" && template.connectionMethod === "bridge" ? "mt5_bridge" : "read_only",
       api_secret: template.apiSecret || "",
       api_passphrase: "",
+      symbol_suffix: "",
+      lot_size: String(DEFAULT_FOREX_LOT_SIZE),
+      position_cost_percent: "0.1",
+      spread_buffer_pips: String(DEFAULT_FOREX_SPREAD_BUFFER_PIPS),
+      spread_multiplier: String(DEFAULT_FOREX_SPREAD_MULTIPLIER),
+      positions_average: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+      max_spread_pips: "3",
+      spread_mode: "exchange",
       margin_type: template.marginType,
       position_mode: template.positionMode,
       is_testnet: template.defaultTestnet === true,
@@ -192,9 +265,12 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
 
   const handleTestConnection = async () => {
     // Validate required credentials before testing
-    if (!formData.api_key || !formData.api_secret) {
-      toast.error("Please fill in API Key and Secret before testing")
-      setTestLog([`✗ Error: Missing API credentials. Please enter your API Key and Secret in the "API Credentials" tab.`])
+    if (!connectionReady) {
+      const message = isForex
+        ? "Enter a valid numeric InstaForex account id/login before testing"
+        : "Please fill in API Key and Secret before testing"
+      toast.error(message)
+      setTestLog([`✗ Error: ${message}`])
       setShowTestLog(true)
       return
     }
@@ -213,6 +289,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
     try {
       logs.push(`[${new Date().toLocaleTimeString()}] Testing connection...`)
       logs.push(`Exchange: ${formData.exchange.toUpperCase()}`)
+      logs.push(`Market: ${isForex ? "FOREX" : "CRYPTO"}`)
       const apiInfoParts = [formData.api_type]
       if (formData.api_type === "unified" && formData.api_subtype) {
         apiInfoParts.push(formData.api_subtype)
@@ -228,10 +305,31 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
           exchange: formData.exchange,
           api_type: formData.api_type,
           ...(formData.api_type === "unified" && formData.api_subtype && { api_subtype: formData.api_subtype }),
-          connection_method: formData.connection_method,
-          connection_library: formData.connection_library,
-          api_key: formData.api_key,
-          api_secret: formData.api_secret,
+          connection_method: isForex ? (forexBridgeSelected ? "bridge" : "rest") : formData.connection_method,
+          connection_library: isForex ? (forexBridgeSelected ? "mt5-bridge" : "native-http") : formData.connection_library,
+          forex_execution_mode: isForex ? (forexBridgeSelected ? "mt5_bridge" : "read_only") : undefined,
+          execution_mode: isForex ? (forexBridgeSelected ? "mt5_bridge" : "read_only") : undefined,
+          read_only: isForex ? !forexBridgeSelected : undefined,
+          execution_supported: isForex ? forexBridgeSelected : undefined,
+          api_key: isForex ? formData.account_id : formData.api_key,
+          api_secret: isForex ? "" : formData.api_secret,
+          account_id: isForex ? formData.account_id : undefined,
+          account_password: forexBridgeSelected ? formData.account_password : undefined,
+          account_server: forexBridgeSelected ? formData.account_server : undefined,
+          bridge_url: forexBridgeSelected ? formData.bridge_url : undefined,
+          bridge_token: forexBridgeSelected ? formData.bridge_token : undefined,
+          terminal_path: forexBridgeSelected ? formData.terminal_path : undefined,
+          symbol_suffix: isForex ? formData.symbol_suffix : undefined,
+          quantity_unit: isForex ? "lots" : undefined,
+          lot_size: isForex ? Number(formData.lot_size) : undefined,
+          position_cost_percent: isForex ? Number(formData.position_cost_percent) : undefined,
+          spread_buffer_pips: isForex ? Number(formData.spread_buffer_pips) : undefined,
+          spread_multiplier: isForex ? Number(formData.spread_multiplier) : undefined,
+          positions_average: isForex ? Number(formData.positions_average) : undefined,
+          average_count: isForex ? Number(formData.positions_average) : undefined,
+          max_spread_pips: isForex ? Number(formData.max_spread_pips) : undefined,
+          spread_mode: isForex ? formData.spread_mode : undefined,
+          market_type: isForex ? "forex" : "crypto",
           api_passphrase: formData.api_passphrase || "",
           margin_type: formData.margin_type,
           position_mode: formData.position_mode,
@@ -295,7 +393,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
       if (data.environment === "prod-vst") formattedLogs.push("✓ Environment: BingX Prod-VST · authenticated demo · virtual funds")
 
       if (response.ok) {
-        formattedLogs.push(`\n✓ Connection test PASSED - Ready to trade!`)
+        formattedLogs.push(`\n✓ Connection test PASSED - ${isForex ? "Forex data verified (read-only official HTTP API)" : "Ready to trade!"}`)
         toast.success(`Connection successful!${balanceDisplay}`)
       } else {
         formattedLogs.push(`\n✗ Connection test FAILED: ${data.error || "Unknown error"}`)
@@ -314,8 +412,10 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!formData.name || !formData.api_key || !formData.api_secret) {
-      toast.error("Please fill in all required fields")
+    if (!formData.name || !connectionReady) {
+      toast.error(isForex
+        ? "Please enter a valid InstaForex account id/login"
+        : "Please fill in all required fields")
       return
     }
 
@@ -333,12 +433,33 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
         body: JSON.stringify({
           name: formData.name,
           exchange: formData.exchange,
+          market_type: isForex ? "forex" : "crypto",
           api_type: formData.api_type,
           ...(formData.api_type === "unified" && formData.api_subtype && { api_subtype: formData.api_subtype }),
-          connection_method: formData.connection_method,
-          connection_library: formData.connection_library,
-          api_key: formData.api_key,
-          api_secret: formData.api_secret,
+          connection_method: isForex ? (forexBridgeSelected ? "bridge" : "rest") : formData.connection_method,
+          connection_library: isForex ? (forexBridgeSelected ? "mt5-bridge" : "native-http") : formData.connection_library,
+          forex_execution_mode: isForex ? (forexBridgeSelected ? "mt5_bridge" : "read_only") : undefined,
+          execution_mode: isForex ? (forexBridgeSelected ? "mt5_bridge" : "read_only") : undefined,
+          read_only: isForex ? !forexBridgeSelected : undefined,
+          execution_supported: isForex ? forexBridgeSelected : undefined,
+          api_key: isForex ? formData.account_id : formData.api_key,
+          api_secret: isForex ? "" : formData.api_secret,
+          account_id: isForex ? formData.account_id : undefined,
+          account_password: forexBridgeSelected ? formData.account_password : undefined,
+          account_server: forexBridgeSelected ? formData.account_server : undefined,
+          bridge_url: forexBridgeSelected ? formData.bridge_url : undefined,
+          bridge_token: forexBridgeSelected ? formData.bridge_token : undefined,
+          terminal_path: forexBridgeSelected ? formData.terminal_path : undefined,
+          symbol_suffix: isForex ? formData.symbol_suffix : undefined,
+          quantity_unit: isForex ? "lots" : undefined,
+          lot_size: isForex ? Number(formData.lot_size) : undefined,
+          position_cost_percent: isForex ? Number(formData.position_cost_percent) : undefined,
+          spread_buffer_pips: isForex ? Number(formData.spread_buffer_pips) : undefined,
+          spread_multiplier: isForex ? Number(formData.spread_multiplier) : undefined,
+          positions_average: isForex ? Number(formData.positions_average) : undefined,
+          average_count: isForex ? Number(formData.positions_average) : undefined,
+          max_spread_pips: isForex ? Number(formData.max_spread_pips) : undefined,
+          spread_mode: isForex ? formData.spread_mode : undefined,
           api_passphrase: formData.api_passphrase || "",
           margin_type: formData.margin_type,
           position_mode: formData.position_mode,
@@ -485,6 +606,31 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 </div>
 
                 <div className="space-y-1.5">
+                  <Label htmlFor="market-type" className="font-medium text-xs">Market Type</Label>
+                  <Select value={formData.market_type} onValueChange={(value) => {
+                    const forex = value === "forex"
+                    setFormData({
+                      ...formData,
+                      market_type: forex ? "forex" : "crypto",
+                      exchange: forex ? "instaforex" : (formData.exchange === "instaforex" ? "bybit" : formData.exchange),
+                      api_type: forex ? "forex" : (formData.exchange === "instaforex" ? "perpetual_futures" : formData.api_type),
+                      connection_method: forex ? "rest" : formData.connection_method,
+                      connection_library: forex ? "native-http" : formData.connection_library,
+                      margin_type: forex ? "cross" : formData.margin_type,
+                      position_mode: forex ? "one_way" : formData.position_mode,
+                    })
+                  }}>
+                    <SelectTrigger id="market-type" disabled={loading} className="bg-background h-8 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="crypto">Crypto</SelectItem>
+                      <SelectItem value="forex">Forex (InstaForex)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
                   <Label htmlFor="api-type" className="font-medium text-xs">API Type</Label>
                   <Select value={formData.api_type} onValueChange={(value) => setFormData({ ...formData, api_type: value })}>
                     <SelectTrigger id="api-type" disabled={loading} className="bg-background h-8 text-sm">
@@ -531,7 +677,12 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
 
                 <div className="space-y-1.5">
                   <Label htmlFor="connection-method" className="font-medium text-xs">Connection</Label>
-                  <Select value={formData.connection_method} onValueChange={(value) => setFormData({ ...formData, connection_method: value })}>
+                  <Select value={formData.connection_method} onValueChange={(value) => setFormData({
+                    ...formData,
+                    connection_method: value,
+                    connection_library: isForex ? (value === "bridge" ? "mt5-bridge" : "native-http") : formData.connection_library,
+                    forex_execution_mode: isForex ? (value === "bridge" ? "mt5_bridge" : "read_only") : "read_only",
+                  })}>
                     <SelectTrigger id="connection-method" disabled={loading} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
@@ -548,7 +699,19 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                   </Select>
                 </div>
 
-                <div className="space-y-1.5">
+                {isForex && <div className="space-y-1.5">
+                  <Label className="font-medium text-xs">Library</Label>
+                  <div className="flex h-8 items-center rounded-md border bg-muted px-3 text-sm">
+                    {forexBridgeSelected ? "Private MT4/MT5 bridge · order execution" : "Official HTTP · read-only"}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {forexBridgeSelected
+                      ? "Orders and native SL/TP use the separately hosted authenticated bridge; official REST remains the quote/history source."
+                      : "Official InstaForex HTTP feeds provide quotes, charts, account state, and history. Order execution is unavailable."}
+                  </p>
+                </div>}
+
+                {!isForex ? <div className="space-y-1.5">
                   <Label htmlFor="connection-library" className="font-medium text-xs">Library</Label>
                   <Select value={formData.connection_library || "native"} onValueChange={(value) => setFormData({ ...formData, connection_library: value })}>
                     <SelectTrigger id="connection-library" disabled={loading} className="bg-background h-8 text-sm">
@@ -590,7 +753,19 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                     {formData.connection_library === "original" && `${formData.exchange.toUpperCase()} exchange library`}
                     {formData.connection_library === "ccxt" && "Universal CCXT library (cross-exchange)"}
                   </p>
-                </div>
+                </div> : (
+                  <div className="space-y-1.5">
+                    <Label className="font-medium text-xs">Execution transport</Label>
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      {forexBridgeSelected ? "Private MT4/MT5 bridge · authenticated execution" : "Official REST/HTTP · read-only"}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {forexBridgeSelected
+                        ? "The bridge is required for mutations and native ticket-bound protection; keep its URL private and authenticated."
+                        : "Official quote, chart, account, and history data are available; order placement stays disabled."}
+                    </p>
+                  </div>
+                )}
 
                 <div className="space-y-1.5">
                   <Label htmlFor="margin-type" className="font-medium text-xs">Margin Type</Label>
@@ -623,13 +798,15 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 <div>
                   <Label className="font-medium text-xs">Environment</Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {isProdVstTemplate ? "Prod-VST authenticated demo · virtual funds" : formData.is_testnet ? "Demo/test environment" : "Prod-Live · real funds"}
+                    {isForex
+                      ? (forexBridgeSelected ? "InstaForex private bridge · broker account · real funds" : "InstaForex official market/account data · read-only")
+                      : isProdVstTemplate ? "Prod-VST authenticated demo · virtual funds" : formData.is_testnet ? "Demo/test environment" : "Prod-Live · real funds"}
                   </p>
                 </div>
                 <Switch
-                  checked={isProdVstTemplate || formData.is_testnet}
+                  checked={isForex ? false : isProdVstTemplate || formData.is_testnet}
                   onCheckedChange={(checked) => setFormData({ ...formData, is_testnet: isProdVstTemplate || checked })}
-                  disabled={loading || isProdVstTemplate}
+                  disabled={loading || isProdVstTemplate || isForex}
                 />
               </div>
 
@@ -704,7 +881,51 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
               </div>
 
               <div className="space-y-4">
-                <div className="space-y-2">
+                {isForex && (
+                  <div className="space-y-2">
+                    <Label htmlFor="account-id" className="font-medium flex items-center gap-2">
+                      <Lock className="h-4 w-4" />
+                      InstaForex Account ID / Login
+                    </Label>
+                    <Input
+                      id="account-id"
+                      inputMode="numeric"
+                      value={formData.account_id}
+                      onChange={(e) => setFormData({ ...formData, account_id: e.target.value.replace(/\D/g, ""), api_key: e.target.value.replace(/\D/g, "") })}
+                      placeholder="Numeric account login"
+                      disabled={loading}
+                      className="bg-background"
+                    />
+                    <p className="text-xs text-muted-foreground">The official Client, Quotes, and Charts APIs use your numeric account login for balance, market, and trade-history reads. The published HTTP integration is read-only.</p>
+                    {forexBridgeSelected && (
+                      <div className="mt-3 grid gap-3 rounded-md border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-900 dark:bg-amber-950/20 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="account-password">Trader password</Label>
+                          <Input id="account-password" type={showSecrets ? "text" : "password"} value={formData.account_password} onChange={(e) => setFormData({ ...formData, account_password: e.target.value })} placeholder="Private bridge only" disabled={loading} />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="account-server">Broker server (optional)</Label>
+                          <Input id="account-server" value={formData.account_server} onChange={(e) => setFormData({ ...formData, account_server: e.target.value })} placeholder="e.g. InstaForex-USA2.com" disabled={loading} />
+                        </div>
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <Label htmlFor="bridge-url">Private bridge URL</Label>
+                          <Input id="bridge-url" type="url" value={formData.bridge_url} onChange={(e) => setFormData({ ...formData, bridge_url: e.target.value })} placeholder="http://127.0.0.1:8765" disabled={loading} />
+                          <p className="text-xs text-muted-foreground">Use a loopback URL or a Chisel/Tailscale-reachable private endpoint. Never use the official InstaForex URL here.</p>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="bridge-token">Bridge token (required off-host)</Label>
+                          <Input id="bridge-token" type={showSecrets ? "text" : "password"} value={formData.bridge_token} onChange={(e) => setFormData({ ...formData, bridge_token: e.target.value })} placeholder="Bearer token" disabled={loading} />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="terminal-path">Terminal path/instance (optional)</Label>
+                          <Input id="terminal-path" value={formData.terminal_path} onChange={(e) => setFormData({ ...formData, terminal_path: e.target.value })} placeholder="MT4/MT5 instance" disabled={loading} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {!isForex && <div className="space-y-2">
                   <Label htmlFor="api-key" className="font-medium flex items-center gap-2">
                     <Lock className="h-4 w-4" />
                     API Key
@@ -727,9 +948,9 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                       {showSecrets ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                   </div>
-                </div>
+                </div>}
 
-                <div className="space-y-2">
+                {!isForex && <div className="space-y-2">
                   <Label htmlFor="api-secret" className="font-medium flex items-center gap-2">
                     <Lock className="h-4 w-4" />
                     API Secret
@@ -743,7 +964,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                     disabled={loading}
                     className="bg-background"
                   />
-                </div>
+                </div>}
 
                 <div className="space-y-2">
                   <Label htmlFor="api-passphrase" className="font-medium">API Passphrase (Optional)</Label>
@@ -756,14 +977,14 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                     disabled={loading}
                     className="bg-background"
                   />
-                  <p className="text-xs text-muted-foreground">Required only for some exchanges (e.g., OKX, Coinbase)</p>
+                  <p className="text-xs text-muted-foreground">{isForex ? "Optional InstaForex Client API passkey for account reads" : "Required only for some exchanges (e.g., OKX, Coinbase)"}</p>
                 </div>
               </div>
             </TabsContent>
 
             {/* Advanced Tab */}
             <TabsContent value="advanced" className="space-y-4 mt-4">
-              <div className="space-y-2">
+              {!isForex ? <div className="space-y-2">
                 <Label htmlFor="connection-library" className="font-medium">Connection Library</Label>
                 <Select value={formData.connection_library} onValueChange={(value) => setFormData({ ...formData, connection_library: value })}>
                   <SelectTrigger id="connection-library" disabled={loading} className="bg-background">
@@ -782,7 +1003,57 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                   {formData.connection_library === "ccxt" && "Universal library supporting 100+ exchanges"}
                   {formData.connection_library === "library" && "Built-in optimized connector"}
                 </p>
-              </div>
+              </div> : (
+                <div className="rounded-lg border border-cyan-200 bg-cyan-50/60 p-3 text-sm dark:border-cyan-900 dark:bg-cyan-950/30">
+                    <p className="font-medium text-cyan-950 dark:text-cyan-100">Forex transport: {forexBridgeSelected ? "private terminal bridge" : "official REST/HTTP (read-only)"}</p>
+                    <p className="mt-1 text-xs text-cyan-900/80 dark:text-cyan-200/80">{forexBridgeSelected ? "The private bridge is the only mutation path and requires exact terminal tickets for SL/TP." : "The official InstaForex Client, Quotes, and Charts APIs provide account and market data but do not place orders."}</p>
+                </div>
+              )}
+
+              {isForex && (
+                <Card className="border-cyan-200 bg-cyan-50/40 dark:border-cyan-900 dark:bg-cyan-950/20">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">InstaForex {forexBridgeSelected ? "private bridge" : "REST read-only"} connection</CardTitle>
+                    <CardDescription>{forexBridgeSelected ? "The official HTTP interfaces remain the data/history source; the private terminal bridge handles authenticated orders and native SL/TP." : "The official HTTP interfaces supply quotes, charts, account information, open trades, and history. This transport does not place orders."}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="symbol-suffix">Broker symbol suffix (optional)</Label>
+                      <Input id="symbol-suffix" value={formData.symbol_suffix} onChange={(e) => setFormData({ ...formData, symbol_suffix: e.target.value })} placeholder="e.g. .fx or .m" disabled={loading} />
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="positions-average">Average count</Label>
+                        <Input id="positions-average" type="number" min="1" max="600" value={formData.positions_average} onChange={(e) => setFormData({ ...formData, positions_average: e.target.value })} disabled={loading} />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="lot-size">Contract size / lot</Label>
+                        <Input id="lot-size" type="number" min="1" value={formData.lot_size} onChange={(e) => setFormData({ ...formData, lot_size: e.target.value })} disabled={loading} />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="max-spread-pips">Max spread (pips)</Label>
+                        <Input id="max-spread-pips" type="number" min="0" step="0.1" value={formData.max_spread_pips} onChange={(e) => setFormData({ ...formData, max_spread_pips: e.target.value })} disabled={loading} />
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="position-cost-percent">Fallback PositionCost %</Label>
+                        <Input id="position-cost-percent" type="number" min="0.02" max="1" step="0.01" value={formData.position_cost_percent} onChange={(e) => setFormData({ ...formData, position_cost_percent: e.target.value })} disabled={loading} />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="spread-buffer-pips">Spread buffer (pips)</Label>
+                        <Input id="spread-buffer-pips" type="number" min="0" step="0.1" value={formData.spread_buffer_pips} onChange={(e) => setFormData({ ...formData, spread_buffer_pips: e.target.value })} disabled={loading} />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="spread-multiplier">Spread multiplier</Label>
+                        <Input id="spread-multiplier" type="number" min="0" step="0.1" value={formData.spread_multiplier} onChange={(e) => setFormData({ ...formData, spread_multiplier: e.target.value })} disabled={loading} />
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Signals use the broker bid/ask tick for entry/exit cost. The buffer and multiplier are only a safety cushion; they do not replace the live spread.</p>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Test Connection Section */}
               <Card className="border-orange-200 bg-orange-50/50">
@@ -795,21 +1066,20 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {/* Validation warning if credentials are missing */}
-                  {(!formData.api_key || !formData.api_secret) && (
+                  {!connectionReady && (
                     <div className="flex items-start gap-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900">
                       <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
                       <div>
-                        <p className="font-medium">Please fill in API credentials first</p>
-                        <p className="text-amber-800">Switch to the "API Credentials" tab to enter your API Key and Secret</p>
+                        <p className="font-medium">Please fill in the required connection credential first</p>
+                        <p className="text-amber-800">{isForex ? "Switch to the API Credentials tab and enter the numeric InstaForex account id/login." : "Switch to the API Credentials tab to enter your API Key and Secret."}</p>
                       </div>
                     </div>
                   )}
-
                   <div className="flex gap-2">
                     <Button
                       type="button"
                       onClick={handleTestConnection}
-                      disabled={testing || !formData.api_key || !formData.api_secret || loading}
+                      disabled={testing || !connectionReady || loading}
                       className="flex-1 bg-orange-600 hover:bg-orange-700"
                     >
                       {testing ? (
@@ -850,7 +1120,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                       <Button
                         type="button"
                         onClick={handleTestConnection}
-                        disabled={testing || loading || !formData.api_key || !formData.api_secret}
+                        disabled={testing || loading || !connectionReady}
                         variant="outline"
                         size="sm"
                         className="w-full"

@@ -8,6 +8,8 @@ import {
   isServerlessDeploymentRuntime,
 } from "@/lib/deployment-runtime"
 import { hasKiloDatabaseBackend } from "@/lib/kilo-database-client"
+import { isForexExchange, normalizeMarketType } from "@/lib/market-types"
+import { isForexBridgeSelected, isValidForexBridgeUrl, resolveForexExecutionMode } from "@/lib/forex-market"
 
 export type RealTradeBlockCode =
   | "disabled"
@@ -15,6 +17,7 @@ export type RealTradeBlockCode =
   | "credentials_missing"
   | "explicit_block"
   | "placement_disabled"
+  | "execution_unavailable"
   | "shared_redis_required"
 
 export interface RealTradeReadiness {
@@ -27,6 +30,33 @@ export interface RealTradeReadiness {
   executionMode: "live" | "blocked" | "simulation"
   blockCode: RealTradeBlockCode | null
   blockReason: string
+}
+
+export function isForexConnection(settings: Record<string, any>): boolean {
+  return normalizeMarketType(settings.market_type ?? settings.asset_class, settings.exchange) === "forex"
+}
+
+function usableForexAccountId(settings: Record<string, any>): boolean {
+  const accountId = String(settings.account_id ?? settings.accountId ?? (isForexExchange(settings.exchange) ? settings.api_key ?? "" : "")).trim()
+  return /^[0-9]{4,12}$/.test(accountId)
+}
+
+export function hasUsableForexExecutionConfig(settings: Record<string, any>): boolean {
+  if (!isForexConnection(settings)) return false
+  const password = String(settings.account_password ?? settings.accountPassword ?? settings.trader_password ?? settings.mt5_password ?? "").trim()
+  const bridgeUrl = String(settings.bridge_url ?? settings.bridgeUrl ?? "").trim()
+  // Settings can arrive from the canonical snake_case API, the camelCase UI,
+  // or an older connector row that called this field connection_method. Use
+  // the same effective mode everywhere so a bridge selected in the UI is not
+  // accidentally downgraded to read-only just because only one alias was
+  // persisted.
+  const executionMode = resolveForexExecutionMode(settings)
+  return isForexBridgeSelected(settings) &&
+    executionMode === "mt5_bridge" &&
+    !truthy(settings.read_only) &&
+    usableForexAccountId(settings) &&
+    password.length > 0 &&
+    isValidForexBridgeUrl(bridgeUrl)
 }
 
 function truthy(value: unknown): boolean {
@@ -113,6 +143,7 @@ function isInlineRedisLiveTradingAllowed(): boolean {
  * branch while keeping the check cheap enough for the per-position hot path.
  */
 export function hasUsableLiveCredentials(settings: Record<string, any>): boolean {
+  if (isForexConnection(settings)) return usableForexAccountId(settings)
   const key = String(settings.api_key || settings.apiKey || "").trim()
   const secret = String(settings.api_secret || settings.apiSecret || "").trim()
   if (key.length < 10 || secret.length < 10) return false
@@ -198,6 +229,7 @@ export function evaluateRealTradeReadiness(
       : settings.live_trade_requested
   const requested = enabled || truthy(requestedField)
   const credentialsValid = hasUsableLiveCredentials(settings)
+  const forexExecutionReady = !isForexConnection(settings) || hasUsableForexExecutionConfig(settings)
   // An explicit process-level paper override wins over every persisted live
   // toggle. This is used by dev/soak/preview runners and prevents a stale
   // snapshot's live request from creating one rejected record and warning per
@@ -239,7 +271,14 @@ export function evaluateRealTradeReadiness(
     blockReason = `${label} is disabled by the operator`
   } else if (!credentialsValid) {
     blockCode = "credentials_missing"
-    blockReason = `${label} requires a valid API key and secret`
+    blockReason = isForexConnection(settings)
+      ? `${label} requires a valid numeric InstaForex account id/login`
+      : `${label} requires a valid API key and secret`
+  } else if (!forexExecutionReady) {
+    blockCode = "execution_unavailable"
+    blockReason = isForexConnection(settings)
+      ? "InstaForex live entries require an explicitly selected private MT4/MT5 bridge, trader password, valid URL, and shared safety controls; official REST remains read-only"
+      : "Exchange order execution is unavailable for this connection"
   } else if (explicitReason) {
     blockCode = "explicit_block"
     blockReason = explicitReason

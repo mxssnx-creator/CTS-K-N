@@ -26,6 +26,13 @@ import { Save, Loader2, ExternalLink, Info } from 'lucide-react'
 import { toast } from "@/lib/simple-toast"
 import { EXCHANGE_CONFIGS, getExchangeConfig } from "@/lib/config"
 import { CONNECTION_PREDEFINITIONS } from "@/lib/connection-predefinitions"
+import { normalizeMarketType } from "@/lib/market-types"
+import {
+  DEFAULT_FOREX_LOT_SIZE,
+  DEFAULT_FOREX_POSITIONS_AVERAGE,
+  DEFAULT_FOREX_SPREAD_BUFFER_PIPS,
+  DEFAULT_FOREX_SPREAD_MULTIPLIER,
+} from "@/lib/forex-market"
 
 interface ExchangeConfig {
   name: string
@@ -52,6 +59,24 @@ interface ExchangeConfig {
 }
 
 const EXCHANGE_API_CONFIGS: Record<string, ExchangeConfig> = {
+  instaforex: {
+    name: "InstaForex",
+    library: "native-http",
+    packageName: "native-http",
+    api_types: [
+      {
+        value: "forex",
+        label: "Forex account and market data",
+        description: "Official quotes, charts, balance, open trades, and history; HTTP execution is not published",
+        capabilities: ["forex", "quotes", "ohlcv", "account_read", "read_only"],
+      },
+    ],
+    connection_methods: [
+      { value: "rest", label: "REST / HTTP", description: "Official Client API and quotes feed", priority: 1 },
+    ],
+    rate_limits: { requests_per_second: 2, requests_per_minute: 60 },
+    docs_url: "https://www.instaforex.com/client_cabinet_api",
+  },
   bybit: {
     name: "Bybit",
     library: "pybit",
@@ -348,11 +373,21 @@ const EXCHANGE_API_CONFIGS: Record<string, ExchangeConfig> = {
 interface ConnectionForm {
   name: string
   exchange: string
+  market_type: "crypto" | "forex"
   api_type: string
   connection_method: string
   connection_library: string
   api_key: string
+  account_id: string
   api_secret: string
+  api_passphrase: string
+  symbol_suffix: string
+  lot_size: string
+  position_cost_percent: string
+  spread_buffer_pips: string
+  spread_multiplier: string
+  positions_average: string
+  max_spread_pips: string
   margin_type: string
   position_mode: string
   is_testnet: boolean
@@ -377,11 +412,21 @@ export function ExchangeConnectionDialog({
   const [form, setForm] = useState<ConnectionForm>({
     name: "",
     exchange: "bybit",
+    market_type: "crypto",
     api_type: "perpetual_futures",
     connection_method: "library",
     connection_library: "pybit",
     api_key: "",
+    account_id: "",
     api_secret: "",
+    api_passphrase: "",
+    symbol_suffix: "",
+    lot_size: String(DEFAULT_FOREX_LOT_SIZE),
+    position_cost_percent: "0.1",
+    spread_buffer_pips: String(DEFAULT_FOREX_SPREAD_BUFFER_PIPS),
+    spread_multiplier: String(DEFAULT_FOREX_SPREAD_MULTIPLIER),
+    positions_average: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+    max_spread_pips: "3",
     margin_type: "cross",
     position_mode: "hedge",
     is_testnet: false,
@@ -392,11 +437,25 @@ export function ExchangeConnectionDialog({
       setForm({
         name: connection.name || "",
         exchange: connection.exchange || "bybit",
+        market_type: normalizeMarketType(connection.market_type || connection.asset_class, connection.exchange),
         api_type: connection.api_type || "perpetual_futures",
-        connection_method: connection.connection_method || "library",
-        connection_library: connection.connection_library || "pybit",
+        connection_method: normalizeMarketType(connection.market_type || connection.asset_class, connection.exchange) === "forex"
+          ? "rest"
+          : connection.connection_method || "library",
+        connection_library: normalizeMarketType(connection.market_type || connection.asset_class, connection.exchange) === "forex"
+          ? "native-http"
+          : connection.connection_library || "pybit",
         api_key: connection.api_key || "",
+        account_id: connection.account_id || (normalizeMarketType(connection.market_type || connection.asset_class, connection.exchange) === "forex" ? connection.api_key || "" : ""),
         api_secret: connection.api_secret || "",
+        api_passphrase: connection.api_passphrase || "",
+        symbol_suffix: connection.symbol_suffix || "",
+        lot_size: String(connection.lot_size || DEFAULT_FOREX_LOT_SIZE),
+        position_cost_percent: String(connection.position_cost_percent || "0.1"),
+        spread_buffer_pips: String(connection.spread_buffer_pips ?? DEFAULT_FOREX_SPREAD_BUFFER_PIPS),
+        spread_multiplier: String(connection.spread_multiplier ?? DEFAULT_FOREX_SPREAD_MULTIPLIER),
+        positions_average: String(connection.positions_average || connection.average_count || DEFAULT_FOREX_POSITIONS_AVERAGE),
+        max_spread_pips: String(connection.max_spread_pips ?? "3"),
         margin_type: connection.margin_type || "cross",
         position_mode: connection.position_mode || "hedge",
         is_testnet: connection.id === "bingx-x02" || connection.is_testnet === true || connection.is_testnet === "1" || connection.is_testnet === "true",
@@ -405,11 +464,21 @@ export function ExchangeConnectionDialog({
       setForm({
         name: "",
         exchange: "bybit",
+        market_type: "crypto",
         api_type: "perpetual_futures",
         connection_method: "library",
         connection_library: "pybit",
         api_key: "",
+        account_id: "",
         api_secret: "",
+        api_passphrase: "",
+        symbol_suffix: "",
+        lot_size: String(DEFAULT_FOREX_LOT_SIZE),
+        position_cost_percent: "0.1",
+        spread_buffer_pips: String(DEFAULT_FOREX_SPREAD_BUFFER_PIPS),
+        spread_multiplier: String(DEFAULT_FOREX_SPREAD_MULTIPLIER),
+        positions_average: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+        max_spread_pips: "3",
         margin_type: "cross",
         position_mode: "hedge",
         is_testnet: false,
@@ -422,22 +491,34 @@ export function ExchangeConnectionDialog({
     if (config) {
       setForm((prev) => ({
         ...prev,
-        connection_library: config.library,
+        market_type: form.exchange === "instaforex" ? "forex" : "crypto",
         api_type: config.api_types[0]?.value || "perpetual_futures",
+        connection_method: form.exchange === "instaforex"
+          ? "rest"
+          : config.connection_methods[0]?.value || "rest",
+        connection_library: form.exchange === "instaforex"
+          ? "native-http"
+          : config.library,
+        ...(form.exchange === "instaforex" ? { is_testnet: false, position_mode: "one_way", margin_type: "cross" } : {}),
       }))
     }
   }, [form.exchange])
+
+  const isForex = form.market_type === "forex" || form.exchange === "instaforex"
+  const credentialReady = isForex
+    ? /^[0-9]{4,12}$/.test(form.account_id.trim())
+    : Boolean(form.api_key.trim() && form.api_secret.trim())
+  const connectionReady = credentialReady
 
   const handleSave = async () => {
     if (!form.name.trim()) {
       toast.error("Please enter a connection name")
       return
     }
-    if (!form.api_key.trim() || !form.api_secret.trim()) {
-      toast.error("Please enter API key and secret")
+    if (!connectionReady) {
+      toast.error(isForex ? "Please enter a valid numeric InstaForex account id/login" : "Please enter API key and secret")
       return
     }
-
     setSaving(true)
     try {
       const [indicationRes, strategyRes, settingsRes] = await Promise.all([
@@ -455,6 +536,26 @@ export function ExchangeConnectionDialog({
 
       const payload = {
         ...form,
+        market_type: isForex ? "forex" : "crypto",
+        api_key: isForex ? form.account_id : form.api_key,
+        api_secret: isForex ? "" : form.api_secret,
+        account_id: isForex ? form.account_id : undefined,
+        symbol_suffix: isForex ? form.symbol_suffix : undefined,
+        quantity_unit: isForex ? "lots" : undefined,
+        lot_size: isForex ? Number(form.lot_size) : undefined,
+        position_cost_percent: isForex ? Number(form.position_cost_percent) : undefined,
+        spread_buffer_pips: isForex ? Number(form.spread_buffer_pips) : undefined,
+        spread_multiplier: isForex ? Number(form.spread_multiplier) : undefined,
+        positions_average: isForex ? Number(form.positions_average) : undefined,
+        average_count: isForex ? Number(form.positions_average) : undefined,
+        max_spread_pips: isForex ? Number(form.max_spread_pips) : undefined,
+        api_type: isForex ? "forex" : form.api_type,
+        connection_method: isForex ? "rest" : form.connection_method,
+        connection_library: isForex ? "native-http" : form.connection_library,
+        execution_mode: isForex ? "read_only" : undefined,
+        read_only: isForex ? true : undefined,
+        execution_supported: isForex ? false : undefined,
+        is_testnet: isForex ? false : form.is_testnet,
         connection_settings: {
           // Volume factor only for active connections (not predefined)
           baseVolumeFactor: MIN_VOLUME_FACTOR,
@@ -593,11 +694,21 @@ export function ExchangeConnectionDialog({
     setForm({
       name: uniqueName,
       exchange: predefinition.id.split("-")[0],
+      market_type: predefinition.marketType || (predefinition.exchange === "instaforex" ? "forex" : "crypto"),
       api_type: predefinition.apiType,
       connection_method: predefinition.connectionMethod,
       connection_library: predefinition.connectionLibrary,
       api_key: predefinition.apiKey || "",
+      account_id: predefinition.accountId || predefinition.apiKey || "",
       api_secret: predefinition.apiSecret || "",
+      api_passphrase: "",
+        symbol_suffix: "",
+      lot_size: String(DEFAULT_FOREX_LOT_SIZE),
+      position_cost_percent: "0.1",
+      spread_buffer_pips: String(DEFAULT_FOREX_SPREAD_BUFFER_PIPS),
+      spread_multiplier: String(DEFAULT_FOREX_SPREAD_MULTIPLIER),
+      positions_average: String(DEFAULT_FOREX_POSITIONS_AVERAGE),
+      max_spread_pips: "3",
       margin_type: predefinition.marginType,
       position_mode: predefinition.positionMode,
       is_testnet: predefinition.id === "bingx-x02" || predefinition.defaultTestnet === true,
@@ -723,35 +834,83 @@ export function ExchangeConnectionDialog({
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="api-key">API Key *</Label>
-                <Input
-                  id="api-key"
-                  type="password"
-                  placeholder="Enter API key"
-                  value={form.api_key}
-                  onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-                />
+                <Label htmlFor="market-type">Market Type *</Label>
+                <Select
+                  value={form.market_type}
+                  onValueChange={(value) => {
+                    const marketType = value === "forex" ? "forex" : "crypto"
+                    setForm({
+                      ...form,
+                      market_type: marketType,
+                      exchange: marketType === "forex"
+                        ? "instaforex"
+                        : form.exchange === "instaforex" ? "bybit" : form.exchange,
+                      api_type: marketType === "forex" ? "forex" : form.api_type,
+                      connection_method: marketType === "forex"
+                        ? "rest"
+                        : form.connection_method,
+                      connection_library: marketType === "forex"
+                        ? "native-http"
+                        : form.connection_library,
+                      is_testnet: marketType === "forex" ? false : form.is_testnet,
+                    })
+                  }}
+                >
+                  <SelectTrigger id="market-type"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="crypto">Crypto</SelectItem>
+                    <SelectItem value="forex">Forex (InstaForex)</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="api-secret">API Secret *</Label>
-                <Input
-                  id="api-secret"
-                  type="password"
-                  placeholder="Enter API secret"
-                  value={form.api_secret}
-                  onChange={(e) => setForm({ ...form, api_secret: e.target.value })}
-                />
-              </div>
+              {isForex ? (
+                <div className="space-y-2 col-span-2">
+                  <Label htmlFor="account-id">InstaForex Account ID / Login *</Label>
+                  <Input
+                    id="account-id"
+                    inputMode="numeric"
+                    placeholder="Numeric account login"
+                    value={form.account_id}
+                    onChange={(e) => setForm({ ...form, account_id: e.target.value.replace(/\D/g, ""), api_key: e.target.value.replace(/\D/g, "") })}
+                  />
+                  <p className="text-xs text-muted-foreground">The official Client API uses the numeric account login for read-only account and trade-history data.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="api-key">API Key *</Label>
+                    <Input
+                      id="api-key"
+                      type="password"
+                      placeholder="Enter API key"
+                      value={form.api_key}
+                      onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="api-secret">API Secret *</Label>
+                    <Input
+                      id="api-secret"
+                      type="password"
+                      placeholder="Enter API secret"
+                      value={form.api_secret}
+                      onChange={(e) => setForm({ ...form, api_secret: e.target.value })}
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="flex items-center space-x-2">
               <Switch
                 id="testnet"
-                checked={form.is_testnet}
+                checked={isForex ? false : form.is_testnet}
                 onCheckedChange={(checked) => setForm({ ...form, is_testnet: checked })}
+                disabled={isForex}
               />
-              <Label htmlFor="testnet">Use Testnet (for testing only)</Label>
+              <Label htmlFor="testnet">{isForex ? "Forex read-only account (no testnet toggle)" : "Use Testnet (for testing only)"}</Label>
             </div>
           </TabsContent>
 
@@ -792,7 +951,11 @@ export function ExchangeConnectionDialog({
                 <Label htmlFor="connection-method">Connection Method</Label>
                 <Select
                   value={form.connection_method}
-                  onValueChange={(value) => setForm({ ...form, connection_method: value })}
+                  onValueChange={(value) => setForm({
+                    ...form,
+                    connection_method: value,
+                    connection_library: isForex ? "native-http" : form.connection_library,
+                  })}
                 >
                   <SelectTrigger id="connection-method">
                     <SelectValue />
@@ -823,15 +986,39 @@ export function ExchangeConnectionDialog({
               </div>
 
               <div className="space-y-2 col-span-2">
+                {isForex && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                    "InstaForex HTTP integration is read-only. Quotes and charts use the official feeds; account reads use the Client API, and order execution is unavailable."
+                  </div>
+                )}
                 <Label htmlFor="connection-library">Connection Library</Label>
                 <Input
                   id="connection-library"
                   placeholder="e.g., pybit, ccxt"
                   value={form.connection_library}
                   onChange={(e) => setForm({ ...form, connection_library: e.target.value })}
+                  disabled={isForex}
                 />
-                <p className="text-xs text-muted-foreground">Library or SDK to use for API communication</p>
+                <p className="text-xs text-muted-foreground">{isForex ? "Native HTTP connector for the official InstaForex feeds (read-only)" : "Library or SDK to use for API communication"}</p>
               </div>
+
+              {isForex && (
+                <div className="col-span-2 rounded-lg border border-cyan-200 bg-cyan-50/50 p-4 space-y-4 dark:border-cyan-900 dark:bg-cyan-950/20">
+                  <div>
+                    <p className="font-medium text-cyan-950 dark:text-cyan-100">InstaForex Forex market settings</p>
+                    <p className="mt-1 text-xs text-cyan-900/80 dark:text-cyan-200/80">The connector uses official quotes/charts, live broker bid/ask spread, Forex lot units, and the higher default average count. Official HTTP order execution remains unavailable.</p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5"><Label htmlFor="symbol-suffix">Broker symbol suffix (optional)</Label><Input id="symbol-suffix" value={form.symbol_suffix} onChange={(e) => setForm({ ...form, symbol_suffix: e.target.value })} placeholder="e.g. .fx or .m" /></div>
+                    <div className="space-y-1.5"><Label htmlFor="positions-average">Average count</Label><Input id="positions-average" type="number" min="1" max="600" value={form.positions_average} onChange={(e) => setForm({ ...form, positions_average: e.target.value })} /></div>
+                    <div className="space-y-1.5"><Label htmlFor="lot-size">Contract size / lot</Label><Input id="lot-size" type="number" min="1" value={form.lot_size} onChange={(e) => setForm({ ...form, lot_size: e.target.value })} /></div>
+                    <div className="space-y-1.5"><Label htmlFor="max-spread-pips">Max spread (pips)</Label><Input id="max-spread-pips" type="number" min="0" step="0.1" value={form.max_spread_pips} onChange={(e) => setForm({ ...form, max_spread_pips: e.target.value })} /></div>
+                    <div className="space-y-1.5"><Label htmlFor="position-cost-percent">Fallback PositionCost %</Label><Input id="position-cost-percent" type="number" min="0.02" max="1" step="0.01" value={form.position_cost_percent} onChange={(e) => setForm({ ...form, position_cost_percent: e.target.value })} /></div>
+                    <div className="space-y-1.5"><Label htmlFor="spread-buffer-pips">Spread buffer (pips)</Label><Input id="spread-buffer-pips" type="number" min="0" step="0.1" value={form.spread_buffer_pips} onChange={(e) => setForm({ ...form, spread_buffer_pips: e.target.value })} /></div>
+                    <div className="space-y-1.5"><Label htmlFor="spread-multiplier">Spread multiplier</Label><Input id="spread-multiplier" type="number" min="0" step="0.1" value={form.spread_multiplier} onChange={(e) => setForm({ ...form, spread_multiplier: e.target.value })} /></div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {selectedExchangeConfig && (
@@ -863,7 +1050,7 @@ export function ExchangeConnectionDialog({
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="margin-type">Margin Type</Label>
-                <Select value={form.margin_type} onValueChange={(value) => setForm({ ...form, margin_type: value })}>
+                <Select value={form.margin_type} onValueChange={(value) => setForm({ ...form, margin_type: value })} disabled={isForex}>
                   <SelectTrigger id="margin-type">
                     <SelectValue />
                   </SelectTrigger>
@@ -889,6 +1076,7 @@ export function ExchangeConnectionDialog({
                 <Select
                   value={form.position_mode}
                   onValueChange={(value) => setForm({ ...form, position_mode: value })}
+                  disabled={isForex}
                 >
                   <SelectTrigger id="position-mode">
                     <SelectValue />
@@ -919,6 +1107,10 @@ export function ExchangeConnectionDialog({
                   <span className="font-medium">{selectedExchangeConfig?.name}</span>
                 </div>
                 <div>
+                  <span className="text-muted-foreground">Market:</span>{" "}
+                  <span className="font-medium">{isForex ? "Forex" : "Crypto"}</span>
+                </div>
+                <div>
                   <span className="text-muted-foreground">API Type:</span>{" "}
                   <span className="font-medium">{selectedApiType?.label}</span>
                 </div>
@@ -931,6 +1123,7 @@ export function ExchangeConnectionDialog({
                   <span className="font-medium capitalize">{form.position_mode}</span>
                 </div>
               </div>
+              {isForex && <p className="text-xs text-amber-700">Read-only data connection; this dialog cannot enable Forex order execution.</p>}
             </div>
           </TabsContent>
         </Tabs>

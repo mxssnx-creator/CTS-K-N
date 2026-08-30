@@ -22,6 +22,8 @@ import {
   sanitizeSpecialPositionPlan,
   type SpecialPositionPlan,
 } from "@/lib/special-strategy"
+import { DEFAULT_FOREX_LOT_SIZE, DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
+import { normalizeMarketType } from "@/lib/market-types"
 
 const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
 const POSITION_CLOSE_LOCK_TTL_MS = 60_000
@@ -487,20 +489,34 @@ export class PseudoPositionManager {
       const volumeCalc = await (async () => {
         const settings = (await getAppSettings()) || {}
         const positionCostPercent = parseFloat(
-          String(settings.exchangePositionCost ?? settings.positionCost ?? "0.1")
+          String(
+            settings.exchangePositionCost ??
+            settings.positionCost ??
+            settings.position_cost_percent ??
+            settings.positionCostPercent ??
+            "0.1",
+          )
         )
         const canonicalPositionCostPercent = Number.isFinite(positionCostPercent) && positionCostPercent > 0
           ? Math.max(0.02, Math.min(1.0, positionCostPercent))
           : 0.02
-        const positionsAverage = (() => {
-          const raw = parseFloat(String(settings.positions_average ?? "2"))
-          return Number.isFinite(raw) && raw > 0 ? raw : 2
-        })()
         // Operator policy: always max leverage — resolved from the exchange
         // predefinition rather than a stored preference flag.
         const { getMaxLeverageForExchange: _getMaxLev } = await import("@/lib/leverage-policy")
         const { getConnection: _getConn } = await import("@/lib/redis-db")
         const _conn = await _getConn(this.connectionId).catch(() => null)
+        const marketType = normalizeMarketType(
+          _conn?.market_type ?? _conn?.asset_class,
+          _conn?.exchange,
+        )
+        const positionsAverage = (() => {
+          const fallback = marketType === "forex" ? DEFAULT_FOREX_POSITIONS_AVERAGE : 2
+          const raw = parseFloat(String(settings.positions_average ?? settings.positionsAverage ?? fallback))
+          return Number.isFinite(raw) && raw > 0 ? raw : fallback
+        })()
+        const lotSize = marketType === "forex"
+          ? Math.max(1, Number(_conn?.lot_size ?? _conn?.lotSize) || DEFAULT_FOREX_LOT_SIZE)
+          : undefined
         const rawLeverage = _getMaxLev(_conn?.exchange)
         const { accountBalance, maxLeverage } =
           await VolumeCalculator.resolveBalanceAndLeverage(this.connectionId, rawLeverage)
@@ -515,6 +531,9 @@ export class PseudoPositionManager {
           currentPrice: params.entryPrice,
           leverage: maxLeverage,
           exchangeMinVolume,
+          marketType,
+          lotSize,
+          symbol: params.symbol,
         })
         return {
           ...calculated,

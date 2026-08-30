@@ -2,7 +2,13 @@ import { createHash } from "node:crypto"
 import { createExchangeConnector, exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
-import { evaluateRealTradeReadiness, hasUsableLiveCredentials, isForcedSimulation } from "@/lib/real-trade-gates"
+import {
+  evaluateRealTradeReadiness,
+  hasUsableForexExecutionConfig,
+  hasUsableLiveCredentials,
+  isForcedSimulation,
+  isForexConnection,
+} from "@/lib/real-trade-gates"
 import {
   getConnection,
   getMarketData,
@@ -14,9 +20,16 @@ import {
 } from "@/lib/redis-db"
 import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import type { ExchangeConnection } from "@/lib/types"
-import { resolveExecutableQuantity } from "@/lib/order-quantity"
+import {
+  normalizeExchangeQuantityRules,
+  resolveExecutableQuantity,
+  roundQuantityDown,
+} from "@/lib/order-quantity"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
+import { VolumeCalculator } from "@/lib/volume-calculator"
+import { DEFAULT_FOREX_LOT_SIZE, forexNotionalUsd } from "@/lib/forex-market"
+import { normalizeMarketType } from "@/lib/market-types"
 import {
   getRuntimeMaintenanceState,
   RUNTIME_MAINTENANCE_STOP_CODE,
@@ -66,6 +79,25 @@ export interface PlaceLiveOrderInput {
   clientOrderId?: string
   /** Exact Direct-Trade ledger row owning this control id. */
   positionId?: string
+  /** Optional caller hint; the service always validates it against the canonical cap. */
+  maxExecutionNotionalUsd?: number
+  marketType?: "crypto" | "forex" | string
+  lotSize?: number
+  quoteToUsdRate?: number
+  positionCostPercentOverride?: number
+  sizeMultiplier?: number
+  stopLossPrice?: number
+  takeProfitPrice?: number
+  protectionStopLossPercent?: number
+  protectionTakeProfitPercent?: number
+  requireProtection?: boolean
+  positionTicket?: number
+}
+
+function finiteOptional(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 const VST_SOAK_CONFIRMATION = "I understand Prod-VST places authenticated orders with virtual funds"
@@ -452,6 +484,8 @@ async function resolveSubmittedQuantity(
   requestedQuantity: number
   adjusted: boolean
   reason?: string
+  marketPrice: number
+  rules: ReturnType<typeof normalizeExchangeQuantityRules>
 }> {
   // Read the pair hash directly here instead of adding another high-level
   // Redis dependency to the order service. This keeps paper/test adapters and
@@ -470,6 +504,10 @@ async function resolveSubmittedQuantity(
     .trim()
     .toLowerCase()
   const isBingX = exchange.includes("bingx")
+  const marketType = normalizeMarketType(
+    input.marketType ?? connection?.market_type ?? connection?.asset_class,
+    connection?.exchange,
+  )
   const quantityRules: Record<string, unknown> = { ...(pair || {}) }
   if (isBingX) {
     // Direct-Trade can start before the optional trading-pair cache has been
@@ -485,6 +523,21 @@ async function resolveSubmittedQuantity(
     if (!(persistedMinimum > 0)) quantityRules.minQuantity = staticMinimum
     else quantityRules.minQuantity = persistedMinimum
   }
+  if (marketType === "forex") {
+    // A cold broker metadata cache must still use the instrument's lot
+    // contract. Never let the generic crypto quantity default turn a Forex
+    // request into arbitrary base units.
+    const persistedMinimum = Number(
+      quantityRules.minQuantity
+      ?? quantityRules.min_order_size
+      ?? quantityRules.min_quantity,
+    )
+    const persistedStep = Number(quantityRules.quantityStep ?? quantityRules.quantity_step)
+    const persistedPrecision = Number(quantityRules.quantityPrecision ?? quantityRules.quantity_precision)
+    if (!(persistedMinimum > 0)) quantityRules.minQuantity = 0.01
+    if (!(persistedStep > 0)) quantityRules.quantityStep = 0.01
+    if (!Number.isFinite(persistedPrecision) || persistedPrecision < 0) quantityRules.quantityPrecision = 2
+  }
 
   let marketPrice = Number(input.price) || 0
   if (!(marketPrice > 0) && input.reduceOnly !== true) {
@@ -497,7 +550,7 @@ async function resolveSubmittedQuantity(
     quantityRules.minNotional,
     quantityRules.min_notional_usdt,
   ].some((value) => Number(value) > 0)
-  return resolveExecutableQuantity(
+  const resolved = resolveExecutableQuantity(
     input.quantity,
     marketPrice,
     quantityRules,
@@ -509,6 +562,302 @@ async function resolveSubmittedQuantity(
       universalMinNotionalUsdt: input.reduceOnly === true || hasVenueNotionalMinimum ? 0 : 5,
     },
   )
+  return {
+    ...resolved,
+    marketPrice,
+    rules: normalizeExchangeQuantityRules(quantityRules),
+  }
+}
+
+function orderQuantityFromPosition(value: unknown): number {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : {}
+  for (const candidate of [
+    row.quantity,
+    row.qty,
+    row.contracts,
+    row.size,
+    row.positionAmt,
+    row.positionSize,
+    row.lots,
+    row.volume,
+  ]) {
+    const parsed = Number(candidate)
+    if (Number.isFinite(parsed) && Math.abs(parsed) > 0) return Math.abs(parsed)
+  }
+  return 0
+}
+
+function orderPriceFromPosition(value: unknown, fallback: number): number {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : {}
+  for (const candidate of [
+    row.entryPrice,
+    row.avgPrice,
+    row.averagePrice,
+    row.openPrice,
+    row.markPrice,
+    row.currentPrice,
+  ]) {
+    const parsed = Number(candidate)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  return fallback
+}
+
+function snapshotSymbol(value: unknown): string {
+  return String(value ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "")
+}
+
+function snapshotDirection(value: unknown): LiveOrderDirection | null {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : {}
+  for (const candidate of [row.direction, row.positionSide, row.position_side, row.side]) {
+    const normalized = String(candidate ?? "").trim().toLowerCase()
+    if (normalized === "long" || normalized === "buy") return "long"
+    if (normalized === "short" || normalized === "sell") return "short"
+  }
+  // One-way derivatives venues commonly encode BOTH plus a signed
+  // positionAmt. Do not infer direction from an unsigned size field: doing so
+  // could charge a long entry against the short slot (or vice versa).
+  for (const candidate of [row.positionAmt, row.position_amount, row.positionSizeSigned]) {
+    const parsed = Number(candidate)
+    if (Number.isFinite(parsed) && parsed !== 0) return parsed > 0 ? "long" : "short"
+  }
+  return null
+}
+
+/**
+ * Read the complete authoritative venue slot before an entry. `getPosition`
+ * is a compatibility fallback for small test/dummy connectors only; real
+ * connectors expose `getPositions`, which is required here so hedge-mode or
+ * broker-split rows are summed instead of silently using the first row.
+ */
+async function readAuthoritativePositionRows(
+  connector: any,
+  symbol: string,
+  direction: LiveOrderDirection,
+): Promise<any[]> {
+  const requestedSymbol = snapshotSymbol(symbol)
+  if (typeof connector?.getPositions === "function") {
+    let snapshot: unknown
+    try {
+      snapshot = await connector.getPositions(symbol)
+    } catch (error) {
+      throw new Error(
+        "authoritative venue position snapshot unavailable ("
+        + (error instanceof Error ? error.message : String(error))
+        + ")",
+      )
+    }
+    const status = typeof connector?.getLastPositionsSnapshotStatus === "function"
+      ? connector.getLastPositionsSnapshotStatus()
+      : null
+    if (status && status.ok !== true) {
+      throw new Error("authoritative venue position snapshot was not confirmed")
+    }
+    if (!Array.isArray(snapshot)) {
+      throw new Error("authoritative venue positions response was not an array")
+    }
+    const rows = snapshot.filter((row) => {
+      const rowObject = row && typeof row === "object" ? row as Record<string, unknown> : {}
+      const rowSymbol = snapshotSymbol(rowObject.symbol ?? rowObject.instrument ?? rowObject.contract)
+      return !rowSymbol || rowSymbol === requestedSymbol
+    })
+    const nonZeroRows = rows.filter((row) => orderQuantityFromPosition(row) > 0)
+    const symbollessRows = nonZeroRows.filter((row) => {
+      const rowObject = row && typeof row === "object" ? row as Record<string, unknown> : {}
+      return !snapshotSymbol(rowObject.symbol ?? rowObject.instrument ?? rowObject.contract)
+    })
+    if (symbollessRows.length > 0 && nonZeroRows.length > 1) {
+      throw new Error("authoritative venue position snapshot has ambiguous symbol ownership")
+    }
+    if (nonZeroRows.some((row) => snapshotDirection(row) === null)) {
+      throw new Error("authoritative venue position snapshot has ambiguous direction ownership")
+    }
+    return nonZeroRows.filter((row) => snapshotDirection(row) === direction)
+  }
+
+  if (typeof connector?.getPosition !== "function") {
+    throw new Error("connector cannot provide an authoritative position snapshot")
+  }
+  let snapshot: unknown
+  try {
+    snapshot = await connector.getPosition(symbol, direction)
+  } catch (error) {
+    throw new Error(
+      "authoritative venue position snapshot unavailable ("
+      + (error instanceof Error ? error.message : String(error))
+      + ")",
+    )
+  }
+  const status = typeof connector?.getLastPositionsSnapshotStatus === "function"
+    ? connector.getLastPositionsSnapshotStatus()
+    : null
+  if (status && status.ok !== true) {
+    throw new Error("authoritative venue position snapshot was not confirmed")
+  }
+  const rows = Array.isArray(snapshot) ? snapshot : snapshot ? [snapshot] : []
+  return rows.filter((row) => orderQuantityFromPosition(row) > 0)
+}
+
+function orderNotionalUsd(
+  input: Pick<PlaceLiveOrderInput, "marketType" | "lotSize" | "quoteToUsdRate">,
+  connection: ExchangeConnection | any,
+  symbol: string,
+  quantity: number,
+  price: number,
+): number {
+  const marketType = normalizeMarketType(
+    input.marketType ?? connection?.market_type ?? connection?.asset_class,
+    connection?.exchange,
+  )
+  if (marketType === "forex") {
+    return forexNotionalUsd(
+      quantity,
+      price,
+      symbol,
+      Number(input.lotSize ?? connection?.lot_size ?? DEFAULT_FOREX_LOT_SIZE) || DEFAULT_FOREX_LOT_SIZE,
+      Number(input.quoteToUsdRate ?? connection?.quote_to_usd_rate ?? connection?.quoteToUsdRate) || undefined,
+    )
+  }
+  const notional = Number(quantity) * Number(price)
+  return Number.isFinite(notional) && notional > 0 ? notional : 0
+}
+
+/**
+ * Resolve the maximum physical notional that the order boundary may submit.
+ * The caller hint is only accepted for the isolated virtual-funds soak; all
+ * other live orders derive the ceiling from the canonical PositionCost model
+ * and the authoritative account balance. Existing venue exposure is removed
+ * from the remaining budget so repeated Block/DCA/direct calls cannot stack
+ * beyond the same safety ceiling.
+ */
+export async function resolveLiveOrderExposureCeiling(
+  input: PlaceLiveOrderInput,
+  connection: ExchangeConnection | any,
+  connector: any,
+  symbol: string,
+  marketPrice: number,
+): Promise<{ maxNotionalUsd: number; currentNotionalUsd: number }> {
+  if (input.reduceOnly === true) return { maxNotionalUsd: 0, currentNotionalUsd: 0 }
+
+  const explicit = Number(input.maxExecutionNotionalUsd)
+  const isAuthorizedVst = isAuthorizedMaintenanceVstSoakExposure(input)
+  let totalCeiling = 0
+  if (isAuthorizedVst && Number.isFinite(explicit) && explicit > 0) {
+    totalCeiling = explicit
+  } else {
+    const intent = resolveLiveTradeIntent(input as any)
+    const volumeResult = await VolumeCalculator.calculateVolumeForConnection(
+      input.connectionId,
+      symbol,
+      marketPrice,
+      {
+        tradeMode: intent === "preset" ? "preset" : "main",
+        indicationType: intent,
+        positionCostPercentOverride: input.positionCostPercentOverride,
+        marketType: input.marketType as any,
+        lotSize: input.lotSize,
+        quoteToUsdRate: input.quoteToUsdRate,
+      },
+    )
+    if (volumeResult.balanceIsFallback === true) {
+      throw Object.assign(
+        new Error("Live entry refused: authoritative exchange balance unavailable; fallback balance cannot establish the exposure ceiling"),
+        { statusCode: 503, mode: "live_exposure_ceiling_unavailable" },
+      )
+    }
+    totalCeiling = Number(volumeResult.maxExecutionNotionalUsd)
+    if (Number.isFinite(explicit) && explicit > 0) totalCeiling = Math.min(totalCeiling, explicit)
+  }
+
+  if (!(totalCeiling > 0) || !Number.isFinite(totalCeiling)) {
+    throw Object.assign(
+      new Error("Live entry refused: no finite PositionCost exposure ceiling is available"),
+      { statusCode: 409, mode: "live_exposure_ceiling_unavailable" },
+    )
+  }
+
+  if (typeof connector?.getPositions !== "function" && typeof connector?.getPosition !== "function") {
+    throw Object.assign(
+      new Error("Live entry refused: connector cannot provide an authoritative position snapshot for exposure validation"),
+      { statusCode: 503, mode: "live_exposure_snapshot_unavailable" },
+    )
+  }
+  let currentNotionalUsd = 0
+  let positions: any[] = []
+  try {
+    const direction = input.positionDirection
+      ? normalizeDirection(input.positionDirection)
+      : normalizeDirection(input.side)
+    positions = await readAuthoritativePositionRows(connector, symbol, direction)
+  } catch (error) {
+    throw Object.assign(
+      new Error("Live entry refused: authoritative venue position snapshot unavailable (" + (error instanceof Error ? error.message : String(error)) + ")"),
+      { statusCode: 503, mode: "live_exposure_snapshot_unavailable" },
+    )
+  }
+  for (const position of positions) {
+    const currentQuantity = orderQuantityFromPosition(position)
+    if (!(currentQuantity > 0)) continue
+    const currentPrice = orderPriceFromPosition(position, marketPrice)
+    const positionNotionalUsd = orderNotionalUsd(input, connection, symbol, currentQuantity, currentPrice)
+    currentNotionalUsd += positionNotionalUsd
+    if (!(positionNotionalUsd > 0)) {
+      throw Object.assign(
+        new Error("Live entry refused: existing venue position cannot be valued in USD"),
+        { statusCode: 409, mode: "live_exposure_snapshot_unavailable" },
+      )
+    }
+  }
+
+  const remaining = totalCeiling - currentNotionalUsd
+  if (!(remaining > 0)) {
+    throw Object.assign(
+      new Error("Live entry refused: PositionCost exposure ceiling " + totalCeiling.toFixed(2) + " USD is already occupied"),
+      { statusCode: 409, mode: "live_exposure_ceiling_reached" },
+    )
+  }
+  return { maxNotionalUsd: remaining, currentNotionalUsd }
+}
+
+function capSubmittedLiveQuantity(
+  input: PlaceLiveOrderInput,
+  connection: ExchangeConnection | any,
+  symbol: string,
+  submitted: Awaited<ReturnType<typeof resolveSubmittedQuantity>>,
+  ceiling: number,
+): Awaited<ReturnType<typeof resolveSubmittedQuantity>> {
+  const unitNotional = orderNotionalUsd(input, connection, symbol, 1, submitted.marketPrice)
+  if (!(unitNotional > 0)) {
+    throw Object.assign(
+      new Error("Live entry refused: " + symbol + " has no valid USD notional conversion"),
+      { statusCode: 409, mode: "live_exposure_ceiling_unavailable" },
+    )
+  }
+  const maximum = roundQuantityDown(ceiling / unitNotional, submitted.rules)
+  const minimum = submitted.rules.minQuantity
+  if (!(maximum > 0) || (minimum > 0 && maximum + 1e-12 < minimum)) {
+    throw Object.assign(
+      new Error("Live entry refused: remaining PositionCost budget is below the executable minimum for " + symbol),
+      { statusCode: 409, mode: "live_exposure_ceiling_below_minimum" },
+    )
+  }
+  const bounded = Math.min(submitted.quantity, maximum)
+  const quantity = roundQuantityDown(bounded, submitted.rules)
+  const notional = orderNotionalUsd(input, connection, symbol, quantity, submitted.marketPrice)
+  if (!(quantity > 0) || (minimum > 0 && quantity + 1e-12 < minimum) || !(notional > 0) || notional > ceiling + 1e-8) {
+    throw Object.assign(
+      new Error("Live entry refused: requested quantity cannot fit within the " + ceiling.toFixed(2) + " USD PositionCost ceiling"),
+      { statusCode: 409, mode: "live_exposure_ceiling_exceeded" },
+    )
+  }
+  return {
+    ...submitted,
+    quantity,
+    adjusted: submitted.adjusted || quantity !== submitted.quantity,
+    reason: quantity !== submitted.quantity
+      ? [submitted.reason, "live quantity capped at " + notional.toFixed(2) + " USD"].filter(Boolean).join("; ")
+      : submitted.reason,
+  }
 }
 
 export interface ParsedFill {
@@ -552,6 +901,326 @@ function firstPositiveNumber(...values: unknown[]): number {
 
 export function exchangeSideForDirection(direction: LiveOrderDirection): "buy" | "sell" {
   return direction === "long" ? "buy" : "sell"
+}
+
+type LiveProtectionResult = {
+  mode: "native" | "conditional"
+  stopLossPrice: number
+  takeProfitPrice: number
+  stopLossOrderId?: string
+  takeProfitOrderId?: string
+  positionTicket?: number
+  protectionVerified?: boolean
+}
+
+function resolveProtectionPrices(
+  input: PlaceLiveOrderInput,
+  direction: LiveOrderDirection,
+  referencePrice: number,
+): { stopLossPrice: number; takeProfitPrice: number } {
+  const reference = Number(referencePrice)
+  const stopPercent = Number(input.protectionStopLossPercent)
+  const takePercent = Number(input.protectionTakeProfitPercent)
+  let stopLossPrice = Number(input.stopLossPrice) || 0
+  let takeProfitPrice = Number(input.takeProfitPrice) || 0
+  if (Number.isFinite(stopPercent) && stopPercent > 0 && reference > 0) {
+    stopLossPrice = direction === "long"
+      ? reference * (1 - stopPercent / 100)
+      : reference * (1 + stopPercent / 100)
+  }
+  if (Number.isFinite(takePercent) && takePercent > 0 && reference > 0) {
+    takeProfitPrice = direction === "long"
+      ? reference * (1 + takePercent / 100)
+      : reference * (1 - takePercent / 100)
+  }
+  return { stopLossPrice, takeProfitPrice }
+}
+
+function protectionPricesAreValid(
+  direction: LiveOrderDirection,
+  prices: { stopLossPrice: number; takeProfitPrice: number },
+  referencePrice: number,
+): boolean {
+  if (
+    !Number.isFinite(prices.stopLossPrice)
+    || !Number.isFinite(prices.takeProfitPrice)
+    || !(prices.stopLossPrice > 0)
+    || !(prices.takeProfitPrice > 0)
+  ) return false
+  const reference = Number(referencePrice)
+  if (!(reference > 0)) return true
+  return direction === "long"
+    ? prices.stopLossPrice < reference && prices.takeProfitPrice > reference
+    : prices.stopLossPrice > reference && prices.takeProfitPrice < reference
+}
+
+async function armRequiredLiveProtection(
+  input: PlaceLiveOrderInput,
+  connection: ExchangeConnection | any,
+  connector: any,
+  symbol: string,
+  direction: LiveOrderDirection,
+  quantity: number,
+  fillPrice: number,
+  orderId: string,
+): Promise<LiveProtectionResult> {
+  const prices = resolveProtectionPrices(input, direction, fillPrice)
+  if (!protectionPricesAreValid(direction, prices, fillPrice)) {
+    throw Object.assign(
+      new Error("Live entry protection requires valid direction-aware stop-loss and take-profit prices"),
+      { statusCode: 409, mode: "live_protection_contract_invalid" },
+    )
+  }
+  const marketType = normalizeMarketType(
+    input.marketType ?? connection?.market_type ?? connection?.asset_class,
+    connection?.exchange,
+  )
+  const native = connectorHasCapability(connector, "native_position_sl_tp")
+  if (marketType === "forex" && !native) {
+    throw Object.assign(
+      new Error("Forex live entry protection requires the broker-native position SL/TP capability"),
+      { statusCode: 409, mode: "live_protection_capability_missing" },
+    )
+  }
+  if (native) {
+    // The entry request already carried these levels, so no second order may
+    // be sent for a native broker position. The terminal owns the exact
+    // ticket-bound protection atomically with the entry. That claim is only
+    // safe after a fresh, ticket-specific read confirms both controls. A
+    // successful entry acknowledgement alone is not proof that the broker
+    // accepted the requested SL/TP.
+    if (typeof connector?.getPositions !== "function" && typeof connector?.getPosition !== "function") {
+      throw Object.assign(
+        new Error("Native live protection cannot be verified because the connector has no position snapshot endpoint"),
+        { statusCode: 503, mode: "live_protection_verification_unavailable" },
+      )
+    }
+
+    const closeSide = direction === "long" ? "sell" as const : "buy" as const
+    const controlBase = exchangeClientOrderIdForControl(
+      String(input.clientOrderId || input.livePositionId || orderId || "live-native-protection"),
+    )
+    const requestedTicket = Number(input.positionTicket)
+    const positionFromSnapshot = (value: any): any => {
+      const candidates = Array.isArray(value)
+        ? value.filter((candidate) => orderQuantityFromPosition(candidate) > 0)
+        : value && orderQuantityFromPosition(value) > 0 ? [value] : []
+      if (Number.isInteger(requestedTicket) && requestedTicket > 0) {
+        return candidates.find((candidate) => Number(
+          candidate?.positionTicket
+          ?? candidate?.ticket
+          ?? candidate?.exchangePositionId,
+        ) === requestedTicket) || null
+      }
+      // A native broker position must be uniquely attributable when the
+      // caller did not already carry a ticket. Picking the first of several
+      // rows could verify the wrong position and flatten the wrong ticket.
+      return candidates.length === 1 ? candidates[0] : null
+    }
+    const nativePrice = (position: any, keys: string[]): number => {
+      const row = position && typeof position === "object" ? position : {}
+      for (const key of keys) {
+        const value = Number(row[key])
+        if (Number.isFinite(value) && value > 0) return value
+      }
+      return 0
+    }
+    const priceMatches = (actual: number, expected: number): boolean => {
+      if (!(actual > 0) || !(expected > 0)) return false
+      // This tolerance is only for JSON/IEEE-754 representation. The MT5
+      // bridge performs the broker point-level verification before returning.
+      return Math.abs(actual - expected) <= Math.max(1e-8, Math.abs(expected) * 1e-9)
+    }
+    const readNativePosition = async (): Promise<any> => {
+      if (typeof connector?.getPositions === "function") {
+        return positionFromSnapshot(await readAuthoritativePositionRows(connector, symbol, direction))
+      }
+      return positionFromSnapshot(await connector.getPosition(symbol, direction))
+    }
+    const flattenUnprotectedNativePosition = async (position: any): Promise<boolean> => {
+      const ticket = Number(
+        position?.positionTicket
+        ?? position?.ticket
+        ?? position?.exchangePositionId,
+      )
+      const flattenOptions = {
+        reduceOnly: true,
+        ...(Number.isInteger(ticket) && ticket > 0 ? { positionTicket: ticket } : {}),
+        clientOrderId: controlBase.slice(0, 22) + "nf",
+      }
+      try {
+        if (typeof connector?.closePosition === "function") {
+          const result = await connector.closePosition(symbol, direction)
+          if (result?.success === true && result?.postCloseVerified === true) return true
+          if (result?.success === true) {
+            const afterClose = await readNativePosition().catch(() => null)
+            if (!afterClose || !(orderQuantityFromPosition(afterClose) > 0)) return true
+          }
+        }
+      } catch {}
+      if (typeof connector?.placeOrder !== "function") return false
+      if (!(Number.isInteger(ticket) && ticket > 0)) return false
+      try {
+        const result = await connector.placeOrder(
+          symbol,
+          closeSide,
+          quantity,
+          undefined,
+          "market",
+          flattenOptions,
+        )
+        if (result?.success !== true) return false
+        const afterClose = await readNativePosition().catch(() => null)
+        return !afterClose || !(orderQuantityFromPosition(afterClose) > 0)
+      } catch {
+        return false
+      }
+    }
+
+    let position: any = null
+    try {
+      position = await readNativePosition()
+      const candidate = Number(
+        position?.positionTicket
+        ?? position?.ticket
+        ?? position?.exchangePositionId,
+      )
+      const observedStopLoss = nativePrice(position, ["stopLoss", "stopLossPrice", "sl", "SL"])
+      const observedTakeProfit = nativePrice(position, ["takeProfit", "takeProfitPrice", "tp", "TP"])
+      if (
+        !position
+        || !Number.isInteger(candidate)
+        || candidate <= 0
+        || !(orderQuantityFromPosition(position) > 0)
+        || !priceMatches(observedStopLoss, prices.stopLossPrice)
+        || !priceMatches(observedTakeProfit, prices.takeProfitPrice)
+      ) {
+        throw new Error(
+          "native broker position did not confirm the exact ticket-bound stop-loss and take-profit controls",
+        )
+      }
+      return {
+        mode: "native",
+        ...prices,
+        positionTicket: candidate,
+        protectionVerified: true,
+      }
+    } catch (error) {
+      const flattened = await flattenUnprotectedNativePosition(position)
+      throw Object.assign(
+        new Error(
+          (error instanceof Error ? error.message : String(error))
+          + "; emergency flatten "
+          + (flattened ? "completed" : "could not be confirmed"),
+        ),
+        {
+          statusCode: flattened ? 502 : 503,
+          mode: flattened
+            ? "live_protection_verification_failed_flattened"
+            : "live_protection_verification_failed_unflattened",
+        },
+      )
+    }
+  }
+  if (typeof connector?.placeStopOrder !== "function") {
+    throw Object.assign(
+      new Error("Live entry protection requires a native conditional-order connector"),
+      { statusCode: 409, mode: "live_protection_capability_missing" },
+    )
+  }
+
+  const closeSide = direction === "long" ? "sell" as const : "buy" as const
+  const hedgeMode = String(connection?.position_mode || "").toLowerCase().includes("hedge")
+    || String(connection?.position_mode || "").toLowerCase().includes("dual")
+  const controlBase = exchangeClientOrderIdForControl(
+    String(input.clientOrderId || input.livePositionId || orderId || "live-protection"),
+  )
+  const commonOptions: Record<string, any> = {
+    reduceOnly: true,
+    hedgeMode,
+    ...(hedgeMode ? { positionSide: direction === "long" ? "LONG" : "SHORT" } : {}),
+    ...(Number.isInteger(Number(input.positionTicket)) && Number(input.positionTicket) > 0
+      ? { positionTicket: Number(input.positionTicket) }
+      : {}),
+  }
+  const emergencyFlatten = async (): Promise<boolean> => {
+    if (typeof connector?.placeOrder !== "function") return false
+    try {
+      const closeResult = await connector.placeOrder(
+        symbol,
+        closeSide,
+        quantity,
+        undefined,
+        "market",
+        {
+          ...commonOptions,
+          clientOrderId: controlBase.slice(0, 22) + "ec",
+        },
+      )
+      return closeResult?.success === true
+    } catch {
+      return false
+    }
+  }
+  const stopLoss = await connector.placeStopOrder(
+    symbol,
+    closeSide,
+    quantity,
+    prices.stopLossPrice,
+    "stop_loss",
+    { ...commonOptions, clientOrderId: controlBase.slice(0, 24) + "sl" },
+  )
+  const stopLossOrderId = String(stopLoss?.orderId || "")
+  if (!stopLoss?.success || !stopLossOrderId) {
+    const flattened = await emergencyFlatten()
+    throw Object.assign(
+      new Error(
+        "Live entry protection stop-loss placement failed; emergency flatten " +
+        (flattened ? "completed" : "could not be confirmed"),
+      ),
+      {
+        statusCode: flattened ? 502 : 503,
+        mode: flattened
+          ? "live_protection_placement_failed_flattened"
+          : "live_protection_placement_failed_unflattened",
+      },
+    )
+  }
+  const takeProfit = await connector.placeStopOrder(
+    symbol,
+    closeSide,
+    quantity,
+    prices.takeProfitPrice,
+    "take_profit",
+    { ...commonOptions, clientOrderId: controlBase.slice(0, 24) + "tp" },
+  )
+  const takeProfitOrderId = String(takeProfit?.orderId || "")
+  if (!takeProfit?.success || !takeProfitOrderId) {
+    try {
+      if (typeof connector?.cancelOrder === "function") {
+        await connector.cancelOrder(symbol, stopLossOrderId)
+      }
+    } catch {}
+    const flattened = await emergencyFlatten()
+    throw Object.assign(
+      new Error(
+        "Live entry protection take-profit placement failed; emergency flatten " +
+        (flattened ? "completed" : "could not be confirmed"),
+      ),
+      {
+        statusCode: flattened ? 502 : 503,
+        mode: flattened
+          ? "live_protection_placement_failed_flattened"
+          : "live_protection_placement_failed_unflattened",
+      },
+    )
+  }
+  return {
+    mode: "conditional",
+    ...prices,
+    stopLossOrderId,
+    takeProfitOrderId,
+  }
 }
 
 export function parseOrderFill(result: any, fallbackQuantity = 0, fallbackPrice = 0): ParsedFill {
@@ -958,6 +1627,12 @@ function assertDirectTradeExecutionContract(
   payload: Record<string, any>,
   willUseRealExchange: boolean,
 ): void {
+  if (isDirectTradePayload(payload) && isForexConnection(connection) && !hasUsableForexExecutionConfig(connection)) {
+    throw Object.assign(new Error("Direct-Trade Forex execution requires the explicit private terminal bridge; official InstaForex REST is read-only"), {
+      statusCode: 409,
+      mode: "unsupported_direct_trade_connection",
+    })
+  }
   if (!willUseRealExchange || !isDirectTradePayload(payload)) return
   const apiType = String(connection?.api_type || connection?.apiType || "").trim().toLowerCase()
   if (apiType.includes("spot")) {
@@ -1001,13 +1676,26 @@ function resolveEntryReadiness(connection: any, payload: Record<string, any>) {
 export async function createLiveOrderConnector(connection: any, payload: Record<string, any> = {}): Promise<{ connector: any; mode: LiveOrderMode; willUseRealExchange: boolean }> {
   const entryReadiness = resolveEntryReadiness(connection, payload)
   const forceSim = isForcedSimulation() || entryReadiness?.executionMode === "simulation"
+  const forexConnection = isForexConnection(connection)
+  // Keep the crypto credential gate explicit for compatibility with the
+  // testing/operations guardrails; Forex uses the private bridge predicate
+  // below because the official Client Cabinet REST API is read-only.
   const willUseRealExchange = !forceSim && hasUsableLiveCredentials(connection)
-  if (willUseRealExchange) {
+  const resolvedWillUseRealExchange = forexConnection
+    ? !forceSim && hasUsableForexExecutionConfig(connection)
+    : willUseRealExchange
+  if (!forceSim && forexConnection && isDirectTradePayload(payload) && !resolvedWillUseRealExchange) {
+    throw Object.assign(new Error("Direct-Trade Forex execution requires a configured private terminal bridge; official InstaForex REST remains read-only"), {
+      statusCode: 409,
+      mode: "unsupported_direct_trade_connection",
+    })
+  }
+  if (resolvedWillUseRealExchange) {
     const safetyFailure = getLiveOrderSafetyFailure(payload)
     if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
   }
   if (
-    !willUseRealExchange &&
+    !resolvedWillUseRealExchange &&
     !forceSim &&
     process.env.NODE_ENV === "production" &&
     process.env.ALLOW_PROD_SIMULATED !== "1"
@@ -1017,12 +1705,23 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
       mode: "missing_live_exchange_credentials",
     })
   }
-  if (!willUseRealExchange) {
+  if (!resolvedWillUseRealExchange) {
     const { SimulatedConnector } = await import("@/lib/exchange-connectors/simulated-connector")
     return {
       connector: new SimulatedConnector({
         apiKey: connection.api_key,
         apiSecret: connection.api_secret,
+        accountId: connection.account_id || connection.api_key,
+        symbolSuffix: connection.symbol_suffix,
+        lotSize: finiteOptional(connection.lot_size),
+        quantityUnit: connection.quantity_unit === "base_units" || connection.quantity_unit === "contracts" || connection.quantity_unit === "lots"
+          ? connection.quantity_unit
+          : undefined,
+        positionCostPercent: finiteOptional(connection.position_cost_percent),
+        spreadBufferPips: finiteOptional(connection.spread_buffer_pips),
+        spreadMultiplier: finiteOptional(connection.spread_multiplier),
+        positionsAverage: finiteOptional(connection.positions_average ?? connection.average_count),
+        marketType: String(connection.market_type || connection.asset_class || "").toLowerCase() === "forex" ? "forex" : "crypto",
         isTestnet: isTruthyFlag(connection.is_testnet),
         // Keep the paper adapter on the same derivatives contract as the
         // selected connection. Omitting these fields made BaseConnector flag
@@ -1032,7 +1731,7 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
         contractType: connection.contract_type || connection.contractType || "usdt-perpetual",
       }, "simulated"),
       mode: "simulated",
-      willUseRealExchange,
+      willUseRealExchange: resolvedWillUseRealExchange,
     }
   }
   // Reuse the process-level connector so BingX library initialization,
@@ -1044,6 +1743,30 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
         apiKey: connection.api_key,
         apiSecret: connection.api_secret,
         apiPassphrase: connection.api_passphrase || "",
+        accountId: connection.account_id || connection.api_key,
+        accountPassword: connection.account_password || connection.trader_password || connection.mt5_password,
+        accountServer: connection.account_server,
+        bridgeUrl: connection.bridge_url,
+        bridgeToken: connection.bridge_token,
+        terminalPath: connection.terminal_path,
+        apiBaseUrl: connection.api_base_url,
+        quotesBaseUrl: connection.quotes_base_url,
+        chartsUrl: connection.charts_url,
+        symbolSuffix: connection.symbol_suffix,
+        lotSize: finiteOptional(connection.lot_size),
+        quantityUnit: connection.quantity_unit === "base_units" || connection.quantity_unit === "contracts" || connection.quantity_unit === "lots"
+          ? connection.quantity_unit
+          : undefined,
+        positionCostPercent: finiteOptional(connection.position_cost_percent),
+        spreadBufferPips: finiteOptional(connection.spread_buffer_pips),
+        spreadMultiplier: finiteOptional(connection.spread_multiplier),
+        positionsAverage: finiteOptional(connection.positions_average ?? connection.average_count),
+        marketType: String(connection.market_type || connection.asset_class || "").toLowerCase() === "forex" ? "forex" : "crypto",
+        executionMode: connection.execution_mode,
+        forexExecutionMode: connection.forex_execution_mode,
+        connectionMethod: connection.connection_method,
+        connectionLibrary: connection.connection_library,
+        readOnly: connection.read_only === true || connection.read_only === "1" || connection.read_only === "true",
         isTestnet: isTruthyFlag(connection.is_testnet),
         apiType: connection.api_type,
         contractType: connection.contract_type,
@@ -1054,7 +1777,7 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
       mode: "exchange_connector_unavailable",
     })
   }
-  return { connector, mode: "live", willUseRealExchange }
+  return { connector, mode: "live", willUseRealExchange: resolvedWillUseRealExchange }
 }
 
 export function normalizeLiveOrderMarginType(value: unknown): LiveOrderMarginType {
@@ -1063,7 +1786,21 @@ export function normalizeLiveOrderMarginType(value: unknown): LiveOrderMarginTyp
     : "cross"
 }
 
+function connectorHasCapability(connector: any, capability: string): boolean {
+  try {
+    const capabilities = connector?.getCapabilities?.()
+    return Array.isArray(capabilities) && capabilities.includes(capability)
+  } catch {
+    return false
+  }
+}
+
 export async function setupLiveOrderLeverage(connector: any, symbol: string, leverage = 1): Promise<boolean> {
+  // Forex brokers manage leverage and margin at the account/terminal level.
+  // Calling the generic crypto mutation here makes a valid private bridge look
+  // broken immediately before entry, so the bridge advertises this explicit
+  // capability and the order path treats it as successfully delegated.
+  if (connectorHasCapability(connector, "broker_managed_margin_leverage")) return false
   if (leverage > 1 && typeof connector?.setLeverage === "function") {
     const result = await connector.setLeverage(symbol, leverage)
     if (result?.success === false) {
@@ -1091,7 +1828,7 @@ export async function setupLiveOrderMarginAndLeverage(
 ): Promise<{ marginType: LiveOrderMarginType; marginConfigured: boolean; leverageConfigured: boolean }> {
   const marginType = normalizeLiveOrderMarginType(options.marginType)
   let marginConfigured = false
-  if (typeof connector?.setMarginType === "function") {
+  if (!connectorHasCapability(connector, "broker_managed_margin_leverage") && typeof connector?.setMarginType === "function") {
     const result = await connector.setMarginType(symbol, marginType)
     if (result?.success === false) {
       throw new Error(result?.error || `Exchange rejected ${marginType} margin for ${symbol}`)
@@ -1239,7 +1976,23 @@ export async function recordLiveOrderProgression(
   return true
 }
 
-export async function persistLiveOrderPosition(input: { connectionId: string; symbol: string; direction: LiveOrderDirection; quantity: number; leverage?: number; marginType?: LiveOrderMarginType; fill: ParsedFill; orderId?: string; existingPosition?: any; livePositionId?: string; status?: string }): Promise<any> {
+export async function persistLiveOrderPosition(input: {
+  connectionId: string
+  symbol: string
+  direction: LiveOrderDirection
+  quantity: number
+  leverage?: number
+  marginType?: LiveOrderMarginType
+  fill: ParsedFill
+  orderId?: string
+  existingPosition?: any
+  livePositionId?: string
+  status?: string
+  marketType?: "crypto" | "forex" | string
+  lotSize?: number
+  quoteToUsdRate?: number
+  positionTicket?: number
+}): Promise<any> {
   // A live position must never be valued from a ticker fallback.  A ticker is
   // an observation, not an exchange execution, and using it creates phantom
   // fills/PF and can strand a pending order after a response-only ack.  The
@@ -1248,6 +2001,20 @@ export async function persistLiveOrderPosition(input: { connectionId: string; sy
   const execQty = Number(input.fill.filledQty) > 0 ? Number(input.fill.filledQty) : 0
   const hasAuthoritativeFill = execQty > 0 && fillPrice > 0
   const now = Date.now()
+  const accountingConnection = {
+    market_type: input.marketType,
+    lot_size: input.lotSize,
+    quoteToUsdRate: input.quoteToUsdRate,
+  }
+  const volumeUsd = hasAuthoritativeFill
+    ? orderNotionalUsd(
+        input,
+        accountingConnection,
+        input.symbol,
+        execQty,
+        fillPrice,
+      )
+    : 0
   const livePos = {
     ...(input.existingPosition || {}),
     id: input.livePositionId || input.existingPosition?.id || `live:${input.connectionId}:${input.symbol}:${input.direction}:${now}:${Math.random().toString(36).slice(2, 8)}`,
@@ -1261,8 +2028,11 @@ export async function persistLiveOrderPosition(input: { connectionId: string; sy
     remainingQuantity: 0,
     averageExecutionPrice: fillPrice || 0,
     quantity: execQty,
-    volumeUsd: (execQty || 0) * (fillPrice || 0),
+    volumeUsd,
     leverage: input.leverage || 1,
+    ...(Number.isInteger(Number(input.positionTicket)) && Number(input.positionTicket) > 0
+      ? { positionTicket: Number(input.positionTicket) }
+      : {}),
     marginType: input.marginType || input.existingPosition?.marginType || "cross",
     status: input.status || (hasAuthoritativeFill ? "open" : "placed"),
     fills: hasAuthoritativeFill ? [{ timestamp: now, quantity: execQty, price: fillPrice, fee: 0, feeAsset: "" }] : [],
@@ -1291,7 +2061,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const connection = input.connection || await loadLiveOrderConnection(input.connectionId)
   const symbol = normalizeOrderSymbol(input.symbol)
   const direction = normalizeDirection(input.side)
-  const submitted = await resolveSubmittedQuantity(input, symbol, connection)
+  let submitted = await resolveSubmittedQuantity(input, symbol, connection)
   if (!(submitted.quantity > 0)) {
     throw new Error(`Could not resolve an executable quantity for ${symbol}: ${input.quantity}`)
   }
@@ -1320,6 +2090,40 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
   }
   assertDirectTradeExecutionContract(connection, orderPayload, willUseRealExchange)
+  if (willUseRealExchange && input.reduceOnly !== true && process.env.NODE_ENV !== "test") {
+    let marketPrice = submitted.marketPrice
+    if (!(marketPrice > 0) && typeof connector?.getTicker === "function") {
+      try {
+        const ticker = await connector.getTicker(symbol)
+        marketPrice = Number(ticker?.last ?? ticker?.ask ?? ticker?.bid) || 0
+      } catch {
+        marketPrice = 0
+      }
+    }
+    if (!(marketPrice > 0)) {
+      throw Object.assign(
+        new Error("Live entry refused: authoritative market price unavailable for exposure validation"),
+        { statusCode: 503, mode: "live_exposure_snapshot_unavailable" },
+      )
+    }
+    submitted = { ...submitted, marketPrice }
+    const exposureCeiling = await resolveLiveOrderExposureCeiling(
+      input,
+      connection,
+      connector,
+      symbol,
+      marketPrice,
+    )
+    submitted = capSubmittedLiveQuantity(
+      input,
+      connection,
+      symbol,
+      submitted,
+      exposureCeiling.maxNotionalUsd,
+    )
+    orderPayload.quantity = submitted.quantity
+    orderPayload.maxExecutionNotionalUsd = exposureCeiling.maxNotionalUsd
+  }
   const clientOrderId = String(input.clientOrderId || "").trim()
   const usesDirectControl = isDirectTradePayload(orderPayload) && clientOrderId.length > 0
   const now = Date.now()
@@ -1382,12 +2186,19 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     // after the venue makes the cumulative execution terminal so later reads
     // cannot leave Direct-Trade statistics permanently understated.
     if (terminal && fill.filledQty > 0) {
+      const volumeUsd = orderNotionalUsd(
+        input,
+        connection,
+        symbol,
+        fill.filledQty,
+        fill.filledPrice,
+      )
       await recordLiveOrderProgression(
         input.connectionId,
         symbol,
         direction,
         "filled",
-        fill.filledQty * fill.filledPrice,
+        volumeUsd,
         identity ? `${symbol}:${direction}:${identity}:filled` : undefined,
         progressionOptions,
       )
@@ -1570,6 +2381,44 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     ?? (connection as any)?.margin_type
     ?? (connection as any)?.marginType,
   )
+  const entryProtection = input.requireProtection === true && willUseRealExchange
+    ? resolveProtectionPrices(
+        input,
+        positionDirection,
+        Number(submitted.marketPrice || input.price || 0),
+      )
+    : null
+  if (
+    input.requireProtection === true
+    && willUseRealExchange
+    && (
+      !entryProtection
+      || !protectionPricesAreValid(
+        positionDirection,
+        entryProtection,
+        Number(submitted.marketPrice || input.price || 0),
+      )
+    )
+  ) {
+    throw Object.assign(
+      new Error("Live entry requires direction-aware stop-loss and take-profit controls before venue placement"),
+      { statusCode: 409, mode: "live_protection_contract_invalid" },
+    )
+  }
+  if (
+    input.requireProtection === true
+    && willUseRealExchange
+    && normalizeMarketType(
+      input.marketType ?? connection?.market_type ?? connection?.asset_class,
+      connection?.exchange,
+    ) === "forex"
+    && !connectorHasCapability(connector, "native_position_sl_tp")
+  ) {
+    throw Object.assign(
+      new Error("Forex live entry requires broker-native ticket-bound SL/TP controls"),
+      { statusCode: 409, mode: "live_protection_capability_missing" },
+    )
+  }
   try {
     if (!input.reduceOnly) {
       await setupLiveOrderMarginAndLeverage(connector, symbol, {
@@ -1594,11 +2443,29 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
         // that safe venue-specific behaviour.
         reduceOnly: input.reduceOnly === true,
         clientOrderId: directControl?.exchangeClientOrderId || clientOrderId,
+        ...(Number.isInteger(Number(input.positionTicket)) && Number(input.positionTicket) > 0
+          ? { positionTicket: Number(input.positionTicket) }
+          : {}),
+        ...(entryProtection?.stopLossPrice
+          ? { stopLossPrice: entryProtection.stopLossPrice }
+          : {}),
+        ...(entryProtection?.takeProfitPrice
+          ? { takeProfitPrice: entryProtection.takeProfitPrice }
+          : {}),
       }
     : {
         hedgeMode: false,
         reduceOnly: input.reduceOnly === true,
         clientOrderId: directControl?.exchangeClientOrderId || clientOrderId,
+        ...(Number.isInteger(Number(input.positionTicket)) && Number(input.positionTicket) > 0
+          ? { positionTicket: Number(input.positionTicket) }
+          : {}),
+        ...(entryProtection?.stopLossPrice
+          ? { stopLossPrice: entryProtection.stopLossPrice }
+          : {}),
+        ...(entryProtection?.takeProfitPrice
+          ? { takeProfitPrice: entryProtection.takeProfitPrice }
+          : {}),
       }
   let result: any
   try {
@@ -1703,27 +2570,56 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const settlement = terminal && willUseRealExchange
     ? await readOrderSettlement(connector, symbol, orderId)
     : null
+  let protection: LiveProtectionResult | null = null
+  if (input.requireProtection === true && willUseRealExchange) {
+    if (!terminal || !(fill.filledQty > 0) || !(fill.filledPrice > 0)) {
+      throw Object.assign(
+        new Error("Live entry protection cannot be armed until an authoritative terminal fill is available"),
+        { statusCode: 503, mode: "live_protection_pending_fill" },
+      )
+    }
+    protection = await armRequiredLiveProtection(
+      input,
+      connection,
+      connector,
+      symbol,
+      positionDirection,
+      fill.filledQty,
+      fill.filledPrice,
+      orderId,
+    )
+  }
   let position: any = null
   if (!willUseRealExchange) {
-    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, marginType: configuredMarginType, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
+    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, marginType: configuredMarginType, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated", marketType: input.marketType ?? connection?.market_type ?? connection?.asset_class, lotSize: input.lotSize ?? finiteOptional(connection?.lot_size), quoteToUsdRate: input.quoteToUsdRate, positionTicket: input.positionTicket })
+    const volumeUsd = orderNotionalUsd(input, connection, symbol, fill.filledQty, fill.filledPrice)
     if (input.updateCounters !== false) await recordLiveOrderProgression(
       input.connectionId,
       symbol,
       direction,
       "simulated",
-      position?.volumeUsd || (fill.filledQty * fill.filledPrice),
+      position?.volumeUsd || volumeUsd,
       progressionIdentity(exchangeOrderId) ? `${symbol}:${direction}:${progressionIdentity(exchangeOrderId)}:simulated` : undefined,
       progressionOptions,
     )
   } else {
-    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, marginType: configuredMarginType, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId })
+    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, marginType: configuredMarginType, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, marketType: input.marketType ?? connection?.market_type ?? connection?.asset_class, lotSize: input.lotSize ?? finiteOptional(connection?.lot_size), quoteToUsdRate: input.quoteToUsdRate, positionTicket: input.positionTicket })
+    const volumeUsd = orderNotionalUsd(input, connection, symbol, fill.filledQty, fill.filledPrice)
     if (input.updateCounters !== false) {
       const identity = progressionIdentity(exchangeOrderId)
       await recordLiveOrderProgression(input.connectionId, symbol, direction, "placed", 0, identity ? `${symbol}:${direction}:${identity}:placed` : undefined, progressionOptions)
       if ((position?.executedQuantity || fill.filledQty) > 0 && (!directControl || terminal)) {
-        await recordLiveOrderProgression(input.connectionId, symbol, direction, "filled", position?.volumeUsd || (fill.filledQty * fill.filledPrice), identity ? `${symbol}:${direction}:${identity}:filled` : undefined, progressionOptions)
+        await recordLiveOrderProgression(input.connectionId, symbol, direction, "filled", position?.volumeUsd || volumeUsd, identity ? `${symbol}:${direction}:${identity}:filled` : undefined, progressionOptions)
       }
     }
+  }
+  if (position && protection) {
+    position.stopLossPrice = protection.stopLossPrice
+    position.takeProfitPrice = protection.takeProfitPrice
+    if (protection.stopLossOrderId) position.stopLossOrderId = protection.stopLossOrderId
+    if (protection.takeProfitOrderId) position.takeProfitOrderId = protection.takeProfitOrderId
+    if (protection.positionTicket) position.positionTicket = protection.positionTicket
+    await savePosition(position)
   }
   const response = {
     success: true,
@@ -1740,6 +2636,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     leverage: input.leverage || 1,
     fill,
     position,
+    protection,
     details: result,
     settlement,
     pendingReconciliation: directControl ? !terminal : undefined,
