@@ -29,11 +29,11 @@ async function handlePost() {
       return NextResponse.json({ success: false, error: "Trade engine coordinator not initialized" }, { status: 503 })
     }
 
-    // ── Restore previous global intent before resuming ───────────────────
+    // ── Publish canonical running intent before resuming ─────────────────
     // startEngine() gates starts on trade_engine:global operator intent. A
-    // paused hash must be changed back to an enabled intent before
-    // coordinator.resume() starts eligible engines, especially in a fresh
-    // process where the coordinator only has Redis state to inspect.
+    // paused hash and its sticky stop markers must be replaced by the explicit
+    // running transition before coordinator.resume() starts eligible engines,
+    // especially in a fresh process where only Redis state is available.
     try {
       const currentGlobalState = (await client.hgetall("trade_engine:global").catch(() => ({}))) as Record<string, string>
       const previousStatus =
