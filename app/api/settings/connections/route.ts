@@ -5,6 +5,7 @@ import { CONNECTION_PREDEFINITIONS } from "@/lib/connection-predefinitions"
 import { API_VERSIONS } from "@/lib/system-version"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { normalizeExchangeId, normalizeMarketType } from "@/lib/market-types"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import {
   DEFAULT_FOREX_LOT_SIZE,
   DEFAULT_FOREX_POSITIONS_AVERAGE,
@@ -96,7 +97,24 @@ export async function GET(request: NextRequest) {
     
     // SECURITY: never return raw credentials. Previous code returned every
     // connection's api_key/api_secret in PLAINTEXT to any caller.
-    const safeConnections = connections.map((connection) => maskConnectionSecrets(connection))
+    const safeConnections = connections.map((connection) => {
+      const safe = maskConnectionSecrets(connection)
+      const effective = resolveCanonicalSymbols(connection)
+      if (effective.count > 0) {
+        // Keep the persisted row untouched, but make the Settings/connection
+        // cards agree with the scoped basket. Legacy flattened fields can
+        // contain the complete exchange catalog (536 X01 markets) while the
+        // nested connection settings still hold the active basket.
+        safe.symbol_count = effective.count
+        safe.symbols = effective.symbols
+        safe.active_symbols = effective.symbols
+        safe.force_symbols = effective.symbols
+        safe.effective_symbol_count = effective.count
+        safe.effective_symbol_count_source = effective.source
+        safe.effective_symbols = effective.symbols
+      }
+      return safe
+    })
 
     return NextResponse.json({ success: true, count: safeConnections.length, connections: safeConnections, version: API_VERSION }, { headers })
   } catch (error) {

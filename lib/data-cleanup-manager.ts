@@ -149,11 +149,11 @@ export class DataCleanupManager {
         this.retentionCompletedPatterns.clear()
       }
       const { report } = result
-      if (report.ttlRepaired || report.terminalRowsBounded || report.orphanVolumeDetailsDeleted || report.indexesTrimmed) {
+      if (report.ttlRepaired || report.terminalRowsBounded || report.orphanVolumeDetailsDeleted || report.indexesTrimmed || report.typeMismatches) {
         console.log(
           `[v0] Retention repair: scanned=${report.scanned} ttl=${report.ttlRepaired} ` +
           `terminal=${report.terminalRowsBounded} orphanVolume=${report.orphanVolumeDetailsDeleted} ` +
-          `trimmed=${report.indexesTrimmed} errors=${report.errors}`,
+          `trimmed=${report.indexesTrimmed} typeMismatches=${report.typeMismatches} errors=${report.errors}`,
         )
       }
     } catch (error) {

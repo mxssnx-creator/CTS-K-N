@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getAllConnections } from "@/lib/redis-db"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 30
@@ -17,7 +18,9 @@ export async function GET() {
     const connections = Array.isArray(connectionsRaw) ? connectionsRaw : []
     return NextResponse.json({
       success: true,
-      connections: connections.map((c: any) => ({
+      connections: connections.map((c: any) => {
+        const effectiveSymbols = resolveCanonicalSymbols(c)
+        return {
         id: c.id,
         name: c.name,
         exchange: c.exchange,
@@ -27,8 +30,11 @@ export async function GET() {
         is_dashboard_enabled: c.is_dashboard_enabled,
         is_active: c.is_active,
         is_live_trade: c.is_live_trade,
-        active_symbols: c.active_symbols,
-      })),
+        active_symbols: effectiveSymbols.count > 0 ? effectiveSymbols.symbols : c.active_symbols,
+        symbol_count: effectiveSymbols.count > 0 ? effectiveSymbols.count : undefined,
+        symbol_count_source: effectiveSymbols.count > 0 ? effectiveSymbols.source : "none",
+      }
+      }),
       count: connections.length,
     })
   } catch (error) {

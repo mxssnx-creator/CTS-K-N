@@ -24,6 +24,23 @@ describe("canonical connection symbol resolution", () => {
     })
   })
 
+  test("prefers a nested scoped basket over stale flattened catalog fields", () => {
+    const result = resolveCanonicalSymbols({
+      force_symbols: JSON.stringify(Array.from({ length: 536 }, (_, i) => `CATALOG${i}`)),
+      active_symbols: JSON.stringify(Array.from({ length: 536 }, (_, i) => `CATALOG${i}`)),
+      connection_settings: {
+        force_symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+        active_symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+      },
+    })
+
+    expect(result).toEqual({
+      count: 4,
+      source: "force_symbols",
+      symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    })
+  })
+
   test("uses the first non-empty authoritative field and de-duplicates symbols", () => {
     expect(resolveCanonicalSymbols(
       { force_symbols: "" },

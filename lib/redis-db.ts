@@ -305,6 +305,7 @@ export function isKiloSnapshotBackend(
 export interface RedisClientLike {
   ping(): Promise<string>
   info(): Promise<string>
+  type?(key: string): Promise<string>
   get(key: string): Promise<string | null>
   mget(...keys: string[]): Promise<Array<string | null>>
   set(key: string, value: string, options?: { EX?: number; PX?: number; NX?: boolean; XX?: boolean }): Promise<string | null>
@@ -2489,6 +2490,16 @@ export class InlineLocalRedis implements RedisClientLike {
     return [`redis_version:local-inline`, `db0:keys=${totalKeys}`, `uptime_in_seconds:${Math.floor(process.uptime())}`].join("\n")
   }
 
+  async type(key: string): Promise<string> {
+    if (this.isExpired(key)) return "none"
+    if (this.data.strings.has(key)) return "string"
+    if (this.data.hashes.has(key)) return "hash"
+    if (this.data.sets.has(key)) return "set"
+    if (this.data.lists.has(key)) return "list"
+    if (this.data.sorted_sets.has(key)) return "zset"
+    return "none"
+  }
+
   async get(key: string): Promise<string | null> {
     this.trackOperation()
     if (this.isExpired(key)) return null
@@ -3460,6 +3471,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
   }
   async ping() { return String(await (await this.c()).ping()) }
   async info() { return String(await (await this.c()).info()) }
+  async type(key: string) { return String(await (await this.c()).type(key)) }
   async get(key: string) { return await (await this.c()).get(key) }
   async mget(...keys: string[]) { return await (await this.c()).mGet(keys) }
   async set(key: string, value: string, options?: { EX?: number; PX?: number; NX?: boolean; XX?: boolean }) { return await (await this.c()).set(key, value, options as any) }
@@ -3626,6 +3638,7 @@ class UpstashRestRedisClient implements RedisClientLike {
   }
   async ping() { return String(await this.command(["PING"])) }
   async info() { return "redis_version:upstash-rest" }
+  async type(key: string) { return await this.command<string>(["TYPE", key]) }
   async get(key: string) { return await this.command<string | null>(["GET", key]) }
   async mget(...keys: string[]) { return await this.command<Array<string | null>>(["MGET", ...keys]) }
   async set(key: string, value: string, options?: { EX?: number; PX?: number; NX?: boolean; XX?: boolean }) { const cmd: Array<string | number> = ["SET", key, value]; if (options?.NX) cmd.push("NX"); if (options?.XX) cmd.push("XX"); if (options?.EX) cmd.push("EX", options.EX); else if (options?.PX) cmd.push("PX", options.PX); return await this.command<string | null>(cmd) }

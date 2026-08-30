@@ -53,6 +53,7 @@ Options:
   --public-url URL     Public application URL
   --skip-tests         Skip Jest tests (typecheck, lint, build still run)
   --safe-simulation    Force paper mode and disable all real exchange orders
+  --enable-live        Explicitly opt into the guarded live path; disabled by default
   --resolve-only       Print the exact resolved target without changing it
   --uninstall          Remove the exact resolved installation
 
@@ -64,6 +65,7 @@ EOF
 
 SKIP_TESTS=0
 SAFE_SIMULATION=0
+LIVE_OPT_IN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) INSTALL_DIR="${2:?--dir requires a value}"; INSTALL_DIR_SET=1; shift 2 ;;
@@ -78,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --public-url) PUBLIC_URL="${2:?--public-url requires a value}"; shift 2 ;;
     --skip-tests) SKIP_TESTS=1; shift ;;
     --safe-simulation) SAFE_SIMULATION=1; shift ;;
+    --enable-live) LIVE_OPT_IN=1; shift ;;
     --resolve-only) RESOLVE_ONLY=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --) shift; INSTALL_ARGS+=("$@"); break ;;
@@ -598,6 +601,9 @@ if (( SKIP_TESTS == 1 )); then
 fi
 if (( SAFE_SIMULATION == 1 )); then
   INSTALL_ARGS+=(--safe-simulation)
+fi
+if (( LIVE_OPT_IN == 1 )); then
+  INSTALL_ARGS+=(--enable-live)
 fi
   if [[ -n "$EXISTING_ENV_MANAGED" ]]; then
   CTS_BOOTSTRAP_CLEAN_INSTALL=1 CTS_PRESERVE_ENV_MANAGED="$EXISTING_ENV_MANAGED" \
