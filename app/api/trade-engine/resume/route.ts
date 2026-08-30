@@ -52,7 +52,7 @@ async function handlePost() {
         operator_stopped_at: "",
         resumed_at: new Date().toISOString(),
       })
-      console.log(`[v0] Global intent restored to: ${previousStatus}`)
+      console.log(`[v0] Global intent restored to: running (previous=${previousStatus || "unknown"})`)
     } catch (err) {
       console.warn("[v0] Failed to restore global intent before resume:", err instanceof Error ? err.message : String(err))
       // Non-fatal: coordinator.resume() also validates/restores Redis state.
