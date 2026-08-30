@@ -5,6 +5,11 @@
 
 import { initRedis, getRedisClient, getSettings, getAppSettings, setSettings } from "@/lib/redis-db"
 import { scanRedisKeys } from "@/lib/redis-scan"
+import {
+  RETENTION_PATTERNS,
+  repairRedisRetentionPage,
+  type RetentionCursorState,
+} from "@/lib/redis-retention"
 
 /**
  * Merge cleanup-related settings from both the `app_settings` (main UI
@@ -23,6 +28,10 @@ async function loadCleanupSettings(): Promise<Record<string, any>> {
 export class DataCleanupManager {
   private static instance: DataCleanupManager | null = null
   private cleanupInterval: NodeJS.Timeout | null = null
+  private retentionRepairInterval: NodeJS.Timeout | null = null
+  private retentionCursors: RetentionCursorState = {}
+  private retentionCompletedPatterns = new Set<string>()
+  private retentionRepairInFlight = false
   private isRunning = false
 
   private constructor() {}
@@ -58,6 +67,12 @@ export class DataCleanupManager {
       clearInterval(this.cleanupInterval)
       this.cleanupInterval = null
     }
+    if (this.retentionRepairInterval) {
+      clearInterval(this.retentionRepairInterval)
+      this.retentionRepairInterval = null
+    }
+    this.retentionCursors = {}
+    this.retentionCompletedPatterns.clear()
     this.isRunning = false
     console.log("[v0] Data cleanup manager stopped")
   }
@@ -65,18 +80,35 @@ export class DataCleanupManager {
   public async startAutoCleanup(): Promise<void> {
     console.log("[v0] Starting data cleanup manager...")
 
+    if (this.retentionRepairInterval || this.cleanupInterval || this.isRunning) {
+      console.log("[v0] Data cleanup manager is already scheduled")
+      return
+    }
+
     try {
       await initRedis()
       // Merge both settings bundles so the operator's cleanup toggles
       // saved in EITHER the main Settings UI (`app_settings`) or the
       // system PATCH route (`system_settings`) are picked up.
       const settings = await loadCleanupSettings()
-      const intervalHours = parseInt(String(settings.cleanupIntervalHours ?? "24"), 10)
+      const configuredIntervalHours = Number.parseInt(String(settings.cleanupIntervalHours ?? "24"), 10)
+      const intervalHours = Number.isFinite(configuredIntervalHours) && configuredIntervalHours > 0
+        ? Math.min(168, configuredIntervalHours)
+        : 24
       const enabled =
         settings.enableAutoCleanup === true ||
         settings.enableAutoCleanup === "true" ||
         settings.automaticDatabaseCleanup === true ||
         settings.automaticDatabaseCleanup === "true"
+
+      // Retention repair is a safety invariant, not an optional historical
+      // cleanup toggle. Old releases wrote diagnostic/runtime projections
+      // without TTLs; leaving repair behind a disabled UI switch lets Redis
+      // grow forever even when ordinary archival cleanup is intentionally off.
+      await this.repairRetentionPage()
+      this.retentionRepairInterval = setInterval(() => {
+        void this.repairRetentionPage()
+      }, 5 * 60 * 1000)
 
       if (!enabled) {
         console.log("[v0] Auto cleanup is disabled in settings")
@@ -93,6 +125,44 @@ export class DataCleanupManager {
       console.log(`[v0] Auto cleanup scheduled every ${intervalHours} hour(s)`)
     } catch (error) {
       console.error("[v0] Failed to start auto cleanup:", error)
+    }
+  }
+
+  private async repairRetentionPage(): Promise<void> {
+    if (this.retentionRepairInFlight) return
+    this.retentionRepairInFlight = true
+    try {
+      const result = await repairRedisRetentionPage(getRedisClient(), {
+        cursors: this.retentionCursors,
+        completedPatterns: this.retentionCompletedPatterns,
+        pageSize: 250,
+        apply: true,
+      })
+      this.retentionCursors = result.cursors
+      for (const descriptor of RETENTION_PATTERNS) {
+        if (this.retentionCursors[descriptor.pattern] === "0") {
+          this.retentionCompletedPatterns.add(descriptor.pattern)
+        }
+      }
+      if (this.retentionCompletedPatterns.size === RETENTION_PATTERNS.length) {
+        this.retentionCursors = {}
+        this.retentionCompletedPatterns.clear()
+      }
+      const { report } = result
+      if (report.ttlRepaired || report.terminalRowsBounded || report.orphanVolumeDetailsDeleted || report.indexesTrimmed) {
+        console.log(
+          `[v0] Retention repair: scanned=${report.scanned} ttl=${report.ttlRepaired} ` +
+          `terminal=${report.terminalRowsBounded} orphanVolume=${report.orphanVolumeDetailsDeleted} ` +
+          `trimmed=${report.indexesTrimmed} errors=${report.errors}`,
+        )
+      }
+    } catch (error) {
+      console.warn(
+        "[v0] Retention repair failed:",
+        error instanceof Error ? error.message : String(error),
+      )
+    } finally {
+      this.retentionRepairInFlight = false
     }
   }
 

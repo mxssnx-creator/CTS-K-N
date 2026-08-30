@@ -89,7 +89,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/install/database/init	POST	install	force-dynamic		none-detected	app/api/install/database/init/route.ts
 /api/install/database/migrate	GET,POST	install	force-dynamic		none-detected	app/api/install/database/migrate/route.ts
 /api/install/database/migrations-info	GET,POST	install	force-dynamic		none-detected	app/api/install/database/migrations-info/route.ts
-/api/install/database/reset	POST	install	force-dynamic		none-detected	app/api/install/database/reset/route.ts
+/api/install/database/reset	POST	install	force-dynamic		admin	app/api/install/database/reset/route.ts
 /api/install/database/status	GET	install	force-dynamic		none-detected	app/api/install/database/status/route.ts
 /api/install/dependencies	POST	install	force-dynamic		none-detected	app/api/install/dependencies/route.ts
 /api/install/diagnostics	POST	install	force-dynamic		none-detected	app/api/install/diagnostics/route.ts

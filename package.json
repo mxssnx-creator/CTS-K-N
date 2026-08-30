@@ -89,7 +89,8 @@
     "redis:local:start": "bash scripts/local-redis.sh start",
     "redis:local:status": "bash scripts/local-redis.sh status",
     "redis:local:stop": "bash scripts/local-redis.sh stop",
-    "redis:retention:inspect": "node --import tsx scripts/inspect-redis-retention.ts"
+    "redis:retention:inspect": "node --import tsx scripts/inspect-redis-retention.ts",
+    "redis:retention:repair": "node --import tsx scripts/repair-redis-retention.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

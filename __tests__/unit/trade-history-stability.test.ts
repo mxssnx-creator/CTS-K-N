@@ -570,14 +570,13 @@ describe("BingX-backed trade history", () => {
     expect(client.hgetall).not.toHaveBeenCalled()
   })
 
-  test("terminal position indexes remain durable and are paged by consumers", () => {
+  test("terminal position indexes remain durable and bounded for consumers", () => {
     const liveStage = readFileSync(join(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
     const redisDb = readFileSync(join(process.cwd(), "lib/redis-db.ts"), "utf8")
     const tradeHistory = readFileSync(join(process.cwd(), "lib/trade-history.ts"), "utf8")
     expect(liveStage).toContain("await keepDurable(closedIndexKey)")
-    expect(liveStage).not.toContain("client.expire(closedIndexKey")
-    expect(liveStage).not.toContain("ltrim(closedIndexKey")
-    expect(redisDb).not.toContain("ltrim(`live:positions:${connId}:closed`")
+    expect(liveStage).toContain("ltrim(closedIndexKey, 0, LIVE_CLOSED_INDEX_LIMIT - 1)")
+    expect(redisDb).toContain("ltrim(`live:positions:${connId}:closed`, 0, LIVE_CLOSED_INDEX_LIMIT - 1)")
     expect(tradeHistory).toContain("loadClosedPositionSnapshotPage")
     expect(tradeHistory).toContain("client.llen(indexKey)")
   })

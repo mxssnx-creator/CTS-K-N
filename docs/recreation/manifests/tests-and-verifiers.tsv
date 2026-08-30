@@ -66,6 +66,7 @@ unit	__tests__/unit/connection-scope-ui-contract.test.ts
 unit	__tests__/unit/connection-secret-status.test.ts
 unit	__tests__/unit/connection-settings-merge-clamp.test.ts
 unit	__tests__/unit/connection-stage-overview.test.ts
+unit	__tests__/unit/connection-symbols.test.ts
 unit	__tests__/unit/connection-test-stored-credentials.test.ts
 unit	__tests__/unit/control-order-capacity.test.ts
 unit	__tests__/unit/cooperative-task-timeout.test.ts
@@ -83,6 +84,7 @@ unit	__tests__/unit/direct-trade-coordination.test.ts
 unit	__tests__/unit/direct-trade-history-policy.test.ts
 unit	__tests__/unit/direct-trade-indication-stats.test.ts
 unit	__tests__/unit/direct-trade-ledger-recovery.test.ts
+unit	__tests__/unit/direct-trade-live-readiness.test.ts
 unit	__tests__/unit/direct-trade-market-history.test.ts
 unit	__tests__/unit/direct-trade-overview-stats.test.ts
 unit	__tests__/unit/direct-trade-position-capacity.test.ts
@@ -117,6 +119,7 @@ unit	__tests__/unit/exchange-position-symbols-stats.test.ts
 unit	__tests__/unit/exchange-position-trailing.test.ts
 unit	__tests__/unit/exchange-quantity-ledger.test.ts
 unit	__tests__/unit/forced-symbols.test.ts
+unit	__tests__/unit/forex-support.test.ts
 unit	__tests__/unit/functional-overview-stage-snapshot.test.ts
 unit	__tests__/unit/futures-connectors-contract.test.ts
 unit	__tests__/unit/health-route-liveness-budget.test.ts
@@ -133,6 +136,7 @@ unit	__tests__/unit/indication-outcome-cost-basis.test.ts
 unit	__tests__/unit/indication-set-type-coordination.test.ts
 unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
+unit	__tests__/unit/live-entry-protection-admission.test.ts
 unit	__tests__/unit/live-execution-summary.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
 unit	__tests__/unit/live-order-preflight.test.ts
@@ -140,6 +144,7 @@ unit	__tests__/unit/live-pnl-calculation.test.ts
 unit	__tests__/unit/live-pos-count-target.test.ts
 unit	__tests__/unit/live-position-actions.test.ts
 unit	__tests__/unit/live-position-analytics-archive.test.ts
+unit	__tests__/unit/live-position-lifetime-summary.test.ts
 unit	__tests__/unit/live-position-lineage-index.test.ts
 unit	__tests__/unit/live-position-read-model.test.ts
 unit	__tests__/unit/live-position-source.test.ts
@@ -211,6 +216,7 @@ unit	__tests__/unit/redis-runtime-root.test.ts
 unit	__tests__/unit/redis-secondary-indexes.test.ts
 unit	__tests__/unit/redis-stats.test.ts
 unit	__tests__/unit/requested-regressions.test.ts
+unit	__tests__/unit/retention-policy.test.ts
 unit	__tests__/unit/run-with-env-lifecycle.test.ts
 unit	__tests__/unit/runtime-boot-id.test.ts
 unit	__tests__/unit/runtime-concurrency-profile.test.ts
@@ -259,6 +265,7 @@ unit	__tests__/unit/strategy-volume-coordination.test.ts
 unit	__tests__/unit/symbol-selection-ownership.test.ts
 unit	__tests__/unit/system-inject-credentials.test.ts
 unit	__tests__/unit/system-monitoring-route.test.ts
+unit	__tests__/unit/system-order-ownership.test.ts
 unit	__tests__/unit/technical-indicators.test.ts
 unit	__tests__/unit/trade-direction.test.ts
 unit	__tests__/unit/trade-engine-auto-start-refresh-queue.test.ts

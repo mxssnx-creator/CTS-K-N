@@ -50,7 +50,7 @@ describe("redis-db secondary indexes", () => {
     await expect(client.smembers("idx:strategies")).resolves.toEqual(["strat-1"])
   })
 
-  it("keeps terminal live snapshots durable and records one lifetime contribution", async () => {
+  it("keeps terminal live snapshots bounded and records one lifetime contribution", async () => {
     const redisDb = await loadRedisDb()
     const client = redisDb.getRedisClient()
     const id = "live:conn-live:BTCUSDT:long:closed"
@@ -70,7 +70,7 @@ describe("redis-db secondary indexes", () => {
       realizedPnlComplete: true,
     })
 
-    await expect(client.ttl(`live:position:${id}`)).resolves.toBe(-1)
+    await expect(client.ttl(`live:position:${id}`)).resolves.toBeGreaterThan(0)
     await expect(client.lrange("live:positions:conn-live:closed", 0, -1)).resolves.toEqual([id])
     await expect(client.hlen("live:positions:conn-live:lifetime:contributions")).resolves.toBe(1)
     await expect(client.hgetall("live:positions:conn-live:lifetime:summary")).resolves.toMatchObject({

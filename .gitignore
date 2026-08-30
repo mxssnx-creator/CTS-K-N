@@ -28,6 +28,7 @@ node_modules
 
 # Redis/reference snapshots can contain connection metadata or credentials.
 redis*
+!lib/redis-retention.ts
 
 # Defensive: a misconfigured V0_REDIS_SNAPSHOT_PATH (e.g. a bare relative
 # value/typo) can otherwise write large runtime snapshot/WAL/temp files
