@@ -305,6 +305,8 @@ export function isKiloSnapshotBackend(
 export interface RedisClientLike {
   ping(): Promise<string>
   info(): Promise<string>
+  /** Close network resources for one-shot maintenance scripts. */
+  close?(): Promise<void>
   type?(key: string): Promise<string>
   get(key: string): Promise<string | null>
   mget(...keys: string[]): Promise<Array<string | null>>
@@ -2490,6 +2492,8 @@ export class InlineLocalRedis implements RedisClientLike {
     return [`redis_version:local-inline`, `db0:keys=${totalKeys}`, `uptime_in_seconds:${Math.floor(process.uptime())}`].join("\n")
   }
 
+  async close(): Promise<void> {}
+
   async type(key: string): Promise<string> {
     if (this.isExpired(key)) return "none"
     if (this.data.strings.has(key)) return "string"
@@ -3471,6 +3475,18 @@ class NodeRedisClientAdapter implements RedisClientLike {
   }
   async ping() { return String(await (await this.c()).ping()) }
   async info() { return String(await (await this.c()).info()) }
+  async close(): Promise<void> {
+    const client = this.client
+    this.client = null
+    this.connectPromise = null
+    if (!client) return
+    try {
+      if (client.isOpen && typeof client.quit === "function") await client.quit()
+      else if (typeof client.disconnect === "function") client.disconnect()
+    } catch {
+      try { client.disconnect?.() } catch { /* best effort during one-shot shutdown */ }
+    }
+  }
   async type(key: string) { return String(await (await this.c()).type(key)) }
   async get(key: string) { return await (await this.c()).get(key) }
   async mget(...keys: string[]) { return await (await this.c()).mGet(keys) }
@@ -3638,6 +3654,7 @@ class UpstashRestRedisClient implements RedisClientLike {
   }
   async ping() { return String(await this.command(["PING"])) }
   async info() { return "redis_version:upstash-rest" }
+  async close(): Promise<void> {}
   async type(key: string) { return await this.command<string>(["TYPE", key]) }
   async get(key: string) { return await this.command<string | null>(["GET", key]) }
   async mget(...keys: string[]) { return await this.command<Array<string | null>>(["MGET", ...keys]) }
