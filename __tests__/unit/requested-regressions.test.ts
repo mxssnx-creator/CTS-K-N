@@ -1732,7 +1732,7 @@ describe("requested regression guardrails", () => {
   })
 
 
-  test("global resume restores Redis intent before startEngine and supports fresh-process paused state", () => {
+  test("global resume publishes canonical running intent before startEngine and supports fresh-process paused state", () => {
     const resumeRoute = read("app/api/trade-engine/resume/route.ts")
     const coordinator = read("lib/trade-engine.ts")
 
@@ -1740,9 +1740,16 @@ describe("requested regression guardrails", () => {
     const routeResumeIndex = resumeRoute.indexOf("await coordinator.resume({ force: true })")
     expect(routeRestoreIndex).toBeGreaterThanOrEqual(0)
     expect(routeRestoreIndex).toBeLessThan(routeResumeIndex)
-    expect(resumeRoute).toContain('status: previousStatus')
-    expect(resumeRoute).toContain('desired_status: previousStatus')
-    expect(resumeRoute).toContain('operator_intent: previousStatus')
+    const routeRestoreBlock = resumeRoute.slice(routeRestoreIndex, routeResumeIndex)
+    expect(routeRestoreBlock).toContain('status: "running"')
+    expect(routeRestoreBlock).toContain('desired_status: "running"')
+    expect(routeRestoreBlock).toContain('operator_intent: "running"')
+    expect(routeRestoreBlock).toContain('actual_status: "running"')
+    expect(routeRestoreBlock).toContain('coordinator_ready: "true"')
+    expect(routeRestoreBlock).toContain('operator_stopped: "0"')
+    expect(routeRestoreBlock).toContain('stopped_at: ""')
+    expect(routeRestoreBlock).toContain('operator_stopped_at: ""')
+    expect(routeRestoreBlock).toContain("resumed_at: new Date().toISOString()")
 
     const resumeBlock = coordinator.slice(
       coordinator.indexOf("async resume(options: { force?: boolean } = {})"),
