@@ -50,6 +50,7 @@ export interface RetentionRepairReport {
   terminalRowsBounded: number
   orphanVolumeDetailsDeleted: number
   indexesTrimmed: number
+  typeMismatches: number
   errors: number
 }
 
@@ -146,6 +147,7 @@ function emptyReport(): RetentionRepairReport {
     terminalRowsBounded: 0,
     orphanVolumeDetailsDeleted: 0,
     indexesTrimmed: 0,
+    typeMismatches: 0,
     errors: 0,
   }
 }
@@ -156,7 +158,28 @@ function addReport(target: RetentionRepairReport, source: RetentionRepairReport)
   target.terminalRowsBounded += source.terminalRowsBounded
   target.orphanVolumeDetailsDeleted += source.orphanVolumeDetailsDeleted
   target.indexesTrimmed += source.indexesTrimmed
+  target.typeMismatches += source.typeMismatches
   target.errors += source.errors
+}
+
+async function hasExpectedType(
+  client: RedisClientLike,
+  key: string,
+  expected: string,
+  report: RetentionRepairReport,
+): Promise<boolean> {
+  if (typeof client.type !== "function") return true
+  try {
+    const actual = String(await client.type(key))
+    if (actual === "none" || actual === expected) return actual === expected
+    report.typeMismatches++
+    return false
+  } catch {
+    // The type command is an optional adapter capability. If an older adapter
+    // cannot answer it, the operation below remains guarded by the caller's
+    // existing error boundary.
+    return true
+  }
 }
 
 function normalizeScanResult(result: any): { cursor: string; keys: string[] } {
@@ -274,6 +297,7 @@ async function repairVolumeIndex(
   report: RetentionRepairReport,
   apply: boolean,
 ): Promise<void> {
+  if (!await hasExpectedType(client, key, "string", report)) return
   const raw = await client.get(key)
   let parsed: unknown = null
   try { parsed = raw ? JSON.parse(raw) : null } catch { parsed = null }
@@ -294,6 +318,7 @@ async function repairVolumeDetail(
   report: RetentionRepairReport,
   apply: boolean,
 ): Promise<void> {
+  if (!await hasExpectedType(client, key, "string", report)) return
   const ttl = await client.ttl(key)
   if (ttl === -2) return
   if (volumeReferences.references.has(key)) {
@@ -327,6 +352,7 @@ async function repairLiveJson(
   apply: boolean,
 ): Promise<void> {
   if (key.startsWith("live:position:tracking:")) return
+  if (!await hasExpectedType(client, key, "string", report)) return
   const raw = await client.get(key)
   if (!raw) return
   let parsed: unknown
@@ -383,15 +409,23 @@ async function repairOneKey(
   if (kind === "volume-detail") return repairVolumeDetail(client, key, volumeReferences, report, apply)
   if (kind === "live-json") return repairLiveJson(client, key, report, apply)
   if (kind === "live-pointer") {
+    if (!await hasExpectedType(client, key, "string", report)) return
     if (apply) await ensureTtl(client, key, LIVE_TRACKING_RETENTION_SECONDS, report)
     return
   }
   if (kind === "live-moved-marker") {
+    if (!await hasExpectedType(client, key, "string", report)) return
     if (apply) await ensureTtl(client, key, LIVE_MOVED_MARKER_RETENTION_SECONDS, report)
     return
   }
-  if (kind === "live-closed-index") return repairLiveClosedIndex(client, key, report, apply)
-  if (kind === "live-hash") return repairLiveHash(client, key, report, apply)
+  if (kind === "live-closed-index") {
+    if (!await hasExpectedType(client, key, "list", report)) return
+    return repairLiveClosedIndex(client, key, report, apply)
+  }
+  if (kind === "live-hash") {
+    if (!await hasExpectedType(client, key, "hash", report)) return
+    return repairLiveHash(client, key, report, apply)
+  }
   if (!apply) return
 
   const seconds =

@@ -71,4 +71,16 @@ describe("redis retention policy", () => {
     await expect(redis.ttl(activeJsonKey)).resolves.toBe(-1)
     await expect(redis.llen(closedIndexKey)).resolves.toBe(LIVE_CLOSED_INDEX_LIMIT)
   })
+
+  it("skips legacy live keys whose Redis type does not match the JSON schema", async () => {
+    const redis = new InlineLocalRedis()
+    const legacyListKey = "live:position:legacy-list"
+    await redis.rpush(legacyListKey, "legacy-value")
+
+    const report = await repairRedisRetentionAll(redis, { pageSize: 250, maxPages: 100 })
+
+    expect(report.typeMismatches).toBeGreaterThanOrEqual(1)
+    expect(report.errors).toBe(0)
+    await expect(redis.llen(legacyListKey)).resolves.toBe(1)
+  })
 })
