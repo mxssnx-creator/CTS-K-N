@@ -36,9 +36,32 @@ export function resolveCanonicalSymbols(
   for (const field of SYMBOL_FIELDS) {
     for (const snapshot of snapshots) {
       if (!snapshot || typeof snapshot !== "object") continue
-      const symbols = normalizeSymbolList(snapshot[field])
-      if (symbols.length > 0) {
-        return { symbols, count: symbols.length, source: field }
+      const record = snapshot as Record<string, unknown>
+      const nestedRaw = record.connection_settings ?? record.connectionSettings
+      let nested: Record<string, unknown> | null = null
+      if (nestedRaw && typeof nestedRaw === "object" && !Array.isArray(nestedRaw)) {
+        nested = nestedRaw as Record<string, unknown>
+      } else if (typeof nestedRaw === "string" && nestedRaw.trim().startsWith("{")) {
+        try {
+          const parsed = JSON.parse(nestedRaw)
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            nested = parsed as Record<string, unknown>
+          }
+        } catch {
+          // Preserve compatibility with malformed legacy nested settings and
+          // continue to the flattened snapshot below.
+        }
+      }
+      // `connection_settings` is the canonical scoped selection on legacy
+      // connection rows. The flattened `symbols`/`force_symbols` fields can
+      // instead contain the complete exchange catalog (for example 536 X01
+      // markets), so nested semantic fields must win when present.
+      const candidates = nested ? [nested, record] : [record]
+      for (const candidate of candidates) {
+        const symbols = normalizeSymbolList(candidate[field])
+        if (symbols.length > 0) {
+          return { symbols, count: symbols.length, source: field }
+        }
       }
     }
   }

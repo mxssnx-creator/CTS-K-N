@@ -45,6 +45,7 @@ import {
   withCanonicalForcedSymbols,
 } from "@/lib/forced-symbols"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -563,9 +564,24 @@ export async function GET(
     settings.coordination_settings = coordinationSettings
     settings.coordinationSettings = coordinationSettings
 
+    const effectiveSymbols = resolveCanonicalSymbols(connection, settings)
+    const safeSettings = maskConnectionSettings(settings)
+    if (effectiveSymbols.count > 0) {
+      // The GET path must describe the current scoped basket consistently with
+      // connection cards and progression stats. Legacy flattened fields may
+      // still contain an exchange-wide catalog (536 X01 markets); this is a
+      // presentation-only overlay and never mutates Redis.
+      safeSettings.symbols = effectiveSymbols.symbols
+      safeSettings.active_symbols = effectiveSymbols.symbols
+      safeSettings.force_symbols = effectiveSymbols.symbols
+      safeSettings.symbol_count = effectiveSymbols.count
+      safeSettings.effective_symbol_count = effectiveSymbols.count
+      safeSettings.effective_symbol_count_source = effectiveSymbols.source
+    }
+
     return NextResponse.json({
       connection: maskConnectionSecrets(connection),
-      settings: maskConnectionSettings(settings),
+      settings: safeSettings,
       statistics: {
         active_trades: trades?.length || 0,
         active_positions: positions?.length || 0,

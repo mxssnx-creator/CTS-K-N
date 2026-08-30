@@ -44,6 +44,7 @@ REDIS_MODE="auto"
 REINSTALL=0
 UNINSTALL=0
 SAFE_SIMULATION=0
+LIVE_OPT_IN=0
 SERVICE_USER_CREATED=0
 SAVED_APP_NAME=""
 SAVED_APP_PORT=""
@@ -92,21 +93,22 @@ Options:
   --redis-mode MODE       auto, native, npm, or snapshot (default: auto)
   --reinstall             Reinstall OS apps, runtimes, global tools, and dependencies
   --safe-simulation       Run the complete server app in forced paper mode; do not require or permit exchange orders
+  --enable-live           Explicitly opt into the guarded live path; disabled by default
   --uninstall             Stop/remove CTS services, CTS-owned runtime data, and this checkout
   --help                  Show this help
 
 Sensitive values should be supplied in --seed-env-file or the existing env
 file, never as command-line arguments. The installer generates ADMIN_SECRET,
 CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent. A production
-server install enables the guarded live execution path and succeeds only when
-valid credentials for at least one supported exchange (BingX, Bybit, Pionex, or
-OrangeX), durable order coordination, and persisted live-control state are
-verified; the verification never submits an order.
+server install stays in safe simulation mode by default. Live execution requires
+the explicit --enable-live opt-in, valid credentials for at least one supported
+exchange (BingX, Bybit, Pionex, or OrangeX), durable order coordination, and
+persisted live-control state; the verification never submits an order.
 
 For a server install or upgrade, prefer scripts/bootstrap-install.sh. When an
 installed CTS runtime is detected, this command delegates to that clean flow.
-Use --safe-simulation for a full owner/debug deployment that must keep every
-exchange order path disabled, including when preserved credentials exist.
+Use --safe-simulation to make paper-mode intent explicit. It always wins,
+including when --enable-live or preserved credentials exist.
 EOF
 }
 
@@ -127,6 +129,7 @@ while [[ $# -gt 0 ]]; do
     --redis-mode) REDIS_MODE="${2:?--redis-mode requires a value}"; shift 2 ;;
     --reinstall) REINSTALL=1; shift ;;
     --safe-simulation) SAFE_SIMULATION=1; shift ;;
+    --enable-live) LIVE_OPT_IN=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --help|-h) usage; exit 0 ;;
     -*) fatal "Unknown option: $1" ;;
@@ -388,6 +391,7 @@ handoff_existing_install_to_bootstrap() {
   (( REINSTALL == 0 )) || bootstrap_args+=(--reinstall)
   (( SKIP_SYSTEM_PACKAGES == 0 )) || bootstrap_args+=(--skip-system-packages)
   (( SKIP_TESTS == 0 )) || bootstrap_args+=(--skip-tests)
+  (( LIVE_OPT_IN == 0 )) || bootstrap_args+=(--enable-live)
   bootstrap_args+=(--redis-mode "$REDIS_MODE")
 
   info "Existing CTS-K-N install detected; delegating to clean stop → delete → reinstall flow"
@@ -959,11 +963,10 @@ configure_environment_and_redis() {
     upsert_env ALLOW_PROD_INLINE_REDIS 0
     upsert_env DISABLE_IN_PROCESS_CONTINUITY 1
   fi
-  if (( SAFE_SIMULATION == 1 )); then
-    # This mode is intended for a complete long-lived owner/debug deployment.
-    # It wins over any preserved settings and credentials, so every exchange
-    # connector remains simulated and no real order path can become available
-    # after a restart.
+  if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
+    # Paper mode is the default and wins over preserved settings and
+    # credentials. A live deployment must be an explicit operator opt-in so a
+    # routine install/upgrade can never silently enable real order placement.
     upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 0
     upsert_env FORCE_SIMULATED 1
     upsert_env FORCE_LIVE 0
@@ -1061,8 +1064,8 @@ configure_environment_and_redis() {
     upsert_env ORANGEX_API_SECRET "$orangex_secret"
     live_venues+=("OrangeX")
   fi
-  if (( SAFE_SIMULATION == 1 )); then
-    ok "Safe simulation mode is active; preserved exchange credentials cannot place orders"
+  if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
+    ok "Safe simulation mode is active by default; preserved exchange credentials cannot place orders"
   elif (( ${#live_venues[@]} > 0 )); then
     ok "Authenticated exchange execution is configured for ${live_venues[*]}; readiness is verified without submitting an order"
   else
@@ -1691,4 +1694,8 @@ info "App service: $APP_NAME"
 info "Scheduler service: $APP_NAME-scheduler"
 info "Direct-Trade processor service: $APP_NAME-direct-trade"
 info "Environment: $ENV_FILE (owner/group-only; secrets were not printed)"
-info "Live exchange execution is credentialed and verified; order placement remains controlled by the explicit live-control state."
+if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
+  info "Safe simulation is active; live exchange execution remains disabled unless --enable-live is supplied explicitly."
+else
+  info "Live exchange execution is credentialed and verified; order placement remains controlled by the explicit live-control state."
+fi

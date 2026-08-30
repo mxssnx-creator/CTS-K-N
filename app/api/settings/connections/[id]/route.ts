@@ -10,6 +10,7 @@ import {
 } from "@/lib/constants"
 import { BINGX_PROD_VST_ORIGIN } from "@/lib/bingx-environment"
 import { normalizeExchangeId, normalizeMarketType } from "@/lib/market-types"
+import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import {
   DEFAULT_FOREX_LOT_SIZE,
   DEFAULT_FOREX_POSITIONS_AVERAGE,
@@ -200,7 +201,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     // Previous code returned the full connection hash including api_key and
     // api_secret in PLAINTEXT to any caller.
-    return NextResponse.json(maskConnectionSecrets(connection), { status: 200 })
+    const safeConnection = maskConnectionSecrets(connection)
+    const effectiveSymbols = resolveCanonicalSymbols(connection)
+    if (effectiveSymbols.count > 0) {
+      // Presentation-only normalization. Do not rewrite the stored row from a
+      // GET, but prevent a legacy exchange-wide catalog from appearing as the
+      // current scoped basket in settings/cards (the observed 536/536 case).
+      safeConnection.symbol_count = effectiveSymbols.count
+      safeConnection.symbols = effectiveSymbols.symbols
+      safeConnection.active_symbols = effectiveSymbols.symbols
+      safeConnection.force_symbols = effectiveSymbols.symbols
+      safeConnection.effective_symbol_count = effectiveSymbols.count
+      safeConnection.effective_symbol_count_source = effectiveSymbols.source
+      safeConnection.effective_symbols = effectiveSymbols.symbols
+    }
+    return NextResponse.json(safeConnection, { status: 200 })
   } catch (error) {
     console.error("[v0] Failed to fetch connection:", error)
     await SystemLogger.logError(error, "api", `GET /api/settings/connections/${(await params).id}`)
