@@ -42,9 +42,14 @@ async function handlePost() {
           : "running"
 
       await client.hset("trade_engine:global", {
-        status: previousStatus,
-        desired_status: previousStatus,
-        operator_intent: previousStatus,
+        status: "running",
+        desired_status: "running",
+        operator_intent: "running",
+        actual_status: "running",
+        coordinator_ready: "true",
+        operator_stopped: "0",
+        stopped_at: "",
+        operator_stopped_at: "",
         resumed_at: new Date().toISOString(),
       })
       console.log(`[v0] Global intent restored to: ${previousStatus}`)
@@ -56,6 +61,21 @@ async function handlePost() {
     await coordinator.resume({ force: true })
 
     try {
+      // Resume is a durable operator transition. Publish the canonical
+      // running state again after the serialized coordinator barrier so a
+      // status/stats read cannot project a fresh worker with stale Stop
+      // metadata from the previous global lifecycle.
+      await client.hset("trade_engine:global", {
+        status: "running",
+        desired_status: "running",
+        operator_intent: "running",
+        actual_status: "running",
+        coordinator_ready: "true",
+        operator_stopped: "0",
+        stopped_at: "",
+        operator_stopped_at: "",
+        resumed_at: new Date().toISOString(),
+      })
       await client.hdel("trade_engine:global", "paused_at", "paused_by", "previous_status")
       console.log("[v0] Global running intent published for resume")
     } catch (err) {

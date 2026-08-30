@@ -76,6 +76,25 @@ describe("distributed engine runtime", () => {
     }
   })
 
+  test("a newer explicit resume supersedes an older sticky stop marker", () => {
+    const runtime = resolveDistributedEngineRuntime({
+      runningHint: "1",
+      states: [{ status: "running", last_processor_heartbeat: now - 1_000 }],
+      globalState: {
+        operator_stopped: "1",
+        operator_stopped_at: new Date(now - 10_000).toISOString(),
+        stopped_at: new Date(now - 10_000).toISOString(),
+        operator_intent: "running",
+        resumed_at: new Date(now - 5_000).toISOString(),
+      },
+      now,
+    })
+
+    expect(runtime.running).toBe(true)
+    expect(runtime.reason).toBe("fresh-heartbeat")
+    expect(runtime.operatorStopped).toBe(false)
+  })
+
   test("uses a bounded startup grace but rejects stale retained running state", () => {
     const starting = resolveDistributedEngineRuntime({
       runningHint: "1",

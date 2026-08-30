@@ -97,6 +97,7 @@ export type DistributedEngineRuntime = {
   runningHint: boolean | null
   status: string
   globalIntent: string
+  operatorStopped: boolean
   heartbeatAt: number
   heartbeatAgeMs: number | null
   heartbeatFresh: boolean
@@ -145,8 +146,23 @@ export function resolveDistributedEngineRuntime(input: {
   const globalIntent = String(
     globalState.operator_intent || globalState.desired_status || globalState.status || "",
   ).trim().toLowerCase()
+  const operatorStopMarker = parseRedisRuntimeFlag(globalState.operator_stopped)
+  const operatorStopAt = Math.max(
+    parseRuntimeTimestamp(globalState.operator_stopped_at),
+    parseRuntimeTimestamp(globalState.stopped_at),
+  )
+  const resumedAt = parseRuntimeTimestamp(globalState.resumed_at)
+  // Stop is a sticky safety veto until a newer explicit Resume transition is
+  // durably visible. This ordering handles eventual-consistency windows where
+  // a read can briefly observe the old marker after Resume has published the
+  // newer running intent.
+  const operatorStopSuperseded =
+    operatorStopMarker === true &&
+    globalIntent === "running" &&
+    operatorStopAt > 0 &&
+    resumedAt > operatorStopAt
   const operatorStopped =
-    parseRedisRuntimeFlag(globalState.operator_stopped) === true ||
+    (operatorStopMarker === true && !operatorStopSuperseded) ||
     globalIntent === "paused" ||
     globalIntent === "stopped"
 
@@ -172,6 +188,7 @@ export function resolveDistributedEngineRuntime(input: {
     runningHint,
     status,
     globalIntent,
+    operatorStopped,
     heartbeatAt,
     heartbeatAgeMs,
     heartbeatFresh,

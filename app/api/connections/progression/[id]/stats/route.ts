@@ -2034,7 +2034,10 @@ export async function GET(
       globalState: globalEngineState,
       connectionEnabled: connectionProcessingEnabled,
     })
-    const engineIsStopped = !engineRuntime.running || ep?.phase === "stopped"
+    // The distributed runtime proof is authoritative for liveness. The
+    // progression phase may legitimately remain "stopped" for a short window
+    // while a resumed worker is already heartbeating.
+    const engineIsStopped = !engineRuntime.running
     const realtimeIsActive =
       !engineIsStopped &&
       (realtimeIndicationCycles > 0 ||
@@ -5366,6 +5369,8 @@ export async function GET(
           heartbeatAt: engineRuntime.heartbeatAt || null,
           heartbeatAgeMs: engineRuntime.heartbeatAgeMs,
           heartbeatFresh: engineRuntime.heartbeatFresh,
+          globalIntent: engineRuntime.globalIntent,
+          operatorStopped: engineRuntime.operatorStopped,
         },
         phase,
         progress,

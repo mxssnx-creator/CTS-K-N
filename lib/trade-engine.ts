@@ -1671,7 +1671,11 @@ export class GlobalTradeEngineCoordinator {
         status: restoredStatus,
         operator_intent: restoredStatus,
         desired_status: restoredStatus,
+        actual_status: restoredStatus,
+        coordinator_ready: "true",
         operator_stopped: "0",
+        stopped_at: "",
+        operator_stopped_at: "",
         resumed_at: nowIso,
         updated_at: nowIso,
       })

@@ -166,6 +166,8 @@ async function buildEngineStatesResponse(connectionId: string): Promise<Response
           heartbeatAt: engineRuntime.heartbeatAt || null,
           heartbeatAgeMs: engineRuntime.heartbeatAgeMs,
           heartbeatFresh: engineRuntime.heartbeatFresh,
+          globalIntent: engineRuntime.globalIntent,
+          operatorStopped: engineRuntime.operatorStopped,
         },
         enabled: buildEnableState(flagEnabled),
         // Keep the original top-level properties for older dashboard clients,

@@ -693,6 +693,16 @@ export function overlayVolatileProgressionStats(
   }
   metadata.progress = progress
   next.progress = progress
+  metadata.engineRunning = engineRuntime.running
+  metadata.runtimeEvidence = {
+    reason: engineRuntime.reason,
+    status: engineRuntime.status,
+    globalIntent: engineRuntime.globalIntent,
+    operatorStopped: engineRuntime.operatorStopped,
+    heartbeatAt: engineRuntime.heartbeatAt || null,
+    heartbeatAgeMs: engineRuntime.heartbeatAgeMs,
+    heartbeatFresh: engineRuntime.heartbeatFresh,
+  }
   metadata.volatileProgression = {
     source: "direct-redis-overlay",
     refreshedAt: now,
