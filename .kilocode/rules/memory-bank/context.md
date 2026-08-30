@@ -6,9 +6,10 @@
   `codex/forex-instaforex-final-20260830`, with the intended
   Forex/InstaForex, volume/exposure, protection, Direct-Trade, UI/API,
   statistics, Redis-retention, and soak-verifier changes committed and
-  reconciled with remote `main`. The local tree is clean; GitHub publication,
-  reviewed PR merge, and deployment remain pending. No real/mainnet order has
-  been used.
+  reconciled with remote `main`. PR #270 is merged into remote `main` as
+  `e02791dc393b06bfcff7ebfec91073afc2eb79f5` with tree
+  `3fd9374fcd9721f89cf3c4f78c958a740661aa9e`. The local tree is clean;
+  deployment remains pending. No real/mainnet order has been used.
 - Forex uses the same indication/strategy/live-position contracts as crypto,
   with explicit `market_type`/asset-class routing, canonical pair keys,
   quote-currency conversion, lot units, higher average-count defaults, and
@@ -53,21 +54,21 @@
   concurrency or order execution. Generated `scripts/__pycache__/` output was
   quarantined recoverably; only `lib/market-data-keys.ts` and
   `lib/trading-pair-keys.ts` remain intended untracked files.
-- Validation completed on the current tree: unit 245/245 suites and
-  1,652/1,652 tests; integration 4/4 suites and 66/66 tests; e2e 1/1 test
+- Validation completed on the current tree: unit 246/246 suites and
+  1,659/1,659 tests; integration 4/4 suites and 66/66 tests; e2e 1/1 test
   (the optional live-load check was skipped because localhost:3002 was not
   running); TypeScript; ESLint; source syntax; release-secret scan
-  1,606 files/0 findings; signal registry 36 sources with no authenticated or
+  1,608 files/0 findings; signal registry 36 sources with no authenticated or
   order requests; volatile cleanup; and recreation-manifest regeneration plus
   verification. The production Next build passed with 42 generated routes
   and 348 complete traces.
 - The 120-second single-symbol production paper soak passed 60 rounds with
-  zero real-exchange orders, crash recovery, 209 ms steady API p95, heap
-  growth 235,650 KiB within budget, and 2,103 non-inventory keys against a
+  zero real-exchange orders, crash recovery, 407 ms steady API p95, heap
+  growth 288,997 KiB within budget, and 2,102 non-inventory keys against a
   5,000 allowance. The 240-second 32-symbol production paper engine soak
-  passed 120 rounds with 5,832 logical Main/Real evaluations, 4,825 physical
-  Real rows, 321 ms steady API p95, 583 stable key growth, bounded memory, and
-  zero real-exchange orders. The post-fix 32-symbol UI paper workflow passed
+  passed 120 rounds with 5,832 logical Main/Real evaluations, 4,801 physical
+  Real rows, 381 ms steady API p95, 59 non-inventory key growth, bounded
+  memory, and zero real-exchange orders. The post-fix 32-symbol UI paper workflow passed
   47 page surfaces, QuickStart, settings backup/hot reload, volume hot
   reload, independent Long/Short checks, all global lifecycle controls,
   position/order relation integrity, and zero real positions/orders.
@@ -79,14 +80,20 @@
   `/workspace/backups/CTS-K-N/20260830T090000Z-pre-regression-guard-test`,
   `/workspace/backups/CTS-K-N/20260830T091500Z-pre-card-accounting-test`,
   `/workspace/backups/CTS-K-N/20260830T101500Z-pre-generated-cleanup`, and
-  `/workspace/backups/CTS-K-N/20260830T104500Z-pre-context-update`. Each
+  `/workspace/backups/CTS-K-N/20260830T104500Z-pre-context-update`,
+  `/workspace/backups/CTS-K-N/20260830T112500Z-pre-github-publish`,
+  `/workspace/backups/CTS-K-N/20260830T113000Z-pre-remote-reconcile`,
+  `/workspace/backups/CTS-K-N/20260830T113500Z-pre-merge-commit`,
+  `/workspace/backups/CTS-K-N/20260830T114500Z-pre-github-pr`,
+  `/workspace/backups/CTS-K-N/20260830T120000Z-pre-pr-merge`, and
+  `/workspace/backups/CTS-K-N/20260830T121000Z-post-merge`. Each
   includes a complete Git bundle, binary worktree/index patches, untracked
   archive/list, HEAD/status/refs evidence, and verified SHA-256 sums.
-- Next handoff: create the final pre-publication checkpoint, publish this exact
-  tested commit through the selected GitHub integration, wait for required
-  checks, merge only the reviewed head, then verify merged-main ancestry and
-  re-run read-only site checks. Keep all runtime previews paper-only; do not
-  enable X01/Mainnet or claim profitable performance from synthetic/VST data.
+- Next handoff: if deployment is later authorized, checkpoint the remote state,
+  deploy only merged `main` through the managed Chisel path, restart/reconcile,
+  and rerun read-only site and paper-soak checks. Keep all runtime previews
+  paper-only; do not enable X01/Mainnet or claim profitable performance from
+  synthetic/VST data.
 
 ## X02 external-protection coexistence follow-up (2026-08-29; authoritative)
 
