@@ -1319,6 +1319,25 @@ prepare_runtime_permissions() {
   ok "Runtime artifacts are owned by the unprivileged service identity"
 }
 
+restore_runtime_access_after_rollback() {
+  local service_group install_owner
+  id "$SERVICE_USER" >/dev/null 2>&1 || return 1
+  [[ -f "$ENV_FILE" ]] || return 1
+  service_group="$(id -gn "$SERVICE_USER")"
+  install_owner="$(id -un)"
+  # configure_environment_and_redis writes the environment atomically as
+  # root:root 0600. If a later dependency/build step fails before
+  # prepare_runtime_permissions(), rollback must repair that metadata before
+  # it starts the preserved build as the unprivileged service user.
+  run_root chown "$install_owner:$service_group" "$ENV_FILE"
+  run_root chmod 640 "$ENV_FILE"
+  if [[ -e "$RUNTIME_DIR/maintenance-stop" ]]; then
+    run_root chown "$install_owner:$service_group" "$RUNTIME_DIR/maintenance-stop"
+    run_root chmod 640 "$RUNTIME_DIR/maintenance-stop"
+  fi
+  run_as_service test -r "$ENV_FILE"
+}
+
 install_systemd_runtime() {
   section "systemd app and minute-scheduler services"
   command -v systemctl >/dev/null 2>&1 || fatal "systemd is unavailable"
@@ -1646,6 +1665,8 @@ rollback_after_failed_verification() {
     fi
     mv "$BUILD_BACKUP" "$PROJECT_ROOT/.next"
     ROLLBACK_ARMED=0
+    restore_runtime_access_after_rollback \
+      || fatal "Previous production build was restored but runtime access could not be repaired"
     start_runtime || true
     fatal "Previous production build restored and restarted"
   fi
@@ -1666,8 +1687,12 @@ installer_exit_handler() {
       mv "$PROJECT_ROOT/.next" "$RUNTIME_DIR/failed-next-$(date -u +%Y%m%dT%H%M%SZ)-$$"
     fi
     mv "$BUILD_BACKUP" "$PROJECT_ROOT/.next"
-    start_runtime
-    warn "Previous production build restoration attempted"
+    if restore_runtime_access_after_rollback; then
+      start_runtime
+      warn "Previous production build restoration attempted"
+    else
+      warn "Previous production build restored but runtime access repair failed; maintenance stop remains active"
+    fi
   fi
   exit "$status"
 }
