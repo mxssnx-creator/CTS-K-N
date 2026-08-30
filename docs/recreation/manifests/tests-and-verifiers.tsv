@@ -66,6 +66,7 @@ unit	__tests__/unit/connection-scope-ui-contract.test.ts
 unit	__tests__/unit/connection-secret-status.test.ts
 unit	__tests__/unit/connection-settings-merge-clamp.test.ts
 unit	__tests__/unit/connection-stage-overview.test.ts
+unit	__tests__/unit/connection-symbol-aliases.test.ts
 unit	__tests__/unit/connection-symbols.test.ts
 unit	__tests__/unit/connection-test-stored-credentials.test.ts
 unit	__tests__/unit/control-order-capacity.test.ts
