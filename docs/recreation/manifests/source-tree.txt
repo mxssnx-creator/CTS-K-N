@@ -305,6 +305,7 @@ __tests__/unit/trend-wiring.test.ts
 __tests__/unit/volume-calculator-variants.test.ts
 __tests__/unit/volume-identity-systemwide.test.ts
 __tests__/unit/x02-slot-protection-operator.test.ts
+__tests__/unit/x02-vst-flatten-operator.test.ts
 app/active-exchange/layout.tsx
 app/active-exchange/page.tsx
 app/additional/chat-history/page.tsx
@@ -1487,6 +1488,7 @@ scripts/direct-trade-cycle-scheduler.mjs
 scripts/direct-trade-processor.mjs
 scripts/direct-trade-supervisor.mjs
 scripts/final-validation-test.mjs
+scripts/flatten-bingx-x02-vst-positions.ts
 scripts/generate-recreation-manifests.mjs
 scripts/init-engine-and-verify.mjs
 scripts/inject-bingx-creds.js
