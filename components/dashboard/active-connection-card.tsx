@@ -387,6 +387,21 @@ export function ActiveConnectionCard({
   const [signalMode, setSignalMode] = useState(() =>
     signalTradeUiFlag(connection.details as any)
   )
+  // Main indication Signal is a processing/profile switch, while the Signal
+  // execution slider above is only a channel intent. Keep the profile state
+  // separate so the compact Signal statistics remain visible when the
+  // execution slider is off (and so toggling the slider never starts a second
+  // indication processor).
+  const [mainSignalIndicationsEnabled, setMainSignalIndicationsEnabled] =
+    useState<boolean | null>(null)
+  const mainSignalIndicationsEnabledRef = useRef<boolean | null>(null)
+
+  useEffect(() => {
+    // A card can be reused for a different connection by the dashboard list;
+    // never carry the previous connection's Signal profile into the new one.
+    mainSignalIndicationsEnabledRef.current = null
+    setMainSignalIndicationsEnabled(null)
+  }, [connection.connectionId])
   const [liveTradeLoading, setLiveTradeLoading] = useState(false)
   const [presetModeLoading, setPresetModeLoading] = useState(false)
   const [signalModeLoading, setSignalModeLoading] = useState(false)
@@ -1160,6 +1175,10 @@ export function ActiveConnectionCard({
           volumeStepRatioRef.current = normalized
           setVolumeStepRatio(normalized)
         }
+        // Indication profile writes use this same scoped event. Refresh the
+        // Signal profile/analytics read model immediately instead of waiting
+        // for the 15-second continuity poll.
+        setDashboardEventRefreshKey((key) => key + 1)
         fetchProgression()
       }
     }
@@ -1202,6 +1221,8 @@ export function ActiveConnectionCard({
   // proxy buffering or a cross-worker stream gap.
   useEffect(() => {
     if (!connection.isActive && !globalEngineRunning) {
+      mainSignalIndicationsEnabledRef.current = null
+      setMainSignalIndicationsEnabled(null)
       setSignalOverview(null)
       setPresetOverview(null)
       return
@@ -1209,15 +1230,36 @@ export function ActiveConnectionCard({
     // Main Trade's unified stage/card read model is already hydrated by the
     // single canonical `/stats` poll. Only optional Signal/Preset panels need
     // their own compact endpoints.
-    if (!signalMode && !presetMode) return
-
     const fetchLiveStats = async () => {
       const requestSeq = ++liveStatsFetchSeqRef.current
       try {
+        // The Main profile is the source of truth for whether the shared
+        // indication processor is producing Signal rows. This read is
+        // deliberately independent from the Signal execution slider: the
+        // slider may be off while Main Signal indications continue to run.
+        const signalProfileRes = await fetch(
+          `/api/settings/connections/${connection.connectionId}/active-indications`,
+          { cache: "no-store" },
+        )
+        const signalProfileData = signalProfileRes.ok
+          ? await signalProfileRes.json().catch(() => null)
+          : null
+        const profileSignalEnabled =
+          typeof signalProfileData?.channels?.main?.signal?.enabled === "boolean"
+            ? signalProfileData.channels.main.signal.enabled
+            : typeof signalProfileData?.signal === "boolean"
+              ? signalProfileData.signal
+              : null
+        if (profileSignalEnabled !== null) {
+          mainSignalIndicationsEnabledRef.current = profileSignalEnabled
+          setMainSignalIndicationsEnabled(profileSignalEnabled)
+        }
+        const signalStatsVisible =
+          signalMode || mainSignalIndicationsEnabledRef.current !== false
         // These are the only optional compact read models. Shared Main/Direct
         // engine metrics continue to come from the canonical stats snapshot.
         const [signalRes, presetRes] = await Promise.all([
-          signalMode
+          signalStatsVisible
             ? fetch(
                 `/api/statistics/indications?connectionId=${encodeURIComponent(connection.connectionId)}`,
                 { cache: "no-store" },
@@ -1259,7 +1301,7 @@ export function ActiveConnectionCard({
               drawdownHours: nonNegativeMetric(positions12.drawdown?.maxDurationHours),
             },
           })
-        } else if (signalMode) {
+        } else if (signalStatsVisible) {
           setSignalOverview(null)
         }
         if (presetData?.success && presetData?.data) {
@@ -1842,7 +1884,10 @@ export function ActiveConnectionCard({
             ? { label: "Ready", className: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" }
             : { label: "Off", className: "text-muted-foreground" }
 
-  const dedicatedChannelOnlyOverview = signalMode || (!liveTrade && presetMode)
+  // Signal indication processing is shared with Main. Its statistics are an
+  // additive projection, never a replacement for the usual Main overview.
+  const signalStatsVisible = signalMode || mainSignalIndicationsEnabled === true
+  const presetOnlyOverview = !liveTrade && presetMode && !signalStatsVisible
 
   const renderOverviewTiles = () => {
     const symbolsProcessed = progression?.prehistoricProgress?.symbolsProcessed ?? 0
@@ -1858,70 +1903,7 @@ export function ActiveConnectionCard({
       finiteMetric(prehistoricStats?.liveTotalPnl)
     const tiles: Array<{ label: string; value: string | number; title?: string; tone?: string }> = []
 
-    if (dedicatedChannelOnlyOverview) {
-      if (signalMode) {
-        const metric = signalOverview?.positions12
-        const pf = metric?.trades
-          ? metric.infiniteProfitFactor
-            ? "∞"
-            : metric.profitFactor === null
-              ? "—"
-              : metric.profitFactor.toFixed(2)
-          : "—"
-        tiles.push(
-          {
-            label: "Signal cycles",
-            value: liveStats?.indicationCycles ?? 0,
-            title: "Shared realtime cycles attributed to Signal; no second processor is started.",
-          },
-          {
-            label: "Signal sets",
-            value: prehistoricStats?.indicationsSignal ?? 0,
-            title: "Current Signal indication rows only; other Main indication types are excluded.",
-          },
-          {
-            label: "Signal open",
-            value:
-              `${signalOverview?.openPositions ?? 0}` +
-              `/${signalOverview?.maxPositionsTotal || 350}`,
-            title: "Open physical Signal positions across Long + Short.",
-          },
-          {
-            label: "Signal closed",
-            value: signalOverview?.closedPositions ?? 0,
-            title: "Closed positions with durable Signal source/config attribution.",
-          },
-          {
-            label: "Signal PF12",
-            value: pf,
-            title: "Profit factor over the newest 12 closed Signal positions.",
-            tone:
-              metric?.trades && !metric.infiniteProfitFactor && Number(metric.profitFactor) < 1
-                ? "text-red-600 dark:text-red-400"
-                : metric?.trades
-                  ? "text-green-600 dark:text-green-400"
-                  : undefined,
-          },
-          {
-            label: "Signal DDT12",
-            value: metric?.trades ? `${metric.drawdownHours.toFixed(2)}h` : "—",
-            title: "Maximum drawdown duration over the newest 12 closed Signal positions.",
-          },
-          {
-            label: "Signal PnL12",
-            value: metric?.trades
-              ? `${metric.netPnl >= 0 ? "+" : ""}${metric.netPnl.toFixed(2)}`
-              : "—",
-            title: "Net result over the newest 12 closed Signal positions.",
-            tone:
-              metric?.trades
-                ? metric.netPnl >= 0
-                  ? "text-green-600 dark:text-green-400"
-                  : "text-red-600 dark:text-red-400"
-                : undefined,
-          },
-        )
-      }
+    if (presetOnlyOverview) {
       if (!signalMode && presetMode) {
         const presetProgress = presetOverview?.progress
         const presetSummary = presetOverview?.summary
@@ -1990,7 +1972,7 @@ export function ActiveConnectionCard({
       ))
     }
 
-    if (!liveTrade) {
+    if (!liveTrade && !signalStatsVisible && !presetMode) {
       tiles.push({
         label: "Trade overview",
         value: "Off",
@@ -2109,10 +2091,10 @@ export function ActiveConnectionCard({
       })
     }
 
-    if (signalMode && signalOverview) {
-      const metric = signalOverview.positions12
-      const signalStandardClosed = signalOverview.standardClosedPositions ?? 0
-      const signalTrailingClosed = signalOverview.trailingClosedPositions ?? 0
+    if (signalStatsVisible) {
+      const metric = signalOverview?.positions12
+      const signalStandardClosed = signalOverview?.standardClosedPositions ?? 0
+      const signalTrailingClosed = signalOverview?.trailingClosedPositions ?? 0
       const signalWinRate =
         signalStandardClosed + signalTrailingClosed > 0
           ? boundedPercentage(signalStandardClosed / (signalStandardClosed + signalTrailingClosed))
@@ -2133,14 +2115,14 @@ export function ActiveConnectionCard({
         {
           label: "Signal open",
           value:
-            `${signalOverview.openPositions ?? 0}` +
-            `/${signalOverview.maxPositionsTotal || 350}`,
+            `${signalOverview?.openPositions ?? 0}` +
+            `/${signalOverview?.maxPositionsTotal || 350}`,
           title: "Open physical Signal positions across Long + Short.",
           tone: "text-cyan-700 dark:text-cyan-400",
         },
         {
           label: "Signal closed",
-          value: signalOverview.closedPositions ?? 0,
+          value: signalOverview?.closedPositions ?? 0,
           title: "Closed positions with durable Signal source/config attribution.",
           tone: "text-cyan-700 dark:text-cyan-400",
         },
@@ -2189,191 +2171,6 @@ export function ActiveConnectionCard({
       )
     }
 
-    if (!liveTrade) {
-      if (!signalMode && !presetMode) {
-        tiles.push({
-          label: "Trade overview",
-          value: "Off",
-          title: "Enable Main, Signal, or Preset to show that engine's overview stats.",
-          tone: "text-muted-foreground",
-        })
-      }
-      return tiles.map(({ label, value, title, tone }, tileIndex) => (
-        <div key={`${label}-${tileIndex}`} className="flex items-center gap-1 text-[10px]" title={title}>
-          <span className="text-muted-foreground">{label}</span>
-          <span className={`font-semibold tabular-nums ${tone ?? ""}`}>{value}</span>
-        </div>
-      ))
-    }
-
-    if (symbolsProcessed > 0 || symbolsTotal > 0) {
-      tiles.push({
-        label: "Symbols",
-        value: symbolsTotal > 0 ? `${symbolsProcessed}/${symbolsTotal}` : symbolsProcessed,
-        title: "Prehistoric backfill coverage — symbols processed vs total.",
-      })
-    }
-
-    tiles.push(
-      {
-        label: "Cycles",
-        value: liveStats?.indicationCycles ?? 0,
-        title: "Realtime indication processor ticks since engine start.",
-      },
-      {
-        label: "Ind",
-        value: liveStats?.indications ?? prehistoricStats?.indicationsTotal ?? 0,
-        title: "Current or cumulative indication sets from the canonical progression stats endpoint.",
-      },
-      {
-        label: "Strat",
-        value: liveStats?.strategies ?? firstFiniteMetric(
-          prehistoricStats?.stratReal,
-          prehistoricStats?.stratMain,
-          prehistoricStats?.stratBase,
-        ),
-        title: "Current or cumulative strategy sets from the canonical progression stats endpoint.",
-      },
-      {
-        label: (prehistoricStats?.liveOpenPositions ?? 0) > 0 ? "Live" : "Pseudo",
-        value: liveStats?.positions ?? 0,
-        title: (prehistoricStats?.liveOpenPositions ?? 0) > 0
-          ? "Open exchange positions (live)."
-          : "Open pseudo positions (evaluation stage).",
-      },
-      {
-        label: "Orders",
-        value: ordersFilled > 0 ? `${ordersPlaced}/${ordersFilled}` : ordersPlaced,
-        title: "Live exchange orders placed / filled.",
-        tone: ordersPlaced > 0 ? "text-amber-700 dark:text-amber-400" : undefined,
-      },
-      {
-        label: "Open ord",
-        value: prehistoricStats?.liveOrdersDataAvailable ? prehistoricStats.liveOpenOrders : "n/a",
-        title: prehistoricStats?.liveOrdersDataAvailable
-          ? `CTS-tracked exchange orders across ${prehistoricStats.liveOpenOrderSymbols} symbols: ${prehistoricStats.liveEntryOrders} entry and ${prehistoricStats.liveControlOrders} control. Excluded as unrelated: ${prehistoricStats.liveExcludedUntrackedOrders} orders.`
-          : `Venue order snapshot unavailable${prehistoricStats?.liveOrdersSnapshotError ? `: ${prehistoricStats.liveOrdersSnapshotError}` : "."}`,
-        tone: prehistoricStats?.liveOrdersDataAvailable && prehistoricStats.liveOpenOrders > 0 ? "text-cyan-700 dark:text-cyan-400" : undefined,
-      },
-      {
-        label: "Live sym",
-        value: prehistoricStats?.liveOpenSymbols ?? 0,
-        title: `Symbols with a CTS-tracked non-zero exchange position. Unrelated venue positions excluded: ${prehistoricStats?.liveExcludedUntrackedPositions ?? 0}.`,
-      },
-      {
-        label: "Excluded",
-        value: `${prehistoricStats?.liveExcludedUntrackedPositions ?? 0}P/${prehistoricStats?.liveExcludedUntrackedOrders ?? 0}O`,
-        title: "Unrelated live-exchange positions/orders excluded from every CTS coordination, PnL and overall statistic.",
-      },
-    )
-
-    if (ordersFailed > 0) {
-      tiles.push({
-        label: "Failed",
-        value: ordersFailed,
-        title: "Live exchange orders failed or rejected.",
-        tone: "text-red-600 dark:text-red-400",
-      })
-    }
-
-    if (failedToOpen > 0) {
-      tiles.push({
-        label: "Failed open",
-        value: failedToOpen,
-        title: "Qualified Sets that failed to open in the latest complete per-symbol dispatch snapshot.",
-        tone: "text-red-600 dark:text-red-400",
-      })
-    }
-
-    const liveDispatchPending = prehistoricStats?.liveDispatchPending ?? 0
-    const liveDispatchBlocked = prehistoricStats?.liveDispatchBlocked ?? 0
-    if (liveDispatchPending > 0) {
-      tiles.push({
-        label: "Pending fill",
-        value: liveDispatchPending,
-        title: "Entry orders accepted or submitted but not fully filled yet; these are not failures.",
-        tone: "text-amber-700 dark:text-amber-400",
-      })
-    }
-
-    if (liveDispatchBlocked > 0) {
-      tiles.push({
-        label: "Blocked",
-        value: liveDispatchBlocked,
-        title: "Qualified Sets held back because the live execution transport or readiness gate was unavailable; no exchange order was sent.",
-        tone: "text-orange-700 dark:text-orange-400",
-      })
-    }
-
-    if ((prehistoricStats?.liveDispatchDeferred ?? 0) > 0) {
-      tiles.push({
-        label: "Next cycle",
-        value: prehistoricStats?.liveDispatchDeferred ?? 0,
-        title: "Qualified Sets safely deferred by the per-symbol physical dispatch budget; the durable cursor rotates them into later cycles.",
-      })
-    }
-
-    if ((prehistoricStats?.liveDispatchAttempted ?? 0) > 0) {
-      tiles.push({
-        label: "Dispatch",
-        value: `${Math.round(prehistoricStats?.liveDispatchDurationMs ?? 0)}ms`,
-        title: `${prehistoricStats?.liveDispatchAttempted ?? 0} attempts; average ${Number(prehistoricStats?.liveDispatchAvgAttemptMs ?? 0).toFixed(1)}ms per attempt.`,
-      })
-    }
-
-    if (livePnl !== 0) {
-      tiles.push({
-        label: "PnL",
-        value: `${livePnl > 0 ? "+" : ""}$${Math.abs(livePnl).toFixed(2)}`,
-        title: "Live exchange unrealized/realized PnL.",
-        tone: livePnl > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400",
-      })
-    }
-
-    if (signalMode && signalOverview) {
-      const metric = signalOverview.positions12
-      tiles.push(
-        {
-          label: "Signal open",
-          value: `${signalOverview.openPositions}/${signalOverview.maxPositionsTotal || 350}`,
-          title: "Signal-attributed positions open / Signal Long + Short capacity.",
-          tone: "text-cyan-700 dark:text-cyan-400",
-        },
-        {
-          label: "Signal closed",
-          value: signalOverview.closedPositions,
-          title: "Closed Signal-attributed positions.",
-          tone: "text-cyan-700 dark:text-cyan-400",
-        },
-        {
-          label: "Signal PF12",
-          value: metric.trades
-            ? metric.infiniteProfitFactor
-              ? "∞"
-              : metric.profitFactor?.toFixed(2) ?? "—"
-            : "—",
-          title: "Signal-only ProfitFactor over the newest 12 closed positions.",
-          tone: metric.trades && !metric.infiniteProfitFactor && Number(metric.profitFactor) < 1
-            ? "text-red-600 dark:text-red-400"
-            : metric.trades
-              ? "text-green-600 dark:text-green-400"
-              : undefined,
-        },
-        {
-          label: "Signal PnL12",
-          value: metric.trades
-            ? `${metric.netPnl >= 0 ? "+" : ""}${metric.netPnl.toFixed(2)}`
-            : "—",
-          title: "Signal-only net PnL over the newest 12 closed Signal positions.",
-          tone: metric.trades
-            ? metric.netPnl >= 0
-              ? "text-green-600 dark:text-green-400"
-              : "text-red-600 dark:text-red-400"
-            : undefined,
-        },
-      )
-    }
-
     if (presetMode && presetOverview) {
       const presetProgress = presetOverview.progress
       const presetSummary = presetOverview.summary
@@ -2401,6 +2198,9 @@ export function ActiveConnectionCard({
       )
     }
 
+    // Every mode returns through this one shared tile list. Signal is additive
+    // to the Main overview, so changing either switch cannot duplicate or
+    // replace the other channel's tiles.
     return tiles.map(({ label, value, title, tone }, tileIndex) => (
       <div key={`${label}-${tileIndex}`} className="flex items-center gap-1 text-[10px]" title={title}>
         <span className="text-muted-foreground">{label}</span>
@@ -2411,7 +2211,9 @@ export function ActiveConnectionCard({
         </span>
       </div>
     ))
+
   }
+
 
   const connName = details?.name || connection.connectionId
   const testStatus = connectionTestStatus
@@ -2834,7 +2636,7 @@ export function ActiveConnectionCard({
                     is the exchange itself (count + real USD volume).
                     Do NOT sum across stages — they mirror the same
                     signal. */}
-                {!dedicatedChannelOnlyOverview && prehistoricStats && (
+                {!presetOnlyOverview && prehistoricStats && (
                   prehistoricStats.pseudoOpen > 0 ||
                   prehistoricStats.realOpen > 0 ||
                   prehistoricStats.liveOpenPositions > 0 ||
@@ -2904,7 +2706,7 @@ export function ActiveConnectionCard({
                 )}
 
                 {/* Rich prehistoric progress display */}
-                {!dedicatedChannelOnlyOverview && (phase === "prehistoric_data" || (prehistoricStats && (prehistoricStats.indicationsTotal > 0 || prehistoricStats.stratBase > 0))) && (
+                {!presetOnlyOverview && (phase === "prehistoric_data" || (prehistoricStats && (prehistoricStats.indicationsTotal > 0 || prehistoricStats.stratBase > 0))) && (
                   <div className="mt-2 p-2 bg-amber-50/50 dark:bg-amber-950/20 rounded border border-amber-200/50 dark:border-amber-800/30 space-y-2">
                     {/* Header row */}
                     <div className="flex items-center justify-between">
