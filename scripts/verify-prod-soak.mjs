@@ -68,7 +68,7 @@ const RSS_PEAK_LIMIT_KB = Math.max(
   1024 * 1024,
   Number(process.env.SOAK_RSS_PEAK_LIMIT_KB || (CONFIGURED_NODE_HEAP_MB + 1024) * 1024),
 )
-const SYMBOLS = [
+const DEFAULT_SYMBOLS = [
   // Match the runtime's mandatory quartet exactly so this harness proves the
   // same physical basket it requests instead of checking only the persisted
   // pre-canonicalized QuickStart response.
@@ -78,7 +78,21 @@ const SYMBOLS = [
   "INJUSDT", "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
   "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
   "ICPUSDT",
-].slice(0, SYMBOL_COUNT)
+]
+const configuredSoakSymbols = String(process.env.SOAK_SYMBOLS || "")
+  .split(",")
+  .map((symbol) => symbol.trim().toUpperCase())
+  .filter(Boolean)
+if (
+  configuredSoakSymbols.length > 32
+  || new Set(configuredSoakSymbols).size !== configuredSoakSymbols.length
+  || configuredSoakSymbols.some((symbol) => !/^[A-Z0-9]+$/.test(symbol))
+) {
+  throw new Error("SOAK_SYMBOLS must contain 1-32 unique normalized symbols")
+}
+const SYMBOLS = configuredSoakSymbols.length > 0
+  ? configuredSoakSymbols
+  : DEFAULT_SYMBOLS.slice(0, SYMBOL_COUNT)
 
 // Constrained-host override for the post-bootstrap database key-growth budget.
 // The default budget (max(1500, symbols*50)) assumes a soak long enough for

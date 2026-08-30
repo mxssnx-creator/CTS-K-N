@@ -89,6 +89,7 @@ CTS_REQUIRE_LIVE_TRADE_READY	test-or-operator-tool	no	yes	2	.env.example,scripts
 CTS_RUNTIME_BOOT_ID	application-runtime	no	no	5	__tests__/unit/requested-regressions.test.ts,__tests__/unit/runtime-boot-id.test.ts,lib/runtime-boot-id.ts,scripts/start-development.mjs,scripts/start-production.mjs
 CTS_RUNTIME_DIR	test-or-operator-tool	no	no	3	__tests__/unit/runtime-maintenance.test.ts,scripts/direct-trade-supervisor.mjs,scripts/start-production.mjs
 CTS_RUNTIME_STARTED_AT	application-runtime	no	no	4	__tests__/unit/runtime-boot-id.test.ts,lib/runtime-boot-id.ts,scripts/start-development.mjs,scripts/start-production.mjs
+CTS_SHUTDOWN_GRACE_MS	test-or-operator-tool	no	no	1	scripts/start-production.mjs
 CTS_STRATEGY_GC_CRITICAL_INTERVAL_MS	test-or-operator-tool	no	yes	1	.env.example
 CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS	test-or-operator-tool	no	yes	2	.env.example,scripts/run-dev-preview-check.mjs
 CTS_STRATEGY_GC_HIGH_INTERVAL_MS	test-or-operator-tool	no	yes	1	.env.example
@@ -394,6 +395,7 @@ SOAK_POLL_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_PRODUCTIVE_COMPLETION_GRACE_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_RSS_GROWTH_LIMIT_KB	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_RSS_PEAK_LIMIT_KB	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
+SOAK_SYMBOLS	test-or-operator-tool	no	no	2	__tests__/unit/production-start-shutdown.test.ts,scripts/verify-prod-soak.mjs
 SPECIAL_VST_DAYS	test-or-operator-tool	no	no	1	scripts/run-special-vst-5d-validation.ts
 SPECIAL_VST_SYMBOLS	test-or-operator-tool	no	no	1	scripts/run-special-vst-5d-validation.ts
 SPECIAL_VST_TARGET_SYMBOLS	test-or-operator-tool	no	no	1	scripts/run-special-vst-5d-validation.ts
