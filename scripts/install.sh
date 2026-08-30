@@ -1166,7 +1166,16 @@ install_dependencies_and_validate() {
   pnpm exec tsc --noEmit
   pnpm exec eslint .
   if (( SKIP_TESTS == 0 )); then
-    pnpm exec jest --runInBand --detectOpenHandles --passWithNoTests
+    # The production maintenance marker must remain armed while release gates
+    # run. Give Jest a private runtime directory so route/engine tests observe
+    # only the marker fixtures they create, never the host's intentional stop.
+    local test_runtime_dir test_status=0
+    test_runtime_dir="$(mktemp -d "$RUNTIME_DIR/install-test-runtime.XXXXXX")"
+    env CTS_RUNTIME_DIR="$test_runtime_dir" \
+      pnpm exec jest --runInBand --detectOpenHandles --passWithNoTests \
+      || test_status=$?
+    rm -rf -- "$test_runtime_dir"
+    (( test_status == 0 )) || return "$test_status"
   else
     warn "Jest was explicitly skipped"
   fi
