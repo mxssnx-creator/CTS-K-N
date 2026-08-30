@@ -1,5 +1,82 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Direct-Trade X02 Prod-VST lifecycle release (2026-08-30; authoritative)
+
+- The functional release is merged through GitHub PR #278 as
+  `e7ce71b38f425915eb8d868d7db3ce7db7e31f6f`, with exact validated tree
+  `a5cd9c59a35a8bcece622026c6697de4728f443b`. The canonical checkout is
+  `/workspace/CTS-K-N`; local `main` and `origin/main` were clean and aligned
+  at that revision after the merge. The PR head, GitHub Dev Preview Smoke,
+  both PR Vercel checks, and both merged-`main` Vercel production checks were
+  green before this handoff update.
+- The no-live-position failure was traced to connector scope, not to exchange
+  entry sizing. Global `FORCE_SIMULATED=1` could leave the generic simulated
+  connector cached for Direct-Trade reconciliation and UI lifecycle work even
+  after an authorized X02 entry selected the real Prod-VST connector. Direct
+  Trade now delegates entry, Block, DCA, close, settlement, exact TP/SL and
+  shared security-stop ownership to the canonical Live stage. A separately
+  scoped lifecycle connector reselects only the exact opted-in `bingx-x02`
+  Prod-VST virtual-funds connection for CTS-owned Direct rows; Main/X01,
+  Mainnet, Bybit and unrelated rows remain simulated/read-only and all
+  ambiguous ownership still fails closed.
+- A normal reinstall now preserves only the exact Direct X02 opt-in while the
+  global paper defaults remain active. Explicit `--safe-simulation` forcibly
+  disables the opt-in; broader connection IDs, non-Prod-VST environments,
+  non-demo accounts and missing/distinct-VST credential proof are rejected.
+  Bootstrap no longer changes tracked installer permissions, and the
+  max-symbol verifier gives cold statistics the same bounded progression
+  deadline as the engine workload.
+- Final source gates passed on the release tree: TypeScript; repository-wide
+  ESLint; 251 unit suites with 1,692 tests; four integration suites with 66
+  tests; 29 focused Direct/live suites with 231 tests; the affected 253-test
+  guardrail set; production Next build with 42 pages and 348 complete traces;
+  source syntax, Linux install, Kilo, recreation-manifest, shell/processor
+  syntax, diff and release-secret gates. The secret scan covered 1,616 files
+  with zero findings. One concurrent timing assertion exceeded 300 ms under
+  full machine load, then its complete integration group passed in isolation;
+  it was not a product failure.
+- The merged public production alias was exercised in a real browser without
+  mutations. All 23 navigation targets were visited sequentially: 21 rendered
+  a non-empty main surface with the expected heading, while Logistics and
+  Settings correctly redirected an unauthenticated session to the application
+  login boundary. Dashboard detail panels and Overview/Progression/
+  Indications/Strategies views opened without a fatal screen, stuck loader or
+  application-origin console error. Read-only health, liveness, statistics,
+  engine progress and migration endpoints responded; connection-scoped X02
+  Direct and live-position reads also returned normally.
+- Vercel is not the exchange-execution acceptance target. Its current
+  serverless instance correctly reports degraded readiness/persistence because
+  shared Redis and the Direct X02 live opt-in are absent, and it reports zero
+  current Direct X02 live positions. No engine, setting or exchange mutation
+  was performed there.
+- Managed Chisel activation was attempted again only through
+  `/workspace/.network-clients/activate-cts.sh` and was cancelled by the local
+  network approval broker before Chisel executed. This reproduces the
+  repository's documented stop condition after the earlier cancelled attempt.
+  No direct SSH, alternate proxy or VPN was used. Consequently no remote
+  backup, install, restart, migration, Redis mutation, UI action or X02 order
+  was performed in this continuation; no Mainnet or Bybit order was placed.
+- Verified owner-only recovery checkpoints for this release include
+  `/workspace/backups/CTS-K-N/20260830T175959Z-pre-direct-lifecycle-connector`,
+  `/workspace/backups/CTS-K-N/20260830T181707Z-precommit-direct-live-fix`,
+  `/workspace/backups/CTS-K-N/20260830T182850Z-premerge-direct-live-fix`, and
+  `/workspace/backups/CTS-K-N/20260830T184814Z-pre-context-direct-live-release`.
+  Each completed checkpoint has a complete Git bundle, binary patch,
+  untracked archive/list, HEAD/status evidence, verified SHA-256 manifest and
+  owner-only permissions.
+- Next authorized remote sequence: start a later fresh Work process, source
+  the managed activation, require the pinned `CTS_SSH_BANNER_OK`, and stop if
+  the broker cancels again. After the banner, checkpoint source, environment,
+  systemd and Redis state; deploy only current green merged `main`; run the
+  normal installer without `--safe-simulation`; verify the exact X02 opt-in
+  through non-secret booleans; then restart and audit every service, timer,
+  migration, persistence boundary, log and authenticated UI section. Run all
+  engines sequentially at the maximum symbol basket in paper mode. Only after
+  a stable read-only X02 account baseline may one minimum-volume, CTS-owned
+  Direct Prod-VST cycle prove physical entry, exact row TP/SL, shared security,
+  processor/stats/UI continuity, settlement and complete baseline restoration.
+  X01/Mainnet and every Bybit connection remain read-only throughout.
+
 ## Forex/InstaForex and high-volume safety continuation (2026-08-30; current)
 
 - Canonical checkout is `/workspace/CTS-K-N` on branch
