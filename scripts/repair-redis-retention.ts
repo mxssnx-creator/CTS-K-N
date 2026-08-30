@@ -29,17 +29,24 @@ async function main(): Promise<void> {
 
   const apply = process.argv.includes("--apply")
   const client = getRedisClient()
-  await client.ping()
-  const report = await repairRedisRetentionAll(client, {
-    apply,
-    pageSize: positiveInteger(argumentValue("--page-size"), 500),
-    maxPages: positiveInteger(argumentValue("--max-pages"), 10_000),
-  })
-  console.log(JSON.stringify({
-    backend: getRedisBackend(),
-    apply,
-    report,
-  }))
+  try {
+    await client.ping()
+    const report = await repairRedisRetentionAll(client, {
+      apply,
+      pageSize: positiveInteger(argumentValue("--page-size"), 500),
+      maxPages: positiveInteger(argumentValue("--max-pages"), 10_000),
+    })
+    console.log(JSON.stringify({
+      backend: getRedisBackend(),
+      apply,
+      report,
+    }))
+  } finally {
+    // Native Redis keeps a socket open after the last command. A maintenance
+    // invocation must terminate once its bounded report is written so a
+    // scheduler or operator cannot accumulate orphaned Node processes.
+    await client.close?.().catch(() => undefined)
+  }
 }
 
 main().catch((error) => {
