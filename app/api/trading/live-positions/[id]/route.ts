@@ -9,6 +9,10 @@ import {
   recalculateAndApplySLTP,
 } from "@/lib/trade-engine/stages/live-stage"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import {
+  isOwnedDirectTradeLifecyclePosition,
+  resolveDirectTradeLifecycleConnector,
+} from "@/lib/direct-trade-lifecycle-connector"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -66,6 +70,9 @@ async function findOpenPosition(connectionId: string, positionId: string): Promi
 async function connectorForPosition(connectionId: string, position: any): Promise<any | null> {
   if (isSimulatedPosition(position)) {
     return new SimulatedConnector({ apiKey: "", apiSecret: "", isTestnet: true }, "simulated")
+  }
+  if (isOwnedDirectTradeLifecyclePosition(position, connectionId)) {
+    return resolveDirectTradeLifecycleConnector(connectionId, [position], null)
   }
   return exchangeConnectorFactory.getOrCreateConnector(connectionId)
 }

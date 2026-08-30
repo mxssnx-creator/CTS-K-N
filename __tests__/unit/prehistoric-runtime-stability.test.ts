@@ -1375,8 +1375,8 @@ describe("historic runtime generation stability", () => {
     expect(coordinator).toContain("connector,")
     expect(coordinator).toContain("isCurrent,")
     expect(liveStage).toContain("Execution generation changed before submission")
-    expect(liveStage).toContain("if (!isCurrent())")
-    expect(liveStage.indexOf("if (!isCurrent())")).toBeLessThan(
+    expect(liveStage).toContain("if (!await isCurrent())")
+    expect(liveStage.indexOf("if (!await isCurrent())")).toBeLessThan(
       liveStage.indexOf("return exchangeConnector.placeOrder("),
     )
   })

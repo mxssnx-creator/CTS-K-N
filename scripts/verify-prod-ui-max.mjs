@@ -639,7 +639,10 @@ async function main() {
     }
     await waitFor(
       "settings recoordination version",
-      async () => (await request(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats`)).data,
+      async () => (await request(
+        `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
+        { timeoutMs: PROGRESSION_TIMEOUT_MS },
+      )).data,
       (stats) => {
         const state = stats?.settingsRecoordination || {}
         return state.pending === false && (
@@ -743,6 +746,7 @@ async function main() {
 
     const beforeResumeStats = (await request(
       `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
+      { timeoutMs: PROGRESSION_TIMEOUT_MS },
     )).data
     const beforeResumeCycles = cycleTotal(beforeResumeStats)
     const beforeResumeLivePositionCycles = livePositionCycleTotal(beforeResumeStats)
@@ -762,7 +766,10 @@ async function main() {
     let resumeHistoricWorkAdvanced = false
     await waitFor(
       "cycles after resume",
-      async () => (await request(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats`)).data,
+      async () => (await request(
+        `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
+        { timeoutMs: PROGRESSION_TIMEOUT_MS },
+      )).data,
       (stats) => {
         const current = cycleTotal(stats)
         const currentLivePositionCycles = livePositionCycleTotal(stats)

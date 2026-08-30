@@ -98,6 +98,8 @@ BINGX_ENVIRONMENT=prod-vst
 BINGX_VST_ORIGIN=https://open-api-vst.bingx.com
 BINGX_X02_API_KEY=SET_ON_THE_SERVER
 BINGX_X02_API_SECRET=SET_ON_THE_SERVER
+DIRECT_TRADE_LIVE_ORDER_PLACEMENT=1
+DIRECT_TRADE_LIVE_CONNECTION_IDS=bingx-x02
 ```
 
 Keep X01 production credentials absent unless intentionally configured. The

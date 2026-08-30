@@ -1,14 +1,10 @@
 import { timingSafeEqual } from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
-import { directOrderControlKey, placeLiveOrder, type LiveOrderDirection } from "@/lib/live-order-service"
+import { directOrderControlKey, type LiveOrderDirection } from "@/lib/live-order-service"
 import { directTradeKeyspace } from "@/lib/direct-trade-keyspace"
 import { isConnectionOwnedClientOrderId } from "@/lib/system-order-ownership"
-import {
-  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
-  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
-  DIRECT_TRADE_LIVE_EXECUTION_READY,
-} from "@/lib/direct-trade-live-readiness"
+import { executeDirectTradeCanonicalOrder } from "@/lib/direct-trade-canonical-order"
 
 export const dynamic = "force-dynamic"
 
@@ -101,7 +97,7 @@ export async function POST(request: NextRequest) {
     const price = Number(body?.price)
     const clientOrderId = controlId(body?.controlId, kind, positionId)
     const reconcileOnly = body?.reconcileOnly === true
-    const stage = body?.stage === "block" || body?.stage === "dca" ? "accumulation" : "entry"
+    const stage = body?.stage === "block" ? "block" : body?.stage === "dca" ? "dca" : "entry"
 
     const symbol = safeText(body?.symbol, 40).toUpperCase()
     // The gateway is shared by crypto and Forex. Keep malformed/unsupported
@@ -163,17 +159,6 @@ export async function POST(request: NextRequest) {
       await client.get(directOrderControlKey(connectionId, clientOrderId)),
     )
     if (
-      kind === "open"
-      && !DIRECT_TRADE_LIVE_EXECUTION_READY
-      && !(reconcileOnly && durableControlExists)
-    ) {
-      return NextResponse.json({
-        success: false,
-        error: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
-        code: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
-      }, { status: 409 })
-    }
-    if (
       !isConnectionOwnedClientOrderId(clientOrderId, connectionId)
       && !(reconcileOnly && durableControlExists)
     ) {
@@ -192,81 +177,39 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const side = kind === "open"
-      ? positionDirection
-      : positionDirection === "long" ? "short" : "long"
-    const result = await placeLiveOrder({
+    const stillAuthorised = async (): Promise<boolean> => {
+      const [currentOwner, currentStateRaw] = await Promise.all([
+        client.get(keys.processorLease),
+        client.get(keys.state),
+      ])
+      if (currentOwner !== instanceId || !currentStateRaw) return false
+      let currentState: any
+      try {
+        currentState = JSON.parse(currentStateRaw)
+      } catch {
+        return false
+      }
+      if (String(currentState?.connectionId || "") !== connectionId) return false
+      if (kind === "close") return true
+      return currentState?.enabled === true && currentState?.liveMode === true
+    }
+
+    const result = await executeDirectTradeCanonicalOrder({
+      kind,
+      stage,
       connectionId,
+      positionId,
+      controlId: clientOrderId,
       symbol,
-      side,
       positionDirection,
       quantity,
       leverage,
       price: Number.isFinite(price) && price > 0 ? price : undefined,
-      orderType: "market",
-      reduceOnly: kind === "close",
-      // If live entry is enabled in a future rollout, Direct-Trade must still
-      // carry exact direction-aware controls into the shared service. The
-      // current readiness gate remains fail-closed until ownership is unified.
-      requireProtection: kind === "open",
-      stopLossPrice: Number.isFinite(Number(body?.stopLossPrice)) && Number(body?.stopLossPrice) > 0
-        ? Number(body.stopLossPrice)
-        : undefined,
-      takeProfitPrice: Number.isFinite(Number(body?.takeProfitPrice)) && Number(body?.takeProfitPrice) > 0
-        ? Number(body.takeProfitPrice)
-        : undefined,
-      protectionStopLossPercent: Number.isFinite(Number(body?.protectionStopLossPercent ?? body?.stopLossPercent))
-        && Number(body?.protectionStopLossPercent ?? body?.stopLossPercent) > 0
-        ? Number(body?.protectionStopLossPercent ?? body?.stopLossPercent)
-        : undefined,
-      protectionTakeProfitPercent: Number.isFinite(Number(body?.protectionTakeProfitPercent ?? body?.takeProfitPercent))
-        && Number(body?.protectionTakeProfitPercent ?? body?.takeProfitPercent) > 0
-        ? Number(body?.protectionTakeProfitPercent ?? body?.takeProfitPercent)
-        : undefined,
-      positionTicket: Number.isInteger(Number(body?.positionTicket)) && Number(body?.positionTicket) > 0
-        ? Number(body.positionTicket)
-        : undefined,
-      clientOrderId,
-      positionId,
-      // Direct Trade owns the position-stage rows itself. The shared live
-      // service still owns connector safety, precision, audit and counters.
-      persistPosition: false,
-      updateCounters: kind === "open",
-      countPositionCreated: kind === "open" && stage === "entry",
-      countAccumulated: kind === "open" && stage === "accumulation",
-      source: `direct-trade-${kind}`,
-      safetyPayload: {
-        confirmLiveOrderPlacement: true,
-        directTrade: true,
-        controlOrder: kind,
-      },
+      reconcileOnly,
+      statePosition,
+      shouldContinue: stillAuthorised,
     })
-    if (!result.success) {
-      return NextResponse.json({
-        success: false,
-        error: result.error,
-        mode: result.mode,
-        controlState: result.controlState,
-        pendingReconciliation: result.pendingReconciliation === true,
-      })
-    }
-    return NextResponse.json({
-      success: true,
-      mode: result.mode,
-      orderId: result.orderId,
-      quantity: result.quantity,
-      fill: result.fill,
-      details: result.details,
-      // The worker must receive the exact venue PnL/fee settlement already
-      // resolved by live-order-service. Omitting it made real fills look
-      // complete while every accounting row remained provisional.
-      settlement: result.settlement,
-      controlId: clientOrderId,
-      controlState: result.controlState,
-      pendingReconciliation: result.pendingReconciliation === true,
-      idempotentReplay: result.idempotentReplay === true,
-      alreadyClosed: result.alreadyClosed === true,
-    })
+    return NextResponse.json({ ...result, controlId: clientOrderId })
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : "Direct-Trade control order failed", mode: error?.mode },

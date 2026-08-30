@@ -87,13 +87,13 @@ const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 22
 const DIRECT_TRADE_PROCESSOR_HEARTBEAT_INTERVAL_MS = 1_500
 const DIRECT_TRADE_CONTROL_REQUEST_TIMEOUT_MS = 10_000
 const DIRECT_TRADE_MAX_LIVE_CLOSE_ACTIONS_PER_CYCLE = 1
-// Defense in depth with the API gateway: Direct live entries stay disabled
-// until this processor owns native row TP/SL, full-slot security protection,
-// and cross-engine physical-slot attribution. Existing live rows still run
-// recovery/close handling; paper and historical evaluation are unaffected.
-const DIRECT_TRADE_LIVE_EXECUTION_READY = false
+// The API gateway now delegates live mutations to the canonical Live stage,
+// which owns native row TP/SL, the full-slot security stop, durable delivery,
+// and cross-engine physical-slot attribution. The gateway still enforces the
+// exact X02 Prod-VST runtime allow-list before this worker can enter live mode.
+const DIRECT_TRADE_LIVE_EXECUTION_READY = true
 const DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON =
-  "unified exact TP/SL/security protection is not production-ready"
+  "canonical Direct-Trade live execution is unavailable"
 const DIRECT_TRADE_RECALC_STALE_GRACE_MS = 30 * 60 * 1_000
 const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"]
 
@@ -1148,6 +1148,7 @@ async function reconcileOneIncompleteLiveAccounting() {
       leverage: 10,
       reconcileOnly: true,
     })
+    position.canonicalLivePositionId = orderResult?.canonicalLivePositionId || position.canonicalLivePositionId || null
     if (!orderResult?.success || !orderResult?.settlement) {
       position.entryAccountingLastError = String(orderResult?.error || "venue settlement is not available yet").slice(0, 300)
       stateDirty = true
@@ -1197,6 +1198,7 @@ async function reconcileOneIncompleteLiveCloseAccounting() {
       leverage: 10,
       reconcileOnly: true,
     })
+    position.canonicalLivePositionId = orderResult?.canonicalLivePositionId || position.canonicalLivePositionId || null
     if (!orderResult?.success || !orderResult?.settlement) {
       position.closeAccountingLastError = String(orderResult?.error || "venue settlement is not available yet").slice(0, 300)
       stateDirty = true
@@ -1326,6 +1328,7 @@ async function submitOrReconcileOpening(position, reconcileOnly = false) {
       leverage: 10,
       reconcileOnly,
     })
+    position.canonicalLivePositionId = orderResult?.canonicalLivePositionId || position.canonicalLivePositionId || null
     position.openControlState = orderResult?.controlState || position.openControlState || "acknowledged"
     position.openOrderId = orderResult?.orderId && orderResult.orderId !== "N/A"
       ? orderResult.orderId
@@ -1668,6 +1671,7 @@ async function addDirectTradeBlockLeg(position, config) {
         leverage: 10,
         reconcileOnly: hasPendingControl,
       })
+      position.canonicalLivePositionId = orderResult?.canonicalLivePositionId || position.canonicalLivePositionId || null
       if (!orderResult?.success) {
         if (orderResult?.controlState === "failed") {
           position.blockControlGeneration = controlGeneration + 1
@@ -1904,6 +1908,7 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
         leverage: 10,
         reconcileOnly: hasPendingControl,
       })
+      position.canonicalLivePositionId = orderResult?.canonicalLivePositionId || position.canonicalLivePositionId || null
       if (!orderResult?.success) {
         if (orderResult?.controlState === "failed") {
           position.dcaControlGeneration = controlGeneration + 1
@@ -2432,6 +2437,7 @@ async function closePosition(pos, exitPrice, reason) {
         leverage: 10,
         reconcileOnly: wasSubmitted,
       }, DIRECT_TRADE_CONTROL_REQUEST_TIMEOUT_MS)
+      pos.canonicalLivePositionId = closeResult?.canonicalLivePositionId || pos.canonicalLivePositionId || null
       pos.closeControlState = closeResult?.controlState || pos.closeControlState
       pos.closeOrderId = closeResult?.orderId && closeResult.orderId !== "N/A"
         ? closeResult.orderId

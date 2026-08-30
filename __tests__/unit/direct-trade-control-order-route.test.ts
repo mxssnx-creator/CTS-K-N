@@ -1,19 +1,13 @@
-const placeLiveOrderMock = jest.fn()
+const executeCanonicalOrderMock = jest.fn()
 
 jest.mock("@/lib/live-order-service", () => ({
-  placeLiveOrder: (...args: unknown[]) => placeLiveOrderMock(...args),
   directOrderControlKey: (connectionId: string, clientOrderId: string) => (
     `live:direct_order_control:${encodeURIComponent(connectionId)}:${encodeURIComponent(clientOrderId)}`
   ),
 }))
 
-// This suite exercises the leased gateway payload and reconciliation logic.
-// Production readiness is covered independently; enable the guarded branch
-// here so those existing transport assertions remain reachable.
-jest.mock("@/lib/direct-trade-live-readiness", () => ({
-  DIRECT_TRADE_LIVE_EXECUTION_READY: true,
-  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE: "test_not_blocked",
-  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON: "test not blocked",
+jest.mock("@/lib/direct-trade-canonical-order", () => ({
+  executeDirectTradeCanonicalOrder: (...args: unknown[]) => executeCanonicalOrderMock(...args),
 }))
 
 function resetInlineRedisGlobals() {
@@ -58,13 +52,16 @@ describe("Direct-Trade leased control-order route", () => {
     jest.clearAllMocks()
     resetInlineRedisGlobals()
     process.env.DIRECT_TRADE_PROCESSOR_TOKEN = token
-    placeLiveOrderMock.mockResolvedValue({
+    executeCanonicalOrderMock.mockResolvedValue({
       success: true,
-      mode: "simulated",
-      orderId: "paper-order-1",
+      mode: "live",
+      orderId: "canonical-order-1",
       quantity: 0.25,
       fill: { filled: true, filledQty: 0.25, filledPrice: 100, status: "filled" },
       details: { status: "filled" },
+      controlState: "completed",
+      pendingReconciliation: false,
+      canonicalLivePositionId: "live:bingx-x02:BTCUSDT:long:direct:test",
     })
   })
 
@@ -77,7 +74,7 @@ describe("Direct-Trade leased control-order route", () => {
     const { POST } = await import("@/app/api/trade-engine/direct-trade/order/route")
     const denied = await POST(request({ kind: "open" }, "wrong-token") as any)
     expect(denied.status).toBe(401)
-    expect(placeLiveOrderMock).not.toHaveBeenCalled()
+    expect(executeCanonicalOrderMock).not.toHaveBeenCalled()
   })
 
   test("opens only for the selected live connection and closes with reduce-only position side", async () => {
@@ -106,15 +103,14 @@ describe("Direct-Trade leased control-order route", () => {
       price: 100,
     }) as any)
     expect(opened.status).toBe(200)
-    expect(placeLiveOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(executeCanonicalOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: "open",
+      stage: "entry",
       connectionId: "bingx-x01",
-      side: "long",
       positionDirection: "long",
-      reduceOnly: false,
-      persistPosition: false,
-      countPositionCreated: true,
-      countAccumulated: false,
-      safetyPayload: expect.objectContaining({ confirmLiveOrderPlacement: true }),
+      controlId: openControlId,
+      statePosition: expect.objectContaining({ id: "dt_BTCUSDT_long_1m_1" }),
+      shouldContinue: expect.any(Function),
     }))
 
     const closed = await POST(request({
@@ -128,11 +124,10 @@ describe("Direct-Trade leased control-order route", () => {
       quantity: 0.25,
     }) as any)
     expect(closed.status).toBe(200)
-    expect(placeLiveOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
-      side: "short",
+    expect(executeCanonicalOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: "close",
       positionDirection: "long",
-      reduceOnly: true,
-      clientOrderId: closeControlId,
+      controlId: closeControlId,
     }))
   })
 
@@ -164,7 +159,7 @@ describe("Direct-Trade leased control-order route", () => {
       direction: "long",
       closeControlId,
     }]))
-    placeLiveOrderMock.mockResolvedValueOnce({
+    executeCanonicalOrderMock.mockResolvedValueOnce({
       success: true,
       mode: "live",
       orderId: settlement.orderId,
@@ -224,8 +219,8 @@ describe("Direct-Trade leased control-order route", () => {
     }) as any)
 
     expect(response.status).toBe(200)
-    expect(placeLiveOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
-      clientOrderId: legacyControlId,
+    expect(executeCanonicalOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      controlId: legacyControlId,
     }))
   })
 
@@ -244,7 +239,7 @@ describe("Direct-Trade leased control-order route", () => {
       direction: "long",
       blockPendingControlId: blockControlId,
     }]))
-    placeLiveOrderMock.mockResolvedValueOnce({
+    executeCanonicalOrderMock.mockResolvedValueOnce({
       success: true,
       mode: "live",
       orderId: "pending-block-1",
@@ -276,9 +271,9 @@ describe("Direct-Trade leased control-order route", () => {
       pendingReconciliation: true,
       idempotentReplay: true,
     })
-    expect(placeLiveOrderMock).toHaveBeenCalledWith(expect.objectContaining({
-      countPositionCreated: false,
-      countAccumulated: true,
+    expect(executeCanonicalOrderMock).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "open",
+      stage: "block",
     }))
   })
 
@@ -307,7 +302,7 @@ describe("Direct-Trade leased control-order route", () => {
       quantity: 0.25,
     }) as any)
     expect(missingPrice.status).toBe(400)
-    expect(placeLiveOrderMock).not.toHaveBeenCalled()
+    expect(executeCanonicalOrderMock).not.toHaveBeenCalled()
   })
 
   test("after Stop allows only reconciliation of an already durable open control", async () => {
@@ -348,7 +343,7 @@ describe("Direct-Trade leased control-order route", () => {
       reconcileOnly: true,
     }) as any)
     expect(reconciled.status).toBe(200)
-    expect(placeLiveOrderMock).toHaveBeenCalledTimes(1)
+    expect(executeCanonicalOrderMock).toHaveBeenCalledTimes(1)
 
     const fresh = await POST(request({
       kind: "open",
@@ -362,7 +357,7 @@ describe("Direct-Trade leased control-order route", () => {
       reconcileOnly: true,
     }) as any)
     expect(fresh.status).toBe(409)
-    expect(placeLiveOrderMock).toHaveBeenCalledTimes(1)
+    expect(executeCanonicalOrderMock).toHaveBeenCalledTimes(1)
   })
 
   test("never lets a legacy global lease override a different scoped owner", async () => {
@@ -388,6 +383,6 @@ describe("Direct-Trade leased control-order route", () => {
     }) as any)
 
     expect(response.status).toBe(409)
-    expect(placeLiveOrderMock).not.toHaveBeenCalled()
+    expect(executeCanonicalOrderMock).not.toHaveBeenCalled()
   })
 })

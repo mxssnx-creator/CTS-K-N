@@ -132,6 +132,35 @@ describe("Main Trade Engine live execution readiness", () => {
     })
   })
 
+  test("permits a caller-scoped FORCE_SIMULATED override only for BingX virtual funds", () => {
+    process.env.REDIS_URL = "redis://shared-test"
+    process.env.FORCE_SIMULATED = "1"
+    process.env.FORCE_LIVE = "0"
+
+    expect(evaluateRealTradeReadiness({
+      ...credentialed,
+      exchange: "bingx",
+      is_testnet: "1",
+      is_live_trade: "1",
+      live_trade_requested: "1",
+    }, "main", { allowForcedSimulationForAuthorizedVst: true })).toMatchObject({
+      canPlaceRealOrders: true,
+      executionMode: "live",
+      blockCode: null,
+    })
+    expect(evaluateRealTradeReadiness({
+      ...credentialed,
+      exchange: "bingx",
+      is_testnet: "0",
+      is_live_trade: "1",
+      live_trade_requested: "1",
+    }, "main", { allowForcedSimulationForAuthorizedVst: true })).toMatchObject({
+      canPlaceRealOrders: false,
+      executionMode: "simulation",
+      blockCode: "forced_simulation",
+    })
+  })
+
   test("an explicit canonical OFF switch overrides a stale legacy ON alias", () => {
     process.env.REDIS_URL = "redis://shared-test"
     const result = evaluateRealTradeReadiness({

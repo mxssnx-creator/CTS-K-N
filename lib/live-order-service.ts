@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto"
 import { createExchangeConnector, exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
-import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
+import {
+  getLiveOrderSafetyFailure,
+  hasLiveOrderConfirmation,
+} from "@/lib/live-order-safety"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import {
   evaluateRealTradeReadiness,
@@ -27,7 +30,10 @@ import {
 } from "@/lib/order-quantity"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import { tradingPairKey } from "@/lib/trading-pair-keys"
-import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
+import type {
+  ExchangeCredentials,
+  ExchangeOrderSettlement,
+} from "@/lib/exchange-connectors/base-connector"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import { DEFAULT_FOREX_LOT_SIZE, forexNotionalUsd } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
@@ -36,6 +42,10 @@ import {
   RUNTIME_MAINTENANCE_STOP_CODE,
   RUNTIME_MAINTENANCE_STOP_MESSAGE,
 } from "@/lib/runtime-maintenance"
+import {
+  isDirectTradeVstConnection,
+  isDirectTradeVstEntryAuthorized,
+} from "@/lib/direct-trade-live-readiness"
 
 export const LIVE_ORDER_REDIS_KEYS = {
   orderIntent: "settings:orders (via getSettings/setSettings('orders'))",
@@ -136,15 +146,16 @@ function isAuthorizedMaintenanceVstSoakExposure(input: PlaceLiveOrderInput): boo
 
 const DIRECT_ORDER_CONTROL_TTL_SECONDS = 60 * 60 * 24 * 30
 
-type DirectOrderControlState = "submitting" | "acknowledged" | "completed" | "failed"
+export type DirectOrderControlState = "submitting" | "acknowledged" | "completed" | "failed"
 
-interface DirectOrderControlRecord {
+export interface DirectOrderControlRecord {
   version: 1
   fingerprint: string
   state: DirectOrderControlState
   connectionId: string
   clientOrderId: string
   positionId?: string
+  canonicalPositionId?: string
   exchangeClientOrderId: string
   symbol: string
   direction: LiveOrderDirection
@@ -476,6 +487,87 @@ async function claimDirectOrderControl(record: DirectOrderControlRecord): Promis
     })
   }
   return { owned: false, record: existing }
+}
+
+export interface DirectOrderControlIntent {
+  connectionId: string
+  clientOrderId: string
+  positionId?: string
+  canonicalPositionId?: string
+  symbol: string
+  direction: LiveOrderDirection
+  positionDirection: LiveOrderDirection
+  reduceOnly: boolean
+  quantity: number
+  orderType?: "market" | "limit"
+}
+
+/**
+ * Claim one durable Direct-Trade generation before the canonical Live stage is
+ * allowed to write any venue intent. The returned record is also the only
+ * object accepted by `updateDirectOrderControl`, keeping terminal replay
+ * monotonic across route retries and process restarts.
+ */
+export async function beginDirectOrderControl(intent: DirectOrderControlIntent): Promise<{
+  owned: boolean
+  record: DirectOrderControlRecord
+}> {
+  await initRedis()
+  const now = Date.now()
+  const orderType = intent.orderType === "limit" ? "limit" : "market"
+  const quantity = Number(intent.quantity)
+  if (!(quantity > 0) || !Number.isFinite(quantity)) {
+    throw Object.assign(new Error("Direct-Trade control quantity must be finite and positive"), {
+      statusCode: 400,
+      mode: "direct_order_control_invalid",
+    })
+  }
+  const record: DirectOrderControlRecord = {
+    version: 1,
+    fingerprint: directOrderFingerprint({
+      positionId: intent.positionId,
+      symbol: intent.symbol,
+      direction: intent.direction,
+      positionDirection: intent.positionDirection,
+      reduceOnly: intent.reduceOnly,
+      quantity,
+      orderType,
+    }),
+    state: "submitting",
+    connectionId: intent.connectionId,
+    clientOrderId: intent.clientOrderId,
+    positionId: intent.positionId,
+    canonicalPositionId: intent.canonicalPositionId,
+    exchangeClientOrderId: exchangeClientOrderIdForControl(intent.clientOrderId),
+    symbol: intent.symbol,
+    direction: intent.direction,
+    positionDirection: intent.positionDirection,
+    reduceOnly: intent.reduceOnly,
+    quantity,
+    orderType,
+    createdAt: now,
+    updatedAt: now,
+  }
+  return claimDirectOrderControl(record)
+}
+
+export async function updateDirectOrderControl(
+  record: DirectOrderControlRecord,
+  update: {
+    state: DirectOrderControlState
+    response?: Record<string, any>
+    orderId?: string
+    canonicalPositionId?: string
+    lastError?: string
+  },
+): Promise<DirectOrderControlRecord> {
+  return writeDirectOrderControlRecord({
+    ...record,
+    ...update,
+    orderId: update.orderId || record.orderId,
+    canonicalPositionId: update.canonicalPositionId || record.canonicalPositionId,
+    updatedAt: Date.now(),
+  })
 }
 
 async function resolveSubmittedQuantity(
@@ -1665,6 +1757,16 @@ function assertDirectTradeExecutionContract(
     })
   }
   if (!willUseRealExchange || !isDirectTradePayload(payload)) return
+  if (
+    process.env.NODE_ENV !== "test"
+    && !isDirectTradeVstConnection(connection)
+    && !isAuthorizedMaintenanceVstSoakExposure(payload as PlaceLiveOrderInput)
+  ) {
+    throw Object.assign(new Error("Direct-Trade exchange mutations are restricted to the BingX X02 Prod-VST virtual-funds connection"), {
+      statusCode: 409,
+      mode: "direct_trade_connection_read_only",
+    })
+  }
   const apiType = String(connection?.api_type || connection?.apiType || "").trim().toLowerCase()
   if (apiType.includes("spot")) {
     throw Object.assign(new Error("Direct-Trade live execution requires a derivatives connection with reduce-only close support"), {
@@ -1706,7 +1808,12 @@ function resolveEntryReadiness(connection: any, payload: Record<string, any>) {
 
 export async function createLiveOrderConnector(connection: any, payload: Record<string, any> = {}): Promise<{ connector: any; mode: LiveOrderMode; willUseRealExchange: boolean }> {
   const entryReadiness = resolveEntryReadiness(connection, payload)
-  const forceSim = isForcedSimulation() || entryReadiness?.executionMode === "simulation"
+  const directScopedOverride = isDirectTradePayload(payload) && (
+    payload.reduceOnly === true
+      ? isDirectTradeVstConnection(connection)
+      : isDirectTradeVstEntryAuthorized(connection)
+  )
+  const forceSim = (isForcedSimulation() && !directScopedOverride) || entryReadiness?.executionMode === "simulation"
   const forexConnection = isForexConnection(connection)
   // Keep the crypto credential gate explicit for compatibility with the
   // testing/operations guardrails; Forex uses the private bridge predicate
@@ -1722,7 +1829,15 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
     })
   }
   if (resolvedWillUseRealExchange) {
-    const safetyFailure = getLiveOrderSafetyFailure(payload)
+    assertDirectTradeExecutionContract(connection, payload, resolvedWillUseRealExchange)
+    // The global placement switch remains OFF for Main/X01/Bybit while the
+    // independently leased Direct owner is allowed to use exact X02 VST.
+    // Keep per-request confirmation mandatory even inside that narrow scope.
+    const safetyFailure = directScopedOverride
+      ? hasLiveOrderConfirmation(payload)
+        ? null
+        : "Direct-Trade X02 placement requires explicit request confirmation"
+      : getLiveOrderSafetyFailure(payload)
     if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
   }
   if (
@@ -1766,11 +1881,11 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
     }
   }
   // Reuse the process-level connector so BingX library initialization,
-  // credentials, and HTTP transport are not rebuilt for every live order.
+  // credentials, and HTTP transport are not rebuilt for every live order. The
+  // authorised VST scope has a separate cache entry so a global-paper
+  // SimulatedConnector can never be mistaken for Direct's venue connector.
   // Callers without a persisted connection id still get an isolated connector.
-  const connector = connection.id && typeof exchangeConnectorFactory?.getOrCreateConnector === "function"
-    ? await exchangeConnectorFactory.getOrCreateConnector(String(connection.id))
-    : await createExchangeConnector(connection.exchange, {
+  const standaloneCredentials: ExchangeCredentials = {
         apiKey: connection.api_key,
         apiSecret: connection.api_secret,
         apiPassphrase: connection.api_passphrase || "",
@@ -1801,12 +1916,44 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
         isTestnet: isTruthyFlag(connection.is_testnet),
         apiType: connection.api_type,
         contractType: connection.contract_type,
-      })
+      }
+  const connector = connection.id && typeof exchangeConnectorFactory?.getOrCreateConnector === "function"
+    ? directScopedOverride
+      ? await exchangeConnectorFactory.getOrCreateConnector(
+          String(connection.id),
+          { allowForcedSimulationForAuthorizedVst: true },
+        )
+      : await exchangeConnectorFactory.getOrCreateConnector(String(connection.id))
+    : directScopedOverride
+      ? await createExchangeConnector(
+          connection.exchange,
+          standaloneCredentials,
+          { allowForcedSimulationForAuthorizedVst: true },
+        )
+      : await createExchangeConnector(connection.exchange, standaloneCredentials)
   if (!connector) {
     throw Object.assign(new Error(`Could not initialize exchange connector for ${connection.id || connection.name || connection.exchange}`), {
       statusCode: 503,
       mode: "exchange_connector_unavailable",
     })
+  }
+  if (directScopedOverride) {
+    let environment: Record<string, any> | null = null
+    try {
+      environment = (connector as any).getEnvironmentInfo?.() || null
+    } catch {
+      environment = null
+    }
+    if (
+      environment?.environment !== "prod-vst"
+      || environment?.isDemo !== true
+      || environment?.usesVirtualFunds !== true
+    ) {
+      throw Object.assign(new Error("Direct-Trade X02 connector did not prove the Prod-VST virtual-funds environment"), {
+        statusCode: 409,
+        mode: "direct_trade_vst_environment_unverified",
+      })
+    }
   }
   return { connector, mode: "live", willUseRealExchange: resolvedWillUseRealExchange }
 }

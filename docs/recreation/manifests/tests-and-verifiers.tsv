@@ -78,6 +78,7 @@ unit	__tests__/unit/database-validator-migration-contract.test.ts
 unit	__tests__/unit/dca-backtest.test.ts
 unit	__tests__/unit/default-indication-direction.test.ts
 unit	__tests__/unit/direct-trade-calculate-route.test.ts
+unit	__tests__/unit/direct-trade-canonical-order.test.ts
 unit	__tests__/unit/direct-trade-config-store.test.ts
 unit	__tests__/unit/direct-trade-continuity-cron.test.ts
 unit	__tests__/unit/direct-trade-control-order-route.test.ts
@@ -85,6 +86,8 @@ unit	__tests__/unit/direct-trade-coordination.test.ts
 unit	__tests__/unit/direct-trade-history-policy.test.ts
 unit	__tests__/unit/direct-trade-indication-stats.test.ts
 unit	__tests__/unit/direct-trade-ledger-recovery.test.ts
+unit	__tests__/unit/direct-trade-lifecycle-connector.test.ts
+unit	__tests__/unit/direct-trade-live-connector.test.ts
 unit	__tests__/unit/direct-trade-live-readiness.test.ts
 unit	__tests__/unit/direct-trade-market-history.test.ts
 unit	__tests__/unit/direct-trade-overview-stats.test.ts

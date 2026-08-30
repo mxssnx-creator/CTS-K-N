@@ -200,8 +200,16 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
         const { closeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
         let connector: any = undefined
         if (String(position.status || "") !== "simulated") {
-          const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
-          connector = await exchangeConnectorFactory.getOrCreateConnector(connectionId)
+          const {
+            isOwnedDirectTradeLifecyclePosition,
+            resolveDirectTradeLifecycleConnector,
+          } = await import("@/lib/direct-trade-lifecycle-connector")
+          if (isOwnedDirectTradeLifecyclePosition(position, connectionId)) {
+            connector = await resolveDirectTradeLifecycleConnector(connectionId, [position], null)
+          } else {
+            const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
+            connector = await exchangeConnectorFactory.getOrCreateConnector(connectionId)
+          }
           if (!connector) {
             return NextResponse.json(
               { success: false, error: "Exchange connector unavailable; position remains open" },
