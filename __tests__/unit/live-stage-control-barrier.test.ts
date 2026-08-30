@@ -7,7 +7,7 @@ import { resolveCombinedPosCountDelta } from "@/lib/pos-count-live-target"
 
 jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
-  getRedisClient: jest.fn(() => ({})),
+  getRedisClient: jest.fn(() => ({ hgetall: jest.fn(async () => ({})) })),
   getRedisBackend: jest.fn(() => "redis-network"),
   getConnection: jest.fn(async () => null),
   getAppSettings: jest.fn(async () => ({})),
@@ -742,6 +742,61 @@ describe("executing Live-stage control barriers", () => {
       blockTargetQuantity: 8,
       addQty: 4,
     })
+  })
+
+  test("uses the exact leased Direct DCA step without re-deriving its market trigger", async () => {
+    const profile = {
+      maxSteps: 4,
+      stepVolumeMultipliers: [1, 1, 1, 1],
+      stepDistancesPct: [0.3, 0.6, 1, 1.6],
+      takeProfitMode: "average",
+      breakevenProfitPct: 0.2,
+      cooldownSeconds: 30,
+      maxPositionVolumeRatio: 5,
+    }
+    const existing = livePosition({
+      combinedPosCounts: false,
+      accumulatedSetKeys: ["direct-trade:position#entry", "direct-trade:position#dca#step:1"],
+      initialExecutedQuantity: 1,
+      executedQuantity: 2,
+      quantity: 2,
+      dcaProfile: profile,
+      dcaLegs: [{ step: 1, quantity: 1 }],
+    })
+    const plan = await __liveStageTest.resolveAccumulationPlan(
+      "connection-control-test",
+      existing,
+      {
+        indicationType: "direct-trade",
+        setVariant: "dca",
+        setKey: "direct-trade:position#dca",
+        requestedDcaStep: 2,
+        dcaProfile: profile,
+      },
+      // No adverse movement: the ordinary strategy resolver would not admit
+      // Step 2, but the leased Direct worker already made that decision.
+      100,
+    )
+
+    expect(plan).toMatchObject({
+      variant: "dca",
+      dcaStep: 2,
+      dcaVolumeMultiplier: 1,
+      dcaTriggerDistancePct: 0.6,
+      addQty: 1,
+    })
+    await expect(__liveStageTest.resolveAccumulationPlan(
+      "connection-control-test",
+      existing,
+      {
+        indicationType: "direct-trade",
+        setVariant: "dca",
+        setKey: "direct-trade:position#dca",
+        requestedDcaStep: 1,
+        dcaProfile: profile,
+      },
+      100,
+    )).resolves.toBeNull()
   })
 
   test("grows the immutable Block base with cumulative fills from only the original entry", () => {

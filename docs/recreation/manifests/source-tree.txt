@@ -102,6 +102,7 @@ __tests__/unit/database-validator-migration-contract.test.ts
 __tests__/unit/dca-backtest.test.ts
 __tests__/unit/default-indication-direction.test.ts
 __tests__/unit/direct-trade-calculate-route.test.ts
+__tests__/unit/direct-trade-canonical-order.test.ts
 __tests__/unit/direct-trade-config-store.test.ts
 __tests__/unit/direct-trade-continuity-cron.test.ts
 __tests__/unit/direct-trade-control-order-route.test.ts
@@ -109,6 +110,8 @@ __tests__/unit/direct-trade-coordination.test.ts
 __tests__/unit/direct-trade-history-policy.test.ts
 __tests__/unit/direct-trade-indication-stats.test.ts
 __tests__/unit/direct-trade-ledger-recovery.test.ts
+__tests__/unit/direct-trade-lifecycle-connector.test.ts
+__tests__/unit/direct-trade-live-connector.test.ts
 __tests__/unit/direct-trade-live-readiness.test.ts
 __tests__/unit/direct-trade-market-history.test.ts
 __tests__/unit/direct-trade-overview-stats.test.ts
@@ -1111,12 +1114,14 @@ lib/debug-mode.ts
 lib/default-exchanges-seeder.ts
 lib/deployment-runtime.ts
 lib/detailed-tracking.ts
+lib/direct-trade-canonical-order.ts
 lib/direct-trade-config-store.ts
 lib/direct-trade-coordination.ts
 lib/direct-trade-history-policy.cjs
 lib/direct-trade-indication-stats.ts
 lib/direct-trade-keyspace.ts
 lib/direct-trade-ledger-recovery.cjs
+lib/direct-trade-lifecycle-connector.ts
 lib/direct-trade-limits.ts
 lib/direct-trade-live-readiness.ts
 lib/direct-trade-market-history.ts

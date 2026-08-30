@@ -100,6 +100,34 @@ describe("ExchangeConnectorFactory.getOrCreateConnector", () => {
     expect(createExchangeConnectorMock.mock.calls[1]?.[1]).toMatchObject({ apiSecret: "new-secret" })
   })
 
+  it("keeps global-paper and authorised VST connectors in separate cache scopes", async () => {
+    const connection = buildConnection(true, {
+      id: "bingx-x02",
+      exchange: "bingx",
+      api_type: "perpetual_futures",
+    })
+    getConnectionMock.mockResolvedValue(connection)
+    const factory = ExchangeConnectorFactory.getInstance()
+
+    const paper = await factory.getOrCreateConnector(connection.id)
+    const vst = await factory.getOrCreateConnector(connection.id, {
+      allowForcedSimulationForAuthorizedVst: true,
+    })
+    const vstReplay = await factory.getOrCreateConnector(connection.id, {
+      allowForcedSimulationForAuthorizedVst: true,
+    })
+
+    expect(paper).not.toBe(vst)
+    expect(vstReplay).toBe(vst)
+    expect(createExchangeConnectorMock).toHaveBeenCalledTimes(2)
+    expect(createExchangeConnectorMock.mock.calls[1]?.[2]).toEqual({
+      allowForcedSimulationForAuthorizedVst: true,
+    })
+    expect(factory.getAllConnectorIds()).toEqual(["bingx-x02"])
+    factory.removeConnector("bingx-x02")
+    expect(factory.hasConnector("bingx-x02")).toBe(false)
+  })
+
   it("backs off repeated production connector failures until credentials change", async () => {
     const previousNodeEnv = process.env.NODE_ENV
     const previousAllowProdSimulated = process.env.ALLOW_PROD_SIMULATED

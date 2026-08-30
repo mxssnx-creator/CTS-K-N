@@ -282,6 +282,7 @@ export async function GET(request: Request) {
         ? state.enabledIndicationTypes
         : [],
     })
+    const liveExecutionReadiness = directTradeLiveExecutionReadiness(connection as any, connectionId)
     const responseStats = {
       ...(stats || {}),
       ...rollingStats,
@@ -306,10 +307,10 @@ export async function GET(request: Request) {
       positionCostPct: Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1,
       state: state ? {
         ...state,
-        liveExecutionReady: directTradeLiveExecutionReadiness().ready,
-        liveExecutionBlockReason: directTradeLiveExecutionReadiness().blockReason,
+        liveExecutionReady: liveExecutionReadiness.ready,
+        liveExecutionBlockReason: liveExecutionReadiness.blockReason,
       } : state,
-      liveExecutionReadiness: directTradeLiveExecutionReadiness(),
+      liveExecutionReadiness,
       stats: responseStats,
       activeConfigs: Math.max(0, Number(calculation?.evaluatedSets) || executionConfigs.length),
       validConfigs: Math.max(0, Number(calculation?.validSets) || executionConfigs.length),

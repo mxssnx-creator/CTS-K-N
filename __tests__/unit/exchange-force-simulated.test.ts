@@ -1,5 +1,6 @@
 import { createExchangeConnector } from "@/lib/exchange-connectors"
 import { SimulatedConnector } from "@/lib/exchange-connectors/simulated-connector"
+import { BingXConnector } from "@/lib/exchange-connectors/bingx-connector"
 
 describe("exchange simulation safety override", () => {
   const originalNodeEnv = process.env.NODE_ENV
@@ -38,6 +39,31 @@ describe("exchange simulation safety override", () => {
 
     expect(connector).toBeInstanceOf(SimulatedConnector)
     expect((connector as any).logs).toEqual([])
+  })
+
+  test("a caller-scoped override creates only a BingX Prod-VST connector", async () => {
+    process.env.FORCE_SIMULATED = "1"
+
+    const vst = await createExchangeConnector("bingx", {
+      apiKey: "real-looking-vst-key",
+      apiSecret: "real-looking-vst-secret",
+      apiType: "perpetual_futures",
+      isTestnet: true,
+    }, { allowForcedSimulationForAuthorizedVst: true })
+    const mainnet = await createExchangeConnector("bingx", {
+      apiKey: "real-looking-mainnet-key",
+      apiSecret: "real-looking-mainnet-secret",
+      apiType: "perpetual_futures",
+      isTestnet: false,
+    }, { allowForcedSimulationForAuthorizedVst: true })
+
+    expect(vst).toBeInstanceOf(BingXConnector)
+    expect((vst as BingXConnector).getEnvironmentInfo()).toMatchObject({
+      environment: "prod-vst",
+      isDemo: true,
+      usesVirtualFunds: true,
+    })
+    expect(mainnet).toBeInstanceOf(SimulatedConnector)
   })
 
   test("fails closed on missing production credentials when simulation is not enabled", async () => {

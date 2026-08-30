@@ -1,5 +1,8 @@
 import type { BaseExchangeConnector, ExchangeCredentials } from "./base-connector"
-import { createExchangeConnector } from "./index"
+import {
+  createExchangeConnector,
+  type ExchangeConnectorCreationOptions,
+} from "./index"
 import { getConnection } from "@/lib/redis-db"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import type { Connection } from "@/lib/db-types"
@@ -43,6 +46,15 @@ export class ExchangeConnectorFactory {
   
   static getConnector(connectionId: string): BaseExchangeConnector | null {
     return ExchangeConnectorFactory.getInstance().connectors.get(connectionId) || null
+  }
+
+  private connectorCacheKey(
+    connectionId: string,
+    options: ExchangeConnectorCreationOptions = {},
+  ): string {
+    return options.allowForcedSimulationForAuthorizedVst === true
+      ? `${connectionId}::authorized-vst-live`
+      : connectionId
   }
   
   private resolveExchangeName(connection: Connection): string {
@@ -162,27 +174,37 @@ export class ExchangeConnectorFactory {
     })
   }
 
-  async createConnector(connection: Connection): Promise<BaseExchangeConnector | null> {
+  async createConnector(
+    connection: Connection,
+    options: ExchangeConnectorCreationOptions = {},
+  ): Promise<BaseExchangeConnector | null> {
+    const cacheKey = this.connectorCacheKey(connection.id, options)
     try {
       const credentials = this.buildCredentials(connection)
       const fingerprint = this.buildFingerprint(connection)
       
       try {
-        const connector = await createExchangeConnector(this.resolveExchangeName(connection), credentials)
+        const connector = options.allowForcedSimulationForAuthorizedVst === true
+          ? await createExchangeConnector(
+              this.resolveExchangeName(connection),
+              credentials,
+              options,
+            )
+          : await createExchangeConnector(this.resolveExchangeName(connection), credentials)
         await (connector as any).warmUpFastPath?.().catch((error: unknown) => {
           console.warn(
             `[ExchangeConnectorFactory] Fast-path SDK warmup failed for ${connection.id}:`,
             error instanceof Error ? error.message : String(error),
           )
         })
-        this.connectors.set(connection.id, connector)
-        this.connectorFingerprints.set(connection.id, fingerprint)
-        this.unavailableConnectorFingerprints.delete(connection.id)
+        this.connectors.set(cacheKey, connector)
+        this.connectorFingerprints.set(cacheKey, fingerprint)
+        this.unavailableConnectorFingerprints.delete(cacheKey)
         return connector
       } catch (err) {
-        const priorFailure = this.unavailableConnectorFingerprints.get(connection.id)
+        const priorFailure = this.unavailableConnectorFingerprints.get(cacheKey)
         const retryAt = Date.now() + FAILED_CONNECTOR_BACKOFF_MS
-        this.unavailableConnectorFingerprints.set(connection.id, { fingerprint, retryAt })
+        this.unavailableConnectorFingerprints.set(cacheKey, { fingerprint, retryAt })
         if (!priorFailure || priorFailure.fingerprint !== fingerprint || priorFailure.retryAt <= Date.now()) {
           console.warn(
             `[ExchangeConnectorFactory] createExchangeConnector unavailable for ${connection.id}; ` +
@@ -197,9 +219,9 @@ export class ExchangeConnectorFactory {
           try {
             const { SimulatedConnector } = await import("./simulated-connector")
             const sim = new SimulatedConnector(credentials, "simulated")
-            this.connectors.set(connection.id, sim)
-            this.connectorFingerprints.set(connection.id, fingerprint)
-            this.unavailableConnectorFingerprints.delete(connection.id)
+            this.connectors.set(cacheKey, sim)
+            this.connectorFingerprints.set(cacheKey, fingerprint)
+            this.unavailableConnectorFingerprints.delete(cacheKey)
             console.log(`[ExchangeConnectorFactory] Fallback to SimulatedConnector for ${connection.id}`)
             return sim
           } catch (err2) {
@@ -219,7 +241,10 @@ export class ExchangeConnectorFactory {
     return this.connectors.get(connectionId) || null
   }
   
-  async getOrCreateConnector(connectionId: string): Promise<BaseExchangeConnector | null> {
+  async getOrCreateConnector(
+    connectionId: string,
+    options: ExchangeConnectorCreationOptions = {},
+  ): Promise<BaseExchangeConnector | null> {
     const connection = await getConnection(connectionId)
     if (!connection) {
       console.error(`[ExchangeConnectorFactory] Connection not found: ${connectionId}`)
@@ -227,28 +252,36 @@ export class ExchangeConnectorFactory {
     }
 
     const fingerprint = this.buildFingerprint(connection as Connection)
-    const existing = this.connectors.get(connectionId)
-    if (existing && this.connectorFingerprints.get(connectionId) === fingerprint) {
+    const cacheKey = this.connectorCacheKey(connectionId, options)
+    const existing = this.connectors.get(cacheKey)
+    if (existing && this.connectorFingerprints.get(cacheKey) === fingerprint) {
       return existing
     }
 
-    const unavailable = this.unavailableConnectorFingerprints.get(connectionId)
+    const unavailable = this.unavailableConnectorFingerprints.get(cacheKey)
     if (unavailable && unavailable.fingerprint === fingerprint && unavailable.retryAt > Date.now()) {
       return null
     }
-    if (unavailable) this.unavailableConnectorFingerprints.delete(connectionId)
+    if (unavailable) this.unavailableConnectorFingerprints.delete(cacheKey)
 
     if (existing) {
       this.removeConnector(connectionId)
     }
     
-    return this.createConnector(connection as Connection)
+    return this.createConnector(connection as Connection, options)
   }
   
   removeConnector(connectionId: string): void {
-    this.connectors.delete(connectionId)
-    this.connectorFingerprints.delete(connectionId)
-    this.unavailableConnectorFingerprints.delete(connectionId)
+    for (const key of new Set([
+      ...this.connectors.keys(),
+      ...this.connectorFingerprints.keys(),
+      ...this.unavailableConnectorFingerprints.keys(),
+    ])) {
+      if (key !== connectionId && !key.startsWith(`${connectionId}::`)) continue
+      this.connectors.delete(key)
+      this.connectorFingerprints.delete(key)
+      this.unavailableConnectorFingerprints.delete(key)
+    }
   }
   
   clearAll(): void {
@@ -258,11 +291,13 @@ export class ExchangeConnectorFactory {
   }
   
   hasConnector(connectionId: string): boolean {
-    return this.connectors.has(connectionId)
+    return [...this.connectors.keys()].some((key) => (
+      key === connectionId || key.startsWith(`${connectionId}::`)
+    ))
   }
   
   getAllConnectorIds(): string[] {
-    return Array.from(this.connectors.keys())
+    return [...new Set(Array.from(this.connectors.keys(), (key) => key.split("::", 1)[0]))]
   }
 }
 

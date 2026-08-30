@@ -206,6 +206,16 @@ export function hasRealTradeBlock(settings: Record<string, any>): boolean {
  */
 export type RealTradeIntent = "main" | "preset" | "signal"
 
+export interface RealTradeReadinessOptions {
+  /**
+   * A separately authenticated, connection-scoped Prod-VST owner may keep the
+   * rest of the process in FORCE_SIMULATED mode.  This escape hatch is
+   * intentionally accepted only for BingX virtual funds; callers must also
+   * enforce their own exact connection/lease allow-list before setting it.
+   */
+  allowForcedSimulationForAuthorizedVst?: boolean
+}
+
 export function normalizeRealTradeIntent(value: unknown): RealTradeIntent {
   const normalized = String(value || "main").trim().toLowerCase()
   return normalized === "preset" || normalized === "signal" ? normalized : "main"
@@ -214,6 +224,7 @@ export function normalizeRealTradeIntent(value: unknown): RealTradeIntent {
 export function evaluateRealTradeReadiness(
   settings: Record<string, any>,
   intent: RealTradeIntent = "main",
+  options: RealTradeReadinessOptions = {},
 ): RealTradeReadiness {
   const isPreset = intent === "preset"
   const isSignal = intent === "signal"
@@ -234,7 +245,10 @@ export function evaluateRealTradeReadiness(
   // toggle. This is used by dev/soak/preview runners and prevents a stale
   // snapshot's live request from creating one rejected record and warning per
   // candidate instead of exercising the intended simulated lifecycle.
-  const forceSimulated = isForcedSimulation()
+  const authorizedVstOverride =
+    options.allowForcedSimulationForAuthorizedVst === true &&
+    isBingXVirtualFundsDemo(settings)
+  const forceSimulated = isForcedSimulation() && !authorizedVstOverride
   if (forceSimulated) {
     return {
       intent,

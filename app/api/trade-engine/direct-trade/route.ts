@@ -64,12 +64,7 @@ import {
   directTradeKeyspace,
   normalizeDirectTradeConnectionId,
 } from "@/lib/direct-trade-keyspace"
-import {
-  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
-  DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
-  DIRECT_TRADE_LIVE_EXECUTION_READY,
-  directTradeLiveExecutionReadiness,
-} from "@/lib/direct-trade-live-readiness"
+import { directTradeLiveExecutionReadiness } from "@/lib/direct-trade-live-readiness"
 
 const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
@@ -823,7 +818,7 @@ export async function GET(request: NextRequest) {
       connectionId,
       exchange: exchange || null,
       state,
-      liveExecutionReadiness: directTradeLiveExecutionReadiness(),
+      liveExecutionReadiness: directTradeLiveExecutionReadiness(connection as any, connectionId || undefined),
       stats,
       // The full historic grid is deliberately not returned here. Its compact
       // evaluation totals and paged Statistics read model live alongside it;
@@ -911,10 +906,16 @@ export async function POST(request: NextRequest) {
       if (newState.liveMode && !newState.connectionId) {
         return NextResponse.json({ error: "Select a live exchange connection before starting Direct-Trade live execution" }, { status: 409 })
       }
-      if (newState.liveMode && !DIRECT_TRADE_LIVE_EXECUTION_READY) {
+      const liveReadiness = newState.liveMode
+        ? directTradeLiveExecutionReadiness(
+            await getConnection(String(newState.connectionId)).catch(() => null),
+            String(newState.connectionId),
+          )
+        : null
+      if (newState.liveMode && !liveReadiness?.ready) {
         return NextResponse.json({
-          error: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
-          code: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
+          error: liveReadiness?.blockReason || "Direct-Trade live execution is not ready",
+          code: liveReadiness?.blockCode || "direct_live_runtime_not_ready",
         }, { status: 409 })
       }
       await setState(newState, scopeConnectionId || newState.connectionId)
@@ -935,10 +936,16 @@ export async function POST(request: NextRequest) {
       if (liveMode && !connectionId) {
         return NextResponse.json({ error: "Select a live exchange connection before enabling Direct-Trade live execution" }, { status: 409 })
       }
-      if (liveMode && !DIRECT_TRADE_LIVE_EXECUTION_READY) {
+      const liveReadiness = liveMode
+        ? directTradeLiveExecutionReadiness(
+            await getConnection(String(connectionId)).catch(() => null),
+            String(connectionId),
+          )
+        : null
+      if (liveMode && !liveReadiness?.ready) {
         return NextResponse.json({
-          error: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
-          code: DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
+          error: liveReadiness?.blockReason || "Direct-Trade live execution is not ready",
+          code: liveReadiness?.blockCode || "direct_live_runtime_not_ready",
         }, { status: 409 })
       }
       const newState: DirectTradeState = {

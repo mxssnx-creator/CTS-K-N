@@ -14,6 +14,7 @@ import {
 } from "@/lib/runtime-concurrency-profile"
 import type { SignalRisk } from "@/lib/signal-indication"
 import type { SignalExecutionLane, TrailingProfile } from "@/lib/signal-trailing"
+import type { DcaProfile } from "@/lib/dca-strategy"
 import {
   calculateBlockVolumeMultiplier,
   parseBlockCount,
@@ -29,6 +30,15 @@ export interface RealPosition {
   direction: "long" | "short"
   entryPrice: number
   quantity: number
+  /** Optional caller quantity ceiling. Canonical venue minimums may raise a
+   * smaller request, but the Live stage never exceeds its PositionCost cap. */
+  requestedQuantityCap?: number
+  /** Exact DCA generation already admitted by an independently leased owner.
+   * The Live stage still enforces its canonical profile and total-volume cap. */
+  requestedDcaStep?: number
+  /** Connection-local risk percentage supplied by an independently leased
+   * canonical execution owner such as Direct-Trade. */
+  positionCostPctOverride?: number
   leverage: number
   riskAmount: number
   rewardTarget: number
@@ -85,6 +95,7 @@ export interface RealPosition {
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
+  dcaProfile?: DcaProfile
   // Exchange-cost-aware protection diagnostics supplied by the strategy
   // coordinator. Live execution treats this as explanatory metadata; the
   // actionable stopLoss/takeProfit percentages are already widened upstream.

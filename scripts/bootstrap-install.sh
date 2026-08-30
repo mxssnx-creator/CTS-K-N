@@ -583,7 +583,9 @@ as_root chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
 restore_install_state_into_clone
 
 cd "$INSTALL_DIR"
-chmod 750 scripts/install.sh
+# Invoke the installer through Bash below. Changing a tracked script's mode
+# here leaves every otherwise exact deployment dirty (Git records 100644 vs
+# 100755), which breaks exact-head verification and future update safety.
 INSTALL_ARGS+=(
   --name "$PROJECT_NAME"
   --port "$PORT"

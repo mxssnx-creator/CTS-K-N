@@ -92,7 +92,7 @@ Options:
   --non-interactive       Never rely on interactive package prompts
   --redis-mode MODE       auto, native, npm, or snapshot (default: auto)
   --reinstall             Reinstall OS apps, runtimes, global tools, and dependencies
-  --safe-simulation       Run the complete server app in forced paper mode; do not require or permit exchange orders
+  --safe-simulation       Force every engine, including Direct X02, into paper mode
   --enable-live           Explicitly opt into the guarded live path; disabled by default
   --uninstall             Stop/remove CTS services, CTS-owned runtime data, and this checkout
   --help                  Show this help
@@ -100,15 +100,19 @@ Options:
 Sensitive values should be supplied in --seed-env-file or the existing env
 file, never as command-line arguments. The installer generates ADMIN_SECRET,
 CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent. A production
-server install stays in safe simulation mode by default. Live execution requires
-the explicit --enable-live opt-in, valid credentials for at least one supported
-exchange (BingX, Bybit, Pionex, or OrangeX), durable order coordination, and
-persisted live-control state; the verification never submits an order.
+server install keeps the ordinary engines in simulation mode by default. Broad
+live execution requires the explicit --enable-live opt-in, valid credentials,
+durable order coordination, and persisted live-control state. A separately
+persisted DIRECT_TRADE_LIVE_ORDER_PLACEMENT=1 plus the exact
+DIRECT_TRADE_LIVE_CONNECTION_IDS=bingx-x02 allow-list can enable only the
+leased X02 Prod-VST Direct path while every ordinary route remains paper. The
+verification never submits an order.
 
 For a server install or upgrade, prefer scripts/bootstrap-install.sh. When an
 installed CTS runtime is detected, this command delegates to that clean flow.
 Use --safe-simulation to make paper-mode intent explicit. It always wins,
-including when --enable-live or preserved credentials exist.
+including when --enable-live, the scoped Direct X02 opt-in, or preserved
+credentials exist.
 EOF
 }
 
@@ -1038,6 +1042,9 @@ configure_environment_and_redis() {
   local pionex_secret="${PIONEX_API_SECRET:-$(env_value PIONEX_API_SECRET)}"
   local orangex_key="${ORANGEX_API_KEY:-$(env_value ORANGEX_API_KEY)}"
   local orangex_secret="${ORANGEX_API_SECRET:-$(env_value ORANGEX_API_SECRET)}"
+  local direct_x02_live_requested direct_x02_connection_ids
+  direct_x02_live_requested="$(env_value DIRECT_TRADE_LIVE_ORDER_PLACEMENT)"
+  direct_x02_connection_ids="$(env_value DIRECT_TRADE_LIVE_CONNECTION_IDS)"
   local live_venues=()
   if ! placeholder_secret "$bingx_key" && ! placeholder_secret "$bingx_secret"; then
     upsert_env BINGX_API_KEY "$bingx_key"
@@ -1064,8 +1071,35 @@ configure_environment_and_redis() {
     upsert_env ORANGEX_API_SECRET "$orangex_secret"
     live_venues+=("OrangeX")
   fi
+
+  # Global paper mode may coexist with exactly one independently leased
+  # authenticated virtual-funds path. An explicit --safe-simulation always
+  # wins; otherwise a previously persisted or protected-seed opt-in must name
+  # only X02 and must have its distinct VST credentials available.
+  if (( SAFE_SIMULATION == 1 )); then
+    upsert_env DIRECT_TRADE_LIVE_ORDER_PLACEMENT 0
+    upsert_env DIRECT_TRADE_LIVE_CONNECTION_IDS bingx-x02
+  elif [[ "$direct_x02_live_requested" == "1" ]]; then
+    [[ "${direct_x02_connection_ids,,}" == "bingx-x02" ]] \
+      || fatal "Direct-Trade live placement allow-list must be exactly bingx-x02"
+    [[ "$bingx_environment" == "prod-vst" ]] \
+      || fatal "Direct-Trade X02 live placement requires BINGX_ENVIRONMENT=prod-vst"
+    ! placeholder_secret "$bingx_vst_key" && ! placeholder_secret "$bingx_vst_secret" \
+      || fatal "Direct-Trade X02 live placement requires distinct Prod-VST credentials"
+    upsert_env DIRECT_TRADE_LIVE_ORDER_PLACEMENT 1
+    upsert_env DIRECT_TRADE_LIVE_CONNECTION_IDS bingx-x02
+  else
+    [[ -z "$direct_x02_live_requested" || "$direct_x02_live_requested" == "0" ]] \
+      || fatal "DIRECT_TRADE_LIVE_ORDER_PLACEMENT must be 0 or 1"
+    upsert_env DIRECT_TRADE_LIVE_ORDER_PLACEMENT 0
+    upsert_env DIRECT_TRADE_LIVE_CONNECTION_IDS bingx-x02
+  fi
   if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
-    ok "Safe simulation mode is active by default; preserved exchange credentials cannot place orders"
+    if [[ "$(env_value DIRECT_TRADE_LIVE_ORDER_PLACEMENT)" == "1" ]]; then
+      ok "Global simulation is active; only leased BingX X02 Prod-VST Direct placement is enabled"
+    else
+      ok "Safe simulation mode is active; preserved exchange credentials cannot place orders"
+    fi
   elif (( ${#live_venues[@]} > 0 )); then
     ok "Authenticated exchange execution is configured for ${live_venues[*]}; readiness is verified without submitting an order"
   else

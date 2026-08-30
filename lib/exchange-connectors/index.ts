@@ -8,6 +8,12 @@ import type { BaseExchangeConnector, ExchangeCredentials } from "./base-connecto
 import { EXCHANGE_API_TYPES } from "@/lib/connection-predefinitions"
 import { hasUsableLiveCredentials, isForcedSimulation } from "@/lib/real-trade-gates"
 
+export interface ExchangeConnectorCreationOptions {
+  /** A caller that already enforced an exact connection allow-list may bypass
+   * global paper mode only for authenticated BingX Prod-VST virtual funds. */
+  allowForcedSimulationForAuthorizedVst?: boolean
+}
+
 // Perpetual-type equivalents - these all mean the same thing across exchanges
 const PERP_TYPES = new Set(["perpetual", "perpetual_futures", "perp", "swap", "futures"])
 
@@ -43,7 +49,8 @@ function convertApiType(apiType: string | undefined, exchangeSupported: string[]
 
 export async function createExchangeConnector(
   exchange: string,
-  credentials: ExchangeCredentials
+  credentials: ExchangeCredentials,
+  options: ExchangeConnectorCreationOptions = {},
 ): Promise<BaseExchangeConnector> {
   const rawExchange = String(exchange || "").toLowerCase()
   let normalizedExchange = rawExchange.replace(/[^a-z]/g, "")
@@ -76,7 +83,11 @@ export async function createExchangeConnector(
   // DEV/TEST: prefer simulated connector when API key is a placeholder or
   // FORCE_SIMULATED is explicitly set. The explicit safety override applies
   // uniformly to every exchange, including BingX.
-  const forceSim = isForcedSimulation()
+  const authorizedVstOverride =
+    options.allowForcedSimulationForAuthorizedVst === true
+    && normalizedExchange === "bingx"
+    && credentials.isTestnet === true
+  const forceSim = isForcedSimulation() && !authorizedVstOverride
   const allowProdSim = process.env.ALLOW_PROD_SIMULATED === "1"
   const isProduction = process.env.NODE_ENV === "production"
   const hasRealCredentials = hasUsableLiveCredentials({

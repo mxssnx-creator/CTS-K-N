@@ -215,6 +215,8 @@ import {
   type LiveEntryProtectionAdmissionAudit,
 } from "@/lib/live-entry-protection-admission"
 import { recordLivePositionLifetimeContribution } from "@/lib/live-position-lifetime-summary"
+import { evaluateDirectTradeLiveReadiness } from "@/lib/direct-trade-live-readiness"
+import { resolveDirectTradeLifecycleConnector } from "@/lib/direct-trade-lifecycle-connector"
 
 interface LiveInstrumentRules {
   quantityStep: number
@@ -398,7 +400,7 @@ const ENTRY_PROTECTION_ADMISSION_LOCK_TTL_MS = 180_000
 const ENTRY_PROTECTION_ADMISSION_WAIT_MS = 3_000
 const SIGNAL_CAPACITY_NOTICE_INTERVAL_MS = 30_000
 const SIGNAL_CAPACITY_NOTICE_MAX_CONNECTIONS = 128
-type LiveExecutionIntent = "main" | "preset" | "signal"
+type LiveExecutionIntent = "main" | "preset" | "signal" | "direct"
 
 function volumeTradeModeForIntent(intent: LiveExecutionIntent): "main" | "preset" {
   return intent === "preset" ? "preset" : "main"
@@ -413,7 +415,8 @@ function volumeTradeModeForIntent(intent: LiveExecutionIntent): "main" | "preset
 function readinessIntentForExecution(
   settings: Record<string, any>,
   intent: LiveExecutionIntent,
-): LiveExecutionIntent {
+): "main" | "preset" | "signal" {
+  if (intent === "direct") return "main"
   if (intent !== "signal") return intent
   if (isConnectionLiveTradeEnabled(settings)) return "main"
   if (isConnectionPresetTradeEnabled(settings)) return "preset"
@@ -885,7 +888,7 @@ function releaseStopSem(): void {
  * is intentionally kept separate (it represents the cached exchange API
  * shape, not the stage pipeline shape).
  */
-interface LivePosition {
+export interface LivePosition {
   id: string
   connectionId: string
   symbol: string
@@ -2499,6 +2502,14 @@ async function readLivePositionSnapshot(client: any, connectionId: string, posit
   return mergeLivePositionSnapshotSources(legacyRaw, hash)
 }
 
+export async function getLivePositionSnapshot(
+  connectionId: string,
+  positionId: string,
+): Promise<LivePosition | null> {
+  await initRedis()
+  return readLivePositionSnapshot(getRedisClient(), connectionId, positionId)
+}
+
 async function evalRedis(client: any, script: string, keys: string[], args: string[]): Promise<any> {
   if (typeof client.eval === "function") {
     try {
@@ -3625,6 +3636,10 @@ function liveExecutionSlot(
       "parentSetKey" | "combinedPosCounts"
     >,
 ): string {
+  if (String(position.indicationType || "").trim().toLowerCase() === "direct-trade") {
+    const identity = String(position.parentSetKey || position.setKey || "unknown")
+    return `direct-${stableExecutionIdentityHash(identity)}`
+  }
   if (position.combinedPosCounts) {
     const identity = String(
       position.parentSetKey ||
@@ -3640,6 +3655,27 @@ function liveExecutionSlot(
     return `poscounts-${(hash >>> 0).toString(36).padStart(7, "0")}`
   }
   return resolveSignalExecutionSlot(position)
+}
+
+function stableExecutionIdentityHash(identity: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < identity.length; index++) {
+    hash ^= identity.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(36).padStart(7, "0")
+}
+
+/** Deterministic crash-recovery identity for one Direct-Trade ownership row. */
+export function directTradeCanonicalPositionId(
+  connectionId: string,
+  symbol: string,
+  direction: "long" | "short",
+  directPositionId: string,
+): string {
+  const normalizedSymbol = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "") || "UNKNOWN"
+  const identity = `${connectionId}\u0000${normalizedSymbol}\u0000${direction}\u0000${directPositionId}`
+  return `live:${connectionId}:${normalizedSymbol}:${direction}:direct:${stableExecutionIdentityHash(identity)}`
 }
 
 function liveLockDirection(
@@ -3946,14 +3982,30 @@ async function resolveAccumulationPlan(
       real?.dcaProfile,
     )
     const referencePrice = Number(existing.initialEntryPrice ?? existing.averageExecutionPrice ?? existing.entryPrice ?? 0)
-    const next = resolveNextDcaStep({
-      direction,
-      referencePrice,
-      currentPrice: price,
-      profile: dcaProfile,
-      legs: existing.dcaLegs,
-      pendingStep: existing.pendingAccumulation?.dcaStep,
-    })
+    const requestedDcaStep = Math.floor(Number(real?.requestedDcaStep) || 0)
+    const isDirectDca = String(real?.indicationType || "").trim().toLowerCase() === "direct-trade"
+    if (
+      isDirectDca
+      && (
+        requestedDcaStep <= 0
+        || requestedDcaStep > dcaProfile.maxSteps
+        || (existing.dcaLegs || []).some((leg) => Number(leg?.step) === requestedDcaStep)
+      )
+    ) return null
+    const next = isDirectDca
+      ? {
+          step: requestedDcaStep,
+          volumeMultiplier: Number(dcaProfile.stepVolumeMultipliers[requestedDcaStep - 1] || 0),
+          triggerDistancePct: Number(dcaProfile.stepDistancesPct[requestedDcaStep - 1] || 0),
+        }
+      : resolveNextDcaStep({
+          direction,
+          referencePrice,
+          currentPrice: price,
+          profile: dcaProfile,
+          legs: existing.dcaLegs,
+          pendingStep: existing.pendingAccumulation?.dcaStep,
+        })
     if (!next) return null
     const baseQuantity = Number(existing.initialExecutedQuantity ?? existing.executedQuantity ?? 0)
     const addQty = calculateDcaAddQuantity(
@@ -4487,6 +4539,7 @@ async function accumulateIntoLivePosition(
   price: number,
   connector: any,
   allowNewExchangeMutation = true,
+  shouldContinue?: () => boolean | Promise<boolean>,
 ): Promise<LivePosition> {
   // Block and DCA are adjustment-only variants: they add an independently
   // calculated leg to an authoritative parent instead of opening competing
@@ -4671,12 +4724,15 @@ async function accumulateIntoLivePosition(
     // still recovered above (and its protection is re-armed), but after that
     // boundary no new quantity may be submitted until the operator enables
     // the corresponding live intent again.
-    if (!allowNewExchangeMutation) {
+    const continuationAuthorised = shouldContinue
+      ? await Promise.resolve(shouldContinue()).catch(() => false)
+      : true
+    if (!allowNewExchangeMutation || !continuationAuthorised) {
       pushStep(
         existing,
         "accumulate_blocked_live_off",
         false,
-        "Live Trade is disabled; existing exchange quantity remains tracked and no new adjustment order is sent",
+        "Live execution is disabled or its owner lease stopped; existing exchange quantity remains tracked and no new adjustment order is sent",
       )
       existing.statusReason = "Live Trade disabled — exchange position tracked; adjustment deferred"
       await savePosition(existing)
@@ -4784,6 +4840,20 @@ async function accumulateIntoLivePosition(
         await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_retry_not_ready")
       }
       return existing
+    }
+    const directRequestedQuantity = Number(real?.requestedQuantityCap)
+    if (
+      String(real?.indicationType || "").trim().toLowerCase() === "direct-trade" &&
+      directRequestedQuantity > 0 &&
+      plan.addQty > directRequestedQuantity
+    ) {
+      plan = { ...plan, addQty: directRequestedQuantity }
+      pushStep(
+        existing,
+        "direct_quantity_cap",
+        true,
+        `canonical add-on capped to leased Direct-Trade request ${directRequestedQuantity}`,
+      )
     }
     if (plan.variant === "special" && plan.specialPositionPlan) {
       existing.specialBaseQuantity = plan.specialBaseQuantity
@@ -5016,11 +5086,13 @@ async function accumulateIntoLivePosition(
             quoteToUsdRate: existing.quoteToUsdRate,
             positionCostPercentOverride: existing.positionCostPct,
             maxExecutionNotionalUsd,
-            source: existing.executionIntent === "preset"
-              ? "preset-trade"
-              : existing.executionIntent === "signal"
-                ? "signal-trade"
-                : "main-trade",
+            source: existing.executionIntent === "direct"
+              ? "direct-trade"
+              : existing.executionIntent === "preset"
+                ? "preset-trade"
+                : existing.executionIntent === "signal"
+                  ? "signal-trade"
+                  : "main-trade",
             liveTradeIntent: existing.executionIntent,
           } as any,
           exposureConnection,
@@ -5196,11 +5268,13 @@ async function accumulateIntoLivePosition(
             quoteToUsdRate: existing.quoteToUsdRate,
             positionCostPercentOverride: existing.positionCostPct,
             maxExecutionNotionalUsd,
-            source: existing.executionIntent === "preset"
-              ? "preset-trade"
-              : existing.executionIntent === "signal"
-                ? "signal-trade"
-                : "main-trade",
+            source: existing.executionIntent === "direct"
+              ? "direct-trade"
+              : existing.executionIntent === "preset"
+                ? "preset-trade"
+                : existing.executionIntent === "signal"
+                  ? "signal-trade"
+                  : "main-trade",
             liveTradeIntent: existing.executionIntent,
           } as any,
           exposureConnection,
@@ -5258,6 +5332,16 @@ async function accumulateIntoLivePosition(
         await verifyProtection("accumulation_final_exposure_snapshot")
         return existing
       }
+    }
+
+    if (shouldContinue && !await Promise.resolve(shouldContinue()).catch(() => false)) {
+      existing.pendingAccumulation = undefined
+      existing.statusReason = "Accumulation stopped before venue submission because its execution owner lease ended"
+      pushStep(existing, "accumulation_owner_stopped", false, existing.statusReason)
+      await savePosition(existing)
+      await rearmProtectionAfterQuantityMutation(connector, existing, "accumulation_owner_stopped")
+      await verifyProtection("accumulation_owner_stopped")
+      return existing
     }
 
     let orderRes: any
@@ -6821,11 +6905,11 @@ async function retry<T>(
   isSuccess: (r: T) => boolean,
   label: string,
   maxAttempts = 3,
-  shouldContinue?: () => boolean,
+  shouldContinue?: () => boolean | Promise<boolean>,
 ): Promise<T> {
   let lastResult: T | undefined
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (shouldContinue?.() === false) {
+    if ((await shouldContinue?.()) === false) {
       return {
         success: false,
         error: "Execution generation superseded before exchange submission",
@@ -6870,7 +6954,7 @@ async function retry<T>(
       lastResult = undefined as unknown as T
     }
     if (attempt < maxAttempts) {
-      if (shouldContinue?.() === false) {
+      if ((await shouldContinue?.()) === false) {
         return {
           success: false,
           error: "Execution generation superseded during retry backoff",
@@ -11411,11 +11495,11 @@ export async function executeLivePosition(
   connectionId: string,
   sourceRealPosition: RealPosition,
   exchangeConnector: any,
-  shouldContinue?: () => boolean,
+  shouldContinue?: () => boolean | Promise<boolean>,
 ): Promise<LivePosition> {
-  const isCurrent = (): boolean => {
+  const isCurrent = async (): Promise<boolean> => {
     try {
-      return shouldContinue?.() !== false
+      return (await shouldContinue?.()) !== false
     } catch {
       return false
     }
@@ -11575,6 +11659,7 @@ export async function executeLivePosition(
   const initialConnectionSettings = (await getConnection(connectionId).catch(() => null)) || {}
   const initialAppSettings = (await getAppSettings().catch(() => null)) || {}
   const configuredPositionCostPct = Number(
+    realPosition.positionCostPctOverride ??
     (initialConnectionSettings as any).positionCost ??
     (initialConnectionSettings as any).exchangePositionCost ??
     (initialConnectionSettings as any).exchange_position_cost ??
@@ -11606,7 +11691,11 @@ export async function executeLivePosition(
   const isSignalPosition =
     String(realPosition.indicationType || "").trim().toLowerCase() === "signal" ||
     Boolean(realPosition.signalRisk?.sourceIds?.length)
-  const executionIntent: LiveExecutionIntent = isSignalPosition
+  const isDirectPosition =
+    String(realPosition.indicationType || "").trim().toLowerCase() === "direct-trade"
+  const executionIntent: LiveExecutionIntent = isDirectPosition
+    ? "direct"
+    : isSignalPosition
     ? "signal"
     : presetModeEnabled && !mainModeEnabled
       ? "preset"
@@ -11642,7 +11731,14 @@ export async function executeLivePosition(
   }
 
   const livePosition: LivePosition = {
-    id: `live:${connectionId}:${realPosition.symbol}:${realPosition.direction}:${liveExecutionLane(realPosition)}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    id: isDirectPosition
+      ? directTradeCanonicalPositionId(
+          connectionId,
+          realPosition.symbol,
+          realPosition.direction,
+          String(realPosition.parentSetKey || realPosition.setKey || realPosition.id),
+        )
+      : `live:${connectionId}:${realPosition.symbol}:${realPosition.direction}:${liveExecutionLane(realPosition)}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
     connectionId,
     system_tracking_id: makeSystemTrackingId(connectionId),
     connection_tracking_id: connectionTrackingId,
@@ -11903,7 +11999,7 @@ export async function executeLivePosition(
     // unsafe: the response can race the settings event. Continue durable
     // recovery, fill reconciliation, and protection for that exact
     // clientOrderId, but suppress every not-yet-started retry below.
-    if (isCurrent() || exchangeSubmissionStarted) return false
+    if (await isCurrent() || exchangeSubmissionStarted) return false
     livePosition.status = "rejected"
     livePosition.statusReason =
       "Execution generation changed before submission; no new order was sent"
@@ -11960,7 +12056,9 @@ export async function executeLivePosition(
     // of flags, credentials, and Redis checks, so production could display Live
     // ON while this branch silently created paper positions.
     const readinessIntent = readinessIntentForExecution(connSettings, executionIntent)
-    const liveReadiness = evaluateRealTradeReadiness(connSettings, readinessIntent)
+    const liveReadiness = executionIntent === "direct"
+      ? evaluateDirectTradeLiveReadiness(connSettings, connectionId)
+      : evaluateRealTradeReadiness(connSettings, readinessIntent)
     const isLiveTradeEnabled = liveReadiness.canPlaceRealOrders
     livePosition.executionMode = liveReadiness.executionMode
     livePosition.executionBlockCode = liveReadiness.blockCode || undefined
@@ -12084,6 +12182,7 @@ export async function executeLivePosition(
           adjustmentPrice,
           exchangeConnector,
           isLiveTradeEnabled,
+          executionIntent === "direct" ? shouldContinue : undefined,
         )
       }
     }
@@ -12232,6 +12331,8 @@ export async function executeLivePosition(
           realPosition,
           accPrice,
           exchangeConnector,
+          true,
+          executionIntent === "direct" ? shouldContinue : undefined,
         )
         // Refresh the existing slot's TTL — the position is still open
         // on the exchange and we want the safety expiry pushed forward
@@ -12862,6 +12963,50 @@ export async function executeLivePosition(
       return livePosition
     }
 
+    // Direct-Trade supplies one minimum-volume economic intent from its leased
+    // worker. The canonical calculator remains the hard risk ceiling; this
+    // branch can only reduce that quantity (or raise the caller's sub-minimum
+    // request to the venue minimum when the same PositionCost ceiling permits
+    // it). It can never turn a Direct request into a larger risk allocation.
+    const directRequestedQuantity = Number(realPosition.requestedQuantityCap)
+    if (executionIntent === "direct" && directRequestedQuantity > 0) {
+      const normalizedDirect = resolveExecutableQuantity(
+        directRequestedQuantity,
+        currentPrice,
+        liveInstrumentRules,
+        { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
+      )
+      const directCeiling = Number(normalizedDirect.quantity || 0)
+      let boundedDirectQuantity = roundQuantityDown(
+        Math.min(computedVolume, directCeiling),
+        liveInstrumentRules,
+      )
+      if (
+        boundedDirectQuantity < liveInstrumentRules.minQuantity - 1e-12 &&
+        directCeiling <= computedVolume + 1e-12
+      ) {
+        boundedDirectQuantity = directCeiling
+      }
+      if (!(boundedDirectQuantity > 0)) {
+        livePosition.status = "error"
+        livePosition.statusReason =
+          "Direct-Trade minimum-volume request does not fit inside the canonical PositionCost ceiling"
+        pushStep(livePosition, "direct_quantity_cap", false, livePosition.statusReason)
+        await savePosition(livePosition)
+        if (liveOrderLockToken) {
+          await releaseLock(
+            connectionId,
+            realPosition.symbol,
+            realPosition.direction + _lockDirSuffix,
+            liveOrderLockToken,
+          ).catch(() => {})
+        }
+        return livePosition
+      }
+      computedVolume = boundedDirectQuantity
+      volumeNote = ` [direct-request: ${directRequestedQuantity} → ${computedVolume}]`
+    }
+
     // Re-apply the calculator's hard notional ceiling after instrument
     // metadata has been loaded. This protects the exchange boundary if a
     // stale cache or future calculator change rounds an entry upward.
@@ -13016,15 +13161,21 @@ export async function executeLivePosition(
     const freshSettings = (await reCheckConn(connectionId)) || {}
     const freshMainModeEnabled = reCheckMainEnabled(freshSettings)
     const freshPresetModeEnabled = reCheckPresetEnabled(freshSettings)
-    const freshExecutionIntent: LiveExecutionIntent = isSignalPosition
+    const freshExecutionIntent: LiveExecutionIntent = isDirectPosition
+      ? "direct"
+      : isSignalPosition
       ? "signal"
       : freshPresetModeEnabled && !freshMainModeEnabled
         ? "preset"
         : "main"
     const freshReadinessIntent = readinessIntentForExecution(freshSettings, freshExecutionIntent)
-    const freshReadiness = evaluateRealTradeReadiness(freshSettings, freshReadinessIntent)
+    const freshReadiness = freshExecutionIntent === "direct"
+      ? evaluateDirectTradeLiveReadiness(freshSettings, connectionId)
+      : evaluateRealTradeReadiness(freshSettings, freshReadinessIntent)
     const supervisedSmokeId = await client.get("live_order_smoke:active").catch(() => null)
-    const engineProcessing = isConnectionMainProcessing(freshSettings)
+    const engineProcessing = freshExecutionIntent === "direct"
+      ? await isCurrent()
+      : isConnectionMainProcessing(freshSettings)
     const isStillLive = freshReadiness.canPlaceRealOrders && engineProcessing && !supervisedSmokeId
     if (await abortSuperseded()) return livePosition
     
@@ -13047,12 +13198,16 @@ export async function executeLivePosition(
         ? "engine_processing_stopped"
         : freshReadiness.blockCode || undefined
       livePosition.executionBlockReason = !engineProcessing
-        ? "Connection processing is stopped"
+        ? freshExecutionIntent === "direct"
+          ? "Direct-Trade processor lease or live state is no longer active"
+          : "Connection processing is stopped"
         : freshReadiness.blockReason || undefined
       livePosition.statusReason = supervisedSmokeId
         ? `Exchange order blocked before placement: supervised live-order smoke ${supervisedSmokeId} owns the account gate`
         : !engineProcessing
-          ? "Exchange order blocked before placement: connection processing is stopped"
+          ? freshExecutionIntent === "direct"
+            ? "Exchange order blocked before placement: Direct-Trade processor lease or live state stopped"
+            : "Exchange order blocked before placement: connection processing is stopped"
         : `Exchange order blocked before placement (${freshReadiness.blockCode || "unknown"}): ${freshReadiness.blockReason}`
       pushStep(livePosition, "entry", false, livePosition.statusReason)
       await savePosition(livePosition)
@@ -13108,23 +13263,32 @@ export async function executeLivePosition(
     const lockedSettings = (await reCheckConn(connectionId)) || {}
     const lockedMainModeEnabled = reCheckMainEnabled(lockedSettings)
     const lockedPresetModeEnabled = reCheckPresetEnabled(lockedSettings)
-    const lockedExecutionIntent: LiveExecutionIntent = isSignalPosition
+    const lockedExecutionIntent: LiveExecutionIntent = isDirectPosition
+      ? "direct"
+      : isSignalPosition
       ? "signal"
       : lockedPresetModeEnabled && !lockedMainModeEnabled
         ? "preset"
         : "main"
-    const lockedReadiness = evaluateRealTradeReadiness(
-      lockedSettings,
-      readinessIntentForExecution(lockedSettings, lockedExecutionIntent),
-    )
-    if (!isConnectionMainProcessing(lockedSettings) || !lockedReadiness.canPlaceRealOrders) {
+    const lockedReadiness = lockedExecutionIntent === "direct"
+      ? evaluateDirectTradeLiveReadiness(lockedSettings, connectionId)
+      : evaluateRealTradeReadiness(
+          lockedSettings,
+          readinessIntentForExecution(lockedSettings, lockedExecutionIntent),
+        )
+    const lockedProcessing = lockedExecutionIntent === "direct"
+      ? await isCurrent()
+      : isConnectionMainProcessing(lockedSettings)
+    if (!lockedProcessing || !lockedReadiness.canPlaceRealOrders) {
       livePosition.status = "rejected"
       livePosition.executionMode = "blocked"
-      livePosition.executionBlockCode = !isConnectionMainProcessing(lockedSettings)
+      livePosition.executionBlockCode = !lockedProcessing
         ? "engine_processing_stopped"
         : lockedReadiness.blockCode || "live_readiness_changed"
-      livePosition.executionBlockReason = !isConnectionMainProcessing(lockedSettings)
-        ? "Connection processing stopped while entry waited for admission"
+      livePosition.executionBlockReason = !lockedProcessing
+        ? lockedExecutionIntent === "direct"
+          ? "Direct-Trade processor lease or live state stopped while entry waited for admission"
+          : "Connection processing stopped while entry waited for admission"
         : lockedReadiness.blockReason
       livePosition.statusReason =
         `Exchange order blocked after admission lock: ${livePosition.executionBlockReason}`
@@ -13232,11 +13396,13 @@ export async function executeLivePosition(
             quoteToUsdRate: livePosition.quoteToUsdRate,
             positionCostPercentOverride: livePosition.positionCostPct,
             maxExecutionNotionalUsd,
-            source: executionIntent === "preset"
-              ? "preset-trade"
-              : executionIntent === "signal"
-                ? "signal-trade"
-                : "main-trade",
+            source: executionIntent === "direct"
+              ? "direct-trade"
+              : executionIntent === "preset"
+                ? "preset-trade"
+                : executionIntent === "signal"
+                  ? "signal-trade"
+                  : "main-trade",
             liveTradeIntent: executionIntent,
           } as any,
           exposureConnection,
@@ -13419,7 +13585,7 @@ export async function executeLivePosition(
     let placeAttempt = 0
     let lastSubmittedEntryQuantity = computedVolume
     const submitEntryQuantity = async (requestedQuantity: number, label: string): Promise<any> => {
-      if (!isCurrent()) {
+      if (!await isCurrent()) {
         return {
           success: false,
           error: "Execution generation superseded before exchange submission",
@@ -13442,11 +13608,13 @@ export async function executeLivePosition(
             quoteToUsdRate: livePosition.quoteToUsdRate,
             positionCostPercentOverride: livePosition.positionCostPct,
             maxExecutionNotionalUsd,
-            source: executionIntent === "preset"
-              ? "preset-trade"
-              : executionIntent === "signal"
-                ? "signal-trade"
-                : "main-trade",
+            source: executionIntent === "direct"
+              ? "direct-trade"
+              : executionIntent === "preset"
+                ? "preset-trade"
+                : executionIntent === "signal"
+                  ? "signal-trade"
+                  : "main-trade",
             liveTradeIntent: executionIntent,
           } as any,
           exposureConnection,
@@ -13501,13 +13669,13 @@ export async function executeLivePosition(
           attempt: placeAttempt,
           label,
         },
-        () => {
-          if (!isCurrent()) {
-            return Promise.resolve({
+        async () => {
+          if (!await isCurrent()) {
+            return {
               success: false,
               error: "Execution generation superseded before exchange submission",
               errorCode: "EXECUTION_SUPERSEDED",
-            })
+            }
           }
           exchangeSubmissionStarted = true
           return exchangeConnector.placeOrder(
@@ -13543,7 +13711,7 @@ export async function executeLivePosition(
     // volume still fails, we fall back to the exchange minimum quantity at
     // the same leverage, which represents the absolute smallest notional
     // with the best leverage efficiency.
-    if (isCurrent() && !orderResult?.success && isNonRecoverableExchangeError(orderResult)) {
+    if (await isCurrent() && !orderResult?.success && isNonRecoverableExchangeError(orderResult)) {
       const reducedVolumeRaw = computedVolume / 2
       const reducedVolume = normalizeRetryEntryQuantity(reducedVolumeRaw, false)
       // Ensure the halved volume is meaningfully smaller (> 0.1% diff) and positive.
@@ -13613,7 +13781,7 @@ export async function executeLivePosition(
           const minQuantityDiffPct = reducedVolume > 0
             ? Math.abs(minQtyForSymbol - reducedVolume) / reducedVolume
             : 1
-          if (isCurrent() && minQtyForSymbol > 0 && minQuantityDiffPct > 0.001) {
+          if (await isCurrent() && minQtyForSymbol > 0 && minQuantityDiffPct > 0.001) {
             if (await abortSuperseded()) {
               await savePosition(livePosition).catch(() => {})
               return livePosition
@@ -13727,7 +13895,7 @@ export async function executeLivePosition(
       // message and retry IMMEDIATELY with corrected volume in THIS cycle.
       // This prevents wasting cycles on repeated sub-minimum rejections.
       let retryWasAttempted = false
-      if (isCurrent() && isMinOrderSizeError(reason) && placeAttempt < 3) {
+      if (await isCurrent() && isMinOrderSizeError(reason) && placeAttempt < 3) {
         const minQty = extractMinOrderQty(reason)
         if (minQty && minQty > 0 && minQty > computedVolume) {
           retryWasAttempted = true
@@ -16829,6 +16997,17 @@ export async function reconcileLivePositions(
       } catch { /* processSimulatedPositions is self-defensive */ }
     }
 
+    // Load the authoritative book before accepting a connector. Direct Trade
+    // has an independently authorised X02 Prod-VST lane while the normal
+    // process cache remains globally simulated; an owned Direct row therefore
+    // has to re-select and verify its scoped lifecycle connector here.
+    const allOpen = await getLivePositions(connectionId)
+    exchangeConnector = await resolveDirectTradeLifecycleConnector(
+      connectionId,
+      allOpen,
+      exchangeConnector,
+    )
+
     // Entry permission and lifecycle ownership are independent. Turning every
     // live-entry toggle off must prevent new orders, but it must not stop the
     // exchange reconciliation of positions this process already owns. Those
@@ -16852,8 +17031,7 @@ export async function reconcileLivePositions(
       return summary
     }
 
-    // Load live-positions index (single Redis round-trip, filtered in-memory)
-    const allOpen = await getLivePositions(connectionId)
+    // The live-positions index was loaded once above for connector selection.
     const invalidDirectionPositions: LivePosition[] = []
     const openPositions = allOpen.filter((p) => {
       const isOpen =
@@ -17958,6 +18136,17 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     // fail-closed and idempotent: an absent book means zero rows, never an
     // exception loop that can starve the engine monitor.
     const allOpenRaw = (Array.isArray(loadedOpenRows) ? loadedOpenRows : []) as LivePosition[]
+
+    // Never trust the connector supplied by a generic engine/cron caller for
+    // an owned Direct lifecycle. Global paper mode intentionally caches a
+    // SimulatedConnector under the normal connection key; replace it with the
+    // separately cached and environment-proved X02 Prod-VST connector before
+    // any exchange snapshot, protection, cancellation, or close operation.
+    exchangeConnector = await resolveDirectTradeLifecycleConnector(
+      connectionId,
+      allOpenRaw,
+      exchangeConnector,
+    )
 
     // ── Self-heal: purge terminal positions stuck in the open index ─────
     // A historical bug in redis-db savePosition() re-added rejected/cancelled/
