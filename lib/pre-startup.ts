@@ -1,4 +1,4 @@
-import { getSettings, getAllConnections, initRedis, saveMarketData, setAppSettings, updateConnection } from "@/lib/redis-db"
+import { getSettings, getAllConnections, initRedis, setAppSettings, updateConnection } from "@/lib/redis-db"
 
 type PreStartupGlobal = typeof globalThis & {
   __cts_pre_startup_done?: boolean
@@ -96,67 +96,6 @@ async function seedPredefinedConnections() {
   }
 }
 
-async function seedMarketData() {
-  // Only seed placeholder prices when market data does not already exist.
-  // This prevents overwriting real market data that was fetched or restored from snapshot.
-  try {
-    const { getRedisClient } = await import("@/lib/redis-db")
-    const client = getRedisClient()
-    // Check if ANY of the target symbols have existing market data
-    const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
-    const existingKeys = await Promise.all(
-      symbols.map(s => client.exists(`market_data:${s}:1s`))
-    )
-    if (existingKeys.some(Boolean)) {
-      console.log("[v0] [PreStartup] seedMarketData: real data present — skipping placeholder seed")
-      return
-    }
-  } catch {
-    // If the Redis check fails, fall through and seed anyway
-  }
-
-  const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
-  const basePrices: Record<string, number> = {
-    BTCUSDT: 100000,
-    ETHUSDT: 3500,
-    SOLUSDT: 180,
-    XRPUSDT: 0.6,
-    ADAUSDT: 0.8,
-  }
-
-  // ── Parallel seeding ────────────────────────────────────────────
-  // Every (symbol, tick) write is independent. Previously this was a
-  // nested for-loop with 6 × 20 = 120 sequential awaits — easily a
-  // full second of pointless serialisation on every startup. Fan
-  // out everything in a single Promise.all so the placeholder seed
-  // lands on Redis as one parallel batch.
-  await Promise.all(
-    symbols.flatMap((symbol) => {
-      const base = basePrices[symbol] ?? 100
-      return Array.from({ length: 20 }, (_v, i) => {
-        const variation = base * 0.02
-        const close = base + (Math.random() - 0.5) * variation
-        // Spec §7: pre-startup seeds 1s placeholders so the engine has
-        // *something* under the canonical key before the real loader
-        // runs. Timestamps step at 1s instead of 60s.
-        return saveMarketData(symbol, "1s", {
-          symbol,
-          exchange: "bingx",
-          interval: "1s",
-          price: close,
-          open: base,
-          high: base + variation,
-          low: base - variation,
-          close,
-          volume: Math.random() * 1_000_000,
-          timestamp: new Date(Date.now() - (20 - i) * 1_000).toISOString(),
-        })
-      })
-    }),
-  )
-  console.log("[v0] [PreStartup] seedMarketData: seeded placeholder prices for", symbols.length, "symbols")
-}
-
 export async function testAllExchangeConnections() {
   try {
     const allConnections = await getAllConnections()
@@ -210,12 +149,14 @@ export async function runPreStartup(options: { force?: boolean } = {}): Promise<
       // pending migrations. A second direct run here duplicated startup work.
       await initRedis()
 
-      // Settings seeding and market data placeholder seeding must run in ALL modes.
-      // On a production cold-start with empty Redis the engine would boot with no
-      // settings and no market data at all — both are no-ops when data already exists.
+      // Settings and connection seeding are idempotent. Market data is deliberately
+      // not synthesized here: it is connection-owned and must be loaded by the
+      // market-data loader (or its explicit FORCE_SIMULATED fixture path) after the
+      // selected venue is known. An unscoped startup seed could make one venue's
+      // price feed visible to another connection and could turn a failed live feed
+      // into a false-ready signal.
       await initializeDefaultSettings()
       await seedPredefinedConnections()
-      await seedMarketData()
 
       // Connection testing is skipped in safe bootstrap mode (both dev and prod).
       // The engine tests connections lazily when it first ticks.

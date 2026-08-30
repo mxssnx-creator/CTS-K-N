@@ -23,6 +23,7 @@ import {
 } from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
 import { normalizeMarketType } from "@/lib/market-types"
+import { marketDataKey } from "@/lib/market-data-keys"
 // Diagnostics must never synchronously write to disk during strategy preparation.
 // Kept opt-in so an operator can isolate a slow Historic phase without adding
 // a hot-path allocation or persistent log volume in ordinary production.
@@ -879,7 +880,7 @@ export class ConfigSetProcessor {
         // --- Load all available candles for this symbol ---
         let candles: any[] = []
 
-        const candlesRaw = await client.get(`market_data:${symbol}:candles`)
+        const candlesRaw = await client.get(marketDataKey(symbol, "candles", this.connectionId))
         if (candlesRaw) {
           candles = JSON.parse(candlesRaw)
         }
@@ -899,6 +900,7 @@ export class ConfigSetProcessor {
           const chunkCandles = await getHistoricCandlesForRange(symbol, {
             startMs: effectiveStart.getTime(),
             endMs: effectiveEnd.getTime(),
+            connectionId: this.connectionId,
           })
           if (chunkCandles.length > candles.length) candles = chunkCandles
         }
@@ -911,7 +913,7 @@ export class ConfigSetProcessor {
         // still tried first; the `:1s` JSON envelope is the
         // authoritative fallback.
         if (!candles || candles.length === 0) {
-          const marketDataRaw = await client.get(`market_data:${symbol}:1s`)
+          const marketDataRaw = await client.get(marketDataKey(symbol, "1s", this.connectionId))
           if (marketDataRaw) {
             const marketDataObj = JSON.parse(marketDataRaw)
             if (marketDataObj?.candles) {

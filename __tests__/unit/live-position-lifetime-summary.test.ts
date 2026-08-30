@@ -40,6 +40,28 @@ describe("live position lifetime summary", () => {
     expect(metric(contribution, "real.under60Seconds")).toBe(1)
   })
 
+  test("uses the Forex lot contract for lifetime volume", () => {
+    const contribution = buildLivePositionLifetimeContribution({
+      id: "forex-short",
+      symbol: "EURUSD",
+      marketType: "forex",
+      volumeKind: "lots",
+      status: "closed",
+      executionMode: "live",
+      direction: "short",
+      totalExecutedQuantity: 1,
+      averageExecutionPrice: 1.1,
+      fills: [{ quantity: 1, price: 1.1 }],
+      realizedPnL: 10,
+      realizedPnlComplete: true,
+      entryAccountingComplete: true,
+      orderId: "entry-fx",
+      closeOrderId: "close-fx",
+    })
+
+    expect(metric(contribution, "real.lifetimeVolumeUsd")).toBeCloseTo(11_000, 10)
+  })
+
   test("keeps simulation-model PnL out of the real lane", () => {
     const contribution = buildLivePositionLifetimeContribution({
       id: "paper-outlier",

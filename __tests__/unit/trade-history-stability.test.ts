@@ -164,6 +164,56 @@ describe("BingX-backed trade history", () => {
     })
   })
 
+  test("normalizes Forex closes as lots and USD PnL", () => {
+    const row = normalizeLocalTradeHistoryRow({
+      id: "forex-local-close",
+      status: "closed",
+      symbol: "EURUSD",
+      marketType: "forex",
+      volumeKind: "lots",
+      direction: "long",
+      totalExecutedQuantity: 1,
+      executedQuantity: 1,
+      averageExecutionPrice: 1.1,
+      closePrice: 1.101,
+      fills: [{ quantity: 1, price: 1.1 }],
+      createdAt: 1_700_000_000_000,
+      closedAt: 1_700_000_060_000,
+    })
+    expect(row).toMatchObject({
+      marketType: "forex",
+      volumeKind: "lots",
+      quantity: 1,
+      volumeUsd: 11_000,
+      grossPnl: expect.closeTo(10, 10),
+      realizedPnl: expect.closeTo(10, 10),
+    })
+  })
+
+  test("quarantines cross-pair Forex history without USD conversion", () => {
+    expect(classifyLocalTradeHistorySnapshot({
+      id: "forex-missing-conversion",
+      status: "closed",
+      symbol: "EURGBP",
+      marketType: "forex",
+      volumeKind: "lots",
+      direction: "long",
+      totalExecutedQuantity: 1,
+      averageExecutionPrice: 0.85,
+      closePrice: 0.851,
+      fills: [{ quantity: 1, price: 0.85 }],
+      createdAt: 1_700_000_000_000,
+      closedAt: 1_700_000_060_000,
+    })).toMatchObject({
+      disposition: "unresolved_trade",
+      reason: "missing_usd_conversion",
+      row: expect.objectContaining({
+        accountingQuality: "exchange_required",
+        volumeUsd: 0,
+      }),
+    })
+  })
+
   test("keeps executed rows with an unknown direction out of signed PnL statistics", () => {
     const snapshot = {
       id: "local-invalid-direction",

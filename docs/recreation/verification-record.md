@@ -15,18 +15,22 @@ remain explicit, independent factors. File-backed fallback imports, Redis
 writes and migration 084 all normalize legacy Base multipliers without
 changing the named channel factors.
 
-- The Signal registry contains exactly 35 documented public one-minute OHLCV
-  adapters. Four liquid core feeds stay in every bounded cycle while
-  priority-ordered pages cover every remaining compatible enabled source.
+- The Signal registry contains exactly 36 documented public adapters: 35
+  crypto one-minute OHLCV feeds and one read-only InstaForex Charts M1 feed.
+  Four liquid crypto core feeds stay in every bounded cycle while
+  priority-ordered pages cover every remaining compatible enabled source; the
+  Forex feed is routed only to Forex symbols and uses its explicit one-source
+  broker quorum.
 - Signal source requests expose a persisted seconds-based interval. It defaults
   to 30 seconds, clamps every API/legacy value to at least 30 seconds, and
   drives both source-fetch and complete-cycle cache expiry. The production UI
   contract verifies that the running API never exposes a sub-30-second value.
-- Fixture/schema tests cover all 35 request and response formats. The isolated
-  public HTTP probe reported 35/35 compatible adapters, zero authenticated
-  requests and zero order endpoints. This validation host blocks direct
-  exchange-domain egress, so its 35 bounded timeouts are recorded as an
-  environment reachability limitation, not as provider failures.
+- Fixture/schema tests cover all 36 request and response formats. The isolated
+  public HTTP probe reports 35 crypto-compatible and one Forex-compatible
+  adapter, zero authenticated requests and zero order endpoints. This
+  validation host blocks direct exchange-domain egress, so bounded timeouts
+  are recorded as an environment reachability limitation, not as provider
+  failures.
 - Signal performance is an exact rolling last-15 **closed** result ring for
   each source × symbol × long/short lane. Negative mature PnL disables only
   that lane; open positions never enter PnL or PF windows.
@@ -58,7 +62,7 @@ Latest executable evidence:
 | Fresh final database stability | 533 → 2,318 keys; stable-window delta 1; schema v84 |
 | Fresh final production latency | steady p95 99 ms (1,000 ms budget) |
 | Crash recovery | 24/24 Paper positions recovered; no pending/placed residue |
-| 32-symbol production UI | pass; Signal enabled, 35-source registry, ≥30 s request interval, Signal volume hot reload |
+| 32-symbol production UI | pass; Signal enabled, 36-source registry (35 crypto + 1 Forex), ≥30 s request interval, Signal volume hot reload |
 | Development/HMR paper soak | pass; 61,183 ms, 330 requests, steady p95 1,494 ms |
 | Real exchange activity | 0 real positions and 0 real order requests |
 

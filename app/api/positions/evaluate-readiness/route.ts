@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server"
-import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getConnection, getMarketData, getRedisClient, initRedis } from "@/lib/redis-db"
+import { marketDataKey } from "@/lib/market-data-keys"
+import { normalizeMarketSymbol, normalizeMarketType } from "@/lib/market-types"
+import { normalizeForexSymbol } from "@/lib/forex-market"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -38,6 +41,7 @@ export async function GET() {
     // Get all pseudo positions
     const positionKeys = await client.keys("position:*")
     const evaluatedPositions: EvaluatedPosition[] = []
+    const connectionCache = new Map<string, Record<string, any> | null>()
 
     for (const key of positionKeys) {
       try {
@@ -47,6 +51,20 @@ export async function GET() {
         const posId = key.replace("position:", "")
         const issues: string[] = []
         let readinessScore = 100
+        const connectionId = String(posData.connection_id || posData.connectionId || "").trim()
+        let connection: Record<string, any> | null = connectionCache.get(connectionId) ?? null
+        if (connectionId && !connectionCache.has(connectionId)) {
+          connection = await getConnection(connectionId).catch(() => null) ?? null
+          connectionCache.set(connectionId, connection)
+        }
+        if (!connectionId) {
+          issues.push("Connection not set")
+          readinessScore -= 25
+        }
+        const marketType = normalizeMarketType(
+          connection?.market_type || connection?.asset_class,
+          connection?.exchange,
+        )
 
         // 1. Check if entry price is set and reasonable
         const entryPrice = parseFloat(posData.entry_price || posData.entryPrice || "0")
@@ -84,16 +102,23 @@ export async function GET() {
         }
 
         // 4. Check market data availability
-        const symbol = posData.symbol || "UNKNOWN"
-        const marketDataStr = await client.get(`market_data:${symbol}`)
-        if (!marketDataStr) {
+        const symbol = marketType === "forex"
+          ? normalizeForexSymbol(posData.symbol || "")
+          : normalizeMarketSymbol(posData.symbol || "", "crypto")
+        const marketDataEnvelope = connectionId
+          ? await getMarketData(symbol, "1s", connectionId).catch(() => null)
+          : null
+        const marketDataHash = connectionId
+          ? await client.hgetall(marketDataKey(symbol, "", connectionId)).catch(() => ({}))
+          : {}
+        if (!marketDataEnvelope && Object.keys(marketDataHash || {}).length === 0) {
           issues.push("No market data available")
           readinessScore -= 25
         }
 
         // 5. Check indication signals
-        const indicationKey = `indications:${posData.connection_id || posData.connectionId}`
-        const indicationsStr = await client.get(indicationKey)
+        const indicationKey = connectionId ? `indications:${connectionId}` : ""
+        const indicationsStr = indicationKey ? await client.get(indicationKey) : null
         const indications = indicationsStr ? JSON.parse(indicationsStr) : []
         const symbolIndications = indications.filter((i: any) => i.symbol === symbol)
 
@@ -120,7 +145,9 @@ export async function GET() {
 
         // Volatility score (from Redis cache if available)
         let volatilityScore = 50 // Default
-        const volatilityStr = await client.get(`volatility:${symbol}`)
+        const volatilityStr = connectionId
+          ? await client.get(`volatility:${connectionId}:${symbol}`)
+          : null
         if (volatilityStr) {
           const volatility = JSON.parse(volatilityStr)
           volatilityScore = volatility.volatilityScore || 50

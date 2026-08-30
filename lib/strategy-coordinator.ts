@@ -18,6 +18,7 @@
  */
 
 import { initRedis, getSettings, setSettings, getRedisClient } from "@/lib/redis-db"
+import { marketDataKey } from "@/lib/market-data-keys"
 import { createHash } from "crypto"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
@@ -9058,13 +9059,13 @@ export class StrategyCoordinator {
     let _cachedMarketPrice = 0
     try {
       const _priceClient = getRedisClient()
-      const _mdhash = await _priceClient.hgetall(`market_data:${symbol}`)
+      const _mdhash = await _priceClient.hgetall(marketDataKey(symbol, "", this.connectionId))
       _cachedMarketPrice = parseFloat(String(_mdhash?.close ?? _mdhash?.price ?? _mdhash?.last ?? "0"))
       if (!_cachedMarketPrice || isNaN(_cachedMarketPrice)) {
         // Spec §7: prefer the canonical :1s envelope, fall back to :1m.
         const _mdraw =
-          (await _priceClient.get(`market_data:${symbol}:1s`)) ??
-          (await _priceClient.get(`market_data:${symbol}:1m`))
+          (await _priceClient.get(marketDataKey(symbol, "1s", this.connectionId))) ??
+          (await _priceClient.get(marketDataKey(symbol, "1m", this.connectionId)))
         if (_mdraw) {
           const _mdobj = typeof _mdraw === "string" ? JSON.parse(_mdraw) : _mdraw
           const _candles = _mdobj?.candles
@@ -9765,13 +9766,13 @@ export class StrategyCoordinator {
         if (!entryPrice || isNaN(entryPrice)) {
           try {
             const client = getRedisClient()
-            const mdhash = await client.hgetall(`market_data:${symbol}`)
+            const mdhash = await client.hgetall(marketDataKey(symbol, "", this.connectionId))
             entryPrice = parseFloat(String(mdhash?.close ?? mdhash?.price ?? mdhash?.last ?? "0"))
             if (!entryPrice || isNaN(entryPrice)) {
               // Spec §7: read :1s first; fall back to :1m for legacy data.
               const mdraw =
-                (await client.get(`market_data:${symbol}:1s`)) ??
-                (await client.get(`market_data:${symbol}:1m`))
+                (await client.get(marketDataKey(symbol, "1s", this.connectionId))) ??
+                (await client.get(marketDataKey(symbol, "1m", this.connectionId)))
               if (mdraw) {
                 const mdobj = typeof mdraw === "string" ? JSON.parse(mdraw) : mdraw
                 const candles = mdobj?.candles

@@ -45,6 +45,7 @@ import {
 } from "@/lib/signal-trailing"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { isExactSystemPositionOwner } from "@/lib/system-order-ownership"
 
 // ── Module-level import memoization for live-sync hot paths ──────────
 // `fireSyncLiveFromPseudo` and `maybeRunLiveSync` were previously doing
@@ -524,7 +525,7 @@ export class RealtimeProcessor {
         if (p?.symbol) uniqueSymbols.add(p.symbol)
       }
       if (uniqueSymbols.size > 0) {
-        await prefetchMarketDataBatch(Array.from(uniqueSymbols))
+        await prefetchMarketDataBatch(Array.from(uniqueSymbols), this.connectionId)
       }
 
       // Process each position in parallel. Each call carries the
@@ -649,8 +650,7 @@ export class RealtimeProcessor {
     try {
       // ── System tracking validation ──
       // Only process positions created by this system. Skip foreign/manual orders.
-      const trackingId = String(position?.system_tracking_id || "").trim()
-      if (!trackingId.startsWith("sys-") || trackingId.length <= 10) {
+      if (!isExactSystemPositionOwner(position, this.connectionId)) {
         // Silent skip for foreign positions - don't pollute logs with every tick
         return
       }
@@ -763,7 +763,7 @@ export class RealtimeProcessor {
    */
   private async getCurrentPrice(symbol: string): Promise<number | null> {
     try {
-      const data = await getMarketDataCached(symbol)
+      const data = await getMarketDataCached(symbol, this.connectionId)
       if (!data) return null
       const price = parseFloat(data?.close || data?.price || "0")
       return price > 0 ? price : null

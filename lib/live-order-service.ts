@@ -26,6 +26,7 @@ import {
   roundQuantityDown,
 } from "@/lib/order-quantity"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
+import { tradingPairKey } from "@/lib/trading-pair-keys"
 import type { ExchangeOrderSettlement } from "@/lib/exchange-connectors/base-connector"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import { DEFAULT_FOREX_LOT_SIZE, forexNotionalUsd } from "@/lib/forex-market"
@@ -92,6 +93,8 @@ export interface PlaceLiveOrderInput {
   protectionTakeProfitPercent?: number
   requireProtection?: boolean
   positionTicket?: number
+  /** Exact venue position identifier, distinct from the local ledger id. */
+  exchangePositionId?: string
 }
 
 function finiteOptional(value: unknown): number | undefined {
@@ -493,9 +496,9 @@ async function resolveSubmittedQuantity(
   // as VolumeCalculator in production.
   let pair: Record<string, unknown> | null = null
   try {
-    const client = getRedisClient() as any
+  const client = getRedisClient() as any
     if (typeof client?.hgetall === "function") {
-      pair = await client.hgetall(`settings:trading_pair:${symbol}`)
+      pair = await client.hgetall(tradingPairKey(symbol, input.connectionId))
     }
   } catch {
     pair = null
@@ -541,7 +544,7 @@ async function resolveSubmittedQuantity(
 
   let marketPrice = Number(input.price) || 0
   if (!(marketPrice > 0) && input.reduceOnly !== true) {
-    const market = await getMarketData(symbol, "1m").catch(() => null as any)
+    const market = await getMarketData(symbol, "1m", input.connectionId).catch(() => null as any)
     const latest = market && (market.latest || (Array.isArray(market) ? market[market.length - 1] : null))
     marketPrice = Number(latest?.close ?? latest?.[4] ?? latest?.price ?? 0) || 0
   }
@@ -1045,21 +1048,36 @@ async function armRequiredLiveProtection(
       )
       const flattenOptions = {
         reduceOnly: true,
-        ...(Number.isInteger(ticket) && ticket > 0 ? { positionTicket: ticket } : {}),
+        positionTicket: ticket,
         clientOrderId: controlBase.slice(0, 22) + "nf",
       }
+      if (!Number.isInteger(ticket) || ticket <= 0) return false
+      const readPositionByTicket = async (): Promise<any | null> => {
+        const rows = await readAuthoritativePositionRows(connector, symbol, direction)
+        return rows.find((candidate) => Number(
+          candidate?.positionTicket
+          ?? candidate?.ticket
+          ?? candidate?.exchangePositionId,
+        ) === ticket) || null
+      }
+      const closeResultIsVerified = async (result: any): Promise<boolean> => {
+        if (result?.success !== true) return false
+        if (result?.postCloseVerified === true || result?.fullyClosed === true) return true
+        const afterClose = await readPositionByTicket().catch(() => null)
+        return !afterClose || !(orderQuantityFromPosition(afterClose) > 0)
+      }
       try {
-        if (typeof connector?.closePosition === "function") {
-          const result = await connector.closePosition(symbol, direction)
-          if (result?.success === true && result?.postCloseVerified === true) return true
-          if (result?.success === true) {
-            const afterClose = await readNativePosition().catch(() => null)
-            if (!afterClose || !(orderQuantityFromPosition(afterClose) > 0)) return true
-          }
+        if (typeof connector?.closePositionByTicket === "function") {
+          const result = await connector.closePositionByTicket(
+            symbol,
+            ticket,
+            quantity,
+            { clientOrderId: flattenOptions.clientOrderId },
+          )
+          if (await closeResultIsVerified(result)) return true
         }
       } catch {}
       if (typeof connector?.placeOrder !== "function") return false
-      if (!(Number.isInteger(ticket) && ticket > 0)) return false
       try {
         const result = await connector.placeOrder(
           symbol,
@@ -1070,7 +1088,7 @@ async function armRequiredLiveProtection(
           flattenOptions,
         )
         if (result?.success !== true) return false
-        const afterClose = await readNativePosition().catch(() => null)
+        const afterClose = await readPositionByTicket().catch(() => null)
         return !afterClose || !(orderQuantityFromPosition(afterClose) > 0)
       } catch {
         return false
@@ -1144,6 +1162,19 @@ async function armRequiredLiveProtection(
       : {}),
   }
   const emergencyFlatten = async (): Promise<boolean> => {
+    const ticket = Number(input.positionTicket)
+    if (!Number.isInteger(ticket) || ticket <= 0) return false
+    if (typeof connector?.closePositionByTicket === "function") {
+      try {
+        const exactResult = await connector.closePositionByTicket(
+          symbol,
+          ticket,
+          quantity,
+          { clientOrderId: controlBase.slice(0, 22) + "ec" },
+        )
+        if (exactResult?.success === true) return true
+      } catch {}
+    }
     if (typeof connector?.placeOrder !== "function") return false
     try {
       const closeResult = await connector.placeOrder(
@@ -2578,8 +2609,15 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
         { statusCode: 503, mode: "live_protection_pending_fill" },
       )
     }
+    const resultPositionTicket = Number(
+      result?.positionTicket
+      ?? result?.position_ticket
+      ?? result?.positionTicketId,
+    )
     protection = await armRequiredLiveProtection(
-      input,
+      Number.isInteger(resultPositionTicket) && resultPositionTicket > 0
+        ? { ...input, positionTicket: resultPositionTicket }
+        : input,
       connection,
       connector,
       symbol,

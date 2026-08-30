@@ -1,3 +1,5 @@
+import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
+
 /**
  * Public short-horizon signal source registry.
  *
@@ -7,7 +9,8 @@
  * provider changing its marketing copy can never change order behaviour.
  */
 
-export type SignalSourceMarket = "perpetual" | "futures" | "spot" | "aggregator"
+export type SignalSourceMarket = "perpetual" | "futures" | "spot" | "aggregator" | "forex"
+export type SignalSourceAssetClass = "crypto" | "forex"
 
 export interface SignalCandle {
   timestamp: number
@@ -33,6 +36,8 @@ export interface SignalSourceDefinition {
   id: string
   name: string
   market: SignalSourceMarket
+  /** The asset class is explicit so crypto feeds can never receive FX symbols. */
+  assetClass?: SignalSourceAssetClass
   priority: 1 | 2 | 3
   timeframeMinutes: number
   officialDocs: string
@@ -46,6 +51,7 @@ export interface SignalSourceDescriptor {
   id: string
   name: string
   market: SignalSourceMarket
+  assetClass: SignalSourceAssetClass
   priority: 1 | 2 | 3
   timeframeMinutes: number
   officialDocs: string
@@ -181,6 +187,55 @@ function standardObjectParser(
   return (payload) => normalizeRows(firstArray(payload, paths), shape)
 }
 
+function xmlValues(xml: string, name: string): string[] {
+  const escaped = name.replace(/[.*+?^$()|[\]\\]/g, "\\$&")
+  const expression = new RegExp(
+    `<[^>]*:?${escaped}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/[^>]*:?${escaped}\\s*>`,
+    "gi",
+  )
+  return Array.from(xml.matchAll(expression)).map((match) => String(match[1] || "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .trim())
+}
+
+function instaForexChartsParser(payload: unknown): SignalCandle[] {
+  if (typeof payload !== "string") {
+    return standardObjectParser(
+      [["candles"], ["charts"], ["GetChartsResponse", "GetChartsResult"]],
+      {
+        timestamp: "timestamp",
+        open: "open",
+        high: "high",
+        low: "low",
+        close: "close",
+        volume: "volume",
+      },
+    )(payload)
+  }
+  const timestamps = xmlValues(payload, "Timestamp")
+  const opens = xmlValues(payload, "Open")
+  const highs = xmlValues(payload, "High")
+  const lows = xmlValues(payload, "Low")
+  const closes = xmlValues(payload, "Close")
+  const volumes = xmlValues(payload, "Volume")
+  return normalizeRows(
+    timestamps.map((timestamp, index) => [
+      timestamp,
+      opens[index],
+      highs[index],
+      lows[index],
+      closes[index],
+      volumes[index] ?? 0,
+    ]),
+    { timestamp: 0, open: 1, high: 2, low: 3, close: 4, volume: 5 },
+  )
+}
+
 function arrayOrObjectParser(
   paths: readonly (readonly (string | number)[])[],
   arrayShape: CandleShape,
@@ -250,7 +305,8 @@ const objectShort = {
 } as const
 
 /**
- * 35 independently fail-isolated, free public feeds.  Priority 1 is the
+ * 35 independently fail-isolated crypto feeds plus one official Forex feed.
+ * Priority 1 is the
  * liquid derivatives core; priority 2 broadens venue agreement; priority 3
  * provides geographic/spot/aggregator confirmation.
  */
@@ -986,10 +1042,42 @@ export const SIGNAL_SOURCE_DEFINITIONS: readonly SignalSourceDefinition[] = [
     }),
     parse: standardArrayParser([["data"]]),
   }),
+  defineSource({
+    id: "instaforex-charts",
+    name: "InstaForex Charts",
+    market: "forex",
+    assetClass: "forex",
+    priority: 1,
+    timeframeMinutes: 1,
+    officialDocs: "https://www.instaforex.com/partners/en/api_charts/",
+    buildRequest: ({ symbol, limit, now }) => {
+      const window = minuteWindow(now, limit)
+      const canonical = isForexSymbol(symbol) ? normalizeForexSymbol(symbol) : "EURUSD"
+      const body =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+        "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">" +
+        "<s:Body><GetCharts xmlns=\"http://tempuri.org/\"><chartRequest>" +
+        `<From>${window.startSec}</From><To>${window.endSec}</To>` +
+        `<Symbol>${canonical}</Symbol><Type>M1</Type>` +
+        "</chartRequest></GetCharts></s:Body></s:Envelope>"
+      return {
+        url: "https://client-api.instaforex.com/soapservices/charts.svc",
+        init: {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/xml; charset=utf-8",
+            SOAPAction: "\"http://tempuri.org/ICharts/GetCharts\"",
+          },
+          body,
+        },
+      }
+    },
+    parse: instaForexChartsParser,
+  }),
 ] as const
 
-if (SIGNAL_SOURCE_DEFINITIONS.length !== 35) {
-  throw new Error(`Signal source registry contract violated: expected 35, got ${SIGNAL_SOURCE_DEFINITIONS.length}`)
+if (SIGNAL_SOURCE_DEFINITIONS.length !== 36) {
+  throw new Error(`Signal source registry contract violated: expected 36, got ${SIGNAL_SOURCE_DEFINITIONS.length}`)
 }
 
 const SOURCE_BY_ID = new Map(SIGNAL_SOURCE_DEFINITIONS.map((source) => [source.id, source]))
@@ -1003,6 +1091,7 @@ export function getSignalSourceDescriptors(): SignalSourceDescriptor[] {
     id: source.id,
     name: source.name,
     market: source.market,
+    assetClass: source.assetClass || "crypto",
     priority: source.priority,
     timeframeMinutes: source.timeframeMinutes,
     officialDocs: source.officialDocs,
@@ -1011,6 +1100,11 @@ export function getSignalSourceDescriptors(): SignalSourceDescriptor[] {
 }
 
 export function signalSourceSupportsSymbol(source: SignalSourceDefinition, symbol: string): boolean {
+  const forexSymbol = isForexSymbol(symbol)
+  if (source.assetClass === "forex") {
+    return forexSymbol && (!source.supportedBases || source.supportedBases.includes(pairParts(symbol).base))
+  }
+  if (forexSymbol) return false
   return !source.supportedBases || source.supportedBases.includes(pairParts(symbol).base)
 }
 

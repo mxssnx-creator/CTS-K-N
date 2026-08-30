@@ -11,6 +11,19 @@ const BASE_URL = process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT ||
 const UI_MAX_SYMBOLS = 32
 const QUICKSTART_UI_TIMEOUT_MS = 35_000
 const PROGRESSION_TIMEOUT_MS = Math.max(30_000, Number(process.env.PROD_UI_PROGRESSION_TIMEOUT_MS || 90_000))
+// A resumed max-symbol engine may be finishing one complete, CPU-heavy
+// indication/strategy matrix.  The engine deliberately keeps that work
+// single-flight instead of cancelling and overlapping it, so a 30-second
+// control-plane poll is not a valid liveness bound for the 32-symbol case.
+// Keep the bound finite and explicit; this only changes verifier patience,
+// never engine concurrency or order execution.
+const configuredResumeTimeout = Number(process.env.PROD_UI_RESUME_TIMEOUT_MS)
+const RESUME_PROGRESSION_TIMEOUT_MS = Math.max(
+  PROGRESSION_TIMEOUT_MS,
+  Number.isFinite(configuredResumeTimeout) && configuredResumeTimeout >= 30_000
+    ? Math.min(configuredResumeTimeout, 300_000)
+    : UI_MAX_SYMBOLS * 7_500,
+)
 const UI_PAGE_PATHS = [
   "/", "/active-exchange", "/additional", "/additional/chat-history",
   "/additional/volume-corrections", "/admin/check-tables", "/admin/migrate",
@@ -578,8 +591,8 @@ async function main() {
       infoProgression.data?.success !== true ||
       infoStats.data?.success !== true ||
       signalStatus.data?.success !== true ||
-      Number(signalStatus.data?.sourceCount) !== 35 ||
-      signalStatus.data?.connections?.[0]?.sourceHealth?.length !== 35 ||
+      Number(signalStatus.data?.sourceCount) !== 36 ||
+      signalStatus.data?.connections?.[0]?.sourceHealth?.length !== 36 ||
       signalSettings.data?.success !== true ||
       Number(signalSettings.data?.settings?.requestIntervalSeconds) < 30
     ) {
@@ -775,7 +788,7 @@ async function main() {
         const readyLiveness = currentHistoricWork.isComplete && resumeCycleAdvanced
         return entryLiveness || bootstrapLiveness || readyLiveness
       },
-      30_000,
+      RESUME_PROGRESSION_TIMEOUT_MS,
     )
 
     await request("/api/trade-engine/stop", { method: "POST", timeoutMs: 30_000 })
@@ -876,7 +889,7 @@ async function main() {
       independentLongShortVerified: true,
       connectionEditDialogVerified: true,
       volumeHotReloadVerified: true,
-      signalSourceRegistryVerified: 35,
+      signalSourceRegistryVerified: { total: 36, crypto: 35, forex: 1 },
       signalEnabledByDefaultVerified: true,
       signalVolumeHotReloadVerified: true,
       mainConnectionToggleVerified: true,

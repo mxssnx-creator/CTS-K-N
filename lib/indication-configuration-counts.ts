@@ -141,6 +141,7 @@ type SignalConfigurationCountSettings = {
   trailingOnly: boolean
   maxSourcesPerCycle: number
   minimumSourceSignals: number
+  minimumSourceSignalsForex: number
   sources: Record<string, { enabled: boolean }>
 }
 
@@ -165,6 +166,10 @@ function normalizeSignalConfigurationCountSettings(
     maxSourcesPerCycle,
     Math.round(Math.max(2, Math.min(20, positiveNumber(raw.minimumSourceSignals, 3)))),
   )
+  const minimumSourceSignalsForex = Math.min(
+    maxSourcesPerCycle,
+    Math.round(Math.max(1, Math.min(20, positiveNumber(raw.minimumSourceSignalsForex, 1)))),
+  )
   const trailingOnly = bool(raw.trailingOnly, false)
   return {
     enabled: bool(raw.enabled, true),
@@ -173,6 +178,7 @@ function normalizeSignalConfigurationCountSettings(
     trailingOnly,
     maxSourcesPerCycle,
     minimumSourceSignals,
+    minimumSourceSignalsForex,
     sources,
   }
 }
@@ -331,21 +337,33 @@ export function calculateIndicationConfigurationCounts(
     .reduce((sum, count) => sum + count, 0)
   const commonEvaluations = commonTimeframes.length * commonParameterVariants
   const signalSettings = normalizeSignalConfigurationCountSettings(rawSignalSettings)
-  const enabledSignalSources = Object.values(signalSettings.sources)
-    .filter((source) => source.enabled)
-    .length
-  const selectedSignalSources = signalSettings.enabled
-    ? Math.min(enabledSignalSources, signalSettings.maxSourcesPerCycle)
+  const enabledSourceDefinitions = SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
+    signalSettings.sources[source.id]?.enabled === true,
+  )
+  const enabledCryptoSignalSources = enabledSourceDefinitions.filter((source) => source.assetClass !== "forex").length
+  const enabledForexSignalSources = enabledSourceDefinitions.filter((source) => source.assetClass === "forex").length
+  const enabledSignalSources = enabledSourceDefinitions.length
+  // Source rows remain independent within each asset class. A crypto symbol
+  // can only use crypto feeds and an FX symbol can only use the broker feed;
+  // therefore a single global quorum would under-count Forex consensus Sets.
+  const selectedCryptoSignalSources = signalSettings.enabled
+    ? Math.min(enabledCryptoSignalSources, signalSettings.maxSourcesPerCycle)
     : 0
-  // Source rows always remain independent. Fresh exact configs bootstrap
-  // automatically; the fixed 12-result quality gate is applied downstream.
+  const selectedForexSignalSources = signalSettings.enabled
+    ? Math.min(enabledForexSignalSources, signalSettings.maxSourcesPerCycle)
+    : 0
+  const selectedSignalSources = selectedCryptoSignalSources + selectedForexSignalSources
   const signalDirectInputs = selectedSignalSources
-  const signalConsensusInputs =
-    selectedSignalSources >= signalSettings.minimumSourceSignals ? 1 : 0
+  const cryptoConsensusInputs =
+    selectedCryptoSignalSources >= signalSettings.minimumSourceSignals ? 1 : 0
+  const forexConsensusInputs =
+    selectedForexSignalSources >= signalSettings.minimumSourceSignalsForex ? 1 : 0
+  const signalConsensusInputs = cryptoConsensusInputs + forexConsensusInputs
   const signalEvaluationInputs = signalDirectInputs + signalConsensusInputs
   const signalPossibleDirectInputs = enabledSignalSources
   const signalPossibleConsensusInputs =
-    enabledSignalSources >= signalSettings.minimumSourceSignals ? 1 : 0
+    (enabledCryptoSignalSources >= signalSettings.minimumSourceSignals ? 1 : 0) +
+    (enabledForexSignalSources >= signalSettings.minimumSourceSignalsForex ? 1 : 0)
   const signalPossibleInputs =
     signalPossibleDirectInputs + signalPossibleConsensusInputs
   const signalTradeConfigurations = buildSignalTradeConfigurations({
@@ -492,9 +510,15 @@ export function calculateIndicationConfigurationCounts(
         `${signalTradeConfigurations} TP/SL/trailing configs × 2 directions`,
       params: {
         enabledSources: enabledSignalSources,
+        enabledCryptoSources: enabledCryptoSignalSources,
+        enabledForexSources: enabledForexSignalSources,
         selectedSourcesPerCycle: selectedSignalSources,
+        selectedCryptoSourcesPerCycle: selectedCryptoSignalSources,
+        selectedForexSourcesPerCycle: selectedForexSignalSources,
         directSourceInputs: signalDirectInputs,
         consensusInputs: signalConsensusInputs,
+        cryptoConsensusInputs,
+        forexConsensusInputs,
         possibleSourceInputs: signalPossibleInputs,
         registrySources: Object.keys(signalSettings.sources).length,
         tradeConfigurations: signalTradeConfigurations,

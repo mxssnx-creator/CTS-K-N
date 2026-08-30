@@ -1381,7 +1381,12 @@ export function ActiveConnectionCard({
           stratBase:  nonNegativeMetric(rows.base?.total ?? strat.base),
           stratMain:  nonNegativeMetric(rows.main?.overall ?? strat.main),
           stratMainAxisNetted: strat.mainAxisNetted || 0,
-          stratReal:  nonNegativeMetric(rows.real?.valid ?? strat.real),
+          // Real's logical pass count is the headline strategy metric. The
+          // Row-Real `valid` value is a physical materialisation count and can
+          // legitimately be larger after position-count/Block fan-out.
+          stratReal:  nonNegativeMetric(
+            strat.realLogicalPassed ?? sd.real?.passed ?? rows.real?.valid ?? strat.real,
+          ),
           stratLive:  nonNegativeMetric(
             rows.live?.executable ?? rows.live?.mirrored ?? rows.live?.total ?? strat.live,
           ),

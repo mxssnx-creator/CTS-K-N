@@ -707,9 +707,6 @@ export async function getStrategyTracking(
   // dedicated progression fields, matching `strategy_detail:*:real.evaluated`.
   const baseOutput    = Number(prog.strategies_base_total            || "0")
   const baseInput     = Number(prog.strategies_base_evaluated        || "0")
-  const mainOutput    = Number(prog.strategies_main_total            || "0")
-  const mainInput     = Number(prog.strategies_main_evaluated        || "0")
-  const mainParentsPassed = Number(prog.strategies_main_parent_passed || "0")
   const realOutput    = Number(prog.strategies_real_total            || "0")
   const realInput     = Number(prog.strategies_real_evaluated        || "0")
   const realLogicalPassed = Number(prog.strategies_real_logical_passed || "0")
@@ -718,11 +715,17 @@ export async function getStrategyTracking(
   // base = evaluated ÷ overall generated (entry point → ~100% when any exist).
   // main = passed Base parents ÷ evaluated Base parents.
   // real = logical Real passes ÷ logical Real evaluated pool.
+  // Main's logical parent funnel starts after the independent Base gate.
+  // `rows.base.total` is the raw emitted pool; using it here understated the
+  // Main pass rate whenever Base rejected candidates.  Physical Main
+  // fan-out remains a separate row/coordination metric.
+  const mainFunnelInput = rows.base.valid
+  const mainFunnelPassed = rows.main.valid
   const stageEvalPercent = {
     base: rows.base.total > 0 ? pct(rows.base.valid, rows.base.total) : pct(baseInput, baseOutput),
-    main: rows.base.total > 0
-      ? pct(rows.main.valid, rows.base.total)
-      : pct(mainParentsPassed || Math.min(mainOutput, mainInput), mainInput),
+    main: mainFunnelInput > 0
+      ? pct(mainFunnelPassed, mainFunnelInput)
+      : 0,
     real: pct(realLogicalPassed || Math.min(realOutput, realInput), realInput),
     live: rows.live.total > 0 ? pct(rows.live.mirrored, rows.live.total) : 0,
   }

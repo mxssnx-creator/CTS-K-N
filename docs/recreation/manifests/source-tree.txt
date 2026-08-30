@@ -1217,6 +1217,7 @@ lib/logistics-workflow.ts
 lib/main-indication-settings.ts
 lib/main-trade-profit-factor.ts
 lib/market-data-fetcher.ts
+lib/market-data-keys.ts
 lib/market-data-loader.ts
 lib/market-types.ts
 lib/memory-manager.ts
@@ -1273,6 +1274,8 @@ lib/quickstart-change-detection.ts
 lib/quickstart-timeouts.ts
 lib/rate-limiter.ts
 lib/real-trade-gates.ts
+lib/redis-db.ts
+lib/redis-db.ts
 lib/redis-db.ts
 lib/redis-idempotent-list.ts
 lib/redis-lock-utils.ts
@@ -1387,6 +1390,7 @@ lib/trade-engine/trade-engine.tsx
 lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
 lib/trade-protection-contract.ts
+lib/trading-pair-keys.ts
 lib/trading.ts
 lib/trailing-settings.ts
 lib/trend-indication.ts

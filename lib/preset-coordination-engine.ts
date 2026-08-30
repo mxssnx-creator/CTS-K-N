@@ -15,6 +15,25 @@ import { DataSyncManager } from "./data-sync-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
 import { concurrencyFromEnv, mapWithConcurrency } from "./bounded-concurrency"
 import { VolumeCalculator } from "./volume-calculator"
+import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
+import { normalizeExchangeId, normalizeMarketSymbol, normalizeMarketType, getDefaultSymbolsForMarket, type MarketType } from "@/lib/market-types"
+import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
+import { fetchDirectTradeMinuteHistory } from "@/lib/direct-trade-market-history"
+import { resolvePositionNotionalUsd } from "@/lib/live-position-pnl"
+import { effectivePositionCostPercent } from "@/lib/position-cost"
+
+function toEpochMilliseconds(value: unknown): number {
+  if (value instanceof Date) {
+    const timestamp = value.getTime()
+    return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0
+  }
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 100_000_000_000 ? numeric * 1000 : numeric
+  }
+  const parsed = Date.parse(String(value ?? ""))
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
 
 export interface PresetCoordinationConfig {
   connectionId: string
@@ -33,6 +52,18 @@ export class PresetCoordinationEngine {
   private positionLimits: Map<string, number> = new Map()
   private lastPositionTime: Map<string, number> = new Map()
   private pseudoPositionManager: PresetPseudoPositionManager
+  private marketContext: {
+    exchange: string
+    marketType: MarketType
+    positionCostPercent: number
+    lotSize?: number
+    quoteToUsdRate?: number
+    spreadBufferPips?: number
+    spreadMultiplier?: number
+  } | null = null
+  private currentMarketCache: Map<string, { fetchedAt: number; candles: any[] }> = new Map()
+  private positionCostCache: Map<string, { value: number; fetchedAt: number }> = new Map()
+  private readonly POSITION_COST_CACHE_TTL_MS = 30_000
 
   private readonly MAX_CONCURRENT_SYMBOLS = concurrencyFromEnv(
     ["PRESET_SYMBOL_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"],
@@ -359,6 +390,7 @@ export class PresetCoordinationEngine {
     const result = await this.calculateIndicatorsAsync(historicalData, configSet, indicationParams)
 
     // Simulate trades asynchronously for parallel processing
+    const positionCostPercent = await this.getPositionCostPercent(symbol)
     const trades = await this.simulateTradesAsync(
       historicalData,
       result.signals,
@@ -367,6 +399,7 @@ export class PresetCoordinationEngine {
       trailing.enabled,
       trailing.start,
       trailing.stop,
+      positionCostPercent,
     )
 
     // Calculate performance metrics
@@ -432,15 +465,38 @@ export class PresetCoordinationEngine {
     indicationParams: any,
   ): Promise<{ signals: any[] }> {
     return new Promise((resolve) => {
-      // Wrap synchronous calculation in Promise for async execution
+      // Yield between configuration sets so a large legacy Preset matrix does
+      // not monopolize the event loop. Each signal is calculated only from
+      // candles available before its entry; a single final-candle signal would
+      // not produce a meaningful historical trade series.
       setImmediate(() => {
-        const prices = historicalData.map((d) => d.close)
+        const rows = historicalData
+          .map((d) => ({
+            price: Number(d.close),
+            timestamp: toEpochMilliseconds(d.timestamp ?? d.time),
+          }))
+          .filter((row) => row.price > 0)
+        const prices = rows.map((row) => row.price)
         const indicatorConfig: IndicatorConfig = {
           type: configSet.indication_type as IndicatorConfig["type"],
           params: indicationParams,
         }
-
-        const signals = calculateIndicators(prices, [indicatorConfig])
+        const configuredPeriods = Object.values(indicationParams || {})
+          .map(Number)
+          .filter((value) => Number.isFinite(value) && value > 0)
+        const lookback = Math.min(300, Math.max(32, Math.floor(Math.max(...configuredPeriods, 14) * 2)))
+        const signals: any[] = []
+        for (let index = Math.max(lookback, 1); index < prices.length - 1; index += 1) {
+          const window = prices.slice(Math.max(0, index - lookback + 1), index + 1)
+          const [signal] = calculateIndicators(window, [indicatorConfig])
+          if (signal && signal.direction !== "neutral" && Number(signal.strength) > 0) {
+            signals.push({
+              ...signal,
+              index,
+              timestamp: rows[index]?.timestamp || signal.timestamp,
+            })
+          }
+        }
         resolve({ signals })
       })
     })
@@ -457,6 +513,7 @@ export class PresetCoordinationEngine {
     trailingEnabled: boolean,
     trailStart: number | null,
     trailStop: number | null,
+    positionCostPercent: number,
   ): Promise<any[]> {
     return new Promise((resolve) => {
       // Wrap synchronous simulation in Promise for async execution
@@ -469,6 +526,7 @@ export class PresetCoordinationEngine {
           trailingEnabled,
           trailStart,
           trailStop,
+          positionCostPercent,
         )
         resolve(trades)
       })
@@ -716,9 +774,7 @@ export class PresetCoordinationEngine {
         {
           tradeMode: "preset",
           indicationType: result.indication_type,
-          positionCostPercentOverride: Number(connection.position_cost_percent) > 0
-            ? Number(connection.position_cost_percent)
-            : undefined,
+          positionCostPercentOverride: await this.getPositionCostPercent(result.symbol),
           marketType: connection.market_type || connection.asset_class,
           lotSize: Number(connection.lot_size) > 0 ? Number(connection.lot_size) : undefined,
           quoteToUsdRate: Number(connection.quote_to_usd_rate) > 0
@@ -826,7 +882,18 @@ export class PresetCoordinationEngine {
         side: signal.direction,
         entryPrice: fillPrice,
         quantity: filledQuantity,
-        volumeUsd: filledQuantity * fillPrice,
+        volumeUsd: resolvePositionNotionalUsd({
+          symbol: result.symbol,
+          marketType: connection.market_type || connection.asset_class,
+          volumeKind: connection.quantity_unit,
+          lotSize: Number(connection.lot_size) > 0 ? Number(connection.lot_size) : undefined,
+          quoteToUsdRate: Number(connection.quote_to_usd_rate) > 0
+            ? Number(connection.quote_to_usd_rate)
+            : undefined,
+          status: "filled",
+          executedQuantity: filledQuantity,
+          entryPrice: fillPrice,
+        }),
         leverage: 1,
         positionTicket: Number(orderResult.protection?.positionTicket) > 0
           ? Number(orderResult.protection.positionTicket)
@@ -850,13 +917,25 @@ export class PresetCoordinationEngine {
   // ============ HELPER METHODS ============
 
   private async getSymbolsForConfigSet(configSet: PresetConfigurationSet): Promise<string[]> {
+    const context = await this.getMarketContext()
+    const normalizeSymbols = (symbols: unknown): string[] => {
+      if (!Array.isArray(symbols)) return []
+      return Array.from(new Set(symbols.map((symbol) => {
+        const value = context.marketType === "forex"
+          ? normalizeForexSymbol(symbol)
+          : normalizeMarketSymbol(symbol, "crypto")
+        return value
+      }).filter((symbol) => context.marketType === "forex" ? isForexSymbol(symbol) : Boolean(symbol))))
+    }
     switch (configSet.symbol_mode) {
       case "main":
-        return ["BTCUSDT", "ETHUSDT", "BNBUSDT"] // Default main symbols
+        return context.marketType === "forex"
+          ? getDefaultSymbolsForMarket("forex")
+          : ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
       case "forced":
-        return configSet.symbols || []
+        return normalizeSymbols(configSet.symbols)
       case "manual":
-        return configSet.symbols || []
+        return normalizeSymbols(configSet.symbols)
       case "exchange":
         return await this.getTopSymbolsByExchange(configSet)
       default:
@@ -865,9 +944,25 @@ export class PresetCoordinationEngine {
   }
 
   private async getTopSymbolsByExchange(configSet: PresetConfigurationSet): Promise<string[]> {
-    // Fetch top symbols from exchange based on order_by criteria
-    // This is a placeholder - actual implementation depends on exchange API
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    const context = await this.getMarketContext()
+    const requested = Math.max(1, Math.min(50, Math.floor(Number(configSet.exchange_limit) || 1)))
+    const order = configSet.exchange_order_by
+    const sort = order === "volatility" || order === "price_change" ? "volatility" : "volume"
+    try {
+      const { fetchTopSymbols } = await import("@/lib/top-symbols")
+      const ranked = await fetchTopSymbols(context.exchange, requested, sort)
+      const symbols = ranked.symbols
+        .map((ticker) => context.marketType === "forex"
+          ? normalizeForexSymbol(ticker.symbol)
+          : normalizeMarketSymbol(ticker.symbol, "crypto"))
+        .filter((symbol) => context.marketType === "forex" ? isForexSymbol(symbol) : Boolean(symbol))
+      if (symbols.length > 0) return Array.from(new Set(symbols))
+    } catch (error) {
+      console.warn(`[v0] Preset top-symbol selection failed for ${context.exchange}:`, error instanceof Error ? error.message : String(error))
+    }
+    return context.marketType === "forex"
+      ? getDefaultSymbolsForMarket("forex").slice(0, requested)
+      : ["BTCUSDT", "ETHUSDT", "SOLUSDT"].slice(0, requested)
   }
 
   private generateIndicationCombinations(configSet: PresetConfigurationSet): any[] {
@@ -929,10 +1024,134 @@ export class PresetCoordinationEngine {
     trailingEnabled: boolean,
     trailStart: number | null,
     trailStop: number | null,
+    positionCostPercent: number,
   ): any[] {
-    // Simulate trades based on signals and exit conditions
-    // This is a simplified simulation - actual implementation would be more complex
-    return []
+    const rows = historicalData.map((row: any) => {
+      const close = Number(row.close || 0)
+      const open = Number(row.open || close || 0)
+      const high = Number(row.high || close || 0)
+      const low = Number(row.low || close || 0)
+      return {
+        timestamp: toEpochMilliseconds(row.timestamp ?? row.time),
+        open,
+        high,
+        low,
+        close,
+      }
+    }).filter((row) => row.timestamp > 0 && row.open > 0 && row.high >= Math.max(row.open, row.close) && row.low > 0 && row.low <= Math.min(row.open, row.close) && row.close > 0)
+    if (rows.length < 2) return []
+    const tp = Number(tpFactor)
+    const sl = Number(slRatio)
+    if (!(tp > 0) || !(sl > 0)) return []
+    const cost = Number.isFinite(Number(positionCostPercent)) && Number(positionCostPercent) >= 0
+      ? Number(positionCostPercent)
+      : 0.1
+    const orderedSignals = [...signals]
+      .filter((signal) => signal?.direction === "long" || signal?.direction === "short")
+      .sort((left, right) => {
+        const leftIndex = Number(left.index)
+        const rightIndex = Number(right.index)
+        const leftTime = toEpochMilliseconds(left.timestamp)
+        const rightTime = toEpochMilliseconds(right.timestamp)
+        return (Number.isFinite(leftIndex) ? leftIndex : Number.MAX_SAFE_INTEGER) -
+          (Number.isFinite(rightIndex) ? rightIndex : Number.MAX_SAFE_INTEGER) ||
+          leftTime - rightTime
+      })
+    const trades: any[] = []
+    let nextEntryIndex = 1
+    for (const signal of orderedSignals) {
+      const rawSignalIndex = Number(signal.index)
+      const signalTimestamp = toEpochMilliseconds(signal.timestamp)
+      const timestampIndex = signalTimestamp > 0
+        ? rows.findIndex((row) => row.timestamp >= signalTimestamp)
+        : -1
+      const candidateIndex = timestampIndex >= 0 ? timestampIndex : rawSignalIndex
+      const signalIndex = Number.isFinite(candidateIndex)
+        ? Math.max(0, Math.min(rows.length - 2, Math.floor(candidateIndex)))
+        : 0
+      const entryIndex = Math.max(nextEntryIndex, signalIndex + 1)
+      if (entryIndex >= rows.length) break
+      const isLong = signal.direction === "long"
+      const entryPrice = rows[entryIndex].open
+      if (!(entryPrice > 0)) continue
+      const takeProfitPrice = isLong
+        ? entryPrice * (1 + tp / 100)
+        : entryPrice * (1 - tp / 100)
+      const stopLossPrice = isLong
+        ? entryPrice * (1 - sl / 100)
+        : entryPrice * (1 + sl / 100)
+      let bestPrice = entryPrice
+      let trailingActive = false
+      let exitPrice = rows[rows.length - 1].close
+      let exitIndex = rows.length - 1
+      let exitReason = "end_of_history"
+
+      for (let index = entryIndex; index < rows.length; index += 1) {
+        const row = rows[index]
+        // If one OHLC candle touches both controls, use the stop first. The
+        // candle has no intra-bar ordering, so this conservative convention
+        // avoids manufacturing an optimistic result.
+        if (isLong && row.low <= stopLossPrice) {
+          exitPrice = stopLossPrice
+          exitIndex = index
+          exitReason = "stoploss"
+          break
+        }
+        if (!isLong && row.high >= stopLossPrice) {
+          exitPrice = stopLossPrice
+          exitIndex = index
+          exitReason = "stoploss"
+          break
+        }
+        if (isLong && row.high >= takeProfitPrice) {
+          exitPrice = takeProfitPrice
+          exitIndex = index
+          exitReason = "takeprofit"
+          break
+        }
+        if (!isLong && row.low <= takeProfitPrice) {
+          exitPrice = takeProfitPrice
+          exitIndex = index
+          exitReason = "takeprofit"
+          break
+        }
+        if (trailingEnabled && Number(trailStart) > 0 && Number(trailStop) > 0) {
+          const favorablePct = isLong
+            ? ((row.high - entryPrice) / entryPrice) * 100
+            : ((entryPrice - row.low) / entryPrice) * 100
+          if (favorablePct >= Number(trailStart)) trailingActive = true
+          if (isLong) bestPrice = Math.max(bestPrice, row.high)
+          else bestPrice = Math.min(bestPrice, row.low)
+          if (trailingActive) {
+            const trailingStop = isLong
+              ? bestPrice * (1 - Number(trailStop) / 100)
+              : bestPrice * (1 + Number(trailStop) / 100)
+            if ((isLong && row.low <= trailingStop) || (!isLong && row.high >= trailingStop)) {
+              exitPrice = trailingStop
+              exitIndex = index
+              exitReason = "trailing_stop"
+              break
+            }
+          }
+        }
+      }
+      const grossProfitPercent = isLong
+        ? ((exitPrice - entryPrice) / entryPrice) * 100
+        : ((entryPrice - exitPrice) / entryPrice) * 100
+      trades.push({
+        entryPrice,
+        exitPrice,
+        profit: grossProfitPercent - cost,
+        grossProfitPercent,
+        positionCostPercent: cost,
+        direction: signal.direction,
+        reason: exitReason,
+        timestamp: rows[exitIndex].timestamp,
+        entryTimestamp: rows[entryIndex].timestamp,
+      })
+      nextEntryIndex = exitIndex + 1
+    }
+    return trades
   }
 
   private calculatePerformanceMetrics(trades: any[], configSet: PresetConfigurationSet): any {
@@ -944,7 +1163,11 @@ export class PresetCoordinationEngine {
 
     const totalProfit = trades.reduce((sum: number, t: any) => sum + Math.max(0, t.profit), 0)
     const totalLoss = Math.abs(trades.reduce((sum: number, t: any) => sum + Math.min(0, t.profit), 0))
-    const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : 0
+    const profitFactor = totalLoss > 0
+      ? totalProfit / totalLoss
+      : totalProfit > 0
+        ? Number.POSITIVE_INFINITY
+        : 0
 
     const avgProfit = winningTrades > 0 ? totalProfit / winningTrades : 0
     const avgLoss = losingTrades > 0 ? totalLoss / losingTrades : 0
@@ -957,21 +1180,27 @@ export class PresetCoordinationEngine {
     const profitFactorLast50 = this.calculateProfitFactorForTrades(last50)
 
     // Calculate positions per 24h
-    const timeSpan =
-      trades.length > 0 ? (trades[trades.length - 1].timestamp - trades[0].timestamp) / (1000 * 60 * 60) : 1
+    const tradeTimes = trades.map((trade: any) => toEpochMilliseconds(trade.timestamp)).filter((timestamp) => timestamp > 0)
+    const timeSpan = tradeTimes.length > 1
+      ? Math.max(1 / 60, (Math.max(...tradeTimes) - Math.min(...tradeTimes)) / (1000 * 60 * 60))
+      : 1
     const positionsPer24h = (totalTrades / timeSpan) * 24
+
+    const drawdownMetrics = this.calculateDrawdownMetrics(trades)
+    const configuredDrawdownLimit = Number(configSet.drawdown_time_max)
+    const drawdownWithinLimit = !Number.isFinite(configuredDrawdownLimit) || configuredDrawdownLimit <= 0 ||
+      drawdownMetrics.maxDrawdownDuration <= configuredDrawdownLimit
 
     // Validation
     const isValid =
       profitFactor >= configSet.profit_factor_min &&
       totalTrades >= configSet.trades_per_48h_min &&
-      (profitFactorLast25 > 0 || profitFactorLast50 > 0)
+      (profitFactorLast25 > 0 || profitFactorLast50 > 0) &&
+      drawdownWithinLimit
 
     const validationReason = !isValid
       ? `Profit factor: ${profitFactor.toFixed(2)}, Trades: ${totalTrades}, Last 25 PF: ${profitFactorLast25.toFixed(2)}`
       : "Valid"
-
-    const drawdownMetrics = this.calculateDrawdownMetrics(trades)
 
     return {
       profitFactor,
@@ -996,34 +1225,47 @@ export class PresetCoordinationEngine {
       return { maxDrawdown: 0, maxDrawdownDuration: 0 }
     }
 
-    const sortedTrades = [...trades].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    const sortedTrades = [...trades]
+      .map((trade) => ({
+        ...trade,
+        timestampMs: toEpochMilliseconds(trade.timestamp),
+        profitValue: Number(trade.profit),
+      }))
+      .filter((trade) => trade.timestampMs > 0 && Number.isFinite(trade.profitValue))
+      .sort((a, b) => a.timestampMs - b.timestampMs)
 
-    let cumulativePnL = 0
-    let peak = 0
+    if (sortedTrades.length === 0) return { maxDrawdown: 0, maxDrawdownDuration: 0 }
+
+    // Simulated profits are percentages, so start with a 100-point equity
+    // baseline. This keeps max drawdown meaningful even when the first trades
+    // are losers instead of silently reporting zero.
+    let cumulativeEquity = 100
+    let peak = 100
     let maxDrawdown = 0
-    let currentDrawdownStart: Date | null = null
+    let currentDrawdownStartMs: number | null = null
     let maxDrawdownDuration = 0
 
     for (const trade of sortedTrades) {
-      cumulativePnL += trade.profit
+      cumulativeEquity += trade.profitValue
 
-      if (cumulativePnL > peak) {
-        peak = cumulativePnL
-        currentDrawdownStart = null
-      } else if (cumulativePnL < peak && peak > 0) {
-        if (!currentDrawdownStart) {
-          currentDrawdownStart = new Date(trade.timestamp)
-        }
-        const currentDrawdown = ((peak - cumulativePnL) / peak) * 100
+      if (cumulativeEquity >= peak) {
+        peak = cumulativeEquity
+        currentDrawdownStartMs = null
+      } else {
+        if (currentDrawdownStartMs === null) currentDrawdownStartMs = trade.timestampMs
+        const currentDrawdown = Math.max(0, ((peak - cumulativeEquity) / Math.max(peak, 1)) * 100)
         if (currentDrawdown > maxDrawdown) {
           maxDrawdown = currentDrawdown
         }
+        const drawdownStartMs = currentDrawdownStartMs ?? trade.timestampMs
+        const duration = (trade.timestampMs - drawdownStartMs) / (1000 * 60 * 60)
+        if (duration > maxDrawdownDuration) maxDrawdownDuration = duration
       }
     }
 
-    if (currentDrawdownStart && sortedTrades.length > 0) {
-      const lastTradeTime = new Date(sortedTrades[sortedTrades.length - 1].timestamp).getTime()
-      const duration = (lastTradeTime - currentDrawdownStart.getTime()) / (1000 * 60 * 60)
+    if (currentDrawdownStartMs !== null) {
+      const lastTradeTime = sortedTrades[sortedTrades.length - 1].timestampMs
+      const duration = (lastTradeTime - currentDrawdownStartMs) / (1000 * 60 * 60)
       if (duration > maxDrawdownDuration) {
         maxDrawdownDuration = duration
       }
@@ -1038,7 +1280,11 @@ export class PresetCoordinationEngine {
     const totalProfit = trades.reduce((sum: number, t: any) => sum + Math.max(0, t.profit), 0)
     const totalLoss = Math.abs(trades.reduce((sum: number, t: any) => sum + Math.min(0, t.profit), 0))
 
-    return totalLoss > 0 ? totalProfit / totalLoss : 0
+    return totalLoss > 0
+      ? totalProfit / totalLoss
+      : totalProfit > 0
+        ? Number.POSITIVE_INFINITY
+        : 0
   }
 
   private hashIndicationParams(params: any): string {
@@ -1057,9 +1303,45 @@ export class PresetCoordinationEngine {
   }
 
   private async getCurrentMarketSignal(result: PresetCoordinationResult): Promise<any> {
-    // Get current market data and calculate signal
-    // This is a placeholder - actual implementation would calculate real-time indicators
-    return { direction: "long", strength: 0.8 }
+    const cached = this.currentMarketCache.get(result.symbol)
+    const now = Date.now()
+    let candles = cached && now - cached.fetchedAt < 15_000 ? cached.candles : []
+    if (candles.length < 20) {
+      try {
+        const historical = await this.getHistoricalData(result.symbol, 2)
+        candles = historical.slice(-300).map((row: any) => ({
+          timestamp: Number(row.timestamp || 0),
+          open: Number(row.open || row.close || 0),
+          high: Number(row.high || row.close || 0),
+          low: Number(row.low || row.close || 0),
+          close: Number(row.close || 0),
+          volume: Number(row.volume || 0),
+        })).filter((row: any) => row.close > 0)
+      } catch {
+        candles = []
+      }
+    }
+    if (candles.length < 20) {
+      try {
+        candles = await this.fetchHistoricalOHLCV(
+          result.symbol,
+          new Date(now - 6 * 60 * 60 * 1000),
+          new Date(now),
+        )
+      } catch {
+        candles = []
+      }
+    }
+    if (candles.length < 20) return { direction: "neutral", strength: 0 }
+    this.currentMarketCache.set(result.symbol, { fetchedAt: now, candles: candles.slice(-300) })
+    const prices = candles.map((row: any) => Number(row.close)).filter((price: number) => price > 0)
+    const [signal] = calculateIndicators(prices, [{
+      type: result.indication_type as IndicatorConfig["type"],
+      params: result.indication_params || {},
+    }])
+    return signal
+      ? { direction: signal.direction, strength: Number(signal.strength) || 0 }
+      : { direction: "neutral", strength: 0 }
   }
 
   private async getCurrentPrice(symbol: string): Promise<number> {
@@ -1070,13 +1352,136 @@ export class PresetCoordinationEngine {
       ORDER BY timestamp DESC
       LIMIT 1
     `
-    return result?.price || 0
+    const databasePrice = Number(result?.price || 0)
+    if (databasePrice > 0) return databasePrice
+    try {
+      const connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
+      const ticker = connector ? await connector.getTicker(symbol) : null
+      const bid = Number(ticker?.bid || 0)
+      const ask = Number(ticker?.ask || 0)
+      const last = Number(ticker?.last || 0)
+      return last > 0 ? last : bid > 0 && ask > 0 ? (bid + ask) / 2 : Math.max(bid, ask)
+    } catch {
+      return 0
+    }
   }
 
   private async fetchHistoricalOHLCV(symbol: string, startTime: Date, endTime: Date): Promise<any[]> {
-    // Fetch historical OHLCV data from exchange
-    // This is a placeholder - actual implementation depends on exchange API
-    return []
+    const context = await this.getMarketContext()
+    const historyHours = Math.max(1 / 60, (endTime.getTime() - startTime.getTime()) / 3_600_000)
+    const canonical = context.marketType === "forex"
+      ? normalizeForexSymbol(symbol)
+      : normalizeMarketSymbol(symbol, "crypto")
+    if (context.marketType === "forex" && isForexSymbol(canonical)) {
+      const { fetchInstaForexMinuteHistory } = await import("@/lib/direct-trade-market-history")
+      return (await fetchInstaForexMinuteHistory(canonical, historyHours))
+        .filter((row) => row.time >= startTime.getTime() && row.time <= endTime.getTime())
+        .map((row) => ({
+          timestamp: row.time,
+          open: row.open,
+          high: row.high,
+          low: row.low,
+          close: row.close,
+          volume: row.volume,
+        }))
+    }
+    if (context.exchange === "bingx" || context.exchange === "bybit") {
+      return (await fetchDirectTradeMinuteHistory(context.exchange, canonical, historyHours))
+        .filter((row) => row.time >= startTime.getTime() && row.time <= endTime.getTime())
+        .map((row) => ({
+          timestamp: row.time,
+          open: row.open,
+          high: row.high,
+          low: row.low,
+          close: row.close,
+          volume: row.volume,
+        }))
+    }
+    const connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
+    if (!connector) return []
+    const limit = Math.max(100, Math.min(5_000, Math.ceil(historyHours * 60)))
+    const candles = await connector.getOHLCV(canonical, "1m", limit)
+    return (candles || [])
+      .filter((row: any) => Number(row.timestamp) >= startTime.getTime() && Number(row.timestamp) <= endTime.getTime())
+      .map((row: any) => ({
+        timestamp: Number(row.timestamp),
+        open: Number(row.open),
+        high: Number(row.high),
+        low: Number(row.low),
+        close: Number(row.close),
+        volume: Number(row.volume || 0),
+      }))
+  }
+
+  private async getMarketContext(): Promise<{
+    exchange: string
+    marketType: MarketType
+    positionCostPercent: number
+    lotSize?: number
+    quoteToUsdRate?: number
+    spreadBufferPips?: number
+    spreadMultiplier?: number
+  }> {
+    if (this.marketContext) return this.marketContext
+    const [connection] = await sql<any>`SELECT * FROM connections WHERE id = ${this.connectionId}`
+    const exchange = normalizeExchangeId(connection?.exchange || "bingx")
+    const marketType = normalizeMarketType(connection?.market_type || connection?.asset_class, exchange)
+    const configuredCost = Number(connection?.position_cost_percent)
+    this.marketContext = {
+      exchange,
+      marketType,
+      positionCostPercent: Number.isFinite(configuredCost) && configuredCost > 0 ? configuredCost : 0.1,
+      lotSize: Number(connection?.lot_size) > 0 ? Number(connection.lot_size) : undefined,
+      quoteToUsdRate: Number(connection?.quote_to_usd_rate) > 0 ? Number(connection.quote_to_usd_rate) : undefined,
+      spreadBufferPips: Number.isFinite(Number(connection?.spread_buffer_pips)) && Number(connection?.spread_buffer_pips) >= 0
+        ? Number(connection.spread_buffer_pips)
+        : undefined,
+      spreadMultiplier: Number.isFinite(Number(connection?.spread_multiplier)) && Number(connection?.spread_multiplier) >= 0
+        ? Number(connection.spread_multiplier)
+        : undefined,
+    }
+    return this.marketContext
+  }
+
+  /**
+   * Resolve the actual cost coordinate for a symbol. Forex spreads are a
+   * broker quote, not a static crypto fee assumption, so every optimization
+   * symbol gets the latest cached broker tick widened by the configured
+   * safety buffer. The short cache prevents a Cartesian preset matrix from
+   * hammering the quote endpoint while still refreshing several times per
+   * minute during a long run.
+   */
+  private async getPositionCostPercent(symbol: string): Promise<number> {
+    const context = await this.getMarketContext()
+    if (context.marketType !== "forex" || !isForexSymbol(symbol)) {
+      return context.positionCostPercent
+    }
+    const canonical = normalizeForexSymbol(symbol)
+    const cached = this.positionCostCache.get(canonical)
+    if (cached && Date.now() - cached.fetchedAt < this.POSITION_COST_CACHE_TTL_MS) {
+      return cached.value
+    }
+
+    let value = context.positionCostPercent
+    try {
+      const connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
+      const ticker = connector ? await connector.getTicker(canonical) : null
+      value = effectivePositionCostPercent(
+        context.positionCostPercent,
+        ticker,
+        canonical,
+        {
+          marketType: "forex",
+          spreadBufferPips: context.spreadBufferPips,
+          spreadMultiplier: context.spreadMultiplier,
+        },
+      )
+    } catch {
+      // A temporary quote outage must not discard a valid cached optimization;
+      // retain the configured minimum until the next bounded refresh.
+    }
+    this.positionCostCache.set(canonical, { value, fetchedAt: Date.now() })
+    return value
   }
 
   private async storeHistoricalData(symbol: string, data: any[]): Promise<void> {

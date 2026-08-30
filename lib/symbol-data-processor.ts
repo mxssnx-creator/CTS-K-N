@@ -3,11 +3,17 @@
  * Async per-symbol data loading, WebSocket connection, and continuous processing
  */
 
-import { getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
+import { getConnection, getRedisClient } from "@/lib/redis-db"
 import { EngineProgressManager, getProgressManager } from "./engine-progress-manager"
 import { getPrehistoricProgressTracker } from "./prehistoric-progress-tracker"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { runtimeParallelism } from "@/lib/runtime-parallelism"
+import { marketDataKey } from "@/lib/market-data-keys"
+import { fetchDirectTradeMinuteHistory } from "@/lib/direct-trade-market-history"
+import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
+import { isForcedSimulation } from "@/lib/real-trade-gates"
+import { normalizeMarketSymbol, normalizeMarketType } from "@/lib/market-types"
+import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
 
 export interface SymbolDataResult {
   symbol: string
@@ -216,7 +222,7 @@ export class SymbolDataProcessor {
     if (process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID || typeof (globalThis as any).jest !== "undefined") return
     try {
       const client = getRedisClient()
-      const key = `market_data:${symbol}:realtime`
+      const key = marketDataKey(symbol, "realtime", this.connectionId)
 
       // Store only the latest tick and do not await detached websocket writes;
       // this prevents late test/process teardown continuations from stalling.
@@ -239,49 +245,68 @@ export class SymbolDataProcessor {
   private async fetchOHLCVData(symbol: string, exchange: string = 'bingx'): Promise<SymbolDataResult> {
     const start = Date.now()
     try {
+      const connection = await getConnection(this.connectionId).catch(() => null)
+      const marketType = normalizeMarketType(
+        (connection as any)?.market_type || (connection as any)?.asset_class,
+        (connection as any)?.exchange || exchange,
+      )
+      const canonicalSymbol = marketType === "forex"
+        ? normalizeForexSymbol(symbol)
+        : normalizeMarketSymbol(symbol, "crypto")
+      if (marketType === "forex" && !isForexSymbol(canonicalSymbol)) {
+        throw new Error(`Invalid Forex symbol ${symbol}`)
+      }
+
       let candles: Array<{timestamp: number; open: number; high: number; low: number; close: number; volume: number}> = []
-      try {
-        const { readBingxCredentialsFromEnv } = await import('@/lib/env-credentials')
-        const { getBaseConnectionCredentials } = await import('@/lib/base-connection-credentials')
-        const envCreds = readBingxCredentialsFromEnv()
-        let apiKey = envCreds.apiKey
-        let apiSecret = envCreds.apiSecret
-        if (!envCreds.hasCredentials) {
-          const base = getBaseConnectionCredentials(this.connectionId as any)
-          apiKey = base.apiKey || ''
-          apiSecret = base.apiSecret || ''
+      if (isForcedSimulation()) {
+        candles = this.generateSimulatedCandles(canonicalSymbol, 400)
+      } else {
+        const venue = String((connection as any)?.exchange || exchange).trim().toLowerCase().replace(/[^a-z]/g, "")
+        const directVenue = venue.includes("instaforex") || venue.includes("instafx")
+          ? "instaforex"
+          : venue.includes("bingx")
+            ? "bingx"
+            : venue.includes("bybit")
+              ? "bybit"
+              : ""
+        if (directVenue) {
+          const raw = await fetchDirectTradeMinuteHistory(directVenue, canonicalSymbol, 24)
+          candles = raw.map((c) => ({
+            timestamp: c.time,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+          }))
+        } else {
+          const connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
+          const raw = connector ? await connector.getOHLCV(canonicalSymbol, "1m", 1_440) : null
+          candles = (raw || []).map((c: any) => ({
+            timestamp: Number(c.timestamp),
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+            volume: Number(c.volume || 0),
+          }))
         }
-        if (apiKey && apiSecret && exchange === 'bingx') {
-          const { BingXConnector } = await import('@/lib/exchange-connectors/bingx-connector')
-          const connector = new BingXConnector({ apiKey, apiSecret, isTestnet: true, apiType: 'perpetual_futures' } as any)
-          const raw = await connector.getOHLCV(symbol, '1m', 500)
-          if (raw && raw.length > 0) {
-            candles = raw.map((c: any) => ({
-              timestamp: c.timestamp,
-              open: c.open,
-              high: c.high,
-              low: c.low,
-              close: c.close,
-              volume: c.volume,
-            }))
-          }
-        }
-      } catch {}
+      }
       if (candles.length === 0) {
-        candles = this.generateSimulatedCandles(symbol, 400)
+        throw new Error(`No current ${marketType} history available for ${canonicalSymbol}`)
       }
       const client = getRedisClient()
-      const ck = `prehistoric:${this.connectionId}:${symbol}:candles`
+      const ck = `prehistoric:${this.connectionId}:${canonicalSymbol}:candles`
       await client.del(ck)
       const toStore = candles.slice().reverse()
       for (const c of toStore) {
         await client.lpush(ck, JSON.stringify(c))
       }
       await client.ltrim(ck, 0, 4999)
-      await client.set(`prehistoric:${this.connectionId}:${symbol}:loaded`, '1', { EX: 86400 } as any)
+      await client.set(`prehistoric:${this.connectionId}:${canonicalSymbol}:loaded`, '1', { EX: 86400 } as any)
       const dur = Date.now() - start
-      await this.progressManager.updateSymbolPrehistoric(symbol, candles.length, 0, dur, true)
-      return { symbol, candles: candles.length, errors: 0, duration: dur, success: true, errorMessage: null }
+      await this.progressManager.updateSymbolPrehistoric(canonicalSymbol, candles.length, 0, dur, true)
+      return { symbol: canonicalSymbol, candles: candles.length, errors: 0, duration: dur, success: true, errorMessage: null }
     } catch (error) {
       const dur = Date.now() - start
       const msg = error instanceof Error ? error.message : 'Unknown error'

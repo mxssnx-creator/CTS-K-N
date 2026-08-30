@@ -54,4 +54,25 @@ describe("Direct-Trade venue-bound market history", () => {
     expect(global.fetch).toBe(originalFetch)
     expect(fetchBingXPublicMock).not.toHaveBeenCalled()
   })
+
+  test("reads InstaForex's public M1 Charts SOAP response without credentials", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      text: async () => [
+        "<ArrayOfChart><Chart><Timestamp>",
+        String(Math.floor((Date.now() - 60_000) / 1_000)),
+        "</Timestamp><Open>1.1000</Open><High>1.1010</High><Low>1.0990</Low>",
+        "<Close>1.1005</Close><Volume>0</Volume></Chart></ArrayOfChart>",
+      ].join(""),
+    }) as any
+    const { fetchDirectTradeMinuteHistory } = await import("@/lib/direct-trade-market-history")
+
+    const candles = await fetchDirectTradeMinuteHistory("instaforex", "EUR/USD", 1)
+
+    expect(candles).toHaveLength(1)
+    expect(candles[0]).toMatchObject({ open: 1.1, high: 1.101, low: 1.099, close: 1.1005 })
+    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain("client-api.instaforex.com/soapservices/charts.svc")
+    expect(String((global.fetch as jest.Mock).mock.calls[0][1]?.body)).toContain("<Symbol>EURUSD</Symbol>")
+    expect(String((global.fetch as jest.Mock).mock.calls[0][1]?.body)).toContain("<Type>M1</Type>")
+  })
 })

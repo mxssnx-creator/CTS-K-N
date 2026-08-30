@@ -322,14 +322,16 @@ export class InstaForexConnector extends BaseExchangeConnector {
     })
   }
 
-  private ensureBridgeConfigured(): void {
-    if (!this.bridgeSelected || !this.bridgeUrl || !this.accountPassword || !this.accountId()) {
+  private ensureBridgeConfigured(): string {
+    const accountId = this.accountId()
+    if (!this.bridgeSelected || !this.bridgeUrl || !this.accountPassword || !/^[0-9]{4,12}$/.test(accountId)) {
       throw new Error("InstaForex private bridge requires an explicit URL, numeric account id/login, and trader password")
     }
+    return accountId
   }
 
   private async bridgeRequest(operation: string, payload: Record<string, unknown> = {}): Promise<unknown> {
-    this.ensureBridgeConfigured()
+    const accountId = this.ensureBridgeConfigured()
     const response = await this.requestJson(this.bridgeUrl + "/v1/mt5", {
       method: "POST",
       headers: {
@@ -338,7 +340,7 @@ export class InstaForexConnector extends BaseExchangeConnector {
       },
       body: JSON.stringify({
         operation,
-        accountId: this.accountId(),
+        accountId,
         password: this.accountPassword,
         server: this.accountServer || undefined,
         terminalPath: this.terminalPath || undefined,
@@ -596,6 +598,9 @@ export class InstaForexConnector extends BaseExchangeConnector {
       liquidationPrice: 0,
       timestamp: timestampFrom(row, ["timestamp", "Timestamp", "openTime", "OpenTime"]),
       quantityUnit: "lots",
+      marketType: "forex",
+      lotSize: this.lotSize(),
+      quoteToUsdRate: numberFrom(row, ["quoteToUsdRate", "quote_to_usd_rate", "usdRate", "usd_rate"], 0) || undefined,
       positionTicket: (() => {
         const ticket = Number(valueFor(row, ["positionTicket", "PositionTicket", "ticket", "Ticket", "trade", "Trade"]))
         return Number.isInteger(ticket) && ticket > 0 ? ticket : undefined
@@ -926,9 +931,11 @@ export class InstaForexConnector extends BaseExchangeConnector {
         success: data.success !== false,
         ...(orderId ? { orderId } : {}),
       }
-      for (const key of ["status", "filledQty", "filledPrice", "remainingLots", "fullyClosed", "postCloseVerified"]) {
+      for (const key of ["status", "filledQty", "filledPrice", "remainingLots", "fullyClosed", "postCloseVerified", "positionTicket"]) {
         if (data[key] !== undefined) result[key] = data[key]
       }
+      const positionTicket = Number(valueFor(data, ["positionTicket", "PositionTicket", "position_ticket", "Position_Ticket"]))
+      if (Number.isInteger(positionTicket) && positionTicket > 0) result.positionTicket = positionTicket
       return result
     } catch (error) {
       return {
@@ -1038,20 +1045,46 @@ export class InstaForexConnector extends BaseExchangeConnector {
       if (!Number.isInteger(positionTicket) || positionTicket <= 0) {
         return { success: false, error: "Native InstaForex close requires an exact terminal position ticket" }
       }
-      const result = await this.bridgeMutation("close", {
-        symbol: this.actualSymbol(normalizeForexSymbol(symbol)),
-        positionTicket,
-        volumeLots: position?.contracts,
-      })
-      if (result.success && result.postCloseVerified !== true) {
-        return {
-          success: false,
-          error: "InstaForex close acknowledgement did not include exact post-close ticket verification",
-        }
-      }
-      return result
+      return this.closePositionByTicket(symbol, positionTicket, position?.contracts)
     }
     return this.readOnlyMutation("position close")
+  }
+
+  /**
+   * Close exactly one MT4/MT5 terminal ticket.  This is intentionally a
+   * separate method from closePosition(symbol, side): emergency protection
+   * handling must never select an arbitrary same-symbol trade.
+   */
+  override async closePositionByTicket(
+    symbol: string,
+    positionTicket: number,
+    quantityLots?: number,
+    options: { clientOrderId?: string } = {},
+  ): Promise<{ success: boolean; error?: string; [key: string]: unknown }> {
+    if (!this.bridgeSelected) return this.readOnlyMutation("position close")
+    const canonical = normalizeForexSymbol(symbol)
+    const ticket = Number(positionTicket)
+    if (!isForexSymbol(canonical)) return { success: false, error: "InstaForex close requires a valid Forex symbol" }
+    if (!Number.isInteger(ticket) || ticket <= 0) {
+      return { success: false, error: "InstaForex close requires a positive terminal position ticket" }
+    }
+    const lots = Number(quantityLots)
+    if (quantityLots !== undefined && (!(lots > 0) || !Number.isFinite(lots))) {
+      return { success: false, error: "InstaForex close quantity must be positive lots when supplied" }
+    }
+    const result = await this.bridgeMutation("close", {
+      symbol: this.actualSymbol(canonical),
+      positionTicket: ticket,
+      ...(quantityLots === undefined ? {} : { volumeLots: lots }),
+      ...(options.clientOrderId ? { clientOrderId: options.clientOrderId } : {}),
+    })
+    if (result.success && result.postCloseVerified !== true) {
+      return {
+        success: false,
+        error: "InstaForex close acknowledgement did not include exact post-close ticket verification",
+      }
+    }
+    return result
   }
 
   async modifyPosition(

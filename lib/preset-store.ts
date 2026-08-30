@@ -20,6 +20,19 @@ import { getHistoricCandlesForRange } from "@/lib/trade-engine/market-data-cache
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import {
+  isForexSymbol,
+  normalizeForexSymbol,
+} from "@/lib/forex-market"
+import {
+  getDefaultSymbolsForMarket,
+  normalizeMarketSymbol,
+  normalizeMarketType,
+  type MarketType,
+} from "@/lib/market-types"
+import { effectivePositionCostPercent } from "@/lib/position-cost"
+import { fetchInstaForexMinuteHistory } from "@/lib/direct-trade-market-history"
+import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 
 const PREFIX = "preset_optimizer:v2"
 const GENERATION_RETENTION = 2
@@ -149,16 +162,27 @@ function historicCoverage(candles: Array<{ timestamp: number }>): number {
 }
 
 async function loadPresetHistoricRange(input: {
+  connectionId: string
   connection: Record<string, any> | null
   symbol: string
   startMs: number
   endMs: number
   settings: PresetOptimizerSettings
 }): Promise<{ candles: unknown[]; sourceCandleCount: number; source: "chunk-cache" | "exchange" }> {
-  let cachedRaw = await getHistoricCandlesForRange(input.symbol, {
+  const connection = input.connection || {}
+  const exchange = String(connection.exchange ?? "")
+  const marketType = normalizeMarketType(
+    connection.market_type ?? connection.asset_class,
+    exchange,
+  )
+  const canonicalSymbol = marketType === "forex"
+    ? normalizeForexSymbol(input.symbol)
+    : normalizeMarketSymbol(input.symbol, marketType)
+  let cachedRaw = await getHistoricCandlesForRange(canonicalSymbol, {
     startMs: input.startMs,
     endMs: input.endMs,
     batchChunks: 4,
+    connectionId: input.connectionId,
   })
   const cachedSourceCount = cachedRaw.length
   let cached = normalizeCandles(cachedRaw)
@@ -178,10 +202,45 @@ async function loadPresetHistoricRange(input: {
   // from being simultaneously retained as two large arrays.
   const cachedFallback = aggregateCandles(cached, input.settings.maxCandlesPerRun)
   if (cachedFallback !== cached) cached = []
-  const connection = input.connection || {}
+  // InstaForex has no crypto-style API secret. Its documented Charts API is a
+  // public read surface, so Forex optimization must not be rejected by the
+  // crypto credential gate below. Keep the returned range on the same candle
+  // contract as crypto so indicators and TP/SL evaluation stay identical.
+  if (marketType === "forex" && isForexSymbol(canonicalSymbol)) {
+    try {
+      const history = await fetchInstaForexMinuteHistory(
+        canonicalSymbol,
+        Math.max(1 / 60, input.settings.historyDays * 24),
+      )
+      const exchangeCandles = normalizeCandles(history.map((row) => ({
+        timestamp: row.time,
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close,
+        volume: row.volume,
+      }))).filter((candle) => candle.timestamp >= input.startMs && candle.timestamp <= input.endMs)
+      if (
+        exchangeCandles.length >= 40 &&
+        historicCoverage(exchangeCandles) > cachedCoverage
+      ) {
+        return {
+          candles: aggregateCandles(exchangeCandles, input.settings.maxCandlesPerRun),
+          sourceCandleCount: exchangeCandles.length,
+          source: "exchange",
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `[PresetOptimizer] ${canonicalSymbol} InstaForex history fallback failed:`,
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+    return { candles: cachedFallback, sourceCandleCount: cachedSourceCount, source: "chunk-cache" }
+  }
+
   const apiKey = String(connection.api_key ?? connection.apiKey ?? "")
   const apiSecret = String(connection.api_secret ?? connection.apiSecret ?? "")
-  const exchange = String(connection.exchange ?? "")
   const hasRealCredentials =
     apiKey.length >= 10 &&
     apiSecret.length >= 10 &&
@@ -204,7 +263,7 @@ async function loadPresetHistoricRange(input: {
       contractType: String(connection.contract_type ?? connection.contractType ?? "") || undefined,
       isTestnet: isTruthyFlag(connection.is_testnet),
     })
-    const exchangeRaw = await connector.getOHLCV(input.symbol, timeframe, limit)
+    const exchangeRaw = await connector.getOHLCV(canonicalSymbol, timeframe, limit)
     const exchangeCandles = normalizeCandles(Array.isArray(exchangeRaw) ? exchangeRaw : [])
       .filter((candle) => candle.timestamp >= input.startMs && candle.timestamp <= input.endMs)
     if (
@@ -236,7 +295,7 @@ function parseJson<T>(raw: unknown, fallback: T): T {
   }
 }
 
-function parseSymbols(raw: unknown): string[] {
+function parseSymbols(raw: unknown, marketType: MarketType = "crypto"): string[] {
   const parsed = parseJson<unknown>(raw, raw)
   const values = Array.isArray(parsed)
     ? parsed
@@ -244,8 +303,10 @@ function parseSymbols(raw: unknown): string[] {
       ? parsed.split(/[\s,|]+/)
       : []
   return [...new Set(values
-    .map((value) => String(value || "").trim().toUpperCase().replace("-", ""))
-    .filter((symbol) => /^[A-Z0-9]+USDT$/.test(symbol)))]
+    .map((value) => marketType === "forex"
+      ? normalizeForexSymbol(value)
+      : normalizeMarketSymbol(value, marketType))
+    .filter((symbol) => marketType === "forex" ? isForexSymbol(symbol) : /^[A-Z0-9]+USDT$/.test(symbol)))]
 }
 
 function settingsFromApp(app: Record<string, any>): PresetOptimizerSettings {
@@ -427,8 +488,6 @@ export async function savePresetOptimizerSettings(
 }
 
 export async function resolvePresetSymbols(connectionId: string, requested?: unknown): Promise<string[]> {
-  const explicit = parseSymbols(requested)
-  if (explicit.length > 0) return explicit
   await initRedis()
   const client = getRedisClient()
   const [connection, engineState, app] = await Promise.all([
@@ -436,6 +495,12 @@ export async function resolvePresetSymbols(connectionId: string, requested?: unk
     client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({})),
     getAppSettings().catch(() => ({})),
   ])
+  const marketType = normalizeMarketType(
+    (connection as any)?.market_type || (connection as any)?.asset_class,
+    (connection as any)?.exchange,
+  )
+  const explicit = parseSymbols(requested, marketType)
+  if (explicit.length > 0) return explicit
   const state = engineState as Record<string, string>
   const sources = [
     state.force_symbols,
@@ -448,10 +513,41 @@ export async function resolvePresetSymbols(connectionId: string, requested?: unk
     (app as any)?.main_symbols,
   ]
   for (const source of sources) {
-    const symbols = parseSymbols(source)
+    const symbols = parseSymbols(source, marketType)
     if (symbols.length > 0) return symbols
   }
-  return FALLBACK_SYMBOLS
+  return marketType === "forex" ? getDefaultSymbolsForMarket("forex") : FALLBACK_SYMBOLS
+}
+
+async function resolvePresetPositionCostPercent(
+  connectionId: string,
+  connection: Record<string, any> | null,
+  symbol: string,
+  configuredPercent: number,
+): Promise<number> {
+  const marketType = normalizeMarketType(
+    connection?.market_type ?? connection?.asset_class,
+    connection?.exchange,
+  )
+  if (marketType !== "forex" || !isForexSymbol(symbol)) return configuredPercent
+  try {
+    const connector = await exchangeConnectorFactory.getOrCreateConnector(connectionId)
+    const ticker = connector ? await connector.getTicker(normalizeForexSymbol(symbol)) : null
+    return effectivePositionCostPercent(
+      configuredPercent,
+      ticker,
+      normalizeForexSymbol(symbol),
+      {
+        marketType: "forex",
+        spreadBufferPips: Number(connection?.spread_buffer_pips ?? connection?.spreadBufferPips),
+        spreadMultiplier: Number(connection?.spread_multiplier ?? connection?.spreadMultiplier),
+      },
+    )
+  } catch {
+    // A missing quote must not make a valid cached optimization fail; the
+    // configured minimum remains the conservative fallback.
+    return configuredPercent
+  }
 }
 
 export async function getCommonIndicationSettings(): Promise<Record<string, unknown>> {
@@ -758,6 +854,7 @@ export async function runPresetOptimization(input: {
       let candles: unknown[] = []
       try {
         const historic = await loadPresetHistoricRange({
+          connectionId: input.connectionId,
           connection: connection as Record<string, any> | null,
           symbol,
           startMs,
@@ -765,13 +862,19 @@ export async function runPresetOptimization(input: {
           settings,
         })
         candles = historic.candles
+        const symbolPositionCostPct = await resolvePresetPositionCostPercent(
+          input.connectionId,
+          connection as Record<string, any> | null,
+          symbol,
+          positionCostPct,
+        )
         const result: PresetOptimizationResult = optimizePresetsForSymbol({
           connectionId: input.connectionId,
           symbol,
           candles,
           commonSettings,
           settings: settings as unknown as Record<string, unknown>,
-          positionCostPct,
+          positionCostPct: symbolPositionCostPct,
           sourceCandleCount: historic.sourceCandleCount,
           now: endMs,
         })

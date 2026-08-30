@@ -6,8 +6,8 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 5 (then evaluate every integer through 30).
-    expect(result.totalPossibleSets).toBe(39_328)
-    expect(result.totalEvaluationConfigurations).toBe(13_715)
+    expect(result.totalPossibleSets).toBe(39_976)
+    expect(result.totalEvaluationConfigurations).toBe(13_717)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(17)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
@@ -18,7 +18,7 @@ describe("indication configuration counts", () => {
       special: 520,
       optimal: 156,
       auto: 0,
-      signal: 11_664,
+      signal: 12_312,
       trend: 102,
       common: 15_192,
     })
@@ -99,7 +99,7 @@ describe("indication configuration counts", () => {
       },
     )
 
-    expect(result.totalPossibleSets).toBe(11_798)
+    expect(result.totalPossibleSets).toBe(12_446)
     expect(result.types.find((type) => type.type === "auto")).toMatchObject({
       storage: "runtime",
       possibleSets: 0,
@@ -112,12 +112,14 @@ describe("indication configuration counts", () => {
     })
     expect(result.types.find((type) => type.type === "signal")).toMatchObject({
       storage: "independent_set",
-      possibleSets: 11_664,
-      evaluationConfigurations: 36,
+      possibleSets: 12_312,
+      evaluationConfigurations: 38,
       params: {
-        directSourceInputs: 35,
-        consensusInputs: 1,
-        possibleSourceInputs: 36,
+        directSourceInputs: 36,
+        consensusInputs: 2,
+        cryptoConsensusInputs: 1,
+        forexConsensusInputs: 1,
+        possibleSourceInputs: 38,
         tradeConfigurations: 162,
         sourcePerformanceLookback: 12,
         symbolDirectionPerformanceLookback: 10,

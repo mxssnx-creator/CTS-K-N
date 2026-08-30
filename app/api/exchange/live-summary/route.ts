@@ -10,6 +10,10 @@ import {
   isConnectionAssignedToMain,
   isConnectionProcessingEnabled,
 } from "@/lib/connection-state-utils"
+import {
+  isForexPosition,
+  resolvePositionNotionalUsd,
+} from "@/lib/live-position-pnl"
 
 export const dynamic = "force-dynamic"
 
@@ -151,8 +155,25 @@ export async function GET(request: Request) {
           const qty       = toNum(p.quantity)
           const markPrice = toNum(p.current_price ?? p.mark_price ?? p.entry_price)
           const leverage  = Math.max(1, toNum(p.leverage) || 1)
-          const storedVolumeUsd = toNum(p.volume_usd)
-          const volumeUsd = storedVolumeUsd > 0 ? storedVolumeUsd : qty * markPrice
+          const positionForNotional = {
+            ...p,
+            symbol: p.symbol,
+            marketType: p.marketType ?? p.market_type,
+            status: p.status || "open",
+            executedQuantity: qty,
+          }
+          const calculatedVolumeUsd = resolvePositionNotionalUsd(
+            positionForNotional,
+            qty,
+            markPrice,
+          )
+          const storedVolumeUsd = toNum(p.volume_usd ?? p.volumeUsd)
+          // Forex rows are unit-sensitive: a stored legacy q×price value
+          // treated lots as base units, so prefer the market-aware resolver.
+          // Crypto retains the durable venue notional when present.
+          const volumeUsd = isForexPosition(positionForNotional)
+            ? calculatedVolumeUsd
+            : storedVolumeUsd > 0 ? storedVolumeUsd : calculatedVolumeUsd
           const storedMarginUsd = toNum(p.margin_usd)
           const marginUsd = storedMarginUsd > 0
             ? storedMarginUsd

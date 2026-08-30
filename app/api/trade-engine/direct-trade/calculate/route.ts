@@ -686,7 +686,7 @@ export async function POST(request: NextRequest) {
     const exchange = String(connection?.exchange || connection?.exchange_name || (connectionId ? "" : "bingx"))
       .trim()
       .toLowerCase()
-    if (exchange !== "bingx" && exchange !== "bybit") {
+    if (exchange !== "bingx" && exchange !== "bybit" && exchange !== "instaforex" && exchange !== "instafx" && exchange !== "forex") {
       return NextResponse.json({
         error: `Direct-Trade historical processing is not supported for exchange ${exchange || "unknown"}`,
       }, { status: 409 })

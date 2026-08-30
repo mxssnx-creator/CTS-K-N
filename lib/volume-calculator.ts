@@ -37,6 +37,7 @@ import {
   DEFAULT_FOREX_LOT_SIZE,
   DEFAULT_FOREX_POSITIONS_AVERAGE,
   forexNotionalUsd,
+  isForexSymbol,
 } from "@/lib/forex-market"
 import { normalizeMarketType, type MarketType } from "@/lib/market-types"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
@@ -45,6 +46,7 @@ import {
   roundQuantityDown,
   resolveExecutableQuantity,
 } from "@/lib/order-quantity"
+import { tradingPairKey } from "@/lib/trading-pair-keys"
 
 /** Hard upper bound for one live/VST position relative to its PositionCost budget. */
 export const MAX_LIVE_POSITION_COST_MULTIPLIER = 5
@@ -333,7 +335,7 @@ export class VolumeCalculator {
       exchangeMinNotionalUsdt = 0,
       quantityStep,
       quantityPrecision,
-      marketType: requestedMarketType = "crypto",
+      marketType: requestedMarketType,
       lotSize,
       symbol,
       quoteToUsdRate,
@@ -346,7 +348,12 @@ export class VolumeCalculator {
       allowUnboundedVariantMultiplier = false,
     } = params
 
-    const marketType = normalizeMarketType(requestedMarketType)
+    // Symbol inference is only a compatibility fallback for callers that
+    // predate the marketType field. An explicit market type always wins, so
+    // crypto symbols cannot be reclassified by a stale alias.
+    const marketType = normalizeMarketType(
+      requestedMarketType ?? (symbol && isForexSymbol(symbol) ? "forex" : "crypto"),
+    )
     const isForex = marketType === "forex"
     const resolvedLotSize = isForex
       ? Math.max(1, Number(lotSize) || DEFAULT_FOREX_LOT_SIZE)
@@ -1084,9 +1091,11 @@ export class VolumeCalculator {
         await VolumeCalculator.resolveBalanceAndLeverage(connectionId, rawLeverage)
 
       // ── Exchange minimum order size from Redis trading-pair metadata ─
-      const tradingPair = await getSettings(`trading_pair:${symbol}`)
+      let tradingPair = await getRedisClient()
+        .hgetall(tradingPairKey(symbol, connectionId))
+        .catch(() => ({} as Record<string, unknown>))
       const exchangeMinVolume = tradingPair?.min_order_size
-        ? parseFloat(tradingPair.min_order_size)
+        ? parseFloat(String(tradingPair.min_order_size))
         : undefined
 
       // ── Resolve engine factor IFF caller asked for it ──────────────

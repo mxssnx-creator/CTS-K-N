@@ -165,6 +165,9 @@ export class ExchangePositionManager {
         market_type: marketType,
         quantity_unit: marketType === "forex" ? "lots" : "base_units",
         lot_size: marketType === "forex" ? (lotSize || undefined) : undefined,
+        quote_to_usd_rate: marketType === "forex"
+          ? (params.quoteToUsdRate ?? (Number(connection?.quote_to_usd_rate) || undefined))
+          : undefined,
         takeprofit: params.takeprofit || null,
         stoploss: params.stoploss || null,
         trailing_enabled: params.trailingEnabled || false,

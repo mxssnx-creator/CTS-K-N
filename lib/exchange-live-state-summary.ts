@@ -5,6 +5,7 @@ import {
   getClosedLivePositionReadModelsStrict,
   getOpenLivePositionReadModelsStrict,
 } from "@/lib/live-position-read-model"
+import { resolvePositionNotionalUsd } from "@/lib/live-position-pnl"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { isRealExchangePosition } from "@/lib/live-position-source"
 
@@ -331,7 +332,17 @@ export function summarizeExchangePositions(
     const { row, symbol, direction, quantity, attributionRatio } = attributed
     const markPrice = finite(row.markPrice ?? row.mark_price ?? row.currentPrice ?? row.current_price)
     const entryPrice = finite(row.entryPrice ?? row.entry_price ?? row.avgPrice ?? row.averagePrice)
-    const notionalUsd = quantity * (markPrice > 0 ? markPrice : entryPrice)
+    const notionalUsd = resolvePositionNotionalUsd(
+      {
+        ...row,
+        symbol: row.symbol ?? row.contract ?? row.instrumentId ?? row.instId ?? symbol,
+        marketType: row.marketType ?? row.market_type,
+        status: row.status ?? "open",
+        executedQuantity: quantity,
+      },
+      quantity,
+      markPrice > 0 ? markPrice : entryPrice,
+    )
     const unrealizedPnl = finite(
       row.unrealizedPnl ?? row.unrealizedPnL ?? row.unrealizedProfit ?? row.unrealized_pnl,
     ) * attributionRatio

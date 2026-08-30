@@ -32,8 +32,9 @@
  * ── Phase order per symbol per cycle ──────────────────────────────────
  *   Phase 1   processIndication(symbol, asOfMs?)            (both modes)
  *   Phase 2   updateOpenPseudoPositionsForSymbol            (realtime)
- *   Phase 3   processStrategy(symbol, indications)          (both modes,
- *             gated on indicationCount > 0)
+ *   Phase 3   processStrategy(symbol, indications)          (both modes;
+ *             realtime may pass an empty array only after the same pass has
+ *             published a fresh connection-scoped snapshot)
  *
  * ── Coordination guarantees ───────────────────────────────────────────
  * Timers are independent, but their exhaustive graph is admitted through one
@@ -242,13 +243,18 @@ export async function runIndStratCycle(
       if (!shouldContinue()) return result
     }
 
-    // ── Phase 3: Strategy evaluation (UNIFIED, indication-gated) ──────
+    // ── Phase 3: Strategy evaluation (UNIFIED, snapshot-gated) ─────────
     // In production the API worker also owns the coordinator. Calling the
     // full strategy evaluator on every empty warm-up tick can monopolize the
     // Node event loop and make health/status routes look crashed. Run the
     // evaluator when Phase 1 produced live indications (historical replay still
-    // passes its backdated indication array), and let the next productive tick
-    // advance the strategy/live stages.
+    // passes its backdated indication array). A realtime pass may also return
+    // no new representatives after successfully publishing the exact current
+    // snapshot. In that case StrategyProcessor receives [] and uses its own
+    // connection-scoped active snapshot, allowing its fingerprinted fast path
+    // to reconcile TP/SL/control state. An absent readiness marker remains a
+    // hard gate, preventing stale Redis rows from being evaluated after a
+    // failed or superseded indication pass.
     // Phase3 has no inner timeout. processStrategy is CPU-bound and with 3800+
     // sets takes 50-110s per symbol on single-threaded Node. A fixed inner
     // timeout was too conservative and discarded valid indication work from
@@ -259,7 +265,8 @@ export async function runIndStratCycle(
     const PHASE3_TIMEOUT_MS = Infinity
     // API-worker safety gate: strategy evaluation runs by default for self-hosted
     // workers so production progress advances; Vercel/serverless workers remain
-    // opt-in. The indication-count check below still prevents empty work.
+    // opt-in. The snapshot-readiness check below still prevents empty/stale
+    // work.
     const apiStrategyFlowEnabled =
       process.env.DISABLE_API_STRATEGY_FLOW !== "1" &&
       process.env.ENABLE_API_STRATEGY_FLOW !== "0" &&
@@ -273,14 +280,24 @@ export async function runIndStratCycle(
         deps.enableStrategyFlow === true) &&
       deps.enableStrategyFlow !== false
     // Live dispatch can still be skipped independently by CRON_LIVE_DISPATCH=0.
-    if (result.indicationCount > 0 && apiStrategyFlowEnabled) {
+    let canReuseRealtimeSnapshot = false
+    if (mode === "realtime" && result.indicationCount === 0) {
+      try {
+        canReuseRealtimeSnapshot = deps.indication.isRealtimeSnapshotReady(symbol)
+      } catch {
+        canReuseRealtimeSnapshot = false
+      }
+    }
+    const shouldEvaluateStrategy = result.indicationCount > 0 || canReuseRealtimeSnapshot
+    if (shouldEvaluateStrategy && apiStrategyFlowEnabled) {
       await yieldPipelineEventLoop()
       if (!shouldContinue()) return result
+      const strategyInput = result.indicationCount > 0 ? indications : []
       const stratResult = await withPhaseTimeout(
         deps.strategy
           .processStrategy(
             symbol,
-            indications,
+            strategyInput,
             mode === "historical" ||
               process.env.CRON_LIVE_DISPATCH === "0" ||
               process.env.CRON_LIVE_DISPATCH === "false"

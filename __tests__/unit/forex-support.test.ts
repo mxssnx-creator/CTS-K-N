@@ -10,6 +10,10 @@ import {
 import { calculateObservedSpread, effectivePositionCostPercent } from "@/lib/position-cost"
 import { InstaForexConnector } from "@/lib/exchange-connectors/instaforex-connector"
 import { VolumeCalculator } from "@/lib/volume-calculator"
+import {
+  resolvePositionLifetimeVolumeUsd,
+  resolvePositionNotionalUsd,
+} from "@/lib/live-position-pnl"
 
 function response(body: unknown, status = 200): Response {
   return {
@@ -169,6 +173,49 @@ describe("Forex volume sizing", () => {
     expect(converted.conversionAvailable).toBe(true)
     expect(converted.intendedNotionalUsd).toBeCloseTo(2_000, 10)
     expect(converted.finalVolume).toBeCloseTo(0.31, 10)
+  })
+})
+
+describe("shared Forex lifecycle accounting", () => {
+  test("converts filled lots to USD notional at each fill price", () => {
+    expect(resolvePositionNotionalUsd({
+      symbol: "EURUSD",
+      marketType: "forex",
+      status: "open",
+      executedQuantity: 1,
+      averageExecutionPrice: 1.1,
+    })).toBeCloseTo(11_000, 10)
+
+    expect(resolvePositionLifetimeVolumeUsd({
+      symbol: "EURUSD",
+      marketType: "forex",
+      status: "closed",
+      totalExecutedQuantity: 1.5,
+      fills: [
+        { quantity: 1, price: 1.1 },
+        { quantity: 0.5, price: 1.101 },
+      ],
+    })).toBeCloseTo(16_505, 10)
+  })
+
+  test("fails closed for a cross-pair without an independent USD quote", () => {
+    expect(resolvePositionLifetimeVolumeUsd({
+      symbol: "EURGBP",
+      marketType: "forex",
+      status: "closed",
+      totalExecutedQuantity: 1,
+      averageExecutionPrice: 0.85,
+      fills: [{ quantity: 1, price: 0.85 }],
+    })).toBe(0)
+    expect(resolvePositionLifetimeVolumeUsd({
+      symbol: "EURGBP",
+      marketType: "forex",
+      status: "closed",
+      totalExecutedQuantity: 1,
+      averageExecutionPrice: 0.85,
+      quoteToUsdRate: 0.78,
+      fills: [{ quantity: 1, price: 0.85 }],
+    })).toBeCloseTo(6_630, 10)
   })
 })
 
@@ -364,6 +411,34 @@ describe("InstaForex official connector safety", () => {
       postCloseVerified: true,
     })
     expect(operations).toEqual(["positions", "close"])
+  })
+
+  test("closes an InstaForex ticket only through the exact ticket mutation", async () => {
+    const requests: Array<Record<string, unknown>> = []
+    jest.spyOn(global, "fetch").mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/v1/mt5")) {
+        const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>
+        requests.push(body)
+        if (body.operation === "close") {
+          return response({ success: true, data: { orderId: "close-99", positionTicket: 99, postCloseVerified: true, fullyClosed: true } })
+        }
+      }
+      return response({}, 404)
+    })
+
+    await expect(bridgeConnector().closePositionByTicket("EURUSD", 99, 0.2, { clientOrderId: "emergency-99" })).resolves.toMatchObject({
+      success: true,
+      orderId: "close-99",
+      positionTicket: 99,
+      postCloseVerified: true,
+    })
+    expect(requests).toEqual([expect.objectContaining({
+      operation: "close",
+      symbol: "EURUSD",
+      positionTicket: 99,
+      volumeLots: 0.2,
+      clientOrderId: "emergency-99",
+    })])
   })
 
 })

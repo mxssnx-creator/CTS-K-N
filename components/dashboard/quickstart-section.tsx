@@ -1929,6 +1929,11 @@ export function QuickstartSection() {
                       {configCounts.settings.enabledCommonIndicators} indicators @ {configCounts.settings.commonTimeframes.join("/")}m
                     </span>
                   </span>
+                  <span>
+                    Signal <span className="text-foreground tabular-nums">
+                      {configCounts.settings.enabledSignalSources} sources · 35 crypto + 1 Forex
+                    </span>
+                  </span>
                 </div>
 
                 {/* Per-type rows */}

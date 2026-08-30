@@ -12,6 +12,7 @@ import {
   stopLossPositionCostRatioToPercent,
   takeProfitPositionCostRatioToPercent,
 } from "@/lib/position-cost"
+import { marketDataKey } from "@/lib/market-data-keys"
 
 export interface TestResult {
   configId: string
@@ -108,11 +109,23 @@ export class PresetTester {
       )
       const data = entries.filter(Boolean) as any[]
 
-      // If no candle data, try to get from the generic market data
+      // If no candle data, try the connection-scoped canonical candle/envelope
+      // keys. Never read the legacy symbol-only key: it can belong to another
+      // connection with a different venue price and spread.
       if (data.length === 0) {
-        const allData = await getSettings(`market_data:${symbol}`)
-        if (allData && Array.isArray(allData)) {
-          return allData.filter((d: any) => new Date(d.timestamp).getTime() >= cutoff)
+        const raw = await client.get(marketDataKey(symbol, "candles", this.connectionId))
+          .catch(() => null)
+        const envelopeRaw = raw || await client.get(marketDataKey(symbol, "1s", this.connectionId)).catch(() => null)
+        let parsed: any = envelopeRaw
+        if (typeof parsed === "string") {
+          try { parsed = JSON.parse(parsed) } catch { parsed = null }
+        }
+        const allData = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.candles) ? parsed.candles : []
+        if (allData.length > 0) {
+          return allData.filter((d: any) => {
+            const timestamp = new Date(d.timestamp ?? d.time).getTime()
+            return Number.isFinite(timestamp) && timestamp >= cutoff
+          })
         }
       }
 

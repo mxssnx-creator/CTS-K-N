@@ -297,7 +297,10 @@ function overlayCurrentStrategyRows(
   next.stageEvalPercent = {
     ...record(next.stageEvalPercent),
     ...(hasBaseRows ? { base: percentage(baseValid, baseTotal) } : {}),
-    ...(hasMainRows ? { main: percentage(mainValid, baseTotal) } : {}),
+    // Main's pass-rate denominator is the Base rows that survived the Base
+    // gate (`baseValid`), not the raw Base output (`baseTotal`).  Main can
+    // then fan out into physical axis/variant rows independently.
+    ...(hasMainRows ? { main: percentage(mainValid, baseValid) } : {}),
     ...(hasRealRows ? { real: percentage(realValid, realEvaluated) } : {}),
     ...(hasLiveRows ? { live: percentage(liveMirrored, liveTotal) } : {}),
   }

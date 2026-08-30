@@ -282,6 +282,13 @@ function progressionSample(stats) {
     baseEvaluated: finiteNonNegative(stages.baseEvaluated, "strategies.baseEvaluated"),
     mainEvaluated: finiteNonNegative(stages.mainEvaluated, "strategies.mainEvaluated"),
     realEvaluated: finiteNonNegative(stages.realEvaluated, "strategies.realEvaluated"),
+    // Main/Real expose both physical materialised rows and their logical
+    // funnel counters.  The latter are the only values that may be compared
+    // with a stage input; axis/variant fan-out can legitimately make the
+    // physical output larger than the logical pool.
+    mainBaseInput: finiteNonNegative(stages.mainBaseInput, "strategies.mainBaseInput"),
+    mainPassedParents: finiteNonNegative(stages.mainPassedParents, "strategies.mainPassedParents"),
+    realLogicalPassed: finiteNonNegative(stages.realLogicalPassed, "strategies.realLogicalPassed"),
   }
   return {
     ...sample,
@@ -386,6 +393,12 @@ function signalRuntimeSample(
   const configuredSources = settings?.sources && typeof settings.sources === "object"
     ? Object.entries(settings.sources)
     : []
+  const cryptoSourceIds = new Set(descriptors
+    .filter((descriptor) => String(descriptor?.assetClass || "crypto") !== "forex")
+    .map((descriptor) => String(descriptor?.id || "")))
+  const forexSourceIds = new Set(descriptors
+    .filter((descriptor) => String(descriptor?.assetClass || "crypto") === "forex")
+    .map((descriptor) => String(descriptor?.id || "")))
   const connectionStatus = Array.isArray(statusPayload?.connections)
     ? statusPayload.connections.find((item) =>
       String(item?.connectionId ?? item?.id) === String(connectionId),
@@ -453,6 +466,13 @@ function signalRuntimeSample(
   const commonTypes = Array.isArray(indicationAnalytics?.common?.types)
     ? indicationAnalytics.common.types
     : []
+  const countSourceClass = (rows, sourceIds) => rows.filter((row) => {
+    const sourceId = typeof row === "string" ? row : String(row?.sourceId || row?.id || "")
+    return sourceIds.has(sourceId)
+  }).length
+  const configuredSourceIds = configuredSources.map(([sourceId]) => String(sourceId))
+  const healthSourceIds = sourceHealthRows.map((row) => row.sourceId)
+  const analyticsSourceIds = analyticsSources.map((source) => String(source?.id || ""))
 
   return {
     enabled: settings?.enabled === true,
@@ -489,8 +509,18 @@ function signalRuntimeSample(
     registeredSources: descriptors.length,
     configuredSources: configuredSources.length,
     enabledSources: configuredSources.filter(([, value]) => value?.enabled === true).length,
+    registryCryptoSourceCount: cryptoSourceIds.size,
+    registryForexSourceCount: forexSourceIds.size,
+    configuredCryptoSourceCount: countSourceClass(configuredSourceIds, cryptoSourceIds),
+    configuredForexSourceCount: countSourceClass(configuredSourceIds, forexSourceIds),
+    enabledCryptoSourceCount: configuredSources.filter(([sourceId, value]) => value?.enabled === true && cryptoSourceIds.has(String(sourceId))).length,
+    enabledForexSourceCount: configuredSources.filter(([sourceId, value]) => value?.enabled === true && forexSourceIds.has(String(sourceId))).length,
     sourceHealthCount: sourceHealthRows.length,
     sourcesExercised: sourceHealthRows.filter((row) => row.successes > 0).length,
+    sourceHealthCryptoSourceCount: countSourceClass(healthSourceIds, cryptoSourceIds),
+    sourceHealthForexSourceCount: countSourceClass(healthSourceIds, forexSourceIds),
+    sourcesExercisedCrypto: sourceHealthRows.filter((row) => row.successes > 0 && cryptoSourceIds.has(row.sourceId)).length,
+    sourcesExercisedForex: sourceHealthRows.filter((row) => row.successes > 0 && forexSourceIds.has(row.sourceId)).length,
     sourceSuccesses: sourceHealthRows.reduce((sum, row) => sum + row.successes, 0),
     sourceFailures: sourceHealthRows.reduce((sum, row) => sum + row.failures, 0),
     sourceConsecutiveFailures: sourceHealthRows.reduce((sum, row) => sum + row.consecutiveFailures, 0),
@@ -541,6 +571,8 @@ function signalRuntimeSample(
       "signal.analytics.openPositions",
     ),
     analyticsSourceCount: analyticsSources.length,
+    analyticsCryptoSourceCount: countSourceClass(analyticsSourceIds, cryptoSourceIds),
+    analyticsForexSourceCount: countSourceClass(analyticsSourceIds, forexSourceIds),
     analyticsSourceSymbolRows: analyticsSources.reduce(
       (sum, source) => sum + (Array.isArray(source?.symbols) ? source.symbols.length : 0),
       0,
@@ -1116,10 +1148,15 @@ async function main() {
       )
     }
     if (sample.baseEvaluated > 0 && sample.base > sample.baseEvaluated) {
-      throw new Error(`Base output exceeds its evaluated pool: ${sample.base} > ${sample.baseEvaluated}`)
+      throw new Error(`Base active snapshot exceeds its evaluated pool: ${sample.base} > ${sample.baseEvaluated}`)
     }
-    if (sample.mainEvaluated > 0 && sample.main > sample.mainEvaluated) {
-      throw new Error(`Main output exceeds its evaluated pool: ${sample.main} > ${sample.mainEvaluated}`)
+    // Main's headline count is a physical/current materialisation snapshot;
+    // it includes valid axis/variant descendants.  Validate the independent
+    // parent funnel instead of comparing physical rows with logical work.
+    if (sample.mainBaseInput > 0 && sample.mainPassedParents > sample.mainBaseInput) {
+      throw new Error(
+        `Main passed-parent count exceeds its Base input: ${sample.mainPassedParents} > ${sample.mainBaseInput}`,
+      )
     }
     // The headline Real "active" count is intentionally lineage-collapsed
     // while Live counts exact mirrored execution rows, so Live may be larger.
@@ -1131,8 +1168,14 @@ async function main() {
     if (liveRowMirrored > liveRowTotal) {
       throw new Error(`Live mirrored row exceeds its Real-row input: ${liveRowMirrored} > ${liveRowTotal}`)
     }
-    if (sample.real > sample.realEvaluated && sample.realEvaluated > 0) {
-      throw new Error(`Real output exceeds its evaluated pool: ${sample.real} > ${sample.realEvaluated}`)
+    // Real's `real` headline may contain materialised/lineage rows (for
+    // example Block and position-count fan-out).  Its logical numerator is
+    // `realLogicalPassed`; only that value has the same unit as
+    // `realEvaluated` and can be checked against it.
+    if (sample.realEvaluated > 0 && sample.realLogicalPassed > sample.realEvaluated) {
+      throw new Error(
+        `Real logical pass count exceeds its evaluated pool: ${sample.realLogicalPassed} > ${sample.realEvaluated}`,
+      )
     }
     for (const [stage, value] of Object.entries(stats?.stageEvalPercent || {})) {
       const percent = Number(value)
@@ -1597,7 +1640,7 @@ async function main() {
         !finalSignal?.enabled ||
         !finalSignal.directExecutionEnabled ||
         finalSignal.requestIntervalSeconds < 30 ||
-        finalSignal.maxSourcesPerCycle > 35 ||
+        finalSignal.maxSourcesPerCycle > 36 ||
         finalSignal.maxPositionsTotal !== SIGNAL_MAX_POSITIONS_TOTAL ||
         finalSignal.positionSelectionMode !== "best_first" ||
         !finalSignal.trailingEnabled ||
@@ -1613,17 +1656,30 @@ async function main() {
         throw new Error(`Signal settings contract failed: ${JSON.stringify(finalSignal)}`)
       }
       if (
-        finalSignal.registeredSources !== 35 ||
-        finalSignal.configuredSources !== 35 ||
-        finalSignal.enabledSources !== 35 ||
-        finalSignal.sourceHealthCount !== 35 ||
+        finalSignal.registeredSources !== 36 ||
+        finalSignal.configuredSources !== 36 ||
+        finalSignal.enabledSources !== 36 ||
+        finalSignal.registryCryptoSourceCount !== 35 ||
+        finalSignal.registryForexSourceCount !== 1 ||
+        finalSignal.configuredCryptoSourceCount !== 35 ||
+        finalSignal.configuredForexSourceCount !== 1 ||
+        finalSignal.enabledCryptoSourceCount !== 35 ||
+        finalSignal.enabledForexSourceCount !== 1 ||
+        finalSignal.sourceHealthCount !== 36 ||
+        finalSignal.sourceHealthCryptoSourceCount !== 35 ||
+        finalSignal.sourceHealthForexSourceCount !== 1 ||
         finalSignal.sourcesExercised !== 35 ||
-        finalSignal.analyticsSourceCount !== 35 ||
+        finalSignal.sourcesExercisedCrypto !== 35 ||
+        finalSignal.analyticsSourceCount !== 36 ||
+        finalSignal.analyticsCryptoSourceCount !== 35 ||
+        finalSignal.analyticsForexSourceCount !== 1 ||
         finalSignal.analyticsCommonTypeCount < 7
       ) {
         throw new Error(
           `Signal source coverage incomplete: registered=${finalSignal.registeredSources} ` +
           `configured=${finalSignal.configuredSources} enabled=${finalSignal.enabledSources} ` +
+          `crypto=${finalSignal.registryCryptoSourceCount}/${finalSignal.sourcesExercisedCrypto} ` +
+          `forex=${finalSignal.registryForexSourceCount}/${finalSignal.sourcesExercisedForex} ` +
           `health=${finalSignal.sourceHealthCount} exercised=${finalSignal.sourcesExercised} ` +
           `analyticsSources=${finalSignal.analyticsSourceCount} ` +
           `commonTypes=${finalSignal.analyticsCommonTypeCount}`,
@@ -1738,7 +1794,22 @@ async function main() {
       inventoryConnectionScopes * 2_000 +
       SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET,
   )
+  // The production preview starts with durable keys for every configured
+  // connection, while this soak intentionally exercises only one selected
+  // connection/basket.  An absolute DBSIZE comparison therefore charged
+  // unrelated baseline state to the selected symbol budget.  Preserve that
+  // baseline and bound only the unindexed growth introduced by this run; the
+  // independent plateau, topology, RSS, and heap guards still cover leaks.
+  const databaseNonInventoryBaseline = databaseNonInventoryKeySeries.length > 0
+    ? Math.min(...databaseNonInventoryKeySeries.slice(0, Math.min(5, databaseNonInventoryKeySeries.length)))
+    : 0
   const databaseNonInventoryKeysEnd = databaseNonInventoryKeySeries.at(-1) || 0
+  const databaseNonInventoryGrowth = Math.max(
+    0,
+    databaseNonInventoryKeysEnd - databaseNonInventoryBaseline,
+  )
+  const databaseNonInventoryAllowedEnd =
+    databaseNonInventoryBaseline + databaseNonInventoryAbsoluteLimit
   const databaseAbsoluteLimit =
     indicationSetInventoryKeysEnd +
     indicationOutcomeAuxiliaryKeysEnd +
@@ -1753,11 +1824,12 @@ async function main() {
       `boundedOutcomeAuxiliaryGrowth=${databaseStableOutcomeAuxiliaryGrowth}`,
     )
   }
-  if (databaseNonInventoryKeysEnd > databaseNonInventoryAbsoluteLimit) {
+  if (databaseNonInventoryKeysEnd > databaseNonInventoryAllowedEnd) {
     throw new Error(
-      `Unindexed database key count exceeds bounded ${SYMBOLS.length}-symbol budget: ` +
-      `${databaseNonInventoryKeysEnd} > ${databaseNonInventoryAbsoluteLimit} ` +
-      `(total=${databaseKeySeries.at(-1) || 0}, indexedSets=${indicationSetInventoryKeysEnd}, ` +
+      `Unindexed database key growth exceeds bounded ${SYMBOLS.length}-symbol budget: ` +
+      `${databaseNonInventoryGrowth} > ${databaseNonInventoryAbsoluteLimit} ` +
+      `(baseline=${databaseNonInventoryBaseline}, end=${databaseNonInventoryKeysEnd}, ` +
+      `total=${databaseKeySeries.at(-1) || 0}, indexedSets=${indicationSetInventoryKeysEnd}, ` +
       `indexedOutcomes=${indicationOutcomeAuxiliaryKeysEnd})`,
     )
   }
@@ -1918,7 +1990,10 @@ async function main() {
     indicationSetInventoryConnections: inventoryConnectionScopes,
     indicationSetInventoryCapacity,
     indicationOutcomeAuxiliaryCapacity,
+    databaseNonInventoryBaseline,
     databaseNonInventoryKeysEnd,
+    databaseNonInventoryGrowth,
+    databaseNonInventoryAllowedEnd,
     databaseNonInventoryAbsoluteLimit,
     nonInventoryKeysPerSymbolBudget: NON_INVENTORY_KEYS_PER_SYMBOL_BUDGET,
     databaseStableGrowthLimit,
@@ -1975,8 +2050,16 @@ async function main() {
       registeredSources: finalSignal.registeredSources,
       configuredSources: finalSignal.configuredSources,
       enabledSources: finalSignal.enabledSources,
+      registryCryptoSourceCount: finalSignal.registryCryptoSourceCount,
+      registryForexSourceCount: finalSignal.registryForexSourceCount,
+      configuredCryptoSourceCount: finalSignal.configuredCryptoSourceCount,
+      configuredForexSourceCount: finalSignal.configuredForexSourceCount,
+      enabledCryptoSourceCount: finalSignal.enabledCryptoSourceCount,
+      enabledForexSourceCount: finalSignal.enabledForexSourceCount,
       sourceHealthCount: finalSignal.sourceHealthCount,
       sourcesExercised: finalSignal.sourcesExercised,
+      sourcesExercisedCrypto: finalSignal.sourcesExercisedCrypto,
+      sourcesExercisedForex: finalSignal.sourcesExercisedForex,
       sourceSuccessesStart: signalRuntime[0]?.sourceSuccesses || 0,
       sourceSuccessesEnd: finalSignal.sourceSuccesses,
       sourceFailuresEnd: finalSignal.sourceFailures,
@@ -2035,6 +2118,8 @@ async function main() {
       analyticsClosedPositionsEnd: finalSignal.analyticsClosedPositions,
       analyticsOpenPositionsEnd: finalSignal.analyticsOpenPositions,
       analyticsSourceCount: finalSignal.analyticsSourceCount,
+      analyticsCryptoSourceCount: finalSignal.analyticsCryptoSourceCount,
+      analyticsForexSourceCount: finalSignal.analyticsForexSourceCount,
       analyticsSourceSymbolRows: finalSignal.analyticsSourceSymbolRows,
       analyticsCommonTypeCount: finalSignal.analyticsCommonTypeCount,
       analyticsWindowTrades: finalSignal.analyticsWindowTrades,

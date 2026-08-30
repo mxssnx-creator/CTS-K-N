@@ -82,9 +82,15 @@ interface StatsResponse {
   }
   breakdown: {
     indications: { direction: number; move: number; active: number; activeAdvanced?: number; special?: number; optimal: number; auto: number; common?: number; signal?: number; trend?: number; total: number }
-    strategies: { base: number; main: number; real: number; live: number; total: number
-                  baseEvaluated: number; mainEvaluated: number; realEvaluated: number }
+    strategies: {
+      base: number; main: number; real: number; live: number; total: number
+      baseEvaluated: number; mainEvaluated: number; realEvaluated: number
+      // Logical funnel fields are separate from physical Main/Real fan-out.
+      mainBaseInput?: number; mainPassedParents?: number
+      realLogicalPassed?: number
+    }
   }
+  stageEvalPercent?: { base: number; main: number; real: number; live?: number }
   strategyDetail: { base: StratDetail; main: StratDetail; real: StratDetail; live?: StratDetail }
   windows: {
     indications: { last5m: number; last60m: number; measured?: boolean; source?: string }
@@ -152,9 +158,10 @@ function StatCell({ label, value, sub, accent }: { label: string; value: string;
 // ─── StratSection ─────────────────────────────────────────────────────────────
 
 function StratSection({
-  label, count, evaluated, evaluatedOf, detail, accentCls, bgCls,
+  label, count, evaluated, evaluatedOf, stagePercent, detail, accentCls, bgCls,
 }: {
   label: string; count: number; evaluated: number; evaluatedOf: number
+  stagePercent?: number
   detail: StratDetail | undefined; accentCls: string; bgCls: string
 }) {
   // ── eval/pass semantics ───────────────────────────────────────────
@@ -171,7 +178,19 @@ function StratSection({
   // Cap at 100: Main is an expansion stage (1 base → many main variants),
   // so evaluated/evaluatedOf can be >>1. Progress bars and percentages
   // should never display >100% — the expansion is captured in the raw count.
-  const evalPct = Math.min(100, evaluatedOf > 0 ? Math.round((evaluated / evaluatedOf) * 1000) / 10 : (detail?.evalPct ?? 0))
+  const evalPct = Math.min(
+    100,
+    Math.max(
+      0,
+      stagePercent !== undefined
+        ? stagePercent
+        : evaluatedOf > 0
+          ? Math.round((evaluated / evaluatedOf) * 1000) / 10
+          : (detail?.evalPct ?? 0),
+    ),
+  )
+  const parentLabel = label === "Main" ? "Base" : label === "Real" ? "Main" : label === "Live" ? "Real" : "parent"
+  const outcomeLabel = label === "Live" ? "rows mirrored" : "sets passed"
 
   return (
     <div className={`rounded-md border p-2.5 space-y-2 ${bgCls}`}>
@@ -185,12 +204,12 @@ function StratSection({
       {evaluatedOf > 0 && (
         <div className="space-y-0.5">
           <div className="flex justify-between text-[10px] text-muted-foreground">
-            <span>Evaluated of {label === "Main" ? "Base" : "Main"}</span>
+            <span>Evaluated of {parentLabel}</span>
             <span className="font-medium tabular-nums">{evalPct.toFixed(1)}%</span>
           </div>
           <Progress value={Math.min(100, evalPct)} className="h-1" />
           <div className="text-[9px] text-muted-foreground text-right">
-            {fmt(evaluated)} / {fmt(evaluatedOf)} sets passed
+            {fmt(evaluated)} / {fmt(evaluatedOf)} {outcomeLabel}
           </div>
         </div>
       )}
@@ -890,8 +909,15 @@ export function QuickstartOverviewDialog() {
             <StratSection
               label="Main"
               count={stats?.activeProgressing?.strategies?.main?.sets || 0}
-              evaluated={bd?.strategies.mainEvaluated || 0}
-              evaluatedOf={stats?.activeProgressing?.strategies?.base?.sets || 0}
+              evaluated={firstFiniteMetric(
+                bd?.strategies.mainPassedParents,
+                stats?.strategyRows?.main?.valid,
+              )}
+              evaluatedOf={firstFiniteMetric(
+                bd?.strategies.mainBaseInput,
+                stats?.strategyRows?.base?.valid,
+              )}
+              stagePercent={stats?.stageEvalPercent?.main}
               detail={sd?.main}
               accentCls="text-yellow-600 dark:text-yellow-400"
               bgCls="bg-yellow-50/50 dark:bg-yellow-950/20 border-yellow-200/50 dark:border-yellow-800/30"
@@ -900,8 +926,15 @@ export function QuickstartOverviewDialog() {
             <StratSection
               label="Real"
               count={stats?.activeProgressing?.strategies?.real?.sets || 0}
-              evaluated={bd?.strategies.realEvaluated || 0}
-              evaluatedOf={stats?.activeProgressing?.strategies?.main?.sets || 0}
+              evaluated={firstFiniteMetric(
+                bd?.strategies.realLogicalPassed,
+                sd?.real?.passed,
+              )}
+              evaluatedOf={firstFiniteMetric(
+                bd?.strategies.realEvaluated,
+                sd?.real?.evaluated,
+              )}
+              stagePercent={stats?.stageEvalPercent?.real}
               detail={sd?.real}
               accentCls="text-green-600 dark:text-green-400"
               bgCls="bg-green-50/50 dark:bg-green-950/20 border-green-200/50 dark:border-green-800/30"
@@ -912,9 +945,14 @@ export function QuickstartOverviewDialog() {
                 from the progression counters + closed-position archive. */}
             <StratSection
               label="Live"
-              count={sd?.live?.createdSets || 0}
-              evaluated={sd?.live?.evaluated || 0}
-              evaluatedOf={bd?.strategies.real || 0}
+              count={firstFiniteMetric(
+                stats?.activeProgressing?.strategies?.live?.sets,
+                stats?.strategyRows?.live?.mirrored,
+                bd?.strategies.live,
+              )}
+              evaluated={firstFiniteMetric(stats?.strategyRows?.live?.mirrored)}
+              evaluatedOf={firstFiniteMetric(stats?.strategyRows?.live?.total)}
+              stagePercent={stats?.stageEvalPercent?.live}
               detail={sd?.live}
               accentCls="text-amber-600 dark:text-amber-400"
               bgCls="bg-amber-50/50 dark:bg-amber-950/20 border-amber-200/50 dark:border-amber-800/30"

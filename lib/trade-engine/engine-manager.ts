@@ -509,6 +509,8 @@ import { fetchTopSymbols } from "@/lib/top-symbols"
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
+import { normalizeMarketType } from "@/lib/market-types"
+import { normalizeForexSymbol } from "@/lib/forex-market"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
 import { getStrategyMemoryCoordinationSnapshot } from "@/lib/strategy-memory-guard"
@@ -3034,7 +3036,16 @@ export class TradeEngineManager {
     try {
       // Process 5 stages of analysis and execution
       await logProgressionEvent(connectionId, "cycle_start", "info", "Starting 5-stage cycle", {})
-      const indications = await this.indicationProcessor.processIndication(connection.monitored_symbol || "BTC/USDT")
+      const marketType = normalizeMarketType(
+        connection.market_type || connection.asset_class,
+        connection.exchange,
+      )
+      const configuredSymbol = String(connection.monitored_symbol || "").trim()
+      const fallbackSymbol = marketType === "forex" ? "EURUSD" : "BTC/USDT"
+      const monitoredSymbol = marketType === "forex"
+        ? normalizeForexSymbol(configuredSymbol || fallbackSymbol)
+        : configuredSymbol || fallbackSymbol
+      const indications = await this.indicationProcessor.processIndication(monitoredSymbol)
       const basePositionCount = indications ? 2 : 0
 
       const duration = Date.now() - startTime
@@ -3353,7 +3364,7 @@ export class TradeEngineManager {
         }
 
         // Batch-prefetch all symbols' market data in one Redis pipeline pass
-        await prefetchMarketDataBatch(symbols).catch(() => { /* non-critical */ })
+        await prefetchMarketDataBatch(symbols, this.connectionId).catch(() => { /* non-critical */ })
 
         // Process indications for every symbol in parallel — but with a
         // memory-aware concurrency cap so dense watchlists
@@ -4951,6 +4962,7 @@ export class TradeEngineManager {
               warmup: replayMode === "exact" ? 300 : 0,
               lookahead: 0,
               pendingOrder: replayMode === "exact" ? "earliest" : "latest",
+              connectionId: connId,
             })
             const pending = replayWindow.pending
 
@@ -5733,7 +5745,7 @@ export class TradeEngineManager {
       try {
         const symbols = await this.prioritizeSignalSymbols(await this.getSymbols())
         if (!shouldContinue() || !symbols || symbols.length === 0) return
-        await prefetchMarketDataBatch(symbols).catch(() => { /* non-critical */ })
+        await prefetchMarketDataBatch(symbols, this.connectionId).catch(() => { /* non-critical */ })
         if (!shouldContinue()) return
         const pipelineDeps = {
           indication: this.indicationProcessor,

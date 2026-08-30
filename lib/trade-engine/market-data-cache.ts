@@ -9,6 +9,7 @@
  */
 
 import { initRedis, getMarketData, getRedisClient } from "@/lib/redis-db"
+import { marketDataKey } from "@/lib/market-data-keys"
 
 // Module-level cache - guaranteed to exist, no class context issues
 const CACHE = new Map<string, { data: any; timestamp: number }>()
@@ -34,43 +35,47 @@ const IN_FLIGHT = new Map<string, Promise<any>>()
  * Get market data with caching - module-level function
  * No class context needed - works reliably across webpack bundle reloads
  */
-export async function getMarketDataCached(symbol: string): Promise<any> {
+export async function getMarketDataCached(symbol: string, connectionId?: string): Promise<any> {
+  const cacheKey = marketDataKey(symbol, "", connectionId)
   const now = Date.now()
-  const cached = CACHE.get(symbol)
+  const cached = CACHE.get(cacheKey)
 
   if (cached && now - cached.timestamp < CACHE_TTL) {
     return cached.data
   }
 
   // Deduplicate concurrent fetches for the same symbol
-  const inFlight = IN_FLIGHT.get(symbol)
+  const inFlight = IN_FLIGHT.get(cacheKey)
   if (inFlight) return inFlight
 
   const fetchPromise = (async () => {
     try {
       await initRedis()
-      const rawData = await getMarketData(symbol, "1m")
+      const rawData = await getMarketData(symbol, "1m", connectionId)
 
       if (!rawData) {
         return null
       }
 
-      const latest = Array.isArray(rawData) ? rawData[0] : rawData
+      const latestCandle = Array.isArray(rawData?.candles) ? rawData.candles.at(-1) : null
+      const latest = latestCandle
+        ? { ...rawData, ...latestCandle }
+        : Array.isArray(rawData) ? rawData.at(-1) : rawData
 
       if (latest) {
-        setBoundedCache(symbol, latest)
+        setBoundedCache(cacheKey, latest)
         return latest
       }
       return null
     } catch (error) {
       // Return stale cache entry rather than null on transient Redis errors
-      return CACHE.get(symbol)?.data ?? null
+      return CACHE.get(cacheKey)?.data ?? null
     } finally {
-      IN_FLIGHT.delete(symbol)
+      IN_FLIGHT.delete(cacheKey)
     }
   })()
 
-  IN_FLIGHT.set(symbol, fetchPromise)
+  IN_FLIGHT.set(cacheKey, fetchPromise)
   return fetchPromise
 }
 
@@ -79,7 +84,7 @@ export async function getMarketDataCached(symbol: string): Promise<any> {
  * Call this at the start of each indication cycle to warm the cache for all symbols
  * so individual processIndication calls hit cache (zero Redis round-trips).
  */
-export async function prefetchMarketDataBatch(symbols: string[]): Promise<void> {
+export async function prefetchMarketDataBatch(symbols: string[], connectionId?: string): Promise<void> {
   if (!symbols || symbols.length === 0) return
   try {
     await initRedis()
@@ -89,15 +94,16 @@ export async function prefetchMarketDataBatch(symbols: string[]): Promise<void> 
     // Deduplicate symbols and avoid overlapping individual fetches.
     const uniqueSymbols = [...new Set(symbols.filter(Boolean))]
     const stale = uniqueSymbols.filter((s) => {
-      const c = CACHE.get(s)
-      return (!c || now - c.timestamp >= CACHE_TTL) && !IN_FLIGHT.has(s)
+      const cacheKey = marketDataKey(s, "", connectionId)
+      const c = CACHE.get(cacheKey)
+      return (!c || now - c.timestamp >= CACHE_TTL) && !IN_FLIGHT.has(cacheKey)
     })
     if (stale.length === 0) return
 
     // Use Redis pipeline for minimal round-trips
     const pipeline = client.multi()
     for (const symbol of stale) {
-      pipeline.hgetall(`market_data:${symbol}`)
+      pipeline.hgetall(marketDataKey(symbol, "", connectionId))
     }
     const results = await pipeline.exec()
 
@@ -105,7 +111,7 @@ export async function prefetchMarketDataBatch(symbols: string[]): Promise<void> 
       for (let i = 0; i < stale.length; i++) {
         const data = results[i]
         if (data && typeof data === "object" && Object.keys(data).length > 0) {
-          setBoundedCache(stale[i], data)
+          setBoundedCache(marketDataKey(stale[i], "", connectionId), data)
         }
       }
     }
@@ -157,6 +163,8 @@ interface HistoricRangeOptions {
   endMs: number
   /** Maximum number of Redis list elements fetched in one request. */
   batchChunks?: number
+  /** Scope the history to one persisted exchange connection. */
+  connectionId?: string
 }
 
 interface HistoricWindowOptions {
@@ -171,6 +179,8 @@ interface HistoricWindowOptions {
    * bootstrap/restart gap never allocates or evaluates the complete backlog.
    */
   pendingOrder?: "earliest" | "latest"
+  /** Scope the history to one persisted exchange connection. */
+  connectionId?: string
 }
 
 function candleTimestamp(candle: any): number {
@@ -194,10 +204,10 @@ function normalizeHistoricCandles(chunks: unknown[]): any[] {
   return [...byTimestamp.values()].sort((a, b) => candleTimestamp(a) - candleTimestamp(b))
 }
 
-async function loadHistoricChunkRanges(symbol: string): Promise<HistoricChunkRange[]> {
+async function loadHistoricChunkRanges(symbol: string, connectionId?: string): Promise<HistoricChunkRange[]> {
   await initRedis()
   const client = getRedisClient()
-  const raw = await client.get(`market_data:${symbol}:history:meta`)
+  const raw = await client.get(marketDataKey(symbol, "history:meta", connectionId))
   if (!raw) return []
   try {
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
@@ -228,9 +238,9 @@ export async function getHistoricCandlesForRange(
   const endMs = Math.max(Number(options.startMs), Number(options.endMs))
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return []
 
-  const ranges = await loadHistoricChunkRanges(symbol)
+  const ranges = await loadHistoricChunkRanges(symbol, options.connectionId)
   if (ranges.length === 0) {
-    const legacy = await getParsedCandlesCached(symbol)
+    const legacy = await getParsedCandlesCached(symbol, options.connectionId)
     return legacy.filter((candle) => {
       const timestamp = candleTimestamp(candle)
       return timestamp >= startMs && timestamp <= endMs
@@ -243,7 +253,7 @@ export async function getHistoricCandlesForRange(
   while (last + 1 < ranges.length && ranges[last + 1].start <= endMs) last++
 
   const client = getRedisClient()
-  const listKey = `market_data:${symbol}:history:chunks`
+  const listKey = marketDataKey(symbol, "history:chunks", options.connectionId)
   const batchChunks = Math.max(1, Math.min(64, Math.floor(Number(options.batchChunks) || 8)))
   // Deduplicate directly into the final bounded range. The previous path
   // built a batch array, a complete selected array, another Map, and a final
@@ -279,13 +289,13 @@ export async function getHistoricCandlesForRange(
  * warmup, so readers must obtain that window from the canonical chunks instead
  * of forcing the loader to duplicate thousands of candles in every hot key.
  */
-export async function getHistoricCandleTail(symbol: string, limit: number): Promise<any[]> {
+export async function getHistoricCandleTail(symbol: string, limit: number, connectionId?: string): Promise<any[]> {
   const requested = Math.max(0, Math.floor(Number(limit) || 0))
   if (requested === 0) return []
 
-  const ranges = await loadHistoricChunkRanges(symbol)
+  const ranges = await loadHistoricChunkRanges(symbol, connectionId)
   if (ranges.length === 0) {
-    const legacy = await getParsedCandlesCached(symbol)
+    const legacy = await getParsedCandlesCached(symbol, connectionId)
     return legacy.slice(-requested)
   }
 
@@ -297,7 +307,7 @@ export async function getHistoricCandleTail(symbol: string, limit: number): Prom
   }
 
   const rawChunks = await getRedisClient().lrange(
-    `market_data:${symbol}:history:chunks`,
+    marketDataKey(symbol, "history:chunks", connectionId),
     first,
     ranges.length - 1,
   )
@@ -322,10 +332,10 @@ export async function getHistoricCandleWindow(
   const empty = { warmup: [] as any[], pending: [] as any[], lookahead: [] as any[] }
   if (!Number.isFinite(afterMs) || !Number.isFinite(beforeMs) || beforeMs < afterMs) return empty
 
-  const ranges = await loadHistoricChunkRanges(symbol)
+  const ranges = await loadHistoricChunkRanges(symbol, options.connectionId)
   let candles: any[]
   if (ranges.length === 0) {
-    candles = await getParsedCandlesCached(symbol)
+    candles = await getParsedCandlesCached(symbol, options.connectionId)
   } else {
     let first: number
     let last: number
@@ -361,7 +371,11 @@ export async function getHistoricCandleWindow(
       }
     }
 
-    const rawChunks = await getRedisClient().lrange(`market_data:${symbol}:history:chunks`, first, last)
+    const rawChunks = await getRedisClient().lrange(
+      marketDataKey(symbol, "history:chunks", options.connectionId),
+      first,
+      last,
+    )
     candles = normalizeHistoricCandles(Array.isArray(rawChunks) ? rawChunks : [])
   }
 
@@ -389,18 +403,21 @@ export async function getHistoricCandleWindow(
  * returned ascending by timestamp. The returned array is SHARED — callers must
  * treat it as read-only (the replay loop only ever .filter()s a copy from it).
  */
-export async function getParsedCandlesCached(symbol: string): Promise<any[]> {
+export async function getParsedCandlesCached(symbol: string, connectionId?: string): Promise<any[]> {
+  const candlesKey = marketDataKey(symbol, "candles", connectionId)
+  const envelopeKey = marketDataKey(symbol, "1s", connectionId)
+  const cacheKey = candlesKey
   const now = Date.now()
   try {
     await initRedis()
     const client = getRedisClient()
-    const raw = await client.get(`market_data:${symbol}:candles`)
+    const raw = await client.get(candlesKey)
     if (!raw) {
       // No prehistoric blob — fall back to the :1s envelope, also cached.
-      const envelopeRaw = await client.get(`market_data:${symbol}:1s`)
+      const envelopeRaw = await client.get(envelopeKey)
       if (!envelopeRaw) return []
       const sig = typeof envelopeRaw === "string" ? envelopeRaw.length : 0
-      const cached = PARSED_CANDLES_CACHE.get(symbol)
+      const cached = PARSED_CANDLES_CACHE.get(cacheKey)
       if (cached && cached.sig === sig) {
         cached.timestamp = now
         return cached.candles
@@ -409,12 +426,12 @@ export async function getParsedCandlesCached(symbol: string): Promise<any[]> {
       const obj = JSON.parse(typeof envelopeRaw === "string" ? envelopeRaw : JSON.stringify(envelopeRaw))
       const arr: any[] = Array.isArray(obj?.candles) ? obj.candles : []
       arr.sort((a: any, b: any) => Number(a?.timestamp ?? 0) - Number(b?.timestamp ?? 0))
-      _storeParsedCandles(symbol, arr, sig, now)
+      _storeParsedCandles(cacheKey, arr, sig, now)
       return arr
     }
 
     const sig = typeof raw === "string" ? raw.length : 0
-    const cached = PARSED_CANDLES_CACHE.get(symbol)
+    const cached = PARSED_CANDLES_CACHE.get(cacheKey)
     if (cached && cached.sig === sig) {
       // Hit — refresh recency and reuse the already-parsed+sorted array.
       cached.timestamp = now
@@ -426,16 +443,16 @@ export async function getParsedCandlesCached(symbol: string): Promise<any[]> {
     const arr = Array.isArray(parsed) ? parsed : []
     // Sort once at parse time so the replay loop never re-sorts the full set.
     arr.sort((a: any, b: any) => Number(a?.timestamp ?? 0) - Number(b?.timestamp ?? 0))
-    _storeParsedCandles(symbol, arr, sig, now)
+    _storeParsedCandles(cacheKey, arr, sig, now)
     return arr
   } catch (e) {
     // On transient Redis/parse errors, return the last good parse if present.
-    return PARSED_CANDLES_CACHE.get(symbol)?.candles ?? []
+    return PARSED_CANDLES_CACHE.get(cacheKey)?.candles ?? []
   }
 }
 
-function _storeParsedCandles(symbol: string, candles: any[], sig: number, now: number) {
-  PARSED_CANDLES_CACHE.set(symbol, { candles, sig, timestamp: now })
+function _storeParsedCandles(cacheKey: string, candles: any[], sig: number, now: number) {
+  PARSED_CANDLES_CACHE.set(cacheKey, { candles, sig, timestamp: now })
   // Evict stale / overflow entries so the Map can never grow unbounded.
   if (PARSED_CANDLES_CACHE.size > PARSED_CANDLES_MAX_ENTRIES) {
     for (const [k, v] of PARSED_CANDLES_CACHE) {
@@ -453,8 +470,8 @@ function _storeParsedCandles(symbol: string, candles: any[], sig: number, now: n
 }
 
 /** Drop a symbol's parsed-candle cache (call after a forced reload). */
-export function invalidateParsedCandles(symbol?: string) {
-  if (symbol) PARSED_CANDLES_CACHE.delete(symbol)
+export function invalidateParsedCandles(symbol?: string, connectionId?: string) {
+  if (symbol) PARSED_CANDLES_CACHE.delete(marketDataKey(symbol, "candles", connectionId))
   else PARSED_CANDLES_CACHE.clear()
 }
 

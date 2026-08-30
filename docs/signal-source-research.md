@@ -10,13 +10,16 @@ calculates the short-horizon direction, confidence, stop loss, and take profit
 locally. No source request contains an API key, account identifier, signature,
 or order operation.
 
-All 35 sources are enabled by default and isolated by timeout, circuit breaker,
-schema validation, deduplicated timestamps, and a bounded cache. The source
-request interval is configurable in seconds, defaults to 30, and is normalized
+All 36 sources are enabled by default: 35 crypto feeds and one official
+InstaForex Charts M1 feed. Each is isolated by timeout, circuit breaker, schema
+validation, deduplicated timestamps, and a bounded cache. The source request
+interval is configurable in seconds, defaults to 30, and is normalized
 server-side to a hard minimum of 30 seconds. The same interval controls both
 source-fetch reuse and complete Signal-cycle reuse, so faster engine ticks
 cannot produce faster outbound requests. Legacy millisecond cache settings are
-migrated through the same minimum. Priority 1
+migrated through the same minimum. Crypto and Forex symbols are routed only to
+their compatible asset-class sources; Forex uses an explicit one-source broker
+quorum. Priority 1
 contains the liquid perpetual core, priority 2 broadens derivatives and venue
 agreement, and priority 3 adds geographically independent spot/aggregator
 confirmation. The default request budget keeps four liquid core venues in every
@@ -64,6 +67,7 @@ symbol/source pairs are skipped rather than treated as negative signals.
 | 33 | 3 | Bithumb | Spot | `GET /public/candlestick/{pair}/1m` | Count capped at 200; Bithumb array order | [Bithumb API](https://apidocs.bithumb.com/v1.2.0/reference/candlestick-rest-api) |
 | 34 | 3 | Bitkub | Spot | `GET /tradingview/history` | Parallel arrays; second-based from/to | [Bitkub official API repository](https://github.com/bitkub/bitkub-official-api-docs/blob/master/restful-api.md) |
 | 35 | 3 | CryptoCompare | Aggregator | `GET /data/v2/histominute` | Nested object rows; bounded free public request | [CryptoCompare API](https://min-api.cryptocompare.com/documentation?key=Historical&cat=dataHistominute) |
+| 36 | 1 | InstaForex Charts | Forex | `POST /soapservices/charts.svc` (`GetCharts`, `M1`) | SOAP/XML OHLC rows; canonical six-character FX pairs; read-only public history | [InstaForex Charts API](https://www.instaforex.com/partners/en/api_charts/) |
 
 ## Signal and risk selection
 
@@ -112,7 +116,7 @@ quantity-independent reduce-only control orders in Live/Paper execution.
 
 ## Verification boundary
 
-Fixture tests cover all 35 documented request/response shapes, timestamp units,
+Fixture tests cover all 36 documented request/response shapes, timestamp units,
 pair formats, malformed rows, and ordering. The read-only network probe imports
 only this registry and reports `authenticatedRequests: 0` and
 `orderEndpointsCalled: 0`. A deployment can use `pnpm test:signal-sources` to

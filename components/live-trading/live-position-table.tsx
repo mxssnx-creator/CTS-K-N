@@ -325,6 +325,9 @@ export function LivePositionTable({
                   const security = resolveEffectiveSecurityStop(position)
                   const status = String(position.status || "open").toLowerCase()
                   const isBusy = busyId === position.id
+                  const isForex = position.marketType === "forex" || position.volumeKind === "lots"
+                  const quantityLabel = isForex ? "lots" : "units"
+                  const marginCurrency = isForex ? "USD" : "USDT"
 
                   return (
                     <TableRow key={position.id} className="group">
@@ -349,12 +352,12 @@ export function LivePositionTable({
                         <div className="text-[9px] text-muted-foreground">Liq {formatPrice(position.liquidationPrice)}</div>
                       </TableCell>
                       <TableCell className="py-1.5">
-                        <div className="font-mono text-[11px] tabular-nums">{formatQuantity(quantity)} · {Math.max(1, finite(position.leverage) || 1)}x</div>
-                        <div className="text-[9px] text-muted-foreground">{formatMoney(margin)} · {position.marginType || "—"}</div>
+                        <div className="font-mono text-[11px] tabular-nums">{formatQuantity(quantity)} {quantityLabel} · {Math.max(1, finite(position.leverage) || 1)}x</div>
+                        <div className="text-[9px] text-muted-foreground">{formatMoney(margin, marginCurrency)} · {position.marginType || "—"}</div>
                       </TableCell>
                       <TableCell className="py-1.5">
                         <div className={`font-semibold tabular-nums ${pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-                          {formatMoney(pnl)}
+                          {formatMoney(pnl, marginCurrency)}
                         </div>
                         <div className={`text-[9px] tabular-nums ${roi >= 0 ? "text-emerald-600/80 dark:text-emerald-400/80" : "text-rose-600/80 dark:text-rose-400/80"}`}>{formatPercent(roi)}</div>
                       </TableCell>

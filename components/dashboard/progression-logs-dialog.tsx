@@ -54,8 +54,13 @@ interface StatsShape {
   }
   breakdown: {
     indications: { direction: number; move: number; active: number; activeAdvanced?: number; active_advanced?: number; special?: number; optimal: number; auto: number; common?: number; signal?: number; trend?: number; total: number }
-    strategies: { base: number; main: number; real: number; live: number; total: number; baseEvaluated: number; mainEvaluated: number; realEvaluated: number }
+    strategies: {
+      base: number; main: number; real: number; live: number; total: number
+      baseEvaluated: number; mainEvaluated: number; realEvaluated: number
+      mainBaseInput?: number; mainPassedParents?: number; realLogicalPassed?: number
+    }
   }
+  stageEvalPercent?: { base: number; main: number; real: number; live?: number }
   // ── Active-now snapshot ────────────────────────────────────────
   // Two equivalent sources are accepted, in priority order:
   //   1. `activeCounts.{indications,strategies}` — the fast per-cycle
@@ -601,21 +606,26 @@ export function ProgressionLogsDialog({
                   </p>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center text-xs">
                     {[
-                      { label: "Base", value: bd?.strategies.base || 0, eval: bd?.strategies.baseEvaluated || 0, cls: "text-orange-700 dark:text-orange-400", bg: "bg-orange-50 dark:bg-orange-950" },
-                      { label: "Main", value: bd?.strategies.main || 0, eval: bd?.strategies.mainEvaluated || 0, cls: "text-yellow-700 dark:text-yellow-400", bg: "bg-yellow-50 dark:bg-yellow-950" },
-                      { label: "Real", value: bd?.strategies.real || 0, eval: bd?.strategies.realEvaluated || 0, cls: "text-green-700 dark:text-green-400",  bg: "bg-green-50 dark:bg-green-950" },
+                      { label: "Base", value: bd?.strategies.base || 0, eval: bd?.strategies.baseEvaluated || 0, evalLabel: "evaluated", cls: "text-orange-700 dark:text-orange-400", bg: "bg-orange-50 dark:bg-orange-950" },
+                      { label: "Main", value: bd?.strategies.main || 0, eval: bd?.strategies.mainPassedParents ?? bd?.strategies.mainEvaluated ?? 0, evalLabel: bd?.strategies.mainPassedParents != null ? "parents passed" : "evaluated", cls: "text-yellow-700 dark:text-yellow-400", bg: "bg-yellow-50 dark:bg-yellow-950" },
+                      { label: "Real", value: bd?.strategies.real || 0, eval: bd?.strategies.realLogicalPassed ?? bd?.strategies.realEvaluated ?? 0, evalLabel: bd?.strategies.realLogicalPassed != null ? "logical passed" : "evaluated", cls: "text-green-700 dark:text-green-400",  bg: "bg-green-50 dark:bg-green-950" },
                       // Live = exchange-side tracked locally (no exchange-history fetch)
-                      { label: "Live", value: bd?.strategies.live || 0, eval: 0,                                   cls: "text-amber-700 dark:text-amber-400",  bg: "bg-amber-50 dark:bg-amber-950" },
-                    ].map(({ label, value, eval: evaluated, cls, bg }) => (
+                      { label: "Live", value: bd?.strategies.live || 0, eval: 0, evalLabel: "", cls: "text-amber-700 dark:text-amber-400",  bg: "bg-amber-50 dark:bg-amber-950" },
+                    ].map(({ label, value, eval: evaluated, evalLabel, cls, bg }) => (
                       <div key={label} className={`rounded-lg ${bg} p-3`}>
                         <div className={`text-xl font-bold tabular-nums ${cls}`}>{fmt(value)}</div>
                         <div className="text-muted-foreground">{label}</div>
                         {evaluated > 0 && (
-                          <div className="text-[10px] text-muted-foreground mt-0.5">{fmt(evaluated)} evaluated</div>
+                          <div className="text-[10px] text-muted-foreground mt-0.5">{fmt(evaluated)} {evalLabel}</div>
                         )}
                       </div>
                     ))}
                   </div>
+                  {stats?.stageEvalPercent && (
+                    <div className="border-t pt-2 text-center text-[10px] text-muted-foreground">
+                      Logical stage pass-through B / M / R / L: {stats.stageEvalPercent.base.toFixed(1)}% / {stats.stageEvalPercent.main.toFixed(1)}% / {stats.stageEvalPercent.real.toFixed(1)}% / {stats.stageEvalPercent.live?.toFixed(1) ?? "0.0"}%
+                    </div>
+                  )}
                 </div>
 
                 {/* Processing completeness */}

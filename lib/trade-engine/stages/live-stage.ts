@@ -150,6 +150,8 @@ import {
   type PositionCostQuote,
 } from "@/lib/position-cost"
 import { normalizeMarketType, type MarketType } from "@/lib/market-types"
+import { marketDataKey } from "@/lib/market-data-keys"
+import { tradingPairKey } from "@/lib/trading-pair-keys"
 import {
   DEFAULT_FOREX_LOT_SIZE,
   forexNotionalUsd,
@@ -295,13 +297,14 @@ function bingXEnvironmentInfo(connector: any): { environment: string; baseUrl: s
 async function loadExchangeQuantityRules(
   symbol: string,
   connector?: any,
+  connectionId?: string,
 ): Promise<LiveInstrumentRules> {
   const normalizedSymbol = String(symbol || "").trim().toUpperCase().replace(/[-/_:]/g, "")
   const client = getRedisClient() as any
   let stored: Record<string, unknown> = {}
   try {
     if (typeof client?.hgetall === "function") {
-      stored = await client.hgetall(`settings:trading_pair:${normalizedSymbol}`) || {}
+      stored = await client.hgetall(tradingPairKey(normalizedSymbol, connectionId)) || {}
     }
   } catch {
     stored = {}
@@ -350,7 +353,7 @@ async function loadExchangeQuantityRules(
         rules,
       })
       if (typeof client?.hset === "function") {
-        await client.hset(`settings:trading_pair:${normalizedSymbol}`, {
+        await client.hset(tradingPairKey(normalizedSymbol, connectionId), {
           quantityStep: String(rules.quantityStep),
           quantityPrecision: String(rules.quantityPrecision),
           minQuantity: String(rules.minQuantity),
@@ -574,16 +577,16 @@ async function resolveAuthoritativeLiveTicker(
 }
 
 /** Read the latest persisted broker/exchange tick for simulation and recovery. */
-async function resolveCachedVenueTicker(symbol: string): Promise<VenueTickerSnapshot | null> {
+async function resolveCachedVenueTicker(symbol: string, connectionId?: string): Promise<VenueTickerSnapshot | null> {
   const normalizedSymbol = isForexSymbol(symbol) ? normalizeForexSymbol(symbol) : String(symbol || "").trim().toUpperCase()
   if (!normalizedSymbol) return null
   try {
     const { getMarketData, getRedisClient } = await import("@/lib/redis-db")
-    const data = await getMarketData(normalizedSymbol, "1s")
+    const data = await getMarketData(normalizedSymbol, "1s", connectionId)
     const fromEnvelope = normalizeVenueTicker(data?.ticker, normalizedSymbol)
     if (fromEnvelope) return fromEnvelope
     const client = getRedisClient()
-    const flatHash = await client.hgetall("market_data:" + normalizedSymbol).catch(() => ({} as Record<string, string>))
+    const flatHash = await client.hgetall(marketDataKey(normalizedSymbol, "", connectionId)).catch(() => ({} as Record<string, string>))
     return normalizeVenueTicker(
       {
         ...flatHash,
@@ -618,7 +621,7 @@ async function resolveForexUsdConversion(
   const inverseSymbol = "USD" + pair.quote
   const read = async (candidate: string): Promise<VenueTickerSnapshot | null> => {
     const live = connector ? await resolveAuthoritativeLiveTicker(connectionId, candidate, connector) : null
-    return live || (allowCached ? await resolveCachedVenueTicker(candidate) : null)
+    return live || (allowCached ? await resolveCachedVenueTicker(candidate, connectionId) : null)
   }
   const direct = await read(directSymbol)
   const directMid = direct ? (finitePositive(direct.bid) + finitePositive(direct.ask)) / 2 || finitePositive(direct.last) : 0
@@ -3765,7 +3768,7 @@ async function fetchCurrentPrice(symbol: string, connId?: string): Promise<numbe
   const { getMarketData, getRedisClient } = await import("@/lib/redis-db")
   try {
     // Primary: OHLCV candle-series key written by historic loader / live feed.
-    const data = await getMarketData(symbol, "1m")
+    const data = await getMarketData(symbol, "1m", connId)
     if (data) {
       const latest = data.latest || (Array.isArray(data) ? data[data.length - 1] : null)
       if (latest) {
@@ -3778,7 +3781,7 @@ async function fetchCurrentPrice(symbol: string, connId?: string): Promise<numbe
     // This key is available in the sandbox even when the candle-series key is absent.
     const client = getRedisClient()
     if (client) {
-      const flatHash = await client.hgetall("market_data:" + symbol).catch(() => ({} as Record<string, string>))
+      const flatHash = await client.hgetall(marketDataKey(symbol, "", connId)).catch(() => ({} as Record<string, string>))
       const cachedTicker = normalizeVenueTicker(flatHash, symbol)
       const tickerPrice = cachedTicker
         ? (finitePositive(cachedTicker.bid) + finitePositive(cachedTicker.ask)) / 2 || finitePositive(cachedTicker.last)
@@ -4826,6 +4829,7 @@ async function accumulateIntoLivePosition(
     const accumulationRules = await loadExchangeQuantityRules(
       String(real?.symbol || existing.symbol || ""),
       connector,
+      connId,
     )
     let maxExecutionNotionalUsd = Number(
       plan.maxExecutionNotionalUsd ?? existing.maxExecutionNotionalUsd ?? 0,
@@ -5935,7 +5939,7 @@ async function reduceCombinedPosCountPosition(
     const reductionExecutable = resolveExecutableQuantity(
       delta.quantity,
       price,
-      await loadExchangeQuantityRules(position.symbol, connector),
+      await loadExchangeQuantityRules(position.symbol, connector, connectionId),
       { reduceOnly: true },
     )
     if (!(reductionExecutable.quantity > 0)) {
@@ -6086,7 +6090,7 @@ async function reconcileCombinedPosCountTarget(
     realPosition.direction,
   )
   let price = Number(realPosition.entryPrice || 0)
-  if (!(price > 0)) price = await fetchCurrentPrice(realPosition.symbol)
+  if (!(price > 0)) price = await fetchCurrentPrice(realPosition.symbol, connectionId)
 
   if (realPosition.posCountsTargetFlat || !(Number(realPosition.sizeMultiplier) > 0)) {
     let lastClosed: LivePosition | null = null
@@ -9949,7 +9953,7 @@ async function reconcileAggregateProtectionBook(
     bySymbol.set(symbol, rows)
   }
   await mapWithConcurrency([...bySymbol.entries()], 4, async ([symbol, rows]) => {
-    const rules = await loadExchangeQuantityRules(symbol, connector)
+    const rules = await loadExchangeQuantityRules(symbol, connector, connectionId)
     for (const row of rows) {
       const before = `${row.quantityStep}|${row.quantityPrecision}|${row.pricePrecision}|${row.priceTick}`
       applyLiveInstrumentRules(row, rules)
@@ -12061,7 +12065,7 @@ export async function executeLivePosition(
       } else {
         const adjustmentPrice = realPosition.entryPrice > 0
           ? realPosition.entryPrice
-          : await fetchCurrentPrice(realPosition.symbol)
+          : await fetchCurrentPrice(realPosition.symbol, connectionId)
         if (await abortSuperseded()) return livePosition
         if (!(adjustmentPrice > 0)) {
           pushStep(existing, "accumulate_skip", false, "market price unavailable — adjustment deferred")
@@ -12193,7 +12197,7 @@ export async function executeLivePosition(
         // accumulator. Reuse fetchCurrentPrice with the realPosition
         // entry-price hint so we don't pay two fetches for the same tick.
         let accPrice = realPosition.entryPrice
-        if (!accPrice || accPrice <= 0) accPrice = await fetchCurrentPrice(realPosition.symbol)
+        if (!accPrice || accPrice <= 0) accPrice = await fetchCurrentPrice(realPosition.symbol, connectionId)
 
         // Skip-paths: when we can't accumulate right now (no market price
         // or no connector), we record the deferral on the EXISTING
@@ -12380,7 +12384,7 @@ export async function executeLivePosition(
     if (!isLiveTradeEnabled) {
       if (await abortSuperseded()) return livePosition
       const simTicker = marketType === "forex"
-        ? await resolveCachedVenueTicker(realPosition.symbol)
+        ? await resolveCachedVenueTicker(realPosition.symbol, connectionId)
         : null
       if (simTicker) {
         livePosition.quoteBid = finitePositive(simTicker.bid) || undefined
@@ -12420,7 +12424,7 @@ export async function executeLivePosition(
         ? selectVenueTickerPrice(simTicker, realPosition.direction)
         : livePosition.entryPrice || realPosition.entryPrice || 0
       if (!simEntryPrice || simEntryPrice <= 0) {
-        simEntryPrice = (await fetchCurrentPrice(realPosition.symbol).catch(() => 0)) || 0
+        simEntryPrice = (await fetchCurrentPrice(realPosition.symbol, connectionId).catch(() => 0)) || 0
       }
       livePosition.entryPrice = simEntryPrice
 
@@ -12746,6 +12750,7 @@ export async function executeLivePosition(
     const liveInstrumentRules = await loadExchangeQuantityRules(
       realPosition.symbol,
       exchangeConnector,
+      connectionId,
     )
     applyLiveInstrumentRules(livePosition, liveInstrumentRules)
     if (bingXEnvironmentInfo(exchangeConnector) && !(livePosition.priceTick && livePosition.priceTick > 0)) {
@@ -13588,7 +13593,7 @@ export async function executeLivePosition(
             const redisClient = getRedisClient()
             if (redisClient) {
               const storedMin = await redisClient.hget(
-                `settings:trading_pair:${realPosition.symbol}`,
+                tradingPairKey(realPosition.symbol, connectionId),
                 "min_order_size",
               )
               const parsedStoredMin = storedMin ? parseFloat(storedMin) : 0
@@ -13734,7 +13739,7 @@ export async function executeLivePosition(
             const { setSettings } = await import("@/lib/redis-db")
             
             // Save the corrected minimum for future cycles
-            await setSettings(`trading_pair:${realPosition.symbol}`, {
+            await setSettings(tradingPairKey(realPosition.symbol, connectionId), {
               min_order_size: minQty,
               updated_at: new Date().toISOString(),
               source: "101400_error_extraction",
@@ -16682,7 +16687,7 @@ async function orphanCloseExpiredPositions(
       if (exitPrice <= 0) {
         try {
           const orphanRedis = getRedisClient()
-          const mdHash = await orphanRedis.hgetall(`market_data:${pos.symbol}`)
+          const mdHash = await orphanRedis.hgetall(marketDataKey(pos.symbol, "", pos.connectionId || connectionId))
           const mdPrice = parseFloat(String(mdHash?.lastPrice ?? mdHash?.price ?? mdHash?.close ?? "0"))
           if (mdPrice > 0) exitPrice = mdPrice
         } catch { /* ignore */ }
@@ -17692,7 +17697,7 @@ export async function processSimulatedPositions(
     const priceMap = new Map<string, number>()
     await Promise.all(
       uniqueSyms.map(async (sym) => {
-        const px = await fetchCurrentPrice(sym).catch(() => 0)
+        const px = await fetchCurrentPrice(sym, connectionId).catch(() => 0)
         if (px > 0) priceMap.set(sym, px)
       }),
     )
@@ -18120,7 +18125,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         const priceMap = new Map<string, number>()
         await Promise.all(
           uniqueSyms.map(async (sym) => {
-            const px = await fetchCurrentPrice(sym).catch(() => 0)
+            const px = await fetchCurrentPrice(sym, connectionId).catch(() => 0)
             if (px > 0) priceMap.set(sym, px)
           }),
         )
@@ -18548,7 +18553,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           let exitPrice: number = Number(position.exchangeData?.markPrice) || position.averageExecutionPrice || 0
           if (exitPrice <= 0) {
             try {
-              const mdHash = await client.hgetall(`market_data:${position.symbol}`)
+              const mdHash = await client.hgetall(marketDataKey(position.symbol, "", position.connectionId || connectionId))
               const mdPrice = parseFloat(String(mdHash?.lastPrice ?? mdHash?.price ?? mdHash?.close ?? "0"))
               if (mdPrice > 0) exitPrice = mdPrice
             } catch { /* fall through */ }

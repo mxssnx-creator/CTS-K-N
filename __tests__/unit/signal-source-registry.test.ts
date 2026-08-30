@@ -94,14 +94,19 @@ function fixturePayload(sourceId: string): unknown {
     case "cryptocompare":
       return { Data: { Data: [{ time: timestampSeconds, open: 100, high: 102, low: 99, close: 101, volumefrom: 12 }] } }
     case "blofin": return { data: [standard] }
+    case "instaforex-charts": return [
+      "<ArrayOfChart xmlns=\"http://schemas.datacontract.org/2004/07/Charts\">",
+      "<Chart><Timestamp>1700000000</Timestamp><Open>100</Open><High>102</High>",
+      "<Low>99</Low><Close>101</Close><Volume>12</Volume></Chart></ArrayOfChart>",
+    ].join("")
     default: throw new Error(`Missing fixture for ${sourceId}`)
   }
 }
 
 describe("Signal source registry and low-stop calculation", () => {
-  test("registers exactly 35 unique, documented, default-enabled public feeds", () => {
-    expect(SIGNAL_SOURCE_DEFINITIONS).toHaveLength(35)
-    expect(new Set(SIGNAL_SOURCE_DEFINITIONS.map((source) => source.id)).size).toBe(35)
+  test("registers exactly 36 unique, documented, default-enabled public feeds", () => {
+    expect(SIGNAL_SOURCE_DEFINITIONS).toHaveLength(36)
+    expect(new Set(SIGNAL_SOURCE_DEFINITIONS.map((source) => source.id)).size).toBe(36)
     for (const source of SIGNAL_SOURCE_DEFINITIONS) {
       expect(source.enabledByDefault).toBe(true)
       expect(source.officialDocs).toMatch(/^https:\/\//)
@@ -111,6 +116,9 @@ describe("Signal source registry and low-stop calculation", () => {
     }
     expect(signalSourceSupportsSymbol(getSignalSource("deribit")!, "BTCUSDT")).toBe(true)
     expect(signalSourceSupportsSymbol(getSignalSource("deribit")!, "DOGEUSDT")).toBe(false)
+    expect(signalSourceSupportsSymbol(getSignalSource("instaforex-charts")!, "EURUSD")).toBe(true)
+    expect(signalSourceSupportsSymbol(getSignalSource("instaforex-charts")!, "BTCUSDT")).toBe(false)
+    expect(signalSourceSupportsSymbol(getSignalSource("binance-usdm")!, "EURUSD")).toBe(false)
   })
 
   test("covers every enabled BTC source through bounded priority rotation", () => {
@@ -121,7 +129,7 @@ describe("Signal source registry and low-stop calculation", () => {
     const seen = new Set<string>()
     for (let cursor = 0; cursor < eligible.length; cursor++) {
       const selected = __signalIndicationTestUtils.selectSources(settings, "BTCUSDT", cursor)
-      expect(selected).toHaveLength(settings.maxSourcesPerCycle)
+      expect(selected).toHaveLength(eligible.length)
       for (const source of selected) seen.add(source.id)
     }
     expect(seen).toEqual(new Set(eligible.map((source) => source.id)))
@@ -132,7 +140,7 @@ describe("Signal source registry and low-stop calculation", () => {
     (sourceId) => {
       const source = getSignalSource(sourceId)!
       const request = source.buildRequest({
-        symbol: "BTCUSDT",
+        symbol: source.assetClass === "forex" ? "EURUSD" : "BTCUSDT",
         limit: 60,
         now: 1_700_000_060_000,
       })
@@ -237,6 +245,26 @@ describe("Signal source registry and low-stop calculation", () => {
     expect(source.parse({
       data: [[timestamp, "100", "102", "99", "101", "12"]],
     })).toEqual([expected])
+  })
+
+  test("parses InstaForex Charts SOAP OHLC rows and sends a bounded M1 request", () => {
+    const source = getSignalSource("instaforex-charts")!
+    const request = source.buildRequest({
+      symbol: "EUR/USD",
+      limit: 60,
+      now: 1_700_000_060_000,
+    })
+    expect(request.init?.method).toBe("POST")
+    expect(String(request.init?.body)).toContain("<Symbol>EURUSD</Symbol>")
+    expect(String(request.init?.body)).toContain("<Type>M1</Type>")
+    expect(source.parse(fixturePayload("instaforex-charts"))).toEqual([{
+      timestamp: 1_700_000_000_000,
+      open: 100,
+      high: 102,
+      low: 99,
+      close: 101,
+      volume: 12,
+    }])
   })
 
   test("normalizes candle rows, removes invalid data and orders timestamps", () => {

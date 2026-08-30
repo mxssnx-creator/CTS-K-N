@@ -26,13 +26,14 @@
  *   public-trade endpoints (see lib/exchange-connectors/aggregate-1s.ts).
  */
 
-import { getClient, initRedis, getAllConnections, getConnection } from "@/lib/redis-db"
+import { getClient, initRedis, getConnection } from "@/lib/redis-db"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { isForcedSimulation } from "@/lib/real-trade-gates"
 import { workloadConcurrency } from "@/lib/runtime-parallelism"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { normalizeMarketSymbol, normalizeMarketType, getDefaultSymbolsForMarket, type MarketType } from "@/lib/market-types"
 import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
+import { marketDataKey } from "@/lib/market-data-keys"
 import type { ExchangeTicker } from "@/lib/exchange-connectors/base-connector"
 
 export interface MarketDataCandle {
@@ -272,9 +273,10 @@ async function writeHistoricCandleChunks(
   symbol: string,
   candles: MarketDataCandle[],
   intervalSeconds = 1,
+  connectionId?: string,
 ): Promise<void> {
-  const chunksKey = `market_data:${symbol}:history:chunks`
-  const metaKey = `market_data:${symbol}:history:meta`
+  const chunksKey = marketDataKey(symbol, "history:chunks", connectionId)
+  const metaKey = marketDataKey(symbol, "history:meta", connectionId)
   const ranges: Array<{ start: number; end: number; count: number }> = []
 
   // Hide metadata while replacing its list. Readers fall back to the small
@@ -359,7 +361,9 @@ export function generateSyntheticCandles(
 
 /**
  * Fetch real OHLCV data from exchange
- * Uses the first available connection with valid credentials
+ * Uses only the explicitly selected connection. An omitted scope is rejected
+ * so a venue cannot silently publish into another connection's market-data
+ * namespace.
  */
 async function fetchRealMarketData(
   symbol: string,
@@ -375,6 +379,11 @@ async function fetchRealMarketData(
   sourceIntervalSeconds?: number
 } | null> {
   try {
+    const scopedConnectionId = String(connectionId || "").trim()
+    if (!scopedConnectionId) {
+      console.warn("[v0] [MarketData] Refusing an unscoped market-data fetch")
+      return null
+    }
     // Explicit paper/preview mode must be deterministic and must not spend a
     // cold-start budget on an exchange request that cannot produce an order or
     // venue-backed history. The normal production path still resolves its
@@ -383,14 +392,14 @@ async function fetchRealMarketData(
     // Engine-owned calls always supply connectionId. Resolve it from Redis on
     // every connector-factory lookup so a settings/credential/testnet update
     // invalidates the cached fingerprint and the next cycle uses the CURRENT
-    // stored connection. For legacy/global callers, prefer persisted BingX
-    // connections before other exchanges; public OHLCV does not require keys.
-    const selected = connectionId ? await getConnection(connectionId) : null
-    if (connectionId && !selected) {
-      console.warn(`[v0] [MarketData] Stored connection not found: ${connectionId}`)
+    // stored connection. Do not fall back to another connection when the
+    // selected record is missing: that would make the source ambiguous.
+    const selected = await getConnection(scopedConnectionId)
+    if (!selected) {
+      console.warn(`[v0] [MarketData] Stored connection not found: ${scopedConnectionId}`)
       return null
     }
-    const inventory = selected ? [selected] : await getAllConnections()
+    const inventory = [selected]
     const requestedIsForex = isForexSymbol(symbol)
     const candidates = inventory
       .filter((connection: any) => connection?.id && connection?.exchange)
@@ -399,10 +408,9 @@ async function fetchRealMarketData(
           connection.market_type || connection.asset_class,
           connection.exchange,
         )
-        // A global refresh must not send a Forex pair to a crypto connector
-        // (or a crypto symbol to the read-only InstaForex adapter). Explicit
-        // connectionId already scopes the inventory to one connection.
-        return connectionId || (requestedIsForex ? connectionMarketType === "forex" : connectionMarketType !== "forex")
+        // The explicit connection scope is mandatory. The selected venue must
+        // still match the symbol's market class before any connector call.
+        return requestedIsForex ? connectionMarketType === "forex" : connectionMarketType !== "forex"
       })
       .sort((left: any, right: any) => {
         const leftBingX = String(left.exchange || left.id || "").toLowerCase().includes("bingx") ? 1 : 0
@@ -490,13 +498,18 @@ export async function loadMarketDataForEngine(
   symbols: string[] = [],
   options: LoadMarketDataOptions = {},
 ): Promise<number> {
+  const scopedConnectionId = String(options.connectionId || "").trim()
+  if (!scopedConnectionId) {
+    console.warn("[v0] [MarketData] Refusing an unscoped engine market-data load")
+    return 0
+  }
   const requestedSymbols = symbols.length > 0 ? symbols : DEFAULT_ENGINE_MARKET_SYMBOLS
   let uniqueSymbols = Array.from(new Set(requestedSymbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)))
   const minimumHistoryCandles = Math.max(
     1,
     Math.floor(Number(options.minimumHistoryCandles) || DEFAULT_MINIMUM_HISTORY_CANDLES),
   )
-  const flightKey = `${options.connectionId || "auto"}:${options.requireHistory ? `history:${minimumHistoryCandles}` : "tail"}:${uniqueSymbols.join("|")}`
+  const flightKey = `${scopedConnectionId}:${options.requireHistory ? `history:${minimumHistoryCandles}` : "tail"}:${uniqueSymbols.join("|")}`
 
   // Coalesce concurrent calls — the second caller joins the first
   // promise for the exact same symbol set and receives the same result,
@@ -509,7 +522,8 @@ export async function loadMarketDataForEngine(
   try {
     await initRedis()
     const client = getClient()
-    const selectedConnection = options.connectionId ? await getConnection(options.connectionId).catch(() => null) : null
+    const selectedConnection = await getConnection(scopedConnectionId).catch(() => null)
+    if (!selectedConnection) return 0
     const marketType = normalizeMarketType(selectedConnection?.market_type ?? selectedConnection?.asset_class, selectedConnection?.exchange)
     const historyIntervalSeconds = marketDataIntervalSeconds(marketType)
     const requiredHistoryCandles = requiredHistoryCandlesForMarketType(marketType, minimumHistoryCandles)
@@ -521,7 +535,7 @@ export async function loadMarketDataForEngine(
       : normalizeMarketSymbol(symbol, marketType)).filter(Boolean)))
     const allowSynthetic =
       syntheticMarketDataAllowed() ||
-      (await isConnectionDemo(options.connectionId))
+      (await isConnectionDemo(scopedConnectionId))
 
     // Default symbols if none provided — matches the production set seeded by
     // migrations (ordered by 1h volatility per standing directive).
@@ -539,11 +553,11 @@ export async function loadMarketDataForEngine(
     {
       const cacheKeys = targetSymbols.flatMap((symbol) => options.requireHistory
         ? [
-            `market_data:${symbol}:1s`,
-            `market_data:${symbol}:history:meta`,
-            `market_data:${symbol}:candles`,
+            marketDataKey(symbol, "1s", scopedConnectionId),
+            marketDataKey(symbol, "history:meta", scopedConnectionId),
+            marketDataKey(symbol, "candles", scopedConnectionId),
           ]
-        : [`market_data:${symbol}:1s`])
+        : [marketDataKey(symbol, "1s", scopedConnectionId)])
       const cachedValues = cacheKeys.length > 0
         ? (await (client as any).mget(...cacheKeys)) as (string | null)[]
         : []
@@ -657,7 +671,7 @@ export async function loadMarketDataForEngine(
     const loadOne = async (symbol: string): Promise<void> => {
       try {
         // Try to fetch real 1s data first.
-        const realData = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS, options.connectionId)
+        const realData = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS, scopedConnectionId)
 
         let candles: MarketDataCandle[]
         let source: string
@@ -733,11 +747,11 @@ export async function loadMarketDataForEngine(
         }
 
         // Authoritative key under the new :1s suffix.
-        const key = `market_data:${symbol}:1s`
+        const key = marketDataKey(symbol, "1s", scopedConnectionId)
         const jsonData = JSON.stringify(marketData)
 
         // Store raw candles array for indication processor historical access.
-        const candlesKey = `market_data:${symbol}:candles`
+        const candlesKey = marketDataKey(symbol, "candles", scopedConnectionId)
 
         // Also write latest bucket to hash format so getMarketData() works.
         const latestCandle = candles[candles.length - 1]
@@ -751,7 +765,7 @@ export async function loadMarketDataForEngine(
           client.expire(candlesKey, 86400),
         ]
         if (latestCandle) {
-          const hashKey = `market_data:${symbol}`
+          const hashKey = marketDataKey(symbol, "", scopedConnectionId)
           const flatHash: Record<string, string> = {
             symbol,
             exchange: source,
@@ -798,6 +812,7 @@ export async function loadMarketDataForEngine(
             symbol,
             candles,
             realData?.sourceIntervalSeconds || historyIntervalSeconds,
+            scopedConnectionId,
           )
         } else if (options.requireHistory) {
           // This should only be reachable when an operator requests a history
@@ -847,11 +862,15 @@ export async function loadMarketDataForEngine(
  */
 export async function updateMarketDataForSymbol(symbol: string, connectionId?: string): Promise<boolean> {
   try {
+    const scopedConnectionId = String(connectionId || "").trim()
+    if (!scopedConnectionId) {
+      console.warn("[v0] [MarketData] Refusing an unscoped market-data update")
+      return false
+    }
     await initRedis()
     const client = getClient()
 
-    // If connectionId provided, use that specific connection
-    // Otherwise try all connections
+    // Every update is tied to exactly one persisted connection.
     let candles: MarketDataCandle[] | null = null
     let source = "synthetic"
     let marketType: MarketType = "crypto"
@@ -862,33 +881,18 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
     // Spec §7: same window as the bulk loader — 1s × 1 day.
     const ONE_DAY_SECONDS = 86_400
 
-    if (connectionId) {
-      const connections = await getAllConnections()
-      const conn = connections.find((c: any) => c.id === connectionId)
-      if (!conn) return false
-      marketType = normalizeMarketType(conn.market_type || conn.asset_class, conn.exchange)
-      symbol = marketType === "forex" ? normalizeForexSymbol(symbol) : normalizeMarketSymbol(symbol, marketType)
-      const result = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS, connectionId)
-      if (result) {
-        candles = result.candles
-        source = result.source
-        marketType = result.marketType
-        ticker = result.ticker
-        sourceTimeframe = result.sourceTimeframe || (result.marketType === "forex" ? "M1" : "1s")
-        sourceIntervalSeconds = result.sourceIntervalSeconds || marketDataIntervalSeconds(result.marketType)
-      }
-    } else {
-      marketType = isForexSymbol(symbol) ? "forex" : "crypto"
-      symbol = marketType === "forex" ? normalizeForexSymbol(symbol) : normalizeMarketSymbol(symbol, marketType)
-      const result = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS)
-      if (result) {
-        candles = result.candles
-        source = result.source
-        marketType = result.marketType
-        ticker = result.ticker
-        sourceTimeframe = result.sourceTimeframe || (result.marketType === "forex" ? "M1" : "1s")
-        sourceIntervalSeconds = result.sourceIntervalSeconds || marketDataIntervalSeconds(result.marketType)
-      }
+    const conn = await getConnection(scopedConnectionId).catch(() => null)
+    if (!conn) return false
+    marketType = normalizeMarketType(conn.market_type || conn.asset_class, conn.exchange)
+    symbol = marketType === "forex" ? normalizeForexSymbol(symbol) : normalizeMarketSymbol(symbol, marketType)
+    const result = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS, scopedConnectionId)
+    if (result) {
+      candles = result.candles
+      source = result.source
+      marketType = result.marketType
+      ticker = result.ticker
+      sourceTimeframe = result.sourceTimeframe || (result.marketType === "forex" ? "M1" : "1s")
+      sourceIntervalSeconds = result.sourceIntervalSeconds || marketDataIntervalSeconds(result.marketType)
     }
 
     // If no real data, use existing or generate synthetic
@@ -896,7 +900,8 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
       // Try to get existing data — :1s is now authoritative; fall back
       // to the legacy :1m envelope for one release so partial upgrades
       // don't lose data.
-      const existing = (await client.get(`market_data:${symbol}:1s`)) ?? (await client.get(`market_data:${symbol}:1m`))
+      const existing = (await client.get(marketDataKey(symbol, "1s", scopedConnectionId))) ??
+        (await client.get(marketDataKey(symbol, "1m", scopedConnectionId)))
       if (existing) {
         const existingData: MarketData = JSON.parse(existing)
         candles = existingData.candles
@@ -906,7 +911,15 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
         sourceTimeframe = existingData.sourceTimeframe || (marketType === "forex" ? "M1" : "1s")
         sourceIntervalSeconds = existingData.sourceIntervalSeconds || marketDataIntervalSeconds(marketType)
       } else {
-        // Generate synthetic
+        const allowSynthetic = syntheticMarketDataAllowed() || await isConnectionDemo(scopedConnectionId)
+        if (!allowSynthetic) {
+          // A production refresh must never replace missing venue data with a
+          // generated price series. Keep the connection entry-gated until a
+          // real tick/history response is available.
+          console.warn(`[v0] [MarketData] ${symbol}: no existing data and synthetic fallback is disabled`)
+          return false
+        }
+        // Generate synthetic only for explicit paper/VST/demo operation.
         sourceTimeframe = marketType === "forex" ? "M1" : "1s"
         sourceIntervalSeconds = marketDataIntervalSeconds(marketType)
         candles = generateSyntheticCandles(
@@ -933,19 +946,19 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
       ...(ticker ? { ticker } : {}),
     }
 
-    const key = `market_data:${symbol}:1s`
+    const key = marketDataKey(symbol, "1s", scopedConnectionId)
     await client.set(key, JSON.stringify(marketData))
     await client.expire(key, 86400)
 
     // Update candles array
-    const candlesKey = `market_data:${symbol}:candles`
+    const candlesKey = marketDataKey(symbol, "candles", scopedConnectionId)
     await client.set(candlesKey, JSON.stringify(realtimeCandles))
     await client.expire(candlesKey, 86400)
 
     // Update hash
     const latestCandle = candles[candles.length - 1]
     if (latestCandle) {
-      const hashKey = `market_data:${symbol}`
+      const hashKey = marketDataKey(symbol, "", scopedConnectionId)
       const flatHash: Record<string, string> = {
         symbol,
         exchange: source,
@@ -998,7 +1011,7 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
         sourceIntervalSeconds,
       )
       if (coverage.complete) {
-        await writeHistoricCandleChunks(client, symbol, candles, sourceIntervalSeconds)
+        await writeHistoricCandleChunks(client, symbol, candles, sourceIntervalSeconds, scopedConnectionId)
       } else {
         console.warn(
           `[v0] [MarketData] ${symbol}: refresh has ${candles.length} sparse/stale candles ` +
@@ -1007,7 +1020,7 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
         )
       }
     } else {
-      const existingMetaRaw = await client.get(`market_data:${symbol}:history:meta`).catch(() => null)
+      const existingMetaRaw = await client.get(marketDataKey(symbol, "history:meta", scopedConnectionId)).catch(() => null)
       let existingCandleCount = 0
       try {
         const metadata = typeof existingMetaRaw === "string" ? JSON.parse(existingMetaRaw) : existingMetaRaw
@@ -1043,7 +1056,13 @@ export async function loadHistoricalMarketData(
   connectionId?: string,
 ): Promise<MarketDataCandle[]> {
   try {
-    const selectedConnection = connectionId ? await getConnection(connectionId).catch(() => null) : null
+    const scopedConnectionId = String(connectionId || "").trim()
+    if (!scopedConnectionId) {
+      console.warn("[v0] [MarketData] Refusing an unscoped historical-data load")
+      return []
+    }
+    const selectedConnection = await getConnection(scopedConnectionId).catch(() => null)
+    if (!selectedConnection) return []
     const marketType = normalizeMarketType(
       selectedConnection?.market_type || selectedConnection?.asset_class,
       selectedConnection?.exchange || (isForexSymbol(symbol) ? "instaforex" : undefined),
@@ -1055,14 +1074,14 @@ export async function loadHistoricalMarketData(
 
     // Try to fetch real historical data. The connector applies the venue's
     // own maximum and the caller receives only actual returned candles.
-    const realData = await fetchRealMarketData(canonicalSymbol, sourceTimeframe, 1000000, connectionId)
+    const realData = await fetchRealMarketData(canonicalSymbol, sourceTimeframe, 1000000, scopedConnectionId)
 
     if (realData && realData.candles.length > 0) {
       console.log(`[v0] [MarketData] Using real historical data for ${canonicalSymbol}: ${realData.candles.length} candles`)
       return realData.candles
     }
 
-    const allowSynthetic = syntheticMarketDataAllowed() || await isConnectionDemo(connectionId)
+    const allowSynthetic = syntheticMarketDataAllowed() || await isConnectionDemo(scopedConnectionId)
     if (!allowSynthetic) {
       console.warn(`[v0] [MarketData] No complete real historical data for ${canonicalSymbol}; synthetic fallback is disabled`)
       return []

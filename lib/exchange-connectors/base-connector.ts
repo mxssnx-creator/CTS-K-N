@@ -103,8 +103,16 @@ export interface ExchangePosition {
   liquidationPrice: number
   timestamp: number
   quantityUnit?: "contracts" | "lots" | "base_units"
+  marketType?: "crypto" | "forex"
+  /** Contract/lot size for unit-aware notional reporting. */
+  lotSize?: number
+  /** Quote-currency → USD conversion used for cross-pair reporting. */
+  quoteToUsdRate?: number
   /** Native terminal position ticket, required for exact SL/TP mutation. */
   positionTicket?: number
+  /** Venue position identifier, when the venue exposes one (for exact close). */
+  positionId?: string
+  exchangePositionId?: string
   /** Broker-reported protective levels, when the venue exposes them. */
   stopLoss?: number
   takeProfit?: number
@@ -229,6 +237,11 @@ export interface PlaceOrderOptions {
   /** Optional native terminal SL/TP attached atomically to an entry request. */
   stopLossPrice?: number
   takeProfitPrice?: number
+}
+
+export interface ExactPositionCloseOptions {
+  /** Stable venue/client id used to correlate the emergency close. */
+  clientOrderId?: string
 }
 
 export abstract class BaseExchangeConnector {
@@ -505,6 +518,23 @@ export abstract class BaseExchangeConnector {
   ): Promise<{ success: boolean; error?: string }>
 
   abstract closePosition(symbol: string, positionSide?: "long" | "short"): Promise<{ success: boolean; error?: string }>
+
+  /**
+   * Close one exact native position.  The default deliberately fails closed:
+   * a symbol-only close is not an equivalent operation and may touch an
+   * external/manual position in the same symbol slot.
+   */
+  async closePositionByTicket(
+    _symbol: string,
+    _positionTicket: number,
+    _quantity?: number,
+    _options: ExactPositionCloseOptions = {},
+  ): Promise<{ success: boolean; error?: string }> {
+    return {
+      success: false,
+      error: "Exact position-ticket close is not supported by this connector",
+    }
+  }
 
   // Funding Methods (Deposits/Withdrawals)
   abstract getDepositAddress(coin: string): Promise<{ address?: string; error?: string }>

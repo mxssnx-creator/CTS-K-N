@@ -29,6 +29,44 @@ describe("complete live position/order/statistics relations", () => {
     expect(stats.bySource["signal-trade"]).toMatchObject({ positions: 0, realizedPnl: 0 })
   })
 
+  test("uses Forex lots and quote conversion in lifetime and open exposure", () => {
+    const stats = calculateLivePositionStatistics([{
+      id: "forex-closed",
+      symbol: "EURUSD",
+      marketType: "forex",
+      volumeKind: "lots",
+      status: "closed",
+      executionMode: "live",
+      direction: "long",
+      setKey: "main-eurusd",
+      totalExecutedQuantity: 1,
+      closedQuantity: 1,
+      averageExecutionPrice: 1.1,
+      fills: [{ quantity: 1, price: 1.1 }],
+      realizedPnL: 10,
+      realizedPnlComplete: true,
+      pnlAccountingComplete: true,
+    }, {
+      id: "forex-open",
+      symbol: "EURGBP",
+      marketType: "forex",
+      volumeKind: "lots",
+      status: "open",
+      executionMode: "live",
+      direction: "short",
+      setKey: "main-eurgbp",
+      executedQuantity: 2,
+      totalExecutedQuantity: 2,
+      averageExecutionPrice: 0.85,
+      quoteToUsdRate: 0.78,
+      fills: [{ quantity: 2, price: 0.85 }],
+    }])
+
+    expect(stats.lifetimeVolumeUsd).toBeCloseTo(11_000 + 13_260, 10)
+    expect(stats.openVolumeUsd).toBeCloseTo(13_260, 10)
+    expect(stats.bySource["main-trade"].lifetimeVolumeUsd).toBeCloseTo(24_260, 10)
+  })
+
   test("reconciles quantities, volumes, partials, lineage, sources, protection, and PnL", () => {
     const positions = [
       {
