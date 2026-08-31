@@ -3,10 +3,12 @@
 ## Session 2026-08-31 — bounded Main indication statistics and merged handoff
 
 - The Main indication statistics latency fix is published through GitHub PR
-  #282 (`c61df445c1a0a76cbf728fdf5eabc70320b8cc53`), and the recreation
-  manifest repair is published through PR #283 (`09f0fc18eb0c5777a3e5d656c8410109105a3e12`).
-  The canonical `/workspace/CTS-K-N` checkout is clean on `main` at
-  `09f0fc18eb0c5777a3e5d656c8410109105a3e12`, exactly matching `origin/main`.
+  #282 (`c61df445c1a0a76cbf728fdf5eabc70320b8cc53`), the recreation manifest
+  repair through PR #283 (`09f0fc18eb0c5777a3e5d656c8410109105a3e12`), and
+  this final handoff correction through PR #284
+  (`4900d2dc94c902ef1fc7b6aeb84821c782ec07ef`). The canonical
+  `/workspace/CTS-K-N` checkout is clean on `main` at
+  `4900d2dc94c902ef1fc7b6aeb84821c782ec07ef`, exactly matching `origin/main`.
 - `app/api/main/indications-stats/route.ts` now uses bounded, parallel reads
   of the durable snapshot/counter/latest keys and a capped evaluator list. It
   no longer scans the full Redis keyspace for a connection-scoped request;
@@ -20,8 +22,8 @@
   1,761 tests), TypeScript, repository ESLint, `build:next` (42 static pages,
   348 server traces), recreation generation/verification, install preflight,
   and release-secret scan (zero findings). The corrected project-files
-  manifest blob is complete (171,619 bytes; local Git blob
-  `bb1dd4ee6704eebbd109e1344a03c0927b688e64`) and was reviewed in PR #283.
+  manifest is complete at 171,619 bytes, was verified with SHA-256 and
+  GitHub's chunk-safe blob upload, and was reviewed in PRs #283 and #284.
 - The public production browser sweep visited all 23 navigation targets and
   found non-empty expected surfaces with no application/internal/unhandled/
   404 markers. A remote-host browser tab renders the shell, but the Work
@@ -51,10 +53,14 @@
   `/workspace/backups/CTS-K-N/20260831T-pre-context-stats-handoff`. Each has
   a complete Git bundle, binary worktree/index patches, untracked list/archive,
   SHA-256 manifest verification, bundle verification and owner-only mode.
-- The latest merged-main Vercel deployment for `09f0fc18` was still building at
-  the last handoff check; verify its final state and exercise the public alias
-  before claiming production rollout. The queued PR #283 preview is not a
-  remote-runtime acceptance target. Next remote work must begin with a new
+- The merged-main Vercel deployment for `4900d2dc` is currently reported as
+  `QUEUED` by the Vercel deployment API with no build-log events, while the
+  public alias is serving HTTP 200 for the root, health, persistence and
+  connection-scoped Main indication stats endpoint (diagnostic source
+  `durable-indication-counters`). The alias is therefore a public UI/API
+  smoke target, not the authenticated remote-runtime acceptance target; the
+  disconnected `cts-v` check remains stale/pending. The queued PR #284 preview
+  is not a remote-runtime acceptance target. Next remote work must begin with a new
   managed-Chisel banner check, a fresh server checkpoint, and deployment only
   of this merged `main`; preserve paper-only execution and the no-live-order
   invariant throughout.
