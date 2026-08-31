@@ -1,5 +1,64 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Session 2026-08-31 — bounded Main indication statistics and merged handoff
+
+- The Main indication statistics latency fix is published through GitHub PR
+  #282 (`c61df445c1a0a76cbf728fdf5eabc70320b8cc53`), and the recreation
+  manifest repair is published through PR #283 (`09f0fc18eb0c5777a3e5d656c8410109105a3e12`).
+  The canonical `/workspace/CTS-K-N` checkout is clean on `main` at
+  `09f0fc18eb0c5777a3e5d656c8410109105a3e12`, exactly matching `origin/main`.
+- `app/api/main/indications-stats/route.ts` now uses bounded, parallel reads
+  of the durable snapshot/counter/latest keys and a capped evaluator list. It
+  no longer scans the full Redis keyspace for a connection-scoped request;
+  diagnostics identify the source as `durable-indication-counters`. The route
+  retains deterministic empty results for an unscoped request and has a
+  regression test for both snapshot and bounded-list/counter fallback paths.
+  This removes the 10–15 second/timeout behavior observed on the remote
+  Main Connections card without changing engine ownership or live-order
+  policy.
+- Post-fix gates are green: focused stats tests (2/2), full Jest (256 suites,
+  1,761 tests), TypeScript, repository ESLint, `build:next` (42 static pages,
+  348 server traces), recreation generation/verification, install preflight,
+  and release-secret scan (zero findings). The corrected project-files
+  manifest blob is complete (171,619 bytes; local Git blob
+  `bb1dd4ee6704eebbd109e1344a03c0927b688e64`) and was reviewed in PR #283.
+- The public production browser sweep visited all 23 navigation targets and
+  found non-empty expected surfaces with no application/internal/unhandled/
+  404 markers. A remote-host browser tab renders the shell, but the Work
+  browser blocks its `/api/*` requests with `ERR_BLOCKED_BY_CLIENT`; this is a
+  client host-filter limitation, not a server failure. Server-side reads over
+  the managed tunnel returned healthy health, persistence, active-indication,
+  engine, progression, statistics, tracking and position contracts.
+- The remote `/opt/cts-kn` runtime was successfully updated once to merged
+  `e8700a2ef6a9331697504af00a37132fde582d96` and remains healthy: main,
+  Direct-Trade supervisor and scheduler units are active; distributed engine
+  heartbeats are fresh; X01/Mainnet and every Bybit connection remain
+  read-only; X02 remains paper/VST only; exchange-open position count is zero.
+  Remote checkpoints include
+  `/var/backups/cts-kn/20260830T231518Z-pre-remote-update` and
+  `/var/backups/cts-kn/20260830T235330Z-pre-remote-stats-update`.
+- The bounded-stats commit has not been installed remotely. After the
+  successful e8700a2 deployment, the only later managed-Chisel activation
+  attempts were cancelled by the Work network approval broker before Chisel
+  execution. No alternate SSH/proxy/VPN was used and no further remote
+  mutation, restart, Redis change, credential read or exchange action is
+  authorized until a fresh managed activation produces `CTS_SSH_BANNER_OK`.
+- Verified owner-only local checkpoints for this series include
+  `/workspace/backups/CTS-K-N/20260830T233537Z-pre-main-stats-optimization`,
+  `/workspace/backups/CTS-K-N/20260830T234600Z-precommit-main-stats-optimization`,
+  `/workspace/backups/CTS-K-N/20260831T000208Z-postmerge-stats-fix`, and the
+  current pre-context checkpoint
+  `/workspace/backups/CTS-K-N/20260831T-pre-context-stats-handoff`. Each has
+  a complete Git bundle, binary worktree/index patches, untracked list/archive,
+  SHA-256 manifest verification, bundle verification and owner-only mode.
+- The latest merged-main Vercel deployment for `09f0fc18` was still building at
+  the last handoff check; verify its final state and exercise the public alias
+  before claiming production rollout. The queued PR #283 preview is not a
+  remote-runtime acceptance target. Next remote work must begin with a new
+  managed-Chisel banner check, a fresh server checkpoint, and deployment only
+  of this merged `main`; preserve paper-only execution and the no-live-order
+  invariant throughout.
+
 ## Shared Signal overview and runtime idempotency release (2026-08-30; authoritative continuation)
 
 - The Signal/Main dashboard and runtime fix is merged through GitHub PR #280 as
