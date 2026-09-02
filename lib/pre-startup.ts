@@ -156,6 +156,17 @@ export async function runPreStartup(options: { force?: boolean } = {}): Promise<
       // price feed visible to another connection and could turn a failed live feed
       // into a false-ready signal.
       await initializeDefaultSettings()
+
+      // Canonical connection rows must exist before symbol defaults are
+      // applied.  Fresh stores previously ran only the symbol pass here,
+      // which meant optional/predefined connections (notably InstaForex)
+      // were absent until an operator happened to visit an init endpoint.
+      // Keep the import lazy so pre-startup retains its small module surface.
+      const { ensureDefaultExchangesExist } = await import("@/lib/default-exchanges-seeder")
+      const ensured = await ensureDefaultExchangesExist()
+      if (!ensured?.success) {
+        throw new Error("Canonical base-connection seeding failed")
+      }
       await seedPredefinedConnections()
 
       // Connection testing is skipped in safe bootstrap mode (both dev and prod).

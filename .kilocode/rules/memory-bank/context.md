@@ -1,5 +1,33 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Session 2026-09-02 — generation-safe progression recovery candidate
+
+- The canonical checkout was recovered from full GitHub history plus the
+  verified local recovery commit
+  `codex/block-break-race-recovery-20260901@9aab1333d6822dc193ec0d8744ce8b67f94ad1af`.
+  It is one commit ahead of and zero commits behind
+  `origin/main@f1cc61beb9ee95814249f849e66bd7511037b0de`; no open pull request existed
+  at the recovery boundary.
+- The recovery candidate exposes a bounded `view=runtime` progression control
+  plane, generation-aware resume liveness, safer retry behavior for transient
+  control-plane reads, startup/runtime coverage, and an InstaForex base-row
+  regression test. X01/Mainnet and Bybit remain read-only; this work does not
+  authorize a real exchange order.
+- Owner-only recovery checkpoints are
+  `/workspace/backups/CTS-K-N/backup-gate-final-2026-09-01T235900Z` and
+  `/workspace/backups/CTS-K-N/precommit-backup-gate-2026-09-02T001000Z`.
+  Their complete bundles, binary patches, untracked archives/lists, status
+  records, bundle verification and SHA-256 manifests passed.
+- The first exact-tree gate found stale recreation hashes and one legacy
+  timeout-contract assertion. The assertion now recognizes the bounded runtime
+  projection and its 15-second reads; all recreation manifests were regenerated
+  and verified. The repaired candidate passed frozen offline install,
+  `git diff --check`, source syntax, secret scan (zero findings), recreation
+  verification, TypeScript, ESLint, all 257 Jest suites and 1,762 tests,
+  production build with 348 complete traces, 37/37 Kilo checks at schema v105,
+  and mutation-free Linux installation preflight. Publication still requires
+  the final exact-patch rerun followed by reviewed branch/PR merge.
+
 ## Session 2026-08-31 — bounded Main indication statistics and merged handoff
 
 - The Main indication statistics latency fix is published through GitHub PR

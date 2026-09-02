@@ -163,6 +163,7 @@ __tests__/unit/indication-lane-identity.test.ts
 __tests__/unit/indication-outcome-cost-basis.test.ts
 __tests__/unit/indication-set-type-coordination.test.ts
 __tests__/unit/inline-local-redis.test.ts
+__tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/live-entry-protection-admission.test.ts
 __tests__/unit/live-execution-summary.test.ts
