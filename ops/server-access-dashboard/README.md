@@ -58,3 +58,24 @@ and applies conservative memory-pressure settings.
 Verify with swapon --show, free -h, and the dashboard's Swap cards. If an
 active swap file already exists with a different size, stop and review it
 instead of resizing live memory infrastructure.
+
+## Complete reboot-persistence reconciliation
+
+On the installed CTS-K-N host, the auto-boot reconciler creates a verified,
+root-only backup and then makes the application, scheduler, Direct-Trade
+worker, Redis (when locally managed), recovery timer, dashboard, nginx,
+pull-agent timer, Chisel server, NetBird, and Tailscale persistent. It also
+installs this dashboard, ensures the exact 18 GiB swap file, and checks the
+local health endpoints without changing live-trading configuration or placing
+an order:
+
+    sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh
+
+After a later operator-controlled reboot, run the non-mutating contract check:
+
+    sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh --verify-only
+
+The reconciler requires the three private-network clients/services to be
+installed and already enrolled. Systemd persistence cannot repair an expired
+or revoked Tailscale or NetBird device identity; those conditions fail closed
+during verification.

@@ -38,8 +38,9 @@ Options:
   --uninstall          Remove only the pull-agent units/configuration
   --help               Show this help
 
-The production environment must already exist with owner-only permissions.
-The timer preserves it and never reads, logs, or writes exchange secrets.
+The production environment must already be owner-only or read-only for its
+service group (0600 or 0640). The timer preserves it and never reads, logs, or
+writes exchange secrets.
 EOF
 }
 
@@ -118,8 +119,9 @@ command -v flock >/dev/null 2>&1 || { echo "flock is required for the pull agent
 [[ -f "$ENV_FILE" ]] || { echo "Expected external production environment is missing: $ENV_FILE" >&2; exit 1; }
 env_mode="$(stat -c '%a' "$ENV_FILE")"
 [[ "$env_mode" =~ ^[0-7]{3,4}$ ]] || { echo "Cannot read permissions for $ENV_FILE" >&2; exit 1; }
-(( (8#$env_mode & 077) == 0 )) \
-  || { echo "Production environment must be owner-only (for example 0600): $ENV_FILE" >&2; exit 1; }
+env_mode_bits=$((8#$env_mode & 0777))
+(( env_mode_bits == 0600 || env_mode_bits == 0640 )) \
+  || { echo "Production environment must be 0600 or service-group-readable 0640: $ENV_FILE" >&2; exit 1; }
 current_origin="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)"
 [[ "$current_origin" == "$REPOSITORY" ]] \
   || { echo "Checkout origin does not match the configured repository" >&2; exit 1; }
@@ -191,7 +193,9 @@ valid_branch "${CTS_PULL_AGENT_BRANCH:-}" || fatal "invalid configured branch"
 [[ -f "$CTS_PULL_AGENT_ENV_FILE" ]] || fatal "production environment is missing"
 env_mode="$(stat -c '%a' "$CTS_PULL_AGENT_ENV_FILE")"
 [[ "$env_mode" =~ ^[0-7]{3,4}$ ]] || fatal "cannot read production environment permissions"
-(( (8#$env_mode & 077) == 0 )) || fatal "production environment must remain owner-only"
+env_mode_bits=$((8#$env_mode & 0777))
+(( env_mode_bits == 0600 || env_mode_bits == 0640 )) \
+  || fatal "production environment must remain 0600 or service-group-readable 0640"
 [[ -d "$CTS_PULL_AGENT_INSTALL_DIR/.git" && -f "$CTS_PULL_AGENT_INSTALL_DIR/scripts/update.sh" ]] \
   || fatal "installed checkout is incomplete"
 command -v git >/dev/null 2>&1 || fatal "git is unavailable"

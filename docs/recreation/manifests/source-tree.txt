@@ -258,6 +258,7 @@ __tests__/unit/runtime-telemetry-interval.test.ts
 __tests__/unit/security-hardening-encryption.test.ts
 __tests__/unit/security-stop-projection.test.ts
 __tests__/unit/serialized-response-swr.test.ts
+__tests__/unit/server-autoboot-script.test.ts
 __tests__/unit/settings-backup.test.ts
 __tests__/unit/settings-continuity.test.ts
 __tests__/unit/settings-hot-reload.test.ts
@@ -1475,6 +1476,7 @@ scripts/direct-place-order.ts
 scripts/direct-trade-cycle-scheduler.mjs
 scripts/direct-trade-processor.mjs
 scripts/direct-trade-supervisor.mjs
+scripts/ensure-server-autoboot.sh
 scripts/final-validation-test.mjs
 scripts/generate-recreation-manifests.mjs
 scripts/init-engine-and-verify.mjs

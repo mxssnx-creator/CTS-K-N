@@ -3030,3 +3030,36 @@ credentials are present.
   commit, push, open a PR or merge until the edit series is stable, these gates
   are repaired, manifests are regenerated, and the complete exact-tree gate is
   rerun successfully.
+
+## Session 2026-09-02 — persistent network and reboot reconciliation
+
+- [x] The durable ChatGPT Work transport remains the managed Chisel activator
+  at `/workspace/.network-clients/activate-cts.sh`. Every remote operation must
+  source it in a fresh process, use only its exported pinned localhost SSH
+  options, require `CTS_SSH_BANNER_OK`, and execute all follow-up SSH commands
+  in that same process. Never fall back to direct public SSH, another VPN, an
+  unpinned host key, or credentials copied from chat.
+- [x] `scripts/ensure-server-autoboot.sh` now defines one idempotent host
+  reconciliation: verified root-only pre-change backup, exact persistent
+  18 GiB swap, dashboard deployment, pull timer, Redis endpoint PING, local
+  application/dashboard health, and enabled/active checks for Chisel server,
+  NetBird, Tailscale, nginx, CTS app/scheduler/Direct worker and recovery. It
+  preserves and never prints the production environment or live-order flags
+  and has a non-mutating `--verify-only` mode for post-reboot attestation.
+- [x] The pull-agent environment contract now accepts the installer's secure
+  `0640` owner/service-group mode as well as `0600`, while rejecting every
+  group-writable or world-accessible mode. Persistent Linux Chisel clients use
+  Chisel's standard owner-only `AUTH` environment value so authentication does
+  not appear in `ExecStart` or process arguments.
+- [x] Local validation passed: 256/256 unit suites and 1,718/1,718 tests,
+  TypeScript, ESLint, shell syntax, recreation verification, a 1,599-file
+  secret scan with zero findings, and the production build with 42 generated
+  pages and 348 complete trace files. The deployment contract still requires
+  an accessible running server and was not represented as a local pass.
+- [ ] No remote mutation or exchange order occurred in this continuation. Two
+  fresh managed activations were cancelled by the network approval broker
+  before Chisel executed, while both owner-provided mesh WebSSH names returned
+  a 502 connection-refused response. Resume only after an authorized route is
+  healthy; then checkpoint again, deploy merged `main`, run the reconciler and
+  its `--verify-only` contract, and separately attest the scoped live-trading
+  state without placing a test order unless explicitly authorized.
