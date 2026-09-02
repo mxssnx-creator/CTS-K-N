@@ -81,9 +81,10 @@ the server; derive and install only its public counterpart.
 
 ## 2. Prepare the production environment outside the checkout
 
-Create the external file with owner-only permissions on the server. Enter the
-actual values interactively on the server; do not use the placeholder values
-below as credentials.
+Create the external file with owner-only permissions on the server. The main
+installer may later change it to `0640` so only its owner and read-only service
+group can access it. Enter the actual values interactively on the server; do
+not use the placeholder values below as credentials.
 
 ```bash
 sudo install -d -m 0750 /etc/cts-kn
@@ -165,6 +166,21 @@ sudo systemctl status cts-kn-pull-agent.service --no-pager
 sudo systemctl list-timers cts-kn-pull-agent.timer --no-pager
 sudo journalctl -u cts-kn-pull-agent.service -n 200 --no-pager
 ```
+
+For a single idempotent pass that also creates a verified backup, installs the
+read-only server dashboard, provisions the exact persistent 18 GiB swap file,
+and enables/verifies Chisel server, NetBird, Tailscale, Redis, CTS workers,
+nginx, recovery, and pull-agent startup after reboot, run:
+
+```bash
+sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh
+sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh --verify-only
+```
+
+This reconciliation preserves `/etc/cts-kn/production.env` and does not alter
+or print exchange credentials or live-order flags. Tailscale and NetBird must
+already be enrolled with durable device identities; systemd can restart their
+daemons but cannot recreate revoked or expired enrollment.
 
 To pause automated updates while keeping the installation and production
 environment intact:

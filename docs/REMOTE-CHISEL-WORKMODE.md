@@ -161,7 +161,7 @@ Work and not the CTS server itself. Install
 `/etc/systemd/system/chisel-client.service` and store the four managed values
 only in `/etc/chisel/client.env` with owner `root` and mode `0600`:
 
-    CTS_CHISEL_AUTH=<managed-auth>
+    AUTH=<managed-auth>
     CTS_CHISEL_ENDPOINT=<managed-endpoint>
     CTS_CHISEL_FINGERPRINT=<managed-fingerprint>
     CTS_CHISEL_FORWARD=<managed-forward-spec>
@@ -173,8 +173,11 @@ Then verify the unit and the pinned SSH target:
     systemctl status --no-pager chisel-client.service
 
 Do not paste the managed values into the unit, command history, logs, or this
-document. Use the same strict known-hosts and owner-only SSH-key requirements
-as the Work procedure.
+document. The standard `AUTH` environment variable is read by Chisel directly,
+so the credential is not exposed through the unit's `ExecStart` arguments. If
+an older client environment uses `CTS_CHISEL_AUTH`, rename that key to `AUTH`
+before installing this hardened unit. Use the same strict known-hosts and
+owner-only SSH-key requirements as the Work procedure.
 
 ## Safety boundary
 

@@ -13,6 +13,7 @@ describe("pull-agent installer", () => {
 
   it("keeps the credential-bearing production environment external", () => {
     expect(script).toContain("CTS_PULL_AGENT_ENV_FILE")
+    expect(script).toContain("env_mode_bits == 0600 || env_mode_bits == 0640")
     expect(script).not.toContain("BINGX_X02_API_SECRET")
     expect(script).not.toMatch(/BEGIN (?:OPENSSH|RSA|EC) PRIVATE KEY/)
   })
