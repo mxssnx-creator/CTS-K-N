@@ -89,6 +89,15 @@ function positiveInteger(...values: unknown[]): number {
   return 0
 }
 
+function nonNegativeInteger(...values: unknown[]): number {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue
+    const parsed = Number(value)
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed)
+  }
+  return 0
+}
+
 function positiveNumber(...values: unknown[]): number {
   for (const value of values) {
     const parsed = Number(value)
@@ -130,8 +139,13 @@ function statsDetailWindow(params: { get(name: string): string | null }): {
  * The complete stats projection can be several megabytes because it contains
  * exhaustive strategy/configuration ledgers. Rebuilding or retransmitting it
  * every three seconds merely to refresh CPU and event-loop counters wastes
- * browser memory and server/network capacity. This view performs four compact
- * read-only Redis reads and never enters the full projection/cache path.
+ * browser memory and server/network capacity. This view performs a bounded
+ * group of compact read-only Redis reads and never enters the full
+ * projection/cache path.
+ * Besides process telemetry it exposes the compact progression control plane
+ * used by QuickStart/pause/resume verification.  A UI control must never wait
+ * behind strategy-ledger materialisation merely to prove that its new engine
+ * generation is advancing.
  */
 async function runtimeOnlyStatsResponse(
   request: NextRequest,
@@ -152,23 +166,61 @@ async function runtimeOnlyStatsResponse(
       requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main",
     ).trim() || "main"
     const scope = buildProgressionScope(connectionId, engineType)
-    const [scopedProgression, legacyProgression, prehistoric, processedSymbols, engineState] = await Promise.all([
-      client.hgetall(scope.progressionKey).catch(() => ({} as Record<string, string>)),
-      client.hgetall(scope.legacyProgressionKey).catch(() => ({} as Record<string, string>)),
+    const progressionKeys = Array.from(new Set(progressionReadKeys(scope)))
+    const [progressionHashes, prehistoric, processedSymbols, engineState, realtime] = await Promise.all([
+      Promise.all(progressionKeys.map((key) =>
+        client.hgetall(key).catch(() => ({} as Record<string, string>)),
+      )),
       client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
       client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
       client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`realtime:${connectionId}`).catch(() => ({} as Record<string, string>)),
     ])
 
-    const canonicalSymbols = resolveCanonicalSymbols(connection, engineState, scopedProgression, legacyProgression, prehistoric)
+    // `progressionReadKeys` is ordered from highest to lowest authority.
+    // Merge rather than choosing one whole hash: rolling migrations and
+    // scoped/unscoped writers can legitimately own different current fields.
+    const progression = progressionHashes.reduce<Record<string, string>>(
+      (merged, hash) => ({ ...(hash || {}), ...merged }),
+      {},
+    )
+
+    const canonicalSymbols = resolveCanonicalSymbols(connection, engineState, progression, prehistoric)
     const measuredSymbolCount = canonicalSymbols.count > 0
       ? canonicalSymbols.count
       : positiveInteger(
-          (scopedProgression as any)?.symbol_count,
-          (legacyProgression as any)?.symbol_count,
+          progression.symbol_count,
           (prehistoric as any)?.symbols_total,
           processedSymbols,
         )
+    const historicProgress = calculateHistoricProgress(
+      Math.min(Number(processedSymbols || 0), measuredSymbolCount),
+      measuredSymbolCount,
+    )
+    const completedConfigWork = nonNegativeInteger(
+      prehistoric.config_work_units_completed,
+      progression.prehistoric_config_work_units_completed,
+    )
+    const totalConfigWork = nonNegativeInteger(
+      prehistoric.config_work_units_total,
+      progression.prehistoric_config_work_units_total,
+    )
+    const churnIndicationCycles = nonNegativeInteger(
+      progression.indication_cycle_count,
+      realtime.cycle_count,
+      engineState.indication_cycle_count,
+    )
+    const churnStrategyCycles = nonNegativeInteger(
+      progression.strategy_cycle_count,
+      engineState.strategy_cycle_count,
+    )
+    const realtimeCycles = nonNegativeInteger(
+      progression.realtime_cycle_count,
+      realtime.cycle_count,
+      engineState.realtime_cycle_count,
+    )
+    const liveIndicationCycles = nonNegativeInteger(progression.indication_live_cycle_count)
+    const liveStrategyCycles = nonNegativeInteger(progression.strategy_live_cycle_count)
 
     return NextResponse.json(
       {
@@ -178,6 +230,56 @@ async function runtimeOnlyStatsResponse(
         view: "runtime",
         symbolCount: measuredSymbolCount,
         symbolCountSource: canonicalSymbols.count > 0 ? canonicalSymbols.source : "scalar_fallback",
+        generation: {
+          epoch: nonNegativeInteger(progression.epoch),
+          session: nonNegativeInteger(progression.session_number),
+          symbolSelectionEpoch: String(
+            engineState.symbol_selection_epoch ||
+            engineState.quickstart_symbol_generation ||
+            prehistoric.symbol_selection_epoch ||
+            progression.symbol_selection_epoch ||
+            "",
+          ),
+          historicGeneration: String(
+            prehistoric.historic_four_hour_generation ||
+            progression.prehistoric_bootstrap_generation ||
+            "",
+          ),
+        },
+        historic: {
+          symbolsProcessed: Math.min(Number(processedSymbols || 0), measuredSymbolCount),
+          symbolsTotal: measuredSymbolCount,
+          isComplete: historicProgress.isComplete,
+          progressPercent: historicProgress.progressPercent,
+          configWork: {
+            completed: completedConfigWork,
+            total: totalConfigWork,
+            failed: nonNegativeInteger(
+              prehistoric.config_work_failed_units,
+              progression.prehistoric_config_work_failed_units,
+            ),
+            currentSymbol: prehistoric.config_work_current_symbol || progression.prehistoric_config_work_current_symbol || "",
+            currentStage: prehistoric.config_work_current_stage || progression.prehistoric_config_work_current_stage || "",
+            lastActivityAt: prehistoric.config_work_last_activity_at || progression.prehistoric_config_work_last_activity_at || null,
+          },
+        },
+        realtime: {
+          indicationCycles: liveIndicationCycles || churnIndicationCycles,
+          strategyCycles: liveStrategyCycles || churnStrategyCycles,
+          realtimeCycles,
+          cycleCounters: {
+            indication: churnIndicationCycles,
+            indicationLive: liveIndicationCycles,
+            strategy: churnStrategyCycles,
+            strategyLive: liveStrategyCycles,
+            realtime: realtimeCycles,
+            realtimeLive: nonNegativeInteger(progression.realtime_live_cycle_count),
+            livePositions: nonNegativeInteger(progression.live_positions_cycle_count),
+          },
+          framesProcessed: nonNegativeInteger(progression.frames_processed),
+        },
+        settingsRecoordination: buildSettingsRecoordinationState(progression),
+        statsRecalculation: buildStatsRecalculationState(progression),
         runtime: getRuntimeTelemetry(measuredSymbolCount || Number.POSITIVE_INFINITY),
       },
       {

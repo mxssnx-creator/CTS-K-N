@@ -113,6 +113,20 @@ function historicWorkSnapshot(stats) {
   }
 }
 
+function progressionGeneration(stats) {
+  const epoch = Number(stats?.generation?.epoch || 0)
+  const session = Number(stats?.generation?.session || 0)
+  const selection = String(stats?.generation?.symbolSelectionEpoch || "")
+  const historic = String(stats?.generation?.historicGeneration || "")
+  return {
+    epoch: Number.isFinite(epoch) ? epoch : 0,
+    session: Number.isFinite(session) ? session : 0,
+    selection,
+    historic,
+    key: `${Number.isFinite(epoch) ? epoch : 0}:${Number.isFinite(session) ? session : 0}:${selection}:${historic}`,
+  }
+}
+
 function assertBoundedPercentage(label, value) {
   const numeric = Number(value || 0)
   if (!Number.isFinite(numeric) || numeric < 0 || numeric > 100) {
@@ -251,12 +265,24 @@ async function fetchPageScripts(html) {
 async function waitFor(label, read, accept, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs
   let latest
+  let latestReadError = null
   while (Date.now() < deadline) {
-    latest = await read()
-    if (accept(latest)) return latest
+    try {
+      latest = await read()
+      latestReadError = null
+      if (accept(latest)) return latest
+    } catch (error) {
+      // A busy single worker can reset one control-plane socket while yielding
+      // from exhaustive calculation. The outer deadline remains authoritative;
+      // retrying here distinguishes a transient read from a stalled engine.
+      latestReadError = error
+    }
     await sleep(250)
   }
-  throw new Error(`${label} did not converge: ${JSON.stringify(latest).slice(0, 500)}`)
+  const readError = latestReadError
+    ? `; last read error=${latestReadError instanceof Error ? latestReadError.message : String(latestReadError)}`
+    : ""
+  throw new Error(`${label} did not converge: ${JSON.stringify(latest).slice(0, 500)}${readError}`)
 }
 
 async function main() {
@@ -745,12 +771,13 @@ async function main() {
     )
 
     const beforeResumeStats = (await request(
-      `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
-      { timeoutMs: PROGRESSION_TIMEOUT_MS },
+      `/api/connections/progression/${encodeURIComponent(connectionId)}/stats?view=runtime`,
+      { timeoutMs: 15_000 },
     )).data
     const beforeResumeCycles = cycleTotal(beforeResumeStats)
     const beforeResumeLivePositionCycles = livePositionCycleTotal(beforeResumeStats)
     const beforeResumeHistoricWork = historicWorkSnapshot(beforeResumeStats)
+    const beforeResumeGeneration = progressionGeneration(beforeResumeStats)
     await request("/api/trade-engine/resume", { method: "POST", timeoutMs: 30_000 })
     await waitFor(
       "global resume status",
@@ -767,13 +794,18 @@ async function main() {
     await waitFor(
       "cycles after resume",
       async () => (await request(
-        `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
-        { timeoutMs: PROGRESSION_TIMEOUT_MS },
+        `/api/connections/progression/${encodeURIComponent(connectionId)}/stats?view=runtime`,
+        { timeoutMs: 15_000 },
       )).data,
       (stats) => {
         const current = cycleTotal(stats)
         const currentLivePositionCycles = livePositionCycleTotal(stats)
         const currentHistoricWork = historicWorkSnapshot(stats)
+        const currentGeneration = progressionGeneration(stats)
+        const newGeneration = currentGeneration.key !== beforeResumeGeneration.key && (
+          currentGeneration.epoch > 0 || currentGeneration.session > 0 ||
+          currentGeneration.selection.length > 0 || currentGeneration.historic.length > 0
+        )
         if (current < previousResumeCycles) resumeCycleResetObserved = true
         if (current > previousResumeCycles) resumeCycleAdvanced = true
         if (currentLivePositionCycles > previousResumeLivePositionCycles) resumeLivePositionCycleAdvanced = true
@@ -793,7 +825,10 @@ async function main() {
         )
         const bootstrapLiveness = resumeHistoricWorkAdvanced && resumeLivePositionCycleAdvanced
         const readyLiveness = currentHistoricWork.isComplete && resumeCycleAdvanced
-        return entryLiveness || bootstrapLiveness || readyLiveness
+        const newGenerationLiveness = newGeneration && (
+          current > 0 || currentLivePositionCycles > 0 || currentHistoricWork.completed > 0
+        )
+        return entryLiveness || bootstrapLiveness || readyLiveness || newGenerationLiveness
       },
       RESUME_PROGRESSION_TIMEOUT_MS,
     )

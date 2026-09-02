@@ -283,7 +283,7 @@ async function main() {
     const latencySamples = []
     const hotPaths = [
       `/api/system/monitoring`,
-      `/api/connections/progression/${encodeURIComponent(x02.id)}/stats`,
+      `/api/connections/progression/${encodeURIComponent(x02.id)}/stats?view=runtime`,
       `/api/trading/live-positions?connection_id=${encodeURIComponent(x02.id)}`,
       `/api/trade-engine/pnl-stats?connection_id=${encodeURIComponent(x02.id)}`,
       `/api/exchange-positions/symbols-stats?connection_id=${encodeURIComponent(x02.id)}`,
@@ -299,13 +299,11 @@ async function main() {
       await sleep(1_500)
     }
 
-    // The stats projection is intentionally cached for five seconds. Wait for
-    // one cache interval and sample it once more so EventLoopUtilization is an
-    // interval measurement rather than the documented zero-value baseline of
-    // the first telemetry observation.
+    // Wait one telemetry interval so EventLoopUtilization is an interval
+    // measurement rather than the documented zero-value first observation.
     await sleep(5_100)
     const freshStats = await request(
-      `/api/connections/progression/${encodeURIComponent(x02.id)}/stats`,
+      `/api/connections/progression/${encodeURIComponent(x02.id)}/stats?view=runtime`,
       { timeoutMs: 60_000 },
     )
     assert(freshStats.status >= 200 && freshStats.status < 300, "Fresh runtime stats sample failed")
