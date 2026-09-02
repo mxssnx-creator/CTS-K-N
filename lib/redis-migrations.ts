@@ -7893,6 +7893,111 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "104")
     },
   },
+  {
+    version: 106,
+    name: "106-compound-block-steps-and-neutral-pf-factor",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const primarySettingKeys = new Set<string>([
+        "settings:app_settings",
+        "settings:all_settings",
+        "settings:system",
+      ])
+      const extendedSettingKeys = new Set<string>([
+        "settings:app_settings",
+        "settings:all_settings",
+        "settings:system",
+      ])
+      const directStateKeys = new Set<string>(["direct_trade:state"])
+
+      for (const connection of connections) {
+        const id = normalizeDirectTradeConnectionId(connection?.id)
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) primarySettingKeys.add(key)
+        extendedSettingKeys.add(`connection_settings:${id}`)
+        extendedSettingKeys.add(`settings:connection_settings:${id}`)
+        directStateKeys.add(`direct_trade:connection:${id}:state`)
+      }
+
+      const normalizeLegacyPf = (raw: unknown): string => {
+        const value = Number(raw)
+        return !Number.isFinite(value) || Math.abs(value - 0.8) <= 1e-12
+          ? "1.1"
+          : String(Math.max(0.2, Math.min(5, value)))
+      }
+      const normalizeSteps = (raw: unknown): string => {
+        const value = Number(raw)
+        return String(Number.isFinite(value)
+          ? Math.max(1, Math.min(5, Math.round(value)))
+          : 2)
+      }
+
+      let hashesUpdated = 0
+      let legacyPfValuesMigrated = 0
+      let directStatesUpdated = 0
+      for (const key of primarySettingKeys) {
+        const current = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {
+          blockProfitFactorRatio: normalizeLegacyPf(current.blockProfitFactorRatio),
+          blockIncrementSteps: normalizeSteps(current.blockIncrementSteps),
+        }
+        if (Math.abs(Number(current.blockProfitFactorRatio) - 0.8) <= 1e-12) legacyPfValuesMigrated++
+        if (extendedSettingKeys.has(key)) {
+          patch.blockRowLiveProfitFactorRatio = normalizeLegacyPf(current.blockRowLiveProfitFactorRatio)
+          patch.blockRowLiveIncrementSteps = normalizeSteps(current.blockRowLiveIncrementSteps)
+          patch.presetBlockProfitFactorRatio = normalizeLegacyPf(current.presetBlockProfitFactorRatio)
+          patch.presetBlockIncrementSteps = normalizeSteps(current.presetBlockIncrementSteps)
+          if (Math.abs(Number(current.blockRowLiveProfitFactorRatio) - 0.8) <= 1e-12) legacyPfValuesMigrated++
+          if (Math.abs(Number(current.presetBlockProfitFactorRatio) - 0.8) <= 1e-12) legacyPfValuesMigrated++
+        }
+        await client.hset(key, patch)
+        hashesUpdated++
+      }
+
+      for (const key of directStateKeys) {
+        const raw = await client.get(key).catch(() => null)
+        if (!raw) continue
+        try {
+          const state = JSON.parse(String(raw)) as Record<string, unknown>
+          if (Math.abs(Number(state.blockProfitFactorRatio) - 0.8) <= 1e-12) legacyPfValuesMigrated++
+          state.blockProfitFactorRatio = Number(normalizeLegacyPf(state.blockProfitFactorRatio))
+          state.blockIncrementSteps = Number(normalizeSteps(state.blockIncrementSteps))
+          await client.set(key, JSON.stringify(state))
+          directStatesUpdated++
+        } catch {
+          // Preserve malformed operator data for diagnostics; runtime loaders
+          // remain fail-safe and will not execute an invalid state object.
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        independent_block_profit_factor: "neutral-distance-x-ratio-x-compound-volume-increment-v3",
+        independent_block_profit_factor_formula: "1+((default-1)*ratio*((1+volume-ratio)^min(count,steps)-1))",
+        block_profit_factor_ratio_default: "1.1",
+        block_profit_factor_legacy_0_8_migrated: String(legacyPfValuesMigrated),
+        block_increment_formula: "base*(1+ratio)^min(count,steps)",
+        block_increment_steps_default: "2",
+        block_increment_steps_range: "1-5",
+        block_setting_hashes_updated: String(hashesUpdated),
+        direct_trade_block_states_updated: String(directStatesUpdated),
+        schema_version: "106",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // Canonical PF/step values are retained; restoring 0.8 would reintroduce
+      // an incompatible pre-neutral coordinate.
+      await client.set("_schema_version", "105")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

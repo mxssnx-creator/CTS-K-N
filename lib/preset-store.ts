@@ -33,6 +33,7 @@ import {
 import { effectivePositionCostPercent } from "@/lib/position-cost"
 import { fetchInstaForexMinuteHistory } from "@/lib/direct-trade-market-history"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
+import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
 
 const PREFIX = "preset_optimizer:v2"
 const GENERATION_RETENTION = 2
@@ -347,6 +348,7 @@ function settingsFromApp(app: Record<string, any>): PresetOptimizerSettings {
     blockEnabled: app.presetBlockEnabled ?? app.variantBlockEnabled ?? app.blockAdjustment,
     blockVolumeRatio: app.presetBlockVolumeRatio ?? app.blockVolumeRatio,
     blockProfitFactorRatio: app.presetBlockProfitFactorRatio ?? app.blockProfitFactorRatio,
+    blockIncrementSteps: app.presetBlockIncrementSteps ?? app.blockIncrementSteps,
     blockMaxStack: app.presetBlockMaxStack ?? app.blockMaxStack,
     blockPauseCountRatio: app.presetBlockPauseCountRatio ?? app.blockPauseCountRatio,
     blockActiveRealEnabled: app.presetBlockActiveRealEnabled ?? app.blockActiveRealEnabled,
@@ -384,6 +386,7 @@ function settingsToApp(settings: PresetOptimizerSettings): Record<string, unknow
     presetBlockEnabled: settings.blockEnabled,
     presetBlockVolumeRatio: settings.blockVolumeRatio,
     presetBlockProfitFactorRatio: settings.blockProfitFactorRatio,
+    presetBlockIncrementSteps: settings.blockIncrementSteps,
     presetBlockMaxStack: settings.blockMaxStack,
     presetBlockPauseCountRatio: settings.blockPauseCountRatio,
     presetBlockActiveRealEnabled: settings.blockActiveRealEnabled,
@@ -404,6 +407,8 @@ function overlayPresetBlockSettings(
       connectionSettings.presetBlockVolumeRatio ?? connectionSettings.blockVolumeRatio ?? app.presetBlockVolumeRatio,
     presetBlockProfitFactorRatio:
       connectionSettings.presetBlockProfitFactorRatio ?? connectionSettings.blockProfitFactorRatio ?? app.presetBlockProfitFactorRatio,
+    presetBlockIncrementSteps:
+      connectionSettings.presetBlockIncrementSteps ?? connectionSettings.blockIncrementSteps ?? app.presetBlockIncrementSteps,
     presetBlockMaxStack:
       connectionSettings.presetBlockMaxStack ?? connectionSettings.blockMaxStack ?? app.presetBlockMaxStack,
     presetBlockPauseCountRatio:
@@ -420,6 +425,7 @@ function runtimeBlockSettings(settings: PresetOptimizerSettings): Record<string,
     variantBlockEnabled: String(settings.blockEnabled),
     blockVolumeRatio: String(settings.blockVolumeRatio),
     blockProfitFactorRatio: String(settings.blockProfitFactorRatio),
+    blockIncrementSteps: String(settings.blockIncrementSteps),
     blockMaxStack: String(settings.blockMaxStack),
     blockPauseCountRatio: String(settings.blockPauseCountRatio),
     blockActiveRealEnabled: String(settings.blockActiveRealEnabled),
@@ -441,6 +447,7 @@ async function persistConnectionBlockSettings(
     currentSettings.blockEnabled !== settings.blockEnabled ? "variantBlockEnabled" : null,
     currentSettings.blockVolumeRatio !== settings.blockVolumeRatio ? "blockVolumeRatio" : null,
     currentSettings.blockProfitFactorRatio !== settings.blockProfitFactorRatio ? "blockProfitFactorRatio" : null,
+    currentSettings.blockIncrementSteps !== settings.blockIncrementSteps ? "blockIncrementSteps" : null,
     currentSettings.blockMaxStack !== settings.blockMaxStack ? "blockMaxStack" : null,
     currentSettings.blockPauseCountRatio !== settings.blockPauseCountRatio ? "blockPauseCountRatio" : null,
     currentSettings.blockActiveRealEnabled !== settings.blockActiveRealEnabled ? "blockActiveRealEnabled" : null,
@@ -747,14 +754,20 @@ async function cleanupOldGenerations(connectionId: string, activeGeneration: str
   const obsolete = generations.filter((generation) => !retained.includes(generation))
   for (const generationId of obsolete) {
     const prefix = generationPrefix(connectionId, generationId)
-    const ids = await client.smembers(candidateIndexKey(connectionId, generationId)).catch(() => [])
+    const ids = await scanRedisSetMembers(
+      client,
+      candidateIndexKey(connectionId, generationId),
+      { count: 250 },
+    ).catch(() => [])
     const keys = ids.map((id) => candidateKey(connectionId, generationId, id))
     // New generations maintain an exact key index, keeping cleanup
     // O(generation size) without a Redis-wide KEYS scan. The fallback only
     // handles generations created before this index existed.
     const keyIndex = generationKeyIndexKey(connectionId, generationId)
-    let indexKeys = await client.smembers(keyIndex).catch(() => [])
-    if (indexKeys.length === 0) indexKeys = await client.keys(`${prefix}:*`).catch(() => [])
+    let indexKeys = await scanRedisSetMembers(client, keyIndex, { count: 250 }).catch(() => [])
+    if (indexKeys.length === 0) {
+      indexKeys = await scanRedisKeys(client, `${prefix}:*`, { count: 250 }).catch(() => [])
+    }
     const deleteKeys = [...new Set([...keys, ...indexKeys, keyIndex])]
     for (let offset = 0; offset < deleteKeys.length; offset += 200) {
       await client.del(...deleteKeys.slice(offset, offset + 200)).catch(() => 0)

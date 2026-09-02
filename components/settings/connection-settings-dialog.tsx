@@ -14,6 +14,10 @@ import {
   normalizeVolumeStepRatio,
 } from "@/lib/constants"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
+import {
+  EXCHANGE_SYMBOL_COUNT_MAX,
+  HIGH_SCALE_SYMBOL_STRESS_TARGET,
+} from "@/lib/symbol-capacity"
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   Dialog,
@@ -625,6 +629,7 @@ export function ConnectionSettingsDialog({
             variants: { ...DEFAULT_COORDINATION_SETTINGS.variants, ...(coord.variants || {}) },
             blockVolumeRatio: typeof coord.blockVolumeRatio === "number" ? coord.blockVolumeRatio : DEFAULT_COORDINATION_SETTINGS.blockVolumeRatio,
             blockProfitFactorRatio: typeof coord.blockProfitFactorRatio === "number" ? coord.blockProfitFactorRatio : DEFAULT_COORDINATION_SETTINGS.blockProfitFactorRatio,
+            blockIncrementSteps: typeof coord.blockIncrementSteps === "number" ? coord.blockIncrementSteps : DEFAULT_COORDINATION_SETTINGS.blockIncrementSteps,
             blockMaxStack:    typeof coord.blockMaxStack    === "number" ? coord.blockMaxStack    : DEFAULT_COORDINATION_SETTINGS.blockMaxStack,
             strategyBlockMaterializationBatchSize: (() => {
               const nested = Number(coord.strategyBlockMaterializationBatchSize)
@@ -645,6 +650,7 @@ export function ConnectionSettingsDialog({
             blockRowLiveEnabled: typeof coord.blockRowLiveEnabled === "boolean" ? coord.blockRowLiveEnabled : DEFAULT_COORDINATION_SETTINGS.blockRowLiveEnabled,
             blockRowLiveVolumeRatio: typeof coord.blockRowLiveVolumeRatio === "number" ? coord.blockRowLiveVolumeRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLiveVolumeRatio,
             blockRowLiveProfitFactorRatio: typeof coord.blockRowLiveProfitFactorRatio === "number" ? coord.blockRowLiveProfitFactorRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLiveProfitFactorRatio,
+            blockRowLiveIncrementSteps: typeof coord.blockRowLiveIncrementSteps === "number" ? coord.blockRowLiveIncrementSteps : DEFAULT_COORDINATION_SETTINGS.blockRowLiveIncrementSteps,
             blockRowLiveMaxStack: typeof coord.blockRowLiveMaxStack === "number" ? coord.blockRowLiveMaxStack : DEFAULT_COORDINATION_SETTINGS.blockRowLiveMaxStack,
             blockRowLivePauseCountRatio: typeof coord.blockRowLivePauseCountRatio === "number" ? coord.blockRowLivePauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLivePauseCountRatio,
             blockRowRealEvalPosCount: typeof coord.blockRowRealEvalPosCount === "number"
@@ -950,7 +956,7 @@ export function ConnectionSettingsDialog({
     setLoadingSymbols(true)
     try {
       const res = await fetch(
-        `/api/settings/connections/${connectionId}/symbols?order=${symbolsCfg.symbolOrder}&count=50`
+        `/api/settings/connections/${connectionId}/symbols?order=${symbolsCfg.symbolOrder}&count=${Math.max(50, symbolsCfg.symbolCount)}`
       ).catch(() => null)
       if (res?.ok) {
         const data = await res.json()
@@ -971,12 +977,12 @@ export function ConnectionSettingsDialog({
     finally {
       if (sequence === symbolRequestSequenceRef.current) setLoadingSymbols(false)
     }
-  }, [connectionId, exchangeKey, symbolsCfg.symbolOrder])
+  }, [connectionId, exchangeKey, symbolsCfg.symbolCount, symbolsCfg.symbolOrder])
 
   // Auto-selects top-N symbols by true 1h ATR volatility.
-  // Fetches live klines for the top-50 volume pool, re-ranks by (high−low)/open,
-  // then populates `symbolsCfg.symbols` and switches symbolOrder to volatility_1h
-  // so the engine's PATCH resolver auto-applies them on the next engine start.
+  // Fetches live klines for a bounded volume-ranked head, retains the complete
+  // requested tail, then switches symbolOrder to volatility_1h so the engine's
+  // PATCH resolver auto-applies the selection on the next engine start.
   const autoSelectByVolatility1h = useCallback(async () => {
     const sequence = ++symbolRequestSequenceRef.current
     setLoadingVolatility1h(true)
@@ -1025,9 +1031,13 @@ export function ConnectionSettingsDialog({
   // order/exchange changes so the Symbols tab picker is always pre-loaded.
   useEffect(() => {
     if (!open) return
-    fetchExchangeSymbols()
-
-  }, [open, exchangeKey, symbolsCfg.symbolOrder])
+    // The range slider can emit many values while dragging. Debounce its
+    // high-scale ranking request so one final selection owns the response.
+    const timer = window.setTimeout(() => {
+      void fetchExchangeSymbols()
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [open, exchangeKey, symbolsCfg.symbolCount, symbolsCfg.symbolOrder, fetchExchangeSymbols])
 
   const addSymbol = useCallback((sym: string) => {
     const clean = sym.trim().toUpperCase()
@@ -1590,12 +1600,18 @@ export function ConnectionSettingsDialog({
                           <span className="text-xs font-mono tabular-nums">{symbolsCfg.symbolCount}</span>
                         </div>
                         <Slider
-                          min={1} max={32} step={1}
+                          min={1} max={EXCHANGE_SYMBOL_COUNT_MAX} step={1}
                           value={[symbolsCfg.symbolCount]}
                           onValueChange={([v]) => setSymbolsCfg(p => ({ ...p, symbolCount: v }))}
                           className="py-1"
                         />
-                        <div className="flex justify-between text-[10px] text-muted-foreground"><span>1</span><span>32 max</span></div>
+                        <div className="flex flex-wrap gap-1">
+                          {[32, HIGH_SCALE_SYMBOL_STRESS_TARGET, EXCHANGE_SYMBOL_COUNT_MAX].map((count) => (
+                            <Button key={count} type="button" size="sm" variant={symbolsCfg.symbolCount === count ? "secondary" : "outline"} className="h-6 px-2 text-[10px]" onClick={() => setSymbolsCfg((previous) => ({ ...previous, symbolCount: count }))}>
+                              {count === EXCHANGE_SYMBOL_COUNT_MAX ? "All" : count}
+                            </Button>
+                          ))}
+                        </div>
                       </div>
                     </div>
 
@@ -1857,13 +1873,20 @@ export function ConnectionSettingsDialog({
                         <span className="text-xs font-mono tabular-nums">{symbolsCfg.symbolCount}</span>
                       </div>
                       <Slider
-                        min={1} max={32} step={1}
+                        min={1} max={EXCHANGE_SYMBOL_COUNT_MAX} step={1}
                         value={[symbolsCfg.symbolCount]}
                         onValueChange={([v]) => setSymbolsCfg(p => ({ ...p, symbolCount: v }))}
                         className="py-2"
                       />
                       <div className="flex justify-between text-[10px] text-muted-foreground">
-                        <span>1</span><span>default 15</span><span>32</span>
+                        <span>1</span><span>default 15</span><span>{EXCHANGE_SYMBOL_COUNT_MAX}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {[32, HIGH_SCALE_SYMBOL_STRESS_TARGET, EXCHANGE_SYMBOL_COUNT_MAX].map((count) => (
+                          <Button key={count} type="button" size="sm" variant={symbolsCfg.symbolCount === count ? "secondary" : "outline"} className="h-6 px-2 text-[10px]" onClick={() => setSymbolsCfg((previous) => ({ ...previous, symbolCount: count }))}>
+                            {count === EXCHANGE_SYMBOL_COUNT_MAX ? "All" : count}
+                          </Button>
+                        ))}
                       </div>
                     </div>
                   </div>
@@ -2351,7 +2374,7 @@ const VARIANT_META: {
   {
     key: "block",
     label: "Block · Adjust",
-    desc:  "Base-derived Sets use independent non-compounding Block targets; Pos-Count Sets never spawn Blocks, while Active Real counts still include Pos-Count positions.",
+    desc:  "Base-derived Sets use independent bounded-compound Block targets; Pos-Count Sets never spawn Blocks, while Active Real counts still include Pos-Count positions.",
     defaultOn: true,
   },
   {

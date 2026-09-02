@@ -127,6 +127,7 @@ const JSON_FIELDS = [
   "dcaProfile",
   "dcaLegs",
   "axisWindows",
+  "executionLane",
   "specialPositionPlan",
   "prevPos",
   "accumulatedSetKeys",
@@ -233,11 +234,18 @@ export function hydrateLivePositionReadModel(
   if (!legacy) return hash
   if (!hash) return legacy
 
-  const hashIsNewer =
-    Number(hash.version || 0) > Number(legacy.version || 0) ||
-    Number(hash.updatedAt || 0) > Number(legacy.updatedAt || 0)
+  const hashVersion = Number(hash.version || 0)
+  const legacyVersion = Number(legacy.version || 0)
+  const hashUpdatedAt = Number(hash.updatedAt || 0)
+  const legacyUpdatedAt = Number(legacy.updatedAt || 0)
+  const hashIsAtLeastAsRecent =
+    hashVersion > legacyVersion ||
+    (hashVersion === legacyVersion && hashUpdatedAt >= legacyUpdatedAt)
 
-  return hashIsNewer
+  // Equal-version snapshots are normally produced by the canonical hash
+  // write followed by its compatibility mirror. Prefer the hash on a tie so
+  // a compact/older JSON projection cannot shadow full fills or set fields.
+  return hashIsAtLeastAsRecent
     ? { ...legacy, ...hash }
     : { ...hash, ...legacy }
 }

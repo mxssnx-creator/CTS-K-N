@@ -12,14 +12,20 @@
 //   "volume"       — top by 24h USDT-quoted volume (liquidity-first).
 //   "volatility"   — top by |24h priceChangePercent| from the ticker feed.
 //   "volatility_1h" — top by true 1h ATR: (1h high - 1h low) / 1h open × 100.
-//                     Fetches the last single 1h kline for each candidate symbol.
-//                     For BingX this hits /openApi/swap/v2/quote/klines once per
-//                     symbol (up to `limit`×top-candidates). A parallel batch with
-//                     concurrency=8 keeps total latency < 2s for 20 symbols.
+//                     Fetches one 1h kline for a bounded ranked head and retains
+//                     the complete volume-ranked tail. Concurrency remains capped
+//                     so exchange-wide selections cannot flood venue APIs.
 
 import { fetchBingXPublic } from "@/lib/bingx-public-api"
 import { getDefaultSymbolsForMarket } from "@/lib/market-types"
 import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
+import {
+  ATR_ENRICHMENT_MAX_SYMBOLS,
+  EXCHANGE_SYMBOL_COUNT_MAX,
+  MARKET_DATA_REQUEST_CONCURRENCY,
+  clampExchangeSymbolCount,
+  isHighScaleSymbolCount,
+} from "@/lib/symbol-capacity"
 
 export type SortKey = "volume" | "volatility" | "volatility_1h"
 export type Ticker = { symbol: string; priceChangePercent: number; volume: number; atr1h?: number }
@@ -28,8 +34,11 @@ export type Ticker = { symbol: string; priceChangePercent: number; volume: numbe
 // save routes and overview cards often request the same public ranking at the
 // same time; one venue request serves all of them while every caller still
 // receives its requested complete top-N slice.
-const cache = new Map<string, { symbols: Ticker[]; timestamp: number }>()
-const inFlight = new Map<string, Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }>>()
+const cache = new Map<string, { symbols: Ticker[]; timestamp: number; attemptedLimit: number }>()
+const inFlight = new Map<string, {
+  attemptedLimit: number
+  promise: Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }>
+}>()
 // 1h ATR cache is per-symbol and shorter-lived (90s) since 1h klines refresh every ~60s.
 const atrCache = new Map<string, { atr1h: number; timestamp: number }>()
 const CACHE_TTL = 60_000
@@ -169,12 +178,13 @@ async function fetchInstaForexTopSymbols(
   limit: number,
   sort: SortKey,
 ): Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }> {
-  const safeLimit = Math.max(1, Math.min(50, Math.floor(limit) || 1))
+  const safeLimit = clampExchangeSymbolCount(limit, 1)
+  const requestTimeoutMs = isHighScaleSymbolCount(safeLimit) ? 15_000 : 5_000
   let listedSymbols: string[] = []
   try {
     const response = await fetch("https://quotes.instaforex.com/api/quotesList", {
       headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(requestTimeoutMs),
     })
     if (response.ok) {
       const payload: any = await response.json()
@@ -198,25 +208,42 @@ async function fetchInstaForexTopSymbols(
 
   const candidates = Array.from(new Set([...listedSymbols, ...SAFE_FOREX_SYMBOLS]))
     .filter(isForexSymbol)
-    .slice(0, 50)
+    .slice(0, safeLimit)
   let quotes = new Map<string, any>()
   if (candidates.length > 0) {
-    try {
-      const url = new URL("https://quotes.instaforex.com/api/quotesTick")
-      url.searchParams.set("q", candidates.join(",").toLowerCase())
-      const response = await fetch(url, {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(5_000),
-      })
-      if (response.ok) {
-        const payload: any = await response.json()
-        const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.quotes) ? payload.quotes : []
-        quotes = new Map(rows.map((row: any) => [normalizeForexSymbol(row?.symbol), row]))
+    const chunks = Array.from(
+      { length: Math.ceil(candidates.length / 50) },
+      (_, index) => candidates.slice(index * 50, index * 50 + 50),
+    )
+    const rowsByChunk: any[][] = new Array(chunks.length)
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < chunks.length) {
+        const index = cursor++
+        try {
+          const url = new URL("https://quotes.instaforex.com/api/quotesTick")
+          url.searchParams.set("q", chunks[index].join(",").toLowerCase())
+          const response = await fetch(url, {
+            headers: { Accept: "application/json" },
+            signal: AbortSignal.timeout(requestTimeoutMs),
+          })
+          if (!response.ok) continue
+          const payload: any = await response.json()
+          rowsByChunk[index] = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload?.quotes)
+              ? payload.quotes
+              : []
+        } catch {
+          rowsByChunk[index] = []
+        }
       }
-    } catch {
-      // Return the listed major instruments with zero volatility if ticks are
-      // temporarily unavailable; no fabricated price is used for trading.
     }
+    await Promise.all(Array.from(
+      { length: Math.min(MARKET_DATA_REQUEST_CONCURRENCY, chunks.length) },
+      worker,
+    ))
+    quotes = new Map(rowsByChunk.flat().map((row: any) => [normalizeForexSymbol(row?.symbol), row]))
   }
 
   let tickers = candidates.map((symbol, index) => {
@@ -257,26 +284,45 @@ async function fetchTopSymbolsUncached(
   limit = 1,
   sort: SortKey = "volume",
 ): Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }> {
-  const safeLimit = Math.max(1, Math.min(50, Math.floor(limit) || 1))
+  const safeLimit = clampExchangeSymbolCount(limit, 1)
+  const highScale = isHighScaleSymbolCount(safeLimit)
+  const tickerTimeoutMs = highScale ? 15_000 : 5_000
   if (exchange === "instaforex" || exchange === "instafx" || exchange === "forex") {
     return fetchInstaForexTopSymbols(safeLimit, sort)
   }
-  // For volatility_1h we first fetch a larger pool (top-100 by volume) to
-  // narrow candidates before making one kline request per symbol.
+  // For volatility_1h we first fetch a volume-ranked pool. ATR enrichment is
+  // capped independently from the requested output size, so a 500-symbol UI
+  // selection does not trigger 500 simultaneous/serial venue requests.
   // MIN_VOLUME_USDT filters out newly listed micro-caps and wash-traded coins
   // that appear at the top of any ATR ranking but have no real liquidity.
   // Threshold: $5M 24h USDT quoteVolume — excludes anything below that floor.
   if (sort === "volatility_1h") {
     const MIN_VOLUME_USDT = 5_000_000
-    // Fetch a wide pool (up to 100 by volume) so we have enough after filtering.
-    const pool = await fetchTopSymbols(exchange, 100, "volume")
+    const poolSize = Math.min(
+      EXCHANGE_SYMBOL_COUNT_MAX,
+      Math.max(safeLimit, ATR_ENRICHMENT_MAX_SYMBOLS),
+    )
+    const pool = await fetchTopSymbols(exchange, poolSize, "volume")
     // Drop micro-caps before fetching klines — saves round-trips and
     // prevents wash-traded coins from polluting the ATR ranking.
     const liquid = pool.symbols.filter((t) => t.volume >= MIN_VOLUME_USDT)
-    const candidates = liquid.length >= limit ? liquid : pool.symbols // fallback if filter over-prunes
-    const enriched = await enrich1hAtr(exchange, candidates, 8)
-    enriched.sort((a, b) => (b.atr1h ?? 0) - (a.atr1h ?? 0))
-    const topN = enriched.slice(0, limit)
+    const candidates = highScale
+      ? pool.symbols
+      : liquid.length >= safeLimit
+        ? liquid
+        : pool.symbols
+    const atrCandidates = candidates.slice(0, ATR_ENRICHMENT_MAX_SYMBOLS)
+    const enriched = await enrich1hAtr(
+      exchange,
+      atrCandidates,
+      MARKET_DATA_REQUEST_CONCURRENCY,
+    )
+    enriched.sort((a, b) => (b.atr1h ?? 0) - (a.atr1h ?? 0) || b.volume - a.volume)
+    const enrichedSymbols = new Set(enriched.map((ticker) => ticker.symbol))
+    const topN = [
+      ...enriched,
+      ...candidates.filter((ticker) => !enrichedSymbols.has(ticker.symbol)),
+    ].slice(0, safeLimit)
     const top  = topN[0] ?? pool.symbols[0]
     return {
       symbol:             top.symbol,
@@ -290,7 +336,7 @@ async function fetchTopSymbolsUncached(
     if (exchange === "binance") {
       const res = await fetch("https://api.binance.com/api/v3/ticker/24hr", {
         headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(tickerTimeoutMs),
       })
       if (!res.ok) throw new Error(`Binance ticker HTTP ${res.status}`)
       const data: any[] = await res.json()
@@ -301,7 +347,8 @@ async function fetchTopSymbolsUncached(
             !t.symbol.includes("DOWN") &&
             !t.symbol.includes("UP") &&
             !["USDCUSDT", "BUSDUSDT", "TUSDUSDT", "FDUSDUSDT"].includes(t.symbol) &&
-            Number.parseFloat(t.quoteVolume) > 5_000_000,
+            (highScale || Number.parseFloat(t.quoteVolume) > 5_000_000) &&
+            Number.parseFloat(t.lastPrice ?? t.last ?? t.price ?? "1") > 0,
           )
           .map((t: any) => ({
             symbol:             t.symbol,
@@ -312,12 +359,16 @@ async function fetchTopSymbolsUncached(
       try {
         const res = await fetch("https://api.bybit.com/v5/market/tickers?category=linear", {
           headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (compatible; TradingBot/1.0)" },
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(tickerTimeoutMs),
         })
         if (res.ok) {
           const data = await res.json()
           tickers = (data?.result?.list || [])
-            .filter((t: any) => t.symbol.endsWith("USDT") && Number.parseFloat(t.turnover24h) > 1_000_000)
+            .filter((t: any) =>
+              t.symbol.endsWith("USDT") &&
+              Number.parseFloat(t.lastPrice || 0) > 0 &&
+              (highScale || Number.parseFloat(t.turnover24h) > 1_000_000),
+            )
             .map((t: any) => ({
               symbol: t.symbol,
               priceChangePercent: Math.abs(Number.parseFloat(t.price24hPcnt || "0") * 100),
@@ -328,11 +379,19 @@ async function fetchTopSymbolsUncached(
         console.warn("[TopSymbols] Bybit API error, using default:", bybitErr instanceof Error ? bybitErr.message : bybitErr)
       }
     } else if (exchange === "bingx") {
-      const res = await fetchBingXPublic("/openApi/swap/v2/quote/ticker", {}, { timeoutMs: 5000 })
+      const res = await fetchBingXPublic(
+        "/openApi/swap/v2/quote/ticker",
+        {},
+        { timeoutMs: tickerTimeoutMs },
+      )
       if (!res.ok) throw new Error(`BingX ticker HTTP ${res.status}`)
       const data = await res.json()
       tickers = (data?.data || [])
-        .filter((t: any) => t.symbol?.endsWith("-USDT") && Number.parseFloat(t.volume) > 100_000)
+        .filter((t: any) =>
+          t.symbol?.endsWith("-USDT") &&
+          Number.parseFloat(t.lastPrice ?? t.price ?? t.close ?? "0") > 0 &&
+          (highScale || Number.parseFloat(t.volume) > 100_000),
+        )
         .map((t: any) => ({
           symbol: (t.symbol as string).replace("-", ""),
           priceChangePercent: Math.abs(Number.parseFloat(t.priceChangePercent || "0")),
@@ -341,12 +400,16 @@ async function fetchTopSymbolsUncached(
     } else if (exchange === "okx") {
       const res = await fetch("https://www.okx.com/api/v5/market/tickers?instType=SWAP", {
         headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(tickerTimeoutMs),
       })
       if (!res.ok) throw new Error(`OKX ticker HTTP ${res.status}`)
       const data = await res.json()
       tickers = (data?.data || [])
-        .filter((t: any) => t.instId?.endsWith("USDT-SWAP") && Number.parseFloat(t.volCcy24h) > 1_000_000)
+        .filter((t: any) =>
+          t.instId?.endsWith("USDT-SWAP") &&
+          Number.parseFloat(t.last || 0) > 0 &&
+          (highScale || Number.parseFloat(t.volCcy24h) > 1_000_000),
+        )
         .map((t: any) => ({
           symbol: (t.instId as string).replace("-SWAP", "").replace("-", ""),
           priceChangePercent: Math.abs(Number.parseFloat(t.sodUtc8 || "0")),
@@ -368,18 +431,6 @@ async function fetchTopSymbolsUncached(
       volume: Math.max(0, (ordered.length - i) * 1000),
     }))
     return { symbol: preferred, priceChangePercent: 0, symbols: fallbackSymbols }
-  }
-
-  // Replace obviously bogus symbols (sandbox junk) with safe majors.
-  const looksBogus = (s: string) =>
-    s.length > 10 || !/USDT$/.test(s) || /AEON|B2US|HANA|INUS|TAG|HOOLI|MAGASOL|SPORTFUN|TIMI/.test(s)
-  if (tickers.some((t) => looksBogus(t.symbol))) {
-    const clean = tickers.filter((t) => !looksBogus(t.symbol))
-    const needed = Math.max(0, safeLimit - clean.length)
-    const extras = SAFE_MAJORS.filter((s) => !clean.some((c) => c.symbol === s))
-      .slice(0, needed)
-      .map((s) => ({ symbol: s, priceChangePercent: 0.5, volume: 1000 }))
-    tickers = [...clean, ...extras].slice(0, Math.max(safeLimit, clean.length))
   }
 
   // Note: "volatility_1h" returns early above; only "volume" and "volatility" reach here.
@@ -408,13 +459,13 @@ export async function fetchTopSymbols(
   sort: SortKey = "volume",
 ): Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }> {
   const normalizedExchange = String(exchange || "").trim().toLowerCase()
-  const requested = Math.max(1, Math.min(50, Math.floor(limit) || 1))
+  const requested = clampExchangeSymbolCount(limit, 1)
   const cacheKey = `${normalizedExchange}:${sort}`
   const cached = cache.get(cacheKey)
   if (
     cached &&
     Date.now() - cached.timestamp < CACHE_TTL &&
-    cached.symbols.length >= requested
+    (cached.symbols.length >= requested || cached.attemptedLimit >= requested)
   ) {
     const symbols = cached.symbols.slice(0, requested)
     return {
@@ -426,8 +477,8 @@ export async function fetchTopSymbols(
 
   const existing = inFlight.get(cacheKey)
   if (existing) {
-    const shared = await existing
-    if (shared.symbols.length >= requested) {
+    const shared = await existing.promise
+    if (shared.symbols.length >= requested || existing.attemptedLimit >= requested) {
       const symbols = shared.symbols.slice(0, requested)
       return {
         symbol: symbols[0].symbol,
@@ -440,13 +491,15 @@ export async function fetchTopSymbols(
   const request = fetchTopSymbolsUncached(normalizedExchange, requested, sort)
     .then((result) => {
       const previous = cache.get(cacheKey)
-      const symbols =
-        previous &&
-        Date.now() - previous.timestamp < CACHE_TTL &&
-        previous.symbols.length > result.symbols.length
-          ? previous.symbols
-          : result.symbols
-      cache.set(cacheKey, { symbols, timestamp: Date.now() })
+      const previousFresh = Boolean(previous && Date.now() - previous.timestamp < CACHE_TTL)
+      const symbols = previousFresh && previous!.symbols.length > result.symbols.length
+        ? previous!.symbols
+        : result.symbols
+      cache.set(cacheKey, {
+        symbols,
+        timestamp: Date.now(),
+        attemptedLimit: Math.max(requested, previousFresh ? previous!.attemptedLimit : 0),
+      })
       return {
         symbol: symbols[0].symbol,
         priceChangePercent: symbols[0].atr1h ?? symbols[0].priceChangePercent,
@@ -454,9 +507,9 @@ export async function fetchTopSymbols(
       }
     })
     .finally(() => {
-      if (inFlight.get(cacheKey) === request) inFlight.delete(cacheKey)
+      if (inFlight.get(cacheKey)?.promise === request) inFlight.delete(cacheKey)
     })
-  inFlight.set(cacheKey, request)
+  inFlight.set(cacheKey, { attemptedLimit: requested, promise: request })
   const result = await request
   const symbols = result.symbols.slice(0, requested)
   return {

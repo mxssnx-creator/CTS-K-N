@@ -8,6 +8,7 @@ import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { appendUniqueListEntries } from "@/lib/redis-idempotent-list"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export interface StrategyConfig {
   id: string
@@ -158,7 +159,7 @@ export class StrategyConfigManager {
     await initRedis()
     const client = getRedisClient()
 
-    let keys = ((await client.smembers(this.getConfigIndexKey()).catch(() => [])) || []) as string[]
+    let keys = await scanRedisSetMembers(client, this.getConfigIndexKey(), { count: 250 }).catch(() => [])
     if (keys.length === 0) {
       keys = await this.scanConfigKeys(client)
       if (keys.length > 0) await client.sadd(this.getConfigIndexKey(), ...keys).catch(() => 0)

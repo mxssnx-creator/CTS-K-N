@@ -1,4 +1,5 @@
 import { getRedisClient } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 /**
  * Archive connection-related data (trades, positions, etc.) 
@@ -18,10 +19,6 @@ export const ConnectionDataArchive = {
     const positionsKey = `positions:connection:${connectionId}:*`
     const ordersKey = `orders:connection:${connectionId}:*`
     
-    const trades = await client.keys(tradesKey)
-    const positions = await client.keys(positionsKey)
-    const orders = await client.keys(ordersKey)
-    
     const archiveData: any = {
       connectionId,
       timestamp: Date.now(),
@@ -32,7 +29,7 @@ export const ConnectionDataArchive = {
     }
     
     // Archive trades
-    for (const key of trades) {
+    for await (const key of iterateRedisKeys(client, tradesKey, { count: 250 })) {
       const tradeData = await client.hgetall(key)
       if (tradeData && Object.keys(tradeData).length > 0) {
         archiveData.trades.push(tradeData)
@@ -40,7 +37,7 @@ export const ConnectionDataArchive = {
     }
     
     // Archive positions
-    for (const key of positions) {
+    for await (const key of iterateRedisKeys(client, positionsKey, { count: 250 })) {
       const posData = await client.hgetall(key)
       if (posData && Object.keys(posData).length > 0) {
         archiveData.positions.push(posData)
@@ -48,7 +45,7 @@ export const ConnectionDataArchive = {
     }
     
     // Archive orders
-    for (const key of orders) {
+    for await (const key of iterateRedisKeys(client, ordersKey, { count: 250 })) {
       const orderData = await client.hgetall(key)
       if (orderData && Object.keys(orderData).length > 0) {
         archiveData.orders.push(orderData)
@@ -70,7 +67,11 @@ export const ConnectionDataArchive = {
     
     // Find the most recent archive for this connection
     const archivePattern = `archive:connection:${connectionId}:*`
-    const archives = await client.keys(archivePattern)
+    const archives = await (async () => {
+      const found: string[] = []
+      for await (const key of iterateRedisKeys(client, archivePattern, { count: 100 })) found.push(key)
+      return found
+    })()
     
     if (archives.length === 0) {
       console.log(`[v0] No archives found for connection ${connectionId}`)
@@ -121,24 +122,21 @@ export const ConnectionDataArchive = {
     const client = getRedisClient()
     
     // Migrate all trades
-    const trades = await client.keys(`trades:connection:${oldConnectionId}:*`)
-    for (const oldKey of trades) {
+    for await (const oldKey of iterateRedisKeys(client, `trades:connection:${oldConnectionId}:*`, { count: 250 })) {
       const newKey = oldKey.replace(`connection:${oldConnectionId}`, `connection:${newConnectionId}`)
       const data = await client.hgetall(oldKey)
       if (data && Object.keys(data).length > 0) await client.hset(newKey, data)
     }
     
     // Migrate all positions
-    const positions = await client.keys(`positions:connection:${oldConnectionId}:*`)
-    for (const oldKey of positions) {
+    for await (const oldKey of iterateRedisKeys(client, `positions:connection:${oldConnectionId}:*`, { count: 250 })) {
       const newKey = oldKey.replace(`connection:${oldConnectionId}`, `connection:${newConnectionId}`)
       const data = await client.hgetall(oldKey)
       if (data && Object.keys(data).length > 0) await client.hset(newKey, data)
     }
     
     // Migrate all orders
-    const orders = await client.keys(`orders:connection:${oldConnectionId}:*`)
-    for (const oldKey of orders) {
+    for await (const oldKey of iterateRedisKeys(client, `orders:connection:${oldConnectionId}:*`, { count: 250 })) {
       const newKey = oldKey.replace(`connection:${oldConnectionId}`, `connection:${newConnectionId}`)
       const data = await client.hgetall(oldKey)
       if (data && Object.keys(data).length > 0) await client.hset(newKey, data)
@@ -152,12 +150,10 @@ export const ConnectionDataArchive = {
    */
   async cleanupOldArchives(maxAgeMs = 30 * 24 * 60 * 60 * 1000) {
     const client = getRedisClient()
-    const archives = await client.keys("archive:connection:*")
-    
     const now = Date.now()
     let cleaned = 0
     
-    for (const archive of archives) {
+    for await (const archive of iterateRedisKeys(client, "archive:connection:*", { count: 250 })) {
       // Extract timestamp from key format: archive:connection:ID:TIMESTAMP
       const parts = archive.split(":")
       const timestamp = parseInt(parts[parts.length - 1], 10)

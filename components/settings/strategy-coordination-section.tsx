@@ -69,6 +69,10 @@ import {
   POS_COUNT_VOLUME_RATIO_STEP,
   posCountVolumeRatioToSetMultiplier,
 } from "@/lib/pos-count-volume-ratio"
+import {
+  calculateBlockVolumeIncrementRatio,
+  calculateBlockVolumeMultiplier,
+} from "@/lib/block-count-state"
 
 export interface CoordinationSettings {
   // ── Position-Count axes ─────────────────────────────────────────────
@@ -87,12 +91,13 @@ export interface CoordinationSettings {
   // ── Block-strategy: completed-position block count × vol-ratio coordination ─
   // Knobs that flow into the Block variant's runtime size scaling.
   // Each valid Block count owns an absolute target from the general basis:
-  //   targetVolume = generalVolume × (1 + blockCount × blockVolumeRatio)
+  //   targetVolume = generalVolume × (1 + blockVolumeRatio)^effectiveStep
   // Physical orders submit only the still-missing delta to that target.
   // for every blockCount in [1..blockMaxStack]. pause count is derived as
   // round(blockCount × blockPauseCountRatio).
   blockVolumeRatio: number // 0.25..3.0 per spec band (UI clamps; engine re-clamps)
   blockProfitFactorRatio: number // 0.2..5.0 × default PF × count volume increment
+  blockIncrementSteps: number // 1..5 compounded increments, default 2
   blockMaxStack:    number // 1..12 block sizes processed independently
   strategyBlockMaterializationBatchSize: number // 64..10000, rotating work batch
   blockPauseCountRatio: number // 1..4, step 0.5
@@ -102,6 +107,7 @@ export interface CoordinationSettings {
   blockRowLiveEnabled: boolean
   blockRowLiveVolumeRatio: number
   blockRowLiveProfitFactorRatio: number
+  blockRowLiveIncrementSteps: number
   blockRowLiveMaxStack: number
   blockRowLivePauseCountRatio: number
   /** Normal/default strategy family; all evaluation remains available when off. */
@@ -224,7 +230,8 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
     dca:      false, // off by default per operator spec
   },
   blockVolumeRatio: 1.0,
-  blockProfitFactorRatio: 0.8,
+  blockProfitFactorRatio: 1.1,
+  blockIncrementSteps: 2,
   blockMaxStack:    12,
   strategyBlockMaterializationBatchSize: 1024,
   blockPauseCountRatio: 1.0,
@@ -232,7 +239,8 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockActiveLiveEnabled: true,
   blockRowLiveEnabled: true,
   blockRowLiveVolumeRatio: 1.0,
-  blockRowLiveProfitFactorRatio: 0.8,
+  blockRowLiveProfitFactorRatio: 1.1,
+  blockRowLiveIncrementSteps: 2,
   blockRowLiveMaxStack: 12,
   blockRowLivePauseCountRatio: 1.0,
   normalEnabled: true,
@@ -902,10 +910,9 @@ export function StrategyCoordinationSection({
               <div>
                 <Label className="text-sm font-semibold">Volume Ratio</Label>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Additive step applied to the immutable general volume. Earlier
-                  confirmed Block fills are subtracted from the next target, so
-                  valid Counts never compound or over-add. Engine clamps this
-                  setting to 0.25–3.0 even if the UI is bypassed.
+                  Compound ratio applied to the immutable general volume. Each
+                  admitted step multiplies the previous target; confirmed fills
+                  are subtracted before the next exact delta is submitted.
                 </p>
                 <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
                   Regular ladders use Base-derived Sets only, never Pos-Count
@@ -935,7 +942,11 @@ export function StrategyCoordinationSection({
             </div>
             <div className="grid grid-cols-3 gap-2 pt-1 text-[11px]">
               {[1, 2, 3].map((n) => {
-                const mul = n * value.blockVolumeRatio
+                const multiplier = calculateBlockVolumeMultiplier(
+                  n,
+                  value.blockVolumeRatio,
+                  value.blockIncrementSteps,
+                )
                 return (
                   <div
                     key={n}
@@ -945,11 +956,39 @@ export function StrategyCoordinationSection({
                       block={n}
                     </span>
                     <span className="font-mono tabular-nums font-semibold">
-                      {(1 + mul).toFixed(2)}× total
+                      {multiplier.toFixed(2)}× total
                     </span>
                   </div>
                 )
               })}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border/60 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label className="text-sm font-semibold">Compound Increment Steps</Label>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Number of sequential Block targets allowed to multiply the
+                  prior target. Range 1–5; default 2. Higher Count rows retain
+                  independent PF/stat identities after the volume cap.
+                </p>
+              </div>
+              <Badge variant="outline" className="text-[10px] tabular-nums">1–5</Badge>
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <Slider
+                value={[value.blockIncrementSteps]}
+                min={1}
+                max={5}
+                step={1}
+                onValueChange={([next]) => onChange({ ...value, blockIncrementSteps: next })}
+                disabled={!value.variants.block}
+                className="flex-1"
+              />
+              <span className="w-8 text-right text-xs font-semibold tabular-nums">
+                {value.blockIncrementSteps}
+              </span>
             </div>
           </div>
 
@@ -961,8 +1000,8 @@ export function StrategyCoordinationSection({
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Minimum PF factor calculated separately for every Block
                   count: Default PF × this factor × that count&apos;s actual
-                  volume increment. The same latest-position window as the
-                  source/default calculation is used. Default 0.8.
+                  volume increment above neutral PF 1.00. The same latest-position
+                  window as the source/default calculation is used. Default 1.1.
                 </p>
               </div>
               <Badge variant="outline" className="text-[10px] tabular-nums">
@@ -990,7 +1029,11 @@ export function StrategyCoordinationSection({
                 <div key={count} className="rounded-md border border-border/60 p-2">
                   <span className="text-muted-foreground">Block {count}</span>
                   <p className="mt-0.5 font-mono font-semibold tabular-nums">
-                    PF × {(value.blockProfitFactorRatio * count * value.blockVolumeRatio).toFixed(2)}
+                    +PF × {(value.blockProfitFactorRatio * calculateBlockVolumeIncrementRatio(
+                      count,
+                      value.blockVolumeRatio,
+                      value.blockIncrementSteps,
+                    )).toFixed(2)}
                   </p>
                 </div>
               ))}
@@ -1035,7 +1078,7 @@ export function StrategyCoordinationSection({
                 disabled={!value.variants.block}
               />
             </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
               <div className="space-y-1.5">
                 <Label className="text-[11px]">Volume ratio</Label>
                 <Slider
@@ -1059,6 +1102,18 @@ export function StrategyCoordinationSection({
                   disabled={!value.variants.block || !value.blockRowLiveEnabled}
                 />
                 <p className="text-right font-mono text-[11px]">{value.blockRowLiveProfitFactorRatio.toFixed(1)}×</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-[11px]">Increment steps</Label>
+                <Slider
+                  value={[value.blockRowLiveIncrementSteps]}
+                  min={1}
+                  max={5}
+                  step={1}
+                  onValueChange={([next]) => onChange({ ...value, blockRowLiveIncrementSteps: next })}
+                  disabled={!value.variants.block || !value.blockRowLiveEnabled}
+                />
+                <p className="text-right font-mono text-[11px]">{value.blockRowLiveIncrementSteps}</p>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-[11px]">Max stack</Label>

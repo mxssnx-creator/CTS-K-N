@@ -104,3 +104,4 @@ version	name	source
 103	103-systemwide-position-cost-pf-selection-coordinate	lib/redis-migrations.ts
 104	104-minimum-executable-volumes-and-set-protection	lib/redis-migrations.ts
 105	105-forex-market-coordination-and-instaforex-defaults	lib/redis-migrations.ts
+106	106-compound-block-steps-and-neutral-pf-factor	lib/redis-migrations.ts

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getRedisClient } from "@/lib/redis-db"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function GET(request: Request) {
@@ -16,8 +17,10 @@ export async function GET(request: Request) {
     const client = getRedisClient()
     
     // Get all Redis keys
-    const keys = await client.keys("*")
-    const keyCount = keys ? keys.length : 0
+    const keyCount = typeof (client as any).dbSize === "function"
+      ? await (client as any).dbSize()
+      : 0
+    const keys = await scanRedisKeys(client, "*", { count: 250, limit: 50 })
     
     // Get Redis info
     const info = await client.info()
@@ -26,7 +29,7 @@ export async function GET(request: Request) {
       success: true,
       database_type: "redis",
       key_count: keyCount,
-      keys_sample: keys ? keys.slice(0, 50) : [],
+      keys_sample: keys,
       info: info
     })
   } catch (error: any) {

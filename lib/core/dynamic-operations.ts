@@ -1,4 +1,5 @@
 import { type EntityType, EntityMetadataMap, type ConfigSubType } from "./entity-types"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export interface QueryFilter {
   field: string
@@ -87,10 +88,8 @@ export class DynamicOperationHandler {
 
     // Get all keys matching pattern
     const pattern = `${tableName}:*`
-    const keys = await this.db.keys(pattern)
-    
     const results: any[] = []
-    for (const key of keys) {
+    for await (const key of iterateRedisKeys(this.db, pattern, { count: 250 })) {
       const data = await this.db.get(key)
       if (data) {
         results.push(JSON.parse(data))

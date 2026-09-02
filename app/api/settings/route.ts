@@ -32,7 +32,12 @@ import {
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
-import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
+import {
+  BLOCK_COUNT_MAX,
+  BLOCK_INCREMENT_STEPS_DEFAULT,
+  normalizeBlockIncrementSteps,
+  normalizeBlockProfitFactorRatio,
+} from "@/lib/block-count-state"
 import {
   ACTIVE_MARKET_EXIT_SITUATIONS,
   DEFAULT_ACTIVE_OUTBREAK_RANGES,
@@ -124,6 +129,16 @@ const CHANNEL_VOLUME_FACTOR_KEYS = [
   "signalVolumeFactor",
 ] as const
 const BLOCK_STACK_KEYS = ["blockMaxStack", "blockRowLiveMaxStack", "presetBlockMaxStack"] as const
+const BLOCK_INCREMENT_STEP_KEYS = [
+  "blockIncrementSteps",
+  "blockRowLiveIncrementSteps",
+  "presetBlockIncrementSteps",
+] as const
+const BLOCK_PROFIT_FACTOR_RATIO_KEYS = [
+  "blockProfitFactorRatio",
+  "blockRowLiveProfitFactorRatio",
+  "presetBlockProfitFactorRatio",
+] as const
 const POSITION_COST_PF_SELECTION_KEYS = [
   "profitFactorMinPreset",
   "strategyRealMinProfitFactor",
@@ -174,6 +189,14 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
     normalized[key] = Number.isFinite(value)
       ? Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(value)))
       : BLOCK_COUNT_MAX
+  }
+  for (const key of BLOCK_INCREMENT_STEP_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    normalized[key] = normalizeBlockIncrementSteps(normalized[key])
+  }
+  for (const key of BLOCK_PROFIT_FACTOR_RATIO_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    normalized[key] = normalizeBlockProfitFactorRatio(normalized[key])
   }
   for (const key of POSITION_COST_PF_SELECTION_KEYS) {
     if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
@@ -275,15 +298,18 @@ function getDefaultSettings(): Record<string, any> {
     blockAdjustment: true,
     variantBlockEnabled: true,
     blockVolumeRatio: 1,
-    blockProfitFactorRatio: 0.8,
-    presetBlockProfitFactorRatio: 0.8,
+    blockProfitFactorRatio: 1.1,
+    blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
+    presetBlockProfitFactorRatio: 1.1,
+    presetBlockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     blockMaxStack: 12,
     blockPauseCountRatio: 1,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
     blockRowLiveEnabled: true,
     blockRowLiveVolumeRatio: 1,
-    blockRowLiveProfitFactorRatio: 0.8,
+    blockRowLiveProfitFactorRatio: 1.1,
+    blockRowLiveIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     blockRowLiveMaxStack: 12,
     blockRowLivePauseCountRatio: 1,
     directionEnabled: true,

@@ -6,6 +6,7 @@
  */
 
 import { getRedisClient } from './redis-db'
+import { iterateRedisKeys } from './redis-scan'
 import { metricsCollector, MetricType } from './metrics-collector'
 import fs from 'fs'
 import path from 'path'
@@ -109,13 +110,11 @@ export class BackupSystem {
 
       console.log(`[BACKUP] Starting backup: ${backupId}`)
 
-      // Get all keys
-      const keys = await (client as any).keys('*')
-      const keyCount = keys.length
-
       // Dump all data
       const data: any = {}
-      for (const key of keys) {
+      let keyCount = 0
+      for await (const key of iterateRedisKeys(client, '*', { count: 500 })) {
+        keyCount++
         try {
           const value = await (client as any).get(key)
           data[key] = value

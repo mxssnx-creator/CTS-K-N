@@ -79,7 +79,9 @@ import {
   calculateBlockRemainingAddQuantity,
   calculateBlockTargetQuantity,
   calculateConfirmedBlockAddQuantity,
+  calculateBlockVolumeMultiplier,
   calculateBlockVolumeIncrementRatio,
+  normalizeBlockIncrementSteps,
   parseBlockCount,
   syncActiveBlockCountIndex,
   type BlockLegState,
@@ -105,6 +107,7 @@ import {
   type RealStrategyVariant,
 } from "@/lib/strategy-real-stats"
 import { getLivePositionSetLineageKeys } from "@/lib/live-position-lineage"
+import { buildLivePositionCompatibilitySnapshot } from "@/lib/live-position-mirror"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import {
   resolveCombinedPosCountDelta,
@@ -169,6 +172,7 @@ import {
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 import {
   BINGX_CONTROL_ORDER_LIMIT,
   ControlOrderCapacityBudget,
@@ -1069,6 +1073,7 @@ export interface LivePosition {
     blockTargetQuantity?: number
     blockBaseVolumeMultiplier?: number
     blockVolumeRatio?: number
+    blockIncrementSteps?: number
     blockVolumeIncrementRatio?: number
     blockCalculatedVolumeMultiplier?: number
     blockScope?: "long" | "short" | "overall" | "live_row"
@@ -1149,6 +1154,7 @@ export interface LivePosition {
   blockBaseQuantity?: number
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number
+  blockIncrementSteps?: number
   blockProfitFactorRatio?: number
   blockDefaultMinimumProfitFactor?: number
   blockConfiguredMinimumProfitFactor?: number
@@ -2428,6 +2434,7 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "blockBaseQuantity",
     "blockBaseVolumeMultiplier",
     "blockVolumeRatio",
+    "blockIncrementSteps",
     "blockProfitFactorRatio",
     "blockDefaultMinimumProfitFactor",
     "blockConfiguredMinimumProfitFactor",
@@ -2486,10 +2493,14 @@ function mergeLivePositionSnapshotSources(
   // JSON snapshot (often `open`) and ignore a newer hash (`closing`/`closed`).
   // Merge the newer source over the older so auxiliary fields survive while
   // the authoritative lifecycle/version can never regress after restart.
-  const hashIsNewer =
-    Number(hashPosition.version || 0) > Number(legacy.version || 0) ||
-    Number(hashPosition.updatedAt || 0) > Number(legacy.updatedAt || 0)
-  return hashIsNewer
+  const hashVersion = Number(hashPosition.version || 0)
+  const legacyVersion = Number(legacy.version || 0)
+  const hashUpdatedAt = Number(hashPosition.updatedAt || 0)
+  const legacyUpdatedAt = Number(legacy.updatedAt || 0)
+  const hashIsAtLeastAsRecent =
+    hashVersion > legacyVersion ||
+    (hashVersion === legacyVersion && hashUpdatedAt >= legacyUpdatedAt)
+  return hashIsAtLeastAsRecent
     ? { ...legacy, ...hashPosition }
     : { ...hashPosition, ...legacy }
 }
@@ -2737,9 +2748,9 @@ async function rebuildSignalAdmissionIndexes(
   const shortKey = signalPositionAdmissionDirectionIndexKey(connectionId, "short")
   const activeIds = new Set(active.map((position) => position.id))
   const [indexedIds, indexedLongIds, indexedShortIds] = await Promise.all([
-    client.smembers(indexKey).catch(() => [] as string[]),
-    client.smembers(longKey).catch(() => [] as string[]),
-    client.smembers(shortKey).catch(() => [] as string[]),
+    scanRedisSetMembers(client, indexKey, { count: 250 }).catch(() => []),
+    scanRedisSetMembers(client, longKey, { count: 250 }).catch(() => []),
+    scanRedisSetMembers(client, shortKey, { count: 250 }).catch(() => []),
   ])
   const staleIds = Array.from(new Set([
     ...indexedIds,
@@ -3060,7 +3071,7 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     } as any)
     await client.set(
       jsonKey,
-      JSON.stringify(position),
+      JSON.stringify(buildLivePositionCompatibilitySnapshot(position as unknown as Record<string, unknown>)),
       incomingTerminal
         ? { EX: terminalRetentionSeconds || LIVE_TERMINAL_RETENTION_SECONDS }
         : undefined,
@@ -3285,30 +3296,21 @@ async function persistCriticalLiveState(reason: string): Promise<void> {
 async function batchSavePositions(positions: LivePosition[]): Promise<void> {
   if (!positions || positions.length === 0) return
 
-  const { getRedisClient } = await import("@/lib/redis-db")
-  const client = getRedisClient()
-
   try {
-    // Use Redis pipeline for atomic multi-save
-    const pipeline = (client as any).pipeline?.()
-    if (!pipeline) {
-      // Fallback: individual saves if pipeline not available
-      await Promise.all(positions.map(p => savePosition(p)))
-      return
+    // Keep the canonical save path for every row. The previous shortcut only
+    // wrote an un-serialised hash: it skipped the compact mirror, TTL policy,
+    // open/closed indexes, tracking pointers and lifetime analytics. That
+    // produced split-brain stats and could leave terminal rows in the active
+    // book. Bound concurrency so a large close batch does not create a Redis
+    // request burst.
+    const batchSize = 16
+    for (let offset = 0; offset < positions.length; offset += batchSize) {
+      await Promise.all(positions.slice(offset, offset + batchSize).map((position) =>
+        savePosition(position),
+      ))
     }
-
-    // Queue all saves in pipeline
-    for (const position of positions) {
-      const key = `live_positions:${position.connectionId}:${position.id}`
-      pipeline.hset(key, position as any)
-    }
-
-    // Execute all queued operations atomically
-    await pipeline.exec()
   } catch (err) {
     console.warn(`${LOG_PREFIX} batchSavePositions failed:`, err instanceof Error ? err.message : String(err))
-    // Fallback to individual saves on error
-    await Promise.all(positions.map(p => savePosition(p).catch(() => {})))
   }
 }
 async function incrementMetric(connectionId: string, metric: string, delta: number = 1): Promise<void> {
@@ -3707,13 +3709,15 @@ function initializeIndependentBlockSeed(
   // row when Normal is disabled, but it must also retain its exact additional
   // quantity when a Normal parent already exists.
   if (source.setVariant !== "block" || !(filledQuantity > 0)) return
+  const blockCount = parseBlockCount(source.setKey) ?? Math.floor(Number(source.blockCount || 0))
+  const volumeRatio = Number(source.blockVolumeRatio || 0)
+  const incrementSteps = normalizeBlockIncrementSteps(source.blockIncrementSteps)
+  const canonicalMultiplier = blockCount > 0 && volumeRatio > 0
+    ? calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps)
+    : 0
   const multiplier = Math.max(
     1,
-    Number(
-      source.blockCalculatedVolumeMultiplier ??
-      source.sizeMultiplier ??
-      1,
-    ),
+    canonicalMultiplier || Number(source.blockCalculatedVolumeMultiplier ?? source.sizeMultiplier ?? 1),
   )
   const baseQuantity = filledQuantity / multiplier
   const addedQuantity = Math.max(0, filledQuantity - baseQuantity)
@@ -3846,6 +3850,7 @@ interface AccumulationPlan {
   blockConfirmedAddQuantity?: number
   blockTargetAddQuantity?: number
   blockTargetQuantity?: number
+  blockIncrementSteps?: number
   dcaStep?: number
   dcaVolumeMultiplier?: number
   dcaTriggerDistancePct?: number
@@ -3877,6 +3882,15 @@ function applySpecialPlanToPosition(
     Math.max(1, sanitized.maximumHoldingSeconds),
   )
   position.specialExpiresAt = firstFillAt + boundedHoldingSeconds * 1_000
+}
+
+function calculateConfirmedDcaAddQuantity(dcaLegs: unknown): number {
+  if (!Array.isArray(dcaLegs)) return 0
+  return dcaLegs.reduce((total: number, leg: unknown) => {
+    if (!leg || typeof leg !== "object") return total
+    const quantity = Number((leg as Record<string, unknown>).quantity || 0)
+    return total + (Number.isFinite(quantity) && quantity > 0 ? quantity : 0)
+  }, 0)
 }
 
 async function resolveAccumulationPlan(
@@ -3921,6 +3935,9 @@ async function resolveAccumulationPlan(
   if (real?.setVariant === "block") {
     const blockCount = parseBlockCount(real?.setKey)
     const blockVolumeRatio = Number(real?.blockVolumeRatio ?? existing.blockVolumeRatio ?? 1)
+    const blockIncrementSteps = normalizeBlockIncrementSteps(
+      real?.blockIncrementSteps ?? existing.blockIncrementSteps,
+    )
     const recordedBlockAddQuantity = calculateConfirmedBlockAddQuantity(existing.blockLegs)
     // Every Block count is an absolute additive target derived from the
     // immutable general/Base quantity. Only confirmed Block legs consume that
@@ -3937,17 +3954,20 @@ async function resolveAccumulationPlan(
       blockBaseQuantity,
       blockCount,
       blockVolumeRatio,
+      blockIncrementSteps,
     )
     const blockTargetQuantity = calculateBlockTargetQuantity(
       blockBaseQuantity,
       blockCount,
       blockVolumeRatio,
+      blockIncrementSteps,
     )
     const addQty = calculateBlockRemainingAddQuantity(
       blockBaseQuantity,
       blockCount,
       blockVolumeRatio,
       blockConfirmedAddQuantity,
+      blockIncrementSteps,
     )
     return {
       addQty,
@@ -3960,6 +3980,7 @@ async function resolveAccumulationPlan(
       blockConfirmedAddQuantity,
       blockTargetAddQuantity,
       blockTargetQuantity,
+      blockIncrementSteps,
     }
   }
 
@@ -4008,10 +4029,15 @@ async function resolveAccumulationPlan(
         })
     if (!next) return null
     const baseQuantity = Number(existing.initialExecutedQuantity ?? existing.executedQuantity ?? 0)
+    // DCA owns an independent lane budget. Confirmed Block/Special/other Set
+    // fills share the physical venue position but must not consume a DCA
+    // step or its configured max-position ratio. The absolute execution-
+    // notional ceiling below remains the final system-wide exposure guard.
+    const dcaLaneCurrentQuantity = baseQuantity + calculateConfirmedDcaAddQuantity(existing.dcaLegs)
     const addQty = calculateDcaAddQuantity(
       baseQuantity,
       next.volumeMultiplier,
-      Number(existing.executedQuantity ?? existing.quantity ?? baseQuantity),
+      dcaLaneCurrentQuantity,
       dcaProfile.maxPositionVolumeRatio,
     )
     if (!(addQty > 0)) return null
@@ -5180,7 +5206,10 @@ async function accumulateIntoLivePosition(
     })()
     existing.initialExecutedQuantity ??= existing.executedQuantity
     existing.initialEntryPrice ??= existing.averageExecutionPrice || existing.entryPrice
-    if (plan.variant === "block") existing.blockBaseQuantity = plan.blockBaseQuantity
+    if (plan.variant === "block") {
+      existing.blockBaseQuantity = plan.blockBaseQuantity
+      existing.blockIncrementSteps = plan.blockIncrementSteps
+    }
     else existing.blockBaseQuantity ??= existing.initialExecutedQuantity
     if (plan.dcaProfile) existing.dcaProfile = plan.dcaProfile
     const blockSetQuantityBefore = plan.variant === "block"
@@ -5215,14 +5244,24 @@ async function accumulateIntoLivePosition(
         ? 1
         : Number(real?.blockBaseVolumeMultiplier || 1),
       blockVolumeRatio: Number(real?.blockVolumeRatio || 1),
+      blockIncrementSteps: normalizeBlockIncrementSteps(
+        plan.blockIncrementSteps ?? real?.blockIncrementSteps,
+      ),
       blockVolumeIncrementRatio: Number(
         real?.blockVolumeIncrementRatio ||
-        (plan.blockCount ? calculateBlockVolumeIncrementRatio(plan.blockCount, Number(real?.blockVolumeRatio || 1)) : 1),
+        (plan.blockCount
+          ? calculateBlockVolumeIncrementRatio(
+              plan.blockCount,
+              Number(real?.blockVolumeRatio || 1),
+              plan.blockIncrementSteps,
+            )
+          : 1),
       ),
       blockCalculatedVolumeMultiplier: plan.variant === "block" && plan.blockCount
         ? 1 + calculateBlockVolumeIncrementRatio(
             plan.blockCount,
             Number(real?.blockVolumeRatio || 1),
+            plan.blockIncrementSteps,
           )
         : Number(real?.blockCalculatedVolumeMultiplier || real?.sizeMultiplier || 1),
       blockScope: real?.blockScope,
@@ -6655,6 +6694,7 @@ async function reconcileAuthoritativeExchangeQuantity(
         blockCount: pending.blockCount,
         blockBaseVolumeMultiplier: pending.blockBaseVolumeMultiplier,
         blockVolumeRatio: pending.blockVolumeRatio,
+        blockIncrementSteps: pending.blockIncrementSteps,
         blockVolumeIncrementRatio: pending.blockVolumeIncrementRatio,
         blockCalculatedVolumeMultiplier: pending.blockCalculatedVolumeMultiplier,
         blockScope: pending.blockScope,
@@ -11508,6 +11548,26 @@ export async function executeLivePosition(
   const client = getRedisClient()
   const connectionTrackingId = makeConnectionTrackingId(connectionId)
   let realPosition = sourceRealPosition
+  if (sourceRealPosition.setVariant === "block") {
+    const blockCount = parseBlockCount(sourceRealPosition.setKey) ?? Math.floor(Number(sourceRealPosition.blockCount || 0))
+    const blockVolumeRatio = Number(sourceRealPosition.blockVolumeRatio || 0)
+    const blockIncrementSteps = normalizeBlockIncrementSteps(sourceRealPosition.blockIncrementSteps)
+    if (blockCount > 0 && blockVolumeRatio > 0) {
+      const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
+        blockCount,
+        blockVolumeRatio,
+        blockIncrementSteps,
+      )
+      realPosition = {
+        ...sourceRealPosition,
+        blockCount,
+        blockIncrementSteps,
+        blockVolumeIncrementRatio: blockCalculatedVolumeMultiplier - 1,
+        blockCalculatedVolumeMultiplier,
+        sizeMultiplier: blockCalculatedVolumeMultiplier,
+      }
+    }
+  }
 
   // ── Exchange circuit-breaker gate (per-symbol) ──────────────���────────
   // BingX code 109400 — "API orders temporarily disabled due to market
@@ -11814,6 +11874,7 @@ export async function executeLivePosition(
     specialPositionPlan: specialPositionPlan || undefined,
     blockBaseVolumeMultiplier: realPosition.blockBaseVolumeMultiplier,
     blockVolumeRatio: realPosition.blockVolumeRatio,
+    blockIncrementSteps: realPosition.blockIncrementSteps,
     blockProfitFactorRatio: realPosition.blockProfitFactorRatio,
     blockDefaultMinimumProfitFactor: realPosition.blockDefaultMinimumProfitFactor,
     blockConfiguredMinimumProfitFactor: realPosition.blockConfiguredMinimumProfitFactor,
@@ -14889,19 +14950,95 @@ export async function updateLivePositionFill(
 ): Promise<LivePosition | null> {
   await initRedis()
   const client = getRedisClient()
+  const lockId = `fill:${process.pid}:${Date.now()}:${nanoid(8)}`
+  let mutationLockHeld = false
+  let stopLockLeaseRefresh: (() => void) | null = null
 
   try {
-    const key = `live:position:${livePositionId}`
-    const data = await client.get(key)
-    if (!data) return null
+    // Fill webhooks and exchange reconciliation can arrive concurrently. The
+    // same position lock used by close/quantity coordination makes the
+    // read→dedupe→aggregate→persist transition one owner at a time.
+    if (!await acquirePositionMutationLock(connectionId, livePositionId, lockId)) return null
+    mutationLockHeld = true
+    stopLockLeaseRefresh = startRedisLockLeaseRefresh(
+      client,
+      positionMutationLockKey(connectionId, livePositionId),
+      lockId,
+      POSITION_MUTATION_LOCK_TTL_MS,
+    )
 
-    const position: LivePosition = JSON.parse(data as string)
-    position.fills!.push(fill)
-    position.executedQuantity += fill.quantity
-    position.remainingQuantity = position.quantity! - position.executedQuantity
+    const position = await readLivePositionSnapshot(client, connectionId, livePositionId)
+    if (!position) return null
+    if (position.connectionId && position.connectionId !== connectionId) return null
+    position.connectionId ||= connectionId
 
-    const totalCost = position.fills!.reduce((sum, f) => sum + f.price * f.quantity, 0)
-    position.averageExecutionPrice = totalCost / position.executedQuantity
+    const fillQuantity = Number(fill?.quantity)
+    const fillPrice = Number(fill?.price)
+    if (!Number.isFinite(fillQuantity) || fillQuantity <= 0 || !Number.isFinite(fillPrice) || fillPrice <= 0) {
+      return null
+    }
+
+    const fills = Array.isArray(position.fills) ? position.fills : []
+    const normalizedFill = {
+      ...fill,
+      quantity: fillQuantity,
+      price: fillPrice,
+    }
+    const fillPriceKey = (value: unknown): string => {
+      const number = Number(value)
+      return Number.isFinite(number) ? number.toPrecision(15) : String(value ?? "")
+    }
+    const fillQuantityKey = fillPriceKey
+    const fillIdentity = (value: typeof normalizedFill): string => {
+      const explicit = String(
+        (value as any).id ?? (value as any).fillId ?? (value as any).tradeId ?? "",
+      ).trim()
+      if (explicit) return `id:${explicit}`
+      return [
+        String(value.orderId || "").trim(),
+        fillPriceKey(value.price),
+        fillQuantityKey(value.quantity),
+        String(value.timestamp ?? ""),
+        fillPriceKey(value.fee ?? 0),
+      ].join("|")
+    }
+    const identity = fillIdentity(normalizedFill)
+    if (fills.some((existing) => fillIdentity(existing as typeof normalizedFill) === identity)) {
+      // Idempotent webhook retry: return the canonical current state without
+      // incrementing executed quantity, fills, version, or Redis write load.
+      return position
+    }
+
+    const currentStatus = String(position.status || "").trim().toLowerCase()
+    if (
+      ["closed", "rejected", "cancelled", "canceled", "expired", "error"].includes(currentStatus) ||
+      (currentStatus === "filled" && Number(position.remainingQuantity || 0) <= 0)
+    ) {
+      return position
+    }
+
+    const previousExecuted = Math.max(0, Number(position.executedQuantity) || 0)
+    const previousAverage = Math.max(
+      0,
+      Number(position.averageExecutionPrice) || Number(position.entryPrice) || 0,
+    )
+    const priorFillQuantity = fills.reduce((sum, item) => sum + Math.max(0, Number(item.quantity) || 0), 0)
+    const priorFillCost = fills.reduce(
+      (sum, item) => sum + Math.max(0, Number(item.price) || 0) * Math.max(0, Number(item.quantity) || 0),
+      0,
+    )
+    const accountedQuantity = previousExecuted > 0 ? previousExecuted : priorFillQuantity
+    const accountedCost = previousExecuted > 0
+      ? previousExecuted * previousAverage
+      : priorFillCost
+    const executedQuantity = accountedQuantity + fillQuantity
+
+    position.fills = [...fills, normalizedFill]
+    position.executedQuantity = executedQuantity
+    position.remainingQuantity = Math.max(0, Number(position.quantity || 0) - executedQuantity)
+    position.averageExecutionPrice = executedQuantity > 0
+      ? (accountedCost + fillPrice * fillQuantity) / executedQuantity
+      : fillPrice
 
     if (position.remainingQuantity <= 0) {
       position.status = "filled"
@@ -14910,13 +15047,20 @@ export async function updateLivePositionFill(
     }
     position.updatedAt = Date.now()
 
-    await client.setex(key, 604800, JSON.stringify(position))
-    await upsertRedisListHead(client, `live:positions:${position.connectionId}`, position.id)
-    await client.expire(`live:positions:${position.connectionId}`, 604800)
+    // savePosition writes both the canonical hash and compatibility mirror,
+    // refreshes lifecycle/tracking indexes, and applies the position-specific
+    // retention policy. The old path only updated the JSON key, which made
+    // restart stats and control-order reconciliation diverge from the webhook.
+    await savePosition(position)
     return position
   } catch (err) {
     console.error(`${LOG_PREFIX} Error updating fill:`, err)
     return null
+  } finally {
+    stopLockLeaseRefresh?.()
+    if (mutationLockHeld) {
+      await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+    }
   }
 }
 
@@ -19007,7 +19151,17 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         }
 
         const key = `live:position:${position.id}`
-        await client.setex(key, 604800, JSON.stringify(position))
+        const terminalRetentionSeconds = liveRetentionSecondsForStatus(position.status)
+        await client.set(
+          key,
+          JSON.stringify(buildLivePositionCompatibilitySnapshot(position as unknown as Record<string, unknown>)),
+          terminalRetentionSeconds !== null
+            ? { EX: terminalRetentionSeconds || LIVE_TERMINAL_RETENTION_SECONDS }
+            : undefined,
+        ).catch(() => null)
+        if (terminalRetentionSeconds === null) {
+          await client.persist(key).catch(() => 0)
+        }
         emitCanonicalEvent({
           type: "live.stageChanged",
           connectionId: position.connectionId || connectionId,
@@ -19015,8 +19169,10 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           stage: "live",
           data: { positionId: position.id, status: position.status, action: "synced" },
         })
-        await upsertRedisListHead(client, `live:positions:${position.connectionId}`, position.id)
-        await client.expire(`live:positions:${position.connectionId}`, 604800)
+        if (terminalRetentionSeconds === null) {
+          await upsertRedisListHead(client, `live:positions:${position.connectionId}`, position.id)
+          await client.persist(`live:positions:${position.connectionId}`).catch(() => 0)
+        }
       } catch (err) {
         console.warn(`${LOG_PREFIX} Error syncing ${position.id}:`, err)
       }
@@ -19248,13 +19404,12 @@ export async function recalculateAndApplySLTP(
   )
 
   try {
-    const key = `live:position:${livePositionId}`
-    // Re-read the position AFTER acquiring the lock so we see any writes the
-    // previous lock-holder (reconcile / sync) just committed to Redis.
-    const data = await client.get(key)
-    if (!data) return null
-
-    const position: LivePosition = JSON.parse(data as string)
+    // Re-read both canonical sources AFTER acquiring the lock so we see any
+    // writes the previous lock-holder (reconcile / sync) just committed. The
+    // JSON key is intentionally compact and cannot be used on its own for a
+    // protection recalculation.
+    const position = await readLivePositionSnapshot(client, connectionId, livePositionId)
+    if (!position) return null
     if (
       position.status === "closed" ||
       position.status === "rejected" ||

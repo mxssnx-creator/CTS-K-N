@@ -14,6 +14,8 @@ import {
   isForexPosition,
   resolvePositionNotionalUsd,
 } from "@/lib/live-position-pnl"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 
@@ -92,8 +94,8 @@ export async function GET(request: Request) {
         // footer correct regardless of which code path opened the
         // position. Balance cache is pulled in the same round-trip.
         const [exchangeIdsRaw, genericIdsRaw, balanceCache, exchangeSnapshot] = await Promise.all([
-          client.smembers(`exchange_positions:${connId}:open`).catch(() => [] as string[]),
-          client.smembers(`positions:${connId}`).catch(() => [] as string[]),
+          scanRedisSetMembers(client, `exchange_positions:${connId}:open`, { count: 250 }).catch(() => []),
+          scanRedisSetMembers(client, `positions:${connId}`, { count: 250 }).catch(() => []),
           getSettings(`connection_balance:${connId}`).catch(() => null),
           getExchangeLiveStateSummary(connId),
         ])
@@ -103,8 +105,16 @@ export async function GET(request: Request) {
 
         // Fetch both stores in parallel.
         const [exchangePositionObjs, genericPositionHashes] = await Promise.all([
-          Promise.all(exchangeIds.map((id) => getSettings(`exchange_position:${id}`).catch(() => null))),
-          Promise.all(genericIds.map((id)  => client.hgetall(`position:${connId}:${id}`).catch(() => null))),
+          mapWithConcurrency(
+            exchangeIds,
+            32,
+            (id) => getSettings(`exchange_position:${id}`).catch(() => null),
+          ),
+          mapWithConcurrency(
+            genericIds,
+            32,
+            (id) => client.hgetall(`position:${connId}:${id}`).catch(() => null),
+          ),
         ])
 
         // Normalise both into a single array of position objects. Only

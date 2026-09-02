@@ -33,12 +33,16 @@ import {
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot"
 import { strategyVariantOutcomeKey } from "@/lib/pos-history"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
-import { getOpenLivePositionReadModels } from "@/lib/live-position-read-model"
+import {
+  getOpenLivePositionReadModels,
+  hydrateLivePositionReadModel,
+} from "@/lib/live-position-read-model"
 import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
@@ -972,30 +976,12 @@ function aggregateOrdersBySymbol(
   }
 
   async function readLivePosition(client: any, connectionId: string, id: string): Promise<Record<string, any> | null> {
-    const raw = await client.get(`live:position:${id}`).catch(() => null)
-    if (raw) {
-      try { return JSON.parse(raw as string) } catch { /* fall through to hash */ }
-    }
-    const hash = await client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => null)
-    if (!hash || Object.keys(hash).length === 0) return null
-    return {
-      ...hash,
-      entryPrice: Number(hash.entryPrice || hash.entry_price || 0),
-      averageExecutionPrice: Number(hash.averageExecutionPrice || hash.entryPrice || hash.entry_price || 0),
-      executedQuantity: Number(hash.executedQuantity || 0),
-      quantity: Number(hash.quantity || hash.executedQuantity || 0),
-      leverage: Number(hash.leverage || 1),
-      createdAt: Number(hash.createdAt || 0),
-      updatedAt: Number(hash.updatedAt || 0),
-      closedAt: Number(hash.closedAt || 0) || undefined,
-      realizedPnL: (() => {
-        const raw = hash.realizedPnL ?? hash.realized_pnl
-        if (raw === undefined || raw === null || raw === "") return undefined
-        const value = Number(raw)
-        return Number.isFinite(value) ? value : undefined
-      })(),
-      exchangeData: typeof hash.exchangeData === "string" ? parseMaybeJson<Record<string, any>>(hash.exchangeData, {}) : hash.exchangeData,
-    }
+    const [raw, hash] = await Promise.all([
+      client.get(`live:position:${id}`).catch(() => null),
+      client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => null),
+    ])
+    const merged = hydrateLivePositionReadModel(raw, hash)
+    return merged ? merged as Record<string, any> : null
   }
 
   function effectiveRealizedPnl(pos: Record<string, any>): number {
@@ -1532,9 +1518,11 @@ export async function GET(
     >()
 
     try {
-      const posIds = (await client
-        .smembers(`pseudo_positions:${connectionId}`)
-        .catch(() => [] as string[])) || []
+      const posIds = await scanRedisSetMembers(
+        client,
+        `pseudo_positions:${connectionId}`,
+        { count: 250 },
+      ).catch(() => [] as string[])
       // Read every current Base pseudo row. Batches bound Redis fan-out without
       // turning 500 into an invisible statistics/admission ceiling.
       const hashes = await mapInBatches(

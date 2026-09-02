@@ -5,6 +5,7 @@ import {
   listSignalPerformance,
 } from "@/lib/signal-indication"
 import { getSignalSourceDescriptors } from "@/lib/signal-source-registry"
+import { iterateRedisSetMembers } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -64,7 +65,6 @@ export async function POST(request: Request) {
     const client = getRedisClient()
     const connectionId = body.connectionId.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_")
     const indexKey = `signal:performance:index:${connectionId}`
-    const indexed = await client.smembers(indexKey).catch(() => [])
     const sourceFilter = typeof body.sourceId === "string"
       ? body.sourceId.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_")
       : null
@@ -74,26 +74,36 @@ export async function POST(request: Request) {
     const directionFilter = body.direction === "long" || body.direction === "short"
       ? body.direction
       : null
-    const selected = indexed.filter((key) => {
-      const parts = key.split(":")
-      const direction = parts.at(-1)
-      const symbol = parts.at(-2)
-      const source = parts.at(-3)
-      return (
-        (!sourceFilter || source === sourceFilter) &&
-        (!symbolFilter || symbol === symbolFilter) &&
-        (!directionFilter || direction === directionFilter)
-      )
-    })
-    if (selected.length > 0) {
+    let selectedCount = 0
+    let selectedBatch: string[] = []
+    const resetBatch = async () => {
+      if (selectedBatch.length === 0) return
+      const currentBatch = selectedBatch
+      selectedBatch = []
       const pipeline = client.multi()
-      for (const key of selected) {
+      for (const key of currentBatch) {
         pipeline.del(key, `${key}:samples`, `${key}:probe`)
         pipeline.srem(indexKey, key)
       }
       await pipeline.exec()
+      selectedCount += currentBatch.length
     }
-    return NextResponse.json({ success: true, reset: selected.length })
+    for await (const key of iterateRedisSetMembers(client, indexKey, { count: 250 })) {
+      const parts = key.split(":")
+      const direction = parts.at(-1)
+      const symbol = parts.at(-2)
+      const source = parts.at(-3)
+      if (
+        (!sourceFilter || source === sourceFilter) &&
+        (!symbolFilter || symbol === symbolFilter) &&
+        (!directionFilter || direction === directionFilter)
+      ) {
+        selectedBatch.push(key)
+        if (selectedBatch.length >= 250) await resetBatch()
+      }
+    }
+    await resetBatch()
+    return NextResponse.json({ success: true, reset: selectedCount })
   } catch (error) {
     return NextResponse.json(
       {

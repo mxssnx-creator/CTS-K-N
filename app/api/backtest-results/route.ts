@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function GET(request: NextRequest) {
@@ -13,10 +14,9 @@ export async function GET(request: NextRequest) {
     const client = getRedisClient()
 
     // Get all backtest result keys from Redis
-    const keys = await (client as any).keys("backtest_result:*")
     const results = []
 
-    for (const key of keys) {
+    for await (const key of iterateRedisKeys(client, "backtest_result:*", { count: 250 })) {
       const data = await (client as any).hgetall(key)
       if (data && Object.keys(data).length > 0) {
         // Apply filters

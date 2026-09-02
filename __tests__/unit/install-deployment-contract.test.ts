@@ -658,7 +658,7 @@ describe("production installation and Kilo deployment contract", () => {
       encoding: "utf8",
     })
     expect(output).toContain('"success":true')
-    expect(output).toContain('"schemaVersion":105')
+    expect(output).toContain('"schemaVersion":106')
   })
 
   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {

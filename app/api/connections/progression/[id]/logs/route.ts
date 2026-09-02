@@ -3,6 +3,7 @@ import { getProgressionLogs, clearProgressionLogs } from "@/lib/engine-progressi
 import { initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import { countRedisKeys } from "@/lib/redis-scan"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -21,8 +22,7 @@ function sanitizeNonNegative(value: unknown): number {
 async function countKeys(client: any, patterns: string[]): Promise<number> {
   let total = 0
   for (const pattern of patterns) {
-    const keys = await client.keys(pattern).catch(() => [])
-    total += Array.isArray(keys) ? keys.length : 0
+    total += await countRedisKeys(client, pattern).catch(() => 0)
   }
   return total
 }

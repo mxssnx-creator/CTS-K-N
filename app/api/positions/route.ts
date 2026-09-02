@@ -8,6 +8,7 @@ import {
   LIVE_POSITION_OPEN_READ_LIMIT,
 } from "@/lib/live-position-read-model"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 
@@ -72,7 +73,11 @@ export async function GET(request: NextRequest) {
     }
 
     // --- Tertiary: legacy positions SET (non-live, manually created via POST) ---
-    const legacyIds = await client.smembers(`positions:${connectionId}`).catch(() => [] as string[])
+    const legacyIds = await scanRedisSetMembers(
+      client,
+      `positions:${connectionId}`,
+      { count: 250 },
+    ).catch(() => [])
     const LEGACY_READ_BATCH_SIZE = 32
     for (let offset = 0; offset < legacyIds.length; offset += LEGACY_READ_BATCH_SIZE) {
       const batch = legacyIds.slice(offset, offset + LEGACY_READ_BATCH_SIZE)

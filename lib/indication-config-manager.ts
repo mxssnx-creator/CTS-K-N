@@ -10,6 +10,7 @@ import { appendUniqueListEntries } from "@/lib/redis-idempotent-list"
 import { COMMON_INDICATOR_DEFINITIONS } from "@/lib/common-indicator-config"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export interface IndicationConfig {
   id: string
@@ -135,7 +136,7 @@ export class IndicationConfigManager {
     await initRedis()
     const client = getRedisClient()
 
-    let keys = ((await client.smembers(this.getConfigIndexKey()).catch(() => [])) || []) as string[]
+    let keys = await scanRedisSetMembers(client, this.getConfigIndexKey(), { count: 250 }).catch(() => [])
     if (keys.length === 0) {
       keys = await this.scanConfigKeys(client)
       if (keys.length > 0) await client.sadd(this.getConfigIndexKey(), ...keys).catch(() => 0)

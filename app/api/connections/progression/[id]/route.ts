@@ -11,6 +11,7 @@ import {
   progressionReadKeys,
 } from "@/lib/progression-scope"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export const dynamicParams = true
@@ -409,7 +410,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         // written before a hot reload.
         const [prehistoricDataRaw, prehistoricSymbolsSet, scopedDoneMarker, legacyDoneMarker, legacyPrehistoricRaw] = await Promise.all([
           client.hgetall(scope.prehistoricKey).catch(() => null),
-          client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]),
+          scanRedisSetMembers(client, `${scope.prehistoricKey}:symbols`, { count: 250 }).catch(() => [] as string[]),
           client.get(prehistoricGateKeys.scoped).catch(() => null),
           client.get(prehistoricGateKeys.legacy).catch(() => null),
           client.hgetall(`prehistoric:${connectionId}`).catch(() => null),

@@ -17,7 +17,7 @@ function resetRedisGlobals(): void {
   ]) delete (globalThis as any)[key]
 }
 
-describe("migrations 080–105 exact Set indexes and current engine defaults", () => {
+describe("migrations 080–106 exact Set indexes and current engine defaults", () => {
   const originalEnv = { ...process.env }
 
   afterEach(() => {
@@ -183,9 +183,9 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
 
-      expect(await client.get("_schema_version")).toBe("105")
+      expect(await client.get("_schema_version")).toBe("106")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -198,7 +198,8 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
       expect(await client.hget("connection_settings:conn-ledger", "axisPrevMaxWindow")).toBe("4")
       expect(await client.hget("settings:connection_settings:conn-ledger", "axisPrevMaxWindow")).toBe("10")
       expect(await client.hget("connection_settings:conn-ledger", "blockProfitFactorRatio")).toBe("1.7")
-      expect(await client.hget("settings:connection_settings:conn-ledger", "blockProfitFactorRatio")).toBe("0.8")
+      expect(await client.hget("settings:connection_settings:conn-ledger", "blockProfitFactorRatio")).toBe("1.1")
+      expect(await client.hget("settings:connection_settings:conn-ledger", "blockIncrementSteps")).toBe("2")
       expect(await client.hget("connection_settings:conn-ledger", "positionCost")).toBe("0.1")
       expect(await client.hget("connection_settings:conn-ledger", "exchangePositionCost")).toBe("0.1")
       expect(await client.hget("connection_settings:conn-ledger", "live_volume_factor")).toBe("1")
@@ -323,9 +324,9 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
       expect(await client.hget("app_settings", "signalTradeVolumeFactor")).toBe("1")
       expect(await client.hget("system:database:coordination:performance", "inline_snapshot_interval_ms")).toBe("60000")
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
-        .toBe("neutral-distance-x-ratio-x-volume-increment-v2")
+        .toBe("neutral-distance-x-ratio-x-compound-volume-increment-v3")
       expect(await client.hget("system:database:coordination:performance", "schema_version"))
-        .toBe("105")
+        .toBe("106")
       expect(await client.hget("system:database:coordination:performance", "active_processing_order"))
         .toBe("primary-active-trend")
       expect(await client.get(`${aliasConfigKey}:results:ref`)).toBe("cfg-a")
@@ -396,7 +397,7 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
 
       // The measured Main coordinate remains neutral at 1.00, while selectable
       // stage thresholds migrate to the first value on the 1.02–2.30 grid.
@@ -500,7 +501,7 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 105,
+        version: 106,
       })
 
       // The legacy sentinel value 0.8 (the old systemwide default) is recognized
@@ -587,7 +588,7 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 105,
+        version: 106,
       })
 
       for (const key of [
@@ -654,7 +655,7 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 105,
+        version: 106,
       })
 
       expect(await client.hget("connection_settings:conn-v91", "strategyRealSetsSafetyCeiling")).toBe("0")
@@ -720,9 +721,9 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
 
-      expect(await client.get("_schema_version")).toBe("105")
+      expect(await client.get("_schema_version")).toBe("106")
       expect(await client.hget("connection:conn-v99", "baseProfitFactor")).toBe("1.1")
       expect(await client.hget("connection:conn-v99", "mainProfitFactor")).toBe("1.4")
       expect(await client.hget("connection_settings:conn-v99", "baseProfitFactor")).toBe("1.1")
@@ -750,8 +751,8 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
     }
   })
 
-  test("keeps non-hash connection metadata intact while migrating schema 105", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "migration-105-wrongtype-"))
+  test("keeps non-hash connection metadata intact while migrating schema 106", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-106-wrongtype-"))
     process.env = {
       ...originalEnv,
       NODE_ENV: "test",
@@ -778,9 +779,9 @@ describe("migrations 080–105 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
 
-      expect(await client.get("_schema_version")).toBe("105")
+      expect(await client.get("_schema_version")).toBe("106")
       expect(await client.get("connection:bingx-x01:tombstoned_at"))
         .toBe("2026-08-27T00:00:00.000Z")
       expect(await client.get("settings:all_settings")).toBe("legacy-settings-evidence")

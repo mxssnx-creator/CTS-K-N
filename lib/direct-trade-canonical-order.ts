@@ -18,6 +18,11 @@ import {
   evaluateDirectTradeLiveReadiness,
   isDirectTradeVstConnection,
 } from "@/lib/direct-trade-live-readiness"
+import {
+  calculateBlockVolumeIncrementRatio,
+  calculateBlockVolumeMultiplier,
+  normalizeBlockIncrementSteps,
+} from "@/lib/block-count-state"
 
 export type DirectTradeCanonicalStage = "entry" | "block" | "dca"
 
@@ -86,6 +91,13 @@ function buildRealPosition(input: DirectTradeCanonicalOrderInput): RealPosition 
   }
 
   const blockVolumeRatio = Math.max(0.1, Number(state.blockVolumeRatio) || 1)
+  const blockIncrementSteps = normalizeBlockIncrementSteps(state.blockIncrementSteps)
+  const blockVolumeIncrementRatio = input.stage === "block"
+    ? calculateBlockVolumeIncrementRatio(blockCount, blockVolumeRatio, blockIncrementSteps)
+    : 0
+  const blockCalculatedVolumeMultiplier = input.stage === "block"
+    ? calculateBlockVolumeMultiplier(blockCount, blockVolumeRatio, blockIncrementSteps)
+    : 1
   const setKey = input.stage === "block"
     ? `${parent}#block:${blockCount}`
     : input.stage === "dca"
@@ -123,12 +135,13 @@ function buildRealPosition(input: DirectTradeCanonicalOrderInput): RealPosition 
     parentSetKey: parent,
     indicationType: "direct-trade",
     setVariant: input.stage === "block" ? "block" : input.stage === "dca" ? "dca" : "default",
-    sizeMultiplier: input.stage === "block" ? 1 + blockCount * blockVolumeRatio : 1,
+    sizeMultiplier: blockCalculatedVolumeMultiplier,
     blockCount: blockCount || undefined,
     blockBaseVolumeMultiplier: 1,
     blockVolumeRatio: input.stage === "block" ? blockVolumeRatio : undefined,
-    blockVolumeIncrementRatio: input.stage === "block" ? blockCount * blockVolumeRatio : undefined,
-    blockCalculatedVolumeMultiplier: input.stage === "block" ? 1 + blockCount * blockVolumeRatio : undefined,
+    blockIncrementSteps: input.stage === "block" ? blockIncrementSteps : undefined,
+    blockVolumeIncrementRatio: input.stage === "block" ? blockVolumeIncrementRatio : undefined,
+    blockCalculatedVolumeMultiplier: input.stage === "block" ? blockCalculatedVolumeMultiplier : undefined,
     blockScope: input.stage === "block" ? "live_row" : undefined,
     blockLaneKind: input.stage === "block" ? "row-live" : undefined,
     blockLaneKey: input.stage === "block" ? parent : undefined,

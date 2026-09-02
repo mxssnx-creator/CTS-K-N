@@ -112,6 +112,8 @@ import {
   type SpecialStrategySettings,
   type SpecialTimedObservation,
 } from "@/lib/special-strategy"
+import { INDICATION_SET_RETENTION_SECONDS } from "@/lib/redis-retention"
+import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
 
 // Default limits per indication type (independently configurable)
 const DEFAULT_LIMITS = {
@@ -474,6 +476,12 @@ count = math.max(count or 0, 0)
 
 redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count), "basis", basis)
 redis.call("SADD", outcomeIndexKey, sampleKey, statsKey, dedupeKey)
+-- Closing a pending observation can be the first write for this projection.
+-- Refresh all retention clocks here as well as in the sample-only path;
+-- otherwise the discovery index and its first sample could become persistent.
+redis.call("EXPIRE", outcomeIndexKey, 7 * 24 * 60 * 60)
+redis.call("EXPIRE", sampleKey, 7 * 24 * 60 * 60)
+redis.call("EXPIRE", statsKey, 7 * 24 * 60 * 60)
 
 local averageMovePct = count > 0 and ((grossProfit - grossLoss) / count) * 100 or 0
 -- Keep the atomic Redis path on the exact same net PositionCost basis as
@@ -985,27 +993,23 @@ export class IndicationSetsProcessor {
   private async indexSetKey(client: any, setKey: string, symbol: string, type: string): Promise<void> {
     const indexes = this.getSetIndexKeys(symbol, type)
     const pipeline = client.multi()
-    for (const indexKey of indexes) pipeline.sadd(indexKey, setKey)
+    for (const indexKey of indexes) {
+      pipeline.sadd(indexKey, setKey)
+      pipeline.expire(indexKey, INDICATION_SET_RETENTION_SECONDS)
+    }
     await pipeline.exec().catch(() => {})
   }
 
   private async getIndexedSetKeys(client: any, symbol: string, type: string): Promise<string[]> {
     const typeIndexKey = `indication_sets:index:${this.connectionId}:${symbol}:${type}`
-    let keys = ((await client.smembers(typeIndexKey).catch(() => [])) || []) as string[]
+    let keys = await scanRedisSetMembers(client, typeIndexKey, { count: 250 }).catch(() => [])
     if (keys.length > 0) return keys
 
     // Startup/repair fallback only: bounded SCAN is used to backfill the
     // maintained per-connection/per-symbol/per-type indexes for legacy keys.
     // Dashboard polling paths normally read only the index set above.
     const prefix = `indication_set:${this.connectionId}:${symbol}:${type}`
-    if (typeof client.scan !== "function") return keys
-    let cursor = "0"
-    do {
-      const result = await client.scan(cursor, "MATCH", `${prefix}*`, "COUNT", 100).catch(() => null)
-      if (!result) break
-      cursor = String(result[0] ?? "0")
-      keys.push(...((result[1] || []) as string[]))
-    } while (cursor !== "0")
+    keys = await scanRedisKeys(client, `${prefix}*`, { count: 100 }).catch(() => [])
 
     if (keys.length > 0) {
       const pipeline = client.multi()
@@ -1390,8 +1394,10 @@ export class IndicationSetsProcessor {
     }
     if (length >= compactionCeiling(cfg)) {
       await client.ltrim(setKey, -cfg.floor, -1)
+      await client.expire(setKey, INDICATION_SET_RETENTION_SECONDS).catch(() => 0)
       return Math.min(length, cfg.floor)
     }
+    await client.expire(setKey, INDICATION_SET_RETENTION_SECONDS).catch(() => 0)
     return length
   }
 
@@ -1431,6 +1437,15 @@ export class IndicationSetsProcessor {
       for (const [indexKey, members] of indexMembers) {
         indexResultIndexes.set(indexKey, commandIndex++)
         pipeline.sadd(indexKey, ...members)
+      }
+      // Active writers refresh TTLs in the same bounded pipeline. Abandoned
+      // Sets and their indexes therefore age out without a keyspace-sized
+      // delete or a second write round-trip.
+      for (const [setKey] of chunk) {
+        pipeline.expire(setKey, INDICATION_SET_RETENTION_SECONDS)
+      }
+      for (const indexKey of indexMembers.keys()) {
+        pipeline.expire(indexKey, INDICATION_SET_RETENTION_SECONDS)
       }
 
       let results: any[]

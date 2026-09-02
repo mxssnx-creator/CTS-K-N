@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { verifyPassword, createToken, setSession } from "@/lib/auth"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest) {
@@ -17,10 +18,9 @@ export async function POST(request: NextRequest) {
     const client = getRedisClient()
     
     // Find user in Redis
-    const userKeys = await (client as any).keys("user:*")
     let user = null
     
-    for (const key of userKeys) {
+    for await (const key of iterateRedisKeys(client, "user:*", { count: 100 })) {
       const userData = await (client as any).hgetall(key)
       if (userData?.email === email) {
         user = userData

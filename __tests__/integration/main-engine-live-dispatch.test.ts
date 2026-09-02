@@ -1062,9 +1062,9 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       accumulatedSetKeys: [binancePhysical, binanceLane],
     } as any, recordingConnector)
 
-    // General 0.01 + (0.01 × 1.5 × Count 3) = 0.055.
-    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
-    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.045, 12)
+    // Default steps=2: General 0.01 × (1 + 1.5)² = 0.0625.
+    expect(position.executedQuantity).toBeCloseTo(0.0625, 12)
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.0525, 12)
     expect(position).toMatchObject({
       indicationType: "signal",
       signalRisk,
@@ -1072,8 +1072,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         expect.objectContaining({
           setKey: binancePhysical,
           blockCount: 3,
-          requestedQuantity: 0.045,
-          targetBlockQuantity: 0.055,
+          requestedQuantity: 0.0525,
+          targetBlockQuantity: 0.0625,
+          incrementSteps: 2,
+          effectiveIncrementStep: 2,
           laneKey: binanceLane,
           sourceId: "binance-usdm",
           scope: "overall",
@@ -1091,7 +1093,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(latestLongProtection).toHaveLength(2)
     expect(latestLongProtection.every((call) =>
       call[1] === "sell" &&
-      call[2] === 0.055 &&
+      call[2] === 0.0625 &&
       call[5]?.reduceOnly === true
     )).toBe(true)
 
@@ -1117,7 +1119,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       accumulatedSetKeys: [okxPhysical, okxLane],
     } as any, recordingConnector)
     expect(placeOrder).toHaveBeenCalledTimes(orderCallsBeforeCoveredLane)
-    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(position.executedQuantity).toBeCloseTo(0.0625, 12)
     expect(position.accumulatedSetKeys).toEqual(expect.arrayContaining([
       okxPhysical,
       okxLane,
@@ -1127,7 +1129,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         setKey: okxPhysical,
         quantity: 0,
         requestedQuantity: 0,
-        targetBlockQuantity: 0.055,
+        targetBlockQuantity: 0.0625,
         laneKey: okxLane,
         sourceId: "okx-swap",
       }),
@@ -1399,6 +1401,13 @@ describe("Main Trade Engine Real → Live dispatch", () => {
 
   test("attaches independent Block counts and sequential DCA steps to one confirmed parent", async () => {
     const { executeLivePosition, __liveStageTest } = await import("@/lib/trade-engine/stages/live-stage")
+    placeOrder.mockImplementation(async (symbol: string, _side: string, quantity: number) => ({
+      success: true,
+      orderId: `exact-fill-${symbol}-${placeOrder.mock.calls.length}`,
+      status: "filled",
+      filledQty: quantity,
+      filledPrice: 100,
+    }))
     const baseSetKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
     const common = {
       connectionId: connection.id,
@@ -1436,11 +1445,11 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockBaseVolumeMultiplier: 1.25,
       blockCalculatedVolumeMultiplier: 1.25,
     } as any, recordingConnector)
-    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.01, 10)
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.0125, 10)
     expect(afterBlock).toMatchObject({
       id: parent.id,
       status: "open",
-      executedQuantity: 0.02,
+      executedQuantity: 0.0225,
       accumulatedSetKeys: expect.arrayContaining([baseSetKey, blockSetKey]),
     })
     expect(afterBlock.blockLegs).toEqual([
@@ -1448,12 +1457,14 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         setKey: blockSetKey,
         blockCount: 2,
         baseQuantity: 0.01,
-        requestedQuantity: 0.01,
-        quantity: 0.01,
-        positionQuantityAfter: 0.02,
+        requestedQuantity: 0.0125,
+        quantity: 0.0125,
+        positionQuantityAfter: 0.0225,
         baseVolumeMultiplier: 1,
-        volumeIncrementRatio: 1,
-        volumeMultiplier: 2,
+        volumeIncrementRatio: 1.25,
+        volumeMultiplier: 2.25,
+        incrementSteps: 2,
+        effectiveIncrementStep: 2,
       }),
     ])
 
@@ -1587,11 +1598,11 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCalculatedVolumeMultiplier: 3,
     } as any, recordingConnector)
 
-    expect(placeOrder.mock.calls[0]?.[2]).toBeCloseTo(0.03, 12)
+    expect(placeOrder.mock.calls[0]?.[2]).toBeCloseTo(0.04, 12)
     expect(countTwo).toMatchObject({
       status: "open",
       setVariant: "block",
-      executedQuantity: 0.03,
+      executedQuantity: 0.04,
       blockBaseQuantity: 0.01,
     })
     expect(countTwo.blockLegs).toEqual([
@@ -1599,11 +1610,13 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         setKey: `${baseSetKey}#block:2`,
         blockCount: 2,
         baseQuantity: 0.01,
-        targetBlockQuantity: 0.03,
+        targetBlockQuantity: 0.04,
+        incrementSteps: 2,
+        effectiveIncrementStep: 2,
       }),
     ])
-    expect(countTwo.blockLegs?.[0]?.requestedQuantity).toBeCloseTo(0.02, 12)
-    expect(countTwo.blockLegs?.[0]?.quantity).toBeCloseTo(0.02, 12)
+    expect(countTwo.blockLegs?.[0]?.requestedQuantity).toBeCloseTo(0.03, 12)
+    expect(countTwo.blockLegs?.[0]?.quantity).toBeCloseTo(0.03, 12)
 
     const countThree = await executeLivePosition(connection.id, {
       ...common,
@@ -1614,7 +1627,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCalculatedVolumeMultiplier: 4,
     } as any, recordingConnector)
     expect(countThree.id).toBe(countTwo.id)
-    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.01, 12)
+    expect(placeOrder).toHaveBeenCalledTimes(1)
     expect(countThree.executedQuantity).toBeCloseTo(0.04, 12)
     expect(countThree.blockBaseQuantity).toBeCloseTo(0.01, 12)
     const countTwoLeg = countThree.blockLegs?.find(
@@ -1623,8 +1636,14 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     const countThreeLeg = countThree.blockLegs?.find(
       (leg: any) => leg.setKey === `${baseSetKey}#block:3`,
     )
-    expect(countTwoLeg?.quantity).toBeCloseTo(0.02, 12)
-    expect(countThreeLeg?.quantity).toBeCloseTo(0.01, 12)
+    expect(countTwoLeg?.quantity).toBeCloseTo(0.03, 12)
+    expect(countThreeLeg).toMatchObject({
+      quantity: 0,
+      requestedQuantity: 0,
+      targetBlockQuantity: 0.04,
+      incrementSteps: 2,
+      effectiveIncrementStep: 2,
+    })
 
     const canonicalHashKey = `live_positions:${connection.id}:${countThree.id}`
     const persistedHash = hashes.get(canonicalHashKey)
@@ -1652,9 +1671,17 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCalculatedVolumeMultiplier: 5,
     } as any, recordingConnector)
     expect(countFour.id).toBe(countTwo.id)
-    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.01, 12)
-    expect(countFour.executedQuantity).toBeCloseTo(0.05, 12)
+    expect(placeOrder).toHaveBeenCalledTimes(1)
+    expect(countFour.executedQuantity).toBeCloseTo(0.04, 12)
     expect(countFour.blockBaseQuantity).toBeCloseTo(0.01, 12)
+    expect(countFour.blockLegs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        setKey: `${baseSetKey}#block:4`,
+        quantity: 0,
+        requestedQuantity: 0,
+        targetBlockQuantity: 0.04,
+      }),
+    ]))
   })
 
   test("keeps the confirmed quantity protected while an accumulation submission is unconfirmed", async () => {
@@ -1706,7 +1733,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(result.pendingAccumulation).toMatchObject({
       setKey: `${baseSetKey}#block:2`,
       positionQuantityBefore: 0.01,
-      requestedQuantity: 0.01,
+      requestedQuantity: 0.0125,
     })
     expect(result.stopLossOrderId).toEqual(expect.any(String))
     expect(result.takeProfitOrderId).toEqual(expect.any(String))
@@ -2019,7 +2046,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(longAfterBlock.id).toBe(longParent.id)
     expect(shortAfterBlock.id).toBe(shortParent.id)
     expect(longAfterBlock.executedQuantity).toBeCloseTo(0.015, 12)
-    expect(shortAfterBlock.executedQuantity).toBeCloseTo(0.0325, 12)
+    expect(shortAfterBlock.executedQuantity).toBeCloseTo(0.030625, 12)
     expect(longAfterBlock.blockLegs?.[0]).toMatchObject({
       blockCount: 1,
       requestedQuantity: 0.005,
@@ -2027,8 +2054,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     })
     expect(shortAfterBlock.blockLegs?.[0]).toMatchObject({
       blockCount: 3,
-      requestedQuantity: 0.0225,
-      volumeIncrementRatio: 2.25,
+      requestedQuantity: 0.020625,
+      volumeIncrementRatio: 2.0625,
+      incrementSteps: 2,
+      effectiveIncrementStep: 2,
     })
 
     const longBlockTwoKey = `${longSet}#block:2`
@@ -2042,10 +2071,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCount: 2,
       blockVolumeRatio: 1.25,
     } as any, recordingConnector)
-    // The second Count is an absolute target from the same 0.01 general
-    // volume. Count 2 × 1.25 targets +0.025 in total, so the earlier +0.005
-    // fill is subtracted and this order adds only +0.020.
-    expect(longAfterSecondBlock.executedQuantity).toBeCloseTo(0.035, 12)
+    // The second Count is an absolute compound target from the same 0.01
+    // General volume: 0.01 × (1 + 1.25)² = 0.050625. The earlier +0.005
+    // fill is subtracted, so this order adds only +0.035625.
+    expect(longAfterSecondBlock.executedQuantity).toBeCloseTo(0.050625, 12)
     expect(longAfterSecondBlock.blockLegs).toEqual(expect.arrayContaining([
       expect.objectContaining({
         setKey: `${longSet}#block:1`,
@@ -2055,14 +2084,19 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         setKey: longBlockTwoKey,
         blockCount: 2,
         baseQuantity: 0.01,
-        targetAdditionalQuantity: 0.025,
+        targetAdditionalQuantity: 0.040625,
         confirmedAdditionalQuantityBefore: 0.005,
-        targetBlockQuantity: 0.035,
-        requestedQuantity: 0.02,
-        positionQuantityAfter: 0.035,
-        volumeIncrementRatio: 2.5,
+        targetBlockQuantity: 0.050625,
+        requestedQuantity: 0.035625,
+        volumeIncrementRatio: 4.0625,
+        incrementSteps: 2,
+        effectiveIncrementStep: 2,
       }),
     ]))
+    const longCountTwoLeg = longAfterSecondBlock.blockLegs?.find(
+      (leg: any) => leg.setKey === longBlockTwoKey,
+    )
+    expect(longCountTwoLeg?.positionQuantityAfter).toBeCloseTo(0.050625, 12)
 
     const callsBeforeReplay = placeOrder.mock.calls.length
     const replayedLongBlock = await executeLivePosition(connection.id, {
@@ -2075,7 +2109,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCount: 2,
       blockVolumeRatio: 1.25,
     } as any, recordingConnector)
-    expect(replayedLongBlock.executedQuantity).toBeCloseTo(0.035, 12)
+    expect(replayedLongBlock.executedQuantity).toBeCloseTo(0.050625, 12)
     expect(placeOrder).toHaveBeenCalledTimes(callsBeforeReplay)
 
     const entryCalls = placeOrder.mock.calls.map((call) => ({
@@ -2085,8 +2119,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     }))
     expect(entryCalls).toEqual(expect.arrayContaining([
       expect.objectContaining({ side: "buy", quantity: 0.005, positionSide: "LONG" }),
-      expect.objectContaining({ side: "buy", quantity: 0.02, positionSide: "LONG" }),
-      expect.objectContaining({ side: "sell", quantity: 0.0225, positionSide: "SHORT" }),
+      expect.objectContaining({ side: "buy", quantity: 0.035625, positionSide: "LONG" }),
+      expect.objectContaining({ side: "sell", quantity: 0.020625, positionSide: "SHORT" }),
     ]))
     const adjustmentAccounting = mockRecordLiveOrderProgression.mock.calls.map((call) => ({
       symbol: call[1],
@@ -2100,16 +2134,16 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "placed")).toHaveLength(1)
     expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "filled")).toHaveLength(1)
     expect(adjustmentAccounting.filter((call) => call.direction === "long" && call.event === "filled")
-      .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(2.5, 10)
+      .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(4.0625, 10)
     expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "filled")
-      .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(2.25, 10)
+      .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(2.0625, 10)
     expect(adjustmentAccounting.every((call) =>
       call.options?.countPositionCreated === false &&
       (call.event === "placed" || call.options?.countAccumulated === true)
     )).toBe(true)
   })
 
-  test("reaches base + ((base × 1.5) × 3) across independent Count orders", async () => {
+  test("reaches the capped compound target across independent Count rows without duplicate orders", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
     let venueQuantity = 0
     placeOrder.mockImplementation(async (
@@ -2177,22 +2211,25 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     const longEntryQuantities = placeOrder.mock.calls
       .filter((call) => call[5]?.positionSide === "LONG" && call[5]?.reduceOnly !== true)
       .map((call) => call[2])
-    expect(longEntryQuantities).toEqual([0.01, 0.015, 0.015, 0.015])
+    expect(longEntryQuantities).toEqual([0.01, 0.015, 0.0375])
 
-    // General volume 0.01 + ((0.01 × 1.5) × 3) = 0.055.
-    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    // Steps=2: 0.01 × (1 + 1.5)² = 0.0625. Count 3 remains an
+    // independent Row but cannot submit another physical order past the cap.
+    expect(position.executedQuantity).toBeCloseTo(0.0625, 12)
     expect(position.blockLegs).toHaveLength(3)
     expect(position.blockLegs?.map((leg: any) => leg.requestedQuantity))
-      .toEqual([0.015, 0.015, 0.015])
+      .toEqual([0.015, 0.0375, 0])
     expect(position.blockLegs?.map((leg: any) => leg.targetAdditionalQuantity))
-      .toEqual([0.015, 0.03, 0.045])
+      .toEqual([0.015, 0.0525, 0.0525])
     expect(position.blockLegs?.map((leg: any) => leg.targetBlockQuantity))
-      .toEqual([0.025, 0.04, 0.055])
+      .toEqual([0.025, 0.0625, 0.0625])
+    expect(position.blockLegs?.map((leg: any) => leg.effectiveIncrementStep))
+      .toEqual([1, 2, 2])
 
     const latestStop = placeStopOrder.mock.calls
       .filter((call) => call[5]?.positionSide === "LONG")
       .at(-1)
-    expect(latestStop?.[2]).toBeCloseTo(0.055, 12)
+    expect(latestStop?.[2]).toBeCloseTo(0.0625, 12)
 
     const callsBeforeCoveredSet = placeOrder.mock.calls.length
     position = await executeLivePosition(connection.id, {
@@ -2204,15 +2241,15 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCount: 2,
       blockVolumeRatio: 1.5,
     } as any, recordingConnector)
-    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(position.executedQuantity).toBeCloseTo(0.0625, 12)
     expect(placeOrder).toHaveBeenCalledTimes(callsBeforeCoveredSet)
     expect(position.blockLegs).toEqual(expect.arrayContaining([
       expect.objectContaining({
         setKey: "BTCUSDT:move:long#block:2",
         quantity: 0,
         requestedQuantity: 0,
-        targetAdditionalQuantity: 0.03,
-        targetBlockQuantity: 0.04,
+        targetAdditionalQuantity: 0.0525,
+        targetBlockQuantity: 0.0625,
       }),
     ]))
   })
@@ -2285,7 +2322,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockVolumeRatio: 1.5,
     } as any, recordingConnector)
 
-    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.045, 12)
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.0525, 12)
     expect(position.executedQuantity).toBeCloseTo(0.03, 12)
     expect(position.pendingAccumulation).toBeUndefined()
     expect(position.accumulatedSetKeys).not.toContain(blockSetKey)
@@ -2293,8 +2330,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       expect.objectContaining({
         setKey: blockSetKey,
         quantity: 0.02,
-        targetAdditionalQuantity: 0.045,
-        requestedQuantity: 0.045,
+        targetAdditionalQuantity: 0.0525,
+        requestedQuantity: 0.0525,
         targetSatisfied: false,
       }),
     ])
@@ -2309,19 +2346,19 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockVolumeRatio: 1.5,
     } as any, recordingConnector)
 
-    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.025, 12)
-    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.0325, 12)
+    expect(position.executedQuantity).toBeCloseTo(0.0625, 12)
     expect(position.pendingAccumulation).toBeUndefined()
     expect(position.accumulatedSetKeys).toContain(blockSetKey)
     expect(position.blockLegs).toHaveLength(1)
     expect(position.blockLegs?.[0]).toMatchObject({
       setKey: blockSetKey,
-      quantity: 0.045,
-      targetAdditionalQuantity: 0.045,
+      targetAdditionalQuantity: 0.0525,
       targetSatisfied: true,
     })
-    expect(position.blockLegs?.[0]?.requestedQuantity).toBeCloseTo(0.025, 12)
-    expect(placeStopOrder.mock.calls.at(-1)?.[2]).toBeCloseTo(0.055, 12)
+    expect(position.blockLegs?.[0]?.quantity).toBeCloseTo(0.0525, 12)
+    expect(position.blockLegs?.[0]?.requestedQuantity).toBeCloseTo(0.0325, 12)
+    expect(placeStopOrder.mock.calls.at(-1)?.[2]).toBeCloseTo(0.0625, 12)
   })
 
   test("reconciles a still-open partial Block order without a duplicate submission", async () => {
@@ -2386,13 +2423,13 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         _orderId: string | undefined,
         clientOrderId: string,
       ) => {
-        venueQuantity = 0.055
+        venueQuantity = 0.0625
         return {
           success: true,
           orderId: blockOrderId,
           clientOrderId,
           status: "filled",
-          filledQty: 0.045,
+          filledQty: 0.0525,
           filledPrice: 100,
         }
       }),
@@ -2434,7 +2471,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(position.executedQuantity).toBeCloseTo(0.03, 12)
     expect(position.pendingAccumulation).toMatchObject({
       setKey: blockSetKey,
-      requestedQuantity: 0.045,
+      requestedQuantity: 0.0525,
       appliedFilledQuantity: 0.02,
     })
     expect(position.accumulatedSetKeys).not.toContain(blockSetKey)
@@ -2453,15 +2490,15 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     } as any, partialConnector)
 
     expect(partialConnector.placeOrder).toHaveBeenCalledTimes(2)
-    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(position.executedQuantity).toBeCloseTo(0.0625, 12)
     expect(position.pendingAccumulation).toBeUndefined()
     expect(position.accumulatedSetKeys).toContain(blockSetKey)
     expect(position.blockLegs?.[0]).toMatchObject({
-      quantity: 0.045,
-      targetAdditionalQuantity: 0.045,
+      quantity: 0.0525,
+      targetAdditionalQuantity: 0.0525,
       targetSatisfied: true,
     })
-    expect(placeStopOrder.mock.calls.at(-1)?.[2]).toBeCloseTo(0.055, 12)
+    expect(placeStopOrder.mock.calls.at(-1)?.[2]).toBeCloseTo(0.0625, 12)
   })
 
   test("stress-checks asymmetric Long/Short Block ladders without duplicate or stranded mutations", async () => {
@@ -2557,8 +2594,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       if (nextShort) shortPosition = nextShort
     }
 
-    expect(longPosition.executedQuantity).toBeCloseTo(0.03, 12)
-    expect(shortPosition.executedQuantity).toBeCloseTo(0.0345, 12)
+    expect(longPosition.executedQuantity).toBeCloseTo(0.0144, 12)
+    expect(shortPosition.executedQuantity).toBeCloseTo(0.018225, 12)
     expect(longPosition.blockLegs).toHaveLength(10)
     expect(shortPosition.blockLegs).toHaveLength(7)
     expect(new Set(longPosition.blockLegs?.map((leg: any) => leg.setKey)).size).toBe(10)
@@ -2566,11 +2603,11 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(longPosition.blockLegs?.reduce(
       (sum: number, leg: any) => sum + Number(leg.requestedQuantity || 0),
       0,
-    )).toBeCloseTo(0.02, 12)
+    )).toBeCloseTo(0.0044, 12)
     expect(shortPosition.blockLegs?.reduce(
       (sum: number, leg: any) => sum + Number(leg.requestedQuantity || 0),
       0,
-    )).toBeCloseTo(0.0245, 12)
+    )).toBeCloseTo(0.008225, 12)
     expect(longPosition.pendingAccumulation).toBeUndefined()
     expect(shortPosition.pendingAccumulation).toBeUndefined()
     expect(longPosition.pendingReduction).toBeUndefined()
@@ -2607,8 +2644,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
 
     const longEntryCalls = placeOrder.mock.calls.filter((call) => call[5]?.positionSide === "LONG")
     const shortEntryCalls = placeOrder.mock.calls.filter((call) => call[5]?.positionSide === "SHORT")
-    expect(longEntryCalls).toHaveLength(11)
-    expect(shortEntryCalls).toHaveLength(8)
+    // Parent + two physical increments. Counts above the default Step cap
+    // remain independently tracked as zero-quantity Rows.
+    expect(longEntryCalls).toHaveLength(3)
+    expect(shortEntryCalls).toHaveLength(3)
     expect(longEntryCalls.every((call) => call[1] === "buy" && call[5]?.reduceOnly !== true)).toBe(true)
     expect(shortEntryCalls.every((call) => call[1] === "sell" && call[5]?.reduceOnly !== true)).toBe(true)
     for (const call of placeStopOrder.mock.calls) {

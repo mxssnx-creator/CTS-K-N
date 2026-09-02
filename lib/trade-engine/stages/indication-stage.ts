@@ -4,6 +4,8 @@
 
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { ExchangeConnection } from "@/lib/types"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 const LOG_PREFIX = "[v0] [IndicationStage]"
 
@@ -284,15 +286,17 @@ export async function getCurrentIndications(
 
   try {
     const indexKey = getIndicationIndexKey(connectionId)
-    const keys = ((await client.smembers(indexKey).catch(() => [])) || []) as string[]
+    const keys = await scanRedisSetMembers(client, indexKey, { count: 250 }).catch(() => [])
     if (keys.length === 0) return []
 
     // Fan-out GETs in parallel — indications can number in the
     // hundreds across symbols, and a sequential await loop dominated
     // cycle latency. Matches the pattern used by every position
     // getter (real / main / live / base stages).
-    const rawValues = await Promise.all(
-      keys.map((key: string) => client.get(key).catch(() => null)),
+    const rawValues = await mapWithConcurrency(
+      keys,
+      32,
+      (key: string) => client.get(key).catch(() => null),
     )
     const indications: IndicationSignal[] = []
     const staleKeys: string[] = []

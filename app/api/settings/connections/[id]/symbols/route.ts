@@ -5,6 +5,7 @@ import {
   CANONICAL_FORCED_SYMBOLS,
   withCanonicalForcedSymbols,
 } from "@/lib/forced-symbols"
+import { clampExchangeSymbolCount } from "@/lib/symbol-capacity"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -25,10 +26,11 @@ export const dynamic = "force-dynamic"
  *   order  — SymbolOrder value from the dialog ("volatility_1h", "volatility_24h",
  *             "volume_24h", "manual", etc.). Maps to SortKey via normaliseSort().
  *             Default: "volume" (volume-first / most liquid).
- *   count  — How many symbols to return. Clamped to [1, 50]. Default: 50.
+ *   count  — How many symbols to return. Uses the shared exchange-wide cap.
+ *             Default: 50.
  *
- * For "volatility_1h": fetches the last 1h kline per candidate (pool of top-50
- * by volume) and ranks by (high−low)/open×100. Adds `atr1h` field per symbol.
+ * For "volatility_1h": ranks the bounded ATR-enrichment head, then retains
+ * the complete requested volume-ranked tail. Adds `atr1h` where enriched.
  */
 export async function GET(
   request: Request,
@@ -42,9 +44,10 @@ export async function GET(
     const rawOrder = searchParams.get("order") || "volume"
     const rawCount = searchParams.get("count") || "50"
     const sort  = normaliseSort(rawOrder)
-    const count = Math.max(
+    const count = clampExchangeSymbolCount(
+      Number.parseInt(rawCount, 10),
+      50,
       CANONICAL_FORCED_SYMBOLS.length,
-      Math.min(50, Number.parseInt(rawCount, 10) || 50),
     )
 
     // Resolve connection from Redis to learn the exchange name.

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getAllConnections, getAssignedAndEnabledConnections, getRedisClient, initRedis } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -38,9 +39,9 @@ export async function GET() {
     const [globalState, refreshRequest, marketDataKeys, prehistoricKeys, engineStateKeys] = await Promise.all([
       client.hgetall("trade_engine:global").catch(() => ({})),
       client.hgetall("settings:engine_coordinator:refresh_requested").catch(() => ({})),
-      client.keys("market_data:*:1m").catch(() => []),
-      client.keys("prehistoric:*").catch(() => []),
-      client.keys("settings:trade_engine_state:*").catch(() => []),
+      scanRedisKeys(client, "market_data:*:1m", { count: 250 }).catch(() => []),
+      scanRedisKeys(client, "prehistoric:*", { count: 250 }).catch(() => []),
+      scanRedisKeys(client, "settings:trade_engine_state:*", { count: 100 }).catch(() => []),
     ])
     const heartbeatRaw = String((globalState as Record<string, string>)?.last_heartbeat_at || "")
     const heartbeatMs = Number(heartbeatRaw)

@@ -262,6 +262,7 @@ export interface StrategyConfig {
       enabled: boolean
       blockSize: number // 2, 4, 6, 8
       adjustmentRatio: number // Volume increase ratio
+      incrementSteps?: number // 1..5 compounded Block targets; default 2
     }
     dca?: {
       enabled: boolean

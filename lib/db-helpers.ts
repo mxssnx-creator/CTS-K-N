@@ -4,6 +4,8 @@
  */
 
 import { getRedisClient } from "@/lib/redis-db"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 // =============================================================================
 // INDICATION QUERIES
@@ -22,15 +24,14 @@ export async function getActiveIndications(
     let ids: string[] = []
     
     if (symbol) {
-      ids = await client.smembers(`indications:${symbol}`)
+      ids = await scanRedisSetMembers(client, `indications:${symbol}`, { count: 250 })
     } else if (connectionId) {
-      ids = await client.smembers(`indications:${connectionId}`)
+      ids = await scanRedisSetMembers(client, `indications:${connectionId}`, { count: 250 })
     } else {
-      ids = await client.smembers("indications:all")
+      ids = await scanRedisSetMembers(client, "indications:all", { count: 250 })
     }
     
-    const indications = await Promise.all(
-      ids.map(async (id) => {
+    const indications = await mapWithConcurrency(ids, 32, async (id) => {
         try {
           const data = await client.hgetall(`indication:${id}`)
           if (data && Object.keys(data).length > 0) {
@@ -46,7 +47,6 @@ export async function getActiveIndications(
           return null
         }
       })
-    )
     
     const filtered = indications.filter(Boolean)
     
@@ -109,15 +109,14 @@ export async function getActiveStrategies(
     let ids: string[] = []
     
     if (symbol) {
-      ids = await client.smembers(`strategies:${symbol}`)
+      ids = await scanRedisSetMembers(client, `strategies:${symbol}`, { count: 250 })
     } else if (connectionId) {
-      ids = await client.smembers(`strategies:${connectionId}`)
+      ids = await scanRedisSetMembers(client, `strategies:${connectionId}`, { count: 250 })
     } else {
-      ids = await client.smembers("strategies:all")
+      ids = await scanRedisSetMembers(client, "strategies:all", { count: 250 })
     }
     
-    const strategies = await Promise.all(
-      ids.map(async (id) => {
+    const strategies = await mapWithConcurrency(ids, 32, async (id) => {
         try {
           const data = await client.hgetall(`strategy:${id}`)
           if (data && Object.keys(data).length > 0) {
@@ -133,7 +132,6 @@ export async function getActiveStrategies(
           return null
         }
       })
-    )
     
     const filtered = strategies.filter(Boolean)
     
@@ -194,13 +192,12 @@ export async function getAllPositions(connectionId?: string) {
     let ids: string[] = []
     
     if (connectionId) {
-      ids = await client.smembers(`positions:${connectionId}`)
+      ids = await scanRedisSetMembers(client, `positions:${connectionId}`, { count: 250 })
     } else {
-      ids = await client.smembers("positions:all")
+      ids = await scanRedisSetMembers(client, "positions:all", { count: 250 })
     }
     
-    const positions = await Promise.all(
-      ids.map(async (id) => {
+    const positions = await mapWithConcurrency(ids, 32, async (id) => {
         try {
           const data = await client.hgetall(`position:${id}`)
           if (data && Object.keys(data).length > 0) {
@@ -219,7 +216,6 @@ export async function getAllPositions(connectionId?: string) {
           return null
         }
       })
-    )
     
     return positions.filter(Boolean)
   } catch (error) {

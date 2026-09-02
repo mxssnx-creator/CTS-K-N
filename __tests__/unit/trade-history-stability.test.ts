@@ -575,7 +575,7 @@ describe("BingX-backed trade history", () => {
     expect(mergeTradeHistory([exchange], [oldLocal], 500)).toHaveLength(2)
   })
 
-  test("loads the closed LIST index with one MGET and only missing hash fallbacks", async () => {
+  test("loads the closed LIST index with MGET plus authoritative hash snapshots", async () => {
     const client = {
       lrange: jest.fn().mockResolvedValue(["live:a", "live:b", "live:a"]),
       llen: jest.fn().mockResolvedValue(3),
@@ -583,7 +583,9 @@ describe("BingX-backed trade history", () => {
         JSON.stringify({ id: "live:a", status: "closed" }),
         null,
       ]),
-      hgetall: jest.fn().mockResolvedValue({ id: "live:b", status: "closed", fills: "[]" }),
+      hgetall: jest.fn().mockImplementation((key: string) => key.endsWith("live:b")
+        ? Promise.resolve({ id: "live:b", status: "closed", fills: "[]" })
+        : Promise.resolve({})),
     }
 
     await expect(loadClosedPositionSnapshots(client, "conn", 500)).resolves.toEqual([
@@ -593,7 +595,8 @@ describe("BingX-backed trade history", () => {
     expect(client.lrange).toHaveBeenCalledWith("live:positions:conn:closed", 0, 499)
     expect(client.llen).toHaveBeenCalledWith("live:positions:conn:closed")
     expect(client.mget).toHaveBeenCalledTimes(1)
-    expect(client.hgetall).toHaveBeenCalledTimes(1)
+    expect(client.hgetall).toHaveBeenCalledTimes(2)
+    expect(client.hgetall).toHaveBeenCalledWith("live_positions:conn:live:a")
     expect(client.hgetall).toHaveBeenCalledWith("live_positions:conn:live:b")
   })
 
@@ -604,7 +607,7 @@ describe("BingX-backed trade history", () => {
         JSON.stringify({ id: "live:new", status: "closed" }),
         JSON.stringify({ id: "live:old", status: "closed" }),
       ]),
-      hgetall: jest.fn(),
+      hgetall: jest.fn().mockResolvedValue({}),
     }
 
     await expect(loadClosedPositionSnapshotArchive(client, "conn")).resolves.toEqual({
@@ -617,7 +620,7 @@ describe("BingX-backed trade history", () => {
     })
     expect(client.lrange).toHaveBeenCalledWith("live:positions:conn:closed", 0, -1)
     expect(client.mget).toHaveBeenCalledTimes(1)
-    expect(client.hgetall).not.toHaveBeenCalled()
+    expect(client.hgetall).toHaveBeenCalledTimes(2)
   })
 
   test("terminal position indexes remain durable and bounded for consumers", () => {

@@ -8,6 +8,7 @@
 import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { getRedisClient } from "@/lib/redis-db"
 import { buildPrehistoricGateKeys } from "@/lib/progression-scope"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export interface PrehistoricProgress {
   connectionId: string
@@ -201,8 +202,8 @@ export class PrehistoricProgressTracker {
       ])
       const [processed, completed, errors] = await Promise.all([
         client.scard(this.key("processed")),
-        client.smembers(this.key("completed")),
-        client.smembers(this.key("errors")),
+        scanRedisSetMembers(client, this.key("completed"), { count: 250 }),
+        scanRedisSetMembers(client, this.key("errors"), { count: 250 }),
       ])
       await client.hset(this.trackingKey, {
         processed_symbols: String(processed || 0),
@@ -237,7 +238,7 @@ export class PrehistoricProgressTracker {
       ])
       const [processed, errors] = await Promise.all([
         client.scard(this.key("processed")),
-        client.smembers(this.key("errors")),
+        scanRedisSetMembers(client, this.key("errors"), { count: 250 }),
       ])
       const details = await client.hgetall(this.key("error_details")).catch(() => ({} as Record<string, string>))
       const errorRows = (errors || [])
@@ -272,8 +273,8 @@ export class PrehistoricProgressTracker {
     try {
       const [state, completed, errors] = await Promise.all([
         client.hgetall(this.trackingKey),
-        client.smembers(this.key("completed")),
-        client.smembers(this.key("errors")),
+        scanRedisSetMembers(client, this.key("completed"), { count: 250 }),
+        scanRedisSetMembers(client, this.key("errors"), { count: 250 }),
       ])
       const total = finiteInt(state?.total_symbols)
       const completedCount = new Set((completed || []).map(normalizeSymbol).filter(Boolean)).size
@@ -357,11 +358,11 @@ export class PrehistoricProgressTracker {
       const snapshot = await Promise.race([
         Promise.all([
           client.hgetall(this.trackingKey),
-          client.smembers(this.key("symbols")),
-          client.smembers(this.key("processed")),
-          client.smembers(this.key("completed")),
-          client.smembers(this.key("errors")),
-          client.smembers(this.key("in_progress")),
+          scanRedisSetMembers(client, this.key("symbols"), { count: 250 }),
+          scanRedisSetMembers(client, this.key("processed"), { count: 250 }),
+          scanRedisSetMembers(client, this.key("completed"), { count: 250 }),
+          scanRedisSetMembers(client, this.key("errors"), { count: 250 }),
+          scanRedisSetMembers(client, this.key("in_progress"), { count: 250 }),
           client.hgetall(this.key("error_details")),
         ]),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),

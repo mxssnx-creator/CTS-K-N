@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getAllConnections, getSettings } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest) {
@@ -21,9 +22,8 @@ export async function POST(request: NextRequest) {
     
     // Get all indications/strategies
     const client = getRedisClient()
-    const indicationKeys = await (client as any).keys("indication:*")
     const strategies = []
-    for (const key of indicationKeys) {
+    for await (const key of iterateRedisKeys(client, "indication:*", { count: 250 })) {
       const data = await (client as any).hGetAll(key)
       strategies.push(data)
     }

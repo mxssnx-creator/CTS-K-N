@@ -52,6 +52,7 @@ import {
   type RealStrategyVariant,
 } from "@/lib/strategy-real-stats"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 // ── Constants ──────────────────────────────────────────────────────────
 const TTL_SECONDS = 90 * 24 * 60 * 60 // 90 days — the run window we care about
@@ -1571,7 +1572,12 @@ export async function getStrategyLedgerTotals(connectionId: string): Promise<Str
 /** Exact active Set-key listing, maintained transactionally with membership counts. */
 export async function getActiveStrategySetKeys(connectionId: string): Promise<Set<string>> {
   try {
-    return new Set((await getRedisClient().smembers(STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId))).map(String))
+    const client = getRedisClient()
+    return new Set((await scanRedisSetMembers(
+      client,
+      STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId),
+      { count: 250 },
+    )).map(String).filter(Boolean))
   } catch {
     return new Set()
   }
@@ -1591,7 +1597,11 @@ export async function getStrategySetClosedResultKeys(
   try {
     const client = getRedisClient()
     const [members, indexedCount, countedFields] = await Promise.all([
-      client.smembers(STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)),
+      scanRedisSetMembers(
+        client,
+        STRATEGY_CLOSED_SET_KEYS_KEY(connectionId),
+        { count: 250 },
+      ),
       client.scard(STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)),
       client.hlen(STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)),
     ])

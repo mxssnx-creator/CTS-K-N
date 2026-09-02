@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest) {
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
       case "indications-engine":
         restartLog("Restarting indications engine...")
         // Reset indications state
-        const indicationKeys = await client.keys("indication:*").catch(() => [])
+        const indicationKeys = await scanRedisKeys(client, "indication:*", { count: 250 }).catch(() => [])
         if (indicationKeys.length > 0) {
           await client.del(...indicationKeys)
           restartLog(`Cleared ${indicationKeys.length} indication keys`)
@@ -40,7 +41,7 @@ export async function POST(request: NextRequest) {
       case "strategies-engine":
         restartLog("Restarting strategies engine...")
         // Reset strategies state
-        const strategyKeys = await client.keys("strategy:*").catch(() => [])
+        const strategyKeys = await scanRedisKeys(client, "strategy:*", { count: 250 }).catch(() => [])
         if (strategyKeys.length > 0) {
           await client.del(...strategyKeys)
           restartLog(`Cleared ${strategyKeys.length} strategy keys`)
@@ -55,21 +56,21 @@ export async function POST(request: NextRequest) {
         await coordinator.stopAllEngines()
         
         // Clear all engine-related state
-        const engineKeys = await client.keys("trade_engine:*").catch(() => [])
+        const engineKeys = await scanRedisKeys(client, "trade_engine:*", { count: 250 }).catch(() => [])
         if (engineKeys.length > 0) {
           await client.del(...engineKeys)
           restartLog(`Cleared ${engineKeys.length} engine keys`)
         }
         
         // Clear indication state
-        const indicKeys = await client.keys("indication:*").catch(() => [])
+        const indicKeys = await scanRedisKeys(client, "indication:*", { count: 250 }).catch(() => [])
         if (indicKeys.length > 0) {
           await client.del(...indicKeys)
           restartLog(`Cleared ${indicKeys.length} indication keys`)
         }
         
         // Clear strategy state
-        const stratKeys = await client.keys("strategy:*").catch(() => [])
+        const stratKeys = await scanRedisKeys(client, "strategy:*", { count: 250 }).catch(() => [])
         if (stratKeys.length > 0) {
           await client.del(...stratKeys)
           restartLog(`Cleared ${stratKeys.length} strategy keys`)
@@ -86,7 +87,7 @@ export async function POST(request: NextRequest) {
         restartLog("✓ Redis module restarted")
         
         // Reset persistence
-        const persistKeys = await client.keys("persist:*").catch(() => [])
+        const persistKeys = await scanRedisKeys(client, "persist:*", { count: 250 }).catch(() => [])
         if (persistKeys.length > 0) {
           await client.del(...persistKeys)
           restartLog(`Cleared ${persistKeys.length} persistence keys`)

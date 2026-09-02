@@ -270,7 +270,8 @@ function applyBlockAdjustment(
   baseRatio: number,
   blockSize: number,
   adjustmentRatio: number,
-  activeBlockCount: number
+  activeBlockCount: number,
+  incrementSteps: number
 ): number {
   const blocks = group(
     positions, 
@@ -286,9 +287,11 @@ function applyBlockAdjustment(
   // Signed Result-R uses 0 as neutral. Do not use a Main-stage
   // PositionCost PF coordinate here: values below 1 are not a PnL sign.
   if (avgSignedResultR < 0) {
-    // Absolute, non-compounding target:
-    return baseRatio * (
-      1 + adjustmentRatio * activeBlockCount
+    // Absolute capped-compound target. Every Count remains an
+    // independent Row after the physical increment cap.
+    return baseRatio * Math.pow(
+      1 + adjustmentRatio,
+      Math.min(activeBlockCount, incrementSteps)
     )
   }
   

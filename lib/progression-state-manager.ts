@@ -100,6 +100,7 @@ import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from
 import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import { getCanonicalSymbolSelection } from "@/lib/trade-engine/symbol-selection-ownership"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export interface ProgressionRecoordinationResult {
   changed: boolean
@@ -647,7 +648,7 @@ export class ProgressionStateManager {
       // Mirror the processed symbols list into the hash so existing readers
       // (which still expect `prehistoric_symbols_processed` as JSON) keep
       // working. `smembers` replaces the old read-modify-write cycle.
-      const symbolsProcessed = ((await client.smembers(symbolsSetKey).catch(() => [])) || []) as string[]
+      const symbolsProcessed = await scanRedisSetMembers(client, symbolsSetKey, { count: 250 }).catch(() => [] as string[])
 
       await Promise.all([
         client.hset(key, {
@@ -1318,8 +1319,8 @@ export class ProgressionStateManager {
       const countPreservedProcessedSymbols = async (eligibleSymbols: string[]): Promise<number> => {
         const eligible = new Set(eligibleSymbols)
         const [canonicalMembers, progressionMembers] = await Promise.all([
-          client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]),
-          client.smembers(`${key}:prehistoric_symbols_set`).catch(() => [] as string[]),
+          scanRedisSetMembers(client, `${scope.prehistoricKey}:symbols`, { count: 250 }).catch(() => [] as string[]),
+          scanRedisSetMembers(client, `${key}:prehistoric_symbols_set`, { count: 250 }).catch(() => [] as string[]),
         ])
         const processed = new Set(
           [...canonicalMembers, ...progressionMembers]
@@ -1461,7 +1462,7 @@ export class ProgressionStateManager {
           legacyLoaded,
         ] = await Promise.all([
           client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
-          client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]),
+          scanRedisSetMembers(client, `${scope.prehistoricKey}:symbols`, { count: 250 }).catch(() => [] as string[]),
           client.get(doneGateKeys.scoped).catch(() => null),
           client.get(doneGateKeys.legacy).catch(() => null),
           client.get(firstPassGateKeys.scoped).catch(() => null),

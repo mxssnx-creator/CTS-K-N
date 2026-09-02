@@ -1,5 +1,6 @@
 import { getRedisClient } from "./redis-db"
 import { loadSettings } from "./settings-storage"
+import { scanRedisKeys } from "./redis-scan"
 
 const dbOpsSecondWindow = {
   timestampMs: 0,
@@ -220,7 +221,7 @@ export const RedisCache = {
   async getAll() {
     const client = getRedisClient()
     // Fixed: use cache: prefix
-    const keys = await client.keys("cache:*")
+    const keys = await scanRedisKeys(client, "cache:*", { count: 250 })
     const settings: Record<string, any> = {}
     for (const key of keys) {
       const settingKey = key.replace("cache:", "")
@@ -252,7 +253,7 @@ export const RedisSettings = {
 
   async getAll() {
     const client = getRedisClient()
-    const keys = await client.keys("settings:*")
+    const keys = await scanRedisKeys(client, "settings:*", { count: 250 })
     const settings: Record<string, any> = {}
     for (const key of keys) {
       const settingKey = key.replace("settings:", "")

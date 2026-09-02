@@ -77,20 +77,21 @@ describe("Real-stage Block overlays", () => {
     )
   })
 
-  test("keeps Block sizing on the exact base × (1 + count × ratio) target regardless of tuner", () => {
+  test("keeps Block sizing on the capped compound target regardless of stale tuner metadata", () => {
     const blockSet = {
       ...source("BTCUSDT:signal:long#block:3#scope:long:long#source:okx-swap", "long"),
       variant: "block" as const,
       blockCount: 3,
       blockVolumeRatio: 1.5,
+      blockIncrementSteps: 2,
       // Deliberately stale values prove the dispatch boundary recomputes the
       // canonical multiplier rather than trusting prior profile metadata.
       variantSizeMultiplier: 1.25,
       blockCalculatedVolumeMultiplier: 4,
     }
 
-    expect(resolveLiveDispatchSizeMultiplier(blockSet, 1, 0.75)).toBeCloseTo(5.5, 12)
-    expect(resolveLiveDispatchSizeMultiplier(blockSet, 1, -0.5)).toBeCloseTo(5.5, 12)
+    expect(resolveLiveDispatchSizeMultiplier(blockSet, 1, 0.75)).toBeCloseTo(6.25, 12)
+    expect(resolveLiveDispatchSizeMultiplier(blockSet, 1, -0.5)).toBeCloseTo(6.25, 12)
   })
 
   test("keeps normal at identity and explicit adjustment ratios independent of the legacy tuner", () => {
@@ -361,7 +362,8 @@ describe("Real-stage Block overlays", () => {
     expect(overlays.every((set) => set.variant === "block" && set.status === "valid_real")).toBe(true)
     expect(overlays.find((set) => set.setKey.endsWith("#block:active:2"))?.axisWindows?.cont).toBe(2)
     expect(overlays.filter((set) => set.setKey.includes("#block:set:"))).toHaveLength(3)
-    expect(overlays.every((set) => set.blockProfitFactorRatio === 0.8)).toBe(true)
+    // Persisted legacy 0.8 is migrated to the neutral-base coordination factor 1.1.
+    expect(overlays.every((set) => set.blockProfitFactorRatio === 1.1)).toBe(true)
     expect(overlays.every((set) => Number(set.blockMinimumProfitFactor) > 0)).toBe(true)
     expect(overlays.find((set) => set.setKey.endsWith("#block:active:2"))?.blockCount).toBe(2)
   })
@@ -628,7 +630,7 @@ describe("Real-stage Block overlays", () => {
     const stats = await getRedisClient().hgetall(statsKey)
     expect(stats["s:BTCUSDT:active:real:long"]).toBe("2")
     expect(stats["s:BTCUSDT:active:real:short"]).toBe("1")
-    expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("2")
+    expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("3")
     expect(stats["s:BTCUSDT:active:volume_increment:short"]).toBe("1")
     await getRedisClient().del(statsKey)
   })
@@ -1024,10 +1026,10 @@ describe("Real-stage Block overlays", () => {
 
     expect(overlays.some((set) => set.setKey.endsWith("#block:active:4"))).toBe(true)
     expect(overlays.some((set) => set.setKey.endsWith("#block:active:3"))).toBe(true)
-    expect(overlays.find((set) => set.setKey.endsWith("#block:active:4"))?.blockVolumeIncrementRatio).toBe(3)
-    expect(overlays.find((set) => set.setKey.endsWith("#block:active:3"))?.blockVolumeIncrementRatio).toBe(2.25)
-    expect(overlays.find((set) => set.setKey.endsWith("#block:active:4"))?.blockCalculatedVolumeMultiplier).toBe(4)
-    expect(overlays.find((set) => set.setKey.endsWith("#block:active:3"))?.blockCalculatedVolumeMultiplier).toBe(3.25)
+    expect(overlays.find((set) => set.setKey.endsWith("#block:active:4"))?.blockVolumeIncrementRatio).toBe(2.0625)
+    expect(overlays.find((set) => set.setKey.endsWith("#block:active:3"))?.blockVolumeIncrementRatio).toBe(2.0625)
+    expect(overlays.find((set) => set.setKey.endsWith("#block:active:4"))?.blockCalculatedVolumeMultiplier).toBe(3.0625)
+    expect(overlays.find((set) => set.setKey.endsWith("#block:active:3"))?.blockCalculatedVolumeMultiplier).toBe(3.0625)
 
     const stats = await client.hgetall(`strategy_block_pf_stats:${connectionId}`)
     expect(stats["s:BTCUSDT:active:real:long"]).toBe("4")
@@ -1036,8 +1038,8 @@ describe("Real-stage Block overlays", () => {
     expect(stats["s:BTCUSDT:active:live:short"]).toBe("3")
     expect(stats["s:BTCUSDT:active:combined:long"]).toBe("4")
     expect(stats["s:BTCUSDT:active:combined:short"]).toBe("3")
-    expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("3")
-    expect(stats["s:BTCUSDT:active:volume_increment:short"]).toBe("2.25")
+    expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("2.0625")
+    expect(stats["s:BTCUSDT:active:volume_increment:short"]).toBe("2.0625")
     await client.del(`strategy_block_pf_stats:${connectionId}`)
   })
 
@@ -1085,7 +1087,7 @@ describe("Real-stage Block overlays", () => {
       expect(stats["s:BTCUSDT:active:cold_start"]).toBe("2")
       expect(stats["s:BTCUSDT:active:combined:long"]).toBe("2")
       expect(stats["s:BTCUSDT:active:combined:short"]).toBe("1")
-      expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("3")
+      expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("5.25")
       expect(stats["s:BTCUSDT:active:volume_increment:short"]).toBe("1.5")
       expect(stats["s:BTCUSDT:active:avg_normal_pf"]).toBe("2")
     } finally {
@@ -1119,8 +1121,15 @@ describe("Real-stage Block overlays", () => {
     expect(overlays.map((set) => set.blockCount)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     expect(new Set(overlays.map((set) => set.setKey)).size).toBe(10)
     for (let index = 1; index < overlays.length; index++) {
-      expect(Number(overlays[index].blockConfiguredMinimumProfitFactor))
-        .toBeGreaterThan(Number(overlays[index - 1].blockConfiguredMinimumProfitFactor))
+      const currentMinimum = Number(overlays[index].blockConfiguredMinimumProfitFactor)
+      const previousMinimum = Number(overlays[index - 1].blockConfiguredMinimumProfitFactor)
+      if (index < 2) {
+        expect(currentMinimum).toBeGreaterThan(previousMinimum)
+      } else {
+        // Counts remain independent Real Sets after the physical Step cap,
+        // but share the same capped compound volume/PF target.
+        expect(currentMinimum).toBe(previousMinimum)
+      }
       // Cold start can use an activated Block immediately from the qualified
       // normal rolling PF; count-specific comparison starts after own closes.
       expect(overlays[index].blockMinimumProfitFactor).toBe(100)
@@ -1216,8 +1225,9 @@ describe("Real-stage Block overlays", () => {
     const before = await coordinator.buildIndependentBlockCountOverlaysForReal(
       "BTCUSDT", [strongSource], metrics, undefined, new Set(),
     ) as StrategySet[]
-    expect(before.map((set) => set.blockVolumeIncrementRatio)).toEqual([0.5, 1])
-    expect(before.map((set) => Number(set.blockConfiguredMinimumProfitFactor))).toEqual([1.08, 1.16])
+    expect(before.map((set) => set.blockVolumeIncrementRatio)).toEqual([0.5, 1.25])
+    expect(Number(before[0].blockConfiguredMinimumProfitFactor)).toBeCloseTo(1.11, 12)
+    expect(Number(before[1].blockConfiguredMinimumProfitFactor)).toBeCloseTo(1.275, 12)
     expect(before.map((set) => Number(set.blockMinimumProfitFactor))).toEqual([100, 100])
 
     coordinator._coordinationSettings.blockVolumeRatio = 1.5
@@ -1225,13 +1235,13 @@ describe("Real-stage Block overlays", () => {
     const after = await coordinator.buildIndependentBlockCountOverlaysForReal(
       "BTCUSDT", [strongSource], metrics, undefined, new Set(),
     ) as StrategySet[]
-    expect(after.map((set) => set.blockVolumeIncrementRatio)).toEqual([1.5, 3])
+    expect(after.map((set) => set.blockVolumeIncrementRatio)).toEqual([1.5, 5.25])
     expect(after[0].blockConfiguredMinimumProfitFactor).toBeCloseTo(1.36, 10)
-    expect(after[1].blockConfiguredMinimumProfitFactor).toBeCloseTo(1.72, 10)
+    expect(after[1].blockConfiguredMinimumProfitFactor).toBeCloseTo(2.26, 10)
     expect(after[0].blockMinimumProfitFactor).toBe(100)
     expect(after[1].blockMinimumProfitFactor).toBe(100)
     expect(after[0].variantSizeMultiplier).toBeCloseTo(2.5, 10)
-    expect(after[1].variantSizeMultiplier).toBeCloseTo(4, 10)
+    expect(after[1].variantSizeMultiplier).toBeCloseTo(6.25, 10)
     expect(after[0].blockBaseVolumeMultiplier).toBe(1)
     expect(after[1].blockBaseVolumeMultiplier).toBe(1)
     await client.del(`strategy_block_pf_stats:${connectionId}`)
@@ -1477,7 +1487,7 @@ describe("Real-stage Block overlays", () => {
     expect(overlays.every((set) =>
       set.variant === "block" &&
       (set.direction === "long" || set.direction === "short") &&
-      set.blockCalculatedVolumeMultiplier === 1 + Number(set.blockCount) * 1.5
+      set.blockCalculatedVolumeMultiplier === 2.5 ** Math.min(Number(set.blockCount), 2)
     )).toBe(true)
     expect(overlays.some((set) => set.setKey.startsWith(posCountSignal.setKey))).toBe(false)
 
@@ -1529,7 +1539,7 @@ describe("Real-stage Block overlays", () => {
       evaluated: 2,
       passed: 2,
       emitted: 2,
-      volumeIncrementSum: 6,
+      volumeIncrementSum: 10.5,
     }))
     expect(snapshot.lanes["signal:binance-usdm:overall"].counts["1"]).toEqual(
       expect.objectContaining({ evaluated: 2, emitted: 2 }),
@@ -1673,7 +1683,9 @@ describe("Real-stage Block overlays", () => {
       expect(new Set(perSource.map((set) => set.direction))).toEqual(new Set(["long", "short"]))
       expect(new Set(perSource.map((set) => set.blockScope))).toEqual(new Set(["long", "short", "overall"]))
       expect(new Set(perSource.map((set) => set.blockCount))).toEqual(new Set([1, 2]))
-      expect(perSource.every((set) => set.variantSizeMultiplier === 1 + 1.5 * Number(set.blockCount))).toBe(true)
+      expect(perSource.every((set) =>
+        set.variantSizeMultiplier === 2.5 ** Math.min(Number(set.blockCount), 2)
+      )).toBe(true)
     }
 
     const stats = await getRedisClient().hgetall(`strategy_block_pf_stats:${scopedConnectionId}`)

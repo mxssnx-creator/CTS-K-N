@@ -25,7 +25,15 @@ import {
   normalizeMainTradePfRatio,
   signedResultRToMainTradePfRatio,
 } from "./main-trade-profit-factor"
-import { calculateBlockMinimumProfitFactor } from "./block-count-state"
+import {
+  BLOCK_INCREMENT_STEPS_DEFAULT,
+  calculateBlockEffectiveIncrementStep,
+  calculateBlockMinimumProfitFactor,
+  calculateBlockVolumeIncrementRatio,
+  calculateBlockVolumeMultiplier,
+  normalizeBlockIncrementSteps,
+  normalizeBlockProfitFactorRatio,
+} from "./block-count-state"
 
 export const DIRECT_TRADE_MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO =
   MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO
@@ -154,6 +162,8 @@ export interface DirectTradeBlockEvaluation {
   blockSetKey: string
   blockCount: number
   blockVolumeRatio: number
+  blockIncrementSteps: number
+  blockEffectiveIncrementStep: number
   blockVolumeIncrementRatio: number
   blockCalculatedVolumeMultiplier: number
   /** Average multiplier actually realised by causal Block adds. */
@@ -244,6 +254,7 @@ export interface DirectTradeSet {
   autoTrailSensitivity: number | null
   blockCount: number
   blockVolumeRatio: number
+  blockIncrementSteps: number
   // Legacy storage alias retained while existing persisted grids roll over.
   volumeRatio: number
   positionCostPercent: number
@@ -333,6 +344,7 @@ export interface DirectTradeEvaluationInput {
   volumeRatio: number
   /** Canonical Block ratio; volumeRatio is retained as the legacy alias. */
   blockVolumeRatio?: number
+  blockIncrementSteps?: number
   tpRange: number[]
   // Parallel to tpRange when the caller owns the PositionCost-ratio grid.
   // Older callers may provide fixed percentages; their ratio is derived.
@@ -894,6 +906,7 @@ function simulateTrades(
   positionCostPercent: number,
   blockCount = 0,
   blockVolumeRatio = 1,
+  blockIncrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
   dcaProfile: DcaProfile | null = null,
 ): DirectTradeSimulationMetrics {
   const createMetrics = (): DirectTradeSimulationMetricsBase => ({
@@ -977,10 +990,11 @@ function simulateTrades(
     // signal adds one independent ratio-sized leg at that candle's close;
     // the parent exit remains shared, exactly as the physical exchange
     // position is shared. This prevents Block PF from being a copied Base PF
-    // while retaining the immutable non-compounding target metadata.
+    // while retaining immutable capped-compound target metadata.
     const entryLegs: Array<{ price: number; weight: number }> = [
       { price: initialEntryPrice, weight: 1 },
     ]
+    let nextBlockCount = 1
     let tpPrice = direction === "long"
       ? initialEntryPrice * (1 + takeprofit / 100)
       : initialEntryPrice * (1 - takeprofit / 100)
@@ -1116,8 +1130,22 @@ function simulateTrades(
       }
       // Add only after every causal exit check for this candle has passed;
       // a close candle cannot also create a new Block leg.
-      if (blockCount > 0 && signals[cursor] && entryLegs.length <= blockCount) {
-        entryLegs.push({ price: candle.close, weight: blockVolumeRatio })
+      if (blockCount > 0 && signals[cursor] && nextBlockCount <= blockCount) {
+        const previousMultiplier = nextBlockCount === 1
+          ? 1
+          : calculateBlockVolumeMultiplier(
+              nextBlockCount - 1,
+              blockVolumeRatio,
+              blockIncrementSteps,
+            )
+        const targetMultiplier = calculateBlockVolumeMultiplier(
+          nextBlockCount,
+          blockVolumeRatio,
+          blockIncrementSteps,
+        )
+        const addWeight = Math.max(0, targetMultiplier - previousMultiplier)
+        if (addWeight > 0) entryLegs.push({ price: candle.close, weight: addWeight })
+        nextBlockCount++
       }
     }
     if (exitTime === entry.time) {
@@ -1212,7 +1240,7 @@ function summarizeRecentPositions(
 
 function stableSetKey(input: Pick<DirectTradeSet,
   "symbol" | "direction" | "signalDirection" | "strategyType" | "timeframe" | "entryTactic" | "exitTactic" | "entryTiming" |
-  "activityVolumeRatio" | "takeprofit" | "takeProfitPositionCostRatio" | "stoploss" | "trailing" | "trailingMode" | "trailStart" | "trailStop" | "autoTrailSensitivity" | "historyHours" | "positionCostPercent" | "blockCount" | "blockVolumeRatio"
+  "activityVolumeRatio" | "takeprofit" | "takeProfitPositionCostRatio" | "stoploss" | "trailing" | "trailingMode" | "trailStart" | "trailStop" | "autoTrailSensitivity" | "historyHours" | "positionCostPercent" | "blockCount" | "blockVolumeRatio" | "blockIncrementSteps"
   | "blockProfitFactorRatio" | "dcaProfile"
 >): string {
   const numeric = (value: number) => round(value, 4).toFixed(4)
@@ -1239,6 +1267,7 @@ function stableSetKey(input: Pick<DirectTradeSet,
     `ta:${input.autoTrailSensitivity == null ? "none" : numeric(input.autoTrailSensitivity)}`,
     `block:${Math.max(0, Math.floor(input.blockCount))}`,
     `blockRatio:${numeric(input.blockVolumeRatio)}`,
+    `blockSteps:${normalizeBlockIncrementSteps(input.blockIncrementSteps)}`,
     `blockPfRatio:${numeric(input.blockProfitFactorRatio)}`,
     input.dcaProfile
       ? `dca:${input.dcaProfile.maxSteps}:${input.dcaProfile.stepVolumeMultipliers.map(numeric).join(",")}:${input.dcaProfile.stepDistancesPct.map(numeric).join(",")}:${input.dcaProfile.takeProfitMode}:${numeric(input.dcaProfile.breakevenProfitPct)}:${input.dcaProfile.cooldownSeconds}:${numeric(input.dcaProfile.maxPositionVolumeRatio)}`
@@ -1320,9 +1349,12 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
           const stoploss = protection.stopLossPct
           for (const trail of input.trailOptions) {
             if (trail.trailing && takeProfitPositionCostRatio < trailingMinTakeProfitRatio) continue
-            const blockProfitFactorRatio = Math.max(
-              0.2,
-              Math.min(5, finite(input.blockProfitFactorRatio, 0.8)),
+            const blockIncrementSteps = normalizeBlockIncrementSteps(
+              input.blockIncrementSteps,
+              BLOCK_INCREMENT_STEPS_DEFAULT,
+            )
+            const blockProfitFactorRatio = normalizeBlockProfitFactorRatio(
+              input.blockProfitFactorRatio,
             )
             const blockEnabled = !dcaProfile && input.blockRange[1] > 0
             const blockMinimum = blockEnabled
@@ -1352,6 +1384,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               positionCostPercent,
               blockMaximum,
               blockVolumeRatio,
+              blockIncrementSteps,
               dcaProfile,
             )
             const simulationPf = calculateDirectTradeProfitFactor(simulation.totalProfit, simulation.totalLoss)
@@ -1414,8 +1447,20 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
                   const blockRecentHasSample = blockRecent.recentPositionCount >= minRecentPositions
                   const blockRecentPfPasses = blockRecentHasSample
                     && blockRecent.recentPositionCostRatio >= minimumRecentPositionCostRatio
-                  const blockVolumeIncrementRatio = blockCount * blockVolumeRatio
-                  const blockCalculatedVolumeMultiplier = 1 + blockVolumeIncrementRatio
+                  const blockEffectiveIncrementStep = calculateBlockEffectiveIncrementStep(
+                    blockCount,
+                    blockIncrementSteps,
+                  )
+                  const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(
+                    blockCount,
+                    blockVolumeRatio,
+                    blockIncrementSteps,
+                  )
+                  const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
+                    blockCount,
+                    blockVolumeRatio,
+                    blockIncrementSteps,
+                  )
                   const blockConfiguredMinimumProfitFactor = calculateBlockMinimumProfitFactor(
                     minimumPositionCostRatio,
                     blockProfitFactorRatio,
@@ -1449,6 +1494,8 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
                     blockSetKey: "",
                     blockCount,
                     blockVolumeRatio,
+                    blockIncrementSteps,
+                    blockEffectiveIncrementStep,
                     blockVolumeIncrementRatio: round(blockVolumeIncrementRatio, 4),
                     blockCalculatedVolumeMultiplier: round(blockCalculatedVolumeMultiplier, 4),
                     blockRealizedVolumeMultiplier: round(
@@ -1537,6 +1584,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               // quantity. Earlier Count fills never compound this target.
               blockCount: selectedBlockCount,
               blockVolumeRatio,
+              blockIncrementSteps,
               volumeRatio: blockVolumeRatio,
               positionCostPercent,
               valid: selectedValid,

@@ -9,12 +9,15 @@ import {
   calculateBlockTargetQuantity,
   calculateConfirmedBlockAddQuantity,
   calculateBlockMinimumProfitFactor,
+  calculateBlockEffectiveIncrementStep,
   calculateBlockVolumeIncrementRatio,
   calculateBlockVolumeMultiplier,
   getUnavailableBlockSetKeys,
   parseBlockCount,
   resolveBlockProfitFactorDecision,
   resolveMirroredActiveBlockCount,
+  normalizeBlockIncrementSteps,
+  normalizeBlockProfitFactorRatio,
   syncActiveBlockCountIndex,
 } from "@/lib/block-count-state"
 
@@ -56,8 +59,9 @@ describe("independent Block count lifecycle", () => {
     const leg = buildBlockLegState({
       setKey: "move:long#block:3",
       blockBaseVolumeMultiplier: 1,
-      blockVolumeRatio: 1.25,
-      blockCalculatedVolumeMultiplier: 4.75,
+      blockVolumeRatio: 1,
+      blockIncrementSteps: 3,
+      blockCalculatedVolumeMultiplier: 8,
       axisWindows: { pause: 6 },
     }, 7.5, "client-3", "order-3", {
       baseQuantity: 2,
@@ -72,8 +76,10 @@ describe("independent Block count lifecycle", () => {
       blockCount: 3,
       quantity: 7.5,
       baseVolumeMultiplier: 1,
-      volumeRatio: 1.25,
-      volumeMultiplier: 4.75,
+      volumeRatio: 1,
+      incrementSteps: 3,
+      effectiveIncrementStep: 3,
+      volumeMultiplier: 8,
       baseQuantity: 2,
       targetAdditionalQuantity: 7.5,
       confirmedAdditionalQuantityBefore: 0,
@@ -90,63 +96,63 @@ describe("independent Block count lifecycle", () => {
   test("calculates every Block target independently from the immutable general volume", () => {
     expect(calculateBlockVolumeMultiplier(1, 1)).toBe(2)
     expect(calculateBlockVolumeMultiplier(3, 1)).toBe(4)
+    expect(calculateBlockVolumeMultiplier(3, 1, 3)).toBe(8)
     expect(calculateBlockAddQuantity(1, 1, 1)).toBe(1)
-    expect(calculateBlockTargetQuantity(1, 3, 1.5)).toBe(5.5)
+    expect(calculateBlockTargetQuantity(1, 3, 1.5)).toBe(6.25)
     // Passing the immutable parent quantity is deliberate: earlier Block
     // fills are subtracted from the next absolute target and never become
     // another count's base.
     expect(calculateBlockAddQuantity(2, 3, 1)).toBe(6)
     const immutableBase = 0.04
     let confirmedAdd = 0
-    const orderDeltas = [1, 2, 4, 7].map((count) => {
+    const orderDeltas = [1, 2, 3, 4].map((count) => {
       const delta = calculateBlockRemainingAddQuantity(
         immutableBase,
         count,
         0.35,
         confirmedAdd,
+        4,
       )
       confirmedAdd += delta
       return delta
     })
-    ;[0.014, 0.014, 0.028, 0.042].forEach((expected, index) => {
+    ;[0.014, 0.0189, 0.025515, 0.03444525].forEach((expected, index) => {
       expect(orderDeltas[index]).toBeCloseTo(expected, 12)
     })
-    expect(immutableBase + confirmedAdd).toBeCloseTo(0.138, 12)
+    expect(immutableBase + confirmedAdd).toBeCloseTo(0.13286025, 12)
     expect(calculateConfirmedBlockAddQuantity(
       orderDeltas.map((quantity) => ({ quantity })),
-    )).toBeCloseTo(0.098, 12)
+    )).toBeCloseTo(0.09286025, 12)
   })
 
-  test("uses the requested base=1, ratio=1.5, count=3 formula without cumulative over-add", () => {
+  test("compounds from the immutable origin without cumulative over-add", () => {
     const base = 1
-    const ratio = 1.5
+    const ratio = 1
+    const steps = 3
     let confirmedAdd = 0
     const deltas = [1, 2, 3].map((count) => {
-      const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd)
+      const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd, steps)
       confirmedAdd += delta
       return delta
     })
 
-    expect(deltas).toEqual([1.5, 1.5, 1.5])
-    expect(base + confirmedAdd).toBe(5.5)
-    expect(calculateBlockRemainingAddQuantity(base, 2, ratio, confirmedAdd)).toBe(0)
-
-    // Direct user formula: Base 5 plus three validated Blocks at ratio 1
-    // equals 5 + (3 × 5 × 1) = 20, never a compounded 40 or 80.
-    expect(calculateBlockTargetQuantity(5, 3, 1)).toBe(20)
+    expect(deltas).toEqual([1, 2, 4])
+    expect(base + confirmedAdd).toBe(8)
+    expect(calculateBlockRemainingAddQuantity(base, 2, ratio, confirmedAdd, steps)).toBe(0)
+    expect(calculateBlockTargetQuantity(5, 3, 1, steps)).toBe(40)
   })
 
   test("calculates a separate proportional minimum PF for every Block count", () => {
     const defaultPf = 1.2
-    const factor = 0.8
+    const factor = 1.1
     const thresholds = Array.from({ length: 10 }, (_, index) => {
       const count = index + 1
-      const volumeIncrement = calculateBlockVolumeIncrementRatio(count, 1)
+      const volumeIncrement = calculateBlockVolumeIncrementRatio(count, 1, 5)
       return calculateBlockMinimumProfitFactor(defaultPf, factor, volumeIncrement)
     })
-    expect(thresholds[0]).toBeCloseTo(1.16, 8)
-    expect(thresholds[9]).toBeCloseTo(2.6, 8)
-    expect(new Set(thresholds).size).toBe(10)
+    expect(thresholds[0]).toBeCloseTo(1.22, 8)
+    expect(thresholds[9]).toBeCloseTo(7.82, 8)
+    expect(new Set(thresholds).size).toBe(5)
     expect(calculateBlockMinimumProfitFactor(defaultPf, 0.01, 1)).toBeCloseTo(1.04, 8)
     expect(calculateBlockMinimumProfitFactor(defaultPf, 9, 1)).toBeCloseTo(2, 8)
   })
@@ -214,12 +220,12 @@ describe("independent Block count lifecycle", () => {
     (ratio) => {
       const positionBase = 2.4
       for (let blockCount = BLOCK_COUNT_MIN; blockCount <= BLOCK_COUNT_MAX; blockCount++) {
-        expect(calculateBlockAddQuantity(positionBase, blockCount, ratio)).toBeCloseTo(
-          positionBase * (blockCount * ratio),
+        expect(calculateBlockAddQuantity(positionBase, blockCount, ratio, 5)).toBeCloseTo(
+          positionBase * ((1 + ratio) ** Math.min(blockCount, 5) - 1),
           8,
         )
-        expect(calculateBlockVolumeIncrementRatio(blockCount, ratio)).toBeCloseTo(
-          blockCount * ratio,
+        expect(calculateBlockVolumeIncrementRatio(blockCount, ratio, 5)).toBeCloseTo(
+          (1 + ratio) ** Math.min(blockCount, 5) - 1,
           8,
         )
       }
@@ -227,16 +233,19 @@ describe("independent Block count lifecycle", () => {
   )
 
   test.each(["long", "short"] as const)(
-    "keeps every sequential %s Count delta additive to the immutable base",
+    "keeps every sequential %s Count delta compounded from the immutable base",
     (_direction) => {
       const base = 0.037
       const ratio = 0.65
+      const steps = 5
       let confirmedAdd = 0
       for (let count = BLOCK_COUNT_MIN; count <= BLOCK_COUNT_MAX; count++) {
-        const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd)
-        expect(delta).toBeCloseTo(base * ratio, 12)
+        const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd, steps)
+        const previousTarget = count === 1 ? 1 : (1 + ratio) ** Math.min(count - 1, steps)
+        const nextTarget = (1 + ratio) ** Math.min(count, steps)
+        expect(delta).toBeCloseTo(base * (nextTarget - previousTarget), 12)
         confirmedAdd += delta
-        expect(base + confirmedAdd).toBeCloseTo(base * (1 + count * ratio), 12)
+        expect(base + confirmedAdd).toBeCloseTo(base * nextTarget, 12)
       }
     },
   )
@@ -246,13 +255,22 @@ describe("independent Block count lifecycle", () => {
     const ratio = 0.4
     let confirmedAdd = 0
     const deltas = [5, 2, 12, 11].map((count) => {
-      const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd)
+      const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd, 5)
       confirmedAdd += delta
       return delta
     })
 
-    expect(deltas).toEqual([6, 0, 8.4, 0])
-    expect(base + confirmedAdd).toBeCloseTo(calculateBlockTargetQuantity(base, 12, ratio), 12)
+    expect(deltas[0]).toBeCloseTo(calculateBlockAddQuantity(base, 5, ratio, 5), 12)
+    expect(deltas.slice(1)).toEqual([0, 0, 0])
+    expect(base + confirmedAdd).toBeCloseTo(calculateBlockTargetQuantity(base, 12, ratio, 5), 12)
+  })
+
+  test("normalizes increment steps and migrates only the exact legacy PF sentinel", () => {
+    expect(normalizeBlockIncrementSteps(0)).toBe(1)
+    expect(normalizeBlockIncrementSteps(99)).toBe(5)
+    expect(calculateBlockEffectiveIncrementStep(12, 3)).toBe(3)
+    expect(normalizeBlockProfitFactorRatio(0.8)).toBe(1.1)
+    expect(normalizeBlockProfitFactorRatio(0.81)).toBe(0.81)
   })
 
   test("combines mirrored Real/Live activity without double-counting and caps each direction independently", () => {

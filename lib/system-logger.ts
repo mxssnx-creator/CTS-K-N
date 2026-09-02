@@ -1,4 +1,5 @@
 import { getRedisClient } from "./redis-db"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 interface LogEntry {
   id?: string
@@ -208,7 +209,13 @@ export class SystemLogger {
       // Fallback to legacy set if list is empty (migration period)
       if (!logIds || logIds.length === 0) {
         const setKey = category ? `logs:${category}` : "logs:all"
-        logIds = (await client.smembers(setKey).catch(() => [] as string[])).slice(-limit)
+        logIds = (await scanRedisSetMembers(client, setKey, {
+          count: 250,
+          // The list index is canonical. Legacy sets are only a migration
+          // fallback, so cap their compatibility read rather than issuing a
+          // blocking SMEMBERS on an unbounded historical log.
+          limit: Math.max(limit * 4, 1_000),
+        }).catch(() => [] as string[])).slice(-limit)
       }
 
       // Fetch bounded diagnostic rows concurrently. The previous sequential
@@ -259,7 +266,7 @@ export class SystemLogger {
       
       // Get IDs from both list and set
       const listIds = await client.lrange(listKey, 0, -1).catch(() => [] as string[])
-      const setIds = await client.smembers(setKey).catch(() => [] as string[])
+      const setIds = await scanRedisSetMembers(client, setKey, { count: 250 }).catch(() => [] as string[])
       const allIds = [...new Set([...listIds, ...setIds])]
 
       for (const logId of allIds) {

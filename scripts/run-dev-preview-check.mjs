@@ -23,11 +23,12 @@ const snapshotPath = `/tmp/cts-dev-preview-${process.pid}.json`
 const debugAdminSecret = `cts-dev-soak-${process.pid}-admin-secret`
 const runtimeStartedAt = new Date().toISOString()
 const runtimeBootId = `dev-preview_${Date.now()}_${process.pid}`
+const HIGH_SCALE_SYMBOL_STRESS_TARGET = 128
 const maxSymbolsRequested = process.argv.includes("--max-symbols")
 const fullSoakRequested = process.env.DEV_PREVIEW_FULL_SOAK === "1"
 const devSoakSymbolCount = maxSymbolsRequested
-  ? 32
-  : Math.max(1, Math.min(32, Number(process.env.DEV_SOAK_SYMBOL_COUNT || 12)))
+  ? HIGH_SCALE_SYMBOL_STRESS_TARGET
+  : Math.max(1, Math.min(1_000, Number(process.env.DEV_SOAK_SYMBOL_COUNT || 12)))
 // Cold Next compilation plus one exhaustive Base→Main→Real→Live pass grows
 // with the selected basket. Give the default command enough observation time
 // to prove at least three completed cycles instead of failing a healthy,
@@ -296,7 +297,7 @@ async function runSoakVerifier() {
         SYMBOL_COUNT: String(devSoakSymbolCount),
         SOAK_DURATION_MS: String(devSoakDurationMs),
         // Historic must finish *and* hand off to at least three observable
-        // Main cycles. The base 32-symbol window measures the complete cold
+        // Main cycles. The selected high-scale window measures the complete cold
         // load; this bounded grace covers only the productive post-Historic
         // transition and exits as soon as its existing criteria are met.
         SOAK_PRODUCTIVE_COMPLETION_GRACE_MS:
@@ -333,7 +334,7 @@ async function runSoakVerifier() {
 // preservation (the dev-preview regression), and endpoint health — without the
 // unbounded key growth that exhausts an in-process Redis in a constrained box.
 async function runSmokeVerifier() {
-  const SYMBOLS = [
+  const baseSymbols = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
     "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
     "UNIUSDT", "NEARUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT",
@@ -341,6 +342,20 @@ async function runSmokeVerifier() {
     "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
     "ICPUSDT", "HBARUSDT",
   ].slice(0, Math.max(1, devSoakSymbolCount))
+  let symbols = baseSymbols
+  if (symbols.length < devSoakSymbolCount) {
+    const top = await requestJson(
+      `/api/exchange/bingx/top-symbols?sort=volume&limit=${devSoakSymbolCount}&t=${Date.now()}`,
+    )
+    symbols = Array.isArray(top?.symbolList)
+      ? top.symbolList.map(String)
+      : Array.isArray(top?.symbols)
+        ? top.symbols.map((entry) => String(entry?.symbol || "")).filter(Boolean)
+        : []
+  }
+  if (symbols.length !== devSoakSymbolCount || new Set(symbols).size !== devSoakSymbolCount) {
+    throw new Error(`Dev symbol discovery returned ${symbols.length}/${devSoakSymbolCount} unique symbols`)
+  }
   const connectionId = await resolveAuditConnectionId()
   const quickStart = await requestJson("/api/trade-engine/quick-start", {
     method: "POST",
@@ -348,8 +363,8 @@ async function runSmokeVerifier() {
     body: JSON.stringify({
       action: "enable",
       connectionId,
-      symbolCount: SYMBOLS.length,
-      symbols: SYMBOLS,
+      symbolCount: symbols.length,
+      symbols,
       liveTrade: false,
       is_live_trade: false,
       baseProfitFactor: 1,
@@ -365,10 +380,10 @@ async function runSmokeVerifier() {
     ? quickStart.connection.symbols.map(String)
     : []
   if (
-    configuredSymbols.length !== SYMBOLS.length ||
-    configuredSymbols.some((symbol, index) => symbol !== SYMBOLS[index])
+    configuredSymbols.length !== symbols.length ||
+    configuredSymbols.some((symbol, index) => symbol !== symbols[index])
   ) {
-    throw new Error(`QuickStart did not preserve the requested ${SYMBOLS.length}-symbol set`)
+    throw new Error(`QuickStart did not preserve the requested ${symbols.length}-symbol set`)
   }
   if (quickStart?.connection?.liveTradeRequested !== false || quickStart?.connection?.liveTradeEnabled !== false) {
     throw new Error("Safe smoke unexpectedly enabled live exchange trading")
@@ -392,7 +407,7 @@ async function runSmokeVerifier() {
     }
     await new Promise((resolve) => setTimeout(resolve, 1500))
   }
-  return { symbols: SYMBOLS.length }
+  return { symbols: symbols.length }
 }
 
 async function stopServer(child) {
@@ -489,7 +504,7 @@ async function main() {
       // explicitly supplies PREHISTORIC_RANGE_HOURS.
       PREHISTORIC_RANGE_HOURS:
         process.env.DEV_PREHISTORIC_RANGE_HOURS || "1",
-      // The measured 32-symbol development plateau is roughly 5.1-6.0 GiB.
+      // The measured legacy 32-symbol development plateau is roughly 5.1-6.0 GiB.
       // A 5 GiB soft boundary therefore classified the normal working set as
       // critical and forced continuous throttling/collection. Keep adequate
       // headroom above that plateau while leaving the independent 7 GiB
@@ -504,7 +519,7 @@ async function main() {
       // Keep non-critical Major collections outside the API p95 sampling
       // majority. Even a five-minute cadence aligns enough multi-second
       // stop-the-world phases with UI refreshes to fill the entire p95 tail in
-      // a 20-minute 32-symbol run. The per-symbol admission guard still
+      // a bounded high-scale run. The per-symbol admission guard still
       // collects immediately at high/critical pressure, and the independent
       // 8 GiB hard boundary remains the crash barrier.
       CTS_MAINTENANCE_GC_INTERVAL_MS:

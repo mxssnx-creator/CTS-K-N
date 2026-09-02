@@ -62,7 +62,7 @@ describe("production launcher shutdown", () => {
     )
     expect(source).toContain("process.env.SOAK_SYMBOLS")
     expect(source).toContain("new Set(configuredSoakSymbols).size")
-    expect(source).toContain("SOAK_SYMBOLS must contain 1-32 unique normalized symbols")
+    expect(source).toContain("SOAK_SYMBOLS must contain 1-${EXCHANGE_SYMBOL_COUNT_MAX} unique normalized symbols")
     expect(source).toContain("? configuredSoakSymbols")
   })
 })

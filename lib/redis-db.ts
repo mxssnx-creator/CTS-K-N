@@ -28,6 +28,7 @@ import {
   LIVE_TERMINAL_RETENTION_SECONDS,
   liveRetentionSecondsForStatus,
 } from "./redis-retention"
+import { buildLivePositionCompatibilitySnapshot } from "./live-position-mirror"
 
 /**
  * Redis Database Layer - High Performance Edition v3.0
@@ -328,6 +329,8 @@ export interface RedisClientLike {
   sadd(key: string, ...members: string[]): Promise<number>
   scard(key: string): Promise<number>
   smembers(key: string): Promise<string[]>
+  /** Bounded set-member scan used by retention repair; avoids SMEMBERS spikes. */
+  sscan?(key: string, cursor: string | number, ...args: any[]): Promise<{ cursor: string; members: string[] } | [string, string[]]>
   sismember(key: string, member: string): Promise<number>
   srem(key: string, ...members: string[]): Promise<number>
   expire(key: string, seconds: number): Promise<number>
@@ -976,7 +979,10 @@ export class InlineLocalRedis implements RedisClientLike {
       }
 
       this.data.hashes.set(hashKey, normalizeRedisHash(position))
-      this.data.strings.set(jsonKey, JSON.stringify(position))
+      this.data.strings.set(
+        jsonKey,
+        JSON.stringify(buildLivePositionCompatibilitySnapshot(position)),
+      )
       const terminalRetentionSeconds = liveRetentionSecondsForStatus(position.status)
       if (terminalRetentionSeconds !== null) {
         const expiresAt = Date.now() + terminalRetentionSeconds * 1000
@@ -2821,6 +2827,18 @@ export class InlineLocalRedis implements RedisClientLike {
     return Array.from(this.data.sets.get(key) || new Set())
   }
 
+  async sscan(key: string, cursor: string | number, ...args: any[]): Promise<[string, string[]]> {
+    this.trackOperation()
+    if (this.isExpired(key)) return ["0", []]
+    const members = Array.from(this.data.sets.get(key) || new Set<string>()) as string[]
+    const options = normalizeScanOptions(args)
+    const count = Math.max(1, Number(options.COUNT || 10))
+    const start = Math.max(0, Number(cursor) || 0)
+    const page = members.slice(start, start + count)
+    const next = start + page.length >= members.length ? "0" : String(start + page.length)
+    return [next, page]
+  }
+
   async sismember(key: string, member: string): Promise<number> {
     if (this.isExpired(key)) return 0
     const set = this.data.sets.get(key)
@@ -3046,7 +3064,10 @@ export class InlineLocalRedis implements RedisClientLike {
   }
 
   async keys(pattern: string): Promise<string[]> {
-    return this.matchKeys(pattern)
+    // Keep the legacy API surface, but do not materialize the complete backing
+    // maps before returning. The SCAN implementation yields bounded pages and
+    // applies the same expiration filtering while preserving key coverage.
+    return scanRedisKeys(this, pattern, { count: 500 })
   }
 
   /**
@@ -3508,6 +3529,10 @@ class NodeRedisClientAdapter implements RedisClientLike {
   async sadd(key: string, ...members: string[]) { return await (await this.c()).sAdd(key, members) }
   async scard(key: string) { return await (await this.c()).sCard(key) }
   async smembers(key: string) { return await (await this.c()).sMembers(key) }
+  async sscan(key: string, cursor: string | number, ...args: any[]) {
+    const options = normalizeScanOptions(args)
+    return await (await this.c()).sScan(key, String(cursor), options)
+  }
   async sismember(key: string, member: string) { return await (await this.c()).sIsMember(key, member) ? 1 : 0 }
   async srem(key: string, ...members: string[]) { return await (await this.c()).sRem(key, members) }
   async expire(key: string, seconds: number) { return await (await this.c()).expire(key, seconds) }
@@ -3523,7 +3548,9 @@ class NodeRedisClientAdapter implements RedisClientLike {
   async rpop(key: string) { return await (await this.c()).rPop(key) }
   async eval(script: string, options: { keys: string[]; arguments: string[] }) { return await (await this.c()).eval(script, options) }
   async dbSize() { return await (await this.c()).dbSize() }
-  async keys(pattern: string) { return await (await this.c()).keys(pattern) }
+  // Legacy callers still receive a complete array, but the network operation
+  // is now incremental SCAN rather than a blocking Redis KEYS command.
+  async keys(pattern: string) { return await scanRedisKeys(this, pattern, { count: 500 }) }
   async scan(cursor: string | number, ...args: any[]) {
     const options = normalizeScanOptions(args)
     return await (await this.c()).scan(String(cursor), options)
@@ -3676,6 +3703,14 @@ class UpstashRestRedisClient implements RedisClientLike {
   async sadd(key: string, ...members: string[]) { return await this.command<number>(["SADD", key, ...members]) }
   async scard(key: string) { return await this.command<number>(["SCARD", key]) }
   async smembers(key: string) { return await this.command<string[]>(["SMEMBERS", key]) }
+  async sscan(key: string, cursor: string | number, ...args: any[]) {
+    const options = normalizeScanOptions(args)
+    const command: Array<string | number> = ["SSCAN", key, cursor]
+    if (options.MATCH) command.push("MATCH", options.MATCH)
+    if (options.COUNT) command.push("COUNT", options.COUNT)
+    const result = await this.command<any>(command)
+    return Array.isArray(result) ? [String(result[0] ?? "0"), (result[1] || []) as string[]] : result
+  }
   async sismember(key: string, member: string) { return await this.command<number>(["SISMEMBER", key, member]) }
   async srem(key: string, ...members: string[]) { return await this.command<number>(["SREM", key, ...members]) }
   async expire(key: string, seconds: number) { return await this.command<number>(["EXPIRE", key, seconds]) }
@@ -3691,7 +3726,9 @@ class UpstashRestRedisClient implements RedisClientLike {
   async rpop(key: string) { return await this.command<string | null>(["RPOP", key]) }
   async eval(script: string, options: { keys: string[]; arguments: string[] }) { return await this.command<any>(["EVAL", script, options.keys.length, ...options.keys, ...options.arguments]) }
   async dbSize() { return await this.command<number>(["DBSIZE"]) }
-  async keys(pattern: string) { return await this.command<string[]>(["KEYS", pattern]) }
+  // Legacy callers still receive a complete array, but avoid issuing the
+  // blocking KEYS command against a production keyspace.
+  async keys(pattern: string) { return await scanRedisKeys(this, pattern, { count: 500 }) }
   async scan(cursor: string | number, ...args: any[]) {
     const options = normalizeScanOptions(args)
     const cmd: Array<string | number> = ["SCAN", cursor]
@@ -3897,9 +3934,8 @@ export async function cleanupVolatileRuntimeState({
   const staleMs = Number(process.env.VOLATILE_STATE_STALE_MS || process.env.REDIS_VOLATILE_STALE_MS || 6 * 60 * 60 * 1000)
   const ownerFreshMs = Number(process.env.VOLATILE_STATE_OWNER_FRESH_MS || process.env.PROCESSOR_HEARTBEAT_FRESH_MS || 90_000)
   const now = Date.now()
-  const allKeys = await client.keys("*").catch(() => [] as string[])
-  const toDelete: string[] = []
   let preserved = 0
+  let deleted = 0
   const activeOwnerSafe = mode === "activeOwnerSafe"
   const activeOwnerCache = new Map<string, boolean>()
 
@@ -3953,29 +3989,62 @@ export async function cleanupVolatileRuntimeState({
     return fresh
   }
 
-  for (const key of allKeys) {
-    let del = false
-    if (key.startsWith("live:position:") || key.startsWith("live:positions:") || key.startsWith("settings:live:")) {
-      del = key.startsWith("live:position:tracking:") || key.includes(":moved:")
-    } else if (key.startsWith("live:lock:") || key.startsWith("prehistoric_loaded:") || key.startsWith("prehistoric:progress:")) {
-      del = await staleStringKey(key)
-    } else if (
-      key.startsWith("pseudo_position:") || key.startsWith("pseudo_positions:") ||
-      key.startsWith("settings:pseudo_position") || key.startsWith("settings:pseudo_positions:") ||
-      key.startsWith("indication_set:") || key.startsWith("indication_outcomes_pending:") ||
-      key.startsWith("strategies:") || key.startsWith("settings:strategies")
-    ) {
-      const connectionId = extractPipelineConnectionId(key)
-      del = !(activeOwnerSafe && connectionId && await hasFreshOwner(connectionId))
+  // The old fallback called KEYS("*") and retained the complete production
+  // keyspace in one Node array. At 860k keys that alone can consume hundreds
+  // of MB and block Redis while the app is trying to boot. Stream SCAN pages
+  // and release each deletion batch before reading the next page.
+  const scanCount = finiteEnvNumber("CTS_REDIS_STARTUP_SCAN_COUNT", 500, 100, 2_000)
+  let cursor = "0"
+  let pages = 0
+  const visitedCursors = new Set<string>()
+  do {
+    if (visitedCursors.has(cursor)) break
+    visitedCursors.add(cursor)
+    let page: { cursor: string; keys: string[] }
+    if (typeof client.scan === "function") {
+      const result = await client.scan(cursor, "MATCH", "*", "COUNT", scanCount)
+      page = Array.isArray(result)
+        ? { cursor: String(result[0] ?? "0"), keys: Array.isArray(result[1]) ? result[1].map(String) : [] }
+        : { cursor: String(result?.cursor ?? "0"), keys: Array.isArray(result?.keys) ? result.keys.map(String) : [] }
+    } else {
+      // All production adapters expose SCAN. Keep a bounded compatibility
+      // fallback for minimal third-party/test clients rather than silently
+      // materialising an unbounded deletion queue.
+      const fallbackKeys = await client.keys("*").catch(() => [] as string[])
+      page = { cursor: "0", keys: fallbackKeys.slice(0, scanCount).map(String) }
     }
-    if (del) toDelete.push(key)
-    else preserved++
-  }
 
-  let deleted = 0
-  for (let i = 0; i < toDelete.length; i += 500) {
-    deleted += await client.del(...toDelete.slice(i, i + 500)).catch(() => 0)
-  }
+    const toDelete: string[] = []
+    for (const key of page.keys) {
+      let shouldDelete = false
+      if (key.startsWith("live:position:") || key.startsWith("live:positions:") || key.startsWith("settings:live:")) {
+        shouldDelete = key.startsWith("live:position:tracking:") || key.includes(":moved:")
+      } else if (key.startsWith("live:lock:") || key.startsWith("prehistoric_loaded:") || key.startsWith("prehistoric:progress:")) {
+        shouldDelete = await staleStringKey(key)
+      } else if (
+        key.startsWith("pseudo_position:") || key.startsWith("pseudo_positions:") ||
+        key.startsWith("settings:pseudo_position") || key.startsWith("settings:pseudo_positions:") ||
+        key.startsWith("indication_set:") || key.startsWith("indication_outcomes_pending:") ||
+        key.startsWith("strategies:") || key.startsWith("settings:strategies")
+      ) {
+        const connectionId = extractPipelineConnectionId(key)
+        shouldDelete = !(activeOwnerSafe && connectionId && await hasFreshOwner(connectionId))
+      }
+      if (shouldDelete) toDelete.push(key)
+      else preserved++
+    }
+    if (toDelete.length > 0) {
+      deleted += await client.del(...toDelete).catch(() => 0)
+    }
+    cursor = page.cursor
+    pages++
+    if (cursor !== "0" && pages % 8 === 0) {
+      await new Promise<void>((resolve) => {
+        if (typeof setImmediate === "function") setImmediate(resolve)
+        else setTimeout(resolve, 0)
+      })
+    }
+  } while (cursor !== "0")
   if (deleted > 0) console.log(`[v0] [Redis] Volatile startup cleanup (${reason}): deleted ${deleted} keys, preserved ${preserved}`)
   return { deleted, preserved }
 }
@@ -5028,7 +5097,10 @@ export async function withSharedPersistenceLease<T>(
 export async function getAllSettings(): Promise<Record<string, any>> {
   await initRedis()
   const client = getClient()
-  const keys = await client.keys("settings:*")
+  // Settings reads can be triggered by dashboards and startup checks. Keep
+  // the legacy namespace fallback non-blocking even when the store contains
+  // hundreds of thousands of runtime keys.
+  const keys = await scanRedisKeys(client, "settings:*", { count: 250 })
   if (keys.length === 0) return {}
 
   // Fan out every hgetall in parallel — sequential awaits compounded
@@ -5428,15 +5500,17 @@ export async function savePosition(position: any): Promise<void> {
       // written before this snapshot expires and remain the stats source.
       await client.set(
         liveKey,
-        JSON.stringify(position),
+        JSON.stringify(buildLivePositionCompatibilitySnapshot(position)),
         isTerminalLivePosition
           ? { EX: terminalRetentionSeconds || LIVE_TERMINAL_RETENTION_SECONDS }
-          : { EX: 7 * 24 * 60 * 60 },
+          : undefined,
       )
+      if (!isTerminalLivePosition) await client.persist(liveKey).catch(() => 0)
     } catch {
       // Some adapters do not support expiration options; retaining the
       // snapshot is safer than dropping accounting history.
-      await client.set(liveKey, JSON.stringify(position))
+      await client.set(liveKey, JSON.stringify(buildLivePositionCompatibilitySnapshot(position)))
+      if (!isTerminalLivePosition) await client.persist(liveKey).catch(() => 0)
     }
 
 	    const connId = position.connectionId || position.connection_id || "unknown"
@@ -6304,7 +6378,7 @@ export async function getIndications(connectionId?: string, symbol?: string): Pr
 
       // Upgrade fallback for pre-snapshot installations.
       const pattern = `indications:${connectionId}:*`
-      const keys = await client.keys(pattern)
+      const keys = await scanRedisKeys(client, pattern, { count: 250 })
       
       for (const key of keys) {
         // Only process keys that are symbol-specific lists: indications:{connectionId}:{symbol}

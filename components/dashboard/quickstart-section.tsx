@@ -30,6 +30,10 @@ import {
   QUICKSTART_UI_MAX_SYMBOLS,
 } from "@/lib/quickstart-timeouts"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
+import {
+  HIGH_SCALE_SYMBOL_STRESS_TARGET,
+  clampExchangeSymbolCount,
+} from "@/lib/symbol-capacity"
 
 const toBooleanFlag = (value: unknown): boolean =>
   value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
@@ -444,7 +448,7 @@ export function QuickstartSection() {
   const [stats, setStats] = useState<LiveStats>(EMPTY_STATS)
   const [loadingStats, setLoadingStats] = useState(false)
 
-  // Quickstart controls — how many top-volatile symbols to process (1-32)
+  // Quickstart controls — how many top-volatile symbols to process.
   // and whether live exchange trading is currently enabled for the connection.
   // SSR-safe default; restored from localStorage in the mount effect below.
   const [symbolCount, setSymbolCount] = useState<number>(DEFAULT_SYMBOL_COUNT)
@@ -898,7 +902,7 @@ export function QuickstartSection() {
       const effectiveLiveTrade = liveTradeUiFlag(conn)
       setLiveTradeActive(effectiveLiveTrade)
 
-      const clampedCount = Math.max(1, Math.min(QUICKSTART_UI_MAX_SYMBOLS, symbolCount))
+      const clampedCount = clampExchangeSymbolCount(symbolCount, DEFAULT_SYMBOL_COUNT)
       addLog(
         clampedCount === 1
           ? "Fetching most volatile symbol (24h)..."
@@ -1135,7 +1139,7 @@ export function QuickstartSection() {
       const sc = localStorage.getItem("qs:symbolCount")
       if (sc) {
         const n = parseInt(sc, 10)
-        if (Number.isFinite(n)) setSymbolCount(Math.max(1, Math.min(32, n || 10)))
+        if (Number.isFinite(n)) setSymbolCount(clampExchangeSymbolCount(n, DEFAULT_SYMBOL_COUNT))
       }
       const ac = localStorage.getItem("qs:activeConnectionId")
       if (ac) {
@@ -1395,7 +1399,16 @@ export function QuickstartSection() {
             >
               −
             </Button>
-            <span className="text-xs font-semibold tabular-nums w-4 text-center">{symbolCount}</span>
+            <input
+              aria-label="QuickStart symbol count"
+              className="h-5 w-12 rounded border bg-background px-1 text-center text-xs font-semibold tabular-nums"
+              type="number"
+              min={1}
+              max={QUICKSTART_UI_MAX_SYMBOLS}
+              value={symbolCount}
+              disabled={isRunning || starting}
+              onChange={(event) => setSymbolCount(clampExchangeSymbolCount(event.target.value, symbolCount))}
+            />
             <Button
               size="sm"
               variant="ghost"
@@ -1406,6 +1419,18 @@ export function QuickstartSection() {
             >
               +
             </Button>
+            {[32, HIGH_SCALE_SYMBOL_STRESS_TARGET, QUICKSTART_UI_MAX_SYMBOLS].map((count) => (
+              <Button
+                key={count}
+                size="sm"
+                variant={symbolCount === count ? "secondary" : "ghost"}
+                className="h-5 px-1 text-[9px]"
+                onClick={() => setSymbolCount(count)}
+                disabled={isRunning || starting}
+              >
+                {count === QUICKSTART_UI_MAX_SYMBOLS ? "All" : count}
+              </Button>
+            ))}
           </div>
 
           {/* Live exchange-trading toggle — fires /api/settings/connections/[id]/live-trade */}

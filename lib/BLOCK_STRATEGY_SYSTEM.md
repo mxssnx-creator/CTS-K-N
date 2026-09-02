@@ -40,7 +40,9 @@ post-position pause lifecycle.
 For an existing live position:
 
 ```text
-targetAddQty = generalBaseQty × (blockCount × blockVolumeRatio)
+effectiveStep = min(blockCount, blockIncrementSteps)
+targetMultiplier = (1 + blockVolumeRatio)^effectiveStep
+targetAddQty = generalBaseQty × (targetMultiplier - 1)
 targetBlockQty = generalBaseQty + targetAddQty
 confirmedBlockAddQty = sum(confirmed Block leg fills)
 nextOrderQty = max(0, targetAddQty - confirmedBlockAddQty)
@@ -77,11 +79,14 @@ count's actual volume increment:
 
 ```text
 blockMinPF = 1 + ((defaultMinPF - 1) × blockProfitFactorRatio × blockVolumeIncrement)
-blockVolumeIncrement = blockCount × blockVolumeRatio
+blockVolumeIncrement = (1 + blockVolumeRatio)^min(blockCount, blockIncrementSteps) - 1
 ```
 
 `blockProfitFactorRatio` is configurable from `0.2..5.0` and defaults to
-`0.8`. The exact Block Set reads the same latest-closed-position window and
+`1.1`. `blockIncrementSteps` is configurable from `1..5` and defaults to `2`.
+Counts above that physical increment cap remain independent Real Rows for
+evaluation, statistics, and attribution, but cannot submit duplicate add
+orders for an already-covered target. The exact Block Set reads the same latest-closed-position window and
 uses the same minimum-sample threshold as the normal coordinate calculation. A
 cold enabled lane starts immediately from the matching normal coordinate, with
 no private Block progression. Once its own window is mature, its effective

@@ -60,7 +60,7 @@ describe("BingX environment migration safety", () => {
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
 
       expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("1")
       expect(await client.hget("connection:bingx-x01", "api_key")).toBe("vst-api-key-long-enough")
@@ -68,12 +68,12 @@ describe("BingX environment migration safety", () => {
 
       process.env.BINGX_ENVIRONMENT = "prod-live"
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
       expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("0")
 
       process.env.BINGX_ENVIRONMENT = "prod-vst"
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
       expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("1")
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -101,7 +101,7 @@ describe("BingX environment migration safety", () => {
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
       expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("1")
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -131,7 +131,7 @@ describe("BingX environment migration safety", () => {
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
 
       expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
       expect(await client.hget("connection:bingx-x02", "is_predefined")).toBe("1")
@@ -152,7 +152,7 @@ describe("BingX environment migration safety", () => {
 
       process.env.BINGX_ENVIRONMENT = "prod-live"
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 105 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
       expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
       expect(await client.hget("connection:bingx-x02", "environment")).toBe("prod-vst")
       expect(await client.hget("connection:bingx-x02", "base_url")).toBe("https://open-api-vst.bingx.com")

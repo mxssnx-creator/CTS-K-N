@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getRedisClient, getConnection, initRedis } from "@/lib/redis-db"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
+import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function GET(req: NextRequest) {
@@ -52,7 +53,11 @@ export async function GET(req: NextRequest) {
     // Only use if progression hash has no data yet (engine just started).
     if (baseSetCount === 0 && mainSetCount === 0) {
       try {
-        const strategyKeys = await redis.keys(`settings:strategies:${connectionId}:*:sets`)
+        const strategyKeys = await scanRedisKeys(
+          redis,
+          `settings:strategies:${connectionId}:*:sets`,
+          { count: 100 },
+        )
         for (const key of strategyKeys) {
           const hash = await redis.hgetall(key) || {}
           const count = parseInt(hash.count || "0", 10)
@@ -118,7 +123,11 @@ export async function GET(req: NextRequest) {
     //   pseudo_position:{connectionId}:{id}  → Redis hash per position
     let positionsCount = 0
     try {
-      const posIds = await redis.smembers(`pseudo_positions:${connectionId}`) || []
+      const posIds = await scanRedisSetMembers(
+        redis,
+        `pseudo_positions:${connectionId}`,
+        { count: 250 },
+      )
       for (const posId of posIds) {
         const hash = await redis.hgetall(`pseudo_position:${connectionId}:${posId}`) || {}
         if (hash.status === "open") positionsCount++
@@ -126,7 +135,11 @@ export async function GET(req: NextRequest) {
       // Also check stage-specific position sets
       if (positionsCount === 0) {
         for (const stage of ["base", "main", "real", "live"]) {
-          const stageIds = await redis.smembers(`${stage}_pseudo_positions:${connectionId}`).catch(() => [] as string[])
+          const stageIds = await scanRedisSetMembers(
+            redis,
+            `${stage}_pseudo_positions:${connectionId}`,
+            { count: 250 },
+          ).catch(() => [])
           for (const posId of stageIds) {
             const hash = (await redis.hgetall(`${stage}_pseudo_position:${connectionId}:${posId}`).catch(() => ({}))) as Record<string, any> || {}
             if ((hash as any).status === "open") positionsCount++

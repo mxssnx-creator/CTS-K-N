@@ -13,14 +13,15 @@ const distDir = process.env.NEXT_DIST_DIR || ".next-prod"
 let outputTail = ""
 let previewRedisEnvironment = {}
 const snapshotPath = `/tmp/cts-prod-preview-${process.pid}.json`
-const UI_MAX_SYMBOLS = 32
+const HIGH_SCALE_SYMBOL_STRESS_TARGET = 128
+const UI_MAX_SYMBOLS = HIGH_SCALE_SYMBOL_STRESS_TARGET
 const PREVIEW_CRON_SECRET = "prod-preview-cron-secret-1234567890"
 const maxSymbolsRequested = process.argv.includes("--max-symbols")
 const uiOnlyRequested = process.argv.includes("--ui-only")
 const productionSoakSymbolCount = maxSymbolsRequested || uiOnlyRequested
   ? UI_MAX_SYMBOLS
   : Math.max(1, Math.min(UI_MAX_SYMBOLS, Number(process.env.PROD_SOAK_SYMBOL_COUNT || 12)))
-const soakSymbols = [
+const baseSoakSymbols = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
   "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
   "UNIUSDT", "NEARUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT",
@@ -102,7 +103,7 @@ function runPostDeployVerifier() {
   })
 }
 
-function runSoakVerifier() {
+function runSoakVerifier(symbols) {
   return new Promise((resolve, reject) => {
     const verifier = spawn(process.execPath, ["scripts/verify-prod-soak.mjs"], {
       cwd: process.cwd(),
@@ -113,6 +114,7 @@ function runSoakVerifier() {
         PORT: String(port),
         START_SIMULATED_ENGINE: "1",
         SYMBOL_COUNT: String(productionSoakSymbolCount),
+        SOAK_SYMBOLS: symbols.join(","),
         SOAK_DURATION_MS: process.env.PROD_SOAK_DURATION_MS || (maxSymbolsRequested ? "240000" : "120000"),
         RUNTIME_MODE: "production",
       },
@@ -155,6 +157,29 @@ async function requestJson(pathname, options = {}) {
   const text = await response.text()
   if (!response.ok) throw new Error(`${options.method || "GET"} ${pathname} returned ${response.status}: ${text.slice(0, 300)}`)
   return JSON.parse(text)
+}
+
+async function resolveProductionSoakSymbols() {
+  if (baseSoakSymbols.length >= productionSoakSymbolCount) {
+    return baseSoakSymbols.slice(0, productionSoakSymbolCount)
+  }
+  const top = await requestJson(
+    `/api/exchange/bingx/top-symbols?sort=volume&limit=${productionSoakSymbolCount}&t=${Date.now()}`,
+  )
+  const symbols = Array.isArray(top?.symbolList)
+    ? top.symbolList.map(String)
+    : Array.isArray(top?.symbols)
+      ? top.symbols.map((entry) => String(entry?.symbol || "")).filter(Boolean)
+      : []
+  if (
+    symbols.length !== productionSoakSymbolCount ||
+    new Set(symbols).size !== productionSoakSymbolCount
+  ) {
+    throw new Error(
+      `Production soak discovery returned ${symbols.length}/${productionSoakSymbolCount} unique symbols`,
+    )
+  }
+  return symbols
 }
 
 function startServer({ engines = false } = {}) {
@@ -492,6 +517,7 @@ async function main() {
     // writing while the newly selected basket is already active. This setup is
     // also a restart-persistence assertion for QuickStart settings: the third
     // process must auto-start directly on this exact paper-only basket.
+    const soakSymbols = await resolveProductionSoakSymbols()
     const preconfigured = await requestJson("/api/trade-engine/quick-start", {
       method: "POST",
       body: JSON.stringify({
@@ -534,7 +560,7 @@ async function main() {
     if (engineBoot.siteInstanceId !== before.siteInstanceId) {
       throw new Error("Site identity rotated before simulated engine soak")
     }
-    await runSoakVerifier()
+    await runSoakVerifier(soakSymbols)
     const crashRecovery = await verifyOpenPositionCrashRecovery(engineServer, after.connectionId, before.siteInstanceId)
     engineServer = crashRecovery.server
     const databaseRequestRates = await verifyDatabaseActivityMetrics()
@@ -552,7 +578,7 @@ async function main() {
       crashRecoveryVerified: true,
       ...crashRecovery.details,
       databaseRequestRates,
-      simulatedEngineSymbols: productionSoakSymbolCount,
+      simulatedEngineSymbols: soakSymbols.length,
       productionUiMaxSymbolsVerified: maxSymbolsRequested,
       redisBackend: redisHarness.kind,
       realExchangeOrdersSubmitted: 0,

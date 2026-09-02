@@ -11,6 +11,7 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { setSettings } from "@/lib/redis-db"
 import { canonicalForcedSymbols } from "@/lib/forced-symbols"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 export interface ProductionSeedOptions {
   seedSettings?: boolean
@@ -141,7 +142,7 @@ async function seedPredefinedConnections(): Promise<void> {
     // existing state. Rebuild the list cache instead of reseeding defaults;
     // otherwise a page-triggered /api/system/initialize can overwrite live
     // operator connection flags when all_connections is missing/stale.
-    const existingConnectionKeys = ((await client.keys("connection:*").catch(() => [])) || [])
+    const existingConnectionKeys = (await scanRedisKeys(client, "connection:*", { count: 250 }).catch(() => []))
       .filter((key: string) =>
         !key.includes(":settings:") &&
         !key.includes(":stats:") &&
@@ -311,11 +312,11 @@ export async function forceReseedProductionData(): Promise<void> {
     const keysToClear = [
       "app_settings",
       "all_connections",
-      ...(await client.keys("market_data:*")),
-      ...(await client.keys("progression:*")),
-      ...(await client.keys("trade_engine_state:*")),
-      ...(await client.keys("settings:*")),
-      ...(await client.keys("connection:*")),
+      ...(await scanRedisKeys(client, "market_data:*", { count: 250 })),
+      ...(await scanRedisKeys(client, "progression:*", { count: 250 })),
+      ...(await scanRedisKeys(client, "trade_engine_state:*", { count: 250 })),
+      ...(await scanRedisKeys(client, "settings:*", { count: 250 })),
+      ...(await scanRedisKeys(client, "connection:*", { count: 250 })),
     ]
     
     if (keysToClear.length > 0) {

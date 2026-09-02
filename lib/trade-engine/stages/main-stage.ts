@@ -11,6 +11,7 @@ import {
   getRuntimeCapabilityConcurrency,
   getRuntimeConcurrencyProfile,
 } from "@/lib/runtime-concurrency-profile"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 const LOG_PREFIX = "[v0] [MainPositionStage]"
 
@@ -327,13 +328,19 @@ export async function getMainPositions(connectionId: string): Promise<MainPositi
   const client = getRedisClient()
 
   try {
-    const ids = ((await client.smembers(`main:positions:index:${connectionId}`).catch(() => [])) || []) as string[]
+    const ids = await scanRedisSetMembers(
+      client,
+      `main:positions:index:${connectionId}`,
+      { count: 250 },
+    ).catch(() => [])
     if (ids.length === 0) return []
 
     // Batch GETs from the explicit index. Avoid Redis KEYS here: this accessor
     // runs in engine/runtime paths and may be polled frequently.
-    const rawValues = await Promise.all(
-      ids.map((id: string) => client.get(`main:position:${id}`).catch(() => null)),
+    const rawValues = await mapWithConcurrency(
+      ids,
+      32,
+      (id: string) => client.get(`main:position:${id}`).catch(() => null),
     )
     const positions: MainPosition[] = []
     for (const data of rawValues) {

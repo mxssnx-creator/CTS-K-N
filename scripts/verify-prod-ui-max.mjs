@@ -1,27 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * Replays the production QuickStart UI workflow at its 32-symbol maximum.
+ * Replays the production QuickStart UI workflow with a 128-symbol high-scale basket.
  *
  * Safety: the live toggle is forced off before and during QuickStart, and the
  * verifier fails if the API exposes any real exchange position.
  */
 
 const BASE_URL = process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT || 3102}`
-const UI_MAX_SYMBOLS = 32
+const UI_MAX_SYMBOLS = 128
 const QUICKSTART_UI_TIMEOUT_MS = 35_000
-const PROGRESSION_TIMEOUT_MS = Math.max(30_000, Number(process.env.PROD_UI_PROGRESSION_TIMEOUT_MS || 90_000))
+const PROGRESSION_TIMEOUT_MS = Math.max(
+  30_000,
+  Number(process.env.PROD_UI_PROGRESSION_TIMEOUT_MS || UI_MAX_SYMBOLS * 7_500),
+)
 // A resumed max-symbol engine may be finishing one complete, CPU-heavy
 // indication/strategy matrix.  The engine deliberately keeps that work
 // single-flight instead of cancelling and overlapping it, so a 30-second
-// control-plane poll is not a valid liveness bound for the 32-symbol case.
+// control-plane poll is not a valid liveness bound for a high-scale case.
 // Keep the bound finite and explicit; this only changes verifier patience,
 // never engine concurrency or order execution.
 const configuredResumeTimeout = Number(process.env.PROD_UI_RESUME_TIMEOUT_MS)
 const RESUME_PROGRESSION_TIMEOUT_MS = Math.max(
   PROGRESSION_TIMEOUT_MS,
   Number.isFinite(configuredResumeTimeout) && configuredResumeTimeout >= 30_000
-    ? Math.min(configuredResumeTimeout, 300_000)
+    ? Math.min(configuredResumeTimeout, 30 * 60_000)
     : UI_MAX_SYMBOLS * 7_500,
 )
 const UI_PAGE_PATHS = [
@@ -385,7 +388,7 @@ async function main() {
     }
 
     // Keep the edit/readback phase independent from engine startup. QuickStart
-    // below is the sole owner of the 32-symbol processing transition.
+    // below is the sole owner of the high-scale processing transition.
     await request(`/api/settings/connections/${encodeURIComponent(connectionId)}/toggle-dashboard`, {
       method: "POST",
       body: { is_enabled_dashboard: false },
@@ -439,7 +442,7 @@ async function main() {
     // This is the same symbol-discovery request emitted by QuickstartSection.
     const top = (await request(
       `/api/exchange/bingx/top-symbols?sort=volatility&limit=${UI_MAX_SYMBOLS}&t=${Date.now()}`,
-      { timeoutMs: 15_000 },
+      { timeoutMs: 30_000 },
     )).data
     const symbols = Array.isArray(top?.symbolList)
       ? top.symbolList.map(String)
@@ -485,7 +488,7 @@ async function main() {
       ? enabled.data.connection.symbols.map(String)
       : []
     if (configuredSymbols.length !== UI_MAX_SYMBOLS || configuredSymbols.some((symbol, index) => symbol !== symbols[index])) {
-      throw new Error("QuickStart did not preserve the exact 32-symbol UI selection")
+      throw new Error(`QuickStart did not preserve the exact ${UI_MAX_SYMBOLS}-symbol UI selection`)
     }
     if (enabled.data?.connection?.liveTradeRequested !== false || enabled.data?.connection?.liveTradeEnabled !== false) {
       throw new Error("Production UI QuickStart unexpectedly enabled real exchange trading")

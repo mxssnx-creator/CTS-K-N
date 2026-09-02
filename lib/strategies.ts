@@ -80,6 +80,7 @@ export class StrategyEngine {
           config,
           config.adjustments.block.blockSize,
           config.adjustments.block.adjustmentRatio,
+          config.adjustments.block.incrementSteps,
         )
         appliedAdjustments.push("block")
       } else if (config.adjustments.dca?.enabled) {
@@ -132,6 +133,7 @@ export class StrategyEngine {
           config,
           config.adjustments.block.blockSize,
           config.adjustments.block.adjustmentRatio,
+          config.adjustments.block.incrementSteps,
         )
         appliedAdjustments.push("block")
       } else if (config.adjustments.dca?.enabled) {
@@ -192,6 +194,7 @@ export class StrategyEngine {
           config,
           config.adjustments.block.blockSize,
           config.adjustments.block.adjustmentRatio,
+          config.adjustments.block.incrementSteps,
         )
         appliedAdjustments.push("block")
       } else if (config.adjustments.dca?.enabled) {
@@ -226,12 +229,13 @@ export class StrategyEngine {
     _config: StrategyConfig,
     blockCount: number,
     blockAdjustmentRatio = 1,
+    incrementSteps?: number,
   ): number {
     // Demo projection mirrors the production cold-start contract:
-    // Base 1 + (Base 1 × ratio × count). There is no private state machine and
+    // Base 1 × (1 + ratio)^effectiveStep. There is no private state machine and
     // no dependency on a preceding negative block. Mature PF no-regression is
     // evaluated by StrategyCoordinator against realised per-lane windows.
-    return calculateBlockVolumeMultiplier(blockCount, blockAdjustmentRatio)
+    return calculateBlockVolumeMultiplier(blockCount, blockAdjustmentRatio, incrementSteps)
   }
 
   private applyDCAdjustment(positions: PseudoPosition[], _dcaLevels: number): number {

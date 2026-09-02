@@ -11,6 +11,10 @@ import {
   isForexSymbol,
 } from "@/lib/forex-market"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+// Keep the Statistics client bundle independent from the Node-only Redis
+// adapter. The pure hydrator preserves the canonical hash/JSON merge contract
+// without importing filesystem-backed runtime code into a client page.
+import { hydrateLivePositionReadModel } from "@/lib/live-position-read-model-core"
 
 /** Bounded transport page; the durable history itself is never truncated. */
 export const TRADE_HISTORY_PAGE_SIZE = 500
@@ -830,28 +834,17 @@ async function loadPositionSnapshotsByIds(
     const jsonValues = await client
       .mget(...batch.map((id) => `live:position:${id}`))
       .catch(() => batch.map(() => null)) as Array<string | null>
-    const parsedBatch = jsonValues.map((raw) => {
-      if (!raw) return null
-      try {
-        const parsed = JSON.parse(raw)
-        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? parsed as Record<string, any>
-          : null
-      } catch { return null }
-    })
-    const missingIndices = parsedBatch
-      .map((parsed, index) => parsed ? -1 : index)
-      .filter((index) => index >= 0)
-    const hashes = await Promise.all(missingIndices.map((index) =>
-      client.hgetall(`live_positions:${connectionId}:${batch[index]}`).catch(() => null),
-    )) as Array<Record<string, any> | null>
-    for (let fallbackIndex = 0; fallbackIndex < missingIndices.length; fallbackIndex++) {
-      const index = missingIndices[fallbackIndex]
-      const hash = hashes[fallbackIndex]
-      if (hash && Object.keys(hash).length > 0) parsedBatch[index] = normalizeSnapshot(hash)
-    }
-    for (const parsed of parsedBatch) {
-      if (parsed) snapshots.push(parsed)
+    // The JSON value is a compact compatibility mirror. Always read the
+    // authoritative hash as well so closed-history rows retain fills,
+    // progression, set attribution and partial/control-order accounting.
+    const hashes = typeof client.hgetall === "function"
+      ? await Promise.all(batch.map((id) =>
+          client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => null),
+        )) as Array<Record<string, any> | null>
+      : batch.map(() => null)
+    for (let index = 0; index < batch.length; index++) {
+      const merged = hydrateLivePositionReadModel(jsonValues[index], hashes[index])
+      if (merged) snapshots.push(normalizeSnapshot(merged as Record<string, any>))
     }
   }
   return snapshots

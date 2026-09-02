@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function GET() {
@@ -8,10 +9,9 @@ export async function GET() {
     const client = getRedisClient()
 
     // Get all retention settings from Redis
-    const keys = await (client as any).keys("exchange_retention:*")
     const retentionSettings = []
 
-    for (const key of keys) {
+    for await (const key of iterateRedisKeys(client, "exchange_retention:*", { count: 100 })) {
       const data = await (client as any).hgetall(key)
       if (data && Object.keys(data).length > 0) {
         retentionSettings.push({

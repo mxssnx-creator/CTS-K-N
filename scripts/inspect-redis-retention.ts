@@ -66,6 +66,10 @@ function keyFamily(key: string): string {
     [/^settings:trading_pair:/, "settings:trading_pair:<symbol>"],
     [/^strategy_detail:[^:]+:/, "strategy_detail:<connection>:<stage>"],
     [/^live:order:[^:]+:/, "live:order:<connection>:<order>"],
+    [/^indication_set:/, "indication_set:<scope>"],
+    [/^indication_sets:index:/, "indication_sets:index:<scope>"],
+    [/^indication_sets:outcome_keys:index:/, "indication_sets:outcome_keys:index:<scope>"],
+    [/^indication_outcomes_pending:/, "indication_outcomes_pending:<scope>"],
     [/^live:position:/, "live:position:<id>"],
     [/^progression:/, "progression:<scope>"],
     [/^prehistoric:/, "prehistoric:<scope>"],
@@ -80,7 +84,7 @@ function keyFamily(key: string): string {
 }
 
 function retentionSensitiveFamily(family: string): boolean {
-  return /^(volume_calc|volume_calcs|strategy_detail|live:order|market_data|indications|signals|logs)/.test(family)
+  return /^(volume_calc|volume_calcs|strategy_detail|live:order|indication|market_data|indications|signals|logs)/.test(family)
 }
 
 // A missing TTL is a key-growth risk only for namespaces that create one key
@@ -91,6 +95,10 @@ const KEY_GROWTH_FAMILIES = new Set([
   "volume_calc:<connection>:<entry>",
   "volume_calcs:<connection>",
   "live:order:<connection>:<order>",
+  "indication_set:<scope>",
+  "indication_sets:index:<scope>",
+  "indication_sets:outcome_keys:index:<scope>",
+  "indication_outcomes_pending:<scope>",
   "market_data:<scope>",
 ])
 

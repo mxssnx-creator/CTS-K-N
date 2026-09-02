@@ -35,7 +35,8 @@ const positionCostPercent = Math.max(0.02, Math.min(1, Number(process.env.DIRECT
 const blockMinimum = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_MIN_COUNT) || 1))
 const blockMaximum = Math.max(blockMinimum, Math.min(12, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_MAX_COUNT) || 12)))
 const blockVolumeRatio = Math.max(0.1, Math.min(10, Number(process.env.DIRECT_TRADE_BLOCK_VOLUME_RATIO) || 1))
-const blockProfitFactorRatio = Math.max(0.2, Math.min(5, Number(process.env.DIRECT_TRADE_BLOCK_PF_RATIO) || 0.8))
+const blockIncrementSteps = Math.max(1, Math.min(5, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_INCREMENT_STEPS) || 2)))
+const blockProfitFactorRatio = Math.max(0.2, Math.min(5, Number(process.env.DIRECT_TRADE_BLOCK_PF_RATIO) || 1.1))
 const minProfitFactor = Math.max(
   0.8,
   Number(process.env.DIRECT_TRADE_BLOCK_MIN_PF) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
@@ -340,6 +341,7 @@ function runMode(blockEnabled) {
             timeframeSet,
             historyHours,
             volumeRatio: blockVolumeRatio,
+            blockIncrementSteps,
             tpRange: plans.tpRange,
             takeProfitPositionCostRatios: plans.ratios,
             slRatios: plan.slRatios,
@@ -359,13 +361,16 @@ function runMode(blockEnabled) {
           })
           for (const set of sets) {
             const blockCount = Math.max(0, Math.floor(Number(set.blockCount) || 0))
-            const scale = calculateBlockVolumeMultiplier(blockCount, blockVolumeRatio) || 1
+            const scale = calculateBlockVolumeMultiplier(blockCount, blockVolumeRatio, blockIncrementSteps) || 1
             if (blockEnabled && blockCount > 0) {
-              const increment = calculateBlockVolumeIncrementRatio(blockCount, blockVolumeRatio)
+              const increment = calculateBlockVolumeIncrementRatio(blockCount, blockVolumeRatio, blockIncrementSteps)
               if (increment <= 0 || scale !== 1 + increment) throw new Error(`Block sizing invariant failed for ${set.setKey}`)
             }
             keys.add(set.setKey)
-            const fingerprintKey = set.setKey.replace(/\|block:\d+\|blockRatio:[^|]+\|blockPfRatio:[^|]+(?=\|dca:)/, "")
+            const fingerprintKey = set.setKey.replace(
+              /\|block:\d+\|blockRatio:[^|]+\|blockSteps:[^|]+\|blockPfRatio:[^|]+(?=\|dca:)/,
+              "",
+            )
             fingerprints.set(fingerprintKey, {
               profitFactor: set.profitFactor,
               profitFactorInfinite: Boolean(set.profitFactorInfinite),
@@ -417,10 +422,10 @@ if (identityMismatches > 0 || withoutBlock.fingerprints.size !== withBlock.finge
 }
 const blockCountThresholds = Object.fromEntries(Array.from({ length: blockMaximum - blockMinimum + 1 }, (_, index) => {
   const count = blockMinimum + index
-  const increment = calculateBlockVolumeIncrementRatio(count, blockVolumeRatio)
+  const increment = calculateBlockVolumeIncrementRatio(count, blockVolumeRatio, blockIncrementSteps)
   return [String(count), {
     volumeIncrementRatio: increment,
-    volumeMultiplier: calculateBlockVolumeMultiplier(count, blockVolumeRatio),
+    volumeMultiplier: calculateBlockVolumeMultiplier(count, blockVolumeRatio, blockIncrementSteps),
     configuredMinimumPF: calculateBlockMinimumProfitFactor(minProfitFactor, blockProfitFactorRatio, increment),
   }]
 }))
@@ -448,10 +453,11 @@ const result = {
     enabledRange: [blockMinimum, blockMaximum],
     disabledRange: [0, 0],
     volumeRatio: blockVolumeRatio,
+    incrementSteps: blockIncrementSteps,
     profitFactorRatio: blockProfitFactorRatio,
     countThresholds: blockCountThresholds,
-    countFormula: "target = base + base × count × volumeRatio",
-    pfFormula: "minimum = 1 + ((defaultPF - 1) × blockPFRatio × (count × volumeRatio))",
+    countFormula: "target = base × (1 + volumeRatio)^min(count, incrementSteps)",
+    pfFormula: "minimum = 1 + ((defaultPF - 1) × blockPFRatio × ((1 + volumeRatio)^effectiveStep - 1))",
     independentCountPfDdtLedger: true,
     pfRatioAppliedToEligibility: true,
     note: "Direct-Trade stores one selected execution row plus independent Count-1..N PF/DDT ledger entries; the selected row uses the largest qualifying count.",
@@ -488,7 +494,7 @@ const result = {
     aggregatePFDifferenceSelectedVsBase: (withBlock.metrics.selectedBlockAggregatePF ?? 0)
       - (withoutBlock.metrics.baseAggregatePF ?? 0),
     identityMismatches,
-    note: "Per-set admission uses the PositionCost coordinate; aggregate Block PF remains the separate classic statistic calculated from summed ratio-weighted positive/negative PnL. The TP ratio range mean is diagnostic only and projected PnL/target volume use the non-compounding multiplier.",
+    note: "Per-set admission uses the PositionCost coordinate; aggregate Block PF remains the separate classic statistic calculated from summed ratio-weighted positive/negative PnL. The TP ratio range mean is diagnostic only and projected PnL/target volume use the capped compound multiplier.",
   },
   generatedAt: new Date().toISOString(),
 }

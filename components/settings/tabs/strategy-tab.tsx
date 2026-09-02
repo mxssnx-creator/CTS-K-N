@@ -13,6 +13,7 @@ import { DirectTradeSettings } from "@/components/settings/direct-trade-settings
 import { useState } from "react"
 import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
 import { PRESET_INDICATOR_TYPES } from "@/lib/preset-optimizer"
+import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
 import { parseStoredBoolean } from "@/lib/trailing-settings"
 import {
   MAIN_TRADE_BASE_PF_RATIO_MIN,
@@ -100,7 +101,8 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   }
   const presetBlockEnabled = settings.presetBlockEnabled !== false
   const presetBlockVolumeRatio = Number(settings.presetBlockVolumeRatio ?? settings.blockVolumeRatio ?? 1)
-  const presetBlockProfitFactorRatio = Number(settings.presetBlockProfitFactorRatio ?? settings.blockProfitFactorRatio ?? 0.8)
+  const presetBlockProfitFactorRatio = Number(settings.presetBlockProfitFactorRatio ?? settings.blockProfitFactorRatio ?? 1.1)
+  const presetBlockIncrementSteps = Number(settings.presetBlockIncrementSteps ?? settings.blockIncrementSteps ?? 2)
   const presetBlockMaxStack = Number(settings.presetBlockMaxStack ?? settings.blockMaxStack ?? 12)
   const presetBlockPauseCountRatio = Number(settings.presetBlockPauseCountRatio ?? settings.blockPauseCountRatio ?? 1)
   const presetBlockActiveRealEnabled = settings.presetBlockActiveRealEnabled ?? settings.blockActiveRealEnabled ?? true
@@ -763,12 +765,12 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <div>
                     <h4 className="font-semibold">Block Strategy Type · Adjust</h4>
                     <p className="text-xs text-muted-foreground">
-                      Every valid Block count is evaluated independently. Its physical target is general volume + ((general volume × ratio) × active Block count); exchange orders submit only the missing delta, while result and pause state remain count-specific.
+                      Every valid Block count is evaluated independently. Its physical target compounds from general volume for the configured 1–5 increment steps; exchange orders submit only the missing delta, while result and pause state remain count-specific.
                       Regular ladders use Base-derived Sets only; Active Real
                       counts independently include Pos-Count positions.
                     </p>
                   </div>
-                  <div className={presetBlockEnabled ? "grid gap-4 md:grid-cols-2 xl:grid-cols-4" : "grid gap-4 md:grid-cols-2 xl:grid-cols-4 pointer-events-none"}>
+                  <div className={presetBlockEnabled ? "grid gap-4 md:grid-cols-2 xl:grid-cols-5" : "grid gap-4 md:grid-cols-2 xl:grid-cols-5 pointer-events-none"}>
                     <PresetOptimizerSlider
                       label="Volume ratio"
                       value={presetBlockVolumeRatio}
@@ -784,6 +786,14 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       max={5}
                       step={0.1}
                       onChange={(value) => updatePresetBlockSetting("presetBlockProfitFactorRatio", "blockProfitFactorRatio", value)}
+                    />
+                    <PresetOptimizerSlider
+                      label="Compound increment steps"
+                      value={presetBlockIncrementSteps}
+                      min={1}
+                      max={5}
+                      step={1}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockIncrementSteps", "blockIncrementSteps", value)}
                     />
                     <PresetOptimizerSlider
                       label="Independent Block counts"
@@ -829,7 +839,11 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <div className="grid grid-cols-3 gap-2 text-[11px]">
                     {[1, 2, Math.max(3, Math.min(12, Math.floor(presetBlockMaxStack)))].map((count, index) => (
                       <div key={`${count}-${index}`} className="rounded border bg-muted/20 p-2 text-center tabular-nums">
-                        Block {count}: {(1 + count * presetBlockVolumeRatio).toFixed(2)}× total
+                        Block {count}: {calculateBlockVolumeMultiplier(
+                          count,
+                          presetBlockVolumeRatio,
+                          presetBlockIncrementSteps,
+                        ).toFixed(2)}× total
                       </div>
                     ))}
                   </div>

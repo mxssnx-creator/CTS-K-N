@@ -1,4 +1,8 @@
 import type { RedisClientLike } from "@/lib/redis-db"
+import {
+  buildLivePositionCompatibilitySnapshot,
+  LIVE_POSITION_MIRROR_VERSION,
+} from "@/lib/live-position-mirror"
 
 /**
  * Retention policy for diagnostics and runtime projections.
@@ -13,11 +17,19 @@ export const VOLUME_DETAIL_RETENTION_SECONDS = 30 * 24 * 60 * 60
 export const LIVE_TERMINAL_RETENTION_SECONDS = 30 * 24 * 60 * 60
 export const LIVE_FAILURE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 export const DIRECT_ORDER_CONTROL_RETENTION_SECONDS = 30 * 24 * 60 * 60
+/** Completed Direct-Trade statistics are a rebuildable read model. */
+export const DIRECT_STATISTICS_RETENTION_SECONDS = 30 * 24 * 60 * 60
 export const SIGNAL_PERFORMANCE_RETENTION_SECONDS = 90 * 24 * 60 * 60
 export const BLOCK_PROCESSED_MARKER_RETENTION_SECONDS = 30 * 24 * 60 * 60
 export const STRATEGY_RESULT_RING_RETENTION_SECONDS = 90 * 24 * 60 * 60
 export const INDICATION_RESULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 export const INDICATION_SNAPSHOT_RETENTION_SECONDS = 24 * 60 * 60
+/** Rolling per-Set rows are refreshed by active writers; inactive Sets expire. */
+export const INDICATION_SET_RETENTION_SECONDS = 7 * 24 * 60 * 60
+export const INDICATION_INDEX_RETENTION_SECONDS = 7 * 24 * 60 * 60
+export const INDICATION_OUTCOME_RETENTION_SECONDS = 7 * 24 * 60 * 60
+export const PENDING_OUTCOME_RETENTION_SECONDS = 24 * 60 * 60
+export const LIVE_ORDER_RETENTION_SECONDS = 7 * 24 * 60 * 60
 export const LIVE_TRACKING_RETENTION_SECONDS = 7 * 24 * 60 * 60
 export const LIVE_MOVED_MARKER_RETENTION_SECONDS = 60 * 60
 export const VOLUME_INDEX_LIMIT = 500
@@ -34,6 +46,16 @@ const TERMINAL_LIVE_STATUSES = new Set([
   "error",
 ])
 
+// `filled` is terminal for an exchange-order record, but it is an active
+// position lifecycle state until the position later closes. Keep that
+// distinction explicit so retention repair cannot move a filled entry into a
+// closed-position interpretation or expire its live exposure snapshot.
+const TERMINAL_ORDER_STATUSES = new Set([
+  ...TERMINAL_LIVE_STATUSES,
+  "filled",
+  "done",
+])
+
 const FAILURE_LIVE_STATUSES = new Set([
   "rejected",
   "cancelled",
@@ -47,9 +69,12 @@ export type LiveRetentionClass = "active" | "terminal" | "unknown"
 export interface RetentionRepairReport {
   scanned: number
   ttlRepaired: number
+  compatibilityMirrorsCompacted: number
   terminalRowsBounded: number
   orphanVolumeDetailsDeleted: number
+  orphanStrategyMembershipsDeleted: number
   indexesTrimmed: number
+  staleIndexMembersRemoved: number
   typeMismatches: number
   errors: number
 }
@@ -75,7 +100,14 @@ type RetentionKind =
   | "signal-performance"
   | "block-marker"
   | "strategy-ring"
+  | "strategy-membership"
   | "indication"
+  | "indication-set"
+  | "indication-index"
+  | "pending-outcomes"
+  | "pending-outcome-guard"
+  | "live-order"
+  | "direct-statistics"
 
 interface RetentionPattern {
   pattern: string
@@ -95,9 +127,20 @@ export const RETENTION_PATTERNS: readonly RetentionPattern[] = [
   { pattern: "live:positions:*:closed", kind: "live-closed-index" },
   { pattern: "live_positions:*", kind: "live-hash" },
   { pattern: "live:direct_order_control:*", kind: "direct-control" },
+  { pattern: "direct_trade:statistics-index", kind: "direct-statistics" },
+  { pattern: "direct_trade:*:statistics-index", kind: "direct-statistics" },
+  { pattern: "live:order:*", kind: "live-order" },
   { pattern: "signal:performance:*", kind: "signal-performance" },
   { pattern: "block_count_pause_processed:*", kind: "block-marker" },
   { pattern: "strategy_set_result_ring:*", kind: "strategy-ring" },
+  { pattern: "strategy_position_set_memberships:*", kind: "strategy-membership" },
+  { pattern: "indication_sets:index:*", kind: "indication-index" },
+  { pattern: "indication_sets:outcome_keys:index:*", kind: "indication-index" },
+  { pattern: "indication_outcomes_pending:*", kind: "pending-outcomes" },
+  { pattern: "indication_outcomes_pending_guard:*", kind: "pending-outcome-guard" },
+  // This also matches `:outcomes`, `:outcome_stats`, and
+  // `:outcome_closed_ids`; the handler classifies those suffixes by type.
+  { pattern: "indication_set:*", kind: "indication-set" },
   { pattern: "indication:*", kind: "indication" },
 ]
 
@@ -144,9 +187,12 @@ function emptyReport(): RetentionRepairReport {
   return {
     scanned: 0,
     ttlRepaired: 0,
+    compatibilityMirrorsCompacted: 0,
     terminalRowsBounded: 0,
     orphanVolumeDetailsDeleted: 0,
+    orphanStrategyMembershipsDeleted: 0,
     indexesTrimmed: 0,
+    staleIndexMembersRemoved: 0,
     typeMismatches: 0,
     errors: 0,
   }
@@ -155,9 +201,12 @@ function emptyReport(): RetentionRepairReport {
 function addReport(target: RetentionRepairReport, source: RetentionRepairReport): void {
   target.scanned += source.scanned
   target.ttlRepaired += source.ttlRepaired
+  target.compatibilityMirrorsCompacted += source.compatibilityMirrorsCompacted
   target.terminalRowsBounded += source.terminalRowsBounded
   target.orphanVolumeDetailsDeleted += source.orphanVolumeDetailsDeleted
+  target.orphanStrategyMembershipsDeleted += source.orphanStrategyMembershipsDeleted
   target.indexesTrimmed += source.indexesTrimmed
+  target.staleIndexMembersRemoved += source.staleIndexMembersRemoved
   target.typeMismatches += source.typeMismatches
   target.errors += source.errors
 }
@@ -182,6 +231,23 @@ async function hasExpectedType(
   }
 }
 
+async function hasAnyExpectedType(
+  client: RedisClientLike,
+  key: string,
+  expected: readonly string[],
+  report: RetentionRepairReport,
+): Promise<boolean> {
+  if (typeof client.type !== "function") return true
+  try {
+    const actual = String(await client.type(key))
+    if (actual === "none" || expected.includes(actual)) return actual !== "none"
+    report.typeMismatches++
+    return false
+  } catch {
+    return true
+  }
+}
+
 function normalizeScanResult(result: any): { cursor: string; keys: string[] } {
   if (Array.isArray(result)) {
     return {
@@ -193,6 +259,51 @@ function normalizeScanResult(result: any): { cursor: string; keys: string[] } {
     cursor: String(result?.cursor ?? "0"),
     keys: Array.isArray(result?.keys) ? result.keys.map(String) : [],
   }
+}
+
+function normalizeSetScanResult(result: any): { cursor: string; members: string[] } {
+  if (Array.isArray(result)) {
+    return {
+      cursor: String(result[0] ?? "0"),
+      members: Array.isArray(result[1]) ? result[1].map(String) : [],
+    }
+  }
+  return {
+    cursor: String(result?.cursor ?? "0"),
+    members: Array.isArray(result?.members)
+      ? result.members.map(String)
+      : Array.isArray(result?.values)
+        ? result.values.map(String)
+        : [],
+  }
+}
+
+async function scanSetPage(
+  client: RedisClientLike,
+  key: string,
+  cursor: string,
+  count: number,
+  match?: string,
+): Promise<{ cursor: string; members: string[] }> {
+  const sscan = (client as any).sscan
+  if (typeof sscan === "function") {
+    const args = match
+      ? ["MATCH", match, "COUNT", count]
+      : ["COUNT", count]
+    return normalizeSetScanResult(await sscan.call(client, key, cursor, ...args))
+  }
+  // All built-in adapters implement SSCAN. This fallback is for small test
+  // doubles and older third-party adapters only; it remains bounded before
+  // returning the first page so a missing SSCAN cannot create another giant
+  // materialisation in the retention worker.
+  const members = typeof client.smembers === "function" ? await client.smembers(key) : []
+  const filtered = match
+    ? members.filter((member) => String(member).startsWith(match.replace(/\\\*/g, "*")))
+    : members
+  const start = Math.max(0, Number(cursor) || 0)
+  const page = filtered.slice(start, start + count)
+  const next = start + page.length >= filtered.length ? "0" : String(start + page.length)
+  return { cursor: next, members: page }
 }
 
 async function boundedWorkers<T>(
@@ -357,9 +468,70 @@ async function repairLiveJson(
   if (!raw) return
   let parsed: unknown
   try { parsed = JSON.parse(raw) } catch { return }
-  const classification = classifyLiveRetention(parsed)
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+
+  // A hash-backed position can be compacted safely: the hash is the complete
+  // ledger, while the string key is only a compatibility/recovery projection.
+  // Never compact a JSON-only row because that would discard its only copy of
+  // fills and Set attribution.
+  const parsedRecord = parsed as Record<string, unknown>
+  const mirrorVersion = Number(parsedRecord.liveMirrorVersion || 0)
+  if (mirrorVersion === LIVE_POSITION_MIRROR_VERSION) {
+    // Canonical writers update the hash and mirror in one ordered save path.
+    // A current compact mirror needs no large HGETALL on every five-minute
+    // sweep; the hash retention pass below only reads its scalar status.
+    const classification = classifyLiveRetention(parsedRecord)
+    if (apply && classification === "terminal") {
+      const seconds = liveRetentionSecondsForStatus(recordStatus(parsedRecord))
+      if (seconds) await ensureTtl(client, key, seconds, report)
+    } else if (apply && classification === "active") {
+      await client.persist(key).catch(() => 0)
+    }
+    return
+  }
+  const positionId = key.slice("live:position:".length)
+  const connectionId = String(
+    parsedRecord.connectionId ??
+    parsedRecord.connection_id ??
+    positionId.match(/^live:([^:]+):/)?.[1] ??
+    "",
+  ).trim()
+  let hash: Record<string, unknown> | null = null
+  if (connectionId && typeof client.hgetall === "function") {
+    const candidate = await client
+      .hgetall(`live_positions:${connectionId}:${positionId}`)
+      .catch(() => null)
+    if (candidate && Object.keys(candidate).length > 0) hash = candidate
+  }
+  const hashVersion = Number(hash?.version || 0)
+  const jsonVersion = Number(parsedRecord.version || 0)
+  const hashUpdatedAt = Number(hash?.updatedAt || 0)
+  const jsonUpdatedAt = Number(parsedRecord.updatedAt || 0)
+  const hashIsAtLeastAsRecent = !!hash && (
+    hashVersion > jsonVersion ||
+    (hashVersion === jsonVersion && hashUpdatedAt >= jsonUpdatedAt)
+  )
+  const source: Record<string, unknown> = hashIsAtLeastAsRecent && hash
+    ? hash
+    : parsedRecord
+  const classification = classifyLiveRetention(source)
+  if (apply && hashIsAtLeastAsRecent && hash) {
+    const mirror = buildLivePositionCompatibilitySnapshot(source)
+    const encodedMirror = JSON.stringify(mirror)
+    if (encodedMirror !== raw) {
+      await client.set(
+        key,
+        encodedMirror,
+        classification === "terminal"
+          ? { EX: liveRetentionSecondsForStatus(recordStatus(source)) || LIVE_TERMINAL_RETENTION_SECONDS }
+          : undefined,
+      )
+      report.compatibilityMirrorsCompacted++
+    }
+    if (classification !== "terminal") await client.persist(key).catch(() => 0)
+  }
   if (classification !== "terminal") return
-  const seconds = liveRetentionSecondsForStatus(recordStatus(parsed))
+  const seconds = liveRetentionSecondsForStatus(recordStatus(source))
   if (!seconds || !apply) return
   const before = await client.ttl(key)
   await ensureTtl(client, key, seconds, report)
@@ -386,13 +558,207 @@ async function repairLiveHash(
   report: RetentionRepairReport,
   apply: boolean,
 ): Promise<void> {
-  const raw = await client.hgetall(key)
-  const classification = classifyLiveRetention(raw)
+  const status = typeof client.hget === "function"
+    ? await client.hget(key, "status").catch(() => null)
+    : null
+  const classification = classifyLiveRetention({ status })
+  if (classification === "active") {
+    if (apply) await client.persist(key).catch(() => 0)
+    return
+  }
   if (classification !== "terminal") return
-  const seconds = liveRetentionSecondsForStatus(recordStatus(raw))
+  const seconds = liveRetentionSecondsForStatus(status)
   if (!seconds || !apply) return
   const before = await client.ttl(key)
   await ensureTtl(client, key, seconds, report)
+  if (before < 0) report.terminalRowsBounded++
+}
+
+function indicationSetRetentionForKey(key: string): number {
+  if (key.endsWith(":outcomes") || key.endsWith(":outcome_stats") || key.endsWith(":outcome_closed_ids")) {
+    return INDICATION_OUTCOME_RETENTION_SECONDS
+  }
+  return INDICATION_SET_RETENTION_SECONDS
+}
+
+async function repairIndicationSet(
+  client: RedisClientLike,
+  key: string,
+  report: RetentionRepairReport,
+  apply: boolean,
+): Promise<void> {
+  const expected = key.endsWith(":outcome_stats")
+    ? ["hash"]
+    : key.endsWith(":outcome_closed_ids")
+      ? ["set"]
+      : key.endsWith(":outcomes")
+        ? ["list"]
+        : ["list", "string"]
+  if (!await hasAnyExpectedType(client, key, expected, report)) return
+  if (apply) await ensureTtl(client, key, indicationSetRetentionForKey(key), report)
+}
+
+async function repairIndicationIndex(
+  client: RedisClientLike,
+  key: string,
+  report: RetentionRepairReport,
+  apply: boolean,
+  cursors: RetentionCursorState,
+): Promise<void> {
+  if (!await hasExpectedType(client, key, "set", report)) return
+  if (apply) await ensureTtl(client, key, INDICATION_INDEX_RETENTION_SECONDS, report)
+
+  // Indexes can contain hundreds of thousands of members. Never use
+  // SMEMBERS in the production path: SSCAN keeps both Redis and Node memory
+  // bounded and lets the next repair page continue from the last cursor.
+  const memberCursorKey = `__setindex__:${key}`
+  const cursor = String(cursors[memberCursorKey] ?? "0")
+  const page = await scanSetPage(client, key, cursor, 500)
+  cursors[memberCursorKey] = page.cursor
+  if (page.members.length === 0 || !apply) return
+
+  const stale: string[] = []
+  await boundedWorkers(page.members, async (member) => {
+    const validPrefix = member.startsWith("indication_set:")
+    if (!validPrefix || !(await client.exists(member).catch(() => 0))) stale.push(member)
+  }, 24)
+  if (stale.length > 0) {
+    const removed = await client.srem(key, ...stale)
+    report.staleIndexMembersRemoved += Number(removed) || 0
+  }
+}
+
+function escapeRedisGlob(value: string): string {
+  return value.replace(/([\\*?\[\]])/g, "\\$1")
+}
+
+/**
+ * A membership Set is deliberately durable while its position is active. A
+ * missing membership cleanup is only removable when the close ledger already
+ * contains an exact position identity. This prevents a concurrent entry from
+ * losing its Set rows during the short interval between membership admission
+ * and the first live-position snapshot.
+ */
+async function hasStrategyCloseEvidence(
+  client: RedisClientLike,
+  connectionId: string,
+  positionId: string,
+): Promise<boolean> {
+  if (typeof client.type !== "function" || typeof client.sscan !== "function") return false
+  const closeIdsKey = `strategy_set_close_ids:${connectionId}`
+  if (String(await client.type(closeIdsKey).catch(() => "none")) !== "set") return false
+  const prefix = `${positionId}|`
+  const match = `${escapeRedisGlob(prefix)}*`
+  let cursor = "0"
+  const visited = new Set<string>()
+  for (let pageIndex = 0; pageIndex < 16; pageIndex++) {
+    if (visited.has(cursor)) return false
+    visited.add(cursor)
+    const page = await scanSetPage(client, closeIdsKey, cursor, 250, match)
+    if (page.members.some((member) => String(member).startsWith(prefix))) return true
+    cursor = page.cursor
+    if (cursor === "0") return false
+  }
+  // A bounded repair must fail closed when a very large close ledger did not
+  // expose the requested member within its budget.
+  return false
+}
+
+type CanonicalLiveState = "absent" | "active" | "terminal" | "unknown"
+
+async function canonicalLiveState(
+  client: RedisClientLike,
+  connectionId: string,
+  positionId: string,
+): Promise<CanonicalLiveState> {
+  if (typeof client.type !== "function") return "unknown"
+  const hashKey = `live_positions:${connectionId}:${positionId}`
+  const hashType = String(await client.type(hashKey).catch(() => "unknown"))
+  if (hashType === "hash") {
+    const status = await client.hget(hashKey, "status").catch(() => null)
+    if (!status) return "unknown"
+    return classifyLiveRetention({ status }) === "terminal" ? "terminal" : "active"
+  }
+  if (hashType !== "none") return "unknown"
+
+  const jsonKey = `live:position:${positionId}`
+  const jsonType = String(await client.type(jsonKey).catch(() => "unknown"))
+  if (jsonType === "none") return "absent"
+  if (jsonType !== "string") return "unknown"
+  const raw = await client.get(jsonKey).catch(() => null)
+  if (!raw) return "absent"
+  try {
+    const parsed = JSON.parse(raw)
+    const classification = classifyLiveRetention(parsed)
+    return classification === "terminal" ? "terminal" : classification === "active" ? "active" : "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
+async function repairStrategyMembership(
+  client: RedisClientLike,
+  key: string,
+  report: RetentionRepairReport,
+  apply: boolean,
+): Promise<void> {
+  const prefix = "strategy_position_set_memberships:"
+  const rest = key.slice(prefix.length)
+  const separator = rest.indexOf(":")
+  if (separator <= 0 || separator >= rest.length - 1) return
+  if (!await hasExpectedType(client, key, "set", report)) return
+
+  const connectionId = rest.slice(0, separator)
+  const positionId = rest.slice(separator + 1)
+  if (!await hasStrategyCloseEvidence(client, connectionId, positionId)) return
+
+  const state = await canonicalLiveState(client, connectionId, positionId)
+  // Active and ambiguous state always wins. Terminal/absent state is safe only
+  // after the close ledger has proved that the Set outcomes were booked.
+  if (state === "active" || state === "unknown") return
+  if (apply && await client.del(key)) report.orphanStrategyMembershipsDeleted++
+}
+
+async function repairPendingOutcome(
+  client: RedisClientLike,
+  key: string,
+  report: RetentionRepairReport,
+  apply: boolean,
+  expected: string,
+): Promise<void> {
+  if (!await hasExpectedType(client, key, expected, report)) return
+  if (apply) await ensureTtl(client, key, PENDING_OUTCOME_RETENTION_SECONDS, report)
+}
+
+async function repairLiveOrder(
+  client: RedisClientLike,
+  key: string,
+  report: RetentionRepairReport,
+  apply: boolean,
+): Promise<void> {
+  if (typeof client.type !== "function") return
+  let actual = ""
+  try { actual = String(await client.type(key)) } catch { return }
+  if (actual === "none") return
+  if (actual !== "string" && actual !== "hash") {
+    report.typeMismatches++
+    return
+  }
+  let value: unknown
+  try {
+    value = actual === "hash"
+      ? await client.hgetall(key)
+      : JSON.parse(String(await client.get(key) || ""))
+  } catch {
+    return
+  }
+  const status = recordStatus(value)
+  const classification = TERMINAL_ORDER_STATUSES.has(status) ? "terminal" : status ? "active" : "unknown"
+  if (classification !== "terminal") return
+  const seconds = liveRetentionSecondsForStatus(status) || LIVE_ORDER_RETENTION_SECONDS
+  if (!seconds || !apply) return
+  const before = await client.ttl(key)
+  await ensureTtl(client, key, Math.min(seconds, LIVE_ORDER_RETENTION_SECONDS), report)
   if (before < 0) report.terminalRowsBounded++
 }
 
@@ -403,6 +769,7 @@ async function repairOneKey(
   volumeReferences: VolumeReferenceState,
   report: RetentionRepairReport,
   apply: boolean,
+  cursors: RetentionCursorState,
 ): Promise<void> {
   report.scanned++
   if (kind === "volume-index") return repairVolumeIndex(client, key, report, apply)
@@ -426,10 +793,17 @@ async function repairOneKey(
     if (!await hasExpectedType(client, key, "hash", report)) return
     return repairLiveHash(client, key, report, apply)
   }
+  if (kind === "live-order") return repairLiveOrder(client, key, report, apply)
+  if (kind === "strategy-membership") return repairStrategyMembership(client, key, report, apply)
+  if (kind === "indication-set") return repairIndicationSet(client, key, report, apply)
+  if (kind === "indication-index") return repairIndicationIndex(client, key, report, apply, cursors)
+  if (kind === "pending-outcomes") return repairPendingOutcome(client, key, report, apply, "list")
+  if (kind === "pending-outcome-guard") return repairPendingOutcome(client, key, report, apply, "set")
   if (!apply) return
 
   const seconds =
     kind === "direct-control" ? DIRECT_ORDER_CONTROL_RETENTION_SECONDS
+      : kind === "direct-statistics" ? DIRECT_STATISTICS_RETENTION_SECONDS
       : kind === "signal-performance" ? SIGNAL_PERFORMANCE_RETENTION_SECONDS
         : kind === "block-marker" ? BLOCK_PROCESSED_MARKER_RETENTION_SECONDS
           : kind === "strategy-ring" ? STRATEGY_RESULT_RING_RETENTION_SECONDS
@@ -476,7 +850,7 @@ export async function repairRedisRetentionPage(
     cursors[descriptor.pattern] = result.cursor
     await boundedWorkers(result.keys, async (key) => {
       try {
-        await repairOneKey(client, key, descriptor.kind, volumeReferences, report, apply)
+        await repairOneKey(client, key, descriptor.kind, volumeReferences, report, apply, cursors)
       } catch {
         report.errors++
       }

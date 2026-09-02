@@ -21,7 +21,9 @@ BINGX_ENVIRONMENT	application-runtime	no	yes	7	.env.example,__tests__/unit/bingx
 BINGX_PUBLIC_FALLBACK_ORIGIN	application-runtime	no	yes	7	.env.example,__tests__/unit/bingx-public-api.test.ts,lib/bingx-public-api.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/run-bingx-vst-live-soak.ts,scripts/run-special-vst-5d-validation.ts,scripts/stress-bingx-public-32.mjs
 BINGX_PUBLIC_ORIGIN	application-runtime	no	yes	8	.env.example,__tests__/unit/bingx-public-api.test.ts,lib/bingx-public-api.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/direct-trade-processor.mjs,scripts/run-bingx-vst-live-soak.ts,scripts/run-special-vst-5d-validation.ts,scripts/stress-bingx-public-32.mjs
 BINGX_SECRET	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
+BINGX_STRESS_ALL_SYMBOLS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
+BINGX_STRESS_PROGRESS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_RETRIES	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_SYMBOL_COUNT	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_TICKER_ROUNDS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
@@ -150,6 +152,7 @@ DEV_URL	test-or-operator-tool	no	no	1	scripts/verify-migration-status.mjs
 DIRECT_TRADE_ADAPTIVE_HISTORY_MAX_HOURS	test-or-operator-tool	no	no	1	scripts/direct-trade-processor.mjs
 DIRECT_TRADE_BASE_URL	test-or-operator-tool	no	no	3	scripts/test-direct-trade-dev-soak.mjs,scripts/test-direct-trade-position-lifecycle.mjs,scripts/test-direct-trade-recovery-scenarios.mjs
 DIRECT_TRADE_BLOCK_HISTORY_MINUTES	test-or-operator-tool	no	no	1	scripts/test-direct-trade-block-comparison.cjs
+DIRECT_TRADE_BLOCK_INCREMENT_STEPS	test-or-operator-tool	no	no	1	scripts/test-direct-trade-block-comparison.cjs
 DIRECT_TRADE_BLOCK_MAX_COUNT	test-or-operator-tool	no	no	1	scripts/test-direct-trade-block-comparison.cjs
 DIRECT_TRADE_BLOCK_MAX_DDT_MIN	test-or-operator-tool	no	no	1	scripts/test-direct-trade-block-comparison.cjs
 DIRECT_TRADE_BLOCK_MIN_COUNT	test-or-operator-tool	no	no	1	scripts/test-direct-trade-block-comparison.cjs
