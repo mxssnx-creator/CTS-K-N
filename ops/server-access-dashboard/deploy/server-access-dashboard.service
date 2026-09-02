@@ -1,0 +1,30 @@
+[Unit]
+Description=Read-only remote server access dashboard
+After=network-online.target cts-kn.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/server-access
+ExecStart=/usr/bin/node /opt/server-access/server/access-dashboard.mjs
+Restart=always
+RestartSec=3
+TimeoutStartSec=15
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/proc /sys
+MemoryHigh=128M
+MemoryMax=256M
+LimitNOFILE=4096
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3004
+Environment=DASHBOARD_REFRESH_MS=2000
+
+[Install]
+WantedBy=multi-user.target

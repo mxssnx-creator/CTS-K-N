@@ -70,7 +70,9 @@ CTS_DIRECT_TRADE_MAX_CONNECTION_WORKERS	test-or-operator-tool	no	no	1	scripts/di
 CTS_DIRECT_TRADE_SUPERVISOR_POLL_MS	test-or-operator-tool	no	no	1	scripts/direct-trade-supervisor.mjs
 CTS_DIRECT_TRADE_WORKER_HEAP_MB	test-or-operator-tool	no	no	1	scripts/direct-trade-supervisor.mjs
 CTS_ENGINE_OWNER_WORKER	application-runtime	no	no	1	lib/trade-engine.ts
+CTS_G_BASE_URL	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 CTS_INLINE_REDIS_PERSISTENT_VOLUME	application-runtime	no	yes	4	.env.example,lib/production-readiness.ts,lib/real-trade-gates.ts,scripts/kilo-deploy.mjs
+CTS_KN_BASE_URL	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 CTS_LIVE_TRADING_CONFIGURED	test-or-operator-tool	no	yes	1	.env.example
 CTS_MAINTENANCE_GC_INTERVAL_MS	application-runtime	no	yes	3	.env.example,lib/trade-engine/engine-manager.ts,scripts/run-dev-preview-check.mjs
 CTS_NODE_BIN	test-or-operator-tool	no	no	1	scripts/start-production.mjs
@@ -101,6 +103,7 @@ CTS_TEST_EXPECT_MODE	test-or-operator-tool	no	no	1	__tests__/unit/install-deploy
 CTS_TEST_INSTALLER	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_USE_LOCAL_NEXT_BUILD	test-or-operator-tool	no	no	2	__tests__/unit/install-deployment-contract.test.ts,scripts/build-next-with-trace-retry.mjs
 CYCLE_DEADLINE_MS	application-runtime	no	no	1	lib/trade-engine/engine-manager.ts
+DASHBOARD_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 DATABASE_TYPE	application-runtime	no	yes	2	.env.example,app/api/install/configure/route.ts
 DB_PATH	application-runtime	no	yes	2	.env.example,lib/db-audit.ts
 DB_TOKEN	application-runtime	yes	yes	7	.env.example,__tests__/unit/inline-local-redis.test.ts,__tests__/unit/requested-regressions.test.ts,custom-worker.ts,lib/kilo-database-client.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs
@@ -238,7 +241,7 @@ FORCE_SIMULATED	application-runtime	no	yes	16	.env.example,__tests__/integration
 HISTORIC_CANDLE_CHUNK_SIZE	test-or-operator-tool	no	yes	1	.env.example
 HISTORIC_CHUNK_READ_BATCH	test-or-operator-tool	no	yes	1	.env.example
 HISTORIC_CHUNK_WRITE_BATCH	test-or-operator-tool	no	yes	1	.env.example
-HOST	test-or-operator-tool	no	no	2	scripts/smoke-routes-test.mjs,scripts/start-production.mjs
+HOST	application-runtime	no	no	3	ops/server-access-dashboard/server/access-dashboard.mjs,scripts/smoke-routes-test.mjs,scripts/start-production.mjs
 HOSTNAME	test-or-operator-tool	no	no	1	scripts/start-production.mjs
 INDICATION_CANDIDATE_YIELD_EVERY	application-runtime	no	yes	3	.env.example,__tests__/unit/requested-regressions.test.ts,lib/indication-sets-processor.ts
 INDICATION_COOPERATIVE_TIME_SLICE_MS	application-runtime	no	yes	2	.env.example,lib/indication-sets-processor.ts
@@ -312,7 +315,7 @@ PATH	application-runtime	no	no	2	__tests__/unit/install-deployment-contract.test
 PIONEX_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
 PIONEX_API_SECRET	test-or-operator-tool	yes	yes	1	.env.example
 POLL_MS	test-or-operator-tool	no	no	1	scripts/run-engine-probe.mjs
-PORT	application-runtime	no	no	18	app/api/settings/connections/route.ts,scripts/direct-trade-processor.mjs,scripts/direct-trade-supervisor.mjs,scripts/kill-test-dev-port.mjs,scripts/logistics-test-suite.mjs,scripts/quickstart-live-trading.js,scripts/run-dev-preview-check.mjs,scripts/run-engine-probe.mjs,scripts/run-prod-preview-check.mjs,scripts/smoke-routes-test.mjs,scripts/start-development.mjs,scripts/start-production.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs
+PORT	application-runtime	no	no	19	app/api/settings/connections/route.ts,ops/server-access-dashboard/server/access-dashboard.mjs,scripts/direct-trade-processor.mjs,scripts/direct-trade-supervisor.mjs,scripts/kill-test-dev-port.mjs,scripts/logistics-test-suite.mjs,scripts/quickstart-live-trading.js,scripts/run-dev-preview-check.mjs,scripts/run-engine-probe.mjs,scripts/run-prod-preview-check.mjs,scripts/smoke-routes-test.mjs,scripts/start-development.mjs,scripts/start-production.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs
 POSITION_FLOW_READ_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 PREHISTORIC_BOOTSTRAP_DEADLINE_MS	application-runtime	no	no	1	lib/trade-engine/engine-manager.ts
 PREHISTORIC_CALC_YIELD_EVERY	application-runtime	no	yes	3	.env.example,__tests__/unit/requested-regressions.test.ts,lib/trade-engine/config-set-processor.ts
@@ -361,6 +364,7 @@ PROD_UI_CONNECTION_ID	test-or-operator-tool	no	no	1	scripts/verify-prod-ui-max.m
 PROD_UI_PROGRESSION_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-ui-max.mjs
 PROD_UI_RESUME_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-ui-max.mjs
 PROD_URL	test-or-operator-tool	no	no	1	scripts/verify-migration-status.mjs
+PROJECT_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 PSEUDO_POSITION_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 PSEUDO_POSITION_WRITE_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 PSEUDO_POSITION_YIELD_EVERY	application-runtime	no	no	1	lib/strategy-coordinator.ts
@@ -382,6 +386,8 @@ RUN_MS	test-or-operator-tool	no	no	1	scripts/run-engine-probe.mjs
 RUNTIME_MODE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SCHEDULER_BASE_URL	test-or-operator-tool	no	yes	1	.env.example
 SERVER_ACTION_ALLOWED_ORIGINS	application-runtime	no	no	1	next.config.mjs
+SERVER_DASHBOARD_SERVICES	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+SERVICE_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 SIGNAL_FOCUSED_SOAK	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SIGNAL_OBSERVATION_INTERVAL_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SIGNAL_PROBE_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/verify-signal-sources.ts

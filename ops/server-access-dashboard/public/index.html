@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Server access · live operations</title>
+  <style>
+    :root{color-scheme:dark;--bg:#070a0f;--panel:#0e141d;--panel2:#131d29;--line:#263548;--text:#edf4fb;--muted:#91a3b8;--faint:#607188;--blue:#65b7ff;--green:#42e6a4;--amber:#f5c95c;--red:#ff7188;--shadow:0 18px 60px rgba(0,0,0,.28)}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% -10%,#163a58 0,transparent 38%),var(--bg);color:var(--text);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}.wrap{width:min(1540px,100%);margin:auto;padding:28px 22px 56px}.top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:24px}.eyebrow{font:11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.18em;text-transform:uppercase;color:var(--blue)}h1{margin:7px 0 4px;font-size:clamp(28px,4vw,50px);letter-spacing:-.05em}h2{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 15px}.sub{color:var(--muted);margin:0;max-width:780px}.badge{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;background:var(--faint);display:inline-block}.dot.up,.dot.running,.dot.active{background:var(--green);box-shadow:0 0 16px rgba(66,230,164,.55)}.dot.degraded,.dot.warning{background:var(--amber)}.dot.down,.dot.failed,.dot.unknown{background:var(--red)}button{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:10px;padding:9px 12px;cursor:pointer}button:hover{border-color:var(--blue)}.grid{display:grid;gap:12px}.metrics{grid-template-columns:repeat(8,minmax(0,1fr));margin-bottom:12px}.card{background:linear-gradient(145deg,rgba(19,29,41,.97),rgba(10,15,22,.97));border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow)}.metric{min-height:128px}.label{font:10px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.value{font:clamp(21px,2.4vw,32px);font-weight:650;letter-spacing:-.04em;margin-top:8px}.small{font-size:12px;color:var(--muted)}.good{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}.muted{color:var(--muted)}.layout{grid-template-columns:1.4fr 1fr;margin-bottom:12px}.chartbox{min-height:258px}.chart{width:100%;height:155px;display:block;margin-top:12px}.chart-grid{stroke:var(--line);stroke-width:1}.chart-line{fill:none;stroke:var(--blue);stroke-width:2.5;vector-effect:non-scaling-stroke}.chart-line.alt{stroke:var(--green)}.chart-line.warn{stroke:var(--amber)}.chart-labels{display:flex;justify-content:space-between;color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}.bar{height:7px;background:#1b2838;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--green));border-radius:inherit;transition:width .35s ease}.bar.warn i{background:linear-gradient(90deg,var(--amber),var(--red))}.bar.red i{background:linear-gradient(90deg,var(--blue),var(--red))}.split{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.kv{display:grid;grid-template-columns:1fr auto;gap:7px 12px;color:var(--muted);font-size:12px}.kv b{color:var(--text);font:12px ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}.section{margin-bottom:12px}.project-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.project{min-height:250px}.project-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.project-title{font-size:18px;font-weight:650}.project-role{color:var(--muted);font-size:12px;margin-top:3px}.status{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;display:flex;align-items:center;gap:6px}.progress{margin-top:17px}.progress-row{margin-top:10px}.progress-row .split{font-size:11px;color:var(--muted);margin-bottom:5px}.progress-row .bar{height:6px}.tag{display:inline-flex;border:1px solid var(--line);background:rgba(255,255,255,.025);border-radius:999px;padding:4px 8px;font:10px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);margin:12px 5px 0 0}.two{grid-template-columns:1fr 1fr}.core-wrap,.service-wrap{overflow:auto}.cores,.services{width:100%;border-collapse:collapse;min-width:720px}.cores th,.services th{text-align:left;color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.08em;padding:0 9px 10px}.cores td,.services td{border-top:1px solid rgba(38,53,72,.7);padding:9px;color:var(--muted);font-size:12px}.cores td:first-child,.services td:first-child{color:var(--text);font-weight:600}.core-cell{min-width:170px}.core-cell .bar{margin-top:4px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}.notice{border-left:3px solid var(--blue);color:var(--muted);padding:2px 0 2px 12px;margin-top:16px;font-size:12px}.event-list{display:grid;gap:7px;max-height:150px;overflow:auto}.event{display:grid;grid-template-columns:auto 1fr;gap:9px;font-size:11px;color:var(--muted)}.event time{color:var(--faint);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.errorbox{display:none;border:1px solid rgba(255,113,136,.45);background:rgba(255,113,136,.08);color:#ffb9c5;border-radius:12px;padding:12px;margin-bottom:12px}.errorbox.show{display:block}.footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--faint);font-size:11px;margin-top:17px}@media(max-width:1280px){.metrics{grid-template-columns:repeat(4,1fr)}.project-grid{grid-template-columns:1fr 1fr}}@media(max-width:900px){.layout,.two{grid-template-columns:1fr}}@media(max-width:640px){.wrap{padding:20px 13px 40px}.top{display:block}.top .badge{margin-top:15px}.metrics{grid-template-columns:1fr 1fr}.project-grid{grid-template-columns:1fr}.card{padding:14px}.value{font-size:25px}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="top">
+      <div>
+        <div class="eyebrow">remote infrastructure · read-only control plane</div>
+        <h1>Server operations</h1>
+        <p class="sub">Live host, project and processing visibility. Exact kernel counters are shown with sampled deltas; no service control, exchange credentials or order payloads are exposed.</p>
+      </div>
+      <div><span class="badge"><i id="overall-dot" class="dot"></i><span id="overall-state">CONNECTING</span></span> <button id="pause" type="button">Pause refresh</button></div>
+    </header>
+    <div id="error" class="errorbox"></div>
+
+    <section class="grid metrics">
+      <article class="card metric"><div class="label">Host uptime</div><div id="uptime" class="value">—</div><div id="host" class="small mono">—</div></article>
+      <article class="card metric"><div class="label">CPU aggregate · <span id="cores">—</span> cores</div><div id="cpu" class="value">—</div><div class="bar"><i id="cpu-bar"></i></div><div id="cpu-sample" class="small">—</div></article>
+      <article class="card metric"><div class="label">RAM used</div><div id="memory" class="value">—</div><div id="memory-exact" class="small mono">—</div><div class="bar warn"><i id="memory-bar"></i></div></article>
+      <article class="card metric"><div class="label">RAM available</div><div id="memory-available" class="value">—</div><div id="memory-breakdown" class="small">—</div></article>
+      <article class="card metric"><div class="label">Swap used</div><div id="swap" class="value">—</div><div id="swap-exact" class="small mono">—</div><div class="bar red"><i id="swap-bar"></i></div></article>
+      <article class="card metric"><div class="label">Load · 1 / 5 / 15m</div><div id="load" class="value mono">—</div><div id="runnable" class="small">—</div></article>
+      <article class="card metric"><div class="label">Dashboard requests · 1m</div><div id="requests" class="value">—</div><div id="request-rate" class="small">—</div></article>
+      <article class="card metric"><div class="label">API p95 / error rate</div><div id="latency" class="value">—</div><div id="request-health" class="small">—</div></article>
+    </section>
+
+    <section class="grid layout section">
+      <article class="card chartbox">
+        <div class="split"><h2>Host pressure · recent samples</h2><span id="updated" class="small mono">—</span></div>
+        <svg class="chart" viewBox="0 0 600 155" preserveAspectRatio="none" aria-label="CPU, memory and swap trend">
+          <path class="chart-grid" d="M0 30H600M0 77H600M0 124H600"/>
+          <polyline id="cpu-line" class="chart-line" points=""></polyline>
+          <polyline id="memory-line" class="chart-line alt" points=""></polyline>
+          <polyline id="swap-line" class="chart-line warn" points=""></polyline>
+        </svg>
+        <div class="chart-labels"><span>CPU</span><span class="good">RAM</span><span class="warn">Swap</span><span>0–100%</span></div>
+        <div class="notice">CPU and network rates use deltas between kernel samples. Refresh is coalesced, so a slow project probe cannot stack requests or manufacture activity.</div>
+      </article>
+      <article class="card">
+        <h2>Memory, network & dashboard process</h2>
+        <div class="kv">
+          <span>RAM total</span><b id="memory-total">—</b>
+          <span>RAM used / available</span><b id="memory-used-available">—</b>
+          <span>Cache / buffers / reclaimable</span><b id="memory-cache">—</b>
+          <span>Swap total / free</span><b id="swap-total-free">—</b>
+          <span>Committed / dirty / writeback</span><b id="memory-kernel">—</b>
+          <span>RX / TX total</span><b id="net-total">—</b>
+          <span>RX / TX rate</span><b id="net-rate">—</b>
+          <span>Dashboard RSS / heap</span><b id="proc-memory">—</b>
+          <span>Dashboard PID / uptime</span><b id="proc-info">—</b>
+        </div>
+      </article>
+    </section>
+
+    <section class="card section">
+      <div class="split"><h2>Per-core CPU usage</h2><span id="cpu-detail" class="small">—</span></div>
+      <div class="core-wrap"><table class="cores"><thead><tr><th>Core</th><th>Usage</th><th>User + nice</th><th>System</th><th>Idle</th><th>I/O wait</th><th>Delta ticks</th></tr></thead><tbody id="cores-table"></tbody></table></div>
+    </section>
+
+    <section class="grid two section">
+      <article class="card">
+        <div class="split"><h2>Stability & activity</h2><span id="stability-state" class="status">—</span></div>
+        <div class="kv">
+          <span>Samples / window</span><b id="stability-samples">—</b>
+          <span>Project checks</span><b id="project-checks">—</b>
+          <span>Service checks</span><b id="service-checks">—</b>
+          <span>Observed failures</span><b id="observed-failures">—</b>
+          <span>Project state changes</span><b id="project-changes">—</b>
+          <span>Service state changes</span><b id="service-changes">—</b>
+          <span>Last event</span><b id="last-event">—</b>
+          <span>Last recorded error</span><b id="last-stability-error">—</b>
+        </div>
+      </article>
+      <article class="card">
+        <div class="split"><h2>Recent activity events</h2><span id="event-count" class="small">—</span></div>
+        <div id="events" class="event-list"><div class="small">Waiting for the first sample…</div></div>
+      </article>
+    </section>
+
+    <section class="section"><h2>Projects & processing lanes</h2><div id="projects" class="grid project-grid"></div></section>
+
+    <section class="card section">
+      <div class="split"><h2>Services & resource activity</h2><span id="service-summary" class="small">—</span></div>
+      <div class="service-wrap"><table class="services"><thead><tr><th>Unit</th><th>State</th><th>PID / threads</th><th>RSS / peak</th><th>Tasks</th><th>CPU time</th><th>Restarts</th><th>Since</th></tr></thead><tbody id="services"></tbody></table></div>
+    </section>
+    <footer class="footer"><span>Read-only metrics · no exchange credentials or payloads are exposed</span><span id="footer-time" class="mono">UTC —</span></footer>
+  </main>
+  <script src="/__server/dashboard.js"></script>
+</body>
+</html>

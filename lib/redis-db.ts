@@ -8,7 +8,7 @@ import {
   syncConnectionSecondaryIndexes,
 } from "./database-indexes"
 import { createKiloDatabaseQuery, hasKiloDatabaseBackend, resolveKiloDatabaseConfig, type KiloDatabaseMethod } from "./kilo-database-client"
-import { scanRedisKeys } from "./redis-scan"
+import { matchesRedisGlob, scanRedisKeys } from "./redis-scan"
 import { resolveRedisRuntimeRoot } from "./redis-runtime-root"
 import { createRedisLockToken, releaseOwnedRedisLock } from "./redis-lock-utils"
 import {
@@ -357,6 +357,7 @@ export interface RedisClientLike {
   zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]>
   zcount(key: string, min: number | string, max: number | string): Promise<number>
   zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number>
+  zremrangebyrank(key: string, start: number, stop: number): Promise<number>
   zrange(key: string, start: number, stop: number): Promise<string[]>
   zrevrange(key: string, start: number, stop: number): Promise<string[]>
   zscore(key: string, member: string): Promise<string | null>
@@ -398,6 +399,21 @@ export class InlineLocalRedis implements RedisClientLike {
     expiresAt: number
   }>()
   private scanSessionCounter = 0
+  /**
+   * Active SSCAN cursors. Set iterators avoid Array.from(set) on every page;
+   * this matters for the large connection/index sets used by retention and
+   * monitoring. The captured size is a finite scan budget, matching the
+   * bounded semantics of the local SCAN implementation.
+   */
+  private setScanSessions = new Map<string, {
+    key: string
+    pattern: string
+    iterator: Iterator<string>
+    remaining: number
+    page: number
+    expiresAt: number
+  }>()
+  private setScanSessionCounter = 0
   private ttlCleanupIterator: Iterator<[string, number]> | null = null
 
   private enforceScanSessionBudget(): void {
@@ -411,6 +427,11 @@ export class InlineLocalRedis implements RedisClientLike {
       const oldest = this.scanSessions.keys().next().value as string | undefined
       if (!oldest) break
       this.scanSessions.delete(oldest)
+    }
+    while (this.setScanSessions.size > INLINE_REDIS_MEMORY_POLICY.maxScanSessions) {
+      const oldest = this.setScanSessions.keys().next().value as string | undefined
+      if (!oldest) break
+      this.setScanSessions.delete(oldest)
     }
   }
   private ttlCleanupRemaining = 0
@@ -2830,13 +2851,60 @@ export class InlineLocalRedis implements RedisClientLike {
   async sscan(key: string, cursor: string | number, ...args: any[]): Promise<[string, string[]]> {
     this.trackOperation()
     if (this.isExpired(key)) return ["0", []]
-    const members = Array.from(this.data.sets.get(key) || new Set<string>()) as string[]
     const options = normalizeScanOptions(args)
     const count = Math.max(1, Number(options.COUNT || 10))
-    const start = Math.max(0, Number(cursor) || 0)
-    const page = members.slice(start, start + count)
-    const next = start + page.length >= members.length ? "0" : String(start + page.length)
-    return [next, page]
+    const pattern = String(options.MATCH || "*")
+    const now = Date.now()
+    for (const [id, session] of this.setScanSessions) {
+      if (session.expiresAt <= now) this.setScanSessions.delete(id)
+    }
+    this.enforceScanSessionBudget()
+
+    const cursorToken = String(cursor ?? "0")
+    let cursorId = cursorToken === "0" ? "0" : cursorToken.split(".", 1)[0]
+    let session = cursorId === "0" ? undefined : this.setScanSessions.get(cursorId)
+    if (!session || session.key !== key || session.pattern !== pattern) {
+      const set = this.data.sets.get(key)
+      if (!set || set.size === 0) return ["0", []]
+      cursorId = String(++this.setScanSessionCounter)
+      session = {
+        key,
+        pattern,
+        iterator: set.values(),
+        remaining: set.size,
+        page: 0,
+        expiresAt: now + INLINE_REDIS_MEMORY_POLICY.maxScanSessionLifetimeMs,
+      }
+      while (this.setScanSessions.size >= INLINE_REDIS_MEMORY_POLICY.maxScanSessions) {
+        const oldest = this.setScanSessions.keys().next().value as string | undefined
+        if (!oldest) break
+        this.setScanSessions.delete(oldest)
+      }
+      this.setScanSessions.set(cursorId, session)
+    }
+
+    const page: string[] = []
+    let examined = 0
+    while (examined < count && session.remaining > 0) {
+      const next = session.iterator.next()
+      if (next.done) {
+        session.remaining = 0
+        break
+      }
+      examined++
+      session.remaining--
+      const member = String(next.value)
+      if (matchesRedisGlob(member, pattern)) page.push(member)
+    }
+
+    session.expiresAt = now + INLINE_REDIS_MEMORY_POLICY.maxScanSessionLifetimeMs
+    const complete = session.remaining <= 0
+    if (complete) {
+      this.setScanSessions.delete(cursorId)
+      return ["0", page]
+    }
+    session.page++
+    return [cursorId + "." + session.page, page]
   }
 
   async sismember(key: string, member: string): Promise<number> {
@@ -3250,6 +3318,22 @@ export class InlineLocalRedis implements RedisClientLike {
     return removed.length
   }
 
+  /** Remove sorted-set members by ascending rank, inclusive. */
+  async zremrangebyrank(key: string, start: number, stop: number): Promise<number> {
+    const zset = this.getSortedSet(key)
+    if (!zset || zset.entries.length === 0) return 0
+    const first = start < 0 ? Math.max(0, zset.entries.length + start) : Math.max(0, start)
+    const last = stop < 0 ? zset.entries.length + stop : Math.min(zset.entries.length - 1, stop)
+    if (first > last || first >= zset.entries.length) return 0
+    const removed = zset.entries.slice(first, last + 1)
+    for (const entry of removed) zset.memberIndex.delete(entry.member)
+    zset.entries.splice(first, removed.length)
+    if (zset.entries.length === 0) this.data.sorted_sets.delete(key)
+    else this.data.sorted_sets.set(key, zset)
+    this.markDirty()
+    return removed.length
+  }
+
   /** Return members in ascending score order between indices start and stop (inclusive). */
   async zrange(key: string, start: number, stop: number): Promise<string[]> {
     if (this.isExpired(key)) return []
@@ -3559,6 +3643,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
   async zrangebyscore(key: string, min: number | string, max: number | string) { return await (await this.c()).zRangeByScore(key, min as any, max as any) }
   async zcount(key: string, min: number | string, max: number | string) { return await (await this.c()).zCount(key, min as any, max as any) }
   async zremrangebyscore(key: string, min: number | string, max: number | string) { return await (await this.c()).zRemRangeByScore(key, min as any, max as any) }
+  async zremrangebyrank(key: string, start: number, stop: number) { return await (await this.c()).zRemRangeByRank(key, start, stop) }
   async zrange(key: string, start: number, stop: number) { return await (await this.c()).zRange(key, start, stop) }
   async zrevrange(key: string, start: number, stop: number) { return await (await this.c()).zRange(key, start, stop, { REV: true } as any) }
   async zscore(key: string, member: string) { const score = await (await this.c()).zScore(key, member); return score == null ? null : String(score) }
@@ -3741,6 +3826,7 @@ class UpstashRestRedisClient implements RedisClientLike {
   async zrangebyscore(key: string, min: number | string, max: number | string) { return await this.command<string[]>(["ZRANGEBYSCORE", key, min, max]) }
   async zcount(key: string, min: number | string, max: number | string) { return await this.command<number>(["ZCOUNT", key, min, max]) }
   async zremrangebyscore(key: string, min: number | string, max: number | string) { return await this.command<number>(["ZREMRANGEBYSCORE", key, min, max]) }
+  async zremrangebyrank(key: string, start: number, stop: number) { return await this.command<number>(["ZREMRANGEBYRANK", key, start, stop]) }
   async zrange(key: string, start: number, stop: number) { return await this.command<string[]>(["ZRANGE", key, start, stop]) }
   async zrevrange(key: string, start: number, stop: number) { return await this.command<string[]>(["ZREVRANGE", key, start, stop]) }
   async zscore(key: string, member: string) { const score = await this.command<string | number | null>(["ZSCORE", key, member]); return score == null ? null : String(score) }
