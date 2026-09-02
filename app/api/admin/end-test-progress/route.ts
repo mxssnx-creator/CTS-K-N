@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { execute, query } from "@/lib/db"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -54,7 +55,7 @@ export async function POST(request: Request) {
 
   // ── 1. Stuck prehistoric phase ─────────────────────────────────────────
   try {
-    const progKeys: string[] = await client.keys("progression:*")
+    const progKeys: string[] = await scanRedisKeys(client, "progression:*", { count: 250 })
     // Exclude history snapshots (progression:{id}:history:{epoch})
     const activeProgKeys = progKeys.filter(
       (k) => !k.includes(":history:"),
@@ -136,7 +137,7 @@ export async function POST(request: Request) {
 
   // ── 3. Stale connection test cache ────────────────────────────────────
   try {
-    const testKeys: string[] = await client.keys("connection:test:*")
+    const testKeys: string[] = await scanRedisKeys(client, "connection:test:*", { count: 250 })
     let testDeleted = 0
     if (testKeys.length > 0) {
       testDeleted = await client.del(...testKeys).catch(() => 0)
@@ -167,7 +168,7 @@ export async function POST(request: Request) {
   // "preset_historical_progress" to prevent the log dialog from
   // showing ghost "historical sync in progress" entries for dead engines.
   try {
-    const logKeys: string[] = await client.keys("progression_log:*")
+    const logKeys: string[] = await scanRedisKeys(client, "progression_log:*", { count: 250 })
     let historicEventsRemoved = 0
 
     for (const logKey of logKeys) {
@@ -231,7 +232,7 @@ export async function GET(request: Request) {
 
   // Prehistoric stuck
   try {
-    const progKeys: string[] = await client.keys("progression:*")
+    const progKeys: string[] = await scanRedisKeys(client, "progression:*", { count: 250 })
     const activeProgKeys = progKeys.filter((k) => !k.includes(":history:"))
     const stuckPrehistoric: string[] = []
     for (const key of activeProgKeys) {
@@ -265,7 +266,7 @@ export async function GET(request: Request) {
 
   // Stale test cache
   try {
-    const testKeys: string[] = await client.keys("connection:test:*")
+    const testKeys: string[] = await scanRedisKeys(client, "connection:test:*", { count: 250 })
     dryRun.stale_connection_tests = { would_delete: testKeys.length, keys: testKeys }
   } catch (err) {
     dryRun.stale_connection_tests = { error: err instanceof Error ? err.message : String(err) }
@@ -281,7 +282,7 @@ export async function GET(request: Request) {
 
   // Historic log events
   try {
-    const logKeys: string[] = await client.keys("progression_log:*")
+    const logKeys: string[] = await scanRedisKeys(client, "progression_log:*", { count: 250 })
     let count = 0
     for (const logKey of logKeys) {
       const entries = await client.lrange(logKey, 0, -1).catch(() => [] as string[])

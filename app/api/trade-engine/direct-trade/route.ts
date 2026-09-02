@@ -65,6 +65,11 @@ import {
   normalizeDirectTradeConnectionId,
 } from "@/lib/direct-trade-keyspace"
 import { directTradeLiveExecutionReadiness } from "@/lib/direct-trade-live-readiness"
+import {
+  BLOCK_INCREMENT_STEPS_DEFAULT,
+  normalizeBlockIncrementSteps,
+  normalizeBlockProfitFactorRatio,
+} from "@/lib/block-count-state"
 
 const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
@@ -129,6 +134,8 @@ export interface DirectTradeState {
   // The Block increase ratio is independent from the base position-size
   // factor. For a base quantity B and N valid Blocks: B + (N × B × ratio).
   blockVolumeRatio: number
+  // Number of compounded Block targets (1..5); defaults to two increments.
+  blockIncrementSteps: number
   // Independent PF floor multiplier for each Block count.
   blockProfitFactorRatio: number
   // Global open-position ceiling. The shipped target is 100 active positions;
@@ -216,7 +223,8 @@ const DEFAULT_STATE: DirectTradeState = {
   takeProfitDefaultsVersion: 3,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
-  blockProfitFactorRatio: 0.8,
+  blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
+  blockProfitFactorRatio: 1.1,
   maxTotalPositions: DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
@@ -449,6 +457,10 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
         ),
         blockRange: normaliseBlockRange(persisted?.blockRange, DEFAULT_STATE.blockRange),
         blockVolumeRatio: clampBlockVolumeRatio(persisted?.blockVolumeRatio, DEFAULT_STATE.blockVolumeRatio),
+        blockIncrementSteps: normalizeBlockIncrementSteps(
+          persisted?.blockIncrementSteps,
+          DEFAULT_STATE.blockIncrementSteps,
+        ),
         blockProfitFactorRatio: clampBlockProfitFactorRatio(persisted?.blockProfitFactorRatio, DEFAULT_STATE.blockProfitFactorRatio),
         maxSlRatio: clampStopLossRatio(persisted?.maxSlRatio, DEFAULT_STATE.maxSlRatio),
         maxPositionsPerSymbol: hasLegacyCapacityDefaults
@@ -542,10 +554,8 @@ function clampBlockVolumeRatio(value: unknown, fallback = 1): number {
   return Number((Math.round(clamped * 10) / 10).toFixed(1))
 }
 
-function clampBlockProfitFactorRatio(value: unknown, fallback = 0.8): number {
-  const raw = Number(value)
-  const clamped = Math.max(0.2, Math.min(5, Number.isFinite(raw) ? raw : fallback))
-  return Number(clamped.toFixed(2))
+function clampBlockProfitFactorRatio(value: unknown, fallback = 1.1): number {
+  return normalizeBlockProfitFactorRatio(value, fallback)
 }
 
 function boundedArray(value: unknown, maximum: number): any[] {
@@ -883,6 +893,7 @@ export async function POST(request: NextRequest) {
         ...(body.trailingMinTakeProfitRatio !== undefined ? { trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(body.trailingMinTakeProfitRatio, currentState.trailingMinTakeProfitRatio) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
+        ...(body.blockIncrementSteps !== undefined ? { blockIncrementSteps: normalizeBlockIncrementSteps(body.blockIncrementSteps, currentState.blockIncrementSteps) } : {}),
         ...(body.blockProfitFactorRatio !== undefined ? { blockProfitFactorRatio: clampBlockProfitFactorRatio(body.blockProfitFactorRatio, currentState.blockProfitFactorRatio) } : {}),
         ...(body.maxTotalPositions !== undefined ? { maxTotalPositions: clampOpenPositionLimit(body.maxTotalPositions) } : {}),
         ...(body.maxPositionsPerSymbol !== undefined ? { maxPositionsPerSymbol: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerSymbol) || 1))) } : {}),
@@ -987,6 +998,7 @@ export async function POST(request: NextRequest) {
         ...(body.trailingMinTakeProfitRatio !== undefined ? { trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(body.trailingMinTakeProfitRatio, currentState.trailingMinTakeProfitRatio) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
+        ...(body.blockIncrementSteps !== undefined ? { blockIncrementSteps: normalizeBlockIncrementSteps(body.blockIncrementSteps, currentState.blockIncrementSteps) } : {}),
         ...(body.blockProfitFactorRatio !== undefined ? { blockProfitFactorRatio: clampBlockProfitFactorRatio(body.blockProfitFactorRatio, currentState.blockProfitFactorRatio) } : {}),
         ...(body.maxTotalPositions !== undefined ? { maxTotalPositions: clampOpenPositionLimit(body.maxTotalPositions) } : {}),
         ...(body.maxPositionsPerSymbol !== undefined ? { maxPositionsPerSymbol: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerSymbol) || 1))) } : {}),

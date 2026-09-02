@@ -4,8 +4,13 @@
  * silently evaluating different symbol universes.
  */
 import { CANONICAL_FORCED_SYMBOLS } from "@/lib/forced-symbols"
+import {
+  EXCHANGE_SYMBOL_COUNT_MAX,
+  clampExchangeSymbolCount,
+} from "@/lib/symbol-capacity"
 
-export const DIRECT_TRADE_MAX_SYMBOLS = 32
+export const DIRECT_TRADE_MAX_SYMBOLS = EXCHANGE_SYMBOL_COUNT_MAX
+export const DIRECT_TRADE_MIN_SYMBOLS = CANONICAL_FORCED_SYMBOLS.length
 
 // Direct-Trade capacity is intentionally defined once.  The dashboard,
 // Settings page, API defaults, headless processor and simulation reports must
@@ -45,10 +50,9 @@ export function clampDirectTradeVolumeFactor(
 }
 
 export function clampDirectTradeSymbolCount(value: unknown, fallback = 8): number {
-  const parsed = Number(value)
-  const candidate = Number.isFinite(parsed) ? parsed : fallback
-  return Math.min(
-    DIRECT_TRADE_MAX_SYMBOLS,
-    Math.max(CANONICAL_FORCED_SYMBOLS.length, Math.floor(candidate)),
+  return clampExchangeSymbolCount(
+    value,
+    fallback,
+    DIRECT_TRADE_MIN_SYMBOLS,
   )
 }

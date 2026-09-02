@@ -71,56 +71,91 @@ function hasSystemAndConnectionTracking(pos: any): boolean {
 async function reconcileStrandedPositions() {
   try {
     const client = getRedisClient()
-    const keys = await client.keys("live:position:*")
-    if (!keys.length) return
-
     const RECONCILE_DEADLINE_MS = 20_000 // 20s hard deadline
     const deadline = Date.now() + RECONCILE_DEADLINE_MS
     const now = Date.now()
     let found = 0
     let reindexed = 0
+    let processed = 0
+    let cursor = "0"
+    const visitedCursors = new Set<string>()
+    let complete = false
 
-    for (const key of keys) {
-      if (Date.now() > deadline) {
-        console.warn(
-          `[v0] [Startup] Reconciling stranded positions deadline ${RECONCILE_DEADLINE_MS}ms exceeded — ` +
-          `processed ${found} of ${keys.length}, deferring remainder`,
-        )
-        break
+    // Never call KEYS for this recovery scan. A Redis SCAN page is bounded and
+    // yields between pages, so boot recovery cannot allocate the entire live
+    // position namespace or block the event loop. All production adapters are
+    // required to expose SCAN; if a reduced test/third-party client does not,
+    // defer recovery to the normal exchange reconciliation loop.
+    if (typeof client.scan !== "function") {
+      console.warn("[v0] [Startup] Redis client has no SCAN; deferring stranded-position reconciliation")
+      return
+    }
+    do {
+      if (Date.now() > deadline) break
+      if (visitedCursors.has(cursor)) break
+      visitedCursors.add(cursor)
+
+      let pageCursor = "0"
+      let pageKeys: string[] = []
+      const result = await client.scan(cursor, "MATCH", "live:position:*", "COUNT", 250)
+      if (Array.isArray(result)) {
+        pageCursor = String(result[0] ?? "0")
+        pageKeys = Array.isArray(result[1]) ? result[1].map(String) : []
+      } else {
+        pageCursor = String(result?.cursor ?? "0")
+        pageKeys = Array.isArray(result?.keys) ? result.keys.map(String) : []
       }
-      // `live:position:*` also matches pointer keys and the alternate-position
-      // LIST index. Neither is a JSON position payload; GET against the LIST
-      // raises WRONGTYPE on every boot. Keep real alternate payload keys while
-      // excluding only their exact metadata index.
-      if (
-        key.startsWith("live:position:tracking:") ||
-        /^live:position:live:[^:]+:index$/.test(key)
-      ) continue
-      try {
-        const raw = await client.get(key)
-        if (!raw) continue
-        const pos = JSON.parse(raw as string)
-        if (pos.status !== "open") continue
-        if (!hasSystemAndConnectionTracking(pos)) {
-          // Never mutate manually-created or foreign exchange positions during
-          // startup reconciliation. Only positions carrying both the system
-          // tracking id and the connection tracking id are owned by this app.
-          continue
+      cursor = pageCursor
+
+      for (const key of pageKeys) {
+        if (Date.now() > deadline) break
+        processed++
+        // `live:position:*` also matches pointer keys and the alternate-position
+        // LIST index. Neither is a JSON position payload; GET against the LIST
+        // raises WRONGTYPE on every boot. Keep real alternate payload keys while
+        // excluding only their exact metadata index.
+        if (
+          key.startsWith("live:position:tracking:") ||
+          /^live:position:live:[^:]+:index$/.test(key)
+        ) continue
+        try {
+          const raw = await client.get(key)
+          if (!raw) continue
+          const pos = JSON.parse(raw as string)
+          if (pos.status !== "open") continue
+          if (!hasSystemAndConnectionTracking(pos)) {
+            // Never mutate manually-created or foreign exchange positions during
+            // startup reconciliation. Only positions carrying both the system
+            // tracking id and the connection tracking id are owned by this app.
+            continue
+          }
+          found++
+
+          // savePosition atomically refreshes the durable open index and all
+          // exchange/client tracking pointers. The live recovery loop will then
+          // reconcile the venue snapshot, entry submission, quantity, and
+          // protection orders. No local-only age based terminal transition is
+          // permitted here.
+          pos.restartRecoveryRequestedAt = now
+          pos.updatedAt = now
+          await saveRedisPosition(pos)
+          reindexed++
+        } catch (err) {
+          console.warn(`[v0] [Startup] reconcile error for ${key}:`, err)
         }
-        found++
-
-        // savePosition atomically refreshes the durable open index and all
-        // exchange/client tracking pointers. The live recovery loop will then
-        // reconcile the venue snapshot, entry submission, quantity, and
-        // protection orders. No local-only age based terminal transition is
-        // permitted here.
-        pos.restartRecoveryRequestedAt = now
-        pos.updatedAt = now
-        await saveRedisPosition(pos)
-        reindexed++
-      } catch (err) {
-        console.warn(`[v0] [Startup] reconcile error for ${key}:`, err)
       }
+
+      if (cursor !== "0" && typeof setImmediate === "function") {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      if (cursor === "0") complete = true
+    } while (cursor !== "0" && Date.now() <= deadline)
+
+    if (!complete) {
+      console.warn(
+        `[v0] [Startup] Reconciling stranded positions deadline or cursor guard reached — ` +
+        `processed ${processed} keys, deferring remainder`,
+      )
     }
 
     if (found > 0) {

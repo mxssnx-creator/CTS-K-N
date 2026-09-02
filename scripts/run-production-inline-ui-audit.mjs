@@ -6,7 +6,7 @@
  * This intentionally differs from run-prod-preview-check: it is allowed to
  * use InlineLocalRedis only because one standalone server owns the complete
  * process. It proves rendered page availability, selected-connection request
- * isolation, 32-symbol QuickStart, state write/readback and hot API latency
+ * isolation, high-scale QuickStart, state write/readback and hot API latency
  * without pretending to validate a multi-worker Redis deployment.
  */
 
@@ -43,7 +43,8 @@ const auditRssHardLimitMb = Math.max(
   auditRssSoftLimitMb,
   Math.min(auditMemoryLimitMb, Number(process.env.PROD_INLINE_AUDIT_RSS_HARD_LIMIT_MB || (deepUiAuditRequested ? 8192 : 5120))),
 )
-const symbols = [
+const HIGH_SCALE_SYMBOL_STRESS_TARGET = 128
+const baseSymbols = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
   "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
   "UNIUSDT", "NEARUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT",
@@ -51,6 +52,7 @@ const symbols = [
   "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
   "ICPUSDT", "HBARUSDT",
 ]
+let symbols = baseSymbols
 let outputTail = ""
 
 function assert(condition, message) {
@@ -129,6 +131,25 @@ async function pageCheck(pathname) {
   assert(html.includes("/_next/static/"), `${pathname} did not render Next client assets`)
 }
 
+async function resolveAuditSymbols() {
+  if (symbols.length >= HIGH_SCALE_SYMBOL_STRESS_TARGET) return
+  const top = await request(
+    `/api/exchange/bingx/top-symbols?sort=volume&limit=${HIGH_SCALE_SYMBOL_STRESS_TARGET}&t=${Date.now()}`,
+    { timeoutMs: 30_000 },
+  )
+  const discovered = Array.isArray(top.data?.symbolList)
+    ? top.data.symbolList.map(String)
+    : Array.isArray(top.data?.symbols)
+      ? top.data.symbols.map((entry) => String(entry?.symbol || "")).filter(Boolean)
+      : []
+  assert(
+    discovered.length === HIGH_SCALE_SYMBOL_STRESS_TARGET &&
+      new Set(discovered).size === HIGH_SCALE_SYMBOL_STRESS_TARGET,
+    `Inline audit discovery returned ${discovered.length}/${HIGH_SCALE_SYMBOL_STRESS_TARGET} unique symbols`,
+  )
+  symbols = discovered
+}
+
 async function runDeepUiVerifier() {
   await new Promise((resolve, reject) => {
     const verifier = spawn(process.execPath, ["scripts/verify-prod-ui-max.mjs"], {
@@ -137,7 +158,8 @@ async function runDeepUiVerifier() {
         ...process.env,
         BASE_URL: baseUrl,
         PORT: String(port),
-        PROD_UI_PROGRESSION_TIMEOUT_MS: process.env.PROD_INLINE_AUDIT_PROGRESS_TIMEOUT_MS || "90000",
+        PROD_UI_PROGRESSION_TIMEOUT_MS:
+          process.env.PROD_INLINE_AUDIT_PROGRESS_TIMEOUT_MS || String(HIGH_SCALE_SYMBOL_STRESS_TARGET * 7_500),
       },
       stdio: "inherit",
     })
@@ -170,7 +192,7 @@ async function main() {
       DISABLE_TRADE_ENGINE_IN_PROCESS: "0",
       ENABLE_TRADE_ENGINE_IN_PROCESS: "1",
       ALLOW_API_TRADE_ENGINE_FOREGROUND: "1",
-      V0_DEV_SYMBOL_COUNT: String(symbols.length),
+      V0_DEV_SYMBOL_COUNT: String(HIGH_SCALE_SYMBOL_STRESS_TARGET),
       ENGINE_SYMBOL_CONCURRENCY: "2",
       STRATEGY_FLOW_SYMBOL_CONCURRENCY: "2",
       // The global Strategy graph lease is deliberately independent of the
@@ -202,6 +224,7 @@ async function main() {
 
   try {
     await waitForReady(child)
+    await resolveAuditSymbols()
     if (deepUiAuditRequested) await runDeepUiVerifier()
     const connectionsResponse = await request("/api/connections")
     assert(connectionsResponse.status === 200, "Could not load production connections")
@@ -271,11 +294,11 @@ async function main() {
         realEvalPosCount: 1,
       },
     })
-    assert(quickStart.status === 200, `32-symbol QuickStart failed: HTTP ${quickStart.status}`)
+    assert(quickStart.status === 200, `High-scale QuickStart failed: HTTP ${quickStart.status}`)
     const configuredSymbols = Array.isArray(quickStart.data?.connection?.symbols)
       ? quickStart.data.connection.symbols.map(String)
       : []
-    assert(configuredSymbols.length === symbols.length, "QuickStart did not preserve all 32 symbols")
+    assert(configuredSymbols.length === symbols.length, `QuickStart did not preserve all ${symbols.length} symbols`)
     assert(quickStart.data?.connection?.liveTradeRequested === false, "Safe production audit enabled live trade")
     assert(quickStart.data?.connection?.liveTradeEnabled === false, "Safe production audit enabled live execution")
 

@@ -4,12 +4,22 @@
  */
 
 import { initRedis, getRedisClient, getSettings, getAppSettings, setSettings } from "@/lib/redis-db"
-import { scanRedisKeys } from "@/lib/redis-scan"
+import { iterateRedisSetMembers, scanRedisKeys } from "@/lib/redis-scan"
 import {
   RETENTION_PATTERNS,
   repairRedisRetentionPage,
   type RetentionCursorState,
 } from "@/lib/redis-retention"
+
+// Ordinary archival cleanup is deliberately bounded. Retention repair already
+// walks its own cursors every five minutes; this pass must not materialise a
+// production-wide KEYS/SCAN result when a stale diagnostic family has grown.
+const CLEANUP_SCAN_LIMIT = 5_000
+const CLEANUP_SCAN_OPTIONS = { count: 250, limit: CLEANUP_SCAN_LIMIT }
+// A closed-position index can contain hundreds of thousands of historical ids.
+// One cleanup invocation must stay bounded so a busy engine never competes
+// with the trading path for a giant Redis reply or an unbounded JS array.
+const CLEANUP_SET_MEMBER_LIMIT = 5_000
 
 /**
  * Merge cleanup-related settings from both the `app_settings` (main UI
@@ -149,11 +159,14 @@ export class DataCleanupManager {
         this.retentionCompletedPatterns.clear()
       }
       const { report } = result
-      if (report.ttlRepaired || report.terminalRowsBounded || report.orphanVolumeDetailsDeleted || report.indexesTrimmed || report.typeMismatches) {
+      if (report.ttlRepaired || report.compatibilityMirrorsCompacted || report.terminalRowsBounded || report.orphanVolumeDetailsDeleted || report.orphanStrategyMembershipsDeleted || report.indexesTrimmed || report.staleIndexMembersRemoved || report.typeMismatches) {
         console.log(
           `[v0] Retention repair: scanned=${report.scanned} ttl=${report.ttlRepaired} ` +
+          `mirrors=${report.compatibilityMirrorsCompacted} ` +
           `terminal=${report.terminalRowsBounded} orphanVolume=${report.orphanVolumeDetailsDeleted} ` +
-          `trimmed=${report.indexesTrimmed} typeMismatches=${report.typeMismatches} errors=${report.errors}`,
+          `orphanMembership=${report.orphanStrategyMembershipsDeleted} ` +
+          `trimmed=${report.indexesTrimmed} staleIndex=${report.staleIndexMembersRemoved} ` +
+          `typeMismatches=${report.typeMismatches} errors=${report.errors}`,
         )
       }
     } catch (error) {
@@ -174,7 +187,7 @@ export class DataCleanupManager {
 
       // Find all closed live positions that haven't been synced to the database yet
       const allConnectionIds: string[] = []
-      const keys = await scanRedisKeys(client, "live:positions:*:closed")
+      const keys = await scanRedisKeys(client, "live:positions:*:closed", CLEANUP_SCAN_OPTIONS)
       for (const key of keys) {
         const match = key.match(/live:positions:(.+?):closed/)
         if (match && match[1]) {
@@ -264,10 +277,12 @@ export class DataCleanupManager {
       await this.syncLivePositionsToDatabase()
 
       // Clean old closed exchange positions
-      const connectionKeys = await scanRedisKeys(client, "exchange_positions:*:closed")
+      const connectionKeys = await scanRedisKeys(client, "exchange_positions:*:closed", CLEANUP_SCAN_OPTIONS)
       for (const key of connectionKeys) {
-        const closedIds = await client.smembers(key)
-        for (const posId of closedIds) {
+        for await (const posId of iterateRedisSetMembers(client, key, {
+          count: 250,
+          limit: CLEANUP_SET_MEMBER_LIMIT,
+        })) {
           const pos = await getSettings(`exchange_position:${posId}`)
           if (pos && pos.closed_at && new Date(pos.closed_at).getTime() < positionCutoff) {
             // Archive to a compressed summary
@@ -291,7 +306,7 @@ export class DataCleanupManager {
       }
 
       // Clean old market data (sorted sets with timestamps)
-      const marketKeys = await scanRedisKeys(client, "market_data:*")
+      const marketKeys = await scanRedisKeys(client, "market_data:*", CLEANUP_SCAN_OPTIONS)
       for (const key of marketKeys) {
         const removed = await client.zremrangebyscore(key, 0, marketDataCutoff)
         if (typeof removed === "number") {
@@ -300,7 +315,7 @@ export class DataCleanupManager {
       }
 
       // Clean old coordination logs (stored as JSON string arrays via SET, not sorted sets)
-      const coordLogKeys = await scanRedisKeys(client, "coord_logs:*")
+      const coordLogKeys = await scanRedisKeys(client, "coord_logs:*", CLEANUP_SCAN_OPTIONS)
       for (const key of coordLogKeys) {
         try {
           const raw = await client.get(key)
@@ -325,7 +340,7 @@ export class DataCleanupManager {
       // erase the history index. Detail keys have a TTL now, while this pass
       // also removes legacy keys that were created before TTL retention.
       const volumeIndexRetentionSeconds = 30 * 24 * 60 * 60
-      const volumeIndexKeys = await scanRedisKeys(client, "volume_calcs:*")
+      const volumeIndexKeys = await scanRedisKeys(client, "volume_calcs:*", CLEANUP_SCAN_OPTIONS)
       for (const key of volumeIndexKeys) {
         try {
           const raw = await client.get(key)
@@ -369,7 +384,7 @@ export class DataCleanupManager {
       // Legacy detail keys are not necessarily reachable from an index (for
       // example after an interrupted write). Remove only demonstrably old
       // entries; fresh diagnostics remain untouched and TTL-managed.
-      const volumeDetailKeys = await scanRedisKeys(client, "volume_calc:*")
+      const volumeDetailKeys = await scanRedisKeys(client, "volume_calc:*", CLEANUP_SCAN_OPTIONS)
       for (const key of volumeDetailKeys) {
         try {
           const ttl = await client.ttl(key)
@@ -403,7 +418,7 @@ export class DataCleanupManager {
       cleaned += typeof removed === "number" ? removed : 0
 
       // Clean connection-specific symbol market data
-      const symbolKeys = await scanRedisKeys(client, `market_data:${connectionId}:*`)
+      const symbolKeys = await scanRedisKeys(client, `market_data:${connectionId}:*`, CLEANUP_SCAN_OPTIONS)
       for (const key of symbolKeys) {
         const r = await client.zremrangebyscore(key, 0, cutoffTime)
         cleaned += typeof r === "number" ? r : 0

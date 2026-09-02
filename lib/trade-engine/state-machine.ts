@@ -20,6 +20,7 @@ import {
   buildSystemExchangeTrackingScope,
 } from "@/lib/exchange-live-state-summary"
 import { getOpenLivePositionReadModelsStrict } from "@/lib/live-position-read-model"
+import { summarizeSymbols } from "@/lib/symbol-capacity"
 // shim: existing code uses redisDb.set; map to InlineLocalRedis instance.
 const redisDb = {
   set: (key: string, val: string, opts?: { ex?: number }) =>
@@ -86,7 +87,7 @@ export class TradeEngineStateMachine {
       await redisDb.set(key, JSON.stringify(config), { ex: 3600 })
 
       console.log(`[v0] [TradeEngine] Initialized for connection ${config.connectionId}`)
-      console.log(`[v0] [TradeEngine] Monitoring symbols: ${config.symbols.join(", ")}`)
+      console.log(`[v0] [TradeEngine] Monitoring ${config.symbols.length} symbols: ${summarizeSymbols(config.symbols)}`)
 
       return true
     } catch (error) {

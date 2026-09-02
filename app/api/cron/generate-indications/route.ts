@@ -47,6 +47,7 @@ import {
 } from "@/lib/market-types"
 import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -871,7 +872,7 @@ export async function GET(request: Request) {
 
       if (!historicReady) {
         const processedSymbols = new Set(
-          (await client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]))
+          (await scanRedisSetMembers(client, `${scope.prehistoricKey}:symbols`, { count: 250 }).catch(() => [] as string[]))
             .map((symbol: unknown) => String(symbol).toUpperCase()),
         )
         const remainingSymbols = allSymbols.filter((symbol) => !processedSymbols.has(symbol))

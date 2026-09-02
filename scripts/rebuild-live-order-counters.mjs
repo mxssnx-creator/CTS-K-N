@@ -61,7 +61,8 @@ const readPosition = async (id) => {
   if (!legacy && Object.keys(hash).length === 0) return null
   if (!legacy) return hash
   if (Object.keys(hash).length === 0) return legacy
-  const hashNewer = finite(hash.version) > finite(legacy.version) || finite(hash.updatedAt) > finite(legacy.updatedAt)
+  const hashNewer = finite(hash.version) > finite(legacy.version)
+    || (finite(hash.version) === finite(legacy.version) && finite(hash.updatedAt) >= finite(legacy.updatedAt))
   return hashNewer ? { ...legacy, ...hash } : { ...hash, ...legacy }
 }
 

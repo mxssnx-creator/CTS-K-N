@@ -57,6 +57,46 @@ const serializeHashValue = (value) => {
   return JSON.stringify(value)
 }
 
+// Keep the legacy string key as a small lifecycle/tracking compatibility
+// mirror. The hash remains the authoritative full ledger; writing the whole
+// repaired position here would duplicate fills, Set lineage and progression
+// payloads and can multiply Redis memory on large books.
+const MIRROR_FIELDS = [
+  "id", "connectionId", "connection_id", "symbol", "side", "direction",
+  "realPositionId", "indicationType", "executionIntent", "executionLane",
+  "axisWindows", "signalRisk", "prevPos", "marketType", "volumeKind",
+  "lotSize", "quoteToUsdRate", "positionTicket", "entryPrice", "entry_price",
+  "executedQuantity", "remainingQuantity", "averageExecutionPrice", "quantity",
+  "totalExecutedQuantity", "closedQuantity", "volumeUsd", "requestedVolume",
+  "intendedNotionalUsd", "quantityStep", "quantityPrecision", "pricePrecision",
+  "priceTick", "leverage", "marginType", "unrealized_pnl",
+  "unrealized_pnl_percent", "markPrice", "currentPrice", "current_price",
+  "realizedPnL", "realizedPnlGross", "tradingFees", "entryTradingFee",
+  "entryTradingFeeAllocated", "entryAccountingComplete", "realizedPnlComplete",
+  "realizedPnlSource", "positionCostPct", "realProfitFactorAtEntry", "version",
+  "timestamp", "lastUpdate", "last_update", "stoppedAt", "updatedAt", "createdAt",
+  "openedAt", "closedAt", "fee", "feeAsset", "stopLoss", "takeProfit",
+  "stopLossPrice", "takeProfitPrice", "stopLossOrderId", "takeProfitOrderId",
+  "securityStopOrderId", "securityStopPrice", "securityStopArmedQuantity",
+  "securityStopRequired", "securityStopStatus", "stopLossArmedQuantity",
+  "takeProfitArmedQuantity", "protectionArmedQuantity", "stopLossLastArmedAt",
+  "takeProfitLastArmedAt", "assignedStopLoss", "assignedTakeProfit", "trailingActive",
+  "trailingStopPrice", "orderId", "clientOrderId", "exchangeOrderId",
+  "exchangePositionId", "exchangeTrackingId", "trackingId", "realPositionId",
+  "system_tracking_id", "connection_tracking_id", "setKey", "parentSetKey", "setVariant",
+  "blockCount", "blockIncrementSteps", "blockBaseQuantity", "blockBaseVolumeMultiplier",
+  "blockVolumeRatio", "blockVolumeIncrementRatio", "blockCalculatedVolumeMultiplier",
+  "dcaStep", "sizeMultiplier", "presetId", "presetIndicatorType", "presetRank",
+  "presetPositionCostPct", "presetProfitFactor", "closeReason", "closePrice",
+  "closeOrderId", "status", "statusReason", "executionMode", "executionBlockCode",
+  "executionBlockReason",
+]
+const buildCompatibilitySnapshot = (position) => Object.fromEntries([
+  ["liveMirrorVersion", 2],
+  ...MIRROR_FIELDS.filter((field) => position[field] !== undefined)
+    .map((field) => [field, position[field]]),
+])
+
 const readPosition = async (id) => {
   const [legacyRaw, rawHash] = await Promise.all([
     client.get(`live:position:${id}`),
@@ -68,7 +108,8 @@ const readPosition = async (id) => {
   if (!legacy && Object.keys(hash).length === 0) return null
   if (!legacy) return hash
   if (Object.keys(hash).length === 0) return legacy
-  const hashNewer = finite(hash.version) > finite(legacy.version) || finite(hash.updatedAt) > finite(legacy.updatedAt)
+  const hashNewer = finite(hash.version) > finite(legacy.version)
+    || (finite(hash.version) === finite(legacy.version) && finite(hash.updatedAt) >= finite(legacy.updatedAt))
   return hashNewer ? { ...legacy, ...hash } : { ...hash, ...legacy }
 }
 
@@ -195,8 +236,8 @@ for (const id of uniqueIds) {
       .map(([key, value]) => [key, serializeHashValue(value)])
       .filter(([, value]) => value !== undefined),
   )
-  await client.set(`live:position:${id}`, JSON.stringify(next))
   await client.hSet(`live_positions:${connectionId}:${id}`, hash)
+  await client.set(`live:position:${id}`, JSON.stringify(buildCompatibilitySnapshot(next)))
 }
 
 result.changedByStatus = changedByStatus

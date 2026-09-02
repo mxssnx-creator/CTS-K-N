@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -14,22 +15,24 @@ export async function GET() {
     await initRedis()
     const client = getRedisClient()
 
-    // Get all indication-related keys to count historical cycles
-    const allKeys = await client.keys("*").catch(() => [])
-    
-    const indicationKeys = allKeys.filter((k: string) => k.includes("indication"))
-    const strategyKeys = allKeys.filter((k: string) => k.includes("strategy"))
-    const positionKeys = allKeys.filter((k: string) => k.includes("position"))
-    const entryKeys = allKeys.filter((k: string) => k.includes("entry"))
-
-    // Analyze symbols processed
+    // Stream the keyspace page by page. This diagnostic endpoint used to keep
+    // every Redis key and four derived arrays in memory just to calculate
+    // counters, which amplified the host pressure during polling.
+    let indicationCount = 0
+    let strategyCount = 0
+    let positionCount = 0
+    let entryCount = 0
     const symbolsSet = new Set<string>()
-    for (const key of indicationKeys) {
+    for await (const key of iterateRedisKeys(client, "*", { count: 500 })) {
+      if (key.includes("indication")) {
+        indicationCount++
       // Parse symbol from key (e.g., "indication:BTCUSDT:...")
-      const parts = key.split(":")
-      if (parts[1]) {
-        symbolsSet.add(parts[1])
+        const parts = key.split(":")
+        if (parts[1]) symbolsSet.add(parts[1])
       }
+      if (key.includes("strategy")) strategyCount++
+      if (key.includes("position")) positionCount++
+      if (key.includes("entry")) entryCount++
     }
     const symbolsArray = Array.from(symbolsSet).sort()
 
@@ -51,23 +54,23 @@ export async function GET() {
           cyclesExecuted: cycleCount,
           avgCycleDuration: cycleDuration,
           symbolsProcessedPerCycle: symbolsArray.length,
-          indicationsCalculated: indicationKeys.length,
+          indicationsCalculated: indicationCount,
         },
         strategyEngine: {
           cyclesExecuted: strategyCycleCount,
           avgCycleDuration: strategyCycleDuration,
           symbolsEvaluatedPerCycle: symbolsArray.length,
-          strategiesEvaluated: strategyKeys.length,
+          strategiesEvaluated: strategyCount,
         },
         symbols: {
           count: symbolsArray.length,
           list: symbolsArray,
         },
         data: {
-          positionsCreated: positionKeys.length,
-          entriesCreated: entryKeys.length,
-          totalIndicationRecords: indicationKeys.length,
-          totalStrategyRecords: strategyKeys.length,
+          positionsCreated: positionCount,
+          entriesCreated: entryCount,
+          totalIndicationRecords: indicationCount,
+          totalStrategyRecords: strategyCount,
         },
       },
     })

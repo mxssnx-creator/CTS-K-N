@@ -33,6 +33,7 @@ import {
   PRESET_INDICATOR_TYPES,
   type PresetIndicatorType,
 } from "@/lib/preset-optimizer"
+import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
 import { toast } from "@/lib/simple-toast"
 
 type IndicatorType = PresetIndicatorType
@@ -64,6 +65,7 @@ interface OptimizerSettings {
   blockEnabled: boolean
   blockVolumeRatio: number
   blockProfitFactorRatio: number
+  blockIncrementSteps: number
   blockMaxStack: number
   blockPauseCountRatio: number
   blockActiveRealEnabled: boolean
@@ -620,7 +622,7 @@ export default function PresetsPage() {
                 <div>
                   <div className="text-xs font-semibold">Block Strategy Type · Adjust</div>
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    Independent Block counts keep their own result and pause state. Target volume = general volume + ((general volume × ratio) × Block count); each exchange order sends only the still-missing delta, so Counts never compound.
+                    Independent Block counts keep their own result and pause state. Target volume compounds from general volume for the selected 1–5 steps; each exchange order sends only the still-missing delta.
                     Regular ladders use Base-derived Sets, not Pos-Count Sets; the separate Active Real count still includes Pos-Count positions.
                   </p>
                 </div>
@@ -629,9 +631,10 @@ export default function PresetsPage() {
                   <Switch checked={draft.blockEnabled} onCheckedChange={(checked) => setDraft({ ...draft, blockEnabled: checked })} />
                 </div>
               </div>
-              <div className={draft.blockEnabled ? "grid gap-2 md:grid-cols-2 xl:grid-cols-4" : "grid gap-2 md:grid-cols-2 xl:grid-cols-4 pointer-events-none"}>
+              <div className={draft.blockEnabled ? "grid gap-2 md:grid-cols-2 xl:grid-cols-5" : "grid gap-2 md:grid-cols-2 xl:grid-cols-5 pointer-events-none"}>
                 <NumberField label="Volume ratio" value={draft.blockVolumeRatio} min={0.25} max={3} step={0.05} onChange={(value) => setDraft({ ...draft, blockVolumeRatio: value })} />
                 <SliderField label="ProfitFactor factor" value={draft.blockProfitFactorRatio} min={0.2} max={5} step={0.1} onChange={(value) => setDraft({ ...draft, blockProfitFactorRatio: value })} />
+                <NumberField label="Compound steps" value={draft.blockIncrementSteps} min={1} max={5} step={1} onChange={(value) => setDraft({ ...draft, blockIncrementSteps: value })} />
                 <NumberField label="Independent counts" value={draft.blockMaxStack} min={1} max={12} step={1} onChange={(value) => setDraft({ ...draft, blockMaxStack: value })} />
                 <NumberField label="Post-profit pause ratio" value={draft.blockPauseCountRatio} min={1} max={4} step={0.5} onChange={(value) => setDraft({ ...draft, blockPauseCountRatio: value })} />
               </div>
@@ -648,7 +651,11 @@ export default function PresetsPage() {
               <div className="grid grid-cols-3 gap-2 text-[10px] tabular-nums">
                 {[1, 2, Math.max(3, Math.min(12, Math.floor(draft.blockMaxStack)))].map((count, index) => (
                   <div key={`${count}-${index}`} className="rounded border bg-muted/20 px-2 py-1.5 text-center">
-                    Block {count}: {formatNumber(1 + count * draft.blockVolumeRatio, 2)}× total
+                    Block {count}: {formatNumber(calculateBlockVolumeMultiplier(
+                      count,
+                      draft.blockVolumeRatio,
+                      draft.blockIncrementSteps,
+                    ), 2)}× total
                   </div>
                 ))}
               </div>

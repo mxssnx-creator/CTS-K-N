@@ -151,6 +151,7 @@ unit	__tests__/unit/live-position-actions.test.ts
 unit	__tests__/unit/live-position-analytics-archive.test.ts
 unit	__tests__/unit/live-position-lifetime-summary.test.ts
 unit	__tests__/unit/live-position-lineage-index.test.ts
+unit	__tests__/unit/live-position-mirror.test.ts
 unit	__tests__/unit/live-position-read-model.test.ts
 unit	__tests__/unit/live-position-source.test.ts
 unit	__tests__/unit/live-position-statistics.test.ts
@@ -268,11 +269,13 @@ unit	__tests__/unit/strategy-snapshot-consistency.test.ts
 unit	__tests__/unit/strategy-stage-accounting.test.ts
 unit	__tests__/unit/strategy-stage-relations.test.ts
 unit	__tests__/unit/strategy-volume-coordination.test.ts
+unit	__tests__/unit/symbol-capacity.test.ts
 unit	__tests__/unit/symbol-selection-ownership.test.ts
 unit	__tests__/unit/system-inject-credentials.test.ts
 unit	__tests__/unit/system-monitoring-route.test.ts
 unit	__tests__/unit/system-order-ownership.test.ts
 unit	__tests__/unit/technical-indicators.test.ts
+unit	__tests__/unit/top-symbols-high-scale.test.ts
 unit	__tests__/unit/trade-direction.test.ts
 unit	__tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
 unit	__tests__/unit/trade-engine-start-all-accounting.test.ts

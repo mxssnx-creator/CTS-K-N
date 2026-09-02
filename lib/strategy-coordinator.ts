@@ -22,6 +22,7 @@ import { marketDataKey } from "@/lib/market-data-keys"
 import { createHash } from "crypto"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 import { PositionThresholdManager } from "@/lib/position-threshold-manager"
 import { PseudoPositionManager, nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import {
@@ -32,19 +33,21 @@ import {
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import {
   BLOCK_COUNT_MAX,
+  BLOCK_INCREMENT_STEPS_DEFAULT,
   calculateBlockMinimumProfitFactor,
   calculateBlockVolumeIncrementRatio,
   calculateBlockVolumeMultiplier,
   getActiveBlockSetKeys,
   getUnavailableBlockSetKeys,
   parseBlockCount,
+  normalizeBlockIncrementSteps,
+  normalizeBlockProfitFactorRatio,
   resolveBlockProfitFactorDecision,
   resolveMirroredActiveBlockCount,
 } from "@/lib/block-count-state"
 import {
   getStrategySetClosedResultKeys,
   getStrategySetLedgerBatch,
-  getStrategySetLedgerSnapshot,
   getStrategyLedgerTotals,
   getStrategySetWindowBatch as readStrategySetWindowBatch,
   type StrategySetLedgerSnapshot,
@@ -721,6 +724,7 @@ export interface StrategySet {
   /** Signal source id when blockLaneKind is `signal_source`. */
   blockSourceId?: string
   /** Exact count × operator volume ratio used by PF and add quantity. */
+  blockIncrementSteps?: number
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
   /**
@@ -995,7 +999,7 @@ export function isPositionCountStrategySet(
  * configured ratios. Block is an absolute target derived from the immutable
  * general-position basis:
  *
- *   target = base × (1 + count × blockVolumeRatio)
+ *   target = base × (1 + blockVolumeRatio)^effectiveIncrementStep
  *
  * Re-applying `sizeDelta` here would make physical volume disagree with the
  * ratio settings and stats. It is therefore ignored for every variant,
@@ -1013,6 +1017,7 @@ export function resolveLiveDispatchSizeMultiplier(
     | "sizeMultiplier"
     | "blockCount"
     | "blockVolumeRatio"
+    | "blockIncrementSteps"
     | "blockCalculatedVolumeMultiplier"
   > & Partial<Pick<StrategySet, "indicationType">>,
   bestEntrySizeMultiplier: unknown,
@@ -1031,7 +1036,11 @@ export function resolveLiveDispatchSizeMultiplier(
     )
     const volumeRatio = Number(set.blockVolumeRatio)
     if (blockCount && Number.isFinite(volumeRatio) && volumeRatio > 0) {
-      return calculateBlockVolumeMultiplier(blockCount, volumeRatio)
+      return calculateBlockVolumeMultiplier(
+        blockCount,
+        volumeRatio,
+        set.blockIncrementSteps,
+      )
     }
     return positiveOr(
       set.blockCalculatedVolumeMultiplier ?? set.variantSizeMultiplier,
@@ -2634,13 +2643,12 @@ export class StrategyCoordinator {
      * positive again.
      *
      *   1. **Block count** — each independent Set calculates an absolute
-     *      target `generalVolume × (1 + blockCount × ratio)`. Live subtracts
+     *      target `generalVolume × (1 + ratio)^effectiveIncrementStep`. Live subtracts
      *      previously confirmed Block fills and submits only the missing delta.
      *
      *   2. **Operator vol-ratio** — `blockVolumeRatio` is the per-block-count
-     *      additive step (0.25 = +25 % per extra block count). The spec
-     *      default 1.0 mirrors the legacy `applyBlockAdjustment` math in
-     *      `lib/strategies.ts` so existing presets keep their behaviour.
+     *      compound ratio (0.25 = ×1.25 per admitted increment). Increment
+     *      depth is independently bounded to 1..5 (default 2).
      *
      * `blockPauseCountRatio` turns a block count into a pause window for
      * post-success cooldown/evaluation (`pause = blockCount × ratio`).
@@ -2655,6 +2663,7 @@ export class StrategyCoordinator {
      */
     blockVolumeRatio: number
     blockProfitFactorRatio: number
+    blockIncrementSteps: number
     blockMaxStack:    number
     blockPauseCountRatio: number
     blockActiveRealEnabled: boolean
@@ -2662,6 +2671,7 @@ export class StrategyCoordinator {
     blockRowLiveEnabled: boolean
     blockRowLiveVolumeRatio: number
     blockRowLiveProfitFactorRatio: number
+    blockRowLiveIncrementSteps: number
     blockRowLiveMaxStack: number
     blockRowLivePauseCountRatio: number
     /** Normal/default execution family; evaluation is always retained. */
@@ -2692,14 +2702,16 @@ export class StrategyCoordinator {
     },
     indicationVariants: defaultStrategyIndicationVariantPolicy(),
     blockVolumeRatio: 1.0,
-    blockProfitFactorRatio: 0.8,
+    blockProfitFactorRatio: 1.1,
+    blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     blockMaxStack:    12,
     blockPauseCountRatio: 1.0,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
     blockRowLiveEnabled: true,
     blockRowLiveVolumeRatio: 1.0,
-    blockRowLiveProfitFactorRatio: 0.8,
+    blockRowLiveProfitFactorRatio: 1.1,
+    blockRowLiveIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     blockRowLiveMaxStack: 12,
     blockRowLivePauseCountRatio: 1.0,
     normalEnabled: true,
@@ -2744,7 +2756,6 @@ export class StrategyCoordinator {
   private _liveSetKeysCache: { keys: Set<string>; at: number } | null = null
   private _liveTradingModeCache: { enabled: boolean; at: number } | null = null
   private _strategyLedgerTotalsCache: { axisEntries: number; at: number } | null = null
-  private _closedResultKeysCache: { keys: Set<string> | null; at: number } | null = null
 
   private async getCachedAxisEntryTotal(): Promise<number> {
     const cached = this._strategyLedgerTotalsCache
@@ -2760,34 +2771,27 @@ export class StrategyCoordinator {
    * contain tens of thousands of candidates while only a small fraction has
    * ever closed; issuing an LRANGE for every empty key monopolizes the Node
    * event loop and makes control/UI requests unavailable under a max-symbol
-   * engine run.  The index helper returns `null` whenever it cannot prove its
-   * own completeness, so that state intentionally falls back to the previous
-   * exhaustive behavior rather than changing PF/DDT calculations.
+   * engine run. Candidate-specific closed counts keep this lookup sparse.
    */
   private async getStrategySetWindowBatch(
     setKeys: string[],
     window: number,
   ): Promise<Map<string, PosWindowStats>> {
-    // The exhaustive Block matrix calls this helper once per bounded source
-    // batch. Re-reading the same three-key completeness proof hundreds of
-    // times made a cold Real pass proportional to Redis round trips rather
-    // than calculations. Cache only the monotonic key index for five seconds;
-    // result rings themselves are still fetched fresh, and a newly closed Set
-    // is picked up by the next cadence window without ever being lost.
-    const now = Date.now()
-    const cached = this._closedResultKeysCache
-    const closedResultKeys = cached && now - cached.at < 5_000
-      ? cached.keys
-      : await getStrategySetClosedResultKeys(this.connectionId).then((keys) => {
-          this._closedResultKeysCache = {
-            keys: keys === null ? null : new Set(keys),
-            at: Date.now(),
-          }
-          return this._closedResultKeysCache.keys
-        })
-    const keysToRead = closedResultKeys === null
-      ? setKeys
-      : setKeys.filter((setKey) => closedResultKeys.has(setKey))
+    // Read only the candidate fields that this cycle can emit. The previous
+    // closed-result index path loaded hundreds of thousands of members, and
+    // the old getStrategySetClosedResultKeys helper consequently made every
+    // high-symbol cycle allocate an avoidable full-set snapshot. Candidate
+    // HGETs are batched in pos-history and are authoritative for these exact
+    // keys, while the small legacy fallback preserves old snapshots. If that
+    // fallback cannot prove completeness, callers retain the exhaustive behavior rather than changing PF/DDT calculations.
+    const candidateLedger = await getStrategySetLedgerBatch(this.connectionId, setKeys)
+    let keysToRead = Object.keys(candidateLedger.closed)
+    if (keysToRead.length === 0 && setKeys.length <= 500) {
+      const legacyClosedKeys = await getStrategySetClosedResultKeys(this.connectionId)
+      keysToRead = legacyClosedKeys === null
+        ? setKeys
+        : setKeys.filter((setKey) => legacyClosedKeys.has(setKey))
+    }
     return readStrategySetWindowBatch(this.connectionId, keysToRead, window)
   }
 
@@ -2850,14 +2854,18 @@ export class StrategyCoordinator {
    */
   private async getOpenPseudoSetKeys(): Promise<Set<string>> {
     const client = getRedisClient()
-    const authoritative = ((await client
-      .smembers(`strategy_active_set_keys:${this.connectionId}`)
-      .catch(() => [])) || []).map(String).filter(Boolean)
+    const authoritative = (await scanRedisSetMembers(
+      client,
+      `strategy_active_set_keys:${this.connectionId}`,
+      { count: 250 },
+    ).catch(() => [])).map(String).filter(Boolean)
     const raw = authoritative.length > 0
       ? authoritative
-      : (((await client
-          .smembers(`pseudo_positions:${this.connectionId}:active_strategy_set_keys`)
-          .catch(() => [])) || []).map(String).filter(Boolean))
+      : (await scanRedisSetMembers(
+        client,
+        `pseudo_positions:${this.connectionId}:active_strategy_set_keys`,
+        { count: 250 },
+      ).catch(() => [])).map(String).filter(Boolean)
     const keys = new Set<string>()
     for (const setKey of raw) {
       keys.add(setKey)
@@ -3333,10 +3341,14 @@ export class StrategyCoordinator {
       if (Number.isFinite(bvr) && bvr > 0) {
         this._coordinationSettings.blockVolumeRatio = Math.max(0.25, Math.min(3.0, bvr))
       }
-      const bpfr = Number(s.blockProfitFactorRatio ?? s.blockProfitFactor)
-      if (Number.isFinite(bpfr) && bpfr > 0) {
-        this._coordinationSettings.blockProfitFactorRatio = Math.max(0.2, Math.min(5, bpfr))
-      }
+      this._coordinationSettings.blockProfitFactorRatio = normalizeBlockProfitFactorRatio(
+        s.blockProfitFactorRatio ?? s.blockProfitFactor,
+        this._coordinationSettings.blockProfitFactorRatio,
+      )
+      this._coordinationSettings.blockIncrementSteps = normalizeBlockIncrementSteps(
+        s.blockIncrementSteps,
+        this._coordinationSettings.blockIncrementSteps,
+      )
       const bms = Number(s.blockMaxStack)
       if (Number.isFinite(bms) && bms >= 1) {
         this._coordinationSettings.blockMaxStack = Math.min(BLOCK_COUNT_MAX, Math.max(1, Math.floor(bms)))
@@ -3355,10 +3367,14 @@ export class StrategyCoordinator {
       this._coordinationSettings.blockRowLiveVolumeRatio = Number.isFinite(rowBvr) && rowBvr > 0
         ? Math.max(0.25, Math.min(3.0, rowBvr))
         : this._coordinationSettings.blockVolumeRatio
-      const rowBpfr = Number(s.blockRowLiveProfitFactorRatio)
-      this._coordinationSettings.blockRowLiveProfitFactorRatio = Number.isFinite(rowBpfr) && rowBpfr > 0
-        ? Math.max(0.2, Math.min(5, rowBpfr))
-        : this._coordinationSettings.blockProfitFactorRatio
+      this._coordinationSettings.blockRowLiveProfitFactorRatio = normalizeBlockProfitFactorRatio(
+        s.blockRowLiveProfitFactorRatio,
+        this._coordinationSettings.blockProfitFactorRatio,
+      )
+      this._coordinationSettings.blockRowLiveIncrementSteps = normalizeBlockIncrementSteps(
+        s.blockRowLiveIncrementSteps,
+        this._coordinationSettings.blockIncrementSteps,
+      )
       const rowBms = Number(s.blockRowLiveMaxStack)
       this._coordinationSettings.blockRowLiveMaxStack = Number.isFinite(rowBms) && rowBms >= 1
         ? Math.min(BLOCK_COUNT_MAX, Math.max(1, Math.floor(rowBms)))
@@ -5208,14 +5224,6 @@ export class StrategyCoordinator {
         Number(process.env.STRATEGY_AXIS_BASE_BATCH_SIZE) ||
           this.strategyMainAxisBatchSize,
       ))
-      // Main must apply exact entry/active/closed counts, but the same sparse
-      // ledger is valid for every candidate generated in this flow. Taking one
-      // snapshot replaces three Redis HGETs per axis candidate while keeping
-      // the next live flow responsive to newly-confirmed positions. Historic
-      // replay intentionally sees no live fill ledger at all.
-      const exactSetLedgerSnapshot: StrategySetLedgerSnapshot = isPrehistoric
-        ? { entries: {}, active: {}, closed: {} }
-        : await getStrategySetLedgerSnapshot(this.connectionId)
       for (let start = 0; start < defaultSets.length; start += baseBatchSize) {
         const axisCandidates = defaultSets
           .slice(start, start + baseBatchSize)
@@ -5226,6 +5234,16 @@ export class StrategyCoordinator {
             liveContByDir,
             symbolCtx.lastPosCount,
           ))
+        // Candidate-specific HGETs preserve exact Set counts without cloning
+        // the complete strategy_set_* hashes into V8 on every cycle. The old
+        // getStrategySetLedgerSnapshot(this.connectionId) path must not run on
+        // this hot path; historic replay intentionally sees no live ledger.
+        const exactSetLedgerSnapshot: StrategySetLedgerSnapshot = isPrehistoric
+          ? { entries: {}, active: {}, closed: {} }
+          : await getStrategySetLedgerBatch(
+              this.connectionId,
+              axisCandidates.map((candidate) => candidate.setKey),
+            )
         const expandedWithLedger = await this.applyExactPositionSetLedger(
           axisCandidates,
           exactSetLedgerSnapshot,
@@ -5893,7 +5911,10 @@ export class StrategyCoordinator {
 
     const maxStack = Math.max(1, Math.min(BLOCK_COUNT_MAX, this._coordinationSettings.blockMaxStack | 0))
     const ratio = this._coordinationSettings.blockVolumeRatio
-    const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
+    const incrementSteps = this._coordinationSettings.blockIncrementSteps
+    const profitFactorRatio = normalizeBlockProfitFactorRatio(
+      this._coordinationSettings.blockProfitFactorRatio,
+    )
     const pauseRatio = this._coordinationSettings.blockPauseCountRatio
     const overlays: StrategySet[] = []
     // Active exposure can outlive the current Real candidate that created it.
@@ -6019,10 +6040,10 @@ export class StrategyCoordinator {
         [`s:${symbol}:active:real_enabled`]: this._coordinationSettings.blockActiveRealEnabled ? "1" : "0",
         [`s:${symbol}:active:live_enabled`]: this._coordinationSettings.blockActiveLiveEnabled ? "1" : "0",
         [`s:${symbol}:active:volume_increment:long`]: String(
-          calculateBlockVolumeIncrementRatio(activeCombinedByDir.long, ratio),
+          calculateBlockVolumeIncrementRatio(activeCombinedByDir.long, ratio, incrementSteps),
         ),
         [`s:${symbol}:active:volume_increment:short`]: String(
-          calculateBlockVolumeIncrementRatio(activeCombinedByDir.short, ratio),
+          calculateBlockVolumeIncrementRatio(activeCombinedByDir.short, ratio, incrementSteps),
         ),
         [`s:${symbol}:active:avg_observed_pf`]: "0",
         [`s:${symbol}:active:avg_normal_pf`]: "0",
@@ -6033,6 +6054,7 @@ export class StrategyCoordinator {
         [`s:${symbol}:window`]: String(resultWindow),
         [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
         [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
+        [`s:${symbol}:increment_steps`]: String(incrementSteps),
         [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
         }).catch(() => 0)
         await client.expire(statsKey, 7 * 24 * 60 * 60).catch(() => 0)
@@ -6064,12 +6086,17 @@ export class StrategyCoordinator {
 
     for (const { source, boundedCount, scope, setKey } of candidates) {
       const ownWindow = exactWindows.get(setKey)
-      const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(boundedCount, ratio)
+      const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(
+        boundedCount,
+        ratio,
+        incrementSteps,
+      )
       // The Block target is anchored to the already-calculated general order
       // volume. The historical profile size must not scale it a second time.
       const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
         boundedCount,
         ratio,
+        incrementSteps,
       )
       const blockConfiguredMinimumProfitFactor = calculateBlockMinimumProfitFactor(
         metrics.minProfitFactor,
@@ -6151,6 +6178,7 @@ export class StrategyCoordinator {
         variantLeverage: blockConfig.leverage,
         blockBaseVolumeMultiplier: 1,
         blockVolumeRatio: ratio,
+        blockIncrementSteps: incrementSteps,
         blockProfitFactorRatio: profitFactorRatio,
         blockDefaultMinimumProfitFactor: metrics.minProfitFactor,
         blockConfiguredMinimumProfitFactor,
@@ -6216,10 +6244,10 @@ export class StrategyCoordinator {
       [`s:${symbol}:active:real_enabled`]: this._coordinationSettings.blockActiveRealEnabled ? "1" : "0",
       [`s:${symbol}:active:live_enabled`]: this._coordinationSettings.blockActiveLiveEnabled ? "1" : "0",
       [`s:${symbol}:active:volume_increment:long`]: String(
-        calculateBlockVolumeIncrementRatio(activeCombinedByDir.long, ratio),
+        calculateBlockVolumeIncrementRatio(activeCombinedByDir.long, ratio, incrementSteps),
       ),
       [`s:${symbol}:active:volume_increment:short`]: String(
-        calculateBlockVolumeIncrementRatio(activeCombinedByDir.short, ratio),
+        calculateBlockVolumeIncrementRatio(activeCombinedByDir.short, ratio, incrementSteps),
       ),
       [`s:${symbol}:active:avg_observed_pf`]: String(
         candidates.length > 0 ? observedProfitFactorSum / candidates.length : 0,
@@ -6240,6 +6268,7 @@ export class StrategyCoordinator {
       [`s:${symbol}:window`]: String(resultWindow),
       [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
       [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
+      [`s:${symbol}:increment_steps`]: String(incrementSteps),
       [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
       }).catch(() => 0)
       await client.expire(statsKey, 7 * 24 * 60 * 60).catch(() => 0)
@@ -6271,7 +6300,10 @@ export class StrategyCoordinator {
     const snapshot: Record<string, string> = {
       [`s:${symbol}:max_stack`]: "0",
       [`s:${symbol}:strategy_enabled`]: this._coordinationSettings.variants.block ? "1" : "0",
-      [`s:${symbol}:profit_factor_ratio`]: String(this._coordinationSettings.blockProfitFactorRatio),
+      [`s:${symbol}:profit_factor_ratio`]: String(normalizeBlockProfitFactorRatio(
+        this._coordinationSettings.blockProfitFactorRatio,
+      )),
+      [`s:${symbol}:increment_steps`]: String(this._coordinationSettings.blockIncrementSteps),
       [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
       [`s:${symbol}:window`]: String(resultWindow),
       [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
@@ -6388,7 +6420,10 @@ export class StrategyCoordinator {
 
     const maxStack = Math.max(1, Math.min(BLOCK_COUNT_MAX, this._coordinationSettings.blockMaxStack | 0))
     const volumeRatio = this._coordinationSettings.blockVolumeRatio
-    const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
+    const incrementSteps = this._coordinationSettings.blockIncrementSteps
+    const profitFactorRatio = normalizeBlockProfitFactorRatio(
+      this._coordinationSettings.blockProfitFactorRatio,
+    )
     const pauseRatio = this._coordinationSettings.blockPauseCountRatio
     const resultWindow = Math.max(1, Math.min(600, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25))
     const minimumSampleCount = Math.max(
@@ -6458,12 +6493,14 @@ export class StrategyCoordinator {
         const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(
           blockCount,
           volumeRatio,
+          incrementSteps,
         )
         // Count Sets share one physical target per symbol+direction:
         // total = general volume × (1 + count × ratio).
         const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
           blockCount,
           volumeRatio,
+          incrementSteps,
         )
         const blockConfiguredMinimumProfitFactor = calculateBlockMinimumProfitFactor(
           metrics.minProfitFactor,
@@ -6553,6 +6590,7 @@ export class StrategyCoordinator {
           variantLeverage: blockConfig.leverage,
           blockBaseVolumeMultiplier: 1,
           blockVolumeRatio: volumeRatio,
+          blockIncrementSteps: incrementSteps,
           blockProfitFactorRatio: profitFactorRatio,
           blockDefaultMinimumProfitFactor: metrics.minProfitFactor,
           blockConfiguredMinimumProfitFactor,
@@ -6613,6 +6651,7 @@ export class StrategyCoordinator {
       [`s:${symbol}:max_stack`]: String(maxStack),
       [`s:${symbol}:strategy_enabled`]: strategyEnabled ? "1" : "0",
       [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
+      [`s:${symbol}:increment_steps`]: String(incrementSteps),
       [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
       [`s:${symbol}:window`]: String(resultWindow),
       [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
@@ -6666,6 +6705,7 @@ export class StrategyCoordinator {
       snapshot[`${prefix}:avg_min_pf`] = String(stats.calculated > 0 ? stats.minimumPfSum / stats.calculated : 0)
       snapshot[`${prefix}:avg_pf_difference`] = String(stats.calculated > 0 ? stats.profitFactorDifferenceSum / stats.calculated : 0)
       snapshot[`${prefix}:avg_volume_increment`] = String(stats.calculated > 0 ? stats.volumeIncrementSum / stats.calculated : 0)
+      snapshot[`${prefix}:effective_increment_step`] = String(Math.min(stats.count, incrementSteps))
       snapshot[`${prefix}:sample_count`] = String(stats.sampleCount)
     }
     if (persistStats) {
@@ -6725,7 +6765,10 @@ export class StrategyCoordinator {
     const normalizedSymbol = blockLaneSymbol(symbol)
     const maxStack = Math.max(1, Math.min(BLOCK_COUNT_MAX, this._coordinationSettings.blockMaxStack | 0))
     const volumeRatio = this._coordinationSettings.blockVolumeRatio
-    const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
+    const incrementSteps = this._coordinationSettings.blockIncrementSteps
+    const profitFactorRatio = normalizeBlockProfitFactorRatio(
+      this._coordinationSettings.blockProfitFactorRatio,
+    )
     const pauseRatio = this._coordinationSettings.blockPauseCountRatio
     const resultWindow = Math.max(
       1,
@@ -6944,10 +6987,12 @@ export class StrategyCoordinator {
       const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(
         blockCount,
         volumeRatio,
+        incrementSteps,
       )
       const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
         blockCount,
         volumeRatio,
+        incrementSteps,
       )
       const blockConfiguredMinimumProfitFactor = calculateBlockMinimumProfitFactor(
         metrics.minProfitFactor,
@@ -7104,6 +7149,7 @@ export class StrategyCoordinator {
         variantLeverage: blockConfig.leverage,
         blockBaseVolumeMultiplier: 1,
         blockVolumeRatio: volumeRatio,
+        blockIncrementSteps: incrementSteps,
         blockProfitFactorRatio: profitFactorRatio,
         blockDefaultMinimumProfitFactor: metrics.minProfitFactor,
         blockConfiguredMinimumProfitFactor,
@@ -7159,6 +7205,7 @@ export class StrategyCoordinator {
         window: resultWindow,
         minimumSampleCount,
         maxStack,
+        incrementSteps,
         lanes: scopedStats,
       }),
       }).catch(() => 0)
@@ -8575,7 +8622,10 @@ export class StrategyCoordinator {
 
     const maxStack = this._coordinationSettings.blockRowLiveMaxStack
     const ratio = this._coordinationSettings.blockRowLiveVolumeRatio
-    const pfRatio = this._coordinationSettings.blockRowLiveProfitFactorRatio
+    const pfRatio = normalizeBlockProfitFactorRatio(
+      this._coordinationSettings.blockRowLiveProfitFactorRatio,
+    )
+    const incrementSteps = this._coordinationSettings.blockRowLiveIncrementSteps
     const pauseRatio = this._coordinationSettings.blockRowLivePauseCountRatio
     const rows: StrategySet[] = []
     const seen = new Set<string>()
@@ -8594,7 +8644,7 @@ export class StrategyCoordinator {
         )
       ) continue
       for (let count = 1; count <= maxStack; count++) {
-        const increment = calculateBlockVolumeIncrementRatio(count, ratio)
+        const increment = calculateBlockVolumeIncrementRatio(count, ratio, incrementSteps)
         const minimumProfitFactor = calculateBlockMinimumProfitFactor(
           metrics.minProfitFactor,
           pfRatio,
@@ -8626,10 +8676,11 @@ export class StrategyCoordinator {
             pause,
             axisKey: `block:row-live:${count}:pause${pause}`,
           },
-          variantSizeMultiplier: calculateBlockVolumeMultiplier(count, ratio),
+          variantSizeMultiplier: calculateBlockVolumeMultiplier(count, ratio, incrementSteps),
           variantLeverage: config.leverage,
           blockBaseVolumeMultiplier: 1,
           blockVolumeRatio: ratio,
+          blockIncrementSteps: incrementSteps,
           blockProfitFactorRatio: pfRatio,
           blockDefaultMinimumProfitFactor: metrics.minProfitFactor,
           blockConfiguredMinimumProfitFactor: minimumProfitFactor,
@@ -8645,7 +8696,7 @@ export class StrategyCoordinator {
           blockLaneKind: "row-live",
           blockLaneKey: key,
           blockVolumeIncrementRatio: increment,
-          blockCalculatedVolumeMultiplier: calculateBlockVolumeMultiplier(count, ratio),
+          blockCalculatedVolumeMultiplier: calculateBlockVolumeMultiplier(count, ratio, incrementSteps),
         })
       }
     }
@@ -9448,6 +9499,7 @@ export class StrategyCoordinator {
                     sizeMultiplier: effectiveSizeMult,
                     blockBaseVolumeMultiplier: set.blockBaseVolumeMultiplier,
                     blockVolumeRatio: set.blockVolumeRatio,
+                    blockIncrementSteps: set.blockIncrementSteps,
                     blockProfitFactorRatio: set.blockProfitFactorRatio,
                     blockDefaultMinimumProfitFactor: set.blockDefaultMinimumProfitFactor,
                     blockConfiguredMinimumProfitFactor: set.blockConfiguredMinimumProfitFactor,
@@ -10706,7 +10758,7 @@ export class StrategyCoordinator {
         gate: () => true,
         // ── Block sub-configs ─ size is historical coordination metadata.
         // Exchange target quantity is always calculated from the authoritative
-        // general position basis as `base × (1 + count × ratio)`; the profile
+        // general position basis as `base × (1 + ratio)^effectiveStep`; the profile
         // size must never scale that target a second time.
         // CRITICAL FIX: Reduced from 1.5/2.0 to 1.15/1.25 to prevent slippage
         // beyond SL triggers. Larger positions were getting filled at prices
@@ -10826,7 +10878,7 @@ export class StrategyCoordinator {
     // PF bias (the one that "wins" alongside that entry). Track it here so the
     // profile `size` and variant `leverage` survive the slim path and reach
     // dispatch. Independent Block Count Sets later replace this legacy profile
-    // size with the exact total multiplier `1 + count × volume ratio`.
+    // size with the exact compounded total multiplier.
     let repConfig: { size: number; leverage: number; pfBias: number } | null = null
 
     // Exhaustively evaluate every Base entry × profile configuration. History

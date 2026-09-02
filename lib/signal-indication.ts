@@ -34,6 +34,8 @@ import {
 } from "@/lib/main-trade-profit-factor"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 import { isForexSymbol } from "@/lib/forex-market"
+import { INDICATION_SET_RETENTION_SECONDS } from "@/lib/redis-retention"
+import { iterateRedisSetMembers } from "@/lib/redis-scan"
 
 export type SignalDirection = "long" | "short"
 export type SignalPerformanceDirection = SignalDirection | "overall"
@@ -1267,16 +1269,32 @@ export async function listSignalPerformance(
   await initRedis()
   const client = getRedisClient()
   const indexKey = `signal:performance:index:${safePart(connectionId)}`
-  const keys = await client.smembers(indexKey).catch(() => [])
-  const states = (await Promise.all(keys.map(async (key) => {
-    const raw = await client.hgetall(key).catch(() => ({}))
-    const parts = key.split(":")
-    const direction = normalizeTradeDirection(parts.at(-1))
-    if (!direction) return null
-    const symbol = parts.at(-2) || "unknown"
-    const sourceId = parts.at(-3) || "unknown"
-    return parsePerformanceState(raw, sourceId, symbol, direction)
-  }))).filter((state): state is SignalPerformanceState => state !== null)
+  const states: SignalPerformanceState[] = []
+  let batch: string[] = []
+  const flushBatch = async () => {
+    if (batch.length === 0) return
+    const currentBatch = batch
+    batch = []
+    const batchStates = (await Promise.all(currentBatch.map(async (key) => {
+      const raw = await client.hgetall(key).catch(() => ({}))
+      const parts = key.split(":")
+      const direction = normalizeTradeDirection(parts.at(-1))
+      if (!direction) return null
+      const symbol = parts.at(-2) || "unknown"
+      const sourceId = parts.at(-3) || "unknown"
+      return parsePerformanceState(raw, sourceId, symbol, direction)
+    }))).filter((state): state is SignalPerformanceState => state !== null)
+    states.push(...batchStates)
+  }
+
+  // The index is a growing, shared set. SSCAN keeps Redis responsive and the
+  // 64-row read window prevents a status poll from creating one Promise per
+  // historical lane while still returning every indexed state.
+  for await (const key of iterateRedisSetMembers(client, indexKey, { count: 250 })) {
+    batch.push(key)
+    if (batch.length >= 64) await flushBatch()
+  }
+  await flushBatch()
   return states.sort((left, right) =>
     left.symbol.localeCompare(right.symbol) ||
     left.direction.localeCompare(right.direction) ||
@@ -1807,13 +1825,23 @@ export function normalizeSignalRisk(value: unknown): SignalRisk | undefined {
   })
   const stopLossPct = protection.stopLossPct
   const takeProfitPct = protection.takeProfitPct
+  const computedRewardRisk = takeProfitPct / stopLossPct
+  const declaredRewardRisk = Number(raw.rewardRisk)
+  // Persisted/API payloads commonly carry a deliberately rounded ratio (for
+  // example 2.333333 for 1.05 / 0.45). Preserve that harmless presentation
+  // precision when it agrees with the normalized pair; a materially stale
+  // declaration is still replaced by the authoritative TP/SL calculation.
+  const rewardRisk = Number.isFinite(declaredRewardRisk) &&
+    Math.abs(declaredRewardRisk - computedRewardRisk) <= Math.max(1e-6, Math.abs(computedRewardRisk) * 1e-6)
+    ? declaredRewardRisk
+    : computedRewardRisk
   return {
     stopLossPct,
     takeProfitPct,
     // The persisted field can be stale or computed from an uncapped legacy
-    // pair.  Keep the normalized TP/SL pair authoritative so downstream
-    // live protection cannot widen the stop through a mismatched rewardRisk.
-    rewardRisk: takeProfitPct / stopLossPct,
+    // pair. Keep the normalized TP/SL pair authoritative while accepting
+    // harmless decimal presentation rounding.
+    rewardRisk,
     sourceIds,
     ...(raw.sourceId && { sourceId: safePart(String(raw.sourceId)) }),
     ...(raw.configId && { configId: String(raw.configId) }),
@@ -1979,6 +2007,10 @@ async function persistSignalCycle(
     pipeline.sadd(`indication_sets:index:${connectionId}`, setKey)
     pipeline.sadd(`indication_sets:index:${connectionId}:${symbol}`, setKey)
     pipeline.sadd(`indication_sets:index:${connectionId}:${symbol}:signal`, setKey)
+    pipeline.expire(setKey, INDICATION_SET_RETENTION_SECONDS)
+    pipeline.expire(`indication_sets:index:${connectionId}`, INDICATION_SET_RETENTION_SECONDS)
+    pipeline.expire(`indication_sets:index:${connectionId}:${symbol}`, INDICATION_SET_RETENTION_SECONDS)
+    pipeline.expire(`indication_sets:index:${connectionId}:${symbol}:signal`, INDICATION_SET_RETENTION_SECONDS)
   }
   if (activeCount > 0) {
     pipeline.hincrby(`progression:${connectionId}`, "indication_sets_total", activeCount)

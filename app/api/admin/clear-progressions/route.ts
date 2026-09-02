@@ -4,6 +4,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
 import { authorizeAdminRequest } from "@/lib/admin-auth"
+import { scanRedisKeys } from "@/lib/redis-scan"
 import {
   DIRECT_TRADE_CONNECTION_INDEX_KEY,
   directTradeKeyspace,
@@ -161,7 +162,11 @@ export async function POST(request: Request) {
     // and statistics are reset; open/opening positions retain their exact
     // venue order IDs and control-order state. Every captured worker is marked
     // disabled first so its supervisor cannot reopen processing during reset.
-    const scopedStateKeys = await client.keys("direct_trade:connection:*:state").catch(() => [] as string[])
+    const scopedStateKeys = await scanRedisKeys(
+      client,
+      "direct_trade:connection:*:state",
+      { count: 250 },
+    ).catch(() => [] as string[])
     const legacyStateExists = await client.exists(directTradeKeyspace().state).catch(() => 0)
     const directStateKeys = [
       ...(legacyStateExists ? [directTradeKeyspace().state] : []),
@@ -245,7 +250,9 @@ export async function POST(request: Request) {
     // effect. We now use `flushRuntimeKeys()` which deletes from memory
     // AND immediately overwrites the snapshot with the survivor-only
     // data, so both layers are consistent after the reset.
-    const startingKeyCount = (await client.keys("*").catch(() => [])).length
+    const startingKeyCount = typeof (client as any).dbSize === "function"
+      ? await (client as any).dbSize()
+      : 0
     console.log(`[v0] [ClearProgressions] Starting with ${startingKeyCount} keys`)
 
     let totalDeleted = 0
@@ -273,7 +280,7 @@ export async function POST(request: Request) {
     } else {
       // Fallback for external Redis adapters: scan BEFORE deletion so the
       // bucket summary is accurate, then chunked DEL.
-      const allKeys = await client.keys("*").catch(() => [] as string[])
+      const allKeys = await scanRedisKeys(client, "*", { count: 500 }).catch(() => [] as string[])
       const safeKeys = allKeys.filter((k) => typeof k === "string" && !isProtected(k))
       protectedSkippedCount = allKeys.length - safeKeys.length
       // Build bucket summary from keys TO DELETE (before deletion).
@@ -300,7 +307,9 @@ export async function POST(request: Request) {
       }
     }
 
-    const endingKeyCountBeforeStep3 = (await client.keys("*").catch(() => [])).length
+    const endingKeyCountBeforeStep3 = typeof (client as any).dbSize === "function"
+      ? await (client as any).dbSize()
+      : 0
     console.log(
       `[v0] [ClearProgressions] After deletion: deleted=${totalDeleted} starting=${startingKeyCount} ending=${endingKeyCountBeforeStep3} protected=${protectedSkippedCount}`,
     )
@@ -380,7 +389,9 @@ export async function POST(request: Request) {
       })
     } catch { /* non-critical */ }
 
-    const endingKeyCount = (await client.keys("*").catch(() => [])).length
+    const endingKeyCount = typeof (client as any).dbSize === "function"
+      ? await (client as any).dbSize()
+      : 0
 
     // ── 5. Log + respond ─────────────────────────────────────────────
     await SystemLogger.logTradeEngine(

@@ -8,6 +8,7 @@ import type { IndicationSignal } from "./indication-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { createHash } from "node:crypto"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 const LOG_PREFIX = "[v0] [BasePositionStage]"
 
@@ -290,13 +291,19 @@ export async function getBasePositions(connectionId: string): Promise<BasePositi
   const client = getRedisClient()
 
   try {
-    const ids = ((await client.smembers(`base:positions:index:${connectionId}`).catch(() => [])) || []) as string[]
+    const ids = await scanRedisSetMembers(
+      client,
+      `base:positions:index:${connectionId}`,
+      { count: 250 },
+    ).catch(() => [])
     if (ids.length === 0) return []
 
     // Batch GETs from the explicit index. Avoid Redis KEYS here: this accessor
     // runs as part of the trade-engine hot path and may be polled frequently.
-    const rawValues = await Promise.all(
-      ids.map((id: string) => client.get(`base:position:${id}`).catch(() => null)),
+    const rawValues = await mapWithConcurrency(
+      ids,
+      32,
+      (id: string) => client.get(`base:position:${id}`).catch(() => null),
     )
     const positions: BasePosition[] = []
     for (const data of rawValues) {
@@ -408,7 +415,11 @@ export async function cleanupOldBasePositions(connectionId: string): Promise<num
   let cleaned = 0
 
   try {
-    const ids = ((await client.smembers(`base:positions:index:${connectionId}`).catch(() => [])) || []) as string[]
+    const ids = await scanRedisSetMembers(
+      client,
+      `base:positions:index:${connectionId}`,
+      { count: 250 },
+    ).catch(() => [])
     if (ids.length === 0) return 0
 
     const now = Date.now()
@@ -416,8 +427,10 @@ export async function cleanupOldBasePositions(connectionId: string): Promise<num
 
     // Phase 1: batch-fetch every row from the explicit index.
     const keys = ids.map((id) => `base:position:${id}`)
-    const rawValues = await Promise.all(
-      keys.map((k: string) => client.get(k).catch(() => null)),
+    const rawValues = await mapWithConcurrency(
+      keys,
+      32,
+      (k: string) => client.get(k).catch(() => null),
     )
 
     // Phase 2: collect the deletable keys, then DEL them in parallel.
@@ -433,7 +446,11 @@ export async function cleanupOldBasePositions(connectionId: string): Promise<num
       } catch { /* skip malformed rows */ }
     }
     if (deletable.length > 0) {
-      await Promise.all(deletable.map((k) => client.del(k).catch(() => 0)))
+      await mapWithConcurrency(
+        deletable,
+        32,
+        (k) => client.del(k).catch(() => 0),
+      )
       const deletedIds = deletable.map((k) => k.replace(/^base:position:/, ""))
       if (deletedIds.length > 0) await client.srem(`base:positions:index:${connectionId}`, ...deletedIds).catch(() => 0)
       cleaned = deletable.length

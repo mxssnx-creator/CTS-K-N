@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { getSystemResourceMetrics } from "@/lib/system-resource-metrics"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -84,42 +85,18 @@ async function collectRedisKeys(client: ReturnType<typeof getRedisClient>): Prom
     } catch { /* fall through to the bounded scanner */ }
   }
 
-  const scannedKeys = new Set<string>()
+  let scannedKeys: string[] = []
   try {
-    let cursor: string | number = "0"
-    for (let i = 0; i < 200 && scannedKeys.size < MONITORING_KEY_SAMPLE_LIMIT; i++) {
-      if (typeof client.scan !== "function") break
-      const result = await client.scan(cursor, "MATCH", "*", "COUNT", 500)
-      const nextCursor = Array.isArray(result) ? result[0] : "0"
-      const batch = Array.isArray(result) ? result[1] : []
-      if (Array.isArray(batch)) {
-        for (const key of batch) {
-          scannedKeys.add(String(key))
-          if (scannedKeys.size >= MONITORING_KEY_SAMPLE_LIMIT) break
-        }
-      }
-      cursor = nextCursor
-      if (String(cursor) === "0") break
-    }
+    scannedKeys = await scanRedisKeys(client, "*", {
+      count: 500,
+      limit: MONITORING_KEY_SAMPLE_LIMIT,
+    })
   } catch {
     // Keep going: the exact DBSIZE value can still provide a useful result.
   }
 
-  if (scannedKeys.size > 0) {
-    const keys = Array.from(scannedKeys)
-    return remember(keys, Math.max(exactKeyCount, scannedKeys.size))
-  }
-
-  // Last-resort compatibility for adapters that expose neither SCAN nor
-  // DBSIZE. This path is intentionally skipped for normal hosted providers.
-  if (exactKeyCount === 0) {
-    try {
-      const keysResult = await client.keys("*")
-      if (Array.isArray(keysResult)) {
-        const keys = keysResult.slice(0, MONITORING_KEY_SAMPLE_LIMIT)
-        return remember(keys, keysResult.length)
-      }
-    } catch { /* no inventory available */ }
+  if (scannedKeys.length > 0) {
+    return remember(scannedKeys, Math.max(exactKeyCount, scannedKeys.length))
   }
 
   return { keys: [], keyCount: exactKeyCount }

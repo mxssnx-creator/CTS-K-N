@@ -5,6 +5,8 @@
  */
 
 import { initRedis, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export class PositionsCacheOptimizer {
   private connectionId: string
@@ -29,11 +31,19 @@ export class PositionsCacheOptimizer {
       }
 
       // Build from pseudo position set
-      const posIds = await client.smembers(`pseudo_positions:${this.connectionId}:active`)
+      const posIds = await scanRedisSetMembers(
+        client,
+        `pseudo_positions:${this.connectionId}:active`,
+        { count: 250 },
+      )
+      const loadedPositions = await mapWithConcurrency(
+        posIds,
+        32,
+        (posId) => getSettings(`pseudo_position:${posId}`),
+      )
       const positions: any[] = []
 
-      for (const posId of posIds) {
-        const pos = await getSettings(`pseudo_position:${posId}`)
+      for (const pos of loadedPositions) {
         if (pos && pos.symbol === symbol && (pos.status === "open" || pos.status === "active")) { // "active" kept for legacy Redis data
           positions.push(pos)
         }
@@ -41,7 +51,7 @@ export class PositionsCacheOptimizer {
 
       // Cache with 2 second TTL
       if (positions.length > 0) {
-        await client.set(cacheKey, JSON.stringify(positions))
+        await client.set(cacheKey, JSON.stringify(positions), { EX: 2 })
       }
 
       return positions
@@ -66,11 +76,19 @@ export class PositionsCacheOptimizer {
         return new Map(parsed)
       }
 
-      const posIds = await client.smembers(`pseudo_positions:${this.connectionId}:active`)
+      const posIds = await scanRedisSetMembers(
+        client,
+        `pseudo_positions:${this.connectionId}:active`,
+        { count: 250 },
+      )
+      const loadedPositions = await mapWithConcurrency(
+        posIds,
+        32,
+        (posId) => getSettings(`pseudo_position:${posId}`),
+      )
       const symbolIndex = new Map<string, any[]>()
 
-      for (const posId of posIds) {
-        const pos = await getSettings(`pseudo_position:${posId}`)
+      for (const pos of loadedPositions) {
         if (!pos || (pos.status !== "open" && pos.status !== "active")) continue // "active" kept for legacy Redis data
 
         if (!symbolIndex.has(pos.symbol)) {
@@ -80,7 +98,7 @@ export class PositionsCacheOptimizer {
       }
 
       const indexData = Array.from(symbolIndex.entries())
-      await client.set(indexKey, JSON.stringify(indexData))
+      await client.set(indexKey, JSON.stringify(indexData), { EX: 2 })
 
       return symbolIndex
     } catch (error) {
@@ -180,11 +198,19 @@ export class PositionsCacheOptimizer {
       const client = getRedisClient()
       const cutoffTime = Date.now() - maxHoldTimeMs
 
-      const posIds = await client.smembers(`pseudo_positions:${this.connectionId}:active`)
+      const posIds = await scanRedisSetMembers(
+        client,
+        `pseudo_positions:${this.connectionId}:active`,
+        { count: 250 },
+      )
+      const loadedPositions = await mapWithConcurrency(
+        posIds,
+        32,
+        (posId) => getSettings(`pseudo_position:${posId}`),
+      )
       const expiring: any[] = []
 
-      for (const posId of posIds) {
-        const pos = await getSettings(`pseudo_position:${posId}`)
+      for (const pos of loadedPositions) {
         if (pos && (pos.status === "open" || pos.status === "active") && new Date(pos.opened_at || pos.created_at).getTime() < cutoffTime) { // "active" kept for legacy Redis data
           expiring.push(pos)
         }

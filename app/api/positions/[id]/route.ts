@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import { hydrateLivePositionReadModel } from "@/lib/live-position-read-model"
+import { buildLivePositionCompatibilitySnapshot } from "@/lib/live-position-mirror"
 
 export const dynamic = "force-dynamic"
 
@@ -21,15 +23,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     await initRedis()
     const client = getRedisClient()
 
-    // Live positions are stored as JSON strings at live:position:{id}.
-    // The id from live-stage always starts with "live:" (e.g. "live:bingx-x01:BTCUSDT:long:...").
-    // Try the live store first, then fall back to the legacy hash.
-    let position: any = null
-
-    const liveRaw = await client.get(`live:position:${positionId}`).catch(() => null)
-    if (liveRaw) {
-      try { position = JSON.parse(liveRaw) } catch { /* fall through */ }
-    }
+    // The JSON key is a compact compatibility mirror; the hash is the
+    // authoritative full record. Read both so fills and set-level fields are
+    // present in detail views after memory compaction.
+    const [liveRaw, liveHash] = await Promise.all([
+      client.get(`live:position:${positionId}`).catch(() => null),
+      client.hgetall(`live_positions:${connectionId}:${positionId}`).catch(() => null),
+    ])
+    let position: any = hydrateLivePositionReadModel(liveRaw, liveHash)
 
     if (!position) {
       // Fallback: legacy hash store (non-live / manually created positions)
@@ -88,10 +89,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // Try live store first, then legacy hash.
     let isLive = false
     let position: any = null
-    const liveRaw = await client.get(`live:position:${positionId}`).catch(() => null)
-    if (liveRaw) {
-      try { position = JSON.parse(liveRaw); isLive = true } catch { /* fall through */ }
-    }
+    const [liveRaw, liveHash] = await Promise.all([
+      client.get(`live:position:${positionId}`).catch(() => null),
+      client.hgetall(`live_positions:${connection_id}:${positionId}`).catch(() => null),
+    ])
+    position = hydrateLivePositionReadModel(liveRaw, liveHash)
+    isLive = !!position
     if (!position) {
       const hash = await client.hgetall(`position:${connection_id}:${positionId}`).catch(() => null)
       if (hash && Object.keys(hash).length > 0) position = { ...hash }
@@ -106,11 +109,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (current_price !== undefined) {
       updates.current_price = String(current_price)
       
-      const entry = parseFloat(position.entry_price)
-      const current = parseFloat(current_price)
-      const qty = parseFloat(position.quantity)
-      const pnl = (current - entry) * qty
-      const pnlPercent = ((current - entry) / entry) * 100
+      const entry = Number(position.entryPrice ?? position.entry_price ?? 0)
+      const current = Number(current_price)
+      const qty = Number(position.quantity ?? position.executedQuantity ?? 0)
+      const direction = resolveConsistentTradeDirection(
+        position.direction,
+        position.side,
+        position.position_type,
+      )
+      if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(current) || current <= 0 || !Number.isFinite(qty) || qty < 0 || !direction) {
+        return NextResponse.json({ success: false, error: "Position price, quantity, or direction is invalid" }, { status: 409 })
+      }
+      const pnl = (direction === "short" ? entry - current : current - entry) * qty
+      const pnlPercent = entry * qty > 0 ? (pnl / (entry * qty)) * 100 : 0
       
       updates.pnl = String(pnl.toFixed(2))
       updates.pnl_percent = String(pnlPercent.toFixed(2))
@@ -123,11 +134,37 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // Write back to the correct store
     if (isLive) {
-      const updated = { ...position, ...updates, updatedAt: Date.now() }
+      const updated = {
+        ...position,
+        ...(current_price !== undefined ? {
+          currentPrice: Number(current_price),
+          current_price: String(current_price),
+          unrealizedPnL: Number(updates.pnl),
+          unrealized_pnl: Number(updates.pnl),
+        } : {}),
+        ...(stop_loss !== undefined ? { stopLoss: Number(stop_loss), stop_loss: String(stop_loss) } : {}),
+        ...(take_profit !== undefined ? { takeProfit: Number(take_profit), take_profit: String(take_profit) } : {}),
+        updatedAt: Date.now(),
+        updated_at: new Date().toISOString(),
+      }
+      await client.hset(`live_positions:${connection_id}:${positionId}`, {
+        ...(current_price !== undefined ? {
+          currentPrice: String(current_price),
+          current_price: String(current_price),
+          unrealizedPnL: String(updates.pnl),
+          unrealized_pnl: String(updates.pnl),
+          pnl: String(updates.pnl),
+          pnl_percent: String(updates.pnl_percent),
+        } : {}),
+        ...(stop_loss !== undefined ? { stopLoss: String(stop_loss), stop_loss: String(stop_loss) } : {}),
+        ...(take_profit !== undefined ? { takeProfit: String(take_profit), take_profit: String(take_profit) } : {}),
+        updatedAt: String(updated.updatedAt),
+        updated_at: updated.updated_at,
+      })
       try {
-        await client.set(`live:position:${positionId}`, JSON.stringify(updated), ({ ex: 7 * 24 * 60 * 60 } as any))
+        await client.set(`live:position:${positionId}`, JSON.stringify(buildLivePositionCompatibilitySnapshot(updated)), ({ ex: 7 * 24 * 60 * 60 } as any))
       } catch {
-        await client.set(`live:position:${positionId}`, JSON.stringify(updated))
+        await client.set(`live:position:${positionId}`, JSON.stringify(buildLivePositionCompatibilitySnapshot(updated)))
       }
     } else {
       await client.hset(`position:${connection_id}:${positionId}`, updates)
@@ -177,10 +214,12 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     // Try live store first, then legacy hash.
     let isLivePosition = false
     let position: any = null
-    const liveRawD = await client.get(`live:position:${positionId}`).catch(() => null)
-    if (liveRawD) {
-      try { position = JSON.parse(liveRawD); isLivePosition = true } catch { /* fall through */ }
-    }
+    const [liveRawD, liveHashD] = await Promise.all([
+      client.get(`live:position:${positionId}`).catch(() => null),
+      client.hgetall(`live_positions:${connectionId}:${positionId}`).catch(() => null),
+    ])
+    position = hydrateLivePositionReadModel(liveRawD, liveHashD)
+    isLivePosition = !!position
     if (!position) {
       const hash = await client.hgetall(`position:${connectionId}:${positionId}`).catch(() => null)
       if (hash && Object.keys(hash).length > 0) {

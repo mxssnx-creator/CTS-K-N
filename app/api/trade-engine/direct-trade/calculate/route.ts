@@ -49,6 +49,11 @@ import {
   normalizeDirectTradeConnectionId,
 } from "@/lib/direct-trade-keyspace"
 import { yieldToEventLoop } from "@/lib/bounded-concurrency"
+import {
+  normalizeBlockIncrementSteps,
+  normalizeBlockProfitFactorRatio,
+} from "@/lib/block-count-state"
+import { DIRECT_STATISTICS_RETENTION_SECONDS } from "@/lib/redis-retention"
 
 const { clampDirectTradeHistoryHours } = directTradeHistoryPolicy
 
@@ -95,6 +100,7 @@ interface CalculationRequest {
   takeProfitRatioStep?: number
   trailingMinTakeProfitRatio?: number
   blockVolumeRatio?: number
+  blockIncrementSteps?: number
   blockProfitFactorRatio?: number
   dcaProfile?: unknown
   recalculate?: boolean
@@ -240,6 +246,7 @@ function createCalculationSummaryAccumulator(details: {
   maxHoldMinutes: number
   blockRange: [number, number]
   blockVolumeRatio: number
+  blockIncrementSteps: number
   blockProfitFactorRatio: number
   dcaProfile: DcaProfile
 }) {
@@ -476,7 +483,7 @@ type StatisticsRow = Pick<EvaluatedDirectTradeConfig,
   "takeprofit" | "takeProfitPositionCostRatio" | "stoploss" |
   "lastPositionPnl" | "lastPositionBestMarketExitPnl" | "lastPositionDrawdownTimeMin" | "lastPositionExitReason" |
   "recentPositionCount" | "recentProfitFactor" | "recentProfitFactorInfinite" | "recentWinRate" |
-  "recentTotalPnl" | "recentAvgDrawdownTimeMin" | "blockCount" | "blockProfitFactorRatio" |
+  "recentTotalPnl" | "recentAvgDrawdownTimeMin" | "blockCount" | "blockIncrementSteps" | "blockProfitFactorRatio" |
   "blockValid" | "blockDeactivationReason" | "blockObservedProfitFactor" |
   "blockObservedProfitFactorInfinite" | "blockNormalProfitFactor" | "blockMinimumProfitFactor" |
   "blockConfiguredMinimumProfitFactor" | "blockProfitFactorDifference" | "blockComparisonAvailable" |
@@ -501,7 +508,7 @@ const STATISTICS_ROW_FIELDS = [
   "takeProfitPositionCostRatio", "stoploss", "lastPositionPnl",
   "lastPositionBestMarketExitPnl", "lastPositionDrawdownTimeMin", "lastPositionExitReason",
   "recentPositionCount", "recentProfitFactor", "recentProfitFactorInfinite", "recentWinRate",
-  "recentTotalPnl", "recentAvgDrawdownTimeMin", "blockCount", "blockProfitFactorRatio",
+  "recentTotalPnl", "recentAvgDrawdownTimeMin", "blockCount", "blockIncrementSteps", "blockProfitFactorRatio",
   "blockValid", "blockDeactivationReason", "blockObservedProfitFactor",
   "blockObservedProfitFactorInfinite", "blockNormalProfitFactor", "blockMinimumProfitFactor",
   "blockConfiguredMinimumProfitFactor", "blockProfitFactorDifference", "blockComparisonAvailable",
@@ -669,7 +676,8 @@ export async function POST(request: NextRequest) {
       directTradeTakeProfitPercent(positionCostPercent, ratio),
     )
     const blockVolumeRatio = Math.max(0.1, Math.min(10, numberOr(body.blockVolumeRatio, 1)))
-    const blockProfitFactorRatio = Math.max(0.2, Math.min(5, numberOr(body.blockProfitFactorRatio, 0.8)))
+    const blockIncrementSteps = normalizeBlockIncrementSteps(body.blockIncrementSteps)
+    const blockProfitFactorRatio = normalizeBlockProfitFactorRatio(body.blockProfitFactorRatio)
     const dcaProfile = normalizeDcaProfile(body.dcaProfile ?? DEFAULT_DCA_PROFILE)
 
     // A manual dashboard refresh and the long-running processor can arrive at
@@ -786,6 +794,7 @@ export async function POST(request: NextRequest) {
       maxHoldMinutes,
       blockRange,
       blockVolumeRatio,
+      blockIncrementSteps,
       blockProfitFactorRatio,
       dcaProfile,
     })
@@ -920,6 +929,7 @@ export async function POST(request: NextRequest) {
                   historyHours,
                   volumeRatio: blockVolumeRatio,
                   blockVolumeRatio,
+                  blockIncrementSteps,
                   tpRange: plan.tpRange,
                   takeProfitPositionCostRatios,
                   trailingMinTakeProfitRatio,
@@ -996,6 +1006,7 @@ export async function POST(request: NextRequest) {
     transaction.del(keys.activeSignals)
     transaction.set(keys.calculation, JSON.stringify(summary))
     transaction.set(keys.statisticsIndex, JSON.stringify(statsIndex))
+    transaction.expire(keys.statisticsIndex, DIRECT_STATISTICS_RETENTION_SECONDS)
     transaction.set(keys.calculationProgress, JSON.stringify({
       status: "ready",
       startedAt: calculationStartedAt,

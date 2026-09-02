@@ -8,6 +8,7 @@ import {
   resolveRealizedPnl,
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
+import { hydrateLivePositionReadModel } from "@/lib/live-position-read-model"
 
 /**
  * Live Positions API
@@ -172,22 +173,11 @@ async function getLivePositions(connectionId: string): Promise<Position[]> {
       const jsonValues = await client
         .mget(...batch.map((id) => `live:position:${id}`))
         .catch(() => batch.map(() => null))
+      const hashes = await Promise.all(batch.map((id) =>
+        client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => null),
+      ))
       for (let index = 0; index < batch.length; index++) {
-        const raw = jsonValues[index]
-        let parsed: Record<string, any> | null = null
-        if (raw) {
-          try {
-            parsed = JSON.parse(raw)
-          } catch {
-            parsed = null
-          }
-        }
-        if (!parsed) {
-          const hash = await client
-            .hgetall(`live_positions:${connectionId}:${batch[index]}`)
-            .catch(() => null)
-          if (hash && Object.keys(hash).length > 0) parsed = hash
-        }
+        const parsed = hydrateLivePositionReadModel(jsonValues[index], hashes[index]) as Record<string, any> | null
         if (!parsed || !isLiveOpenStatus(parsed.status)) continue
         const normalized = normaliseLivePosition({ ...parsed, id: parsed.id || batch[index] })
         if (normalized) positions.push(normalized)

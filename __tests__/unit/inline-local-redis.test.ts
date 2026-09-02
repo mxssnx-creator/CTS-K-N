@@ -581,7 +581,17 @@ describe("InlineLocalRedis compatibility and persistence", () => {
         totalExecutedQuantity: "2",
         accumulatedSetKeys: JSON.stringify(["base", "block:1"]),
       })
-      await expect(reader.get(jsonKey)).resolves.toEqual(JSON.stringify(latest))
+      const restoredMirror = JSON.parse((await reader.get(jsonKey)) || "{}")
+      expect(restoredMirror).toMatchObject({
+        liveMirrorVersion: 2,
+        id: positionId,
+        version: 2,
+        quantity: 2,
+        executedQuantity: 2,
+        totalExecutedQuantity: 2,
+        updatedAt: 200,
+      })
+      expect(restoredMirror).not.toHaveProperty("accumulatedSetKeys")
       await expect(reader.lrange(`live:positions:${connectionId}`, 0, -1)).resolves.toEqual([positionId])
     } finally {
       await rm(dir, { recursive: true, force: true })

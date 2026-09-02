@@ -20,6 +20,7 @@ import {
   parseBlockCount,
 } from "@/lib/block-count-state"
 import type { SpecialPositionPlan } from "@/lib/special-strategy"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 const LOG_PREFIX = "[v0] [RealPositionStage]"
 
@@ -78,6 +79,7 @@ export interface RealPosition {
   /** Immutable Block sizing inputs used by Live adjustment execution. */
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number
+  blockIncrementSteps?: number
   blockProfitFactorRatio?: number
   blockDefaultMinimumProfitFactor?: number
   blockConfiguredMinimumProfitFactor?: number
@@ -336,7 +338,7 @@ function calculateEvaluationScore(
  * The active StrategyCoordinator path resolves the same contract before
  * executeLivePosition. Keeping this older exported stage fail-closed prevents
  * a direct caller from resurrecting legacy `baseMultiplier` scaling:
- * normal/trailing=1, Block=1+count×ratio, DCA=its explicit ratio and combined
+ * normal/trailing=1, Block=(1+ratio)^effectiveStep, DCA=its explicit ratio and combined
  * Position-count=its explicit net ratio (including a deliberate flat 0).
  */
 export function resolveRealStageSizeMultiplier(variantSource?: Record<string, any>): number {
@@ -352,7 +354,11 @@ export function resolveRealStageSizeMultiplier(variantSource?: Record<string, an
       parsedCount >= 1 &&
       Number.isFinite(ratio) &&
       ratio > 0
-      ? calculateBlockVolumeMultiplier(parsedCount, ratio)
+      ? calculateBlockVolumeMultiplier(
+          parsedCount,
+          ratio,
+          variantSource?.blockIncrementSteps,
+        )
       : 1
   }
   if (variantSource?.combinedPosCounts) {
@@ -532,6 +538,7 @@ function createRealPosition(
     ...([
       "blockBaseVolumeMultiplier",
       "blockVolumeRatio",
+      "blockIncrementSteps",
       "blockProfitFactorRatio",
       "blockDefaultMinimumProfitFactor",
       "blockConfiguredMinimumProfitFactor",
@@ -564,13 +571,19 @@ export async function getRealPositions(connectionId: string): Promise<RealPositi
   const client = getRedisClient()
 
   try {
-    const ids = ((await client.smembers(`real:positions:index:${connectionId}`).catch(() => [])) || []) as string[]
+    const ids = await scanRedisSetMembers(
+      client,
+      `real:positions:index:${connectionId}`,
+      { count: 250 },
+    ).catch(() => [])
     if (ids.length === 0) return []
 
     // Batch GETs from the explicit per-connection index. Avoid Redis KEYS here:
     // this accessor runs in engine/runtime paths and may be polled frequently.
-    const rawValues = await Promise.all(
-      ids.map((id: string) => client.get(`real:position:${id}`).catch(() => null)),
+    const rawValues = await mapWithConcurrency(
+      ids,
+      32,
+      (id: string) => client.get(`real:position:${id}`).catch(() => null),
     )
     const positions: RealPosition[] = []
     for (const data of rawValues) {

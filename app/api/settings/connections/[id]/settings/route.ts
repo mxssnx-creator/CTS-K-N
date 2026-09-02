@@ -39,13 +39,19 @@ import {
   POS_COUNT_VOLUME_RATIO_MAX,
   POS_COUNT_VOLUME_RATIO_MIN,
 } from "@/lib/pos-count-volume-ratio"
-import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
+import {
+  BLOCK_COUNT_MAX,
+  BLOCK_INCREMENT_STEPS_DEFAULT,
+  normalizeBlockIncrementSteps,
+  normalizeBlockProfitFactorRatio,
+} from "@/lib/block-count-state"
 import {
   CANONICAL_FORCED_SYMBOLS,
   withCanonicalForcedSymbols,
 } from "@/lib/forced-symbols"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
+import { clampExchangeSymbolCount } from "@/lib/symbol-capacity"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -194,6 +200,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "axisPauseMaxWindow",
   "blockVolumeRatio",
   "blockProfitFactorRatio",
+  "blockIncrementSteps",
   "blockMaxStack",
   "strategyBlockMaterializationBatchSize",
   "blockPauseCountRatio",
@@ -203,6 +210,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "blockRowLiveEnabled",
   "blockRowLiveVolumeRatio",
   "blockRowLiveProfitFactorRatio",
+  "blockRowLiveIncrementSteps",
   "blockRowLiveMaxStack",
   "blockRowLivePauseCountRatio",
   "blockRowRealEvalPosCount",
@@ -374,9 +382,9 @@ export async function GET(
           // Axis max-window values
           "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
           // Block strategy tuning
-          "blockVolumeRatio", "blockProfitFactorRatio", "blockMaxStack",
+          "blockVolumeRatio", "blockProfitFactorRatio", "blockIncrementSteps", "blockMaxStack",
           "strategyBlockMaterializationBatchSize", "blockPauseCountRatio",
-          "blockRowLiveVolumeRatio", "blockRowLiveProfitFactorRatio", "blockRowLiveMaxStack", "blockRowLivePauseCountRatio",
+          "blockRowLiveVolumeRatio", "blockRowLiveProfitFactorRatio", "blockRowLiveIncrementSteps", "blockRowLiveMaxStack", "blockRowLivePauseCountRatio",
           "posCountsVolumeRatio", "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds", "dcaMaxPositionVolumeRatio",
           // PF / DDT / stage thresholds
           "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
@@ -506,16 +514,18 @@ export async function GET(
         0.25,
         3.0,
       ),
-      blockProfitFactorRatio: asBoundedNumber(
+      blockProfitFactorRatio: normalizeBlockProfitFactorRatio(
         firstDefined(
           storedCoord.blockProfitFactorRatio,
           storedCoord.blockProfitFactor,
           settings.blockProfitFactorRatio,
           settings.blockProfitFactor,
-       ),
-        0.8,
-        0.2,
-        5.0,
+        ),
+        1.1,
+      ),
+      blockIncrementSteps: normalizeBlockIncrementSteps(
+        firstDefined(storedCoord.blockIncrementSteps, settings.blockIncrementSteps),
+        BLOCK_INCREMENT_STEPS_DEFAULT,
       ),
       blockMaxStack: Math.floor(asBoundedNumber(
         firstDefined(storedCoord.blockMaxStack, settings.blockMaxStack),
@@ -546,6 +556,36 @@ export async function GET(
         storedCoord.blockActiveLiveEnabled,
         settings.blockActiveLiveEnabled,
       ), true),
+      blockRowLiveEnabled: asBoolean(firstDefined(
+        storedCoord.blockRowLiveEnabled,
+        settings.blockRowLiveEnabled,
+      ), true),
+      blockRowLiveVolumeRatio: asBoundedNumber(
+        firstDefined(storedCoord.blockRowLiveVolumeRatio, settings.blockRowLiveVolumeRatio),
+        1,
+        0.25,
+        3,
+      ),
+      blockRowLiveProfitFactorRatio: normalizeBlockProfitFactorRatio(
+        firstDefined(storedCoord.blockRowLiveProfitFactorRatio, settings.blockRowLiveProfitFactorRatio),
+        1.1,
+      ),
+      blockRowLiveIncrementSteps: normalizeBlockIncrementSteps(
+        firstDefined(storedCoord.blockRowLiveIncrementSteps, settings.blockRowLiveIncrementSteps),
+        BLOCK_INCREMENT_STEPS_DEFAULT,
+      ),
+      blockRowLiveMaxStack: Math.floor(asBoundedNumber(
+        firstDefined(storedCoord.blockRowLiveMaxStack, settings.blockRowLiveMaxStack),
+        BLOCK_COUNT_MAX,
+        1,
+        BLOCK_COUNT_MAX,
+      )),
+      blockRowLivePauseCountRatio: Math.round(asBoundedNumber(
+        firstDefined(storedCoord.blockRowLivePauseCountRatio, settings.blockRowLivePauseCountRatio),
+        1,
+        1,
+        4,
+      ) * 2) / 2,
       posCountsVolumeRatio: asBoundedNumber(
         firstDefined(storedCoord.posCountsVolumeRatio, settings.posCountsVolumeRatio),
         POS_COUNT_VOLUME_RATIO_DEFAULT,
@@ -771,7 +811,7 @@ export async function PATCH(
     if (settings.symbol_count !== undefined) {
       const requestedCount = Number(settings.symbol_count)
       settings.symbol_count = Number.isFinite(requestedCount)
-        ? Math.max(CANONICAL_FORCED_SYMBOLS.length, Math.min(32, Math.floor(requestedCount)))
+        ? clampExchangeSymbolCount(requestedCount, CANONICAL_FORCED_SYMBOLS.length, CANONICAL_FORCED_SYMBOLS.length)
         : CANONICAL_FORCED_SYMBOLS.length
     }
     if (Array.isArray(settings.symbols)) {
@@ -945,7 +985,7 @@ export async function PATCH(
       try {
         const rawCount = Number(merged.symbol_count)
         const count = Number.isFinite(rawCount) && rawCount > 0
-          ? Math.max(CANONICAL_FORCED_SYMBOLS.length, Math.min(32, Math.floor(rawCount)))
+          ? clampExchangeSymbolCount(rawCount, 15, CANONICAL_FORCED_SYMBOLS.length)
           : 15
         const manualList = Array.isArray(merged.symbols)
           ? (merged.symbols as unknown[]).filter((s): s is string => typeof s === "string" && s.length > 0)
@@ -1114,8 +1154,11 @@ export async function PATCH(
       }
       const bvr = Number(coord.blockVolumeRatio)
       if (Number.isFinite(bvr) && bvr > 0) flatKnobs.blockVolumeRatio = String(Math.max(0.25, Math.min(3.0, bvr)))
-      const bpfr = Number(coord.blockProfitFactorRatio ?? coord.blockProfitFactor)
-      if (Number.isFinite(bpfr) && bpfr > 0) flatKnobs.blockProfitFactorRatio = String(Math.max(0.2, Math.min(5.0, bpfr)))
+      const blockPfRatio = normalizeBlockProfitFactorRatio(
+        coord.blockProfitFactorRatio ?? coord.blockProfitFactor,
+      )
+      flatKnobs.blockProfitFactorRatio = String(blockPfRatio)
+      flatKnobs.blockIncrementSteps = String(normalizeBlockIncrementSteps(coord.blockIncrementSteps))
       const bms = Number(coord.blockMaxStack)
       if (Number.isFinite(bms) && bms >= 1) flatKnobs.blockMaxStack = String(Math.min(BLOCK_COUNT_MAX, Math.max(1, Math.floor(bms))))
       const blockBatch = Number(coord.strategyBlockMaterializationBatchSize)
@@ -1132,8 +1175,14 @@ export async function PATCH(
       if (typeof coord.normalEnabled === "boolean") flatKnobs.normalEnabled = String(coord.normalEnabled)
       const rowLiveVolume = Number(coord.blockRowLiveVolumeRatio)
       if (Number.isFinite(rowLiveVolume) && rowLiveVolume > 0) flatKnobs.blockRowLiveVolumeRatio = String(Math.max(0.25, Math.min(3, rowLiveVolume)))
-      const rowLivePf = Number(coord.blockRowLiveProfitFactorRatio)
-      if (Number.isFinite(rowLivePf) && rowLivePf > 0) flatKnobs.blockRowLiveProfitFactorRatio = String(Math.max(0.2, Math.min(5, rowLivePf)))
+      flatKnobs.blockRowLiveProfitFactorRatio = String(normalizeBlockProfitFactorRatio(
+        coord.blockRowLiveProfitFactorRatio,
+        blockPfRatio,
+      ))
+      flatKnobs.blockRowLiveIncrementSteps = String(normalizeBlockIncrementSteps(
+        coord.blockRowLiveIncrementSteps,
+        normalizeBlockIncrementSteps(coord.blockIncrementSteps),
+      ))
       const rowLiveStack = Number(coord.blockRowLiveMaxStack)
       if (Number.isFinite(rowLiveStack) && rowLiveStack >= 1) flatKnobs.blockRowLiveMaxStack = String(Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(rowLiveStack))))
       const rowLivePause = Number(coord.blockRowLivePauseCountRatio)

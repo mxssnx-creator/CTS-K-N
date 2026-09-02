@@ -4,6 +4,7 @@
  */
 
 import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { scanRedisKeys } from "@/lib/redis-scan"
 import { nanoid } from "nanoid"
 
 export const DEFAULT_PRESET_TYPES = [
@@ -63,7 +64,7 @@ export async function seedDefaultPresetTypes(): Promise<void> {
     const client = getRedisClient()
 
     // Check if preset types already exist
-    const existingKeys = await (client as any).keys("preset_type:*")
+    const existingKeys = await scanRedisKeys(client, "preset_type:*", { count: 100 })
     if (existingKeys && existingKeys.length > 0) {
       console.log("[v0] Preset types already exist, skipping seeding")
       return

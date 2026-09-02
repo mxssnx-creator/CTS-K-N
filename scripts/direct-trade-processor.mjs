@@ -96,6 +96,44 @@ const DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON =
   "canonical Direct-Trade live execution is unavailable"
 const DIRECT_TRADE_RECALC_STALE_GRACE_MS = 30 * 60 * 1_000
 const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"]
+const BLOCK_INCREMENT_STEPS_MIN = 1
+const BLOCK_INCREMENT_STEPS_MAX = 5
+const BLOCK_INCREMENT_STEPS_DEFAULT = 2
+
+function normalizeBlockIncrementSteps(value, fallback = BLOCK_INCREMENT_STEPS_DEFAULT) {
+  const parsed = Number(value)
+  const fallbackParsed = Number(fallback)
+  const candidate = Number.isFinite(parsed)
+    ? parsed
+    : Number.isFinite(fallbackParsed)
+      ? fallbackParsed
+      : BLOCK_INCREMENT_STEPS_DEFAULT
+  return Math.max(BLOCK_INCREMENT_STEPS_MIN, Math.min(BLOCK_INCREMENT_STEPS_MAX, Math.floor(candidate)))
+}
+
+function normalizeBlockProfitFactorRatio(value, fallback = 1.1) {
+  const parsed = Number(value)
+  const fallbackParsed = Number(fallback)
+  let candidate = Number.isFinite(parsed) ? parsed : Number.isFinite(fallbackParsed) ? fallbackParsed : 1.1
+  if (Math.abs(candidate - 0.8) < 1e-9) candidate = 1.1
+  return Number(Math.max(0.2, Math.min(5, candidate)).toFixed(2))
+}
+
+function blockEffectiveIncrementStep(blockCount, incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT) {
+  const count = Math.max(0, Math.floor(Number(blockCount) || 0))
+  return Math.min(count, normalizeBlockIncrementSteps(incrementSteps))
+}
+
+function blockVolumeMultiplier(blockCount, volumeRatio, incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT) {
+  const ratio = Number(volumeRatio)
+  if (!(ratio > 0) || !(Number(blockCount) > 0)) return 1
+  return Number(((1 + ratio) ** blockEffectiveIncrementStep(blockCount, incrementSteps)).toFixed(12))
+}
+
+function blockTargetQuantity(baseQuantity, blockCount, volumeRatio, incrementSteps) {
+  const base = Number(baseQuantity)
+  return base > 0 ? Number((base * blockVolumeMultiplier(blockCount, volumeRatio, incrementSteps)).toFixed(12)) : 0
+}
 
 function normalizeEnabledIndicationTypes(value, fallback = DIRECT_TRADE_ENTRY_TACTICS) {
   const source = Array.isArray(value) ? value : fallback
@@ -161,6 +199,11 @@ function normalizeDirectTradeConfig(config) {
     ...config,
     takeprofit: protection.takeprofit,
     stoploss: protection.stoploss,
+    blockIncrementSteps: normalizeBlockIncrementSteps(config.blockIncrementSteps ?? state.blockIncrementSteps),
+    blockProfitFactorRatio: normalizeBlockProfitFactorRatio(
+      config.blockProfitFactorRatio,
+      state.blockProfitFactorRatio,
+    ),
   }
 }
 
@@ -190,10 +233,26 @@ function normalizeLoadedDirectTradePosition(position) {
     recoveredPosition.stoploss,
     Number(recoveredPosition.positionCostPercent) || Number(state.positionCostPercent) || 0.1,
   )
+  const blockIncrementSteps = normalizeBlockIncrementSteps(
+    recoveredPosition.blockIncrementSteps ?? state.blockIncrementSteps,
+  )
+  const blockProfitFactorRatio = normalizeBlockProfitFactorRatio(
+    recoveredPosition.blockProfitFactorRatio,
+    state.blockProfitFactorRatio,
+  )
   const changed = Number(recoveredPosition.takeprofit) !== protection.takeprofit ||
-    Number(recoveredPosition.stoploss) !== protection.stoploss
+    Number(recoveredPosition.stoploss) !== protection.stoploss ||
+    Number(recoveredPosition.blockIncrementSteps) !== blockIncrementSteps ||
+    Number(recoveredPosition.blockProfitFactorRatio) !== blockProfitFactorRatio
   if (!changed) return recoveredPosition
-  const next = { ...recoveredPosition, takeprofit: protection.takeprofit, stoploss: protection.stoploss }
+  stateDirty = true
+  const next = {
+    ...recoveredPosition,
+    takeprofit: protection.takeprofit,
+    stoploss: protection.stoploss,
+    blockIncrementSteps,
+    blockProfitFactorRatio,
+  }
   const entry = Number(next.entryPrice)
   if (entry > 0 && next.trailingArmed !== true) {
     next.currentSlPrice = next.direction === "short"
@@ -422,7 +481,8 @@ let state = {
   trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
-  blockProfitFactorRatio: 0.8,
+  blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
+  blockProfitFactorRatio: 1.1,
   maxTotalPositions: DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   maxPositionsPerSymbol: 12,
   maxPositionsPerDirection: 6,
@@ -589,6 +649,7 @@ function configKey(config) {
     `ta:${config.autoTrailSensitivity == null ? "none" : numeric(config.autoTrailSensitivity)}`,
     `b:${Math.max(0, Math.floor(Number(config.blockCount) || 0))}`,
     `br:${numeric(config.blockVolumeRatio ?? config.volumeRatio)}`,
+    `bs:${normalizeBlockIncrementSteps(config.blockIncrementSteps ?? state.blockIncrementSteps)}`,
     `bpf:${numeric(config.blockProfitFactorRatio ?? state.blockProfitFactorRatio)}`,
     dcaProfile
       ? `dca:${dcaProfile.maxSteps}:${dcaProfile.stepVolumeMultipliers.map(numeric).join(",")}:${dcaProfile.stepDistancesPct.map(numeric).join(",")}:${dcaProfile.takeProfitMode}:${numeric(dcaProfile.breakevenProfitPct)}:${dcaProfile.cooldownSeconds}:${numeric(dcaProfile.maxPositionVolumeRatio)}`
@@ -601,6 +662,7 @@ function resolveBlockSizing(config, baseQuantity) {
     return {
       blockCount: 0,
       blockVolumeRatio: 0,
+      blockIncrementSteps: normalizeBlockIncrementSteps(config?.blockIncrementSteps ?? state.blockIncrementSteps),
       blockBaseQuantity: baseQuantity,
       blockAddedQuantity: 0,
       targetBlockQuantity: baseQuantity,
@@ -612,13 +674,23 @@ function resolveBlockSizing(config, baseQuantity) {
   const blockCount = Math.max(configuredMinimum, Math.min(configuredMaximum, requestedCount))
   const requestedRatio = Number(config?.blockVolumeRatio ?? config?.volumeRatio ?? state.blockVolumeRatio)
   const blockVolumeRatio = Math.max(0.1, Math.min(10, Number.isFinite(requestedRatio) ? requestedRatio : 1))
-  const blockAddedQuantity = blockCount > 0 ? baseQuantity * blockCount * blockVolumeRatio : 0
+  const blockIncrementSteps = normalizeBlockIncrementSteps(
+    config?.blockIncrementSteps ?? state.blockIncrementSteps,
+  )
+  const targetBlockQuantity = blockTargetQuantity(
+    baseQuantity,
+    blockCount,
+    blockVolumeRatio,
+    blockIncrementSteps,
+  ) || baseQuantity
+  const blockAddedQuantity = Math.max(0, targetBlockQuantity - baseQuantity)
   return {
     blockCount,
     blockVolumeRatio,
+    blockIncrementSteps,
     blockBaseQuantity: baseQuantity,
     blockAddedQuantity,
-    targetBlockQuantity: baseQuantity + blockAddedQuantity,
+    targetBlockQuantity,
   }
 }
 
@@ -781,6 +853,7 @@ function calculationInputsSignature(input = state, historyHoursOverride = null) 
     strategyTypes: input.strategyTypes,
     blockRange: input.blockRange,
     blockVolumeRatio: input.blockVolumeRatio,
+    blockIncrementSteps: normalizeBlockIncrementSteps(input.blockIncrementSteps),
     blockProfitFactorRatio: input.blockProfitFactorRatio,
     trailingEnabled: input.trailingEnabled,
     minProfitFactor: input.minProfitFactor,
@@ -818,6 +891,7 @@ async function requestConfigRecalculation() {
       trailingMinTakeProfitRatio: state.trailingMinTakeProfitRatio,
       blockRange: state.blockRange,
       blockVolumeRatio: state.blockVolumeRatio,
+      blockIncrementSteps: state.blockIncrementSteps,
       blockProfitFactorRatio: state.blockProfitFactorRatio,
       trailingEnabled: state.trailingEnabled,
       minProfitFactor: state.minProfitFactor,
@@ -1237,8 +1311,14 @@ function finalizeOpenedPosition(position, filledPrice, filledQuantity, orderId =
   position.entryPrice = entryPrice
   position.quantity = quantity
   position.blockBaseQuantity = quantity
-  position.blockAddedQuantity = quantity * Number(position.blockCount || 0) * Number(position.blockVolumeRatio || 1)
-  position.targetBlockQuantity = quantity + position.blockAddedQuantity
+  position.blockIncrementSteps = normalizeBlockIncrementSteps(position.blockIncrementSteps)
+  position.targetBlockQuantity = blockTargetQuantity(
+    quantity,
+    position.blockCount,
+    position.blockVolumeRatio,
+    position.blockIncrementSteps,
+  ) || quantity
+  position.blockAddedQuantity = Math.max(0, position.targetBlockQuantity - quantity)
   if (orderId && orderId !== "N/A") {
     position.orderId = orderId
     if (position.mode === "live") position.exchangeOrderId = orderId
@@ -1249,6 +1329,8 @@ function finalizeOpenedPosition(position, filledPrice, filledQuantity, orderId =
     quantity,
     entryPrice,
     volumeRatio: position.blockVolumeRatio,
+    incrementSteps: position.blockIncrementSteps,
+    effectiveIncrementStep: 0,
     volumeMultiplier: 1,
     orderId: position.orderId || null,
     controlId: position.openControlId || null,
@@ -1483,6 +1565,9 @@ async function openPosition(config) {
     maxHoldMinutes: state.maxHoldMinutes,
     blockCount: isDca ? 0 : config.blockCount,
     blockVolumeRatio: config.blockVolumeRatio ?? config.volumeRatio ?? state.blockVolumeRatio,
+    blockIncrementSteps: normalizeBlockIncrementSteps(
+      config.blockIncrementSteps ?? state.blockIncrementSteps,
+    ),
     blockProfitFactorRatio: config.blockProfitFactorRatio ?? state.blockProfitFactorRatio,
     entrySignalKey: config.entrySignalKey || null,
     entryTactic: config.entryTactic || null,
@@ -1554,9 +1639,10 @@ async function openPosition(config) {
   // Direct-Trade Block uses one base fill followed by causal, one-ratio add-on
   // fills. The historical simulator follows the same path. Keeping the full
   // target only as metadata prevents a Block PF from becoming a copied Base PF
-  // while preserving the non-compounding formula B + (count × B × ratio).
+  // while preserving the same bounded compounded target as historic evaluation.
   position.blockCount = blockSizing.blockCount
   position.blockVolumeRatio = blockSizing.blockVolumeRatio
+  position.blockIncrementSteps = blockSizing.blockIncrementSteps
   position.blockBaseQuantity = blockSizing.blockBaseQuantity
   position.blockAddedQuantity = blockSizing.blockAddedQuantity
   position.targetBlockQuantity = blockSizing.targetBlockQuantity
@@ -1618,13 +1704,63 @@ async function addDirectTradeBlockLeg(position, config) {
 
   const baseQuantity = Number(position.blockBaseQuantity) || 0
   const volumeRatio = Math.max(0.1, Math.min(10, Number(position.blockVolumeRatio) || Number(state.blockVolumeRatio) || 1))
+  const incrementSteps = normalizeBlockIncrementSteps(
+    position.blockIncrementSteps ?? state.blockIncrementSteps,
+  )
+  const targetQuantityForCount = blockTargetQuantity(
+    baseQuantity,
+    nextCount,
+    volumeRatio,
+    incrementSteps,
+  )
+  const existingLegs = Array.isArray(position.positionLegs) && position.positionLegs.length > 0
+    ? position.positionLegs
+    : Array.isArray(position.blockLegs) ? position.blockLegs : []
+  const confirmedQuantity = Math.abs(Number(position.quantity) || 0)
   const requestedQuantity = hasPendingControl
     ? Number(position.blockPendingRequestedQuantity)
-    : baseQuantity * volumeRatio
+    : Number(Math.max(0, targetQuantityForCount - confirmedQuantity).toFixed(12))
   const marketPrice = hasPendingControl
     ? Number(position.blockPendingRequestedPrice)
     : Number(position.lastObservedPrice) || 0
-  if (!(baseQuantity > 0) || !(requestedQuantity > 0) || !(marketPrice > 0)) return false
+  if (!(baseQuantity > 0)) return false
+  const targetTolerance = Math.max(1e-12, targetQuantityForCount * 1e-9)
+  if (!hasPendingControl && requestedQuantity <= targetTolerance) {
+    const volumeMultiplier = targetQuantityForCount / baseQuantity
+    const marker = {
+      setKey: `${position.configKey}#block:${nextCount}`,
+      blockCount: nextCount,
+      quantity: 0,
+      entryPrice: Number(position.lastObservedPrice) || Number(position.entryPrice) || 0,
+      baseQuantity,
+      volumeRatio,
+      incrementSteps,
+      effectiveIncrementStep: blockEffectiveIncrementStep(nextCount, incrementSteps),
+      volumeIncrementRatio: Number((volumeMultiplier - 1).toFixed(12)),
+      volumeMultiplier,
+      targetBlockQuantity: targetQuantityForCount,
+      targetSatisfied: true,
+      requestedQuantity: 0,
+      addedAt: Date.now(),
+    }
+    position.blockAddedCount = nextCount
+    position.blockIncrementSteps = incrementSteps
+    position.blockAddedQuantity = Math.max(0, confirmedQuantity - baseQuantity)
+    position.targetBlockQuantity = blockTargetQuantity(
+      baseQuantity,
+      maximumCount,
+      volumeRatio,
+      incrementSteps,
+    )
+    position.blockRealizedVolumeMultiplier = Number((confirmedQuantity / baseQuantity).toFixed(6))
+    position.positionLegs = [...existingLegs.filter((leg) => leg?.setKey !== marker.setKey), marker]
+    position.blockLegs = [...position.positionLegs]
+    stateDirty = true
+    if (position.mode === "live") await persistState()
+    log("debug", `Block Count ${nextCount}/${maximumCount} ${position.symbol} retained its capped ${volumeMultiplier.toFixed(4)}× target without a duplicate order`)
+    return true
+  }
+  if (!(requestedQuantity > 0) || !(marketPrice > 0)) return false
 
   let filledPrice = marketPrice
   let filledQuantity = requestedQuantity
@@ -1728,9 +1864,6 @@ async function addDirectTradeBlockLeg(position, config) {
     }
   }
 
-  const existingLegs = Array.isArray(position.positionLegs) && position.positionLegs.length > 0
-    ? position.positionLegs
-    : Array.isArray(position.blockLegs) ? position.blockLegs : []
   const currentNotional = existingLegs.reduce(
     (sum, leg) => sum + Math.abs(Number(leg?.entryPrice) || 0) * Math.abs(Number(leg?.quantity) || 0),
     0,
@@ -1745,8 +1878,15 @@ async function addDirectTradeBlockLeg(position, config) {
   position.blockPendingRequestedQuantity = 0
   position.blockPendingRequestedPrice = 0
   position.blockRealizedVolumeMultiplier = baseQuantity > 0 ? Number((nextQuantity / baseQuantity).toFixed(6)) : 1
-  position.blockAddedQuantity = baseQuantity * nextCount * volumeRatio
-  position.targetBlockQuantity = baseQuantity * (1 + maximumCount * volumeRatio)
+  position.blockIncrementSteps = incrementSteps
+  position.blockAddedQuantity = Math.max(0, nextQuantity - baseQuantity)
+  position.targetBlockQuantity = blockTargetQuantity(
+    baseQuantity,
+    maximumCount,
+    volumeRatio,
+    incrementSteps,
+  )
+  const volumeMultiplier = targetQuantityForCount / baseQuantity
   position.positionLegs = [
     ...existingLegs,
     {
@@ -1756,9 +1896,12 @@ async function addDirectTradeBlockLeg(position, config) {
       entryPrice: filledPrice,
       baseQuantity,
       volumeRatio,
-      volumeIncrementRatio: nextCount * volumeRatio,
-      volumeMultiplier: 1 + nextCount * volumeRatio,
-      targetBlockQuantity: baseQuantity * (1 + nextCount * volumeRatio),
+      incrementSteps,
+      effectiveIncrementStep: blockEffectiveIncrementStep(nextCount, incrementSteps),
+      volumeIncrementRatio: Number((volumeMultiplier - 1).toFixed(12)),
+      volumeMultiplier,
+      targetBlockQuantity: targetQuantityForCount,
+      targetSatisfied: Math.abs(nextQuantity - targetQuantityForCount) <= targetTolerance,
       orderId,
       controlId: appliedControlId,
       controlGeneration: Math.max(0, Math.floor(Number(position.blockControlGeneration) || 0)),
@@ -2151,6 +2294,9 @@ function rebuildRealizedNotionalStats() {
     closed: rows.length,
     ...aggregate(rows),
     volumeRatio: Number(rows.at(-1)?.blockVolumeRatio) || Number(state.blockVolumeRatio) || 1,
+    incrementSteps: normalizeBlockIncrementSteps(
+      rows.at(-1)?.blockIncrementSteps ?? state.blockIncrementSteps,
+    ),
     meanQuantity: rows.length > 0 ? Number((rows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0) / rows.length).toFixed(12)) : 0,
   }]))
 }
@@ -2828,6 +2974,14 @@ function applyRemoteState(nextState, source = "load") {
       nextState.enabledIndicationTypes,
       state.enabledIndicationTypes,
     ),
+    blockIncrementSteps: normalizeBlockIncrementSteps(
+      nextState.blockIncrementSteps ?? state.blockIncrementSteps,
+      state.blockIncrementSteps,
+    ),
+    blockProfitFactorRatio: normalizeBlockProfitFactorRatio(
+      nextState.blockProfitFactorRatio,
+      state.blockProfitFactorRatio,
+    ),
     dcaProfile: normalizeDirectDcaProfile(nextState.dcaProfile || state.dcaProfile),
   }
   const persistedRecalcAt = Date.parse(nextState.lastRecalcAt || "")
@@ -2871,6 +3025,7 @@ function applyRemoteState(nextState, source = "load") {
     takeProfitRatioStep: prev.takeProfitRatioStep,
     trailingMinTakeProfitRatio: normalizeDirectTradeTrailingMinTakeProfitRatio(prev.trailingMinTakeProfitRatio),
     blockVolumeRatio: prev.blockVolumeRatio,
+    blockIncrementSteps: normalizeBlockIncrementSteps(prev.blockIncrementSteps),
     blockProfitFactorRatio: prev.blockProfitFactorRatio,
     maxSlRatio: prev.maxSlRatio,
     slRatioStep: prev.slRatioStep,
@@ -2898,6 +3053,7 @@ function applyRemoteState(nextState, source = "load") {
     takeProfitRatioStep: state.takeProfitRatioStep,
     trailingMinTakeProfitRatio: normalizeDirectTradeTrailingMinTakeProfitRatio(state.trailingMinTakeProfitRatio),
     blockVolumeRatio: state.blockVolumeRatio,
+    blockIncrementSteps: normalizeBlockIncrementSteps(state.blockIncrementSteps),
     blockProfitFactorRatio: state.blockProfitFactorRatio,
     maxSlRatio: state.maxSlRatio,
     slRatioStep: state.slRatioStep,
@@ -2908,7 +3064,7 @@ function applyRemoteState(nextState, source = "load") {
     dcaProfile: normalizeDirectDcaProfile(state.dcaProfile),
   })
   if (evaluationInputsChanged) {
-    log("info", `Config change detected by ${source}: volFactor=${normalizeDirectTradeVolumeFactor(state.minVolFactor)}, tp=${state.takeProfitRatioRange.join("-")}×cost step=${state.takeProfitRatioStep}, blockRatio=${state.blockVolumeRatio}, minPF=${state.minProfitFactor}`)
+    log("info", `Config change detected by ${source}: volFactor=${normalizeDirectTradeVolumeFactor(state.minVolFactor)}, tp=${state.takeProfitRatioRange.join("-")}×cost step=${state.takeProfitRatioStep}, blockRatio=${state.blockVolumeRatio}, blockSteps=${state.blockIncrementSteps}, minPF=${state.minProfitFactor}`)
     // Settings are authoritative immediately. Rebuild the entire historic
     // grid on the next owned tick instead of trading stale configurations.
     resetAdaptiveHistory(`calculation inputs changed by ${source}`)

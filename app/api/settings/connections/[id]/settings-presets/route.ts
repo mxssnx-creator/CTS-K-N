@@ -21,6 +21,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { getClient, initRedis } from "@/lib/redis-db"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 const MAX_PRESETS_PER_CONNECTION = 20
 const MAX_NAME_LENGTH = 48
@@ -51,7 +52,7 @@ export async function GET(
     const client = getClient()
 
     const pattern = `settings:preset:${id}:*`
-    const keys: string[] = await client.keys(pattern).catch(() => [])
+    const keys: string[] = await scanRedisKeys(client, pattern, { count: 100 }).catch(() => [])
 
     if (keys.length === 0) {
       return NextResponse.json({ presets: [] })
@@ -119,7 +120,11 @@ export async function POST(
     const client = getClient()
 
     // Enforce per-connection preset cap.
-    const existing: string[] = await client.keys(`settings:preset:${id}:*`).catch(() => [])
+    const existing: string[] = await scanRedisKeys(
+      client,
+      `settings:preset:${id}:*`,
+      { count: 100 },
+    ).catch(() => [])
     const targetKey = presetKey(id, sanitized)
     const isNew = !existing.includes(targetKey)
     if (isNew && existing.length >= MAX_PRESETS_PER_CONNECTION) {

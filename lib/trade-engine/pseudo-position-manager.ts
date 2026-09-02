@@ -26,6 +26,7 @@ import { DEFAULT_FOREX_LOT_SIZE, DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/f
 import { normalizeMarketType } from "@/lib/market-types"
 import { tradingPairKey } from "@/lib/trading-pair-keys"
 import { connectionTrackingId } from "@/lib/system-order-ownership"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
 const POSITION_CLOSE_LOCK_TTL_MS = 60_000
@@ -321,7 +322,7 @@ export class PseudoPositionManager {
   private async listPositions(filter?: { status?: string; side?: string; symbol?: string; indicationType?: string }): Promise<any[]> {
     try {
       const client = getRedisClient()
-      const ids = await client.smembers(this.positionsSetKey())
+      const ids = await scanRedisSetMembers(client, this.positionsSetKey(), { count: 250 })
       if (!ids || ids.length === 0) return []
 
       // Pipelined fan-in: queue one HGETALL per id into a single multi()
@@ -1600,7 +1601,7 @@ export class PseudoPositionManager {
   async reconcileStaleOpenPositions(activeConfigSetKeys: Set<string>): Promise<number> {
     try {
       const client = getRedisClient()
-      const openIds = await client.smembers(this.positionsSetKey())
+      const openIds = await scanRedisSetMembers(client, this.positionsSetKey(), { count: 250 })
       if (!openIds || openIds.length === 0) return 0
 
       let closed = 0

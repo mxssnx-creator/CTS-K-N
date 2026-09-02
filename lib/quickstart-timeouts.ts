@@ -1,3 +1,5 @@
+import { EXCHANGE_SYMBOL_COUNT_MAX } from "@/lib/symbol-capacity"
+
 /**
  * Shared QuickStart timing contract.
  *
@@ -13,7 +15,7 @@ export const QUICKSTART_ENGINE_BOOT_WAIT_MAX_MS =
   QUICKSTART_ENABLE_TIMEOUT_MS - QUICKSTART_MIN_TIMEOUT_HEADROOM_MS
 
 export const QUICKSTART_CONNECTION_TEST_TIMEOUT_MS = 5_000
-export const QUICKSTART_UI_MAX_SYMBOLS = 32
+export const QUICKSTART_UI_MAX_SYMBOLS = EXCHANGE_SYMBOL_COUNT_MAX
 
 export function resolveQuickStartEngineBootWaitMs(rawValue: unknown): number {
   const parsed = Number(rawValue)

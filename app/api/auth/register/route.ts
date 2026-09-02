@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { hashPassword, createToken, setSession } from "@/lib/auth"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 import { nanoid } from "nanoid"
 
 export const dynamic = "force-dynamic"
@@ -22,8 +23,7 @@ export async function POST(request: NextRequest) {
     const client = getRedisClient()
 
     // Check if user already exists
-    const userKeys = await (client as any).keys("user:*")
-    for (const key of userKeys) {
+    for await (const key of iterateRedisKeys(client, "user:*", { count: 100 })) {
       const userData = await (client as any).hgetall(key)
       if (userData?.email === email || userData?.username === username) {
         return NextResponse.json({ success: false, error: "User already exists" }, { status: 409 })

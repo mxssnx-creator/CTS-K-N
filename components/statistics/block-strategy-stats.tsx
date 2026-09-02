@@ -362,7 +362,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
             <CardTitle>Block Strategy Settings</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <div className="text-sm text-muted-foreground">Execution Mode</div>
                 <div className="text-lg font-bold">
@@ -377,8 +377,12 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
                 <div className="text-sm text-muted-foreground">Volume / PF Ratios</div>
                 <div className="text-lg font-bold">
                   {Number(settings.blockVolumeRatio ?? 1).toFixed(2)}× /{" "}
-                  {Number(settings.blockProfitFactorRatio ?? 0.8).toFixed(2)}×
+                  {Number(settings.blockProfitFactorRatio ?? 1.1).toFixed(2)}×
                 </div>
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">Compound Steps</div>
+                <div className="text-lg font-bold">{Number(settings.blockIncrementSteps ?? 2)}</div>
               </div>
               <div>
                 <div className="text-sm text-muted-foreground">Max Stack / Analysis Window</div>

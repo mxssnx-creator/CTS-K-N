@@ -11,6 +11,7 @@ import { BasePseudoPositionManager } from "./base-pseudo-position-manager"
 import { ExchangePositionManager } from "./exchange-position-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
 import { concurrencyFromEnv, forEachWithConcurrency, mapWithConcurrency } from "./bounded-concurrency"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 import {
   movePctToMainTradePfRatio,
   netMovePctAfterPositionCost,
@@ -236,7 +237,11 @@ export class PositionFlowCoordinator {
       await this.reconcileActiveRealPseudo()
 
       // Get main pseudo positions for this connection+symbol
-      const positionIds = await client.smembers(`pseudo_positions:${this.connectionId}:main`)
+      const positionIds = await scanRedisSetMembers(
+        client,
+        `pseudo_positions:${this.connectionId}:main`,
+        { count: 250 },
+      )
       
       const mainPositions = await this.loadSettingsBatch(
         positionIds.map((posId) => `pseudo_position:${posId}`),
@@ -334,7 +339,11 @@ export class PositionFlowCoordinator {
       const client = getRedisClient()
       await this.reconcileActiveRealPseudo()
 
-      const realPosIds = await client.smembers(`real_pseudo_positions:${this.connectionId}`)
+      const realPosIds = await scanRedisSetMembers(
+        client,
+        `real_pseudo_positions:${this.connectionId}`,
+        { count: 250 },
+      )
       const realPositions = await this.loadSettingsBatch(
         realPosIds.map((realId) => `real_pseudo:${realId}`),
       )
@@ -471,7 +480,11 @@ export class PositionFlowCoordinator {
       const stageSettings = await this.loadMainTradeStageSettings()
 
       // Get recent main positions for this base
-      const mainPosIds = await client.smembers(`pseudo_positions:${this.connectionId}:main`)
+      const mainPosIds = await scanRedisSetMembers(
+        client,
+        `pseudo_positions:${this.connectionId}:main`,
+        { count: 250 },
+      )
       const loadedPositions = await this.loadSettingsBatch(
         mainPosIds.map((posId) => `pseudo_position:${posId}`),
       )
@@ -577,7 +590,11 @@ export class PositionFlowCoordinator {
   async reconcileActiveRealPseudo(): Promise<number> {
     try {
       const client = getRedisClient()
-      const ids = await client.smembers(`real_pseudo:${this.connectionId}`)
+      const ids = await scanRedisSetMembers(
+        client,
+        `real_pseudo:${this.connectionId}`,
+        { count: 250 },
+      )
       const positions = await this.loadSettingsBatch(ids.map((id) => `real_pseudo:${id}`))
       const staleIds = ids.filter((_, index) => {
         const position = positions[index]

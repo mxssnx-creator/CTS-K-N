@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function POST(request: Request) {
@@ -18,13 +19,13 @@ export async function POST(request: Request) {
     const cutoffTimeStr = cutoffTime.toISOString()
 
     // Get all market data keys for this connection
-    const keys = await (client as any).keys(`market_data:${connectionId}:*`)
-
     let deletedCount = 0
     let archivedCount = 0
     let keptCount = 0
+    let totalProcessed = 0
 
-    for (const key of keys) {
+    for await (const key of iterateRedisKeys(client, `market_data:${connectionId}:*`, { count: 250 })) {
+      totalProcessed++
       const data = await (client as any).hgetall(key)
 
       if (!data || !data.timestamp) {
@@ -63,7 +64,7 @@ export async function POST(request: Request) {
       deletedCount,
       archivedCount,
       keptCount,
-      totalProcessed: keys.length,
+      totalProcessed,
     })
   } catch (error) {
     console.error("[v0] Error cleaning up historical data:", error)

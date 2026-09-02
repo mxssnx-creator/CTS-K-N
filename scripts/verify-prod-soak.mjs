@@ -10,16 +10,25 @@ const SIGNAL_OBSERVATION_INTERVAL_MS = Math.max(
   30_000,
   Number(process.env.SIGNAL_OBSERVATION_INTERVAL_MS || 30_000),
 )
+const EXCHANGE_SYMBOL_COUNT_MAX = 1_000
+const requestedSymbolCount = Number(process.env.SYMBOL_COUNT || 12)
+const SYMBOL_COUNT = Math.max(
+  1,
+  Math.min(
+    EXCHANGE_SYMBOL_COUNT_MAX,
+    Number.isFinite(requestedSymbolCount) ? Math.floor(requestedSymbolCount) : 12,
+  ),
+)
+const HIGH_SCALE_SOAK = SYMBOL_COUNT > 100
 // Startup is intentionally excluded from the measured soak window. A cold
-// 32-symbol historic graph may need minutes to publish its first productive
+// high-scale historic graph may need minutes to publish its first productive
 // Main cycle on a constrained Linux host; treating that bounded bootstrap as
 // a 0-cycle regression made the verifier fail while the engine was still
 // correctly gated. Operators can shorten this only for focused diagnostics.
 const BOOTSTRAP_READY_TIMEOUT_MS = Math.max(
   120_000,
-  Number(process.env.SOAK_BOOTSTRAP_READY_TIMEOUT_MS || 10 * 60_000),
+  Number(process.env.SOAK_BOOTSTRAP_READY_TIMEOUT_MS || (HIGH_SCALE_SOAK ? 20 : 10) * 60_000),
 )
-const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.SYMBOL_COUNT || 12)))
 const START_SIMULATED_ENGINE = process.env.START_SIMULATED_ENGINE === "1"
 const VERIFY_SIGNAL_ENGINE = process.env.VERIFY_SIGNAL_ENGINE === "1"
 const SIGNAL_FOCUSED_SOAK = process.env.SIGNAL_FOCUSED_SOAK === "1"
@@ -34,7 +43,7 @@ const SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET = VERIFY_SIGNAL_ENGINE
   : 0
 // Outside the separately indexed Set/outcome inventory, each symbol owns a
 // finite collection of market-cache, stage/progression, position/history and
-// tracking keys. The exhaustive 32-symbol Shared-Redis run stabilizes below
+// tracking keys. The exhaustive legacy 32-symbol Shared-Redis run stabilizes below
 // 830 keys/symbol; keep explicit headroom for all enabled strategy variants
 // while the independent low-water plateau check still rejects per-cycle growth.
 const NON_INVENTORY_KEYS_PER_SYMBOL_BUDGET = 1_000
@@ -84,13 +93,13 @@ const configuredSoakSymbols = String(process.env.SOAK_SYMBOLS || "")
   .map((symbol) => symbol.trim().toUpperCase())
   .filter(Boolean)
 if (
-  configuredSoakSymbols.length > 32
+  configuredSoakSymbols.length > EXCHANGE_SYMBOL_COUNT_MAX
   || new Set(configuredSoakSymbols).size !== configuredSoakSymbols.length
   || configuredSoakSymbols.some((symbol) => !/^[A-Z0-9]+$/.test(symbol))
 ) {
-  throw new Error("SOAK_SYMBOLS must contain 1-32 unique normalized symbols")
+  throw new Error(`SOAK_SYMBOLS must contain 1-${EXCHANGE_SYMBOL_COUNT_MAX} unique normalized symbols`)
 }
-const SYMBOLS = configuredSoakSymbols.length > 0
+let SYMBOLS = configuredSoakSymbols.length > 0
   ? configuredSoakSymbols
   : DEFAULT_SYMBOLS.slice(0, SYMBOL_COUNT)
 
@@ -101,11 +110,12 @@ const SYMBOLS = configuredSoakSymbols.length > 0
 // 1–7 day TTL keys within a memory-fitting short soak, so it only observes the
 // accumulation phase. A constrained host may raise this budget; production CI
 // leaves it at the strict default.
-const DB_STABLE_GROWTH_LIMIT = Math.max(
+const resolveDbStableGrowthLimit = () => Math.max(
   1_500 + SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET,
   SYMBOLS.length * 50 + SIGNAL_POSITION_TOPOLOGY_KEY_BUDGET,
   Number(process.env.SOAK_DB_GROWTH_LIMIT || 0),
 )
+let DB_STABLE_GROWTH_LIMIT = resolveDbStableGrowthLimit()
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -673,10 +683,34 @@ function assertPositionQuantityIntegrity(position, executionProgress) {
   }
 }
 
+async function resolveExactSoakBasket() {
+  if (configuredSoakSymbols.length > 0 || SYMBOLS.length === SYMBOL_COUNT) {
+    DB_STABLE_GROWTH_LIMIT = resolveDbStableGrowthLimit()
+    return
+  }
+  const top = (await request(
+    `/api/exchange/bingx/top-symbols?sort=volume&limit=${SYMBOL_COUNT}&t=${Date.now()}`,
+    { timeoutMs: 30_000 },
+  )).json
+  const discovered = Array.isArray(top?.symbolList)
+    ? top.symbolList.map(String)
+    : Array.isArray(top?.symbols)
+      ? top.symbols.map((entry) => String(entry?.symbol || "")).filter(Boolean)
+      : []
+  if (discovered.length !== SYMBOL_COUNT || new Set(discovered).size !== SYMBOL_COUNT) {
+    throw new Error(
+      `Production soak discovery returned ${discovered.length}/${SYMBOL_COUNT} unique symbols`,
+    )
+  }
+  SYMBOLS = discovered
+  DB_STABLE_GROWTH_LIMIT = resolveDbStableGrowthLimit()
+}
+
 async function main() {
   if (SIGNAL_FOCUSED_SOAK && !VERIFY_SIGNAL_ENGINE) {
     throw new Error("SIGNAL_FOCUSED_SOAK requires VERIFY_SIGNAL_ENGINE=1")
   }
+  await resolveExactSoakBasket()
   const inventory = (await request("/api/connections")).json
   const availableConnections = Array.isArray(inventory?.connections) ? inventory.connections : []
   const selectedConnection = REQUESTED_CONNECTION_ID

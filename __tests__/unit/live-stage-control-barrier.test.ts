@@ -708,9 +708,10 @@ describe("executing Live-stage control barriers", () => {
       blockCount: 2,
       blockBaseQuantity: 1,
       blockConfirmedAddQuantity: 0,
-      blockTargetAddQuantity: 1,
-      blockTargetQuantity: 2,
-      addQty: 1,
+      blockTargetAddQuantity: 1.25,
+      blockTargetQuantity: 2.25,
+      addQty: 1.25,
+      blockIncrementSteps: 2,
     })
   })
 

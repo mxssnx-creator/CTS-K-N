@@ -5,6 +5,8 @@
 
 import { initRedis, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 interface SetEvaluationMetrics {
   setId: string
@@ -46,7 +48,7 @@ export class PresetSetEvaluator {
       const client = getRedisClient()
       console.log("[v0] Starting hourly Set evaluation...")
 
-      const setIds = await client.smembers("preset_configuration_sets:active")
+      const setIds = await scanRedisSetMembers(client, "preset_configuration_sets:active", { count: 250 })
       let evaluated = 0
 
       for (const setId of setIds) {
@@ -72,15 +74,11 @@ export class PresetSetEvaluator {
     const client = getRedisClient()
 
     // Get pseudo positions for this set's indication type
-    const positionIds = await client.smembers(`pseudo_positions:set:${setId}`)
-    const positions: any[] = []
-
-    for (const posId of positionIds) {
+    const positionIds = await scanRedisSetMembers(client, `pseudo_positions:set:${setId}`, { count: 250 })
+    const positions = (await mapWithConcurrency(positionIds, 32, async (posId) => {
       const pos = await getSettings(`pseudo_position:${posId}`)
-      if (pos && pos.indication_type === set.indication_type) {
-        positions.push(pos)
-      }
-    }
+      return pos && pos.indication_type === set.indication_type ? pos : null
+    })).filter(Boolean) as any[]
 
     // Sort by created_at DESC
     positions.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())

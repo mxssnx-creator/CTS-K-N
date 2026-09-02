@@ -361,14 +361,19 @@ describe("Direct-Trade independent historical coordination", () => {
       activityVolumeRatio: 0,
       maxHoldMinutes: 20,
       positionCostPercent: 0.1,
-      blockRange: [3, 3],
+        blockRange: [3, 3],
+        blockIncrementSteps: 4,
       minProfitFactor: 0.8,
       maxDrawdownTimeMin: 60,
     })
 
     expect(sets.map((set) => set.takeProfitPositionCostRatio)).toEqual([4, 5])
     expect(sets.map((set) => set.takeprofit)).toEqual([0.4, 0.5])
-    expect(sets.every((set) => set.blockVolumeRatio === 1.5 && set.blockCount === 3)).toBe(true)
+    expect(sets.every((set) =>
+      set.blockVolumeRatio === 1.5
+      && set.blockIncrementSteps === 4
+      && set.blockCount === 3,
+    )).toBe(true)
     expect(new Set(sets.map((set) => set.setKey)).size).toBe(2)
   })
 
@@ -391,7 +396,8 @@ describe("Direct-Trade independent historical coordination", () => {
       activityVolumeRatio: 0,
       maxHoldMinutes: 20,
       minProfitFactor: 0.8,
-      blockProfitFactorRatio: 0.8,
+      blockProfitFactorRatio: 1.1,
+      blockIncrementSteps: 3,
       minRecentProfitFactor: 0.8,
       recentPositionWindow: 3,
       minRecentPositions: 3,
@@ -403,9 +409,10 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(withBlock.blockEvaluations.map((entry) => entry.blockCount)).toEqual([1, 2, 3])
     expect(new Set(withBlock.blockEvaluations.map((entry) => entry.blockSetKey)).size).toBe(3)
     expect(withBlock.blockEvaluations.every((entry) => entry.blockSetKey.endsWith(`#block:${entry.blockCount}`))).toBe(true)
-    expect(withBlock.blockEvaluations.map((entry) => entry.blockVolumeIncrementRatio)).toEqual([0.5, 1, 1.5])
-    expect(withBlock.blockEvaluations.map((entry) => entry.blockCalculatedVolumeMultiplier)).toEqual([1.5, 2, 2.5])
-    expect(withBlock.blockEvaluations.map((entry) => entry.blockConfiguredMinimumProfitFactor)).toEqual([1.008, 1.016, 1.024])
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockEffectiveIncrementStep)).toEqual([1, 2, 3])
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockVolumeIncrementRatio)).toEqual([0.5, 1.25, 2.375])
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockCalculatedVolumeMultiplier)).toEqual([1.5, 2.25, 3.375])
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockConfiguredMinimumProfitFactor)).toEqual([1.011, 1.0275, 1.0523])
     expect(withBlock.blockEvaluations.every((entry) => entry.blockProfitFactorWindow === 3)).toBe(true)
     expect(withBlock.blockCount).toBe(3)
     expect(withBlock.blockTotalPnl).not.toBeCloseTo(withBlock.totalPnl * 2.5, 3)

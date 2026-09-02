@@ -12,6 +12,7 @@
  */
 
 import { getAllConnections, getAssignedAndEnabledConnections, initRedis, getRedisClient } from "@/lib/redis-db"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 interface VerificationReport {
   timestamp: string
@@ -142,7 +143,7 @@ export async function verifyEngineSystem(): Promise<VerificationReport> {
     }
     
     // Check for market data keys
-    const marketDataKeys = await client.keys("market_data:*:candles")
+    const marketDataKeys = await scanRedisKeys(client, "market_data:*:candles", { count: 250 })
     const validSymbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT", "LITUSDT", "THETAUSDT", "AVAXUSDT", "MATICUSDT", "SOLUSDT", "UNIUSDT", "APTUSDT", "ARBUSDT"]
     
     marketDataCheck.totalSymbols = validSymbols.length
@@ -175,12 +176,12 @@ export async function verifyEngineSystem(): Promise<VerificationReport> {
     }
     
     // Check for prehistoric indications (should exist after first run)
-    const prehistoricKeys = await client.keys("prehistoric:*:data")
+    const prehistoricKeys = await scanRedisKeys(client, "prehistoric:*:data", { count: 250 })
     indicationCheck.prehistoricPhaseComplete = prehistoricKeys.length > 0
     indicationCheck.prehistoricIndications = prehistoricKeys.length
     
     // Check for realtime indications
-    const realtimeKeys = await client.keys("indication:*:realtime")
+    const realtimeKeys = await scanRedisKeys(client, "indication:*:realtime", { count: 250 })
     indicationCheck.realtimeIndications = realtimeKeys.length
     
     if (!indicationCheck.prehistoricPhaseComplete) {

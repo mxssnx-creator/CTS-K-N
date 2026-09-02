@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
-import { scanRedisKeys } from "@/lib/redis-scan"
+import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -174,9 +174,11 @@ async function getRealIndications(connectionId: string): Promise<Indication[]> {
     if (!client) return []
 
     // ── Primary path: canonical exhaustive per-symbol snapshots ─────────────
-    const indexedSymbols = (
-      await client.smembers(`indications_snapshot:index:${connectionId}`).catch(() => [])
-    ) as string[]
+    const indexedSymbols = await scanRedisSetMembers(
+      client,
+      `indications_snapshot:index:${connectionId}`,
+      { count: 250 },
+    ).catch(() => [])
     let snapshotKeys = [...new Set(indexedSymbols.map((symbol) =>
       `indications_snapshot:${connectionId}:${String(symbol).trim().toUpperCase()}`,
     ))]

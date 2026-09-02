@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { buildProgressionScope } from "@/lib/progression-scope"
+import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -48,10 +49,10 @@ export async function GET(request: NextRequest) {
 
     // Also scan for any indication/strategy/market_data keys for this connection
     const [indKeys, stratKeys, mktKeys, posKeys] = await Promise.all([
-      client.keys(`indications:${id}:*`).catch(() => [] as string[]),
-      client.keys(`strategies:${id}:*`).catch(() => [] as string[]),
-      client.keys(`market_data:${id}:*`).catch(() => [] as string[]),
-      client.smembers(`pseudo_positions:${id}`).catch(() => [] as string[]),
+      scanRedisKeys(client, `indications:${id}:*`, { count: 250 }).catch(() => [] as string[]),
+      scanRedisKeys(client, `strategies:${id}:*`, { count: 250 }).catch(() => [] as string[]),
+      scanRedisKeys(client, `market_data:${id}:*`, { count: 250 }).catch(() => [] as string[]),
+      scanRedisSetMembers(client, `pseudo_positions:${id}`, { count: 250, limit: 20 }).catch(() => [] as string[]),
     ])
 
     // Read indication type counts

@@ -1,4 +1,5 @@
 import { RedisClientLike, getClient, getObservedRedisRequestsPerSecond } from './redis-db'
+import { iterateRedisKeys } from './redis-scan'
 
 export interface RedisHealthStatus {
   status: 'healthy' | 'degraded' | 'unhealthy'
@@ -59,12 +60,13 @@ export class RedisProcedures {
     largeKeys: number
     expired: number
   }> {
-    const keys = await this.client.keys('*')
     const prefixes: Record<string, number> = {}
     let largeKeys = 0
     let expired = 0
+    let totalKeys = 0
 
-    for (const key of keys) {
+    for await (const key of iterateRedisKeys(this.client, '*')) {
+      totalKeys++
       const prefix = key.split(':')[0]
       prefixes[prefix] = (prefixes[prefix] || 0) + 1
 
@@ -75,7 +77,7 @@ export class RedisProcedures {
       if (ttl === -2) expired++
     }
 
-    return { totalKeys: keys.length, prefixes, largeKeys, expired }
+    return { totalKeys, prefixes, largeKeys, expired }
   }
 
   async getStats(): Promise<{
@@ -95,13 +97,16 @@ export class RedisProcedures {
     writeSpeed: number
   }> {
     // Simple benchmark
-    const keys = await this.client.keys('*')
+    const sampleKeys: string[] = []
+    for await (const key of iterateRedisKeys(this.client, '*', { count: 50, limit: 50 })) {
+      sampleKeys.push(key)
+    }
     const start = Date.now()
-    for (let i = 0; i < Math.min(50, keys.length); i++) {
-      await this.client.get(keys[i]).catch(() => null)
+    for (const key of sampleKeys) {
+      await this.client.get(key).catch(() => null)
     }
     const readTime = Date.now() - start
-    const readSpeed = keys.length > 0 ? (Math.min(50, keys.length) / (readTime / 1000)) : 0
+    const readSpeed = sampleKeys.length > 0 ? (sampleKeys.length / (readTime / 1000)) : 0
 
     const writeStart = Date.now()
     for (let i = 0; i < 50; i++) {
@@ -133,9 +138,8 @@ export class RedisProcedures {
   }
 
   async backup(): Promise<string> {
-    const keys = await this.client.keys('*')
     const data: Record<string, string> = {}
-    for (const key of keys) {
+    for await (const key of iterateRedisKeys(this.client, '*')) {
       const value = await this.client.get(key)
       if (value !== null) data[key] = value
     }

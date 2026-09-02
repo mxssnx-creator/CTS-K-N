@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getAllConnections, getRedisClient } from "@/lib/redis-db"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export async function GET() {
@@ -8,8 +9,6 @@ export async function GET() {
     const client = getRedisClient()
 
     // Get strategies from Redis keys: strategies:{connectionId}:{symbol}
-    const strategyKeys = await client.keys("strategies:*")
-    
     const strategyStats = {
       base: { count: 0, winRate: 0, drawdown: 0, drawdownHours: 0, profitFactor250: 0, profitFactor50: 0, strategies: [] as any[] },
       main: { count: 0, winRate: 0, drawdown: 0, drawdownHours: 0, profitFactor250: 0, profitFactor50: 0, strategies: [] as any[] },
@@ -18,7 +17,7 @@ export async function GET() {
     }
 
     // Fetch all strategies
-    for (const key of strategyKeys) {
+    for await (const key of iterateRedisKeys(client, "strategies:*", { count: 250 })) {
       const strategy = await client.get(key)
       if (!strategy) continue
 

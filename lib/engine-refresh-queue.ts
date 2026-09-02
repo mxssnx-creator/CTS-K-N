@@ -1,5 +1,6 @@
 import { publishEngineEvent } from "./engine-event-bus"
 import { getRedisBackend, getRedisClient, getSettings, setSettings } from "./redis-db"
+import { scanRedisKeys } from "./redis-scan"
 
 export const ENGINE_REFRESH_REQUEST_PREFIX = "engine_coordinator:refresh_requested:"
 
@@ -26,8 +27,11 @@ async function recoverLegacyRefreshRequestConnectionIds(client: any): Promise<st
   if (legacyRefreshIndexRecoveryComplete) return []
   if (legacyRefreshIndexRecoveryInFlight) return legacyRefreshIndexRecoveryInFlight
 
-  const recovery = client
-    .keys(`settings:${ENGINE_REFRESH_REQUEST_PREFIX}*`)
+  const recovery = scanRedisKeys(
+    client,
+    `settings:${ENGINE_REFRESH_REQUEST_PREFIX}*`,
+    { count: 250, limit: 5_000 },
+  )
     .catch(() => [] as string[])
     .then((keys: string[]) => keys
       .filter((redisKey: string) => !redisKey.endsWith(ENGINE_REFRESH_REQUEST_INDEX))

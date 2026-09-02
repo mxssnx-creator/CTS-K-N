@@ -127,7 +127,7 @@ describe("Direct-Trade API state and processor lease", () => {
     }
   })
 
-  test("every Direct-Trade state update accepts the shared 32-symbol maximum", async () => {
+  test("every Direct-Trade state update accepts the shared high-scale capacity", async () => {
     const [{ POST }, { getRedisClient }] = await Promise.all([
       import("@/app/api/trade-engine/direct-trade/route"),
       import("@/lib/redis-db"),
@@ -136,11 +136,11 @@ describe("Direct-Trade API state and processor lease", () => {
     await redis.del(...DIRECT_KEYS)
 
     try {
-      const started = await POST(post({ action: "start", symbolCount: 99 }) as any)
-      expect((await started.json()).state.symbolCount).toBe(32)
+      const started = await POST(post({ action: "start", symbolCount: 128.9 }) as any)
+      expect((await started.json()).state.symbolCount).toBe(128)
 
-      const updated = await POST(post({ action: "update-config", symbolCount: 32.9 }) as any)
-      expect((await updated.json()).state.symbolCount).toBe(32)
+      const updated = await POST(post({ action: "update-config", symbolCount: 9_999 }) as any)
+      expect((await updated.json()).state.symbolCount).toBe(1_000)
 
       const minimum = await POST(post({ action: "update-config", symbolCount: 0 }) as any)
       expect((await minimum.json()).state.symbolCount).toBe(4)

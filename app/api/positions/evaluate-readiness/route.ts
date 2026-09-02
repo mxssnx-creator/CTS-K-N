@@ -3,6 +3,7 @@ import { getConnection, getMarketData, getRedisClient, initRedis } from "@/lib/r
 import { marketDataKey } from "@/lib/market-data-keys"
 import { normalizeMarketSymbol, normalizeMarketType } from "@/lib/market-types"
 import { normalizeForexSymbol } from "@/lib/forex-market"
+import { iterateRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -39,11 +40,10 @@ export async function GET() {
     const client = getRedisClient()
 
     // Get all pseudo positions
-    const positionKeys = await client.keys("position:*")
     const evaluatedPositions: EvaluatedPosition[] = []
     const connectionCache = new Map<string, Record<string, any> | null>()
 
-    for (const key of positionKeys) {
+    for await (const key of iterateRedisKeys(client, "position:*", { count: 250 })) {
       try {
         const posData = await client.hgetall(key)
         if (!posData || Object.keys(posData).length === 0) continue

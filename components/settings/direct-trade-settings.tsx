@@ -17,6 +17,7 @@ import {
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
   DIRECT_TRADE_MAX_SYMBOLS,
+  DIRECT_TRADE_MIN_SYMBOLS,
   DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
   DIRECT_TRADE_VOLUME_FACTOR_MAX,
   DIRECT_TRADE_VOLUME_FACTOR_MIN,
@@ -37,6 +38,7 @@ import {
   type DcaProfile,
   type DcaTakeProfitMode,
 } from "@/lib/dca-strategy"
+import { HIGH_SCALE_SYMBOL_STRESS_TARGET } from "@/lib/symbol-capacity"
 
 type DirectTradeState = {
   enabled: boolean
@@ -65,6 +67,7 @@ type DirectTradeState = {
   trailingMinTakeProfitRatio: number
   blockRange: [number, number]
   blockVolumeRatio: number
+  blockIncrementSteps: number
   blockProfitFactorRatio: number
   maxTotalPositions: number
   maxPositionsPerSymbol: number
@@ -109,7 +112,8 @@ const DEFAULT_STATE: DirectTradeState = {
   trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
-  blockProfitFactorRatio: 0.8,
+  blockIncrementSteps: 2,
+  blockProfitFactorRatio: 1.1,
   maxTotalPositions: DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
   maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
@@ -361,7 +365,20 @@ export function DirectTradeSettings() {
             <Range label="Processing interval" value={state.processingIntervalMs} min={100} max={2_000} step={20} suffix=" ms" onChange={(value) => update("processingIntervalMs", value)} />
             <Range label="Recalculate every" value={recalcMinutes} min={5} max={1_440} step={5} suffix=" min" onChange={(value) => update("recalcIntervalMs", value * 60_000)} />
             <Range label="Historical range" value={state.historyHours} min={6} max={90} step={1} suffix=" h" onChange={(value) => update("historyHours", value)} />
-            <Range label="Symbols" value={state.symbolCount} min={1} max={DIRECT_TRADE_MAX_SYMBOLS} step={1} onChange={(value) => update("symbolCount", value)} />
+            <Range label="Symbols" value={state.symbolCount} min={DIRECT_TRADE_MIN_SYMBOLS} max={DIRECT_TRADE_MAX_SYMBOLS} step={1} onChange={(value) => update("symbolCount", value)} />
+            <div className="flex flex-wrap items-end gap-1">
+              {[32, HIGH_SCALE_SYMBOL_STRESS_TARGET, DIRECT_TRADE_MAX_SYMBOLS].map((count) => (
+                <Button
+                  key={count}
+                  type="button"
+                  size="sm"
+                  variant={state.symbolCount === count ? "secondary" : "outline"}
+                  onClick={() => update("symbolCount", count)}
+                >
+                  {count === DIRECT_TRADE_MAX_SYMBOLS ? "All symbols" : `${count} symbols`}
+                </Button>
+              ))}
+            </div>
             <Range label="Global open-position cap" value={state.maxTotalPositions} min={1} max={300} step={1} onChange={(value) => update("maxTotalPositions", value)} />
             <Range label="Max positions / symbol" value={state.maxPositionsPerSymbol} min={1} max={300} step={1} onChange={(value) => update("maxPositionsPerSymbol", value)} />
             <Range label="Max positions / direction" value={state.maxPositionsPerDirection} min={1} max={300} step={1} onChange={(value) => update("maxPositionsPerDirection", value)} />
@@ -446,6 +463,7 @@ export function DirectTradeSettings() {
             <Range label="Block minimum" value={state.blockRange[0]} min={0} max={state.blockRange[1]} step={1} onChange={(value) => update("blockRange", [value, state.blockRange[1]])} />
             <Range label="Block maximum" value={state.blockRange[1]} min={state.blockRange[0]} max={120} step={1} onChange={(value) => update("blockRange", [state.blockRange[0], value])} />
             <Range label="Block increase ratio / valid block" value={state.blockVolumeRatio} min={0.1} max={10} step={0.1} onChange={(value) => update("blockVolumeRatio", value)} />
+            <Range label="Block compound increment steps" value={state.blockIncrementSteps} min={1} max={5} step={1} onChange={(value) => update("blockIncrementSteps", Math.round(value))} />
             <Range label="Block minimum-PF factor" value={state.blockProfitFactorRatio} min={0.2} max={5} step={0.1} suffix="×" onChange={(value) => update("blockProfitFactorRatio", value)} />
             <div className="flex items-center justify-between rounded-md border p-3"><div><Label>Trailing protection</Label><p className="text-xs text-muted-foreground">Fixed, Auto and Combination remain independent lanes.</p></div><Switch checked={state.trailingEnabled} onCheckedChange={(value) => update("trailingEnabled", value)} /></div>
           </div></section>

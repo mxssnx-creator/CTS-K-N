@@ -402,6 +402,7 @@ interface Settings {
   presetBlockEnabled?: boolean
   presetBlockVolumeRatio?: number
   presetBlockProfitFactorRatio?: number
+  presetBlockIncrementSteps?: number
   presetBlockMaxStack?: number
   presetBlockPauseCountRatio?: number
   presetBlockActiveRealEnabled?: boolean
@@ -409,6 +410,7 @@ interface Settings {
   variantBlockEnabled?: boolean
   blockVolumeRatio?: number
   blockProfitFactorRatio?: number
+  blockIncrementSteps?: number
   blockMaxStack?: number
   blockPauseCountRatio?: number
   blockActiveRealEnabled?: boolean
@@ -416,6 +418,7 @@ interface Settings {
   blockRowLiveEnabled?: boolean
   blockRowLiveVolumeRatio?: number
   blockRowLiveProfitFactorRatio?: number
+  blockRowLiveIncrementSteps?: number
   blockRowLiveMaxStack?: number
   blockRowLivePauseCountRatio?: number
   blockRowRealEvalPosCount?: number
@@ -715,21 +718,24 @@ const initialSettings: Settings = {
   presetMaxCandlesPerRun: 6000,
   presetBlockEnabled: true,
   presetBlockVolumeRatio: 1,
-  presetBlockProfitFactorRatio: 0.8,
+  presetBlockProfitFactorRatio: 1.1,
+  presetBlockIncrementSteps: 2,
   presetBlockMaxStack: 12,
   presetBlockPauseCountRatio: 1,
   presetBlockActiveRealEnabled: true,
   presetBlockActiveLiveEnabled: true,
   variantBlockEnabled: true,
   blockVolumeRatio: 1,
-  blockProfitFactorRatio: 0.8,
+  blockProfitFactorRatio: 1.1,
+  blockIncrementSteps: 2,
   blockMaxStack: 12,
   blockPauseCountRatio: 1,
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
   blockRowLiveEnabled: true,
   blockRowLiveVolumeRatio: 1,
-  blockRowLiveProfitFactorRatio: 0.8,
+  blockRowLiveProfitFactorRatio: 1.1,
+  blockRowLiveIncrementSteps: 2,
   blockRowLiveMaxStack: 12,
   blockRowLivePauseCountRatio: 1,
   blockRowRealEvalPosCount: 20,
@@ -1035,14 +1041,18 @@ export default function SettingsPage() {
     presetMaxCandlesPerRun: initialSettings.presetMaxCandlesPerRun ?? 6000,
     presetBlockEnabled: initialSettings.presetBlockEnabled ?? true,
     presetBlockVolumeRatio: initialSettings.presetBlockVolumeRatio ?? initialSettings.blockVolumeRatio ?? 1,
-    presetBlockProfitFactorRatio: initialSettings.presetBlockProfitFactorRatio ?? initialSettings.blockProfitFactorRatio ?? 0.8,
+    presetBlockProfitFactorRatio: initialSettings.presetBlockProfitFactorRatio ?? initialSettings.blockProfitFactorRatio ?? 1.1,
+    presetBlockIncrementSteps: initialSettings.presetBlockIncrementSteps ?? initialSettings.blockIncrementSteps ?? 2,
     presetBlockMaxStack: initialSettings.presetBlockMaxStack ?? initialSettings.blockMaxStack ?? 12,
     presetBlockPauseCountRatio: initialSettings.presetBlockPauseCountRatio ?? initialSettings.blockPauseCountRatio ?? 1,
     presetBlockActiveRealEnabled: initialSettings.presetBlockActiveRealEnabled ?? initialSettings.blockActiveRealEnabled ?? true,
     presetBlockActiveLiveEnabled: initialSettings.presetBlockActiveLiveEnabled ?? initialSettings.blockActiveLiveEnabled ?? true,
     variantBlockEnabled: initialSettings.variantBlockEnabled ?? initialSettings.presetBlockEnabled ?? true,
     blockVolumeRatio: initialSettings.blockVolumeRatio ?? initialSettings.presetBlockVolumeRatio ?? 1,
-    blockProfitFactorRatio: initialSettings.blockProfitFactorRatio ?? initialSettings.presetBlockProfitFactorRatio ?? 0.8,
+    blockProfitFactorRatio: initialSettings.blockProfitFactorRatio ?? initialSettings.presetBlockProfitFactorRatio ?? 1.1,
+    blockIncrementSteps: initialSettings.blockIncrementSteps ?? initialSettings.presetBlockIncrementSteps ?? 2,
+    blockRowLiveProfitFactorRatio: initialSettings.blockRowLiveProfitFactorRatio ?? 1.1,
+    blockRowLiveIncrementSteps: initialSettings.blockRowLiveIncrementSteps ?? 2,
     blockMaxStack: initialSettings.blockMaxStack ?? initialSettings.presetBlockMaxStack ?? 12,
     blockPauseCountRatio: initialSettings.blockPauseCountRatio ?? initialSettings.presetBlockPauseCountRatio ?? 1,
     blockActiveRealEnabled: initialSettings.blockActiveRealEnabled ?? initialSettings.presetBlockActiveRealEnabled ?? true,

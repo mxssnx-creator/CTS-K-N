@@ -17,16 +17,19 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
 import {
+  clampDirectTradeSymbolCount,
   clampDirectTradeVolumeFactor,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   DIRECT_TRADE_EFFECTIVE_VOLUME_RATIO,
   DIRECT_TRADE_MAX_SYMBOLS,
+  DIRECT_TRADE_MIN_SYMBOLS,
   DIRECT_TRADE_VOLUME_FACTOR_DEFAULT,
   DIRECT_TRADE_VOLUME_FACTOR_MAX,
   DIRECT_TRADE_VOLUME_FACTOR_MIN,
 } from "@/lib/direct-trade-limits"
 import { mergePendingDirectTradeConfig } from "@/lib/direct-trade-settings-sync"
+import { HIGH_SCALE_SYMBOL_STRESS_TARGET } from "@/lib/symbol-capacity"
 import type {
   DirectTradeOverview48h,
   DirectTradeOverviewCategory,
@@ -98,6 +101,7 @@ interface DirectTradeState {
   trailingMinTakeProfitRatio: number
   blockRange: [number, number]
   blockVolumeRatio: number
+  blockIncrementSteps: number
   blockProfitFactorRatio: number
   maxPositionsPerSymbol: number
   maxPositionsPerDirection: number
@@ -178,7 +182,8 @@ const DEFAULT_STATE: DirectTradeState = {
   trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
-  blockProfitFactorRatio: 0.8,
+  blockIncrementSteps: 2,
+  blockProfitFactorRatio: 1.1,
   maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   keepEnabledPosCount: 12,
@@ -430,6 +435,7 @@ export function DirectTradeSection() {
           trailingMinTakeProfitRatio: localTrailingMinTakeProfitRatio,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
           blockVolumeRatio: state.blockVolumeRatio,
+          blockIncrementSteps: state.blockIncrementSteps,
           blockProfitFactorRatio: state.blockProfitFactorRatio,
           maxPositionsPerSymbol: localMaxPosPerSymbol,
           maxPositionsPerDirection: localMaxPosPerDir,
@@ -506,6 +512,7 @@ export function DirectTradeSection() {
           trailingMinTakeProfitRatio: localTrailingMinTakeProfitRatio,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
           blockVolumeRatio: state.blockVolumeRatio,
+          blockIncrementSteps: state.blockIncrementSteps,
           blockProfitFactorRatio: state.blockProfitFactorRatio,
           minProfitFactor: localMinPF,
           minRecentProfitFactor: localMinRecentPF,
@@ -872,7 +879,7 @@ export function DirectTradeSection() {
                 </div>
                 <Slider
                   value={[localSymbolCount]}
-                  min={1}
+                  min={DIRECT_TRADE_MIN_SYMBOLS}
                   max={DIRECT_TRADE_MAX_SYMBOLS}
                   step={1}
                   onValueChange={([v]) => {
@@ -880,6 +887,36 @@ export function DirectTradeSection() {
                     saveConfig({ symbolCount: v })
                   }}
                 />
+                <input
+                  aria-label="Direct-Trade symbol count"
+                  className="h-7 w-full rounded border bg-background px-2 font-mono text-xs"
+                  type="number"
+                  min={DIRECT_TRADE_MIN_SYMBOLS}
+                  max={DIRECT_TRADE_MAX_SYMBOLS}
+                  value={localSymbolCount}
+                  onChange={(event) => {
+                    const count = clampDirectTradeSymbolCount(event.target.value, localSymbolCount)
+                    setLocalSymbolCount(count)
+                    saveConfig({ symbolCount: count })
+                  }}
+                />
+                <div className="flex flex-wrap gap-1">
+                  {[32, HIGH_SCALE_SYMBOL_STRESS_TARGET, DIRECT_TRADE_MAX_SYMBOLS].map((count) => (
+                    <Button
+                      key={count}
+                      type="button"
+                      size="sm"
+                      variant={localSymbolCount === count ? "secondary" : "outline"}
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => {
+                        setLocalSymbolCount(count)
+                        saveConfig({ symbolCount: count })
+                      }}
+                    >
+                      {count === DIRECT_TRADE_MAX_SYMBOLS ? "All" : count}
+                    </Button>
+                  ))}
+                </div>
               </div>
 
               {/* Symbol Order */}

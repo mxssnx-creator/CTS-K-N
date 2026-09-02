@@ -33,6 +33,7 @@ export {
 } from "./redis-migrations"
 
 import { getRedisClient, initRedis as initRedisDb, getAllConnections as redisGetAll, getSettings as redisGetSettings, setSettings as redisSetSettings, getConnection as redisGetConnection, getMarketData as redisGetMarketData, saveMarketData as redisSetMarketData } from "./redis-db"
+import { scanRedisKeys } from "./redis-scan"
 import { nanoid } from "nanoid"
 
 // These former SQL event tables are intentionally aggregate-only. Routing
@@ -132,7 +133,7 @@ async function routeQuery(queryText: string, params: any[] = []): Promise<{ rows
       if (upper.includes("WHERE") && params.length > 0) {
         // Get indications for a specific connection
         const connId = params[0]
-        const keys = await client.keys(`indications:${connId}:*`)
+        const keys = await scanRedisKeys(client, `indications:${connId}:*`, { count: 250 })
         const items: any[] = []
         for (const key of keys.slice(0, 100)) {
           const data = await client.get(key)

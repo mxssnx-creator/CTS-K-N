@@ -8,7 +8,11 @@ export interface BlockLegState {
   quantity: number
   baseVolumeMultiplier: number
   volumeRatio: number
-  /** Exact count × operator ratio used by add quantity and Block PF. */
+  /** Number of independent compounded increments admitted for this lane. */
+  incrementSteps: number
+  /** Effective compounded step for this exact count, capped by incrementSteps. */
+  effectiveIncrementStep: number
+  /** Compounded add-on ratio used by add quantity and Block PF. */
   volumeIncrementRatio: number
   volumeMultiplier: number
   baseQuantity?: number
@@ -31,6 +35,56 @@ export interface BlockLegState {
 /** Canonical independent Block count range used by Direct-Trade and stages. */
 export const BLOCK_COUNT_MIN = 1
 export const BLOCK_COUNT_MAX = 12
+export const BLOCK_INCREMENT_STEPS_MIN = 1
+export const BLOCK_INCREMENT_STEPS_MAX = 5
+export const BLOCK_INCREMENT_STEPS_DEFAULT = 2
+export const BLOCK_PROFIT_FACTOR_RATIO_DEFAULT = 1.1
+export const BLOCK_PROFIT_FACTOR_RATIO_LEGACY_DEFAULT = 0.8
+
+export function normalizeBlockIncrementSteps(
+  raw: unknown,
+  fallback = BLOCK_INCREMENT_STEPS_DEFAULT,
+): number {
+  const parsed = Number(raw)
+  const fallbackParsed = Number(fallback)
+  const candidate = Number.isFinite(parsed)
+    ? parsed
+    : Number.isFinite(fallbackParsed)
+      ? fallbackParsed
+      : BLOCK_INCREMENT_STEPS_DEFAULT
+  return Math.max(
+    BLOCK_INCREMENT_STEPS_MIN,
+    Math.min(BLOCK_INCREMENT_STEPS_MAX, Math.floor(candidate)),
+  )
+}
+
+export function normalizeBlockProfitFactorRatio(
+  raw: unknown,
+  fallback = BLOCK_PROFIT_FACTOR_RATIO_DEFAULT,
+): number {
+  if (raw === null || raw === undefined || (typeof raw === "string" && raw.trim() === "")) {
+    return normalizeBlockProfitFactorRatio(fallback, BLOCK_PROFIT_FACTOR_RATIO_DEFAULT)
+  }
+  const parsed = Number(raw)
+  const fallbackParsed = Number(fallback)
+  let candidate = Number.isFinite(parsed)
+    ? parsed
+    : Number.isFinite(fallbackParsed)
+      ? fallbackParsed
+      : BLOCK_PROFIT_FACTOR_RATIO_DEFAULT
+  if (Math.abs(candidate - BLOCK_PROFIT_FACTOR_RATIO_LEGACY_DEFAULT) < 1e-9) {
+    candidate = BLOCK_PROFIT_FACTOR_RATIO_DEFAULT
+  }
+  return Number(Math.max(0.2, Math.min(5, candidate)).toFixed(2))
+}
+
+export function calculateBlockEffectiveIncrementStep(
+  blockCount: number,
+  incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
+): number {
+  if (!Number.isFinite(blockCount) || blockCount <= 0) return 0
+  return Math.min(Math.floor(blockCount), normalizeBlockIncrementSteps(incrementSteps))
+}
 
 export function parseBlockCount(setKey: unknown): number | null {
   const match = String(setKey || "").match(/#block:(?:(?:active|set):)?(\d+)(?:$|[#:_-])/i)
@@ -47,18 +101,21 @@ function positive(raw: unknown, fallback: number): number {
 export function calculateBlockVolumeMultiplier(
   blockCount: number,
   volumeRatio: number,
+  incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
 ): number {
   if (![blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
-  return 1 + Math.floor(blockCount) * volumeRatio
+  const effectiveStep = calculateBlockEffectiveIncrementStep(blockCount, incrementSteps)
+  return Number(((1 + volumeRatio) ** effectiveStep).toFixed(12))
 }
 
 /** Actual add-on ratio relative to the currently confirmed position size. */
 export function calculateBlockVolumeIncrementRatio(
   blockCount: number,
   volumeRatio: number,
+  incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
 ): number {
   if (![blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
-  return Math.floor(blockCount) * volumeRatio
+  return Number((calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps) - 1).toFixed(12))
 }
 
 /**
@@ -94,8 +151,8 @@ export function resolveMirroredActiveBlockCount(input: {
  *
  *   1 + ((default - 1) × Block PF ratio × volume increment)
  *
- * Thus a default 1.10 at ratio 0.8 and Count-1 volume increment 1 requires
- * 1.08, while Count 2 requires 1.16. Multiplying the complete coordinate used
+ * Thus a default 1.10 at ratio 1.1 and Count-1 volume increment 1 requires
+ * 1.11. Multiplying the complete coordinate used
  * to push small counts below neutral and mixed two incompatible PF semantics.
  */
 export function calculateBlockMinimumProfitFactor(
@@ -105,7 +162,7 @@ export function calculateBlockMinimumProfitFactor(
 ): number {
   if (![defaultMinimumProfitFactor, blockProfitFactorRatio, volumeIncrementFactor]
     .every((value) => Number.isFinite(value) && value > 0)) return 0
-  const boundedRatio = Math.max(0.2, Math.min(5, blockProfitFactorRatio))
+  const boundedRatio = normalizeBlockProfitFactorRatio(blockProfitFactorRatio)
   const positiveDistance = Math.max(0, defaultMinimumProfitFactor - 1)
   return 1 + positiveDistance * boundedRatio * volumeIncrementFactor
 }
@@ -227,15 +284,16 @@ export function calculateBlockAddQuantity(
   positionBaseQuantity: number,
   blockCount: number,
   volumeRatio: number,
+  incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
 ): number {
   if (![positionBaseQuantity, blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
-  return positionBaseQuantity * calculateBlockVolumeIncrementRatio(blockCount, volumeRatio)
+  return positionBaseQuantity * calculateBlockVolumeIncrementRatio(blockCount, volumeRatio, incrementSteps)
 }
 
 /**
  * Absolute position target for one Block count.
  *
- * Example: base=1, count=3, ratio=1.5 => 1 + (1 × 3 × 1.5) = 5.5.
+ * Example: base=1, count=3, ratio=1, steps=3 => 1 × 2³ = 8.
  * Other adjustment lanes (for example DCA) remain independent and are not
  * included in this Block-specific target.
  */
@@ -243,11 +301,13 @@ export function calculateBlockTargetQuantity(
   positionBaseQuantity: number,
   blockCount: number,
   volumeRatio: number,
+  incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
 ): number {
   const targetAdditionalQuantity = calculateBlockAddQuantity(
     positionBaseQuantity,
     blockCount,
     volumeRatio,
+    incrementSteps,
   )
   return targetAdditionalQuantity > 0
     ? positionBaseQuantity + targetAdditionalQuantity
@@ -279,11 +339,13 @@ export function calculateBlockRemainingAddQuantity(
   blockCount: number,
   volumeRatio: number,
   confirmedBlockAddQuantity: number,
+  incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
 ): number {
   const targetAdditionalQuantity = calculateBlockAddQuantity(
     positionBaseQuantity,
     blockCount,
     volumeRatio,
+    incrementSteps,
   )
   if (targetAdditionalQuantity <= 0) return 0
   const confirmed = Number(confirmedBlockAddQuantity)
@@ -318,6 +380,8 @@ export function buildBlockLegState(
   // at this boundary so restored/stale Sets cannot scale the base twice.
   const baseVolumeMultiplier = 1
   const volumeRatio = positive(source?.blockVolumeRatio, 1)
+  const incrementSteps = normalizeBlockIncrementSteps(source?.blockIncrementSteps)
+  const effectiveIncrementStep = calculateBlockEffectiveIncrementStep(blockCount, incrementSteps)
   return {
     setKey: String(source?.setKey || `block:${blockCount}`),
     blockCount,
@@ -328,11 +392,13 @@ export function buildBlockLegState(
     quantity: Math.max(0, Number(quantity) || 0),
     baseVolumeMultiplier,
     volumeRatio,
+    incrementSteps,
+    effectiveIncrementStep,
     volumeIncrementRatio: positive(
       source?.blockVolumeIncrementRatio,
-      calculateBlockVolumeIncrementRatio(blockCount, volumeRatio),
+      calculateBlockVolumeIncrementRatio(blockCount, volumeRatio, incrementSteps),
     ),
-    volumeMultiplier: calculateBlockVolumeMultiplier(blockCount, volumeRatio),
+    volumeMultiplier: calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps),
     ...(Number(exact?.baseQuantity) >= 0 && { baseQuantity: Number(exact?.baseQuantity) }),
     ...(Number(exact?.targetAdditionalQuantity) >= 0 && {
       targetAdditionalQuantity: Number(exact?.targetAdditionalQuantity),

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 /**
  * GET /api/settings/connections/[id]/statistics
@@ -51,7 +52,7 @@ export async function GET(
 
     // Get symbol statistics
     const symbolsKey = `symbols:${connectionId}`
-    const symbolsSet = await client.smembers(symbolsKey)
+    const symbolsSet = await scanRedisSetMembers(client, symbolsKey, { count: 250 })
     const symbols = [...new Set(symbolsSet.map(String).filter(Boolean))]
     const symbolStats: Array<Record<string, string | number>> = []
     const READ_BATCH_SIZE = 32

@@ -1,4 +1,5 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
+import { sameSymbolSet, summarizeSymbols } from "@/lib/symbol-capacity"
 // Diagnostics must never synchronously write to disk from the engine hot path.
 // An operator can enable this narrow timing trace while investigating a
 // production bootstrap; it writes only to stdout and stays completely off in
@@ -516,6 +517,7 @@ import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
 import { getStrategyMemoryCoordinationSnapshot } from "@/lib/strategy-memory-guard"
 import { withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 import {
   historicReplayNeedsCanonicalAdmission,
   historicReplayNeedsRealtimeWarmup,
@@ -1308,7 +1310,9 @@ export class TradeEngineManager {
       })
       assertStartupCurrent()
       if (loaded === 0) {
-        console.warn(`[v0] [Engine] No market data loaded for symbols: ${symbols.join(", ")}`)
+        console.warn(
+          `[v0] [Engine] No market data loaded for ${symbols.length} symbols: ${summarizeSymbols(symbols)}`,
+        )
       }
       __DBG(`START_after_market_load ${this.connectionId} loaded=${loaded}`)
 
@@ -1346,7 +1350,7 @@ export class TradeEngineManager {
             redisClient.hget(cacheScope.prehistoricKey, "symbol_selection_epoch"),
             redisClient.hget(cacheScope.prehistoricKey, "symbols_processed"),
             redisClient.hget(cacheScope.prehistoricKey, "symbols_total"),
-            redisClient.smembers(`${cacheScope.prehistoricKey}:symbols`).catch(() => []),
+            scanRedisSetMembers(redisClient, `${cacheScope.prehistoricKey}:symbols`, { count: 250 }).catch(() => []),
           ])
           const symbolsForCheck = await this.getSymbols()
           const currentSelection = await getCanonicalSymbolSelection(this.connectionId)
@@ -1919,7 +1923,7 @@ export class TradeEngineManager {
           client.hget(scope.prehistoricKey, "symbol_selection_epoch"),
           client.hget(scope.prehistoricKey, "symbols_processed"),
           client.hget(scope.prehistoricKey, "symbols_total"),
-          client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => []),
+          scanRedisSetMembers(client, `${scope.prehistoricKey}:symbols`, { count: 250 }).catch(() => []),
         ])
       const expected = symbols.map(String).sort()
       const persisted = (persistedSymbols || []).map(String).sort()
@@ -5453,14 +5457,10 @@ export class TradeEngineManager {
         // never truncate it behind the operator's back.
         if (Array.isArray(forceSymbols) && forceSymbols.length > 0) {
           const effectiveForceSymbols = withCanonicalForcedSymbols(forceSymbols)
-          const sortedForce = [...effectiveForceSymbols].sort()
-          const sortedCache = [...this._symbolsCache].sort()
-          // CRITICAL FIX: Use efficient array comparison instead of JSON.stringify
-          // which causes CPU overload when called frequently (every cycle).
-          // Direct array comparison is O(n) instead of O(n log n) serialization.
-          const arraysEqual = sortedForce.length === sortedCache.length &&
-                             sortedForce.every((v, i) => v === sortedCache[i])
-          if (!arraysEqual) {
+          // Membership, not ranking order, owns cache invalidation here. Use an
+          // O(n) Set comparison instead of sorting/serializing up to 1,000
+          // symbols on every cached hot-path check.
+          if (!sameSymbolSet(effectiveForceSymbols, this._symbolsCache)) {
             logRuntimeInfo(
               `engine:${this.connectionId}:force-symbol-change`,
               30_000,
@@ -5612,7 +5612,7 @@ export class TradeEngineManager {
               logRuntimeInfo(
                 `engine:${this.connectionId}:top-symbols`,
                 60_000,
-                `[v0] [getSymbols] ${this.connectionId}: selected top-${syms.length} by 1h volatility on ${exchange}: ${syms.join(", ")}`,
+                `[v0] [getSymbols] ${this.connectionId}: selected top-${syms.length} by 1h volatility on ${exchange}: ${summarizeSymbols(syms)}`,
               )
               return syms
             }

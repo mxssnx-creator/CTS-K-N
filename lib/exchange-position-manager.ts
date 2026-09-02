@@ -10,6 +10,8 @@ import { initRedis, getRedisClient, getSettings, getConnection, setSettings } fr
 import { VolumeCalculator } from "./volume-calculator"
 import { forexNotionalUsd } from "@/lib/forex-market"
 import { normalizeMarketType, type MarketType } from "@/lib/market-types"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { scanRedisSetMembers } from "@/lib/redis-scan"
 
 export interface ExchangePositionCreateParams {
   connectionId: string
@@ -429,17 +431,20 @@ export class ExchangePositionManager {
       const client = getRedisClient()
 
       // Get all positions for this connection+symbol from the last 24h
-      const allPosIds = await client.smembers(`exchange_positions:${connectionId}:${symbol}`)
+      const allPosIds = await scanRedisSetMembers(
+        client,
+        `exchange_positions:${connectionId}:${symbol}`,
+        { count: 250 },
+      )
       const periodStart = Date.now() - 24 * 60 * 60 * 1000
-      const positions: any[] = []
-
-      for (const posId of allPosIds) {
+      const loaded = await mapWithConcurrency(allPosIds, 32, async (posId) => {
         const pos = await getSettings(`exchange_position:${posId}`)
-        if (!pos) continue
-        if (pos.indication_type !== indicationType || pos.trade_mode !== tradeMode) continue
-        if (new Date(pos.opened_at).getTime() < periodStart) continue
-        positions.push(pos)
-      }
+        if (!pos) return null
+        if (pos.indication_type !== indicationType || pos.trade_mode !== tradeMode) return null
+        if (new Date(pos.opened_at).getTime() < periodStart) return null
+        return pos
+      })
+      const positions = loaded.filter(Boolean)
 
       if (positions.length === 0) return
 
@@ -557,20 +562,22 @@ export class ExchangePositionManager {
       await initRedis()
       const client = getRedisClient()
 
-      const openIds = await client.smembers(`exchange_positions:${this.connectionId}:open`)
-      const positions: any[] = []
-
-      for (const posId of openIds) {
+      const openIds = await scanRedisSetMembers(
+        client,
+        `exchange_positions:${this.connectionId}:open`,
+        { count: 250 },
+      )
+      const positions = (await mapWithConcurrency(openIds, 32, async (posId) => {
         const pos = await getSettings(`exchange_position:${posId}`)
-        if (!pos) continue
+        if (!pos) return null
 
-        if (filters?.symbol && pos.symbol !== filters.symbol) continue
-        if (filters?.side && pos.side !== filters.side) continue
-        if (filters?.tradeMode && pos.trade_mode !== filters.tradeMode) continue
-        if (filters?.indicationType && pos.indication_type !== filters.indicationType) continue
+        if (filters?.symbol && pos.symbol !== filters.symbol) return null
+        if (filters?.side && pos.side !== filters.side) return null
+        if (filters?.tradeMode && pos.trade_mode !== filters.tradeMode) return null
+        if (filters?.indicationType && pos.indication_type !== filters.indicationType) return null
 
-        positions.push(pos)
-      }
+        return pos
+      })).filter(Boolean)
 
       return positions.sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime())
     } catch (error) {
