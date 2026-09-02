@@ -71,6 +71,13 @@ an order:
 
     sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh
 
+If a deliberate `.cts-runtime/maintenance-stop` marker exists, the command
+stops before changing anything. Only after separately confirming that the
+runtime is authorized to start may an operator back up and clear that exact
+marker explicitly:
+
+    sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh --clear-maintenance
+
 After a later operator-controlled reboot, run the non-mutating contract check:
 
     sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh --verify-only

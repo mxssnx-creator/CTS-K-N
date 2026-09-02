@@ -177,6 +177,11 @@ sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh
 sudo bash /opt/cts-kn/scripts/ensure-server-autoboot.sh --verify-only
 ```
 
+An existing `.cts-runtime/maintenance-stop` marker makes reconciliation fail
+before mutation. Use `--clear-maintenance` only after a separate, explicit
+decision to resume the installed runtime; the marker is included in the
+verified backup before it is removed.
+
 This reconciliation preserves `/etc/cts-kn/production.env` and does not alter
 or print exchange credentials or live-order flags. Tailscale and NetBird must
 already be enrolled with durable device identities; systemd can restart their
