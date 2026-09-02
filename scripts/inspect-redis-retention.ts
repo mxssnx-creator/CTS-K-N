@@ -249,6 +249,19 @@ async function kiloSnapshotSource(limit: number): Promise<InventorySource | null
   }
 }
 
+let diagnosticClient: ReturnType<typeof getRedisClient> | null = null
+
+async function closeDiagnosticClient(): Promise<void> {
+  const client = diagnosticClient
+  diagnosticClient = null
+  if (!client || typeof client.close !== "function") return
+  try {
+    await client.close()
+  } catch {
+    // A read-only diagnostic must not mask its report with shutdown noise.
+  }
+}
+
 function volumeIndexLength(entry: InventoryEntry): number | null {
   if (entry.type !== "string" || !/^volume_calcs:[^:]+$/.test(entry.key)) return null
   try {
@@ -326,8 +339,8 @@ async function main(): Promise<void> {
     (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
     (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
   ) {
-    const client = getRedisClient() as any
-    source = await networkSource(client, getRedisBackend(), pattern, limit)
+    diagnosticClient = getRedisClient()
+    source = await networkSource(diagnosticClient, getRedisBackend(), pattern, limit)
   } else {
     source = await inlineSnapshotSource(limit)
   }
@@ -339,7 +352,9 @@ async function main(): Promise<void> {
   if (process.argv.includes("--fail-on-unbounded") && (unbounded > 0 || oversized > 0)) process.exitCode = 2
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = 1
-})
+void main()
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
+  .finally(closeDiagnosticClient)
