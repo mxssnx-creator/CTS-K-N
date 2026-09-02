@@ -3063,3 +3063,9 @@ credentials are present.
   healthy; then checkpoint again, deploy merged `main`, run the reconciler and
   its `--verify-only` contract, and separately attest the scoped live-trading
   state without placing a test order unless explicitly authorized.
+- [x] A post-merge public dashboard read at 2026-09-02 15:51 UTC showed Redis,
+  nginx, the dashboard and `chisel-server` active, but `cts-kn`, its scheduler
+  and Direct-Trade inactive. The reconciler therefore fails before mutation
+  when `.cts-runtime/maintenance-stop` exists. Only the explicit
+  `--clear-maintenance` option may remove that exact marker, and only after it
+  has been copied into the verified pre-change backup.

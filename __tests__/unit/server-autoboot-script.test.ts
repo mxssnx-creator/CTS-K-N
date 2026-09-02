@@ -16,6 +16,14 @@ describe("server auto-boot reconciler", () => {
     expect(script).toContain("chmod -R go-rwx")
   })
 
+  it("never starts through an existing maintenance marker implicitly", () => {
+    expect(script).toContain("--clear-maintenance")
+    expect(script).toContain('MAINTENANCE_MARKER="$PROJECT_ROOT/.cts-runtime/maintenance-stop"')
+    expect(script).toContain('backup_one "$MAINTENANCE_MARKER"')
+    expect(script.indexOf("create_backup\n")).toBeLessThan(script.indexOf('rm -f -- "$MAINTENANCE_MARKER"'))
+    expect(script).toContain("rerun with --clear-maintenance only after explicit start authorization")
+  })
+
   it("enables and verifies every reboot-critical service", () => {
     for (const expected of [
       "chisel-server.service",

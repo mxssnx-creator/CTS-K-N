@@ -18,6 +18,7 @@ BACKUP_ROOT="${CTS_AUTOBOOT_BACKUP_ROOT:-}"
 VERIFY_ONLY=0
 SKIP_SWAP=0
 SKIP_PULL_AGENT=0
+CLEAR_MAINTENANCE=0
 BACKUP_DIR=""
 
 info() { printf '[autoboot] %s\n' "$*"; }
@@ -43,6 +44,8 @@ Options:
   --branch NAME        Pull-agent branch (default: main)
   --backup-root PATH   Root-only backup parent
   --verify-only        Make no changes; only verify the complete contract
+  --clear-maintenance  Back up and remove the exact CTS maintenance marker
+                       before starting services
   --skip-swap          Do not create or verify the exact 18 GiB swap file
   --skip-pull-agent    Do not install or verify the Git pull timer
   --help               Show this help
@@ -60,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --branch) BRANCH="${2:?--branch requires a value}"; shift 2 ;;
     --backup-root) BACKUP_ROOT="${2:?--backup-root requires a value}"; shift 2 ;;
     --verify-only) VERIFY_ONLY=1; shift ;;
+    --clear-maintenance) CLEAR_MAINTENANCE=1; shift ;;
     --skip-swap) SKIP_SWAP=1; shift ;;
     --skip-pull-agent) SKIP_PULL_AGENT=1; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -95,7 +99,7 @@ valid_branch "$BRANCH" || fatal "Invalid branch"
 
 for command_name in \
   systemctl install stat git node curl sha256sum find sort xargs sed cp chmod \
-  date mktemp awk grep swapon timeout sleep id runuser; do
+  date mktemp awk grep swapon timeout sleep id runuser rm; do
   command -v "$command_name" >/dev/null 2>&1 || fatal "Required command is missing: $command_name"
 done
 
@@ -104,6 +108,13 @@ done
 [[ -f "$PROJECT_ROOT/scripts/install-pull-agent.sh" ]] || fatal "Pull-agent installer is missing"
 [[ -f "$PROJECT_ROOT/scripts/run-with-env.mjs" ]] || fatal "Environment runner is missing"
 [[ -f "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" ]] || fatal "Redis verifier is missing"
+MAINTENANCE_MARKER="$PROJECT_ROOT/.cts-runtime/maintenance-stop"
+if [[ ( -e "$MAINTENANCE_MARKER" || -L "$MAINTENANCE_MARKER" ) && "$VERIFY_ONLY" -eq 1 ]]; then
+  fatal "CTS maintenance marker is present; reboot-persistence verification must remain fail-closed"
+fi
+if [[ ( -e "$MAINTENANCE_MARKER" || -L "$MAINTENANCE_MARKER" ) && "$CLEAR_MAINTENANCE" -eq 0 ]]; then
+  fatal "CTS maintenance marker is present; rerun with --clear-maintenance only after explicit start authorization"
+fi
 [[ -f "$ENV_FILE" ]] || fatal "Production environment is missing: $ENV_FILE"
 [[ -r "$ENV_FILE" ]] || fatal "Production environment is not readable by root"
 env_mode="$(stat -c '%a' "$ENV_FILE")"
@@ -197,6 +208,7 @@ create_backup() {
   backup_one /etc/fstab
   backup_one /etc/sysctl.d/99-cts-kn-memory.conf
   backup_one "$ENV_FILE"
+  backup_one "$MAINTENANCE_MARKER"
   backup_one /opt/server-access
   backup_one /etc/systemd/system/server-access-dashboard.service
   backup_one "/etc/systemd/system/$APP_NAME-pull-agent.service"
@@ -350,6 +362,11 @@ if (( VERIFY_ONLY == 1 )); then
 fi
 
 create_backup
+
+if (( CLEAR_MAINTENANCE == 1 )) && [[ -e "$MAINTENANCE_MARKER" || -L "$MAINTENANCE_MARKER" ]]; then
+  rm -f -- "$MAINTENANCE_MARKER"
+  info "Backed up and cleared the explicit CTS maintenance marker"
+fi
 
 if (( SKIP_SWAP == 0 )); then
   bash "$PROJECT_ROOT/ops/server-access-dashboard/deploy/ensure-swap-18g.sh"
