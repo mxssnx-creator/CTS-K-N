@@ -10,6 +10,8 @@ import {
   INDICATION_OUTCOME_RETENTION_SECONDS,
   LIVE_CLOSED_INDEX_LIMIT,
   DIRECT_STATISTICS_RETENTION_SECONDS,
+  INDICATION_OUTCOME_LIST_LIMIT,
+  INDICATION_OUTCOME_CLOSED_ID_LIMIT,
 } from "@/lib/redis-retention"
 import { InlineLocalRedis } from "@/lib/redis-db"
 import { repairRedisRetentionAll } from "@/lib/redis-retention"
@@ -173,6 +175,30 @@ describe("redis retention policy", () => {
     await expect(redis.ttl(closedIdsKey)).resolves.toBeGreaterThan(INDICATION_OUTCOME_RETENTION_SECONDS - 2)
     await expect(redis.sismember(indexKey, setKey)).resolves.toBe(1)
     await expect(redis.sismember(indexKey, "indication_set:retention-test:missing")).resolves.toBe(0)
+  })
+
+  it("repairs oversized outcome projections without changing the rolling basis", async () => {
+    const redis = new InlineLocalRedis()
+    const setKey = "indication_set:retention-test:BTCUSDT:direction:long:r3"
+    const outcomesKey = setKey + ":outcomes"
+    const closedIdsKey = setKey + ":outcome_closed_ids"
+    await redis.rpush(
+      outcomesKey,
+      ...Array.from(
+        { length: INDICATION_OUTCOME_LIST_LIMIT + 25 },
+        (_, index) => JSON.stringify({ id: index, profit: 1, loss: 0 }),
+      ),
+    )
+    await redis.zadd(closedIdsKey, 1, "oldest")
+    for (let index = 1; index < INDICATION_OUTCOME_CLOSED_ID_LIMIT + 25; index++) {
+      await redis.zadd(closedIdsKey, index + 1, "outcome-" + index)
+    }
+
+    await repairRedisRetentionAll(redis, { pageSize: 250, maxPages: 100 })
+
+    await expect(redis.llen(outcomesKey)).resolves.toBe(INDICATION_OUTCOME_LIST_LIMIT)
+    await expect(redis.zcard(closedIdsKey)).resolves.toBe(INDICATION_OUTCOME_CLOSED_ID_LIMIT)
+    await expect(redis.zscore(closedIdsKey, "oldest")).resolves.toBeNull()
   })
 
   it("bounds terminal exchange-order rows but leaves active rows without a TTL", async () => {

@@ -7,8 +7,8 @@ export interface RedisSetScanOptions extends RedisScanOptions {
   match?: string
 }
 
-/** Match Redis glob syntax for the no-SSCAN compatibility fallback. */
-function matchesRedisGlob(value: string, pattern: string): boolean {
+/** Match Redis glob syntax for compatibility adapters and local SSCAN. */
+export function matchesRedisGlob(value: string, pattern: string): boolean {
   let expression = "^"
   for (const character of String(pattern || "*")) {
     if (character === "*") expression += ".*"

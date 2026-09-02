@@ -35,6 +35,10 @@ export const LIVE_MOVED_MARKER_RETENTION_SECONDS = 60 * 60
 export const VOLUME_INDEX_LIMIT = 500
 export const LIVE_CLOSED_INDEX_LIMIT = 5_000
 export const STRATEGY_RESULT_RING_LIMIT = 600
+/** Keep outcome audit rows bounded even when an older writer skipped LTRIM. */
+export const INDICATION_OUTCOME_LIST_LIMIT = 1_000
+/** Dedupe identities use the same seven-day rolling bound as the writer. */
+export const INDICATION_OUTCOME_CLOSED_ID_LIMIT = 1_000
 export const VOLUME_ORPHAN_GRACE_SECONDS = 10 * 60
 
 const TERMINAL_LIVE_STATUSES = new Set([
@@ -590,11 +594,28 @@ async function repairIndicationSet(
   const expected = key.endsWith(":outcome_stats")
     ? ["hash"]
     : key.endsWith(":outcome_closed_ids")
-      ? ["set"]
+      ? ["zset", "set"]
       : key.endsWith(":outcomes")
         ? ["list"]
         : ["list", "string"]
   if (!await hasAnyExpectedType(client, key, expected, report)) return
+  if (apply && key.endsWith(":outcomes")) {
+    const length = await client.llen(key).catch(() => 0)
+    if (Number(length) > INDICATION_OUTCOME_LIST_LIMIT) {
+      await client.ltrim(key, -INDICATION_OUTCOME_LIST_LIMIT, -1)
+      report.indexesTrimmed++
+    }
+  } else if (apply && key.endsWith(":outcome_closed_ids") && typeof client.zremrangebyrank === "function") {
+    const size = await client.zcard(key).catch(() => 0)
+    if (Number(size) > INDICATION_OUTCOME_CLOSED_ID_LIMIT) {
+      const removed = await client.zremrangebyrank(
+        key,
+        0,
+        Number(size) - INDICATION_OUTCOME_CLOSED_ID_LIMIT - 1,
+      )
+      report.indexesTrimmed += Number(removed) || 0
+    }
+  }
   if (apply) await ensureTtl(client, key, indicationSetRetentionForKey(key), report)
 }
 

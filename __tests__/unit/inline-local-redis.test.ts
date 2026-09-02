@@ -192,6 +192,34 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     expect(new Set(collected).size).toBe(2_400)
   })
 
+  it("streams large set scans without materializing the full set per page", async () => {
+    const redis = new InlineLocalRedis()
+    const members = Array.from({ length: 2_400 }, (_, index) => "member:" + index)
+    await redis.sadd("large:index", ...members)
+
+    const collected: string[] = []
+    let cursor = "0"
+    let pages = 0
+    do {
+      const [next, page] = await redis.sscan(
+        "large:index",
+        cursor,
+        "MATCH",
+        "member:*",
+        "COUNT",
+        37,
+      )
+      cursor = next
+      collected.push(...page)
+      pages++
+    } while (cursor !== "0")
+
+    expect(pages).toBeGreaterThan(1)
+    expect(collected).toHaveLength(members.length)
+    expect(new Set(collected).size).toBe(members.length)
+    expect(collected).toEqual(expect.arrayContaining(["member:0", "member:2399"]))
+  })
+
   it("never evicts durable all-indicator configuration records under advisory pressure", async () => {
     const redis = new InlineLocalRedis()
     for (let index = 0; index < 150; index++) {

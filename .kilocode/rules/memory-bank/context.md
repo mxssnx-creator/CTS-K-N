@@ -1,5 +1,86 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Remote access / Chisel continuity rule (2026-09-02; authoritative)
+
+- Remote CTS work must use only the managed activator
+  `/workspace/.network-clients/activate-cts.sh`. The fixed route is the
+  Chisel client relay at `152.53.114.112:8090` with the local SSH forward
+  `127.0.0.1:2222:127.0.0.1:22`; subsequent SSH is to the local forwarded
+  endpoint as `root`. Fingerprint, auth material, keys and client arguments
+  remain owner-only and must never be printed or committed.
+- Before any remote read or mutation, validate the managed listener and the
+  SSH banner/`CTS_SSH_BANNER_OK` result produced by the activator. If the
+  approval broker or network policy cancels activation, stop all remote
+  operations and record the blocker; do not use direct public-IP SSH, the
+  legacy connection path, SOCKS5, an ad-hoc proxy, VPN or any other fallback.
+- This is the required route for future chats and deployments. A deployment
+  still requires the explicit approval phrase `Managed Chisel/SSH-Deployment
+  freigeben`; X01/Mainnet and every Bybit connection remain read-only, and an
+  X02 VST lifecycle requires its separate explicit approval.
+- On 2026-09-02 the activator was attempted from the canonical checkout, but
+  the Work network approval broker rejected the required escalated network
+  access before Chisel ran. Therefore no remote swap, Redis, service,
+  credential, database, UI or exchange mutation was performed in this
+  continuation.
+
+## Continuation checkpoint 2026-09-02 — Redis bounded scans and server observability
+
+- The authoritative checkout is /workspace/CTS-K-N on branch
+  codex/block-break-race-recovery-20260902-v2. The material continuation
+  release is committed locally at d1b59256f847a7db0014136382c2645218cf3ca3;
+  the checkout is clean and the pinned pnpm installation completed with the
+  repository lockfile policy. The connected GitHub branch was pushed through
+  the Git data API after the shell credential path failed, then rebased onto
+  merged main b86410fd566a79d48e6d4ae96aac7804c9602324 so its final tree is
+  the same d1 tree without a duplicate first commit.
+- GitHub PR #289 is open at
+  https://github.com/mxssnx-creator/CTS-K-N/pull/289. Its current remote head
+  is 7db5f72bb5572438bc5cfcdb7202bb790e02fde6, ahead of main by two commits
+  and changing 18 files. The PR is structurally mergeable, but merge must
+  wait for its required Vercel contexts: cts-k-n is QUEUED for this head and
+  the cts-v context is still pending with a 404 deployment target. Do not
+  bypass those checks or merge a non-green head.
+- The owner-only pre-edit checkpoint for this continuation is
+  /workspace/backups/CTS-K-N/20260902T112943Z. It contains the complete Git
+  bundle, binary worktree/index/unstaged patches, untracked archive/list,
+  HEAD/status/ref records, SHA-256 manifest, successful sha256sum -c, and
+  successful git bundle verify.
+- The clean exact-tree pre-push checkpoint is
+  /workspace/backups/CTS-K-N/20260902T115808Z-prepush; its SHA-256 manifest
+  and Git bundle were reverified before the final context update. Additional
+  owner-only investigation gates exist under /workspace/backups/CTS-K-N and
+  do not authorize remote mutation.
+- Inline Redis SSCAN now uses bounded Map iterators rather than
+  Array.from(set) on every page. The Redis-compatible adapters expose
+  sorted-set rank trimming, and retention repairs recognize the canonical
+  :outcome_closed_ids ZSET, cap it at 1,000, cap outcome LISTs at 1,000,
+  and preserve the existing seven-day TTL policy.
+- ops/server-access-dashboard/ is now versioned as the read-only source for
+  the host page currently fronted by nginx. Schema 2 exposes exact memory and
+  swap bytes plus MiB/GiB, per-core CPU deltas, kernel/load/network counters,
+  process and systemd resources, CTS-K-N/CTS-G probes and progression,
+  request latency/error rates, restarts, state changes, failure history, and
+  recent stability events. deploy/ensure-swap-18g.sh is idempotent, refuses
+  unsafe or mismatched live swap files, and persists an exact 18 GiB
+  /swapfile-cts-kn only after disk-space checks.
+- Safe local validation passed: Redis-focused Jest 2 suites/36 tests,
+  dashboard Node tests 4/4, TypeScript, repository ESLint, source-syntax
+  verification, release secret scan (1,597 files, zero findings), recreation
+  manifest regeneration/verification (1,589 files), and a local dashboard
+  HTTP smoke returning schema 2 with per-core/memory/project/stability data.
+  The deployment-contract check was not runnable because no CTS deployment URL
+  is configured in this workspace. The full unit command was stopped by the
+  safety guard after it identified an unexpected BingX VST path; no X02 VST
+  lifecycle or exchange request was approved or performed.
+- The remote 18 GiB swap, Redis repair, dashboard installation/restart,
+  nginx reload, and remote verification are still pending. The managed
+  Chisel activator was attempted, but Work network approval was cancelled
+  before the Chisel client ran; no direct public-IP SSH, legacy route, SOCKS5,
+  ad-hoc proxy, VPN, remote credential read, service restart, database/Redis
+  mutation, UI deployment, or exchange action was performed. Resume only after
+  the managed activator produces CTS_SSH_BANNER_OK; deploy only after the
+  explicit phrase Managed Chisel/SSH-Deployment freigeben.
+
 ## Session 2026-09-02 — generation-safe progression recovery candidate
 
 - The canonical checkout was recovered from full GitHub history plus the
