@@ -29,7 +29,7 @@ function sleep(milliseconds) {
 }
 
 function runBuild(command, args, env) {
-  const timeoutMs = Math.max(0, Number(process.env.NEXT_TRACE_BUILD_TIMEOUT_MS || 0))
+  const timeoutMs = Math.max(0, Number(process.env.NEXT_TRACE_BUILD_TIMEOUT_MS || (process.env.CI ? 15 * 60 * 1000 : 10 * 60 * 1000)))
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
