@@ -1,5 +1,9 @@
 # Remote CTS-K-N work through managed Chisel
 
+For a concise future-chat handoff, start with
+[`CHISEL-REMOTE-INFO.md`](./CHISEL-REMOTE-INFO.md). This file remains the
+authoritative detailed operational reference.
+
 This is the authoritative, credential-free connection procedure for the
 CTS-K-N remote Linux server. Never commit or print Chisel authentication,
 endpoint and fingerprint values, SSH private keys, exchange credentials,
