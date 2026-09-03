@@ -9237,7 +9237,13 @@ export class StrategyCoordinator {
         // confirmed parent first, then Block/DCA adjust that parent. The old
         // direct pseudo fan-out opened adjustment variants as standalone
         // positions and never exercised their real quantity/step lifecycle.
-        if (!isLiveTradeEnabled || connector) {
+        // Always dispatch qualifying Sets through executeLivePosition.
+        // When isLiveTradeEnabled is false, executeLivePosition runs simulation.
+        // When isLiveTradeEnabled is true but connector is null, executeLivePosition
+        // handles the null connector gracefully (status="error", blockCode set).
+        // The previous condition `!isLiveTradeEnabled || connector` silently skipped
+        // dispatch when live trade was enabled but the connector was null, causing
+        // no orders at all to be attempted.
             // Calculation and physical dispatch are exhaustive for every
             // policy-enabled Set. Deduplication prevents duplicate writes, but
             // no hidden per-symbol budget may defer otherwise eligible Sets.
@@ -9737,14 +9743,6 @@ export class StrategyCoordinator {
                 // the next cycle will retry the active snapshot repair.
               }
             }
-        } else {
-          console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: live_trade=true but connector not available`)
-          // Source contract marker retained for the unavailable-dispatch
-          // metric; the explicit classification below keeps blocked
-          // connectors out of terminal-failure counts.
-          // persistUnavailableDispatch("connector_unavailable")
-          await persistUnavailableDispatch("connector_unavailable", "blocked")
-        }
       } catch (liveErr) {
         console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: Real exchange execution error:`, liveErr instanceof Error ? liveErr.message : String(liveErr))
         if (!dispatchOutcomePersisted) {
