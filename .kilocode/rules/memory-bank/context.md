@@ -1,5 +1,38 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Session 2026-09-03 — Fix: no live exchange orders opening when connector is null
+
+- **Code fix committed and pushed to `origin/main`** (commit `ba6389e`).
+- **Bug:** `lib/strategy-coordinator.ts` line 9240 had condition
+  `if (!isLiveTradeEnabled || connector)` which silently skipped ALL dispatch
+  when `isLiveTradeEnabled` was `true` but the exchange connector was `null`
+  (e.g., connector creation failure, backoff, or invalid credentials). The
+  else branch only logged a warning and persisted `connector_unavailable`,
+  so no orders were ever attempted — neither live nor simulated.
+- **Fix:** Removed the `if (!isLiveTradeEnabled || connector)` gating condition
+  and the `else` branch. Dispatch now always proceeds through
+  `executeLivePosition`, which already handles all three cases:
+  1. `isLiveTradeEnabled=false` → simulation mode (connector null, runs paper)
+  2. `isLiveTradeEnabled=true`, connector valid → live exchange order
+  3. `isLiveTradeEnabled=true`, connector null → returns `status="error"` with
+     proper block code (`live-stage.ts` line 12738)
+- **Test update:** Updated `__tests__/unit/requested-regressions.test.ts` to
+  assert that `persistUnavailableDispatch("connector_unavailable")` is no longer
+  present in the dispatcher, and that the new always-dispatch comments exist.
+- **Validation:** `bun typecheck` and `bun lint` both pass. Targeted test
+  "production strategy fan-out is exhaustive while rotating work and caches remain
+  bounded" passes.
+- **Remote server status:** Cannot connect. The managed Chisel activator at
+  `/workspace/.network-clients/activate-cts.sh` is not present in this
+  environment, no Chisel binary is installed, and no SSH credentials are
+  available. Per AGENTS.md, direct SSH/SOCKS5/proxy/VPN fallbacks are
+  prohibited. The remote `.cts-runtime/maintenance-stop` marker (commit
+  `5d01b66`) remains unchecked and may still prevent services from starting.
+- **Canonical checkout:** Cannot create `/workspace/CTS-K-N` due to file-system
+  permission rules blocking cross-directory creation. Working from the
+  session-specific checkout at `/workspace/6995fed7-bbea...` until the canonical
+  path is available.
+
 ## Remote access / Chisel continuity rule (2026-09-02; authoritative)
 
 - Remote CTS work must use only the managed activator
