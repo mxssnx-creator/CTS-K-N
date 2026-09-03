@@ -29,6 +29,7 @@ function sleep(milliseconds) {
 }
 
 function runBuild(command, args, env) {
+  const timeoutMs = Math.max(0, Number(process.env.NEXT_TRACE_BUILD_TIMEOUT_MS || 0))
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
@@ -36,18 +37,33 @@ function runBuild(command, args, env) {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     })
+    let timedOut = false
+    const timeout = timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true
+          signalProcessGroup(child.pid, "SIGTERM")
+          setTimeout(() => signalProcessGroup(child.pid, "SIGKILL"), 1500).unref()
+        }, timeoutMs)
+      : null
     const stdout = []
     const stderr = []
     child.stdout.on("data", chunk => stdout.push(Buffer.from(chunk)))
     child.stderr.on("data", chunk => stderr.push(Buffer.from(chunk)))
-    child.once("error", reject)
-    child.once("exit", (code, signal) => resolve({
-      pid: child.pid,
-      signal,
-      status: code ?? 1,
-      stderr,
-      stdout,
-    }))
+    child.once("error", error => {
+      if (timeout) clearTimeout(timeout)
+      reject(error)
+    })
+    child.once("exit", (code, signal) => {
+      if (timeout) clearTimeout(timeout)
+      resolve({
+        pid: child.pid,
+        signal,
+        timedOut,
+        status: timedOut ? 124 : (code ?? 1),
+        stderr,
+        stdout,
+      })
+    })
   })
 }
 
@@ -367,6 +383,10 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   // when the error has that exact signature and all build-owned artifacts prove
   // complete below.
   if (result.status !== 0) {
+    if (result.timedOut) {
+      console.error(`[next-trace-build] timed out after ${process.env.NEXT_TRACE_BUILD_TIMEOUT_MS}ms`)
+      process.exit(124)
+    }
     if (!recoverableFilesystemRace) {
       console.error(`[next-trace-build] non-recoverable Next build failure (${result.status})`)
       process.exit(result.status || 1)
