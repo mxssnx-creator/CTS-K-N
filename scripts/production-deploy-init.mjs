@@ -116,7 +116,11 @@ async function verifyLiveTradeReadiness() {
   return { required, connectionIds: states }
 }
 
-async function verifyDirectTradeProcessor(maxAttempts = 20) {
+// A cold Direct-Trade worker can spend the full 30-second API timeout
+// hydrating its first signal pulse before it acquires and publishes the
+// processor lease. Keep this gate bounded, but allow three complete startup
+// windows so a healthy worker is not stopped by a false 20-second failure.
+async function verifyDirectTradeProcessor(maxAttempts = 90) {
   let last = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // Direct Trade is connection-scoped. A request without a connection ID

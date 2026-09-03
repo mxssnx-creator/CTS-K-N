@@ -206,7 +206,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(productionInit).toContain("async function verifyLiveTradeReadiness()")
     expect(productionInit).toContain('process.env.FORCE_SIMULATED === "1"')
     expect(productionInit).toContain('skipped: "safe_simulation"')
-    expect(productionInit).toContain("async function verifyDirectTradeProcessor")
+    expect(productionInit).toContain("async function verifyDirectTradeProcessor(maxAttempts = 90)")
     expect(productionInit).toContain('/api/trade-engine/direct-trade/status?aggregate=1')
     expect(productionInit).toContain("last?.processorRequired === true")
     expect(productionInit).toContain("requiredConnections.every((entry) => entry?.healthy === true)")
