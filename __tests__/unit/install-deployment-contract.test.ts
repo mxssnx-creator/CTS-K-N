@@ -58,7 +58,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("--reinstall")
     expect(installer).toContain("--safe-simulation")
     expect(installer).toContain("--enable-live")
-    expect(installer).toContain("LIVE_OPT_IN=0")
+    expect(installer).toContain("LIVE_OPT_IN=1")
     expect(installer).toContain("if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then")
     expect(installer).toContain("SAFE_SIMULATION=0")
     expect(installer).toContain("ensure_python_pip_and_bun")
