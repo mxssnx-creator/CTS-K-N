@@ -4133,4 +4133,44 @@ describe("requested regression guardrails", () => {
     expect(directCanonical).toContain('coverage.securityStopStatus === "armed"')
   })
 
+  test("reset database and flush routes authorize via same-origin admin session, not bearer-only", () => {
+    const flush = read("app/api/install/database/flush/route.ts")
+    const resetAndInit = read("app/api/admin/reset-and-init/route.ts")
+    const reset = read("app/api/install/database/reset/route.ts")
+
+    // Browser-initiated destructive resets (install manager + admin migrate UI)
+    // send no Authorization header, so a bearer-only gate returns 401. The
+    // session-aware helper accepts a same-origin admin session and must be
+    // used on every destructive DB route.
+    expect(flush).toContain("authorizeAdminRequest")
+    expect(flush).not.toContain("authorizeAdminBearer")
+    expect(resetAndInit).toContain("authorizeAdminRequest")
+    expect(resetAndInit).not.toContain("authorizeAdminBearer")
+    expect(reset).toContain("authorizeAdminRequest")
+  })
+
+  test("engine restart restores canonical running intent before startAll so a paused/stopped state cannot silently no-op restart", () => {
+    const restartRoute = read("app/api/trade-engine/restart/route.ts")
+
+    // startAll() -> startEngine() is gated on isGlobalCoordinatorEnabled(),
+    // which blocks while operator_intent is "paused"". A Restart issued after
+    // a Pause must clear that stale intent to "running" before startAll().
+    expect(restartRoute).toContain("trade_engine:global")
+    expect(restartRoute).toContain('status: "running"')
+    expect(restartRoute).toContain('operator_intent: "running"')
+    expect(restartRoute).toContain('operator_stopped: "0"')
+    expect(restartRoute.indexOf("await client.hset")).toBeLessThan(restartRoute.indexOf("await coordinator.startAll()"))
+  })
+
+  test("live-phase symbols_processed reports the full configured scope, not the per-tick rotating slice", () => {
+    const engine = read("lib/trade-engine/engine-manager.ts")
+
+    // With REALTIME_PIPELINE_SYMBOLS_PER_TICK below the basket size, the live
+    // tick advances only a slice per cycle. Writing the slice count froze the
+    // "X/N symbols processed" display at the slice size (e.g. 13/50). The live
+    // phase trades the whole scope — report the configured scope total.
+    expect(engine).toContain('"symbols_processed", String(configuredSymbols.length)')
+    expect(engine).not.toContain('"symbols_processed", String(symbols.length)')
+  })
+
 })

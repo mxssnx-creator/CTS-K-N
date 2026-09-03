@@ -1,5 +1,56 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Session 2026-09-03 — Reset-db auth, restart intent, live-phase symbols_processed
+
+- **No remote/deploy work performed.** The managed Chisel activator
+  `/workspace/.network-clients/activate-cts.sh` is absent and no SSH credentials
+  are available in this sandbox; per AGENTS.md no direct/ad-hoc remote route was
+  used. X01/Mainnet and every Bybit connection remain read-only; no remote Redis,
+  service, credential, or exchange mutation occurred.
+- **Working checkout:** session-specific path
+  `/workspace/6995fed7-bbea-4273-9cb0-04a70d5daeb4/sessions/agent_8a6cfdd1-...`.
+  The canonical `/workspace/CTS-K-N` checkout is blocked by file-system permission
+  rules in this sandbox.
+- **Fixes applied (all gates green locally):**
+  - **Reset DB unauthorized (#1):** `app/api/install/database/flush/route.ts` and
+    `app/api/admin/reset-and-init/route.ts` authenticated via `authorizeAdminBearer`
+    (bearer-only) and rejected same-origin browser resets with HTTP 401
+    "Unauthorized". Switched both to `authorizeAdminRequest` (bearer OR authenticated
+    same-origin admin session), matching the working `reset/route.ts`. Browser UIs
+    (`components/settings/install-manager.tsx:134`, `app/admin/migrate/page.tsx:43`)
+    call these endpoints via `fetch({ method:"POST" })` with no Authorization header.
+  - **Global-coordinator control error (#2):** `app/api/trade-engine/restart/route.ts`
+    called `stopAll()` + `startAll()` without restoring `trade_engine:global` operator
+    intent. After a Pause (which writes `operator_intent="paused"`), `startEngine()` ->
+    `isGlobalCoordinatorEnabled()` stays disabled, so Restart silently no-ops while the
+    API returns success. Now writes `status/operator_intent/desired_status/actual_status="running"`,
+    clears `operator_stopped`/`stopped_at` and the paused markers before `startAll()`
+    (mirrors the resume route's intent-first pattern).
+  - **Main engine progress stuck after N symbols (#4):**
+    `lib/trade-engine/engine-manager.ts` live tick wrote `symbols_processed` as the
+    per-tick rotating slice (`symbols.length`). When `REALTIME_PIPELINE_SYMBOLS_PER_TICK`
+    is below the basket size the dashboard froze at the slice size (e.g. 13/50). Now
+    writes `configuredSymbols.length` (the full in-scope basket).
+- **Already resolved in this tree (verified structurally by `__tests__/unit/requested-regressions`,
+  203 pre-existing tests pass):**
+  - Settings-change recoordination is event-driven (`settings:dirty` flag +
+    `queueEngineRefreshRequest`; no delayed refresh polling) and the save fan-out is
+    bounded (`mapWithConcurrency` cap 4 + per-engine single-flight
+    `canonicalPipelineAdmission`/`immediateStrategyReevaluationInFlight`). The settings
+    envelope uses `compactSettingsEventValues` (no full connection/credential retention,
+    no unbounded union growth) — addresses **settings-change OOM (#3)**.
+  - Live positions reuse a cached exchange connector (no per-200ms allocation churn);
+    1800 ms cycle deadline + cooperative `shouldContinue` checkpoints; single lease
+    across ind+strat+pseudo; adaptive CPU lanes (`getSymbolConcurrency` from
+    `runtime-concurrency-profile.ts`, hard max 8) with progressive idle backoff up to
+    1 s; `setMaxListeners(60)` — addresses **lagg (#5)**.
+- **Validation:** `bun typecheck` exit 0; ESLint (all changed files) exit 0;
+  `requested-regressions` 206/206 pass (3 lock-in tests added for the three fixes);
+  full unit suite 1719/1719 pass.
+- **Pending:** a production deploy only of merged green `main`, gated by the review
+  branch/PR flow, with the existing remote `.env`/Redis/credentials preserved. No
+  PR created yet — changes are local only and unverified against the live runtime.
+
 ## Session 2026-09-03 — Fix: no live exchange orders opening when connector is null
 
 - **Code fix committed and pushed to `origin/main`** (commit `ba6389e`).

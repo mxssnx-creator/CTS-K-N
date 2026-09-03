@@ -3617,7 +3617,14 @@ export class TradeEngineManager {
             // semantics: one cycle = one full per-symbol fan-out.
             client.hincrby(redisKey, "realtime_cycle_count", 1),
             client.hincrby(redisKey, "frames_processed", 1),
-            client.hset(redisKey, "symbols_processed", String(symbols.length)),
+            // Use the full configured scope (not the per-tick rotating slice)
+            // for `symbols_processed`. With REALTIME_PIPELINE_SYMBOLS_PER_TICK
+            // below the basket size, the live tick advances only a slice per
+            // cycle, so writing `symbols.length` here froze the live-phase
+            // "X/N symbols processed" display at the slice size (e.g. 13/50).
+            // The live phase trades the whole scope — report the scope total
+            // so the dashboard never regresses from monotonic progress.
+            client.hset(redisKey, "symbols_processed", String(configuredSymbols.length)),
             // Continuous "still alive" stamp on the progression hash so
             // the dashboard's freshness indicator never goes stale while
             // the engine is actively ticking. See same-pattern comment

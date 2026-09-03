@@ -3,7 +3,7 @@ import { flushAll, getRedisClient, initRedis } from "@/lib/redis-db"
 import { runMigrations, resetMigrationRunState } from "@/lib/redis-migrations"
 import { SystemLogger } from "@/lib/system-logger"
 import { stopAllProgressionsBeforeReset } from "@/lib/db-reset-helper"
-import { authorizeAdminBearer } from "@/lib/admin-auth"
+import { authorizeAdminRequest } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
   const logs: string[] = []
 
   try {
-    const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+    const authorization = await authorizeAdminRequest(request)
     if (!authorization.ok) {
       return NextResponse.json(
         { success: false, error: authorization.error },

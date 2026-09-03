@@ -42,6 +42,35 @@ export async function POST(request: NextRequest) {
 
     await coordinator.stopAll()
     await new Promise((resolve) => setTimeout(resolve, 1000))
+
+    // Restore canonical running intent before re-arming engines. A prior
+    // pause()/stop writes `operator_intent="paused"` / `operator_stopped="1"`
+    // to `trade_engine:global`; startAll() -> startEngine() is gated on
+    // isGlobalCoordinatorEnabled(), which refuses to start while intent is
+    // anything other than "running". Without this write, a Restart issued
+    // after a Pause silently no-ops — engines stay stopped while the API
+    // returns success. This mirrors the resume route's intent-first pattern.
+    try {
+      const { initRedis, getRedisClient } = await import("@/lib/redis-db")
+      await initRedis()
+      const client = getRedisClient()
+      const nowIso = new Date().toISOString()
+      await client.hset("trade_engine:global", {
+        status: "running",
+        operator_intent: "running",
+        desired_status: "running",
+        actual_status: "running",
+        operator_stopped: "0",
+        stopped_at: "",
+        operator_stopped_at: "",
+        previous_status: "stopped",
+        updated_at: nowIso,
+      })
+      await client.hdel("trade_engine:global", "paused_at", "paused_by", "pause_reason")
+    } catch (intentErr) {
+      console.warn("[v0] Could not restore global running intent before restart:", intentErr)
+    }
+
     await coordinator.startAll()
 
     console.log("[v0] Trade engine restarted successfully")
