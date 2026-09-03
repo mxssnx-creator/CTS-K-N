@@ -53,7 +53,7 @@ Options:
   --public-url URL     Public application URL
   --skip-tests         Skip Jest tests (typecheck, lint, build still run)
   --safe-simulation    Force paper mode and disable all real exchange orders
-  --enable-live        Explicitly opt into the guarded live path; disabled by default
+  --enable-live        Enable the guarded live path (default: enabled)
   --resolve-only       Print the exact resolved target without changing it
   --uninstall          Remove the exact resolved installation
 
@@ -65,7 +65,9 @@ EOF
 
 SKIP_TESTS=0
 SAFE_SIMULATION=0
-LIVE_OPT_IN=0
+# Match install.sh: guarded live execution is the server-install default.
+# --safe-simulation is still the explicit paper-mode override.
+LIVE_OPT_IN=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) INSTALL_DIR="${2:?--dir requires a value}"; INSTALL_DIR_SET=1; shift 2 ;;

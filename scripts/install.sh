@@ -44,7 +44,9 @@ REDIS_MODE="auto"
 REINSTALL=0
 UNINSTALL=0
 SAFE_SIMULATION=0
-LIVE_OPT_IN=0
+# The guarded live path is enabled by default for long-lived server installs.
+# --safe-simulation remains the explicit paper-mode override and always wins.
+LIVE_OPT_IN=1
 SERVICE_USER_CREATED=0
 SAVED_APP_NAME=""
 SAVED_APP_PORT=""
@@ -93,17 +95,16 @@ Options:
   --redis-mode MODE       auto, native, npm, or snapshot (default: auto)
   --reinstall             Reinstall OS apps, runtimes, global tools, and dependencies
   --safe-simulation       Force every engine, including Direct X02, into paper mode
-  --enable-live           Explicitly opt into the guarded live path; disabled by default
+  --enable-live           Enable the guarded live path (default: enabled)
   --uninstall             Stop/remove CTS services, CTS-owned runtime data, and this checkout
   --help                  Show this help
 
 Sensitive values should be supplied in --seed-env-file or the existing env
 file, never as command-line arguments. The installer generates ADMIN_SECRET,
-CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent. A production
-server install keeps the ordinary engines in simulation mode by default. Broad
-live execution requires the explicit --enable-live opt-in, valid credentials,
-durable order coordination, and persisted live-control state. A separately
-persisted DIRECT_TRADE_LIVE_ORDER_PLACEMENT=1 plus the exact
+CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent. The guarded
+live path is enabled by default, but actual exchange placement still requires
+valid credentials, durable order coordination, and persisted live-control state.
+A separately persisted DIRECT_TRADE_LIVE_ORDER_PLACEMENT=1 plus the exact
 DIRECT_TRADE_LIVE_CONNECTION_IDS=bingx-x02 allow-list can enable only the
 leased X02 Prod-VST Direct path while every ordinary route remains paper. The
 verification never submits an order.
@@ -968,9 +969,8 @@ configure_environment_and_redis() {
     upsert_env DISABLE_IN_PROCESS_CONTINUITY 1
   fi
   if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
-    # Paper mode is the default and wins over preserved settings and
-    # credentials. A live deployment must be an explicit operator opt-in so a
-    # routine install/upgrade can never silently enable real order placement.
+    # Explicit paper mode wins over the default live path, preserved settings,
+    # and credentials. This keeps --safe-simulation a deterministic override.
     upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 0
     upsert_env FORCE_SIMULATED 1
     upsert_env FORCE_LIVE 0
@@ -1763,7 +1763,7 @@ info "Scheduler service: $APP_NAME-scheduler"
 info "Direct-Trade processor service: $APP_NAME-direct-trade"
 info "Environment: $ENV_FILE (owner/group-only; secrets were not printed)"
 if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
-  info "Safe simulation is active; live exchange execution remains disabled unless --enable-live is supplied explicitly."
+  info "Safe simulation is active; live exchange execution remains disabled by explicit override."
 else
   info "Live exchange execution is credentialed and verified; order placement remains controlled by the explicit live-control state."
 fi
