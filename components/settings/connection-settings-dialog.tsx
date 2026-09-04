@@ -404,6 +404,7 @@ export function ConnectionSettingsDialog({
           preset: enforceStrategyChannelPipeline(stratPreset),
         },
         coordination_settings: coordination,
+        blockOnlyEnabled:     coordination.blockOnlyEnabled,
         prevPosMinCount:      coordination.prevPosMinCount,
         mainEvalPosCount:     coordination.mainEvalPosCount,
         realEvalPosCount:     coordination.realEvalPosCount,
@@ -665,6 +666,17 @@ export function ConnectionSettingsDialog({
               : typeof (settings as Record<string, unknown>).normalEnabled === "boolean"
                 ? Boolean((settings as Record<string, unknown>).normalEnabled)
                 : DEFAULT_COORDINATION_SETTINGS.normalEnabled,
+            blockOnlyEnabled: typeof coord.blockOnlyEnabled === "boolean"
+              ? coord.blockOnlyEnabled
+              : typeof (coord as Record<string, unknown>).blockOnly === "boolean"
+                ? Boolean((coord as Record<string, unknown>).blockOnly)
+                : typeof (coord as Record<string, unknown>).variantBlockOnly === "boolean"
+                  ? Boolean((coord as Record<string, unknown>).variantBlockOnly)
+              : typeof (settings as Record<string, unknown>).blockOnlyEnabled === "boolean"
+                ? Boolean((settings as Record<string, unknown>).blockOnlyEnabled)
+                : typeof (settings as Record<string, unknown>).blockOnly === "boolean"
+                  ? Boolean((settings as Record<string, unknown>).blockOnly)
+                : DEFAULT_COORDINATION_SETTINGS.blockOnlyEnabled,
             posCountsVolumeRatio: normalizePosCountVolumeRatio(
               coord.posCountsVolumeRatio,
               DEFAULT_COORDINATION_SETTINGS.posCountsVolumeRatio,
@@ -808,6 +820,7 @@ export function ConnectionSettingsDialog({
         coordination_settings: coordination,
         coordinationSettings:  coordination, // legacy alias
         normalEnabled: coordination.normalEnabled,
+        blockOnlyEnabled: coordination.blockOnlyEnabled,
         // Persist both indication channels in the same ordered transaction as
         // the rest of the dialog. This produces one coherent hot reload and
         // prevents the engine from seeing new strategies with old indications.

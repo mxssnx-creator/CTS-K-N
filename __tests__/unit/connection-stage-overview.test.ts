@@ -97,10 +97,11 @@ describe("connection stage overview", () => {
       closedPositions: [],
     })
 
-    expect(overview.schemaVersion).toBe(2)
+    expect(overview.schemaVersion).toBe(3)
     expect(overview.semantics).toBe("latest-cycle-and-current-open-stage-relations")
     expect(overview.snapshot).toMatchObject({
       fresh: true,
+      maxAgeMs: 5 * 60_000,
       complete: true,
       engineRunning: true,
       coverage: { processed: 12, total: 12, percent: 100, complete: true },

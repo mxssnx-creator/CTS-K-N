@@ -11,7 +11,8 @@ APP_NAME="${CTS_PROJECT_NAME:-cts-kn}"
 APP_PORT="${CTS_PORT:-3002}"
 PROJECT_ROOT="${CTS_INSTALL_DIR:-/opt/cts-kn}"
 SERVICE_USER="${CTS_SERVICE_USER:-cts-kn}"
-ENV_FILE="${CTS_ENV_FILE:-/var/lib/cts-kn/.env.production.local}"
+STATE_DIR="${CTS_STATE_DIR:-}"
+ENV_FILE="${CTS_ENV_FILE:-}"
 REPOSITORY="${CTS_REPOSITORY:-https://github.com/mxssnx-creator/CTS-K-N.git}"
 BRANCH="${CTS_BRANCH:-main}"
 BACKUP_ROOT="${CTS_AUTOBOOT_BACKUP_ROOT:-}"
@@ -39,6 +40,7 @@ Options:
   --name NAME          Installed service name (default: cts-kn)
   --port PORT          Installed HTTP port (default: 3002)
   --service-user USER  Installed runtime user (default: cts-kn)
+  --state-dir PATH     Durable instance state (default: /var/lib/cts/instances/<name>)
   --env-file PATH      External production environment
   --repository URL     Expected Git origin
   --branch NAME        Pull-agent branch (default: main)
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --name) APP_NAME="${2:?--name requires a value}"; shift 2 ;;
     --port) APP_PORT="${2:?--port requires a value}"; shift 2 ;;
     --service-user) SERVICE_USER="${2:?--service-user requires a value}"; shift 2 ;;
+    --state-dir) STATE_DIR="${2:?--state-dir requires a value}"; shift 2 ;;
     --env-file) ENV_FILE="${2:?--env-file requires a value}"; shift 2 ;;
     --repository) REPOSITORY="${2:?--repository requires a value}"; shift 2 ;;
     --branch) BRANCH="${2:?--branch requires a value}"; shift 2 ;;
@@ -71,7 +74,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$BACKUP_ROOT" ]] || BACKUP_ROOT="/var/backups/$APP_NAME"
+[[ -n "$STATE_DIR" ]] || STATE_DIR="/var/lib/cts/instances/$APP_NAME"
+[[ -n "$ENV_FILE" ]] || ENV_FILE="$STATE_DIR/.env.production.local"
+[[ -n "$BACKUP_ROOT" ]] || BACKUP_ROOT="/var/backups/cts/$APP_NAME"
 
 valid_name() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]; }
 valid_user() { [[ "$1" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]]; }
@@ -88,8 +93,11 @@ valid_user "$SERVICE_USER" || fatal "Invalid service user"
 valid_port "$APP_PORT" || fatal "Invalid app port"
 valid_absolute_path "$PROJECT_ROOT" && [[ "$PROJECT_ROOT" == /opt/* ]] \
   || fatal "Project directory must be a safe path under /opt"
-valid_absolute_path "$ENV_FILE" && [[ "$ENV_FILE" == /etc/* ]] \
-  || fatal "Environment file must be a safe path under /etc"
+valid_absolute_path "$STATE_DIR" && [[ "$STATE_DIR" == /var/lib/* ]] \
+  || fatal "State directory must be a safe path under /var/lib"
+valid_absolute_path "$ENV_FILE" \
+  && { [[ "$ENV_FILE" == "$STATE_DIR"/* ]] || [[ "$ENV_FILE" == /etc/* ]] || [[ "$ENV_FILE" == /var/lib/* ]]; } \
+  || fatal "Environment file must be inside durable state, /var/lib, or /etc"
 valid_absolute_path "$BACKUP_ROOT" && [[ "$BACKUP_ROOT" == /var/backups/* ]] \
   || fatal "Backup root must be a safe path below /var/backups"
 valid_repository "$REPOSITORY" || fatal "Invalid repository URL"
@@ -207,6 +215,7 @@ create_backup() {
 
   backup_one /etc/fstab
   backup_one /etc/sysctl.d/99-cts-kn-memory.conf
+  backup_one "$PROJECT_ROOT/.cts-runtime/install-values.env"
   backup_one "$ENV_FILE"
   backup_one "$MAINTENANCE_MARKER"
   backup_one /opt/server-access

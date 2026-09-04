@@ -6,8 +6,9 @@
 import path from "path"
 import fs from "fs"
 import { getClient } from "./db"
+import { resolvePersistentDataDir } from "./persistent-paths"
 
-const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "data", "database.db")
+const DB_PATH = process.env.DB_PATH || path.join(resolvePersistentDataDir(path.join(process.cwd(), "data")), "database.db")
 
 interface TableInfo {
   name: string

@@ -75,6 +75,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   const [strategySubTab, setStrategySubTab] = useState("main")
   const [strategyMainSubTab, setStrategyMainSubTab] = useState("base")
   const blockAdjustmentEnabled = parseStoredBoolean(settings.blockAdjustment, true)
+  const blockOnlyEnabled = parseStoredBoolean(settings.blockOnlyEnabled, true)
   const dcaAdjustmentEnabled = parseStoredBoolean(settings.dcaAdjustment, false)
   const dcaVolumes: number[] = Array.isArray(settings.dcaStepVolumeMultipliers)
     ? settings.dcaStepVolumeMultipliers
@@ -172,8 +173,9 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       Minimum cost-relative result required at each stage.
                       Ratio 1.00 is neutral after cost; a +0.10 ratio delta
                       equals +1× PositionCost net. Selectable thresholds use
-                      1.02–2.30 in 0.02 steps. This is separate from realised
-                      Profit Factor (gross profit ÷ gross loss).
+                      Base Valid starts at 0.80; Main/Real/Live use 1.02–2.30
+                      in 0.02 steps. This is separate from realised Profit
+                      Factor (gross profit ÷ gross loss).
                     </p>
                   </div>
                   <div className="grid md:grid-cols-2 gap-4">
@@ -448,7 +450,22 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <CardDescription>Configure block and DCA adjustments</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid gap-6 md:grid-cols-2">
+                  <div className="grid gap-6 md:grid-cols-3">
+                    <div className="flex items-center justify-between p-4 border rounded-lg border-amber-300/70 bg-amber-50/60 dark:border-amber-800/70 dark:bg-amber-950/20">
+                      <div>
+                        <Label htmlFor="global-block-only">Block Only</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Calculate every family, but execute Main rows only through Block.
+                        </p>
+                      </div>
+                      <Switch
+                        id="global-block-only"
+                        aria-label="Execute Main positions through Block adjustment rows only"
+                        checked={blockOnlyEnabled && blockAdjustmentEnabled}
+                        disabled={!blockAdjustmentEnabled}
+                        onCheckedChange={(checked) => handleSettingChange("blockOnlyEnabled", checked)}
+                      />
+                    </div>
                     <div className="flex items-center justify-between p-4 border rounded-lg">
                       <div>
                         <Label>Block Adjustment</Label>
@@ -458,7 +475,10 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       </div>
                       <Switch
                         checked={blockAdjustmentEnabled}
-                        onCheckedChange={(checked) => handleSettingChange("blockAdjustment", checked)}
+                        onCheckedChange={(checked) => {
+                          handleSettingChange("blockAdjustment", checked)
+                          if (!checked) handleSettingChange("blockOnlyEnabled", false)
+                        }}
                       />
                     </div>
 
@@ -911,12 +931,12 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                           min={5}
                           max={55}
                           step={5}
-                          value={[settings.liveEvalPosCount ?? 15]}
+                          value={[settings.liveEvalPosCount ?? 20]}
                           onValueChange={([v]) => handleSettingChange("liveEvalPosCount", v)}
                           className="flex-1"
                         />
                         <span className="text-sm font-semibold w-10 text-right">
-                          {settings.liveEvalPosCount ?? 15}
+                          {settings.liveEvalPosCount ?? 20}
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground">

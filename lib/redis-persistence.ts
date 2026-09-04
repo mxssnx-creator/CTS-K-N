@@ -7,11 +7,12 @@
 
 import fs from "fs"
 import path from "path"
+import { resolvePersistentDataDir } from "@/lib/persistent-paths"
 
 const DATA_DIR =
-  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
+  process.env.AWS_LAMBDA_FUNCTION_NAME
     ? path.join("/tmp", "data")
-    : path.join(process.cwd(), "data")
+    : resolvePersistentDataDir(path.join(process.cwd(), "data"))
 
 const REDIS_PERSISTENCE_FILE = path.join(DATA_DIR, "redis-persistent.json")
 const PERSISTENCE_INTERVAL_MS = 3 * 60 * 1000 // 3 minutes

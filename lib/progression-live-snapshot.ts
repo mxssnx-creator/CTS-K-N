@@ -1,4 +1,5 @@
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
+import { resolveStageRowSnapshotFreshMs } from "@/lib/stage-row-snapshot"
 
 /**
  * Overlay the volatile, worker-owned progression fields onto a cached full
@@ -89,6 +90,7 @@ function aggregateFreshRowField(
   legacyField: string,
   activeSymbols: Set<string>,
   now: number,
+  maxAgeMs: number,
 ): number {
   let total = 0
   let samples = 0
@@ -97,7 +99,7 @@ function aggregateFreshRowField(
     const symbol = key.slice(2, -3)
     if (activeSymbols.size > 0 && !activeSymbols.has(symbol.toUpperCase())) continue
     const timestamp = number(hash[key])
-    if (!(timestamp > 0) || now - timestamp > 5 * 60_000) continue
+    if (!(timestamp > 0) || now - timestamp > maxAgeMs) continue
     total += number(hash[`s:${symbol}:${field}`])
     samples++
   }
@@ -121,6 +123,7 @@ function summarizeStageRowCoverage(
   activeSymbols: Set<string>,
   expectedSymbols: number,
   now: number,
+  maxAgeMs: number,
 ): StageRowCoverage {
   const timestamps: number[] = []
   const knownSymbols = new Set<string>()
@@ -130,7 +133,7 @@ function summarizeStageRowCoverage(
     if (activeSymbols.size > 0 && !activeSymbols.has(symbol)) continue
     knownSymbols.add(symbol)
     const timestamp = number(hash[key])
-    if (!(timestamp > 0) || now - timestamp > 5 * 60_000) continue
+    if (!(timestamp > 0) || now - timestamp > maxAgeMs) continue
     timestamps.push(timestamp)
   }
   const total = Math.max(activeSymbols.size, expectedSymbols, knownSymbols.size)
@@ -142,7 +145,7 @@ function summarizeStageRowCoverage(
     total,
     oldestUpdatedAt,
     latestUpdatedAt,
-    fresh: covered > 0 && now - oldestUpdatedAt <= 5 * 60_000,
+    fresh: covered > 0 && now - oldestUpdatedAt <= maxAgeMs,
     complete: total > 0 && covered >= total,
   }
 }
@@ -169,17 +172,18 @@ function overlayCurrentStrategyRows(
   if (!hasBaseRows && !hasMainRows && !hasRealRows && !hasLiveRows) return
 
   const expectedSymbols = number(record(next.historic).symbolsTotal)
-  const baseCoverage = summarizeStageRowCoverage(baseHash, activeSymbols, expectedSymbols, now)
-  const mainCoverage = summarizeStageRowCoverage(mainHash, activeSymbols, expectedSymbols, now)
-  const realCoverage = summarizeStageRowCoverage(realHash, activeSymbols, expectedSymbols, now)
-  const liveCoverage = summarizeStageRowCoverage(liveHash, activeSymbols, expectedSymbols, now)
+  const maxAgeMs = resolveStageRowSnapshotFreshMs(Math.max(activeSymbols.size, expectedSymbols))
+  const baseCoverage = summarizeStageRowCoverage(baseHash, activeSymbols, expectedSymbols, now, maxAgeMs)
+  const mainCoverage = summarizeStageRowCoverage(mainHash, activeSymbols, expectedSymbols, now, maxAgeMs)
+  const realCoverage = summarizeStageRowCoverage(realHash, activeSymbols, expectedSymbols, now, maxAgeMs)
+  const liveCoverage = summarizeStageRowCoverage(liveHash, activeSymbols, expectedSymbols, now, maxAgeMs)
   const aggregateCompleteFreshRowField = (
     hash: Hash,
     coverage: StageRowCoverage,
     field: string,
     legacyField: string,
   ): number => coverage.complete
-    ? aggregateFreshRowField(hash, field, legacyField, activeSymbols, now)
+    ? aggregateFreshRowField(hash, field, legacyField, activeSymbols, now, maxAgeMs)
     : 0
   const openValue = (value: number): number => engineRunning ? value : 0
 
@@ -208,6 +212,7 @@ function overlayCurrentStrategyRows(
     trailing: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_trailing", "row_overall_open_trailing"),
     positionCount: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_position_count", "row_overall_open_position_count"),
     block: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_block", "row_overall_open_block"),
+    blockCalculated: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_block_calculated_open", "row_overall_open_block"),
     dca: aggregateCompleteFreshRowField(mainHash, mainCoverage, "row_overall_open_dca", "row_overall_open_dca"),
   }
   const realActiveExact = aggregateCompleteFreshRowField(realHash, realCoverage, "row_active_exact", "sets_running_now")
@@ -268,8 +273,8 @@ function overlayCurrentStrategyRows(
         false,
       ),
     } : live,
-    updatedAt: [baseCoverage, mainCoverage, realCoverage].every((stage) => stage.complete && stage.oldestUpdatedAt > 0)
-      ? Math.min(baseCoverage.oldestUpdatedAt, mainCoverage.oldestUpdatedAt, realCoverage.oldestUpdatedAt)
+    updatedAt: [baseCoverage, mainCoverage, realCoverage, liveCoverage].every((stage) => stage.complete && stage.oldestUpdatedAt > 0)
+      ? Math.min(baseCoverage.oldestUpdatedAt, mainCoverage.oldestUpdatedAt, realCoverage.oldestUpdatedAt, liveCoverage.oldestUpdatedAt)
       : 0,
     semantics: "latest-cycle-and-current-open-row-snapshot",
     snapshot: {
@@ -280,6 +285,7 @@ function overlayCurrentStrategyRows(
           baseCoverage.covered,
           mainCoverage.covered,
           realCoverage.covered,
+          liveCoverage.covered,
         ),
         total: Math.max(
           activeSymbols.size,
@@ -287,9 +293,10 @@ function overlayCurrentStrategyRows(
           baseCoverage.total,
           mainCoverage.total,
           realCoverage.total,
+          liveCoverage.total,
         ),
         complete: record(next.historic).isComplete === true &&
-          [baseCoverage, mainCoverage, realCoverage].every((stage) => stage.complete),
+          [baseCoverage, mainCoverage, realCoverage, liveCoverage].every((stage) => stage.complete),
       },
       stages: { base: baseCoverage, main: mainCoverage, real: realCoverage, live: liveCoverage },
     },
@@ -375,14 +382,15 @@ function overlayCurrentStrategyRows(
     }
     next.connectionStageOverview = {
       ...overview,
-      schemaVersion: 2,
+      schemaVersion: 3,
       semantics: "latest-cycle-and-current-open-stage-relations",
       snapshot: {
         updatedAt: rowUpdatedAt,
         ageMs: rowUpdatedAt > 0
           ? Math.max(0, now - rowUpdatedAt)
           : null,
-        fresh: engineRunning && rowUpdatedAt > 0 && now - rowUpdatedAt <= 5 * 60_000,
+        fresh: engineRunning && rowUpdatedAt > 0 && now - rowUpdatedAt <= maxAgeMs,
+        maxAgeMs,
         complete: rowCoverage.complete === true,
         engineRunning,
         coverage: {

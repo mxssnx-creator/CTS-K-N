@@ -75,7 +75,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 107 })
 
       const prefix = "direct_trade:connection:bingx-custom-v100"
       expect(JSON.parse(String(await client.get(`${prefix}:state`)))).toMatchObject({
@@ -112,7 +112,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
       expect(JSON.parse(String(
         await client.hget("connection_settings:bingx-custom-v100", "connection_settings"),
       ))).toMatchObject({
-        profitFactorMin: { base: 1.1, main: 1.1, real: 1.1, live: 1.1 },
+        profitFactorMin: { base: 0.8, main: 1.1, real: 1.1, live: 1.1 },
         measured: { profitFactor: 0.5 },
       })
     } finally {
@@ -165,7 +165,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 107 })
 
       expect(JSON.parse(String(await client.get("direct_trade:connection:bounded:state"))))
         .toMatchObject({
@@ -189,15 +189,21 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
           minRecentProfitFactor: 1.3,
           fullHistoryPfDefaultsVersion: 2,
         })
-      expect(await client.hget("system:database:coordination:performance", "schema_version")).toBe("106")
+      expect(await client.hget("system:database:coordination:performance", "schema_version")).toBe("107")
       expect(await client.hget("system:database:coordination:performance", "direct_trade_effective_volume_ratio")).toBe("0.2")
-      expect(await client.hget("app_settings", "baseProfitFactor")).toBe("1.02")
+      expect(await client.hget("app_settings", "baseProfitFactor")).toBe("0.8")
       expect(await client.hget("app_settings", "mainProfitFactor")).toBe("1.12")
       expect(await client.hget("app_settings", "profitFactorMinPreset")).toBe("1.02")
       expect(JSON.parse(String(await client.hget("app_settings", "connection_settings"))))
-        .toEqual({
+        .toMatchObject({
           profitFactorMin: { base: 1.02, main: 1.14, real: 2.3, live: 1.1 },
           measured: { profitFactor: 0.5 },
+          baseProfitFactor: 0.8,
+          blockOnlyEnabled: true,
+          realEvalPosCount: 20,
+          blockRowRealEvalPosCount: 20,
+          liveEvalPosCount: 20,
+          blockRowLiveEnabled: true,
         })
       expect(await client.hget("system:database:coordination:performance", "main_trade_pf_selection_range"))
         .toBe("1.02-2.30")
@@ -262,7 +268,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 106 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 107 })
 
       await expect(client.hgetall("connection:bingx-x01")).resolves.toMatchObject({
         is_live_trade: "0",

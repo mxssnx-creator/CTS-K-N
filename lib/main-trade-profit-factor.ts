@@ -42,8 +42,11 @@ export const PREVIOUS_POSITION_MIN_PF_RATIO = 1.1
 // the neutral domain: 1.00 means no result remains after one PositionCost.
 // Positive gate tuning is an explicit operator setting, not an implicit
 // stricter floor on hot reload.
-export const MAIN_TRADE_BASE_PF_RATIO_MIN = MAIN_TRADE_PF_RATIO_MIN
-export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.1
+// Base deliberately admits a wider bootstrap domain than downstream stages.
+// The operator contract uses a classic 0.80 minimum for Base Valid while
+// Main/Real/Live retain the positive PositionCost-relative 1.02 floor.
+export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8
+export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.8
 export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.1
 
 export type MainTradeStage = "base" | "main" | "real" | "live"
@@ -109,6 +112,23 @@ export function normalizeMainTradeStagePfRatio(
   stage: MainTradeStage,
   value: unknown,
 ): number {
+  if (stage === "base") {
+    const parsed = finite(value, MAIN_TRADE_BASE_PF_RATIO_DEFAULT)
+    const clamped = Math.max(
+      MAIN_TRADE_BASE_PF_RATIO_MIN,
+      Math.min(MAIN_TRADE_PF_RATIO_MAX, parsed),
+    )
+    // Base uses a 0.02 operator grid anchored at 0.80. Keeping its grid
+    // independent avoids pulling a valid 0.80–1.00 bootstrap threshold onto
+    // the downstream 1.02 grid.
+    const steps = Math.round(
+      (clamped - MAIN_TRADE_BASE_PF_RATIO_MIN) / MAIN_TRADE_PF_RATIO_STEP + 1e-9,
+    )
+    return round(Math.min(
+      MAIN_TRADE_PF_RATIO_MAX,
+      MAIN_TRADE_BASE_PF_RATIO_MIN + steps * MAIN_TRADE_PF_RATIO_STEP,
+    ), 2)
+  }
   return Math.max(
     mainTradeStagePfMin(stage),
     normalizeMainTradePfRatio(value, mainTradeStagePfDefault(stage)),

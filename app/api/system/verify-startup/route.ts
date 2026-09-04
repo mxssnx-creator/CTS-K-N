@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { loadConnections } from "@/lib/file-storage"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
+import { resolvePersistentDataDir } from "@/lib/persistent-paths"
 
 export const dynamic = "force-dynamic"
 export async function GET() {
@@ -80,7 +81,7 @@ export async function GET() {
     try {
       const fs = await import("fs")
       const path = await import("path")
-      const filePath = path.join(process.cwd(), "data", "connections.json")
+      const filePath = path.join(resolvePersistentDataDir(path.join(process.cwd(), "data")), "connections.json")
       const fileExists = fs.existsSync(filePath)
 
       verification.checks.push({

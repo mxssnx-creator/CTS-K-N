@@ -13,10 +13,71 @@
  *   execution has started (use executeTimeoutMs for that).
  */
 
-interface RateLimitConfig {
+export interface RateLimitConfig {
   requestsPerSecond: number
   requestsPerMinute: number
   maxConcurrent: number
+}
+
+const FALLBACK_RATE_LIMIT: RateLimitConfig = {
+  requestsPerSecond: 5,
+  requestsPerMinute: 100,
+  maxConcurrent: 3,
+}
+
+function positiveNumber(raw: unknown): number | null {
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+function boundedInteger(raw: unknown, fallback: number, maximum: number): number {
+  const value = positiveNumber(raw)
+  return Math.max(1, Math.min(maximum, Math.floor(value ?? fallback)))
+}
+
+/**
+ * Return a per-process share of an exchange's hard budget.
+ *
+ * Multiple CTS installations commonly share one public IP. The host installer
+ * therefore persists CTS_EXCHANGE_RATE_LIMIT_SHARE=0.45 for each instance so
+ * two parallel installs remain below the provider budget with headroom. An
+ * operator may lower that share further or set exchange-specific caps, but no
+ * environment override can raise a limiter above the built-in hard ceiling.
+ */
+export function resolveRateLimitConfig(
+  exchange: string,
+  environment: Record<string, string | undefined> = process.env,
+): RateLimitConfig {
+  const normalizedExchange = exchange.toLowerCase()
+  const base = RateLimiter.EXCHANGE_LIMITS[normalizedExchange] || FALLBACK_RATE_LIMIT
+  const prefix = normalizedExchange.toUpperCase().replace(/[^A-Z0-9]/g, "_")
+  const requestedShare = positiveNumber(
+    environment[`CTS_${prefix}_RATE_LIMIT_SHARE`] ?? environment.CTS_EXCHANGE_RATE_LIMIT_SHARE,
+  ) ?? 1
+  const share = Math.max(0.05, Math.min(1, requestedShare))
+  const shared = {
+    requestsPerSecond: Math.max(1, Math.floor(base.requestsPerSecond * share)),
+    requestsPerMinute: Math.max(1, Math.floor(base.requestsPerMinute * share)),
+    maxConcurrent: Math.max(1, Math.floor(base.maxConcurrent * share)),
+  }
+
+  return {
+    requestsPerSecond: boundedInteger(
+      environment[`CTS_${prefix}_RATE_LIMIT_RPS`],
+      shared.requestsPerSecond,
+      shared.requestsPerSecond,
+    ),
+    requestsPerMinute: boundedInteger(
+      environment[`CTS_${prefix}_RATE_LIMIT_RPM`],
+      shared.requestsPerMinute,
+      shared.requestsPerMinute,
+    ),
+    maxConcurrent: boundedInteger(
+      environment[`CTS_${prefix}_RATE_LIMIT_CONCURRENCY`],
+      shared.maxConcurrent,
+      shared.maxConcurrent,
+    ),
+  }
 }
 
 interface QueuedRequest {
@@ -94,11 +155,7 @@ export class RateLimiter {
 
   constructor(exchange: string) {
     this.exchange = exchange.toLowerCase()
-    this.config = RateLimiter.EXCHANGE_LIMITS[this.exchange] || {
-      requestsPerSecond: 5,
-      requestsPerMinute: 100,
-      maxConcurrent: 3,
-    }
+    this.config = resolveRateLimitConfig(this.exchange)
   }
 
   /**

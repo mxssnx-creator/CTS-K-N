@@ -14,7 +14,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUNTIME_DIR="$PROJECT_ROOT/.cts-runtime"
 VALUES_FILE="$RUNTIME_DIR/install-values.env"
-ENV_FILE="/var/lib/cts-kn/.env.production.local"
+STATE_DIR="/var/lib/cts/instances/cts-kn"
+ENV_FILE="$STATE_DIR/.env.production.local"
+REDIS_DB="0"
+REDIS_PORT="6379"
+REDIS_MODE="auto"
+EXECUTION_MODE="live"
 APP_NAME="cts-kn"
 APP_PORT="3002"
 RUNTIME="auto"
@@ -72,6 +77,21 @@ read_saved_values() {
       CTS_INSTALLED_ENV_MANAGED)
         [[ "$value" =~ ^[01]$ ]] && ENV_FILE_MANAGED="$value"
         ;;
+      CTS_INSTALLED_STATE_DIR)
+        valid_absolute_path "$value" && STATE_DIR="$value"
+        ;;
+      CTS_INSTALLED_REDIS_DB)
+        [[ "$value" =~ ^([0-9]|1[0-5])$ ]] && REDIS_DB="$value"
+        ;;
+      CTS_INSTALLED_REDIS_PORT)
+        valid_port "$value" && REDIS_PORT="$value"
+        ;;
+      CTS_INSTALLED_REDIS_MODE)
+        [[ "$value" =~ ^(native|npm|inline-snapshot|external)$ ]] && REDIS_MODE="$value"
+        ;;
+      CTS_INSTALLED_EXECUTION_MODE)
+        [[ "$value" =~ ^(live|safe-simulation)$ ]] && EXECUTION_MODE="$value"
+        ;;
     esac
   done < "$VALUES_FILE"
 }
@@ -101,6 +121,7 @@ valid_name "$APP_NAME" || { echo "Invalid service name" >&2; exit 2; }
 valid_port "$APP_PORT" || { echo "Port must be 1..65535" >&2; exit 2; }
 valid_absolute_path "$PROJECT_ROOT" || { echo "Invalid project root" >&2; exit 2; }
 valid_absolute_path "$ENV_FILE" || { echo "Invalid installed environment path" >&2; exit 2; }
+valid_absolute_path "$STATE_DIR" || { echo "Invalid installed state path" >&2; exit 2; }
 if (( NAME_SET == 1 )) && [[ -n "$SAVED_APP_NAME" && "$APP_NAME" != "$SAVED_APP_NAME" ]]; then
   echo "Requested service '$APP_NAME' does not match installed service '$SAVED_APP_NAME'" >&2
   exit 2
@@ -129,6 +150,11 @@ if [[ "$ACTION" == "resolve" ]]; then
   printf 'CTS_INSTALLED_PROJECT_ROOT=%s\n' "$PROJECT_ROOT"
   printf 'CTS_INSTALLED_ENV_FILE=%s\n' "$ENV_FILE"
   printf 'CTS_INSTALLED_ENV_MANAGED=%s\n' "$ENV_FILE_MANAGED"
+  printf 'CTS_INSTALLED_STATE_DIR=%s\n' "$STATE_DIR"
+  printf 'CTS_INSTALLED_REDIS_DB=%s\n' "$REDIS_DB"
+  printf 'CTS_INSTALLED_REDIS_PORT=%s\n' "$REDIS_PORT"
+  printf 'CTS_INSTALLED_REDIS_MODE=%s\n' "$REDIS_MODE"
+  printf 'CTS_INSTALLED_EXECUTION_MODE=%s\n' "$EXECUTION_MODE"
   exit 0
 fi
 

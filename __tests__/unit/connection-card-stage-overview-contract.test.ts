@@ -61,8 +61,8 @@ describe("connection card stage overview contract", () => {
     ]) {
       expect(coordinator).toContain(field)
     }
-    expect(coordinator).toContain("mainSetHasOpenLineage(s, activeKeys)")
     expect(coordinator).toContain("countOpenMainBreakdown(mainSets, activeKeys)")
+    expect(coordinator).toContain("resolveMainOpenAccounting(")
   })
 
   test("Real PF is snapshotted before Live execution and rendered on the card", () => {
@@ -82,11 +82,11 @@ describe("connection card stage overview contract", () => {
     expect(card).toContain("Ratio <strong")
   })
 
-  test("Base setting copy and engine share the positive selectable floor", () => {
+  test("Base setting copy and engine share the 0.80 selectable floor", () => {
     const settings = read("components/settings/strategy/base-strategy-settings.tsx")
     const ratios = read("lib/main-trade-profit-factor.ts")
-    expect(settings).toContain("1.00 is calculation-neutral; selectable range 1.02–2.30 in 0.02 steps; default 1.10")
-    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_MIN = MAIN_TRADE_PF_RATIO_MIN")
-    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.1")
+    expect(settings).toContain("selectable range 0.80–2.30 in 0.02 steps; default 0.80")
+    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8")
+    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.8")
   })
 })

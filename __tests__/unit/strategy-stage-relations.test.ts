@@ -2,6 +2,7 @@ import {
   classifyMainOpenSet,
   countOpenMainBreakdown,
   mainSetHasOpenLineage,
+  resolveMainOpenAccounting,
 } from "@/lib/strategy-stage-relations"
 
 describe("strategy stage relations", () => {
@@ -48,5 +49,39 @@ describe("strategy stage relations", () => {
       dca: 1,
     })
     expect(Object.values(breakdown).reduce((sum, value) => sum + value, 0)).toBe(5)
+  })
+
+  test("Block-Only replaces calculated Block rows without breaking Main identities", () => {
+    expect(resolveMainOpenAccounting({
+      standard: 0,
+      trailing: 1,
+      positionCount: 1,
+      block: 4,
+      dca: 0,
+    }, 3, true)).toEqual({
+      included: {
+        standard: 1,
+        trailing: 1,
+        positionCount: 1,
+        block: 0,
+        dca: 0,
+      },
+      blockCalculated: 4,
+      overall: 3,
+    })
+  })
+
+  test("normal mode includes Block rows additively", () => {
+    expect(resolveMainOpenAccounting({
+      standard: 2,
+      trailing: 0,
+      positionCount: 0,
+      block: 3,
+      dca: 0,
+    }, 2, false)).toMatchObject({
+      included: { standard: 2, block: 3 },
+      blockCalculated: 3,
+      overall: 5,
+    })
   })
 })

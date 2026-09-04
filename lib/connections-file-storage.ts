@@ -5,6 +5,7 @@
 
 import type { ExchangeConnection } from "@/lib/types"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { resolvePersistentDataDir } from "@/lib/persistent-paths"
 
 let connectionsCache: ExchangeConnection[] | null = null
 
@@ -18,7 +19,7 @@ async function getFilePaths() {
   const dataDir =
     (typeof process !== "undefined" && isServerlessDeploymentRuntime())
       ? path.join("/tmp", "cts-data")
-      : path.join(cwd, "data")
+      : resolvePersistentDataDir(path.join(cwd, "data"))
   return { dataDir, connectionsFile: path.join(dataDir, "connections.json") }
 }
 

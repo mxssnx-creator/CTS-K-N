@@ -14,6 +14,15 @@ describe("server auto-boot reconciler", () => {
     expect(script).toContain("bundle verify")
     expect(script).toContain("sha256sum -c SHA256SUMS")
     expect(script).toContain("chmod -R go-rwx")
+    expect(script).toContain('backup_one "$PROJECT_ROOT/.cts-runtime/install-values.env"')
+  })
+
+  it("uses the same durable per-instance state contract as clean installs", () => {
+    expect(script).toContain('STATE_DIR="${CTS_STATE_DIR:-}"')
+    expect(script).toContain('STATE_DIR="/var/lib/cts/instances/$APP_NAME"')
+    expect(script).toContain('ENV_FILE="$STATE_DIR/.env.production.local"')
+    expect(script).toContain('[[ "$STATE_DIR" == /var/lib/* ]]')
+    expect(script).not.toContain('ENV_FILE="${CTS_ENV_FILE:-/var/lib/cts-kn/.env.production.local}"')
   })
 
   it("never starts through an existing maintenance marker implicitly", () => {

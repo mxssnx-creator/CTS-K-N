@@ -111,6 +111,7 @@ import {
 import {
   countOpenMainBreakdown,
   mainSetHasOpenLineage,
+  resolveMainOpenAccounting,
 } from "@/lib/strategy-stage-relations"
 import {
   normalizeTradeDirection,
@@ -1144,6 +1145,9 @@ export function collectActivePositionCountsBySymbol(
 export function selectLiveDispatchCandidates(
   candidates: StrategySet[],
   options: {
+    blockOnlyEnabled?: boolean
+    /** Backward-compatible persisted/operator alias. */
+    blockOnly?: boolean
     normalEnabled?: boolean
     trailingEnabled?: boolean
     blockEnabled?: boolean
@@ -1155,6 +1159,7 @@ export function selectLiveDispatchCandidates(
   const seenSignalSlots = new Set<string>()
   const seenSignalBlockSlots = new Set<string>()
   const policy: StrategyExecutionPolicy = {
+    blockOnlyEnabled: (options.blockOnlyEnabled ?? options.blockOnly) === true,
     normalEnabled: options.normalEnabled !== false,
     trailingEnabled: options.trailingEnabled !== false,
     blockEnabled: options.blockEnabled !== false,
@@ -2676,6 +2681,8 @@ export class StrategyCoordinator {
     blockRowLivePauseCountRatio: number
     /** Normal/default execution family; evaluation is always retained. */
     normalEnabled: boolean
+    /** Execute Main-family exchange rows only through Block adjustment rows. */
+    blockOnlyEnabled: boolean
     /**
      * Position-Count coordination ratio — normalized on the 0.1..10 operator
      * grid, then converted to the per-valid-Set multiplier (10 → 0.02).
@@ -2715,6 +2722,7 @@ export class StrategyCoordinator {
     blockRowLiveMaxStack: 12,
     blockRowLivePauseCountRatio: 1.0,
     normalEnabled: true,
+    blockOnlyEnabled: true,
     /**
      * Operator coordination ratio. Default 3.0; conversion to direct physical
      * volume happens once during exhaustive axis materialisation.
@@ -2723,7 +2731,7 @@ export class StrategyCoordinator {
     mainEvalPosCount: 25,
     realEvalPosCount: 20,
     blockRowRealEvalPosCount: 20,
-    liveEvalPosCount: 15,
+    liveEvalPosCount: 20,
   }
   private _coordinationLoadedAt = 0
   private readonly _coordinationTtlMs = 5_000
@@ -3206,7 +3214,7 @@ export class StrategyCoordinator {
       const liveEvalRaw = Number((s as any).liveEvalPosCount)
       this._coordinationSettings.liveEvalPosCount = Number.isFinite(liveEvalRaw) && liveEvalRaw > 0
         ? Math.min(55, Math.max(5, Math.round(liveEvalRaw / 5) * 5))
-        : 15
+        : 20
 
       // ── Strategy work scheduling ────────────────────────────────────────
       // Batch sizes limit only concurrent work. Legacy stage-cap fields are
@@ -3329,8 +3337,11 @@ export class StrategyCoordinator {
         s.normalEnabled ?? s.normal_enabled ?? s.strategyNormalEnabled,
         true,
       )
-      // Old Only-mode Redis fields are intentionally not read. Normal,
-      // Trailing, Block and DCA are independent execution families.
+      this._coordinationSettings.blockOnlyEnabled = bool(
+        s.blockOnlyEnabled ?? s.block_only_enabled ?? s.strategyBlockOnlyEnabled
+          ?? s.blockOnly ?? s.variantBlockOnly,
+        true,
+      )
 
       // ── Block-strategy tuning (previously never read from settings) ─────
       // blockVolumeRatio, blockMaxStack, blockPauseCountRatio, and
@@ -5465,9 +5476,19 @@ export class StrategyCoordinator {
     //   count once, so Base + Pos-Count produces the requested doubled set
     //   count before other Main projections are added.
     const mainAccounting = accountMainStage(baseValidCount, mainSets)
+    const mainPublicAccounting = accountMainStage(
+      baseValidCount,
+      this._coordinationSettings.blockOnlyEnabled
+        ? mainSets.filter((set) => set.variant !== "block")
+        : mainSets,
+    )
     const mainBaseInputCount = baseValidCount
     const mainLogicalEvaluated = mainAccounting.logicalEvaluated
     const mainPassedParentCount = uniqueBaseSetsProduced.size
+    const mainLogicalOverall = Math.max(
+      mainPassedParentCount,
+      mainPublicAccounting.logicalEvaluated,
+    )
     const mainRelatedSetCount =
       mainAccounting.positionCountRelated + mainAccounting.otherRelated
     const mainRawRelatedSetCount = Math.max(
@@ -5495,15 +5516,20 @@ export class StrategyCoordinator {
       // mainSets.length as a safe upper bound (slim path means entryCount ≥ 1
       // for all passing sets). For exact tracking: sets with entryCount > 0.
       // Computed inline here to avoid another .filter() pass.
-      let mainRunningNow = 0
       let mainProgressing = 0
       for (const s of mainSets) {
         if ((s.entryCount || 0) > 0) mainProgressing++
-        if (mainSetHasOpenLineage(s, activeKeys)) mainRunningNow++
       }
-      const mainOpenBreakdown = countOpenMainBreakdown(mainSets, activeKeys)
+      const mainCalculatedOpenBreakdown = countOpenMainBreakdown(mainSets, activeKeys)
       const mainValidOpen = Array.from(uniqueBaseSetsProduced)
         .filter((setKey) => activeKeys.has(setKey)).length
+      const mainOpenAccounting = resolveMainOpenAccounting(
+        mainCalculatedOpenBreakdown,
+        mainValidOpen,
+        this._coordinationSettings.blockOnlyEnabled,
+      )
+      const mainOpenBreakdown = mainOpenAccounting.included
+      const mainRunningNow = mainOpenAccounting.overall
       const baseValidOpen = Array.from(baseValidSetKeys)
         .filter((setKey) => activeKeys.has(setKey)).length
 
@@ -5537,13 +5563,14 @@ export class StrategyCoordinator {
           // Cartesian work separately in raw_materialized_sets so a single
           // Pos-Count parent with thousands of axes cannot inflate the UI's
           // valid/overall set funnel.
-          row_overall:       String(mainLogicalEvaluated),
+          row_overall:       String(mainLogicalOverall),
           row_valid_open:    String(mainValidOpen),
           row_overall_open:  String(mainRunningNow),
           row_overall_open_standard:       String(mainOpenBreakdown.standard),
           row_overall_open_trailing:       String(mainOpenBreakdown.trailing),
           row_overall_open_position_count: String(mainOpenBreakdown.positionCount),
           row_overall_open_block:          String(mainOpenBreakdown.block),
+          row_block_calculated_open:        String(mainOpenAccounting.blockCalculated),
           row_overall_open_dca:            String(mainOpenBreakdown.dca),
           count_pos_eval:    String(mainSets.length),
           sets_running_now:         String(mainRunningNow),
@@ -5563,13 +5590,14 @@ export class StrategyCoordinator {
           [`s:${symbol}:other_related_sets`]: String(mainAccounting.otherRelated),
           [`s:${symbol}:raw_materialized_sets`]: String(mainAccounting.rawMaterialized),
           [`s:${symbol}:row_valid`]:        String(mainPassedParentCount),
-          [`s:${symbol}:row_overall`]:      String(mainLogicalEvaluated),
+          [`s:${symbol}:row_overall`]:      String(mainLogicalOverall),
           [`s:${symbol}:row_valid_open`]:   String(mainValidOpen),
           [`s:${symbol}:row_overall_open`]: String(mainRunningNow),
           [`s:${symbol}:row_overall_open_standard`]:       String(mainOpenBreakdown.standard),
           [`s:${symbol}:row_overall_open_trailing`]:       String(mainOpenBreakdown.trailing),
           [`s:${symbol}:row_overall_open_position_count`]: String(mainOpenBreakdown.positionCount),
           [`s:${symbol}:row_overall_open_block`]:          String(mainOpenBreakdown.block),
+          [`s:${symbol}:row_block_calculated_open`]:        String(mainOpenAccounting.blockCalculated),
           [`s:${symbol}:row_overall_open_dca`]:            String(mainOpenBreakdown.dca),
           [`s:${symbol}:apf`]:        String(mainAvgPF.toFixed(4)),
           [`s:${symbol}:addt`]:       String(Math.round(mainAvgDDT)),
@@ -8005,7 +8033,9 @@ export class StrategyCoordinator {
       const realActiveBaseKeys = realCacheFresh
         ? realActiveCache!.keys
         : await this.getOpenPseudoSetKeys()
-      const activeRealSets = realSets.filter((set) => realActiveBaseKeys.has(set.setKey))
+      const activeRealSets = realSets.filter((set) =>
+        mainSetHasOpenLineage(set, realActiveBaseKeys),
+      )
       // Related Position-Count/Block/DCA children belong to one Base lineage
       // for the public Real "Active" statistic. Exact child membership still
       // decides whether a row is active; only the final count is collapsed.
@@ -8797,6 +8827,7 @@ export class StrategyCoordinator {
     const isLiveTradeEnabled = await this.isLiveTradingEnabledForConnection()
     if (!isCurrent()) return cancelled()
     const executionPolicy: StrategyExecutionPolicy = {
+      blockOnlyEnabled: this._coordinationSettings.blockOnlyEnabled === true,
       normalEnabled: this._coordinationSettings.normalEnabled !== false,
       trailingEnabled: this._coordinationSettings.variants.trailing !== false,
       blockEnabled: this._coordinationSettings.variants.block === true,

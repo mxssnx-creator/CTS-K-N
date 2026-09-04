@@ -495,11 +495,11 @@ export class InlineLocalRedis implements RedisClientLike {
   // Notes:
   //   • Defaults to `<cwd>/.v0-data/redis-snapshot.json`, falls back to
   //     `/tmp/v0-redis-snapshot.json` if the cwd path is not writable
-  //     (Vercel serverless restricts writes outside `/tmp`).
-  //   • This is NOT cross-instance durable. Vercel `/tmp` is per warm
-  //     instance; a fresh cold instance starts empty and rebuilds via
-  //     migrations. Swap the body of save/load for Vercel Blob to gain
-  //     cross-instance durability without changing this surface.
+  //     (some ephemeral runtimes restrict writes outside `/tmp`).
+  //   • This is NOT cross-instance durable. An ephemeral `/tmp` is local to
+  //     one warm instance; a fresh instance starts empty and rebuilds via
+  //     migrations. Production hosts therefore use the configured network
+  //     Redis or the explicit durable CTS_DATA_DIR volume.
   //   • Browser builds: every entry point exits early via the `process`
   //     guard so client bundles never pull in `node:fs`. We use dynamic
   //     `await import("node:fs/promises")` to keep the file's "no static
@@ -3926,7 +3926,6 @@ function isNextBuildPhase(): boolean {
   return (
     process.env.NEXT_PHASE === "phase-production-build" ||
     lifecycle === "build" ||
-    lifecycle === "vercel-build" ||
     /\bnext(\.js)?\s+build\b/.test(argv)
   )
 }
@@ -4222,7 +4221,7 @@ async function markSharedRuntimeReady(client: RedisClientLike): Promise<void> {
  * SAME shared promise. This closes the cold-start race where isConnected
  * flipped true before migrations ran, letting concurrent route handlers read
  * un-migrated data. Identical behaviour in dev (`next dev`) and production
- * (`next start` / Vercel) — both invoke instrumentation.register() which calls
+ * (`next start` / hosted runtime) — both invoke instrumentation.register() which calls
  * this, and every server action / route guards on it via ensureRedisInitialized.
  */
 export async function initRedis(): Promise<void> {
@@ -5233,7 +5232,7 @@ const APP_SETTINGS_KEY_LEGACY    = "all_settings" as const
 let appSettingsCache: { value: Record<string, any>; ts: number; version: number } | null = null
 // Hard-refresh deadline — picks up silent Redis writes that happened
 // without going through our mirror writer (e.g. an out-of-band SET from
-// a migration script or another Vercel region). The version-counter
+// a migration script or another runtime instance). The version-counter
 // check below handles the common case in single-digit milliseconds.
 const APP_SETTINGS_HARD_REFRESH_MS = 30_000
 
@@ -6042,19 +6041,15 @@ export function setMigrationsRun(value: boolean): void {
 }
 
 /**
- * Returns true when running in a production or Vercel preview environment.
+ * Returns true when running in a production or CI validation environment.
  * Used to decide whether to run expensive "complete coverage" repair passes
  * on every cold start (required for correct migration state + non-zero counts).
  */
 export function isProductionEnvironment(): boolean {
   if (typeof process === "undefined") return false
   const env = process.env.NODE_ENV
-  const vercelEnv = process.env.VERCEL_ENV || process.env.VERCEL
-  // Treat "production" and "preview" (Vercel PR previews) as "production mode" for migrations.
   if (env === "production") return true
-  if (vercelEnv === "production" || vercelEnv === "preview") return true
-  // Fallback for common hosting hints
-  if (process.env.CI === "true" || process.env.VERCEL_GIT_COMMIT_SHA) return true
+  if (process.env.CI === "true") return true
   return false
 }
 

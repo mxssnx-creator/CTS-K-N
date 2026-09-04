@@ -33,6 +33,9 @@ APP_PORT_SET=0
 RUNTIME_SET=0
 SERVICE_USER_SET=0
 ENV_FILE_SET=0
+STATE_DIR_SET=0
+REDIS_DB_SET=0
+REDIS_PORT_SET=0
 CREATE_SERVICE_USER=0
 PREFLIGHT_ONLY=0
 SKIP_SYSTEM_PACKAGES=0
@@ -41,12 +44,14 @@ NON_INTERACTIVE=0
 SEED_ENV_FILE=""
 PNPM_VERSION="10.28.1"
 REDIS_MODE="auto"
+REDIS_MODE_SET=0
 REINSTALL=0
 UNINSTALL=0
 SAFE_SIMULATION=0
 # The guarded live path is enabled by default for long-lived server installs.
 # --safe-simulation remains the explicit paper-mode override and always wins.
 LIVE_OPT_IN=1
+EXECUTION_MODE_SET=0
 SERVICE_USER_CREATED=0
 SAVED_APP_NAME=""
 SAVED_APP_PORT=""
@@ -55,8 +60,16 @@ SAVED_SERVICE_USER=""
 SAVED_PROJECT_ROOT=""
 SAVED_ENV_FILE=""
 SAVED_ENV_MANAGED=""
+SAVED_STATE_DIR=""
+SAVED_REDIS_DB=""
+SAVED_REDIS_PORT=""
+SAVED_REDIS_MODE=""
+SAVED_EXECUTION_MODE=""
 ENV_FILE_MANAGED="${CTS_PRESERVE_ENV_MANAGED:-}"
 [[ -n "${CTS_ENV_FILE:-}" ]] && ENV_FILE_SET=1
+[[ -n "${CTS_STATE_DIR:-}" ]] && STATE_DIR_SET=1
+[[ -n "${CTS_REDIS_DB:-}" ]] && REDIS_DB_SET=1
+[[ -n "${CTS_REDIS_PORT:-}" ]] && REDIS_PORT_SET=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -66,6 +79,10 @@ DEFAULT_PROJECT_NAME="cts-kn"
 [[ -n "$APP_NAME" ]] || APP_NAME="$DEFAULT_PROJECT_NAME"
 [[ -n "$APP_PORT" ]] || APP_PORT="3002"
 ENV_FILE="${CTS_ENV_FILE:-}"
+STATE_DIR="${CTS_STATE_DIR:-}"
+REDIS_DB="${CTS_REDIS_DB:-}"
+REDIS_PORT="${CTS_REDIS_PORT:-}"
+INSTALL_SEARCH_ROOT="${CTS_INSTALL_SEARCH_ROOT:-/opt}"
 RUNTIME_DIR="$PROJECT_ROOT/.cts-runtime"
 BUILD_BACKUP=""
 ROLLBACK_ARMED=0
@@ -88,6 +105,9 @@ Options:
   --service-user USER     Unprivileged runtime user (default: current user)
   --create-service-user   Create the system service user when it is absent
   --env-file PATH         Production environment file
+  --state-dir PATH        Durable per-instance state (default: /var/lib/cts/instances/<name>)
+  --redis-db NUMBER       Local/shared Redis logical DB, 0..15 (derived from HTTP port)
+  --redis-port PORT       Per-instance npm Redis fallback port (derived from Redis DB)
   --seed-env-file PATH    Merge KEY=VALUE entries before installation
   --preflight-only        Run non-mutating host/project checks and exit
   --skip-system-packages  Do not install OS packages
@@ -127,15 +147,18 @@ while [[ $# -gt 0 ]]; do
     --service-user) SERVICE_USER="${2:?--service-user requires a value}"; SERVICE_USER_SET=1; shift 2 ;;
     --create-service-user) CREATE_SERVICE_USER=1; shift ;;
     --env-file) ENV_FILE="${2:?--env-file requires a value}"; ENV_FILE_SET=1; shift 2 ;;
+    --state-dir) STATE_DIR="${2:?--state-dir requires a value}"; STATE_DIR_SET=1; shift 2 ;;
+    --redis-db) REDIS_DB="${2:?--redis-db requires a value}"; REDIS_DB_SET=1; shift 2 ;;
+    --redis-port) REDIS_PORT="${2:?--redis-port requires a value}"; REDIS_PORT_SET=1; shift 2 ;;
     --seed-env-file) SEED_ENV_FILE="${2:?--seed-env-file requires a value}"; shift 2 ;;
     --preflight-only) PREFLIGHT_ONLY=1; shift ;;
     --skip-system-packages) SKIP_SYSTEM_PACKAGES=1; shift ;;
     --skip-tests) SKIP_TESTS=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
-    --redis-mode) REDIS_MODE="${2:?--redis-mode requires a value}"; shift 2 ;;
+    --redis-mode) REDIS_MODE="${2:?--redis-mode requires a value}"; REDIS_MODE_SET=1; shift 2 ;;
     --reinstall) REINSTALL=1; shift ;;
-    --safe-simulation) SAFE_SIMULATION=1; shift ;;
-    --enable-live) LIVE_OPT_IN=1; shift ;;
+    --safe-simulation) SAFE_SIMULATION=1; LIVE_OPT_IN=0; EXECUTION_MODE_SET=1; shift ;;
+    --enable-live) SAFE_SIMULATION=0; LIVE_OPT_IN=1; EXECUTION_MODE_SET=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --help|-h) usage; exit 0 ;;
     -*) fatal "Unknown option: $1" ;;
@@ -190,6 +213,45 @@ load_installed_defaults() {
       CTS_INSTALLED_ENV_MANAGED)
         [[ "$value" =~ ^[01]$ ]] && SAVED_ENV_MANAGED="$value"
         ;;
+      CTS_INSTALLED_STATE_DIR)
+        SAVED_STATE_DIR="$value"
+        if (( STATE_DIR_SET == 0 )) && valid_absolute_path "$value"; then
+          STATE_DIR="$value"
+        fi
+        ;;
+      CTS_INSTALLED_REDIS_DB)
+        SAVED_REDIS_DB="$value"
+        if (( REDIS_DB_SET == 0 )) && [[ "$value" =~ ^([0-9]|1[0-5])$ ]]; then
+          REDIS_DB="$value"
+        fi
+        ;;
+      CTS_INSTALLED_REDIS_PORT)
+        SAVED_REDIS_PORT="$value"
+        if (( REDIS_PORT_SET == 0 )) && [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )); then
+          REDIS_PORT="$value"
+        fi
+        ;;
+      CTS_INSTALLED_REDIS_MODE)
+        if [[ "$value" =~ ^(native|npm|inline-snapshot|external)$ ]]; then
+          SAVED_REDIS_MODE="$value"
+          if (( REDIS_MODE_SET == 0 )); then
+            case "$value" in
+              inline-snapshot) REDIS_MODE="snapshot" ;;
+              external) REDIS_MODE="auto" ;;
+              *) REDIS_MODE="$value" ;;
+            esac
+          fi
+        fi
+        ;;
+      CTS_INSTALLED_EXECUTION_MODE)
+        if [[ "$value" =~ ^(live|safe-simulation)$ ]]; then
+          SAVED_EXECUTION_MODE="$value"
+          if (( EXECUTION_MODE_SET == 0 )) && [[ "$value" == "safe-simulation" ]]; then
+            SAFE_SIMULATION=1
+            LIVE_OPT_IN=0
+          fi
+        fi
+        ;;
     esac
   done < "$values_file"
 }
@@ -201,13 +263,36 @@ load_installed_defaults
 # Production state must outlive the replaceable Git checkout. Existing install
 # metadata and an explicit --env-file/CTS_ENV_FILE remain authoritative; a new
 # installation otherwise converges on one stable per-service location.
-[[ -n "$ENV_FILE" ]] || ENV_FILE="/var/lib/$APP_NAME/.env.production.local"
+default_redis_db_for_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] || { printf '0'; return; }
+  if (( port >= 3002 )); then
+    printf '%s' "$(( (port - 3002) % 16 ))"
+  else
+    printf '%s' "$(( port % 16 ))"
+  fi
+}
+
+[[ -n "$STATE_DIR" ]] || STATE_DIR="/var/lib/cts/instances/$APP_NAME"
+[[ -n "$ENV_FILE" ]] || ENV_FILE="$STATE_DIR/.env.production.local"
+if (( ENV_FILE_SET == 0 )) && [[ "$ENV_FILE" == "/var/lib/$APP_NAME/.env.production.local" ]] \
+  && [[ "$STATE_DIR" != "/var/lib/$APP_NAME" ]]; then
+  # Transparently converge legacy /var/lib/<name> installs on the canonical
+  # multi-instance hierarchy. The migration below copies the file first.
+  ENV_FILE="$STATE_DIR/.env.production.local"
+fi
+[[ -n "$REDIS_DB" ]] || REDIS_DB="$(default_redis_db_for_port "$APP_PORT")"
+if [[ -z "$REDIS_PORT" ]]; then
+  if [[ "$REDIS_DB" =~ ^([0-9]|1[0-5])$ ]]; then REDIS_PORT="$(( 6379 + REDIS_DB ))"; else REDIS_PORT=6379; fi
+fi
 
 if [[ "$ENV_FILE" != /* ]]; then
   ENV_FILE="$PROJECT_ROOT/${ENV_FILE#./}"
 fi
 valid_absolute_path "$PROJECT_ROOT" || fatal "Project root must be a safe absolute non-root path"
 valid_absolute_path "$ENV_FILE" || fatal "Environment file must be a safe absolute non-root path"
+valid_absolute_path "$STATE_DIR" || fatal "State directory must be a safe absolute non-root path"
+valid_absolute_path "$INSTALL_SEARCH_ROOT" || fatal "CTS_INSTALL_SEARCH_ROOT must be a safe absolute non-root path"
 
 # A directory is authoritative on removal. Never let a typo in --name stop an
 # unrelated service and then remove this checkout; use its recorded runtime
@@ -230,11 +315,23 @@ if (( UNINSTALL == 1 )) && [[ -n "$SAVED_APP_NAME" && "$SAVED_APP_NAME" =~ ^[a-z
     && [[ "$ENV_FILE" != "$SAVED_ENV_FILE" ]]; then
     fatal "--env-file '$ENV_FILE' does not match the installed environment '$SAVED_ENV_FILE' in $PROJECT_ROOT"
   fi
+  if (( STATE_DIR_SET == 1 )) && valid_absolute_path "$SAVED_STATE_DIR" && [[ "$STATE_DIR" != "$SAVED_STATE_DIR" ]]; then
+    fatal "--state-dir '$STATE_DIR' does not match installed state '$SAVED_STATE_DIR' in $PROJECT_ROOT"
+  fi
+  if (( REDIS_DB_SET == 1 )) && [[ "$SAVED_REDIS_DB" =~ ^([0-9]|1[0-5])$ ]] && [[ "$REDIS_DB" != "$SAVED_REDIS_DB" ]]; then
+    fatal "--redis-db '$REDIS_DB' does not match installed Redis DB '$SAVED_REDIS_DB' in $PROJECT_ROOT"
+  fi
+  if (( REDIS_PORT_SET == 1 )) && [[ "$SAVED_REDIS_PORT" =~ ^[0-9]+$ ]] && [[ "$REDIS_PORT" != "$SAVED_REDIS_PORT" ]]; then
+    fatal "--redis-port '$REDIS_PORT' does not match installed Redis port '$SAVED_REDIS_PORT' in $PROJECT_ROOT"
+  fi
   APP_NAME="$SAVED_APP_NAME"
   [[ "$SAVED_APP_PORT" =~ ^[0-9]+$ ]] && APP_PORT="$SAVED_APP_PORT"
   [[ "$SAVED_RUNTIME" =~ ^(systemd|pm2)$ ]] && RUNTIME="$SAVED_RUNTIME"
   [[ "$SAVED_SERVICE_USER" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]] && SERVICE_USER="$SAVED_SERVICE_USER"
   [[ "$SAVED_ENV_FILE" == /* && "$SAVED_ENV_FILE" != "/" ]] && ENV_FILE="$SAVED_ENV_FILE"
+  valid_absolute_path "$SAVED_STATE_DIR" && STATE_DIR="$SAVED_STATE_DIR"
+  [[ "$SAVED_REDIS_DB" =~ ^([0-9]|1[0-5])$ ]] && REDIS_DB="$SAVED_REDIS_DB"
+  [[ "$SAVED_REDIS_PORT" =~ ^[0-9]+$ ]] && REDIS_PORT="$SAVED_REDIS_PORT"
 elif (( APP_NAME_SET == 1 )) && [[ -n "$SAVED_APP_NAME" && "$SAVED_APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ && "$APP_NAME" != "$SAVED_APP_NAME" ]]; then
   fatal "This checkout is installed as '$SAVED_APP_NAME'; use bootstrap-install.sh to replace it under a new --name safely"
 fi
@@ -250,6 +347,15 @@ if (( UNINSTALL == 0 )); then
   if (( ENV_FILE_SET == 1 )) && [[ "$SAVED_ENV_FILE" == /* && "$SAVED_ENV_FILE" != "/" ]] \
     && [[ "$ENV_FILE" != "$SAVED_ENV_FILE" ]]; then
     fatal "This checkout uses environment '$SAVED_ENV_FILE'; use bootstrap-install.sh to relocate it safely"
+  fi
+  if (( STATE_DIR_SET == 1 )) && valid_absolute_path "$SAVED_STATE_DIR" && [[ "$STATE_DIR" != "$SAVED_STATE_DIR" ]]; then
+    fatal "This checkout uses state '$SAVED_STATE_DIR'; use bootstrap-install.sh to relocate it safely"
+  fi
+  if (( REDIS_DB_SET == 1 )) && [[ "$SAVED_REDIS_DB" =~ ^([0-9]|1[0-5])$ ]] && [[ "$REDIS_DB" != "$SAVED_REDIS_DB" ]]; then
+    fatal "This checkout uses Redis DB '$SAVED_REDIS_DB'; use bootstrap-install.sh to change it safely"
+  fi
+  if (( REDIS_PORT_SET == 1 )) && [[ "$SAVED_REDIS_PORT" =~ ^[0-9]+$ ]] && [[ "$REDIS_PORT" != "$SAVED_REDIS_PORT" ]]; then
+    fatal "This checkout uses Redis port '$SAVED_REDIS_PORT'; use bootstrap-install.sh to change it safely"
   fi
 fi
 if [[ -n "$ENV_FILE_MANAGED" && ! "$ENV_FILE_MANAGED" =~ ^[01]$ ]]; then
@@ -282,9 +388,22 @@ if (( UNINSTALL == 0 && NON_INTERACTIVE == 0 )) && [[ -t 0 ]]; then
   fi
 fi
 
+if [[ -z "$SAVED_APP_NAME" ]]; then
+  if (( STATE_DIR_SET == 0 )); then STATE_DIR="/var/lib/cts/instances/$APP_NAME"; fi
+  if (( ENV_FILE_SET == 0 )); then ENV_FILE="$STATE_DIR/.env.production.local"; fi
+fi
+if [[ -z "$SAVED_REDIS_DB" && "$REDIS_DB_SET" == "0" ]]; then REDIS_DB="$(default_redis_db_for_port "$APP_PORT")"; fi
+if [[ -z "$SAVED_REDIS_PORT" && "$REDIS_PORT_SET" == "0" ]]; then
+  if [[ "$REDIS_DB" =~ ^([0-9]|1[0-5])$ ]]; then REDIS_PORT="$(( 6379 + REDIS_DB ))"; else REDIS_PORT=6379; fi
+fi
+
 [[ "$APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] || fatal "Invalid service name: $APP_NAME"
 [[ "$SERVICE_USER" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]] || fatal "Invalid service user: $SERVICE_USER"
 [[ "$APP_PORT" =~ ^[0-9]+$ ]] && (( APP_PORT >= 1 && APP_PORT <= 65535 )) || fatal "Port must be 1..65535"
+[[ "$REDIS_DB" =~ ^([0-9]|1[0-5])$ ]] || fatal "Redis DB must be 0..15"
+[[ "$REDIS_PORT" =~ ^[0-9]+$ ]] && (( REDIS_PORT >= 1 && REDIS_PORT <= 65535 )) || fatal "Redis port must be 1..65535"
+valid_absolute_path "$STATE_DIR" || fatal "State directory must be a safe absolute non-root path"
+valid_absolute_path "$ENV_FILE" || fatal "Environment file must be a safe absolute non-root path"
 case "$RUNTIME" in auto|systemd|pm2) ;; *) fatal "Runtime must be auto, systemd, or pm2" ;; esac
 case "$REDIS_MODE" in auto|native|npm|snapshot) ;; *) fatal "Redis mode must be auto, native, npm, or snapshot" ;; esac
 if (( UNINSTALL == 0 )); then
@@ -339,10 +458,25 @@ uninstall_project() {
   fi
 
   if command -v systemctl >/dev/null 2>&1; then
-    run_root systemctl disable --now "$APP_NAME-recovery.timer" "$APP_NAME-redis-governor.timer" "$APP_NAME-redis-governor.service" "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-redis" 2>/dev/null || true
-    run_root rm -f -- "/etc/systemd/system/$APP_NAME.service" "/etc/systemd/system/$APP_NAME-scheduler.service" "/etc/systemd/system/$APP_NAME-direct-trade.service" "/etc/systemd/system/$APP_NAME-recovery.service" "/etc/systemd/system/$APP_NAME-recovery.timer" "/etc/systemd/system/$APP_NAME-redis-governor.service" "/etc/systemd/system/$APP_NAME-redis-governor.timer" "/etc/systemd/system/$APP_NAME-redis.service"
+    run_root systemctl disable --now "$APP_NAME-recovery.timer" \
+      "$APP_NAME-redis-governor.timer" "$APP_NAME-redis-governor.service" \
+      "$APP_NAME-redis-memory.timer" "$APP_NAME-redis-memory.service" \
+      "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-redis" \
+      2>/dev/null || true
+    run_root rm -f -- "/etc/systemd/system/$APP_NAME.service" \
+      "/etc/systemd/system/$APP_NAME-scheduler.service" \
+      "/etc/systemd/system/$APP_NAME-direct-trade.service" \
+      "/etc/systemd/system/$APP_NAME-recovery.service" \
+      "/etc/systemd/system/$APP_NAME-recovery.timer" \
+      "/etc/systemd/system/$APP_NAME-redis-governor.service" \
+      "/etc/systemd/system/$APP_NAME-redis-governor.timer" \
+      "/etc/systemd/system/$APP_NAME-redis-memory.service" \
+      "/etc/systemd/system/$APP_NAME-redis-memory.timer" \
+      "/etc/systemd/system/$APP_NAME-redis.service"
     run_root systemctl daemon-reload 2>/dev/null || true
-    run_root systemctl reset-failed "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis-governor" "$APP_NAME-redis" 2>/dev/null || true
+    run_root systemctl reset-failed "$APP_NAME" "$APP_NAME-scheduler" \
+      "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis-governor" \
+      "$APP_NAME-redis-memory" "$APP_NAME-redis" 2>/dev/null || true
   fi
   if command -v pm2 >/dev/null 2>&1 && id "$SERVICE_USER" >/dev/null 2>&1; then
     run_as_service pm2 delete "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis" >/dev/null 2>&1 || true
@@ -360,8 +494,8 @@ uninstall_project() {
   cd /
   run_root rm -rf -- "$PROJECT_ROOT"
   if (( remove_service_user == 1 )) && id "$SERVICE_USER" >/dev/null 2>&1; then
-    # /var/lib/<name> is the canonical durable environment/credential root.
-    # Remove only the account record; preserve its home for a clean reinstall.
+    # Remove only the account record; preserve both its home and the canonical
+    # /var/lib/cts/instances/<name> state for a clean reinstall.
     run_root userdel "$SERVICE_USER" 2>/dev/null || true
     ok "Removed CTS-managed service user; preserved its durable state home: $SERVICE_USER"
   fi
@@ -369,6 +503,7 @@ uninstall_project() {
   if (( external_env_preserved == 1 )); then
     info "Externally managed environment file preserved: $ENV_FILE"
   fi
+  info "Durable instance state preserved: $STATE_DIR"
   info "Shared Bun/Node/Redis installations and externally managed Redis data were preserved."
 }
 
@@ -393,6 +528,9 @@ handoff_existing_install_to_bootstrap() {
     --runtime "$RUNTIME"
     --service-user "$SERVICE_USER"
     --env-file "$ENV_FILE"
+    --state-dir "$STATE_DIR"
+    --redis-db "$REDIS_DB"
+    --redis-port "$REDIS_PORT"
     --repository "$repository"
     --branch "$branch"
   )
@@ -401,7 +539,11 @@ handoff_existing_install_to_bootstrap() {
   (( REINSTALL == 0 )) || bootstrap_args+=(--reinstall)
   (( SKIP_SYSTEM_PACKAGES == 0 )) || bootstrap_args+=(--skip-system-packages)
   (( SKIP_TESTS == 0 )) || bootstrap_args+=(--skip-tests)
-  (( LIVE_OPT_IN == 0 )) || bootstrap_args+=(--enable-live)
+  if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
+    bootstrap_args+=(--safe-simulation)
+  else
+    bootstrap_args+=(--enable-live)
+  fi
   bootstrap_args+=(--redis-mode "$REDIS_MODE")
 
   info "Existing CTS-K-N install detected; delegating to clean stop → delete → reinstall flow"
@@ -493,8 +635,53 @@ effective_memory_limits_kb() {
   printf '%s %s\n' "$total_kb" "$available_kb"
 }
 
+assert_unique_install_identity() {
+  local values other_root key value
+  local other_name other_port other_state other_redis_db other_redis_port
+  shopt -s nullglob
+  for values in "$INSTALL_SEARCH_ROOT"/*/.cts-runtime/install-values.env; do
+    [[ -r "$values" ]] || continue
+    other_root="${values%/.cts-runtime/install-values.env}"
+    [[ "$other_root" != "$PROJECT_ROOT" ]] || continue
+    other_name=""; other_port=""; other_state=""; other_redis_db=""; other_redis_port=""
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
+      case "$key" in
+        CTS_INSTALLED_APP_NAME) [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] && other_name="$value" ;;
+        CTS_INSTALLED_APP_PORT) [[ "$value" =~ ^[0-9]+$ ]] && other_port="$value" ;;
+        CTS_INSTALLED_STATE_DIR) valid_absolute_path "$value" && other_state="$value" ;;
+        CTS_INSTALLED_REDIS_DB) [[ "$value" =~ ^([0-9]|1[0-5])$ ]] && other_redis_db="$value" ;;
+        CTS_INSTALLED_REDIS_PORT) [[ "$value" =~ ^[0-9]+$ ]] && other_redis_port="$value" ;;
+      esac
+    done < "$values"
+    [[ "$other_name" != "$APP_NAME" ]] \
+      || fatal "Another checkout already owns service name '$APP_NAME': $other_root"
+    [[ "$other_port" != "$APP_PORT" ]] \
+      || fatal "Another CTS checkout already owns HTTP port '$APP_PORT': $other_root"
+    [[ -z "$other_state" || "$other_state" != "$STATE_DIR" ]] \
+      || fatal "Another CTS checkout already owns state directory '$STATE_DIR': $other_root"
+    [[ -z "$other_redis_db" || -z "$other_redis_port" \
+      || "$other_redis_db:$other_redis_port" != "$REDIS_DB:$REDIS_PORT" ]] \
+      || fatal "Another CTS checkout already owns Redis namespace '$REDIS_DB' on local port '$REDIS_PORT': $other_root"
+  done
+  shopt -u nullglob
+}
+
+installed_instance_count() {
+  local values root count=1
+  shopt -s nullglob
+  for values in "$INSTALL_SEARCH_ROOT"/*/.cts-runtime/install-values.env; do
+    [[ -r "$values" ]] || continue
+    root="${values%/.cts-runtime/install-values.env}"
+    [[ "$root" != "$PROJECT_ROOT" ]] || continue
+    count=$((count + 1))
+  done
+  shopt -u nullglob
+  printf '%s' "$count"
+}
+
 run_preflight() {
   section "Production preflight"
+  assert_unique_install_identity
   [[ "$(uname -s)" == "Linux" ]] || fatal "Only long-lived Linux servers are supported by this installer"
   ok "OS: $(uname -srm)"
   [[ "$PACKAGE_MANAGER" != "none" || "$SKIP_SYSTEM_PACKAGES" == "1" ]] \
@@ -545,10 +732,15 @@ run_preflight() {
     fi
   fi
 
-  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs lib/direct-trade-ledger-recovery.cjs lib/redis-memory-policy.cjs scripts/redis-memory-governor.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
+  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs lib/direct-trade-ledger-recovery.cjs lib/redis-memory-policy.cjs scripts/redis-memory-governor.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/resolve-instance-redis-url.mjs scripts/backup-local-redis.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/bootstrap-install.sh scripts/update.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
     [[ -f "$PROJECT_ROOT/$file" ]] || fatal "Required install artifact is missing: $file"
   done
   bash -n "$PROJECT_ROOT/scripts/install.sh"
+  bash -n "$PROJECT_ROOT/scripts/bootstrap-install.sh"
+  bash -n "$PROJECT_ROOT/scripts/update.sh"
+  bash -n "$PROJECT_ROOT/scripts/service-control.sh"
+  node --check "$PROJECT_ROOT/scripts/resolve-instance-redis-url.mjs"
+  node --check "$PROJECT_ROOT/scripts/backup-local-redis.mjs"
   ok "Project/install artifacts are complete and shell syntax is valid"
 
   if command -v node >/dev/null 2>&1; then
@@ -795,7 +987,7 @@ configure_memory_watchdog() {
   # work. The remaining budget is intentionally based on *available* memory,
   # so a server that is already busy never receives the old fixed 5.6 GiB Node
   # heap or a restart threshold it cannot sustain.
-  local total_kb available_kb total_mb available_mb reserve_mb process_budget_mb runtime_max_mb runtime_high_mb runtime_soft_mb app_heap_mb scheduler_max_mb scheduler_heap_mb direct_trade_max_mb direct_trade_heap_mb direct_trade_worker_count direct_trade_worker_heap_mb
+  local total_kb available_kb total_mb available_mb reserve_mb process_budget_mb fair_process_budget_mb instance_count runtime_max_mb runtime_high_mb runtime_soft_mb app_heap_mb scheduler_max_mb scheduler_heap_mb direct_trade_max_mb direct_trade_heap_mb direct_trade_worker_count direct_trade_worker_heap_mb
   read -r total_kb available_kb < <(effective_memory_limits_kb)
   total_mb=$(( total_kb / 1024 ))
   available_mb=$(( available_kb / 1024 ))
@@ -806,6 +998,13 @@ configure_memory_watchdog() {
   # available-memory budget. Individual service watchdogs therefore cannot
   # collectively promise more memory than the host/cgroup can provide.
   process_budget_mb=$(( (available_mb - reserve_mb) * 80 / 100 ))
+  instance_count="$(installed_instance_count)"
+  [[ "$instance_count" =~ ^[0-9]+$ ]] || instance_count=1
+  (( instance_count > 0 )) || instance_count=1
+  fair_process_budget_mb=$(( (total_mb - reserve_mb) * 80 / 100 / instance_count ))
+  if (( fair_process_budget_mb > 0 && fair_process_budget_mb < process_budget_mb )); then
+    process_budget_mb="$fair_process_budget_mb"
+  fi
   (( process_budget_mb >= 1280 )) || fatal "Effective available memory is too low after the CTS runtime reserve"
   runtime_max_mb=$(( process_budget_mb * 70 / 100 ))
   scheduler_max_mb=$(( process_budget_mb * 15 / 100 ))
@@ -837,6 +1036,7 @@ configure_memory_watchdog() {
 
   upsert_env CTS_EFFECTIVE_MEMORY_MB "$total_mb"
   upsert_env CTS_AVAILABLE_MEMORY_MB "$available_mb"
+  upsert_env CTS_HOST_INSTANCE_COUNT "$instance_count"
   # The application must coordinate against its own systemd service ceiling,
   # not the larger host/cgroup total. Soft pressure serialises new Strategy
   # graphs; the hard value matches MemoryMax exactly.
@@ -852,7 +1052,7 @@ configure_memory_watchdog() {
   upsert_env CTS_RUNTIME_MEMORY_MAX_MB "$runtime_max_mb"
   upsert_env CTS_SCHEDULER_MEMORY_MAX_MB "$scheduler_max_mb"
   upsert_env CTS_DIRECT_TRADE_MEMORY_MAX_MB "$direct_trade_max_mb"
-  ok "Memory watchdog: ${available_mb} MiB available → app ${runtime_max_mb} MiB, scheduler ${scheduler_max_mb} MiB, Direct-Trade ${direct_trade_max_mb} MiB (${direct_trade_worker_count} workers × ${direct_trade_worker_heap_mb} MiB heap)"
+  ok "Memory watchdog: ${available_mb} MiB available across ${instance_count} CTS instance(s) → app ${runtime_max_mb} MiB, scheduler ${scheduler_max_mb} MiB, Direct-Trade ${direct_trade_max_mb} MiB (${direct_trade_worker_count} workers × ${direct_trade_worker_heap_mb} MiB heap)"
 }
 
 merge_seed_env() {
@@ -901,9 +1101,47 @@ placeholder_secret() {
     || "$lower" =~ (placeholder|example|dummy|not[_-]?set|test[_-]?key|test[_-]?secret) ]]
 }
 
+copy_missing_state() {
+  local source="$1" destination="$2" resolved_source resolved_destination
+  [[ -d "$source" && "$source" != "$destination" ]] || return 0
+  resolved_source="$(readlink -f -- "$source" 2>/dev/null || true)"
+  resolved_destination="$(readlink -f -- "$destination" 2>/dev/null || true)"
+  [[ -z "$resolved_source" || -z "$resolved_destination" || "$resolved_source" != "$resolved_destination" ]] || return 0
+  run_root install -d -m 0750 -- "$destination"
+  # Never overwrite newer canonical state. GNU cp -n is available on every
+  # supported long-lived Linux target and preserves modes/timestamps here.
+  run_root cp -a -n -- "$source/." "$destination/"
+}
+
+migrate_legacy_instance_state() {
+  local legacy_root="/var/lib/$APP_NAME" legacy_env="$legacy_root/.env.production.local"
+  run_root install -d -m 0750 -- "$STATE_DIR"
+  run_root install -d -m 0750 -- "$STATE_DIR/data" "$STATE_DIR/logs" "$STATE_DIR/redis" "$STATE_DIR/reports"
+  run_root install -d -m 0700 -o root -g root -- "$STATE_DIR/credentials" "$STATE_DIR/forex" "$STATE_DIR/backups"
+
+  if [[ "$legacy_root" != "$STATE_DIR" && -d "$legacy_root" ]]; then
+    copy_missing_state "$legacy_root/credentials" "$STATE_DIR/credentials"
+    copy_missing_state "$legacy_root/forex" "$STATE_DIR/forex"
+    copy_missing_state "$legacy_root/data" "$STATE_DIR/data"
+    copy_missing_state "$legacy_root/logs" "$STATE_DIR/logs"
+    if [[ ! -e "$STATE_DIR/.env.production.local" && -f "$legacy_env" ]]; then
+      run_root cp -a -- "$legacy_env" "$STATE_DIR/.env.production.local"
+    fi
+  fi
+  copy_missing_state "$PROJECT_ROOT/data" "$STATE_DIR/data"
+  copy_missing_state "$PROJECT_ROOT/logs" "$STATE_DIR/logs"
+  copy_missing_state "$PROJECT_ROOT/.agent-logs" "$STATE_DIR/reports"
+  copy_missing_state "$RUNTIME_DIR/redis-data" "$STATE_DIR/redis"
+  if [[ -d "$PROJECT_ROOT/logs" && ! -L "$PROJECT_ROOT/logs" ]]; then run_root rm -rf -- "$PROJECT_ROOT/logs"; fi
+  if [[ -d "$PROJECT_ROOT/.agent-logs" && ! -L "$PROJECT_ROOT/.agent-logs" ]]; then run_root rm -rf -- "$PROJECT_ROOT/.agent-logs"; fi
+  [[ -e "$PROJECT_ROOT/logs" || -L "$PROJECT_ROOT/logs" ]] || run_root ln -s "$STATE_DIR/logs" "$PROJECT_ROOT/logs"
+  [[ -e "$PROJECT_ROOT/.agent-logs" || -L "$PROJECT_ROOT/.agent-logs" ]] || run_root ln -s "$STATE_DIR/reports" "$PROJECT_ROOT/.agent-logs"
+}
+
 configure_environment_and_redis() {
   section "Durable Redis and production environment"
-  mkdir -p "$RUNTIME_DIR" "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data/redis"
+  mkdir -p "$RUNTIME_DIR"
+  migrate_legacy_instance_state
   local env_parent
   env_parent="$(dirname "$ENV_FILE")"
   if [[ ! -d "$env_parent" ]]; then
@@ -912,24 +1150,41 @@ configure_environment_and_redis() {
   # Root-only source archives and normalized runtime fallbacks survive checkout
   # replacement. Services consume only the generated group-readable main env.
   run_root install -d -m 0700 -o root -g root -- \
-    "$env_parent/credentials" "$env_parent/forex"
+    "$env_parent/credentials" "$env_parent/forex" "$STATE_DIR/credentials" "$STATE_DIR/forex"
   [[ -f "$ENV_FILE" ]] || run_root install -m 0600 /dev/null "$ENV_FILE"
   run_root chmod 600 "$ENV_FILE"
   merge_seed_env
+  merge_persistent_credential_fallback "$STATE_DIR/credentials/runtime.env"
+  merge_persistent_credential_fallback "$STATE_DIR/forex/runtime.env"
   merge_persistent_credential_fallback "$env_parent/credentials/runtime.env"
   merge_persistent_credential_fallback "$env_parent/forex/runtime.env"
 
-  local redis_url redis_service_mode="external" inline_snapshot=0
+  local redis_url redis_service_mode="external" inline_snapshot=0 force_npm=0 npm_redis_url=""
   redis_url="${INSTALL_REDIS_URL:-$(env_value REDIS_URL)}"
   if [[ "$REDIS_MODE" == "snapshot" ]]; then
     section "Persistent InlineLocalRedis snapshot"
     inline_snapshot=1
     redis_url=""
     redis_service_mode="inline-snapshot"
-    mkdir -p "$RUNTIME_DIR/redis-data"
+    run_root install -d -m 0750 -- "$STATE_DIR/redis"
     upsert_env CTS_REDIS_SERVICE_MODE inline-snapshot
     upsert_env CTS_INLINE_REDIS_PERSISTENT_VOLUME 1
-    upsert_env V0_REDIS_SNAPSHOT_PATH "$RUNTIME_DIR/redis-data/redis-snapshot.json"
+    upsert_env V0_REDIS_SNAPSHOT_PATH "$STATE_DIR/redis/redis-snapshot.json"
+  fi
+  if [[ "$inline_snapshot" == "0" && "$REDIS_MODE" == "npm" ]]; then
+    force_npm=1
+    npm_redis_url="redis://127.0.0.1:$REDIS_PORT/$REDIS_DB"
+    if [[ -n "$redis_url" ]]; then
+      redis_url="$(CTS_REDIS_CANDIDATE="$redis_url" CTS_REDIS_DB="$REDIS_DB" \
+        node "$PROJECT_ROOT/scripts/resolve-instance-redis-url.mjs")" \
+        || fatal "Configured Redis URL is incompatible with this instance namespace"
+      [[ "$redis_url" == "$npm_redis_url" ]] \
+        || fatal "Explicit npm Redis mode requires the instance endpoint $npm_redis_url"
+    fi
+    # A clean update intentionally stops the previous per-instance Redis.
+    # Select its canonical endpoint now and start it below instead of treating
+    # the expected outage as a broken external Redis configuration.
+    redis_url="$npm_redis_url"
   fi
   if [[ "$inline_snapshot" == "0" && -z "$redis_url" ]]; then
     if [[ "$REDIS_MODE" == "auto" || "$REDIS_MODE" == "native" ]]; then
@@ -939,17 +1194,28 @@ configure_environment_and_redis() {
         run_root service redis-server start 2>/dev/null || run_root service redis start 2>/dev/null || true
       fi
     fi
-    redis_url="redis://127.0.0.1:6379"
+    redis_url="redis://127.0.0.1:6379/$REDIS_DB"
+    redis_service_mode="native"
   fi
 
-  if [[ "$inline_snapshot" == "0" ]] && ! REDIS_URL="$redis_url" node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1; then
-    [[ "$REDIS_MODE" != "native" ]] || fatal "Native Redis is not reachable"
-    [[ -z "${INSTALL_REDIS_URL:-}" && -z "$(env_value REDIS_URL)" ]] || fatal "Configured Redis is not reachable"
+  if [[ "$inline_snapshot" == "0" ]]; then
+    redis_url="$(CTS_REDIS_CANDIDATE="$redis_url" CTS_REDIS_DB="$REDIS_DB" \
+      node "$PROJECT_ROOT/scripts/resolve-instance-redis-url.mjs")" \
+      || fatal "Configured Redis URL is incompatible with this instance namespace"
+  fi
+
+  if [[ "$inline_snapshot" == "0" ]] \
+    && { [[ "$force_npm" == "1" ]] || ! REDIS_URL="$redis_url" node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1; }; then
+    if [[ "$force_npm" == "0" ]]; then
+      [[ "$REDIS_MODE" != "native" ]] || fatal "Native Redis is not reachable"
+      [[ -z "${INSTALL_REDIS_URL:-}" && -z "$(env_value REDIS_URL)" ]] || fatal "Configured Redis is not reachable"
+    fi
     section "npm Redis fallback"
     command -v npm >/dev/null 2>&1 || fatal "npm is required for the local Redis fallback"
     local npm_redis_root="$RUNTIME_DIR/npm-redis"
     if (( REINSTALL == 1 )); then rm -rf -- "$npm_redis_root"; fi
-    mkdir -p "$npm_redis_root" "$RUNTIME_DIR/redis-data"
+    mkdir -p "$npm_redis_root" "$RUNTIME_DIR/redis-binaries"
+    run_root install -d -m 0750 -- "$STATE_DIR/redis"
     if [[ ! -f "$npm_redis_root/node_modules/redis-memory-server/package.json" ]]; then
       REDISMS_DISABLE_POSTINSTALL=true npm --cache "$RUNTIME_DIR/npm-cache" --prefix "$npm_redis_root" install --no-save --no-audit --no-fund redis-memory-server@0.17.0 \
         || fatal "Native Redis is unavailable and npm redis-memory-server installation failed"
@@ -957,15 +1223,15 @@ configure_environment_and_redis() {
     node "$PROJECT_ROOT/scripts/prepare-npm-redis.mjs" "$npm_redis_root/node_modules/redis-memory-server" \
       || fatal "The npm Redis provider has an unsupported compiler layout"
     redis_service_mode="npm"
-    redis_url="redis://127.0.0.1:6379"
+    redis_url="redis://127.0.0.1:$REDIS_PORT/$REDIS_DB"
     upsert_env CTS_REDIS_SERVICE_MODE npm
     upsert_env CTS_NPM_REDIS_ROOT "$npm_redis_root/node_modules"
-    upsert_env CTS_REDIS_DATA_DIR "$RUNTIME_DIR/redis-data"
-    upsert_env CTS_REDIS_PORT 6379
+    upsert_env CTS_REDIS_DATA_DIR "$STATE_DIR/redis"
+    upsert_env CTS_REDIS_PORT "$REDIS_PORT"
     upsert_env REDISMS_DOWNLOAD_DIR "$RUNTIME_DIR/redis-binaries"
     node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
-      env CTS_NPM_REDIS_ROOT="$npm_redis_root/node_modules" CTS_REDIS_DATA_DIR="$RUNTIME_DIR/redis-data" CTS_REDIS_PORT=6379 REDISMS_DOWNLOAD_DIR="$RUNTIME_DIR/redis-binaries" \
-      node "$PROJECT_ROOT/scripts/npm-redis-service.mjs" >"$RUNTIME_DIR/redis.log" 2>&1 &
+      env CTS_NPM_REDIS_ROOT="$npm_redis_root/node_modules" CTS_REDIS_DATA_DIR="$STATE_DIR/redis" CTS_REDIS_PORT="$REDIS_PORT" REDISMS_DOWNLOAD_DIR="$RUNTIME_DIR/redis-binaries" \
+      node "$PROJECT_ROOT/scripts/npm-redis-service.mjs" >"$STATE_DIR/logs/redis-bootstrap.log" 2>&1 &
     echo $! > "$RUNTIME_DIR/redis.pid"
     for _ in {1..30}; do REDIS_URL="$redis_url" node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1 && break; sleep 1; done
     REDIS_URL="$redis_url" node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1 || fatal "npm Redis service did not become ready"
@@ -974,6 +1240,7 @@ configure_environment_and_redis() {
     redis-cli -u "$redis_url" --no-auth-warning ping >/dev/null 2>&1 || fatal "Redis verification failed"
   fi
   if [[ "$inline_snapshot" == "0" && "$redis_url" =~ ^redis://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?(/[0-9]+)?/?$ ]]; then
+    [[ "$redis_service_mode" == "npm" ]] || redis_service_mode="native"
     if command -v redis-cli >/dev/null 2>&1; then
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET appendonly yes >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET appendfsync everysec >/dev/null
@@ -995,8 +1262,20 @@ configure_environment_and_redis() {
   upsert_env NODE_ENV production
   upsert_env HOST 0.0.0.0
   upsert_env PORT "$APP_PORT"
+  upsert_env CTS_RUNTIME_INSTANCE_ID "$APP_NAME"
+  upsert_env CTS_STATE_DIR "$STATE_DIR"
+  upsert_env CTS_DATA_DIR "$STATE_DIR/data"
+  upsert_env CTS_LOG_DIR "$STATE_DIR/logs"
+  upsert_env DB_PATH "$STATE_DIR/data/database.db"
+  upsert_env CTS_REDIS_DB "$REDIS_DB"
+  [[ -n "$(env_value CTS_EXCHANGE_RATE_LIMIT_SHARE)" ]] || upsert_env CTS_EXCHANGE_RATE_LIMIT_SHARE 0.45
+  local redis_memory_share="1"
+  if [[ "$redis_service_mode" == "npm" ]]; then
+    redis_memory_share="$(awk -v count="$(installed_instance_count)" 'BEGIN { if (count < 1) count = 1; printf "%.4f", 1 / count }')"
+  fi
+  upsert_env CTS_REDIS_MEMORY_INSTANCE_SHARE "$redis_memory_share"
   upsert_env REDIS_URL "$redis_url"
-  [[ "$redis_service_mode" == "npm" || "$redis_service_mode" == "inline-snapshot" ]] || upsert_env CTS_REDIS_SERVICE_MODE native
+  upsert_env CTS_REDIS_SERVICE_MODE "$redis_service_mode"
   if [[ "$inline_snapshot" == "1" ]]; then
     upsert_env ALLOW_PROD_INLINE_REDIS 1
     upsert_env DISABLE_IN_PROCESS_CONTINUITY 0
@@ -1169,7 +1448,11 @@ resolve_runtime() {
 stop_runtime() {
   touch "$RUNTIME_DIR/maintenance-stop"
   if [[ "$RUNTIME" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
-    run_root systemctl stop "$APP_NAME-direct-trade" "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-redis" 2>/dev/null || true
+    run_root systemctl stop "$APP_NAME-recovery.timer" "$APP_NAME-recovery" \
+      "$APP_NAME-redis-governor.timer" "$APP_NAME-redis-governor" \
+      "$APP_NAME-redis-memory.timer" "$APP_NAME-redis-memory" \
+      "$APP_NAME-direct-trade" "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-redis" \
+      2>/dev/null || true
   elif [[ "$RUNTIME" == "pm2" ]] && command -v pm2 >/dev/null 2>&1; then
     run_as_service pm2 stop "$APP_NAME-direct-trade" "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-recovery" "$APP_NAME-redis" >/dev/null 2>&1 || true
   fi
@@ -1187,6 +1470,15 @@ start_runtime() {
     run_root systemctl reset-failed "$APP_NAME-direct-trade" 2>/dev/null || true
     run_root systemctl restart "$APP_NAME-direct-trade"
     run_root systemctl start "$APP_NAME-recovery.timer" 2>/dev/null || true
+    if [[ -f "/etc/systemd/system/$APP_NAME-redis-governor.timer" ]]; then
+      run_root systemctl start "$APP_NAME-redis-governor.service" 2>/dev/null || true
+      run_root systemctl start "$APP_NAME-redis-governor.timer" 2>/dev/null || true
+    elif [[ -f "/etc/systemd/system/$APP_NAME-redis-memory.timer" ]]; then
+      # Restore a legacy governor only when rolling back before the replacement
+      # units have been installed. Successful installs remove these old units.
+      run_root systemctl start "$APP_NAME-redis-memory.service" 2>/dev/null || true
+      run_root systemctl start "$APP_NAME-redis-memory.timer" 2>/dev/null || true
+    fi
   else
     if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
       run_as_service pm2 restart "$APP_NAME-redis" --update-env >/dev/null 2>&1 || true
@@ -1202,10 +1494,15 @@ stage_existing_runtime() {
   section "Existing installation handoff"
   if existing_runtime_active; then
     info "Stopping the existing $APP_NAME service and scheduler before replacement"
-    stop_runtime
   else
     info "No active $APP_NAME service was found"
   fi
+
+  # Always arm maintenance and stop every owner. A clean bootstrap stops the
+  # old services before cloning, so relying on existing_runtime_active here
+  # would otherwise let the fresh checkout lose the old marker and start its
+  # workers before release verification has completed.
+  stop_runtime
 
   # Do not let stale route chunks or a half-written previous output mix with
   # the next build. Keep one recoverable backup until every install, migration,
@@ -1260,10 +1557,15 @@ install_dependencies_and_validate() {
   # exists to avoid build failures.
   node "$PROJECT_ROOT/scripts/prepare-turbopack.mjs" 2>/dev/null || true
   if ! node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- pnpm run build; then
-    [[ -z "$BUILD_BACKUP" || ! -d "$BUILD_BACKUP" ]] || mv "$BUILD_BACKUP" "$PROJECT_ROOT/.next"
+    if [[ -n "$BUILD_BACKUP" && -d "$BUILD_BACKUP" ]]; then
+      mv "$BUILD_BACKUP" "$PROJECT_ROOT/.next"
+      ROLLBACK_ARMED=0
+      start_runtime || true
+      fatal "Production build failed; previous build restored"
+    fi
     ROLLBACK_ARMED=0
-    start_runtime || true
-    fatal "Production build failed; previous build restored"
+    stop_runtime || true
+    fatal "Production build failed; clean install remains stopped in maintenance"
   fi
   [[ -f "$PROJECT_ROOT/.next/BUILD_ID" ]] || fatal "Production build did not create BUILD_ID"
   ok "All static checks/tests and the optimized production build passed"
@@ -1284,6 +1586,11 @@ CTS_INSTALLED_SERVICE_USER=$SERVICE_USER
 CTS_INSTALLED_PROJECT_ROOT=$PROJECT_ROOT
 CTS_INSTALLED_ENV_FILE=$ENV_FILE
 CTS_INSTALLED_ENV_MANAGED=$ENV_FILE_MANAGED
+CTS_INSTALLED_STATE_DIR=$STATE_DIR
+CTS_INSTALLED_REDIS_DB=$REDIS_DB
+CTS_INSTALLED_REDIS_PORT=$REDIS_PORT
+CTS_INSTALLED_REDIS_MODE=$(env_value CTS_REDIS_SERVICE_MODE)
+CTS_INSTALLED_EXECUTION_MODE=$([[ "$SAFE_SIMULATION" == "1" || "$LIVE_OPT_IN" == "0" ]] && printf 'safe-simulation' || printf 'live')
 CTS_INSTALLED_REPOSITORY=$repository
 CTS_INSTALLED_BRANCH=$branch
 EOF
@@ -1380,8 +1687,12 @@ prepare_runtime_permissions() {
   run_root install -d -m 0750 -o "$SERVICE_USER" -g "$service_group" "$PROJECT_ROOT/.next/cache"
   run_root chown -R "$SERVICE_USER:$service_group" "$PROJECT_ROOT/.next/cache"
   run_root chmod -R u+rwX,g+rX,o-rwx "$PROJECT_ROOT/.next/cache"
-  run_root install -d -m 0700 -o "$SERVICE_USER" -g "$service_group" "$PROJECT_ROOT/.agent-logs"
-  run_root chown -R "$SERVICE_USER:$service_group" "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data"
+  run_root chown "root:$service_group" "$STATE_DIR"
+  run_root chmod 750 "$STATE_DIR"
+  run_root chown -R "$SERVICE_USER:$service_group" \
+    "$STATE_DIR/data" "$STATE_DIR/logs" "$STATE_DIR/redis" "$STATE_DIR/reports"
+  run_root chmod -R u+rwX,g+rX,o-rwx \
+    "$STATE_DIR/data" "$STATE_DIR/logs" "$STATE_DIR/redis" "$STATE_DIR/reports"
   run_as_service test -r "$PROJECT_ROOT/package.json" || fatal "Service user cannot read the checkout"
   run_as_service test -r "$PROJECT_ROOT/tsconfig.json" || fatal "Service user cannot read tsconfig.json"
   run_as_service test -x "$RUNTIME_DIR/start-app.sh" || fatal "Service user cannot execute the app wrapper"
@@ -1389,7 +1700,10 @@ prepare_runtime_permissions() {
   run_as_service test -x "$RUNTIME_DIR/start-recovery.sh" || fatal "Service user cannot execute the recovery wrapper"
   run_as_service test -r "$ENV_FILE" || fatal "Service user cannot read the production environment"
   run_as_service test -w "$PROJECT_ROOT/.next/cache" || fatal "Service user cannot write the Next runtime cache"
-  run_as_service test -w "$PROJECT_ROOT/.agent-logs" || fatal "Service user cannot write operator reports"
+  run_as_service test -w "$STATE_DIR/data" || fatal "Service user cannot write durable application data"
+  run_as_service test -w "$STATE_DIR/logs" || fatal "Service user cannot write durable logs"
+  run_as_service test -w "$STATE_DIR/redis" || fatal "Service user cannot write durable Redis state"
+  run_as_service test -w "$STATE_DIR/reports" || fatal "Service user cannot write operator reports"
   ok "Runtime artifacts are owned by the unprivileged service identity"
 }
 
@@ -1423,6 +1737,8 @@ install_systemd_runtime() {
   local recovery_timer="/etc/systemd/system/$APP_NAME-recovery.timer"
   local redis_governor_unit="/etc/systemd/system/$APP_NAME-redis-governor.service"
   local redis_governor_timer="/etc/systemd/system/$APP_NAME-redis-governor.timer"
+  local legacy_redis_governor_unit="/etc/systemd/system/$APP_NAME-redis-memory.service"
+  local legacy_redis_governor_timer="/etc/systemd/system/$APP_NAME-redis-memory.timer"
   local redis_unit="/etc/systemd/system/$APP_NAME-redis.service"
   local runtime_high_mb runtime_max_mb scheduler_max_mb direct_trade_max_mb
   runtime_high_mb="$(env_value CTS_RUNTIME_MEMORY_HIGH_MB)"
@@ -1434,6 +1750,12 @@ install_systemd_runtime() {
   direct_trade_max_mb="$(env_value CTS_DIRECT_TRADE_MEMORY_MAX_MB)"
   [[ "$scheduler_max_mb" =~ ^[0-9]+$ ]] || scheduler_max_mb=384
   [[ "$direct_trade_max_mb" =~ ^[0-9]+$ ]] || direct_trade_max_mb=384
+
+  # Retire the pre-governor timer before publishing replacement units. Its
+  # ExecStart may point into a deleted checkout during clean reinstalls.
+  run_root systemctl disable --now "$APP_NAME-redis-memory.timer" \
+    "$APP_NAME-redis-memory.service" 2>/dev/null || true
+  run_root rm -f -- "$legacy_redis_governor_unit" "$legacy_redis_governor_timer"
 
   if [[ -f "$RUNTIME_DIR/redis.pid" ]]; then
     local bootstrap_pid
@@ -1458,8 +1780,8 @@ User=$SERVICE_USER
 WorkingDirectory=$PROJECT_ROOT
 EnvironmentFile=$ENV_FILE
 Environment=CTS_NPM_REDIS_ROOT=$RUNTIME_DIR/npm-redis/node_modules
-Environment=CTS_REDIS_DATA_DIR=$RUNTIME_DIR/redis-data
-Environment=CTS_REDIS_PORT=6379
+Environment=CTS_REDIS_DATA_DIR=$STATE_DIR/redis
+Environment=CTS_REDIS_PORT=$REDIS_PORT
 Environment=REDISMS_DOWNLOAD_DIR=$RUNTIME_DIR/redis-binaries
 ExecStart=$RUNTIME_DIR/start-redis.sh
 Restart=always
@@ -1851,6 +2173,8 @@ info "App service: $APP_NAME"
 info "Scheduler service: $APP_NAME-scheduler"
 info "Direct-Trade processor service: $APP_NAME-direct-trade"
 info "Environment: $ENV_FILE (owner/group-only; secrets were not printed)"
+info "Durable state: $STATE_DIR (preserved across update, uninstall, and clean reinstall)"
+info "Redis namespace: logical DB $REDIS_DB; npm fallback port $REDIS_PORT"
 if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
   info "Safe simulation is active; live exchange execution remains disabled by explicit override."
 else

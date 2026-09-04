@@ -12,10 +12,10 @@ and future work on CTS-K-N. It intentionally contains no secret values.
 | Installation | `/opt/cts-kn` |
 | Service name | `cts-kn` |
 | Public application | `http://152.53.114.112:3002/` |
-| Main environment | `/var/lib/cts-kn/.env.production.local` |
-| Credential archive | `/var/lib/cts-kn/credentials` |
-| Forex archive | `/var/lib/cts-kn/forex` |
-| Backup root | `/var/backups/cts-kn` |
+| Main environment | `/var/lib/cts/instances/cts-kn/.env.production.local` |
+| Credential archive | `/var/lib/cts/instances/cts-kn/credentials` |
+| Forex archive | `/var/lib/cts/instances/cts-kn/forex` |
+| Backup root | `/var/backups/cts/cts-kn` |
 
 The environment is outside the replaceable Git checkout. New installs default
 to this location, existing install metadata remains authoritative, and clean
@@ -39,9 +39,12 @@ The production installation has one owner for each responsibility:
 - `cts-kn-redis-governor.timer`: host-relative Redis memory policy.
 - native `redis-server` (or the installer-owned fallback): shared durable state.
 
-The clean bootstrap stops every unit and PM2 owner, then terminates only stale
-processes proven to belong to `/opt/cts-kn`. An unrelated process on port 3002
-is never killed; installation fails with a clear port-ownership error.
+The clean bootstrap stops every app, scheduler, Direct-Trade, recovery, and
+Redis-governor unit (including the retired `redis-memory` timer) plus every PM2
+owner, then terminates only stale processes proven to belong to `/opt/cts-kn`.
+The fresh installer always re-arms maintenance even when those old services are
+already inactive. An unrelated process on port 3002 is never killed;
+installation fails with a clear port-ownership error.
 
 ## Exchange safety boundary
 
@@ -79,12 +82,14 @@ sudo bash "$bootstrap_dir/scripts/bootstrap-install.sh" \
   --port 3002 \
   --runtime systemd \
   --service-user cts-kn \
-  --env-file /var/lib/cts-kn/.env.production.local \
+  --state-dir /var/lib/cts/instances/cts-kn \
   --public-url http://152.53.114.112:3002 \
   --branch main \
   --repository https://github.com/mxssnx-creator/CTS-K-N.git \
+  --redis-mode native \
+  --redis-db 0 \
   --enable-live \
-  -- --redis-mode native --reinstall
+  -- --reinstall
 ```
 
 The installer performs host preflight, pinned package installation, frozen
