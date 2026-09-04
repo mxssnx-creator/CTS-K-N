@@ -1184,7 +1184,12 @@ copy_missing_state() {
 }
 
 migrate_legacy_instance_state() {
-  local legacy_root="/var/lib/$APP_NAME" legacy_env="$legacy_root/.env.production.local"
+  # Bash expands every assignment in one `local` command before assigning any
+  # of them. Split dependent values so `set -u` cannot observe legacy_root as
+  # unbound on the first clean migration.
+  local legacy_root legacy_env
+  legacy_root="/var/lib/$APP_NAME"
+  legacy_env="$legacy_root/.env.production.local"
   run_root install -d -m 0750 -- "$STATE_DIR"
   run_root install -d -m 0750 -- "$STATE_DIR/data" "$STATE_DIR/logs" "$STATE_DIR/redis" "$STATE_DIR/reports"
   run_root install -d -m 0700 -o root -g root -- "$STATE_DIR/credentials" "$STATE_DIR/forex" "$STATE_DIR/backups"
