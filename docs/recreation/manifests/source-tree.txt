@@ -1303,6 +1303,7 @@ lib/real-trade-gates.ts
 lib/redis-db.ts
 lib/redis-idempotent-list.ts
 lib/redis-lock-utils.ts
+lib/redis-memory-policy.cjs
 lib/redis-migrations.ts
 lib/redis-operations.ts
 lib/redis-persistence.ts
@@ -1527,6 +1528,7 @@ scripts/quickstart-live-trading.js
 scripts/rebuild-live-order-counters.mjs
 scripts/rebuild-live-position-lifetime-summary.ts
 scripts/reconcile-bingx-x02-protection-slot.ts
+scripts/redis-memory-governor.mjs
 scripts/redis-persistence-cleanup.mjs
 scripts/regression/direct-trade-cycle-serialization.test.mjs
 scripts/regression/live-stage-simulated-protection.test.ts
