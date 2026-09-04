@@ -16,6 +16,10 @@ describe("BingX Prod-VST connector contract", () => {
 
   afterEach(() => {
     global.fetch = originalFetch
+    ;(BingXConnector as any).swapMarkets?.clear()
+    ;(BingXConnector as any).swapMarketsInFlight?.clear()
+    ;(BingXConnector as any).invalidTickerSymbols?.clear()
+    ;(BingXConnector as any).tickerCooldownUntil?.clear()
     ;(BingXConnector as any).openOrdersSnapshotCache?.clear()
     ;(BingXConnector as any).sharedTimeOffset = 0
     ;(BingXConnector as any).sharedLastSync = 0
@@ -118,6 +122,9 @@ describe("BingX Prod-VST connector contract", () => {
             },
           },
         })
+      }
+      if (url.pathname === "/openApi/swap/v2/quote/contracts") {
+        return Response.json({ code: 0, data: [{ symbol: "BTC-USDT" }] })
       }
       if (url.pathname === "/openApi/swap/v2/quote/ticker") {
         return Response.json({ code: 0, data: { symbol: "BTC-USDT", lastPrice: "60000" } })
@@ -576,6 +583,9 @@ describe("BingX Prod-VST connector contract", () => {
       seen.push(url)
       if (url.pathname === "/openApi/swap/v2/server/time") {
         return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      }
+      if (url.pathname === "/openApi/swap/v2/quote/contracts") {
+        return Response.json({ code: 0, data: [{ symbol: "BTC-USDT" }] })
       }
       if (url.pathname === "/openApi/swap/v2/quote/ticker") {
         return Response.json({ code: 0, data: { symbol: "BTC-USDT", lastPrice: "60000" } })

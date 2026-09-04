@@ -807,8 +807,10 @@ describe("historic runtime generation stability", () => {
     ).toEqual([102, 103])
   })
 
-  test("closes Base-PF pending rows exactly once and persists the realized aggregate", async () => {
-    const connectionId = `pending-outcome-close-${Date.now()}`
+  test.each([
+    ["long", "list"], ["short", "list"], ["long", "legacy"], ["short", "legacy"],
+  ])("closes pending %s rows in %s storage and refreshes cached validation exactly once", async (direction, storage) => {
+    const connectionId = `pending-outcome-close-${direction}-${storage}-${Date.now()}`
     const symbol = "BTCUSDT"
     const client = getRedisClient()
     const setKey = `indication_set:${connectionId}:${symbol}:direction:long:test`
@@ -826,18 +828,22 @@ describe("historic runtime generation stability", () => {
     const openedAt = Date.now() - 180_000
     const pendingPayload = JSON.stringify({
       setKey,
-      direction: "long",
+      direction,
       openedAt,
     })
     const pendingEntry = {
       id: "pending-base-row",
       timestamp: new Date(openedAt).toISOString(),
       type: "direction",
-      direction: "long",
+      direction,
+      validated: false,
+      setKey,
       profitFactor: 0.8,
       metadata: {
-        direction: "long",
+        direction,
         outcomePending: true,
+        bootstrapWithoutHistory: true,
+        validationState: "pending_forward_outcome",
         positionCostRatio: 0.8,
       },
     }
@@ -853,12 +859,15 @@ describe("historic runtime generation stability", () => {
         outcomeIndexKey,
         ...setIndexes,
       )
-      await client.rpush(setKey, JSON.stringify(pendingEntry))
+      if (storage === "legacy") await client.set(setKey, JSON.stringify([pendingEntry]))
+      else await client.rpush(setKey, JSON.stringify(pendingEntry))
       await client.rpush(pendingKey, pendingPayload)
       await client.sadd(guardKey, setKey)
 
       const processor = new IndicationSetsProcessor(connectionId)
       await (processor as any).settingsReady
+      ;(processor as any).baseMinimumPfRatio = 1.1
+      ;(processor as any).trendPositionCostPct = 0.1
       const marketData = {
         executionPrice: 100,
         candles: [
@@ -880,6 +889,19 @@ describe("historic runtime generation stability", () => {
       )
       expect(Number(realized.profitFactor)).toBe(Number(realized.metadata?.positionCostRatio))
       expect(Number(realized.profitFactor)).not.toBe(0.8)
+      const validated = direction === "long"
+      expect(realized.validated).toBe(validated)
+      expect(realized.metadata).toMatchObject({
+        bootstrapWithoutHistory: false,
+        validationState: validated ? "validated" : "rejected",
+        outcomeSampleCount: 1,
+      })
+      const refreshed = await (processor as any).refreshCachedOutcomeRows([pendingEntry])
+      expect(refreshed[0]).toMatchObject({
+        validated,
+        metadata: { outcomePending: false, validationState: validated ? "validated" : "rejected" },
+      })
+      expect(pendingEntry.validated).toBe(false)
       await expect(client.llen(pendingKey)).resolves.toBe(0)
       await expect(client.sismember(guardKey, setKey)).resolves.toBe(0)
       await expect(client.llen(outcomesKey)).resolves.toBe(1)

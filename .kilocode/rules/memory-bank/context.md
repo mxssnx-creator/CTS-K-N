@@ -1,5 +1,66 @@
 # Active Context: CTS-K-N Trading System (main project)
-## Active continuation 2026-09-04 — independent connection margin call
+## Active continuation 2026-09-04 — native statistics and VST verification
+
+- PR310 is merged and deployed: main/remote revision
+  `9e9f5b1ef2f089e77ae66c8d4cbb4e30d06c51af`. Independent session-equity margin
+  calls default to 30% for X01 and X02. The native API isolation/restart check
+  passed 7/7, and the new panel was observed in the production browser.
+- Canonical checkout and concurrent work remain untouched. This continuation
+  uses `/workspace/CTS-K-N-worktrees/vst-margin-20260904`, branch
+  `codex/post-margin-verification-20260904`, based on merged PR310.
+- User explicitly authorized rollout, push/merge/backups and insists on actual
+  X02 VST orders/fills, correct nonzero counts and intensive screenshot checks.
+  Do not ask for another generic deployment confirmation. X01/Mainnet and all
+  Bybit venue writes remain prohibited. Counts must describe actual evidence.
+- Root cause of native-only zero/misaligned counts: NodeRedisClientAdapter.multi
+  silently omitted unrecognized lowercase commands (HINCRBY, LRANGE, LPUSH,
+  etc.) and passed collection members in the wrong calling convention. The
+  adapter now queues the complete native command set, normalizes arguments,
+  preserves result ordering and rejects unsupported queues before EXEC.
+- Closed forward outcomes now persist validated/rejected state and refresh the
+  current snapshot. The Lua discovery-index loop must exclude the final dedupe
+  ZSET: its previous SADD raised WRONGTYPE after the row had already changed,
+  losing the acknowledgement that triggers cache refresh.
+- `pnpm test:redis-native` starts an isolated native Redis with no exchange
+  credentials. It verifies 12 mixed batch operations and four long/short,
+  LIST/legacy outcome cases, including cache refresh and idempotence. Passed
+  on the remote native server; inline-only mocks had missed these defects.
+- Live fallback lookup now caches compact slot-to-ID membership, revalidating
+  complete membership and reading matching positions fresh. The old fallback
+  repeatedly decoded the entire 350-position book for every absent candidate.
+- BingX ticker admission uses the selected environment's contracts inventory,
+  remembers invalid symbols and honors the venue's quoted 109429 retry time.
+  Its quote cooldown does not block private safety/close requests.
+- The VST harness now retains the canonical `bingx-x02` identity in its isolated
+  UUID-owned database. A random synthetic connection ID had passed Direct
+  orders but failed Main/Preset/Signal's LIVE_ORDER_CONNECTION_IDS guard.
+  Validate the existing allow-list before placing any test order.
+- Full current Jest gate: 274 suites / 1,886 tests passed. TypeScript and changed
+  file ESLint passed. Native coordination runner passed. Remote build/10-minute
+  32-symbol soak is running at `/var/tmp/cts-kn-main-diagnostic-r4-20260904`, unit
+  `cts-kn-main-diagnostic-r4-resume-20260904`. A verifier-only optional-method
+  TypeScript annotation was corrected after the first R4 build attempt.
+- Prior 32-symbol R3 reached four Main cycles and 350 simulated positions, but
+  failed the heap-growth gate. R4 tests the repaired native batches with a
+  smaller 2.5-GiB heap and 1.5/3-GiB soft/hard memory thresholds; do not weaken
+  soak acceptance criteria or call R3 a pass.
+- Authenticated VST R3 stopped after two cycles at the connection allow-list
+  mismatch; cleanupComplete=true, owned exposure/orders reconciled and official
+  services restored. Private report remains under /opt/cts-kn/.agent-logs.
+  A complete 20-minute, 16-cycle proof is still required after this correction.
+- Production after PR310 rollout initially passed all installer checks but has
+  since shown health timeouts, recovery restarts and a browser 502 screenshot.
+  Do not describe it as continuously stable until the corrective release is
+  deployed and the user-requested UI/API/statistics checks pass again.
+- Backups: local `20260904T220747Z-pre-native-outcome-fix` and later checkpoints
+  under `/workspace/backups/CTS-K-N`; remote
+  `/var/backups/cts-kn/pre-margin-vst-r3-20260904`; installer rollback
+  `/var/backups/cts/cts-kn/20260904T212630Z`. All source bundles/checksums verified.
+- Next: finish the R4 soak, publish/review/merge this release, deploy only green
+  main with fresh backup, run full owned VST lifecycle, intensive screenshots,
+  compare API counts against durable ledgers and record measured memory/DB data.
+
+## Archived pre-PR310 planning — independent connection margin call
 
 - Canonical source remains `/workspace/CTS-K-N`. Another concurrent chat changed
   its branch, so this release is isolated in the same repository's worktree

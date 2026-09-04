@@ -34,6 +34,7 @@ import {
 import { nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { assertMarginCallEntryAllowed, monitorConnectionMarginCall } from "@/lib/margin-call"
+import { LiveSlotLookupCache } from "@/lib/live-slot-lookup-cache"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import {
@@ -3741,6 +3742,8 @@ function initializeIndependentBlockSeed(
   if (leg) position.blockLegs = [leg]
 }
 
+const liveSlotLookupCache = new LiveSlotLookupCache()
+
 async function findOpenLivePositionByDir(
   connId: string,
   symbol: string,
@@ -3758,14 +3761,28 @@ async function findOpenLivePositionByDir(
     await evalLockLua(client, RELEASE_LOCK_LUA, slotKey, [String(indexedId)]).catch(() => 0)
   }
 
-  // Legacy/recovery fallback: an older snapshot may not have slot indexes.
-  // Repair it after the first bounded full scan so subsequent dispatches are
-  // constant-time without changing the existing matching semantics.
-  const positions = await getLivePositions(connId)
-  for (const p of positions) {
-    if (matchesLiveSlot(p, symbol, side, executionSlot)) {
-      await client.set(slotKey, p.id).catch(() => null)
-      return p
+  // Every missing candidate formerly reloaded the entire open book. Thousands
+  // of distinct Signal lanes at capacity then deserialized the same 350 rows
+  // twice per candidate. Compare complete durable membership and retain only
+  // slot -> IDs; a matching position is always read fresh before it is used.
+  const ids = await client.lrange(`live:positions:${connId}`, 0, -1)
+  const matches = await liveSlotLookupCache.lookup(connId, ids.map(String), slotKey, async (members) => {
+    const rows: Array<{ id: string; slot: string }> = []
+    for (let offset = 0; offset < members.length; offset += 32) {
+      const positions = await Promise.all(members.slice(offset, offset + 32)
+        .map((id) => readLivePositionSnapshot(client, connId, id).catch(() => null)))
+      for (const position of positions) {
+        if (!position || !position.direction || !isActiveLiveSlotStatus(position.status)) continue
+        rows.push({ id: position.id, slot: livePositionSlotIndexKey(connId, position.symbol, position.direction, liveExecutionSlot(position)) })
+      }
+    }
+    return rows
+  })
+  for (const id of matches) {
+    const position = await readLivePositionSnapshot(client, connId, id).catch(() => null)
+    if (position && matchesLiveSlot(position, symbol, side, executionSlot)) {
+      await client.set(slotKey, position.id, { NX: true }).catch(() => null)
+      return position
     }
   }
   return null

@@ -4,7 +4,7 @@ ALLOW_API_TRADE_ENGINE_FOREGROUND	application-runtime	no	no	4	FIXES-APPLIED-SESS
 ALLOW_BINGX_LIVE_PROTECTION_CLEANUP	test-or-operator-tool	no	no	1	scripts/cleanup-bingx-cts-protection-orders.ts
 ALLOW_INLINE_REDIS_LIVE_TRADING	application-runtime	no	yes	16	.env.example,LIVE_TRADING_SETUP.md,__tests__/integration/main-engine-live-dispatch.test.ts,__tests__/unit/inline-local-redis.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,custom-worker.ts,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,lib/trade-engine-auto-start.ts,lib/trade-engine.ts,scripts/kilo-deploy-preflight.mjs,scripts/run-bingx-vst-live-soak.ts
 ALLOW_KILO_SQLITE_LIVE_TRADING	application-runtime	no	yes	6	.env.example,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/trade-engine-auto-start.ts,lib/trade-engine.ts,scripts/kilo-deploy-preflight.mjs
-ALLOW_LIVE_ORDER_PLACEMENT	application-runtime	no	yes	9	.env.example,__tests__/unit/direct-trade-live-connector.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/runtime/dashboard-pulse/route.ts,lib/live-order-safety.ts,lib/real-trade-gates.ts,scripts/production-deploy-init.mjs,scripts/run-bingx-vst-live-soak.ts
+ALLOW_LIVE_ORDER_PLACEMENT	application-runtime	no	yes	10	.env.example,__tests__/unit/direct-trade-live-connector.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/runtime/dashboard-pulse/route.ts,lib/live-order-safety.ts,lib/real-trade-gates.ts,scripts/production-deploy-init.mjs,scripts/run-bingx-vst-live-soak.ts,scripts/verify-native-redis-coordination.ts
 ALLOW_PROCESS_LOCAL_DEPLOY_VERIFY	test-or-operator-tool	no	no	1	scripts/verify-deployment-contract.mjs
 ALLOW_PROD_INLINE_REDIS	application-runtime	no	yes	9	.env.example,__tests__/unit/requested-regressions.test.ts,custom-worker.ts,lib/production-readiness.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/kilo-deploy-preflight.mjs,scripts/run-bingx-vst-live-soak.ts,scripts/verify-prod-soak.mjs
 ALLOW_PROD_SIMULATED	application-runtime	no	yes	10	.env.example,__tests__/integration/live-order-service.test.ts,__tests__/unit/exchange-connector-factory.test.ts,__tests__/unit/exchange-force-simulated.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/trade-engine/quick-start/route.ts,lib/exchange-connectors/factory.ts,lib/exchange-connectors/index.ts,lib/live-order-service.ts,lib/market-data-loader.ts
@@ -96,6 +96,7 @@ CTS_LOG_DIR	test-or-operator-tool	no	yes	1	.env.example
 CTS_LOG_MAX_BYTES	test-or-operator-tool	no	yes	1	.env.example
 CTS_LOG_MAX_LINES	test-or-operator-tool	no	yes	1	.env.example
 CTS_MAINTENANCE_GC_INTERVAL_MS	application-runtime	no	yes	3	.env.example,lib/trade-engine/engine-manager.ts,scripts/run-dev-preview-check.mjs
+CTS_NATIVE_REDIS_VERIFY	test-or-operator-tool	no	no	1	scripts/verify-native-redis-coordination.ts
 CTS_NODE_BIN	test-or-operator-tool	no	no	1	scripts/start-production.mjs
 CTS_NODE_HEAP_MB	application-runtime	no	no	5	__tests__/unit/requested-regressions.test.ts,lib/startup-coordinator.ts,lib/trade-engine/engine-manager.ts,scripts/build-next-with-trace-retry.mjs,scripts/verify-prod-soak.mjs
 CTS_NPM_REDIS_ROOT	test-or-operator-tool	no	no	2	scripts/npm-redis-service.mjs,scripts/preview-redis-harness.mjs
@@ -265,10 +266,11 @@ ENGINE_REFRESH_REQUEST_TTL_MS	application-runtime	no	no	2	__tests__/unit/engine-
 ENGINE_STALL_THRESHOLD_MS	application-runtime	no	no	1	lib/trade-engine.ts
 ENGINE_SYMBOL_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 FORCE_LIVE	application-runtime	no	yes	12	.env.example,__tests__/unit/direct-trade-live-connector.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,__tests__/unit/signal-indication.test.ts,lib/market-data-loader.ts,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/signal-indication.ts,scripts/production-deploy-init.mjs,scripts/run-bingx-vst-live-soak.ts
-FORCE_SIMULATED	application-runtime	no	yes	16	.env.example,__tests__/integration/live-order-service.test.ts,__tests__/unit/direct-trade-live-connector.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,__tests__/unit/exchange-force-simulated.test.ts,__tests__/unit/install-deployment-contract.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,__tests__/unit/signal-indication.test.ts,app/api/trade-engine/direct-trade/route.ts,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/signal-indication.ts,scripts/production-deploy-init.mjs,scripts/run-bingx-vst-live-soak.ts
+FORCE_SIMULATED	application-runtime	no	yes	17	.env.example,__tests__/integration/live-order-service.test.ts,__tests__/unit/direct-trade-live-connector.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,__tests__/unit/exchange-force-simulated.test.ts,__tests__/unit/install-deployment-contract.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,__tests__/unit/signal-indication.test.ts,app/api/trade-engine/direct-trade/route.ts,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/signal-indication.ts,scripts/production-deploy-init.mjs,scripts/run-bingx-vst-live-soak.ts,scripts/verify-native-redis-coordination.ts
 HISTORIC_CANDLE_CHUNK_SIZE	test-or-operator-tool	no	yes	1	.env.example
 HISTORIC_CHUNK_READ_BATCH	test-or-operator-tool	no	yes	1	.env.example
 HISTORIC_CHUNK_WRITE_BATCH	test-or-operator-tool	no	yes	1	.env.example
+HOME	test-or-operator-tool	no	no	1	scripts/run-native-redis-coordination.mjs
 HOST	application-runtime	no	no	3	ops/server-access-dashboard/server/access-dashboard.mjs,scripts/smoke-routes-test.mjs,scripts/start-production.mjs
 HOSTNAME	test-or-operator-tool	no	no	1	scripts/start-production.mjs
 INDICATION_CANDIDATE_YIELD_EVERY	application-runtime	no	yes	3	.env.example,__tests__/unit/requested-regressions.test.ts,lib/indication-sets-processor.ts
@@ -341,7 +343,7 @@ NODE_OPTIONS	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.m
 ORANGEX_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
 ORANGEX_API_SECRET	test-or-operator-tool	yes	yes	1	.env.example
 ORPHAN_PROGRESS_SECOND_CONFIRM_MS	application-runtime	no	no	1	lib/startup-coordinator.ts
-PATH	application-runtime	no	no	2	__tests__/unit/install-deployment-contract.test.ts,app/api/install/remote/route.ts
+PATH	application-runtime	no	no	3	__tests__/unit/install-deployment-contract.test.ts,app/api/install/remote/route.ts,scripts/run-native-redis-coordination.mjs
 PIONEX_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
 PIONEX_API_SECRET	test-or-operator-tool	yes	yes	1	.env.example
 POLL_MS	test-or-operator-tool	no	no	1	scripts/run-engine-probe.mjs

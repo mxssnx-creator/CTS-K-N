@@ -3674,31 +3674,90 @@ class NodeRedisClientAdapter implements RedisClientLike {
             if (typeof client.multi === "function") {
               const tx = client.multi()
               const txMethodAliases: Record<string, string> = {
+                mget: "mGet",
+                setex: "setEx",
+                incrby: "incrBy",
                 hset: "hSet",
+                hmset: "hSet",
+                hget: "hGet",
                 hgetall: "hGetAll",
+                hlen: "hLen",
+                hdel: "hDel",
+                hincrby: "hIncrBy",
+                hincrbyfloat: "hIncrByFloat",
+                lpush: "lPush",
+                rpush: "rPush",
+                lrange: "lRange",
+                ltrim: "lTrim",
+                llen: "lLen",
+                lrem: "lRem",
+                lpos: "lPos",
+                lpop: "lPop",
+                rpop: "rPop",
                 zadd: "zAdd",
                 zrange: "zRange",
                 zrevrange: "zRange",
+                zrangebyscore: "zRangeByScore",
+                zremrangebyscore: "zRemRangeByScore",
+                zremrangebyrank: "zRemRangeByRank",
+                zcount: "zCount",
+                zscore: "zScore",
                 zcard: "zCard",
                 sadd: "sAdd",
+                scard: "sCard",
+                srem: "sRem",
+                sismember: "sIsMember",
                 smembers: "sMembers",
+                sscan: "sScan",
               }
               for (const { method, args } of ops) {
-                if (method === "zadd" && typeof tx.zAdd === "function") {
-                  tx.zAdd(args[0], { score: args[1], value: args[2] })
-                  continue
-                }
-                if (method === "zrevrange" && typeof tx.zRange === "function") {
-                  tx.zRange(args[0], args[1], args[2], { REV: true } as any)
-                  continue
-                }
                 const txMethod = typeof tx[method] === "function" ? method : txMethodAliases[method]
-                if (txMethod && typeof tx[txMethod] === "function") tx[txMethod](...args)
+                if (!txMethod || typeof tx[txMethod] !== "function") {
+                  // Dropping an unsupported command shifts every subsequent
+                  // result and leaves counters/lists unwritten. Reject the
+                  // whole queue before EXEC so callers can safely retry.
+                  throw new Error(`Unsupported native Redis transaction command: ${method}`)
+                }
+                let nativeArgs = args
+                if (method === "mget" || method === "del") {
+                  nativeArgs = [args]
+                } else if (["sadd", "srem", "lpush", "rpush", "hdel"].includes(method)) {
+                  nativeArgs = [args[0], args.slice(1)]
+                } else if (method === "hset") {
+                  nativeArgs = typeof args[1] === "string"
+                    ? [args[0], args[1], redisHashScalar(args[2])]
+                    : [args[0], normalizeRedisHash(args[1])]
+                } else if (method === "hmset") {
+                  const values: Record<string, string> = {}
+                  for (let index = 1; index < args.length; index += 2) {
+                    values[String(args[index])] = redisHashScalar(args[index + 1])
+                  }
+                  nativeArgs = [args[0], values]
+                } else if (method === "zadd") {
+                  nativeArgs = [args[0], { score: args[1], value: args[2] }]
+                } else if (method === "zrevrange") {
+                  nativeArgs = [args[0], args[1], args[2], { REV: true }]
+                } else if (method === "scan") {
+                  nativeArgs = [String(args[0]), normalizeScanOptions(args.slice(1))]
+                } else if (method === "sscan") {
+                  nativeArgs = [args[0], String(args[1]), normalizeScanOptions(args.slice(2))]
+                }
+                tx[txMethod](...nativeArgs)
               }
-              return tx.exec()
+              const results = await tx.exec()
+              return results.map((value: any, index: number) => {
+                if (ops[index].method === "sismember") return value ? 1 : 0
+                if (ops[index].method === "zscore") return value == null ? null : String(value)
+                return value
+              })
             }
             const results: any[] = []
-            for (const { method, args } of ops) results.push(await self[method]?.(...args))
+            for (const { method, args } of ops) {
+              if (typeof self[method] !== "function") {
+                throw new Error(`Unsupported native Redis transaction command: ${method}`)
+              }
+              results.push(await self[method](...args))
+            }
             return results
           }
         }
