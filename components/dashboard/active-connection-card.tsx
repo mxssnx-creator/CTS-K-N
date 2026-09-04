@@ -3106,30 +3106,17 @@ export function ActiveConnectionCard({
                                      </span> axis (net)
                                    </span>
                                  )}
-                                {/* ── Open-position count for Real stage ───────
-                                    Real-stage's `count` field is the cumulative
-                                    Set tally — it does NOT surface the actual
-                                    currently-open Real positions. Operators
-                                    repeatedly reported "Stage Real showing no
-                                    open Positions" because of this. We clamp to
-                                    `Math.max(realOpen, liveOpenPositions)` so
-                                    the value never reads 0 while live mirrors
-                                    are still on the exchange (Live positions
-                                    cannot exist without an upstream Real
-                                    promotion). */}
+                                {/* Real and exchange positions have independent
+                                    lifecycles; show the measured Real count. */}
                                 {label === "Real" && (() => {
-                                  const realOpenClamped = Math.max(
-                                    prehistoricStats.realOpen || 0,
-                                    prehistoricStats.liveOpenPositions || 0,
-                                  )
-                                  if (realOpenClamped <= 0) return null
+                                  const realOpen = prehistoricStats.realOpen || 0
                                   return (
                                     <span
                                       className="text-muted-foreground"
-                                      title="Currently-open validated Real positions awaiting mirror into exchange orders (clamped to live count so it never reads 0 while live mirrors are still alive)."
+                                      title="Currently open Real-stage positions, independent of exchange-position lifetimes."
                                     >
                                       <span className="text-emerald-700 dark:text-emerald-400 font-semibold tabular-nums">
-                                        {realOpenClamped}
+                                        {realOpen}
                                       </span>{" "}
                                       open
                                     </span>

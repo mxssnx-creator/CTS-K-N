@@ -383,9 +383,14 @@ export function deriveVstSoakProtectionBand(input: {
     )
   }
   const source = liquidationPrice > 0 ? "liquidation" as const : "fallback" as const
+  const testBandDistance = Math.max(entryPrice * 0.08, priceTick * 40)
+  // A tiny cross-margin short can have a valid liquidation price hundreds
+  // of times above entry. Using that entire distance made its TP negative.
+  // Keep the test band bounded while the real liquidation boundary remains
+  // authoritative whenever it is closer than the normal test band.
   const riskDistance = source === "liquidation"
-    ? liquidationDistance
-    : Math.max(entryPrice * 0.08, priceTick * 40)
+    ? Math.min(liquidationDistance, testBandDistance)
+    : testBandDistance
   // Production security coordination adds 10% of the largest independent
   // entry-to-row-SL range, not 10% of the full liquidation/fallback range.
   const securityStopGap = Math.max(priceTick * 2, riskDistance * 0.6 * 0.1)

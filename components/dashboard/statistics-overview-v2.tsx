@@ -9,6 +9,7 @@ import { PerformanceTiers } from "@/components/dashboard/performance-tiers"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import { projectOverviewCurrentCounts } from "@/lib/statistics-overview-current-counts"
 
 interface CompactStats {
   marketType: "crypto" | "forex"
@@ -805,7 +806,6 @@ export function StatisticsOverviewV2() {
         // (preferred) and `strategyDetail.live` (extra fields) by the
         // /stats endpoint.
         const liveExec = d.liveExecution || {}
-        const liveDetail = d.strategyDetail?.live || {}
 
         // ── Main-stage breakdown sources ────────────────────────────
         // Three distinct backend namespaces, all exposed by /stats:
@@ -909,41 +909,7 @@ export function StatisticsOverviewV2() {
           stratBase:        d.breakdown?.strategies?.base || 0,
           stratMain:        d.breakdown?.strategies?.main || 0,
           stratReal:        d.breakdown?.strategies?.real || 0,
-          stratLive:        d.breakdown?.strategies?.live || liveExec.positionsCreated || 0,
-          // Active-now snapshot — written per cycle by engine writers.
-          // Falls back to breakdown cumulative counts when activeCounts
-          // is 0 (hash expired, not yet written, or engine just started)
-          // so per-type tiles stay non-zero while the engine is running.
-          activeIndDirection: Number(d.activeCounts?.indications?.direction) ||
-                              Number(d.breakdown?.indications?.direction) || 0,
-          activeIndMove:      Number(d.activeCounts?.indications?.move) ||
-                              Number(d.breakdown?.indications?.move) || 0,
-          activeIndActive:    Number(d.activeCounts?.indications?.active) ||
-                              Number(d.breakdown?.indications?.active) || 0,
-          activeIndOptimal:   Number(d.activeCounts?.indications?.optimal) ||
-                              Number(d.breakdown?.indications?.optimal) || 0,
-          // Fall back to cumulative indicationsTotal when the per-cycle
-          // active-sets count is 0 — keeps the tile non-zero while the
-          // engine is running but nothing has crossed the threshold yet.
-          // Third fallback: breakdown.indications.total (type-summed)
-          // which is the most reliable cumulative source and does not
-          // depend on the per-cycle active-hash write timing.
-          activeIndTotal: (() => {
-            const active = Number(d.activeCounts?.indications?.total) || 0
-            if (active > 0) return active
-            const rt = Number(d.realtime?.indicationsTotal) || 0
-            if (rt > 0) return rt
-            return Number(d.breakdown?.indications?.total) || 0
-          })(),
-          activeStratBase:    Number(d.activeCounts?.strategies?.base)            || 0,
-          activeStratMain:    Number(d.activeCounts?.strategies?.main)            || 0,
-          activeStratReal:    Number(d.activeCounts?.strategies?.real)            || 0,
-          // Fall back to activeProgressing strategies total when activeCounts is 0.
-          activeStratTotal: (() => {
-            const active = Number(d.activeCounts?.strategies?.total) || 0
-            if (active > 0) return active
-            return Number(d.activeProgressing?.strategies?.total?.sets) || 0
-          })(),
+          ...projectOverviewCurrentCounts(d),
           mainEvaluated:    mainBreakdownEval,
           mainBaseInput,
           mainPosCountRelated,
@@ -964,8 +930,6 @@ export function StatisticsOverviewV2() {
           apStrategies:  (d.activeProgressing?.strategies  || {}) as ActiveProgressingByName,
           liveFilled:       liveExec.ordersFilled     || 0,
           liveClosed:       liveExec.positionsClosed  || 0,
-          liveWinRate:      liveExec.winRate          || liveDetail.winRate  || 0,
-          liveFillRate:     liveExec.fillRate         || liveDetail.passRatio || 0,
           liveOpenOrders:   Number(liveExec.openOrders) || 0,
           liveEntryOrders:  Number(liveExec.entryOrders) || 0,
           liveControlOrders: Number(liveExec.controlOrders) || 0,

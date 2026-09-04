@@ -145,6 +145,7 @@ unit	__tests__/unit/indication-set-type-coordination.test.ts
 unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/instaforex-base-connection.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
+unit	__tests__/unit/live-entry-budget-block-cache.test.ts
 unit	__tests__/unit/live-entry-protection-admission.test.ts
 unit	__tests__/unit/live-execution-summary.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
@@ -265,6 +266,7 @@ unit	__tests__/unit/startup-coordinator-cleanup.test.ts
 unit	__tests__/unit/startup-global-liveness.test.ts
 unit	__tests__/unit/startup-validation-runtime-health.test.ts
 unit	__tests__/unit/state-switch-coordination.test.ts
+unit	__tests__/unit/statistics-overview-current-counts.test.ts
 unit	__tests__/unit/statistics-rollups.test.ts
 unit	__tests__/unit/statistics-ui-correctness.test.ts
 unit	__tests__/unit/strategy-axis-coordination.test.ts

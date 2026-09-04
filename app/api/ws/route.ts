@@ -23,7 +23,11 @@ export async function GET(request: NextRequest) {
     // Set up SSE response headers
     const responseHeaders = new Headers({
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Cache-Control": "no-cache, no-transform",
+      // nginx buffers proxied responses by default. Flush the handshake,
+      // heartbeats and updates as they arrive instead of holding small SSE
+      // frames until a buffer fills and downstream clients time out.
+      "X-Accel-Buffering": "no",
       Connection: "keep-alive",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",

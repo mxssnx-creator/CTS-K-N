@@ -1,4 +1,56 @@
 # Active Context: CTS-K-N Trading System (main project)
+## Active follow-up — continuous statistics, admission and VST band
+
+- PR313 merged as `4cc47c34c4a01c42c7c32d83c450f4cee0406b5f`, head
+  `da8cd875b506941ee41284bcfa864a7be8f174ce`, exact tree
+  `0d40b6cd7147dacbe588c5a88326aceed93c0456`; Linux smoke 33928805746 passed.
+  Official stage-evals deployment succeeded, with 274 suites / 1,892 tests,
+  schema/shared Redis/continuity/restart checks. Backup:
+  `/var/backups/cts-kn/pre-stage-evals-deploy-20260904`; installer rollback:
+  `/var/backups/cts/cts-kn/20260904T232606Z`.
+- Browser verified exact Evals 3,540/3,402 (96.1%) and 2,835/2,835 (100%),
+  explicit Orders 0/0. Statistics showed 953 venue-history trades; BTC filter
+  yielded 13 and Reset restored 953. These unattributed venue trades are not
+  CTS pipeline fills. Screenshot saved in the shared screenshot directory.
+- Further concrete defects: Statistics stage/indication cards only loaded once;
+  now a single non-overlapping loop refreshes runtime every three seconds and
+  current counts every fifteen, without rebuilding the archive. Connection PF
+  scope and local versus venue-history archive rows are now explicit.
+- Overview V2 fell through measured active=0 to cumulative counts and used a
+  mirrored Set as one live exchange position despite confirmed execution=0.
+  Shared projection now uses only current active counts and confirmed live
+  results; regression fixtures preserve zero and real positive observations.
+  Real open counts are also independent of exchange position lifetimes.
+- nginx defaults to buffering; production lacked a buffering override for SSE.
+  The SSE route now sends X-Accel-Buffering:no and no-transform; a real stream
+  reader test verifies immediate handshake and subscriber cleanup on abort.
+- Budget refusals are now blocked entries, not venue failures. A bounded
+  one-second negative admission cache only reuses an authoritative crypto
+  ceiling below the universal $5 floor. Existing reductions/targets/adjustments
+  run before this cache; settings partition its key, and every skipped fresh
+  candidate returns a blocked result. No sizing/exposure limits were raised.
+- Native lifetime backfill applied successfully while all trading units were
+  stopped: 5,000 unique snapshots/contributions, zero missing, all error rows
+  with no executed quantities. Core-only CLI exited cleanly, no boot cleanup.
+  Backup: `/var/backups/cts-kn/pre-native-vst-r5-20260904`.
+- VST R5 did place authenticated orders. BTC Long Direct/DCA completed entry,
+  accumulation, trailing/security replacement and close. SOL Short Main/Block
+  filled twice, then protection-band derivation failed: a valid far-away cross
+  margin liquidation price (45,932.7 at entry 101.85) produced a negative TP.
+  The band now caps test distance while honoring any closer liquidation bound.
+  A regression uses that exact observed input.
+- R5 cleanup owned residuals were zero; cleanupComplete=false solely because
+  unrelated BILL Short exposure and four foreign controls disappeared during
+  the run. Keep this failed report intact; do not claim a full soak pass.
+  Fresh read-only verification confirmed zero positions/orders on every selected
+  symbol and the 0.2 SOL exception-close fill. Official services restored after
+  this verification, without touching any foreign position/order.
+  Report: `.agent-logs/bingx-vst-soak-2026-09-04T23-36-36-314Z.json`.
+  Verification: `/var/tmp/cts-kn-native-vst-r5-20260904/owned-cleanup-verification.json`.
+- Next: finish release gates, publish/merge/deploy this follow-up from green
+  main, repeat full 20-minute/16-cycle VST, retain strict foreign-baseline
+  evidence, recheck screenshots/API/current counts and runtime stability.
+
 ## Current follow-up — exact evaluated/passed display
 
 - User additionally requested Stage Sets and Evals #/# verification. The card

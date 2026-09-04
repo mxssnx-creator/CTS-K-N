@@ -35,6 +35,8 @@ import { nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { assertMarginCallEntryAllowed, monitorConnectionMarginCall } from "@/lib/margin-call"
 import { LiveSlotLookupCache } from "@/lib/live-slot-lookup-cache"
+import { createHash } from "node:crypto"
+import { LiveEntryBudgetBlockCache } from "@/lib/live-entry-budget-block-cache"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import {
@@ -1978,6 +1980,7 @@ const SIMULATED_POSITION_PROCESS_CONCURRENCY = 12
 // from management: it is revisited within one bounded sweep, while new/closed
 // rows update the Stage cache immediately through savePosition().
 const SIMULATED_POSITION_STAGE_BATCH_SIZE = 96
+const liveEntryBudgetBlocks = new LiveEntryBudgetBlockCache()
 const SIMULATED_POSITION_STAGE_BATCH_MAX = 256
 const SIMULATED_POSITION_STAGE_CACHE_MS = 1_000
 const SIMULATED_POSITION_STAGE_CACHE_MAX_CONNECTIONS = 64
@@ -12467,6 +12470,34 @@ export async function executeLivePosition(
       }
     }
 
+    // Existing targets, reductions and adjustments have already been handled.
+    // A one-second negative proof avoids repeatedly pricing and persisting
+    // thousands of impossible fresh entries. Every candidate still returns a
+    // blocked result to dispatch accounting. Any settings/connection change
+    // creates a new key; no credential values are retained in this cache.
+    const budgetBlockKey = isLiveTradeEnabled && marketType === "crypto"
+      ? createHash("sha256").update(JSON.stringify([
+          connectionId, realPosition.symbol, realPosition.direction, executionIntent,
+          livePosition.positionCostPct, initialConnectionSettings, initialAppSettings,
+        ])).digest("hex")
+      : null
+    const budgetBlock = budgetBlockKey ? liveEntryBudgetBlocks.get(budgetBlockKey) : null
+    if (budgetBlock) {
+      livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = "live_exposure_below_minimum"
+      livePosition.statusReason = budgetBlock.reason
+      livePosition.executionBlockReason = budgetBlock.reason
+      livePosition.maxExecutionNotionalUsd = budgetBlock.ceiling
+      pushStep(livePosition, "volume_admission", false, budgetBlock.reason)
+      if (liveOrderLockToken) {
+        await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken)
+        liveOrderLockToken = null
+      }
+      await incrementMetric(connectionId, "live_orders_blocked_count")
+      return livePosition
+    }
+
     const isSignalPositionCandidate = isActiveSignalPosition(
       livePosition as unknown as Record<string, unknown>,
     )
@@ -13003,15 +13034,33 @@ export async function executeLivePosition(
     let computedVolume = volumeResult?.finalVolume || volumeResult?.volume || 0
     let volumeNote = ""
     if (computedVolume <= 0 || !Number.isFinite(computedVolume)) {
-      livePosition.status = "error"
+      const ceiling = Number(volumeResult?.maxExecutionNotionalUsd)
+      const budgetBelowMinimum = ceiling > 0 &&
+        ceiling < Number(volumeResult?.exchangeMinNotionalUsd) &&
+        volumeResult?.balanceIsFallback !== true
+      livePosition.status = budgetBelowMinimum ? "rejected" : "error"
       livePosition.statusReason = volumeResult?.adjustmentReason ||
         "Live entry refused: no finite risk-budgeted executable quantity was calculated"
+      if (budgetBelowMinimum) {
+        livePosition.executionMode = "blocked"
+        livePosition.executionBlockCode = "live_exposure_below_minimum"
+        livePosition.executionBlockReason = livePosition.statusReason
+        livePosition.maxExecutionNotionalUsd = ceiling
+        if (budgetBlockKey) liveEntryBudgetBlocks.remember(budgetBlockKey, {
+          marketType,
+          finalQuantity: computedVolume,
+          ceiling,
+          universalMinimum: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD,
+          balanceIsFallback: volumeResult?.balanceIsFallback === true,
+          reason: livePosition.statusReason,
+        })
+      }
       pushStep(livePosition, "volume_calc", false, livePosition.statusReason)
       await savePosition(livePosition)
       await Promise.all([
-        incrementMetric(connectionId, "live_orders_failed_count"),
-        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
-        logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
+        incrementMetric(connectionId, budgetBelowMinimum ? "live_orders_blocked_count" : "live_orders_failed_count"),
+        ...(budgetBelowMinimum ? [] : [incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")]),
+        logProgressionEvent(connectionId, "live_trading", budgetBelowMinimum ? "warning" : "error", livePosition.statusReason, {
           symbol: realPosition.symbol,
           direction: realPosition.direction,
         }),
