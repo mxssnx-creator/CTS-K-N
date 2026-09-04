@@ -134,6 +134,7 @@ __tests__/unit/engine-progression-log-coalescing.test.ts
 __tests__/unit/engine-progression-long-cycle.test.ts
 __tests__/unit/engine-refresh-queue-claim.test.ts
 __tests__/unit/engine-refresh-queue-ttl.test.ts
+__tests__/unit/engine-structured-logging.test.ts
 __tests__/unit/env-credential-loading.test.ts
 __tests__/unit/event-stream-stability.test.ts
 __tests__/unit/events/canonical-events.test.ts

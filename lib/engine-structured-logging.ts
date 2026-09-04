@@ -34,6 +34,7 @@ class StructuredLogger {
   private flushInterval = 10000 // 10 seconds
   private flushTimer?: NodeJS.Timeout
   private flushPromise: Promise<void> | null = null
+  private destroyed = false
 
   constructor(connectionId: string) {
     this.connectionId = connectionId
@@ -48,12 +49,17 @@ class StructuredLogger {
     this.flushTimer.unref?.() // Don't block process exit
   }
 
-  destroy() {
+  async destroy() {
+    this.destroyed = true
     if (this.flushTimer) {
       clearInterval(this.flushTimer)
       this.flushTimer = undefined
     }
-    this.flushLogs() // Final flush
+    if (loggers.get(this.connectionId) === this) loggers.delete(this.connectionId)
+    // A flush may already own a batch while final progress is still buffered.
+    // Wait for both batches before teardown completes, including a partial one
+    // that will no longer have a timer to persist it.
+    while (this.flushPromise || this.logBuffer.length > 0) await this.flushLogs()
   }
 
   async logCycleStart(engine: string, cycle: number) {
@@ -104,7 +110,7 @@ class StructuredLogger {
       details: {
         cycleCount: cycle,
         cycleDuration: duration,
-        successRate: details.successRate || 100,
+        successRate: details.successRate ?? (success ? 100 : 0),
         errorCount: details.errorCount || 0,
         dataPoints: details.results,
       },
@@ -153,6 +159,7 @@ class StructuredLogger {
   }
 
   private addToBuffer(log: EngineProgressLog) {
+    if (this.destroyed) return
     this.logBuffer.push(log)
     if (this.logBuffer.length > this.maxBufferSize) {
       this.logBuffer.splice(0, this.logBuffer.length - this.maxBufferSize)
