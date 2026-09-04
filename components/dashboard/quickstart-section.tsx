@@ -257,6 +257,7 @@ interface LiveStats {
   variantDca: VariantDetail
   variantOverall: VariantDetail
   normalEnabled: boolean
+  blockOnlyEnabled: boolean
   trailingEnabled: boolean
   blockEnabled: boolean
   dcaEnabled: boolean
@@ -357,7 +358,7 @@ const EMPTY_STATS: LiveStats = {
   variantDefault:  { ...EMPTY_VARIANT }, variantTrailing: { ...EMPTY_VARIANT },
   variantBlock:    { ...EMPTY_VARIANT }, variantDca:      { ...EMPTY_VARIANT },
   variantOverall:  { ...EMPTY_VARIANT },
-  normalEnabled: true, trailingEnabled: true, blockEnabled: true, dcaEnabled: false,
+  normalEnabled: true, blockOnlyEnabled: true, trailingEnabled: true, blockEnabled: true, dcaEnabled: false,
   mainCoord: {
     ...EMPTY_MAIN_COORD,
     positionContext: { ...EMPTY_MAIN_COORD.positionContext },
@@ -644,6 +645,7 @@ export function QuickstartSection() {
         variantDca:            variant(s.strategyVariants?.dca),
         variantOverall:        variant(s.strategyVariants?.overall),
         normalEnabled:         s.connectionStageOverview?.main?.executionPolicy?.normalEnabled !== false,
+        blockOnlyEnabled:      s.connectionStageOverview?.main?.executionPolicy?.blockOnlyEnabled !== false,
         trailingEnabled:       s.connectionStageOverview?.main?.executionPolicy?.trailingEnabled !== false,
         blockEnabled:          s.connectionStageOverview?.main?.executionPolicy?.blockEnabled !== false,
         dcaEnabled:            s.connectionStageOverview?.main?.executionPolicy?.dcaEnabled === true,

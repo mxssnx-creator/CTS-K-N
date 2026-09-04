@@ -3,6 +3,7 @@ export const runtime = "nodejs"
 import { NextResponse } from "next/server"
 import fs from "fs"
 import path from "path"
+import { resolvePersistentDataDir } from "@/lib/persistent-paths"
 
 export async function POST(request: Request) {
   try {
@@ -11,7 +12,7 @@ export async function POST(request: Request) {
     console.log("[v0] Configuring database: Redis")
 
     // Create data directory for local configuration
-    const dataDir = path.join(process.cwd(), "data")
+    const dataDir = resolvePersistentDataDir(path.join(process.cwd(), "data"))
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true })
     }

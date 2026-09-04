@@ -10,6 +10,12 @@
 export type StrategyExecutionFamily = "normal" | "trailing" | "block" | "dca" | "axis" | "signal"
 
 export interface StrategyExecutionPolicy {
+  /**
+   * Execute only Block adjustment rows from the Main family. Calculation and
+   * reporting of Normal/Trailing/Pos-Count/DCA rows remains exhaustive.
+   * Signal lanes keep their independent admission policy.
+   */
+  blockOnlyEnabled: boolean
   normalEnabled: boolean
   trailingEnabled: boolean
   blockEnabled: boolean
@@ -17,6 +23,7 @@ export interface StrategyExecutionPolicy {
 }
 
 export const DEFAULT_STRATEGY_EXECUTION_POLICY: StrategyExecutionPolicy = {
+  blockOnlyEnabled: true,
   normalEnabled: true,
   trailingEnabled: true,
   blockEnabled: true,
@@ -34,6 +41,11 @@ export function normalizeStrategyExecutionPolicy(
 ): StrategyExecutionPolicy {
   const source = raw || {}
   return {
+    blockOnlyEnabled: bool(
+      source.blockOnlyEnabled ?? source.block_only_enabled ?? source.strategyBlockOnlyEnabled
+        ?? source.blockOnly ?? source.variantBlockOnly,
+      DEFAULT_STRATEGY_EXECUTION_POLICY.blockOnlyEnabled,
+    ),
     normalEnabled: bool(
       source.normalEnabled ?? source.normal_enabled ?? source.strategyNormalEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.normalEnabled,
@@ -73,6 +85,7 @@ export function classifyStrategyExecutionFamily(set: any): StrategyExecutionFami
 export function hasAnyStrategyExecutionVariantEnabled(
   policy: StrategyExecutionPolicy,
 ): boolean {
+  if (policy.blockOnlyEnabled) return policy.blockEnabled
   return policy.normalEnabled || policy.trailingEnabled || policy.blockEnabled || policy.dcaEnabled
 }
 
@@ -80,7 +93,9 @@ export function isStrategyExecutionFamilyEnabled(
   family: StrategyExecutionFamily,
   policy: StrategyExecutionPolicy,
 ): boolean {
-  if (family === "signal" || family === "axis") return true
+  if (family === "signal") return true
+  if (policy.blockOnlyEnabled) return family === "block" && policy.blockEnabled
+  if (family === "axis") return true
   if (family === "normal") return policy.normalEnabled
   if (family === "trailing") return policy.trailingEnabled
   if (family === "block") return policy.blockEnabled

@@ -35,4 +35,36 @@ describe("Redis host-relative memory policy", () => {
     expect(result.targetBytes).toBeGreaterThan(5 * 1024 * MIB)
     expect(result.overBudget).toBe(true)
   })
+
+  test("scales independent Redis processes to their host instance share", () => {
+    const shared = calculateRedisMemoryPolicy({
+      totalBytes: 16_384 * MIB,
+      availableBytes: 12_000 * MIB,
+      usedBytes: 128 * MIB,
+      instanceShare: 1,
+    })
+    const half = calculateRedisMemoryPolicy({
+      totalBytes: 16_384 * MIB,
+      availableBytes: 12_000 * MIB,
+      usedBytes: 128 * MIB,
+      instanceShare: 0.5,
+    })
+
+    expect(shared.instanceShare).toBe(1)
+    expect(half.instanceShare).toBe(0.5)
+    expect(half.targetBytes).toBeLessThanOrEqual(shared.targetBytes / 2 + 64 * MIB)
+    expect(half.targetBytes).toBeGreaterThan(128 * MIB)
+  })
+
+  test("never lowers no-eviction capacity below live data headroom", () => {
+    const policy = calculateRedisMemoryPolicy({
+      totalBytes: 4_096 * MIB,
+      availableBytes: 300 * MIB,
+      usedBytes: 900 * MIB,
+      previousState: "critical",
+      instanceShare: 0.25,
+    })
+    expect(policy.targetBytes).toBeGreaterThanOrEqual(900 * MIB * 1.2 + 64 * MIB)
+    expect(policy.overBudget).toBe(true)
+  })
 })

@@ -730,7 +730,7 @@ describe("Real-stage Block overlays", () => {
     ])
   })
 
-  test("keeps Normal, Block and DCA independent and ignores legacy Block-only", () => {
+  test("Block-Only dispatches Block rows while normal mode keeps families independent", () => {
     const standardLong = {
       ...source("BTCUSDT:direction:long#standard", "long"),
       variant: "default" as const,
@@ -749,9 +749,7 @@ describe("Real-stage Block overlays", () => {
       [standardLong, blockLong, dcaLong],
       { blockEnabled: true, blockOnly: true },
     ).map((set) => set.setKey)).toEqual([
-      standardLong.setKey,
       blockLong.setKey,
-      dcaLong.setKey,
     ])
 
     expect(selectLiveDispatchCandidates(
@@ -766,7 +764,7 @@ describe("Real-stage Block overlays", () => {
     expect(selectLiveDispatchCandidates(
       [standardLong],
       { blockEnabled: false, dcaEnabled: false, blockOnly: true },
-    ).map((set) => set.setKey)).toEqual([standardLong.setKey])
+    ).map((set) => set.setKey)).toEqual([])
 
     expect(selectLiveDispatchCandidates(
       [standardLong, blockLong, dcaLong],

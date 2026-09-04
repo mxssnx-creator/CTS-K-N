@@ -47,6 +47,7 @@ import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
+import { resolveStageRowSnapshotFreshMs } from "@/lib/stage-row-snapshot"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -2971,6 +2972,7 @@ export async function GET(
       activeStatsSymbolFilter.size,
       historicSymbolsTotal,
     )
+    const stageRowSnapshotFreshMs = resolveStageRowSnapshotFreshMs(expectedStageSymbolCount)
 
     // Track stale-symbol fields for opportunistic pruning. Without this,
     // every symbol ever evaluated (incl. ones removed from the basket
@@ -2987,10 +2989,10 @@ export async function GET(
         // ── Cross-symbol aggregation from per-symbol `s:{symbol}:*` fields ─
         // Each `(symbol, cycle)` writes a `s:{symbol}:*` bundle. We sum
         // counters and weight-mean the averages across all FRESH symbols
-        // (ts ≤ 5 min old). Symbols stale > 30 min are queued for HDEL
-        // pruning to bound the hash size.
-        const FRESH_MS = 5 * 60 * 1000
-        const PRUNE_MS = 30 * 60 * 1000
+        // inside the basket-scaled freshness budget). Older symbols are queued
+        // for bounded HDEL pruning after twice that budget (minimum 30 min).
+        const FRESH_MS = stageRowSnapshotFreshMs
+        const PRUNE_MS = Math.max(30 * 60 * 1000, FRESH_MS * 2)
         const nowMs = Date.now()
         let symCreated = 0, symEntries = 0, symRunning = 0, symProgressing = 0
         let symPassed = 0, symEvaluated = 0
@@ -3011,6 +3013,7 @@ export async function GET(
               "row_total", "row_valid", "row_overall", "row_active",
               "row_active_exact", "row_mirrored", "row_total_open",
               "row_valid_open", "row_overall_open",
+              "row_block_calculated_open",
               "apf", "addt", "apps", "aper", "dispatch_selected",
               "dispatch_suppressed", "qualified_before_materialization",
               "materialization_ceiling", "materialization_truncated",
@@ -3277,7 +3280,7 @@ export async function GET(
     const readFreshSymbolDispatchSummary = (
       suffix: "dispatch_selected" | "dispatch_deferred" | "dispatch_suppressed",
     ): DispatchSummaryRow[] => {
-      const FRESH_MS = 5 * 60 * 1000
+      const FRESH_MS = stageRowSnapshotFreshMs
       const nowMs = Date.now()
       const rows: DispatchSummaryRow[] = []
       for (const [field, raw] of Object.entries(strategyDetailLiveHash)) {
@@ -3291,7 +3294,7 @@ export async function GET(
       return mergeDispatchSummaries(rows)
     }
     const readFreshSymbolDispatchCount = (suffix: string): number => {
-      const freshMs = 5 * 60 * 1000
+      const freshMs = stageRowSnapshotFreshMs
       const nowMs = Date.now()
       let total = 0
       for (const [field, raw] of Object.entries(strategyDetailLiveHash)) {
@@ -3305,7 +3308,7 @@ export async function GET(
       return total
     }
     const readFreshSymbolDispatchMaximum = (suffix: string): number => {
-      const freshMs = 5 * 60 * 1000
+      const freshMs = stageRowSnapshotFreshMs
       const nowMs = Date.now()
       let maximum = 0
       for (const [field, raw] of Object.entries(strategyDetailLiveHash)) {
@@ -3404,7 +3407,8 @@ export async function GET(
 
       stratDetail.live = {
         // Same shape as base/main/real so the UI can reuse its row renderer:
-        avgPosPerSet:        Math.round(avgPosSize * 100) / 100,        // avg position notional (USD)
+        avgPosPerSet:        liveCreated > 0 ? 1 : 0,                  // one exchange position per Live Set
+        avgPositionNotionalUsd: Math.round(avgPosSize * 100) / 100,
         createdSets:         liveCreated,                               // positions actually created on exchange
         avgProfitFactor:     Math.round(profitFactor * 1000) / 1000,    // PF from realised PnL
         avgProcessingTimeMs: 0,                                         // not tracked for live — handled inline
@@ -3451,7 +3455,7 @@ export async function GET(
     // coordinator. They deliberately do not fall back to lifetime HINCRBY
     // totals or the global pseudo-position count: both would mix unrelated
     // stages and inflate active percentages after long runs.
-    const ROW_SNAPSHOT_FRESH_MS = 5 * 60_000
+    const ROW_SNAPSHOT_FRESH_MS = stageRowSnapshotFreshMs
     type StageRowCoverage = {
       covered: number
       total: number
@@ -3565,7 +3569,7 @@ export async function GET(
       const symbol = match[1].toUpperCase()
       if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
       const updatedAt = n(blockProfitFactorStatsHash[`s:${match[1]}:updated_at`])
-      if (updatedAt > 0 && Date.now() - updatedAt > 5 * 60_000) continue
+      if (updatedAt > 0 && Date.now() - updatedAt > ROW_SNAPSHOT_FRESH_MS) continue
       blockWorkSymbols.add(symbol)
       const value = n(raw)
       if (match[2] === "logical_emitted") blockWork.logicalEmitted += value
@@ -3598,6 +3602,7 @@ export async function GET(
           trailing: currentOpenRowField(strategyDetailMainHash, "row_overall_open_trailing", "row_overall_open_trailing"),
           positionCount: currentOpenRowField(strategyDetailMainHash, "row_overall_open_position_count", "row_overall_open_position_count"),
           block: currentOpenRowField(strategyDetailMainHash, "row_overall_open_block", "row_overall_open_block"),
+          blockCalculated: currentOpenRowField(strategyDetailMainHash, "row_block_calculated_open", "row_overall_open_block"),
           dca: currentOpenRowField(strategyDetailMainHash, "row_overall_open_dca", "row_overall_open_dca"),
         },
       },
@@ -3653,12 +3658,13 @@ export async function GET(
         mirroredRatio: ratio(liveRowMirrored, liveRowTotal),
         executablePerRow: ratio(liveRowExecutable, liveRowTotal, false),
       },
-      updatedAt: [baseRowCoverage, mainRowCoverage, realRowCoverage]
+      updatedAt: [baseRowCoverage, mainRowCoverage, realRowCoverage, liveRowCoverage]
         .every((stage) => stage.complete && stage.oldestUpdatedAt > 0)
         ? Math.min(
             baseRowCoverage.oldestUpdatedAt,
             mainRowCoverage.oldestUpdatedAt,
             realRowCoverage.oldestUpdatedAt,
+            liveRowCoverage.oldestUpdatedAt,
           )
         : 0,
       semantics: "latest-cycle-and-current-open-row-snapshot",
@@ -3670,6 +3676,7 @@ export async function GET(
             baseRowCoverage.covered,
             mainRowCoverage.covered,
             realRowCoverage.covered,
+            liveRowCoverage.covered,
           ),
           total: Math.max(
             activeStatsSymbolFilter.size,
@@ -3677,8 +3684,9 @@ export async function GET(
             baseRowCoverage.total,
             mainRowCoverage.total,
             realRowCoverage.total,
+            liveRowCoverage.total,
           ),
-          complete: historicIsComplete && [baseRowCoverage, mainRowCoverage, realRowCoverage]
+          complete: historicIsComplete && [baseRowCoverage, mainRowCoverage, realRowCoverage, liveRowCoverage]
             .every((stage) => stage.complete),
         },
         stages: {
@@ -3694,7 +3702,8 @@ export async function GET(
     // Per-symbol per-stage performance snapshot derived from the Main and Real
     // strategy_detail hashes. Each hash carries `s:{symbol}:{apf|addt|apps|aper|ts}`
     // fields written by strategy-coordinator every cycle. We aggregate across all
-    // fresh (≤5-min-old) symbols to give each (symbol × stage) a complete metrics
+    // symbols inside the basket-scaled freshness budget to give each
+    // (symbol × stage) a complete metrics
     // row including current open membership, PF, DDT, and avg entry-score.
     //
     // "Detail" = per-symbol spec rows | "Aggregated" = cross-symbol tier averages.
@@ -3705,7 +3714,7 @@ export async function GET(
       aggregated: Record<string, any>
       detail: Array<{ symbol: string; created: number; entries: number; running: number; avgProfitFactor: number; avgDrawdownTime: number; avgPosPerSet: number; avgPosEval: number; fresh: boolean }>
     } => {
-      const FRESH_MS = 5 * 60 * 1000
+      const FRESH_MS = stageRowSnapshotFreshMs
       const nowMs = Date.now()
       const coverage = summarizeStageRowCoverage(dh)
       let symCreated = 0, symEntries = 0, symRunning = 0
@@ -4237,7 +4246,7 @@ export async function GET(
           "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
           "leveragePercentage", "useMaximalLeverage",
           "is_live_trade", "is_preset_trade",
-          "baseProfitFactor", "normalEnabled", "normal_enabled",
+          "baseProfitFactor", "normalEnabled", "normal_enabled", "blockOnlyEnabled", "block_only_enabled",
           "variantTrailingEnabled", "strategyBaseTrailingEnabled",
           "variantBlockEnabled", "blockEnabled", "blockAdjustment",
           "variantDcaEnabled", "dcaEnabled",
@@ -4317,6 +4326,7 @@ export async function GET(
       },
       snapshot: {
         updatedAt: strategyRows.updatedAt,
+        maxAgeMs: stageRowSnapshotFreshMs,
         engineRunning: strategyRows.snapshot.engineRunning,
         coverage: strategyRows.snapshot.coverage,
         stages: strategyRows.snapshot.stages,
@@ -4325,6 +4335,66 @@ export async function GET(
         (position) => !isRealizedPnlAccountingPending(position),
       ),
     })
+
+    // Realtime stage averages are a dedicated read model. They deliberately
+    // do not reuse the historic overview's labels or lifetime-count layout,
+    // which previously made a partial current cycle look like historic truth.
+    // Evaluation-stage averages are published only for complete symbol
+    // coverage; Live outcome averages use the durable settled-close sample.
+    const stageCoverageView = (coverage: StageRowCoverage) => ({
+      covered: coverage.covered,
+      total: coverage.total,
+      percent: coverage.total > 0
+        ? Math.min(100, Math.round((coverage.covered / coverage.total) * 1_000) / 10)
+        : 0,
+      fresh: coverage.fresh,
+      complete: coverage.complete,
+    })
+    const nullableAverage = (value: unknown, samples: number): number | null => {
+      const parsed = Number(value)
+      return samples > 0 && Number.isFinite(parsed) ? parsed : null
+    }
+    const evaluationStageAverage = (
+      tier: Record<string, any>,
+      coverage: StageRowCoverage,
+    ) => {
+      const setSamples = coverage.complete ? Math.max(0, Number(tier.totalCreated) || 0) : 0
+      return {
+        averages: {
+          profitFactor: nullableAverage(tier.avgProfitFactor, setSamples),
+          drawdownMinutes: nullableAverage(tier.avgDrawdownMin, setSamples),
+          positionsPerSet: nullableAverage(tier.avgPosPerSet, setSamples),
+        },
+        samples: { sets: setSamples, outcomes: setSamples },
+        coverage: stageCoverageView(coverage),
+      }
+    }
+    const liveSetSamples = Math.max(0, n(progHash.live_positions_created_count))
+    const liveOutcomeSamples = Math.max(0, liveClosedCount)
+    const realtimeStageAverages = {
+      schemaVersion: 1,
+      semantics: "current-complete-stage-averages-independent-from-historic-overview",
+      updatedAt: strategyRows.updatedAt,
+      maxAgeMs: stageRowSnapshotFreshMs,
+      stages: {
+        base: evaluationStageAverage(performanceTiers.base, baseRowCoverage),
+        main: evaluationStageAverage(performanceTiers.main, mainRowCoverage),
+        real: evaluationStageAverage(performanceTiers.real, realRowCoverage),
+        live: {
+          averages: {
+            profitFactor: nullableAverage(liveProfitFactor, liveOutcomeSamples),
+            drawdownMinutes: nullableAverage(liveAvgHoldMin, liveOutcomeSamples),
+            positionsPerSet: nullableAverage(1, liveSetSamples),
+            positionNotionalUsd: nullableAverage(
+              performanceTiers.live.avgNotionalUsd,
+              liveSetSamples,
+            ),
+          },
+          samples: { sets: liveSetSamples, outcomes: liveOutcomeSamples },
+          coverage: stageCoverageView(liveRowCoverage),
+        },
+      },
+    }
 
     const mainIndicationDefinitions = [
       ["direction", "Direction", "direction"],
@@ -4376,6 +4446,7 @@ export async function GET(
         volumeConfig,
         strategyRows,
         connectionStageOverview,
+        realtimeStageAverages,
         mainIndications,
         runtime: getRuntimeTelemetry(historicSymbolsTotal),
         settingsRecoordination,
@@ -4791,6 +4862,7 @@ export async function GET(
       // descendants are materialised after the parent filter.
       strategyRows,
       connectionStageOverview,
+      realtimeStageAverages,
 
       // Per-variant strategy breakdown (Default / Trailing / Block / DCA).
       // Written by StrategyCoordinator.createMainSets based on each entry's

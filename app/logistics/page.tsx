@@ -387,6 +387,7 @@ function MainSystemTab({
   const minBaseStep = settingNumber("minStep", 2)
   const posCountsRatio = settingNumber("posCountsVolumeRatio", 3)
   const blockEnabled = settingBool("variantBlockEnabled", settingBool("blockAdjustment", true))
+  const blockOnlyEnabled = settingBool("blockOnlyEnabled", true)
   const normalEnabled = settingBool("normalEnabled", true)
   const trailingEnabled = settingBool("variantTrailingEnabled", settingBool("strategyBaseTrailingEnabled", true))
   const dcaEnabled = settingBool("variantDcaEnabled", false)
@@ -509,7 +510,7 @@ function MainSystemTab({
             <Row label="PF ratio gate" value={`${mainPf.toFixed(2)} × PositionCost`} />
             <Row label="Evaluation lookback" value={`Latest ${mainLookback} closed positions per Set`} />
             <Row label="Pos-Count volume ratio" value={posCountsRatio.toFixed(1)} />
-            <Row label="Execution families" value={`Normal ${normalEnabled ? "on" : "off"} · Trailing ${trailingEnabled ? "on" : "off"} · Block ${blockEnabled ? "on" : "off"} · DCA ${dcaEnabled ? "on" : "off"}`} />
+            <Row label="Execution families" value={blockOnlyEnabled && blockEnabled ? "Block Only (other families calculate)" : `Normal ${normalEnabled ? "on" : "off"} · Trailing ${trailingEnabled ? "on" : "off"} · Block ${blockEnabled ? "on" : "off"} · DCA ${dcaEnabled ? "on" : "off"}`} />
             <Row label="Disabled-family semantics" value="Validation/statistics remain active; only physical dispatch is gated" />
             <Row label="Storage" mono value={`strategy_detail:{connId}:main`} />
           </Block>

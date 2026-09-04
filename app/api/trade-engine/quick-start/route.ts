@@ -851,6 +851,13 @@ async function handlePost(request: Request) {
        ["normalEnabled", "normal_enabled"],
        "true",
      ))
+     const resolvedBlockOnly = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["blockOnlyEnabled", "block_only_enabled", "blockOnly", "variantBlockOnly"],
+       ["blockOnlyEnabled", "block_only_enabled", "blockOnly", "variantBlockOnly"],
+       "true",
+     ))
      const resolvedVariantDca = stringifySettingValue(resolveQuickStartValue(
        body,
        existingQuickStartSettings,
@@ -1005,6 +1012,7 @@ async function handlePost(request: Request) {
       live_min_profit_factor: resolvedLiveProfitFactor,
       // Variant toggles
       normalEnabled: resolvedNormal,
+      blockOnlyEnabled: resolvedBlockOnly,
       variantTrailingEnabled: resolvedVariantTrailing,
       variantBlockEnabled: resolvedVariantBlock,
       variantDcaEnabled: resolvedVariantDca,

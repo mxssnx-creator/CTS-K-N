@@ -728,7 +728,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                   {([
                     { key: "mainEvalPosCount", label: "Main Row Lookback", value: settings.mainEvalPosCount ?? 25 },
                     { key: "realEvalPosCount", label: "Real Row Lookback", value: settings.realEvalPosCount ?? 20 },
-                    { key: "liveEvalPosCount", label: "Live Row Lookback", value: settings.liveEvalPosCount ?? 15 },
+                    { key: "liveEvalPosCount", label: "Live Row Lookback", value: settings.liveEvalPosCount ?? 20 },
                   ] as const).map((row) => (
                     <div key={row.key} className="space-y-2">
                       <div className="flex items-center justify-between">

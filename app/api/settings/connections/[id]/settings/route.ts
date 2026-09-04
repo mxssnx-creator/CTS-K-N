@@ -189,6 +189,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "variantTrailingEnabled",
   "variantBlockEnabled",
   "normalEnabled",
+  "blockOnlyEnabled",
   "variantDcaEnabled",
   "axisPrevEnabled",
   "axisLastEnabled",
@@ -507,6 +508,16 @@ export async function GET(
         storedCoord.normal_enabled,
         settings.normalEnabled,
         settings.normal_enabled,
+      ), true),
+      blockOnlyEnabled: asBoolean(firstDefined(
+        storedCoord.blockOnlyEnabled,
+        storedCoord.block_only_enabled,
+        storedCoord.blockOnly,
+        storedCoord.variantBlockOnly,
+        settings.blockOnlyEnabled,
+        settings.block_only_enabled,
+        settings.blockOnly,
+        settings.variantBlockOnly,
       ), true),
       blockVolumeRatio: asBoundedNumber(
         firstDefined(storedCoord.blockVolumeRatio, settings.blockVolumeRatio),
@@ -1173,6 +1184,7 @@ export async function PATCH(
       if (typeof coord.blockActiveLiveEnabled === "boolean") flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
       if (typeof coord.blockRowLiveEnabled === "boolean") flatKnobs.blockRowLiveEnabled = String(coord.blockRowLiveEnabled)
       if (typeof coord.normalEnabled === "boolean") flatKnobs.normalEnabled = String(coord.normalEnabled)
+      if (typeof coord.blockOnlyEnabled === "boolean") flatKnobs.blockOnlyEnabled = String(coord.blockOnlyEnabled)
       const rowLiveVolume = Number(coord.blockRowLiveVolumeRatio)
       if (Number.isFinite(rowLiveVolume) && rowLiveVolume > 0) flatKnobs.blockRowLiveVolumeRatio = String(Math.max(0.25, Math.min(3, rowLiveVolume)))
       flatKnobs.blockRowLiveProfitFactorRatio = String(normalizeBlockProfitFactorRatio(

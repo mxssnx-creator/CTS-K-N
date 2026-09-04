@@ -1,4 +1,4 @@
-import { RateLimiter } from "@/lib/rate-limiter"
+import { RateLimiter, resolveRateLimitConfig } from "@/lib/rate-limiter"
 
 describe("RateLimiter queue liveness", () => {
   afterEach(() => {
@@ -73,5 +73,39 @@ describe("RateLimiter queue liveness", () => {
 
     expect(result).toBe("ok")
     expect(jest.getTimerCount()).toBe(0)
+  })
+
+  test("reserves provider headroom for parallel host installations", () => {
+    expect(resolveRateLimitConfig("bingx", { CTS_EXCHANGE_RATE_LIMIT_SHARE: "0.45" })).toEqual({
+      requestsPerSecond: 4,
+      requestsPerMinute: 270,
+      maxConcurrent: 2,
+    })
+  })
+
+  test("allows lower per-exchange caps but never exceeds the shared hard ceiling", () => {
+    expect(resolveRateLimitConfig("bingx", {
+      CTS_EXCHANGE_RATE_LIMIT_SHARE: "0.5",
+      CTS_BINGX_RATE_LIMIT_RPS: "999",
+      CTS_BINGX_RATE_LIMIT_RPM: "120",
+      CTS_BINGX_RATE_LIMIT_CONCURRENCY: "1",
+    })).toEqual({
+      requestsPerSecond: 5,
+      requestsPerMinute: 120,
+      maxConcurrent: 1,
+    })
+  })
+
+  test("clamps malformed shares and keeps every limiter live", () => {
+    expect(resolveRateLimitConfig("unknown", { CTS_EXCHANGE_RATE_LIMIT_SHARE: "0" })).toEqual({
+      requestsPerSecond: 5,
+      requestsPerMinute: 100,
+      maxConcurrent: 3,
+    })
+    expect(resolveRateLimitConfig("instaforex", { CTS_EXCHANGE_RATE_LIMIT_SHARE: "0.01" })).toEqual({
+      requestsPerSecond: 1,
+      requestsPerMinute: 3,
+      maxConcurrent: 1,
+    })
   })
 })

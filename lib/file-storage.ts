@@ -6,11 +6,12 @@ import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults
 import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
 import type { MarketType } from "@/lib/market-types"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { resolvePersistentDataDir } from "@/lib/persistent-paths"
 
 const DATA_DIR =
   isServerlessDeploymentRuntime()
     ? path.join("/tmp", "data")
-    : path.join(process.cwd(), "data")
+    : resolvePersistentDataDir(path.join(process.cwd(), "data"))
 
 const CONNECTIONS_FILE = path.join(DATA_DIR, "connections.json")
 const SETTINGS_FILE = path.join(DATA_DIR, "settings.json")

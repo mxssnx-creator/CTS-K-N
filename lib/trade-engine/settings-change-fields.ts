@@ -33,6 +33,7 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "variantTrailingEnabled",
   "variantBlockEnabled",
   "normalEnabled",
+  "blockOnlyEnabled",
   "variantDcaEnabled",
   "strategyBaseTrailingEnabled",
   "strategyBaseTrailingVariants",

@@ -28,6 +28,7 @@ import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
   normalizeMainTradePfRatio,
+  normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
@@ -140,6 +141,7 @@ const BLOCK_PROFIT_FACTOR_RATIO_KEYS = [
   "presetBlockProfitFactorRatio",
 ] as const
 const POSITION_COST_PF_SELECTION_KEYS = [
+  "baseProfitFactor",
   "profitFactorMinPreset",
   "strategyRealMinProfitFactor",
   "indication_min_profit_factor",
@@ -200,7 +202,9 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
   }
   for (const key of POSITION_COST_PF_SELECTION_KEYS) {
     if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
-    normalized[key] = normalizeMainTradePfRatio(normalized[key])
+    normalized[key] = key === "baseProfitFactor"
+      ? normalizeMainTradeStagePfRatio("base", normalized[key])
+      : normalizeMainTradePfRatio(normalized[key])
   }
   if (normalized.trendTimeframesMinutes !== undefined) {
     normalized.trendTimeframesMinutes = normalizeTrendTimeframesMinutes(
@@ -290,11 +294,12 @@ function getDefaultSettings(): Record<string, any> {
     mainEvalPosCount: 25,
     realEvalPosCount: 20,
     blockRowRealEvalPosCount: 20,
-    liveEvalPosCount: 15,
+    liveEvalPosCount: 20,
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     strategyBaseTrailingEnabled: true,
     strategyBaseTrailingVariants: DEFAULT_TRAILING_VARIANTS,
     normalEnabled: true,
+    blockOnlyEnabled: true,
     blockAdjustment: true,
     variantBlockEnabled: true,
     blockVolumeRatio: 1,

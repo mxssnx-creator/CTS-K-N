@@ -112,6 +112,8 @@ export interface CoordinationSettings {
   blockRowLivePauseCountRatio: number
   /** Normal/default strategy family; all evaluation remains available when off. */
   normalEnabled: boolean
+  /** Execute Main positions through Block adjustment rows only. */
+  blockOnlyEnabled: boolean
 
   // Per-connection trailing matrix. Values use the canonical "start:stop"
   // encoding and are validated again by the engine before Base fan-out.
@@ -187,7 +189,7 @@ export interface CoordinationSettings {
    * Row-Live is the final, materialised live candidate. It evaluates the
    * latest Row-Real result window exactly once; Exchange dispatch consumes
    * that validated row without re-running a hidden PF/DDT gate.
-   * Range 5..55, step 5, default 15.
+   * Range 5..55, step 5, default 20.
    */
   liveEvalPosCount: number
 
@@ -244,6 +246,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockRowLiveMaxStack: 12,
   blockRowLivePauseCountRatio: 1.0,
   normalEnabled: true,
+  blockOnlyEnabled: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
   dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
@@ -258,7 +261,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   mainEvalPosCount: 25,
   realEvalPosCount: 20,
   blockRowRealEvalPosCount: 20,
-  liveEvalPosCount: 15,
+  liveEvalPosCount: 20,
   minStep:           DEFAULT_BASE_MIN_STEP,
   maxStopLossRatio:  2.5,
   trailingMinStep:   DEFAULT_BASE_MIN_STEP,
@@ -383,6 +386,7 @@ export function StrategyCoordinationSection({
     onChange({
       ...value,
       variants: { ...value.variants, [key]: enabled },
+      ...(key === "block" && !enabled ? { blockOnlyEnabled: false } : {}),
     })
   }
 
@@ -817,6 +821,24 @@ export function StrategyCoordinationSection({
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-300/60 bg-amber-50/70 p-3 dark:border-amber-800/70 dark:bg-amber-950/25">
+            <div className="flex-1 min-w-0">
+              <Label htmlFor="coordination-block-only" className="text-sm font-semibold">Block Only</Label>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Enabled by default. Normal, Trailing, Position-Count and DCA
+                Sets remain fully calculated and visible, while Main exchange
+                execution is emitted only by independently validated Block
+                adjustment rows. Signal lanes remain independent.
+              </p>
+            </div>
+            <Switch
+              id="coordination-block-only"
+              aria-label="Execute Main positions through Block adjustment rows only"
+              checked={value.blockOnlyEnabled}
+              onCheckedChange={(checked) => onChange({ ...value, blockOnlyEnabled: checked })}
+              disabled={!value.variants.block}
+            />
+          </div>
           <div className="flex items-start justify-between gap-3 rounded-lg border border-primary/25 bg-primary/5 p-3">
             <div className="flex-1 min-w-0">
               <Label className="text-sm font-semibold">Normal strategy</Label>
@@ -899,9 +921,9 @@ export function StrategyCoordinationSection({
         <CardContent className="space-y-4">
           <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
             <p className="text-xs leading-relaxed text-muted-foreground">
-              Block is always an independent add-on family. It may accumulate
-              into a Normal parent or seed its own protected parent when Normal
-              is disabled; there is no system-wide “Block Only” mode.
+              Block owns an independent adjustment row and can accumulate into
+              a calculated parent. With Block Only enabled it replaces, rather
+              than adds to, that parent's physical execution count.
             </p>
           </div>
           {/* Volume ratio */}
@@ -1550,7 +1572,7 @@ export function StrategyCoordinationSection({
                 </p>
               </div>
               <Badge variant="secondary" className="text-[10px] tabular-nums">
-                default 15
+                default 20
               </Badge>
             </div>
             <div className="flex items-center gap-3 pt-1">

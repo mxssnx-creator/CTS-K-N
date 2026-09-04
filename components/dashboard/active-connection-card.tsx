@@ -154,6 +154,20 @@ const formatCompactCount = (value: number): string => {
   return String(count)
 }
 
+const REALTIME_STAGE_AVERAGE_ROWS = [
+  { key: "base", label: "Base", tone: "text-sky-700 dark:text-sky-300" },
+  { key: "main", label: "Main", tone: "text-violet-700 dark:text-violet-300" },
+  { key: "real", label: "Real", tone: "text-emerald-700 dark:text-emerald-300" },
+  { key: "live", label: "Live", tone: "text-amber-700 dark:text-amber-300" },
+] as const
+
+function formatRealtimeStageAverage(value: unknown, digits: number, suffix = ""): string {
+  const parsed = Number(value)
+  return value !== null && value !== undefined && Number.isFinite(parsed)
+    ? `${parsed.toFixed(digits)}${suffix}`
+    : "—"
+}
+
 interface ActiveConnectionCardProps {
   connection: ActiveConnection & { details?: Connection }
   expanded: boolean
@@ -229,6 +243,7 @@ interface ConnectionStageOverview {
   snapshot?: {
     updatedAt: number
     ageMs: number | null
+    maxAgeMs: number
     fresh: boolean
     complete: boolean
     engineRunning: boolean
@@ -266,9 +281,12 @@ interface ConnectionStageOverview {
       block: number
       dca: number
     }
+    blockCalculated: number
     breakdownComplete: boolean
     normalEnabled: boolean
+    blockOnlyEnabled: boolean
     executionPolicy?: {
+      blockOnlyEnabled: boolean
       normalEnabled: boolean
       trailingEnabled: boolean
       blockEnabled: boolean
@@ -2965,21 +2983,6 @@ export function ActiveConnectionCard({
 
                     {/* Strategy stages breakdown */}
                     {prehistoricStats && (
-                      prehistoricStats.stratBase > 0 ||
-                      prehistoricStats.stratMain > 0 ||
-                      prehistoricStats.stratReal > 0 ||
-                      prehistoricStats.livePositionsCreated > 0 ||
-                      prehistoricStats.realPositionStats !== null ||
-                      // Also surface the section during pure prehistoric
-                      // processing — the historic PF aggregate is written
-                      // even before any Set is "created" in the realtime
-                      // sense, so we open the section when any stage's PF
-                      // is non-zero. See historic PF block in
-                      // lib/trade-engine/config-set-processor.ts.
-                      prehistoricStats.avgProfitFactorBase > 0 ||
-                      prehistoricStats.avgProfitFactorMain > 0 ||
-                      prehistoricStats.avgProfitFactorReal > 0
-                    ) && (
                       <div className="space-y-1">
                         <div className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                           Current Coordinated Stage Sets &amp; Open Positions
@@ -3049,17 +3052,7 @@ export function ActiveConnectionCard({
                             isLive: true,
                           },
                         ].map(({ label, count, total = 0, validOpen = 0, valid = 0, overall = 0, active = 0, continuousRealCreated = 0, axisNetted = 0, evaluated, passed, passRatio, avgPF, avgDDT, avgPosEval, countPosEval, color, isLive }) => (
-                          // Render the row whenever ANY metric for the stage
-                          // has data — count, evaluated/passed, OR an avg
-                          // profit factor. Previously this was gated on
-                          // `count > 0`, which hid Base/Main/Real PF entirely
-                          // during pure prehistoric processing (set count is
-                          // populated by realtime strategy-coordinator only,
-                          // but the PF aggregate is now also written by the
-                          // prehistoric path — see config-set-processor's
-                          // historic PF aggregation block).
-                          (count > 0 || evaluated > 0 || avgPF > 0 || (label === "Real" && (prehistoricStats.realOpen > 0 || prehistoricStats.liveOpenPositions > 0)) || (label === "Base" && total > 0) || (label === "Main" && (valid > 0 || overall > 0)) || (label === "Real" && (valid > 0 || active > 0))) && (
-                            <div key={label} className="space-y-0.5">
+                          <div key={label} className="space-y-0.5">
                               {/* Main row: coordinated Sets/positions count, pass/fill ratio, PF */}
                               <div className="flex items-center gap-2 text-[10px]">
                                 <span className={`font-semibold w-7 shrink-0 ${color}`}>{label}</span>
@@ -3234,8 +3227,7 @@ export function ActiveConnectionCard({
                                   )}
                                 </div>
                               )}
-                            </div>
-                          )
+                          </div>
                         ))}
                         {prehistoricStats.realPositionStats && (() => {
                           const realDetail = prehistoricStats.realPositionStats
@@ -3420,6 +3412,58 @@ export function ActiveConnectionCard({
                             </div>
                           )}
                         </div>
+
+                        {/* Every connection renders the exact same four-stage
+                            realtime-average grid. It is independent from the
+                            historic rows above and withholds partial-basket
+                            means instead of presenting them as complete. */}
+                        {(() => {
+                          const averages = statsSnapshot?.realtimeStageAverages?.stages || {}
+                          return (
+                            <div
+                              className="rounded-lg border border-blue-200/70 bg-background/70 p-2"
+                              data-testid="realtime-stage-averages"
+                              aria-label="Realtime Base Main Real and Live stage averages"
+                            >
+                              <div className="mb-1.5 flex items-center justify-between gap-2 text-[9px]">
+                                <span className="font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+                                  Realtime stage averages
+                                </span>
+                                <span className="text-muted-foreground">complete symbol snapshots only</span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+                                {REALTIME_STAGE_AVERAGE_ROWS.map(({ key, label, tone }) => {
+                                  const stage = averages[key] || {}
+                                  const metric = stage.averages || {}
+                                  const coverage = stage.coverage || {}
+                                  const setSamples = nonNegativeMetric(stage.samples?.sets)
+                                  const outcomeSamples = nonNegativeMetric(stage.samples?.outcomes)
+                                  return (
+                                    <div key={key} className="rounded-md border border-border/65 bg-background/80 p-1.5 text-[9px]">
+                                      <div className="flex items-center justify-between gap-1">
+                                        <span className={`font-semibold uppercase tracking-wide ${tone}`}>{label}</span>
+                                        <span
+                                          className={coverage.complete && coverage.fresh ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}
+                                          title={`Coverage ${nonNegativeMetric(coverage.covered)}/${nonNegativeMetric(coverage.total)}`}
+                                        >
+                                          {coverage.complete && coverage.fresh ? "current" : `${boundedPercentage(coverage.percent).toFixed(0)}%`}
+                                        </span>
+                                      </div>
+                                      <div className="mt-1 grid grid-cols-3 gap-1 text-muted-foreground">
+                                        <span>PF <strong className="text-foreground tabular-nums">{formatRealtimeStageAverage(metric.profitFactor, 2)}</strong></span>
+                                        <span>DDT <strong className="text-foreground tabular-nums">{formatRealtimeStageAverage(metric.drawdownMinutes, 1, "m")}</strong></span>
+                                        <span>Pos/Set <strong className="text-foreground tabular-nums">{formatRealtimeStageAverage(metric.positionsPerSet, 2)}</strong></span>
+                                      </div>
+                                      <div className="mt-0.5 text-muted-foreground tabular-nums">
+                                        n={setSamples.toLocaleString()}{key === "live" ? ` · closed ${outcomeSamples.toLocaleString()}` : ""}
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          )
+                        })()}
 
                         {/* ── Indications / Strategies / Sets sub-row ──
                             Moved here from the connection overview row so
@@ -3761,7 +3805,7 @@ export function ActiveConnectionCard({
                 <div className="mb-2.5 flex flex-wrap items-center gap-2">
                   <div>
                     <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                      Stage Overview
+                      Overall Stage Overview
                     </div>
                     <div className="text-[10px] text-muted-foreground">
                       Latest completed cycle · current open lineage kept separate
@@ -3796,7 +3840,9 @@ export function ActiveConnectionCard({
                     <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
                       Main
                       <Badge variant="outline" className="h-4 px-1 text-[8px]">
-                        Normal {connectionStageOverview.main.normalEnabled ? "on" : "off"}
+                        {connectionStageOverview.main.blockOnlyEnabled
+                          ? "Block Only"
+                          : `Normal ${connectionStageOverview.main.normalEnabled ? "on" : "off"}`}
                       </Badge>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
@@ -3809,12 +3855,12 @@ export function ActiveConnectionCard({
                             `Normal ${connectionStageOverview.main.breakdown.standard}`,
                             `Trailing ${connectionStageOverview.main.breakdown.trailing}`,
                             `Position-count ${connectionStageOverview.main.breakdown.positionCount}`,
-                            `Block ${connectionStageOverview.main.breakdown.block} (live ${connectionStageOverview.main.executionPolicy?.blockEnabled ? "on" : "off"})`,
+                            `Block ${connectionStageOverview.main.breakdown.block} included / ${connectionStageOverview.main.blockCalculated} calculated (live ${connectionStageOverview.main.executionPolicy?.blockEnabled ? "on" : "off"})`,
                             `DCA ${connectionStageOverview.main.breakdown.dca} (live ${connectionStageOverview.main.executionPolicy?.dcaEnabled ? "on" : "off"})`,
                           ].join(", ")}
                         >
                           Cycle {connectionStageOverview.latestCycle?.main.valid.toLocaleString() ?? "—"}/{connectionStageOverview.latestCycle?.main.overall.toLocaleString() ?? "—"} · N {connectionStageOverview.main.breakdown.standard} · T {connectionStageOverview.main.breakdown.trailing} · Pos {connectionStageOverview.main.breakdown.positionCount}
-                          <> · B {connectionStageOverview.main.breakdown.block}{connectionStageOverview.main.executionPolicy?.blockEnabled ? "" : " (calc)"}</>
+                          <> · B {connectionStageOverview.main.breakdown.block}/{connectionStageOverview.main.blockCalculated}{connectionStageOverview.main.blockOnlyEnabled ? " (replace)" : ""}</>
                           <> · D {connectionStageOverview.main.breakdown.dca}{connectionStageOverview.main.executionPolicy?.dcaEnabled ? "" : " (calc)"}</>
                         </div>
                   </div>

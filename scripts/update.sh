@@ -14,6 +14,9 @@ APP_PORT="${CTS_PORT:-}"
 RUNTIME="${CTS_RUNTIME:-}"
 SERVICE_USER="${CTS_SERVICE_USER:-}"
 ENV_FILE="${CTS_ENV_FILE:-}"
+STATE_DIR="${CTS_STATE_DIR:-}"
+REDIS_DB="${CTS_REDIS_DB:-}"
+REDIS_PORT="${CTS_REDIS_PORT:-}"
 REPOSITORY="${CTS_REPOSITORY:-}"
 BRANCH="${CTS_BRANCH:-}"
 INSTALL_SEARCH_ROOT="${CTS_INSTALL_SEARCH_ROOT:-/opt}"
@@ -23,6 +26,9 @@ PORT_SET=0
 RUNTIME_SET=0
 SERVICE_USER_SET=0
 ENV_FILE_SET=0
+STATE_DIR_SET=0
+REDIS_DB_SET=0
+REDIS_PORT_SET=0
 REPOSITORY_SET=0
 BRANCH_SET=0
 REINSTALL=0
@@ -34,6 +40,9 @@ RESOLVE_ONLY=0
 [[ -n "${CTS_RUNTIME:-}" ]] && RUNTIME_SET=1
 [[ -n "${CTS_SERVICE_USER:-}" ]] && SERVICE_USER_SET=1
 [[ -n "${CTS_ENV_FILE:-}" ]] && ENV_FILE_SET=1
+[[ -n "${CTS_STATE_DIR:-}" ]] && STATE_DIR_SET=1
+[[ -n "${CTS_REDIS_DB:-}" ]] && REDIS_DB_SET=1
+[[ -n "${CTS_REDIS_PORT:-}" ]] && REDIS_PORT_SET=1
 [[ -n "${CTS_REPOSITORY:-}" ]] && REPOSITORY_SET=1
 [[ -n "${CTS_BRANCH:-}" ]] && BRANCH_SET=1
 
@@ -47,6 +56,9 @@ Usage: scripts/update.sh [options]
   --runtime MODE       Existing runtime: systemd or pm2
   --service-user USER  Existing runtime user
   --env-file PATH      Existing production environment file
+  --state-dir PATH     Existing durable per-instance state directory
+  --redis-db NUMBER    Existing Redis logical DB, 0..15
+  --redis-port PORT    Existing npm Redis fallback port
   --repository URL     Expected Git origin
   --branch NAME        Branch to clone from (default: saved branch/main)
   --reinstall          Reinstall host runtimes and project dependencies
@@ -65,6 +77,9 @@ while [[ $# -gt 0 ]]; do
     --runtime) RUNTIME="${2:?--runtime requires a value}"; RUNTIME_SET=1; shift 2 ;;
     --service-user) SERVICE_USER="${2:?--service-user requires a value}"; SERVICE_USER_SET=1; shift 2 ;;
     --env-file) ENV_FILE="${2:?--env-file requires a value}"; ENV_FILE_SET=1; shift 2 ;;
+    --state-dir) STATE_DIR="${2:?--state-dir requires a value}"; STATE_DIR_SET=1; shift 2 ;;
+    --redis-db) REDIS_DB="${2:?--redis-db requires a value}"; REDIS_DB_SET=1; shift 2 ;;
+    --redis-port) REDIS_PORT="${2:?--redis-port requires a value}"; REDIS_PORT_SET=1; shift 2 ;;
     --repository) REPOSITORY="${2:?--repository requires a value}"; REPOSITORY_SET=1; shift 2 ;;
     --branch) BRANCH="${2:?--branch requires a value}"; BRANCH_SET=1; shift 2 ;;
     --reinstall) REINSTALL=1; shift ;;
@@ -160,6 +175,11 @@ SAVED_SERVICE_USER=""
 SAVED_PROJECT_ROOT=""
 SAVED_ENV_FILE=""
 SAVED_ENV_MANAGED=""
+SAVED_STATE_DIR=""
+SAVED_REDIS_DB=""
+SAVED_REDIS_PORT=""
+SAVED_REDIS_MODE=""
+SAVED_EXECUTION_MODE=""
 SAVED_REPOSITORY=""
 SAVED_BRANCH=""
 
@@ -173,6 +193,11 @@ while IFS='=' read -r key value || [[ -n "$key" ]]; do
     CTS_INSTALLED_PROJECT_ROOT) SAVED_PROJECT_ROOT="$value" ;;
     CTS_INSTALLED_ENV_FILE) [[ "$value" == /* && "$value" != "/" ]] && SAVED_ENV_FILE="$value" ;;
     CTS_INSTALLED_ENV_MANAGED) [[ "$value" =~ ^[01]$ ]] && SAVED_ENV_MANAGED="$value" ;;
+    CTS_INSTALLED_STATE_DIR) valid_absolute_path "$value" && SAVED_STATE_DIR="$value" ;;
+    CTS_INSTALLED_REDIS_DB) [[ "$value" =~ ^([0-9]|1[0-5])$ ]] && SAVED_REDIS_DB="$value" ;;
+    CTS_INSTALLED_REDIS_PORT) valid_port "$value" && SAVED_REDIS_PORT="$value" ;;
+    CTS_INSTALLED_REDIS_MODE) [[ "$value" =~ ^(native|npm|inline-snapshot|external)$ ]] && SAVED_REDIS_MODE="$value" ;;
+    CTS_INSTALLED_EXECUTION_MODE) [[ "$value" =~ ^(live|safe-simulation)$ ]] && SAVED_EXECUTION_MODE="$value" ;;
     CTS_INSTALLED_REPOSITORY) SAVED_REPOSITORY="$value" ;;
     CTS_INSTALLED_BRANCH) SAVED_BRANCH="$value" ;;
   esac
@@ -192,12 +217,35 @@ fi
 if (( ENV_FILE_SET == 1 )) && [[ -n "$SAVED_ENV_FILE" && "$ENV_FILE" != "$SAVED_ENV_FILE" ]]; then
   log_fatal "Update cannot relocate the environment file; use bootstrap-install.sh"
 fi
+if (( STATE_DIR_SET == 1 )) && [[ -n "$SAVED_STATE_DIR" && "$STATE_DIR" != "$SAVED_STATE_DIR" ]]; then
+  log_fatal "Update cannot relocate durable state; use bootstrap-install.sh"
+fi
+if (( REDIS_DB_SET == 1 )) && [[ -n "$SAVED_REDIS_DB" && "$REDIS_DB" != "$SAVED_REDIS_DB" ]]; then
+  log_fatal "Update cannot change the Redis namespace; use bootstrap-install.sh"
+fi
+if (( REDIS_PORT_SET == 1 )) && [[ -n "$SAVED_REDIS_PORT" && "$REDIS_PORT" != "$SAVED_REDIS_PORT" ]]; then
+  log_fatal "Update cannot change the Redis fallback port; use bootstrap-install.sh"
+fi
 
 [[ -n "$APP_NAME" ]] || APP_NAME="${SAVED_APP_NAME:-cts-kn}"
 [[ -n "$APP_PORT" ]] || APP_PORT="${SAVED_APP_PORT:-3002}"
 [[ -n "$RUNTIME" ]] || RUNTIME="${SAVED_RUNTIME:-systemd}"
 [[ -n "$SERVICE_USER" ]] || SERVICE_USER="${SAVED_SERVICE_USER:-cts-kn}"
-[[ -n "$ENV_FILE" ]] || ENV_FILE="${SAVED_ENV_FILE:-/var/lib/$APP_NAME/.env.production.local}"
+[[ -n "$STATE_DIR" ]] || STATE_DIR="${SAVED_STATE_DIR:-/var/lib/cts/instances/$APP_NAME}"
+[[ -n "$ENV_FILE" ]] || ENV_FILE="${SAVED_ENV_FILE:-$STATE_DIR/.env.production.local}"
+if (( ENV_FILE_SET == 0 )) && [[ "$ENV_FILE" == "/var/lib/$APP_NAME/.env.production.local" ]] \
+  && [[ "$STATE_DIR" != "/var/lib/$APP_NAME" ]]; then ENV_FILE="$STATE_DIR/.env.production.local"; fi
+if [[ -z "$REDIS_DB" ]]; then
+  if [[ -n "$SAVED_REDIS_DB" ]]; then REDIS_DB="$SAVED_REDIS_DB"
+  elif [[ "$APP_PORT" =~ ^[0-9]+$ ]] && (( APP_PORT >= 3002 )); then REDIS_DB="$(( (APP_PORT - 3002) % 16 ))"
+  elif [[ "$APP_PORT" =~ ^[0-9]+$ ]]; then REDIS_DB="$(( APP_PORT % 16 ))"
+  else REDIS_DB=0; fi
+fi
+if [[ -z "$REDIS_PORT" ]]; then
+  if [[ -n "$SAVED_REDIS_PORT" ]]; then REDIS_PORT="$SAVED_REDIS_PORT"
+  elif [[ "$REDIS_DB" =~ ^([0-9]|1[0-5])$ ]]; then REDIS_PORT="$(( 6379 + REDIS_DB ))"
+  else REDIS_PORT=6379; fi
+fi
 [[ -n "$REPOSITORY" ]] || REPOSITORY="${SAVED_REPOSITORY:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)}"
 [[ -n "$BRANCH" ]] || BRANCH="${SAVED_BRANCH:-$(git -C "$PROJECT_ROOT" symbolic-ref --short HEAD 2>/dev/null || true)}"
 [[ -n "$BRANCH" ]] || BRANCH="main"
@@ -207,6 +255,9 @@ valid_port "$APP_PORT" || log_fatal "Invalid installed port"
 valid_user "$SERVICE_USER" || log_fatal "Invalid installed service user"
 [[ "$RUNTIME" =~ ^(systemd|pm2)$ ]] || log_fatal "Invalid installed runtime"
 valid_absolute_path "$ENV_FILE" || log_fatal "Invalid installed environment file"
+valid_absolute_path "$STATE_DIR" || log_fatal "Invalid installed state directory"
+[[ "$REDIS_DB" =~ ^([0-9]|1[0-5])$ ]] || log_fatal "Invalid installed Redis DB"
+valid_port "$REDIS_PORT" || log_fatal "Invalid installed Redis port"
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != *".."* && "$BRANCH" != *"//"* ]] || log_fatal "Invalid branch"
 [[ -n "$REPOSITORY" && "$REPOSITORY" != *$'\n'* && "$REPOSITORY" != *[[:space:]]* ]] || log_fatal "Invalid repository URL"
 
@@ -221,6 +272,11 @@ if (( RESOLVE_ONLY == 1 )); then
   printf 'CTS_RUNTIME=%s\n' "$RUNTIME"
   printf 'CTS_SERVICE_USER=%s\n' "$SERVICE_USER"
   printf 'CTS_ENV_FILE=%s\n' "$ENV_FILE"
+  printf 'CTS_STATE_DIR=%s\n' "$STATE_DIR"
+  printf 'CTS_REDIS_DB=%s\n' "$REDIS_DB"
+  printf 'CTS_REDIS_PORT=%s\n' "$REDIS_PORT"
+  printf 'CTS_REDIS_MODE=%s\n' "${SAVED_REDIS_MODE:-auto}"
+  printf 'CTS_EXECUTION_MODE=%s\n' "${SAVED_EXECUTION_MODE:-live}"
   printf 'CTS_ENV_MANAGED=%s\n' "${SAVED_ENV_MANAGED:-0}"
   printf 'CTS_REPOSITORY=%s\n' "$REPOSITORY"
   printf 'CTS_BRANCH=%s\n' "$BRANCH"
@@ -237,9 +293,22 @@ bootstrap_args=(
   --runtime "$RUNTIME"
   --service-user "$SERVICE_USER"
   --env-file "$ENV_FILE"
+  --state-dir "$STATE_DIR"
+  --redis-db "$REDIS_DB"
+  --redis-port "$REDIS_PORT"
   --repository "$REPOSITORY"
   --branch "$BRANCH"
 )
+case "$SAVED_REDIS_MODE" in
+  inline-snapshot) bootstrap_args+=(--redis-mode snapshot) ;;
+  native|npm) bootstrap_args+=(--redis-mode "$SAVED_REDIS_MODE") ;;
+  *) bootstrap_args+=(--redis-mode auto) ;;
+esac
+if [[ "$SAVED_EXECUTION_MODE" == "safe-simulation" ]]; then
+  bootstrap_args+=(--safe-simulation)
+else
+  bootstrap_args+=(--enable-live)
+fi
 bootstrap_args+=(--)
 (( REINSTALL == 0 )) || bootstrap_args+=(--reinstall)
 

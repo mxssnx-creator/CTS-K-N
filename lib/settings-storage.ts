@@ -5,6 +5,7 @@
 
 import { canonicalForcedBaseSymbols, canonicalForcedSymbols } from "@/lib/forced-symbols"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { resolvePersistentDataDir } from "@/lib/persistent-paths"
 
 let settingsCache: Record<string, any> | null = null
 
@@ -60,7 +61,7 @@ async function getFilePaths() {
   // Use simple string concatenation instead of path module for compatibility
   const cwd = typeof process !== "undefined" && typeof process.cwd === "function" ? process.cwd() : "/tmp"
   const isServerless = typeof process !== "undefined" && isServerlessDeploymentRuntime()
-  const basePath = isServerless ? "/tmp/cts-data" : `${cwd}/data`
+  const basePath = isServerless ? "/tmp/cts-data" : resolvePersistentDataDir(`${cwd}/data`)
   const dataDir = basePath
   const settingsFile = `${dataDir}/settings.json`
   return { dataDir, settingsFile }

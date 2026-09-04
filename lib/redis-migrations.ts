@@ -7998,6 +7998,219 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "105")
     },
   },
+  {
+    version: 107,
+    name: "107-base-pf-and-real-live-row-defaults",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const settingKeys = new Set<string>([
+        "app_settings",
+        "all_settings",
+        "settings:app_settings",
+        "settings:all_settings",
+        "settings:system",
+      ])
+      const settingPatterns = [
+        "connection:*",
+        "settings:connection:*",
+        "connection_settings:*",
+        "settings:connection_settings:*",
+        "trade_engine_state:*",
+        "settings:trade_engine_state:*",
+      ] as const
+      for (const pattern of settingPatterns) {
+        for (const key of await scanRedisKeys(client, pattern)) settingKeys.add(String(key))
+      }
+
+      // Schema 099 deliberately mapped pre-selection values <= 1.00 to the
+      // former neutral coordinate. Schema 107 is the one-time default
+      // transition requested for Base: generated neutral values and the old
+      // shipped 1.10 default become 0.80. Other operator-selected values stay
+      // untouched. The version marker prevents future saves of 1.10 from ever
+      // being mistaken for a default transition.
+      const migrateBaseDefault = (value: unknown): number | null => {
+        if (value == null || value === "") return MAIN_TRADE_STAGE_PF_DEFAULTS.base
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS.base
+        if (Math.abs(parsed - 1) <= 1e-12 || Math.abs(parsed - 1.1) <= 1e-12) {
+          return MAIN_TRADE_STAGE_PF_DEFAULTS.base
+        }
+        return null
+      }
+      const isBaseThreshold = (field: string, parent = ""): boolean => {
+        const compactField = field.toLowerCase().replace(/[^a-z0-9]/g, "")
+        const compactParent = parent.toLowerCase().replace(/[^a-z0-9]/g, "")
+        return ["baseprofitfactor", "baseminprofitfactor", "profitfactorbase"].includes(compactField)
+          || (compactParent === "base" && compactField === "minprofitfactor")
+          || (compactParent.includes("profitfactormin") && compactField === "base")
+      }
+      const migrateDocument = (
+        document: Record<string, any>,
+        seedCoordination: boolean,
+        parent = "",
+      ): boolean => {
+        let changed = false
+        for (const [field, value] of Object.entries(document)) {
+          if (value && typeof value === "object" && !Array.isArray(value)) {
+            if (migrateDocument(value as Record<string, any>, false, field)) changed = true
+            continue
+          }
+          if (!isBaseThreshold(field, parent)) continue
+          const next = migrateBaseDefault(value)
+          if (next != null && Number(value) !== next) {
+            document[field] = next
+            changed = true
+          }
+        }
+        if (!seedCoordination) return changed
+
+        const baseCurrent = document.baseProfitFactor ?? document.base_min_profit_factor
+        const migratedBase = migrateBaseDefault(baseCurrent)
+        const parsedBase = Number(baseCurrent)
+        const canonicalBase = migratedBase
+          ?? (Number.isFinite(parsedBase)
+            ? normalizeMainTradeStagePfRatio("base", parsedBase)
+            : MAIN_TRADE_STAGE_PF_DEFAULTS.base)
+        if (document.baseProfitFactor == null || document.base_min_profit_factor == null || migratedBase != null) {
+          if (Number(document.baseProfitFactor) !== canonicalBase) {
+            document.baseProfitFactor = canonicalBase
+            changed = true
+          }
+          if (Number(document.base_min_profit_factor) !== canonicalBase) {
+            document.base_min_profit_factor = canonicalBase
+            changed = true
+          }
+        }
+        if (
+          document.blockOnlyEnabled == null
+          && document.block_only_enabled == null
+          && document.strategyBlockOnlyEnabled == null
+          && document.blockOnly == null
+          && document.variantBlockOnly == null
+        ) {
+          document.blockOnlyEnabled = true
+          changed = true
+        }
+        const seedCount = (field: string, replaceLegacy15 = false) => {
+          const current = Number(document[field])
+          if (document[field] == null || !Number.isFinite(current) || (replaceLegacy15 && current === 15)) {
+            document[field] = 20
+            changed = true
+          }
+        }
+        seedCount("realEvalPosCount")
+        seedCount("blockRowRealEvalPosCount")
+        seedCount("liveEvalPosCount", true)
+
+        const rowLiveDefaults: Record<string, unknown> = {
+          blockRowLiveEnabled: document.blockActiveLiveEnabled ?? true,
+          blockRowLiveVolumeRatio: document.blockVolumeRatio ?? 1,
+          blockRowLiveProfitFactorRatio: document.blockProfitFactorRatio ?? 1.1,
+          blockRowLiveIncrementSteps: document.blockIncrementSteps ?? 2,
+          blockRowLiveMaxStack: document.blockMaxStack ?? 12,
+          blockRowLivePauseCountRatio: document.blockPauseCountRatio ?? 1,
+        }
+        for (const [field, value] of Object.entries(rowLiveDefaults)) {
+          if (document[field] != null && document[field] !== "") continue
+          document[field] = value
+          changed = true
+        }
+        if (document.baseProfitFactorDefaultsVersion !== 1) {
+          document.baseProfitFactorDefaultsVersion = 1
+          changed = true
+        }
+        return changed
+      }
+
+      let hashesUpdated = 0
+      let baseFieldsUpdated = 0
+      let structuredDocumentsUpdated = 0
+      for (const key of settingKeys) {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0) continue
+        const patch: Record<string, string> = {
+          baseProfitFactorDefaultsVersion: "1",
+        }
+        const currentBase = values.baseProfitFactor ?? values.base_min_profit_factor
+        const nextBase = migrateBaseDefault(currentBase)
+        if (nextBase != null) {
+          for (const field of ["baseProfitFactor", "base_min_profit_factor"]) {
+            if (Number(values[field]) === nextBase) continue
+            patch[field] = String(nextBase)
+            baseFieldsUpdated++
+          }
+        }
+        if (
+          values.blockOnlyEnabled == null
+          && values.block_only_enabled == null
+          && values.strategyBlockOnlyEnabled == null
+          && values.blockOnly == null
+          && values.variantBlockOnly == null
+        ) patch.blockOnlyEnabled = "true"
+
+        const seedCount = (field: string, replaceLegacy15 = false) => {
+          const current = Number(values[field])
+          if (values[field] == null || !Number.isFinite(current) || (replaceLegacy15 && current === 15)) {
+            patch[field] = "20"
+          }
+        }
+        seedCount("realEvalPosCount")
+        seedCount("blockRowRealEvalPosCount")
+        seedCount("liveEvalPosCount", true)
+
+        const rowLiveDefaults: Record<string, string> = {
+          blockRowLiveEnabled: values.blockActiveLiveEnabled || "true",
+          blockRowLiveVolumeRatio: values.blockVolumeRatio || "1",
+          blockRowLiveProfitFactorRatio: values.blockProfitFactorRatio || "1.1",
+          blockRowLiveIncrementSteps: values.blockIncrementSteps || "2",
+          blockRowLiveMaxStack: values.blockMaxStack || "12",
+          blockRowLivePauseCountRatio: values.blockPauseCountRatio || "1",
+        }
+        for (const [field, value] of Object.entries(rowLiveDefaults)) {
+          if (values[field] == null || values[field] === "") patch[field] = value
+        }
+
+        for (const field of ["connection_settings", "coordination_settings", "coordinationSettings", "strategies"]) {
+          const raw = values[field]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(raw) as Record<string, any>
+            if (migrateDocument(document, field !== "strategies")) {
+              patch[field] = JSON.stringify(document)
+              structuredDocumentsUpdated++
+            }
+          } catch {
+            // Malformed recovery payloads stay untouched; canonical flat
+            // settings remain authoritative and the next save can repair JSON.
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          hashesUpdated++
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        base_stage_pf_selection_range: "0.80-2.30",
+        base_stage_pf_selection_step: "0.02",
+        base_stage_pf_selection_default: "0.80",
+        base_stage_pf_fields_updated: String(baseFieldsUpdated),
+        block_only_default: "1",
+        row_real_evaluation_positions_default: "20",
+        row_live_evaluation_positions_default: "20",
+        row_live_block_settings: "independent-inherit-active-v1",
+        stage_setting_hashes_updated: String(hashesUpdated),
+        stage_structured_documents_updated: String(structuredDocumentsUpdated),
+        schema_version: "107",
+        updated_at: now,
+      })
+    },
+    down: async (client: any) => {
+      // Operator-visible stage choices and independent Row-Live settings are
+      // retained; rollback only moves the migration cursor.
+      await client.set("_schema_version", "106")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {
@@ -8176,8 +8389,8 @@ async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: n
     //   is_active_inserted: cfg.autoActive ? "1" : ...
     // for autoActive base connections (bingx-x01). Every
     // cold-start (or any code path that calls `initRedis` followed by
-    // `runMigrations` — which is essentially every Vercel function
-    // invocation) re-flipped the flag back to "1", undoing the
+    // `runMigrations` — including isolated hosted-runtime invocations)
+    // re-flipped the flag back to "1", undoing the
     // operator's explicit DELETE on `/api/settings/connections/[id]/active`.
     //
     // Same class of bug applies to is_inserted, is_dashboard_inserted,

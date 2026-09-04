@@ -38,7 +38,7 @@ describe("legacy pseudo Result-R / Main-stage PF contract", () => {
     expect(strategy.avg_signed_result_r).toBeCloseTo(0.6, 12)
     expect(strategy.avg_profit_factor).toBeCloseTo(1.06, 12)
     expect(strategy.stats.win_rate).toBe(1)
-    expect(strategy.validation_state).toBe("invalid")
+    expect(strategy.validation_state).toBe("valid")
   })
 
   test("uses the explicit signed result for DCA instead of a display PF coordinate", () => {

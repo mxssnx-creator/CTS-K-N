@@ -88,12 +88,19 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).not.toContain("OnBootSec=2min")
     expect(installer).toContain("CTS_INSTALLED_ENV_FILE=$ENV_FILE")
     expect(installer).toContain("CTS_INSTALLED_ENV_MANAGED=$ENV_FILE_MANAGED")
+    expect(installer).toContain("CTS_INSTALLED_STATE_DIR=$STATE_DIR")
+    expect(installer).toContain("CTS_INSTALLED_REDIS_DB=$REDIS_DB")
+    expect(installer).toContain("CTS_INSTALLED_REDIS_PORT=$REDIS_PORT")
+    expect(installer).toContain("CTS_INSTALLED_REDIS_MODE=$(env_value CTS_REDIS_SERVICE_MODE)")
+    expect(installer).toContain("CTS_INSTALLED_EXECUTION_MODE=")
     expect(installer).toContain('ENV_FILE="${CTS_ENV_FILE:-}"')
-    expect(installer).toContain('ENV_FILE="/var/lib/$APP_NAME/.env.production.local"')
+    expect(installer).toContain('STATE_DIR="/var/lib/cts/instances/$APP_NAME"')
+    expect(installer).toContain('ENV_FILE="$STATE_DIR/.env.production.local"')
     expect(installer).toContain('if [[ "$ENV_FILE" != "$PROJECT_ROOT"/* ]]; then ENV_FILE_MANAGED=0; fi')
-    expect(bootstrap).toContain('ENV_FILE="/var/lib/$PROJECT_NAME/.env.production.local"')
-    expect(updater).toContain('${SAVED_ENV_FILE:-/var/lib/$APP_NAME/.env.production.local}')
-    expect(serviceControl).toContain('ENV_FILE="/var/lib/cts-kn/.env.production.local"')
+    expect(bootstrap).toContain('STATE_DIR="/var/lib/cts/instances/$PROJECT_NAME"')
+    expect(bootstrap).toContain('ENV_FILE="$STATE_DIR/.env.production.local"')
+    expect(updater).toContain('${SAVED_STATE_DIR:-/var/lib/cts/instances/$APP_NAME}')
+    expect(serviceControl).toContain('STATE_DIR="/var/lib/cts/instances/cts-kn"')
     expect(installer).not.toContain('userdel --remove "$SERVICE_USER"')
     expect(bootstrap).not.toContain('userdel --remove "$EXISTING_SERVICE_USER"')
     expect(installer).toContain('"$env_parent/credentials" "$env_parent/forex"')
@@ -148,6 +155,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
     expect(installer).toContain("handoff_existing_install_to_bootstrap")
     expect(installer).toContain("clean stop → delete → reinstall flow")
+    expect(installer).toContain("bootstrap_args+=(--safe-simulation)")
+    expect(installer).toContain("bootstrap_args+=(--enable-live)")
     expect(bootstrap).toContain('INSTALL_DIR="$INSTALL_SEARCH_ROOT/$PROJECT_NAME"')
     expect(bootstrap).toContain("--enable-live")
     expect(bootstrap).toContain("/opt/*/.cts-runtime/install-values.env")
@@ -157,8 +166,10 @@ describe("production installation and Kilo deployment contract", () => {
     expect(bootstrap).toContain('pm2 pid "$pm2_name"')
     expect(bootstrap).toContain("while PM2 process $pm2_name is still active")
     expect(bootstrap).toContain('systemctl stop "$name-recovery.timer" "$name-recovery"')
+    expect(bootstrap).toContain('"$name-redis-governor.timer" "$name-redis-governor"')
+    expect(bootstrap).toContain('"$name-redis-memory.timer" "$name-redis-memory"')
     expect(bootstrap).toContain('"$name-direct-trade" "$name-scheduler" "$name" "$name-redis"')
-    expect(bootstrap).toContain('for unit in "$name-recovery.timer" "$name-recovery" "$name-direct-trade"')
+    expect(bootstrap).toContain('for unit in "$name-recovery.timer" "$name-recovery"')
     expect(bootstrap).toContain('pm2 stop "$name-recovery" "$name-direct-trade"')
     expect(bootstrap).toContain('pm2 delete "$name" "$name-scheduler" "$name-direct-trade" "$name-recovery"')
     expect(bootstrap).toContain("stop_stale_cts_processes")
@@ -168,6 +179,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(bootstrap).toContain("Unrelated listeners remain a hard preflight error")
     expect(bootstrap).toContain("--resolve-only")
     expect(bootstrap).toContain("--safe-simulation")
+    expect(bootstrap).toContain("--redis-mode")
+    expect(bootstrap).toContain("CTS_INSTALLED_EXECUTION_MODE")
     expect(bootstrap).toContain("cts-state")
     expect(bootstrap).toContain("Saved persistent CTS state outside the target directory")
     expect(bootstrap).toContain("resume_preserved_state_after_failed_clean_install")
@@ -181,8 +194,11 @@ describe("production installation and Kilo deployment contract", () => {
     expect(bootstrap).toContain('[[ "$ENV_FILE" == "$INSTALL_DIR"/*')
     expect(bootstrap).toContain('"$INSTALL_DIR/.cts-runtime/managed-service-user"')
     expect(bootstrap).toMatch(/preserve_existing_install_state\(\) \{[\s\S]*stop_existing_installation\n/)
-    expect(bootstrap).toMatch(/preserve_existing_install_state\nprepare_clean_install_workspace\nremove_existing_install_target[\s\S]*git clone --branch/)
-    expect(bootstrap).toMatch(/resume_preserved_state_after_failed_clean_install\npreserve_existing_install_state\nprepare_clean_install_workspace/)
+    expect(bootstrap).toMatch(/preserve_existing_install_state\ncreate_permanent_backup\nprepare_clean_install_workspace\nremove_existing_install_target[\s\S]*git clone --branch/)
+    expect(bootstrap).toMatch(/resume_preserved_state_after_failed_clean_install\npreserve_existing_install_state\ncreate_permanent_backup\nprepare_clean_install_workspace/)
+    expect(bootstrap).toContain("Verified permanent pre-reinstall backup")
+    expect(bootstrap).toContain('bundle create "$backup/source.bundle"')
+    expect(bootstrap).toContain('"$backup/SHA256SUMS"')
     expect(updater).toContain("Tracked local changes exist; refusing to overwrite them")
     expect(updater).toContain("discover_saved_install_from_name")
     expect(updater).toContain("Delegating to clean stop → delete → install lifecycle")
@@ -197,6 +213,13 @@ describe("production installation and Kilo deployment contract", () => {
     // install.sh persists the npm fallback as its node_modules directory;
     // the service must resolve that layout after a host restart.
     expect(installer).toContain('CTS_NPM_REDIS_ROOT "$npm_redis_root/node_modules"')
+    expect(installer).toContain("scripts/resolve-instance-redis-url.mjs scripts/backup-local-redis.mjs")
+    expect(installer).toContain('upsert_env CTS_REDIS_SERVICE_MODE "$redis_service_mode"')
+    expect(installer).toContain('[[ "$force_npm" == "1" ]]')
+    expect(installer).toContain("Explicit npm Redis mode requires the instance endpoint")
+    expect(updater).toContain("SAVED_REDIS_MODE")
+    expect(updater).toContain("SAVED_EXECUTION_MODE")
+    expect(serviceControl).toContain("CTS_INSTALLED_EXECUTION_MODE")
     expect(installer).toContain("scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs")
     expect(installer).toContain('upsert_env CTS_DIRECT_TRADE_MAX_CONNECTION_WORKERS "$direct_trade_worker_count"')
     expect(installer).toContain('upsert_env CTS_DIRECT_TRADE_WORKER_HEAP_MB "$direct_trade_worker_heap_mb"')
@@ -238,6 +261,15 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toMatch(
       /wait_for_health 90 \|\| return 1[\s\S]*?rm -f -- "\$RUNTIME_DIR\/maintenance-stop"[\s\S]*?production-deploy-init\.mjs/,
     )
+    expect(installer).toMatch(
+      /stage_existing_runtime\(\) \{[\s\S]*?if existing_runtime_active; then[\s\S]*?fi\n[\s\S]*?stop_runtime\n/,
+    )
+    expect(installer).toContain("clean install remains stopped in maintenance")
+    expect(installer).toContain('systemctl stop "$APP_NAME-recovery.timer" "$APP_NAME-recovery"')
+    expect(installer).toContain('"$APP_NAME-redis-governor.timer" "$APP_NAME-redis-governor"')
+    expect(installer).toContain('"$APP_NAME-redis-memory.timer" "$APP_NAME-redis-memory"')
+    expect(installer).toContain('systemctl start "$APP_NAME-redis-governor.timer"')
+    expect(installer).toContain('systemctl disable --now "$APP_NAME-redis-memory.timer"')
     expect(installer).toMatch(
       /rollback_after_failed_verification\(\) \{[\s\S]*?warn "Final verification failed"[\s\S]*?stop_runtime/,
     )
@@ -292,6 +324,8 @@ describe("production installation and Kilo deployment contract", () => {
     execFileSync("bash", ["-n", "scripts/bootstrap-install.sh"], { cwd: process.cwd() })
     execFileSync("bash", ["-n", "scripts/update.sh"], { cwd: process.cwd() })
     execFileSync("bash", ["-n", "scripts/service-control.sh"], { cwd: process.cwd() })
+    execFileSync(process.execPath, ["--check", "scripts/resolve-instance-redis-url.mjs"], { cwd: process.cwd() })
+    execFileSync(process.execPath, ["--check", "scripts/backup-local-redis.mjs"], { cwd: process.cwd() })
     expect(await readFile(path.join(process.cwd(), "pnpm-workspace.yaml"), "utf8"))
       .toContain("onlyBuiltDependencies:")
   })
@@ -310,6 +344,69 @@ describe("production installation and Kilo deployment contract", () => {
     expect(runbook).toContain("Activation and SSH must run in the same shell/tool process")
     expect(runbook).toContain("Resolved incident: process-local proxy (2026-08-27)")
     execFileSync("bash", ["-n", "scripts/connect-remote-chisel.sh"], { cwd: process.cwd() })
+  })
+
+  it("derives independent durable state and Redis namespaces for parallel installs", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-multi-install-resolve-"))
+    try {
+      const resolveInstall = (name: string, port: number) => execFileSync("bash", [
+        path.join(process.cwd(), "scripts", "bootstrap-install.sh"),
+        "--dir", path.join(root, name),
+        "--name", name,
+        "--port", String(port),
+        "--service-user", "root",
+        "--resolve-only",
+      ], {
+        encoding: "utf8",
+        env: { ...process.env, CTS_BACKUP_ROOT: path.join(root, "backups") },
+      })
+
+      const kn = resolveInstall("cts-kn", 3002)
+      const g = resolveInstall("cts-g", 3003)
+      expect(kn).toContain("CTS_STATE_DIR=/var/lib/cts/instances/cts-kn")
+      expect(kn).toContain("CTS_ENV_FILE=/var/lib/cts/instances/cts-kn/.env.production.local")
+      expect(kn).toContain("CTS_REDIS_DB=0")
+      expect(kn).toContain("CTS_REDIS_PORT=6379")
+      expect(g).toContain("CTS_STATE_DIR=/var/lib/cts/instances/cts-g")
+      expect(g).toContain("CTS_ENV_FILE=/var/lib/cts/instances/cts-g/.env.production.local")
+      expect(g).toContain("CTS_REDIS_DB=1")
+      expect(g).toContain("CTS_REDIS_PORT=6380")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a second checkout that reuses an installed identity", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-multi-install-collision-"))
+    const otherRuntime = path.join(root, "cts-g", ".cts-runtime")
+    try {
+      await mkdir(otherRuntime, { recursive: true })
+      await writeFile(path.join(otherRuntime, "install-values.env"), [
+        "CTS_INSTALLED_APP_NAME=cts-g",
+        "CTS_INSTALLED_APP_PORT=3003",
+        "CTS_INSTALLED_STATE_DIR=/var/lib/cts/instances/cts-g",
+        "CTS_INSTALLED_REDIS_DB=1",
+        "CTS_INSTALLED_REDIS_PORT=6380",
+        "",
+      ].join("\n"))
+
+      expect(() => execFileSync("bash", [
+        path.join(process.cwd(), "scripts", "install.sh"),
+        "--name", "cts-copy",
+        "--port", "3003",
+        "--state-dir", path.join(root, "copy-state"),
+        "--preflight-only",
+        "--skip-system-packages",
+        "--non-interactive",
+      ], {
+        cwd: process.cwd(),
+        env: { ...process.env, CTS_INSTALL_SEARCH_ROOT: root },
+        encoding: "utf8",
+        stdio: "pipe",
+      })).toThrow(/already owns HTTP port/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("retries a missing Next BUILD_ID only after compilation reached page collection", () => {
@@ -466,6 +563,10 @@ describe("production installation and Kilo deployment contract", () => {
             `CTS_INSTALLED_PROJECT_ROOT=${root}`,
             `CTS_INSTALLED_ENV_FILE=${root}/config/production.env`,
             "CTS_INSTALLED_ENV_MANAGED=0",
+            "CTS_INSTALLED_REDIS_DB=4",
+            "CTS_INSTALLED_REDIS_PORT=6383",
+            "CTS_INSTALLED_REDIS_MODE=npm",
+            "CTS_INSTALLED_EXECUTION_MODE=safe-simulation",
             "CTS_INSTALLED_REPOSITORY=https://github.com/mxssnx-creator/CTS-K-N.git",
             "CTS_INSTALLED_BRANCH=release/stable",
             "",
@@ -492,6 +593,8 @@ describe("production installation and Kilo deployment contract", () => {
       expect(bootstrap).toContain("CTS_PROJECT_NAME=desk-alpha")
       expect(bootstrap).toContain("CTS_PORT=4312")
       expect(bootstrap).toContain(`CTS_ENV_FILE=${root}/config/production.env`)
+      expect(bootstrap).toContain("CTS_REDIS_MODE=npm")
+      expect(bootstrap).toContain("CTS_EXECUTION_MODE=safe-simulation")
 
       const update = execFileSync("bash", [
         path.join(scriptsDir, "update.sh"),
@@ -500,6 +603,8 @@ describe("production installation and Kilo deployment contract", () => {
       expect(update).toContain(`CTS_INSTALL_DIR=${root}`)
       expect(update).toContain("CTS_PROJECT_NAME=desk-alpha")
       expect(update).toContain("CTS_BRANCH=release/stable")
+      expect(update).toContain("CTS_REDIS_MODE=npm")
+      expect(update).toContain("CTS_EXECUTION_MODE=safe-simulation")
 
       const control = execFileSync("bash", [
         path.join(scriptsDir, "service-control.sh"),
@@ -509,6 +614,8 @@ describe("production installation and Kilo deployment contract", () => {
       expect(control).toContain("CTS_INSTALLED_APP_PORT=4312")
       expect(control).toContain(`CTS_INSTALLED_ENV_FILE=${root}/config/production.env`)
       expect(control).toContain("CTS_INSTALLED_ENV_MANAGED=0")
+      expect(control).toContain("CTS_INSTALLED_REDIS_MODE=npm")
+      expect(control).toContain("CTS_INSTALLED_EXECUTION_MODE=safe-simulation")
 
       expect(() => execFileSync("bash", [
         path.join(scriptsDir, "service-control.sh"),
@@ -673,7 +780,7 @@ describe("production installation and Kilo deployment contract", () => {
       encoding: "utf8",
     })
     expect(output).toContain('"success":true')
-    expect(output).toContain('"schemaVersion":106')
+    expect(output).toContain('"schemaVersion":107')
   })
 
   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {

@@ -2148,7 +2148,7 @@ describe("requested regression guardrails", () => {
     expect(globalReadyBlock).toContain("migrationsRan = false")
     expect(source).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(source).toContain('import("@/lib/redis-migrations")')
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 106")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 107")
     expect(source).toContain('client.get("_schema_version").catch(() => null)')
   })
 
@@ -2595,7 +2595,7 @@ describe("requested regression guardrails", () => {
     expect(strategiesRoute).not.toContain("is_enabled: !!strat.is_enabled")
     expect(migrations).toContain('strategy_stage_switches: "compatibility-only-always-true"')
     expect(read("lib/strategy-coordinator.ts")).toContain("normalEnabled: this._coordinationSettings.normalEnabled !== false")
-    expect(read("lib/strategy-coordinator.ts")).not.toContain("blockOnly")
+    expect(read("lib/strategy-coordinator.ts")).toContain("blockOnlyEnabled: this._coordinationSettings.blockOnlyEnabled === true")
   })
 
   test("statistics never invent portfolio balance, TP/SL values, trailing values, or execution PF", () => {
@@ -3980,7 +3980,7 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain("RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS")
     expect(migrations).toContain("await releaseOwnedRedisLock(client, keys.baseLock, token)")
     expect(migrations).toContain("__v0_devBootGuardDone = false")
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 106")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 107")
     expect(redisDb).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(redisDb).toContain("ensureSharedVolatileStartupCleanup")
     expect(redisDb).toContain("markSharedRuntimeReady")

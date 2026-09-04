@@ -198,10 +198,13 @@ export interface StageOverviewInput {
       trailing?: number
       positionCount?: number
       block?: number
+      /** Calculated Block rows, including replacements excluded from Overall. */
+      blockCalculated?: number
       dca?: number
     }
     /** Whether the Normal/default execution family is enabled. */
     normalEnabled?: boolean
+    blockOnlyEnabled?: boolean
     trailingEnabled?: boolean
     blockEnabled?: boolean
     dcaEnabled?: boolean
@@ -230,6 +233,7 @@ export interface StageOverviewInput {
   }
   snapshot?: {
     updatedAt?: number
+    maxAgeMs?: number
     engineRunning?: boolean
     coverage?: {
       processed?: number
@@ -261,6 +265,9 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
     block: nonNegative(input.main?.breakdown?.block),
     dca: nonNegative(input.main?.breakdown?.dca),
   }
+  const blockCalculated = nonNegative(
+    input.main?.breakdown?.blockCalculated ?? input.main?.breakdown?.block,
+  )
   const breakdownTotal = Object.values(breakdown).reduce((sum, value) => sum + value, 0)
   const liveBySymbol = (input.live?.bySymbol || []).map((row) => ({
     symbol: String(row?.symbol || "").toUpperCase(),
@@ -293,6 +300,7 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
 
   const snapshotUpdatedAt = Math.max(0, finite(input.snapshot?.updatedAt))
   const snapshotAgeMs = snapshotUpdatedAt > 0 ? Math.max(0, now - snapshotUpdatedAt) : null
+  const snapshotMaxAgeMs = Math.max(5 * 60_000, finite(input.snapshot?.maxAgeMs, 5 * 60_000))
   const coverageTotal = nonNegative(input.snapshot?.coverage?.total)
   const coverageProcessed = Math.min(
     nonNegative(input.snapshot?.coverage?.processed),
@@ -321,12 +329,13 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
   }
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     semantics: "latest-cycle-and-current-open-stage-relations",
     snapshot: {
       updatedAt: snapshotUpdatedAt,
       ageMs: snapshotAgeMs,
-      fresh: input.snapshot?.engineRunning === true && snapshotAgeMs !== null && snapshotAgeMs <= 5 * 60_000,
+      fresh: input.snapshot?.engineRunning === true && snapshotAgeMs !== null && snapshotAgeMs <= snapshotMaxAgeMs,
+      maxAgeMs: snapshotMaxAgeMs,
       complete: input.snapshot?.coverage?.complete === true,
       engineRunning: input.snapshot?.engineRunning === true,
       coverage: {
@@ -369,9 +378,12 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
       additional: Math.max(0, mainOverall - mainValid),
       expansionPercent: mainValid > 0 ? rounded((mainOverall / mainValid) * 100, 1) : 0,
       breakdown,
+      blockCalculated,
       breakdownComplete,
       normalEnabled: input.main?.normalEnabled !== false,
+      blockOnlyEnabled: input.main?.blockOnlyEnabled === true,
       executionPolicy: {
+        blockOnlyEnabled: input.main?.blockOnlyEnabled === true,
         normalEnabled: input.main?.normalEnabled !== false,
         trailingEnabled: input.main?.trailingEnabled !== false,
         blockEnabled: input.main?.blockEnabled !== false,

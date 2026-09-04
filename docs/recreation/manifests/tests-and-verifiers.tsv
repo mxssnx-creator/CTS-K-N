@@ -183,6 +183,7 @@ unit	__tests__/unit/order-quantity.test.ts
 unit	__tests__/unit/orders-market-notional.test.ts
 unit	__tests__/unit/orders-route-concurrency.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
+unit	__tests__/unit/persistent-paths.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts
@@ -251,6 +252,7 @@ unit	__tests__/unit/signal-source-registry.test.ts
 unit	__tests__/unit/signal-trailing.test.ts
 unit	__tests__/unit/special-strategy.test.ts
 unit	__tests__/unit/special-vst-validator-contract.test.ts
+unit	__tests__/unit/stage-row-snapshot.test.ts
 unit	__tests__/unit/startup-coordinator-cleanup.test.ts
 unit	__tests__/unit/startup-global-liveness.test.ts
 unit	__tests__/unit/startup-validation-runtime-health.test.ts

@@ -85,3 +85,48 @@ export function countOpenMainBreakdown(
   }
   return result
 }
+
+export interface MainOpenAccounting {
+  included: Record<MainOpenBreakdownKind, number>
+  blockCalculated: number
+  overall: number
+}
+
+/**
+ * Convert exhaustive Main calculations into the public open-row accounting.
+ *
+ * Main Valid is a parent-lineage count. Main Overall is that lineage baseline
+ * plus independently included descendants. A Block row is additive in normal
+ * mode, but replaces its parent for physical execution in Block-Only mode and
+ * therefore must not inflate Overall. Some cycles can materialise only a Block
+ * child for a valid lineage, so the standard bucket is topped up to preserve
+ * the invariant Valid <= Overall while keeping the five displayed buckets
+ * mutually exclusive and exactly summing to Overall.
+ */
+export function resolveMainOpenAccounting(
+  calculated: Readonly<Record<MainOpenBreakdownKind, number>>,
+  validOpen: number,
+  blockOnlyEnabled: boolean,
+): MainOpenAccounting {
+  const nonNegative = (value: unknown): number => {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
+  }
+  const included: Record<MainOpenBreakdownKind, number> = {
+    standard: nonNegative(calculated.standard),
+    trailing: nonNegative(calculated.trailing),
+    positionCount: nonNegative(calculated.positionCount),
+    block: blockOnlyEnabled ? 0 : nonNegative(calculated.block),
+    dca: nonNegative(calculated.dca),
+  }
+  const requiredBaseline = nonNegative(validOpen)
+  const currentOverall = Object.values(included).reduce((sum, count) => sum + count, 0)
+  if (currentOverall < requiredBaseline) {
+    included.standard += requiredBaseline - currentOverall
+  }
+  return {
+    included,
+    blockCalculated: nonNegative(calculated.block),
+    overall: Object.values(included).reduce((sum, count) => sum + count, 0),
+  }
+}

@@ -12,6 +12,10 @@ PORT="${CTS_PORT:-3002}"
 RUNTIME="${CTS_RUNTIME:-auto}"
 SERVICE_USER="${CTS_SERVICE_USER:-}"
 ENV_FILE="${CTS_ENV_FILE:-}"
+STATE_DIR="${CTS_STATE_DIR:-}"
+REDIS_DB="${CTS_REDIS_DB:-}"
+REDIS_PORT="${CTS_REDIS_PORT:-}"
+REDIS_MODE="${CTS_REDIS_MODE:-}"
 SEED_ENV_FILE=""
 PUBLIC_URL="${CTS_PUBLIC_URL:-${NEXT_PUBLIC_APP_URL:-}}"
 INSTALL_SEARCH_ROOT="${CTS_INSTALL_SEARCH_ROOT:-/opt}"
@@ -21,6 +25,10 @@ PORT_SET=0
 RUNTIME_SET=0
 SERVICE_USER_SET=0
 ENV_FILE_SET=0
+STATE_DIR_SET=0
+REDIS_DB_SET=0
+REDIS_PORT_SET=0
+REDIS_MODE_SET=0
 REPOSITORY_SET=0
 BRANCH_SET=0
 UNINSTALL=0
@@ -33,6 +41,10 @@ INSTALL_ARGS=()
 [[ -n "${CTS_RUNTIME:-}" ]] && RUNTIME_SET=1
 [[ -n "${CTS_SERVICE_USER:-}" ]] && SERVICE_USER_SET=1
 [[ -n "${CTS_ENV_FILE:-}" ]] && ENV_FILE_SET=1
+[[ -n "${CTS_STATE_DIR:-}" ]] && STATE_DIR_SET=1
+[[ -n "${CTS_REDIS_DB:-}" ]] && REDIS_DB_SET=1
+[[ -n "${CTS_REDIS_PORT:-}" ]] && REDIS_PORT_SET=1
+[[ -n "${CTS_REDIS_MODE:-}" ]] && REDIS_MODE_SET=1
 [[ -n "${CTS_REPOSITORY:-}" ]] && REPOSITORY_SET=1
 [[ -n "${CTS_BRANCH:-}" ]] && BRANCH_SET=1
 
@@ -47,6 +59,10 @@ Options:
   --runtime MODE       auto, systemd, or pm2
   --service-user USER  Unprivileged runtime user (default: app name)
   --env-file PATH      Production environment file
+  --state-dir PATH     Durable per-instance state (default: /var/lib/cts/instances/<name>)
+  --redis-db NUMBER    Redis logical DB, 0..15 (derived from HTTP port)
+  --redis-port PORT    Per-instance npm Redis fallback port
+  --redis-mode MODE    auto, native, npm, or snapshot (preserved on update)
   --seed-env-file PATH Merge KEY=VALUE entries before installation
   --branch NAME        Git branch (default: main)
   --repository URL     Git repository URL
@@ -65,6 +81,7 @@ EOF
 
 SKIP_TESTS=0
 SAFE_SIMULATION=0
+EXECUTION_MODE_SET=0
 # Match install.sh: guarded live execution is the server-install default.
 # --safe-simulation is still the explicit paper-mode override.
 LIVE_OPT_IN=1
@@ -78,11 +95,15 @@ while [[ $# -gt 0 ]]; do
     --runtime) RUNTIME="${2:?--runtime requires a value}"; RUNTIME_SET=1; shift 2 ;;
     --service-user) SERVICE_USER="${2:?--service-user requires a value}"; SERVICE_USER_SET=1; shift 2 ;;
     --env-file) ENV_FILE="${2:?--env-file requires a value}"; ENV_FILE_SET=1; shift 2 ;;
+    --state-dir) STATE_DIR="${2:?--state-dir requires a value}"; STATE_DIR_SET=1; shift 2 ;;
+    --redis-db) REDIS_DB="${2:?--redis-db requires a value}"; REDIS_DB_SET=1; shift 2 ;;
+    --redis-port) REDIS_PORT="${2:?--redis-port requires a value}"; REDIS_PORT_SET=1; shift 2 ;;
+    --redis-mode) REDIS_MODE="${2:?--redis-mode requires a value}"; REDIS_MODE_SET=1; shift 2 ;;
     --seed-env-file) SEED_ENV_FILE="${2:?--seed-env-file requires a value}"; shift 2 ;;
     --public-url) PUBLIC_URL="${2:?--public-url requires a value}"; shift 2 ;;
     --skip-tests) SKIP_TESTS=1; shift ;;
-    --safe-simulation) SAFE_SIMULATION=1; shift ;;
-    --enable-live) LIVE_OPT_IN=1; shift ;;
+    --safe-simulation) SAFE_SIMULATION=1; LIVE_OPT_IN=0; EXECUTION_MODE_SET=1; shift ;;
+    --enable-live) SAFE_SIMULATION=0; LIVE_OPT_IN=1; EXECUTION_MODE_SET=1; shift ;;
     --resolve-only) RESOLVE_ONLY=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --) shift; INSTALL_ARGS+=("$@"); break ;;
@@ -122,11 +143,17 @@ EXISTING_SERVICE_USER=""
 EXISTING_PROJECT_ROOT=""
 EXISTING_ENV_FILE=""
 EXISTING_ENV_MANAGED=""
+EXISTING_STATE_DIR=""
+EXISTING_REDIS_DB=""
+EXISTING_REDIS_PORT=""
+EXISTING_REDIS_MODE=""
+EXISTING_EXECUTION_MODE=""
 EXISTING_REPOSITORY=""
 EXISTING_BRANCH=""
 EXISTING_MANAGED_SERVICE_USER=0
 PRESERVED_STATE=""
 CLEAN_INSTALL_WORK_DIR=""
+PERMANENT_BACKUP=""
 
 discover_install_dir_from_name() {
   (( INSTALL_DIR_SET == 0 )) || return 0
@@ -210,6 +237,21 @@ read_existing_install_values() {
       CTS_INSTALLED_ENV_MANAGED)
         [[ "$value" =~ ^[01]$ ]] && EXISTING_ENV_MANAGED="$value"
         ;;
+      CTS_INSTALLED_STATE_DIR)
+        valid_absolute_path "$value" && EXISTING_STATE_DIR="$value"
+        ;;
+      CTS_INSTALLED_REDIS_DB)
+        [[ "$value" =~ ^([0-9]|1[0-5])$ ]] && EXISTING_REDIS_DB="$value"
+        ;;
+      CTS_INSTALLED_REDIS_PORT)
+        valid_port "$value" && EXISTING_REDIS_PORT="$value"
+        ;;
+      CTS_INSTALLED_REDIS_MODE)
+        [[ "$value" =~ ^(native|npm|inline-snapshot|external)$ ]] && EXISTING_REDIS_MODE="$value"
+        ;;
+      CTS_INSTALLED_EXECUTION_MODE)
+        [[ "$value" =~ ^(live|safe-simulation)$ ]] && EXISTING_EXECUTION_MODE="$value"
+        ;;
       CTS_INSTALLED_REPOSITORY)
         [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *[[:space:]]* ]] \
           && EXISTING_REPOSITORY="$value"
@@ -229,6 +271,20 @@ read_existing_install_values() {
   if (( RUNTIME_SET == 0 )) && [[ -n "$EXISTING_RUNTIME" ]]; then RUNTIME="$EXISTING_RUNTIME"; fi
   if (( SERVICE_USER_SET == 0 )) && [[ -n "$EXISTING_SERVICE_USER" ]]; then SERVICE_USER="$EXISTING_SERVICE_USER"; fi
   if (( ENV_FILE_SET == 0 )) && [[ -n "$EXISTING_ENV_FILE" ]]; then ENV_FILE="$EXISTING_ENV_FILE"; fi
+  if (( STATE_DIR_SET == 0 )) && [[ -n "$EXISTING_STATE_DIR" ]]; then STATE_DIR="$EXISTING_STATE_DIR"; fi
+  if (( REDIS_DB_SET == 0 )) && [[ -n "$EXISTING_REDIS_DB" ]]; then REDIS_DB="$EXISTING_REDIS_DB"; fi
+  if (( REDIS_PORT_SET == 0 )) && [[ -n "$EXISTING_REDIS_PORT" ]]; then REDIS_PORT="$EXISTING_REDIS_PORT"; fi
+  if (( REDIS_MODE_SET == 0 )) && [[ -n "$EXISTING_REDIS_MODE" ]]; then
+    case "$EXISTING_REDIS_MODE" in
+      inline-snapshot) REDIS_MODE="snapshot" ;;
+      external) REDIS_MODE="auto" ;;
+      *) REDIS_MODE="$EXISTING_REDIS_MODE" ;;
+    esac
+  fi
+  if (( EXECUTION_MODE_SET == 0 )) && [[ "$EXISTING_EXECUTION_MODE" == "safe-simulation" ]]; then
+    SAFE_SIMULATION=1
+    LIVE_OPT_IN=0
+  fi
   if (( REPOSITORY_SET == 0 )) && [[ -n "$EXISTING_REPOSITORY" ]]; then REPOSITORY="$EXISTING_REPOSITORY"; fi
   if (( BRANCH_SET == 0 )) && [[ -n "$EXISTING_BRANCH" ]]; then BRANCH="$EXISTING_BRANCH"; fi
 }
@@ -301,12 +357,16 @@ stop_existing_installation() {
   local user="${EXISTING_SERVICE_USER:-$SERVICE_USER}"
   if [[ "$runtime" == "systemd" || "$runtime" == "auto" ]] && command -v systemctl >/dev/null 2>&1; then
     # Stop every CTS owner before replacing its checkout. Leaving the leased
-    # Direct-Trade worker or recovery timer alive lets an old binary continue
-    # writing to shared Redis while the new schema/build is installed.
+    # Direct-Trade, recovery, or memory-governor owners left alive can execute
+    # scripts from the checkout while it is being replaced.
     as_root systemctl stop "$name-recovery.timer" "$name-recovery" \
+      "$name-redis-governor.timer" "$name-redis-governor" \
+      "$name-redis-memory.timer" "$name-redis-memory" \
       "$name-direct-trade" "$name-scheduler" "$name" "$name-redis" 2>/dev/null || true
-    for unit in "$name-recovery.timer" "$name-recovery" "$name-direct-trade" \
-      "$name-scheduler" "$name" "$name-redis"; do
+    for unit in "$name-recovery.timer" "$name-recovery" \
+      "$name-redis-governor.timer" "$name-redis-governor" \
+      "$name-redis-memory.timer" "$name-redis-memory" \
+      "$name-direct-trade" "$name-scheduler" "$name" "$name-redis"; do
       if systemctl is-active --quiet "$unit" 2>/dev/null; then
         echo "Refusing to remove $INSTALL_DIR while service $unit is still active" >&2
         exit 1
@@ -367,11 +427,67 @@ preserve_existing_install_state() {
     as_root cp -a -- "$INSTALL_DIR/.cts-runtime/managed-service-user" "$PRESERVED_STATE/managed-service-user"
   fi
   for state_dir in data logs; do
-    if [[ -d "$INSTALL_DIR/$state_dir" ]]; then
+    if [[ -d "$INSTALL_DIR/$state_dir" && ! -L "$INSTALL_DIR/$state_dir" ]]; then
       as_root cp -a -- "$INSTALL_DIR/$state_dir" "$PRESERVED_STATE/$state_dir"
     fi
   done
   echo "Saved persistent CTS state outside the target directory: $PRESERVED_STATE" >&2
+}
+
+create_permanent_backup() {
+  [[ -d "$INSTALL_DIR" ]] || return 0
+  local timestamp backup commit manifest_tmp redis_status_tmp backup_info_tmp legacy_root
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup="$BACKUP_ROOT/$PROJECT_NAME/$timestamp"
+  [[ ! -e "$backup" ]] || backup="$backup.$$"
+  as_root install -d -m 0700 -- "$backup"
+  backup_info_tmp="$(mktemp)"
+  printf 'project=%s\ninstall_dir=%s\ncreated_at=%s\n' \
+    "$PROJECT_NAME" "$INSTALL_DIR" "$timestamp" > "$backup_info_tmp"
+  as_root install -m 0600 -- "$backup_info_tmp" "$backup/backup-info"
+  rm -f -- "$backup_info_tmp"
+
+  if [[ -n "$PRESERVED_STATE" && -d "$PRESERVED_STATE" ]]; then
+    as_root cp -a --reflink=auto -- "$PRESERVED_STATE" "$backup/recovery-state"
+  fi
+  if [[ -d "$STATE_DIR" ]]; then
+    as_root cp -a --reflink=auto -- "$STATE_DIR" "$backup/instance-state"
+  fi
+  legacy_root="/var/lib/$PROJECT_NAME"
+  if [[ "$legacy_root" != "$STATE_DIR" && -d "$legacy_root" ]]; then
+    as_root cp -a --reflink=auto -- "$legacy_root" "$backup/legacy-instance-state"
+  fi
+  if [[ -f "$ENV_FILE" && "$ENV_FILE" != "$STATE_DIR"/* && "$ENV_FILE" != "$legacy_root"/* ]]; then
+    as_root cp -a -- "$ENV_FILE" "$backup/environment"
+  fi
+
+  commit="$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    as_root git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" bundle create "$backup/source.bundle" HEAD \
+      || { echo "Could not create the required source bundle backup" >&2; exit 1; }
+    as_root git bundle verify "$backup/source.bundle" >/dev/null \
+      || { echo "Source bundle backup verification failed" >&2; exit 1; }
+  fi
+
+  if [[ -f "$INSTALL_DIR/scripts/run-with-env.mjs" && -f "$INSTALL_DIR/scripts/backup-local-redis.mjs" \
+    && -f "$ENV_FILE" && -d "$INSTALL_DIR/node_modules/redis" ]]; then
+    redis_status_tmp="$(mktemp)"
+    as_root node "$INSTALL_DIR/scripts/run-with-env.mjs" "$ENV_FILE" -- \
+      node "$INSTALL_DIR/scripts/backup-local-redis.mjs" "$backup/redis.rdb" \
+      > "$redis_status_tmp"
+    as_root install -m 0600 -- "$redis_status_tmp" "$backup/redis-backup.status"
+    rm -f -- "$redis_status_tmp"
+  fi
+
+  manifest_tmp="$(mktemp)"
+  as_root bash -c 'cd "$1" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum' \
+    _ "$backup" > "$manifest_tmp"
+  as_root install -m 0600 -- "$manifest_tmp" "$backup/SHA256SUMS"
+  rm -f -- "$manifest_tmp"
+  as_root test -s "$backup/SHA256SUMS" \
+    || { echo "Permanent backup manifest is empty" >&2; exit 1; }
+  PERMANENT_BACKUP="$backup"
+  echo "Verified permanent pre-reinstall backup: $PERMANENT_BACKUP" >&2
 }
 
 # A failed clean install deliberately leaves the state archive beside the
@@ -423,6 +539,21 @@ read_preserved_install_values() {
       CTS_INSTALLED_ENV_MANAGED)
         [[ "$value" =~ ^[01]$ ]] && EXISTING_ENV_MANAGED="$value"
         ;;
+      CTS_INSTALLED_STATE_DIR)
+        valid_absolute_path "$value" && EXISTING_STATE_DIR="$value"
+        ;;
+      CTS_INSTALLED_REDIS_DB)
+        [[ "$value" =~ ^([0-9]|1[0-5])$ ]] && EXISTING_REDIS_DB="$value"
+        ;;
+      CTS_INSTALLED_REDIS_PORT)
+        valid_port "$value" && EXISTING_REDIS_PORT="$value"
+        ;;
+      CTS_INSTALLED_REDIS_MODE)
+        [[ "$value" =~ ^(native|npm|inline-snapshot|external)$ ]] && EXISTING_REDIS_MODE="$value"
+        ;;
+      CTS_INSTALLED_EXECUTION_MODE)
+        [[ "$value" =~ ^(live|safe-simulation)$ ]] && EXISTING_EXECUTION_MODE="$value"
+        ;;
       CTS_INSTALLED_REPOSITORY)
         [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *[[:space:]]* ]] \
           && EXISTING_REPOSITORY="$value"
@@ -439,6 +570,20 @@ read_preserved_install_values() {
   if (( RUNTIME_SET == 0 )) && [[ -n "$EXISTING_RUNTIME" ]]; then RUNTIME="$EXISTING_RUNTIME"; fi
   if (( SERVICE_USER_SET == 0 )) && [[ -n "$EXISTING_SERVICE_USER" ]]; then SERVICE_USER="$EXISTING_SERVICE_USER"; fi
   if (( ENV_FILE_SET == 0 )) && [[ -n "$EXISTING_ENV_FILE" ]]; then ENV_FILE="$EXISTING_ENV_FILE"; fi
+  if (( STATE_DIR_SET == 0 )) && [[ -n "$EXISTING_STATE_DIR" ]]; then STATE_DIR="$EXISTING_STATE_DIR"; fi
+  if (( REDIS_DB_SET == 0 )) && [[ -n "$EXISTING_REDIS_DB" ]]; then REDIS_DB="$EXISTING_REDIS_DB"; fi
+  if (( REDIS_PORT_SET == 0 )) && [[ -n "$EXISTING_REDIS_PORT" ]]; then REDIS_PORT="$EXISTING_REDIS_PORT"; fi
+  if (( REDIS_MODE_SET == 0 )) && [[ -n "$EXISTING_REDIS_MODE" ]]; then
+    case "$EXISTING_REDIS_MODE" in
+      inline-snapshot) REDIS_MODE="snapshot" ;;
+      external) REDIS_MODE="auto" ;;
+      *) REDIS_MODE="$EXISTING_REDIS_MODE" ;;
+    esac
+  fi
+  if (( EXECUTION_MODE_SET == 0 )) && [[ "$EXISTING_EXECUTION_MODE" == "safe-simulation" ]]; then
+    SAFE_SIMULATION=1
+    LIVE_OPT_IN=0
+  fi
   if (( REPOSITORY_SET == 0 )) && [[ -n "$EXISTING_REPOSITORY" ]]; then REPOSITORY="$EXISTING_REPOSITORY"; fi
   if (( BRANCH_SET == 0 )) && [[ -n "$EXISTING_BRANCH" ]]; then BRANCH="$EXISTING_BRANCH"; fi
   [[ ! -f "$PRESERVED_STATE/managed-service-user" ]] || EXISTING_MANAGED_SERVICE_USER=1
@@ -508,12 +653,18 @@ remove_runtime_identity() {
   if [[ "$runtime" == "systemd" || "$runtime" == "auto" ]] \
     && command -v systemctl >/dev/null 2>&1; then
     as_root systemctl disable --now "$name-recovery.timer" "$name-recovery" \
+      "$name-redis-governor.timer" "$name-redis-governor" \
+      "$name-redis-memory.timer" "$name-redis-memory" \
       "$name-direct-trade" "$name-scheduler" "$name" "$name-redis" 2>/dev/null || true
     as_root rm -f -- "/etc/systemd/system/$name.service" \
       "/etc/systemd/system/$name-scheduler.service" \
       "/etc/systemd/system/$name-direct-trade.service" \
       "/etc/systemd/system/$name-recovery.service" \
       "/etc/systemd/system/$name-recovery.timer" \
+      "/etc/systemd/system/$name-redis-governor.service" \
+      "/etc/systemd/system/$name-redis-governor.timer" \
+      "/etc/systemd/system/$name-redis-memory.service" \
+      "/etc/systemd/system/$name-redis-memory.timer" \
       "/etc/systemd/system/$name-redis.service"
     as_root systemctl daemon-reload 2>/dev/null || true
   fi
@@ -557,7 +708,26 @@ read_preserved_install_values
 if [[ -z "$SERVICE_USER" ]]; then
   if valid_user "$PROJECT_NAME"; then SERVICE_USER="$PROJECT_NAME"; else SERVICE_USER="cts-kn"; fi
 fi
-[[ -n "$ENV_FILE" ]] || ENV_FILE="/var/lib/$PROJECT_NAME/.env.production.local"
+default_redis_db_for_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] || { printf '0'; return; }
+  if (( port >= 3002 )); then printf '%s' "$(( (port - 3002) % 16 ))"; else printf '%s' "$(( port % 16 ))"; fi
+}
+[[ -n "$STATE_DIR" ]] || STATE_DIR="/var/lib/cts/instances/$PROJECT_NAME"
+[[ -n "$ENV_FILE" ]] || ENV_FILE="$STATE_DIR/.env.production.local"
+if (( ENV_FILE_SET == 0 )) && [[ "$ENV_FILE" == "/var/lib/$PROJECT_NAME/.env.production.local" ]] \
+  && [[ "$STATE_DIR" != "/var/lib/$PROJECT_NAME" ]]; then
+  ENV_FILE="$STATE_DIR/.env.production.local"
+fi
+[[ -n "$REDIS_DB" ]] || REDIS_DB="$(default_redis_db_for_port "$PORT")"
+if [[ -z "$REDIS_PORT" ]]; then
+  if [[ "$REDIS_DB" =~ ^([0-9]|1[0-5])$ ]]; then REDIS_PORT="$(( 6379 + REDIS_DB ))"; else REDIS_PORT=6379; fi
+fi
+[[ -n "$REDIS_MODE" ]] || REDIS_MODE="auto"
+BACKUP_ROOT="${CTS_BACKUP_ROOT:-/var/backups/cts}"
+if [[ -n "${CTS_TEST_TARGET:-}${CTS_TEST_INSTALLER:-}" && -z "${CTS_BACKUP_ROOT:-}" ]]; then
+  BACKUP_ROOT="$(dirname "$INSTALL_DIR")/.cts-backups"
+fi
 
 valid_absolute_path "$INSTALL_DIR" || { echo "Install directory must be a safe absolute non-root path" >&2; exit 2; }
 valid_name "$PROJECT_NAME" || { echo "Invalid service name" >&2; exit 2; }
@@ -565,6 +735,13 @@ valid_user "$SERVICE_USER" || { echo "Invalid service user" >&2; exit 2; }
 valid_port "$PORT" || { echo "Invalid port" >&2; exit 2; }
 [[ "$RUNTIME" =~ ^(auto|systemd|pm2)$ ]] || { echo "Invalid runtime" >&2; exit 2; }
 valid_absolute_path "$ENV_FILE" || { echo "Environment file must be a safe absolute non-root path" >&2; exit 2; }
+valid_absolute_path "$STATE_DIR" || { echo "State directory must be a safe absolute non-root path" >&2; exit 2; }
+valid_absolute_path "$BACKUP_ROOT" || { echo "Backup root must be a safe absolute non-root path" >&2; exit 2; }
+[[ "$BACKUP_ROOT" != "$STATE_DIR" && "$BACKUP_ROOT" != "$STATE_DIR"/* ]] \
+  || { echo "Backup root must be outside the durable state directory" >&2; exit 2; }
+[[ "$REDIS_DB" =~ ^([0-9]|1[0-5])$ ]] || { echo "Redis DB must be 0..15" >&2; exit 2; }
+valid_port "$REDIS_PORT" || { echo "Invalid Redis port" >&2; exit 2; }
+[[ "$REDIS_MODE" =~ ^(auto|native|npm|snapshot)$ ]] || { echo "Invalid Redis mode" >&2; exit 2; }
 [[ -z "$SEED_ENV_FILE" || -r "$SEED_ENV_FILE" ]] \
   || { echo "Seed env file is not readable: $SEED_ENV_FILE" >&2; exit 2; }
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != *".."* && "$BRANCH" != *"//"* ]] || { echo "Invalid branch" >&2; exit 2; }
@@ -585,6 +762,16 @@ if (( RESOLVE_ONLY == 1 )); then
   printf 'CTS_RUNTIME=%s\n' "$RUNTIME"
   printf 'CTS_SERVICE_USER=%s\n' "$SERVICE_USER"
   printf 'CTS_ENV_FILE=%s\n' "$ENV_FILE"
+  printf 'CTS_STATE_DIR=%s\n' "$STATE_DIR"
+  printf 'CTS_REDIS_DB=%s\n' "$REDIS_DB"
+  printf 'CTS_REDIS_PORT=%s\n' "$REDIS_PORT"
+  printf 'CTS_REDIS_MODE=%s\n' "$REDIS_MODE"
+  if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
+    printf 'CTS_EXECUTION_MODE=safe-simulation\n'
+  else
+    printf 'CTS_EXECUTION_MODE=live\n'
+  fi
+  printf 'CTS_BACKUP_ROOT=%s\n' "$BACKUP_ROOT"
   printf 'CTS_REPOSITORY=%s\n' "$REPOSITORY"
   printf 'CTS_BRANCH=%s\n' "$BRANCH"
   exit 0
@@ -605,7 +792,7 @@ fi
 
 for installer_arg in "${INSTALL_ARGS[@]}"; do
   case "$installer_arg" in
-    --name|--project-name|--project|--port|--runtime|--service-user|--env-file|--seed-env-file|--uninstall)
+    --name|--project-name|--project|--port|--runtime|--service-user|--env-file|--state-dir|--redis-db|--redis-port|--redis-mode|--seed-env-file|--safe-simulation|--enable-live|--uninstall)
       echo "Pass $installer_arg before -- so bootstrap can resolve one authoritative target" >&2
       exit 2
       ;;
@@ -628,6 +815,7 @@ fi
 
 resume_preserved_state_after_failed_clean_install
 preserve_existing_install_state
+create_permanent_backup
 prepare_clean_install_workspace
 remove_existing_install_target
 as_root mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -645,6 +833,10 @@ INSTALL_ARGS+=(
   --runtime "$RUNTIME"
   --service-user "$SERVICE_USER"
   --env-file "$ENV_FILE"
+  --state-dir "$STATE_DIR"
+  --redis-db "$REDIS_DB"
+  --redis-port "$REDIS_PORT"
+  --redis-mode "$REDIS_MODE"
   --create-service-user
   --non-interactive
 )
@@ -694,3 +886,4 @@ if [[ -n "$PRESERVED_STATE" && -d "$PRESERVED_STATE" ]]; then
 fi
 trap - EXIT
 echo "CTS-K-N installation verified: $PROJECT_NAME at $INSTALL_DIR on port $PORT" >&2
+[[ -z "$PERMANENT_BACKUP" ]] || echo "Permanent rollback backup retained at: $PERMANENT_BACKUP" >&2
