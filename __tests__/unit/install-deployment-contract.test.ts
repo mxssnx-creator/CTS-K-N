@@ -411,11 +411,13 @@ describe("production installation and Kilo deployment contract", () => {
     }
   })
 
-  it("ignores only inactive immutable legacy release snapshots, including short SHAs", async () => {
+  it("ignores only inactive immutable release and rollback snapshots", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "cts-legacy-release-snapshot-"))
     const appName = "cts-stale-release-test"
     const staleRoot = path.join(root, `${appName}-release-${"a".repeat(7)}`)
     const runtime = path.join(staleRoot, ".cts-runtime")
+    const rollbackRoot = path.join(root, `${appName}-rollback-pr253-20260829T020725Z-${"b".repeat(7)}`)
+    const rollbackRuntime = path.join(rollbackRoot, ".cts-runtime")
     const args = [
       path.join(process.cwd(), "scripts", "install.sh"),
       "--name", appName,
@@ -428,15 +430,23 @@ describe("production installation and Kilo deployment contract", () => {
     let sleeper: ReturnType<typeof spawn> | null = null
     try {
       await mkdir(runtime, { recursive: true })
-      await writeFile(path.join(runtime, "install-values.env"), [
-        `CTS_INSTALLED_APP_NAME=${appName}`,
-        "CTS_INSTALLED_APP_PORT=49317",
-        `CTS_INSTALLED_PROJECT_ROOT=${staleRoot}`,
-        `CTS_INSTALLED_STATE_DIR=${path.join(root, "state")}`,
-        "CTS_INSTALLED_REDIS_DB=11",
-        "CTS_INSTALLED_REDIS_PORT=6390",
-        "",
-      ].join("\n"))
+      await mkdir(rollbackRuntime, { recursive: true })
+      const writeIdentity = (runtimePath: string, projectRoot: string) => writeFile(
+        path.join(runtimePath, "install-values.env"),
+        [
+          `CTS_INSTALLED_APP_NAME=${appName}`,
+          "CTS_INSTALLED_APP_PORT=49317",
+          `CTS_INSTALLED_PROJECT_ROOT=${projectRoot}`,
+          `CTS_INSTALLED_STATE_DIR=${path.join(root, "state")}`,
+          "CTS_INSTALLED_REDIS_DB=11",
+          "CTS_INSTALLED_REDIS_PORT=6390",
+          "",
+        ].join("\n"),
+      )
+      await Promise.all([
+        writeIdentity(runtime, staleRoot),
+        writeIdentity(rollbackRuntime, rollbackRoot),
+      ])
 
       sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
         cwd: staleRoot,
@@ -458,7 +468,8 @@ describe("production installation and Kilo deployment contract", () => {
         env: { ...process.env, CTS_INSTALL_SEARCH_ROOT: root },
         encoding: "utf8",
       })
-      expect(output).toContain("Ignoring inactive legacy release snapshot")
+      expect(output).toContain(`Ignoring inactive legacy checkout snapshot during identity checks: ${staleRoot}`)
+      expect(output).toContain(`Ignoring inactive legacy checkout snapshot during identity checks: ${rollbackRoot}`)
       expect(output).toContain("Preflight completed without mutations")
     } finally {
       if (sleeper && sleeper.exitCode === null) {
