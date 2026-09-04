@@ -1,4 +1,45 @@
 # Active Context: CTS-K-N Trading System (main project)
+## Current follow-up — visible counts during partial symbol coverage
+
+- PR311 merged as `d96c7ff4363292b7c30bdf58c78a94d91d265b67`, head
+  `af588f51294bfa9cb51e765284a91097298e2197`, exact tree
+  `4d7c3b518f47b70f2631a4485950411b266acfae`. GitHub Dev Preview Smoke run
+  33925459131 succeeded. The official updater stopped before replacement because
+  a concurrent remote edit to `scripts/runtime-recovery.sh` was detected.
+  Full source backup `/var/backups/cts-kn/recovery-draft-20260904` verified;
+  the exact recovery draft is preserved in this follow-up and must be included
+  in merged main before clearing the matching remote patch for deployment.
+  Runtime/env/Redis backup: `/var/backups/cts-kn/pre-native-stats-deploy-20260904`.
+- R4's native runner, production build, API routes and restart checks passed.
+  During the computational soak its process received SIGTERM after roughly
+  five minutes; no final verifier result exists. Do not call that a full pass.
+  Isolated repeat R5 uses the same verified build at port 3123 and logs under
+  `/var/tmp/cts-kn-main-diagnostic-r5-20260904`, unit of the same name.
+- R4 measured 79,034 active indications, 260,394 evaluated indications,
+  351 simulated entries and 350 current Signal positions. The production
+  quote connector separately confirmed executable BTC/ETH/SOL Prod-VST books
+  and rejected an unknown symbol without a quote request. No credentials or
+  exchange orders were used in these computational/public-quote checks.
+- A separate display defect was confirmed against the native API: with five
+  of 32 symbols processed, strategyRows and Overview masked all existing
+  counts/PF as zero. Current changes sum fresh measured symbol rows immediately
+  and retain explicit partial coverage. Stale/unselected rows and last-symbol
+  legacy aggregates are still excluded; stopped current-open counts stay zero.
+- The card now identifies completed symbol calculations and per-stage coverage.
+  A fresh partial snapshot is informative, not a count-integrity error. Current
+  branch is `codex/visible-progress-stats-20260904` in the same isolated worktree.
+  Focused checks passed 16/16; all 274 Jest suites / 1,888 tests passed, typecheck
+  and changed-file lint passed. Production build passed with 349 complete traces.
+- The preserved recovery fix confirms three liveness failures before restarting
+  and queues systemd restarts with --no-block so the recovery oneshot does not
+  wait through the app shutdown timeout. Deterministic private-PATH tests pass
+  transient liveness recovery, three-sample outage, queued restart, cooldown,
+  boot/wrapper/maintenance guards and Direct heartbeat recovery. No real service
+  is touched by these shell tests.
+- Keep the prior unresolved work below: complete 20-minute authenticated X02 VST
+  lifecycle, production order/fill/ledger comparison, intensive browser
+  screenshots, stable health/restart/memory verification and final backups.
+
 ## Active continuation 2026-09-04 — native statistics and VST verification
 
 - PR310 is merged and deployed: main/remote revision

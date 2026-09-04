@@ -47,7 +47,7 @@ import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
-import { resolveStageRowSnapshotFreshMs } from "@/lib/stage-row-snapshot"
+import { resolveStageRowSnapshotFreshMs, sumFreshStageRowField } from "@/lib/stage-row-snapshot"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -3051,9 +3051,8 @@ export async function GET(
         // values are what the dashboard sees. They are retained for old
         // exports, but must never be presented as a current stage snapshot
         // when no fresh per-symbol row exists.
-        const useCross = freshSymbols > 0 && (
-          expectedStageSymbolCount <= 0 || freshSymbols >= expectedStageSymbolCount
-        )
+        // Publish the measured subset immediately; coverage remains explicit.
+        const useCross = freshSymbols > 0
         const createdSets       = useCross ? symCreated : 0
         const avgPosPerSet      = useCross && weightSum > 0
           ? weightedPPS / weightSum
@@ -3103,7 +3102,7 @@ export async function GET(
           : 0
 
         // ── evaluated / passed / passRatio ───���────────────────────────
-        // Current stage totals must be complete per-symbol sums. A legacy
+        // Current stage totals sum all available fresh per-symbol rows. A legacy
         // aggregate is a last-symbol value and can make both X01 and X02
         // display thousands of validated rows from a stale run.
         const stageEvaluated = useCross ? symEvaluated : 0
@@ -3156,6 +3155,11 @@ export async function GET(
         const setsProgressing = useCross ? symProgressing : 0
 
         stratDetail[stage] = {
+          coverage: {
+            covered: freshSymbols,
+            total: expectedStageSymbolCount,
+            complete: expectedStageSymbolCount > 0 && freshSymbols >= expectedStageSymbolCount,
+          },
           avgPosPerSet:        isFinite(avgPosPerSet)    ? Math.round(avgPosPerSet * 100) / 100      : 0,
           createdSets,
           entriesCount:        useCross ? symEntries : 0,
@@ -3496,64 +3500,40 @@ export async function GET(
     const aggregateFreshRowField = (
       hash: Record<string, string>,
       field: string,
-      legacyField: string,
-    ): number => {
-      const nowMs = Date.now()
-      let total = 0
-      let samples = 0
-      for (const key of Object.keys(hash)) {
-        if (!key.startsWith("s:") || !key.endsWith(":ts")) continue
-        const symbol = key.slice(2, -3)
-        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
-        const timestamp = Number(hash[key] || 0)
-        if (!(timestamp > 0) || nowMs - timestamp > ROW_SNAPSHOT_FRESH_MS) continue
-        total += n(hash[`s:${symbol}:${field}`])
-        samples++
-      }
-      // Do not fall back to the last-symbol legacy field. That value is not a
-      // current cross-symbol snapshot and would make stale validation counts
-      // look authoritative on every exchange card.
-      return samples > 0 ? total : 0
-    }
+      _legacyField: string,
+    ): number => sumFreshStageRowField(hash, field, {
+      symbols: activeStatsSymbolFilter,
+      maxAgeMs: ROW_SNAPSHOT_FRESH_MS,
+    })
     const baseRowCoverage = summarizeStageRowCoverage(strategyDetailBaseHash)
     const mainRowCoverage = summarizeStageRowCoverage(strategyDetailMainHash)
     const realRowCoverage = summarizeStageRowCoverage(strategyDetailRealHash)
     const liveRowCoverage = summarizeStageRowCoverage(strategyDetailLiveHash)
-    const aggregateCompleteFreshRowField = (
-      hash: Record<string, string>,
-      field: string,
-      legacyField: string,
-    ): number => {
-      const coverage = summarizeStageRowCoverage(hash)
-      return coverage.complete
-        ? aggregateFreshRowField(hash, field, legacyField)
-        : 0
-    }
     const currentOpenRowField = (
       hash: Record<string, string>,
       field: string,
       legacyField: string,
-    ): number => engineIsStopped ? 0 : aggregateCompleteFreshRowField(hash, field, legacyField)
+    ): number => engineIsStopped ? 0 : aggregateFreshRowField(hash, field, legacyField)
     const ratio = (numerator: number, denominator: number, cap = true): number => {
       if (!(denominator > 0)) return 0
       const value = Math.round((numerator / denominator) * 1000) / 10
       return cap ? Math.min(100, value) : value
     }
-    const baseRowTotal = aggregateCompleteFreshRowField(strategyDetailBaseHash, "row_total", "created_sets")
-    const baseRowValid = aggregateCompleteFreshRowField(strategyDetailBaseHash, "row_valid", "passed_sets")
-    const mainRowValid = aggregateCompleteFreshRowField(strategyDetailMainHash, "row_valid", "parent_sets_passed")
-    const mainRowOverall = aggregateCompleteFreshRowField(strategyDetailMainHash, "row_overall", "created_sets")
-    const realRowValid = aggregateCompleteFreshRowField(strategyDetailRealHash, "row_valid", "created_sets")
-    const realRowActive = aggregateCompleteFreshRowField(strategyDetailRealHash, "row_active", "sets_running_now")
-    const realRowEvaluated = aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_evaluated", "evaluated")
-    const realRowRejected = aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_rejected", "row_real_rejected")
-    const liveRowTotal = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_total", "evaluated")
-    const liveRowMirrored = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_mirrored", "created_sets")
-    const liveRowBlockCreated = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_block_created", "row_live_block_created")
-    const liveRowBlockValid = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_block_valid", "row_live_block_valid")
-    const liveRowExecutable = aggregateCompleteFreshRowField(strategyDetailLiveHash, "row_live_executable", "created_sets")
-    const liveAdditionalDca = aggregateCompleteFreshRowField(strategyDetailLiveHash, "additional_dca_executable", "additional_dca_executable")
-    const liveExecutableTotal = aggregateCompleteFreshRowField(strategyDetailLiveHash, "executable_total", "created_sets")
+    const baseRowTotal = aggregateFreshRowField(strategyDetailBaseHash, "row_total", "created_sets")
+    const baseRowValid = aggregateFreshRowField(strategyDetailBaseHash, "row_valid", "passed_sets")
+    const mainRowValid = aggregateFreshRowField(strategyDetailMainHash, "row_valid", "parent_sets_passed")
+    const mainRowOverall = aggregateFreshRowField(strategyDetailMainHash, "row_overall", "created_sets")
+    const realRowValid = aggregateFreshRowField(strategyDetailRealHash, "row_valid", "created_sets")
+    const realRowActive = aggregateFreshRowField(strategyDetailRealHash, "row_active", "sets_running_now")
+    const realRowEvaluated = aggregateFreshRowField(strategyDetailRealHash, "row_real_evaluated", "evaluated")
+    const realRowRejected = aggregateFreshRowField(strategyDetailRealHash, "row_real_rejected", "row_real_rejected")
+    const liveRowTotal = aggregateFreshRowField(strategyDetailLiveHash, "row_total", "evaluated")
+    const liveRowMirrored = aggregateFreshRowField(strategyDetailLiveHash, "row_mirrored", "created_sets")
+    const liveRowBlockCreated = aggregateFreshRowField(strategyDetailLiveHash, "row_live_block_created", "row_live_block_created")
+    const liveRowBlockValid = aggregateFreshRowField(strategyDetailLiveHash, "row_live_block_valid", "row_live_block_valid")
+    const liveRowExecutable = aggregateFreshRowField(strategyDetailLiveHash, "row_live_executable", "created_sets")
+    const liveAdditionalDca = aggregateFreshRowField(strategyDetailLiveHash, "additional_dca_executable", "additional_dca_executable")
+    const liveExecutableTotal = aggregateFreshRowField(strategyDetailLiveHash, "executable_total", "created_sets")
     const blockWork = {
       logicalEmitted: 0,
       materialized: 0,
@@ -3577,12 +3557,6 @@ export async function GET(
       else blockWork.batchSize = Math.max(blockWork.batchSize, value)
     }
     blockWork.activeSymbols = blockWorkSymbols.size
-    if (!realRowCoverage.complete) {
-      blockWork.logicalEmitted = 0
-      blockWork.materialized = 0
-      blockWork.batchSize = 0
-      blockWork.activeSymbols = 0
-    }
     const strategyRows = {
       base: {
         total: baseRowTotal,
@@ -3611,27 +3585,27 @@ export async function GET(
         evaluated: realRowEvaluated,
         rejected: realRowRejected,
         validRatio: ratio(realRowValid, realRowEvaluated),
-        qualifiedBeforeMaterialization: aggregateCompleteFreshRowField(
+        qualifiedBeforeMaterialization: aggregateFreshRowField(
           strategyDetailRealHash,
           "qualified_before_materialization",
           "qualified_sets_before_materialization",
         ),
-        materializationCeiling: aggregateCompleteFreshRowField(
+        materializationCeiling: aggregateFreshRowField(
           strategyDetailRealHash,
           "materialization_ceiling",
           "materialization_ceiling",
         ),
-        materializationTruncated: aggregateCompleteFreshRowField(
+        materializationTruncated: aggregateFreshRowField(
           strategyDetailRealHash,
           "materialization_truncated",
           "materialization_truncated",
         ),
-        materializationActivePreserved: aggregateCompleteFreshRowField(
+        materializationActivePreserved: aggregateFreshRowField(
           strategyDetailRealHash,
           "materialization_active_preserved",
           "materialization_active_preserved",
         ),
-        materializationFamiliesPreserved: aggregateCompleteFreshRowField(
+        materializationFamiliesPreserved: aggregateFreshRowField(
           strategyDetailRealHash,
           "materialization_families_preserved",
           "materialization_families_preserved",
@@ -3640,9 +3614,9 @@ export async function GET(
         activeExactRows: currentOpenRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
         activeRatio: ratio(realRowActive, realRowValid),
         blockRows: {
-          evaluated: aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_block_evaluated", "row_real_block_evaluated"),
-          created: aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_block_created", "row_real_block_created"),
-          rejected: aggregateCompleteFreshRowField(strategyDetailRealHash, "row_real_block_rejected", "row_real_block_rejected"),
+          evaluated: aggregateFreshRowField(strategyDetailRealHash, "row_real_block_evaluated", "row_real_block_evaluated"),
+          created: aggregateFreshRowField(strategyDetailRealHash, "row_real_block_created", "row_real_block_created"),
+          rejected: aggregateFreshRowField(strategyDetailRealHash, "row_real_block_rejected", "row_real_block_rejected"),
         },
         blockWork,
       },
@@ -3659,7 +3633,7 @@ export async function GET(
         executablePerRow: ratio(liveRowExecutable, liveRowTotal, false),
       },
       updatedAt: [baseRowCoverage, mainRowCoverage, realRowCoverage, liveRowCoverage]
-        .every((stage) => stage.complete && stage.oldestUpdatedAt > 0)
+        .every((stage) => stage.covered > 0 && stage.oldestUpdatedAt > 0)
         ? Math.min(
             baseRowCoverage.oldestUpdatedAt,
             mainRowCoverage.oldestUpdatedAt,
@@ -3751,17 +3725,17 @@ export async function GET(
       detail.sort((a, b) => b.created - a.created)
       return {
         aggregated: {
-          // A partial symbol set is diagnostic detail, not a global stage
-          // result. Keep the per-symbol rows available while withholding
-          // totals/PF until the current selection is fully covered.
-          symbolCount:       coverage.complete ? detail.length : 0,
-          totalCreated:      coverage.complete ? symCreated : 0,
-          totalEntries:      coverage.complete ? symEntries : 0,
-          totalRunning:      coverage.complete ? totalRunning : 0,
-          avgProfitFactor:   coverage.complete && weightSum > 0 ? Math.round((weightedPF  / weightSum) * 1000) / 1000 : 0,
-          avgDrawdownTime:   coverage.complete && weightSum > 0 ? Math.round((weightedDDT / weightSum) * 10)  / 10    : 0,
-          avgPosPerSet:      coverage.complete && weightSum > 0 ? Math.round((weightedPPS / weightSum) * 100)  / 100   : 0,
-          avgPosEval:        coverage.complete && weightSum > 0 ? Math.round((weightedPER / weightSum) * 10000) / 10000 : 0,
+          // Counts and weighted means cover only fresh observed symbols.
+          // Missing symbols remain visible in coverage, never synthetic zeros.
+          coverage,
+          symbolCount:       coverage.covered,
+          totalCreated:      symCreated,
+          totalEntries:      symEntries,
+          totalRunning:      totalRunning,
+          avgProfitFactor:   weightSum > 0 ? Math.round((weightedPF  / weightSum) * 1000) / 1000 : 0,
+          avgDrawdownTime:   weightSum > 0 ? Math.round((weightedDDT / weightSum) * 10)  / 10    : 0,
+          avgPosPerSet:      weightSum > 0 ? Math.round((weightedPPS / weightSum) * 100)  / 100   : 0,
+          avgPosEval:        weightSum > 0 ? Math.round((weightedPER / weightSum) * 10000) / 10000 : 0,
         },
         detail: detail.slice(0, 200), // cap at 200 rows for response size
       }
@@ -4312,7 +4286,7 @@ export async function GET(
         real: {
           valid: realRowValid,
           active: realRowActive,
-          activeExactSets: aggregateCompleteFreshRowField(
+          activeExactSets: aggregateFreshRowField(
             strategyDetailRealHash,
             "row_active_exact",
             "sets_running_now",
@@ -4339,8 +4313,8 @@ export async function GET(
     // Realtime stage averages are a dedicated read model. They deliberately
     // do not reuse the historic overview's labels or lifetime-count layout,
     // which previously made a partial current cycle look like historic truth.
-    // Evaluation-stage averages are published only for complete symbol
-    // coverage; Live outcome averages use the durable settled-close sample.
+    // Evaluation-stage averages use the observed fresh symbols and carry
+    // explicit coverage; Live outcome averages use durable settled closes.
     const stageCoverageView = (coverage: StageRowCoverage) => ({
       covered: coverage.covered,
       total: coverage.total,
@@ -4358,7 +4332,7 @@ export async function GET(
       tier: Record<string, any>,
       coverage: StageRowCoverage,
     ) => {
-      const setSamples = coverage.complete ? Math.max(0, Number(tier.totalCreated) || 0) : 0
+      const setSamples = coverage.covered > 0 ? Math.max(0, Number(tier.totalCreated) || 0) : 0
       return {
         averages: {
           profitFactor: nullableAverage(tier.avgProfitFactor, setSamples),
@@ -4373,7 +4347,7 @@ export async function GET(
     const liveOutcomeSamples = Math.max(0, liveClosedCount)
     const realtimeStageAverages = {
       schemaVersion: 1,
-      semantics: "current-complete-stage-averages-independent-from-historic-overview",
+      semantics: "current-observed-stage-averages-independent-from-historic-overview",
       updatedAt: strategyRows.updatedAt,
       maxAgeMs: stageRowSnapshotFreshMs,
       stages: {
