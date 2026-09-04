@@ -44,7 +44,10 @@ export async function GET(req: NextRequest) {
     }
 
     // Apply limit
-    const limit = limitParam ? parseInt(limitParam) : 100
+    const requestedLimit = limitParam ? parseInt(limitParam, 10) : 100
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(1000, requestedLimit))
+      : 100
     logs = logs.slice(-limit)
 
     // Format response
