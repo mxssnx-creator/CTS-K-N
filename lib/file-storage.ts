@@ -5,9 +5,10 @@ import { DEFAULT_COMMON_INDICATION_SETTINGS } from "@/lib/common-indicator-confi
 import { REALIZED_PROFIT_FACTOR_MIN_DEFAULT } from "@/lib/profit-factor-defaults"
 import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
 import type { MarketType } from "@/lib/market-types"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 const DATA_DIR =
-  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
+  isServerlessDeploymentRuntime()
     ? path.join("/tmp", "data")
     : path.join(process.cwd(), "data")
 

@@ -40,7 +40,7 @@ restart_server() {
   fuser -k 3002/tcp 2>/dev/null || true
   sleep 2
   
-  cd "/vercel/share/v0-project"
+  cd "$PROJECT_DIR"
   NEXT_DIST_DIR=".next" \
   NODE_ENV="production" \
   CRON_SECRET="${CRON_SECRET}" \

@@ -42,14 +42,13 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("keeps the canonical host installer fail-closed and complete", async () => {
-    const [installer, bootstrap, updater, serviceControl, envExample, remoteRoute, vercelConfig, credentialRoute, productionInit] = await Promise.all([
+    const [installer, bootstrap, updater, serviceControl, envExample, remoteRoute, credentialRoute, productionInit] = await Promise.all([
       readFile(path.join(process.cwd(), "scripts/install.sh"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/bootstrap-install.sh"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/update.sh"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/service-control.sh"), "utf8"),
       readFile(path.join(process.cwd(), ".env.example"), "utf8"),
       readFile(path.join(process.cwd(), "app/api/install/remote/route.ts"), "utf8"),
-      readFile(path.join(process.cwd(), "vercel.json"), "utf8"),
       readFile(path.join(process.cwd(), "app/api/system/inject-credentials/route.ts"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/production-deploy-init.mjs"), "utf8"),
     ])
@@ -89,6 +88,18 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).not.toContain("OnBootSec=2min")
     expect(installer).toContain("CTS_INSTALLED_ENV_FILE=$ENV_FILE")
     expect(installer).toContain("CTS_INSTALLED_ENV_MANAGED=$ENV_FILE_MANAGED")
+    expect(installer).toContain('ENV_FILE="${CTS_ENV_FILE:-}"')
+    expect(installer).toContain('ENV_FILE="/var/lib/$APP_NAME/.env.production.local"')
+    expect(installer).toContain('if [[ "$ENV_FILE" != "$PROJECT_ROOT"/* ]]; then ENV_FILE_MANAGED=0; fi')
+    expect(bootstrap).toContain('ENV_FILE="/var/lib/$PROJECT_NAME/.env.production.local"')
+    expect(updater).toContain('${SAVED_ENV_FILE:-/var/lib/$APP_NAME/.env.production.local}')
+    expect(serviceControl).toContain('ENV_FILE="/var/lib/cts-kn/.env.production.local"')
+    expect(installer).not.toContain('userdel --remove "$SERVICE_USER"')
+    expect(bootstrap).not.toContain('userdel --remove "$EXISTING_SERVICE_USER"')
+    expect(installer).toContain('"$env_parent/credentials" "$env_parent/forex"')
+    expect(installer).toContain('merge_persistent_credential_fallback "$env_parent/credentials/runtime.env"')
+    expect(installer).toContain('merge_persistent_credential_fallback "$env_parent/forex/runtime.env"')
+    expect(installer).toContain('BINGX_*|BYBIT_*|PIONEX_*|ORANGEX_*|INSTAFOREX_*|FOREX_*|MT4_*|MT5_*|METAAPI_*|FX_*')
     expect(installer).toContain("use bootstrap-install.sh to relocate it safely")
     expect(installer).toContain('rm -f -- "$RUNTIME_DIR/managed-service-user"')
     expect(installer).not.toContain("DEFAULT_PASSWORD")
@@ -107,6 +118,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("upsert_env FORCE_LIVE 1")
     expect(installer).toContain("upsert_env FORCE_SIMULATED 0")
     expect(installer).toContain("upsert_env ALLOW_LIVE_ORDER_PLACEMENT 1")
+    expect(installer).toContain("upsert_env LIVE_ORDER_CONNECTION_IDS bingx-x02")
     expect(installer).toContain("upsert_env CTS_REQUIRE_LIVE_TRADE_READY 1")
     expect(installer).toContain("upsert_env FORCE_SIMULATED 1")
     expect(installer).toContain("upsert_env FORCE_LIVE 0")
@@ -126,7 +138,9 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('upsert_env BINGX_PUBLIC_ORIGIN "https://open-api-vst.bingx.com"')
     expect(installer).toContain('upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api-vst.bingx.pro"')
     expect(installer).toContain('upsert_env BINGX_VST_ORIGIN "$bingx_vst_origin"')
-    expect(installer).toContain('BingX X02 Prod-VST (virtual funds)')
+    expect(installer).toContain('BingX X02 Prod-VST (write-eligible only after all runtime gates)')
+    expect(installer).toContain('BingX X01 (read-only by connection policy)')
+    expect(installer).toContain('exchange writes remain allow-listed to bingx-x02')
     expect(installer).toContain('upsert_env BINGX_X02_API_KEY "$bingx_vst_key"')
     expect(installer).toContain('upsert_env BINGX_X02_API_SECRET "$bingx_vst_secret"')
     expect(installer).toContain('fatal "Production server installation requires valid credentials for at least one supported exchange')
@@ -147,6 +161,11 @@ describe("production installation and Kilo deployment contract", () => {
     expect(bootstrap).toContain('for unit in "$name-recovery.timer" "$name-recovery" "$name-direct-trade"')
     expect(bootstrap).toContain('pm2 stop "$name-recovery" "$name-direct-trade"')
     expect(bootstrap).toContain('pm2 delete "$name" "$name-scheduler" "$name-direct-trade" "$name-recovery"')
+    expect(bootstrap).toContain("stop_stale_cts_processes")
+    expect(bootstrap).toContain('[[ "$cwd" == "$INSTALL_DIR"')
+    expect(bootstrap).toContain('as_root kill -TERM "${matched[@]}"')
+    expect(bootstrap).toContain('as_root kill -KILL "${alive[@]}"')
+    expect(bootstrap).toContain("Unrelated listeners remain a hard preflight error")
     expect(bootstrap).toContain("--resolve-only")
     expect(bootstrap).toContain("--safe-simulation")
     expect(bootstrap).toContain("cts-state")
@@ -231,13 +250,9 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('run_as_service test -r "$ENV_FILE"')
     expect(installer).toMatch(/production-deploy-init\.mjs" \\\n\s+\|\| return 1/)
     expect(installer).toMatch(/run-minute-scheduler\.mjs" --once \\\n\s+\|\| return 1/)
-    const vercel = JSON.parse(vercelConfig)
-    expect(vercel.installCommand).toBe("corepack pnpm@10.28.1 install --frozen-lockfile")
-    expect(vercel.buildCommand).toBe("corepack pnpm@10.28.1 run vercel-build")
-    expect(vercel.installCommand).not.toContain("corepack enable")
-    expect(vercel.buildCommand).not.toContain("vercel-build-setup")
+    expect(existsSync(path.join(process.cwd(), "vercel.json"))).toBe(false)
     const packageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"))
-    expect(packageJson.scripts["vercel-build"]).toBe("node scripts/build-next-with-trace-retry.mjs")
+    expect(packageJson.scripts["vercel-build"]).toBeUndefined()
     expect(packageJson.scripts.build).toBe("node scripts/build-next-with-trace-retry.mjs")
     expect(packageJson.scripts["build:next"]).toContain("next/dist/bin/next build")
     expect(packageJson.scripts["build:next"]).toContain("--require=./scripts/next-fs-rm-compat.cjs")
@@ -703,7 +718,7 @@ describe("production installation and Kilo deployment contract", () => {
       "utf8",
     )
     expect(nextBuildWrapper).toContain('["pnpm@10.28.1", "run", "build:next"]')
-    expect(nextBuildWrapper).toContain("const requiresStandalone = !isVercelBuild")
+    expect(nextBuildWrapper).toContain("const requiresStandalone = true")
     expect(nextBuildWrapper).toContain('detached: process.platform !== "win32"')
     expect(nextBuildWrapper).toContain('process.kill(-pid, signal)')
     expect(nextBuildWrapper).toContain('signalProcessGroup(pid, "SIGKILL")')
@@ -732,7 +747,7 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("repairs invalid Next provider markers without false static-export packaging", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "cts-vercel-manifests-"))
+    const root = await mkdtemp(path.join(tmpdir(), "cts-next-manifests-"))
     const dist = path.join(root, ".next")
     const normalizer = path.join(process.cwd(), "scripts/normalize-next-env.mjs")
     try {

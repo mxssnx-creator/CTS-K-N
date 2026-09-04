@@ -106,3 +106,4 @@ async function main() {
   finally { report.finishedAt = new Date().toISOString(); await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 }); console.log(`[orchestrated-verifier] ${report.success ? "PASS" : "FAIL"} artifact=${path}`) }
 }
 void main()
+

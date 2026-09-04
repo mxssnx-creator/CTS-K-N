@@ -100,9 +100,7 @@ function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; m
   const deploymentUrl =
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.DEPLOYMENT_URL ||
-    process.env.URL ||
-    process.env.VERCEL_URL ||
-    process.env.VERCEL_PROJECT_PRODUCTION_URL
+    process.env.URL
   const serverless = isServerlessDeploymentRuntime()
   if (!deploymentUrl && !serverless) {
     return {

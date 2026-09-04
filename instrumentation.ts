@@ -4,8 +4,8 @@
  * starts, BEFORE any request is handled.
  *
  * ── WHY THIS FILE IS CRITICAL (production stability) ─────────────────────────
- * This file had gone missing even though `next.config.mjs` and
- * `scripts/vercel-build-setup.sh` both reference it. Without it, production had
+ * This file had gone missing even though the production configuration expects
+ * it. Without it, production had
  * NO server-side boot path: the engine only initialized when a browser happened
  * to mount `EngineAutoInitializer` and POST `/api/system/initialize`. That route
  * seeds + auto-starts but does NOT run `completeStartup()`, so the orphaned-flag

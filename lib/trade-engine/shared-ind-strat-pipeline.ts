@@ -264,7 +264,7 @@ export async function runIndStratCycle(
     // disables the Promise.race in the caller.
     const PHASE3_TIMEOUT_MS = Infinity
     // API-worker safety gate: strategy evaluation runs by default for self-hosted
-    // workers so production progress advances; Vercel/serverless workers remain
+    // workers so production progress advances; serverless workers remain
     // opt-in. The snapshot-readiness check below still prevents empty/stale
     // work.
     const apiStrategyFlowEnabled =

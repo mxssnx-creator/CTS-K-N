@@ -1,10 +1,9 @@
 /**
  * Shared deployment-runtime classification.
  *
- * Kilo/OpenNext and Cloudflare workers do not necessarily expose Vercel's
- * environment flags. Checking only VERCEL therefore made request workers look
- * like durable Node processes: they accepted a start request, lost their
- * timers after the response, and left settings/progression with stale markers.
+ * Request workers must be distinguished from durable Node processes through
+ * portable runtime flags. Otherwise they can accept a start request, lose
+ * their timers after the response, and leave stale settings/progression state.
  */
 
 const SERVERLESS_RUNTIME_NAMES = new Set([
@@ -14,7 +13,6 @@ const SERVERLESS_RUNTIME_NAMES = new Set([
   "cloudflare-workers",
   "kilo",
   "kilo-deploy",
-  "vercel",
   "lambda",
 ])
 
@@ -45,8 +43,6 @@ function hasKiloDeploymentUrl(): boolean {
     process.env.NEXT_PUBLIC_APP_URL,
     process.env.DEPLOYMENT_URL,
     process.env.URL,
-    process.env.VERCEL_URL,
-    process.env.VERCEL_PROJECT_PRODUCTION_URL,
   ].some((value) => /(^|\.)kiloapps\.io(?::|\/|$)/i.test(String(value ?? "")))
 }
 
@@ -84,8 +80,6 @@ export function isServerlessDeploymentRuntime(): boolean {
 
   return (
     process.env.NEXT_RUNTIME === "edge" ||
-    process.env.VERCEL === "1" ||
-    Boolean(process.env.VERCEL_ENV) ||
     Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
     isTruthy(process.env.CF_PAGES) ||
     isTruthy(process.env.CLOUDFLARE_WORKERS) ||
@@ -102,11 +96,16 @@ export function hasExplicitServerlessForegroundOptIn(): boolean {
   )
 }
 
+export function canStartTradeEngineInProcess(): boolean {
+  if (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1") return false
+  if (process.env.NEXT_RUNTIME === "edge") return false
+  return !isServerlessDeploymentRuntime() || hasExplicitServerlessForegroundOptIn()
+}
+
 export function getDeploymentRuntimeLabel(): string {
   const configured = getConfiguredDeploymentRuntime()
   if (configured) return configured
   if (isKiloDeploymentRuntime()) return "kilo-deploy"
-  if (process.env.VERCEL === "1" || process.env.VERCEL_ENV) return "vercel"
   if (process.env.AWS_LAMBDA_FUNCTION_NAME) return "lambda"
   if (process.env.CF_PAGES || process.env.CLOUDFLARE_WORKERS || hasCloudflareWorkerGlobals()) {
     return "cloudflare-workers"

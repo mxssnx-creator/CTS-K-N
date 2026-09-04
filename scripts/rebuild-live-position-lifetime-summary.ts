@@ -4,7 +4,9 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { hydrateLivePositionReadModel } from "@/lib/live-position-read-model"
 import {
   LIVE_POSITION_LIFETIME_SUMMARY_VERSION,
+  LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW,
   buildLivePositionLifetimeContribution,
+  livePositionLifetimeContributionOrderKey,
   livePositionLifetimeContributionsKey,
   livePositionLifetimeSummaryKey,
 } from "@/lib/live-position-lifetime-summary"
@@ -53,12 +55,29 @@ async function main(): Promise<void> {
   }
 
   const generatedAt = Date.now()
+  const allContributionEntries = [...contributions.entries()]
+  const retainedContributionEntries = allContributionEntries.slice(
+    0,
+    LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW,
+  )
+  const prunedContributionEntries = allContributionEntries.slice(
+    LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW,
+  )
+  const contributionWindowPrunedBeforeAt = prunedContributionEntries.reduce((latest, [, raw]) => {
+    try {
+      return Math.max(latest, Number(JSON.parse(raw)?.terminalAt) || 0)
+    } catch {
+      return latest
+    }
+  }, 0)
   const report = {
     connectionId,
     apply,
     terminalIndexRows: ids.length,
     uniqueTerminalIndexRows: uniqueIds.length,
-    indexedContributions: contributions.size,
+    indexedContributions: retainedContributionEntries.length,
+    prunedContributions: prunedContributionEntries.length,
+    contributionWindowLimit: LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW,
     missingPositionSnapshots,
     summaryVersion: LIVE_POSITION_LIFETIME_SUMMARY_VERSION,
     generatedAt,
@@ -68,14 +87,20 @@ async function main(): Promise<void> {
   if (apply) {
     const finalContributionKey = livePositionLifetimeContributionsKey(connectionId)
     const finalSummaryKey = livePositionLifetimeSummaryKey(connectionId)
+    const finalOrderKey = livePositionLifetimeContributionOrderKey(connectionId)
     const suffix = `${process.pid}:${generatedAt}`
     const tempContributionKey = `${finalContributionKey}:rebuild:${suffix}`
     const tempSummaryKey = `${finalSummaryKey}:rebuild:${suffix}`
-    await client.del(tempContributionKey, tempSummaryKey)
+    const tempOrderKey = `${finalOrderKey}:rebuild:${suffix}`
+    await client.del(tempContributionKey, tempSummaryKey, tempOrderKey)
 
-    const entries = [...contributions.entries()]
+    const entries = retainedContributionEntries
     for (let offset = 0; offset < entries.length; offset += 250) {
       await client.hset(tempContributionKey, Object.fromEntries(entries.slice(offset, offset + 250)))
+    }
+    const contributionIds = entries.map(([id]) => id).slice(0, LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW)
+    for (let offset = 0; offset < contributionIds.length; offset += 250) {
+      await client.rpush(tempOrderKey, ...contributionIds.slice(offset, offset + 250))
     }
     await client.hset(tempSummaryKey, {
       ...Object.fromEntries(Object.entries(metrics).map(([field, value]) => [field, String(value)])),
@@ -85,14 +110,19 @@ async function main(): Promise<void> {
       terminalIndexRows: String(ids.length),
       uniqueTerminalIndexRows: String(uniqueIds.length),
       missingPositionSnapshots: String(missingPositionSnapshots),
+      contributionWindowLimit: String(LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW),
+      contributionWindowPruned: String(prunedContributionEntries.length),
+      contributionWindowPrunedBeforeAt: String(contributionWindowPrunedBeforeAt),
+      ignoredHistoricReplays: "0",
     })
 
     // Applied rebuilds run while the engine is in maintenance. Swap both
     // complete temporary hashes in one Redis transaction so readers never see
     // a delete/rename gap or a summary paired with old contributions.
     const transaction = client.multi()
-    transaction.del(finalContributionKey, finalSummaryKey)
+    transaction.del(finalContributionKey, finalSummaryKey, finalOrderKey)
     if (entries.length > 0) transaction.rename(tempContributionKey, finalContributionKey)
+    if (contributionIds.length > 0) transaction.rename(tempOrderKey, finalOrderKey)
     transaction.rename(tempSummaryKey, finalSummaryKey)
     const transactionResults = await transaction.exec()
     const transactionError = transactionResults?.find((result: unknown) => result instanceof Error)
@@ -100,6 +130,7 @@ async function main(): Promise<void> {
     if (typeof client.persist === "function") {
       await Promise.all([
         ...(entries.length > 0 ? [client.persist(finalContributionKey)] : []),
+        ...(contributionIds.length > 0 ? [client.persist(finalOrderKey)] : []),
         client.persist(finalSummaryKey),
       ])
     }

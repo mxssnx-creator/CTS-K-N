@@ -14,7 +14,7 @@ export const maxDuration = 60
  * scheduler invokes it once per minute on any server platform; long-lived
  * Node/PM2/Docker deployments additionally run the in-process 15-second
  * recovery timer. Keeping sleeps out of the request avoids hosted-function
- * duration limits and makes Vercel an optional target rather than a runtime
+ * duration limits and keeps hosted request workers optional rather than runtime
  * dependency.
  *
  * ──────────────────────────────────────────────────────────────────────

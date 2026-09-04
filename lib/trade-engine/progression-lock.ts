@@ -29,25 +29,22 @@
  * ║                                                                      ║
  * ║  Atomicity:                                                          ║
  * ║   • Acquire   → `SET key val NX EX ttl` — single command, atomic.    ║
- * ║   • Extend    → read value, compare to owner token, then `expire`.   ║
- * ║                 Small window race (~ms) but bounded by the cheap     ║
- * ║                 read-then-write semantics of our inline Redis        ║
- * ║                 client; worst case is a one-tick-late TTL refresh.   ║
- * ║   • Release   → read value, compare, then `del`. Same window. The    ║
- * ║                 TTL provides the fallback safety net.                ║
+ * ║   • Extend    → owner-checked Lua compare-and-renew.                 ║
+ * ║   • Release   → owner-checked Lua compare-and-delete.                ║
  * ║                                                                      ║
  * ║  Note on the inline Redis client (`lib/redis-db.ts`):                ║
  * ║   The local in-process client doesn't support `SCRIPT EVAL`, so      ║
- * ║   compare-and-swap is implemented in JS rather than Lua. This is     ║
- * ║   fine for the inline path — there's only one consumer. When wired  ║
- * ║   to a real Upstash/ioredis client at deploy time the same APIs     ║
- * ║   still work (the `set` options `{NX, EX}` are standard Redis); we   ║
- * ║   just lose one round-trip's worth of strict atomicity, which the    ║
- * ║   TTL safety net covers.                                             ║
+ * ║   compare-and-swap falls back to JS only for that single-process     ║
+ * ║   adapter. Shared Redis adapters fail closed if EVAL is unavailable. ║
  * ╚══════════════════════════════════════════════════════════════════════╝
  */
 
 import { getRedisClient } from "@/lib/redis-db"
+import {
+  releaseOwnedRedisLock,
+  renewOwnedRedisLock,
+  replaceRedisLockIfValue,
+} from "@/lib/redis-lock-utils"
 import crypto from "node:crypto"
 
 const LOCK_KEY_PREFIX = "engine_lock:"
@@ -245,13 +242,19 @@ export async function acquireProgressionLock(
         //   3. DEL deletes Y (WRONG — not ours)
         //   4. SET NX acquires (wrong epoch steals ownership)
         //
-        // Single `SET` (no NX guard) atomically overwrites whatever value
-        // is present. By the time we reach this block the stored epoch is
-        // confirmed stale (age > 2× LOCK_TTL_SEC) — no legitimate
-        // owner would sit idle that long. Worst case: a parallel staleness
-        // detector also fires SET; the LAST write wins via TTL extension,
-        // which is harmless since all callers verified staleness.
-        await client.set(key(connectionId), encodeValue(handle), { EX: ttlSec })
+        // Compare-and-replace in one Lua operation. A new owner that appears
+        // after the stale read can no longer be overwritten by this caller.
+        const healed = await replaceRedisLockIfValue(
+          client,
+          key(connectionId),
+          existingRaw as string,
+          encodeValue(handle),
+          ttlSec,
+        )
+        if (!healed) {
+          const currentOwner = await client.get(key(connectionId)).catch(() => null)
+          return { acquired: false, existingOwner: currentOwner ?? existingOwner }
+        }
         console.warn(
           `[ProgressionLock] healed stale lock for ${connectionId} (age=${age}ms, prev_epoch=${existingDecoded.epoch})`,
         )
@@ -287,14 +290,7 @@ export async function extendProgressionLock(
   const client = getRedisClient()
   if (!client) return false
   try {
-    const raw = await client.get(key(connectionId))
-    const decoded = decodeValue(raw)
-    if (!decoded) return false
-    if (decoded.ownerToken !== handle.ownerToken || decoded.epoch !== handle.epoch) {
-      return false
-    }
-    await client.expire(key(connectionId), ttlSec)
-    return true
+    return await renewOwnedRedisLock(client, key(connectionId), encodeValue(handle), ttlSec)
   } catch (err) {
     console.warn(
       `[ProgressionLock] extend failed for ${connectionId}:`,
@@ -316,17 +312,7 @@ export async function releaseProgressionLock(
   const client = getRedisClient()
   if (!client) return false
   try {
-    const raw = await client.get(key(connectionId))
-    const decoded = decodeValue(raw)
-    if (!decoded) {
-      // Already gone — treat as released for caller's purposes.
-      return true
-    }
-    if (decoded.ownerToken !== handle.ownerToken || decoded.epoch !== handle.epoch) {
-      return false
-    }
-    await client.del(key(connectionId))
-    return true
+    return await releaseOwnedRedisLock(client, key(connectionId), encodeValue(handle))
   } catch (err) {
     console.warn(
       `[ProgressionLock] release failed for ${connectionId}:`,
@@ -367,8 +353,7 @@ export async function forceBreakProgressionLock(connectionId: string): Promise<b
   try {
     const existed = await client.get(key(connectionId))
     if (!existed) return false
-    await client.del(key(connectionId))
-    return true
+    return await releaseOwnedRedisLock(client, key(connectionId), existed)
   } catch {
     return false
   }

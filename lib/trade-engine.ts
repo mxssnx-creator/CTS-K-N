@@ -61,6 +61,7 @@ import { hasExplicitServerlessForegroundOptIn, isKiloDeploymentRuntime, isServer
 import { isTruthyFlag } from "./connection-state-utils"
 import { resolveDistributedEngineRuntime } from "./distributed-engine-runtime"
 import { getRuntimeMaintenanceState } from "./runtime-maintenance"
+import { logRuntimeError, logRuntimeWarning } from "./runtime-log-throttle"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
 export { TradeEngine, type TradeEngineConfig, TRADE_SERVICE_NAME } from "./trade-engine/trade-engine"
@@ -140,7 +141,9 @@ export class GlobalTradeEngineCoordinator {
   private runtimeMaintenanceBlocks(context: string): boolean {
     const maintenance = getRuntimeMaintenanceState()
     if (!maintenance.active) return false
-    console.warn(
+    logRuntimeWarning(
+      `coordinator:maintenance:${context}`,
+      300_000,
       `[v0] [Coordinator] ${context} skipped — runtime maintenance stop is active (${maintenance.reason})`,
     )
     return true
@@ -171,7 +174,7 @@ export class GlobalTradeEngineCoordinator {
     // coordinator worker) owns the engine runtime by DEFAULT. This is exactly
     // what the instrumentation boot path assumes (it arms the in-process
     // monitor + continuity runner for long-lived prod Node processes) and what
-    // `startEngine()` below already permits for non-Vercel prod.
+    // `startEngine()` below already permits this on durable production hosts.
     //
     // The serverless case was rejected above. Every remaining production
     // runtime is an explicitly long-lived owner and may start by default.
@@ -262,14 +265,18 @@ export class GlobalTradeEngineCoordinator {
       this.isPaused = intent === "paused"
       this.isGloballyRunning = enabled && Array.from(this.engineManagers.values()).some((manager) => manager.isEngineRunning)
       if (!enabled) {
-        console.warn(
+        logRuntimeWarning(
+          `coordinator:disabled:${context}:${intent || "empty"}`,
+          300_000,
           `[v0] [Coordinator] ${context} skipped — global coordinator is not enabled ` +
             `(intent="${intent || "empty"}", legacy_status="${globalState?.status || "empty"}")`,
         )
       }
       return enabled
     } catch (err) {
-      console.warn(
+      logRuntimeError(
+        `coordinator:state-check-failed:${context}`,
+        60_000,
         `[v0] [Coordinator] ${context} could not verify global coordinator state; refusing to start/restart connection engines:`,
         err instanceof Error ? err.message : String(err),
       )
@@ -1299,7 +1306,7 @@ export class GlobalTradeEngineCoordinator {
             const config: EngineConfig = {
               connectionId: connection.id,
               allowInProcessStart: true,
-               // PRODUCTION FIX: forceLocalTakeover=true allows Vercel cron-triggered healing sweep
+               // A forced local takeover allows an authorized healing sweep.
                forceLocalTakeover: true,
               engine_type: "main", // Main Trade Engine for indications, strategies, pseudo positions
               indicationInterval: settings.mainEngineIntervalMs ? Math.max(1, settings.mainEngineIntervalMs / 1000) : 5,

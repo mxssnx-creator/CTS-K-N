@@ -11,6 +11,7 @@ import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { canStartTradeEngineInProcess } from "@/lib/deployment-runtime"
 
 /**
  * Preset mode is a mode of the connection's single shared engine. Disabling it
@@ -134,12 +135,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         updated_at: changedAt,
       })
 
-      const localStartAllowed =
-        process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
-        process.env.NEXT_RUNTIME !== "edge" &&
-        (process.env.VERCEL !== "1" ||
-          (process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
-            process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"))
+      const localStartAllowed = canStartTradeEngineInProcess()
 
       try {
         if (localStartAllowed) {

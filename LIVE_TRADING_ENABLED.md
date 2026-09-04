@@ -295,14 +295,14 @@ Position Tracking & PnL
 ## Version & Deployment
 
 **Status**: Production Ready
-**Deployment**: Ready for Vercel or server deployment
+**Deployment**: Ready for the managed self-hosted server deployment
 **Live Trading**: System-wide enabled and operational
 **Connections**: 11/11 connections live-trade enabled
 
 **To Deploy:**
 1. Review changes in `/app/api/admin/enable-live-trading/route.ts`
 2. Commit to GitHub
-3. Deploy to Vercel or server
+3. Deploy with the production bootstrap installer
 4. Environment variable `ALLOW_INLINE_REDIS_LIVE_TRADING=1` already set
 5. Live trading active upon deployment
 

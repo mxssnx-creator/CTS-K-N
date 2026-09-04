@@ -43,6 +43,24 @@ const UI_PAGE_PATHS = [
   "/testing/orders", "/tracking",
 ]
 
+function configuredUiSymbols() {
+  const raw = String(process.env.PROD_UI_SYMBOLS_JSON || "").trim()
+  if (!raw) return []
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error("PROD_UI_SYMBOLS_JSON must be a JSON string array")
+  }
+  const symbols = Array.isArray(parsed)
+    ? [...new Set(parsed.map((symbol) => String(symbol || "").trim().toUpperCase()).filter(Boolean))]
+    : []
+  if (symbols.length !== UI_MAX_SYMBOLS) {
+    throw new Error(`PROD_UI_SYMBOLS_JSON contains ${symbols.length}/${UI_MAX_SYMBOLS} unique symbols`)
+  }
+  return symbols
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function request(pathname, { method = "GET", body, timeoutMs = 20_000, parse = "json" } = {}) {
@@ -440,13 +458,21 @@ async function main() {
     }
 
     // This is the same symbol-discovery request emitted by QuickstartSection.
-    const top = (await request(
-      `/api/exchange/bingx/top-symbols?sort=volatility&limit=${UI_MAX_SYMBOLS}&t=${Date.now()}`,
-      { timeoutMs: 30_000 },
-    )).data
-    const symbols = Array.isArray(top?.symbolList)
-      ? top.symbolList.map(String)
-      : (Array.isArray(top?.symbols) ? top.symbols.map((entry) => String(entry?.symbol || "")).filter(Boolean) : [])
+    // The explicit list is reserved for the forced-simulated inline audit,
+    // where an outer network sandbox can block public ticker discovery. Normal
+    // production acceptance leaves it unset and always exercises this API.
+    const explicitSymbols = configuredUiSymbols()
+    const top = explicitSymbols.length > 0
+      ? null
+      : (await request(
+          `/api/exchange/bingx/top-symbols?sort=volatility&limit=${UI_MAX_SYMBOLS}&t=${Date.now()}`,
+          { timeoutMs: 30_000 },
+        )).data
+    const symbols = explicitSymbols.length > 0
+      ? explicitSymbols
+      : Array.isArray(top?.symbolList)
+        ? top.symbolList.map(String)
+        : (Array.isArray(top?.symbols) ? top.symbols.map((entry) => String(entry?.symbol || "")).filter(Boolean) : [])
     if (symbols.length !== UI_MAX_SYMBOLS || new Set(symbols).size !== UI_MAX_SYMBOLS) {
       throw new Error(`UI symbol discovery returned ${symbols.length}/${UI_MAX_SYMBOLS} unique symbols`)
     }

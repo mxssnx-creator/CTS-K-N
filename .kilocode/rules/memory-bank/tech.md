@@ -154,16 +154,16 @@ bun typecheck      # Run TypeScript type checking
 ### CTS Runtime Persistence
 
 - Redis is the primary runtime/coordinator store. Production workers must share
-  one backend through `REDIS_URL`, Upstash REST variables, or Vercel KV REST
+  one backend through `REDIS_URL`, Upstash REST variables, or retired cloud provider KV REST
   variables; the in-process adapter is development/demo-only and cannot release
   live exchange orders.
 - Kilo's optional managed SQLite binding uses Drizzle ORM plus the typed HTTP
   adapter in `lib/kilo-database-client.ts` with server-only `DB_URL` and
   `DB_TOKEN`. Schema files live in `src/db/schema.ts` and generated SQL lives in
   `src/db/migrations/`.
-- `pnpm run db:migrate` uses a deployment-aware wrapper. Vercel skips the
+- `pnpm run db:migrate` uses a deployment-aware wrapper. retired cloud provider skips the
   Kilo-only step; Kilo launches `node --import tsx src/db/migrate.ts`, skips
   cleanly when the optional binding is absent, and applies Drizzle migrations
   when the binding is present.
 - The dependency graph is locked with pnpm 10.28.1 and contains no Git-hosted
-  runtime packages, keeping Vercel and Kilo clean installs deterministic.
+  runtime packages, keeping retired cloud provider and Kilo clean installs deterministic.

@@ -9,6 +9,7 @@
 
 import { isServerlessDeploymentRuntime, hasExplicitServerlessForegroundOptIn } from "./deployment-runtime"
 import { getRuntimeMaintenanceState } from "./runtime-maintenance"
+import { logRuntimeWarning } from "./runtime-log-throttle"
 
 async function loadRedisDb() {
   return import("./redis-db")
@@ -352,7 +353,11 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
 
     if (operatorIntent === "paused") {
       if (isStartup) {
-        console.warn("[v0] [AutoStart] Startup sweep skipped: global coordinator is paused")
+        logRuntimeWarning(
+          "auto-start:paused",
+          300_000,
+          "[v0] [AutoStart] Startup sweep skipped: global coordinator is paused",
+        )
       }
       return { startedCount: 0, eligibleCount: 0, skipped: "paused" }
     }

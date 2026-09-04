@@ -122,7 +122,7 @@ const DEFAULT_TIMINGS: EngineTimings = {
 const TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; max: number; unit: string; live: boolean; help: string }> = {
   cronSyncIntervalSeconds: {
     min: 5, max: 60, unit: "sec", live: true,
-    help: "Sub-minute sync cadence. The cron handler self-loops inside each 60s Vercel invocation, sleeping this many seconds between sweeps. 15s = 4 sweeps/min.",
+    help: "Sub-minute sync cadence. The cron handler self-loops inside each 60s invocation, sleeping this many seconds between sweeps. 15s = 4 sweeps/min.",
   },
   liveSyncIntervalMs: {
     min: 100, max: 60_000, unit: "ms", live: true,
@@ -248,7 +248,7 @@ export function SystemSettings() {
       const [riskRes, systemRes] = await Promise.all([
         fetch("/api/settings/risk-and-engines").catch(() => null),
         // Cache: no-store so refreshing the page right after a save shows
-        // the just-written values (Vercel can otherwise serve a stale
+        // the just-written values (a request worker can otherwise serve a stale
         // edge-cached GET for several seconds).
         fetch("/api/settings/system", { cache: "no-store" }).catch(() => null),
       ])
@@ -807,7 +807,7 @@ value={timings.normalizeMaxPerDirection}
             <div className="text-sm text-blue-900">
               <p className="font-medium">Sub-minute cron cadence</p>
               <p className="text-xs mt-1">
-                Vercel cron schedules at minute granularity. The sync-live-positions handler self-loops within each 60-second invocation,
+                Hosted cron schedules run at minute granularity. The sync-live-positions handler self-loops within each 60-second invocation,
                 sleeping <code className="font-mono">cron_sync_interval_seconds</code> between sweeps to give you faster effective cadence
                 (e.g. 15 s = 4 sweeps per cron tick).
               </p>

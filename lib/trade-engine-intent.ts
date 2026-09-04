@@ -33,3 +33,4 @@ export async function publishRunningTradeEngineIntent(
   })
   await client.hdel("trade_engine:global", "paused_at", "paused_by", "pause_reason")
 }
+

@@ -345,6 +345,8 @@ export function ConnectionSettingsDialog({
   const presetLoadSequenceRef = useRef(0)
   const symbolRequestSequenceRef = useRef(0)
   const saveSequenceRef = useRef(0)
+  const saveInFlightRef = useRef(false)
+  const saveAbortControllerRef = useRef<AbortController | null>(null)
 
   // ── Indications & Strategies state (per channel) ────────────────
   const [indMain,   setIndMain]   = useState<ChannelProfile>(DEFAULT_MAIN_INDICATION_PROFILE)
@@ -760,7 +762,17 @@ export function ConnectionSettingsDialog({
   // ─��──────────────────────────────────��────────────────────────────
 
   const saveAll = useCallback(async () => {
+    // React state is not synchronous, so the disabled button alone cannot
+    // prevent two click events in the same frame from issuing duplicate
+    // settings commits. Keep the client side single-flight just as strict as
+    // the serialized server-side commit queue.
+    if (saveInFlightRef.current) return
+    saveInFlightRef.current = true
     const saveSequence = ++saveSequenceRef.current
+    const controller = new AbortController()
+    saveAbortControllerRef.current?.abort()
+    saveAbortControllerRef.current = controller
+    const timeoutId = window.setTimeout(() => controller.abort(), 45_000)
     setSaving(true)
     try {
       const payload = {
@@ -828,14 +840,40 @@ export function ConnectionSettingsDialog({
       // change envelopes and occasionally hot-reloaded stale values.
       const settingsRes = await fetch(`/api/settings/connections/${connectionId}/settings`, {
         method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
         body:    JSON.stringify(payload),
       })
       if (saveSequence !== saveSequenceRef.current) return
-      const savedEvent = await settingsRes.json().catch(() => ({})) as Record<string, unknown>
+      const responseText = await settingsRes.text()
+      let savedEvent: Record<string, unknown> = {}
+      if (responseText.trim()) {
+        try {
+          const parsed = JSON.parse(responseText)
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            savedEvent = parsed as Record<string, unknown>
+          }
+        } catch {
+          const responseSummary = responseText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
+          throw new Error(
+            settingsRes.ok
+              ? "Settings server returned an invalid response"
+              : `Settings save failed (${settingsRes.status}${settingsRes.statusText ? ` ${settingsRes.statusText}` : ""})${responseSummary ? `: ${responseSummary}` : ""}`,
+          )
+        }
+      }
       if (!settingsRes.ok || savedEvent.success !== true) {
         throw new Error(
-          String(savedEvent.details || savedEvent.error || "Settings save failed"),
+          String(
+            savedEvent.details ||
+            savedEvent.error ||
+            `Settings save failed (${settingsRes.status}${settingsRes.statusText ? ` ${settingsRes.statusText}` : ""})`,
+          ),
         )
       }
       if (saveSequence !== saveSequenceRef.current) return
@@ -897,8 +935,17 @@ export function ConnectionSettingsDialog({
     } catch (err) {
       if (saveSequence !== saveSequenceRef.current) return
       console.error("[v0] [Settings Dialog] save error:", err)
-      toast.error("Save failed", { description: err instanceof Error ? err.message : String(err) })
+      const description =
+        err && typeof err === "object" && "name" in err && err.name === "AbortError"
+          ? "Settings save timed out after 45 seconds. No success was assumed; reload before retrying."
+          : err instanceof Error ? err.message : String(err)
+      toast.error("Save failed", { description })
     } finally {
+      window.clearTimeout(timeoutId)
+      if (saveAbortControllerRef.current === controller) {
+        saveAbortControllerRef.current = null
+        saveInFlightRef.current = false
+      }
       if (saveSequence === saveSequenceRef.current) setSaving(false)
     }
   }, [connectionId, connectionName, overview, symbolsCfg, symbolResolutionSource, stratMain, stratPreset, indMain, indPreset, coordination, onOpenChange])
@@ -1073,6 +1120,9 @@ export function ConnectionSettingsDialog({
 
   useEffect(() => {
     if (!open) {
+      saveAbortControllerRef.current?.abort()
+      saveAbortControllerRef.current = null
+      saveInFlightRef.current = false
       loadSequenceRef.current++
       presetLoadSequenceRef.current++
       symbolRequestSequenceRef.current++
@@ -1091,6 +1141,9 @@ export function ConnectionSettingsDialog({
     // Invalidate this connection's pending hydration before a new connection
     // or a closed dialog can receive its response.
     return () => {
+      saveAbortControllerRef.current?.abort()
+      saveAbortControllerRef.current = null
+      saveInFlightRef.current = false
       loadSequenceRef.current++
       presetLoadSequenceRef.current++
       symbolRequestSequenceRef.current++
@@ -2055,6 +2108,7 @@ export function ConnectionSettingsDialog({
 
         <DialogFooter className="px-5 py-3 border-t bg-muted/30 shrink-0">
           <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={() => void testStoredConnection()}
@@ -2067,6 +2121,7 @@ export function ConnectionSettingsDialog({
             {testingConnection ? "Testing…" : "Test Connection"}
           </Button>
           <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={() => onOpenChange(false)}
@@ -2075,13 +2130,14 @@ export function ConnectionSettingsDialog({
             Cancel
           </Button>
           <Button
+            type="button"
             size="sm"
             onClick={saveAll}
             disabled={saving || loading || testingConnection}
             className="gap-1.5"
           >
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-            {saving ? "Saving…" : "Save Changes"}
+            {saving ? "Saving…" : "Save Settings"}
           </Button>
         </DialogFooter>
       </DialogContent>

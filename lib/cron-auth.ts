@@ -48,7 +48,7 @@ export function authorizeCronRequest(request?: Request): CronAuthorization {
     // Invalid URLs are handled as unauthorized below.
   }
 
-  const production = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL_ENV)
+  const production = process.env.NODE_ENV === "production"
   if (!production && !secret) return { ok: true }
   if (!secret) {
     return {

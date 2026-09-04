@@ -72,7 +72,6 @@ function normalizeAllowedOrigin(value) {
 function getServerActionAllowedOrigins() {
   const configuredOrigins = [
     process.env.NEXT_PUBLIC_APP_URL,
-    process.env.VERCEL_PROJECT_PRODUCTION_URL,
     process.env.SERVER_ACTION_ALLOWED_ORIGINS,
   ]
     .flatMap((value) => value?.split(",") ?? [])
@@ -88,10 +87,8 @@ function getServerActionAllowedOrigins() {
 }
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // OpenNext's Cloudflare adapter consumes the Next standalone server bundle
-  // when assembling the Worker. Keep this enabled for both Vercel and Kilo;
-  // Vercel can deploy the same deterministic output without changing route
-  // behavior, while Kilo otherwise fails after a successful Next compile.
+  // OpenNext's Cloudflare adapter and the self-hosted service both consume the
+  // deterministic Next standalone server bundle.
   output: "standalone",
   // Allow a separate build output directory (e.g. for running a production
   // `next start` alongside a `next dev` on the same project). Defaults to

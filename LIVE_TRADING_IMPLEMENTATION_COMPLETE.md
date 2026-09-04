@@ -3,7 +3,7 @@
 **Status**: ✅ Live trading is fully enabled, tested, and deployed to production branch
 
 **Date**: July 19, 2026  
-**Branch**: `vercel` (Production deployment branch)  
+**Branch**: `main` (Production source branch)
 **Engine Phase**: `live_trading` (Verified and running)
 
 ---
@@ -28,14 +28,14 @@
 - All infrastructure checks passing
 
 ### 4. Production Deployment Ready
-- Created `vercel` branch for continuous deployment
-- Added comprehensive Vercel deployment guide
-- Production URL: https://cts-k-n-mxssnxx.vercel.app
-- Automatic deployment on push to `vercel` branch
+- Consolidated production delivery on the protected `main` branch
+- Added a self-hosted installation and operations guide
+- Production URL: http://152.53.114.112:3002
+- Controlled deployment from a reviewed and merged revision
 
 ### 5. Documentation Complete
 - `LIVE_TRADING_SETUP.md` - Technical setup details
-- `VERCEL_DEPLOYMENT.md` - Deployment and configuration guide
+- `docs/PRODUCTION-OPERATIONS.md` - Installation and operations guide
 - Environment variable requirements documented
 
 ---
@@ -63,7 +63,7 @@ CRON_SECRET='<generate-a-unique-secret-of-at-least-32-characters>'
 ALLOW_INLINE_REDIS_LIVE_TRADING='1'
 ```
 
-### Required in Vercel Production Environment
+### Required in the durable production environment
 1. `ALLOW_INLINE_REDIS_LIVE_TRADING` = `1`
 2. `CRON_SECRET` = (16+ character string)
 
@@ -76,8 +76,8 @@ ALLOW_INLINE_REDIS_LIVE_TRADING='1'
 
 ## Deployment Instructions
 
-### Step 1: Set Environment Variables in Vercel
-1. Go to: https://vercel.com/mxssnxx/cts-k-n/settings/environment-variables
+### Step 1: Store Environment Variables Persistently
+1. Maintain the protected environment file at `/var/lib/cts-kn/.env.production.local`.
 2. Add `ALLOW_INLINE_REDIS_LIVE_TRADING=1` (Production)
 3. Add `CRON_SECRET=your-secret-value` (Production)
 4. Save
@@ -85,12 +85,12 @@ ALLOW_INLINE_REDIS_LIVE_TRADING='1'
 ### Step 2: Verify Deployment
 ```bash
 # Check live trading is enabled
-curl https://cts-k-n-mxssnxx.vercel.app/api/trade-engine/progression
+curl http://152.53.114.112:3002/api/trade-engine/progression
 
 # Should return: "phase": "live_trading"
 
 # Check system health
-curl https://cts-k-n-mxssnxx.vercel.app/api/health
+curl http://152.53.114.112:3002/api/health
 
 # Should return: all checks "ok"
 ```
@@ -99,7 +99,7 @@ curl https://cts-k-n-mxssnxx.vercel.app/api/health
 ```bash
 # Generate indications (requires CRON_SECRET)
 curl -H "Authorization: Bearer YOUR_CRON_SECRET" \
-  https://cts-k-n-mxssnxx.vercel.app/api/cron/generate-indications
+  http://127.0.0.1:3002/api/cron/generate-indications
 ```
 
 ---
@@ -152,8 +152,8 @@ curl -H "Authorization: Bearer YOUR_CRON_SECRET" \
 
 ```
 ┌─────────────────────────────────────────┐
-│   Vercel Production Environment         │
-│   https://cts-k-n-mxssnxx.vercel.app    │
+│   CTS-K-N Production Server             │
+│   http://152.53.114.112:3002             │
 └─────────────────────────────────────────┘
                     │
         ┌───────────┼───────────┐
@@ -179,27 +179,27 @@ curl -H "Authorization: Bearer YOUR_CRON_SECRET" \
 2. **Monitor Closely**: Review dashboards and logs regularly
 3. **Use Correct Secret**: CRON_SECRET must match in API calls
 4. **Environment Variables**: MUST be set before deployment
-5. **Rollback Available**: Previous deployments accessible via Vercel dashboard
+5. **Rollback Available**: Installer-created backups remain available on the server
 
 ---
 
 ## Support & Troubleshooting
 
 ### System Logs
-- Vercel: https://vercel.com/mxssnxx/cts-k-n/logs
+- Runtime logs: `journalctl -u cts-kn -u cts-kn-scheduler -u cts-kn-direct-trade`
 - Real-time function logs available
 - Trade-engine cycle details logged
 
 ### Health Checks
 ```bash
 # API Health
-curl https://cts-k-n-mxssnxx.vercel.app/api/health
+curl http://152.53.114.112:3002/api/health
 
 # Engine Status
-curl https://cts-k-n-mxssnxx.vercel.app/api/trade-engine/progression
+curl http://152.53.114.112:3002/api/trade-engine/progression
 
 # Live Positions
-curl https://cts-k-n-mxssnxx.vercel.app/api/trading/live-positions
+curl http://152.53.114.112:3002/api/trading/live-positions
 ```
 
 ### Common Issues
@@ -215,7 +215,7 @@ curl https://cts-k-n-mxssnxx.vercel.app/api/trading/live-positions
 
 ## Next Steps
 
-1. **Set Vercel Environment Variables** (Critical)
+1. **Verify the durable production environment file** (Critical)
 2. **Verify Production Deployment** (Test)
 3. **Enable Indication Generation** (Configure cron job)
 4. **Monitor Live Trading** (Ongoing)
@@ -237,4 +237,4 @@ All components tested and verified:
 - ✅ Continuous deployment enabled
 - ✅ Documentation complete
 
-**Ready to deploy** - Set environment variables in Vercel and go live!
+**Ready to deploy** - Verify the durable environment, then run the bootstrap installer.

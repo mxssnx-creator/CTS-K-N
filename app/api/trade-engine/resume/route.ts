@@ -179,7 +179,6 @@ async function handlePost() {
     return NextResponse.json({ success: false, error: errorMessage }, { status: 500 })
   }
 }
-
 export async function POST() {
   if (typeof withSharedPersistenceLease !== "function") return handlePost()
   return withSharedPersistenceLease("api:trade-engine:resume", handlePost, {

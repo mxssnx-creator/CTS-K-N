@@ -281,6 +281,10 @@ export function DirectTradeSection() {
   const [localDeactivatePosCount, setLocalDeactivatePosCount] = useState(16)
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const statusRequestInFlightRef = useRef(false)
+  const statusRequestGenerationRef = useRef(0)
+  const accountRequestInFlightRef = useRef(false)
+  const accountRequestGenerationRef = useRef(0)
   const pendingConfigRef = useRef(new Map<string, {
     connectionId: string | null
     updates: Record<string, unknown>
@@ -338,6 +342,9 @@ export function DirectTradeSection() {
   // ─── Data Fetching ────────────────────────────────────────────────────────
 
   const fetchStatus = useCallback(async () => {
+    if (statusRequestInFlightRef.current) return
+    statusRequestInFlightRef.current = true
+    const requestGeneration = ++statusRequestGenerationRef.current
     try {
       const query = selectedConnectionId
         ? `?connectionId=${encodeURIComponent(selectedConnectionId)}`
@@ -345,6 +352,7 @@ export function DirectTradeSection() {
       const res = await fetch(`/api/trade-engine/direct-trade/status${query}`, { cache: "no-store" })
       if (!res.ok) return
       const data = await res.json()
+      if (requestGeneration !== statusRequestGenerationRef.current) return
       if (data.state) {
         applyRemoteState(data.state)
       }
@@ -358,12 +366,16 @@ export function DirectTradeSection() {
       if (data.disabledConfigs !== undefined) setDisabledConfigs(data.disabledConfigs)
       setCalculationProgress(data.calculationProgress && typeof data.calculationProgress === "object" ? data.calculationProgress : null)
       if (data.processor) setProcessorHealthy(data.processor.isHealthy || false)
-    } catch {}
+    } catch {} finally {
+      statusRequestInFlightRef.current = false
+    }
   }, [applyRemoteState, selectedConnectionId])
 
   useEffect(() => {
     // Do not render one exchange connection's Direct-Trade state while the
     // newly selected independent Redis scope is loading.
+    statusRequestGenerationRef.current++
+    accountRequestGenerationRef.current++
     setState({ ...DEFAULT_STATE, connectionId: selectedConnectionId })
     setStats(DEFAULT_STATS)
     setOverview48h(null)
@@ -384,6 +396,9 @@ export function DirectTradeSection() {
   }, [fetchStatus])
 
   const fetchExchangeAccount = useCallback(async () => {
+    if (accountRequestInFlightRef.current) return
+    accountRequestInFlightRef.current = true
+    const requestGeneration = ++accountRequestGenerationRef.current
     try {
       const connectionId = selectedConnectionId ?? state.connectionId
       const query = connectionId
@@ -392,8 +407,12 @@ export function DirectTradeSection() {
       const response = await fetch(`/api/exchange/live-summary${query}`, { cache: "no-store" })
       if (!response.ok) return
       const payload = await response.json()
-      if (payload.accountPerformance15h) setExchangeAccount15h(payload.accountPerformance15h)
-    } catch {}
+      if (requestGeneration === accountRequestGenerationRef.current && payload.accountPerformance15h) {
+        setExchangeAccount15h(payload.accountPerformance15h)
+      }
+    } catch {} finally {
+      accountRequestInFlightRef.current = false
+    }
   }, [selectedConnectionId, state.connectionId])
 
   useEffect(() => {

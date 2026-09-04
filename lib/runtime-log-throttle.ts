@@ -83,6 +83,21 @@ export function logRuntimeWarning(
   return emitRuntimeLog(key, intervalMs, message, (...values) => console.warn(...values), ...details)
 }
 
+/**
+ * Preserve error severity while coalescing a known repeating infrastructure
+ * failure (for example one Redis OOM repeated for every symbol). Callers must
+ * use a condition-level key, never a symbol/position id, so one root failure
+ * produces one actionable log record per interval.
+ */
+export function logRuntimeError(
+  key: string,
+  intervalMs: number,
+  message: string | (() => string),
+  ...details: unknown[]
+): boolean {
+  return emitRuntimeLog(key, intervalMs, message, (...values) => console.error(...values), ...details)
+}
+
 export function clearRuntimeLogThrottle(prefix?: string): void {
   if (!prefix) {
     entries.clear()

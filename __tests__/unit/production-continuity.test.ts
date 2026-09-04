@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { authorizeCronRequest } from "@/lib/cron-auth"
 import {
@@ -84,7 +84,6 @@ describe("production continuity invariants", () => {
 
   test("portable scheduler and startup source keep the required safety contracts", () => {
     const read = (file: string) => readFileSync(join(process.cwd(), file), "utf8")
-    const vercel = JSON.parse(read("vercel.json"))
     const continuity = read("lib/server-continuity-runner.ts")
     const migrations = read("lib/redis-migrations.ts")
     const instrumentation = read("instrumentation.ts")
@@ -95,7 +94,7 @@ describe("production continuity invariants", () => {
     const systemStatus = read("app/api/system/status/route.ts")
     const activeConnectionCard = read("components/dashboard/active-connection-card.tsx")
 
-    expect(vercel.crons).toBeUndefined()
+    expect(existsSync(join(process.cwd(), "vercel.json"))).toBe(false)
     expect(continuity).toContain("CONTINUITY_MINUTE_INTERVAL_MS = 60_000")
     expect(continuity).toContain("void enqueueContinuityAutoStartJob()")
     expect(continuity).toContain("Defer the expensive indication/strategy fallback")

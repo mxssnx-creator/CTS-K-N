@@ -115,7 +115,6 @@ describe("live-trade block clearance", () => {
   const originalRedisUrl = process.env.REDIS_URL
   const originalDisableInProcess = process.env.DISABLE_TRADE_ENGINE_IN_PROCESS
   const originalNextRuntime = process.env.NEXT_RUNTIME
-  const originalVercel = process.env.VERCEL
   const originalForceSimulated = process.env.FORCE_SIMULATED
 
   beforeEach(() => {
@@ -125,7 +124,6 @@ describe("live-trade block clearance", () => {
     process.env.REDIS_URL = "redis://test-shared-redis"
     delete process.env.DISABLE_TRADE_ENGINE_IN_PROCESS
     delete process.env.NEXT_RUNTIME
-    delete process.env.VERCEL
     // These tests use mocked exchange/reconciliation modules and verify the
     // normal readiness branches. Do not let an outer safe-soak environment
     // replace those branches with the forced-simulation response.
@@ -144,8 +142,6 @@ describe("live-trade block clearance", () => {
     else process.env.DISABLE_TRADE_ENGINE_IN_PROCESS = originalDisableInProcess
     if (originalNextRuntime === undefined) delete process.env.NEXT_RUNTIME
     else process.env.NEXT_RUNTIME = originalNextRuntime
-    if (originalVercel === undefined) delete process.env.VERCEL
-    else process.env.VERCEL = originalVercel
     if (originalForceSimulated === undefined) delete process.env.FORCE_SIMULATED
     else process.env.FORCE_SIMULATED = originalForceSimulated
   })

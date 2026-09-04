@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -53,8 +53,11 @@ export function TradeEngineStatus() {
     activeEngines: number
     totalConnections: number
   }>({ isRunning: false, queued: false, activeEngines: 0, totalConnections: 0 })
+  const statusInFlightRef = useRef(false)
 
   const loadEnginesStatus = async () => {
+    if (statusInFlightRef.current) return
+    statusInFlightRef.current = true
     setIsLoading(true)
     try {
       // Get global status
@@ -117,6 +120,7 @@ export function TradeEngineStatus() {
     } catch (error) {
       console.error("[v0] Failed to load trade engine status:", error)
     } finally {
+      statusInFlightRef.current = false
       setIsLoading(false)
     }
   }

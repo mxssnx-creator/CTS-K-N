@@ -233,19 +233,19 @@ Warnings:             1 (minor JSON, fixed)
 
 ## Deployment Instructions
 
-### Option 1: Deploy to Vercel (Recommended)
+### Option 1: Deploy to the managed production server (Recommended)
 ```bash
 1. Click "Publish" in v0 UI (top-right)
-2. Vercel auto-pulls from GitHub branch
+2. Install the reviewed GitHub `main` revision on the target host
 3. Build pipeline runs (Next.js 16 + Turbopack)
-4. Live at: https://{project}.vercel.app
+4. Verify the configured server URL and health endpoints
 ```
 
 ### Option 2: Merge to Main & Deploy
 ```bash
 1. Create Pull Request: v0/mxssnxx-dde71898 → main
 2. Review and merge changes
-3. Vercel auto-deploys on merge (if configured)
+3. Run the controlled bootstrap install after merge
 4. Live at: production URL
 ```
 
@@ -272,7 +272,7 @@ Warnings:             1 (minor JSON, fixed)
 
 The BingX trading engine is **PRODUCTION READY** for deployment. All core functionality has been tested and verified working correctly. The UI is responsive, the engine control is smooth, and the BingX integration is operational with live trading capabilities.
 
-**Recommendation**: Proceed with deployment to Vercel or continue with additional long-duration testing as needed.
+**Recommendation**: Proceed with the controlled server deployment or continue with additional long-duration testing as needed.
 
 ---
 

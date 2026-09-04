@@ -87,9 +87,9 @@ group can access it. Enter the actual values interactively on the server; do
 not use the placeholder values below as credentials.
 
 ```bash
-sudo install -d -m 0750 /etc/cts-kn
-sudo install -m 0600 /dev/null /etc/cts-kn/production.env
-sudoedit /etc/cts-kn/production.env
+sudo install -d -m 0750 /var/lib/cts-kn
+sudo install -m 0600 /dev/null /var/lib/cts-kn/.env.production.local
+sudoedit /var/lib/cts-kn/.env.production.local
 ```
 
 Minimum X02 Prod-VST configuration:
@@ -121,7 +121,7 @@ sudo bash "$bootstrap_dir/scripts/bootstrap-install.sh" \
   --port 3002 \
   --runtime systemd \
   --service-user cts-kn \
-  --env-file /etc/cts-kn/production.env \
+  --env-file /var/lib/cts-kn/.env.production.local \
   --repository https://github.com/mxssnx-creator/CTS-K-N.git \
   --branch main \
   -- --redis-mode native
@@ -155,7 +155,7 @@ sudo bash /opt/cts-kn/scripts/install-pull-agent.sh \
   --name cts-kn \
   --port 3002 \
   --service-user cts-kn \
-  --env-file /etc/cts-kn/production.env \
+  --env-file /var/lib/cts-kn/.env.production.local \
   --repository https://github.com/mxssnx-creator/CTS-K-N.git \
   --branch main \
   --interval 15min \
@@ -182,7 +182,7 @@ before mutation. Use `--clear-maintenance` only after a separate, explicit
 decision to resume the installed runtime; the marker is included in the
 verified backup before it is removed.
 
-This reconciliation preserves `/etc/cts-kn/production.env` and does not alter
+This reconciliation preserves `/var/lib/cts-kn/.env.production.local` and does not alter
 or print exchange credentials or live-order flags. Tailscale and NetBird must
 already be enrolled with durable device identities; systemd can restart their
 daemons but cannot recreate revoked or expired enrollment.

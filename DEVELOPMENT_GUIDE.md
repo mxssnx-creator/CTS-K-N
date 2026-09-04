@@ -114,7 +114,7 @@ Progression Log Recorded
 - Deterministic headless initialization on every process start
 - Full migrations run on cold boot
 - Orphan cleanup and stranded position reconciliation run on every restart
-- Heap: Deployment-specific (Vercel default ~3GB)
+- Heap: Deployment-specific and sized by the server memory policy
 
 ## Testing Strategy
 
@@ -187,7 +187,7 @@ grep "\[v0\]" /tmp/nextdev.log
 grep "\[v0\] \[Startup\]" /tmp/nextdev.log
 
 # Prod
-# Check Vercel deployment logs
+# Check production service logs
 ```
 
 ### Trace Progression
@@ -207,7 +207,7 @@ redis-cli KEYS "live:position:*" | wc -l
 ### Add New Environment Variable
 1. Add to `.env.example`
 2. Add to `.env.local` for dev
-3. Add to Vercel project vars for prod
+3. Add to the protected production environment file
 4. Use in code: `process.env.VAR_NAME`
 
 ### Add New API Route
@@ -234,7 +234,7 @@ NODE_ENV=production pnpm start
 git push origin feature-branch
 # → Create PR
 # → Merge to main
-# → Vercel auto-deploys
+# → run the controlled production installer after merge
 ```
 
 ## Monitoring Checklist
@@ -279,7 +279,6 @@ git push origin feature-branch
 
 <optional body explaining rationale>
 
-Co-authored-by: v0agent <it+v0agent@vercel.com>
 ```
 
 ### Testing Before Push
@@ -300,5 +299,5 @@ git push origin feature-branch
 ## Support Resources
 
 - **GitHub Issues**: mxssnx-creator/CTS-V-yd
-- **Vercel Dashboard**: https://vercel.com/mxssnx-creator/CTS-V-yd
+- **Production operations**: `docs/PRODUCTION-OPERATIONS.md`
 - **System Summary**: See SYSTEM_SUMMARY.md

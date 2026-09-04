@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Portable post-deployment verification for Vercel, Kilo/Cloudflare, and Node hosts.
+# Portable post-deployment verification for Kilo/Cloudflare and Node hosts.
 
 set -uo pipefail
 
-RAW_DEPLOYMENT_URL="${DEPLOYMENT_URL:-${VERCEL_URL:-${NEXT_PUBLIC_APP_URL:-}}}"
+RAW_DEPLOYMENT_URL="${DEPLOYMENT_URL:-${NEXT_PUBLIC_APP_URL:-}}"
 READ_TIMEOUT_SECONDS="${DEPLOY_VERIFY_TIMEOUT_SECONDS:-30}"
 CRON_TIMEOUT_SECONDS="${DEPLOY_VERIFY_CRON_TIMEOUT_SECONDS:-75}"
 FAILURES=0
 
 if [ -z "$RAW_DEPLOYMENT_URL" ]; then
-  echo "[Deploy Verify] ERROR: set DEPLOYMENT_URL, VERCEL_URL, or NEXT_PUBLIC_APP_URL"
+  echo "[Deploy Verify] ERROR: set DEPLOYMENT_URL or NEXT_PUBLIC_APP_URL"
   exit 1
 fi
 

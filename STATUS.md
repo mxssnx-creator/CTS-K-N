@@ -111,7 +111,7 @@ For future development:
 
 - **Issue Tracker**: GitHub Issues in mxssnx-creator/CTS-V-yd
 - **Documentation**: SYSTEM_SUMMARY.md, DEVELOPMENT_GUIDE.md
-- **Logs**: Vercel deployment logs, `/tmp/nextdev.log` in dev
+- **Logs**: systemd journal in production, `/tmp/nextdev.log` in development
 - **Debugging**: Check instrumentation boot sequence first
 
 ---

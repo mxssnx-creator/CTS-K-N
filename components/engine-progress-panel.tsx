@@ -33,22 +33,30 @@ export function EngineProgressPanel({ connectionId }: EngineProgressPanelProps) 
   const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    fetchProgress()
-    const interval = setInterval(fetchProgress, 5000)
-    return () => clearInterval(interval)
-  }, [connectionId])
-
-  const fetchProgress = async () => {
-    try {
-      const res = await fetch(`/api/engine-progress?connectionId=${connectionId}`)
-      const data = await res.json()
-      setProgress(data.progress)
-    } catch (error) {
-      console.error("Failed to fetch progress:", error)
-    } finally {
-      setLoading(false)
+    let disposed = false
+    let inFlight = false
+    const fetchProgress = async () => {
+      if (disposed || inFlight) return
+      inFlight = true
+      try {
+        const res = await fetch(`/api/engine-progress?connectionId=${connectionId}`, { cache: "no-store" })
+        const data = await res.json()
+        if (!disposed) setProgress(data.progress)
+      } catch (error) {
+        if (!disposed) console.error("Failed to fetch progress:", error)
+      } finally {
+        inFlight = false
+        if (!disposed) setLoading(false)
+      }
     }
-  }
+
+    void fetchProgress()
+    const interval = setInterval(() => void fetchProgress(), 5000)
+    return () => {
+      disposed = true
+      clearInterval(interval)
+    }
+  }, [connectionId])
 
   const toggleSymbol = (symbol: string) => {
     const newExpanded = new Set(expandedSymbols)

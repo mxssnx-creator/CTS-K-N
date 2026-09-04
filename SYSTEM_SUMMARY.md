@@ -117,7 +117,7 @@ completeStartup()
 
 ### Memory
 - Dev: 4GB heap (Turbopack), 2.5GB single-symbol baseline
-- Prod: Varies by deployment (Vercel configurable)
+- Prod: Dynamically sized by the self-hosted service memory policy
 - Multi-symbol (10+): ~3.5GB with engine running
 
 ### Performance

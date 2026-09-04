@@ -129,7 +129,7 @@ export const errorHandler = ErrorHandler.getInstance()
 // CRITICAL (Global Trade Coordinator stability): these handlers must NEVER
 // exit the process. The coordinator is a long-lived singleton that owns every
 // running engine; a `process.exit(1)` here kills ALL engines and (under
-// `next start`/Vercel) forces a worker restart — exactly the "stopping /
+// `next start` or a request-worker runtime) forces a worker restart — exactly the "stopping /
 // crashing / restarting" the operator reported, often triggered by a stray
 // rejection in the settings-save → recoordination → engine start/stop chain.
 //

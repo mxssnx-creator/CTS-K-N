@@ -1,8 +1,7 @@
 // Cloudflare/OpenNext custom worker entrypoint.
 //
 // The generated OpenNext worker only exports `fetch`. Production continuity in
-// Cloudflare needs a real Workers `scheduled()` handler; Vercel-style
-// `vercel.json` crons are ignored by Workers deployments. This wrapper reuses
+// Cloudflare needs a real Workers `scheduled()` handler. This wrapper reuses
 // the generated fetch handler and invokes the existing cron route handlers on
 // each Cloudflare Cron Trigger.
 
@@ -72,7 +71,7 @@ const CRON_PATHS = [
 
 function exposeWorkerEnvironment(env: WorkerEnvironment): void {
   // CTS's persistence/runtime modules intentionally use process.env so the
-  // same code works on Node, Vercel, and self-hosted servers. Cloudflare
+  // same code works on Node request workers and self-hosted servers. Cloudflare
   // exposes bindings only through the Worker env argument, however. Project
   // primitive bindings into the Node-compat environment before OpenNext loads
   // a request route; otherwise Kilo silently behaves as if its Redis/DB and

@@ -2,7 +2,7 @@
  * Production Cron Scheduler for Indication Generation
  * 
  * This endpoint can be called every 1-3 seconds by an external scheduler
- * (Vercel Crons, AWS EventBridge, etc.) to keep the trade engine constantly
+ * (Cloudflare Cron Triggers, AWS EventBridge, etc.) to keep the trade engine constantly
  * fed with new indications.
  * 
  * Without this, indications only generate when a browser is open.

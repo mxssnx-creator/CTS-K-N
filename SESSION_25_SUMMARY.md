@@ -223,7 +223,7 @@ df4be14 - docs: add long-duration test summary
 
 ### Deployment (If PASS)
 1. Merge to main branch
-2. Deploy to Vercel production
+2. Deploy to the self-hosted production server
 3. Monitor first 24 hours
 4. Document production characteristics
 

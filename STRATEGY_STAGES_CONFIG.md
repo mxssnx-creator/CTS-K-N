@@ -346,7 +346,7 @@ Target Daily Return: 0.5-1.5%
 
 ### How to Adjust
 1. Edit `/lib/constants.ts` (stage constants)
-2. Rebuild: `pnpm run vercel-build`
+2. Rebuild: `pnpm run build`
 3. Restart server
 4. Changes automatically applied to all stages
 
@@ -372,4 +372,3 @@ Target Daily Return: 0.5-1.5%
 
 All parameters configured, imported, and active in live trading.
 System enforces all limits and quality gates automatically.
-

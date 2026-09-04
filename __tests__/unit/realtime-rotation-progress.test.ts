@@ -65,4 +65,32 @@ describe("realtime rotation progress", () => {
     expect(repeated.complete).toBe(false)
     expect(repeated.stalledSymbols).toEqual(["E"])
   })
+
+  test("normalizes symbol identity and rejects completions not admitted to the current tick", () => {
+    const tracker = new RealtimeRotationTracker()
+    const generation = realtimeBasketGeneration(["btcusdt", "ETHUSDT", "BTCUSDT"], 4, 9)
+    tracker.beginBasket(generation, ["btcusdt", "ETHUSDT", "BTCUSDT"])
+
+    const first = tracker.finishTick(
+      generation,
+      [" btcusdt ", "UNKNOWN"],
+      ["BTCUSDT", "ETHUSDT", "UNKNOWN"],
+    )!
+    expect(first).toMatchObject({
+      configuredSymbolCount: 2,
+      attemptedCurrentTick: 1,
+      succeededCurrentTick: 1,
+      coveredUnique: 1,
+      complete: false,
+      failedSymbols: [],
+      stalledSymbols: ["ETHUSDT"],
+    })
+
+    expect(tracker.finishTick(generation, ["ethusdt"], [" ETHUSDT "])).toMatchObject({
+      attemptedCurrentTick: 1,
+      succeededCurrentTick: 1,
+      coveredUnique: 2,
+      complete: true,
+    })
+  })
 })

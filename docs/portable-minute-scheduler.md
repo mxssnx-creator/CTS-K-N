@@ -1,6 +1,6 @@
 # Portable one-minute continuity
 
-CTS-K-N no longer depends on Vercel Cron configuration. The same one-minute
+CTS-K-N uses a portable one-minute scheduler. The same one-minute
 coordination works in two deployment shapes:
 
 1. A long-lived `next start`, Docker, PM2, systemd, or VPS process runs the

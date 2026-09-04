@@ -29,7 +29,6 @@ function isLiveTradeRequested(connection: any): boolean {
   const requested = connection?.live_trade_requested
   return truthy(requested) || isConnectionLiveTradeEnabled(connection)
 }
-
 function validateLiveTradeRequirements(connection: any): { valid: boolean; reason: string; blockCode: string | null } {
   // Global Start is a state-reconciliation operation, not a venue health test.
   // Gating it on testConnection() made one transient API/rate-limit failure

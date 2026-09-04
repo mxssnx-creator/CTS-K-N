@@ -15,6 +15,7 @@ import { loadSettingsAsync } from "@/lib/settings-storage"
 import { SystemLogger } from "@/lib/system-logger"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { canStartTradeEngineInProcess } from "@/lib/deployment-runtime"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -159,12 +160,7 @@ export async function POST(
     let engineStatus: "running" | "queued" | "stopped" | "error" =
       sharedEngineRunning ? "running" : "stopped"
     if (requested && !sharedEngineRunning) {
-      const localStartAllowed =
-        process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
-        process.env.NEXT_RUNTIME !== "edge" &&
-        (process.env.VERCEL !== "1" ||
-          (process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
-            process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"))
+      const localStartAllowed = canStartTradeEngineInProcess()
       try {
         if (localStartAllowed) {
           const settings = await loadSettingsAsync()

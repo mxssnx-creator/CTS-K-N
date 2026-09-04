@@ -31,13 +31,8 @@ async function initializeDefaultSettings() {
 }
 
 async function seedPredefinedConnections() {
-  // In Vercel serverless functions (NEXT_RUNTIME !== "nodejs"), the
-  // migrations handle symbol seeding. In Node.js runtimes (dev/local prod),
-  // we also ensure symbols are seeded (in case migration didn't run).
-  if (process.env.VERCEL === "1" && process.env.NEXT_RUNTIME !== "nodejs") {
-    // Migrations handle this in Vercel serverless functions
-    return
-  }
+  // Migrations seed symbols first; durable Node startup verifies that an
+  // existing or restored database also has a usable default symbol basket.
   try {
     const allConnections = await getAllConnections()
     const { getRedisClient, getSettings } = await import("@/lib/redis-db")

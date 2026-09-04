@@ -35,6 +35,7 @@ import { normalizeMarketSymbol, normalizeMarketType, getDefaultSymbolsForMarket,
 import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
 import { marketDataKey } from "@/lib/market-data-keys"
 import type { ExchangeTicker } from "@/lib/exchange-connectors/base-connector"
+import { logRuntimeWarning } from "@/lib/runtime-log-throttle"
 
 export interface MarketDataCandle {
   timestamp: number
@@ -690,7 +691,9 @@ export async function loadMarketDataForEngine(
           realDataCount++
         } else {
           if (realData && realData.candles.length > 0) {
-            console.warn(
+            logRuntimeWarning(
+              `market-data:${scopedConnectionId}:partial-history`,
+              60_000,
               `[v0] [MarketData] ${symbol}: venue returned only ${realData.candles.length} ` +
                 `candle(s), requires ${requiredCandles} dense/recent ${historyIntervalSeconds === 60 ? "M1 bars" : "seconds"} ` +
                 `(unique=${realCoverage?.uniqueSeconds || 0}, ` +
@@ -700,7 +703,9 @@ export async function loadMarketDataForEngine(
             )
           }
           if (!allowSynthetic) {
-            console.warn(
+            logRuntimeWarning(
+              `market-data:${scopedConnectionId}:history-gated`,
+              60_000,
               `[v0] [MarketData] ${symbol}: no complete real history and synthetic ` +
                 `fallback is disabled; entry processing remains gated`,
             )

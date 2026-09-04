@@ -197,7 +197,7 @@ fi
 [[ -n "$APP_PORT" ]] || APP_PORT="${SAVED_APP_PORT:-3002}"
 [[ -n "$RUNTIME" ]] || RUNTIME="${SAVED_RUNTIME:-systemd}"
 [[ -n "$SERVICE_USER" ]] || SERVICE_USER="${SAVED_SERVICE_USER:-cts-kn}"
-[[ -n "$ENV_FILE" ]] || ENV_FILE="${SAVED_ENV_FILE:-$PROJECT_ROOT/.env.production.local}"
+[[ -n "$ENV_FILE" ]] || ENV_FILE="${SAVED_ENV_FILE:-/var/lib/$APP_NAME/.env.production.local}"
 [[ -n "$REPOSITORY" ]] || REPOSITORY="${SAVED_REPOSITORY:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)}"
 [[ -n "$BRANCH" ]] || BRANCH="${SAVED_BRANCH:-$(git -C "$PROJECT_ROOT" symbolic-ref --short HEAD 2>/dev/null || true)}"
 [[ -n "$BRANCH" ]] || BRANCH="main"

@@ -53,7 +53,6 @@ SUCCESS-COORDINATION-GUIDE.md
 SYSTEM_SUMMARY.md
 TEMPLATE_LAYOUT_FIXES.md
 TEST-SUITE-SESSION-37.md
-VERCEL_DEPLOYMENT.md
 __tests__/e2e/progression-flow.test.ts
 __tests__/integration/live-order-service.test.ts
 __tests__/integration/main-engine-live-dispatch.test.ts
@@ -64,6 +63,7 @@ __tests__/unit/active-outbreak-strategy-protection.test.ts
 __tests__/unit/admin-auth.test.ts
 __tests__/unit/advanced-config-exhaustive.test.ts
 __tests__/unit/aggregate-protection-coordination.test.ts
+__tests__/unit/api-stats-fetcher.test.ts
 __tests__/unit/auth-runtime-secret.test.ts
 __tests__/unit/backtest-result-accounting.test.ts
 __tests__/unit/balanced-config-selection.test.ts
@@ -201,6 +201,7 @@ __tests__/unit/monitoring-stats-route.test.ts
 __tests__/unit/multi-range-coordination.test.ts
 __tests__/unit/navigation-contract.test.ts
 __tests__/unit/no-fixed-sleeps-regression.test.ts
+__tests__/unit/orchestrated-verifier-safety.test.ts
 __tests__/unit/order-quantity.test.ts
 __tests__/unit/orders-market-notional.test.ts
 __tests__/unit/orders-route-concurrency.test.ts
@@ -222,6 +223,7 @@ __tests__/unit/preset-types-persistence.test.ts
 __tests__/unit/production-continuity.test.ts
 __tests__/unit/production-start-shutdown.test.ts
 __tests__/unit/progression-live-snapshot.test.ts
+__tests__/unit/progression-lock-atomicity.test.ts
 __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
@@ -236,6 +238,7 @@ __tests__/unit/quickstart-timeouts.test.ts
 __tests__/unit/rate-limiter-queue.test.ts
 __tests__/unit/real-position-durability.test.ts
 __tests__/unit/realtime-cycle-diagnostic.test.ts
+__tests__/unit/realtime-rotation-progress.test.ts
 __tests__/unit/realtime-trailing-update.test.ts
 __tests__/unit/redis-db-network-client.test.ts
 __tests__/unit/redis-db-write-budget.test.ts
@@ -937,6 +940,8 @@ custom-worker.ts
 data/.gitkeep
 data/connections.json
 data/settings.json
+docs/BINGX-VST-ORCHESTRATED-VERIFIER.md
+docs/CHISEL-REMOTE-INFO.md
 docs/CTS-K-N-DCA-MAIN-SPECIAL-VALIDATION-2026-08-15.md
 docs/CTS-K-N-VALIDATION-RESULTS-2026-08-14.json
 docs/CTS-K-N-VALIDATION-RESULTS-2026-08-14.md
@@ -947,6 +952,7 @@ docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.md
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.checksums.sha256
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.json
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.md
+docs/PRODUCTION-OPERATIONS.md
 docs/REMOTE-CHISEL-WORKMODE.md
 docs/REMOTE-TAILSCALE-PULL-AGENT.md
 docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
@@ -1241,6 +1247,7 @@ lib/metrics-aggregator.ts
 lib/metrics-collector.ts
 lib/monitoring-logger.ts
 lib/multi-range-coordination.ts
+lib/orchestrated-verifier-safety.ts
 lib/order-executor.ts
 lib/order-quantity.ts
 lib/performance-dashboard.ts
@@ -1372,6 +1379,7 @@ lib/top-symbols.ts
 lib/tp-sl-ratio.ts
 lib/trade-direction.ts
 lib/trade-engine-auto-start.ts
+lib/trade-engine-intent.ts
 lib/trade-engine-status-cache.ts
 lib/trade-engine-worker-heartbeat.ts
 lib/trade-engine.ts
@@ -1389,6 +1397,7 @@ lib/trade-engine/progression-lock.ts
 lib/trade-engine/progression-writes.ts
 lib/trade-engine/pseudo-position-manager.ts
 lib/trade-engine/realtime-processor.ts
+lib/trade-engine/realtime-rotation-progress.ts
 lib/trade-engine/settings-change-fields.ts
 lib/trade-engine/shared-ind-strat-pipeline.ts
 lib/trade-engine/simple-indication-generator.ts
@@ -1507,6 +1516,7 @@ scripts/prepare-turbopack.mjs
 scripts/preview-redis-harness.mjs
 scripts/prod-restart-manager.sh
 scripts/production-deploy-init.mjs
+scripts/prune-live-position-lifetime-contributions.ts
 scripts/quickstart-live-trading.js
 scripts/rebuild-live-order-counters.mjs
 scripts/rebuild-live-position-lifetime-summary.ts
@@ -1519,6 +1529,7 @@ scripts/repair-live-position-ledgers.mjs
 scripts/repair-redis-retention.ts
 scripts/restart.sh
 scripts/run-bingx-vst-live-soak.ts
+scripts/run-bingx-vst-orchestrated-verifier.ts
 scripts/run-dev-preview-check.mjs
 scripts/run-direct-trade-dev-soak.mjs
 scripts/run-direct-trade-recovery-soak.mjs
@@ -1558,7 +1569,6 @@ scripts/test-runtime-recovery.sh
 scripts/test-tp-sl-ranges.mjs
 scripts/update.sh
 scripts/validate-comprehensive.mjs
-scripts/vercel-build-setup.sh
 scripts/verify-deployment-contract.mjs
 scripts/verify-migration-status.mjs
 scripts/verify-prod-preview.mjs
@@ -1581,11 +1591,11 @@ test-final-comprehensive.sh
 test-long-term.sh
 test-longterm-3hours.sh
 tsconfig.json
+tunnel.js
 types/bingx-api.d.ts
 types/open-next-worker.d.ts
 vendor/app-builder-db-marker/README.md
 vendor/app-builder-db-marker/index.js
 vendor/app-builder-db-marker/package.json
-vercel.json
 verify-live-trading.sh
 wrangler.jsonc

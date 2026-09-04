@@ -7,7 +7,7 @@ import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
-// Vercel Hobby permits a maximum of 300 seconds per Serverless Function.
+// Keep the request bound compatible with hosted serverless function limits.
 export const maxDuration = 300
 
 const DEFAULT_REPOSITORY = "https://github.com/mxssnx-creator/CTS-K-N.git"

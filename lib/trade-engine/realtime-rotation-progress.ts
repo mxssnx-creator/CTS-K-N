@@ -27,10 +27,16 @@ export class RealtimeRotationTracker {
   private configured = new Set<string>()
   private covered = new Set<string>()
 
+  private normalizeSymbols(symbols: readonly string[]): string[] {
+    return Array.from(new Set(
+      symbols.map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean),
+    ))
+  }
+
   beginBasket(generation: string, symbols: readonly string[]): void {
     if (generation === this.generation) return
     this.generation = generation
-    this.configured = new Set(symbols)
+    this.configured = new Set(this.normalizeSymbols(symbols))
     this.covered = new Set()
   }
 
@@ -40,8 +46,14 @@ export class RealtimeRotationTracker {
     successfulSymbols: readonly string[],
   ): RealtimeRotationProgress | null {
     if (generation !== this.generation) return null
-    const attempted = Array.from(new Set(attemptedSymbols))
-    const succeeded = new Set(successfulSymbols.filter((symbol) => this.configured.has(symbol)))
+    const attempted = this.normalizeSymbols(attemptedSymbols).filter((symbol) => this.configured.has(symbol))
+    const attemptedSet = new Set(attempted)
+    // A completion can only cover a symbol admitted to this exact tick. This
+    // prevents a late result from another tick in the same basket generation
+    // from inflating current-tick or full-rotation coverage.
+    const succeeded = new Set(
+      this.normalizeSymbols(successfulSymbols).filter((symbol) => attemptedSet.has(symbol)),
+    )
     for (const symbol of succeeded) this.covered.add(symbol)
     const failedSymbols = attempted.filter((symbol) => !succeeded.has(symbol))
     const stalledSymbols = Array.from(this.configured).filter((symbol) => !this.covered.has(symbol))

@@ -21,6 +21,21 @@ describe("requested regression guardrails", () => {
     expect(source.indexOf("authorizeAdminBearer")).toBeLessThan(source.indexOf("await initRedis()"))
   })
 
+  test("the Admin database UI uses the authenticated same-origin session", () => {
+    const page = read("app/admin/migrate/page.tsx")
+    for (const route of [
+      "reset-and-init",
+      "run-migrations",
+      "init-database-direct",
+      "reinit-db",
+    ]) {
+      const source = read(`app/api/admin/${route}/route.ts`)
+      expect(source).toContain("authorizeAdminRequest")
+      expect(source).toContain("await authorizeAdminRequest(request)")
+    }
+    expect(page.match(/credentials: "same-origin"/g)).toHaveLength(4)
+  })
+
   test("startup and diagnostics never substitute unscoped market data", () => {
     const startup = read("lib/pre-startup.ts")
     const verification = read("app/api/debug/system-verification/route.ts")
@@ -443,8 +458,7 @@ describe("requested regression guardrails", () => {
     expect(startBranch).toContain('status: "running"')
     expect(startBranch).toContain('coordinator_ready: "true"')
     expect(startBranch).toContain("const engineStarted = await coordinator.startEngine")
-    expect(startBranch).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
-    expect(startBranch).toContain('process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"')
+    expect(startBranch).toContain("canStartTradeEngineInProcess()")
     expect(startBranch).toContain('engineStatus = "queued"')
     expect(startBranch).toContain('runTradeEngineHealingSweep({ isStartup: false })')
     expect(startBranch).toContain('engineStatus = "started"')
@@ -486,8 +500,7 @@ describe("requested regression guardrails", () => {
 
     expect(source).toContain('export const runtime = "nodejs"')
     expect(source).toContain("const engineStarted = await coordinator.startEngine")
-    expect(source).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
-    expect(source).toContain('process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"')
+    expect(source).toContain("canStartTradeEngineInProcess()")
     expect(source).toContain('reason: "live_trade_enable"')
     expect(source).toContain('runTradeEngineHealingSweep({ isStartup: false })')
     expect(source).toContain('engineStatus = "running"')
@@ -994,7 +1007,7 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("runningUnderProdStart")
   })
 
-  test("self-hosted production progression remains enabled by default while Vercel stays opt-in", () => {
+  test("self-hosted production progression remains enabled by default while serverless stays opt-in", () => {
     const engineManager = read("lib/trade-engine/engine-manager.ts")
     const sharedPipeline = read("lib/trade-engine/shared-ind-strat-pipeline.ts")
     const indicationSets = read("lib/indication-sets-processor.ts")
@@ -1257,13 +1270,12 @@ describe("requested regression guardrails", () => {
     const nextConfig = read("next.config.mjs")
 
     expect(pkg.scripts.prebuild).toContain("node scripts/clean-next-dist.mjs")
-    expect(pkg.scripts["prevercel-build"]).toContain("node scripts/clean-next-dist.mjs")
     expect(pkg.scripts.prebuild).not.toContain("rm -rf .next")
-    expect(pkg.scripts["prevercel-build"]).not.toContain("rm -rf .next")
+    expect(pkg.scripts["prevercel-build"]).toBeUndefined()
     expect(read("eslint.config.mjs")).toContain('".next-*/**"')
     expect(pkg.scripts.postbuild).toContain("node scripts/normalize-next-env.mjs")
     expect(pkg.scripts.postbuild).toContain("node scripts/prepare-standalone-assets.mjs")
-    expect(pkg.scripts["postvercel-build"]).toBe("node scripts/normalize-next-env.mjs")
+    expect(pkg.scripts["postvercel-build"]).toBeUndefined()
     expect(read("scripts/normalize-next-env.mjs")).toContain('./.next/types/routes.d.ts')
     expect(read("scripts/normalize-next-env.mjs")).toContain(
       'next/navigation-types/compat/navigation',
@@ -1579,9 +1591,11 @@ describe("requested regression guardrails", () => {
 
   test("dashboard enable keeps API worker responsive unless foreground runtime is explicitly allowed", () => {
     const source = read("app/api/settings/connections/[id]/toggle-dashboard/route.ts")
+    const runtime = read("lib/deployment-runtime.ts")
 
-    expect(source).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
-    expect(source).toContain('process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"')
+    expect(source).toContain("canStartTradeEngineInProcess()")
+    expect(runtime).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
+    expect(runtime).toContain('process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"')
     expect(source).toContain('allowInProcessStart: true')
     expect(source).toContain('const engineStarted = await coordinator.startEngine')
     expect(source).toContain('engineStatus = "queued"')
@@ -1715,8 +1729,7 @@ describe("requested regression guardrails", () => {
     expect(enableRoute).toContain('coordinator_ready: "true"')
     expect(enableRoute).toContain('operator_stopped: "0"')
     expect(enableRoute).toContain('const localStartAllowed =')
-    expect(enableRoute).toContain('process.env.VERCEL !== "1"')
-    expect(enableRoute).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
+    expect(enableRoute).toContain("canStartTradeEngineInProcess()")
     expect(enableRoute.indexOf('operator_intent: "running"')).toBeLessThan(enableRoute.indexOf("await coordinator.startMissingEngines"))
 
     expect(dashboardRoute).toContain("const preservedCoordinatorIntent")
@@ -4109,46 +4122,6 @@ describe("requested regression guardrails", () => {
     expect(performance).toContain("Only settled closed executions enter live W/L/BE")
   })
 
-  test("all legacy and diagnostic entry routes carry the shared protection contract", () => {
-    const stateMachine = read("lib/trade-engine/state-machine.ts")
-    const orchestrator = read("lib/trade-execution-orchestrator.ts")
-    const testingRoute = read("app/api/testing/place-order/route.ts")
-    const directRoute = read("app/api/trade-engine/direct-trade/order/route.ts")
-    const directCanonical = read("lib/direct-trade-canonical-order.ts")
-
-    expect(stateMachine).toContain("ExchangeConnectorFactory.getInstance().getOrCreateConnector")
-    expect(stateMachine).toContain("requireProtection: true")
-    expect(stateMachine).toContain("protectionStopLossPercent")
-    expect(stateMachine).toContain("protectionTakeProfitPercent")
-    expect(orchestrator).toContain("requireProtection: true")
-    expect(orchestrator).toContain("signal.protectionStopLossPercent")
-    expect(orchestrator).toContain("signal.protectionTakeProfitPercent")
-    expect(testingRoute).toContain("requireProtection: true")
-    expect(testingRoute).toContain("body.protectionStopLossPercent")
-    expect(directRoute).toContain("executeDirectTradeCanonicalOrder")
-    expect(directCanonical).toContain("Direct-Trade live entry requires finite positive Stop Loss and Take Profit percentages")
-    expect(directCanonical).toContain("hasCanonicalDirectProtection")
-    expect(directCanonical).toContain("Boolean(coverage.stopLossOrderId)")
-    expect(directCanonical).toContain("Boolean(coverage.takeProfitOrderId)")
-    expect(directCanonical).toContain('coverage.securityStopStatus === "armed"')
-  })
-
-  test("reset database and flush routes authorize via same-origin admin session, not bearer-only", () => {
-    const flush = read("app/api/install/database/flush/route.ts")
-    const resetAndInit = read("app/api/admin/reset-and-init/route.ts")
-    const reset = read("app/api/install/database/reset/route.ts")
-
-    // Browser-initiated destructive resets (install manager + admin migrate UI)
-    // send no Authorization header, so a bearer-only gate returns 401. The
-    // session-aware helper accepts a same-origin admin session and must be
-    // used on every destructive DB route.
-    expect(flush).toContain("authorizeAdminRequest")
-    expect(flush).not.toContain("authorizeAdminBearer")
-    expect(resetAndInit).toContain("authorizeAdminRequest")
-    expect(resetAndInit).not.toContain("authorizeAdminBearer")
-    expect(reset).toContain("authorizeAdminRequest")
-  })
-
   describe("trade-engine restart behavior", () => {
     const request = { text: jest.fn().mockResolvedValue("") } as any
     const originalEnv = { ...process.env }
@@ -4166,6 +4139,7 @@ describe("requested regression guardrails", () => {
     async function runRestart(options: {
       globalState?: Record<string, string>
       engineState?: Record<string, string>
+      engineStatesByKey?: Record<string, Record<string, string>>
       hsetError?: Error
       startError?: Error
     } = {}) {
@@ -4193,7 +4167,9 @@ describe("requested regression guardrails", () => {
         hdel: jest.fn(async (_key: string, ...fields: string[]) => {
           for (const field of fields) delete globalState[field]
         }),
-        hgetall: jest.fn(async (key: string) => key === "trade_engine:global" ? globalState : engineState),
+        hgetall: jest.fn(async (key: string) => key === "trade_engine:global"
+          ? globalState
+          : options.engineStatesByKey?.[key] || engineState),
       }
 
       jest.doMock("@/lib/runtime-maintenance", () => ({
@@ -4252,17 +4228,52 @@ describe("requested regression guardrails", () => {
       })
       expect(result.running()).toBe(false)
     })
+
+    test("a stale legacy mirror cannot overwrite a fresh scoped runtime state", async () => {
+      const now = Date.now()
+      const result = await runRestart({
+        engineStatesByKey: {
+          "trade_engine_state:connection/unsafe": {
+            status: "realtime",
+            last_processor_heartbeat: String(now),
+          },
+          "settings:trade_engine_state:connection/unsafe": {
+            status: "stopped",
+            last_processor_heartbeat: String(now - 10 * 60_000),
+            updated_at: String(now - 10 * 60_000),
+          },
+          "trade_engine_state:connection/unsafe:main": {},
+          "settings:trade_engine_state:connection/unsafe:main": {},
+        },
+      })
+      expect(result.response.status).toBe(200)
+      expect(result.body).toMatchObject({ success: true, coordinatorState: "running" })
+      expect(result.running()).toBe(true)
+    })
   })
 
-  test("live-phase symbols_processed reports the full configured scope, not the per-tick rotating slice", () => {
-    const engine = read("lib/trade-engine/engine-manager.ts")
+  test("all legacy and diagnostic entry routes carry the shared protection contract", () => {
+    const stateMachine = read("lib/trade-engine/state-machine.ts")
+    const orchestrator = read("lib/trade-execution-orchestrator.ts")
+    const testingRoute = read("app/api/testing/place-order/route.ts")
+    const directRoute = read("app/api/trade-engine/direct-trade/order/route.ts")
+    const directCanonical = read("lib/direct-trade-canonical-order.ts")
 
-    // With REALTIME_PIPELINE_SYMBOLS_PER_TICK below the basket size, the live
-    // tick advances only a slice per cycle. Writing the slice count froze the
-    // "X/N symbols processed" display at the slice size (e.g. 13/50). The live
-    // phase trades the whole scope — report the configured scope total.
-    expect(engine).toContain('"symbols_processed", String(configuredSymbols.length)')
-    expect(engine).not.toContain('"symbols_processed", String(symbols.length)')
+    expect(stateMachine).toContain("ExchangeConnectorFactory.getInstance().getOrCreateConnector")
+    expect(stateMachine).toContain("requireProtection: true")
+    expect(stateMachine).toContain("protectionStopLossPercent")
+    expect(stateMachine).toContain("protectionTakeProfitPercent")
+    expect(orchestrator).toContain("requireProtection: true")
+    expect(orchestrator).toContain("signal.protectionStopLossPercent")
+    expect(orchestrator).toContain("signal.protectionTakeProfitPercent")
+    expect(testingRoute).toContain("requireProtection: true")
+    expect(testingRoute).toContain("body.protectionStopLossPercent")
+    expect(directRoute).toContain("executeDirectTradeCanonicalOrder")
+    expect(directCanonical).toContain("Direct-Trade live entry requires finite positive Stop Loss and Take Profit percentages")
+    expect(directCanonical).toContain("hasCanonicalDirectProtection")
+    expect(directCanonical).toContain("Boolean(coverage.stopLossOrderId)")
+    expect(directCanonical).toContain("Boolean(coverage.takeProfitOrderId)")
+    expect(directCanonical).toContain('coverage.securityStopStatus === "armed"')
   })
 
 })

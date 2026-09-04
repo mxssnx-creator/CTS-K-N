@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -56,35 +56,46 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
   const [intervals, setIntervals] = useState<IntervalsData>({})
   const [strategies, setStrategies] = useState<StrategyStats[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const loadingRef = useRef(false)
+  const requestGenerationRef = useRef(0)
 
   useEffect(() => {
+    const generation = ++requestGenerationRef.current
     if (!selectedConnectionId) {
       setIntervals({})
       setStrategies([])
       setIsLoading(false)
       return
     }
-    void loadData(selectedConnectionId)
-    const intervalId = setInterval(() => { void loadData(selectedConnectionId) }, 5000)
+    setIntervals({})
+    setStrategies([])
+    setIsLoading(true)
+    void loadData(selectedConnectionId, generation)
+    const intervalId = setInterval(() => { void loadData(selectedConnectionId, generation) }, 5000)
     return () => clearInterval(intervalId)
   }, [selectedConnectionId, connections])
 
-  const loadData = async (connectionId = selectedConnectionId) => {
-    if (!connectionId) return
+  const loadData = async (connectionId = selectedConnectionId, generation = requestGenerationRef.current) => {
+    if (!connectionId || loadingRef.current) return
+    loadingRef.current = true
+    const isCurrent = () => generation === requestGenerationRef.current
     try {
       const [intervalsRes, strategiesRes] = await Promise.all([
         fetch(`/api/monitoring/intervals/${connectionId}`).catch(() => null),
         fetch(`/api/monitoring/strategies/${connectionId}`).catch(() => null),
       ])
 
+      if (!isCurrent()) return
       if (intervalsRes?.ok) {
         const data = await intervalsRes.json()
+        if (!isCurrent()) return
         setIntervals(data.intervals || {})
       } else {
         // Fallback: derive interval health from system monitoring
         const sysRes = await fetch("/api/system/monitoring").catch(() => null)
-        if (sysRes?.ok) {
+        if (sysRes?.ok && isCurrent()) {
           const sysData = await sysRes.json()
+          if (!isCurrent()) return
           const engineRunning = sysData.services?.tradeEngine || false
           const indicationsRunning = sysData.services?.indicationsEngine || false
           setIntervals(Object.fromEntries(INDICATION_INTERVALS.map(({ type, timeout }) => [
@@ -102,12 +113,14 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
 
       if (strategiesRes?.ok) {
         const data = await strategiesRes.json()
+        if (!isCurrent()) return
         setStrategies(data.strategies || [])
       } else {
         // Fallback: derive strategies from system stats
         const statsRes = await fetch("/api/main/system-stats-v3").catch(() => null)
-        if (statsRes?.ok) {
+        if (statsRes?.ok && isCurrent()) {
           const statsData = await statsRes.json()
+          if (!isCurrent()) return
           const pipelineEnabled = Boolean(statsData.tradeEngines?.mainEnabled)
           const fallbackStrategies: StrategyStats[] = [
             { type: "base", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.total || 0, totalIndications: 0, successRate: 0 },
@@ -121,7 +134,8 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
     } catch (error) {
       console.error("[IntervalsStrategies] Failed to load data:", error)
     } finally {
-      setIsLoading(false)
+      loadingRef.current = false
+      if (isCurrent()) setIsLoading(false)
     }
   }
 

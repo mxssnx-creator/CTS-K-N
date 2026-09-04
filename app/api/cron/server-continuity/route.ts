@@ -57,7 +57,7 @@ async function runCronTask(
  * Durable server-side continuity tick.
  *
  * Browser tabs and in-process timers are not reliable in all production modes:
- * users can close the dashboard, PM2/Docker processes can restart, and Vercel
+ * users can close the dashboard, PM2/Docker processes can restart, and hosted
  * serverless functions cannot keep intervals alive after a request returns.
  * This cron endpoint is the deployment-level heartbeat that re-arms Redis,
  * migrations, and the trade-engine auto-start monitor once per minute.
@@ -102,7 +102,7 @@ export async function GET(request: Request) {
 
     try {
       // On long-lived Node deployments this ensures the in-process runner is
-      // active. On Vercel/serverless the runner intentionally no-ops, so this
+      // active. On serverless runtimes the runner intentionally no-ops, so this
       // single cron invocation runs the durable heartbeat tasks directly.
       //
       // NOTE: live-position sync is intentionally NOT run here. It has its own

@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-All production build issues have been fixed comprehensively and are production-ready for deployment to Vercel.
+All production build issues have been fixed comprehensively and are ready for the managed self-hosted deployment.
 
 **Status**: ✅ PRODUCTION READY
 **Branch**: v0/mxssnxx-d3d33a76
@@ -201,15 +201,15 @@ Returns:
 - [x] Error logging cleaned up
 - [x] Documentation complete
 - [x] Changes committed to GitHub
-- [x] Ready for Vercel deployment
+- [x] Ready for self-hosted production deployment
 
 ---
 
 ## Next Steps for Production Deployment
 
-1. Merge `v0/mxssnxx-d3d33a76` → `vercel` branch
-2. Set Vercel environment variables if needed
-3. Push to Vercel (automatic deployment)
+1. Merge the reviewed branch into `main`
+2. Verify the durable server environment file
+3. Run the production bootstrap installer
 4. Verify `/api/health` returns status "healthy"
 5. Verify `/api/health/readiness` returns status "ready"
 6. Monitor logs for error rate (should be 60%+ lower)
@@ -230,4 +230,4 @@ Returns:
 
 **Commit**: 2cff765 - fix: comprehensive production build issues - startup validation, error suppression, and health checks
 **Date**: Production fixes completed and tested
-**Status**: READY FOR VERCEL DEPLOYMENT
+**Status**: READY FOR MANAGED SERVER DEPLOYMENT

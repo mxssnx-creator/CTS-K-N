@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server"
-import { authorizeAdminBearer } from "@/lib/admin-auth"
+import { authorizeAdminRequest } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 export async function POST(request: Request) {
-  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  const authorization = await authorizeAdminRequest(request)
   if (!authorization.ok) {
     return NextResponse.json(
       { success: false, error: authorization.error },

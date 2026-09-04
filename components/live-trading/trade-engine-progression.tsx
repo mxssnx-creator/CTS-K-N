@@ -34,18 +34,24 @@ export function TradeEngineProgression() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let disposed = false
+    let inFlight = false
     const fetchProgression = async () => {
+      if (disposed || inFlight) return
+      inFlight = true
       try {
         const response = await fetch("/api/trade-engine/progression")
-        if (response.ok) {
+        if (!disposed && response.ok) {
           const data = await response.json()
+          if (disposed) return
           setProgressionData(data.connections || [])
           console.log("[v0] Fetched trade engine progression:", data)
         }
       } catch (error) {
-        console.error("[v0] Failed to fetch progression:", error)
+        if (!disposed) console.error("[v0] Failed to fetch progression:", error)
       } finally {
-        setLoading(false)
+        inFlight = false
+        if (!disposed) setLoading(false)
       }
     }
 
@@ -61,6 +67,7 @@ export function TradeEngineProgression() {
     // Poll every 10 seconds
     const interval = setInterval(fetchProgression, 10000)
     return () => {
+      disposed = true
       clearInterval(interval)
       window.removeEventListener(PROGRESSION_STATE_INVALIDATE_EVENT, handleInvalidation)
       window.removeEventListener(CONNECTION_STATE_CHANGED_EVENT, handleInvalidation)

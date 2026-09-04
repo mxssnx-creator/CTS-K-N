@@ -56,6 +56,7 @@ SAVED_PROJECT_ROOT=""
 SAVED_ENV_FILE=""
 SAVED_ENV_MANAGED=""
 ENV_FILE_MANAGED="${CTS_PRESERVE_ENV_MANAGED:-}"
+[[ -n "${CTS_ENV_FILE:-}" ]] && ENV_FILE_SET=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -64,7 +65,7 @@ PACKAGE_VERSION="$(node -p "require('$PROJECT_ROOT/package.json').version" 2>/de
 DEFAULT_PROJECT_NAME="cts-kn"
 [[ -n "$APP_NAME" ]] || APP_NAME="$DEFAULT_PROJECT_NAME"
 [[ -n "$APP_PORT" ]] || APP_PORT="3002"
-ENV_FILE="$PROJECT_ROOT/.env.production.local"
+ENV_FILE="${CTS_ENV_FILE:-}"
 RUNTIME_DIR="$PROJECT_ROOT/.cts-runtime"
 BUILD_BACKUP=""
 ROLLBACK_ARMED=0
@@ -103,11 +104,11 @@ Sensitive values should be supplied in --seed-env-file or the existing env
 file, never as command-line arguments. The installer generates ADMIN_SECRET,
 CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent. The guarded
 live path is enabled by default, but actual exchange placement still requires
-valid credentials, durable order coordination, and persisted live-control state.
-A separately persisted DIRECT_TRADE_LIVE_ORDER_PLACEMENT=1 plus the exact
-DIRECT_TRADE_LIVE_CONNECTION_IDS=bingx-x02 allow-list can enable only the
-leased X02 Prod-VST Direct path while every ordinary route remains paper. The
-verification never submits an order.
+valid credentials, durable order coordination, persisted live-control state,
+and the exact LIVE_ORDER_CONNECTION_IDS=bingx-x02 allow-list. Direct Trade has
+an additional independent DIRECT_TRADE_LIVE_ORDER_PLACEMENT=1 plus
+DIRECT_TRADE_LIVE_CONNECTION_IDS=bingx-x02 gate. Verification never submits an
+order.
 
 For a server install or upgrade, prefer scripts/bootstrap-install.sh. When an
 installed CTS runtime is detected, this command delegates to that clean flow.
@@ -197,6 +198,11 @@ load_installed_defaults() {
 # operator omits --name/--port. Explicit command-line values always win.
 load_installed_defaults
 
+# Production state must outlive the replaceable Git checkout. Existing install
+# metadata and an explicit --env-file/CTS_ENV_FILE remain authoritative; a new
+# installation otherwise converges on one stable per-service location.
+[[ -n "$ENV_FILE" ]] || ENV_FILE="/var/lib/$APP_NAME/.env.production.local"
+
 if [[ "$ENV_FILE" != /* ]]; then
   ENV_FILE="$PROJECT_ROOT/${ENV_FILE#./}"
 fi
@@ -257,6 +263,10 @@ fi
 if [[ -z "$ENV_FILE_MANAGED" ]]; then
   if [[ -e "$ENV_FILE" ]]; then ENV_FILE_MANAGED=0; else ENV_FILE_MANAGED=1; fi
 fi
+# Any environment outside the checkout is operator recovery state. Preserve it
+# even when the installer originally created the file; reinstall and uninstall
+# must never discard credentials or generated signing secrets.
+if [[ "$ENV_FILE" != "$PROJECT_ROOT"/* ]]; then ENV_FILE_MANAGED=0; fi
 if [[ -n "$SAVED_PROJECT_ROOT" && "$SAVED_PROJECT_ROOT" != "$PROJECT_ROOT" ]]; then
   fatal "Saved installation root '$SAVED_PROJECT_ROOT' does not match this checkout '$PROJECT_ROOT'"
 fi
@@ -329,24 +339,19 @@ uninstall_project() {
   fi
 
   if command -v systemctl >/dev/null 2>&1; then
-    run_root systemctl disable --now "$APP_NAME-recovery.timer" "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-redis" 2>/dev/null || true
-    run_root rm -f -- "/etc/systemd/system/$APP_NAME.service" "/etc/systemd/system/$APP_NAME-scheduler.service" "/etc/systemd/system/$APP_NAME-direct-trade.service" "/etc/systemd/system/$APP_NAME-recovery.service" "/etc/systemd/system/$APP_NAME-recovery.timer" "/etc/systemd/system/$APP_NAME-redis.service"
+    run_root systemctl disable --now "$APP_NAME-recovery.timer" "$APP_NAME-redis-governor.timer" "$APP_NAME-redis-governor.service" "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-redis" 2>/dev/null || true
+    run_root rm -f -- "/etc/systemd/system/$APP_NAME.service" "/etc/systemd/system/$APP_NAME-scheduler.service" "/etc/systemd/system/$APP_NAME-direct-trade.service" "/etc/systemd/system/$APP_NAME-recovery.service" "/etc/systemd/system/$APP_NAME-recovery.timer" "/etc/systemd/system/$APP_NAME-redis-governor.service" "/etc/systemd/system/$APP_NAME-redis-governor.timer" "/etc/systemd/system/$APP_NAME-redis.service"
     run_root systemctl daemon-reload 2>/dev/null || true
-    run_root systemctl reset-failed "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis" 2>/dev/null || true
+    run_root systemctl reset-failed "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis-governor" "$APP_NAME-redis" 2>/dev/null || true
   fi
   if command -v pm2 >/dev/null 2>&1 && id "$SERVICE_USER" >/dev/null 2>&1; then
     run_as_service pm2 delete "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis" >/dev/null 2>&1 || true
     run_as_service pm2 save --force >/dev/null 2>&1 || true
   fi
 
-  local external_env_preserved=0 external_env_removed=0
+  local external_env_preserved=0
   if [[ "$ENV_FILE" != "$PROJECT_ROOT"/* && -e "$ENV_FILE" ]]; then
-    if (( ENV_FILE_MANAGED == 1 )); then
-      run_root rm -f -- "$ENV_FILE"
-      external_env_removed=1
-    else
-      external_env_preserved=1
-    fi
+    external_env_preserved=1
   fi
 
   # Redis, Node, pnpm, and Bun can be shared by unrelated applications. Remove
@@ -355,14 +360,14 @@ uninstall_project() {
   cd /
   run_root rm -rf -- "$PROJECT_ROOT"
   if (( remove_service_user == 1 )) && id "$SERVICE_USER" >/dev/null 2>&1; then
-    run_root userdel --remove "$SERVICE_USER" 2>/dev/null || run_root userdel "$SERVICE_USER" || true
-    ok "Removed CTS-managed service user: $SERVICE_USER"
+    # /var/lib/<name> is the canonical durable environment/credential root.
+    # Remove only the account record; preserve its home for a clean reinstall.
+    run_root userdel "$SERVICE_USER" 2>/dev/null || true
+    ok "Removed CTS-managed service user; preserved its durable state home: $SERVICE_USER"
   fi
   ok "Removed CTS services and checkout: $PROJECT_ROOT"
   if (( external_env_preserved == 1 )); then
     info "Externally managed environment file preserved: $ENV_FILE"
-  elif (( external_env_removed == 1 )); then
-    ok "Removed installer-managed environment file: $ENV_FILE"
   fi
   info "Shared Bun/Node/Redis installations and externally managed Redis data were preserved."
 }
@@ -540,7 +545,7 @@ run_preflight() {
     fi
   fi
 
-  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs lib/direct-trade-ledger-recovery.cjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
+  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs lib/direct-trade-ledger-recovery.cjs lib/redis-memory-policy.cjs scripts/redis-memory-governor.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
     [[ -f "$PROJECT_ROOT/$file" ]] || fatal "Required install artifact is missing: $file"
   done
   bash -n "$PROJECT_ROOT/scripts/install.sh"
@@ -864,6 +869,31 @@ merge_seed_env() {
   done < "$SEED_ENV_FILE"
 }
 
+merge_persistent_credential_fallback() {
+  local source="$1" line key value merged=0
+  [[ -r "$source" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" == *=* ]] || fatal "Invalid persistent credential fallback line"
+    key="${line%%=*}"; value="${line#*=}"
+    [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fatal "Invalid persistent credential fallback key"
+    case "$key" in
+      BINGX_*|BYBIT_*|PIONEX_*|ORANGEX_*|INSTAFOREX_*|FOREX_*|MT4_*|MT5_*|METAAPI_*|FX_*) ;;
+      *) fatal "Unsupported key in persistent credential fallback: $key" ;;
+    esac
+    [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
+      || fatal "Persistent credential fallback values cannot contain newlines"
+    # The durable main environment remains authoritative. Recovery fragments
+    # fill only absent/blank credential fields after a clean reinstall.
+    if [[ -z "$(env_value "$key")" && -n "$value" ]]; then
+      upsert_env "$key" "$value"
+      merged=$((merged + 1))
+    fi
+  done < "$source"
+  (( merged == 0 )) || ok "Recovered $merged missing credential fields from protected persistent state"
+}
+
 placeholder_secret() {
   local value="$1" lower
   lower="${value,,}"
@@ -879,9 +909,15 @@ configure_environment_and_redis() {
   if [[ ! -d "$env_parent" ]]; then
     run_root install -d -m 0750 -- "$env_parent"
   fi
+  # Root-only source archives and normalized runtime fallbacks survive checkout
+  # replacement. Services consume only the generated group-readable main env.
+  run_root install -d -m 0700 -o root -g root -- \
+    "$env_parent/credentials" "$env_parent/forex"
   [[ -f "$ENV_FILE" ]] || run_root install -m 0600 /dev/null "$ENV_FILE"
   run_root chmod 600 "$ENV_FILE"
   merge_seed_env
+  merge_persistent_credential_fallback "$env_parent/credentials/runtime.env"
+  merge_persistent_credential_fallback "$env_parent/forex/runtime.env"
 
   local redis_url redis_service_mode="external" inline_snapshot=0
   redis_url="${INSTALL_REDIS_URL:-$(env_value REDIS_URL)}"
@@ -978,6 +1014,7 @@ configure_environment_and_redis() {
     upsert_env ALLOW_LIVE_ORDER_PLACEMENT 0
     upsert_env CTS_REQUIRE_LIVE_TRADE_READY 0
     upsert_env DISABLE_BINGX_SDK_ORDERS 1
+    upsert_env LIVE_ORDER_CONNECTION_IDS bingx-x02
   else
     upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 1
     # A long-lived Linux install is the authoritative live-order owner. Do not
@@ -990,6 +1027,9 @@ configure_environment_and_redis() {
     upsert_env ALLOW_LIVE_ORDER_PLACEMENT 1
     upsert_env CTS_REQUIRE_LIVE_TRADE_READY 1
     upsert_env DISABLE_BINGX_SDK_ORDERS 0
+    # The server may hold read-only credentials for X01 and other venues, but
+    # only X02 virtual funds is authorized for Main/Preset/Signal writes.
+    upsert_env LIVE_ORDER_CONNECTION_IDS bingx-x02
   fi
   configure_cpu_parallelism
   configure_memory_watchdog
@@ -1045,31 +1085,31 @@ configure_environment_and_redis() {
   local direct_x02_live_requested direct_x02_connection_ids
   direct_x02_live_requested="$(env_value DIRECT_TRADE_LIVE_ORDER_PLACEMENT)"
   direct_x02_connection_ids="$(env_value DIRECT_TRADE_LIVE_CONNECTION_IDS)"
-  local live_venues=()
+  local credential_venues=()
   if ! placeholder_secret "$bingx_key" && ! placeholder_secret "$bingx_secret"; then
     upsert_env BINGX_API_KEY "$bingx_key"
     upsert_env BINGX_API_SECRET "$bingx_secret"
-    live_venues+=("BingX X01 Prod-Live")
+    credential_venues+=("BingX X01 (read-only by connection policy)")
   fi
   if ! placeholder_secret "$bingx_vst_key" && ! placeholder_secret "$bingx_vst_secret"; then
     upsert_env BINGX_X02_API_KEY "$bingx_vst_key"
     upsert_env BINGX_X02_API_SECRET "$bingx_vst_secret"
-    live_venues+=("BingX X02 Prod-VST (virtual funds)")
+    credential_venues+=("BingX X02 Prod-VST (write-eligible only after all runtime gates)")
   fi
   if ! placeholder_secret "$bybit_key" && ! placeholder_secret "$bybit_secret"; then
     upsert_env BYBIT_API_KEY "$bybit_key"
     upsert_env BYBIT_API_SECRET "$bybit_secret"
-    live_venues+=("Bybit")
+    credential_venues+=("Bybit (read-only by connection policy)")
   fi
   if ! placeholder_secret "$pionex_key" && ! placeholder_secret "$pionex_secret"; then
     upsert_env PIONEX_API_KEY "$pionex_key"
     upsert_env PIONEX_API_SECRET "$pionex_secret"
-    live_venues+=("Pionex")
+    credential_venues+=("Pionex (read-only by connection policy)")
   fi
   if ! placeholder_secret "$orangex_key" && ! placeholder_secret "$orangex_secret"; then
     upsert_env ORANGEX_API_KEY "$orangex_key"
     upsert_env ORANGEX_API_SECRET "$orangex_secret"
-    live_venues+=("OrangeX")
+    credential_venues+=("OrangeX (read-only by connection policy)")
   fi
 
   # Global paper mode may coexist with exactly one independently leased
@@ -1100,8 +1140,8 @@ configure_environment_and_redis() {
     else
       ok "Safe simulation mode is active; preserved exchange credentials cannot place orders"
     fi
-  elif (( ${#live_venues[@]} > 0 )); then
-    ok "Authenticated exchange execution is configured for ${live_venues[*]}; readiness is verified without submitting an order"
+  elif (( ${#credential_venues[@]} > 0 )); then
+    ok "Authenticated account connectivity is configured for ${credential_venues[*]}; exchange writes remain allow-listed to bingx-x02 and readiness is verified without submitting an order"
   else
     fatal "Production server installation requires valid credentials for at least one supported exchange; supply them via --seed-env-file or the existing environment file"
   fi
@@ -1381,6 +1421,8 @@ install_systemd_runtime() {
   local direct_trade_unit="/etc/systemd/system/$APP_NAME-direct-trade.service"
   local recovery_unit="/etc/systemd/system/$APP_NAME-recovery.service"
   local recovery_timer="/etc/systemd/system/$APP_NAME-recovery.timer"
+  local redis_governor_unit="/etc/systemd/system/$APP_NAME-redis-governor.service"
+  local redis_governor_timer="/etc/systemd/system/$APP_NAME-redis-governor.timer"
   local redis_unit="/etc/systemd/system/$APP_NAME-redis.service"
   local runtime_high_mb runtime_max_mb scheduler_max_mb direct_trade_max_mb
   runtime_high_mb="$(env_value CTS_RUNTIME_MEMORY_HIGH_MB)"
@@ -1425,6 +1467,8 @@ RestartSec=3
 TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
+LogRateLimitIntervalSec=300s
+LogRateLimitBurst=30
 
 [Install]
 WantedBy=multi-user.target
@@ -1461,6 +1505,8 @@ PrivateTmp=true
 LimitNOFILE=65536
 MemoryHigh=${runtime_high_mb}M
 MemoryMax=${runtime_max_mb}M
+LogRateLimitIntervalSec=300s
+LogRateLimitBurst=120
 
 [Install]
 WantedBy=multi-user.target
@@ -1485,6 +1531,8 @@ TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
 MemoryMax=${scheduler_max_mb}M
+LogRateLimitIntervalSec=300s
+LogRateLimitBurst=60
 
 [Install]
 WantedBy=multi-user.target
@@ -1509,6 +1557,8 @@ TimeoutStopSec=45
 NoNewPrivileges=true
 PrivateTmp=true
 MemoryMax=${direct_trade_max_mb}M
+LogRateLimitIntervalSec=300s
+LogRateLimitBurst=60
 
 [Install]
 WantedBy=multi-user.target
@@ -1525,6 +1575,8 @@ User=root
 WorkingDirectory=$PROJECT_ROOT
 ExecStart=$PROJECT_ROOT/scripts/runtime-recovery.sh --name $APP_NAME --port $APP_PORT --runtime-dir $RUNTIME_DIR --runtime systemd --service-user $SERVICE_USER
 TimeoutStartSec=25
+LogRateLimitIntervalSec=300s
+LogRateLimitBurst=20
 EOF
   run_root tee "$recovery_timer" >/dev/null <<EOF
 [Unit]
@@ -1542,19 +1594,55 @@ Unit=$APP_NAME-recovery.service
 [Install]
 WantedBy=timers.target
 EOF
+  run_root tee "$redis_governor_unit" >/dev/null <<EOF
+[Unit]
+Description=CTS-K-N host-relative Redis memory governor
+After=network-online.target redis-server.service redis.service $APP_NAME-redis.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$SERVICE_USER
+WorkingDirectory=$PROJECT_ROOT
+RuntimeDirectory=$APP_NAME-redis-governor
+RuntimeDirectoryMode=0700
+ExecStart=${node_bin} ${PROJECT_ROOT}/scripts/run-with-env.mjs ${ENV_FILE} -- env CTS_RUNTIME_DIR=${RUNTIME_DIR} CTS_REDIS_GOVERNOR_STATE=/run/${APP_NAME}-redis-governor/state.json ${node_bin} ${PROJECT_ROOT}/scripts/redis-memory-governor.mjs
+TimeoutStartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+LogRateLimitIntervalSec=300s
+LogRateLimitBurst=20
+EOF
+  run_root tee "$redis_governor_timer" >/dev/null <<EOF
+[Unit]
+Description=CTS-K-N Redis memory pressure timer
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=10s
+RandomizedDelaySec=5s
+Persistent=true
+Unit=$APP_NAME-redis-governor.service
+
+[Install]
+WantedBy=timers.target
+EOF
   run_root systemctl daemon-reload
   if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
     run_root systemctl enable "$APP_NAME-redis"
     run_root systemctl restart "$APP_NAME-redis"
   fi
-  run_root systemctl enable "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery.timer"
+  run_root systemctl enable "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery.timer" "$APP_NAME-redis-governor.timer"
+  run_root systemctl start "$APP_NAME-redis-governor.service"
   run_root systemctl restart "$APP_NAME"
   run_root systemctl reset-failed "$APP_NAME-scheduler" 2>/dev/null || true
   run_root systemctl restart "$APP_NAME-scheduler"
   run_root systemctl reset-failed "$APP_NAME-direct-trade" 2>/dev/null || true
   run_root systemctl restart "$APP_NAME-direct-trade"
   run_root systemctl start "$APP_NAME-recovery.timer"
-  ok "systemd services and minute recovery timer enabled for boot and restart continuity"
+  run_root systemctl start "$APP_NAME-redis-governor.timer"
+  ok "systemd services, recovery, Redis memory governor, and timers enabled for boot continuity"
 }
 
 install_pm2_runtime() {
@@ -1679,7 +1767,8 @@ verify_and_restart() {
 
   if [[ "$RUNTIME" == "systemd" ]]; then
     run_root systemctl is-active --quiet "$APP_NAME" && run_root systemctl is-active --quiet "$APP_NAME-scheduler" \
-      && run_root systemctl is-active --quiet "$APP_NAME-direct-trade" && run_root systemctl is-active --quiet "$APP_NAME-recovery.timer" || return 1
+      && run_root systemctl is-active --quiet "$APP_NAME-direct-trade" && run_root systemctl is-active --quiet "$APP_NAME-recovery.timer" \
+      && run_root systemctl is-active --quiet "$APP_NAME-redis-governor.timer" || return 1
   else
     run_as_service pm2 describe "$APP_NAME" >/dev/null && run_as_service pm2 describe "$APP_NAME-scheduler" >/dev/null \
       && run_as_service pm2 describe "$APP_NAME-direct-trade" >/dev/null && run_as_service pm2 describe "$APP_NAME-recovery" >/dev/null || return 1
@@ -1765,5 +1854,5 @@ info "Environment: $ENV_FILE (owner/group-only; secrets were not printed)"
 if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
   info "Safe simulation is active; live exchange execution remains disabled by explicit override."
 else
-  info "Live exchange execution is credentialed and verified; order placement remains controlled by the explicit live-control state."
+  info "The guarded live path is active; exchange writes remain restricted to bingx-x02 and still require every persisted runtime/control gate."
 fi

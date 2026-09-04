@@ -2,7 +2,7 @@
  * Minimal client for Kilo's optional managed SQLite HTTP endpoint.
  *
  * This deliberately lives in CTS rather than an unreleased Git-hosted npm
- * package. Vercel must be able to make a deterministic clean install from the
+ * package. Every deployment must make a deterministic clean install from the
  * registry, while Kilo deployments that inject DB_URL/DB_TOKEN retain the
  * same query protocol and migration support.
  */

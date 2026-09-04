@@ -12,6 +12,7 @@ import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { SystemLogger } from "@/lib/system-logger"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { canStartTradeEngineInProcess } from "@/lib/deployment-runtime"
 
 // POST toggle connection active status (inserted/enabled) - INDEPENDENT from Settings
 // When enabling, also triggers engine start for this connection
@@ -266,18 +267,11 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
           active_connections: String(activeDashboardCount),
         })
         
-// Queue/reconcile by default in production so API workers stay responsive.
-         // Local foreground start is reserved for non-Vercel or explicit
-         // production opt-in via ALLOW_API_TRADE_ENGINE_FOREGROUND +
-         // ENABLE_TRADE_ENGINE_IN_PROCESS.
+         // Queue/reconcile by default in request-worker runtimes. A durable
+         // host may start locally; a serverless worker needs explicit opt-in.
          try {
            const coordinator = getGlobalTradeEngineCoordinator()
-           const localStartAllowed =
-             process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
-             process.env.NEXT_RUNTIME !== "edge" &&
-             (process.env.VERCEL !== "1" ||
-               (process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
-                 process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"))
+           const localStartAllowed = canStartTradeEngineInProcess()
 
           if (localStartAllowed) {
             const settings = await loadSettingsAsync()

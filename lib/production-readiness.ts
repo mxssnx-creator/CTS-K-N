@@ -64,7 +64,7 @@ export function productionReadinessJson(result: ProductionReadinessResult) {
       ? "Global coordinator requires shared Redis"
       : "Production readiness check failed",
     message: sharedPersistenceMissing
-      ? "This serverless deployment has no durable shared Redis. Configure the same Redis connection for every worker (REDIS_URL, Upstash REST, or Vercel KV) before starting the global coordinator."
+      ? "This serverless deployment has no durable shared Redis. Configure the same Redis connection for every worker (REDIS_URL, KV_URL, or a managed Redis REST endpoint) before starting the global coordinator."
       : "Trade engines were not started because required production readiness fields are missing or stale.",
     readinessCode: sharedPersistenceMissing ? "shared_persistence_required" : "production_readiness_failed",
     missingFields: result.missingFields,

@@ -143,9 +143,12 @@ export default function MarketDataMonitor({ connectionId }: { connectionId: stri
   useEffect(() => {
     if (!connectionId || symbols.length === 0) return
     let disposed = false
+    let refreshInFlight = false
 
     const refresh = async () => {
+      if (disposed || refreshInFlight) return
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return
+      refreshInFlight = true
       try {
         const response = await fetch("/api/market-data", {
           method: "POST",
@@ -187,6 +190,8 @@ export default function MarketDataMonitor({ connectionId }: { connectionId: stri
         if (disposed) return
         setStatus("disconnected")
         setError(refreshError instanceof Error ? refreshError.message : "Market data unavailable")
+      } finally {
+        refreshInFlight = false
       }
     }
 

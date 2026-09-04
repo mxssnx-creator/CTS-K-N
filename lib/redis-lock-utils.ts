@@ -10,10 +10,7 @@ export async function releaseOwnedRedisLock(client: any, key: string, token: str
         { keys: [key], arguments: [token] },
       )
       return Number(released) === 1
-    } catch {
-      // Inline/test clients may expose a partial EVAL surface. Use the safe
-      // single-process fallback below; shared Redis adapters support the Lua.
-    }
+    } catch { return false }
   }
   const current = await client.get(key).catch(() => null)
   if (current !== token) return false
@@ -33,11 +30,33 @@ export async function renewOwnedRedisLock(
         { keys: [key], arguments: [token, String(ttlSeconds)] },
       )
       return Number(renewed) === 1
-    } catch {
-      // See releaseOwnedRedisLock fallback note.
-    }
+    } catch { return false }
   }
   const current = await client.get(key).catch(() => null)
   if (current !== token) return false
   return (await client.set(key, token, { XX: true, EX: ttlSeconds }).catch(() => null)) === "OK"
+}
+
+/** Replace a lock only while its observed value is still unchanged. */
+export async function replaceRedisLockIfValue(
+  client: any,
+  key: string,
+  expected: string,
+  replacement: string,
+  ttlSeconds: number,
+): Promise<boolean> {
+  if (typeof client?.eval === "function") {
+    try {
+      const replaced = await client.eval(
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]) return 1 else return 0 end",
+        { keys: [key], arguments: [expected, replacement, String(ttlSeconds)] },
+      )
+      return Number(replaced) === 1
+    } catch { return false }
+  }
+  // InlineLocalRedis is single-process, so its compare/set fallback cannot
+  // race another process. Shared adapters expose EVAL and fail closed above.
+  const current = await client.get(key).catch(() => null)
+  if (current !== expected) return false
+  return (await client.set(key, replacement, { EX: ttlSeconds }).catch(() => null)) === "OK"
 }
