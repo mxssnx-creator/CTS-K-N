@@ -108,6 +108,17 @@ describe("production base-connection credential injection", () => {
     expect((await (await POST(request)).json()).success).toBe(true)
     const status = await (await GET(request)).json()
     expect(status.liveTradeReady).toEqual(expect.arrayContaining(["bingx-x01", "bingx-x02"]))
+
+    // Persisted operator intent is not effective readiness when the process
+    // has an explicit write allow-list. Deployment verification must ignore
+    // read-only X01 instead of failing before the allowed X02 VST owner starts.
+    process.env.LIVE_ORDER_CONNECTION_IDS = "bingx-x02"
+    const allowListedStatus = await (await GET(request)).json()
+    expect(allowListedStatus.database["bingx-x01"]).toMatchObject({
+      hasCredentials: true,
+      liveTradeEnabled: false,
+    })
+    expect(allowListedStatus.liveTradeReady).toEqual(["bingx-x02"])
     await expect(redis.hgetall("connection:bingx-x01")).resolves.toMatchObject({
       is_live_trade: "1",
       live_trade_enabled: "1",
