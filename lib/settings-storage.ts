@@ -4,6 +4,7 @@
  */
 
 import { canonicalForcedBaseSymbols, canonicalForcedSymbols } from "@/lib/forced-symbols"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 let settingsCache: Record<string, any> | null = null
 
@@ -58,7 +59,7 @@ function isNodeRuntime(): boolean {
 async function getFilePaths() {
   // Use simple string concatenation instead of path module for compatibility
   const cwd = typeof process !== "undefined" && typeof process.cwd === "function" ? process.cwd() : "/tmp"
-  const isServerless = typeof process !== "undefined" && (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME)
+  const isServerless = typeof process !== "undefined" && isServerlessDeploymentRuntime()
   const basePath = isServerless ? "/tmp/cts-data" : `${cwd}/data`
   const dataDir = basePath
   const settingsFile = `${dataDir}/settings.json`

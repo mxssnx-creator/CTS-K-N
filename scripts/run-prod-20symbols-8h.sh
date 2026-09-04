@@ -146,7 +146,7 @@ main() {
   
   # Build production bundle
   log_info "Building production bundle..."
-  pnpm run vercel-build > /dev/null 2>&1
+  pnpm run build > /dev/null 2>&1
   log_success "Build complete"
   
   # Start server

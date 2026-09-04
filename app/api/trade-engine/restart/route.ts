@@ -1,8 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 import { getAssignedAndEnabledConnections, getRedisClient, initRedis } from "@/lib/redis-db"
-import { parseRuntimeTimestamp } from "@/lib/distributed-engine-runtime"
+import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { publishRunningTradeEngineIntent } from "@/lib/trade-engine-intent"
+import { buildProgressionScope } from "@/lib/progression-scope"
 
 export const dynamic = "force-dynamic"
 
@@ -12,7 +13,6 @@ const HEARTBEAT_FRESH_MS = 90_000
 function sanitizedConnectionId(value: unknown): string {
   return String(value ?? "unknown").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 96) || "unknown"
 }
-
 async function waitForRestartConvergence(
   coordinator: any,
   timeoutMs = Number(process.env.TRADE_ENGINE_RESTART_TIMEOUT_MS || 15_000),
@@ -34,21 +34,34 @@ async function waitForRestartConvergence(
 
     for (const connection of eligible) {
       const id = String(connection.id)
+      const engineType = String(
+        (connection as Record<string, unknown>).engine_type ||
+        (connection as Record<string, unknown>).engineType ||
+        "main",
+      ).trim() || "main"
+      const scope = buildProgressionScope(id, engineType)
       const states = await Promise.all([
         client.hgetall(`trade_engine_state:${id}`),
         client.hgetall(`settings:trade_engine_state:${id}`),
-        client.hgetall(`trade_engine_state:${id}:main`),
-        client.hgetall(`settings:trade_engine_state:${id}:main`),
+        client.hgetall(`trade_engine_state:${id}:${scope.engineType}`),
+        client.hgetall(scope.tradeEngineStateKey),
       ]) as Array<Record<string, string>>
-      const merged = Object.assign({}, ...states)
-      const heartbeatAt = Math.max(
-        parseRuntimeTimestamp(merged.last_processor_heartbeat),
-        parseRuntimeTimestamp(merged.last_heartbeat_at),
-        parseRuntimeTimestamp(merged.last_heartbeat_iso),
-      )
-      const heartbeatCurrent = heartbeatAt > 0 && heartbeatAt <= now + 5_000 && now - heartbeatAt < HEARTBEAT_FRESH_MS
-      const phase = String(merged.status || merged.actual_status || "").trim().toLowerCase()
-      if (!heartbeatCurrent || !ACTIVE_PHASES.has(phase)) failures.push(sanitizedConnectionId(id))
+      // Select status by each hash's own activity timestamp and heartbeat by
+      // the newest mirror. Object.assign let a stale legacy mirror overwrite a
+      // fresh scoped runtime hash merely because it appeared later in the
+      // array, producing false restart failures (or false success).
+      const runtime = resolveDistributedEngineRuntime({
+        runningHint: true,
+        states,
+        globalState,
+        connectionEnabled: true,
+        now,
+        heartbeatFreshMs: HEARTBEAT_FRESH_MS,
+        startupGraceMs: 0,
+      })
+      if (!runtime.heartbeatFresh || !ACTIVE_PHASES.has(runtime.status)) {
+        failures.push(sanitizedConnectionId(id))
+      }
     }
 
     if (globalRunning && failures.length === 0) return { converged: true, failedConnectionIds: [] as string[] }

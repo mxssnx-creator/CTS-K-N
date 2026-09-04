@@ -3,7 +3,7 @@
 ## Persistence contract
 
 Redis is the runtime source of truth. Production must use a cross-instance
-backend through `REDIS_URL`, `KV_URL`, an Upstash REST pair, or a Vercel/KV REST
+backend through `REDIS_URL`, `KV_URL`, or a supported managed Redis REST
 pair. InlineLocalRedis exists for tests/local diagnostics and optional local
 snapshot recovery; it cannot unlock live trading in a multi-instance or
 serverless production deployment.

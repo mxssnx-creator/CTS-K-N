@@ -34,6 +34,7 @@ import {
 } from "@/lib/quickstart-change-detection"
 import { canRetainQuickStartPrehistoricCoverage } from "@/lib/quickstart-bootstrap-state"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
@@ -176,8 +177,7 @@ const QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS = resolveQuickStartEngineBootWai
 function shouldAwaitQuickStartEngineBoot(): boolean {
   return (
     process.env.NODE_ENV === "production" ||
-    process.env.VERCEL === "1" ||
-    !!process.env.VERCEL_ENV ||
+    isServerlessDeploymentRuntime() ||
     process.env.NEXT_PUBLIC_QUICKSTART_AWAIT_ENGINE_BOOT === "1"
   )
 }

@@ -1,6 +1,7 @@
 import {
   __runtimeLogThrottleTestUtils,
   clearRuntimeLogThrottle,
+  logRuntimeError,
   logRuntimeInfo,
   logRuntimeWarning,
 } from "@/lib/runtime-log-throttle"
@@ -53,6 +54,22 @@ describe("runtime log throttling", () => {
 
     expect(consoleWarn).toHaveBeenCalledTimes(2)
     expect(consoleWarn.mock.calls[1]).toEqual(
+      expect.arrayContaining(["[1 repetitive messages coalesced]"]),
+    )
+  })
+
+  test("coalesces a repeating infrastructure error without lowering severity", () => {
+    let now = 1_000
+    Date.now = () => now
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => undefined)
+
+    expect(logRuntimeError("redis:oom", 60_000, "Redis write failed", "OOM")).toBe(true)
+    expect(logRuntimeError("redis:oom", 60_000, "Redis write failed", "OOM")).toBe(false)
+    now += 60_000
+    expect(logRuntimeError("redis:oom", 60_000, "Redis write failed", "OOM")).toBe(true)
+
+    expect(consoleError).toHaveBeenCalledTimes(2)
+    expect(consoleError.mock.calls[1]).toEqual(
       expect.arrayContaining(["[1 repetitive messages coalesced]"]),
     )
   })

@@ -116,7 +116,7 @@ export class ProductionErrorHandler {
 
   /**
    * Best-effort reaction to a platform-issued SIGTERM/SIGINT. This does NOT
-   * call process.exit() — the platform (PM2/systemd/Vercel) already sent the
+   * call process.exit() — the platform (PM2/systemd/request worker) already sent the
    * signal and owns when the process actually dies. We only race to close
    * live exchange positions within a short budget before that happens, so
    * positions don't stay open on the exchange with no local process managing

@@ -155,7 +155,7 @@ Every 10 seconds, heartbeat:
 
 ## Next Steps
 
-1. **Deploy to Production Vercel**
+1. **Deploy to the production server with the bootstrap installer**
    - All fixes verified
    - Ready for immediate deployment
    - No pre-requisites or configuration needed

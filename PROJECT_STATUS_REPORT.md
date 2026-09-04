@@ -31,7 +31,7 @@
 ## Project Structure
 
 ### Root Directory
-`/vercel/share/v0-project/`
+`/opt/cts-kn/`
 
 ### Core Directories
 ```
@@ -199,7 +199,7 @@
 - ✅ Hot reload working
 
 ### Ready For
-- ✅ Vercel deployment (recommended)
+- ✅ Managed self-hosted deployment (recommended)
 - ✅ Docker containerization
 - ✅ Server deployment (with proper setup)
 - ✅ Production trading
@@ -209,7 +209,7 @@
 
 ## Next Steps Available
 
-### Option 1: Deploy to Vercel (Recommended)
+### Option 1: Deploy with the production bootstrap installer (Recommended)
 - Click "Publish" button in v0 UI
 - Live deployment in <5 minutes
 - Auto-scaling, SSL, CDN included

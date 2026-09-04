@@ -3361,7 +3361,7 @@ export class TradeEngineManager {
 
         attemptedCycles++
 
-        // API workers must remain responsive: Vercel/serverless workers keep
+        // API workers must remain responsive: serverless workers keep
         // realtime progression opt-in, while self-hosted production workers
         // must run by default or progression appears stuck in production.
         const apiRealtimeProgressionEnabled =
@@ -3512,10 +3512,9 @@ export class TradeEngineManager {
           return
         }
 
-        // A symbol reaches the successful boundary only when its entire
-        // indication -> pseudo-position -> strategy pipeline returned without
-        // an error. Empty-but-clean results are successful processing; caught
-        // failures never advance rotation coverage.
+        // Count coverage only after a symbol completes the entire indication
+        // -> pseudo-position -> strategy pipeline. Failed symbols stay visible
+        // as uncovered, and completions from a replaced basket are rejected.
         const successfulSymbols = pipelineResults
           .filter((result) => !result.error)
           .map((result) => result.symbol)
@@ -4323,7 +4322,7 @@ export class TradeEngineManager {
       liveSyncInFlight = true
       lastSyncStartedAt = cycleStart
       try {
-        // API workers must remain responsive. Vercel/serverless workers keep
+        // API workers must remain responsive. Serverless workers keep
         // exchange-side live position sync opt-in, while self-hosted production
         // workers run it by default so live progress does not freeze.
         const apiLiveSyncEnabled =

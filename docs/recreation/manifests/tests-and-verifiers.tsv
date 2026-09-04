@@ -40,6 +40,7 @@ unit	__tests__/unit/active-outbreak-strategy-protection.test.ts
 unit	__tests__/unit/admin-auth.test.ts
 unit	__tests__/unit/advanced-config-exhaustive.test.ts
 unit	__tests__/unit/aggregate-protection-coordination.test.ts
+unit	__tests__/unit/api-stats-fetcher.test.ts
 unit	__tests__/unit/auth-runtime-secret.test.ts
 unit	__tests__/unit/backtest-result-accounting.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
@@ -177,6 +178,7 @@ unit	__tests__/unit/monitoring-stats-route.test.ts
 unit	__tests__/unit/multi-range-coordination.test.ts
 unit	__tests__/unit/navigation-contract.test.ts
 unit	__tests__/unit/no-fixed-sleeps-regression.test.ts
+unit	__tests__/unit/orchestrated-verifier-safety.test.ts
 unit	__tests__/unit/order-quantity.test.ts
 unit	__tests__/unit/orders-market-notional.test.ts
 unit	__tests__/unit/orders-route-concurrency.test.ts
@@ -198,6 +200,7 @@ unit	__tests__/unit/preset-types-persistence.test.ts
 unit	__tests__/unit/production-continuity.test.ts
 unit	__tests__/unit/production-start-shutdown.test.ts
 unit	__tests__/unit/progression-live-snapshot.test.ts
+unit	__tests__/unit/progression-lock-atomicity.test.ts
 unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
@@ -212,6 +215,7 @@ unit	__tests__/unit/quickstart-timeouts.test.ts
 unit	__tests__/unit/rate-limiter-queue.test.ts
 unit	__tests__/unit/real-position-durability.test.ts
 unit	__tests__/unit/realtime-cycle-diagnostic.test.ts
+unit	__tests__/unit/realtime-rotation-progress.test.ts
 unit	__tests__/unit/realtime-trailing-update.test.ts
 unit	__tests__/unit/redis-db-network-client.test.ts
 unit	__tests__/unit/redis-db-write-budget.test.ts

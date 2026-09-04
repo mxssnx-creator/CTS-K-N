@@ -247,7 +247,7 @@ if (existsSync(join(distDir, 'standalone')) && !isValidPrerenderManifest(standal
 }
 
 // Next 15 can leave export-marker.json as a zero-byte file after an otherwise
-// successful provider build. @vercel/next parses this build-owned marker before
+// successful provider build. Next packaging parses this build-owned marker before
 // packaging functions and fails with `Unexpected end of JSON input`. CTS-K-N
 // does not define exportPathMap/static export; rebuild only an absent/invalid
 // marker from the serialized Next config and validate the result immediately.
@@ -320,7 +320,7 @@ if (!isValidJson(exportMarker)) {
 }
 
 // A late Next 15 export worker can also recreate export-detail.json after the
-// normal server build has already unlinked it. @vercel/next interprets any
+// normal server build has already unlinked it. Some adapters interpret any
 // successful export detail as an intentional static-only deployment and drops
 // every API/server function. Preserve it only for an explicit output: export.
 const exportDetail = join(distDir, 'export-detail.json')

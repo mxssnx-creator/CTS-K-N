@@ -125,7 +125,7 @@ function normalizeSymbolList(value: unknown, marketType: MarketType = "crypto"):
 }
 
 // CRITICAL: Never HTTP-self-fetch from a route handler — it deadlocks the dev server
-// and hangs on Vercel when the request context is unavailable. Call the shared lib fn
+// and hangs in request workers when the request context is unavailable. Call the shared lib fn
 // directly so resolution happens in-process with zero network overhead.
 async function getMostVolatileSymbol(exchange: string, marketType: MarketType): Promise<string> {
   // Acceptance/dev paper runs must be deterministic and offline. The normal

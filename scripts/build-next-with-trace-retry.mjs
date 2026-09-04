@@ -11,8 +11,7 @@ const distDir = process.env.NEXT_DIST_DIR || ".next"
 const maxAttempts = Math.max(1, Number(process.env.NEXT_TRACE_BUILD_ATTEMPTS || 4))
 const minimumTraceCount = 300
 const settleAfterFailureMs = Math.max(0, Number(process.env.NEXT_TRACE_SETTLE_MS || 8000))
-const isVercelBuild = process.env.VERCEL === "1" || process.env.VERCEL === "true"
-const requiresStandalone = !isVercelBuild
+const requiresStandalone = true
 const standaloneDistName = basename(distDir)
 const settleAfterSuccessMs = Math.max(
   0,
@@ -306,14 +305,14 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   // Some local/CI runtimes (e.g. bun-managed sandboxes) ship `pnpm` directly
   // but omit `corepack`. Fall back to the locally-installed `pnpm` when
   // Corepack is not resolvable so the production build still succeeds here,
-  // while Vercel and other Corepack-enabled providers keep the pinned
+  // while Corepack-enabled deployment environments keep the pinned
   // `pnpm@10.28.1` contract unchanged.
   function resolveBuildCommand() {
     // A fully installed Linux node may deliberately run without outbound
     // package-registry access.  In that case Corepack must not try to resolve
     // pnpm again: execute the already installed, lockfile-produced Next
     // binary while retaining this wrapper's source-drift, trace and
-    // standalone validation.  The opt-in flag keeps CI/Vercel on the pinned
+    // standalone validation. The opt-in flag keeps CI on the pinned
     // Corepack path by default.
     if (process.env.CTS_USE_LOCAL_NEXT_BUILD === "1") {
       return {
@@ -348,7 +347,7 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   // A successful Next parent can still leave output-tracing children writing
   // into `.next` after the lifecycle exits. Give them a provider-bounded
   // completion window, then terminate the isolated build process group before
-  // validating or handing the directory to Vercel/OpenNext packaging.
+  // validating or handing the directory to OpenNext/self-hosted packaging.
   const writerSettleMs = result.status === 0 ? settleAfterSuccessMs : settleAfterFailureMs
   if (writerSettleMs > 0) sleep(writerSettleMs)
   if (!waitForProcessGroupExit(result.pid, settleAfterChildExitMs)) {

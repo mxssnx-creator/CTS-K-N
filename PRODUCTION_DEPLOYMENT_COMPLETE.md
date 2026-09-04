@@ -45,7 +45,7 @@
 
 ## Production Configuration
 
-### Environment Variables (Required in Vercel Dashboard)
+### Environment Variables (Required in the durable server environment)
 
 ```env
 # Critical for live trading
@@ -91,21 +91,21 @@ Health: Healthy (all checks passing)
 ### Infrastructure
 - **Redis**: Connected and healthy ✅
 - **Database**: Connected and healthy ✅
-- **Vercel**: Ready for deployment ✅
+- **Self-hosted server**: Ready for deployment ✅
 
 ---
 
 ## Deployment Steps
 
-### 1. Merge to Vercel Branch
+### 1. Merge to Main
 ```bash
-git checkout vercel
+git checkout main
 git merge v0/mxssnxx-d3d33a76
-git push origin vercel
+git push origin main
 ```
 
-### 2. Configure Vercel Environment Variables
-- Go to: https://vercel.com/mxssnxx/cts-k-n/settings/environment-variables
+### 2. Configure Persistent Environment Variables
+- Update `/var/lib/cts-kn/.env.production.local` with owner-only write access.
 - Add for "Production" environment:
   - `ALLOW_INLINE_REDIS_LIVE_TRADING=1`
   - `CRON_SECRET=production-cron-secret-1234567890abcdef`
@@ -114,18 +114,18 @@ git push origin vercel
 ### 3. Verify Deployment
 ```bash
 # Health check
-curl https://cts-k-n.vercel.app/api/health
+curl http://152.53.114.112:3002/api/health
 
 # Engine status
-curl https://cts-k-n.vercel.app/api/trade-engine/progression
+curl http://152.53.114.112:3002/api/trade-engine/progression
 # Should show: "phase": "live_trading"
 
 # Live positions
-curl https://cts-k-n.vercel.app/api/trading/live-positions
+curl http://152.53.114.112:3002/api/trading/live-positions
 ```
 
 ### 4. Monitor Initial Trades
-- Check Vercel logs: https://vercel.com/mxssnxx/cts-k-n/logs
+- Check service logs with `journalctl -u cts-kn -u cts-kn-scheduler -u cts-kn-direct-trade`.
 - Watch for successful order execution
 - Monitor SL/TP protection order placement
 - Verify position fills and accuracy
@@ -176,7 +176,7 @@ If issues occur:
 1. Revert cycle timing (increase intervals further, e.g., 3000-5000ms)
 2. Reduce rate limits further (0.5 req/sec if needed)
 3. Scale down symbol count (start with 2, then 4, then 8)
-4. Check Vercel logs for specific errors
+4. Check systemd journals for specific errors
 5. Previous deployments available for instant rollback
 
 ---
@@ -184,9 +184,9 @@ If issues occur:
 ## Support & Monitoring
 
 ### Dashboards
-- Production: https://cts-k-n.vercel.app
-- Vercel: https://vercel.com/mxssnxx/cts-k-n
-- Logs: https://vercel.com/mxssnxx/cts-k-n/logs
+- Production: http://152.53.114.112:3002
+- Install root: `/opt/cts-kn`
+- Logs: systemd journal for the CTS-K-N units
 
 ### Key Metrics to Monitor
 - Engine phase (should always be "live_trading")
@@ -225,7 +225,7 @@ This session achieved:
 - ✅ Enabled live trading on production server
 - ✅ Verified order execution with real positions
 - ✅ Implemented proper rate limiting and cycle control
-- ✅ Prepared system for Vercel deployment
+- ✅ Prepared system for managed self-hosted deployment
 - ✅ Documented complete deployment process
 
 **System is production-ready and stable.**

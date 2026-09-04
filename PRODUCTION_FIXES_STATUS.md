@@ -122,7 +122,7 @@ Engine Activity:
 - [x] Commit all changes
 - [x] Verify tsc=0
 - [ ] Rebuild production
-- [ ] Deploy to Vercel
+- [ ] Deploy to the managed production server
 - [ ] Monitor first 24 hours
 - [ ] Collect metrics
 

@@ -108,7 +108,7 @@ MAGAUSDT, CVXUSDT, GMXUSDT, PERPUSDT, RDNTUSDT, WLDUSDT, ZKUSDT, TAOUSDT, DYDXUS
 
 ### Step 1: Load the Preset File
 ```bash
-cd /vercel/share/v0-project
+cd /opt/cts-kn
 cat configs/preset-long-30-2.2.json | jq
 ```
 
@@ -242,4 +242,3 @@ If you want to modify this preset:
 This is a production-ready preset. Use the JSON configuration file to quickly restore settings for future runs. All parameters are type-safe and persist across server restarts.
 
 **Last Updated**: 2026-07-19 13:21:06 UTC
-

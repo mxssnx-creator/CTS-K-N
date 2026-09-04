@@ -5,7 +5,7 @@ import { getBroadcaster } from "@/lib/event-broadcaster"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 export const dynamic = "force-dynamic"
-// Vercel/Kilo request workers must finish before the platform timeout; the
+// Kilo/Cloudflare request workers must finish before the platform timeout; the
 // browser EventSource reconnects after a bounded stream closes.
 export const maxDuration = 10
 const SERVERLESS_MAX_STREAM_LIFETIME_MS = 8_000

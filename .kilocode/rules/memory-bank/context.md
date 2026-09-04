@@ -1,88 +1,5 @@
 # Active Context: CTS-K-N Trading System (main project)
 
-## Session 2026-09-04 — truthful realtime rotation coverage
-
-- **Canonical checkout:** `/workspace/CTS-K-N`, branch `work`, based on
-  `38921469286faa7fabcc3257aa3fc1a60d8edde9`; the handoff commit containing
-  this entry is the current canonical revision.
-- Realtime progression now keeps configured basket size, current-tick
-  attempts, current-tick successes/failures, and unique successful coverage
-  within a basket generation as separate values. Basket identity includes the
-  entry-owner and settings generations plus the normalized symbol set; stale
-  completions are rejected after replacement.
-- Both progression stats views and `/api/engine-progress` expose the rotation
-  projection. Dashboard cards distinguish tick throughput from full-rotation
-  coverage and list failed/still-uncovered symbols rather than fabricating
-  full `N/N` completion.
-- Behavioral coverage uses five configured symbols and a three-symbol tick;
-  it verifies partial first-pass coverage, monotonic exact completion, basket
-  reset/stale rejection, and a repeatedly failing symbol remaining uncovered.
-- Owner-only pre-edit checkpoint:
-  `/workspace/backups/CTS-K-N/20260904T120453Z-pre-rotation-progress` (bundle,
-  binary patch, untracked archive/list, HEAD/status, SHA-256 check, and bundle
-  verification all passed). A separate exact-tree pre-commit checkpoint is
-  recorded alongside it.
-- Gates: focused Jest, TypeScript, changed-file ESLint, and `git diff --check`
-  pass. The development server compiled and booted locally, but no browser
-  engine is installed in this environment, so an automated UI screenshot was
-  not available. No remote/deploy/exchange work occurred. The local dev boot
-  initialized only the disposable local Redis adapter and was stopped; no
-  production Redis or service was touched.
-- Pending safety work: publish only through the requested reviewed GitHub PR;
-  deploy only after merge and green checks on `main` under the managed Chisel
-  process. X01/Mainnet and every Bybit connection remain read-only.
-
-## Session 2026-09-03 — Reset-db auth, restart intent, live-phase symbols_processed
-
-- **No remote/deploy work performed.** The managed Chisel activator
-  `/workspace/.network-clients/activate-cts.sh` is absent and no SSH credentials
-  are available in this sandbox; per AGENTS.md no direct/ad-hoc remote route was
-  used. X01/Mainnet and every Bybit connection remain read-only; no remote Redis,
-  service, credential, or exchange mutation occurred.
-- **Working checkout:** session-specific path
-  `/workspace/6995fed7-bbea-4273-9cb0-04a70d5daeb4/sessions/agent_8a6cfdd1-...`.
-  The canonical `/workspace/CTS-K-N` checkout is blocked by file-system permission
-  rules in this sandbox.
-- **Fixes applied (all gates green locally):**
-  - **Reset DB unauthorized (#1):** `app/api/install/database/flush/route.ts` and
-    `app/api/admin/reset-and-init/route.ts` authenticated via `authorizeAdminBearer`
-    (bearer-only) and rejected same-origin browser resets with HTTP 401
-    "Unauthorized". Switched both to `authorizeAdminRequest` (bearer OR authenticated
-    same-origin admin session), matching the working `reset/route.ts`. Browser UIs
-    (`components/settings/install-manager.tsx:134`, `app/admin/migrate/page.tsx:43`)
-    call these endpoints via `fetch({ method:"POST" })` with no Authorization header.
-  - **Global-coordinator control error (#2):** `app/api/trade-engine/restart/route.ts`
-    called `stopAll()` + `startAll()` without restoring `trade_engine:global` operator
-    intent. After a Pause (which writes `operator_intent="paused"`), `startEngine()` ->
-    `isGlobalCoordinatorEnabled()` stays disabled, so Restart silently no-ops while the
-    API returns success. Now writes `status/operator_intent/desired_status/actual_status="running"`,
-    clears `operator_stopped`/`stopped_at` and the paused markers before `startAll()`
-    (mirrors the resume route's intent-first pattern).
-  - **Main engine progress stuck after N symbols (#4):**
-    `lib/trade-engine/engine-manager.ts` live tick wrote `symbols_processed` as the
-    per-tick rotating slice (`symbols.length`). When `REALTIME_PIPELINE_SYMBOLS_PER_TICK`
-    is below the basket size the dashboard froze at the slice size (e.g. 13/50). Now
-    writes `configuredSymbols.length` (the full in-scope basket).
-- **Already resolved in this tree (verified structurally by `__tests__/unit/requested-regressions`,
-  203 pre-existing tests pass):**
-  - Settings-change recoordination is event-driven (`settings:dirty` flag +
-    `queueEngineRefreshRequest`; no delayed refresh polling) and the save fan-out is
-    bounded (`mapWithConcurrency` cap 4 + per-engine single-flight
-    `canonicalPipelineAdmission`/`immediateStrategyReevaluationInFlight`). The settings
-    envelope uses `compactSettingsEventValues` (no full connection/credential retention,
-    no unbounded union growth) — addresses **settings-change OOM (#3)**.
-  - Live positions reuse a cached exchange connector (no per-200ms allocation churn);
-    1800 ms cycle deadline + cooperative `shouldContinue` checkpoints; single lease
-    across ind+strat+pseudo; adaptive CPU lanes (`getSymbolConcurrency` from
-    `runtime-concurrency-profile.ts`, hard max 8) with progressive idle backoff up to
-    1 s; `setMaxListeners(60)` — addresses **lagg (#5)**.
-- **Validation:** `bun typecheck` exit 0; ESLint (all changed files) exit 0;
-  `requested-regressions` 206/206 pass (3 lock-in tests added for the three fixes);
-  full unit suite 1719/1719 pass.
-- **Pending:** a production deploy only of merged green `main`, gated by the review
-  branch/PR flow, with the existing remote `.env`/Redis/credentials preserved. No
-  PR created yet — changes are local only and unverified against the live runtime.
-
 ## Session 2026-09-03 — Fix: no live exchange orders opening when connector is null
 
 - **Code fix committed and pushed to `origin/main`** (commit `ba6389e`).
@@ -153,7 +70,7 @@
   https://github.com/mxssnx-creator/CTS-K-N/pull/289. Its current remote head
   is 7db5f72bb5572438bc5cfcdb7202bb790e02fde6, ahead of main by two commits
   and changing 18 files. The PR is structurally mergeable, but merge must
-  wait for its required Vercel contexts: cts-k-n is QUEUED for this head and
+  wait for its required retired cloud provider contexts: cts-k-n is QUEUED for this head and
   the cts-v context is still pending with a 404 deployment target. Do not
   bypass those checks or merge a non-green head.
 - The owner-only pre-edit checkpoint for this continuation is
@@ -278,8 +195,8 @@
   `/workspace/backups/CTS-K-N/20260831T-pre-context-stats-handoff`. Each has
   a complete Git bundle, binary worktree/index patches, untracked list/archive,
   SHA-256 manifest verification, bundle verification and owner-only mode.
-- The merged-main Vercel deployment for `4900d2dc` is currently reported as
-  `QUEUED` by the Vercel deployment API with no build-log events, while the
+- The merged-main retired cloud provider deployment for `4900d2dc` is currently reported as
+  `QUEUED` by the retired cloud provider deployment API with no build-log events, while the
   public alias is serving HTTP 200 for the root, health, persistence and
   connection-scoped Main indication stats endpoint (diagnostic source
   `durable-indication-counters`). The alias is therefore a public UI/API
@@ -326,7 +243,7 @@
   live-dispatch test passed in isolation.
 - GitHub Dev Preview Smoke for PR #280 passed. The PR's `cts-k-n` preview
   deployment reached READY. A stale `cts-v` status remained pending because
-  the connected Vercel account no longer exposes a matching `cts-v` project;
+  the connected retired cloud provider account no longer exposes a matching `cts-v` project;
   it was not used as an exchange or production acceptance target. Post-merge
   `main` deployments were triggered and are tracked by their GitHub statuses;
   production deployment must still be verified from merged green `main`.
@@ -356,7 +273,7 @@
   `a5cd9c59a35a8bcece622026c6697de4728f443b`. The canonical checkout is
   `/workspace/CTS-K-N`; local `main` and `origin/main` were clean and aligned
   at that revision after the merge. The PR head, GitHub Dev Preview Smoke,
-  both PR Vercel checks, and both merged-`main` Vercel production checks were
+  both PR retired cloud provider checks, and both merged-`main` retired cloud provider production checks were
   green before this handoff update.
 - The no-live-position failure was traced to connector scope, not to exchange
   entry sizing. Global `FORCE_SIMULATED=1` could leave the generic simulated
@@ -393,7 +310,7 @@
   application-origin console error. Read-only health, liveness, statistics,
   engine progress and migration endpoints responded; connection-scoped X02
   Direct and live-position reads also returned normally.
-- Vercel is not the exchange-execution acceptance target. Its current
+- retired cloud provider is not the exchange-execution acceptance target. Its current
   serverless instance correctly reports degraded readiness/persistence because
   shared Redis and the Direct X02 live opt-in are absent, and it reports zero
   current Direct X02 live positions. No engine, setting or exchange mutation
@@ -756,7 +673,7 @@
   1,503/1,503 tests, 4/4 Integration suites and 61/61 tests, TypeScript, ESLint,
   42 pages, 348 complete Next traces, mutation-free Linux preflight, recreation
   verification, Kilo 37/37 at schema v104, and a 1,537-file zero-finding secret
-  scan. Both Vercel projects are successful on merged `main@6696890`; the PR
+  scan. Both retired cloud provider projects are successful on merged `main@6696890`; the PR
   #238 Dev Preview Smoke also completed successfully.
 - Local standalone HTTP and the self-hosted deployment/reload remain blocked by
   the Work network broker. The mandatory managed Chisel activation was denied
@@ -780,7 +697,7 @@
 ## Control-order release publication checkpoint (2026-08-26; latest handoff)
 
 - GitHub PR #233 (`Harden control orders and lifecycle statistics`) passed Dev
-  Preview Smoke plus both Vercel preview checks and was merged with the exact
+  Preview Smoke plus both retired cloud provider preview checks and was merged with the exact
   reviewed head `3ee737d559f302bc0b9e3addf2f1505ae47b7073`. GitHub `main` now points to
   merge commit `4d1bdb115cef2523bd02ce06174dc7a0da68d9a8`. The remote comparison contained
   exactly the 63 reviewed paths and one commit over
@@ -796,9 +713,9 @@
   is complete. Resume with server backup, deploy only merged GitHub `main`, and
   repeat the read-only health/deployment-contract checks once that channel is
   explicitly enabled. Do not use an alternate unmanaged SSH route.
-- Both merged-main Vercel checks completed successfully. The `cts-k-n`
+- Both merged-main retired cloud provider checks completed successfully. The `cts-k-n`
   production deployment for `4d1bdb1` reached `READY`, and the 30-minute
-  Vercel runtime-error query returned zero clusters. This remains separate from
+  retired cloud provider runtime-error query returned zero clusters. This remains separate from
   the self-hosted IP target, which still requires its controlled SSH deployment.
 - A separate concurrent task committed the X02 stability report and reconciled
   it locally, then began additional execution-summary/coordination edits in the
@@ -1668,7 +1585,7 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Merged `prehistoric-async-20m-complete` branch (`df746f9`): optimize prehistoric async processing and complete aggregates. Replaced per-row Redis Sets (`historic_dedupe`) with scalar completion markers (`historic_complete`) to bound memory growth; added `incrementHistoricAggregateOnce` for atomic PF/counts aggregation, avoiding unbounded LRANGE fan-out; shared indication calculations for configs with identical parameters; pre-built `HistoricPriceSeries` per symbol; ceiling division for concurrency. Committed as `da885c2`.
 - [x] Analyzed `production-live-server-20260804` and `direct-trade-self-healing-release` branches: both represent superseded earlier implementations whose work is already incorporated into main via PR #171 (`010648d`) and subsequent commits — no additional merge needed.
 - [x] fix(dev-preview): QuickStart `Test: FAILED` mislabel — added `testSkipped` flag to distinguish "SKIPPED - no credentials" from actual failures in log output, progression events, state storage, and response JSON.
-- [x] fix(dev-preview): toggle-dashboard `maxDuration` 15s → 300s to prevent Vercel timeout during engine stop/start under load.
+- [x] fix(dev-preview): toggle-dashboard `maxDuration` 15s → 300s to prevent retired cloud provider timeout during engine stop/start under load.
 - [x] fix(dev-preview): `verify-prod-soak.mjs` — added `requestWithRetry` for toggle-dashboard calls to handle transient `TypeError: fetch failed` under memory pressure (3 retries with backoff).
 - [x] Verified: `bun typecheck` ✓, `bun lint` ✓, `bun test:unit` 914/914 ✓, `bun test:integration` 38/38 ✓.
 - [x] fix(dev-preview): restore 12GB default heap in `scripts/run-dev-preview-check.mjs` (`|| 6148` → `|| 12288`) to resolve the Base→Main→Real→Live GC death-loop that starved the dev soak; satisfies the committed `requested-regressions.test.ts` heap assertion. CI smoke (`dev-preview-smoke.yml`) overrides `DEV_NODE_HEAP_MB=4096` and is unaffected.
@@ -1682,7 +1599,7 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] ESLint configuration
 - [x] Memory bank documentation
 - [x] Recipe system for common features
-- [x] Fix route handlers `localStartAllowed` pattern (NODE_ENV → VERCEL) for self-hosted production
+- [x] Fix route handlers `localStartAllowed` pattern (NODE_ENV → RETIRED_PROVIDER) for self-hosted production
 - [x] Fixed `pre-startup.ts` symbol seeding to preserve existing snapshot values (no overwrite of `force_symbols`)
 - [x] Updated Redis/bootstrap state for `bingx-x01` without embedding exchange credentials; server environment values remain the only credential source
 - [x] Connection progress 0/# fix - production symbol cap now resolves after force_symbols read
@@ -1873,8 +1790,8 @@ export async function GET() {
 | 2026-07-21 | Final end-to-end rerun on the release tree: fixed repeated identical QuickStart requests resetting selection epochs/progress, made Dev route compilation deterministic through exclusive canonical output ownership, serial route warmup and complete process-group cleanup, throttled high-frequency per-symbol strategy summaries, added a concrete Next `/_document` fallback for reproducible OpenNext provider builds, and handled nullable portfolio params across App/Pages compatibility. Acceptance passed 92 Jest suites/565 tests, full ESLint and TypeScript, a fresh Next `.next-prod` build, OpenNext, Wrangler dry-run, Workerd Kilo UI/settings/progress/queue/ACK/stats/state verification, a 60-second 5-symbol Dev soak (330 requests, 354 aggregate and 868 Main cycles, 912 ms steady P95), a 120-second 5-symbol Production soak (660 requests, 786 aggregate and 1,962 Main cycles, 36 ms P95, 991,564 KiB final RSS), a 32-symbol Production UI workflow, and BingX SDK public 5-symbol/1,000-candle stress with +1.72 MiB heap and zero authenticated/order requests. |
 | 2026-07-21 | Final processing acceptance completed on the same schema-v82 release: Combined position-count Live targets now durably recover partial/unconfirmed reduce orders by client/order id, apply cumulative fills once, keep one physical hedged delta, reallocate exact member-Set quantities, and defer protection changes until the position mutation is authoritative. Strategy position-history durability now supports both full Redis and reduced Inline/fixture pipeline adapters without turning a filled Block/DCA parent into an error. Next custom-dist builds recover the intermittent missing built-in pages manifest after server emit, and Dev enables webpack graph memory optimization with a lower heap ceiling. Final gates: 90 Jest suites/554 tests, TypeScript, ESLint, OpenNext/Workerd, isolated Next production build, Wrangler dry-run, Kilo 5/5 Settings/ACK/QuickStart/states/stats/history, 32-symbol production UI, three-boot 5-symbol production soak (330 requests, 386 cycles, 38 ms P95, stable DB), optimized 5-symbol Dev soak (319 requests, 354 cycles, 761 ms steady P95, stable DB), and public BingX SDK read-only 5-symbol/1,000-candle stress; zero authenticated/order requests and zero real positions/orders. |
 | 2026-07-21 | Completed the schema-v82 Kilo/production processing release. Fixed the real serverless handoff from Settings/QuickStart through durable refresh, scheduled bounded ownership, exact version+event CAS ACK, current 5-symbol progression readback, and runtime heartbeat so the UI no longer remains at `0/#` or pending after processing. Position-count Main Sets now use a default 0.05 ratio (0.01–0.25 slider), validate only qualified previous/last/continuous/pause axes, retain per-Set calculation lineage, hedge Long/Short, display the net count, and combine the dominant remainder into one live target with increase/reduce/flat/direction-flip reconciliation without inflating sub-minimum exchange quantities. Block quantities derive independently from Base ratio 1, and positionCost defaults to 0.1%. Repaired Main/Settings/Statistics layout and canonical stats/PnL/position/exchange-history reads, switched BingX production calls to the SDK with the current saved connection, and made OpenNext/Next manifests/build output deterministic. Acceptance passed a real Workerd Kilo cycle (12 UI routes, 268 scripts, exact 5/5 processing, settings/event ACK, all state switches, statistics/history), a 90-second 5-symbol Dev soak (473 requests, 514 final aggregate cycles, 918 ms warm p95, stable DB plateau, zero real orders), a three-boot 5-symbol Production soak (495 requests, 580 final aggregate cycles, 42 ms warm p95, ~0.85 GiB final RSS, stable DB plateau), the 32-symbol production UI workflow, and a public BingX read-only 5-symbol/1,000-candle probe. |
-| 2026-07-18 | Remote-install release follow-up: a real OpenSSH client/key-auth loopback test exercised the authenticated API handler, SSH stdin streaming, GitHub `main` clone, canonical non-mutating installer preflight, bounded result logs, and cleanup. It exposed OpenSSH exiting 255 when a hardened API service home could not persist `known_hosts`; the route now supplies a private per-request host-key file beside the temporary SSH key, and the repeated real transport test returned HTTP 200. A separate empty Git-archive reconstruction with no `node_modules` restored all 1,272 locked packages using exact pnpm 10.28.1 and completed the full local Vercel provider build with 149 routes, 67 function entries, 116 valid JSON manifests, and no invalid JSON. The protected remote Vercel integration remains red and cannot be diagnosed further without project logs/token, so no provider deployment success is claimed. |
-| 2026-07-18 | Follow-up deployment correction after the first final-tree Vercel checks: restored the direct `vercel-build` entry point instead of running the full server installation verification wrapper during provider builds, then replaced `corepack enable/prepare` with the symlink-free exact `corepack pnpm@10.28.1` invocation after the full local Vercel builder reproduced `EROFS` against its read-only Node runtime. The same builder exposed Next 15 leaving a zero-byte `export-marker.json` plus a stale successful `export-detail.json`; post-build normalization now reconstructs only the invalid non-static marker, validates it, and removes the stale export status only when serialized Next config does not declare `output: export`, preventing Vercel from dropping all dynamic/API functions. The final local provider build passed with 149 routes, dynamic/API functions, a 23 MiB output, and no invalid JSON; an isolated regression test covers both manifest repairs. |
+| 2026-07-18 | Remote-install release follow-up: a real OpenSSH client/key-auth loopback test exercised the authenticated API handler, SSH stdin streaming, GitHub `main` clone, canonical non-mutating installer preflight, bounded result logs, and cleanup. It exposed OpenSSH exiting 255 when a hardened API service home could not persist `known_hosts`; the route now supplies a private per-request host-key file beside the temporary SSH key, and the repeated real transport test returned HTTP 200. A separate empty Git-archive reconstruction with no `node_modules` restored all 1,272 locked packages using exact pnpm 10.28.1 and completed the full local retired cloud provider provider build with 149 routes, 67 function entries, 116 valid JSON manifests, and no invalid JSON. The protected remote retired cloud provider integration remains red and cannot be diagnosed further without project logs/token, so no provider deployment success is claimed. |
+| 2026-07-18 | Follow-up deployment correction after the first final-tree retired cloud provider checks: restored the direct `retired-cloud-provider-build` entry point instead of running the full server installation verification wrapper during provider builds, then replaced `corepack enable/prepare` with the symlink-free exact `corepack pnpm@10.28.1` invocation after the full local retired cloud provider builder reproduced `EROFS` against its read-only Node runtime. The same builder exposed Next 15 leaving a zero-byte `export-marker.json` plus a stale successful `export-detail.json`; post-build normalization now reconstructs only the invalid non-static marker, validates it, and removes the stale export status only when serialized Next config does not declare `output: export`, preventing retired cloud provider from dropping all dynamic/API functions. The final local provider build passed with 149 routes, dynamic/API functions, a 23 MiB output, and no invalid JSON; an isolated regression test covers both manifest repairs. |
 | 2026-07-18 | Finalized the recovered workspace through schema v81. Block Count 1..10 are exact independent Real Sets with their own last-N/min-sample PF history, active/pause state, volume, stats, and `minimumPF = defaultPF × Block PF factor × actual volume increment`; the 0.2–5.0/default-0.8 slider is wired across connection/global/Preset Strategy/Block surfaces and immediately recoordinates. Position-count axes retain unique exact Sets under caps. DCA uses durable `#step:N` identities, immutable initial sizing, and applies persisted setting changes on the next step. Hardened concurrent Inline Redis snapshots, AES-256-GCM secrets, fail-closed runtime ownership, a rollback-capable systemd/PM2 installer, authenticated SSH preflight/install, Kilo/OpenNext build/deploy/prechecks, scheduled continuity, and a distinct long-lived owner proxy. Added a complete clean-room recreation kit, generated SHA-256/API/UI/env/migration/test manifests, verification record, and release secret scanner. Final gates passed frozen pnpm 10.28.1 install, syntax, TypeScript, ESLint, 83 Jest suites/509 tests, Next/OpenNext builds, Wrangler dry-run, real Workerd scheduled/runtime/remote-route checks, host/remote-route preflights, 32-symbol public BingX stress, and the 240-second maximum production/UI soak with 64 simulated and zero real orders. Actual Cloudflare upload, external SSH host install, and authenticated exchange smoke remain explicitly blocked because no corresponding credentials/target/flat-account proof were supplied. |
 | 2026-07-18 | Completed the coherent live-safety/production-continuity verification release through schema v79. Real/Live snapshots now preserve authoritative lineage and clamp Live <= Real even when Real is zero; the unsafe testnet Main-to-Live synthetic fallback is removed. Production status endpoints distinguish connected InlineLocalRedis from shared cross-instance durability, live smoke fails closed without shared Redis, Cloudflare/Kilo workers declare external minute ownership, both cron routes persist source/freshness/result diagnostics, and post-deploy/startup checks now fail on stale migrations, broken APIs, unprotected cron, or missing authorized ticks. Added bounded warm-state API p95 contracts, robust 15-symbol Dev/Prod soaks, 32-symbol UI lifecycle/settings/volume validation, and public BingX 32-symbol stress telemetry. BingX remains `bingx-api` package-first for supported account/order calls with duplicate-safe signed REST fallback; public quote/instrument reads now fail over from the official `.com` origin to `.pro` without ever replaying account/trade writes. Verified schema v79 restart persistence, 3,750 candles and hundreds of coordinated engine cycles in both Dev/Prod, Base/Main/Real/Live 2/2/2/2, active paper-position updates, stable post-warmup DB growth, Prod warm p95 33 ms, Dev warm p95 1,804 ms, 32-symbol UI QuickStart 143 ms, 6,400 live public candles across 32 BingX symbols with one primary-host timeout recovered by `.pro`, optimized Next production build, TypeScript, ESLint, portable 60,000 ms scheduler, and the final combined-current-main 79-suite/462-test matrix. No real exchange order was submitted: local/deployed prerequisites still lacked shared Redis plus the admin/live-placement gates, so the safety contract correctly blocked the authorized minimal-order smoke. |
 | 2026-07-18 | Follow-up skipped-test enforcement after PR #129: repaired the standalone BingX readiness CLI so `.com` timeouts fail over to `.pro`, exit deterministically, and never submit orders; repaired the drift monitor's obsolete endpoint and made it fail on a globally running but heartbeat-stale/non-advancing connection; accepted current idle/realtime strategy phases and bounded transient retries in the comprehensive monitor; made `npm start` specify a portable host; and added a repository-aware deployment contract that rejects stale deployed schema/builds, outdated persistence diagnostics, missing site identity, incomplete migrations, and (when required) non-shared persistence or stale minute ticks. Additional validation passed route smoke, volatile cleanup, exact 60,000 ms scheduler, 15/15 public BingX symbols, 31 critical suites/138 tests, the complete 79-suite/462-test matrix, TypeScript, ESLint, and a fresh 65-second 15-symbol production restart/soak with 3,750 candles, 422 cycles, Base/Main/Real/Live 2/2/2/2, stable post-warmup DB growth, and 37 ms warm p95. The public Kilo URL is still an old schema-v74 build with process-local state and a stalled connection heartbeat/zero cycles; the new contract correctly rejects it, so real-order smoke remains blocked until the current build, shared Redis, external engine ownership, admin secret, and live-placement gates are deployed. |
@@ -1884,7 +1801,7 @@ export async function GET() {
 | 2026-07-16 | Completed QuickStart timeout and maximum-symbol production validation. Added one shared client/server timing contract: 35s UI deadline, 18s default production engine-boot wait, at least 10s boot headroom, 1–25s override clamp, and a bounded 5s read-only connection check. Both QuickStart UI entry points now use the shared deadline; the compact UI explicitly sends the freshly-read effective Live state (eliminating a stale React-state race), supports its full 32-symbol maximum through a shared constant, and aborts a hung enable request. The production harness now carries all 32 symbols through preconfiguration, restart, local/cron caps, soak verification, and a reproducible UI-equivalent workflow that loads production HTML/assets, performs the exact top-volatility/QuickStart requests, measures the browser deadline, verifies canonical cycles/positions, and stops cleanly. Removed the production soak's invalid dependency on the intentionally disabled raw debug endpoint. A 242s max-symbol soak passed 117 rounds/1,287 requests/378 engine cycles, 32/32 historic symbols, Base→Main→Real→Live/Paper progression, p95 2,063ms, restart/settings/schema-v74 persistence, bounded post-warmup RSS behavior, and zero real positions/orders; a second UI-focused production run passed QuickStart in 4,079ms with cycles 177→180 and clean stop. Cloud Browser itself could not open the local port (`ERR_BLOCKED_BY_CLIENT`), so no visual click/screenshot claim is made; the repository-owned UI request harness is the reproducible substitute. Verified optimized production build, 72 Jest suites/410 tests, TypeScript, ESLint, source syntax, volatile cleanup, and diff checks; no authenticated BingX request or real order was made. |
 | 2026-07-16 | Added Trend as the final Main indication type across realtime and set-backed engines, Settings, active profiles, dashboards, counters, health, cleanup, and progression. Trend evaluates independent 1/3/5/10/15/30-minute configurations with configurable negative PositionCost drawdown factors plus recent/active situation thresholds; Strategy Set identity preserves each selected timeframe/config through Base/Main/Real/Live and carries adaptive TP metadata through axis/position-count variants. Base pseudo positions now derive a stepped TP ladder from average absolute 1-minute market change divided by PositionCost (default minimum ×2, maximum 10, step 1), and shared batched/serialized Redis mutations prevent concurrent symbol/config writes from dropping positions or indexes. Pre-v74 Base config keys remain byte-compatible, Active-Advanced now enforces caps against its actual position pool, and Axis Sets retain a safe parent-entry fallback. Schema v74 seeds fill-missing-only Trend defaults into canonical and legacy settings mirrors, settings changes trigger immediate recoordination, candle ordering is deterministic, and cron fallback ownership now requires a fresh per-connection heartbeat instead of treating an unrelated global heartbeat as ownership. Verified all 71 Jest suites/406 tests, TypeScript, ESLint, source/diff/secret guards, and an optimized Next.js production build; no authenticated exchange calls or real orders were made. |
 | 2026-07-16 | Follow-up runtime validation and coordination hardening: production and development safe 12-symbol soaks now exercise historic bootstrap, indication/realtime/LivePositions, Base/Main/Real/Live Sets, paper positions, restart persistence, and settings recoordination with zero real order requests. Fixed the scoped-vs-legacy prehistoric completion gate that could delay realtime by 60 seconds, coalesced settings changes during bootstrap, started LivePositions before continuous replay, bounded replay work, and made diagnostic/progression routes read canonical main-scoped state. QuickStart now atomically clears stale live flags in paper mode. Live dispatch/protection handling uses immediate SL/TP, narrow retries, terminal-position resurrection guards, close-result propagation, fast trailing rearm, and stable coordinator locks. Added balanced bounded config selection, strategy caps, DCA/Block/Trailing volume coverage, rate-limiter self-wakeup, portable minute scheduling, schema v73 timing/strategy migrations, and dev/prod preview validation. Verified 68 Jest suites/391 tests, TypeScript, source/diff guards, one-minute scheduler contract, isolated optimized production build, 60-second prod and dev 12-symbol soaks, mocked sub-300 ms order dispatch and sub-second protection with no stranded positions, and zero authenticated/order requests to BingX. |
-| 2026-07-16 | Completed the live-safety, production-runtime, UI top-layer, strategy-coordination, and database-maintenance replacement release. Added three selectable transparent responsive header assets, shorter CTS metadata, removed the header Engine Test action, and eliminated nested duplicate layouts. BingX now defaults to the `bingx-api` community package fast path with signed official-REST fallback, connector reuse, normalized account/order/control/position operations, and no source-embedded credentials. Added portable one-minute scheduling outside Vercel Cron, configurable long-lived-server recovery, bounded cron sweeps, fatal migration/startup readiness, and corrected smoke cleanup. Base/Main/Real/Live now share symbol-scoped exact active Set lineage; active Live Sets survive PF/DDT/cap changes until terminal, candidates never count as entries, and Live vs paper books cannot double-count. The idempotent confirmed-entry ledger coordinates Set/Base/axis/hedge counts for initial and accumulation fills in both exchange and paper modes, with closed-only Previous/Last, reached-only directional Continuous, Pause windows, bounded fan-out, and terminal active-index cleanup. Database schema v71 adds crash-safe combined migration batching with a renewable distributed lock, canonical indexed connection reads with SCAN-only recovery, on-write Main/Base/Exchange/Working index maintenance, tombstone mirror cleanup, fill-missing-only progression consolidation, and durable fingerprinted maintenance/coverage repair. Duplicate init-plus-migration paths were collapsed; pre-startup is process-wide single-flight, retryable, and force-reseedable after reset, while coverage waits for seed/validation/maintenance and is cross-worker deduplicated. Verified lint, typecheck, source/cleanup guards, 58 unit suites/357 tests, 4 integration suites/12 tests, scheduler contract, dev route smoke, optimized production builds, three production boots/restart at schema v71, 12-symbol 90-second simulated soak (495 requests, 100 engine cycles, P95 729 ms), and zero real exchange order requests. |
+| 2026-07-16 | Completed the live-safety, production-runtime, UI top-layer, strategy-coordination, and database-maintenance replacement release. Added three selectable transparent responsive header assets, shorter CTS metadata, removed the header Engine Test action, and eliminated nested duplicate layouts. BingX now defaults to the `bingx-api` community package fast path with signed official-REST fallback, connector reuse, normalized account/order/control/position operations, and no source-embedded credentials. Added portable one-minute scheduling outside retired cloud provider Cron, configurable long-lived-server recovery, bounded cron sweeps, fatal migration/startup readiness, and corrected smoke cleanup. Base/Main/Real/Live now share symbol-scoped exact active Set lineage; active Live Sets survive PF/DDT/cap changes until terminal, candidates never count as entries, and Live vs paper books cannot double-count. The idempotent confirmed-entry ledger coordinates Set/Base/axis/hedge counts for initial and accumulation fills in both exchange and paper modes, with closed-only Previous/Last, reached-only directional Continuous, Pause windows, bounded fan-out, and terminal active-index cleanup. Database schema v71 adds crash-safe combined migration batching with a renewable distributed lock, canonical indexed connection reads with SCAN-only recovery, on-write Main/Base/Exchange/Working index maintenance, tombstone mirror cleanup, fill-missing-only progression consolidation, and durable fingerprinted maintenance/coverage repair. Duplicate init-plus-migration paths were collapsed; pre-startup is process-wide single-flight, retryable, and force-reseedable after reset, while coverage waits for seed/validation/maintenance and is cross-worker deduplicated. Verified lint, typecheck, source/cleanup guards, 58 unit suites/357 tests, 4 integration suites/12 tests, scheduler contract, dev route smoke, optimized production builds, three production boots/restart at schema v71, 12-symbol 90-second simulated soak (495 requests, 100 engine cycles, P95 729 ms), and zero real exchange order requests. |
 | 2026-07-15 | Completed the Preset optimizer and Main/Preset live-execution release. Added persisted 1–14 day real-candle optimization for nine indication types, position-cost-normalized TP/SL/PF/drawdown metrics, independent trailing profiles, four best eligible presets per symbol/type, automatic/manual selection, bounded two-generation Redis indexes, sequential one-symbol historical loading, typed calculation buffers, and bounded UI rendering/charts. Preset Trade now applies selected eligible profiles inside the shared Main progression while preserving Block/DCA metadata. Added full Preset Block · Adjust settings/persistence with independent count, ratio, stack, pause, Real/Live controls and current-position-base volume calculation. Unified Main/Preset live readiness so requested-but-blocked modes remain visible and automatically recover without silently becoming simulation; live entries and control orders were verified with recording connectors only. Fixed shared engine-state aliases, exact production-preview build selection, and unreferenced passive health timers. Verified typecheck, lint, 52 Jest suites/333 tests, optimized production build, read-only production preview (10 pages, 20 progression reads, 2 switch cycles, 0 order requests), and public BingX 32-symbol stress (6,400 candles, 6 ticker rounds, +2.06 MB heap, 0 authenticated/order requests). |
 | 2026-07-14 | Completed the event/state/UI coordination release. Canonical SSE now closes reconnect gaps, bounds history/client memory, deduplicates events, rejects stale epoch/session events, and independently orders timestamp settings generations versus numeric switch generations. Connection, Live, Preset, dashboard, QuickStart, logistics, and engine refresh state changes use guarded Redis generations/owned claims; refresh leases renew and durable requests share a 10-minute TTL with automatic expiry/index pruning. Settings notifications merge concurrent field invalidations, use event-owned cleanup, coalesce saves arriving mid-apply, atomically count beyond nine changes, and retain metadata only (no connection credentials or large strategy snapshots). Idempotent assignment/Live/Preset actions no longer reset prehistoric progression. Trade history uses authoritative exchange history with a 500-row cap, 50-row virtual scrolling window, and Won/Lost/PnL summaries. Client-imported templates no longer load credentials, NEXT_PUBLIC credential aliases and embedded defaults were removed, and `.env.example` contains explicit replace-only placeholders. Verified typecheck, lint, 45 unit suites/301 tests, 2 integration suites/5 tests, source/volatile cleanup checks, optimized production build, a read-only production preview (9 pages, 20 progression reads, 2 switch cycles, 0 order requests), and a read-only BingX 32-symbol stress run (6,320 candles, 6 ticker rounds, 2.07 MB heap delta, 0 authenticated/order requests). |
 | 2026-07-14 | Completed the progression/live-order stability release: bounded chunked historic market-data reads and realtime tails reduce retained heap; serialized settings recoordination preserves edits across reconnects; Block and DCA legs retain independent counts/ratios/volumes; live entry, accumulation, SL, and TP submissions persist durable client IDs and recover across timeout/restart before retry; authoritative double-absence checks prevent premature close/retry; startup and the continuity runner resume open-position tracking before historic bootstrap; trade history merges real exchange/local closes with a 500-row cap, 50-row virtual window, and Won/Lost/PnL summaries. Removed embedded BingX credential fallback (environment/connection storage only). Verified typecheck, lint, 42 unit suites/278 tests, 2 integration suites/5 tests, source/cleanup guards, optimized Next.js production build, managed read-only production preview, and a read-only 32-symbol BingX public-data stress test with zero order requests. |
@@ -1910,10 +1827,10 @@ export async function GET() {
 | 2026-07-10 | Follow-up progression/stats fix: canonical progression stats now accepts fresh runtime engine_progression/trade_engine_state snapshots even when scoped epoch fields are absent, and no longer treats a missing local coordinator as definitively stopped when Redis global intent plus fresh processor heartbeat prove another worker is processing; settings recoordination confirmation now waits longer and checks the canonical stats marker before warning, preventing false "did not confirm" toasts while route-side recoordination completes. |
 | 2026-07-10 | Progression/statistics recovery: Active Exchange statistics now reads the canonical `/api/connections/progression/{id}/stats` contract instead of the stale settings statistics route, trade-engine progression display recognizes Redis heartbeat/global-intent queued starts as initializing/running instead of idle, and settings-save recoordination can initialize a missing global running intent plus run an immediate healing sweep for dashboard-enabled connections while still honoring explicit operator stops. |
 | 2026-07-10 | Production status-all correction: status-all now derives global running intent from `operator_intent`/`desired_status` as well as legacy `status`, and treats fresh per-engine running/heartbeat/ready state as running so dashboards do not show stopped while progression is actively advancing. |
-| 2026-07-10 | Production progression recovery: restored self-hosted production defaults for realtime progression, indication set fill, strategy flow, and live-position sync while keeping Vercel/serverless workers opt-in; raised the default production cycle deadline to 90s with env overrides so normal processing is not cancelled every 5s. |
+| 2026-07-10 | Production progression recovery: restored self-hosted production defaults for realtime progression, indication set fill, strategy flow, and live-position sync while keeping retired cloud provider/serverless workers opt-in; raised the default production cycle deadline to 90s with env overrides so normal processing is not cancelled every 5s. |
 | 2026-07-10 | Engine start/status responsiveness hardening: explicit API/UI starts now use local takeover options, production cycle deadlines are shorter, API worker realtime/live/strategy/indication heavy paths are gated by opt-in env flags, progression stats clamp impossible real/main/live cascade snapshots with `[STATS-VALIDATION]` warnings, and status reads use bounded Redis/coordinator timeouts. |
-| 2026-07-09 | Production-mode correctness follow-up: restored live-stage failed-order counters to run before fallible progression/final logging while broadening the regression guard to verify metrics around failure markers rather than requiring log-before-metric ordering. Re-ran targeted progression/orders/live-position/settings/event coverage, the full Jest suite, typecheck, lint, production build, Vercel build, and a production `next start` smoke against health, trade-engine status, progression stats, live positions, and orders APIs. |
-| 2026-07-09 | Deploy/test recovery: removed the duplicate `ordersBySymbol` property in progression stats by keeping the shared aggregation output, repaired a missing regression-test closure, and aligned live-stage failed-order metric updates with regression guard expectations. Verified full Jest, typecheck, lint, production build, and Vercel build. |
+| 2026-07-09 | Production-mode correctness follow-up: restored live-stage failed-order counters to run before fallible progression/final logging while broadening the regression guard to verify metrics around failure markers rather than requiring log-before-metric ordering. Re-ran targeted progression/orders/live-position/settings/event coverage, the full Jest suite, typecheck, lint, production build, retired cloud provider build, and a production `next start` smoke against health, trade-engine status, progression stats, live positions, and orders APIs. |
+| 2026-07-09 | Deploy/test recovery: removed the duplicate `ordersBySymbol` property in progression stats by keeping the shared aggregation output, repaired a missing regression-test closure, and aligned live-stage failed-order metric updates with regression guard expectations. Verified full Jest, typecheck, lint, production build, and retired cloud provider build. |
 | 2026-07-09 | Live-stage simulation accounting fix: simulated live orders now canonicalize as placed and filled after position persistence, increment global and per-symbol directional order counters, and progression stats comments document that simulated entries are folded into placed/filled output. The shared live-order accounting service now applies the same simulated placed+filled contract, with regression coverage for directional simulated counters. |
 | 2026-07-09 | Live-stage simulation accounting fix: simulated live orders now canonicalize as placed and filled after position persistence, increment global and per-symbol directional order counters, and progression stats comments document that simulated entries are folded into placed/filled output. Added regression coverage for directional simulated counters. |
 | 2026-07-09 | Production startup/build recovery: repaired malformed merge fragments in QuickStart API, QuickStart dashboard button, legacy connection settings defaults, and startup coordinator imports so source syntax, typecheck, and production build can run again. QuickStart now persists one coherent resolved per-connection settings patch into both Redis settings hashes before recoordination/startup, preserving selected symbols/live intent for production workers. |
@@ -1980,7 +1897,7 @@ export async function GET() {
 | 2026-07-10 | Comprehensive progression continuity follow-up: runtime progression route now falls back from scoped to legacy engine progress/state and checks both scoped and legacy prehistoric done flags; engine-manager phase updates and validated progression-writes mirror scoped mutations to legacy keys; settings recoordination markers and trade-engine-state patches now write scoped and legacy hashes together so coordinator stop/restart or settings hot reload cannot reset to stale settings/progress. |
 | 2026-07-10 | Settings PATCH single-writer hardening: removed pre-recoordination partial writes from the Main Connection PATCH route. PATCH now computes merged settings, resolved symbols, flat mirrors, connection patch, and trade-engine-state patch in memory, then performs persistence only through `applyMainConnectionSettingsChange()`, avoiding transient scoped/legacy split-brain windows that could make running engines fall back to stale settings/progress during hot reload or coordinator restart. Added a regression guard for the no-partial-write contract. |
 | 2026-07-10 | Systemwide deploy/test fix pass: repaired ConfigSet prehistoric progress syntax and ensured scoped+legacy engine progress mirrors use the shared `setEngineProgress()` helper, fixed progression stats namespace destructuring and test-safe query parsing so live order-by-symbol totals populate correctly, restored production engine ownership guard compatibility, and added post-recoordination settings hash mirrors for lightweight/test deployments without reintroducing pre-recoordination partial writes. Verified lint, typecheck, full Jest, smoke routes, and production build in the local Node 24 environment (known package engine warning: project wants Node >=20 <23). |
-| 2026-07-10 | Deploy/test hygiene pass: Vercel install/build commands now explicitly enable Corepack and activate pnpm 10.28.1 before frozen install/build, preventing platform pnpm-version drift; Jest suite scripts now run in-band with open-handle detection to avoid lingering worker-handle warnings while preserving full test coverage. Verified typecheck, lint, smoke routes, full Jest, production build, and Vercel build locally. |
+| 2026-07-10 | Deploy/test hygiene pass: retired cloud provider install/build commands now explicitly enable Corepack and activate pnpm 10.28.1 before frozen install/build, preventing platform pnpm-version drift; Jest suite scripts now run in-band with open-handle detection to avoid lingering worker-handle warnings while preserving full test coverage. Verified typecheck, lint, smoke routes, full Jest, production build, and retired cloud provider build locally. |
 | 2026-07-10 | Stats completeness fix: progression stats now report Real evaluated counts after Real fan-out instead of returning before the fan-out calculation, active-count strategy payloads include the Live stage, and dashboard/active-connection indication breakdowns include Active Advanced values so all generated indication types are visible and update correctly. |
 | 2026-07-10 | Dashboard canonical event bridge: `useDashboardEvents()` now maps fresh canonical SSE events (`settings.hotReloaded`, `connection.recoordinated`, progression epoch/stage changes, processing progress, live stage changes, engine status, and errors) onto the dashboard refresh handlers used by Main Connections, statistics, logging, monitoring, and processing surfaces. This keeps progress/stats/info cards synchronized immediately after settings recoordination, engine restarts, and recalculation epochs instead of waiting for legacy event aliases or incidental polling. |
 | 2026-07-10 | Dev/prod comparison responsiveness fix: 12-symbol BingX quickstart comparison exposed Main Connection progression endpoint starvation in dev under heavy engine log output. The progression route now timeboxes auxiliary log flushing/recent-log reads so progress/stats snapshots return without waiting on logging I/O, and progression logging no longer treats high-frequency indication/strategy/realtime/live-trading hot-path events as immediate stdout/Redis flush events. This keeps dashboard progress/stats responsive during settings recoordination, engine restart, and 12-symbol recalculation runs. |
@@ -1994,7 +1911,7 @@ export async function GET() {
 | 2026-07-14 | Credential hygiene follow-up: removed tracked BingX/Bybit/Pionex/OrangeX credential literals from `.env.example`, base/user connection fallbacks, default file-storage records, and a committed Redis snapshot temp file. Importable connection metadata now resolves credentials only from server-side environment aliases, and runtime snapshot temp files are ignored. Historical keys must be revoked/rotated because deleting them from the current tree does not erase prior Git commits. |
 | 2026-07-14 | Block/live-order completion: every Block count now uses the positions-based add-on formula `confirmed current quantity × (Block count × ratio)`, with independent Set keys, active/pause state, base/requested/filled/aggregate volume metadata, and order/client IDs. Partial fills apply only newly observed exchange deltas; durable pre-send outboxes and continuous restart reconciliation prevent blind resubmission and retain tracking across crashes. Block pause updates are atomic in network Redis and serialized in the local adapter. Active Real/Live settings remain independent and default enabled. Trade History now reads up to 500 real BingX/local closes, excludes partial/duplicate bookkeeping rows, derives missing local PnL, and renders Won/Lost/fees/net-PnL/volume through a continuous 50-row virtual window. |
 | 2026-07-14 | Final continuity/performance pass: connection and indication settings use serialized, diff-aware atomic saves so reconnects and concurrent dialogs preserve operator values and only trigger necessary recoordination. Trailing profiles and four-step DCA settings now propagate through Strategy → Real → Live; DCA uses immutable first-fill sizing, adverse-price steps, cooldowns, average/first-entry/breakeven TP modes, durable pending-order recovery, and aggregate quantity metadata. Realtime status/direction creation races are leased/deduplicated, closed Live history is capped at 500, and the 32-symbol public BingX no-order stress plus production preview, 283 Jest tests, lint, typecheck, volatile cleanup, and optimized build all passed. The tracked environment template now contains placeholders only; previously exposed credentials still require rotation because they remain in Git history. |
-| 2026-07-15 | Production continuity release: startup is process-wide single-flight and retryable, migrations reach schema v70 without overwriting explicit operator settings, and a Redis-backed stable site ID is separated from the per-process boot ID so sessions/settings survive worker and server restarts. Self-hosted deployments now have a portable non-overlapping one-minute scheduler plus a 15-second continuity recovery loop; cron routes require `CRON_SECRET` in production and no longer depend on Vercel cron execution. Browser session and dashboard selection caches persist indefinitely in local storage, while server startup/status APIs expose authoritative readiness and scheduler state. |
+| 2026-07-15 | Production continuity release: startup is process-wide single-flight and retryable, migrations reach schema v70 without overwriting explicit operator settings, and a Redis-backed stable site ID is separated from the per-process boot ID so sessions/settings survive worker and server restarts. Self-hosted deployments now have a portable non-overlapping one-minute scheduler plus a 15-second continuity recovery loop; cron routes require `CRON_SECRET` in production and no longer depend on retired cloud provider cron execution. Browser session and dashboard selection caches persist indefinitely in local storage, while server startup/status APIs expose authoritative readiness and scheduler state. |
 | 2026-07-15 | Intensive engine/UI verification release: corrected Main/Real progression accounting to preserve valid strategy/axis fan-out while reporting parent-input pass rates, bounded system-monitoring scans and restricted connection reads to active/main indexes, and added production restart/soak/scheduler/monitoring regression harnesses. Validation passed 55 Jest suites (348 tests), lint, strict typecheck, optimized production build, volatile cleanup, two restart-and-persistence preview runs, a 66-second 12-symbol simulated production soak (historic 100%, realtime/monitoring advancing, zero exchange orders, post-warmup memory released), and a 32-symbol public BingX read-only stress run (6,400 candles, +2.13 MB heap, zero authenticated/order requests). |
 | 2026-07-15 | Bounded asynchronous engine release: added an allocation-conscious ordered worker pool and applied explicit concurrency budgets across realtime/historic symbols, indication Set writes, config/type calculations, Strategy Base→Main→Real flows, legacy/preset engines, preset combinations/optimizer, pseudo-position updates, and position-stage symbol groups. Same-symbol Base admissions and Main→Real creations are leased to preserve ceilings, duplicate realtime mutations are single-flight, stale strategy fingerprints now include indication identity/time and commit only after successful stages, Preset strategy consumes the current indication result, and legacy short protection prices now place TP below entry and SL above. Historic optimizer memory is capped at two temporary symbol batches by default and releases both after completion; exchange mutation/order sequencing remains serial. Direct validation passed ESLint, strict TypeScript, deployment syntax, 58 Jest suites/355 tests, optimized production build, portable scheduler, volatile cleanup, 32-symbol public BingX stress (6,400 candles, +3.39 MB heap, zero authenticated/order requests), and a 90-second 12-symbol simulated production soak (historic 100%, 140 engine cycles, p95 291 ms, RSS 2.03 GiB peak → 1.16 GiB end, settings/site identity stable across restart, zero exchange orders). |
 | 2026-07-19 | Ultra Kilo production-readiness pass: expanded the real Workerd verifier to load dashboard/settings/preset client assets, mutate and read back Block PF and volume settings, exercise Disable/Enable/Live/Pause/Resume/Stop/Start, prove external-owner queueing and zero real positions/orders, and run scheduled continuity/live recovery. Fixed false local settings-apply claims, phantom-running status after Resume, strict-string flag handling for Redis-parsed Boolean Main/Preset states, and stale-generation global Start queues. Reproduced and eliminated the isolated `.next-prod` Next 15 export cleanup race by serializing static generation only for custom dist directories. Verified schema v81, 83 Jest suites/510 tests, lint, typecheck, OpenNext, Wrangler dry-run, Workerd, a 240-second/32-symbol production soak (1,320 requests, 400 cycles, p95 127 ms, 0 real orders), UI settings/state hot reload, and secret scan. Actual Kilo upload and minimum-size BingX open/protect/close remain blocked until authenticated targets, shared Redis, a distinct long-lived owner, runtime secrets, exchange credentials, and flat-account proof are supplied. |
@@ -2082,7 +1999,7 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   secret findings. Real Kilo upload and live exchange mutation remain correctly
   blocked without the required external deployment credentials/target inputs.
 
-## Session 2026-07-22 — Kilo/Vercel deploy and QuickStart PF state repair
+## Session 2026-07-22 — Kilo/retired cloud provider deploy and QuickStart PF state repair
 
 - [x] QuickStart PF sliders now keep a ref-backed optimistic draft, merge rapid
   cross-stage changes deterministically, consume the canonical settings object
@@ -2092,33 +2009,33 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   the stale cross-isolate GET that made a slider jump back after “Saved”.
 - [x] Replaced the Git-hosted `@kilocode/app-builder-db` runtime dependency with
   the same small typed HTTP query protocol in `lib/kilo-database-client.ts` so
-  Vercel/Kilo clean installs use only the frozen registry graph. Drizzle schema,
+  retired cloud provider/Kilo clean installs use only the frozen registry graph. Drizzle schema,
   SQLite proxy and migration semantics remain unchanged. Deployments without
   optional `DB_URL`/`DB_TOKEN` skip migration cleanly; configured Kilo databases
   still migrate and fail the deploy on real migration errors.
 - [x] The deployment-aware `db:migrate` wrapper now launches
   `node --import tsx src/db/migrate.ts` instead of the IPC-creating `tsx` CLI,
   which works in restricted Kilo build sandboxes and retains Node 20+
-  compatibility while Vercel safely skips the Kilo-only migration. The retired
+  compatibility while retired cloud provider safely skips the Kilo-only migration. The retired
   credential-bootstrap route is a permanent no-store 404 and has a regression
   forbidding DB credential access.
 - [x] Production-readiness responses distinguish missing shared persistence with
-  `shared_persistence_required` and actionable Redis/Upstash/Vercel KV guidance;
+  `shared_persistence_required` and actionable Redis/Upstash/retired cloud provider KV guidance;
   engine/order coordination remains fail-closed until the shared backend is
   actually present.
 - [x] Verification on the release tree: frozen pnpm 10.28.1 lockfile, 92 Jest
-  suites/576 tests, TypeScript, ESLint, 40-page Vercel Production build, and
+  suites/576 tests, TypeScript, ESLint, 40-page retired cloud provider Production build, and
   36-check OpenNext/Kilo preflight plus successful Worker bundle generation.
 - [x] Kilo App Builder still provisions its managed SQLite binding by package
   name. The local, dependency-free `vendor/app-builder-db-marker` package keeps
   that provisioning signal while CTS continues to use its audited local HTTP
   adapter at runtime. Its exact `file:` entry is pinned in `pnpm-lock.yaml`, so
-  Vercel/Kilo frozen installs remain reproducible and never fetch the former
+  retired cloud provider/Kilo frozen installs remain reproducible and never fetch the former
   Git-hosted runtime package.
-- [x] Vercel now uses the same source-fingerprint and trace-validating Next build
+- [x] retired cloud provider now uses the same source-fingerprint and trace-validating Next build
   wrapper as OpenNext. It retries only known late `.next` ENOENT/ENOTEMPTY writer
   races and still fails immediately on compilation, syntax, type or source-change
-  errors. Vercel validates its function traces without requiring the intentionally
+  errors. retired cloud provider validates its function traces without requiring the intentionally
   absent OpenNext standalone tree; OpenNext still requires that additional output.
   Each attempt runs in an isolated process group; late trace/export children get
   a bounded settlement window and are then terminated before provider packaging.
@@ -2530,10 +2447,10 @@ credentials are present.
   recovery, DB metrics, UI-max).
 - [x] **Build pipeline was fully broken in this environment**: `scripts/build-next-with-trace-retry.mjs`
   invoked `corepack pnpm@10.28.1 run build:next`, but `corepack` is not installed
-  here (only `pnpm` 10.28.1 is). `bun run build`/`vercel-build` failed with
+  here (only `pnpm` 10.28.1 is). `bun run build`/`retired-cloud-provider-build` failed with
   `spawn corepack ENOENT`, so no production artifact could be built/deployed.
   Fixed by adding a `resolveBuildCommand()` fallback: use `COREPACK_BIN` if set, else
-  `corepack` if resolvable, else `pnpm` directly. Vercel/CI corepack contract preserved.
+  `corepack` if resolvable, else `pnpm` directly. retired cloud provider/CI corepack contract preserved.
 - [x] Verified the full build now produces a complete standalone artifact including
   `prepare-standalone-assets` (copies `.next/static` + `public` into standalone so
   the prod server serves JS/CSS — a missing-asset 404 was the symptom that breaks
@@ -2824,7 +2741,7 @@ credentials are present.
   requires the simulated lifecycle counter and rejects any real-counter
   movement during forced simulation.
 - [x] Merged PR #225 as `main@b6b0a22` after head-binding PR head
-  `27f97589bb64fbebe104162d5ae4338bfb2fc16c` and all GitHub/Vercel checks.
+  `27f97589bb64fbebe104162d5ae4338bfb2fc16c` and all GitHub/retired cloud provider checks.
   It also contains bounded aggregate-protection reconciliation and the
   canonical Direct-Trade recent PF default `1.10`.
 - [x] Isolated remote validation on the exact release source passed: 219/219
@@ -3067,7 +2984,7 @@ credentials are present.
 ## Session 2026-08-29 — PR #253 deployment, exact repair and soak-capacity hardening
 
 - [x] GitHub PR #253 (`Fix exact X02 slot protection reconciliation`) passed
-  both Vercel checks and the Dev Preview Smoke workflow, then merged as
+  both retired cloud provider checks and the Dev Preview Smoke workflow, then merged as
   `main@41ef9a46e762b8b0c32921aec6ca85184086115c` with exact tree
   `8303a013d19b7457d72c7984b41239f3b26ca198`. That exact commit/tree and a
   348-server-trace production build are deployed at `/opt/cts-kn`; the prior
@@ -3186,44 +3103,45 @@ credentials are present.
   `--clear-maintenance` option may remove that exact marker, and only after it
   has been copied into the verified pre-change backup.
 
-## Session 2026-09-04 — fail-closed global restart convergence
+## Session 2026-09-04 — production memory, installation and UI stability candidate
 
-- [x] Work began from canonical branch `work` at revision
-  `38921469286faa7fabcc3257aa3fc1a60d8edde9`. The pre-edit source checkpoint
-  `/workspace/backups/CTS-K-N/20260904T120308Z-pre-restart-convergence`
-  contains the complete bundle, binary patch, untracked archive/list,
-  HEAD/status records, verified SHA-256 manifest and successful bundle verify.
-- [x] Global restart now commits running intent through the same shared helper
-  used by Start and Resume, fails closed on Redis or coordinator errors, and
-  waits for authoritative running intent, coordinator state, and fresh active
-  per-connection engine heartbeats before returning success. Non-convergence
-  stops the coordinator and returns sanitized connection identifiers.
-- [x] Focused behavioral coverage passes 210/210 tests, including successful
-  restart, failed Redis persistence, failed `startAll()`, stale paused intent,
-  and bounded non-convergence; the TypeScript no-emit gate also passes.
-- [ ] No remote service, Redis data, exchange account, deployment, or order was
-  touched. Publication through the current reviewed branch/PR flow remains the
-  only pending handoff action; deploy only after a green merge to `main`.
-## Session 2026-09-04 — runtime-discovered Prod-VST orchestrated gate
-
-- [x] Added a two-phase BingX Prod-VST verifier which records the authoritative
-  runtime contract count and normalized unique symbols, passes that exact set
-  into the existing exhaustive simulated production soak, and performs rendered
-  browser assertions before the separately authorized representative X02
-  lifecycle. Exchange submission is forced off throughout computation.
-- [x] Added a reusable fail-closed boundary and unit coverage rejecting X01,
-  BingX mainnet, Bybit, an inexact authorization phrase, absent maintenance,
-  and active production services. The authenticated phase delegates cleanup
-  and exact account restoration to the existing hardened lifecycle runner.
-- [x] Focused validation passed: 8/8 new unit tests, TypeScript, and ESLint for
-  every new TypeScript file. The full orchestrated runtime gate was not run
-  because this checkout has no running candidate application or approved
-  Playwright browser; no remote operation, Redis mutation, or exchange request
-  occurred.
-- [x] The pre-edit owner-only source checkpoint is
-  `/workspace/backups/CTS-K-N/20260904T120443Z-pre-orchestrated-verifier`; its
-  complete bundle, binary patch, untracked archive/list, HEAD/status records,
-  bundle verification, and SHA-256 manifest verified. Canonical revision at
-  handoff is the commit containing this entry (see `git rev-parse HEAD`); GitHub
-  PR publication is required and deployment remains pending a merged green
-  `main` plus the documented operator approvals.
+- [x] The canonical handoff is `docs/PRODUCTION-OPERATIONS.md`. Long-lived
+  installs now default to `/var/lib/cts-kn/.env.production.local`; owner-only
+  `/var/lib/cts-kn/credentials/runtime.env` and `forex/runtime.env` fragments
+  fill only missing supported credential fields after a clean replacement.
+  Uninstall no longer removes `/var/lib/cts-kn`, and stale-process cleanup is
+  restricted to processes proven to belong to the exact installation.
+- [x] The guarded live path is enabled by default, while the central
+  `LIVE_ORDER_CONNECTION_IDS=bingx-x02` boundary denies Main/Preset/Signal
+  exchange writes for X01, Bybit and every other connection. Direct Trade
+  retains its independent X02-only gate. X02 lifecycle tests require
+  maintenance, inactive services, exact confirmation, virtual funds, owned
+  client IDs, minimum valid volume and complete cleanup.
+- [x] Redis remains `noeviction`; a host/cgroup-aware governor dynamically
+  adjusts maxmemory with pressure hysteresis, safe data-set floors, allocator
+  purge and bounded AOF rewrite. Lifetime contribution detail is windowed at
+  10,000 while cumulative totals stay monotonic. Repeated runtime failures are
+  signature-coalesced and systemd journals are rate-limited.
+- [x] Admin reset routes await shared same-origin authorization. Main Connection
+  Save Settings is single-flight, abortable and persistence-acknowledged.
+  Pollers reject stale overlap, distributed/progression locks are atomic,
+  restart is fail-closed until heartbeat convergence, and realtime rotation
+  reports truthful admitted-symbol coverage.
+- [x] The retired deployment provider configuration, scripts and dependencies
+  were removed. Versioned private keys, Chisel binary/logs and embedded-auth
+  legacy helpers were also removed; the release scanner reports 0 findings
+  across 1,609 files. Active transport secrets must remain external and any
+  historically exposed tunnel credential must be rotated before final handoff.
+- [x] Candidate validation passed 260 unit suites/1,750 tests, 4 integration
+  suites/66 tests, TypeScript, ESLint, source/shell syntax, minute scheduler,
+  frozen pnpm 10.28.1 clean install, Linux install preflight and the optimized
+  Next 15.5.18 build on attempt 1 with 42 static pages and 348 complete traces.
+  A forced-simulated 128-symbol production audit passed 47 page surfaces,
+  QuickStart, settings/dialog persistence, backup round trip, all global
+  controls, stats/status isolation and 20 hot-API samples (p95 10.44 ms), with
+  zero real positions and zero exchange orders.
+- [ ] GitHub review/merge, exact merged-main remote replacement, persistent
+  credential import, Redis prune/governor verification, real all-symbol public
+  discovery, X02 Prod-VST minimum-volume lifecycle, production soak and browser
+  acceptance are pending. Do not claim production readiness until each passes
+  against the exact deployed merge SHA and baseline cleanup is proven.

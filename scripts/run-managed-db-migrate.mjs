@@ -8,7 +8,7 @@ const kiloManagedMigration =
   process.env.CTS_DEPLOYMENT_RUNTIME === "kilo-deploy" ||
   process.env.RUN_MANAGED_DB_MIGRATIONS === "1"
 
-// Vercel can invoke the repository's db:migrate script as part of a generic
+// A deployment system can invoke the repository's db:migrate script as part of a generic
 // build integration, but it does not use Kilo's HTTP-SQLite contract. Exit
 // before resolving tsx so production-only installs cannot fail on a dev-only
 // executable that this deployment does not need.

@@ -31,6 +31,7 @@ interface StatsResponse {
 class OptimizedStatsFetcher {
   private apiClient: BatchAPIClient
   private statsCache: Map<string, { data: StatsResponse; timestamp: number }> = new Map()
+  private statsInFlight: Map<string, Promise<StatsResponse>> = new Map()
   private readonly CACHE_TTL = 3000 // 3 seconds for stats
   private readonly BATCH_SIZE = 10 // Max requests per batch
 
@@ -54,25 +55,35 @@ class OptimizedStatsFetcher {
       return cached
     }
 
-    try {
-      const response = await this.apiClient.queueRequest<StatsResponse>({
-        path: `/api/connections/progression/${connectionId}/stats`,
-        method: 'GET',
-        timeout: 10000,
-        retries: 2,
-        priority: 1,
-      })
+    const inFlight = this.statsInFlight.get(cacheKey)
+    if (inFlight) return inFlight
 
-      if (response) {
-        this.cacheStats(cacheKey, response)
-        return response
+    const request = (async () => {
+      try {
+        const response = await this.apiClient.queueRequest<StatsResponse>({
+          path: `/api/connections/progression/${connectionId}/stats`,
+          method: 'GET',
+          timeout: 10000,
+          retries: 2,
+          priority: 1,
+        })
+
+        if (response) {
+          this.cacheStats(cacheKey, response)
+          return response
+        }
+
+        throw new Error(`Failed to fetch stats for ${connectionId}`)
+      } catch (error) {
+        console.error('[StatsFetcher] Error fetching stats:', error)
+        throw error
+      } finally {
+        this.statsInFlight.delete(cacheKey)
       }
+    })()
 
-      throw new Error(`Failed to fetch stats for ${connectionId}`)
-    } catch (error) {
-      console.error('[StatsFetcher] Error fetching stats:', error)
-      throw error
-    }
+    this.statsInFlight.set(cacheKey, request)
+    return request
   }
 
   /**
@@ -183,25 +194,28 @@ class OptimizedStatsFetcher {
     interval: number = 5000,
     onUpdate?: (stats: StatsResponse) => void,
   ): Promise<() => void> {
-    // Use shorter cache TTL for monitoring
-    const originalTTL = this.CACHE_TTL
-    const pollingInterval = setInterval(async () => {
+    let stopped = false
+    let pollingTimer: ReturnType<typeof setTimeout> | null = null
+    const poll = async (): Promise<void> => {
+      if (stopped) return
       try {
-        // Clear cache to get fresh data
-        this.statsCache.clear()
+        this.statsCache.delete(`conn:${connectionId}`)
         const stats = await this.fetchConnectionStats(connectionId)
 
-        if (onUpdate) {
-          onUpdate(stats)
-        }
+        if (!stopped && onUpdate) onUpdate(stats)
       } catch (error) {
         console.error('[StatsFetcher] Monitoring error:', error)
+      } finally {
+        if (!stopped) pollingTimer = setTimeout(() => void poll(), Math.max(0, interval))
       }
-    }, interval)
+    }
+
+    pollingTimer = setTimeout(() => void poll(), Math.max(0, interval))
 
     // Return cleanup function
     return () => {
-      clearInterval(pollingInterval)
+      stopped = true
+      if (pollingTimer) clearTimeout(pollingTimer)
     }
   }
 

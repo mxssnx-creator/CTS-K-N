@@ -73,8 +73,10 @@ describe("redis-db secondary indexes", () => {
     await expect(client.ttl(`live:position:${id}`)).resolves.toBeGreaterThan(0)
     await expect(client.lrange("live:positions:conn-live:closed", 0, -1)).resolves.toEqual([id])
     await expect(client.hlen("live:positions:conn-live:lifetime:contributions")).resolves.toBe(1)
+    await expect(client.llen("live:positions:conn-live:lifetime:contribution-order")).resolves.toBe(1)
     await expect(client.hgetall("live:positions:conn-live:lifetime:summary")).resolves.toMatchObject({
-      schemaVersion: "1",
+      schemaVersion: "2",
+      contributionWindowLimit: "10000",
       terminalIndexRows: "1",
       uniqueTerminalIndexRows: "1",
       "real.closedTrades": "1",

@@ -14,6 +14,7 @@ import { isForexBridgeSelected, isValidForexBridgeUrl, resolveForexExecutionMode
 export type RealTradeBlockCode =
   | "disabled"
   | "forced_simulation"
+  | "connection_not_allowed"
   | "credentials_missing"
   | "explicit_block"
   | "placement_disabled"
@@ -168,6 +169,24 @@ export function isBingXVirtualFundsDemo(settings: Record<string, any>): boolean 
   )
 }
 
+/**
+ * Optional process-level connection allow-list for every Main/Preset/Signal
+ * exchange write. An absent variable preserves development compatibility; an
+ * explicitly configured list is fail-closed when the connection has no ID.
+ */
+export function isLiveOrderConnectionAllowed(settings: Record<string, any>): boolean {
+  const configured = String(process.env.LIVE_ORDER_CONNECTION_IDS || "").trim()
+  if (!configured) return true
+  const connectionId = String(settings.id ?? settings.connection_id ?? settings.connectionId ?? "")
+    .trim()
+    .toLowerCase()
+  if (!connectionId) return false
+  const allowed = new Set(
+    configured.split(/[\s,]+/).map((value) => value.trim().toLowerCase()).filter(Boolean),
+  )
+  return allowed.has(connectionId)
+}
+
 export function getRealTradeInfrastructureBlockReason(): string {
   if (
     !hasSharedRedisConfig() &&
@@ -283,6 +302,9 @@ export function evaluateRealTradeReadiness(
   if (!requested) {
     blockCode = "disabled"
     blockReason = `${label} is disabled by the operator`
+  } else if (!isLiveOrderConnectionAllowed(settings)) {
+    blockCode = "connection_not_allowed"
+    blockReason = `${label} is not allowed for this connection by LIVE_ORDER_CONNECTION_IDS`
   } else if (!credentialsValid) {
     blockCode = "credentials_missing"
     blockReason = isForexConnection(settings)

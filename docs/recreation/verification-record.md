@@ -115,8 +115,8 @@ Latest executable evidence:
 | Canonical independent-host preflight | pass; apt host, free port 45671, 44 GiB free disk, 21 GiB RAM |
 | Remote API route contract | pass; authentication, validation, disposable clone, preflight/install, seed transport, and auto/systemd/PM2 contract through the SSH boundary fixture; an additional real OpenSSH/key-auth loopback run cloned the pushed `main` and completed the canonical non-mutating preflight over the SSH protocol |
 | Portable minute scheduler | pass; both required paths, 60,000 ms interval |
-| Clean reconstruction/Vercel builder | pass from an empty Git archive with no `node_modules`; exact pnpm 10.28.1 restored 1,272 locked packages and provider packaging produced 149 routes, 67 function entries, 116 valid JSON manifests, and no invalid JSON |
-| Full Vercel builder | pass locally; provider simulation reproduced and eliminated read-only `corepack enable` EROFS, Next 15's zero-byte `export-marker.json`, and stale `export-detail.json` false-static classification; dynamic/API functions are retained |
+| Clean reconstruction/build | pass from an empty Git archive with no `node_modules`; exact pnpm 10.28.1 restored the locked packages and production packaging retained all dynamic/API routes |
+| Full production builder | pass locally; Next 15 manifest recovery handles zero-byte `export-marker.json` and stale `export-detail.json` classification while retaining dynamic/API functions |
 | OpenNext 1.20.1 build | pass; generated `.open-next/worker.js` |
 | Wrangler 4.86.0 dry-run | pass; 831 assets accepted for upload |
 | Local Workerd Kilo runtime | pass; health, schema v84, 12 UI routes and 268 served UI scripts, non-collapsing header/sidebar CSS, exact 5/5 Historic/Main progress, version/event Settings ACK, Block-PF/position-count/volume changes, minute-deduplicated dashboard paper pulse, external-owner queue, all global/connection state switches, statistics/history, live fail-closed, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
@@ -141,11 +141,9 @@ per-request host-key isolation, API streaming, GitHub revision clone, cleanup,
 and canonical non-mutating preflight. The disposable SSH/bootstrap boundary
 test additionally covered install mode without changing a real host.
 
-The pushed GitHub revision's Vercel integration still reports a provider-side
-failure. The same revision succeeds in both populated and empty-checkout local
-Vercel builders, but the protected deployment logs require Vercel project
-access or a `VERCEL_TOKEN`; no remote Vercel success is claimed without that
-evidence.
+The authoritative deployment target is the managed long-lived server. A remote
+success is claimed only after the exact merged revision passes install,
+post-deploy health, continuity, progression, and UI verification there.
 
 The linked Kilo deployment and its public URL are supplied and are rebuilt by a
 GitHub `main` update. No shared production Redis/external database or distinct

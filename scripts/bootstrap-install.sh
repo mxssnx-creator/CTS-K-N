@@ -239,6 +239,56 @@ assert_cts_checkout() {
     || { echo "Refusing to replace/remove a directory that is not a CTS-K-N checkout: $INSTALL_DIR" >&2; exit 1; }
 }
 
+stop_stale_cts_processes() {
+  local proc pid cwd cmdline attempt state
+  local -a matched=() alive=()
+  shopt -s nullglob
+  for proc in /proc/[0-9]*; do
+    pid="${proc##*/}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    (( pid != $$ && pid != PPID )) || continue
+    [[ -r "$proc/cmdline" ]] || continue
+    cwd="$(readlink "$proc/cwd" 2>/dev/null || true)"
+    cmdline="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+    # Never kill by executable name alone. A process must resolve to this exact
+    # checkout (including Linux's deleted-cwd suffix) and run one of the known
+    # CTS owners/wrappers. Unrelated listeners remain a hard preflight error.
+    if [[ "$cwd" == "$INSTALL_DIR" || "$cwd" == "$INSTALL_DIR"/* \
+      || "$cwd" == "$INSTALL_DIR (deleted)" || "$cmdline" == *"$INSTALL_DIR/"* ]]; then
+      case "$cmdline" in
+        *scripts/run-with-env.mjs*|*scripts/start-production.mjs*|*scripts/run-minute-scheduler.mjs*|\
+        *scripts/direct-trade-supervisor.mjs*|*scripts/direct-trade-processor.mjs*|\
+        *scripts/runtime-recovery.sh*|*scripts/npm-redis-service.mjs*|\
+        *scripts/start.sh*|*scripts/restart.sh*|*.next/standalone/server.js*|\
+        *node_modules/next/dist/bin/next*dev*|*node_modules/next/dist/bin/next*start*)
+          matched+=("$pid")
+          ;;
+      esac
+    fi
+  done
+  shopt -u nullglob
+  (( ${#matched[@]} > 0 )) || return 0
+
+  printf 'Stopping %d stale CTS-K-N process(es) scoped to %s\n' "${#matched[@]}" "$INSTALL_DIR" >&2
+  as_root kill -TERM "${matched[@]}" 2>/dev/null || true
+  for attempt in {1..50}; do
+    alive=()
+    for pid in "${matched[@]}"; do
+      state="$(awk '{ print $3; exit }' "/proc/$pid/stat" 2>/dev/null || true)"
+      [[ -d "/proc/$pid" && "$state" != "Z" ]] && alive+=("$pid")
+    done
+    (( ${#alive[@]} == 0 )) && return 0
+    sleep 0.1
+  done
+  as_root kill -KILL "${alive[@]}" 2>/dev/null || true
+  sleep 0.2
+  for pid in "${alive[@]}"; do
+    state="$(awk '{ print $3; exit }' "/proc/$pid/stat" 2>/dev/null || true)"
+    [[ ! -d "/proc/$pid" || "$state" == "Z" ]] \
+      || { echo "Refusing checkout removal while scoped CTS process $pid remains alive" >&2; exit 1; }
+  done
+}
+
 stop_existing_installation() {
   [[ -d "$INSTALL_DIR" ]] || return 0
   assert_cts_checkout
@@ -283,6 +333,7 @@ stop_existing_installation() {
       fi
     done
   fi
+  stop_stale_cts_processes
 }
 
 preserve_existing_install_state() {
@@ -506,7 +557,7 @@ read_preserved_install_values
 if [[ -z "$SERVICE_USER" ]]; then
   if valid_user "$PROJECT_NAME"; then SERVICE_USER="$PROJECT_NAME"; else SERVICE_USER="cts-kn"; fi
 fi
-[[ -n "$ENV_FILE" ]] || ENV_FILE="$INSTALL_DIR/.env.production.local"
+[[ -n "$ENV_FILE" ]] || ENV_FILE="/var/lib/$PROJECT_NAME/.env.production.local"
 
 valid_absolute_path "$INSTALL_DIR" || { echo "Install directory must be a safe absolute non-root path" >&2; exit 2; }
 valid_name "$PROJECT_NAME" || { echo "Invalid service name" >&2; exit 2; }
@@ -636,7 +687,9 @@ if [[ -n "$PRESERVED_STATE" && -d "$PRESERVED_STATE" ]]; then
   PRESERVED_STATE=""
   if (( EXISTING_MANAGED_SERVICE_USER == 1 )) && [[ -n "$EXISTING_SERVICE_USER" && "$EXISTING_SERVICE_USER" != "$SERVICE_USER" ]] \
     && id "$EXISTING_SERVICE_USER" >/dev/null 2>&1; then
-    as_root userdel --remove "$EXISTING_SERVICE_USER" 2>/dev/null || as_root userdel "$EXISTING_SERVICE_USER" || true
+    # Preserve the old service home because it may contain operator-owned
+    # credential archives used to recover or audit the replaced installation.
+    as_root userdel "$EXISTING_SERVICE_USER" 2>/dev/null || true
   fi
 fi
 trap - EXIT

@@ -175,15 +175,15 @@ All 7 phases of the comprehensive audit have been completed successfully. The sy
 
 ## Deployment Steps
 
-1. **Merge to vercel branch**
+1. **Merge the reviewed branch to `main`**
    ```
-   git checkout vercel
+   git checkout main
    git merge v0/mxssnxx-d3d33a76
    ```
 
-2. **Deploy to Vercel**
-   - Push to vercel branch
-   - Vercel automatic deployment triggered
+2. **Deploy to the production server**
+   - Push the reviewed revision to `main`
+   - Run the clean bootstrap installer on the target host
    - Monitor /api/health endpoint
 
 3. **Post-Deployment Verification**
@@ -197,7 +197,7 @@ All 7 phases of the comprehensive audit have been completed successfully. The sy
 ## Recommendations
 
 ### Immediate
-1. Deploy to Vercel production environment
+1. Deploy to the self-hosted production environment
 2. Monitor health endpoints for 1 hour
 3. Verify trading activity continues
 
@@ -261,5 +261,4 @@ The BingX Trading Engine has successfully completed all phases of the comprehens
 **Audit Date**: 2026-07-19
 **Branch**: v0/mxssnxx-d3d33a76
 **Status**: ✅ APPROVED FOR PRODUCTION DEPLOYMENT
-**Next Step**: Merge to vercel branch and deploy
-
+**Next Step**: Merge to `main` and run the production installer

@@ -29,6 +29,7 @@ import {
   liveRetentionSecondsForStatus,
 } from "./redis-retention"
 import { buildLivePositionCompatibilitySnapshot } from "./live-position-mirror"
+import { logRuntimeError } from "./runtime-log-throttle"
 
 /**
  * Redis Database Layer - High Performance Edition v3.0
@@ -3571,7 +3572,12 @@ class NodeRedisClientAdapter implements RedisClientLike {
     if (!this.connectPromise) {
       this.connectPromise = import("redis").then(async ({ createClient }) => {
         const client = createClient({ url: this.url })
-        client.on?.("error", (err: unknown) => console.error("[v0] [Redis] network client error:", err))
+        client.on?.("error", (err: unknown) => logRuntimeError(
+          "redis:network-client-error",
+          60_000,
+          "[v0] [Redis] network client error:",
+          err instanceof Error ? err.message : String(err),
+        ))
         await client.connect()
         this.client = client
         return client

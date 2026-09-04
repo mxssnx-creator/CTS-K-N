@@ -30,7 +30,7 @@ Options:
   --name NAME          Installed systemd service name (default: cts-kn)
   --port PORT          Installed HTTP port (default: 3002)
   --service-user USER  Installed runtime user (default: <name>)
-  --env-file PATH      Existing external production environment under /etc
+  --env-file PATH      Existing persistent production environment under /var/lib
   --repository URL     Expected Git origin
   --branch NAME        Approved remote branch (default: main)
   --interval DURATION  Minimum time after a completed run (default: 15min)
@@ -74,15 +74,15 @@ valid_repository() { [[ -n "$1" && "$1" != *$'\n'* && "$1" != *$'\r'* && "$1" !=
 
 [[ -n "$PROJECT_ROOT" ]] || PROJECT_ROOT="/opt/$APP_NAME"
 [[ -n "$SERVICE_USER" ]] || SERVICE_USER="$APP_NAME"
-[[ -n "$ENV_FILE" ]] || ENV_FILE="/etc/$APP_NAME/production.env"
+[[ -n "$ENV_FILE" ]] || ENV_FILE="/var/lib/$APP_NAME/.env.production.local"
 
 valid_name "$APP_NAME" || { echo "Invalid app name: $APP_NAME" >&2; exit 2; }
 valid_user "$SERVICE_USER" || { echo "Invalid service user: $SERVICE_USER" >&2; exit 2; }
 valid_port "$APP_PORT" || { echo "Invalid HTTP port: $APP_PORT" >&2; exit 2; }
 valid_absolute_path "$PROJECT_ROOT" && [[ "$PROJECT_ROOT" == /opt/* ]] \
   || { echo "Install directory must be a safe path under /opt: $PROJECT_ROOT" >&2; exit 2; }
-valid_absolute_path "$ENV_FILE" && [[ "$ENV_FILE" == /etc/* ]] \
-  || { echo "Environment file must be a safe path under /etc: $ENV_FILE" >&2; exit 2; }
+valid_absolute_path "$ENV_FILE" && [[ "$ENV_FILE" == /var/lib/* ]] \
+  || { echo "Environment file must be a safe path under /var/lib: $ENV_FILE" >&2; exit 2; }
 valid_repository "$REPOSITORY" || { echo "Invalid repository URL" >&2; exit 2; }
 valid_branch "$BRANCH" || { echo "Invalid branch: $BRANCH" >&2; exit 2; }
 valid_duration "$PULL_INTERVAL" || { echo "Invalid systemd interval: $PULL_INTERVAL" >&2; exit 2; }

@@ -22,6 +22,7 @@ import {
 } from "@/lib/bingx-environment"
 import { resolveAuthoritativeTradeDirection } from "@/lib/trade-direction"
 import { ErrorHandler, ErrorCode } from "@/lib/error-handling"
+import { logRuntimeInfo } from "@/lib/runtime-log-throttle"
 
 /**
  * BingX Exchange Connector
@@ -225,7 +226,7 @@ export class BingXConnector extends BaseExchangeConnector {
   private timeSyncIntervalMs: number = 60_000
   // recvWindow (ms) attached to every signed request. BingX validates
   // `serverTime - timestamp <= recvWindow` (default ~5000ms, max 60000ms). On
-  // the Vercel→BingX link RTT routinely measured 800-1136ms, so one-way transit
+  // a hosted BingX link RTT routinely measured 800-1136ms, so one-way transit
   // plus a few hundred ms of skew pushed the FIRST attempt past the default
   // tolerance — signed calls failed with code 100421 and only succeeded after a
   // forced resync+retry. A 60s window absorbs all realistic latency/skew so
@@ -235,7 +236,7 @@ export class BingXConnector extends BaseExchangeConnector {
   // timestamp. BingX's recvWindow is ONE-SIDED: it tolerates timestamps that
   // lag server time (serverTime - timestamp <= recvWindow) but rejects any
   // timestamp that is AHEAD of server time almost immediately, returning code
-  // 100421 "timestamp mismatch". On the high-RTT Vercel→BingX link the midpoint
+  // 100421 "timestamp mismatch". On a high-RTT hosted link the midpoint
   // offset estimate is noisy, so a clock running even slightly fast sends future
   // timestamps and every request fails. By always biasing the timestamp to sit
   // ~2s behind our best estimate of server time, we trade harmless lateness
@@ -637,7 +638,7 @@ export class BingXConnector extends BaseExchangeConnector {
 
   /**
    * Inject a generous `recvWindow` into every signed request so requests
-   * tolerate the high, variable RTT of the Vercel→BingX link and succeed on
+   * tolerate a high, variable RTT to BingX and succeed on
    * the first attempt instead of failing with code 100421. Callers may
    * override by supplying their own `recvWindow`.
    */
@@ -3181,7 +3182,11 @@ export class BingXConnector extends BaseExchangeConnector {
           break
         }
         const rows = (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []).map(toRow)
-        console.warn(`[v0] [BingXBackfill] ${symbol} page=${iterations} http=${resp.status} code=${data?.code ?? "none"} rows=${rows.length} minId=${minId}`)
+        logRuntimeInfo(
+          "bingx:history-backfill-page",
+          60_000,
+          `[v0] [BingXBackfill] ${symbol} page=${iterations} http=${resp.status} code=${data?.code ?? "none"} rows=${rows.length} minId=${minId}`,
+        )
         if (rows.length === 0) break
         allRows.push(...rows)
         const pageMinId = rows.reduce(

@@ -1,6 +1,6 @@
 /**
  * Symbol Data Loader
- * Comprehensive symbol data loading by timeframe with optimal logging for Vercel
+ * Comprehensive symbol data loading by timeframe with structured logging
  * Handles: timeframe selection, caching, error recovery, state tracking, batch processing
  */
 
@@ -40,10 +40,9 @@ export interface LoadStats {
 }
 
 /**
- * Vercel-optimized structured logging
- * Uses JSON format for easy parsing in Vercel logs
+ * Provider-neutral structured logging in JSON format.
  */
-function logForVercel(level: "INFO" | "WARN" | "ERROR", context: string, message: string, data?: Record<string, any>) {
+function logStructured(level: "INFO" | "WARN" | "ERROR", context: string, message: string, data?: Record<string, any>) {
   const timestamp = new Date().toISOString()
   const logEntry = {
     timestamp,
@@ -53,7 +52,7 @@ function logForVercel(level: "INFO" | "WARN" | "ERROR", context: string, message
     ...data,
   }
   
-  // Use console.log with JSON for Vercel's structured logging
+  // Use console.log with JSON so journal and hosted log drains can parse it.
   if (level === "ERROR") {
     console.error(JSON.stringify(logEntry))
   } else if (level === "WARN") {
@@ -93,7 +92,7 @@ export async function loadSymbolDataByTimeframe(config: SymbolDataLoadConfig): P
     await initRedis()
     const client = getRedisClient()
 
-    logForVercel("INFO", "SymbolDataLoader", "Starting symbol data load", {
+    logStructured("INFO", "SymbolDataLoader", "Starting symbol data load", {
       connectionId: config.connectionId,
       totalSymbols: config.symbols.length,
       timeframes: config.timeframes.join(","),
@@ -115,7 +114,7 @@ export async function loadSymbolDataByTimeframe(config: SymbolDataLoadConfig): P
         const progressKey = `load_progress:${config.connectionId}`
         await client.set(progressKey, JSON.stringify(progress))
 
-        logForVercel("INFO", "SymbolDataLoader", `Loading batch of ${symbolBatch.length} symbols at ${timeframe}`, {
+        logStructured("INFO", "SymbolDataLoader", `Loading batch of ${symbolBatch.length} symbols at ${timeframe}`, {
           batch: i / batchSize + 1,
           totalBatches: Math.ceil(config.symbols.length / batchSize),
           timeframe,
@@ -137,7 +136,7 @@ export async function loadSymbolDataByTimeframe(config: SymbolDataLoadConfig): P
               stats.errors++
               progress.errors.push({ symbol, timeframe, error: errorMsg })
 
-              logForVercel("WARN", "SymbolDataLoader", `Failed to load ${symbol} at ${timeframe}`, {
+              logStructured("WARN", "SymbolDataLoader", `Failed to load ${symbol} at ${timeframe}`, {
                 error: errorMsg,
                 symbol,
                 timeframe,
@@ -154,7 +153,7 @@ export async function loadSymbolDataByTimeframe(config: SymbolDataLoadConfig): P
         stats.totalRecords += recordsLoaded
 
         if (successCount > 0) {
-          logForVercel("INFO", "SymbolDataLoader", `Batch complete: ${successCount}/${symbolBatch.length} symbols loaded`, {
+          logStructured("INFO", "SymbolDataLoader", `Batch complete: ${successCount}/${symbolBatch.length} symbols loaded`, {
             timeframe,
             recordsLoaded,
             failedSymbols: symbolBatch.length - successCount,
@@ -177,7 +176,7 @@ export async function loadSymbolDataByTimeframe(config: SymbolDataLoadConfig): P
     const progressKey = `load_progress:${config.connectionId}`
     await client.set(progressKey, JSON.stringify(progress))
 
-    logForVercel("INFO", "SymbolDataLoader", "Symbol data load completed successfully", {
+    logStructured("INFO", "SymbolDataLoader", "Symbol data load completed successfully", {
       totalRecords: stats.totalRecords,
       duration: stats.duration,
       successRate: stats.successRate.toFixed(2) + "%",
@@ -204,7 +203,7 @@ export async function loadSymbolDataByTimeframe(config: SymbolDataLoadConfig): P
     const errorMsg = error instanceof Error ? error.message : String(error)
     stats.errors++
 
-    logForVercel("ERROR", "SymbolDataLoader", "Failed to load symbol data", {
+    logStructured("ERROR", "SymbolDataLoader", "Failed to load symbol data", {
       error: errorMsg,
       connectionId: config.connectionId,
       progressedSymbols: progress.processedSymbols,
@@ -251,7 +250,7 @@ async function loadSingleSymbolTimeframe(
     )
 
     if (!syncStatus.needsSync) {
-      logForVercel("INFO", "SymbolDataLoader", `Data already cached for ${symbol} at ${timeframe}`, {
+      logStructured("INFO", "SymbolDataLoader", `Data already cached for ${symbol} at ${timeframe}`, {
         symbol,
         timeframe,
         dataType: "market_data",
@@ -314,7 +313,7 @@ async function loadSingleSymbolTimeframe(
       }),
     )
 
-    logForVercel("INFO", "SymbolDataLoader", `Loaded ${totalRecordCount} records for ${symbol} at ${timeframe}`, {
+    logStructured("INFO", "SymbolDataLoader", `Loaded ${totalRecordCount} records for ${symbol} at ${timeframe}`, {
       symbol,
       timeframe,
       recordCount: totalRecordCount,
@@ -326,7 +325,7 @@ async function loadSingleSymbolTimeframe(
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error)
 
-    logForVercel("WARN", "SymbolDataLoader", `Error loading ${symbol} at ${timeframe}`, {
+    logStructured("WARN", "SymbolDataLoader", `Error loading ${symbol} at ${timeframe}`, {
       symbol,
       timeframe,
       error: errorMsg,
@@ -385,7 +384,7 @@ export async function cancelSymbolDataLoad(connectionId: string): Promise<void> 
       progress.status = "paused"
       await client.set(progressKey, JSON.stringify(progress))
 
-      logForVercel("INFO", "SymbolDataLoader", "Symbol data load cancelled", {
+      logStructured("INFO", "SymbolDataLoader", "Symbol data load cancelled", {
         connectionId,
         processedSymbols: progress.processedSymbols,
         totalSymbols: progress.totalSymbols,

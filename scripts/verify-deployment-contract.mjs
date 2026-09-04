@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
-const rawBaseUrl = process.argv[2] || process.env.DEPLOYMENT_URL || process.env.VERCEL_URL || process.env.NEXT_PUBLIC_APP_URL || ""
+const rawBaseUrl = process.argv[2] || process.env.DEPLOYMENT_URL || process.env.NEXT_PUBLIC_APP_URL || ""
 if (!rawBaseUrl) {
   console.error("[Deployment Contract] Missing deployment URL")
   process.exit(1)

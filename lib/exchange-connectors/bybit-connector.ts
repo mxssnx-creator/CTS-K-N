@@ -41,7 +41,7 @@ import { normalizeTradeDirection } from "@/lib/trade-direction"
 export class BybitConnector extends BaseExchangeConnector {
   // ── Static (process-wide) time-sync state ────────────────────────────────
   //
-  // Bybit enforces a 5–10s timestamp window. On Vercel the VM clock can drift
+  // Bybit enforces a 5–10s timestamp window. A hosted VM clock can drift
   // or a cold container may have significant skew. Sharing offset and sync state
   // statically means the first successful sync warms the cache for all
   // subsequent instances — the same approach proven with BingX.
@@ -60,7 +60,7 @@ export class BybitConnector extends BaseExchangeConnector {
   // Re-sync every 60 s. Process-wide via static sharing.
   private readonly timeSyncIntervalMs = 60_000
   // recvWindow in ms. Bybit accepts up to 5000ms by default; we use 10000
-  // to absorb high-latency Vercel→Bybit links without causing strict-window
+  // to absorb high-latency hosted links without causing strict-window
   // failures (retCode 10003 / 10004).
   private readonly recvWindowMs = 10_000
   // Small lag bias (ms): always send a timestamp slightly behind server time.

@@ -1,8 +1,12 @@
 import {
   buildLivePositionLifetimeContribution,
+  livePositionLifetimeContributionOrderKey,
+  livePositionLifetimeContributionsKey,
   lifetimeLaneDerived,
+  recordLivePositionLifetimeContribution,
   readLivePositionLifetimeSummary,
 } from "@/lib/live-position-lifetime-summary"
+import { InlineLocalRedis } from "@/lib/redis-db"
 
 function metric(
   contribution: ReturnType<typeof buildLivePositionLifetimeContribution>,
@@ -180,5 +184,58 @@ describe("live position lifetime summary", () => {
     const summary = await readLivePositionLifetimeSummary(client, "conn")
 
     expect(summary.coverage.complete).toBe(true)
+  })
+
+  test("keeps cumulative totals while bounding the correction window", async () => {
+    const client = new InlineLocalRedis()
+    await client.flushDb()
+    const connectionId = "bounded-lifetime"
+    const position = (id: string, terminalAt: number, realizedPnL: number) => ({
+      id,
+      status: "closed",
+      executionMode: "simulation",
+      direction: "long",
+      totalExecutedQuantity: 1,
+      averageExecutionPrice: 10,
+      realizedPnL,
+      realizedPnlComplete: true,
+      updatedAt: terminalAt,
+      closedAt: terminalAt,
+    })
+
+    await recordLivePositionLifetimeContribution(client, connectionId, position("p1", 1_700_000_001_000, 1), { windowLimit: 2 })
+    await recordLivePositionLifetimeContribution(client, connectionId, position("p2", 1_700_000_002_000, 2), { windowLimit: 2 })
+    await recordLivePositionLifetimeContribution(client, connectionId, position("p3", 1_700_000_003_000, 3), { windowLimit: 2 })
+
+    expect(await client.hlen(livePositionLifetimeContributionsKey(connectionId))).toBe(2)
+    expect(await client.lrange(livePositionLifetimeContributionOrderKey(connectionId), 0, -1)).toEqual(["p3", "p2"])
+
+    let summary = await readLivePositionLifetimeSummary(client, connectionId)
+    expect(summary.lanes.simulated.realizedPnl).toBe(6)
+    expect(summary.coverage).toMatchObject({
+      uniqueTerminalIndexRows: 3,
+      indexedContributions: 2,
+      prunedContributions: 1,
+      contributionWindowLimit: 2,
+      complete: true,
+    })
+
+    // A replay older than the prune watermark must not double-count the
+    // cumulative summary after its compact correction row was discarded.
+    await expect(recordLivePositionLifetimeContribution(
+      client,
+      connectionId,
+      position("p1", 1_700_000_001_000, 99),
+      { windowLimit: 2 },
+    )).resolves.toBe(false)
+
+    // A retained row remains exactly correctable without changing cardinality.
+    await recordLivePositionLifetimeContribution(client, connectionId, position("p3", 1_700_000_003_000, 5), { windowLimit: 2 })
+    summary = await readLivePositionLifetimeSummary(client, connectionId)
+    expect(summary.lanes.simulated.realizedPnl).toBe(8)
+    expect(summary.coverage.uniqueTerminalIndexRows).toBe(3)
+    expect(summary.coverage.ignoredHistoricReplays).toBe(1)
+
+    await client.flushDb()
   })
 })

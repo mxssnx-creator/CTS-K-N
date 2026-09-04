@@ -4,11 +4,15 @@ __v0_devtools.tsx
 __v0_jsx-dev-runtime.ts
 .snowflake/
 .v0-trash/
-.vercel/
 
 # Private keys and environment variables
 cts_key
 *.pem
+.ssh/
+/chisel
+/chisel*.log
+/try_ssh.sh
+/rapid_ssh.sh
 .env
 .env.*
 !.env.example

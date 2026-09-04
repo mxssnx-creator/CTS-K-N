@@ -23,6 +23,7 @@ describe("Main Trade Engine live execution readiness", () => {
     FORCE_SIMULATED: process.env.FORCE_SIMULATED,
     FORCE_LIVE: process.env.FORCE_LIVE,
     ALLOW_LIVE_ORDER_PLACEMENT: process.env.ALLOW_LIVE_ORDER_PLACEMENT,
+    LIVE_ORDER_CONNECTION_IDS: process.env.LIVE_ORDER_CONNECTION_IDS,
   }
 
   beforeEach(() => {
@@ -36,6 +37,7 @@ describe("Main Trade Engine live execution readiness", () => {
     delete process.env.FORCE_SIMULATED
     delete process.env.FORCE_LIVE
     delete process.env.ALLOW_LIVE_ORDER_PLACEMENT
+    delete process.env.LIVE_ORDER_CONNECTION_IDS
   })
 
   afterAll(() => {
@@ -310,6 +312,49 @@ describe("Main Trade Engine live execution readiness", () => {
         canPlaceRealOrders: false,
         executionMode: "blocked",
         blockCode: "placement_disabled",
+      })
+    } finally {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: previousNodeEnv,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+    }
+  })
+
+  test("production connection allow-list keeps X01 read-only while authorizing X02 virtual funds", () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    try {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: "production",
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+      process.env.REDIS_URL = "redis://shared-test"
+      process.env.ALLOW_LIVE_ORDER_PLACEMENT = "1"
+      process.env.LIVE_ORDER_CONNECTION_IDS = "bingx-x02"
+
+      const base = {
+        ...credentialed,
+        exchange: "bingx",
+        is_live_trade: "1",
+        live_trade_requested: "1",
+      }
+      expect(evaluateRealTradeReadiness({ ...base, id: "bingx-x01", is_testnet: "0" })).toMatchObject({
+        canPlaceRealOrders: false,
+        executionMode: "blocked",
+        blockCode: "connection_not_allowed",
+      })
+      expect(evaluateRealTradeReadiness({ ...base, id: "bingx-x02", is_testnet: "1" })).toMatchObject({
+        canPlaceRealOrders: true,
+        executionMode: "live",
+        blockCode: null,
+      })
+      expect(evaluateRealTradeReadiness({ ...base, is_testnet: "1" })).toMatchObject({
+        canPlaceRealOrders: false,
+        blockCode: "connection_not_allowed",
       })
     } finally {
       Object.defineProperty(process.env, "NODE_ENV", {

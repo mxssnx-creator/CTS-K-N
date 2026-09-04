@@ -17,6 +17,7 @@ export default function MigratePage() {
     try {
       const response = await fetch("/api/admin/run-migrations", {
         method: "POST",
+        credentials: "same-origin",
       })
 
       const data = await response.json()
@@ -32,7 +33,7 @@ export default function MigratePage() {
   }
 
   async function resetAndInit() {
-    if (!confirm("This will DROP ALL TABLES and recreate them. All data will be lost. Continue?")) {
+    if (!confirm("This will flush the complete Redis database and recreate all application data. All current data will be lost. Continue?")) {
       return
     }
 
@@ -42,6 +43,7 @@ export default function MigratePage() {
     try {
       const response = await fetch("/api/admin/reset-and-init", {
         method: "POST",
+        credentials: "same-origin",
       })
 
       const data = await response.json()
@@ -67,6 +69,7 @@ export default function MigratePage() {
     try {
       const response = await fetch("/api/admin/init-database-direct", {
         method: "POST",
+        credentials: "same-origin",
       })
 
       const data = await response.json()
@@ -88,6 +91,7 @@ export default function MigratePage() {
     try {
       const response = await fetch("/api/admin/reinit-db", {
         method: "POST",
+        credentials: "same-origin",
       })
 
       const data = await response.json()

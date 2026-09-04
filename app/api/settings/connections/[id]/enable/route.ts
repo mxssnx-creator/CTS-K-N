@@ -8,6 +8,7 @@ import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { parseBooleanInput } from "@/lib/boolean-utils"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { canStartTradeEngineInProcess } from "@/lib/deployment-runtime"
 
 /**
  * POST /api/settings/connections/[id]/enable
@@ -160,12 +161,7 @@ await queueEngineRefreshRequest({
              state_switch_version: stateSwitchVersion,
              reason: "connection_enable",
            })
-           const localStartAllowed =
-             process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
-             process.env.NEXT_RUNTIME !== "edge" &&
-             (process.env.VERCEL !== "1" ||
-               (process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
-                 process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"))
+           const localStartAllowed = canStartTradeEngineInProcess()
           if (localStartAllowed && !coordinator.isEngineRunning(id)) {
             await coordinator.startMissingEngines([updatedConnection])
           }

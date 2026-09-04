@@ -16,6 +16,7 @@ import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cach
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { evaluateRealTradeReadiness, hasUsableLiveCredentials } from "@/lib/real-trade-gates"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { canStartTradeEngineInProcess } from "@/lib/deployment-runtime"
 
 /**
  * POST /api/settings/connections/[id]/live-trade
@@ -319,16 +320,10 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
         console.log(`[v0] [LiveTrade] Engine already running for ${connName} — flag updated, no restart`)
         triggerControlOrderRebuild()
       } else {
-        // Engine is not running. Queue by default in production so API workers
-        // remain responsive; foreground start is allowed only for non-Vercel
-        // or explicit flag opt-in.
+        // Engine is not running. Queue by default in request-worker runtimes;
+        // durable hosts can own it and serverless workers need explicit opt-in.
         try {
-          const localStartAllowed =
-            process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
-            process.env.NEXT_RUNTIME !== "edge" &&
-            (process.env.VERCEL !== "1" ||
-              (process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
-                process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"))
+          const localStartAllowed = canStartTradeEngineInProcess()
 
           if (localStartAllowed) {
             const settings = await loadSettingsAsync()

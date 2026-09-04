@@ -24,7 +24,6 @@ CTS-K-N/
 ├── open-next.config.ts          OpenNext build configuration
 ├── custom-worker.ts             OpenNext fetch + Cloudflare scheduled handler
 ├── wrangler.jsonc               Kilo/Cloudflare Worker source of truth
-└── vercel.json                  Optional Vercel compatibility configuration
 ```
 
 ## Critical domain modules

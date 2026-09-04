@@ -188,7 +188,6 @@ for (const match of envExample.matchAll(/^([A-Z][A-Z0-9_]*)=/gm)) {
 
 const platformVariables = new Set([
   "AWS_LAMBDA_FUNCTION_NAME", "CI", "JEST_WORKER_ID", "NEXT_PHASE", "NEXT_RUNTIME", "NODE_ENV",
-  "VERCEL", "VERCEL_ENV", "VERCEL_GIT_COMMIT_SHA", "VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL",
 ])
 
 const environmentRows = [...environmentUses.entries()]

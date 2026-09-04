@@ -79,14 +79,14 @@ Production and preview deployments must use shared Redis. Configure exactly one 
 # Native Redis URL (preferred when available)
 REDIS_URL=redis://...
 
-# Vercel KV/Redis URL alternative
+# Generic managed Redis URL alternative
 KV_URL=redis://...
 
 # Upstash Redis REST pair
 UPSTASH_REDIS_REST_URL=https://...
 UPSTASH_REDIS_REST_TOKEN=...
 
-# Vercel KV REST pair
+# Managed Redis REST pair
 KV_REST_API_URL=https://...
 KV_REST_API_TOKEN=...
 ```
@@ -103,7 +103,7 @@ SERVER_ACTION_ALLOWED_ORIGINS=app.example.com,https://admin.example.com
 
 # Also auto-detected when present.
 NEXT_PUBLIC_APP_URL=https://app.example.com
-VERCEL_PROJECT_PRODUCTION_URL=app.example.com
+NEXT_PUBLIC_APP_URL=https://app.example.com
 ```
 
 Local development is limited to the repo's dev-server port (`localhost:3002` and `127.0.0.1:3002`).
@@ -117,9 +117,9 @@ Local development is limited to the repo's dev-server port (`localhost:3002` and
    NODE_OPTIONS="--max-old-space-size=3072" pnpm exec next build
    ```
 
-2. **Deploy to Vercel**
+2. **Deploy to the production server**
    ```bash
-   vercel deploy --prod
+   sudo bash scripts/bootstrap-install.sh --port 3002 --runtime systemd --non-interactive
    ```
 
 3. **Enable Live Trading**

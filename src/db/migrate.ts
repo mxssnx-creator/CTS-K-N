@@ -7,12 +7,12 @@ function hasManagedDatabaseConfiguration(): boolean {
 }
 
 function shouldRunManagedDatabaseMigrations(): boolean {
-  // Vercel may discover and invoke `db:migrate` while building the Next
+  // A deployment system may discover and invoke `db:migrate` while building the Next
   // application. Its deployment has no Kilo managed-DB contract, even if a
   // generic DB_URL happens to be present for another integration. Running the
   // Kilo HTTP-SQLite migrator there makes an otherwise healthy build fail.
   // Kilo's Worker manifest sets both identifiers; a manual operator run may
-  // opt in explicitly without weakening the default Vercel build path.
+  // opt in explicitly without weakening the default build path.
   return (
     process.env.KILO_DEPLOYMENT === "1" ||
     process.env.CTS_DEPLOYMENT_RUNTIME === "kilo-deploy" ||

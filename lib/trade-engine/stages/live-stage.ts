@@ -169,7 +169,7 @@ import {
   MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   normalizeProtectionPercentages,
 } from "@/lib/trade-protection-contract"
-import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
+import { logRuntimeError, logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
@@ -18200,15 +18200,16 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         )
       }
     } catch (lockErr) {
-      // Redis unreachable — fail open (proceed without the lock).
-      // The in-process flag in RealtimeProcessor still prevents
-      // same-process duplicate runs; the only path that loses
-      // dedup is cron-vs-realtime, which is rare and idempotent.
-      console.warn(
-        `${LOG_PREFIX} [sync-lock] acquire failed for ${connectionId} — proceeding without cross-caller lock:`,
+      // Cross-process ownership is unknown while Redis is unavailable. Never
+      // reconcile exchange positions or submit lifecycle mutations without
+      // that ownership proof; the next healthy tick will retry.
+      logRuntimeError(
+        `live-sync:${connectionId}:lock-acquire-failed`,
+        60_000,
+        `${LOG_PREFIX} [sync-lock] acquire failed for ${connectionId} — reconciliation skipped (fail closed):`,
         lockErr instanceof Error ? lockErr.message : String(lockErr),
       )
-      lockAcquired = true // treat as acquired so the finally block doesn't try to release
+      return
     }
     if (!lockAcquired) {
       // Throttled skip log: emit at most once per 20 s to avoid flooding stdout.

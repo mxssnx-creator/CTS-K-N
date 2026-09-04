@@ -14,7 +14,8 @@ import {
   type LivePositionSource,
 } from "@/lib/live-position-source"
 
-export const LIVE_POSITION_LIFETIME_SUMMARY_VERSION = 1
+export const LIVE_POSITION_LIFETIME_SUMMARY_VERSION = 2
+export const LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW = 10_000
 
 const TERMINAL_STATUSES = new Set([
   "closed",
@@ -67,6 +68,9 @@ export interface LivePositionLifetimeSummary {
     terminalIndexRows: number
     uniqueTerminalIndexRows: number
     indexedContributions: number
+    prunedContributions: number
+    contributionWindowLimit: number
+    ignoredHistoricReplays: number
     missingPositionSnapshots: number
     complete: boolean
   }
@@ -75,6 +79,7 @@ export interface LivePositionLifetimeSummary {
 export interface LivePositionLifetimeContribution {
   schemaVersion: number
   positionId: string
+  terminalAt: number
   metrics: Record<string, number>
 }
 
@@ -219,6 +224,7 @@ export function buildLivePositionLifetimeContribution(
   return {
     schemaVersion: LIVE_POSITION_LIFETIME_SUMMARY_VERSION,
     positionId,
+    terminalAt: closedAt || timestamp(position.updatedAt ?? position.updated_at) || openedAt,
     metrics,
   }
 }
@@ -231,8 +237,19 @@ export function livePositionLifetimeContributionsKey(connectionId: string): stri
   return `live:positions:${connectionId}:lifetime:contributions`
 }
 
+export function livePositionLifetimeContributionOrderKey(connectionId: string): string {
+  return `live:positions:${connectionId}:lifetime:contribution-order`
+}
+
 const APPLY_CONTRIBUTION_LUA = `
   local oldRaw = redis.call("HGET", KEYS[1], ARGV[1])
+  local terminalAt = tonumber(ARGV[6]) or 0
+  local prunedBeforeAt = tonumber(redis.call("HGET", KEYS[2], "contributionWindowPrunedBeforeAt") or "0")
+  if not oldRaw and prunedBeforeAt > 0 and terminalAt <= prunedBeforeAt then
+    redis.call("HINCRBY", KEYS[2], "ignoredHistoricReplays", 1)
+    redis.call("HSET", KEYS[2], "schemaVersion", ARGV[3], "updatedAt", ARGV[4], "contributionWindowLimit", ARGV[5])
+    return 0
+  end
   if oldRaw then
     local old = cjson.decode(oldRaw)
     if old.metrics then
@@ -251,7 +268,26 @@ const APPLY_CONTRIBUTION_LUA = `
     end
   end
   redis.call("HSET", KEYS[1], ARGV[1], ARGV[2])
-  redis.call("HSET", KEYS[2], "schemaVersion", ARGV[3], "updatedAt", ARGV[4])
+  redis.call("LREM", KEYS[3], 0, ARGV[1])
+  redis.call("LPUSH", KEYS[3], ARGV[1])
+  local windowLimit = tonumber(ARGV[5])
+  while redis.call("LLEN", KEYS[3]) > windowLimit do
+    local oldestId = redis.call("RPOP", KEYS[3])
+    if oldestId then
+      local oldestRaw = redis.call("HGET", KEYS[1], oldestId)
+      if oldestRaw then
+        local oldest = cjson.decode(oldestRaw)
+        local oldestTerminalAt = tonumber(oldest.terminalAt or "0") or 0
+        if oldestTerminalAt > prunedBeforeAt then
+          prunedBeforeAt = oldestTerminalAt
+          redis.call("HSET", KEYS[2], "contributionWindowPrunedBeforeAt", tostring(prunedBeforeAt))
+        end
+        redis.call("HDEL", KEYS[1], oldestId)
+        redis.call("HINCRBY", KEYS[2], "contributionWindowPruned", 1)
+      end
+    end
+  end
+  redis.call("HSET", KEYS[2], "schemaVersion", ARGV[3], "updatedAt", ARGV[4], "contributionWindowLimit", ARGV[5])
   return 1
 `
 
@@ -261,6 +297,7 @@ export async function recordLivePositionLifetimeContribution(
   client: RedisClientLike,
   connectionId: string,
   position: Record<string, any>,
+  options: { windowLimit?: number } = {},
 ): Promise<boolean> {
   const contribution = buildLivePositionLifetimeContribution(position)
   if (!contribution) return false
@@ -268,12 +305,19 @@ export async function recordLivePositionLifetimeContribution(
   const keys = [
     livePositionLifetimeContributionsKey(connectionId),
     livePositionLifetimeSummaryKey(connectionId),
+    livePositionLifetimeContributionOrderKey(connectionId),
   ]
+  const windowLimit = Math.max(
+    1,
+    Math.min(50_000, Math.floor(options.windowLimit || LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW)),
+  )
   const args = [
     contribution.positionId,
     JSON.stringify(contribution),
     String(LIVE_POSITION_LIFETIME_SUMMARY_VERSION),
     String(Date.now()),
+    String(windowLimit),
+    String(contribution.terminalAt),
   ]
   if (typeof redis.eval !== "function") {
     // InlineLocalRedis is deliberately single-process and does not interpret
@@ -281,6 +325,16 @@ export async function recordLivePositionLifetimeContribution(
     // operations in sequence. Shared/network production adapters all expose
     // EVAL and use the atomic script above.
     const oldRaw = await redis.hget(keys[0], contribution.positionId)
+    const prunedBeforeAt = finite(await redis.hget(keys[1], "contributionWindowPrunedBeforeAt"))
+    if (!oldRaw && prunedBeforeAt > 0 && contribution.terminalAt <= prunedBeforeAt) {
+      await redis.hincrby(keys[1], "ignoredHistoricReplays", 1)
+      await redis.hset(keys[1], {
+        schemaVersion: String(LIVE_POSITION_LIFETIME_SUMMARY_VERSION),
+        updatedAt: String(Date.now()),
+        contributionWindowLimit: String(windowLimit),
+      })
+      return false
+    }
     if (oldRaw) {
       const old = JSON.parse(oldRaw) as LivePositionLifetimeContribution
       for (const [field, value] of Object.entries(old.metrics || {})) {
@@ -294,9 +348,25 @@ export async function recordLivePositionLifetimeContribution(
       await redis.hincrbyfloat(keys[1], field, finite(value))
     }
     await redis.hset(keys[0], contribution.positionId, JSON.stringify(contribution))
+    await redis.lrem(keys[2], 0, contribution.positionId)
+    await redis.lpush(keys[2], contribution.positionId)
+    while (await redis.llen(keys[2]) > windowLimit) {
+      const oldestId = await redis.rpop(keys[2])
+      if (!oldestId) break
+      const oldestRaw = await redis.hget(keys[0], oldestId)
+      if (!oldestRaw) continue
+      const oldest = JSON.parse(oldestRaw) as Partial<LivePositionLifetimeContribution>
+      const oldestTerminalAt = finite(oldest.terminalAt)
+      if (oldestTerminalAt > finite(await redis.hget(keys[1], "contributionWindowPrunedBeforeAt"))) {
+        await redis.hset(keys[1], "contributionWindowPrunedBeforeAt", String(oldestTerminalAt))
+      }
+      await redis.hdel(keys[0], oldestId)
+      await redis.hincrby(keys[1], "contributionWindowPruned", 1)
+    }
     await redis.hset(keys[1], {
       schemaVersion: String(LIVE_POSITION_LIFETIME_SUMMARY_VERSION),
       updatedAt: String(Date.now()),
+      contributionWindowLimit: String(windowLimit),
     })
     return true
   }
@@ -341,6 +411,22 @@ export async function readLivePositionLifetimeSummary(
   const schemaVersion = finite(hash.schemaVersion)
   const generatedAt = finite(hash.generatedAt)
   const contributionCount = Math.max(0, finite(indexedContributions))
+  const prunedContributions = Math.max(0, finite(hash.contributionWindowPruned))
+  const contributionWindowLimit = Math.max(
+    1,
+    finite(hash.contributionWindowLimit) || LIVE_POSITION_LIFETIME_CONTRIBUTION_WINDOW,
+  )
+  const ignoredHistoricReplays = Math.max(0, finite(hash.ignoredHistoricReplays))
+  const legacyCoverageComplete =
+    missingPositionSnapshots === 0
+    && recordedTerminalIndexRows === Math.max(0, finite(terminalIndexRows))
+    && contributionCount === uniqueTerminalIndexRows
+  const windowCoverageComplete =
+    missingPositionSnapshots === 0
+    && recordedTerminalIndexRows >= Math.max(0, finite(terminalIndexRows))
+    && uniqueTerminalIndexRows >= Math.max(0, finite(terminalIndexRows))
+    && contributionCount <= contributionWindowLimit
+    && contributionCount + prunedContributions === uniqueTerminalIndexRows
   return {
     schemaVersion,
     connectionId,
@@ -353,15 +439,14 @@ export async function readLivePositionLifetimeSummary(
       terminalIndexRows: Math.max(0, finite(terminalIndexRows)),
       uniqueTerminalIndexRows,
       indexedContributions: contributionCount,
+      prunedContributions,
+      contributionWindowLimit,
+      ignoredHistoricReplays,
       missingPositionSnapshots,
       complete:
-        missingPositionSnapshots === 0
-        && recordedTerminalIndexRows === Math.max(0, finite(terminalIndexRows))
-        && contributionCount === uniqueTerminalIndexRows
-        && (
-          schemaVersion === LIVE_POSITION_LIFETIME_SUMMARY_VERSION
-          || uniqueTerminalIndexRows === 0
-        ),
+        uniqueTerminalIndexRows === 0
+        || (schemaVersion === 1 && legacyCoverageComplete)
+        || (schemaVersion === LIVE_POSITION_LIFETIME_SUMMARY_VERSION && windowCoverageComplete),
     },
   }
 }
