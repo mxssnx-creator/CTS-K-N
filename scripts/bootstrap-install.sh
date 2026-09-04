@@ -470,7 +470,11 @@ create_permanent_backup() {
   if [[ "$commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
     as_root git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" bundle create "$backup/source.bundle" HEAD \
       || { echo "Could not create the required source bundle backup" >&2; exit 1; }
-    as_root git bundle verify "$backup/source.bundle" >/dev/null \
+    # `git bundle verify` resolves prerequisite objects against the current
+    # repository. Bootstrap may be launched by systemd with WorkingDirectory=/,
+    # so always anchor verification in the still-present source checkout.
+    as_root git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" \
+      bundle verify "$backup/source.bundle" >/dev/null \
       || { echo "Source bundle backup verification failed" >&2; exit 1; }
   fi
 
