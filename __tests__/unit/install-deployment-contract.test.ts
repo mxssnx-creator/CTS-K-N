@@ -43,7 +43,7 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("keeps the canonical host installer fail-closed and complete", async () => {
-    const [installer, bootstrap, updater, serviceControl, envExample, remoteRoute, credentialRoute, productionInit] = await Promise.all([
+    const [installer, bootstrap, updater, serviceControl, envExample, remoteRoute, credentialRoute, productionInit, devPreviewWorkflow] = await Promise.all([
       readFile(path.join(process.cwd(), "scripts/install.sh"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/bootstrap-install.sh"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/update.sh"), "utf8"),
@@ -52,6 +52,7 @@ describe("production installation and Kilo deployment contract", () => {
       readFile(path.join(process.cwd(), "app/api/install/remote/route.ts"), "utf8"),
       readFile(path.join(process.cwd(), "app/api/system/inject-credentials/route.ts"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/production-deploy-init.mjs"), "utf8"),
+      readFile(path.join(process.cwd(), ".github/workflows/dev-preview-smoke.yml"), "utf8"),
     ])
     expect(installer).toContain('PNPM_VERSION="10.28.1"')
     expect(installer).toContain('DEFAULT_PROJECT_NAME="cts-kn"')
@@ -107,6 +108,10 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('"$env_parent/credentials" "$env_parent/forex"')
     expect(installer).toContain('merge_persistent_credential_fallback "$env_parent/credentials/runtime.env"')
     expect(installer).toContain('merge_persistent_credential_fallback "$env_parent/forex/runtime.env"')
+    expect(devPreviewWorkflow).toContain("Verify release completeness")
+    expect(devPreviewWorkflow).toContain("node scripts/verify-recreation-manifests.mjs")
+    expect(devPreviewWorkflow).toContain("bash scripts/install.sh")
+    expect(devPreviewWorkflow).toContain("--preflight-only")
     expect(installer).toContain('BINGX_*|BYBIT_*|PIONEX_*|ORANGEX_*|INSTAFOREX_*|FOREX_*|MT4_*|MT5_*|METAAPI_*|FX_*')
     expect(installer).toContain("use bootstrap-install.sh to relocate it safely")
     expect(installer).toContain('rm -f -- "$RUNTIME_DIR/managed-service-user"')

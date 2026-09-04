@@ -98,10 +98,13 @@ CTS_NPM_REDIS_ROOT	test-or-operator-tool	no	no	2	scripts/npm-redis-service.mjs,s
 CTS_PREVIEW_REDIS_START_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/preview-redis-harness.mjs
 CTS_RECOVERY_COOLDOWN_SECONDS	test-or-operator-tool	no	yes	1	.env.example
 CTS_RECOVERY_CRON_STALE_SECONDS	test-or-operator-tool	no	yes	2	.env.example,scripts/runtime-recovery.sh
+CTS_REDIS_BUILD_MODE	test-or-operator-tool	no	no	1	scripts/redis-memory-governor.mjs
 CTS_REDIS_CANDIDATE	test-or-operator-tool	no	no	1	scripts/resolve-instance-redis-url.mjs
 CTS_REDIS_DATA_DIR	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_DB	test-or-operator-tool	no	yes	2	.env.example,scripts/resolve-instance-redis-url.mjs
+CTS_REDIS_GOVERNOR_STATE	test-or-operator-tool	no	no	1	scripts/redis-memory-governor.mjs
 CTS_REDIS_MEMORY_CLEANUP	application-runtime	no	no	1	lib/redis-db.ts
+CTS_REDIS_MEMORY_INSTANCE_SHARE	test-or-operator-tool	no	no	1	scripts/redis-memory-governor.mjs
 CTS_REDIS_PERSISTENCE_CLEANUP_INTERVAL_MS	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_PERSISTENCE_CLEANUP_MIN_AGE_MS	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_PORT	test-or-operator-tool	no	yes	2	.env.example,scripts/npm-redis-service.mjs
@@ -110,7 +113,7 @@ CTS_REDIS_VERSION	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REMOTE_INSTALL_TEST_ROOT	application-runtime	no	no	2	__tests__/unit/install-deployment-contract.test.ts,app/api/install/remote/route.ts
 CTS_REQUIRE_LIVE_TRADE_READY	test-or-operator-tool	no	yes	2	.env.example,scripts/production-deploy-init.mjs
 CTS_RUNTIME_BOOT_ID	application-runtime	no	no	5	__tests__/unit/requested-regressions.test.ts,__tests__/unit/runtime-boot-id.test.ts,lib/runtime-boot-id.ts,scripts/start-development.mjs,scripts/start-production.mjs
-CTS_RUNTIME_DIR	test-or-operator-tool	no	no	3	__tests__/unit/runtime-maintenance.test.ts,scripts/direct-trade-supervisor.mjs,scripts/start-production.mjs
+CTS_RUNTIME_DIR	test-or-operator-tool	no	no	4	__tests__/unit/runtime-maintenance.test.ts,scripts/direct-trade-supervisor.mjs,scripts/redis-memory-governor.mjs,scripts/start-production.mjs
 CTS_RUNTIME_INSTANCE_ID	test-or-operator-tool	no	yes	1	.env.example
 CTS_RUNTIME_STARTED_AT	application-runtime	no	no	4	__tests__/unit/runtime-boot-id.test.ts,lib/runtime-boot-id.ts,scripts/start-development.mjs,scripts/start-production.mjs
 CTS_SHUTDOWN_GRACE_MS	test-or-operator-tool	no	no	1	scripts/start-production.mjs
@@ -295,7 +298,7 @@ KILO_REQUIRE_REMOTE_INSTALL_OWNER	test-or-operator-tool	no	no	1	scripts/kilo-dep
 KILO_REQUIRE_RUNTIME_ENV	test-or-operator-tool	no	no	1	scripts/kilo-deploy-preflight.mjs
 KV_REST_API_TOKEN	application-runtime	yes	yes	11	.env.example,__tests__/unit/main-live-trade-readiness.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/inspect-redis-retention.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/preview-redis-harness.mjs
 KV_REST_API_URL	application-runtime	no	yes	12	.env.example,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/redis-secondary-indexes.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/inspect-redis-retention.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/preview-redis-harness.mjs
-KV_URL	application-runtime	yes	yes	16	.env.example,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/redis-secondary-indexes.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/audit-live-position-ledgers.mjs,scripts/backup-local-redis.mjs,scripts/inspect-redis-retention.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/preview-redis-harness.mjs,scripts/rebuild-live-order-counters.mjs,scripts/repair-live-position-ledgers.mjs
+KV_URL	application-runtime	yes	yes	17	.env.example,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/redis-secondary-indexes.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/audit-live-position-ledgers.mjs,scripts/backup-local-redis.mjs,scripts/inspect-redis-retention.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/preview-redis-harness.mjs,scripts/rebuild-live-order-counters.mjs,scripts/redis-memory-governor.mjs,scripts/repair-live-position-ledgers.mjs
 LIVE_DISPATCH_PER_CYCLE	test-or-operator-tool	no	no	1	__tests__/unit/requested-regressions.test.ts
 LIVE_ORDER_CONNECTION_IDS	application-runtime	no	yes	3	.env.example,__tests__/unit/main-live-trade-readiness.test.ts,lib/real-trade-gates.ts
 LIVE_ORDER_SMOKE_MAX_NOTIONAL_USDT	application-runtime	no	no	1	lib/live-order-smoke.ts
@@ -399,7 +402,7 @@ REALTIME_CANDLE_WINDOW	test-or-operator-tool	no	yes	1	.env.example
 REALTIME_CANONICAL_CYCLE_BUDGET_MS	application-runtime	no	no	1	lib/trade-engine/engine-manager.ts
 REALTIME_PIPELINE_SYMBOLS_PER_TICK	application-runtime	no	yes	2	.env.example,lib/trade-engine/engine-manager.ts
 REDIS_DEBUG_ENABLED	application-runtime	no	yes	4	.env.example,__tests__/unit/requested-regressions.test.ts,app/api/debug/progression-dump/route.ts,app/api/debug/redis-state/route.ts
-REDIS_URL	application-runtime	yes	yes	22	.env.example,__tests__/integration/main-engine-live-dispatch.test.ts,__tests__/integration/preset-optimizer-store.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/redis-secondary-indexes.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/audit-live-position-ledgers.mjs,scripts/backup-local-redis.mjs,scripts/diagnose-stats.mjs,scripts/inspect-redis-retention.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/preview-redis-harness.mjs,scripts/rebuild-live-order-counters.mjs,scripts/repair-live-position-ledgers.mjs,scripts/verify-redis-endpoint.mjs
+REDIS_URL	application-runtime	yes	yes	23	.env.example,__tests__/integration/main-engine-live-dispatch.test.ts,__tests__/integration/preset-optimizer-store.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/redis-secondary-indexes.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/audit-live-position-ledgers.mjs,scripts/backup-local-redis.mjs,scripts/diagnose-stats.mjs,scripts/inspect-redis-retention.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/preview-redis-harness.mjs,scripts/rebuild-live-order-counters.mjs,scripts/redis-memory-governor.mjs,scripts/repair-live-position-ledgers.mjs,scripts/verify-redis-endpoint.mjs
 REDIS_VOLATILE_STALE_MS	application-runtime	no	no	1	lib/redis-db.ts
 REDISMS_DOWNLOAD_DIR	test-or-operator-tool	no	no	2	scripts/npm-redis-service.mjs,scripts/preview-redis-harness.mjs
 REMOTE_INSTALL_OWNER_SECRET	application-runtime	yes	yes	4	.env.example,__tests__/unit/install-deployment-contract.test.ts,app/api/install/remote/route.ts,scripts/kilo-deploy-preflight.mjs

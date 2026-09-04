@@ -43,5 +43,17 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Verify release completeness
+        run: |
+          node scripts/verify-recreation-manifests.mjs
+          bash scripts/install.sh \
+            --name cts-ci \
+            --port 49317 \
+            --runtime pm2 \
+            --service-user "$(id -un)" \
+            --state-dir /tmp/cts-ci-state \
+            --preflight-only \
+            --skip-system-packages \
+            --non-interactive
       - name: Run dev-preview smoke verifier
         run: node scripts/run-dev-preview-check.mjs

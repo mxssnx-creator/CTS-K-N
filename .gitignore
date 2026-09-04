@@ -31,7 +31,7 @@ node_modules
 .v0-data/redis-snapshot.json.live-wal*
 
 # Redis/reference snapshots can contain connection metadata or credentials.
-redis*
+/redis*
 !lib/redis-retention.ts
 
 # Defensive: a misconfigured V0_REDIS_SNAPSHOT_PATH (e.g. a bare relative
