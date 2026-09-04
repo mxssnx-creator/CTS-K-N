@@ -100,6 +100,16 @@ interface ProgressionData {
       lastActivityAt: string | null
     }
   }
+  realtimeRotation?: {
+    configuredSymbolCount: number
+    attemptedCurrentTick: number
+    succeededCurrentTick: number
+    failedCurrentTick: number
+    coveredUnique: number
+    complete: boolean
+    failedSymbols: string[]
+    stalledSymbols: string[]
+  }
   error: string | null
 }
 
@@ -1026,6 +1036,7 @@ export function ActiveConnectionCard({
                   },
                 }
               : undefined,
+            realtimeRotation: data.realtime?.rotation,
           }
           setProgression(nextProgression as any)
           // Persist so the UI shows last-known progress immediately on reload
@@ -2616,10 +2627,24 @@ export function ActiveConnectionCard({
                 </div>
                 <Progress value={progress} className="h-1.5" />
                 {progression?.message && (
-                  <p className="text-[11px] text-muted-foreground truncate">
+                  <div className="text-[11px] text-muted-foreground">
                     {progression.message}
                     {progression.subPhase && <span className="ml-1">- {progression.subPhase}</span>}
-                  </p>
+                    {progression.realtimeRotation && (
+                      <div className="mt-1 space-y-0.5 text-[10px]">
+                        <div>
+                          Tick {progression.realtimeRotation.succeededCurrentTick}/{progression.realtimeRotation.attemptedCurrentTick} succeeded
+                          {" · Rotation "}{progression.realtimeRotation.coveredUnique}/{progression.realtimeRotation.configuredSymbolCount} unique
+                        </div>
+                        {progression.realtimeRotation.failedCurrentTick > 0 && (
+                          <div className="text-destructive">Failed: {progression.realtimeRotation.failedSymbols.join(", ")}</div>
+                        )}
+                        {!progression.realtimeRotation.complete && progression.realtimeRotation.stalledSymbols.length > 0 && (
+                          <div className="text-amber-600">Awaiting: {progression.realtimeRotation.stalledSymbols.join(", ")}</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {/* Per-connection engine stats — always shown when connection is active.

@@ -1,4 +1,8 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
+import {
+  RealtimeRotationTracker,
+  realtimeBasketGeneration,
+} from "@/lib/trade-engine/realtime-rotation-progress"
 import { sameSymbolSet, summarizeSymbols } from "@/lib/symbol-capacity"
 // Diagnostics must never synchronously write to disk from the engine hot path.
 // An operator can enable this narrow timing trace while investigating a
@@ -802,6 +806,12 @@ export class TradeEngineManager {
   private prehistoricTargetSelectionEpoch = ""
   /** Cancels self-rescheduling entry loops without stopping position recovery. */
   private entryProcessingGeneration = 0
+  private configuredSymbolCount = 0
+  private attemptedSymbolsCurrentTick = 0
+  private successfullyProcessedSymbolsCurrentTick = 0
+  private uniqueSymbolsCoveredCurrentRotation = 0
+  private realtimeBasketGeneration = ""
+  private readonly realtimeRotationTracker = new RealtimeRotationTracker()
   private healthCheckTimer?: NodeJS.Timeout
   private heartbeatTimer?: NodeJS.Timeout
   private currentEngineType = "main"
@@ -3258,6 +3268,16 @@ export class TradeEngineManager {
           (_, offset) => configuredSymbols[(realtimeSymbolCursor + offset) % configuredSymbols.length],
         )
         realtimeSymbolCursor = (realtimeSymbolCursor + symbols.length) % configuredSymbols.length
+        const tickBasketGeneration = realtimeBasketGeneration(
+          configuredSymbols,
+          entryGeneration,
+          this.settingsVersion,
+        )
+        this.realtimeRotationTracker.beginBasket(tickBasketGeneration, configuredSymbols)
+        this.realtimeBasketGeneration = tickBasketGeneration
+        this.configuredSymbolCount = configuredSymbols.length
+        this.attemptedSymbolsCurrentTick = symbols.length
+        this.successfullyProcessedSymbolsCurrentTick = 0
 
         // ── CHECK: Settings dirty flag and reload if needed ─��────────────���─────────
         // When user updates connection settings via UI, a dirty flag is set.
@@ -3492,6 +3512,26 @@ export class TradeEngineManager {
           return
         }
 
+        // A symbol reaches the successful boundary only when its entire
+        // indication -> pseudo-position -> strategy pipeline returned without
+        // an error. Empty-but-clean results are successful processing; caught
+        // failures never advance rotation coverage.
+        const successfulSymbols = pipelineResults
+          .filter((result) => !result.error)
+          .map((result) => result.symbol)
+        const rotationProgress = this.realtimeRotationTracker.finishTick(
+          tickBasketGeneration,
+          symbols,
+          successfulSymbols,
+        )
+        if (!rotationProgress || tickBasketGeneration !== this.realtimeBasketGeneration) {
+          aborted = true
+          return
+        }
+        this.attemptedSymbolsCurrentTick = rotationProgress.attemptedCurrentTick
+        this.successfullyProcessedSymbolsCurrentTick = rotationProgress.succeededCurrentTick
+        this.uniqueSymbolsCoveredCurrentRotation = rotationProgress.coveredUnique
+
         // NOTE: Coordinator is invoked per-symbol by the strategy processor
         // (strategy-processor.ts line 252) during indication processing.
         // No separate aggregation call needed — the per-symbol execution
@@ -3617,14 +3657,18 @@ export class TradeEngineManager {
             // semantics: one cycle = one full per-symbol fan-out.
             client.hincrby(redisKey, "realtime_cycle_count", 1),
             client.hincrby(redisKey, "frames_processed", 1),
-            // Use the full configured scope (not the per-tick rotating slice)
-            // for `symbols_processed`. With REALTIME_PIPELINE_SYMBOLS_PER_TICK
-            // below the basket size, the live tick advances only a slice per
-            // cycle, so writing `symbols.length` here froze the live-phase
-            // "X/N symbols processed" display at the slice size (e.g. 13/50).
-            // The live phase trades the whole scope — report the scope total
-            // so the dashboard never regresses from monotonic progress.
-            client.hset(redisKey, "symbols_processed", String(configuredSymbols.length)),
+            client.hset(redisKey, {
+              symbols_processed: String(this.uniqueSymbolsCoveredCurrentRotation),
+              realtime_configured_symbol_count: String(this.configuredSymbolCount),
+              realtime_symbols_attempted_current_tick: String(this.attemptedSymbolsCurrentTick),
+              realtime_symbols_succeeded_current_tick: String(this.successfullyProcessedSymbolsCurrentTick),
+              realtime_symbols_failed_current_tick: String(rotationProgress.failedCurrentTick),
+              realtime_rotation_covered_unique: String(this.uniqueSymbolsCoveredCurrentRotation),
+              realtime_rotation_complete: rotationProgress.complete ? "1" : "0",
+              realtime_rotation_generation: this.realtimeBasketGeneration,
+              realtime_failed_symbols_current_tick: JSON.stringify(rotationProgress.failedSymbols),
+              realtime_stalled_symbols: JSON.stringify(rotationProgress.stalledSymbols),
+            }),
             // Continuous "still alive" stamp on the progression hash so
             // the dashboard's freshness indicator never goes stale while
             // the engine is actively ticking. See same-pattern comment
