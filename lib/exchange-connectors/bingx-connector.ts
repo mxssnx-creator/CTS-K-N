@@ -50,6 +50,39 @@ import { logRuntimeInfo } from "@/lib/runtime-log-throttle"
  * - Hedge position mode
  */
 export class BingXConnector extends BaseExchangeConnector {
+  private static swapMarkets = new Map<string, { symbols: Set<string>; expiresAt: number }>()
+  private static swapMarketsInFlight = new Map<string, Promise<Set<string>>>()
+  private static invalidTickerSymbols = new Map<string, number>()
+  private static tickerCooldownUntil = new Map<string, number>()
+  private lastTickerSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
+
+  getLastTickerSnapshotStatus() { return { ...this.lastTickerSnapshotStatus } }
+
+  private async supportsSwapTicker(baseUrl: string, symbol: string): Promise<boolean> {
+    const rejectedUntil = BingXConnector.invalidTickerSymbols.get(`${baseUrl}:${symbol}`) || 0
+    if (rejectedUntil > Date.now()) return false
+    const cached = BingXConnector.swapMarkets.get(baseUrl)
+    if (cached && cached.expiresAt > Date.now()) return cached.symbols.has(symbol)
+    let pending = BingXConnector.swapMarketsInFlight.get(baseUrl)
+    if (!pending) {
+      pending = (async () => {
+        const response = await this.rateLimitedFetch(`${baseUrl}/openApi/swap/v2/quote/contracts`)
+        const payload = await this.safeJson(response)
+        if (!response.ok || String(payload.code) !== "0" || !Array.isArray(payload.data)) {
+          throw new Error(`BingX market inventory unavailable (code=${payload.code ?? response.status})`)
+        }
+        const symbols = new Set<string>(payload.data.map((row: any) => String(row?.symbol || "").toUpperCase()).filter(Boolean))
+        BingXConnector.swapMarkets.set(baseUrl, { symbols, expiresAt: Date.now() + 60_000 })
+        return symbols
+      })().catch((error) => {
+        BingXConnector.swapMarkets.set(baseUrl, { symbols: new Set(), expiresAt: Date.now() + 10_000 })
+        throw error
+      }).finally(() => { BingXConnector.swapMarketsInFlight.delete(baseUrl) })
+      BingXConnector.swapMarketsInFlight.set(baseUrl, pending)
+    }
+    return (await pending).has(symbol)
+  }
+
   private lastPositionsSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
   private lastOpenOrdersSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
   private lastOrderHistorySnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
@@ -2917,7 +2950,12 @@ export class BingXConnector extends BaseExchangeConnector {
 
       const baseUrl = this.getBaseUrl()
       const apiType = this.credentials.apiType || "perpetual_futures"
-      
+
+      const cooldownUntil = BingXConnector.tickerCooldownUntil.get(baseUrl) || 0
+      if (cooldownUntil > Date.now()) {
+        this.lastTickerSnapshotStatus = { ok: false, at: Date.now(), error: `BingX ticker cooldown until ${cooldownUntil}` }
+        return null
+      }
       // Transform symbol format for BingX
       let bingxSymbol = symbol
       if (apiType !== "spot") {
@@ -2931,6 +2969,13 @@ export class BingXConnector extends BaseExchangeConnector {
       if (apiType === "spot") {
         endpoint = `/openApi/spot/v1/ticker/price?symbol=${bingxSymbol}`
       } else {
+        // VST's market inventory differs from Mainnet discovery. Reject an
+        // unavailable market before repeated 109415 replies lock the entire
+        // quote endpoint, including otherwise valid BTC/ETH books.
+        if (!await this.supportsSwapTicker(baseUrl, bingxSymbol)) {
+          this.lastTickerSnapshotStatus = { ok: false, at: Date.now(), error: `Market ${bingxSymbol} is unavailable in this BingX environment` }
+          return null
+        }
         // Prod-VST does not expose the v3 quote/price route (100404). The v2
         // ticker is the shared documented swap endpoint and includes bid, ask
         // and last price on both Prod-Live and Prod-VST.
@@ -2944,6 +2989,19 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (data.code !== 0 && data.code !== "0") {
+        const code = String(data.code)
+        if (code === "109415") {
+          const key = `${baseUrl}:${bingxSymbol}`
+          BingXConnector.invalidTickerSymbols.delete(key)
+          BingXConnector.invalidTickerSymbols.set(key, Date.now() + 900_001)
+          while (BingXConnector.invalidTickerSymbols.size > 2_000) {
+            BingXConnector.invalidTickerSymbols.delete(BingXConnector.invalidTickerSymbols.keys().next().value!)
+          }
+        } else if (code === "109429") {
+          const retryAt = Number(String(data.msg || "").match(/retry after time:\s*(\d+)/i)?.[1])
+          BingXConnector.tickerCooldownUntil.set(baseUrl, Math.max(Date.now() + 1_000, retryAt || Date.now() + 60_000))
+        }
+        this.lastTickerSnapshotStatus = { ok: false, at: Date.now(), error: `BingX ticker rejected: ${code} ${String(data.msg || "")}` }
         return null
       }
 
@@ -2952,11 +3010,14 @@ export class BingXConnector extends BaseExchangeConnector {
       const ask = Number.parseFloat(tickerData.askPrice || tickerData.ask || "0")
       const last = Number.parseFloat(tickerData.lastPrice || tickerData.price || "0")
 
+      this.lastTickerSnapshotStatus = { ok: last > 0 || (bid > 0 && ask > 0), at: Date.now(), error: "" }
+
       this.log(`✓ Ticker fetched: bid=${bid}, ask=${ask}, last=${last}`)
       return { bid, ask, last }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
       this.logError(`✗ Failed to fetch ticker: ${errorMsg}`)
+      this.lastTickerSnapshotStatus = { ok: false, at: Date.now(), error: errorMsg }
       return null
     }
   }

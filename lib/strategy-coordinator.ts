@@ -3518,7 +3518,13 @@ export class StrategyCoordinator {
       const now = Date.now()
       phaseTimings[phase] = now - phaseStartedAt
       phaseStartedAt = now
+      if (phaseDiagnosticsEnabled) {
+        // Production strips log/info calls. Opt-in warnings keep completed
+        // phase boundaries observable even when a later stage never returns.
+        console.warn(`[v0] [StrategyPhaseTiming] ${this.connectionId}:${symbol} ${JSON.stringify({ phase, durationMs: phaseTimings[phase] })}`)
+      }
     }
+    if (phaseDiagnosticsEnabled) console.warn(`[v0] [StrategyPhaseTiming] ${this.connectionId}:${symbol} started`)
 
     try {
       // Reclaim short-lived objects before this symbol's BASE→MAIN→REAL
@@ -3777,7 +3783,7 @@ export class StrategyCoordinator {
       throw error
     } finally {
       if (phaseDiagnosticsEnabled) {
-        console.log(
+        console.warn(
           `[v0] [StrategyPhaseTiming] ${this.connectionId}:${symbol} ` +
           `${JSON.stringify({ totalMs: Date.now() - flowStartedAt, ...phaseTimings })}`,
         )

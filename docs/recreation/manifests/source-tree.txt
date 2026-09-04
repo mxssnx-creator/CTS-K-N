@@ -73,6 +73,7 @@ __tests__/unit/bingx-instrument-rules.test.ts
 __tests__/unit/bingx-library-fast-path.test.ts
 __tests__/unit/bingx-public-api.test.ts
 __tests__/unit/bingx-rate-limit-timing.test.ts
+__tests__/unit/bingx-ticker-admission.test.ts
 __tests__/unit/bingx-vst-environment.test.ts
 __tests__/unit/bingx-vst-migration.test.ts
 __tests__/unit/bingx-vst-runtime-routing.test.ts
@@ -183,6 +184,7 @@ __tests__/unit/live-position-statistics.test.ts
 __tests__/unit/live-position-stats-sources.test.ts
 __tests__/unit/live-position-status.test.ts
 __tests__/unit/live-positions-pnl.test.ts
+__tests__/unit/live-slot-lookup-cache.test.ts
 __tests__/unit/live-stage-control-barrier.test.ts
 __tests__/unit/live-stage-position-cost-coordinate.test.ts
 __tests__/unit/live-stage-redis-position-lock.test.ts
@@ -1237,6 +1239,7 @@ lib/live-position-read-model.ts
 lib/live-position-source.ts
 lib/live-position-statistics.ts
 lib/live-position-status.ts
+lib/live-slot-lookup-cache.ts
 lib/live-trading-analytics.ts
 lib/load-test-framework.ts
 lib/load-testing.ts
@@ -1554,6 +1557,7 @@ scripts/run-direct-trade-shared-isolation.mjs
 scripts/run-engine-probe.mjs
 scripts/run-managed-db-migrate.mjs
 scripts/run-minute-scheduler.mjs
+scripts/run-native-redis-coordination.mjs
 scripts/run-prod-20symbols-8h.sh
 scripts/run-prod-preview-check.mjs
 scripts/run-production-inline-ui-audit.mjs
@@ -1588,6 +1592,7 @@ scripts/update.sh
 scripts/validate-comprehensive.mjs
 scripts/verify-deployment-contract.mjs
 scripts/verify-migration-status.mjs
+scripts/verify-native-redis-coordination.ts
 scripts/verify-prod-preview.mjs
 scripts/verify-prod-soak.mjs
 scripts/verify-prod-ui-max.mjs

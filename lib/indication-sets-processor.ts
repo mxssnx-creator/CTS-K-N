@@ -397,6 +397,7 @@ local cap = tonumber(ARGV[1]) or 1000
 local positionCostPct = tonumber(ARGV[2]) or 0
 local itemCount = tonumber(ARGV[3]) or 0
 local basis = ARGV[4] or ""
+local minimumPfRatio = tonumber(ARGV[5 + itemCount * 6]) or math.huge
 
 if redis.call("HGET", statsKey, "basis") ~= basis then
   redis.call("DEL", sampleKey)
@@ -507,7 +508,11 @@ if setType == "list" and itemCount > 0 then
       if type(metadata) == "table" and metadata["outcomePending"] == true then
         patched = patched + 1
         entry["profitFactor"] = positionCostRatio
+        entry["validated"] = positionCostRatio >= minimumPfRatio
         metadata["outcomePending"] = false
+        metadata["bootstrapWithoutHistory"] = false
+        metadata["validationState"] = entry["validated"] and "validated" or "rejected"
+        metadata["outcomeSampleCount"] = count
         metadata["outcome"] = outcomes[patched] or {}
         metadata["realizedProfitFactor"] = classicProfitFactor
         metadata["averageMovePct"] = averageMovePct
@@ -522,7 +527,10 @@ if setType == "list" and itemCount > 0 then
 end
 
 if patched > 0 then
-  for keyIndex = 5, #KEYS do
+  -- Only the three discovery indexes are SETs. The final key is the outcome
+  -- dedupe ZSET; SADD there fails after LSET has already committed and loses
+  -- the patched-row acknowledgement needed by the current snapshot cache.
+  for keyIndex = 5, #KEYS - 1 do
     redis.call("SADD", KEYS[keyIndex], setKey)
   end
 end
@@ -2034,6 +2042,7 @@ export class IndicationSetsProcessor {
         return {
           ...entry,
           profitFactor: update.profitFactor,
+          validated: update.validated === true,
           metadata: update.metadata,
         }
       })
@@ -4016,17 +4025,7 @@ export class IndicationSetsProcessor {
           // rows already carry the Base PF and therefore are normally nonzero.
           if (entries[index]?.metadata?.outcomePending) {
             const closed = items[items.length - patchCount].closed
-            entries[index].profitFactor = performance.positionCostRatio
-            entries[index].metadata = {
-              ...entries[index].metadata,
-              outcomePending: false,
-              outcome: closed,
-              realizedProfitFactor: performance.classicProfitFactor,
-              averageMovePct: performance.averageMovePct,
-              positionCostRatio: performance.positionCostRatio,
-              positionCostPct: this.trendPositionCostPct,
-              profitFactorSource: "position_cost_relative_realized_outcomes",
-            }
+            this.applyCompletedOutcomePerformance(entries[index], closed, performance)
             patchCount--
             patched = true
           }
@@ -4085,6 +4084,7 @@ export class IndicationSetsProcessor {
                 String(openedAt),
               ]
             }),
+            String(this.baseMinimumPfRatio),
           ],
         }
       }

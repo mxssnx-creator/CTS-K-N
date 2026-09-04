@@ -16,6 +16,7 @@
     "test:integration": "jest --runInBand --detectOpenHandles --testPathPatterns=__tests__/integration --passWithNoTests",
     "test:e2e": "jest --runInBand --detectOpenHandles --testPathPatterns=__tests__/e2e --passWithNoTests",
     "test:all": "jest --runInBand --detectOpenHandles --passWithNoTests",
+    "test:redis-native": "node scripts/run-native-redis-coordination.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "start": "NODE_OPTIONS=\"--max-old-space-size=${CTS_NODE_HEAP_MB:-5632} --max-semi-space-size=128 --expose-gc\" node scripts/start-production.mjs",

@@ -25,6 +25,7 @@ operator-tool	scripts/test-quickstart-3symbols.js
 operator-tool	scripts/test-tp-sl-ranges.mjs
 operator-tool	scripts/validate-comprehensive.mjs
 operator-tool	scripts/verify-migration-status.mjs
+operator-tool	scripts/verify-native-redis-coordination.ts
 operator-tool	scripts/verify-recreation-manifests.mjs
 operator-tool	scripts/verify-redis-endpoint.mjs
 operator-tool	scripts/verify-signal-sources.ts
@@ -50,6 +51,7 @@ unit	__tests__/unit/bingx-instrument-rules.test.ts
 unit	__tests__/unit/bingx-library-fast-path.test.ts
 unit	__tests__/unit/bingx-public-api.test.ts
 unit	__tests__/unit/bingx-rate-limit-timing.test.ts
+unit	__tests__/unit/bingx-ticker-admission.test.ts
 unit	__tests__/unit/bingx-vst-environment.test.ts
 unit	__tests__/unit/bingx-vst-migration.test.ts
 unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
@@ -160,6 +162,7 @@ unit	__tests__/unit/live-position-statistics.test.ts
 unit	__tests__/unit/live-position-stats-sources.test.ts
 unit	__tests__/unit/live-position-status.test.ts
 unit	__tests__/unit/live-positions-pnl.test.ts
+unit	__tests__/unit/live-slot-lookup-cache.test.ts
 unit	__tests__/unit/live-stage-control-barrier.test.ts
 unit	__tests__/unit/live-stage-position-cost-coordinate.test.ts
 unit	__tests__/unit/live-stage-redis-position-lock.test.ts

@@ -6,6 +6,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { classifyVstSoakExternalProtectionOrder } from "@/lib/bingx-vst-soak-audit"
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
+import { isLiveOrderConnectionAllowed } from "@/lib/real-trade-gates"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
 const VST_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
@@ -1061,7 +1062,11 @@ async function main(): Promise<void> {
       throw new Error(`Soak requires isolated inline-local coordination; received ${redisModule.getRedisBackend()}`)
     }
     redisClient = redisModule.getRedisClient()
-    const connectionId = `bingx-vst-soak-${runSuffix}`
+    // Credentials come exclusively from BINGX_X02_*. Keep that canonical
+    // identity so every Main/Preset/Signal guard observes the production
+    // allow-list. Run isolation is provided by the UUID-owned inline database
+    // and order IDs, not by substituting an unauthorized connection identity.
+    const connectionId = "bingx-x02"
     const inMemoryConnection = {
       id: connectionId,
       name: "BingX Prod-VST Soak",
@@ -1085,6 +1090,10 @@ async function main(): Promise<void> {
       api_key: apiKey,
       api_secret: apiSecret,
     }
+    if (!isLiveOrderConnectionAllowed(inMemoryConnection)) {
+      throw new Error("Prod-VST X02 is not allowed by LIVE_ORDER_CONNECTION_IDS")
+    }
+    report.preflight.connectionId = connectionId
 
     const environment = connector.getEnvironmentInfo()
     report.preflight.environment = environment
@@ -1164,6 +1173,10 @@ async function main(): Promise<void> {
     for (const symbol of unoccupiedCandidates) {
       try {
         const ticker = await connector.getTicker(symbol)
+        if (!ticker) {
+          const status = connector.getLastTickerSnapshotStatus?.()
+          candidateErrors.set(symbol, status?.error || "No authoritative Prod-VST ticker")
+        }
         candidateTickers.set(symbol, ticker)
         liquidityRows.push({
           symbol,
