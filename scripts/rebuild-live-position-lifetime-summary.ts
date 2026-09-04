@@ -1,6 +1,7 @@
 #!/usr/bin/env npx tsx
 
-import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getRedisClient, ensureCoreRedis } from "@/lib/redis-db"
+import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import { hydrateLivePositionReadModel } from "@/lib/live-position-read-model"
 import {
   LIVE_POSITION_LIFETIME_SUMMARY_VERSION,
@@ -23,7 +24,12 @@ async function main(): Promise<void> {
   const apply = process.argv.includes("--apply")
   if (!connectionId) throw new Error("--connection is required")
 
-  await initRedis()
+  if (apply && getRuntimeMaintenanceState().reason !== "marker_present") {
+    throw new Error("--apply requires the runtime maintenance marker")
+  }
+  // An audit must not become a runtime bootstrap owner, run migrations or
+  // clear live coordinator keys. Connect only to the already installed DB.
+  await ensureCoreRedis()
   const client = getRedisClient() as any
   const ids = (await client.lrange(`live:positions:${connectionId}:closed`, 0, -1)) as string[]
   const uniqueIds = [...new Set(ids.filter(Boolean))]
@@ -142,4 +148,6 @@ async function main(): Promise<void> {
 main().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`)
   process.exitCode = 1
+}).finally(async () => {
+  try { await (getRedisClient() as any).close?.() } catch { /* preserve the operation result */ }
 })

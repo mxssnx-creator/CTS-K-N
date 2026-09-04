@@ -2927,7 +2927,7 @@ export function ActiveConnectionCard({
                           {stageEvalPercent && (
                             <div
                               className="flex items-center gap-1"
-                              title="Stage pass-through: Base is the 100% entry point; Main = survived Base→Main; Real = survived Main→Real."
+                              title="Current stage pass-through: passed/evaluated Sets for Base, Main and Real; mirrored/evaluated dispatch rows for Live."
                             >
                               <span className="text-muted-foreground">Evals B/M/R/L</span>
                               <span className="font-medium tabular-nums text-sky-700 dark:text-sky-400">
@@ -3135,20 +3135,16 @@ export function ActiveConnectionCard({
                                     </span>
                                   )
                                 })()}
+                                <span
+                                  className="text-muted-foreground"
+                                  title={isLive ? "Orders placed / filled" : "Evaluated / passed Sets in the current symbol sample"}
+                                >
+                                  {isLive ? "Orders " : "Evals "}
+                                  <span className="text-foreground font-medium tabular-nums">
+                                    {evaluated.toLocaleString()}/{passed.toLocaleString()}
+                                  </span> {isLive ? "placed/filled" : "evaluated/passed"}
+                                </span>
                                 {evaluated > 0 && (
-                                  <span className="text-muted-foreground">
-                                    {isLive ? "placed " : "eval "}
-                                    <span className="text-foreground font-medium tabular-nums">
-                                      {evaluated >= 1000 ? `${(evaluated / 1000).toFixed(1)}K` : evaluated}
-                                    </span>
-                                    {passed > 0 && (
-                                      <span className="text-foreground font-medium tabular-nums ml-0.5">
-                                        /{passed >= 1000 ? `${(passed / 1000).toFixed(1)}K` : passed} {isLive ? "filled" : "pass"}
-                                      </span>
-                                    )}
-                                  </span>
-                                )}
-                                {passRatio > 0 && (
                                   <span className="text-muted-foreground">
                                     <span className={`font-medium ${passRatio >= 50 ? "text-green-600 dark:text-green-400" : passRatio >= 25 ? "text-amber-600 dark:text-amber-400" : "text-foreground"}`}>
                                       {passRatio.toFixed(1)}%

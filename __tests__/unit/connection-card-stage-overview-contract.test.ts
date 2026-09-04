@@ -19,7 +19,7 @@ describe("connection card stage overview contract", () => {
     expect(route).toContain("const useCross = freshSymbols > 0")
     expect(route).toContain("sumFreshStageRowField")
     expect(route).not.toContain("coverage.complete ? detail.length : 0")
-    expect(route).toContain("const stageEvaluated = useCross ? symEvaluated : 0")
+    expect(route).toContain("const stageEvaluated = evaluation.evaluated")
     expect(route).toContain("symbolCount:       coverage.covered")
     expect(route).not.toContain("return samples > 0 ? total : n(hash[field] ?? hash[legacyField])")
     expect(route).toContain("engineRunning: !engineIsStopped")

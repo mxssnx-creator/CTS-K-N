@@ -123,6 +123,12 @@ const APPROVED_BINGX_VST_ORIGINS = new Set([
 function isAuthorizedMaintenanceVstSoakExposure(input: PlaceLiveOrderInput): boolean {
   const connection = input.connection as Record<string, unknown> | null | undefined
   const connectionId = String(input.connectionId || "")
+  const canonicalIsolatedSoak = connectionId === "bingx-x02"
+    && connection?.id === connectionId
+    && /^\/tmp\/cts-bingx-vst-soak-[a-f0-9-]{36}\.json$/.test(String(process.env.V0_REDIS_SNAPSHOT_PATH || ""))
+    && /^(direct-trade|main-trade|preset-trade|signal-trade)-vst-soak-(entry|dca|block|close)$/.test(String(input.source || ""))
+    && typeof getRedisBackend === "function"
+    && getRedisBackend() === "inline-local"
   const exchange = String(connection?.exchange || connection?.exchange_type || "").toLowerCase()
   const testnet = isTruthyFlag(connection?.is_testnet) || isTruthyFlag(connection?.demo_mode)
   let environment: Record<string, unknown> | null = null
@@ -133,7 +139,7 @@ function isAuthorizedMaintenanceVstSoakExposure(input: PlaceLiveOrderInput): boo
   }
   return (
     process.env.BINGX_VST_SOAK_CONFIRM === VST_SOAK_CONFIRMATION &&
-    /^bingx-vst-soak-[A-Za-z0-9_-]+$/.test(connectionId) &&
+    (/^bingx-vst-soak-[A-Za-z0-9_-]+$/.test(connectionId) || canonicalIsolatedSoak) &&
     exchange.includes("bingx") &&
     testnet &&
     input.connector != null &&

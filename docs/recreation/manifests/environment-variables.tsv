@@ -471,7 +471,7 @@ UPSTASH_REDIS_REST_URL	application-runtime	no	yes	13	.env.example,__tests__/unit
 URL	application-runtime	no	no	2	lib/deployment-runtime.ts,lib/startup-validation.ts
 UV_THREADPOOL_SIZE	test-or-operator-tool	no	yes	1	.env.example
 V0_DEV_SYMBOL_COUNT	application-runtime	no	yes	4	.env.example,lib/redis-db.ts,lib/redis-migrations.ts,lib/redis-runtime-bootstrap.ts
-V0_REDIS_SNAPSHOT_PATH	application-runtime	no	yes	8	.env.example,__tests__/unit/inline-local-redis.test.ts,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/redis-db.ts,scripts/inspect-redis-retention.ts,scripts/kilo-deploy.mjs,scripts/run-bingx-vst-live-soak.ts
+V0_REDIS_SNAPSHOT_PATH	application-runtime	no	yes	10	.env.example,__tests__/unit/inline-local-redis.test.ts,__tests__/unit/runtime-maintenance.test.ts,lib/live-order-service.ts,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/redis-db.ts,scripts/inspect-redis-retention.ts,scripts/kilo-deploy.mjs,scripts/run-bingx-vst-live-soak.ts
 VAR_NAME	test-or-operator-tool	no	no	1	DEVELOPMENT_GUIDE.md
 VERIFY_CONNECTION_ID	test-or-operator-tool	no	no	1	scripts/verify-prod-preview.mjs
 VERIFY_CONNECTION_TOGGLE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs

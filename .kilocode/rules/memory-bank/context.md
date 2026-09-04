@@ -1,4 +1,57 @@
 # Active Context: CTS-K-N Trading System (main project)
+## Current follow-up — exact evaluated/passed display
+
+- User additionally requested Stage Sets and Evals #/# verification. The card
+  previously hid passed=0 and abbreviated count pairs; it now shows both exact
+  values, including 0/0, and labels evaluated/passed vs placed/filled.
+- Current per-stage evaluation samples now exclude off-basket symbols and
+  always derive pass percentages from the same measured counts. An old stored
+  pass_rate of 100% must never override a measured 0/20; current stage rates
+  also no longer fall through to lifetime or physical fan-out counts.
+- PR312 merged as `07c71df49e3f7dd7a4001b37fa3e662c8e2a8d6e`, head
+  `5e8b085fab635f8c27b0369730415935820763a0`, exact tree
+  `53cbce5faf9da38d13f70430ebb30449cc13327e`. Required Linux smoke run
+  33926885773 passed. Full remote backup under
+  `/var/backups/cts-kn/pre-visible-recovery-deploy-20260904` verified; the
+  exact reviewed recovery draft is stashed and included unchanged in merged
+  main. Official update unit `cts-kn-visible-recovery-deploy-20260904` started.
+- R5 isolated native 32-symbol, ten-minute soak passed: Main cycles 1→27,
+  353 simulated positions recovered, heap growth 155,757 KiB, RSS peak
+  1,927,048 KiB, database plateau gate passed. No venue orders in that test.
+- PR312 deployed successfully, installer verified schema/shared Redis/continuity
+  and restart persistence. Liveness 14 ms, X02 stats 29 ms; browser Overview
+  loads again. X02 has untracked external account exposure: never adopt or
+  close it. Preserve baseline and select empty slots for the supervised test.
+- Browser/API comparison found a null-handling display defect: a verified
+  exchange snapshot had available=true but the API replaced its null error
+  with exchange_snapshot_unavailable. Preserve the successful null explicitly.
+- Evaluation follow-up passed all 274 suites / 1,890 tests, typecheck, lint
+  and production build (349 traces). A final narrow null-error projection fix
+  is verified. Full VST R4 failed at the first entry: the older maintenance
+  exception still expected the random soak connection namespace. No entry was
+  placed; cleanupComplete=true and official services restored. The canonical
+  X02 exception now additionally requires the UUID-owned /tmp soak snapshot,
+  inline-local backend and an exact harness source, besides existing confirmed
+  VST origin/virtual-fund checks. Native production Redis, X01, ordinary API
+  entries, missing confirmation and Mainnet remain blocked during maintenance.
+  Regression tests explicitly verify these boundaries; repeat full VST next.
+
+- Production Redis audit: X02 terminal index has 5,000 unique rows, all with
+  zero executed quantity and no exchange order ID (4,997 error / 3 pending at
+  sampling, then all errors). These are not fills and must not enter live PF.
+  Recent automatic entries fail because the 0.57-USD PositionCost exposure
+  ceiling is below the executable minimum; investigate sizing/configuration
+  and avoid repeated futile dispatches without raising limits silently.
+- The existing lifetime CLI's dry-run called full initRedis(), unexpectedly
+  ran bootstrap and removed 26,628 rebuildable volatile keys. No durable order,
+  margin-session or credential data was removed. Its own completed process was
+  stopped. The CLI now uses core-only Redis initialization, requires maintenance
+  for --apply and closes the native connection after completion. Verify it has
+  no boot/migration/volatile-cleanup side effects before applying the backfill.
+- Real's per-symbol passed field contains physical fan-out. Evals now explicitly
+  uses logical_passed_sets against the logical evaluated pool, with a regression
+  fixture where 1,000 physical rows represent only 20/100 logical passes.
+
 ## Current follow-up — visible counts during partial symbol coverage
 
 - PR311 merged as `d96c7ff4363292b7c30bdf58c78a94d91d265b67`, head
