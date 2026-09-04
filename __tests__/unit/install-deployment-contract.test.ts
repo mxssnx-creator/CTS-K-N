@@ -108,6 +108,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('"$env_parent/credentials" "$env_parent/forex"')
     expect(installer).toContain('merge_persistent_credential_fallback "$env_parent/credentials/runtime.env"')
     expect(installer).toContain('merge_persistent_credential_fallback "$env_parent/forex/runtime.env"')
+    expect(installer).toMatch(/local legacy_root legacy_env\n\s+legacy_root="\/var\/lib\/\$APP_NAME"\n\s+legacy_env="\$legacy_root\/\.env\.production\.local"/)
+    expect(installer).not.toContain('local legacy_root="/var/lib/$APP_NAME" legacy_env=')
     expect(devPreviewWorkflow).toContain("Verify release completeness")
     expect(devPreviewWorkflow).toContain("node scripts/verify-recreation-manifests.mjs")
     expect(devPreviewWorkflow).toContain("bash scripts/install.sh")
