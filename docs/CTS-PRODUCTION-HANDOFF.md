@@ -129,6 +129,10 @@ or `/var/backups`. Before replacement it:
 7. keeps the permanent backup after success and retains resumable recovery state
    if installation fails.
 
+Retries resume the newest exact-target recovery archive both when the target is
+absent and when a replacement clone exists but has not yet produced authoritative
+install metadata. The incomplete clone can never overwrite the prior archive.
+
 Uninstall removes only the exact checkout, units, and managed runtime identity.
 It intentionally preserves `/var/lib/cts/instances/<name>` and
 `/var/backups/cts/<name>`.
