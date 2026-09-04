@@ -1,5 +1,37 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Session 2026-09-04 — truthful realtime rotation coverage
+
+- **Canonical checkout:** `/workspace/CTS-K-N`, branch `work`, based on
+  `38921469286faa7fabcc3257aa3fc1a60d8edde9`; the handoff commit containing
+  this entry is the current canonical revision.
+- Realtime progression now keeps configured basket size, current-tick
+  attempts, current-tick successes/failures, and unique successful coverage
+  within a basket generation as separate values. Basket identity includes the
+  entry-owner and settings generations plus the normalized symbol set; stale
+  completions are rejected after replacement.
+- Both progression stats views and `/api/engine-progress` expose the rotation
+  projection. Dashboard cards distinguish tick throughput from full-rotation
+  coverage and list failed/still-uncovered symbols rather than fabricating
+  full `N/N` completion.
+- Behavioral coverage uses five configured symbols and a three-symbol tick;
+  it verifies partial first-pass coverage, monotonic exact completion, basket
+  reset/stale rejection, and a repeatedly failing symbol remaining uncovered.
+- Owner-only pre-edit checkpoint:
+  `/workspace/backups/CTS-K-N/20260904T120453Z-pre-rotation-progress` (bundle,
+  binary patch, untracked archive/list, HEAD/status, SHA-256 check, and bundle
+  verification all passed). A separate exact-tree pre-commit checkpoint is
+  recorded alongside it.
+- Gates: focused Jest, TypeScript, changed-file ESLint, and `git diff --check`
+  pass. The development server compiled and booted locally, but no browser
+  engine is installed in this environment, so an automated UI screenshot was
+  not available. No remote/deploy/exchange work occurred. The local dev boot
+  initialized only the disposable local Redis adapter and was stopped; no
+  production Redis or service was touched.
+- Pending safety work: publish only through the requested reviewed GitHub PR;
+  deploy only after merge and green checks on `main` under the managed Chisel
+  process. X01/Mainnet and every Bybit connection remain read-only.
+
 ## Session 2026-09-03 — Reset-db auth, restart intent, live-phase symbols_processed
 
 - **No remote/deploy work performed.** The managed Chisel activator
@@ -3172,3 +3204,26 @@ credentials are present.
 - [ ] No remote service, Redis data, exchange account, deployment, or order was
   touched. Publication through the current reviewed branch/PR flow remains the
   only pending handoff action; deploy only after a green merge to `main`.
+## Session 2026-09-04 — runtime-discovered Prod-VST orchestrated gate
+
+- [x] Added a two-phase BingX Prod-VST verifier which records the authoritative
+  runtime contract count and normalized unique symbols, passes that exact set
+  into the existing exhaustive simulated production soak, and performs rendered
+  browser assertions before the separately authorized representative X02
+  lifecycle. Exchange submission is forced off throughout computation.
+- [x] Added a reusable fail-closed boundary and unit coverage rejecting X01,
+  BingX mainnet, Bybit, an inexact authorization phrase, absent maintenance,
+  and active production services. The authenticated phase delegates cleanup
+  and exact account restoration to the existing hardened lifecycle runner.
+- [x] Focused validation passed: 8/8 new unit tests, TypeScript, and ESLint for
+  every new TypeScript file. The full orchestrated runtime gate was not run
+  because this checkout has no running candidate application or approved
+  Playwright browser; no remote operation, Redis mutation, or exchange request
+  occurred.
+- [x] The pre-edit owner-only source checkpoint is
+  `/workspace/backups/CTS-K-N/20260904T120443Z-pre-orchestrated-verifier`; its
+  complete bundle, binary patch, untracked archive/list, HEAD/status records,
+  bundle verification, and SHA-256 manifest verified. Canonical revision at
+  handoff is the commit containing this entry (see `git rev-parse HEAD`); GitHub
+  PR publication is required and deployment remains pending a merged green
+  `main` plus the documented operator approvals.
