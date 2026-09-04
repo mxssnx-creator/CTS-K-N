@@ -207,6 +207,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(bootstrap).toMatch(/resume_preserved_state_after_failed_clean_install\npreserve_existing_install_state\ncreate_permanent_backup\nprepare_clean_install_workspace/)
     expect(bootstrap).toContain("Verified permanent pre-reinstall backup")
     expect(bootstrap).toContain('bundle create "$backup/source.bundle"')
+    expect(bootstrap).toContain('git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR"')
+    expect(bootstrap).toContain('bundle verify "$backup/source.bundle"')
     expect(bootstrap).toContain('"$backup/SHA256SUMS"')
     expect(updater).toContain("Tracked local changes exist; refusing to overwrite them")
     expect(updater).toContain("discover_saved_install_from_name")
