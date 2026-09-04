@@ -4,6 +4,7 @@ import path from "node:path"
 
 const originalRuntimeDir = process.env.CTS_RUNTIME_DIR
 const originalSoakConfirmation = process.env.BINGX_VST_SOAK_CONFIRM
+const originalSoakSnapshot = process.env.V0_REDIS_SNAPSHOT_PATH
 const temporaryRoots: string[] = []
 
 async function runtimeRoot(): Promise<string> {
@@ -33,6 +34,8 @@ describe("runtime maintenance stop", () => {
     else process.env.CTS_RUNTIME_DIR = originalRuntimeDir
     if (originalSoakConfirmation === undefined) delete process.env.BINGX_VST_SOAK_CONFIRM
     else process.env.BINGX_VST_SOAK_CONFIRM = originalSoakConfirmation
+    if (originalSoakSnapshot === undefined) delete process.env.V0_REDIS_SNAPSHOT_PATH
+    else process.env.V0_REDIS_SNAPSHOT_PATH = originalSoakSnapshot
     await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
   })
 
@@ -169,6 +172,37 @@ describe("runtime maintenance stop", () => {
       connection: { exchange: "bingx", is_testnet: "1" },
       safetyPayload: { confirmLiveOrderPlacement: true },
     })).rejects.toMatchObject({ mode: "runtime_maintenance_stop" })
+  })
+
+  test("canonical X02 maintenance entries require the isolated soak database and verified VST venue", async () => {
+    await activateMaintenance()
+    process.env.BINGX_VST_SOAK_CONFIRM = "I understand Prod-VST places authenticated orders with virtual funds"
+    process.env.V0_REDIS_SNAPSHOT_PATH = "/tmp/cts-bingx-vst-soak-12345678-1234-1234-1234-123456789abc.json"
+    let backend = "inline-local"
+    jest.doMock("@/lib/redis-db", () => ({ getRedisBackend: () => backend }))
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const input = {
+      connectionId: "bingx-x02", symbol: "BTCUSDT", side: "long", quantity: 0,
+      source: "direct-trade-vst-soak-entry",
+      connection: { id: "bingx-x02", exchange: "bingx", is_testnet: "1" },
+      connector: { getEnvironmentInfo: () => ({
+        environment: "prod-vst", baseUrl: "https://open-api-vst.bingx.com", isDemo: true, usesVirtualFunds: true,
+      }) },
+      safetyPayload: { confirmLiveOrderPlacement: true },
+    }
+    // Quantity validation is the next boundary; no venue request can be sent.
+    await expect(placeLiveOrder(input)).rejects.not.toMatchObject({ mode: "runtime_maintenance_stop" })
+    for (const changed of [
+      { ...input, connectionId: "bingx-x01" },
+      { ...input, source: "testing-place-order" },
+      { ...input, safetyPayload: { confirmLiveOrderPlacement: false } },
+      { ...input, connector: { getEnvironmentInfo: () => ({ environment: "prod-live", baseUrl: "https://open-api.bingx.com", isDemo: false, usesVirtualFunds: false }) } },
+    ]) await expect(placeLiveOrder(changed)).rejects.toMatchObject({ mode: "runtime_maintenance_stop" })
+    backend = "redis"
+    await expect(placeLiveOrder(input)).rejects.toMatchObject({ mode: "runtime_maintenance_stop" })
+    backend = "inline-local"
+    process.env.V0_REDIS_SNAPSHOT_PATH = "/opt/cts-kn/data/redis-snapshot.json"
+    await expect(placeLiveOrder(input)).rejects.toMatchObject({ mode: "runtime_maintenance_stop" })
   })
 
   test("wires the host marker through boot and every managed runtime", async () => {

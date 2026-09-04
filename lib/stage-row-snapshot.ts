@@ -42,3 +42,18 @@ export function sumFreshStageRowField(
   }
   return total
 }
+
+/** Evaluation fractions describe the same fresh, selected symbol samples. */
+export function summarizeFreshStageEvaluation(
+  hash: Record<string, string>,
+  options: { symbols: ReadonlySet<string>; maxAgeMs: number; now?: number; passedField?: string },
+): { evaluated: number; passed: number; failed: number; passRatio: number } {
+  const evaluated = sumFreshStageRowField(hash, "evaluated", options)
+  const passed = Math.min(evaluated, sumFreshStageRowField(hash, options.passedField ?? "passed", options))
+  return {
+    evaluated,
+    passed,
+    failed: evaluated - passed,
+    passRatio: evaluated > 0 ? Math.round(passed / evaluated * 1000) / 10 : 0,
+  }
+}

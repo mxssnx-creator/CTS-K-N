@@ -3571,12 +3571,12 @@ describe("requested regression guardrails", () => {
 
     expect(statsRoute).toContain("let activeRealPassedSeen = false")
     expect(statsRoute).toContain("const _realLogicalPassed = Number(progHash.strategies_real_logical_passed")
-    expect(statsRoute).toContain("real: activeRealInput > 0 && activeRealPassedSeen")
+    expect(statsRoute).toContain("real: Number(stratDetail.real?.passRatio) || 0")
     expect(statsRoute).toContain("return activeRealInput || stratEvaluated.real || 0")
     expect(statsRoute).not.toContain("return stratEvaluated.real || 0\n            // NOTE: Real accounting has three meanings")
     expect(statsRoute).toContain("live:  activeStratByStage.live  || 0")
-    expect(statsRoute).toContain("const mainFunnelInput = strategyRows.base.valid > 0 ? strategyRows.base.valid : activeMainInput")
-    expect(statsRoute).toContain("const mainFunnelPassed = strategyRows.base.valid > 0 ? strategyRows.main.valid : activeMainPassedParents")
+    expect(statsRoute).toContain("main: Number(stratDetail.main?.passRatio) || 0")
+    expect(statsRoute).toContain("base: Number(stratDetail.base?.passRatio) || 0")
     expect(statsRoute).not.toContain("_pct(strategyRows.main.valid, strategyRows.base.total)")
 
     expect(quickstart).toContain("indActiveAdvanced: number")

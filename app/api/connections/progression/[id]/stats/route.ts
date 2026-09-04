@@ -47,7 +47,7 @@ import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
-import { resolveStageRowSnapshotFreshMs, sumFreshStageRowField } from "@/lib/stage-row-snapshot"
+import { resolveStageRowSnapshotFreshMs, sumFreshStageRowField, summarizeFreshStageEvaluation } from "@/lib/stage-row-snapshot"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -2964,10 +2964,7 @@ export async function GET(
     // Typed as Record<string, unknown> to allow the Real stage to include its
     // bounded position-detail read model alongside the flat number fields.
     const stratDetail: Record<string, Record<string, unknown>> = {}
-    // A per-symbol row is useful as a global stage snapshot only after every
-    // symbol in the current selection has reported the same cycle. Showing
-    // the one freshly completed symbol while the remaining symbols are still
-    // running makes its validated rows look like the complete total.
+    // Current measurements carry coverage so a partial basket remains explicit.
     const expectedStageSymbolCount = Math.max(
       activeStatsSymbolFilter.size,
       historicSymbolsTotal,
@@ -2995,7 +2992,7 @@ export async function GET(
         const PRUNE_MS = Math.max(30 * 60 * 1000, FRESH_MS * 2)
         const nowMs = Date.now()
         let symCreated = 0, symEntries = 0, symRunning = 0, symProgressing = 0
-        let symPassed = 0, symEvaluated = 0
+        let symEvaluated = 0
         let weightedPF = 0, weightedDDT = 0, weightedPPS = 0, weightedPER = 0
         let weightSum = 0, freshSymbols = 0
         const staleFields: string[] = []
@@ -3023,14 +3020,14 @@ export async function GET(
             }
             continue
           }
-          if (ageMs > FRESH_MS) continue   // present-but-stale → exclude
+          if (ageMs > FRESH_MS || !(ts > 0) || !Number.isFinite(ts)) continue
+          if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
           freshSymbols += 1
           const c = Number(dh[`s:${symbol}:created`]    || 0) || 0
           symCreated     += c
           symEntries     += Number(dh[`s:${symbol}:entries`]     || 0) || 0
           symRunning     += Number(dh[`s:${symbol}:running`]     || 0) || 0
           symProgressing += Number(dh[`s:${symbol}:progressing`] || 0) || 0
-          symPassed      += Number(dh[`s:${symbol}:passed`]      || 0) || 0
           symEvaluated   += Number(dh[`s:${symbol}:evaluated`]   || 0) || 0
           // Weighted means: weight = createdSets. A symbol with c=0
           // contributes nothing — correct, an empty sample shouldn't
@@ -3101,40 +3098,16 @@ export async function GET(
           ? Math.min(100, Math.round((num / den) * 1000) / 10)
           : 0
 
-        // ── evaluated / passed / passRatio ───���────────────────────────
-        // Current stage totals sum all available fresh per-symbol rows. A legacy
-        // aggregate is a last-symbol value and can make both X01 and X02
-        // display thousands of validated rows from a stale run.
-        const stageEvaluated = useCross ? symEvaluated : 0
-
-        // passed = sets that advanced to the next stage.
-        // Expansion stages (BASE/MAIN): all sets pass → fall back to stageEvaluated.
-        // Filter stages (REAL): output count = stratCounts.real.
-        const stagePassedUnbounded = useCross ? symPassed : 0
-        const stagePassed = stageEvaluated > 0
-          ? Math.min(stagePassedUnbounded, stageEvaluated)
-          : 0
-
-        // passRatio: prefer stored pass_rate (0-1 fraction from coordinator),
-        // but cross-validate it against the actual counted values.
-        // If pass_rate * stageEvaluated diverges from stagePassed by more
-        // than 10%, the hash is stale from a prior cycle — recompute.
-        const passRatioRaw = useCross ? parseFloat(dh.pass_rate || "0") : 0
-        const passRatioFromRate = passRatioRaw > 0
-          ? Math.min(100, Math.round(passRatioRaw * 1000) / 10)
-          : 0
-        // Recompute from counted values — always available when stageEvaluated > 0.
-        const passRatioFromCounts = stageEvaluated > 0
-          ? Math.min(100, Math.round((stagePassed / Math.max(stageEvaluated, 1)) * 1000) / 10)
-          : stagePassed > 0 ? 100 : 0
-        // Validate: if pass_rate implies a passed count that differs by >10%
-        // from the actual stagePassed, the stored value is stale.
-        const impliedPassed = passRatioRaw * stageEvaluated
-        const stalePassRate = stageEvaluated > 0 && stagePassed > 0
-          && Math.abs(impliedPassed - stagePassed) / Math.max(stagePassed, 1) > 0.1
-        const passRatio = (passRatioFromRate > 0 && !stalePassRate)
-          ? passRatioFromRate
-          : passRatioFromCounts
+        // Counts and percentage must share exactly the same measured sample.
+        const evaluation = summarizeFreshStageEvaluation(dh, {
+          symbols: activeStatsSymbolFilter,
+          maxAgeMs: FRESH_MS,
+          now: nowMs,
+          passedField: stage === "real" ? "logical_passed_sets" : "passed",
+        })
+        const stageEvaluated = evaluation.evaluated
+        const stagePassed = evaluation.passed
+        const passRatio = evaluation.passRatio
 
         // ── Actively-running counts (operator spec) ──
         // `sets_running_now` is written by strategy-coordinator using
@@ -4009,63 +3982,15 @@ export async function GET(
     }
 
     // ── METADATA section ─────────────────────────────────────────────�����──────
-    // ── STAGE EVAL PERCENT ───────────────────────────────────────────────────
-    // Parent-filter/output rates: same logic as detailed-tracking.ts so the stats
-    // endpoint exposes the same values without a second full Redis round-trip.
-    //   strategies_{stage}_total     = Sets the stage OUTPUT (promoted)
-    //   strategies_{stage}_evaluated = Sets that ENTERED the stage (input)
-    // base = 100% (pipeline entry; every Base set that exists passed by definition)
-    // main = Base parents passed / Base parents evaluated (before fan-out)
-    // real = logical Real passes / logical Real input (Main→Real filter survival)
-    const _pct = (num: number, den: number): number =>
-      den > 0 ? Math.max(0, Math.min(100, Number(((num / den) * 100).toFixed(1)))) : 0
-    // CUMULATIVE FUNNEL (operator spec): each stage's Eval% = sets that
-    // survived/evaluated at the stage ÷ the full candidate pool considered at
-    // the stage. Main counts one Pos-Count lineage per Base parent. Real keeps
-    // its logical filter denominator and numerator separate from physical
-    // Block/Row-Real fan-out, matching `strategy_detail:*:real.evaluated`.
-    //   strategies_{stage}_total           = stage OUTPUT (promoted / passed)
-    //   strategies_{stage}_evaluated        = stage evaluated pool
-    //   strategies_{stage}_related_created  = additionally created at the stage
-    const _baseOutput      = Number(progHash.strategies_base_total            || "0")
-    const _baseEvaluated   = Number(progHash.strategies_base_evaluated        || "0")
-    const _mainOutput      = Number(progHash.strategies_main_total            || "0")
-    const _mainInput       = Number(progHash.strategies_main_evaluated        || "0")
-    const _mainParentsPassed = Number(progHash.strategies_main_parent_passed  || "0")
-    const _realOutput      = Number(progHash.strategies_real_total            || "0")
-    const _realInput       = Number(progHash.strategies_real_evaluated        || "0")
+    // Current evaluation percentages use the same selected, fresh symbol
+    // samples as the displayed evaluated/passed counts. A measured zero must
+    // not fall through to a lifetime counter or a physical fan-out count.
     const _realLogicalPassed = Number(progHash.strategies_real_logical_passed || "0")
-    // base = evaluated ÷ overall generated (pipeline entry — every Base Set is
-    //        evaluated, so ~100% when any exist, expressed as the true ratio).
-    // main = passed Base parents ÷ evaluated Base parents. Related Main Sets
-    //        are reported separately and never inflate this filter ratio.
-    // real = logical Real passes ÷ logical Real evaluated pool. Physical
-    //       outputs remain capacity/dispatch metrics and are not a rate.
-    // live evalPct = sets dispatched this cycle / real sets available for dispatch
-    const _liveDispatched = stratCounts.live || 0
-    const _liveBase       = stratCounts.real  || 0
-    // Main's filter denominator is the Base pool that actually passed the
-    // independent Base gate, not the raw Base rows emitted before that gate.
-    // Physical Main fan-out is intentionally reported separately and must not
-    // affect this logical parent pass rate.
-    const mainFunnelInput = strategyRows.base.valid > 0 ? strategyRows.base.valid : activeMainInput
-    const mainFunnelPassed = strategyRows.base.valid > 0 ? strategyRows.main.valid : activeMainPassedParents
     const stageEvalPercent = {
-      base: strategyRows.base.total > 0
-        ? _pct(strategyRows.base.valid, strategyRows.base.total)
-        : _pct(_baseEvaluated, _baseOutput),
-      main: mainFunnelInput > 0
-        ? _pct(mainFunnelPassed, mainFunnelInput)
-        : 0,
-      real: activeRealInput > 0 && activeRealPassedSeen
-        ? _pct(activeRealPassed, activeRealInput)
-        : _pct(_realLogicalPassed || Math.min(_realOutput, _realInput), _realInput),
-      // Live: what fraction of Real-stage survivors were dispatched to exchange
-      live: strategyRows.live.total > 0
-        ? _pct(strategyRows.live.mirrored, strategyRows.live.total)
-        : _liveBase > 0
-          ? Math.min(100, Math.round((_liveDispatched / _liveBase) * 1000) / 10)
-          : 0,
+      base: Number(stratDetail.base?.passRatio) || 0,
+      main: Number(stratDetail.main?.passRatio) || 0,
+      real: Number(stratDetail.real?.passRatio) || 0,
+      live: ratio(strategyRows.live.mirrored, strategyRows.live.total),
     }
 
     // ── REAL AVERAGES ────────────��───────────────────────────────────────────
@@ -5233,8 +5158,8 @@ export async function GET(
         controlOrders: liveExecutionSummary?.controlOrders ?? 0,
         positionsDataAvailable: liveExecutionSummary?.positionsDataAvailable ?? false,
         ordersDataAvailable: liveExecutionSummary?.ordersDataAvailable ?? false,
-        positionsSnapshotError: liveExecutionSummary?.positionsSnapshotError ?? "exchange_snapshot_unavailable",
-        ordersSnapshotError: liveExecutionSummary?.ordersSnapshotError ?? "exchange_snapshot_unavailable",
+        positionsSnapshotError: liveExecutionSummary ? liveExecutionSummary.positionsSnapshotError : "exchange_snapshot_unavailable",
+        ordersSnapshotError: liveExecutionSummary ? liveExecutionSummary.ordersSnapshotError : "exchange_snapshot_unavailable",
         excludedUntrackedPositions: liveExecutionSummary?.excludedUntrackedPositions ?? 0,
         excludedUntrackedOrders: liveExecutionSummary?.excludedUntrackedOrders ?? 0,
         exchangeScope: "cts_tracked_only",
