@@ -66,3 +66,6 @@ workspace/
 .agent-logs/
 .codex-backups/
 .normalizer-test/
+
+# Runtime diagnostics are bounded on the host and never belong in releases.
+*.log

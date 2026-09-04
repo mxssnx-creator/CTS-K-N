@@ -33,6 +33,7 @@ class StructuredLogger {
   private maxBufferSize = 1000
   private flushInterval = 10000 // 10 seconds
   private flushTimer?: NodeJS.Timeout
+  private flushPromise: Promise<void> | null = null
 
   constructor(connectionId: string) {
     this.connectionId = connectionId
@@ -153,34 +154,43 @@ class StructuredLogger {
 
   private addToBuffer(log: EngineProgressLog) {
     this.logBuffer.push(log)
+    if (this.logBuffer.length > this.maxBufferSize) {
+      this.logBuffer.splice(0, this.logBuffer.length - this.maxBufferSize)
+    }
     if (this.logBuffer.length >= this.maxBufferSize) {
-      this.flushLogs()
+      void this.flushLogs()
     }
   }
 
   private async flushLogs() {
+    if (this.flushPromise) return this.flushPromise
     if (this.logBuffer.length === 0) return
+    const batch = this.logBuffer.splice(0, this.maxBufferSize)
+    this.flushPromise = (async () => {
+      try {
+        await initRedis()
+        const client = getRedisClient()
+        const logKey = `engine:logs:${this.connectionId}`
+        const pipeline = client.pipeline()
 
-    try {
-      await initRedis()
-      const client = getRedisClient()
-      const logKey = `engine:logs:${this.connectionId}`
-      const timestamp = new Date().toISOString()
-
-      // Store logs in Redis with TTL (30 days)
-      for (const log of this.logBuffer) {
-        await client.lpush(logKey, JSON.stringify(log))
+        for (const log of batch) pipeline.lpush(logKey, JSON.stringify(log))
+        pipeline.ltrim(logKey, 0, 999)
+        pipeline.expire(logKey, 2592000) // 30 days
+        const results = await pipeline.exec()
+        if (results.some((result: any) => result instanceof Error || (Array.isArray(result) && result[0]))) {
+          throw new Error("Engine structured-log pipeline returned an error")
+        }
+        console.log(`[v0] [Logger] Flushed ${batch.length} logs to Redis`)
+      } catch (error) {
+        // Logs are diagnostic. Drop this bounded batch rather than retrying it
+        // indefinitely and competing with engine state under Redis pressure.
+        console.error("[v0] [Logger] Failed to flush logs:", error)
+      } finally {
+        this.flushPromise = null
+        if (this.logBuffer.length >= this.maxBufferSize) void this.flushLogs()
       }
-
-      // Trim to last 10000 entries
-      await client.ltrim(logKey, 0, 9999)
-      await client.expire(logKey, 2592000) // 30 days
-
-      console.log(`[v0] [Logger] Flushed ${this.logBuffer.length} logs to Redis`)
-      this.logBuffer = []
-    } catch (error) {
-      console.error("[v0] [Logger] Failed to flush logs:", error)
-    }
+    })()
+    return this.flushPromise
   }
 
   async retrieveLogs(limit = 100) {
@@ -188,7 +198,8 @@ class StructuredLogger {
       await initRedis()
       const client = getRedisClient()
       const logKey = `engine:logs:${this.connectionId}`
-      const rawLogs = await client.lrange(logKey, 0, limit - 1)
+      const boundedLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 100)))
+      const rawLogs = await client.lrange(logKey, 0, boundedLimit - 1)
       return rawLogs.map((log) => JSON.parse(log) as EngineProgressLog)
     } catch (error) {
       console.error("[v0] [Logger] Failed to retrieve logs:", error)

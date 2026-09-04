@@ -802,13 +802,14 @@ run_preflight() {
     fi
   fi
 
-  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs lib/direct-trade-ledger-recovery.cjs lib/redis-memory-policy.cjs scripts/redis-memory-governor.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/resolve-instance-redis-url.mjs scripts/backup-local-redis.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/bootstrap-install.sh scripts/update.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
+  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/direct-trade-supervisor.mjs scripts/direct-trade-processor.mjs lib/direct-trade-ledger-recovery.cjs lib/redis-memory-policy.cjs scripts/redis-memory-governor.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/resolve-instance-redis-url.mjs scripts/backup-local-redis.mjs scripts/limit-runtime-logs.sh scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/bootstrap-install.sh scripts/update.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
     [[ -f "$PROJECT_ROOT/$file" ]] || fatal "Required install artifact is missing: $file"
   done
   bash -n "$PROJECT_ROOT/scripts/install.sh"
   bash -n "$PROJECT_ROOT/scripts/bootstrap-install.sh"
   bash -n "$PROJECT_ROOT/scripts/update.sh"
   bash -n "$PROJECT_ROOT/scripts/service-control.sh"
+  bash -n "$PROJECT_ROOT/scripts/limit-runtime-logs.sh"
   node --check "$PROJECT_ROOT/scripts/resolve-instance-redis-url.mjs"
   node --check "$PROJECT_ROOT/scripts/backup-local-redis.mjs"
   ok "Project/install artifacts are complete and shell syntax is valid"
@@ -1341,6 +1342,9 @@ configure_environment_and_redis() {
   upsert_env CTS_STATE_DIR "$STATE_DIR"
   upsert_env CTS_DATA_DIR "$STATE_DIR/data"
   upsert_env CTS_LOG_DIR "$STATE_DIR/logs"
+  [[ -n "$(env_value CTS_LOG_MAX_LINES)" ]] || upsert_env CTS_LOG_MAX_LINES 1000
+  [[ -n "$(env_value CTS_LOG_MAX_BYTES)" ]] || upsert_env CTS_LOG_MAX_BYTES 8388608
+  [[ -n "$(env_value CTS_JOURNAL_MAX_USE)" ]] || upsert_env CTS_JOURNAL_MAX_USE 256M
   upsert_env DB_PATH "$STATE_DIR/data/database.db"
   upsert_env CTS_REDIS_DB "$REDIS_DB"
   [[ -n "$(env_value CTS_EXCHANGE_RATE_LIMIT_SHARE)" ]] || upsert_env CTS_EXCHANGE_RATE_LIMIT_SHARE 0.45
@@ -1510,6 +1514,96 @@ configure_environment_and_redis() {
   if placeholder_secret "$jwt_secret"; then upsert_env JWT_SECRET "$(openssl rand -hex 32)"; fi
   if placeholder_secret "$direct_trade_processor_token"; then upsert_env DIRECT_TRADE_PROCESSOR_TOKEN "$(openssl rand -hex 32)"; fi
   ok "Network Redis is reachable, AOF/fsync/protected-mode/no-eviction are configured, and secrets/gates are configured"
+}
+
+configure_host_log_retention() {
+  section "Bounded host and runtime logs"
+  # Installer contract fixtures must never mutate their host. The shell script
+  # itself is exercised against a private scan root by unit tests.
+  if [[ -n "${CTS_TEST_TARGET:-}${CTS_TEST_INSTALLER:-}" ]]; then
+    ok "Skipped host log-retention publication in installer fixture"
+    return 0
+  fi
+
+  local max_lines max_bytes journal_max
+  max_lines="$(env_value CTS_LOG_MAX_LINES)"
+  max_bytes="$(env_value CTS_LOG_MAX_BYTES)"
+  journal_max="$(env_value CTS_JOURNAL_MAX_USE)"
+  [[ "$max_lines" =~ ^[0-9]+$ ]] && (( max_lines >= 100 && max_lines <= 10000 )) \
+    || fatal "CTS_LOG_MAX_LINES must be 100..10000"
+  [[ "$max_bytes" =~ ^[0-9]+$ ]] && (( max_bytes >= 1048576 && max_bytes <= 67108864 )) \
+    || fatal "CTS_LOG_MAX_BYTES must be 1..64 MiB"
+  [[ "$journal_max" =~ ^[0-9]+[KMG]$ ]] || fatal "CTS_JOURNAL_MAX_USE must be an integer K/M/G size"
+
+  run_root install -m 0750 -- "$PROJECT_ROOT/scripts/limit-runtime-logs.sh" \
+    /usr/local/sbin/cts-log-retention
+  run_root tee /etc/default/cts-log-retention >/dev/null <<EOF
+CTS_LOG_MAX_LINES=$max_lines
+CTS_LOG_MAX_BYTES=$max_bytes
+CTS_JOURNAL_MAX_USE=$journal_max
+EOF
+
+  run_root install -d -m 0755 /etc/systemd/journald.conf.d
+  run_root tee /etc/systemd/journald.conf.d/cts-retention.conf >/dev/null <<EOF
+[Journal]
+SystemMaxUse=$journal_max
+RuntimeMaxUse=64M
+SystemMaxFileSize=32M
+RuntimeMaxFileSize=16M
+SystemKeepFree=1G
+MaxRetentionSec=7day
+MaxFileSec=1day
+RateLimitIntervalSec=30s
+RateLimitBurst=1000
+EOF
+
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    run_root tee /etc/systemd/system/cts-log-retention.service >/dev/null <<'EOF'
+[Unit]
+Description=Bound CTS and supporting host text logs
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/cts-log-retention
+ExecStart=/usr/local/sbin/cts-log-retention
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=128M
+LogRateLimitIntervalSec=300s
+LogRateLimitBurst=30
+EOF
+    run_root tee /etc/systemd/system/cts-log-retention.timer >/dev/null <<'EOF'
+[Unit]
+Description=Run CTS log retention every five minutes
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=cts-log-retention.service
+
+[Install]
+WantedBy=timers.target
+EOF
+    run_root rm -f -- /etc/cron.d/cts-log-retention
+    run_root systemctl daemon-reload
+    run_root systemctl restart systemd-journald
+    run_root systemctl enable --now cts-log-retention.timer
+    run_root systemctl start cts-log-retention.service
+  else
+    run_root tee /etc/cron.d/cts-log-retention >/dev/null <<'EOF'
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/5 * * * * root /usr/local/sbin/cts-log-retention >/dev/null 2>&1
+EOF
+    run_root chmod 0644 /etc/cron.d/cts-log-retention
+    run_root env CTS_LOG_MAX_LINES="$max_lines" CTS_LOG_MAX_BYTES="$max_bytes" \
+      CTS_JOURNAL_MAX_USE="$journal_max" /usr/local/sbin/cts-log-retention
+  fi
+  ok "Physical text logs are capped at $max_lines lines/$max_bytes bytes; journal use is capped at $journal_max"
 }
 
 resolve_runtime() {
@@ -2196,6 +2290,36 @@ rollback_after_failed_verification() {
   fatal "Installation is not production-ready; inspect service logs"
 }
 
+cleanup_transient_install_artifacts() {
+  section "Transient install cache cleanup"
+  local artifact service_home
+  if [[ -d "$PROJECT_ROOT/.next/cache" && ! -L "$PROJECT_ROOT/.next/cache" ]]; then
+    rm -rf -- "$PROJECT_ROOT/.next/cache"
+  fi
+  shopt -s nullglob
+  for artifact in "$RUNTIME_DIR"/failed-next-* "$RUNTIME_DIR"/previous-next-* \
+    "$RUNTIME_DIR"/install-test-runtime.*; do
+    [[ -d "$artifact" && ! -L "$artifact" && "$artifact" == "$RUNTIME_DIR/"* ]] || continue
+    rm -rf -- "$artifact"
+  done
+  shopt -u nullglob
+
+  # Old installs used the service home as a package cache. It is not runtime
+  # or trading state and previously inflated every permanent backup by GiB.
+  service_home="$(awk -F: -v wanted="$SERVICE_USER" '$1 == wanted { print $6; exit }' /etc/passwd 2>/dev/null || true)"
+  if [[ "$service_home" == "/var/lib/$APP_NAME" && "$service_home" != "/var/lib/" ]]; then
+    run_root rm -rf -- "$service_home/.local/share/pnpm" \
+      "$service_home/.cache/node" "$service_home/.cache/pnpm"
+  fi
+  if [[ -x /usr/local/sbin/cts-log-retention ]]; then
+    run_root env CTS_LOG_MAX_LINES="$(env_value CTS_LOG_MAX_LINES)" \
+      CTS_LOG_MAX_BYTES="$(env_value CTS_LOG_MAX_BYTES)" \
+      CTS_JOURNAL_MAX_USE="$(env_value CTS_JOURNAL_MAX_USE)" \
+      /usr/local/sbin/cts-log-retention
+  fi
+  ok "Build caches and legacy package caches were removed; persistent state was retained"
+}
+
 installer_exit_handler() {
   local status=$?
   trap - EXIT
@@ -2228,6 +2352,7 @@ ensure_node_and_pnpm
 ensure_python_pip_and_bun
 mkdir -p "$RUNTIME_DIR"
 configure_environment_and_redis
+configure_host_log_retention
 resolve_runtime
 stage_existing_runtime
 install_dependencies_and_validate
@@ -2242,6 +2367,7 @@ if [[ -n "$BUILD_BACKUP" && -d "$BUILD_BACKUP" ]]; then
   rm -rf -- "$BUILD_BACKUP"
   BUILD_BACKUP=""
 fi
+cleanup_transient_install_artifacts
 
 section "Installation complete"
 ok "Project $APP_NAME is ready locally at http://127.0.0.1:$APP_PORT"

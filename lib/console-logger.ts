@@ -76,7 +76,7 @@ async function captureLog(level: "info" | "warn" | "error", args: any[]) {
     // Store in Redis with bounded lists (not unbounded sets) to prevent endless growth
     await client.hset(logId, logEntry)
     await client.lpush("logs:all:list", logId)
-    await client.ltrim("logs:all:list", 0, 4999) // Keep max 5000
+    await client.ltrim("logs:all:list", 0, 999) // Keep max 1000 system-wide
     await client.expire("logs:all:list", 604800) // Keep the bounded index rolling for 7 days
     await client.lpush(`logs:${category}:list`, logId)
     await client.ltrim(`logs:${category}:list`, 0, 999) // Keep max 1000 per category

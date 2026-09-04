@@ -14,7 +14,8 @@ export async function GET(request: Request) {
     const url = new URL(request.url)
     const level = url.searchParams.get("level")
     const category = url.searchParams.get("category")
-    const limit = Number.parseInt(url.searchParams.get("limit") || "100")
+    const requestedLimit = Number.parseInt(url.searchParams.get("limit") || "100", 10)
+    const limit = Math.max(1, Math.min(MAX_LOGS, Number.isFinite(requestedLimit) ? requestedLimit : 100))
 
     const rawLogs = await client.lrange(SITE_LOGS_KEY, 0, MAX_LOGS - 1)
     let logs = rawLogs.map((entry: any) => {

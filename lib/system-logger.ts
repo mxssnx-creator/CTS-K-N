@@ -87,7 +87,7 @@ export class SystemLogger {
         pipeline.expire(logKey, 604800)
       }
 
-      pipeline.ltrim("logs:all:list", 0, 4999)
+      pipeline.ltrim("logs:all:list", 0, 999)
       pipeline.expire("logs:all:list", 604800)
       for (const category of new Set(batch.map((entry) => entry.category))) {
         pipeline.ltrim(`logs:${category}:list`, 0, 999)

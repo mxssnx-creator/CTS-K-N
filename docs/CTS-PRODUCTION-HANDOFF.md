@@ -17,7 +17,7 @@ Redis snapshots, or the contents of the persistent credential archives.
 | HTTP port | `3002` | Unique port |
 | Durable state | `/var/lib/cts/instances/cts-kn` | `/var/lib/cts/instances/<project-name>` |
 | Environment | `/var/lib/cts/instances/cts-kn/.env.production.local` | Inside the durable state root |
-| Backups | `/var/backups/cts/cts-kn/<UTC timestamp>` | `/var/backups/cts/<project-name>/<UTC timestamp>` |
+| Backups | `/var/backups/cts/cts-kn/<UTC timestamp>` | Latest 3 verified generations under `/var/backups/cts/<project-name>` |
 | Redis namespace | logical DB `0` on native Redis | Unique DB, or unique npm Redis port plus DB |
 | Public URL | `http://152.53.114.112:3002/` | URL matching the instance port |
 
@@ -121,13 +121,19 @@ or `/var/backups`. Before replacement it:
 1. resolves the exact saved identity;
 2. enters maintenance and stops only matching CTS owners;
 3. captures recovery state outside the checkout;
-4. creates a permanent timestamped backup containing instance state, environment
-   when external, a verified Git source bundle, an online Redis RDB when
-   available, and `SHA256SUMS`;
+4. creates a permanent timestamped backup containing only persistent CTS state,
+   environment when external, a verified Git source bundle, an online Redis RDB
+   when available, and a checksum-verified `SHA256SUMS` manifest;
 5. clones the requested branch into a clean target;
 6. restores state and runs the complete installer;
 7. keeps the permanent backup after success and retains resumable recovery state
    if installation fails.
+
+Package-manager caches, PM2 internals, build artifacts and service-user dotfiles
+are never copied into permanent backups. After a new backup verifies, the
+bootstrap retains the newest three verified generations by default
+(`CTS_BACKUP_RETENTION_COUNT=3`). A malformed or unverifiable backup is retained
+for operator inspection instead of being silently deleted.
 
 Retries resume the newest exact-target recovery archive both when the target is
 absent and when a replacement clone exists but has not yet produced authoritative
@@ -174,8 +180,13 @@ active snapshot and every ordinary parallel checkout remains a hard collision.
 - Exchange queues combine global and per-endpoint token buckets, bounded queues,
   priority scheduling, retry timing, and `CTS_EXCHANGE_RATE_LIMIT_SHARE` so
   parallel instances do not each assume the venue's full allowance.
-- systemd journal limits and in-process signature/time-window coalescing retain
-  counters while preventing repeated failures from flooding logs.
+- every Redis/in-process diagnostic sink retains at most 1,000 rows; evicted
+  Monitoring/Error payload hashes are deleted and new payloads receive TTLs;
+- the shared five-minute `cts-log-retention.timer` keeps regular host and CTS
+  text logs at the newest 1,000 lines and at most 8 MiB per file without
+  traversing data, credentials, Redis state, reports or backups;
+- systemd-journald is capped at 256 MiB/7 days (64 MiB runtime), while service
+  rate limits and signature/time-window coalescing suppress repeated messages.
 
 ## Stage and UI accounting contract
 
@@ -284,7 +295,7 @@ pinned fingerprint or SSH known-host check.
 3. Keep production in maintenance while candidate, backup, or migration status
    is uncertain.
 4. Never display secret values; compare only key names, modes, sizes, and hashes.
-5. Back up before every clean reinstall and keep the backup after success.
+5. Back up before every clean reinstall and retain the latest three verified generations.
 6. Push a feature branch, pass CI, merge, and deploy only merged `main`.
 7. Record exact test counts, merged/deployed SHA, backup path, all-symbol
    coverage, browser result, Redis/memory result, and X02 cleanup result below.

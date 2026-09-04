@@ -291,7 +291,11 @@ export const RedisMonitoring = {
     await client.hmset(eventId, ...args)
     // Use bounded list instead of unbounded set for monitoring events
     await client.lpush("monitoring:events:list", eventId)
-    await client.ltrim("monitoring:events:list", 0, 4999) // Keep max 5000 events
+    const expiredEventIds = await client.lrange("monitoring:events:list", 1000, -1)
+    await client.ltrim("monitoring:events:list", 0, 999)
+    for (const expiredEventId of new Set(expiredEventIds)) {
+      await client.del(expiredEventId).catch(() => undefined)
+    }
     await client.expire(eventId, 2592000) // 30 days
   },
 

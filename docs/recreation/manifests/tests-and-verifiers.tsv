@@ -166,6 +166,7 @@ unit	__tests__/unit/live-trade-block-clearance.test.ts
 unit	__tests__/unit/live-trading-analytics.test.ts
 unit	__tests__/unit/live-trading-dashboard-contract.test.ts
 unit	__tests__/unit/live-trading-format.test.ts
+unit	__tests__/unit/log-retention-contract.test.ts
 unit	__tests__/unit/logistics-workflow.test.ts
 unit	__tests__/unit/main-indication-settings.test.ts
 unit	__tests__/unit/main-indications-stats-route.test.ts
@@ -199,6 +200,7 @@ unit	__tests__/unit/preset-pseudo-trailing-resilience.test.ts
 unit	__tests__/unit/preset-type-config.test.ts
 unit	__tests__/unit/preset-types-persistence.test.ts
 unit	__tests__/unit/production-continuity.test.ts
+unit	__tests__/unit/production-deploy-init-state.test.ts
 unit	__tests__/unit/production-start-shutdown.test.ts
 unit	__tests__/unit/progression-live-snapshot.test.ts
 unit	__tests__/unit/progression-lock-atomicity.test.ts

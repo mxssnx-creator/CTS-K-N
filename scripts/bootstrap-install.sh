@@ -154,6 +154,7 @@ EXISTING_MANAGED_SERVICE_USER=0
 PRESERVED_STATE=""
 CLEAN_INSTALL_WORK_DIR=""
 PERMANENT_BACKUP=""
+BACKUP_RETENTION_COUNT="${CTS_BACKUP_RETENTION_COUNT:-3}"
 
 discover_install_dir_from_name() {
   (( INSTALL_DIR_SET == 0 )) || return 0
@@ -439,6 +440,54 @@ preserve_existing_install_state() {
   echo "Saved persistent CTS state outside the target directory: $PRESERVED_STATE" >&2
 }
 
+copy_persistent_backup_state() {
+  local source="$1" destination="$2" entry
+  [[ -d "$source" && ! -L "$source" ]] || return 0
+  as_root install -d -m 0700 -- "$destination"
+  # These are the complete persistent CTS namespaces. Deliberately omit
+  # package-manager caches, PM2 internals, build output and user dotfiles.
+  for entry in .env.production.local credentials forex data logs redis reports backups; do
+    [[ -e "$source/$entry" && ! -L "$source/$entry" ]] || continue
+    as_root cp -a --reflink=auto -- "$source/$entry" "$destination/$entry"
+  done
+}
+
+verify_backup_manifest() {
+  local backup="$1"
+  [[ -s "$backup/SHA256SUMS" ]] || return 1
+  as_root bash -c 'cd "$1" && sha256sum -c SHA256SUMS >/dev/null 2>&1' _ "$backup"
+}
+
+prune_verified_backups() {
+  local project_backup_root="$BACKUP_ROOT/$PROJECT_NAME" name target remove_count
+  local -a verified=()
+  [[ -d "$project_backup_root" ]] || return 0
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[0-9]{8}T[0-9]{6}Z(\.[0-9]+)?$ ]] || continue
+    target="$project_backup_root/$name"
+    [[ -d "$target" && ! -L "$target" && -s "$target/backup-info" ]] || continue
+    as_root grep -Fqx "project=$PROJECT_NAME" "$target/backup-info" || continue
+    if [[ ! -f "$target/VERIFIED" ]]; then
+      if verify_backup_manifest "$target"; then
+        as_root install -m 0600 /dev/null "$target/VERIFIED"
+      else
+        echo "Retaining backup with unverifiable manifest: $target" >&2
+        continue
+      fi
+    fi
+    verified+=("$target")
+  done < <(as_root find "$project_backup_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+
+  remove_count=$(( ${#verified[@]} - BACKUP_RETENTION_COUNT ))
+  (( remove_count > 0 )) || return 0
+  for target in "${verified[@]:0:remove_count}"; do
+    [[ "$target" != "$PERMANENT_BACKUP" && "$target" == "$project_backup_root/"* \
+      && "$target" != "$project_backup_root" ]] || continue
+    as_root rm -rf --one-file-system -- "$target"
+    echo "Removed expired verified CTS backup: $target" >&2
+  done
+}
+
 create_permanent_backup() {
   [[ -d "$INSTALL_DIR" ]] || return 0
   local timestamp backup commit manifest_tmp redis_status_tmp backup_info_tmp legacy_root
@@ -456,11 +505,11 @@ create_permanent_backup() {
     as_root cp -a --reflink=auto -- "$PRESERVED_STATE" "$backup/recovery-state"
   fi
   if [[ -d "$STATE_DIR" ]]; then
-    as_root cp -a --reflink=auto -- "$STATE_DIR" "$backup/instance-state"
+    copy_persistent_backup_state "$STATE_DIR" "$backup/instance-state"
   fi
   legacy_root="/var/lib/$PROJECT_NAME"
   if [[ "$legacy_root" != "$STATE_DIR" && -d "$legacy_root" ]]; then
-    as_root cp -a --reflink=auto -- "$legacy_root" "$backup/legacy-instance-state"
+    copy_persistent_backup_state "$legacy_root" "$backup/legacy-instance-state"
   fi
   if [[ -f "$ENV_FILE" && "$ENV_FILE" != "$STATE_DIR"/* && "$ENV_FILE" != "$legacy_root"/* ]]; then
     as_root cp -a -- "$ENV_FILE" "$backup/environment"
@@ -495,8 +544,12 @@ create_permanent_backup() {
   rm -f -- "$manifest_tmp"
   as_root test -s "$backup/SHA256SUMS" \
     || { echo "Permanent backup manifest is empty" >&2; exit 1; }
+  verify_backup_manifest "$backup" \
+    || { echo "Permanent backup checksum verification failed" >&2; exit 1; }
+  as_root install -m 0600 /dev/null "$backup/VERIFIED"
   PERMANENT_BACKUP="$backup"
   echo "Verified permanent pre-reinstall backup: $PERMANENT_BACKUP" >&2
+  prune_verified_backups
 }
 
 # A failed clean install deliberately leaves the state archive beside the
@@ -757,6 +810,9 @@ valid_port "$PORT" || { echo "Invalid port" >&2; exit 2; }
 valid_absolute_path "$ENV_FILE" || { echo "Environment file must be a safe absolute non-root path" >&2; exit 2; }
 valid_absolute_path "$STATE_DIR" || { echo "State directory must be a safe absolute non-root path" >&2; exit 2; }
 valid_absolute_path "$BACKUP_ROOT" || { echo "Backup root must be a safe absolute non-root path" >&2; exit 2; }
+[[ "$BACKUP_RETENTION_COUNT" =~ ^[0-9]+$ ]] \
+  && (( BACKUP_RETENTION_COUNT >= 2 && BACKUP_RETENTION_COUNT <= 20 )) \
+  || { echo "CTS_BACKUP_RETENTION_COUNT must be 2..20" >&2; exit 2; }
 [[ "$BACKUP_ROOT" != "$STATE_DIR" && "$BACKUP_ROOT" != "$STATE_DIR"/* ]] \
   || { echo "Backup root must be outside the durable state directory" >&2; exit 2; }
 [[ "$REDIS_DB" =~ ^([0-9]|1[0-5])$ ]] || { echo "Redis DB must be 0..15" >&2; exit 2; }
@@ -792,6 +848,7 @@ if (( RESOLVE_ONLY == 1 )); then
     printf 'CTS_EXECUTION_MODE=live\n'
   fi
   printf 'CTS_BACKUP_ROOT=%s\n' "$BACKUP_ROOT"
+  printf 'CTS_BACKUP_RETENTION_COUNT=%s\n' "$BACKUP_RETENTION_COUNT"
   printf 'CTS_REPOSITORY=%s\n' "$REPOSITORY"
   printf 'CTS_BRANCH=%s\n' "$BRANCH"
   exit 0

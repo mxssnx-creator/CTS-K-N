@@ -55,16 +55,21 @@ export class MonitoringLogger {
         try { categoryLogs = JSON.parse(existingCat) } catch { categoryLogs = [] }
       }
       
-      // Prepend new entry
+      // Prepend new entry and remove payload hashes that fall out of the
+      // shared 1000-row diagnostic window. The previous JSON-list cap left an
+      // unbounded settings:monitor_log:* hash for every discarded id.
       allLogs.unshift(logId)
       categoryLogs.unshift(logId)
-      
-      // Trim to max 500 entries
-      if (allLogs.length > 500) allLogs = allLogs.slice(0, 500)
-      if (categoryLogs.length > 500) categoryLogs = categoryLogs.slice(0, 500)
+      const expiredLogIds = allLogs.slice(1000)
+      allLogs = allLogs.slice(0, 1000)
+      categoryLogs = categoryLogs.slice(0, 1000)
       
       await client.set(allLogsKey, JSON.stringify(allLogs))
       await client.set(categoryLogsKey, JSON.stringify(categoryLogs))
+      await client.expire(`settings:monitor_log:${logId}`, 7 * 24 * 60 * 60)
+      for (const expiredLogId of new Set(expiredLogIds)) {
+        await client.del(`settings:monitor_log:${expiredLogId}`).catch(() => undefined)
+      }
     } catch (error) {
       console.error("[v0] Failed to write to monitoring log:", error)
     }
