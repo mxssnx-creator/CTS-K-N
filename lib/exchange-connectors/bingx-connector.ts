@@ -844,11 +844,15 @@ export class BingXConnector extends BaseExchangeConnector {
             total: Number(asset.balance ?? asset.equity ?? 0) || 0,
           }))
           const usdtBalance = balances.find((asset) => asset.asset === "USDT")?.total ?? 0
+          const settlement = rows.find((asset: any) => String(asset.asset).toUpperCase() === "USDT")
+          const accountEquity = settlement?.equity == null || settlement.equity === ""
+            ? Number.NaN : Number(settlement.equity)
           this.sdkLastError = ""
           this.logs.push(`[${new Date().toISOString()}] ✓ Account balance via bingx-api: ${usdtBalance.toFixed(4)} USDT`)
           return {
             success: true,
             balance: usdtBalance,
+            ...(Number.isFinite(accountEquity) ? { equity: accountEquity } : {}),
             balances,
             capabilities: this.getCapabilities(),
             logs: this.logs,
@@ -1011,7 +1015,8 @@ export class BingXConnector extends BaseExchangeConnector {
       if (!settlementEntry) throw new Error("BingX settlement balance was not present in the response")
       const settlementAsset = String(settlementEntry.asset || (this.credentials.isTestnet ? "VST" : "USDT")).toUpperCase()
       const usdtBalance = Number.parseFloat(settlementEntry.balance || settlementEntry.walletBalance || "0") || 0
-      const equity = Number.parseFloat(settlementEntry.equity || settlementEntry.balance || "0") || usdtBalance
+      const parsedEquity = settlementEntry.equity == null || settlementEntry.equity === ""
+        ? Number.NaN : Number(settlementEntry.equity)
       const availableMargin = Number.parseFloat(settlementEntry.availableMargin || settlementEntry.free || "0") || 0
       const unrealizedProfit = Number.parseFloat(
         settlementEntry.unrealizedProfit
@@ -1019,6 +1024,7 @@ export class BingXConnector extends BaseExchangeConnector {
         || settlementEntry.unrealizedPNL
         || "0",
       ) || 0
+      const equity = Number.isFinite(parsedEquity) ? parsedEquity : usdtBalance + unrealizedProfit
 
       // Get BTC price from market data (for display only — silent failure OK)
       let btcPrice = 0

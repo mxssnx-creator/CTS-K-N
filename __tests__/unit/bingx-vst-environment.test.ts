@@ -81,6 +81,19 @@ describe("BingX Prod-VST connector contract", () => {
     }
   })
 
+  test.each(["0", "-10"])("preserves explicit account equity %s even when the wallet balance is positive", async (equity) => {
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname.includes("server/time")) return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      if (url.pathname.includes("/user/balance")) return Response.json({ code: 0, data: {
+        balance: { asset: "USDT", balance: "1000", equity, unrealizedProfit: "-1000" },
+      } })
+      return Response.json({ code: 0, data: { lastPrice: "60000" } })
+    }) as typeof fetch
+    const connector = new BingXConnector({ apiKey: "demo-api-key", apiSecret: "demo-api-secret", isTestnet: true, apiType: "perpetual_futures" })
+    await expect(connector.getBalance()).resolves.toMatchObject({ success: true, balance: 1000, equity: Number(equity) })
+  })
+
   test("keeps balance, quotes, orders, positions, and mode changes on Prod-VST", async () => {
     const requests: Array<{ url: URL; method: string }> = []
     const fetchMock = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {

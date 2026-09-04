@@ -1,6 +1,6 @@
 route	dynamic_segments	imported_components	source
 /		dashboard-shell,dashboard/dashboard	app/page.tsx
-/active-exchange		dashboard/exchange-statistics,page-scaffold,ui/alert,ui/badge,ui/card,ui/select	app/active-exchange/page.tsx
+/active-exchange		dashboard/exchange-statistics,page-scaffold,settings/margin-call-panel,ui/alert,ui/badge,ui/card,ui/select	app/active-exchange/page.tsx
 /additional		ui/card	app/additional/page.tsx
 /additional/chat-history		ui/button	app/additional/chat-history/page.tsx
 /additional/volume-corrections		ui/alert,ui/button,ui/card,ui/tabs	app/additional/volume-corrections/page.tsx

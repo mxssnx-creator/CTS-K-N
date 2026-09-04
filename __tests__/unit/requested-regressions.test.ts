@@ -1874,6 +1874,7 @@ describe("requested regression guardrails", () => {
       const hincrby = jest.fn().mockResolvedValue(1)
       const hincrbyfloat = jest.fn().mockResolvedValue(1)
       const createExchangeConnector = jest.fn().mockResolvedValue({
+        getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
         placeOrder: jest.fn().mockResolvedValue({
           success: true,
           orderId: "order-1",
@@ -1886,9 +1887,23 @@ describe("requested regression guardrails", () => {
           .mockResolvedValueOnce({ success: true, orderId: "take-1" }),
       })
 
+      const riskValues = new Map<string, string>()
       jest.doMock("@/lib/redis-db", () => ({
         initRedis: jest.fn().mockResolvedValue(undefined),
-        getRedisClient: jest.fn(() => ({ hgetall, hget, hincrby, hincrbyfloat })),
+        persistNow: jest.fn(async () => true),
+        getRedisBackend: jest.fn(() => "inline-local"),
+        getRedisClient: jest.fn(() => ({
+          hgetall, hget, hincrby, hincrbyfloat,
+          hset: async () => 1,
+          get: async (key: string) => riskValues.get(key) ?? null,
+          set: async (key: string, value: string, options?: { NX?: boolean }) => {
+            if (options?.NX && riskValues.has(key)) return null
+            riskValues.set(key, value); return "OK"
+          },
+          del: async (key: string) => Number(riskValues.delete(key)),
+          lpush: async () => 1,
+          ltrim: async () => "OK",
+        })),
         savePosition: jest.fn().mockResolvedValue(undefined),
         getMarketData: jest.fn().mockResolvedValue(null),
       }))

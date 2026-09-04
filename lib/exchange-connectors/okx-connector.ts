@@ -114,6 +114,7 @@ export class OKXConnector extends BaseExchangeConnector {
       return {
         success: true,
         balance: usdtBalance,
+        equity: usdtBalance,
         balances,
         capabilities: this.getCapabilities(),
         logs: this.logs,

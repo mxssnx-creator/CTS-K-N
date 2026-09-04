@@ -173,6 +173,8 @@ unit	__tests__/unit/main-indication-settings.test.ts
 unit	__tests__/unit/main-indications-stats-route.test.ts
 unit	__tests__/unit/main-live-trade-readiness.test.ts
 unit	__tests__/unit/main-trade-profit-factor.test.ts
+unit	__tests__/unit/margin-call-route.test.ts
+unit	__tests__/unit/margin-call.test.ts
 unit	__tests__/unit/market-data-fetch-deadline.test.ts
 unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts

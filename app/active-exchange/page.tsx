@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { ExchangeStatistics } from "@/components/dashboard/exchange-statistics"
+import { MarginCallPanel } from "@/components/settings/margin-call-panel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
@@ -127,6 +128,9 @@ export default function ActiveExchangePage() {
         </CardContent>
       </Card>
 
+      {effectiveConnection ? (
+        <MarginCallPanel key={`margin-${effectiveConnection.id}`} connectionId={effectiveConnection.id} />
+      ) : null}
       {effectiveConnection ? (
         <ExchangeStatistics
           key={effectiveConnection.id}

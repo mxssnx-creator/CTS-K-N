@@ -33,6 +33,7 @@ import {
 } from "@/lib/redis-db"
 import { nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import { assertMarginCallEntryAllowed, monitorConnectionMarginCall } from "@/lib/margin-call"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import {
@@ -4567,6 +4568,7 @@ async function accumulateIntoLivePosition(
   allowNewExchangeMutation = true,
   shouldContinue?: () => boolean | Promise<boolean>,
 ): Promise<LivePosition> {
+  if (allowNewExchangeMutation) await assertMarginCallEntryAllowed(connId, connector)
   // Block and DCA are adjustment-only variants: they add an independently
   // calculated leg to an authoritative parent instead of opening competing
   // exchange positions for the same symbol/direction.
@@ -7546,6 +7548,15 @@ async function resolveNativePositionTicket(
   }
 }
 
+function isRetryableProtectionRejection(message: string, expectedCode: string, fallback: RegExp): boolean {
+  // Lockout messages quote the business error that caused the rolling ban.
+  // Only the primary response code describes this request's rejection.
+  const primaryCode = message.match(/(?:code\s*[=:]\s*|^\s*)(\d{5,6})(?=\D|$)/i)?.[1]
+  if (primaryCode) return primaryCode === expectedCode
+  if (/109429|100410|rate.limit|cooldown|can retry after time/i.test(message)) return false
+  return message.includes(expectedCode) || fallback.test(message)
+}
+
 async function placeProtectionOrder(
   connector: any,
   symbol: string,
@@ -7705,7 +7716,7 @@ async function placeProtectionOrder(
     // externally closed or fully consumed by the other protection leg — treat
     // it as success (reconcile will verify).
     if (!result?.success) {
-      const is110424 = (msg: string) => msg.includes("110424") || /available amount/i.test(msg)
+      const is110424 = (msg: string) => isRetryableProtectionRejection(msg, "110424", /available amount/i)
       let attempt = 0
       while (!result?.success && is110424(String(result?.error || "")) && attempt < 2) {
         const errMsg = String(result?.error || "")
@@ -7743,7 +7754,9 @@ async function placeProtectionOrder(
     // if the retry also fails (position will have settled by then).
     if (!result?.success) {
       const errMsg109 = String(result?.error || "")
-      if (errMsg109.includes("109420") || /position not exist/i.test(errMsg109)) {
+      const isPositionSettling = (message: string) =>
+        isRetryableProtectionRejection(message, "109420", /position not exist/i)
+      if (isPositionSettling(errMsg109)) {
         // Exponential backoff: 1s, 2s, 4s.
         // BingX hedge-mode positions can take 2–4 s to become visible
         // under load. The old 500ms/1s/2s budget was exhausted too quickly,
@@ -7751,7 +7764,7 @@ async function placeProtectionOrder(
         // tick — leaving the position unprotected for up to 60 s.
         const BACKOFF_DELAYS_MS = [1000, 2000, 4000]
         let retryAttempt = 0
-        while (retryAttempt < BACKOFF_DELAYS_MS.length && !result?.success) {
+        while (retryAttempt < BACKOFF_DELAYS_MS.length && !result?.success && isPositionSettling(String(result?.error || ""))) {
           const delay = BACKOFF_DELAYS_MS[retryAttempt]
           console.warn(`${tag} 109420 retry: position not yet visible on exchange — waiting ${delay}ms before retry`)
           await new Promise((r) => setTimeout(r, delay))
@@ -12753,6 +12766,8 @@ export async function executeLivePosition(
       return livePosition
     }
 
+    await assertMarginCallEntryAllowed(connectionId, exchangeConnector)
+
     // ── Step 2: Fetch the authoritative venue price ─────────────────────
     // Historical strategy rows can use a normalized price domain (for
     // example ~100) while the actual venue instrument trades at a fraction of
@@ -13738,6 +13753,7 @@ export async function executeLivePosition(
               errorCode: "EXECUTION_SUPERSEDED",
             }
           }
+          await assertMarginCallEntryAllowed(connectionId, exchangeConnector)
           exchangeSubmissionStarted = true
           return exchangeConnector.placeOrder(
             realPosition.symbol,
@@ -17216,6 +17232,10 @@ export async function reconcileLivePositions(
       return summary
     }
 
+    if (liveTradeOn || openPositions.length > 0) {
+      await monitorConnectionMarginCall(connectionId, exchangeConnector, { startSession: true })
+    }
+
     // Single batch fetch of ALL exchange positions for the position-sync loop.
     // Use cycle-level cache to eliminate duplicate getPositions() calls when
     // multiple symbols are processed. Cache TTL=500ms, expires after cycle completes.
@@ -18292,6 +18312,9 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       allOpenRaw,
       exchangeConnector,
     )
+    if (exchangeConnector && typeof exchangeConnector.getBalance === "function") {
+      await monitorConnectionMarginCall(connectionId, exchangeConnector, { startSession: true })
+    }
 
     // ── Self-heal: purge terminal positions stuck in the open index ─────
     // A historical bug in redis-db savePosition() re-added rejected/cancelled/
