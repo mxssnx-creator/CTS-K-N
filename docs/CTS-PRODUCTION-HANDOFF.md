@@ -148,7 +148,9 @@ Clean installation disables old matching services/timers, retires legacy Redis
 memory units, removes matching PM2 owners, and force-terminates only processes
 whose command/cwd proves ownership by the exact checkout. It never kills an
 unrelated process merely because it occupies the requested port; that is a hard
-preflight failure.
+preflight failure. Immutable legacy paths named `<name>-release-<40-hex-SHA>`
+are excluded from identity and memory-share counts only when no live process
+uses that exact root; an active release path remains a hard collision.
 
 ## Redis, memory, logs, and rate limits
 

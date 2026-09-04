@@ -635,6 +635,38 @@ effective_memory_limits_kb() {
   printf '%s %s\n' "$total_kb" "$available_kb"
 }
 
+root_has_live_process() {
+  local candidate_root="$1" proc cwd cmdline had_nullglob=0
+  shopt -q nullglob || had_nullglob=1
+  shopt -s nullglob
+  for proc in /proc/[0-9]*; do
+    cwd="$(readlink "$proc/cwd" 2>/dev/null || true)"
+    if [[ "$cwd" == "$candidate_root" || "$cwd" == "$candidate_root"/* ]]; then
+      (( had_nullglob == 0 )) || shopt -u nullglob
+      return 0
+    fi
+    if [[ -r "$proc/cmdline" ]]; then
+      cmdline="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+      if [[ "$cmdline" == *"$candidate_root"* ]]; then
+        (( had_nullglob == 0 )) || shopt -u nullglob
+        return 0
+      fi
+    fi
+  done
+  (( had_nullglob == 0 )) || shopt -u nullglob
+  return 1
+}
+
+is_inactive_legacy_release_snapshot() {
+  local candidate_root="$1" basename prefix suffix
+  basename="${candidate_root##*/}"
+  prefix="$APP_NAME-release-"
+  [[ "$basename" == "$prefix"* ]] || return 1
+  suffix="${basename#"$prefix"}"
+  [[ "$suffix" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+  ! root_has_live_process "$candidate_root"
+}
+
 assert_unique_install_identity() {
   local values other_root key value
   local other_name other_port other_state other_redis_db other_redis_port
@@ -653,6 +685,10 @@ assert_unique_install_identity() {
         CTS_INSTALLED_REDIS_PORT) [[ "$value" =~ ^[0-9]+$ ]] && other_redis_port="$value" ;;
       esac
     done < "$values"
+    if is_inactive_legacy_release_snapshot "$other_root"; then
+      warn "Ignoring inactive legacy release snapshot during identity checks: $other_root"
+      continue
+    fi
     [[ "$other_name" != "$APP_NAME" ]] \
       || fatal "Another checkout already owns service name '$APP_NAME': $other_root"
     [[ "$other_port" != "$APP_PORT" ]] \
@@ -673,6 +709,7 @@ installed_instance_count() {
     [[ -r "$values" ]] || continue
     root="${values%/.cts-runtime/install-values.env}"
     [[ "$root" != "$PROJECT_ROOT" ]] || continue
+    is_inactive_legacy_release_snapshot "$root" && continue
     count=$((count + 1))
   done
   shopt -u nullglob
