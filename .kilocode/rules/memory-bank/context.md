@@ -3153,3 +3153,27 @@ credentials are present.
   when `.cts-runtime/maintenance-stop` exists. Only the explicit
   `--clear-maintenance` option may remove that exact marker, and only after it
   has been copied into the verified pre-change backup.
+
+## Session 2026-09-04 — runtime-discovered Prod-VST orchestrated gate
+
+- [x] Added a two-phase BingX Prod-VST verifier which records the authoritative
+  runtime contract count and normalized unique symbols, passes that exact set
+  into the existing exhaustive simulated production soak, and performs rendered
+  browser assertions before the separately authorized representative X02
+  lifecycle. Exchange submission is forced off throughout computation.
+- [x] Added a reusable fail-closed boundary and unit coverage rejecting X01,
+  BingX mainnet, Bybit, an inexact authorization phrase, absent maintenance,
+  and active production services. The authenticated phase delegates cleanup
+  and exact account restoration to the existing hardened lifecycle runner.
+- [x] Focused validation passed: 8/8 new unit tests, TypeScript, and ESLint for
+  every new TypeScript file. The full orchestrated runtime gate was not run
+  because this checkout has no running candidate application or approved
+  Playwright browser; no remote operation, Redis mutation, or exchange request
+  occurred.
+- [x] The pre-edit owner-only source checkpoint is
+  `/workspace/backups/CTS-K-N/20260904T120443Z-pre-orchestrated-verifier`; its
+  complete bundle, binary patch, untracked archive/list, HEAD/status records,
+  bundle verification, and SHA-256 manifest verified. Canonical revision at
+  handoff is the commit containing this entry (see `git rev-parse HEAD`); GitHub
+  PR publication is required and deployment remains pending a merged green
+  `main` plus the documented operator approvals.
