@@ -50,14 +50,15 @@ export class ErrorLogger {
       allLogs.unshift(logId)
       levelLogs.unshift(logId)
       
-      // Trim to max 1000 entries
-      if (allLogs.length > 1000) allLogs = allLogs.slice(0, 1000)
-      if (levelLogs.length > 1000) levelLogs = levelLogs.slice(0, 1000)
-      
-      // Remove old entries from individual log storage
+      // Capture evicted ids before slicing. The old order sliced first, making
+      // `toRemove` permanently empty and leaking settings:site_log:* hashes.
       const toRemove = allLogs.slice(1000)
+      allLogs = allLogs.slice(0, 1000)
+      levelLogs = levelLogs.slice(0, 1000)
+
+      await client.expire(`settings:site_log:${logId}`, 7 * 24 * 60 * 60)
       for (const oldId of toRemove) {
-        await client.del(`site_log:${oldId}`)
+        await client.del(`settings:site_log:${oldId}`).catch(() => undefined)
       }
       
       await client.set(allLogsKey, JSON.stringify(allLogs))

@@ -31,13 +31,10 @@ class AuditLogger {
       // Get existing logs
       const logs = (await getSettings("audit_logs")) || []
 
-      // Keep last 10,000 logs (rotate)
-      if (logs.length >= 10000) {
-        logs.shift()
-      }
-
-      logs.push(log)
-      await setSettings("audit_logs", logs)
+      // Compliance diagnostics remain available, but are bounded like every
+      // other runtime log store. Slice also repairs an oversized legacy value
+      // in one write instead of dropping only one row per new event.
+      await setSettings("audit_logs", [...logs.slice(-999), log])
 
       // Also log to console for immediate visibility
       if (auditLog.status === "failed") {

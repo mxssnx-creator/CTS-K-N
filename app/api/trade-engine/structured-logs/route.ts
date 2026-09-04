@@ -16,7 +16,10 @@ export async function GET(request: NextRequest) {
     // Get query parameters
     const { searchParams } = new URL(request.url)
     const connectionId = searchParams.get("connectionId")
-    const limit = Number.parseInt(searchParams.get("limit") || "100")
+    const limit = Math.max(
+      1,
+      Math.min(1000, Number.parseInt(searchParams.get("limit") || "100", 10) || 100),
+    )
     const engine = searchParams.get("engine") // Filter by engine type
 
     if (!connectionId) {

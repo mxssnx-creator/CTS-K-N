@@ -4,6 +4,7 @@
 
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
+import { pathToFileURL } from "node:url"
 
 function resolveBaseUrl() {
   const raw =
@@ -171,6 +172,42 @@ async function verifyDirectTradeProcessor(maxAttempts = 90) {
   throw new Error(`Direct-Trade processor did not publish a fresh leased heartbeat: ${JSON.stringify(compact)}`)
 }
 
+export function classifyProdVstMainEngineState(state) {
+  const main = state?.modes?.mainTrade
+  const runtime = state?.runtimeEvidence
+  const enabledAndEffective =
+    state?.success === true &&
+    state?.enabled?.flag === true &&
+    main?.effective === true
+
+  if (
+    enabledAndEffective &&
+    state?.engineRunning === true &&
+    runtime?.heartbeatFresh === true
+  ) {
+    return { kind: "running", heartbeatAt: runtime.heartbeatAt || null }
+  }
+
+  // Reinstall must preserve a deliberate, durable operator stop.  Live-ready
+  // means that the scoped X02 path is capable of placing an order; it does not
+  // grant the installer authority to resume a paused engine.  Accept only the
+  // canonical distributed-runtime proof so a crashed or stale owner cannot be
+  // mistaken for an intentional stop.
+  if (
+    enabledAndEffective &&
+    state?.engineRunning !== true &&
+    runtime?.reason === "operator-stopped" &&
+    runtime?.operatorStopped === true
+  ) {
+    return {
+      kind: "operator-stopped",
+      globalIntent: String(runtime.globalIntent || "stopped"),
+    }
+  }
+
+  return { kind: "waiting" }
+}
+
 async function verifyProdVstMainEngine(liveTrade, maxAttempts = 45) {
   // X02 is the installer-default execution target because it is explicitly
   // BingX Prod-VST.  Readiness alone proves that credentials *could* place an
@@ -183,16 +220,26 @@ async function verifyProdVstMainEngine(liveTrade, maxAttempts = 45) {
   let last = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     last = await request("/api/connections/bingx-x02/engine-states", { timeoutMs: 30_000 })
-    const main = last?.modes?.mainTrade
-    if (
-      last?.success === true &&
-      last?.enabled?.flag === true &&
-      main?.effective === true &&
-      last?.engineRunning === true &&
-      last?.runtimeEvidence?.heartbeatFresh === true
-    ) {
+    const classified = classifyProdVstMainEngineState(last)
+    if (classified.kind === "running") {
       console.log("[Prod Init] BingX X02 Prod-VST Main Trade owner is running with a fresh heartbeat")
-      return { verified: true, connectionId: "bingx-x02", heartbeatAt: last.runtimeEvidence.heartbeatAt }
+      return {
+        verified: true,
+        running: true,
+        state: classified.kind,
+        connectionId: "bingx-x02",
+        heartbeatAt: classified.heartbeatAt,
+      }
+    }
+    if (classified.kind === "operator-stopped") {
+      console.log("[Prod Init] BingX X02 Prod-VST Main Trade remains intentionally operator-stopped; persisted intent was preserved")
+      return {
+        verified: true,
+        running: false,
+        state: classified.kind,
+        connectionId: "bingx-x02",
+        globalIntent: classified.globalIntent,
+      }
     }
     if (attempt < maxAttempts) await sleep(1_000)
   }
@@ -269,7 +316,10 @@ async function main() {
   }, null, 2))
 }
 
-main().catch((error) => {
-  console.error(`[Prod Init] FAILED: ${error instanceof Error ? error.message : String(error)}`)
-  process.exitCode = 1
-})
+const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : ""
+if (invokedPath === import.meta.url) {
+  main().catch((error) => {
+    console.error(`[Prod Init] FAILED: ${error instanceof Error ? error.message : String(error)}`)
+    process.exitCode = 1
+  })
+}

@@ -16,6 +16,7 @@ and future work on CTS-K-N. It intentionally contains no secret values.
 | Credential archive | `/var/lib/cts/instances/cts-kn/credentials` |
 | Forex archive | `/var/lib/cts/instances/cts-kn/forex` |
 | Backup root | `/var/backups/cts/cts-kn` |
+| Backup retention | Latest 3 verified generations per project |
 
 The environment is outside the replaceable Git checkout. New installs default
 to this location, existing install metadata remains authoritative, and clean
@@ -95,7 +96,11 @@ sudo bash "$bootstrap_dir/scripts/bootstrap-install.sh" \
 The installer performs host preflight, pinned package installation, frozen
 dependency installation, tests, typecheck, lint, production build, migrations,
 service installation, restart-persistence verification, scheduler continuity,
-deployment-contract checks, and rollback on failed final verification.
+deployment-contract checks, and rollback on failed final verification. A backup
+contains only persistent CTS namespaces, the effective environment when needed,
+the source bundle and Redis export; package-manager caches, PM2 internals and
+build output are excluded. `CTS_BACKUP_RETENTION_COUNT` defaults to `3` and only
+old backups with a verified checksum manifest are pruned.
 
 For a non-mutating package/host check:
 
@@ -117,6 +122,14 @@ target from host/cgroup total and currently available memory:
 - 64 MiB target steps, hysteresis at pressure boundaries;
 - allocator purge under pressure or sustained fragmentation;
 - bounded AOF rewrites when file growth materially exceeds the data set.
+
+Every in-process/Redis diagnostic stream is capped at 1,000 rows. The shared
+`cts-log-retention.timer` runs every five minutes and keeps regular host/runtime
+text logs at the newest 1,000 lines and at most 8 MiB per file. It deliberately
+does not traverse credentials, data, Redis state, reports or backups. Journald
+is independently limited to 256 MiB/7 days, with 64 MiB for its runtime store.
+The defaults are controlled by `CTS_LOG_MAX_LINES`, `CTS_LOG_MAX_BYTES`, and
+`CTS_JOURNAL_MAX_USE` in the persistent environment.
 
 Application, scheduler, Direct worker, Redis, recovery, and governor units have
 journal rate limits. Repeated runtime failures are coalesced by signature and

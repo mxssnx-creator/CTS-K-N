@@ -66,6 +66,8 @@ export interface LoggerOptions {
   enableMetrics?: boolean
 }
 
+const MAX_STRUCTURED_LOGS = 1000
+
 /**
  * Structured Logger
  */
@@ -77,7 +79,7 @@ export class StructuredLogger {
   private enableFile: boolean
   private enableMetrics: boolean
   private logBuffer: StructuredLog[] = []
-  private maxBufferSize = 10000
+  private maxBufferSize = MAX_STRUCTURED_LOGS
 
   constructor(options: LoggerOptions) {
     this.minLevel = options.minLevel ?? LogLevel.INFO
@@ -353,7 +355,9 @@ export function getAllLogs(): StructuredLog[] {
   loggers.forEach(logger => {
     allLogs.push(...logger.getBuffer())
   })
-  return allLogs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+  return allLogs
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .slice(-MAX_STRUCTURED_LOGS)
 }
 
 /**
