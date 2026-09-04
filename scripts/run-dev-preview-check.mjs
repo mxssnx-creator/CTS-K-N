@@ -335,12 +335,12 @@ async function runSoakVerifier() {
 // unbounded key growth that exhausts an in-process Redis in a constrained box.
 async function runSmokeVerifier() {
   const baseSymbols = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
+    "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT", "BNBUSDT", "DOGEUSDT",
     "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
     "UNIUSDT", "NEARUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT",
     "INJUSDT", "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
     "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
-    "ICPUSDT", "HBARUSDT",
+    "ICPUSDT",
   ].slice(0, Math.max(1, devSoakSymbolCount))
   let symbols = baseSymbols
   if (symbols.length < devSoakSymbolCount) {

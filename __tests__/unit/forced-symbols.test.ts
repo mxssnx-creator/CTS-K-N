@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import {
   CANONICAL_FORCED_BASE_SYMBOLS,
   CANONICAL_FORCED_SYMBOLS,
@@ -11,6 +13,21 @@ import {
 } from "@/lib/symbol-selection-defaults"
 
 describe("canonical mandatory symbol basket", () => {
+  test.each([
+    ["scripts/run-prod-preview-check.mjs", "baseSoakSymbols"],
+    ["scripts/run-dev-preview-check.mjs", "baseSymbols"],
+    ["scripts/verify-prod-soak.mjs", "DEFAULT_SYMBOLS"],
+  ])("keeps the requested preview baskets unchanged by runtime canonicalization: %s", (path, declaration) => {
+    const source = readFileSync(resolve(process.cwd(), path), "utf8")
+    const array = source.match(new RegExp(`const ${declaration} = \\[([\\s\\S]*?)\\]`))?.[1] || ""
+    const symbols = [...array.matchAll(/"([A-Z0-9]+USDT)"/g)].map((match) => match[1])
+    expect(symbols).toHaveLength(32)
+    for (const count of [4, 12, 32]) {
+      const basket = symbols.slice(0, count)
+      expect(withCanonicalForcedSymbols(basket, count)).toEqual(basket)
+    }
+  })
+
   test("is exact, stable and returned through defensive copies", () => {
     expect(CANONICAL_FORCED_BASE_SYMBOLS).toEqual(["BTC", "SOL", "BCH", "XRP"])
     expect(CANONICAL_FORCED_SYMBOLS).toEqual(["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"])
