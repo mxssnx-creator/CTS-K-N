@@ -186,6 +186,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(bootstrap).toContain("Saved persistent CTS state outside the target directory")
     expect(bootstrap).toContain("resume_preserved_state_after_failed_clean_install")
     expect(bootstrap).toContain("Resuming preserved CTS state from failed clean install")
+    expect(bootstrap).toContain("Resuming preserved CTS state past an incomplete replacement clone")
     expect(bootstrap).toContain("remove_existing_install_target")
     expect(bootstrap).toContain('as_root rm -rf -- "$INSTALL_DIR"')
     expect(bootstrap).toContain("prepare_clean_install_workspace")
@@ -568,9 +569,9 @@ describe("production installation and Kilo deployment contract", () => {
       await expect(readFile(path.join(target, "scripts", "install.sh"), "utf8")).resolves.toContain("CTS_INSTALLED_RUNTIME")
       await expect(readFile(installArgs, "utf8")).resolves.toContain("--safe-simulation\n")
 
-      // This is the exact recovery state left by a clone failure: the old
-      // checkout is gone, but its persistent data was safely archived beside
-      // it. A retry must restore it automatically rather than starting empty.
+      // This is the exact recovery state left by a failure after the
+      // replacement clone but before install-values.env was written. The
+      // incomplete clone must not hide or overwrite the authoritative archive.
       const preservedState = path.join(root, "opt", ".cts-kn.cts-state.20260803T010921Z.1")
       await mkdir(path.join(preservedState, "data"), { recursive: true })
       await writeFile(path.join(preservedState, "data", "recovery-marker"), "preserved\n")
@@ -587,6 +588,9 @@ describe("production installation and Kilo deployment contract", () => {
         "",
       ].join("\n"))
       await rm(target, { recursive: true, force: true })
+      await mkdir(path.join(target, "scripts"), { recursive: true })
+      await writeFile(path.join(target, "package.json"), '{"name":"cts-incomplete-clone"}\n')
+      await writeFile(path.join(target, "scripts", "install.sh"), "#!/usr/bin/env bash\nexit 1\n")
 
       execFileSync("bash", [path.join(process.cwd(), "scripts", "bootstrap-install.sh"),
         "--dir", target,

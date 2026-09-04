@@ -397,6 +397,11 @@ stop_existing_installation() {
 }
 
 preserve_existing_install_state() {
+  # A retry may already have selected the archive from the failed attempt while
+  # an uninitialized replacement clone still occupies INSTALL_DIR. Keep that
+  # authoritative archive and let the normal replacement step remove the
+  # incomplete clone; creating a second archive here would lose the first one.
+  [[ -z "$PRESERVED_STATE" ]] || return 0
   [[ -e "$INSTALL_DIR" ]] || return 0
   assert_cts_checkout
   stop_existing_installation
@@ -497,7 +502,14 @@ create_permanent_backup() {
 # no target checkout, resume the newest archive for this *exact* target name.
 # The archive name is timestamped, so lexical glob order is chronological.
 resume_preserved_state_after_failed_clean_install() {
-  [[ ! -e "$INSTALL_DIR" && -z "$PRESERVED_STATE" ]] || return 0
+  [[ -z "$PRESERVED_STATE" ]] || return 0
+  # A failure can happen after clone but before install-values.env is written.
+  # Such a checkout contains no authoritative runtime state and must not hide
+  # the recovery archive from the immediately preceding clean attempt.
+  if [[ -e "$INSTALL_DIR" && -f "$INSTALL_DIR/.cts-runtime/install-values.env" ]]; then
+    return 0
+  fi
+  [[ ! -e "$INSTALL_DIR" ]] || assert_cts_checkout
   local parent base candidate latest=""
   parent="$(dirname "$INSTALL_DIR")"
   base="$(basename "$INSTALL_DIR")"
@@ -509,7 +521,11 @@ resume_preserved_state_after_failed_clean_install() {
   shopt -u nullglob
   [[ -n "$latest" ]] || return 0
   PRESERVED_STATE="$latest"
-  echo "Resuming preserved CTS state from failed clean install: $PRESERVED_STATE" >&2
+  if [[ -e "$INSTALL_DIR" ]]; then
+    echo "Resuming preserved CTS state past an incomplete replacement clone: $PRESERVED_STATE" >&2
+  else
+    echo "Resuming preserved CTS state from failed clean install: $PRESERVED_STATE" >&2
+  fi
 }
 
 read_preserved_install_values() {
