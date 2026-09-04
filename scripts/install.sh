@@ -659,14 +659,45 @@ root_has_live_process() {
   return 1
 }
 
-is_inactive_legacy_release_snapshot() {
-  local candidate_root="$1" basename prefix suffix
+root_has_runtime_reference() {
+  local candidate_root="$1" unit
+  root_has_live_process "$candidate_root" && return 0
+  if command -v systemctl >/dev/null 2>&1; then
+    for unit in "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" \
+      "$APP_NAME-recovery" "$APP_NAME-redis-governor" "$APP_NAME-redis-memory" "$APP_NAME-redis"; do
+      if systemctl cat "$unit" 2>/dev/null | grep -Fq -- "$candidate_root"; then
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+is_inactive_legacy_snapshot() {
+  local candidate_root="$1" basename prefix suffix values key value
+  local snapshot_name="" snapshot_port=""
+  values="$candidate_root/.cts-runtime/install-values.env"
+  [[ -r "$values" ]] || return 1
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    case "$key" in
+      CTS_INSTALLED_APP_NAME) snapshot_name="$value" ;;
+      CTS_INSTALLED_APP_PORT) snapshot_port="$value" ;;
+    esac
+  done < "$values"
+  [[ "$snapshot_name" == "$APP_NAME" && "$snapshot_port" == "$APP_PORT" ]] || return 1
+
   basename="${candidate_root##*/}"
   prefix="$APP_NAME-release-"
-  [[ "$basename" == "$prefix"* ]] || return 1
-  suffix="${basename#"$prefix"}"
-  [[ "$suffix" =~ ^[0-9a-fA-F]{7,40}$ ]] || return 1
-  ! root_has_live_process "$candidate_root"
+  if [[ "$basename" == "$prefix"* ]]; then
+    suffix="${basename#"$prefix"}"
+    [[ "$suffix" =~ ^[0-9a-fA-F]{7,40}$ ]] || return 1
+  else
+    prefix="$APP_NAME-rollback-pr"
+    [[ "$basename" == "$prefix"* ]] || return 1
+    suffix="${basename#"$prefix"}"
+    [[ "$suffix" =~ ^[0-9]+-[0-9]{8}T[0-9]{6}Z-[0-9a-fA-F]{7,40}$ ]] || return 1
+  fi
+  ! root_has_runtime_reference "$candidate_root"
 }
 
 assert_unique_install_identity() {
@@ -687,8 +718,8 @@ assert_unique_install_identity() {
         CTS_INSTALLED_REDIS_PORT) [[ "$value" =~ ^[0-9]+$ ]] && other_redis_port="$value" ;;
       esac
     done < "$values"
-    if is_inactive_legacy_release_snapshot "$other_root"; then
-      warn "Ignoring inactive legacy release snapshot during identity checks: $other_root"
+    if is_inactive_legacy_snapshot "$other_root"; then
+      warn "Ignoring inactive legacy checkout snapshot during identity checks: $other_root"
       continue
     fi
     [[ "$other_name" != "$APP_NAME" ]] \
@@ -711,7 +742,7 @@ installed_instance_count() {
     [[ -r "$values" ]] || continue
     root="${values%/.cts-runtime/install-values.env}"
     [[ "$root" != "$PROJECT_ROOT" ]] || continue
-    is_inactive_legacy_release_snapshot "$root" && continue
+    is_inactive_legacy_snapshot "$root" && continue
     count=$((count + 1))
   done
   shopt -u nullglob
