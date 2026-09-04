@@ -17,6 +17,7 @@ import {
 } from "@/lib/connection-state-utils"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { publishRunningTradeEngineIntent } from "@/lib/trade-engine-intent"
 
 export const dynamic = "force-dynamic"
 
@@ -136,19 +137,9 @@ async function handlePost(request: NextRequest) {
     // reload would re-respect the stop flag and refuse to bootstrap
     // engines, even though the operator just pressed Start.
     const existingGlobalState = wasAlreadyRunning ? await client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)) : {}
-    await client.hset("trade_engine:global", { 
-      status: "running", 
-      desired_status: "running",
-      operator_intent: "running",
-      started_at: existingGlobalState.started_at || new Date().toISOString(),
-      // The status endpoint uses this fresh request marker to avoid starting
-      // a competing recovery sweep while this explicit global Start is still
-      // attaching managers and warming Historic data.
-      last_start_requested_at: new Date().toISOString(),
-      coordinator_ready: "true",
-      operator_stopped: "0",
-      operator_stopped_at: "",
-      stopped_at: "",
+    await publishRunningTradeEngineIntent(client, {
+      event: "started",
+      startedAt: existingGlobalState.started_at || new Date().toISOString(),
     })
     
     console.log("[v0] [Trade Engine] Global Coordinator state saved to Redis + Upstash: status=running")
