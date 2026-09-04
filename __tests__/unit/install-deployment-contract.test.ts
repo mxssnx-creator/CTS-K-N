@@ -411,10 +411,10 @@ describe("production installation and Kilo deployment contract", () => {
     }
   })
 
-  it("ignores only inactive immutable legacy release snapshots", async () => {
+  it("ignores only inactive immutable legacy release snapshots, including short SHAs", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "cts-legacy-release-snapshot-"))
     const appName = "cts-stale-release-test"
-    const staleRoot = path.join(root, `${appName}-release-${"a".repeat(40)}`)
+    const staleRoot = path.join(root, `${appName}-release-${"a".repeat(7)}`)
     const runtime = path.join(staleRoot, ".cts-runtime")
     const args = [
       path.join(process.cwd(), "scripts", "install.sh"),
