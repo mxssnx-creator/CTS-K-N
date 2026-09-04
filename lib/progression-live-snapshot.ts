@@ -637,6 +637,11 @@ export function overlayVolatileProgressionStats(
     [progression, "strategies_main_cycles"],
     [engineState, "strategies_main_cycles"],
   ], number(mainCoordination.totalCycles))
+  mainCoordination.reusedCycles = firstKnown([
+    [progression, "strategies_main_reused_cycles"],
+    [engineState, "strategies_main_reused_cycles"],
+  ], number(mainCoordination.reusedCycles))
+  mainCoordination.productiveCycles = number(mainCoordination.totalCycles) + number(mainCoordination.reusedCycles)
   const totalMainCoordinationWork = number(mainCoordination.totalCreated) + number(mainCoordination.totalReused)
   mainCoordination.reuseRate = totalMainCoordinationWork > 0
     ? Math.round((number(mainCoordination.totalReused) / totalMainCoordinationWork) * 1000) / 10

@@ -22,12 +22,12 @@ const productionSoakSymbolCount = maxSymbolsRequested || uiOnlyRequested
   ? UI_MAX_SYMBOLS
   : Math.max(1, Math.min(UI_MAX_SYMBOLS, Number(process.env.PROD_SOAK_SYMBOL_COUNT || 12)))
 const baseSoakSymbols = [
-  "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
+  "BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT", "BNBUSDT", "DOGEUSDT",
   "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
   "UNIUSDT", "NEARUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT",
   "INJUSDT", "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
   "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
-  "ICPUSDT", "HBARUSDT",
+  "ICPUSDT",
 ].slice(0, productionSoakSymbolCount)
 const detectedParallelism = Math.max(1, Number(availableParallelism()) || 1)
 const defaultPreviewConcurrency = String(Math.max(1, Math.min(4, Math.floor((detectedParallelism + 1) / 4))))

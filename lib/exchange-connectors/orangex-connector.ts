@@ -273,6 +273,7 @@ export class OrangeXConnector extends BaseExchangeConnector {
         return {
           success: true,
           balance,
+          equity: balance,
           balances: [...areaBalances, ...balances],
           capabilities: this.getCapabilities(),
           logs: this.logs,

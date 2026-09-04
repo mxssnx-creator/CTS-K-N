@@ -25,6 +25,13 @@ jest.mock("@/lib/redis-db", () => ({
   getRedisBackend: jest.fn(() => "inline-local"),
   persistNow: (...args: unknown[]) => mockPersistNow(...args),
   getRedisClient: jest.fn(() => ({
+    hgetall: async (key: string) => hashStore.get(key) || {},
+    hset: async (key: string, values: Record<string, string>) => {
+      hashStore.set(key, { ...hashStore.get(key), ...values })
+      return Object.keys(values).length
+    },
+    lpush: async () => 1,
+    ltrim: async () => "OK",
     get: async (key: string) => kvStore.get(key) ?? null,
     set: async (key: string, value: string, options?: { NX?: boolean; XX?: boolean }) => {
       if (options?.NX && kvStore.has(key)) return null
@@ -62,6 +69,7 @@ jest.mock("@/lib/live-order-safety", () => ({
 
 jest.mock("@/lib/exchange-connectors/factory", () => ({
   createExchangeConnector: jest.fn(async () => ({
+    getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
     setLeverage: jest.fn(async () => ({ success: true })),
     placeOrder: jest.fn(async () => ({
       success: true,
@@ -105,7 +113,7 @@ describe("live-order-service integration accounting", () => {
       "BTCUSDT:long:placed": "1",
       "BTCUSDT:long:filled": "1",
     })
-    const saved = JSON.parse([...kvStore.values()][0])
+    const saved = JSON.parse([...kvStore.entries()].find(([key]) => key.startsWith("live:position:"))![1])
     expect(saved).toMatchObject({
       connectionId: "conn-a",
       symbol: "BTCUSDT",
@@ -120,6 +128,7 @@ describe("live-order-service integration accounting", () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const calls: string[] = []
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setMarginType: jest.fn(async (_symbol: string, marginType: string) => {
         calls.push(`margin:${marginType}`)
         return { success: true }
@@ -167,6 +176,7 @@ describe("live-order-service integration accounting", () => {
     const priorConfirmation = process.env.BINGX_VST_SOAK_CONFIRM
     process.env.BINGX_VST_SOAK_CONFIRM = "I understand Prod-VST places authenticated orders with virtual funds"
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       getEnvironmentInfo: jest.fn(() => ({
         environment: "prod-vst",
         baseUrl: "https://open-api-vst.bingx.com",
@@ -209,6 +219,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade live order reconciles exchange-only acknowledgements before recording the fill", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({ success: true, orderId: "exchange-ack-only" })),
       getOrder: jest.fn(async () => ({
@@ -232,7 +243,7 @@ describe("live-order-service integration accounting", () => {
     expect(result.success).toBe(true)
     expect(connector.getOrder).toHaveBeenCalledWith("BTCUSDT", "exchange-ack-only")
     expect(result.fill).toMatchObject({ filled: true, filledQty: 1.5, filledPrice: 101.25 })
-    expect(JSON.parse([...kvStore.values()][0])).toMatchObject({
+    expect(JSON.parse([...kvStore.entries()].find(([key]) => key.startsWith("live:position:"))![1])).toMatchObject({
       executedQuantity: 1.5,
       averageExecutionPrice: 101.25,
       status: "open",
@@ -242,6 +253,7 @@ describe("live-order-service integration accounting", () => {
   test("does not book a live order acknowledgement as a fill when the exchange reports no execution", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({
         success: true,
@@ -270,7 +282,7 @@ describe("live-order-service integration accounting", () => {
 
     expect(result.success).toBe(true)
     expect(result.fill).toMatchObject({ filled: false, filledQty: 0, filledPrice: 0, status: "new" })
-    expect(JSON.parse([...kvStore.values()][0])).toMatchObject({
+    expect(JSON.parse([...kvStore.entries()].find(([key]) => key.startsWith("live:position:"))![1])).toMatchObject({
       executedQuantity: 0,
       averageExecutionPrice: 0,
       volumeUsd: 0,
@@ -285,6 +297,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade replays a completed control id without placing a second exchange order", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({
         success: true,
@@ -331,6 +344,7 @@ describe("live-order-service integration accounting", () => {
     const placementStarted = new Promise<void>((resolve) => { notifyPlacementStarted = resolve })
     const placementGate = new Promise<Record<string, unknown>>((resolve) => { resolvePlacement = resolve })
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => {
         notifyPlacementStarted()
@@ -390,6 +404,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade completes delayed exact-order settlement on idempotent replay", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({
         success: true,
@@ -449,6 +464,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade reconciles a pending control id to its final fill without resubmission", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({ success: true, orderId: "control-pending-1", status: "new" })),
       getOrder: jest.fn()
@@ -495,6 +511,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade waits for an active partial and books its cumulative volume only when terminal", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({ success: true, orderId: "control-partial-1", status: "new" })),
       getOrder: jest.fn()
@@ -541,6 +558,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade refuses to reuse one control id for different economic order inputs", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({
         success: true,
@@ -574,6 +592,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade treats a transport exception as ambiguous and reconciles by client id", async () => {
     const { exchangeClientOrderIdForControl, placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => { throw new Error("ECONNRESET after request write") }),
       // BingX's connector returns a success/order wrapper for this endpoint;
@@ -629,6 +648,7 @@ describe("live-order-service integration accounting", () => {
     const controlId = "dtopen_empty_aliases_1"
     const venueClientOrderId = exchangeClientOrderIdForControl(controlId)
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => { throw new Error("network timeout after request write") }),
       getOrderDetails: jest.fn(async () => ({
@@ -677,6 +697,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade never attributes a mismatched exact-order response to its control", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({ success: true, orderId: "owned-order", status: "new" })),
       getOrder: jest
@@ -715,6 +736,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade completes a reduce-only control when BingX reports that the position is already absent", async () => {
     const { directOrderControlKey, isAlreadyClosedReduceOnlyError, placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       placeOrder: jest.fn(async () => ({
         success: false,
         code: 101205,
@@ -760,6 +782,7 @@ describe("live-order-service integration accounting", () => {
   test("does not reinterpret an already-closed error for a non-reduce entry", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({ success: false, code: 101205, error: "No position to close" })),
     }
@@ -787,6 +810,7 @@ describe("live-order-service integration accounting", () => {
     const controlId = "dtopen_okx_ack_without_order_id_1"
     const venueClientOrderId = exchangeClientOrderIdForControl(controlId)
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => { throw new Error("network timeout after request write") }),
       getOpenOrders: jest.fn(async () => [{
@@ -844,6 +868,7 @@ describe("live-order-service integration accounting", () => {
   test("Direct-Trade makes a pre-submit leverage rejection terminal without touching placeOrder", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: false, error: "leverage not allowed" })),
       placeOrder: jest.fn(),
     }
@@ -880,12 +905,15 @@ describe("live-order-service integration accounting", () => {
   })
 
   test("Direct-Trade releases a claim when inline durability fails before placement", async () => {
-    mockPersistNow.mockResolvedValueOnce(false).mockResolvedValueOnce(false)
     const { directOrderControlKey, placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(),
     }
+    const { assertMarginCallEntryAllowed } = await import("@/lib/margin-call")
+    await assertMarginCallEntryAllowed("conn-direct-persist-failure", connector)
+    mockPersistNow.mockResolvedValueOnce(false).mockResolvedValueOnce(false)
 
     await expect(placeLiveOrder({
       connectionId: "conn-direct-persist-failure",
@@ -946,6 +974,7 @@ describe("live-order-service integration accounting", () => {
   ])("blocks $name Direct-Trade connections that cannot guarantee reduce-only idempotency", async ({ connection }) => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(),
     }
@@ -973,6 +1002,7 @@ describe("live-order-service integration accounting", () => {
   test("exchange order ids make live progression accounting idempotent", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       setLeverage: jest.fn(async () => ({ success: true })),
       placeOrder: jest.fn(async () => ({
         success: true,
@@ -1232,6 +1262,7 @@ describe("live-order-service integration accounting", () => {
   test("requires and records two real conditional controls after an authoritative fill", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       getCapabilities: jest.fn(() => ["futures"]),
       placeOrder: jest.fn(async () => ({
         success: true,
@@ -1293,6 +1324,7 @@ describe("live-order-service integration accounting", () => {
   test("fails closed when a conditional protection order is rejected without an exact position ticket", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       getCapabilities: jest.fn(() => ["futures"]),
       placeOrder: jest.fn()
         .mockResolvedValueOnce({
@@ -1333,6 +1365,7 @@ describe("live-order-service integration accounting", () => {
   test("verifies native Forex SL/TP on the exact terminal position before recording the fill", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       getCapabilities: jest.fn(() => ["forex", "native_position_sl_tp", "broker_managed_margin_leverage"]),
       placeOrder: jest.fn(async () => ({
         success: true,
@@ -1389,6 +1422,7 @@ describe("live-order-service integration accounting", () => {
   test("refuses a symbol-only emergency close when the terminal does not confirm both controls", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")
     const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
       getCapabilities: jest.fn(() => ["forex", "native_position_sl_tp", "broker_managed_margin_leverage"]),
       placeOrder: jest.fn(async () => ({
         success: true,

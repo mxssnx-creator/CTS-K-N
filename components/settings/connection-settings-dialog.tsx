@@ -14,6 +14,7 @@ import {
   normalizeVolumeStepRatio,
 } from "@/lib/constants"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
+import { MarginCallPanel } from "@/components/settings/margin-call-panel"
 import {
   EXCHANGE_SYMBOL_COUNT_MAX,
   HIGH_SCALE_SYMBOL_STRESS_TARGET,
@@ -1501,6 +1502,7 @@ export function ConnectionSettingsDialog({
                   </div>
 
                   <Separator className="my-4" />
+                  <MarginCallPanel key={connectionId} connectionId={connectionId} />
                   <SectionHeading icon={ListFilter} title="Position Mode" subtitle="Margin and volume denomination applied to all orders." />
 
                   <div className="grid grid-cols-2 gap-3">

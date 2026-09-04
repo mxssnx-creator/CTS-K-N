@@ -398,6 +398,18 @@ describe("executing Live-stage control barriers", () => {
     expect(position.stopLossPrice).toBe(98)
   })
 
+  test.each(["109420", "110424"])("does not retry a rate-limit rejection quoting earlier business code %s", async (quotedCode) => {
+    const placeStopOrder = jest.fn(async () => ({
+      success: false,
+      error: `BingX stop order error (code=109429): over 20 error code:${quotedCode} requests within 480000 ms; can retry after time: 1788552868620`,
+    }))
+    await expect(__liveStageTest.placeProtectionOrder(
+      connector({ placeStopOrder }), "BTCUSDT", "sell", 1, 95,
+      "SecurityStop", "long", "cts-rate-limit-test",
+    )).resolves.toEqual({ orderId: null, armedQuantity: 0 })
+    expect(placeStopOrder).toHaveBeenCalledTimes(1)
+  })
+
   test("records the actual BingX quantity after a 110424 protection retry", async () => {
     const placeStopOrder = jest
       .fn()

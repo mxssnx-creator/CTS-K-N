@@ -1,4 +1,58 @@
 # Active Context: CTS-K-N Trading System (main project)
+## Active continuation 2026-09-04 — independent connection margin call
+
+- Canonical source remains `/workspace/CTS-K-N`. Another concurrent chat changed
+  its branch, so this release is isolated in the same repository's worktree
+  `/workspace/CTS-K-N-worktrees/vst-margin-20260904`, branch
+  `codex/vst-margin-isolated-20260904`, base `dcd14c2e`.
+  Preserve canonical unstaged work and all stashes, including separate
+  `session-equity-*` drafts; do not mix competing implementations.
+- Merged GitHub main: `b2d329517cf768ddba5e5114d817864fd1d9413a` (PRs 308/309).
+  Logger shutdown flushes outstanding progress and preserves a 0% success rate.
+- User clarified the default 30% means equity BELOW 30% of the active session's
+  starting equity. Close every position on that connection, cancel pending
+  entries first, retain protective stops until flat, then cancel remaining orders.
+  Keep new entries/accumulation locked until an explicit new flat-account session.
+  Each connection has separate settings, session, events and a renewable lease.
+- Risk settings/session hashes live under protected `settings:margin_call:*` and
+  `settings:margin_call_session:*`. Native Redis uses acknowledged commands and
+  configured persistence; inline/Kilo snapshot backends require a successful flush.
+  A failed equity snapshot blocks entries; an already latched closure continues
+  from authoritative positions/orders even when the balance endpoint is down.
+  Simulated equity cannot initialize a real account session.
+- UI: connection-settings Overview and Active Exchange panel. API:
+  `/api/connections/[id]/margin-call`; GET status, admin PATCH threshold,
+  admin POST new-session, with flat-account validation and no engine auto-start.
+- Additional corrections: exact canonical 4/12/32-symbol preview fixtures,
+  primary-code-aware BingX protection retries, explicit zero/negative equity,
+  current reused/productive coordination counters in the cached stats overlay.
+- Remote currently runs PR308 head `a5ea4651`; PR309/new margin work has NOT yet
+  been deployed. The managed Chisel listener and pinned SSH forward work.
+  Existing public UI is `https://152-53-114-112.sslip.io/` (port 3002 upstream).
+- Remote VST attempt 2026-09-04 20:09 UTC failed due a BingX rolling rate ban
+  while arming the third protective order. Original failure report preserved.
+  Exact owned BTC LONG 0.0002 and two controls were reconciled at 20:18 UTC;
+  confirmed zero positions/orders and restored empty pre-test baseline.
+  Services restored via official service-control script; no X01/Bybit mutation.
+- Remote isolated simulated 32-symbol preview passed 46 UI/API routes and restart
+  persistence, but 3/10-minute soak checks failed productive Main coordination.
+  Cached counter correction still requires a new remote run; do not weaken gates.
+- CTS-G secondary X02 pulse service was subsequently repaired by concurrent work.
+  Read-only check observed revision `6ba593a352d743ac8ad74760d033c1d1588d9c59`,
+  active/running with zero restarts and source valid_candidate restored.
+  Revalidate deployment file parity; do not read/compare keys.
+- Verified source checkpoints include
+  `/workspace/backups/CTS-K-N/20260904T204925Z-pre-isolated-margin-review` and
+  `/workspace/backups/CTS-K-N/20260904T205518Z-pre-margin-final-review`.
+  Full remote backup: `/var/backups/cts-kn/continue-vst-20260904T195654Z`.
+  Owned cleanup snapshot: `/var/backups/cts-kn/owned-vst-cleanup-20260904T2017`.
+- Local release gates: 272 Jest suites / 1,875 tests passed, TypeScript passed,
+  production build passed with 349 complete traces, release scan zero findings,
+  recreation inventory verified, Kilo preflight 37/37 and schema 107.
+- Before remote release: publish reviewed PR, require green
+  main, checkpoint/deploy with official installer, rerun full 20-minute VST and
+  computational soak, verify UI/DB/memory, then record final results here.
+
 
 ## Session 2026-09-03 — Fix: no live exchange orders opening when connector is null
 

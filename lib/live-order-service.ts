@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { assertMarginCallEntryAllowed } from "@/lib/margin-call"
 import { createExchangeConnector, exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import {
   getLiveOrderSafetyFailure,
@@ -2268,6 +2269,9 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
   }
   assertDirectTradeExecutionContract(connection, orderPayload, willUseRealExchange)
+  if (willUseRealExchange && input.reduceOnly !== true) {
+    await assertMarginCallEntryAllowed(input.connectionId, connector)
+  }
   if (willUseRealExchange && input.reduceOnly !== true && process.env.NODE_ENV !== "test") {
     let marketPrice = submitted.marketPrice
     if (!(marketPrice > 0) && typeof connector?.getTicker === "function") {

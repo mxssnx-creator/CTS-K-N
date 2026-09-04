@@ -196,6 +196,8 @@ __tests__/unit/main-indication-settings.test.ts
 __tests__/unit/main-indications-stats-route.test.ts
 __tests__/unit/main-live-trade-readiness.test.ts
 __tests__/unit/main-trade-profit-factor.test.ts
+__tests__/unit/margin-call-route.test.ts
+__tests__/unit/margin-call.test.ts
 __tests__/unit/market-data-fetch-deadline.test.ts
 __tests__/unit/market-data-history-contract.test.ts
 __tests__/unit/market-data-second-coverage.test.ts
@@ -363,6 +365,7 @@ app/api/backup/auto/route.ts
 app/api/broadcast/health/route.ts
 app/api/broadcast/stats/route.ts
 app/api/connections/[id]/engine-states/route.ts
+app/api/connections/[id]/margin-call/route.ts
 app/api/connections/counts/route.ts
 app/api/connections/progression/[id]/logs/route.ts
 app/api/connections/progression/[id]/route.ts
@@ -860,6 +863,7 @@ components/settings/exchange-connection-settings-dialog.tsx
 components/settings/install-manager.tsx
 components/settings/logging-settings.tsx
 components/settings/logs-viewer.tsx
+components/settings/margin-call-panel.tsx
 components/settings/overall-settings.tsx
 components/settings/preset-connection-manager.tsx
 components/settings/settings-editor-dialog.tsx
@@ -1241,6 +1245,8 @@ lib/logger.ts
 lib/logistics-workflow.ts
 lib/main-indication-settings.ts
 lib/main-trade-profit-factor.ts
+lib/margin-call-policy.ts
+lib/margin-call.ts
 lib/market-data-fetcher.ts
 lib/market-data-keys.ts
 lib/market-data-loader.ts

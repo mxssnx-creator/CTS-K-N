@@ -353,6 +353,7 @@ const applySelectedPresetToRealPosition = jest.fn(async (_connectionId: string, 
 }))
 
 const recordingConnector = {
+  getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
   getTicker: jest.fn(async () => ({ bid: 99.9, ask: 100, last: 100 })),
   placeOrder,
   placeStopOrder,

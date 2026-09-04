@@ -26,6 +26,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/broadcast/stats	GET	broadcast	force-dynamic		none-detected	app/api/broadcast/stats/route.ts
 /api/connections	GET	connections	force-dynamic	30	none-detected	app/api/connections/route.ts
 /api/connections/[id]/engine-states	GET	connections	force-dynamic	15	none-detected	app/api/connections/[id]/engine-states/route.ts
+/api/connections/[id]/margin-call	GET,PATCH,POST	connections	force-dynamic		admin,session	app/api/connections/[id]/margin-call/route.ts
 /api/connections/counts	GET	connections	force-dynamic	30	none-detected	app/api/connections/counts/route.ts
 /api/connections/progression/[id]	GET	connections	force-dynamic	30	session	app/api/connections/progression/[id]/route.ts
 /api/connections/progression/[id]/logs	DELETE,GET	connections	force-dynamic	30	none-detected	app/api/connections/progression/[id]/logs/route.ts
