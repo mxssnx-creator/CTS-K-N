@@ -102,6 +102,35 @@ function nonNegativeInteger(...values: unknown[]): number {
   return 0
 }
 
+function parseStringArray(value: unknown): string[] {
+  if (typeof value !== "string" || !value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+function realtimeRotationProgress(hash: Record<string, string>) {
+  const configuredSymbolCount = nonNegativeInteger(hash.realtime_configured_symbol_count)
+  const coveredUnique = Math.min(
+    configuredSymbolCount,
+    nonNegativeInteger(hash.realtime_rotation_covered_unique),
+  )
+  return {
+    basketGeneration: hash.realtime_rotation_generation || "",
+    configuredSymbolCount,
+    attemptedCurrentTick: nonNegativeInteger(hash.realtime_symbols_attempted_current_tick),
+    succeededCurrentTick: nonNegativeInteger(hash.realtime_symbols_succeeded_current_tick),
+    failedCurrentTick: nonNegativeInteger(hash.realtime_symbols_failed_current_tick),
+    coveredUnique,
+    complete: configuredSymbolCount > 0 && coveredUnique === configuredSymbolCount && hash.realtime_rotation_complete === "1",
+    failedSymbols: parseStringArray(hash.realtime_failed_symbols_current_tick),
+    stalledSymbols: parseStringArray(hash.realtime_stalled_symbols),
+  }
+}
+
 function positiveNumber(...values: unknown[]): number {
   for (const value of values) {
     const parsed = Number(value)
@@ -268,6 +297,7 @@ async function runtimeOnlyStatsResponse(
           },
         },
         realtime: {
+          rotation: realtimeRotationProgress(progression),
           indicationCycles: liveIndicationCycles || churnIndicationCycles,
           strategyCycles: liveStrategyCycles || churnStrategyCycles,
           realtimeCycles,
@@ -4438,6 +4468,7 @@ export async function GET(
 
 
       realtime: {
+        rotation: realtimeRotationProgress(progHash),
         indicationCycles: realtimeIndicationCycles,
         strategyCycles:   realtimeStrategyCycles,
         realtimeCycles,

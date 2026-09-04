@@ -113,6 +113,26 @@ export function EngineProgressPanel({ connectionId }: EngineProgressPanelProps) 
         </CardContent>
       </Card>
 
+      {/* Tick throughput is intentionally separate from rotation coverage. */}
+      {progress.realtimeRotation && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm">Realtime symbol rotation</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-xs">
+            <div className="grid grid-cols-2 gap-2">
+              <span>Current tick: {progress.realtimeRotation.succeededCurrentTick}/{progress.realtimeRotation.attemptedCurrentTick} succeeded</span>
+              <span>Full rotation: {progress.realtimeRotation.coveredUnique}/{progress.realtimeRotation.configuredSymbolCount} unique</span>
+            </div>
+            <Progress value={progress.realtimeRotation.configuredSymbolCount > 0 ? (progress.realtimeRotation.coveredUnique / progress.realtimeRotation.configuredSymbolCount) * 100 : 0} className="h-2" />
+            {progress.realtimeRotation.failedCurrentTick > 0 && (
+              <div className="text-destructive">Failed this tick ({progress.realtimeRotation.failedCurrentTick}): {progress.realtimeRotation.failedSymbols.join(", ")}</div>
+            )}
+            {!progress.realtimeRotation.complete && progress.realtimeRotation.stalledSymbols.length > 0 && (
+              <div className="text-amber-600">Awaiting successful coverage: {progress.realtimeRotation.stalledSymbols.join(", ")}</div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Prehistoric Progress */}
       <Card>
         <CardHeader className="pb-2">

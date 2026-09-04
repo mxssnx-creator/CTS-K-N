@@ -1,5 +1,37 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Session 2026-09-04 — truthful realtime rotation coverage
+
+- **Canonical checkout:** `/workspace/CTS-K-N`, branch `work`, based on
+  `38921469286faa7fabcc3257aa3fc1a60d8edde9`; the handoff commit containing
+  this entry is the current canonical revision.
+- Realtime progression now keeps configured basket size, current-tick
+  attempts, current-tick successes/failures, and unique successful coverage
+  within a basket generation as separate values. Basket identity includes the
+  entry-owner and settings generations plus the normalized symbol set; stale
+  completions are rejected after replacement.
+- Both progression stats views and `/api/engine-progress` expose the rotation
+  projection. Dashboard cards distinguish tick throughput from full-rotation
+  coverage and list failed/still-uncovered symbols rather than fabricating
+  full `N/N` completion.
+- Behavioral coverage uses five configured symbols and a three-symbol tick;
+  it verifies partial first-pass coverage, monotonic exact completion, basket
+  reset/stale rejection, and a repeatedly failing symbol remaining uncovered.
+- Owner-only pre-edit checkpoint:
+  `/workspace/backups/CTS-K-N/20260904T120453Z-pre-rotation-progress` (bundle,
+  binary patch, untracked archive/list, HEAD/status, SHA-256 check, and bundle
+  verification all passed). A separate exact-tree pre-commit checkpoint is
+  recorded alongside it.
+- Gates: focused Jest, TypeScript, changed-file ESLint, and `git diff --check`
+  pass. The development server compiled and booted locally, but no browser
+  engine is installed in this environment, so an automated UI screenshot was
+  not available. No remote/deploy/exchange work occurred. The local dev boot
+  initialized only the disposable local Redis adapter and was stopped; no
+  production Redis or service was touched.
+- Pending safety work: publish only through the requested reviewed GitHub PR;
+  deploy only after merge and green checks on `main` under the managed Chisel
+  process. X01/Mainnet and every Bybit connection remain read-only.
+
 ## Session 2026-09-03 — Reset-db auth, restart intent, live-phase symbols_processed
 
 - **No remote/deploy work performed.** The managed Chisel activator
