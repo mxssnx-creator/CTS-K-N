@@ -280,6 +280,9 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('systemctl start "$APP_NAME-redis-governor.timer"')
     expect(installer).toContain('systemctl disable --now "$APP_NAME-redis-memory.timer"')
     expect(installer).toMatch(
+      /install_systemd_runtime\(\) \{[\s\S]*?local [^\n]*node_bin[\s\S]*?node_bin="\$\(command -v node\)"[\s\S]*?ExecStart=\$\{node_bin\} [^\n]*redis-memory-governor\.mjs/,
+    )
+    expect(installer).toMatch(
       /rollback_after_failed_verification\(\) \{[\s\S]*?warn "Final verification failed"[\s\S]*?stop_runtime/,
     )
     expect(installer).toContain("restore_runtime_access_after_rollback()")
