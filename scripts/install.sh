@@ -646,7 +646,9 @@ root_has_live_process() {
       return 0
     fi
     if [[ -r "$proc/cmdline" ]]; then
-      cmdline="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+      # Apply stderr redirection before opening cmdline so a process that exits
+      # between -r and open cannot leak a harmless /proc race into install logs.
+      cmdline="$(tr '\0' ' ' 2>/dev/null < "$proc/cmdline" || true)"
       if [[ "$cmdline" == *"$candidate_root"* ]]; then
         (( had_nullglob == 0 )) || shopt -u nullglob
         return 0
@@ -663,7 +665,7 @@ is_inactive_legacy_release_snapshot() {
   prefix="$APP_NAME-release-"
   [[ "$basename" == "$prefix"* ]] || return 1
   suffix="${basename#"$prefix"}"
-  [[ "$suffix" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+  [[ "$suffix" =~ ^[0-9a-fA-F]{7,40}$ ]] || return 1
   ! root_has_live_process "$candidate_root"
 }
 
