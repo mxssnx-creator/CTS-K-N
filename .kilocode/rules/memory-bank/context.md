@@ -3153,3 +3153,22 @@ credentials are present.
   when `.cts-runtime/maintenance-stop` exists. Only the explicit
   `--clear-maintenance` option may remove that exact marker, and only after it
   has been copied into the verified pre-change backup.
+
+## Session 2026-09-04 — fail-closed global restart convergence
+
+- [x] Work began from canonical branch `work` at revision
+  `38921469286faa7fabcc3257aa3fc1a60d8edde9`. The pre-edit source checkpoint
+  `/workspace/backups/CTS-K-N/20260904T120308Z-pre-restart-convergence`
+  contains the complete bundle, binary patch, untracked archive/list,
+  HEAD/status records, verified SHA-256 manifest and successful bundle verify.
+- [x] Global restart now commits running intent through the same shared helper
+  used by Start and Resume, fails closed on Redis or coordinator errors, and
+  waits for authoritative running intent, coordinator state, and fresh active
+  per-connection engine heartbeats before returning success. Non-convergence
+  stops the coordinator and returns sanitized connection identifiers.
+- [x] Focused behavioral coverage passes 210/210 tests, including successful
+  restart, failed Redis persistence, failed `startAll()`, stale paused intent,
+  and bounded non-convergence; the TypeScript no-emit gate also passes.
+- [ ] No remote service, Redis data, exchange account, deployment, or order was
+  touched. Publication through the current reviewed branch/PR flow remains the
+  only pending handoff action; deploy only after a green merge to `main`.

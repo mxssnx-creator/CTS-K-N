@@ -1742,22 +1742,22 @@ describe("requested regression guardrails", () => {
 
   test("global resume publishes canonical running intent before startEngine and supports fresh-process paused state", () => {
     const resumeRoute = read("app/api/trade-engine/resume/route.ts")
+    const intentHelper = read("lib/trade-engine-intent.ts")
     const coordinator = read("lib/trade-engine.ts")
 
-    const routeRestoreIndex = resumeRoute.indexOf('await client.hset("trade_engine:global", {')
+    const routeRestoreIndex = resumeRoute.indexOf("await publishRunningTradeEngineIntent(client")
     const routeResumeIndex = resumeRoute.indexOf("await coordinator.resume({ force: true })")
     expect(routeRestoreIndex).toBeGreaterThanOrEqual(0)
     expect(routeRestoreIndex).toBeLessThan(routeResumeIndex)
-    const routeRestoreBlock = resumeRoute.slice(routeRestoreIndex, routeResumeIndex)
-    expect(routeRestoreBlock).toContain('status: "running"')
-    expect(routeRestoreBlock).toContain('desired_status: "running"')
-    expect(routeRestoreBlock).toContain('operator_intent: "running"')
-    expect(routeRestoreBlock).toContain('actual_status: "running"')
-    expect(routeRestoreBlock).toContain('coordinator_ready: "true"')
-    expect(routeRestoreBlock).toContain('operator_stopped: "0"')
-    expect(routeRestoreBlock).toContain('stopped_at: ""')
-    expect(routeRestoreBlock).toContain('operator_stopped_at: ""')
-    expect(routeRestoreBlock).toContain("resumed_at: new Date().toISOString()")
+    expect(intentHelper).toContain('status: "running"')
+    expect(intentHelper).toContain('desired_status: "running"')
+    expect(intentHelper).toContain('operator_intent: "running"')
+    expect(intentHelper).toContain('actual_status: "running"')
+    expect(intentHelper).toContain('coordinator_ready: "true"')
+    expect(intentHelper).toContain('operator_stopped: "0"')
+    expect(intentHelper).toContain('stopped_at: ""')
+    expect(intentHelper).toContain('operator_stopped_at: ""')
+    expect(intentHelper).toContain("[eventField]: nowIso")
 
     const resumeBlock = coordinator.slice(
       coordinator.indexOf("async resume(options: { force?: boolean } = {})"),
@@ -4149,17 +4149,109 @@ describe("requested regression guardrails", () => {
     expect(reset).toContain("authorizeAdminRequest")
   })
 
-  test("engine restart restores canonical running intent before startAll so a paused/stopped state cannot silently no-op restart", () => {
-    const restartRoute = read("app/api/trade-engine/restart/route.ts")
+  describe("trade-engine restart behavior", () => {
+    const request = { text: jest.fn().mockResolvedValue("") } as any
+    const originalEnv = { ...process.env }
 
-    // startAll() -> startEngine() is gated on isGlobalCoordinatorEnabled(),
-    // which blocks while operator_intent is "paused"". A Restart issued after
-    // a Pause must clear that stale intent to "running" before startAll().
-    expect(restartRoute).toContain("trade_engine:global")
-    expect(restartRoute).toContain('status: "running"')
-    expect(restartRoute).toContain('operator_intent: "running"')
-    expect(restartRoute).toContain('operator_stopped: "0"')
-    expect(restartRoute.indexOf("await client.hset")).toBeLessThan(restartRoute.indexOf("await coordinator.startAll()"))
+    beforeEach(() => {
+      jest.resetModules()
+    })
+
+    afterEach(() => {
+      process.env = { ...originalEnv }
+      jest.resetModules()
+      jest.restoreAllMocks()
+    })
+
+    async function runRestart(options: {
+      globalState?: Record<string, string>
+      engineState?: Record<string, string>
+      hsetError?: Error
+      startError?: Error
+    } = {}) {
+      process.env.TRADE_ENGINE_RESTART_STOP_DELAY_MS = "0"
+      process.env.TRADE_ENGINE_RESTART_TIMEOUT_MS = "0"
+      const globalState = { ...(options.globalState || { operator_intent: "running", desired_status: "running" }) }
+      const engineState = options.engineState || {
+        status: "realtime",
+        last_processor_heartbeat: String(Date.now()),
+      }
+      let running = false
+      const coordinator = {
+        stopAll: jest.fn(async () => { running = false }),
+        startAll: jest.fn(async () => {
+          if (options.startError) throw options.startError
+          running = true
+        }),
+        isRunning: jest.fn(() => running),
+      }
+      const client = {
+        hset: jest.fn(async (_key: string, values: Record<string, string>) => {
+          if (options.hsetError) throw options.hsetError
+          Object.assign(globalState, values)
+        }),
+        hdel: jest.fn(async (_key: string, ...fields: string[]) => {
+          for (const field of fields) delete globalState[field]
+        }),
+        hgetall: jest.fn(async (key: string) => key === "trade_engine:global" ? globalState : engineState),
+      }
+
+      jest.doMock("@/lib/runtime-maintenance", () => ({
+        getRuntimeMaintenanceState: () => ({ active: false }),
+        runtimeMaintenanceJson: jest.fn(),
+      }))
+      jest.doMock("@/lib/redis-db", () => ({
+        initRedis: jest.fn(async () => undefined),
+        getRedisClient: () => client,
+        getAssignedAndEnabledConnections: jest.fn(async () => [{ id: "connection/unsafe" }]),
+      }))
+      jest.doMock("@/lib/trade-engine", () => ({ getGlobalTradeEngineCoordinator: () => coordinator }))
+
+      const { POST } = await import("../../app/api/trade-engine/restart/route")
+      const response = await POST(request)
+      return { response, body: await response.json(), coordinator, globalState, running: () => running }
+    }
+
+    test("successful restart returns only after the coordinator and eligible engine converge", async () => {
+      const result = await runRestart()
+      expect(result.response.status).toBe(200)
+      expect(result.body).toMatchObject({ success: true, coordinatorState: "running" })
+      expect(result.running()).toBe(true)
+    })
+
+    test("Redis intent write failure fails closed", async () => {
+      const result = await runRestart({ hsetError: new Error("redis unavailable") })
+      expect(result.response.status).toBe(500)
+      expect(result.body).toMatchObject({ success: false, coordinatorState: "stopped" })
+      expect(result.coordinator.startAll).not.toHaveBeenCalled()
+      expect(result.running()).toBe(false)
+    })
+
+    test("startAll failure fails closed", async () => {
+      const result = await runRestart({ startError: new Error("start failed") })
+      expect(result.response.status).toBe(500)
+      expect(result.body).toMatchObject({ success: false, coordinatorState: "stopped" })
+      expect(result.running()).toBe(false)
+    })
+
+    test("stale paused intent is durably replaced before startup", async () => {
+      const result = await runRestart({ globalState: { operator_intent: "paused", desired_status: "paused" } })
+      expect(result.response.status).toBe(200)
+      expect(result.globalState).toMatchObject({ operator_intent: "running", desired_status: "running" })
+      expect(result.running()).toBe(true)
+    })
+
+    test("startup that never converges reports sanitized partial failure and stops", async () => {
+      const result = await runRestart({ engineState: { status: "starting", last_processor_heartbeat: "0" } })
+      expect(result.response.status).toBe(504)
+      expect(result.body).toMatchObject({
+        success: false,
+        code: "restart_convergence_timeout",
+        failedConnectionIds: ["connection_unsafe"],
+        coordinatorState: "stopped",
+      })
+      expect(result.running()).toBe(false)
+    })
   })
 
   test("live-phase symbols_processed reports the full configured scope, not the per-tick rotating slice", () => {
