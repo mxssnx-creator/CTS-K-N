@@ -45,6 +45,46 @@
     }).join(" ");
   };
 
+  const metric = (value, digits = 2) => {
+    if (value === null || value === undefined || value === "") return "—";
+    if (Number.isFinite(Number(value))) return Number(value).toFixed(digits);
+    return String(value) === "true" ? "∞" : "—";
+  };
+  const pfMetric = (row) => {
+    if (!row) return "—";
+    if (row.infinite) return "∞ (" + integer(row.samples) + ")";
+    return metric(row.value, 2) + " (" + integer(row.samples) + (row.available ? "" : " · partial") + ")";
+  };
+
+  function connectionMarkup(connection) {
+    const stats = connection.stats || {};
+    const pf = stats.pf || {};
+    const ddt = stats.averageDdt || {};
+    const runtime = connection.runtime || {};
+    const recoord = runtime.settingsRecoordination || {};
+    const recalculation = runtime.statsRecalculation || {};
+    const progress = connection.progress || {};
+    const exchange = stats.exchangeOpen === null || stats.exchangeOpen === undefined ? "—" : integer(stats.exchangeOpen);
+    const errors = Array.isArray(connection.upstream?.errors) ? connection.upstream.errors.join(", ") : "";
+    const state = String(connection.status || "unknown");
+    const coverage = stats.accounting?.coveragePercent;
+    return '<div class="connection-card"><div class="connection-head"><div><span class="mono">' + esc(connection.id) +
+      '</span><div class="small">' + esc(connection.name || connection.id) + " · " + esc(connection.exchange || "unknown") +
+      '</div></div><span class="status"><i class="dot ' + stateClass(state) + '"></i>' + esc(state) + '</span></div>' +
+      '<div class="connection-grid"><div><span class="label">Processing state</span><b>' + esc(state) + " · " + esc(progress.phase || "warming") +
+      " · " + number(progress.percent, 1) + '</b></div><div><span class="label">Pos Valid / Exchange</span><b>' +
+      integer(stats.realValid) + " / " + exchange + " (live " + integer(stats.liveOpen) + ')</b></div><div><span class="label">Unrealized PnL</span><b class="mono">' +
+      metric(stats.unrealizedPnl, 4) + '</b></div><div><span class="label">PF last 8 / 25 / 75</span><b class="mono">' +
+      esc(pfMetric(pf.last8)) + " / " + esc(pfMetric(pf.last25)) + " / " + esc(pfMetric(pf.last75)) +
+      '</b></div><div><span class="label">Average DDT · Overall / Sets</span><b class="mono">' +
+      metric(ddt.overallMinutes, 1) + " / " + metric(ddt.setsMinutes, 1) + ' min</b></div><div><span class="label">Coverage</span><b class="mono">' +
+      integer(stats.realValid) + " valid · " + metric(coverage, 1) + '%</b></div></div>' +
+      '<div class="small connection-foot">heartbeat ' + (connection.heartbeatFresh ? "fresh" : "stale") +
+      " · recoord " + esc(recoord.phase || recoord.status || "idle") + " · recalc " + esc(recalculation.phase || recalculation.status || "idle") +
+      (stats.exchangeOpenSource ? " · exchange source " + esc(stats.exchangeOpenSource) : "") +
+      (errors ? ' · <span class="bad">' + esc(errors) + '</span>' : "") + "</div></div>";
+  }
+
   function projectMarkup(project) {
     const cls = stateClass(project.status);
     const activity = project.activity || {};
@@ -75,10 +115,15 @@
       project.health?.redis ? "Redis " + project.health.redis : "",
       "checks " + integer(activity.checks),
       project.serviceDetails?.length ? project.serviceDetails.length + " services" : "",
+      project.connectionIds?.length ? project.connectionIds.length + " connections" : "",
     ].filter(Boolean);
     const serviceLine = Array.isArray(project.serviceDetails) && project.serviceDetails.length
       ? " · services " + project.serviceDetails.map((service) => service.id.replace(/\.service$/, "") + " " + formatBytes(service.memoryBytes)).join(", ")
       : "";
+    const connections = Array.isArray(project.connections) ? project.connections : [];
+    const connectionRows = connections.length
+      ? '<div class="connection-list">' + connections.map(connectionMarkup).join("") + "</div>"
+      : '<div class="small connection-empty">No per-connection stats available from this project.</div>';
     return '<article class="card project"><div class="project-head"><div><div class="project-title">' +
       esc(project.name) + '</div><div class="project-role">' + esc(project.role) +
       '</div></div><div class="status"><i class="dot ' + cls + '"></i>' + esc(project.status || "unknown") +
@@ -87,7 +132,8 @@
       '</div><div class="small" style="margin-top:10px">Failures ' + integer(activity.failures) +
       " (" + number(activity.failureRatePercent, 1) + "%) · state changes " + integer(activity.stateChanges) +
       (activity.lastOkAt ? " · last OK " + esc(new Date(activity.lastOkAt).toLocaleTimeString()) : "") +
-      esc(serviceLine) + "</div>" + (project.error ? '<div class="small bad" style="margin-top:8px">' + esc(project.error) + "</div>" : "") + "</article>";
+      esc(serviceLine) + "</div>" + (project.error ? '<div class="small bad" style="margin-top:8px">' + esc(project.error) + "</div>" : "") +
+      '<div class="connection-title">Connection coverage</div>' + connectionRows + "</article>";
   }
 
   function renderCoreRows(cores) {
