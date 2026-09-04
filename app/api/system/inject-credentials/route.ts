@@ -4,6 +4,7 @@ import { BASE_CONNECTION_CREDENTIALS } from "@/lib/base-connection-credentials"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
+import { isLiveOrderConnectionAllowed } from "@/lib/real-trade-gates"
 
 export const dynamic = "force-dynamic"
 
@@ -175,10 +176,14 @@ export async function GET(request: Request) {
       const hasSecret = !!(secret && secret.length > 10)
       const hasCredentials = hasKey && hasSecret
       const banned = /PLACEHOLDER|00998877|^test|^replace_me|^[•*]+$/i
+      const liveTradeRequested = conn?.is_live_trade === "1"
+        || conn?.live_trade_requested === "1"
+        || conn?.live_trade_enabled === "1"
       const liveTradeEnabled = hasCredentials
         && !banned.test(key)
         && !banned.test(secret)
-        && (conn?.is_live_trade === "1" || conn?.live_trade_requested === "1" || conn?.live_trade_enabled === "1")
+        && liveTradeRequested
+        && isLiveOrderConnectionAllowed({ id: connId })
       dbStatus[connId] = { hasCredentials, liveTradeEnabled }
     }
     
