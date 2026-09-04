@@ -19,6 +19,8 @@ CRON_STALE_SECONDS="${CTS_RECOVERY_CRON_STALE_SECONDS:-150}"
 BOOT_GRACE_SECONDS="${CTS_RECOVERY_BOOT_GRACE_SECONDS:-180}"
 DIRECT_STALE_SAMPLES="${CTS_RECOVERY_DIRECT_STALE_SAMPLES:-3}"
 DIRECT_SAMPLE_DELAY_SECONDS="${CTS_RECOVERY_DIRECT_SAMPLE_DELAY_SECONDS:-2}"
+LIVENESS_SAMPLES="${CTS_RECOVERY_LIVENESS_SAMPLES:-3}"
+LIVENESS_SAMPLE_DELAY_SECONDS="${CTS_RECOVERY_LIVENESS_SAMPLE_DELAY_SECONDS:-1}"
 
 usage() {
   echo "Usage: runtime-recovery.sh --name NAME --port PORT --runtime-dir PATH --runtime systemd|pm2 [--service-user USER]" >&2
@@ -52,6 +54,10 @@ valid_name "$APP_NAME" && valid_port "$APP_PORT" && valid_runtime_dir "$RUNTIME_
 (( DIRECT_STALE_SAMPLES >= 2 && DIRECT_STALE_SAMPLES <= 5 )) || DIRECT_STALE_SAMPLES=3
 [[ "$DIRECT_SAMPLE_DELAY_SECONDS" =~ ^[0-9]+$ ]] || DIRECT_SAMPLE_DELAY_SECONDS=2
 (( DIRECT_SAMPLE_DELAY_SECONDS >= 1 && DIRECT_SAMPLE_DELAY_SECONDS <= 5 )) || DIRECT_SAMPLE_DELAY_SECONDS=2
+[[ "$LIVENESS_SAMPLES" =~ ^[0-9]+$ ]] || LIVENESS_SAMPLES=3
+(( LIVENESS_SAMPLES >= 2 && LIVENESS_SAMPLES <= 5 )) || LIVENESS_SAMPLES=3
+[[ "$LIVENESS_SAMPLE_DELAY_SECONDS" =~ ^[0-9]+$ ]] || LIVENESS_SAMPLE_DELAY_SECONDS=1
+(( LIVENESS_SAMPLE_DELAY_SECONDS >= 1 && LIVENESS_SAMPLE_DELAY_SECONDS <= 5 )) || LIVENESS_SAMPLE_DELAY_SECONDS=1
 
 # A deliberate `service-control stop` creates this marker. Self-healing must
 # never turn a maintenance stop into an unexpected live restart.
@@ -188,17 +194,32 @@ restart_service() {
   if [[ "${CTS_RECOVERY_DRY_RUN:-0}" == "1" ]]; then return 0; fi
   if [[ "$RUNTIME" == "systemd" ]]; then
     systemctl reset-failed "$service" 2>/dev/null || true
-    systemctl restart "$service"
+    # A stop can take longer than this oneshot's timeout when a Node worker is
+    # draining a large calculation batch. Queue the restart and return; a
+    # synchronous `systemctl restart` left the app inactive after the recovery
+    # unit itself was killed at TimeoutStartSec.
+    systemctl restart --no-block "$service"
   else
     pm2_as_service restart "$service" --update-env
   fi
+}
+
+liveness_available() {
+  local sample
+  for (( sample=1; sample<=LIVENESS_SAMPLES; sample++ )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/api/health/liveness" >/dev/null 2>&1; then
+      return 0
+    fi
+    (( sample < LIVENESS_SAMPLES )) && sleep "$LIVENESS_SAMPLE_DELAY_SECONDS"
+  done
+  return 1
 }
 
 app_service="$APP_NAME"
 scheduler_service="$APP_NAME-scheduler"
 direct_service="$APP_NAME-direct-trade"
 
-if ! curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/api/health/liveness" >/dev/null 2>&1; then
+if ! liveness_available; then
   restart_service "$app_service" "liveness endpoint unavailable"
   exit 0
 fi

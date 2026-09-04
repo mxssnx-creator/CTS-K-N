@@ -2259,7 +2259,7 @@ export function ActiveConnectionCard({
             ? `partial ${stageSnapshot.coverage.processed}/${stageSnapshot.coverage.total}`
             : "coordinated"
   const stageSnapshotHealthy = connectionStageOverview?.integrity.valid === true &&
-    (!stageSnapshot || (stageSnapshot.engineRunning && stageSnapshot.fresh && stageSnapshot.complete))
+    (!stageSnapshot || (stageSnapshot.engineRunning && stageSnapshot.fresh))
 
   return (
     <>
@@ -3429,7 +3429,7 @@ export function ActiveConnectionCard({
                                 <span className="font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
                                   Realtime stage averages
                                 </span>
-                                <span className="text-muted-foreground">complete symbol snapshots only</span>
+                                <span className="text-muted-foreground">measured symbols · coverage shown per stage</span>
                               </div>
                               <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
                                 {REALTIME_STAGE_AVERAGE_ROWS.map(({ key, label, tone }) => {
@@ -3808,7 +3808,7 @@ export function ActiveConnectionCard({
                       Overall Stage Overview
                     </div>
                     <div className="text-[10px] text-muted-foreground">
-                      Latest completed cycle · current open lineage kept separate
+                      {stageSnapshot?.complete ? "Latest completed cycle" : "Completed symbol calculations"} · current open lineage kept separate
                     </div>
                   </div>
                   <Badge

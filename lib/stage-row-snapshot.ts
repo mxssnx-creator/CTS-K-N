@@ -22,3 +22,23 @@ export function resolveStageRowSnapshotFreshMs(expectedSymbols: unknown): number
     ),
   )
 }
+
+/** Sum the measured current symbols; coverage describes missing work separately. */
+export function sumFreshStageRowField(
+  hash: Record<string, string>,
+  field: string,
+  options: { symbols: ReadonlySet<string>; maxAgeMs: number; now?: number },
+): number {
+  const now = options.now ?? Date.now()
+  let total = 0
+  for (const key of Object.keys(hash)) {
+    if (!key.startsWith("s:") || !key.endsWith(":ts")) continue
+    const symbol = key.slice(2, -3)
+    if (options.symbols.size > 0 && !options.symbols.has(symbol.toUpperCase())) continue
+    const timestamp = Number(hash[key])
+    if (!(timestamp > 0) || !Number.isFinite(timestamp) || now - timestamp > options.maxAgeMs) continue
+    const value = Number(hash[`s:${symbol}:${field}`])
+    if (Number.isFinite(value) && value > 0) total += value
+  }
+  return total
+}

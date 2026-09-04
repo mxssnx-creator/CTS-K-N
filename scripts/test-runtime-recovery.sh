@@ -10,6 +10,7 @@ MOCK_BIN="$TEST_ROOT/bin"
 RUNTIME_DIR="$TEST_ROOT/runtime"
 RESTART_LOG="$TEST_ROOT/restarts.log"
 STATUS_CALLS="$TEST_ROOT/status-calls"
+LIVENESS_CALLS="$TEST_ROOT/liveness-calls"
 cleanup() {
   if [[ "${CTS_RUNTIME_RECOVERY_TEST_KEEP:-0}" == "1" ]]; then
     printf '[test-runtime-recovery] retained %s\n' "$TEST_ROOT" >&2
@@ -21,6 +22,7 @@ trap cleanup EXIT
 mkdir -p "$MOCK_BIN" "$RUNTIME_DIR"
 : > "$RESTART_LOG"
 : > "$STATUS_CALLS"
+: > "$LIVENESS_CALLS"
 
 cat > "$MOCK_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -28,7 +30,11 @@ set -Eeuo pipefail
 url="${!#}"
 case "$url" in
   */api/health/liveness)
-    [[ "${CTS_RECOVERY_TEST_LIVENESS:-up}" == "up" ]] || exit 22
+    mode="${CTS_RECOVERY_TEST_LIVENESS:-up}"
+    calls="$(wc -l < "${CTS_RECOVERY_TEST_LIVENESS_CALLS:?}")"
+    printf '.\n' >> "${CTS_RECOVERY_TEST_LIVENESS_CALLS:?}"
+    if [[ "$mode" == "recover" && "$calls" -ge 1 ]]; then mode="up"; fi
+    [[ "$mode" == "up" ]] || exit 22
     printf '%s' '{"alive":true}'
     ;;
   */api/system/init-status)
@@ -97,6 +103,7 @@ done
 clear_scenario() {
   : > "$RESTART_LOG"
   : > "$STATUS_CALLS"
+  : > "$LIVENESS_CALLS"
   rm -f -- \
     "$RUNTIME_DIR/recovery-cts-selfheal.epoch" \
     "$RUNTIME_DIR/recovery-cts-selfheal-scheduler.epoch" \
@@ -114,6 +121,7 @@ run_tick() {
     PATH="$MOCK_BIN:$PATH" \
     CTS_RECOVERY_TEST_LOG="$RESTART_LOG" \
     CTS_RECOVERY_TEST_STATUS_CALLS="$STATUS_CALLS" \
+    CTS_RECOVERY_TEST_LIVENESS_CALLS="$LIVENESS_CALLS" \
     CTS_RECOVERY_TEST_LIVENESS="$TEST_LIVENESS" \
     CTS_RECOVERY_TEST_CRON="$TEST_CRON" \
     CTS_RECOVERY_TEST_DIRECT="$TEST_DIRECT" \
@@ -123,6 +131,8 @@ run_tick() {
     CTS_RECOVERY_BOOT_GRACE_SECONDS="$TEST_BOOT_GRACE" \
     CTS_RECOVERY_DIRECT_STALE_SAMPLES=3 \
     CTS_RECOVERY_DIRECT_SAMPLE_DELAY_SECONDS=1 \
+    CTS_RECOVERY_LIVENESS_SAMPLES=3 \
+    CTS_RECOVERY_LIVENESS_SAMPLE_DELAY_SECONDS=1 \
     bash "$PROJECT_ROOT/scripts/runtime-recovery.sh" \
       --name cts-selfheal --port 3902 --runtime-dir "$RUNTIME_DIR" --runtime systemd --service-user root
 }
@@ -146,14 +156,31 @@ wrapper_output="$(run_tick)"
 [[ ! -s "$RESTART_LOG" ]]
 chmod 700 "$RUNTIME_DIR/start-app.sh"
 
+# One temporary liveness timeout must not interrupt a healthy calculation.
+clear_scenario
+TEST_LIVENESS=recover
+run_tick >/dev/null
+[[ ! -s "$RESTART_LOG" ]]
+[[ "$(wc -l < "$LIVENESS_CALLS")" -eq 2 ]]
+
+# Confirm a full outage, then queue the restart without waiting inside the
+# short-lived recovery unit for the app's longer shutdown timeout.
+clear_scenario
+TEST_LIVENESS=down
+run_tick >/dev/null
+grep -qx 'restart --no-block cts-selfheal' "$RESTART_LOG"
+[[ "$(wc -l < "$LIVENESS_CALLS")" -eq 3 ]]
+run_tick >/dev/null
+[[ "$(wc -l < "$RESTART_LOG")" -eq 1 ]]
+
 # Stale continuity restarts only the scheduler; a Direct worker needs three
 # consecutive stale heartbeat samples before its own isolated restart.
 clear_scenario
 TEST_CRON=stale
 TEST_DIRECT=stale
 stale_output="$(run_tick)"
-grep -qx 'restart cts-selfheal-scheduler' "$RESTART_LOG"
-grep -qx 'restart cts-selfheal-direct-trade' "$RESTART_LOG"
+grep -qx 'restart --no-block cts-selfheal-scheduler' "$RESTART_LOG"
+grep -qx 'restart --no-block cts-selfheal-direct-trade' "$RESTART_LOG"
 [[ "$stale_output" == *"cron continuity is stale or degraded"* ]]
 [[ "$stale_output" == *"heartbeat stale for 3 consecutive samples"* ]]
 [[ "$stale_output" == *"continuity requested recovery"* ]]
@@ -192,4 +219,4 @@ maintenance_output="$(run_tick)"
 [[ "$maintenance_output" == *"maintenance stop is active"* ]]
 [[ ! -s "$RESTART_LOG" ]]
 
-printf '%s\n' '{"success":true,"bootGrace":true,"wrapperGuard":true,"consecutiveHeartbeatSamples":3,"recoveredWithoutRestart":true,"progressDegradationOnly":true,"cooldown":true,"maintenanceStop":true,"realServicesTouched":false}'
+printf '%s\n' '{"success":true,"bootGrace":true,"wrapperGuard":true,"consecutiveHeartbeatSamples":3,"consecutiveLivenessSamples":3,"queuedRestart":true,"recoveredWithoutRestart":true,"progressDegradationOnly":true,"cooldown":true,"maintenanceStop":true,"realServicesTouched":false}'
