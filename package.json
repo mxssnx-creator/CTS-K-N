@@ -58,6 +58,7 @@
     "test:direct-trade:live-preflight": "node scripts/test-direct-trade-live-preflight.mjs",
     "test:bingx:vst:soak": "node --env-file-if-exists=.env.production.local --env-file-if-exists=.env --import tsx scripts/run-bingx-vst-live-soak.ts",
     "test:bingx:vst:preflight": "BINGX_VST_SOAK_PREFLIGHT_ONLY=1 node --env-file-if-exists=.env.production.local --env-file-if-exists=.env --import tsx scripts/run-bingx-vst-live-soak.ts",
+    "test:bingx:vst:orchestrated": "NODE_OPTIONS='--expose-gc --max-old-space-size=2048' node --env-file-if-exists=.env.production.local --env-file-if-exists=.env --import tsx scripts/run-bingx-vst-orchestrated-verifier.ts",
     "test:bingx:vst:settlements": "node --env-file-if-exists=.env --import tsx scripts/audit-bingx-vst-soak-settlements.ts",
     "reconcile:bingx:x02:slot-protection": "node --env-file-if-exists=.env.production.local --env-file-if-exists=.env --import tsx scripts/reconcile-bingx-x02-protection-slot.ts",
     "rebuild:live-lifetime-summary": "node --env-file-if-exists=.env.production.local --env-file-if-exists=.env --import tsx scripts/rebuild-live-position-lifetime-summary.ts",
