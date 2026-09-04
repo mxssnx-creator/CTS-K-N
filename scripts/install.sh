@@ -1815,7 +1815,10 @@ install_systemd_runtime() {
   local legacy_redis_governor_unit="/etc/systemd/system/$APP_NAME-redis-memory.service"
   local legacy_redis_governor_timer="/etc/systemd/system/$APP_NAME-redis-memory.timer"
   local redis_unit="/etc/systemd/system/$APP_NAME-redis.service"
-  local runtime_high_mb runtime_max_mb scheduler_max_mb direct_trade_max_mb
+  local runtime_high_mb runtime_max_mb scheduler_max_mb direct_trade_max_mb node_bin
+  node_bin="$(command -v node)"
+  [[ -n "$node_bin" && -x "$node_bin" ]] \
+    || fatal "Node.js executable is unavailable while publishing systemd units"
   runtime_high_mb="$(env_value CTS_RUNTIME_MEMORY_HIGH_MB)"
   runtime_max_mb="$(env_value CTS_RUNTIME_MEMORY_MAX_MB)"
   [[ "$runtime_high_mb" =~ ^[0-9]+$ ]] || runtime_high_mb=768
