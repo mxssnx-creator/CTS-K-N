@@ -7,6 +7,7 @@ import { join } from "node:path"
 import { classifyVstSoakExternalProtectionOrder } from "@/lib/bingx-vst-soak-audit"
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import { isLiveOrderConnectionAllowed } from "@/lib/real-trade-gates"
+import { tradingPairKey } from "@/lib/trading-pair-keys"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
 const VST_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
@@ -1226,7 +1227,7 @@ async function main(): Promise<void> {
       const priceTick = 10 ** -Math.max(0, Math.min(12, finite(rules.pricePrecision)))
       if (!(priceTick > 0)) throw new Error(`No exact Prod-VST price tick for ${symbol}`)
       rulesBySymbol.set(symbol, { ...rules, priceTick })
-      await redisClient.hset(`settings:trading_pair:${symbol}`, {
+      await redisClient.hset(tradingPairKey(symbol, connectionId), {
         quantityStep: String(rules.quantityStep),
         quantityPrecision: String(rules.quantityPrecision),
         pricePrecision: String(rules.pricePrecision),

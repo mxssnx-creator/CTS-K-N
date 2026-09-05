@@ -50,6 +50,13 @@
 - Next: finish release gates, publish/merge/deploy this follow-up from green
   main, repeat full 20-minute/16-cycle VST, retain strict foreign-baseline
   evidence, recheck screenshots/API/current counts and runtime stability.
+- PR314 initial tree passed 276 suites / 1,906 tests, typecheck, lint, secret
+  scan and production build (349 traces); Linux smoke 33931151496 passed.
+  Before merge, one more harness namespace mismatch was identified: venue
+  quantity rules were written globally while Main/Preset/Signal read the
+  connection-scoped key. The verifier now uses the shared tradingPairKey with
+  canonical X02, so the observed SOL request 0.03 cannot be inflated to the
+  static 0.1 fallback merely because its authoritative metadata is misplaced.
 
 ## Current follow-up — exact evaluated/passed display
 
