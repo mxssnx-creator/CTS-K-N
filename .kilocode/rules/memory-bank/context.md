@@ -1,4 +1,41 @@
 # Active Context: CTS-K-N Trading System (main project)
+## Redis production recovery — 2026-09-05
+
+- Canonical `/workspace/CTS-K-N` remains at `90f361f2` with preserved concurrent
+  changes. Current isolated worktree is
+  `/workspace/CTS-K-N-worktrees/ui-runtime-audit-20260905`, branch
+  `codex/ui-runtime-audit-20260905`, based on PR317 head `789728bcb5f7f249b984ce96fb1350dcdc0072f8`.
+  Production/main remain `bd1d506cff2f03d4d26b2245fa5956a2a3b5ad74` pending merge/deploy.
+- Managed Chisel was restored and the pinned SSH forward verified. Redis OOM
+  plus 90-second replay timeouts raised its NRestarts to 63. The old governor
+  admitted 25.2 GB on a 16 GiB host. All CTS runtime NRestarts remained zero.
+- Verified checkpoints:
+  `/workspace/backups/CTS-K-N/20260905T134706Z-pre-ui-runtime-recovery`,
+  `/workspace/backups/CTS-K-N/20260905T135142Z-pre-redis-memory-fix`, and
+  `/var/backups/cts-kn/redis-oom-20260905T135159Z` with complete AOF chain/RDB.
+- Lossless production compression verified 20,838,428 entries and reclaimed
+  14,409,357,707 bytes, retaining order and absolute TTL. Redis allocation
+  decreased to ~6.41 GiB, available RAM ~3.4 GiB, swap ~3.6 GiB. No new Redis
+  restarts occurred after recovery. AOF remains enabled/everysec/write-status ok.
+- Production temporary repairs: `redis-server.service` timeout drop-in 900s,
+  automatic RDB/AOF forks disabled, list compression depth 1 / listpack -1.
+  The obsolete cts-kn-redis-governor timer is stopped until corrected rollout.
+  Full lossless repack unit completed; its protected aggregate log is
+  `/var/tmp/cts-redis-repack-verification/full-repack.log`.
+- Source adds a host-bounded budget, headroom/cooldown/loading-aware maintenance,
+  durable governor state, bounded connections and a non-destructive history
+  write error path. See `docs/verification/redis-memory-recovery-20260905.md`.
+- A fresh complete remote checkpoint including .next/node_modules rollback
+  binaries is running as `cts-kn-pre-memory-deploy-backup-20260905`;
+  status log `/var/tmp/cts-memory-deploy-20260905/checkpoint.log`.
+- Current gates: 285 suites / 1,962 tests, TypeScript and ESLint passed;
+  final production build is running. Production maxmemory is now explicitly
+  capped at 8,386,641,920 bytes (half of measured host RAM).
+- Pending: finish exact-source gates, publish updated PR317, green CI/merge,
+  managed clean reinstall and corrected governor restoration, UI/API and X02
+  VST acceptance. No new venue orders have been placed during this incident.
+  X01/Mainnet/Bybit remain read-only; do not assume X02 is flat from cached data.
+
 ## Strategy continuation checkpoint — 2026-09-05 08:55 UTC
 
 - Canonical checkout remains `/workspace/CTS-K-N`; concurrent changes there

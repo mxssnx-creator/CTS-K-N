@@ -6,7 +6,7 @@ import { createRequire } from "node:module"
 import { createClient } from "redis"
 
 const require = createRequire(import.meta.url)
-const { MIB, calculateRedisMemoryPolicy } = require("../lib/redis-memory-policy.cjs")
+const { MIB, calculateRedisMemoryPolicy, calculateRedisMaintenanceAdmission } = require("../lib/redis-memory-policy.cjs")
 const SIX_HOURS_MS = 6 * 60 * 60 * 1_000
 
 function parseInfo(raw) {
@@ -79,10 +79,16 @@ async function main() {
     return
   }
 
-  const client = createClient({ url: redisUrl })
+  const client = createClient({
+    url: redisUrl,
+    socket: { connectTimeout: 5_000, reconnectStrategy: false },
+    disableOfflineQueue: true,
+  })
   client.on("error", () => undefined)
-  await client.connect()
+  const deadline = setTimeout(() => { if (client.isOpen) client.destroy() }, 25_000)
+  deadline.unref()
   try {
+    await client.connect()
     const [memoryRaw, persistenceRaw, maxmemoryConfig, policyConfig, host] = await Promise.all([
       client.info("memory"),
       client.info("persistence"),
@@ -104,6 +110,18 @@ async function main() {
       buildMode,
       instanceShare,
     })
+    const maintenance = calculateRedisMaintenanceAdmission({
+      policy, availableBytes: host.availableBytes, usedBytes,
+      rssBytes: Number(memory.used_memory_rss) || 0,
+      persistence, now,
+      lastPurgeAt: Number(previous.lastPurgeAt || 0),
+      lastAofAttemptAt: Number(previous.lastAofAttemptAt || previous.lastAofRewriteAt || 0),
+    })
+    if (maintenance.loading) {
+      await writeState(statePath, { ...previous, state: "loading", lastRunAt: now })
+      console.log("[redis-governor] durable recovery is still loading; maintenance deferred")
+      return
+    }
     const targetChanged = Math.abs(currentTarget - policy.targetBytes) >= 64 * MIB
     const stateChanged = previous.state !== policy.state
     const actions = []
@@ -123,7 +141,8 @@ async function main() {
     const fragmentation = Number(memory.mem_fragmentation_ratio) || 0
     const purgeDue = now - Number(previous.lastPurgeAt || 0) >= SIX_HOURS_MS
     let lastPurgeAt = Number(previous.lastPurgeAt || 0)
-    if ((policy.state !== "normal" || (fragmentation >= 1.5 && purgeDue)) && usedBytes > 128 * MIB) {
+    if (maintenance.purgeAllowed && (policy.state !== "normal" || (fragmentation >= 1.5 && purgeDue)) && usedBytes > 128 * MIB) {
+      lastPurgeAt = now
       try {
         await client.sendCommand(["MEMORY", "PURGE"])
         actions.push("memory-purge")
@@ -136,12 +155,15 @@ async function main() {
     const aofBytes = Number(persistence.aof_current_size) || 0
     const aofRewriteDue = now - Number(previous.lastAofRewriteAt || 0) >= SIX_HOURS_MS
     let lastAofRewriteAt = Number(previous.lastAofRewriteAt || 0)
+    let lastAofAttemptAt = Number(previous.lastAofAttemptAt || previous.lastAofRewriteAt || 0)
     if (
       aofRewriteDue
+      && maintenance.aofRewriteAllowed
       && persistence.aof_enabled === "1"
       && persistence.aof_rewrite_in_progress !== "1"
       && aofBytes > Math.max(256 * MIB, usedBytes * 1.5)
     ) {
+      lastAofAttemptAt = now
       try {
         await client.bgRewriteAof()
         actions.push("aof-rewrite")
@@ -160,6 +182,9 @@ async function main() {
       lastHeartbeatAt: stateChanged || actions.length > 0 || heartbeatDue ? now : previous.lastHeartbeatAt,
       lastPurgeAt,
       lastAofRewriteAt,
+      lastAofAttemptAt,
+      forkAllowed: maintenance.forkAllowed,
+      forkReserveBytes: maintenance.forkReserveBytes,
     }
     await writeState(statePath, nextState)
     if (stateChanged || actions.length > 0 || heartbeatDue || policy.overBudget) {
@@ -175,7 +200,8 @@ async function main() {
       }))
     }
   } finally {
-    await client.quit().catch(() => client.disconnect())
+    clearTimeout(deadline)
+    if (client.isOpen) client.destroy()
   }
 }
 

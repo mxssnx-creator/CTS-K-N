@@ -172,6 +172,7 @@ __tests__/unit/indication-connection-selection.test.ts
 __tests__/unit/indication-lane-identity.test.ts
 __tests__/unit/indication-outcome-cost-basis.test.ts
 __tests__/unit/indication-set-type-coordination.test.ts
+__tests__/unit/indication-set-write-pressure.test.ts
 __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
@@ -1015,6 +1016,7 @@ docs/signal-source-research.md
 docs/system-modules-map.md
 docs/verification/dca-20d-20260905.json
 docs/verification/dca-candidate-defaults-20260905.json
+docs/verification/redis-memory-recovery-20260905.md
 docs/verification/strategy-dca-20260905.md
 drizzle.config.ts
 eslint.config.mjs
@@ -1336,6 +1338,7 @@ lib/rate-limiter.ts
 lib/real-trade-gates.ts
 lib/redis-db.ts
 lib/redis-idempotent-list.ts
+lib/redis-list-repack.cjs
 lib/redis-lock-utils.ts
 lib/redis-memory-policy.cjs
 lib/redis-migrations.ts
@@ -1571,6 +1574,7 @@ scripts/redis-persistence-cleanup.mjs
 scripts/regression/direct-trade-cycle-serialization.test.mjs
 scripts/regression/live-stage-simulated-protection.test.ts
 scripts/remove-stray-bun-lock.mjs
+scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
 scripts/repair-redis-retention.ts
 scripts/resolve-instance-redis-url.mjs
@@ -1626,6 +1630,7 @@ scripts/verify-prod-soak.mjs
 scripts/verify-prod-ui-max.mjs
 scripts/verify-recreation-manifests.mjs
 scripts/verify-redis-endpoint.mjs
+scripts/verify-redis-list-repack.mjs
 scripts/verify-signal-sources.ts
 scripts/verify-source-syntax.mjs
 scripts/verify-stability.sh

@@ -1322,7 +1322,12 @@ configure_environment_and_redis() {
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET appendfsync everysec >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET protected-mode yes >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET maxmemory-policy noeviction >/dev/null
-    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET save "900 1 300 10 60 10000" >/dev/null
+    # AOF remains fsynced every second. Expensive CoW rewrites are admitted by
+    # the host-aware governor, never triggered blindly under memory pressure.
+    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET save "" >/dev/null
+    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET auto-aof-rewrite-percentage 0 >/dev/null
+    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET list-compress-depth 1 >/dev/null
+    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET list-max-listpack-size -1 >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG REWRITE >/dev/null 2>&1 || true
     [[ "$(redis-cli -u "$redis_url" --no-auth-warning CONFIG GET appendonly | tail -n 1)" == "yes" ]] \
       || fatal "Local Redis AOF persistence could not be enabled"
@@ -1332,6 +1337,23 @@ configure_environment_and_redis() {
       || fatal "Local Redis protected mode could not be enabled"
     [[ "$(redis-cli -u "$redis_url" --no-auth-warning CONFIG GET maxmemory-policy | tail -n 1)" == "noeviction" ]] \
       || fatal "Local Redis no-eviction policy could not be enabled"
+    if [[ "$redis_service_mode" == "native" ]] && command -v systemctl >/dev/null 2>&1; then
+      local recovery_unit recovery_timeout recovery_dropin
+      for recovery_unit in redis-server redis; do
+        [[ "$(systemctl show "$recovery_unit" --property=LoadState --value 2>/dev/null || true)" == "loaded" ]] || continue
+        recovery_timeout="$(systemctl show "$recovery_unit" --property=TimeoutStartUSec --value 2>/dev/null || true)"
+        recovery_dropin="/etc/systemd/system/$recovery_unit.service.d/cts-recovery-timeout.conf"
+        # Preserve existing operator overrides, including longer/infinite
+        # deadlines. Only replace systemd's known 90-second default.
+        if [[ ! -e "$recovery_dropin" && "$recovery_timeout" == "1min 30s" ]]; then
+          run_root install -d -m 0755 "$(dirname "$recovery_dropin")"
+          printf '[Service]\nTimeoutStartSec=900\nRestartSec=5\n' | run_root tee "$recovery_dropin" >/dev/null
+          run_root chmod 0644 "$recovery_dropin"
+          run_root systemctl daemon-reload
+        fi
+        break
+      done
+    fi
     fi
   fi
 
@@ -2098,9 +2120,8 @@ Wants=network-online.target
 Type=oneshot
 User=$SERVICE_USER
 WorkingDirectory=$PROJECT_ROOT
-RuntimeDirectory=$APP_NAME-redis-governor
-RuntimeDirectoryMode=0700
-ExecStart=${node_bin} ${PROJECT_ROOT}/scripts/run-with-env.mjs ${ENV_FILE} -- env CTS_RUNTIME_DIR=${RUNTIME_DIR} CTS_REDIS_GOVERNOR_STATE=/run/${APP_NAME}-redis-governor/state.json ${node_bin} ${PROJECT_ROOT}/scripts/redis-memory-governor.mjs
+# Persist retry/purge cooldowns across oneshot exits and host restarts.
+ExecStart=${node_bin} ${PROJECT_ROOT}/scripts/run-with-env.mjs ${ENV_FILE} -- env CTS_RUNTIME_DIR=${RUNTIME_DIR} CTS_REDIS_GOVERNOR_STATE=${STATE_DIR}/data/redis-memory-governor.json ${node_bin} ${PROJECT_ROOT}/scripts/redis-memory-governor.mjs
 TimeoutStartSec=30
 NoNewPrivileges=true
 PrivateTmp=true

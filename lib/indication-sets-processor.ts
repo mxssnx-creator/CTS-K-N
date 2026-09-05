@@ -1412,7 +1412,10 @@ export class IndicationSetsProcessor {
     let length: number
     try {
       length = await client.rpush(setKey, ...serializedEntries)
-    } catch {
+    } catch (error) {
+      // Capacity/transport failures are not legacy data. In particular, never
+      // delete an existing list because RPUSH was rejected under memory pressure.
+      if (!(error instanceof Error) || !/^WRONGTYPE\b/.test(error.message)) throw error
       // Migration path for legacy JSON-array keys. Convert once by reading the
       // string, deleting it, and recreating the same key as a Redis LIST.
       const legacy = await this.readIndicationSetEntries(client, setKey)
