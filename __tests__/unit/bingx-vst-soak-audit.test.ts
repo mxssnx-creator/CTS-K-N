@@ -19,12 +19,12 @@ describe("BingX Prod-VST soak accounting audit", () => {
       priceTick: 0.1,
     })).toMatchObject({
       source: "liquidation",
-      riskDistance: 20,
-      initialStopPrice: 88,
-      ratchetedStopPrice: 90,
-      staleStopPrice: 89,
-      takeProfitPrice: 112,
-      securityStopPrice: 86.8,
+      riskDistance: 8,
+      initialStopPrice: 95.2,
+      ratchetedStopPrice: 96,
+      staleStopPrice: 95.6,
+      takeProfitPrice: 104.8,
+      securityStopPrice: 94.7,
     })
     expect(deriveVstSoakProtectionBand({
       direction: "short",
@@ -33,12 +33,26 @@ describe("BingX Prod-VST soak accounting audit", () => {
       priceTick: 0.1,
     })).toMatchObject({
       source: "liquidation",
-      initialStopPrice: 112,
-      ratchetedStopPrice: 110,
-      staleStopPrice: 111,
-      takeProfitPrice: 88,
-      securityStopPrice: 113.2,
+      initialStopPrice: 104.8,
+      ratchetedStopPrice: 104,
+      staleStopPrice: 104.4,
+      takeProfitPrice: 95.2,
+      securityStopPrice: 105.3,
     })
+  })
+
+  test("keeps a tiny cross-margin short positive when liquidation is far above entry", () => {
+    const band = deriveVstSoakProtectionBand({
+      direction: "short", entryPrice: 101.85, liquidationPrice: 45932.7, priceTick: 0.001,
+    })
+    expect(band.source).toBe("liquidation")
+    expect(band.riskDistance).toBeCloseTo(8.148, 10)
+    expect(band.takeProfitPrice).toBeGreaterThan(0)
+    expect(band.takeProfitPrice).toBeLessThan(101.85)
+    expect(band.securityStopPrice).toBeLessThan(45932.7)
+    expect(band.securityStopPrice).toBeGreaterThan(band.initialStopPrice)
+    expect(band.initialStopPrice).toBeGreaterThan(band.staleStopPrice)
+    expect(band.staleStopPrice).toBeGreaterThan(band.ratchetedStopPrice)
   })
 
   test("uses the documented fallback when VST omits liquidation and rejects unsafe ranges", () => {

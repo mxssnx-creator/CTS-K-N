@@ -1,10 +1,10 @@
 {
   "project": "CTS-K-N",
-  "sourceRevisionBeforeHandoffCommit": "033d4a2c629b9bb8d387e71a58c01408e73edae5",
-  "sourceTreeBeforeHandoffCommit": "b7197763b72366051cf3a95b71efe708d9697523",
-  "sourceRevisionTimestamp": "2026-09-05T08:08:33+09:00",
+  "sourceRevisionBeforeHandoffCommit": "4823bcd97aa997075994c8299d07e9b93e72be46",
+  "sourceTreeBeforeHandoffCommit": "853b94178c304d957bc11f98ec2460b7a57ce6e1",
+  "sourceRevisionTimestamp": "2026-09-05T08:52:22+09:00",
   "workingTreeChangesIncluded": true,
-  "workingTreeStatusEntryCount": 5,
+  "workingTreeStatusEntryCount": 2,
   "nodeRequirement": ">=20.16",
   "packageManager": "pnpm@10.28.1",
   "framework": {
@@ -13,13 +13,13 @@
     "typescript": "^5.8.3"
   },
   "counts": {
-    "projectFilesExcludingGeneratedManifests": 1623,
+    "projectFilesExcludingGeneratedManifests": 1627,
     "apiRoutes": 296,
     "apiMethods": 382,
     "uiPages": 48,
     "environmentVariables": 482,
     "redisMigrations": 107,
-    "testsAndVerifiers": 306
+    "testsAndVerifiers": 308
   },
   "apiGroups": {
     "additional": {

@@ -167,6 +167,7 @@ __tests__/unit/indication-set-type-coordination.test.ts
 __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
+__tests__/unit/live-entry-budget-block-cache.test.ts
 __tests__/unit/live-entry-protection-admission.test.ts
 __tests__/unit/live-execution-summary.test.ts
 __tests__/unit/live-order-coordination.test.ts
@@ -287,6 +288,7 @@ __tests__/unit/startup-coordinator-cleanup.test.ts
 __tests__/unit/startup-global-liveness.test.ts
 __tests__/unit/startup-validation-runtime-health.test.ts
 __tests__/unit/state-switch-coordination.test.ts
+__tests__/unit/statistics-overview-current-counts.test.ts
 __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/statistics-ui-correctness.test.ts
 __tests__/unit/strategy-axis-coordination.test.ts
@@ -1220,6 +1222,7 @@ lib/integration-test-suite.ts
 lib/interval-progression-manager.ts
 lib/kilo-database-client.ts
 lib/leverage-policy.ts
+lib/live-entry-budget-block-cache.ts
 lib/live-entry-protection-admission.ts
 lib/live-execution-summary.ts
 lib/live-order-coordination.ts
@@ -1361,6 +1364,7 @@ lib/stage-row-snapshot.ts
 lib/startup-coordinator.ts
 lib/startup-diagnostics.ts
 lib/startup-validation.ts
+lib/statistics-overview-current-counts.ts
 lib/statistics-tracker.ts
 lib/step-based-indicators.ts
 lib/stoploss-ratio-range.ts

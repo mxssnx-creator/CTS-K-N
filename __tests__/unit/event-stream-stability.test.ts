@@ -3,9 +3,35 @@ import { join } from "node:path"
 import { getBroadcaster, resetBroadcaster } from "@/lib/event-broadcaster"
 import { createCanonicalEvent } from "@/lib/events/schema"
 import { SSEClient } from "@/lib/sse-client"
+import { NextRequest } from "next/server"
+import { GET as openEventStream } from "@/app/api/ws/route"
 
 describe("event stream stability", () => {
   afterEach(() => resetBroadcaster())
+
+  test("streams its handshake through nginx and releases the subscription on abort", async () => {
+    const abort = new AbortController()
+    const response = await openEventStream(new NextRequest(
+      "http://localhost/api/ws?connectionId=conn-stream-proof",
+      { signal: abort.signal },
+    ))
+    expect(response.headers.get("Content-Type")).toBe("text/event-stream")
+    expect(response.headers.get("X-Accel-Buffering")).toBe("no")
+    expect(response.headers.get("Cache-Control")).toContain("no-transform")
+    const reader = response.body!.getReader()
+    try {
+      const retry = new TextDecoder().decode((await reader.read()).value)
+      const handshake = new TextDecoder().decode((await reader.read()).value)
+      expect(retry).toContain("retry: 1000")
+      expect(handshake).toContain("event: connected")
+      expect(handshake).toContain("conn-stream-proof")
+      expect(getBroadcaster().getStats().totalClients).toBe(1)
+    } finally {
+      abort.abort()
+      await reader.cancel()
+    }
+    expect(getBroadcaster().getStats().totalClients).toBe(0)
+  })
 
   test("wildcard clients accept per-connection canonical events", () => {
     const client = new SSEClient("*", "http://localhost/api/ws?connectionId=*")

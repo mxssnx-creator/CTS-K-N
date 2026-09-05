@@ -300,7 +300,7 @@ describe("statistics UI correctness", () => {
 
     expect(page).toContain("signedResultRToMainTradePfRatio(realizedPnl / positionCost)")
     expect(page).not.toContain("profit_factor: 1 + realizedPnl / positionCost")
-    expect(page).toContain("/stats?view=runtime")
+    expect(page).toContain('includeStages ? "overview" : "runtime"')
     expect(page).toContain("/stats?view=overview")
     expect(page).toContain("view=statistics")
     expect(route).toContain('searchParams.get("view") === "runtime"')

@@ -750,25 +750,33 @@ export default function StatisticsPage() {
     }
   }, [selectedExchange, selectedConnectionId, reloadGeneration])
 
-  // Runtime resource/latency values are intentionally independent from the
-  // heavier statistics rebuild. Keep the visible Overview card fresh every
-  // three seconds without replacing positions, history or PF rows mid-render.
+  // Refresh runtime every three seconds and current stage/indication counts
+  // every fifteen seconds. Reuse one non-overlapping request loop so an open
+  // statistics page keeps progressing without rebuilding the trade archive.
   useEffect(() => {
     if (!selectedConnectionId) return
     let cancelled = false
     let inFlight = false
+    let lastStageRefreshAt = 0
     const controller = new AbortController()
     const refreshRuntime = async () => {
       if (cancelled || inFlight) return
       inFlight = true
       try {
+        const includeStages = Date.now() - lastStageRefreshAt >= 15_000
         const response = await fetch(
-          `/api/connections/progression/${encodeURIComponent(selectedConnectionId)}/stats?view=runtime`,
+          `/api/connections/progression/${encodeURIComponent(selectedConnectionId)}/stats?view=${includeStages ? "overview" : "runtime"}`,
           { cache: "no-store", signal: controller.signal },
         )
         if (!response.ok) return
         const payload = await response.json().catch(() => null)
-        if (!cancelled) setRuntimeTelemetry((payload?.runtime as RuntimeTelemetry | undefined) || null)
+        if (cancelled || !payload) return
+        setRuntimeTelemetry((payload.runtime as RuntimeTelemetry | undefined) || null)
+        if (includeStages) {
+          lastStageRefreshAt = Date.now()
+          setCurrentStrategyRows((payload.strategyRows as CurrentStrategyRows | undefined) || null)
+          setMainIndications((payload.mainIndications as MainIndicationSnapshot | undefined) || null)
+        }
       } catch {
         // A telemetry miss must not clear the last good Overview sample.
       } finally {
@@ -1116,7 +1124,7 @@ export default function StatisticsPage() {
               className="h-7 gap-1 tabular-nums"
               title={
                 archiveCoverage.complete
-                  ? `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved; all ${archiveCoverage.eligibleSnapshots.toLocaleString()} eligible executed trades normalized; ${archiveCoverage.excludedNonTradeSnapshots.toLocaleString()} non-trade lifecycle rows excluded; ${archiveCoverage.normalizedLocalRows.toLocaleString()} rows match the selected environment.`
+                  ? `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved; all ${archiveCoverage.eligibleSnapshots.toLocaleString()} eligible executed trades normalized; ${archiveCoverage.excludedNonTradeSnapshots.toLocaleString()} non-trade lifecycle rows excluded; ${archiveCoverage.normalizedLocalRows.toLocaleString()} local rows plus ${archiveCoverage.exchangeOverlays.toLocaleString()} venue-history rows match the selected environment.`
                   : `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved; ${archiveCoverage.normalizedSnapshots.toLocaleString()} of ${archiveCoverage.eligibleSnapshots.toLocaleString()} eligible executed trades normalized; ${archiveCoverage.unresolvedTradeSnapshots.toLocaleString()} remain unresolved. Statistics are in bounded fallback mode.`
               }
             >
@@ -1177,9 +1185,10 @@ export default function StatisticsPage() {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Measured Profit Factor &amp; Drawdown Time</CardTitle>
+          <CardTitle className="text-sm">Connection Profit Factor &amp; Drawdown Time</CardTitle>
           <CardDescription>
-            Gross-profit ÷ gross-loss PF from closed positions. Time windows use
+            Gross-profit ÷ gross-loss PF from closed positions across the selected
+            connection, independently of the Analytics Filters below. Time windows use
             the complete indexed archive; latest-position windows are globally
             ordered across the selected scope.
             {performanceConnectionCount > 1
