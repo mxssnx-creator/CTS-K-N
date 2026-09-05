@@ -426,20 +426,24 @@ export default function StatisticsPage() {
 
             const responses = await Promise.all(
               scopeIds.map(async (id: string) => {
-                const [open, history, archive, progression] = await Promise.all([
+                const [open, history, progression] = await Promise.all([
                   fetch(`/api/data/positions?connectionId=${encodeURIComponent(id)}`, { cache: "no-store", signal: controller.signal })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
                   fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&limit=500`, { cache: "no-store", signal: controller.signal })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
-                  fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&view=statistics`, { cache: "no-store", signal: controller.signal })
-                    .then((r) => (r.ok ? r.json() : null))
-                    .catch(() => null),
                   fetch(`/api/connections/progression/${encodeURIComponent(id)}/stats?view=overview`, { cache: "no-store", signal: controller.signal })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
                 ])
+                // Allow the history request to obtain/refresh its cache first.
+                // The archive response supplies its own matching PF/DDT so a
+                // background refresh cannot mix analytics from a 500-row page
+                // with the complete archive rows used by this render.
+                const archive = await fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&view=statistics`, { cache: "no-store", signal: controller.signal })
+                  .then((r) => (r.ok ? r.json() : null))
+                  .catch(() => null)
                 return { id, open, history, archive, progression }
               }),
             )
@@ -655,7 +659,7 @@ export default function StatisticsPage() {
               })
             }
             const connectionAnalytics = responses
-              .map((payload) => payload.history?.analytics)
+              .map((payload) => payload.archive?.analytics ?? payload.history?.analytics)
               .filter((value): value is LiveTradingAnalytics =>
                 Boolean(
                   value?.timeWindows?.["4h"] &&
@@ -1124,12 +1128,12 @@ export default function StatisticsPage() {
               className="h-7 gap-1 tabular-nums"
               title={
                 archiveCoverage.complete
-                  ? `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved; all ${archiveCoverage.eligibleSnapshots.toLocaleString()} eligible executed trades normalized; ${archiveCoverage.excludedNonTradeSnapshots.toLocaleString()} non-trade lifecycle rows excluded; ${archiveCoverage.normalizedLocalRows.toLocaleString()} local rows plus ${archiveCoverage.exchangeOverlays.toLocaleString()} venue-history rows match the selected environment.`
+                  ? `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed local snapshot IDs resolved; all ${archiveCoverage.eligibleSnapshots.toLocaleString()} eligible executed trades normalized; ${archiveCoverage.excludedNonTradeSnapshots.toLocaleString()} non-trade lifecycle rows excluded; ${archiveCoverage.normalizedLocalRows.toLocaleString()} local rows plus ${archiveCoverage.exchangeOverlays.toLocaleString()} cached venue-history rows match the selected environment. Local completeness does not establish complete exchange-account history.`
                   : `${archiveCoverage.resolvedSnapshots.toLocaleString()} of ${archiveCoverage.uniqueIds.toLocaleString()} indexed snapshot IDs resolved; ${archiveCoverage.normalizedSnapshots.toLocaleString()} of ${archiveCoverage.eligibleSnapshots.toLocaleString()} eligible executed trades normalized; ${archiveCoverage.unresolvedTradeSnapshots.toLocaleString()} remain unresolved. Statistics are in bounded fallback mode.`
               }
             >
               <History className="h-3 w-3" />
-              {archiveCoverage.complete ? "Full archive" : "Partial archive"}
+              {archiveCoverage.complete ? "Local archive complete" : "Local archive partial"}
               {" · "}{archiveCoverage.returned.toLocaleString()} rows
             </Badge>
           )}

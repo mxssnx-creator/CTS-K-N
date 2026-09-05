@@ -2398,7 +2398,7 @@ export async function GET(
     const activeIndEvaluatedTotal = Object.values(activeIndEvaluatedByType).reduce((s, v) => s + v, 0)
     // Pipeline-aware total: use REAL final output, not the sum of parent and
     // derived stage populations.
-    let activeStratTotal = activeStratByStage.real || strategiesTotal
+    const activeStratTotal = activeStratByStage.real
     const activeSetsIndTotal   = Object.values(activeSetsIndByType).reduce((s, v) => s + v, 0)
     // Only count distinct REAL-stage sets progressing, not sum across stages
     const activeSetsStratTotal = activeSetsStratByStage.real || 0
@@ -2462,9 +2462,9 @@ export async function GET(
     // The canonical total is the REAL-stage count (the final filtered output
     // before live promotion). Live is a runtime-only subset derived from Real
     // and is shown separately in the breakdown; it is NOT part of the total.
-    // Fall back to `strategies_count` (which is written with the same
-    // pipeline-aware semantic by the engine & cron) if Real is zero.
-    const stratTotal = stratCounts.real || strategiesTotal
+    // An empty current Real sample is authoritative. A retained connection
+    // counter can describe an older cycle or a different symbol basket.
+    const stratTotal = stratCounts.real
 
     // ── STRATEGY VARIANT breakdown ───────────────────────────────────────��───
     // The Main stage expands each promoted Base Set into position-variant

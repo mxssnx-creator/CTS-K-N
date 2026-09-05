@@ -532,6 +532,9 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         view: "statistics",
         tupleVersion: 1,
         rows: rows.map(toStatisticsHistoryTuple),
+        // The Statistics page must use the same complete local/venue-cache
+        // snapshot for its row counts and PF/DDT, independent of table paging.
+        analytics: buildLiveTradingAnalytics(rows, Date.now()),
         archive: {
           indexed: archive.indexed,
           uniqueIds: archive.uniqueIds,
