@@ -51,6 +51,7 @@ unit	__tests__/unit/backtest-result-accounting.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
 unit	__tests__/unit/base-position-batch-coordination.test.ts
 unit	__tests__/unit/base-stage-concurrency.test.ts
+unit	__tests__/unit/bingx-account-snapshot-recovery.test.ts
 unit	__tests__/unit/bingx-instrument-rules.test.ts
 unit	__tests__/unit/bingx-library-fast-path.test.ts
 unit	__tests__/unit/bingx-public-api.test.ts
@@ -202,6 +203,7 @@ unit	__tests__/unit/orchestrated-verifier-safety.test.ts
 unit	__tests__/unit/order-quantity.test.ts
 unit	__tests__/unit/orders-market-notional.test.ts
 unit	__tests__/unit/orders-route-concurrency.test.ts
+unit	__tests__/unit/overview-poller.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/persistent-paths.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
