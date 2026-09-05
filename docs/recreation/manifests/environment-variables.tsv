@@ -88,9 +88,11 @@ CTS_DIRECT_TRADE_WORKER_HEAP_MB	test-or-operator-tool	no	no	1	scripts/direct-tra
 CTS_ENGINE_OWNER_WORKER	application-runtime	no	no	1	lib/trade-engine.ts
 CTS_EXCHANGE_RATE_LIMIT_SHARE	test-or-operator-tool	no	yes	1	.env.example
 CTS_G_BASE_URL	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+CTS_G_PORT	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 CTS_INLINE_REDIS_PERSISTENT_VOLUME	application-runtime	no	yes	4	.env.example,lib/production-readiness.ts,lib/real-trade-gates.ts,scripts/kilo-deploy.mjs
 CTS_JOURNAL_MAX_USE	test-or-operator-tool	no	yes	1	.env.example
 CTS_KN_BASE_URL	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+CTS_KN_PORT	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 CTS_LIVE_TRADING_CONFIGURED	test-or-operator-tool	no	yes	1	.env.example
 CTS_LOG_DIR	test-or-operator-tool	no	yes	1	.env.example
 CTS_LOG_MAX_BYTES	test-or-operator-tool	no	yes	1	.env.example
@@ -398,6 +400,7 @@ PROD_UI_PROGRESSION_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod
 PROD_UI_RESUME_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-ui-max.mjs
 PROD_UI_SYMBOLS_JSON	test-or-operator-tool	no	no	1	scripts/verify-prod-ui-max.mjs
 PROD_URL	test-or-operator-tool	no	no	1	scripts/verify-migration-status.mjs
+PROJECT_DETAIL_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 PROJECT_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 PSEUDO_POSITION_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 PSEUDO_POSITION_WRITE_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
@@ -420,7 +423,11 @@ RUN_MS	test-or-operator-tool	no	no	1	scripts/run-engine-probe.mjs
 RUNTIME_MODE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SCHEDULER_BASE_URL	test-or-operator-tool	no	yes	1	.env.example
 SERVER_ACTION_ALLOWED_ORIGINS	application-runtime	no	no	1	next.config.mjs
+SERVER_DASHBOARD_PROJECT_MANIFEST	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+SERVER_DASHBOARD_PROJECTS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+SERVER_DASHBOARD_SERVICE_PREFIXES	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 SERVER_DASHBOARD_SERVICES	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+SERVICE_DISCOVERY_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 SERVICE_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 SIGNAL_FOCUSED_SOAK	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SIGNAL_OBSERVATION_INTERVAL_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs

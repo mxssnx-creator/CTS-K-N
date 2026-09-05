@@ -3413,3 +3413,21 @@ credentials are present.
   discovery, X02 Prod-VST minimum-volume lifecycle, production soak and browser
   acceptance are pending. Do not claim production readiness until each passes
   against the exact deployed merge SHA and baseline cleanup is proven.
+
+## Session 2026-09-05 — server-access observability integration candidate
+
+- [x] The dynamic server-access dashboard candidate from `ae6d1cae` was
+  replayed onto GitHub `main` at `4cc47c34`; its earlier symbol-basket commit
+  was already contained in `main` and was not duplicated.
+- [x] Dashboard deployment now installs the versioned project inventory under
+  `/etc/server-access-dashboard/projects.json`, and compact connection-stage
+  performance tiers are available to overview polling without materialising
+  the exhaustive statistics payload.
+- [x] The integrated candidate passed frozen pnpm 10.28.1 online and subsequent
+  offline installation, source syntax, secret scanning, recreation manifests,
+  TypeScript, ESLint, 274 Jest suites/1,892 tests, the dashboard Node test,
+  runtime-recovery verification, Linux and Kilo preflights, and the optimized
+  Next build with 349 complete traces.
+- [ ] Publish only through a new green pull request. PR #314 is a separate VST
+  admission candidate and must remain unmerged while its Vercel deployments or
+  authenticated X02 acceptance evidence are failing.

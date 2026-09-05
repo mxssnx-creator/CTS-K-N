@@ -4346,6 +4346,10 @@ export async function GET(
         strategyRows,
         connectionStageOverview,
         realtimeStageAverages,
+        // Compact stage performance is safe for overview polling and avoids
+        // forcing an operations dashboard to materialise the exhaustive full
+        // strategy/configuration payload just to show PF/DDT.
+        performanceTiers,
         mainIndications,
         runtime: getRuntimeTelemetry(historicSymbolsTotal),
         settingsRecoordination,
