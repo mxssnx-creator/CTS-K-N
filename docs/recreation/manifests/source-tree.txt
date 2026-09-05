@@ -1629,6 +1629,7 @@ scripts/verify-prod-preview.mjs
 scripts/verify-prod-soak.mjs
 scripts/verify-prod-ui-max.mjs
 scripts/verify-recreation-manifests.mjs
+scripts/verify-redis-backup.mjs
 scripts/verify-redis-endpoint.mjs
 scripts/verify-redis-list-repack.mjs
 scripts/verify-signal-sources.ts

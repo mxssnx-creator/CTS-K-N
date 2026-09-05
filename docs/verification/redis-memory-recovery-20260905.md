@@ -20,6 +20,12 @@ raised maxmemory to 25,232,932,864 bytes, above the physical host capacity.
 - Defer maintenance during loading, snapshots, or an existing rewrite. Throttle
   purge attempts and failed AOF rewrite attempts, and persist cooldown state
   in the durable per-instance data directory across systemd oneshot runs.
+- Backups copy and validate the complete native AOF chain without a Redis
+  fork. Rotated manifests or incomplete/corrupt command tails are retried and
+  rejected, never repaired/truncated silently. RDB-only backups require full
+  copy-on-write headroom; connection/recovery deadlines are bounded. Native
+  restore verification recovered all 400 fixture entries, ownership and exact
+  TTL with no persistence fork, and rejected corrupt input without mutation.
 - Retain AOF every-second durability; disable automatic RDB snapshots and
   automatic AOF rewrites so the headroom-aware governor owns fork scheduling.
 - Give native Redis 900 seconds to finish durable replay when the default
@@ -49,12 +55,18 @@ DUMP/RESTORE representation change, avoiding that unnecessary rewrite load.
 
 ## Verification and release boundary
 
+The updated complete pre-deployment checkpoint is
+`/var/backups/cts-kn/pre-production-memory-deploy-20260905T143918Z`; it includes
+all six AOF segments and the executable .next/node_modules rollback artifacts.
+All 18 checkpoint files and the source bundle were verified.
+
 - Isolated native Redis verification: exact list values/order, unchanged
   absolute expiry, persistent-key lifetime, collision rejection, protected
   namespaces and repeated logical idempotence passed; fixture memory fell
   from 274,896 to 25,024 bytes in the DUMP/RESTORE test.
 - Full Jest validation passed: 285 suites / 1,962 tests. TypeScript and ESLint
-  passed; the final production build remains a release gate.
+  passed. Production build passed with 349 complete traces before the
+  standalone backup-helper follow-up; the installer rebuilds the merged release.
 - Regression coverage includes the original 18.7 GB oversized dataset,
   compressed production sizing, loading/busy persistence, fork headroom,
   failed-attempt cooldowns, and non-destructive OOM/transport handling.

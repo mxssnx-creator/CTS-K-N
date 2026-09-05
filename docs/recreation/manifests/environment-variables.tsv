@@ -412,7 +412,7 @@ REALTIME_CANONICAL_CYCLE_BUDGET_MS	application-runtime	no	no	1	lib/trade-engine/
 REALTIME_PIPELINE_SYMBOLS_PER_TICK	application-runtime	no	yes	2	.env.example,lib/trade-engine/engine-manager.ts
 REDIS_DEBUG_ENABLED	application-runtime	no	yes	4	.env.example,__tests__/unit/requested-regressions.test.ts,app/api/debug/progression-dump/route.ts,app/api/debug/redis-state/route.ts
 REDIS_REPACK_URL	test-or-operator-tool	no	no	1	scripts/repack-redis-indication-lists.mjs
-REDIS_SERVER_BINARY	test-or-operator-tool	no	no	1	scripts/verify-redis-list-repack.mjs
+REDIS_SERVER_BINARY	test-or-operator-tool	no	no	2	scripts/verify-redis-backup.mjs,scripts/verify-redis-list-repack.mjs
 REDIS_URL	application-runtime	yes	yes	23	.env.example,__tests__/integration/main-engine-live-dispatch.test.ts,__tests__/integration/preset-optimizer-store.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/redis-secondary-indexes.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/audit-live-position-ledgers.mjs,scripts/backup-local-redis.mjs,scripts/diagnose-stats.mjs,scripts/inspect-redis-retention.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/preview-redis-harness.mjs,scripts/rebuild-live-order-counters.mjs,scripts/redis-memory-governor.mjs,scripts/repair-live-position-ledgers.mjs,scripts/verify-redis-endpoint.mjs
 REDIS_VOLATILE_STALE_MS	application-runtime	no	no	1	lib/redis-db.ts
 REDISMS_DOWNLOAD_DIR	test-or-operator-tool	no	no	2	scripts/npm-redis-service.mjs,scripts/preview-redis-harness.mjs

@@ -29,6 +29,7 @@ operator-tool	scripts/verify-block-native-redis.ts
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-native-redis-coordination.ts
 operator-tool	scripts/verify-recreation-manifests.mjs
+operator-tool	scripts/verify-redis-backup.mjs
 operator-tool	scripts/verify-redis-endpoint.mjs
 operator-tool	scripts/verify-redis-list-repack.mjs
 operator-tool	scripts/verify-signal-sources.ts

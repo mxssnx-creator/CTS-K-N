@@ -25,11 +25,17 @@
 - Source adds a host-bounded budget, headroom/cooldown/loading-aware maintenance,
   durable governor state, bounded connections and a non-destructive history
   write error path. See `docs/verification/redis-memory-recovery-20260905.md`.
-- A fresh complete remote checkpoint including .next/node_modules rollback
-  binaries is running as `cts-kn-pre-memory-deploy-backup-20260905`;
-  status log `/var/tmp/cts-memory-deploy-20260905/checkpoint.log`.
+- Complete remote checkpoint including .next/node_modules rollback binaries
+  is verified: `/var/backups/cts-kn/pre-production-memory-deploy-20260905T143918Z`
+  (18 files, six AOF segments). A further source checkpoint precedes backup
+  hardening: `/workspace/backups/CTS-K-N/20260905T145319Z-pre-backup-memory-guard`.
+- PR317 published head `62aec40f92e08f1ff2805a08b3f3f20758e6b92d`, exact tree
+  `7323e79614e0291339e9cf390d3bbdf701337f8c`; GitHub smoke 33972808718 passed.
+  Standalone backup follow-up still needs publication. Its native AOF-copy
+  restore test passed: 400 entries, ownership, exact TTL, zero persistence
+  forks and rejection of corrupt input without modifying the source.
 - Current gates: 285 suites / 1,962 tests, TypeScript and ESLint passed;
-  final production build is running. Production maxmemory is now explicitly
+  production build passed with 349 complete traces. Production maxmemory is now explicitly
   capped at 8,386,641,920 bytes (half of measured host RAM).
 - Pending: finish exact-source gates, publish updated PR317, green CI/merge,
   managed clean reinstall and corrected governor restoration, UI/API and X02
