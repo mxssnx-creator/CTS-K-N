@@ -80,3 +80,41 @@ All 18 checkpoint files and the source bundle were verified.
 - This report does not assert feature deployment, a successful X02 lifecycle,
   complete venue account statistics, or a sustained load-test pass. These
   require acceptance on the merged deployed revision.
+
+## Merged production verification and follow-up
+
+PR317 was merged as `3a6a136bca637b218d7709db02081ba9b1a269c0`.
+GitHub Actions passed on the PR and main; local and remote installations passed
+285 suites / 1,962 tests, TypeScript, lint and complete production traces.
+The managed clean reinstall and restart verification completed successfully.
+All three CTS services are active with NRestarts=0. Redis remains at the
+incident's NRestarts=63; no new Redis restart occurred during repair/deployment.
+At 16:08 UTC Redis used 3.07 GiB versus the incident's 19.97 GiB peak.
+
+The separate offline AOF maintenance reduced persistence from 35,866,913,708
+to 4,337,377,411 bytes in 50 seconds (58,519,552-byte actual copy-on-write).
+The governor subsequently rewrote with sufficient physical reserve and its
+persisted cooldown. Post-startup derived-data cleanup also reduced allocation;
+only the earlier 14,409,357,707-byte repack is claimed as exact lossless savings.
+
+Verified rollback checkpoints include:
+- `/var/backups/cts-kn/pre-production-memory-deploy-20260905T143918Z`
+- `/var/backups/cts-kn/pre-x02-memory-release-vst-20260905T153436Z`
+
+The authenticated X02 VST run on this release lasted 925,061 ms, completed
+11 lifecycle cycles and stopped during cycle 12 on an open-order snapshot
+100421 timestamp rejection. Owned exposure was fully reconciled, cleanup
+reported no errors or account differences, and production services restarted.
+This harness uses an isolated local ledger; its virtual venue fills are not a
+claim of native production ledger acceptance. The full 20-minute gate did not
+pass. No mainnet or foreign account orders were changed.
+
+The failure exposed missing lazy signing and clock-error recovery in account
+snapshots. The follow-up signs open orders, order history and position reads at
+dispatch and retries exactly once after a timestamp rejection/resynchronization.
+It also prevents Overview request overlap, aborts closed scopes, separates logs
+from stats, and labels failed refreshes without fabricating zero metrics.
+Exact stage numerator/denominator values determine their displayed percentage.
+
+Legacy Vercel integrations remain outside the successful GitHub Actions gate:
+one still invokes the intentionally removed vercel-build script.

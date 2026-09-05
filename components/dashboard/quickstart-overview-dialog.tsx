@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useCallback, useRef } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
@@ -12,6 +12,7 @@ import {
   ChevronDown, ChevronUp, CheckCircle2, Circle, Clock, DollarSign,
 } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
+import { createOverviewPoller, fetchOverviewJson } from "@/lib/overview-poller"
 import { firstFiniteMetric } from "@/lib/dashboard-metrics"
 
 // ─── types ────────────────────────────────────────────────────────────────────
@@ -158,10 +159,10 @@ function StatCell({ label, value, sub, accent }: { label: string; value: string;
 // ─── StratSection ─────────────────────────────────────────────────────────────
 
 function StratSection({
-  label, count, evaluated, evaluatedOf, stagePercent, detail, accentCls, bgCls,
+  label, count, evaluated, evaluatedOf, detail, accentCls, bgCls,
 }: {
   label: string; count: number; evaluated: number; evaluatedOf: number
-  stagePercent?: number
+
   detail: StratDetail | undefined; accentCls: string; bgCls: string
 }) {
   // ── eval/pass semantics ───────────────────────────────────────────
@@ -178,17 +179,7 @@ function StratSection({
   // Cap at 100: Main is an expansion stage (1 base → many main variants),
   // so evaluated/evaluatedOf can be >>1. Progress bars and percentages
   // should never display >100% — the expansion is captured in the raw count.
-  const evalPct = Math.min(
-    100,
-    Math.max(
-      0,
-      stagePercent !== undefined
-        ? stagePercent
-        : evaluatedOf > 0
-          ? Math.round((evaluated / evaluatedOf) * 1000) / 10
-          : (detail?.evalPct ?? 0),
-    ),
-  )
+  const evalPct = evaluatedOf > 0 ? Math.min(100, Math.max(0, evaluated / evaluatedOf * 100)) : 0
   const parentLabel = label === "Main" ? "Base" : label === "Real" ? "Main" : label === "Live" ? "Real" : "parent"
   const outcomeLabel = label === "Live" ? "rows mirrored" : "sets passed"
 
@@ -201,7 +192,7 @@ function StratSection({
       </div>
 
       {/* eval bar — only for Main and Real */}
-      {evaluatedOf > 0 && (
+      {label !== "Base" && (
         <div className="space-y-0.5">
           <div className="flex justify-between text-[10px] text-muted-foreground">
             <span>Evaluated of {parentLabel}</span>
@@ -209,7 +200,7 @@ function StratSection({
           </div>
           <Progress value={Math.min(100, evalPct)} className="h-1" />
           <div className="text-[9px] text-muted-foreground text-right">
-            {fmt(evaluated)} / {fmt(evaluatedOf)} {outcomeLabel}
+            {evaluated.toLocaleString("en-US")} / {evaluatedOf.toLocaleString("en-US")} {outcomeLabel}
           </div>
         </div>
       )}
@@ -271,53 +262,52 @@ export function QuickstartOverviewDialog() {
 
   const [isOpen, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [stats, setStats] = useState<StatsResponse | null>(null)
+  const [snapshot, setSnapshot] = useState<{ connectionId: string; value: StatsResponse } | null>(null)
+  const stats = snapshot?.connectionId === connectionId ? snapshot.value : null
+  const [statsError, setStatsError] = useState(false)
+  const [logsError, setLogsError] = useState(false)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [expandedLog, setExpandedLog] = useState<number | null>(null)
-  // Newer `@types/react` rejects `useRef<T>()` with no args — pass an
-  // explicit `undefined` initial value so the call shape is unambiguous.
-  const pollRef = useRef<NodeJS.Timeout | undefined>(undefined)
-
-  const load = useCallback(async (silent = false) => {
-    if (!connectionId) return
-    if (!silent) setLoading(true)
-    try {
-      const [statsRes, logsRes] = await Promise.all([
-        fetch(`/api/connections/progression/${connectionId}/stats`, { cache: "no-store" }),
-        fetch(`/api/connections/progression/${connectionId}/logs?t=${Date.now()}`, { cache: "no-store" }),
-      ])
-      if (statsRes.ok) setStats(await statsRes.json())
-      if (logsRes.ok) {
-        const d = await logsRes.json()
-        setLogs((d.logs || d.recentLogs || []).slice(0, 200))
-      }
-      setLastRefresh(new Date())
-    } catch { /* non-critical */ }
-    finally { if (!silent) setLoading(false) }
-  }, [connectionId])
+  const pollRef = useRef<ReturnType<typeof createOverviewPoller> | null>(null)
 
   useEffect(() => {
-    clearInterval(pollRef.current)
-    if (!isOpen) return
-    load()
-    pollRef.current = setInterval(() => load(true), 3000)
-    return () => clearInterval(pollRef.current)
-  }, [isOpen, load])
-
-  // Listen for settings changes and force immediate refresh of stats/progress
-  useEffect(() => {
-    if (!connectionId) return
+    setSnapshot(null)
+    setLogs([])
+    setLastRefresh(null)
+    setStatsError(false)
+    setLogsError(false)
+    setExpandedLog(null)
+    setLoading(false)
+    if (!isOpen || !connectionId) return
+    const path = `/api/connections/progression/${encodeURIComponent(connectionId)}`
+    const poller = createOverviewPoller<StatsResponse, { logs?: LogEntry[]; recentLogs?: LogEntry[] }>({
+      loadStats: signal => fetchOverviewJson(`${path}/stats`, signal, value =>
+        !!value?.historic && !!value?.realtime && !!value?.breakdown),
+      loadLogs: signal => fetchOverviewJson(`${path}/logs?t=${Date.now()}`, signal, value =>
+        Array.isArray(value?.logs) || Array.isArray(value?.recentLogs)),
+      onStats: value => {
+        setSnapshot({ connectionId, value })
+        setStatsError(false)
+        setLastRefresh(new Date())
+      },
+      onLogs: value => { setLogs((value.logs || value.recentLogs || []).slice(0, 200)); setLogsError(false) },
+      onStatsError: () => setStatsError(true),
+      onLogsError: () => setLogsError(true),
+      onLoading: setLoading,
+    })
+    pollRef.current = poller
+    void poller.refresh()
     const handleSettingsUpdated = (event: Event) => {
-      const customEvent = event as CustomEvent
-      if (customEvent.detail?.connectionId === connectionId) {
-        // Settings changed for this connection, force refresh immediately
-        load()
-      }
+      if ((event as CustomEvent).detail?.connectionId === connectionId) void poller.refresh()
     }
     window.addEventListener("connection-settings-updated", handleSettingsUpdated)
-    return () => window.removeEventListener("connection-settings-updated", handleSettingsUpdated)
-  }, [connectionId, load])
+    return () => {
+      poller.stop()
+      pollRef.current = null
+      window.removeEventListener("connection-settings-updated", handleSettingsUpdated)
+    }
+  }, [isOpen, connectionId])
 
   const h   = stats?.historic
   const rt  = stats?.realtime
@@ -376,7 +366,7 @@ export function QuickstartOverviewDialog() {
             )}
             <Button
               size="icon" variant="ghost" className="ml-auto h-6 w-6"
-              onClick={() => load()} disabled={loading} title="Refresh"
+              onClick={() => { void pollRef.current?.refresh() }} disabled={loading} title="Refresh"
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </Button>
@@ -391,7 +381,14 @@ export function QuickstartOverviewDialog() {
           )}
         </DialogHeader>
 
-        <Tabs defaultValue="overview" className="flex-1 flex flex-col min-h-0">
+        {statsError && <p role="alert" className="px-4 py-2 text-xs text-destructive">
+          {stats ? "Refresh failed. Showing the last successful update." : "Overview data is unavailable. Use Refresh to retry."}
+        </p>}
+        {!stats && !statsError && <p role="status" className="p-4 text-sm text-muted-foreground">
+          {connectionId ? "Loading overview…" : "Select a connection to view its overview."}
+        </p>}
+        {logsError && <p role="alert" className="px-4 py-2 text-xs text-destructive">Logs could not be refreshed. Previously loaded logs may be outdated.</p>}
+        {stats && <Tabs defaultValue="overview" className="flex-1 flex flex-col min-h-0">
           <TabsList className="shrink-0 grid grid-cols-5 h-8 rounded-none border-b bg-transparent px-4">
             {["overview","prehistoric","indications","strategies","logs"].map(tab => (
               <TabsTrigger key={tab} value={tab} className="text-[11px] capitalize h-7 data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none">
@@ -918,7 +915,7 @@ export function QuickstartOverviewDialog() {
                 bd?.strategies.mainBaseInput,
                 stats?.strategyRows?.base?.valid,
               )}
-              stagePercent={stats?.stageEvalPercent?.main}
+
               detail={sd?.main}
               accentCls="text-yellow-600 dark:text-yellow-400"
               bgCls="bg-yellow-50/50 dark:bg-yellow-950/20 border-yellow-200/50 dark:border-yellow-800/30"
@@ -935,7 +932,7 @@ export function QuickstartOverviewDialog() {
                 bd?.strategies.realEvaluated,
                 sd?.real?.evaluated,
               )}
-              stagePercent={stats?.stageEvalPercent?.real}
+
               detail={sd?.real}
               accentCls="text-green-600 dark:text-green-400"
               bgCls="bg-green-50/50 dark:bg-green-950/20 border-green-200/50 dark:border-green-800/30"
@@ -953,7 +950,7 @@ export function QuickstartOverviewDialog() {
               )}
               evaluated={firstFiniteMetric(stats?.strategyRows?.live?.mirrored)}
               evaluatedOf={firstFiniteMetric(stats?.strategyRows?.live?.total)}
-              stagePercent={stats?.stageEvalPercent?.live}
+
               detail={sd?.live}
               accentCls="text-amber-600 dark:text-amber-400"
               bgCls="bg-amber-50/50 dark:bg-amber-950/20 border-amber-200/50 dark:border-amber-800/30"
@@ -1032,7 +1029,7 @@ export function QuickstartOverviewDialog() {
           <TabsContent value="logs" className="flex-1 flex flex-col min-h-0 p-4">
             <div className="flex items-center justify-between pb-2 shrink-0">
               <span className="text-xs text-muted-foreground">{logs.length} entries</span>
-              <Button size="sm" variant="outline" onClick={() => load()} disabled={loading} className="h-7 gap-1.5 text-xs">
+              <Button size="sm" variant="outline" onClick={() => { void pollRef.current?.refresh() }} disabled={loading} className="h-7 gap-1.5 text-xs">
                 <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
                 Refresh
               </Button>
@@ -1080,7 +1077,7 @@ export function QuickstartOverviewDialog() {
               </div>
             </ScrollArea>
           </TabsContent>
-        </Tabs>
+        </Tabs>}
       </DialogContent>
     </Dialog>
   )

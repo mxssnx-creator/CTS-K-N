@@ -2192,6 +2192,21 @@ export class BingXConnector extends BaseExchangeConnector {
     })
   }
 
+  /** Read-only account snapshots: sign at dispatch and retry a clock rejection once. */
+  private async readSignedAccountSnapshot(endpoint: string, params: Record<string, any>): Promise<any> {
+    const request = async () => {
+      const response = await this.rateLimitedFetch(() => {
+        const { signature, queryString } = this.signParams({ ...params, timestamp: this.getTimestamp() })
+        return `${this.getBaseUrl()}${endpoint}?${queryString}&signature=${signature}`
+      }, { headers: { "X-BX-APIKEY": this.credentials.apiKey } })
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      return this.safeJson(response)
+    }
+    let data = await request()
+    if (!this.isBingXSuccess(data.code) && await this.resyncOnTimestampError(data)) data = await request()
+    return data
+  }
+
   async getOpenOrders(
     symbol?: string,
     options: { forceRefresh?: boolean } = {},
@@ -2222,22 +2237,9 @@ export class BingXConnector extends BaseExchangeConnector {
       // Perp: /openApi/swap/v2/trade/openOrders (not v3).
       const endpoint = this.credentials.apiType === "spot" ? "/openApi/spot/v1/trade/openOrders" : "/openApi/swap/v2/trade/openOrders"
 
-      const params: Record<string, any> = {
-        timestamp: this.getTimestamp(),
-      }
-
-      if (symbol) {
-        params.symbol = this.toBingXSymbol(symbol)
-      }
-
-      const { signature, queryString: signedQs } = this.signParams(params)
-      const url = `${this.getBaseUrl()}${endpoint}?${signedQs}&signature=${signature}`
-
-      const response = await this.rateLimitedFetch(url, {
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+      const data = await this.readSignedAccountSnapshot(endpoint, {
+        ...(symbol ? { symbol: this.toBingXSymbol(symbol) } : {}),
       })
-
-      const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
         // Only a real 109429 lockout throws so the shared cooldown engages.
@@ -2292,23 +2294,9 @@ export class BingXConnector extends BaseExchangeConnector {
         // Perp: /openApi/swap/v2/trade/allOrders (not v3).
         const endpoint = this.credentials.apiType === "spot" ? "/openApi/spot/v1/trade/allOrders" : "/openApi/swap/v2/trade/allOrders"
 
-        const params: Record<string, any> = {
-          limit,
-          timestamp: this.getTimestamp(),
-        }
-
-        if (symbol) {
-          params.symbol = this.toBingXSymbol(symbol)
-        }
-
-        const { signature, queryString: signedQs } = this.signParams(params)
-        const url = `${this.getBaseUrl()}${endpoint}?${signedQs}&signature=${signature}`
-
-        const response = await this.rateLimitedFetch(url, {
-          headers: { "X-BX-APIKEY": this.credentials.apiKey },
+        const data = await this.readSignedAccountSnapshot(endpoint, {
+          limit, ...(symbol ? { symbol: this.toBingXSymbol(symbol) } : {}),
         })
-
-        const data = await this.safeJson(response)
 
         if (!this.isBingXSuccess(data.code)) {
           // Only a real 109429 lockout throws so the shared cooldown engages.
@@ -2389,30 +2377,15 @@ export class BingXConnector extends BaseExchangeConnector {
     try {
       this.log(`Fetching positions${symbol ? ` for ${symbol}` : ""} (${effectiveContractType})`)
 
-      const params: Record<string, any> = {
-        timestamp: this.getTimestamp(),
-      }
-
-      if (symbol) {
-        params.symbol = this.toBingXSymbol(symbol)
-      }
-
-      const { signature, queryString: signedQs } = this.signParams(params)
-
       // Use different endpoint based on contract type
       let endpoint = "/openApi/swap/v2/user/positions" // USDT Perpetual
       if (effectiveContractType === "coin-perpetual") {
         endpoint = "/openApi/cswap/v1/user/positions" // Coin-M Perpetual
       }
 
-      const url = `${this.getBaseUrl()}${endpoint}?${signedQs}&signature=${signature}`
-      this.log(`Using endpoint: ${endpoint}`)
-
-      const response = await this.rateLimitedFetch(url, {
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+      const data = await this.readSignedAccountSnapshot(endpoint, {
+        ...(symbol ? { symbol: this.toBingXSymbol(symbol) } : {}),
       })
-
-      const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
         this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: `${data.code}:${data.msg || "exchange_error"}` }

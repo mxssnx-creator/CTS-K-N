@@ -1,4 +1,32 @@
 # Active Context: CTS-K-N Trading System (main project)
+## Latest verified production — 2026-09-05 16:12 UTC
+
+- PR317 merged/deployed/reinstalled as `3a6a136bca637b218d7709db02081ba9b1a269c0`;
+  both PR and main Actions green; 285 suites / 1,962 tests, TypeScript, lint,
+  production build, schema, shared Redis, continuity and restart checks pass.
+- Redis recovery is complete for this incident: exact lossless list repack
+  reclaimed 14,409,357,707 bytes; offline AOF rewrite 35.87→4.34 GB; used memory
+  now ~3.07 GiB. Redis restart counter unchanged at 63; three CTS services active,
+  NRestarts=0. Governor timer active with durable state and bounded half-host cap.
+- Complete verified remote rollback source/config/env/binaries/AOF checkpoints:
+  `/var/backups/cts-kn/pre-production-memory-deploy-20260905T143918Z` and
+  `/var/backups/cts-kn/pre-x02-memory-release-vst-20260905T153436Z`.
+- Authenticated X02 VST run: 925061 ms, 11 complete cycles, cycle12 stopped on
+  orders snapshot 100421; cleanupComplete=true, cleanupErrors=[], differences={};
+  all CTS services restored. This is NOT a passing 20-minute soak. Harness uses
+  an isolated snapshot ledger, not production native-Redis order accounting.
+- New isolated branch `codex/overview-reliability-20260905` fixes lazy signing /
+  one clock-resync retry for the three account snapshot reads, Overview polling
+  races/error-as-zero display, exact stage #/# values. Targeted 81 tests pass;
+  full 287 suites / 1,977 tests, TypeScript and lint pass. Publication and
+  production build pending in the next recorded update.
+- Local pre-edit verified checkpoints include
+  `/workspace/backups/CTS-K-N/20260905T154247Z-pre-overview-error-handling` and
+  `/workspace/backups/CTS-K-N/20260905T161049Z-pre-snapshot-timestamp-fix`.
+- Canonical checkout is preserved with concurrent changes; current isolated
+  worktree remains `/workspace/CTS-K-N-worktrees/ui-runtime-audit-20260905`.
+  Older pending-deployment notes below are historical and superseded here.
+
 ## Redis production recovery — 2026-09-05
 
 - Canonical `/workspace/CTS-K-N` remains at `90f361f2` with preserved concurrent
