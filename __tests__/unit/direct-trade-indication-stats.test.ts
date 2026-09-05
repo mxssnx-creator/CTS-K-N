@@ -71,12 +71,17 @@ describe("Direct-Trade indication-type performance statistics", () => {
     })
 
     expect(rows.map((row) => row.indicationType)).toEqual([
+      "trend",
+      "break",
+      "trend_break",
       "momentum",
       "mean_reversion",
       "breakout",
       "relative",
     ])
-    expect(rows[0]).toMatchObject({
+    const momentum = rows.find((row) => row.indicationType === "momentum")!
+    const relative = rows.find((row) => row.indicationType === "relative")!
+    expect(momentum).toMatchObject({
       liveEntryEnabled: true,
       openPositions: 1,
       closedPositions: 3,
@@ -94,8 +99,8 @@ describe("Direct-Trade indication-type performance statistics", () => {
       internalTotalPnl: 45,
       internalProfitFactor: 1.8,
     })
-    expect(rows[2]).toMatchObject({ liveEntryEnabled: true, profitFactor: null, profitFactorCoordinate: null })
-    expect(rows[3]).toMatchObject({ liveEntryEnabled: false, internalEvaluated: 40, internalTotalPnl: -5 })
+    expect(rows.find((row) => row.indicationType === "breakout")).toMatchObject({ liveEntryEnabled: true, profitFactor: null, profitFactorCoordinate: null })
+    expect(relative).toMatchObject({ liveEntryEnabled: false, internalEvaluated: 40, internalTotalPnl: -5 })
   })
 
   test("infers legacy tactics but never invents a lane", () => {

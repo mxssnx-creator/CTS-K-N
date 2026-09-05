@@ -54,6 +54,7 @@ SYSTEM_SUMMARY.md
 TEMPLATE_LAYOUT_FIXES.md
 TEST-SUITE-SESSION-37.md
 __tests__/e2e/progression-flow.test.ts
+__tests__/fixtures/cts-g-trend-break.json
 __tests__/integration/live-order-service.test.ts
 __tests__/integration/main-engine-live-dispatch.test.ts
 __tests__/integration/preset-optimizer-store.test.ts
@@ -79,7 +80,9 @@ __tests__/unit/bingx-vst-migration.test.ts
 __tests__/unit/bingx-vst-read-pacer.test.ts
 __tests__/unit/bingx-vst-runtime-routing.test.ts
 __tests__/unit/bingx-vst-soak-audit.test.ts
+__tests__/unit/block-additive-lifecycle.test.ts
 __tests__/unit/block-count-state.test.ts
+__tests__/unit/block-settings-migration.test.ts
 __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
@@ -98,6 +101,10 @@ __tests__/unit/connection-test-stored-credentials.test.ts
 __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
+__tests__/unit/cts-g-exit.test.ts
+__tests__/unit/cts-g-history-cache.test.ts
+__tests__/unit/cts-g-timeframes.test.ts
+__tests__/unit/cts-g-trend-break.test.ts
 __tests__/unit/dashboard-event-polling.test.ts
 __tests__/unit/dashboard-main-connections.test.ts
 __tests__/unit/database-validator-migration-contract.test.ts
@@ -1006,6 +1013,9 @@ docs/reports/20260826T233006Z-x02-vst-one-hour/step-results.csv
 docs/reports/20260826T233006Z-x02-vst-one-hour/summary.json
 docs/signal-source-research.md
 docs/system-modules-map.md
+docs/verification/dca-20d-20260905.json
+docs/verification/dca-candidate-defaults-20260905.json
+docs/verification/strategy-dca-20260905.md
 drizzle.config.ts
 eslint.config.mjs
 fix-bun-permissions.sh
@@ -1059,7 +1069,11 @@ lib/bingx-instrument-rules.ts
 lib/bingx-public-api.ts
 lib/bingx-vst-read-pacer.ts
 lib/bingx-vst-soak-audit.ts
+lib/block-count-lifecycle.ts
+lib/block-count-outcomes.ts
 lib/block-count-state.ts
+lib/block-settings-migration.ts
+lib/block-volume-ratio.cjs
 lib/boolean-utils.ts
 lib/bounded-concurrency.ts
 lib/broadcast-helpers.ts
@@ -1109,6 +1123,10 @@ lib/core/entity-types.ts
 lib/correlation-tracking.ts
 lib/cron-auth.ts
 lib/cron-engine-eligibility.ts
+lib/cts-g-exit-core.cjs
+lib/cts-g-exit.ts
+lib/cts-g-indications.ts
+lib/cts-g-timeframes.ts
 lib/dashboard-events.ts
 lib/dashboard-metrics.ts
 lib/dashboard-poll-utils.ts
@@ -1510,6 +1528,7 @@ scripts/direct-trade-cycle-scheduler.mjs
 scripts/direct-trade-processor.mjs
 scripts/direct-trade-supervisor.mjs
 scripts/ensure-server-autoboot.sh
+scripts/fetch-dca-public-history.py
 scripts/final-validation-test.mjs
 scripts/generate-recreation-manifests.mjs
 scripts/init-engine-and-verify.mjs
@@ -1532,6 +1551,7 @@ scripts/next-fs-rm-compat.cjs
 scripts/normalize-next-env.mjs
 scripts/npm-redis-service.mjs
 scripts/optimize-dca-14d.ts
+scripts/optimize-dca-20d.ts
 scripts/optimize-dca-42d.ts
 scripts/optimize-dca-7d.ts
 scripts/post-deploy-verify.sh
@@ -1597,6 +1617,7 @@ scripts/test-runtime-recovery.sh
 scripts/test-tp-sl-ranges.mjs
 scripts/update.sh
 scripts/validate-comprehensive.mjs
+scripts/verify-block-native-redis.ts
 scripts/verify-deployment-contract.mjs
 scripts/verify-migration-status.mjs
 scripts/verify-native-redis-coordination.ts

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import blockVolume from "../lib/block-volume-ratio.cjs"
+import ctsGExit from "../lib/cts-g-exit-core.cjs"
+const { advanceBlockCountLifecycle, normalizeBlockIncrementSteps, blockEffectiveIncrementStep, blockVolumeMultiplier: canonicalBlockVolumeMultiplier, BLOCK_INCREMENT_STEPS_DEFAULT } = blockVolume
 /**
  * Direct-Trade Continuous Processor
  *
@@ -14,7 +17,7 @@
  * - Self-healing on errors (auto-restart loops)
  * - Rate limit respect (BingX: 10 req/s, backs off on 429)
  * - Exact 5m, 15m and 30m timeframes, individually and in every combination
- * - Block Strategy 1-12
+ * - Block Strategy 1-6
  * - Trailing stop support
  * - Recalculates the complete independent set grid every 2h from historic data
  * - Control orders for position management
@@ -95,22 +98,7 @@ const DIRECT_TRADE_LIVE_EXECUTION_READY = true
 const DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON =
   "canonical Direct-Trade live execution is unavailable"
 const DIRECT_TRADE_RECALC_STALE_GRACE_MS = 30 * 60 * 1_000
-const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"]
-const BLOCK_INCREMENT_STEPS_MIN = 1
-const BLOCK_INCREMENT_STEPS_MAX = 5
-const BLOCK_INCREMENT_STEPS_DEFAULT = 2
-
-function normalizeBlockIncrementSteps(value, fallback = BLOCK_INCREMENT_STEPS_DEFAULT) {
-  const parsed = Number(value)
-  const fallbackParsed = Number(fallback)
-  const candidate = Number.isFinite(parsed)
-    ? parsed
-    : Number.isFinite(fallbackParsed)
-      ? fallbackParsed
-      : BLOCK_INCREMENT_STEPS_DEFAULT
-  return Math.max(BLOCK_INCREMENT_STEPS_MIN, Math.min(BLOCK_INCREMENT_STEPS_MAX, Math.floor(candidate)))
-}
-
+const DIRECT_TRADE_ENTRY_TACTICS = ["trend", "break", "trend_break", "momentum", "mean_reversion", "breakout", "relative"]
 function normalizeBlockProfitFactorRatio(value, fallback = 1.1) {
   const parsed = Number(value)
   const fallbackParsed = Number(fallback)
@@ -119,20 +107,11 @@ function normalizeBlockProfitFactorRatio(value, fallback = 1.1) {
   return Number(Math.max(0.2, Math.min(5, candidate)).toFixed(2))
 }
 
-function blockEffectiveIncrementStep(blockCount, incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT) {
-  const count = Math.max(0, Math.floor(Number(blockCount) || 0))
-  return Math.min(count, normalizeBlockIncrementSteps(incrementSteps))
+function blockVolumeMultiplier(count, ratio, steps = BLOCK_INCREMENT_STEPS_DEFAULT, recoveryStep = 1) {
+  return canonicalBlockVolumeMultiplier(Number(count), Number(ratio), steps, recoveryStep) || 1
 }
-
-function blockVolumeMultiplier(blockCount, volumeRatio, incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT) {
-  const ratio = Number(volumeRatio)
-  if (!(ratio > 0) || !(Number(blockCount) > 0)) return 1
-  return Number(((1 + ratio) ** blockEffectiveIncrementStep(blockCount, incrementSteps)).toFixed(12))
-}
-
-function blockTargetQuantity(baseQuantity, blockCount, volumeRatio, incrementSteps) {
-  const base = Number(baseQuantity)
-  return base > 0 ? Number((base * blockVolumeMultiplier(blockCount, volumeRatio, incrementSteps)).toFixed(12)) : 0
+function blockTargetQuantity(baseQuantity, count, ratio, steps, recoveryStep = 1) {
+  return Number(baseQuantity) > 0 ? Number((Number(baseQuantity) * blockVolumeMultiplier(count, ratio, steps, recoveryStep)).toFixed(12)) : 0
 }
 
 function normalizeEnabledIndicationTypes(value, fallback = DIRECT_TRADE_ENTRY_TACTICS) {
@@ -255,9 +234,13 @@ function normalizeLoadedDirectTradePosition(position) {
   }
   const entry = Number(next.entryPrice)
   if (entry > 0 && next.trailingArmed !== true) {
-    next.currentSlPrice = next.direction === "short"
+    const normalizedStop = next.direction === "short"
       ? entry * (1 + protection.stoploss / 100)
       : entry * (1 - protection.stoploss / 100)
+    const priorStop = Number(next.currentSlPrice)
+    next.currentSlPrice = next.ctsGExitEnabled && priorStop > 0
+      ? next.direction === "short" ? Math.min(priorStop, normalizedStop) : Math.max(priorStop, normalizedStop)
+      : normalizedStop
   }
   log("warn", `Normalized Direct-Trade protection for ${next.symbol || "unknown"}`, {
     takeprofit: protection.takeprofit,
@@ -479,7 +462,7 @@ let state = {
   takeProfitRatioRange: [5, 10],
   takeProfitRatioStep: 5,
   trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
-  blockRange: [1, 12],
+  blockRange: [1, 6],
   blockVolumeRatio: 1,
   blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
   blockProfitFactorRatio: 1.1,
@@ -657,6 +640,54 @@ function configKey(config) {
   ].join("|")
 }
 
+const blockCountLifecycles = new Map()
+function directBlockLifecycleKey(config, count) { return `${config.configKey || configKey(config)}|${config.direction}#block:${count}` }
+function directBlockState(config, count) { return blockCountLifecycles.get(directBlockLifecycleKey(config, count)) }
+function settledBlockLegNetPnl(position, leg) {
+  const entryPrice = Number(leg?.entryPrice) || 0
+  const quantity = Math.abs(Number(leg?.quantity) || 0)
+  const exitPrice = Number(position?.exitPrice) || 0
+  if (!(entryPrice > 0) || !(quantity > 0) || !(exitPrice > 0)) return Number(position.pnl)
+  const gross = (position.direction === "long" ? exitPrice - entryPrice : entryPrice - exitPrice) * quantity
+  const legs = Array.isArray(position.positionLegs) && position.positionLegs.length > 0
+    ? position.positionLegs
+    : Array.isArray(position.blockLegs) ? position.blockLegs : []
+  const totalNotional = legs.reduce((sum, item) => sum + Math.abs(Number(item?.entryPrice) || 0) * Math.abs(Number(item?.quantity) || 0), 0)
+  const totalFee = Math.max(0, Number(position.tradingFeeUsdt) || 0)
+  const fee = Number(leg?.tradingFeeUsdt) > 0
+    ? Number(leg.tradingFeeUsdt)
+    : totalNotional > 0
+      ? totalFee * (entryPrice * quantity) / totalNotional
+      : 0
+  // Lifecycle admission only needs the signed result. Keep the value in the
+  // same percent-like unit as the rest of this worker for diagnostics.
+  const net = gross - fee
+  return entryPrice * quantity > 0 ? (net / (entryPrice * quantity)) * 100 : Number(position.pnl)
+}
+function recordDirectBlockOutcome(position) {
+  if (position.blockLifecycleRecorded || position.status !== "closed" || (position.mode === "live" && position.pnlAccountingComplete !== true) || !Number.isFinite(Number(position.pnl))) return
+  const source = `${position.configKey || configKey(position)}|${position.direction}`
+  for (const [key, prior] of blockCountLifecycles) {
+    if (prior.sourceKey === source && Number(prior.remaining) > 0) {
+      const remaining = Math.max(0, Number(prior.remaining) - 1)
+      if (remaining) blockCountLifecycles.set(key, { ...prior, remaining })
+      else blockCountLifecycles.delete(key)
+    }
+  }
+  for (const leg of position.positionLegs || position.blockLegs || []) {
+    if (!(Number(leg.blockCount) > 0) || leg.targetSatisfied === false) continue
+    const key = `${source}#block:${leg.blockCount}`
+    blockCountLifecycles.set(key, advanceBlockCountLifecycle(blockCountLifecycles.get(key), {
+      setKey: key, sourceKey: source, symbol: position.symbol, direction: position.direction,
+      blockCount: Number(leg.blockCount), incrementSteps: position.blockIncrementSteps,
+      executedIncrementStep: leg.effectiveIncrementStep || 1, pauseCount: leg.pauseCount || leg.blockCount,
+      netPnl: settledBlockLegNetPnl(position, leg), updatedAt: Date.now(),
+    }))
+  }
+  position.blockLifecycleRecorded = true
+  stateDirty = true
+}
+
 function resolveBlockSizing(config, baseQuantity) {
   if ((config?.strategyType || "standard") === "dca") {
     return {
@@ -669,8 +700,8 @@ function resolveBlockSizing(config, baseQuantity) {
     }
   }
   const requestedCount = Math.floor(Number(config?.blockCount) || 0)
-  const configuredMinimum = Math.max(0, Math.floor(Number(state.blockRange?.[0]) || 0))
-  const configuredMaximum = Math.max(configuredMinimum, Math.floor(Number(state.blockRange?.[1]) || 0))
+  const configuredMinimum = Math.min(6, Math.max(0, Math.floor(Number(state.blockRange?.[0]) || 0)))
+  const configuredMaximum = Math.min(6, Math.max(configuredMinimum, Math.floor(Number(state.blockRange?.[1]) || 0)))
   const blockCount = Math.max(configuredMinimum, Math.min(configuredMaximum, requestedCount))
   const requestedRatio = Number(config?.blockVolumeRatio ?? config?.volumeRatio ?? state.blockVolumeRatio)
   const blockVolumeRatio = Math.max(0.1, Math.min(10, Number.isFinite(requestedRatio) ? requestedRatio : 1))
@@ -1572,6 +1603,7 @@ async function openPosition(config) {
     entrySignalKey: config.entrySignalKey || null,
     entryTactic: config.entryTactic || null,
     indicationType: config.entryTactic || null,
+    ctsGExitEnabled: ["trend", "break", "trend_break"].includes(config.entryTactic),
     blockAddedCount: 0,
     blockLastPulseAt: 0,
     blockRealizedVolumeMultiplier: 1,
@@ -1639,7 +1671,7 @@ async function openPosition(config) {
   // Direct-Trade Block uses one base fill followed by causal, one-ratio add-on
   // fills. The historical simulator follows the same path. Keeping the full
   // target only as metadata prevents a Block PF from becoming a copied Base PF
-  // while preserving the same bounded compounded target as historic evaluation.
+  // while preserving the same bounded additive target as historic evaluation.
   position.blockCount = blockSizing.blockCount
   position.blockVolumeRatio = blockSizing.blockVolumeRatio
   position.blockIncrementSteps = blockSizing.blockIncrementSteps
@@ -1707,11 +1739,20 @@ async function addDirectTradeBlockLeg(position, config) {
   const incrementSteps = normalizeBlockIncrementSteps(
     position.blockIncrementSteps ?? state.blockIncrementSteps,
   )
+  const countState = directBlockState(position, nextCount)
+  if (!hasPendingControl && Number(countState?.remaining) > 0) {
+    position.blockAddedCount = nextCount
+    stateDirty = true
+    return false
+  }
+  const recoveryStep = hasPendingControl ? position.blockEffectiveIncrementStep || 1 : countState?.incrementStep || 1
+  position.blockEffectiveIncrementStep = recoveryStep
   const targetQuantityForCount = blockTargetQuantity(
     baseQuantity,
     nextCount,
     volumeRatio,
     incrementSteps,
+    recoveryStep,
   )
   const existingLegs = Array.isArray(position.positionLegs) && position.positionLegs.length > 0
     ? position.positionLegs
@@ -1735,7 +1776,7 @@ async function addDirectTradeBlockLeg(position, config) {
       baseQuantity,
       volumeRatio,
       incrementSteps,
-      effectiveIncrementStep: blockEffectiveIncrementStep(nextCount, incrementSteps),
+      effectiveIncrementStep: blockEffectiveIncrementStep(nextCount, incrementSteps, recoveryStep),
       volumeIncrementRatio: Number((volumeMultiplier - 1).toFixed(12)),
       volumeMultiplier,
       targetBlockQuantity: targetQuantityForCount,
@@ -1897,7 +1938,7 @@ async function addDirectTradeBlockLeg(position, config) {
       baseQuantity,
       volumeRatio,
       incrementSteps,
-      effectiveIncrementStep: blockEffectiveIncrementStep(nextCount, incrementSteps),
+      effectiveIncrementStep: blockEffectiveIncrementStep(nextCount, incrementSteps, recoveryStep),
       volumeIncrementRatio: Number((volumeMultiplier - 1).toFixed(12)),
       volumeMultiplier,
       targetBlockQuantity: targetQuantityForCount,
@@ -1960,6 +2001,12 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
   const hasPendingControl = pendingControlStep > 0 && Boolean(position.dcaPendingControlId)
   if ((!state.enabled && !hasPendingControl) || position.status !== "open" || position.strategyType !== "dca") return false
   if (!(Number(currentPrice) > 0) && !hasPendingControl) return false
+  if (!hasPendingControl && ["trend", "break", "trend_break"].includes(position.entryTactic)) {
+    // A retry must always reconcile its original control, even after the
+    // signal expires. Only genuinely new exposure requires a fresh pulse.
+    if (!position.entrySignalKey || !activeSignalKeys.has(position.entrySignalKey)
+      || !lastSignalPulseAt || Date.now() - lastSignalPulseAt > 90_000) return false
+  }
 
   const profile = normalizeDirectDcaProfile(position.dcaProfile || state.dcaProfile)
   position.dcaProfile = profile
@@ -2302,6 +2349,7 @@ function rebuildRealizedNotionalStats() {
 }
 
 function recordAccountedConfigOutcome(position, reason = position.exitReason || "closed") {
+  recordDirectBlockOutcome(position)
   if (position.configPerformanceRecorded === true) return false
   if (position.mode === "live" && position.pnlAccountingComplete !== true) return false
   if (!Number.isFinite(Number(position.pnl))) return false
@@ -2427,6 +2475,22 @@ async function checkAndClosePositions() {
     // flip the venue position.
     if (pos.blockPendingControlId || pos.dcaPendingControlId) continue
     if (!currentPrice || !pos.entryPrice) continue
+    if (pos.ctsGExitEnabled === true) {
+      const peakPrice = pos.direction === "long"
+        ? Math.max(Number(pos.highWatermark) || pos.entryPrice, currentPrice)
+        : Math.min(Number(pos.lowWatermark) || pos.entryPrice, currentPrice)
+      const exit = ctsGExit.coordinateCtsGExit({
+        direction: pos.direction, entryPrice: Number(pos.averageEntryPrice || pos.entryPrice),
+        markPrice: currentPrice, peakPrice, hardStopPrice: Number(pos.currentSlPrice),
+        ageSeconds: Math.max(0, Date.now() - new Date(pos.openedAt).getTime()) / 1000,
+        positionCostPct: Number(pos.positionCostPercent ?? state.positionCostPercent ?? 0.1),
+      })
+      if (exit.lane !== "hard") {
+        pos.currentSlPrice = exit.stopPrice
+        pos.ctsGExitLane = exit.lane
+        stateDirty = true
+      }
+    }
 
     // A hard DCA stop always has priority over an accumulation fill. When the
     // processor is stopped, existing positions are still closed/protected but
@@ -2905,7 +2969,7 @@ async function persistState() {
       recalculationInFlight: Boolean(recalcRequestInFlight),
       nextRecalcAttemptAt: nextRecalcAttemptAt > Date.now() ? new Date(nextRecalcAttemptAt).toISOString() : null,
       positions,
-      stats,
+      stats: { ...stats, blockCountLifecycles: Object.fromEntries(blockCountLifecycles) },
       configStatus: Object.fromEntries(configStatus),
       configPerformance: Object.fromEntries(configPerformance),
     })
@@ -3114,6 +3178,9 @@ async function loadState(includeExecution = false) {
     }
     if (result?.stats && typeof result.stats === "object") stats = { ...stats, ...result.stats }
     if (Array.isArray(result?.positions)) positions = result.positions.map(normalizeLoadedDirectTradePosition)
+    blockCountLifecycles.clear()
+    for (const [key, value] of Object.entries(result?.stats?.blockCountLifecycles || {})) blockCountLifecycles.set(key, value)
+    for (const position of positions) recordDirectBlockOutcome(position)
     rebuildRealizedNotionalStats()
     if (result?.configPerformance && typeof result.configPerformance === "object") {
       configPerformance = new Map(Object.entries(result.configPerformance))

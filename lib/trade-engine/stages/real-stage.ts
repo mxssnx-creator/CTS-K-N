@@ -80,6 +80,8 @@ export interface RealPosition {
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number
   blockIncrementSteps?: number
+  blockEffectiveIncrementStep?: number
+  blockLifecycleKey?: string
   blockProfitFactorRatio?: number
   blockDefaultMinimumProfitFactor?: number
   blockConfiguredMinimumProfitFactor?: number
@@ -338,7 +340,7 @@ function calculateEvaluationScore(
  * The active StrategyCoordinator path resolves the same contract before
  * executeLivePosition. Keeping this older exported stage fail-closed prevents
  * a direct caller from resurrecting legacy `baseMultiplier` scaling:
- * normal/trailing=1, Block=(1+ratio)^effectiveStep, DCA=its explicit ratio and combined
+ * normal/trailing=1, Block=1+count×ratio×recoveryStep, DCA=its explicit ratio and combined
  * Position-count=its explicit net ratio (including a deliberate flat 0).
  */
 export function resolveRealStageSizeMultiplier(variantSource?: Record<string, any>): number {
@@ -358,6 +360,7 @@ export function resolveRealStageSizeMultiplier(variantSource?: Record<string, an
           parsedCount,
           ratio,
           variantSource?.blockIncrementSteps,
+          variantSource?.blockEffectiveIncrementStep,
         )
       : 1
   }
@@ -539,6 +542,7 @@ function createRealPosition(
       "blockBaseVolumeMultiplier",
       "blockVolumeRatio",
       "blockIncrementSteps",
+          "blockEffectiveIncrementStep",
       "blockProfitFactorRatio",
       "blockDefaultMinimumProfitFactor",
       "blockConfiguredMinimumProfitFactor",

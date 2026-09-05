@@ -53,7 +53,7 @@ import {
 } from "@/lib/main-trade-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 
-const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend", "break"] as const
 
 function aggregateWindowByType(hash: Record<string, string>): Record<string, number> {
   const totals: Record<string, number> = {}

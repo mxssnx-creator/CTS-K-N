@@ -85,7 +85,7 @@ export interface PseudoPosition {
   connection_id: string
   symbol: string
   direction?: "long" | "short"
-  indication_type: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend"
+  indication_type: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend" | "break"
   takeprofit_factor: number
   stoploss_ratio: number
   trailing_enabled: boolean
@@ -168,7 +168,7 @@ export interface RealPosition {
   opened_at: string
   closed_at?: string
 
-  indication_type?: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend"
+  indication_type?: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend" | "break"
   indication_range?: number
   indication_interval?: number
   strategy_interval?: number
@@ -198,7 +198,7 @@ export interface TradingPosition extends RealPosition {
   volume_factor?: number
   base_volume?: number // Base volume before factor adjustment
   adjusted_volume?: number // Volume after applying volume_factor
-  indication_type?: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend"
+  indication_type?: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend" | "break"
 
   entry_timestamp?: string
   last_update_timestamp?: string
@@ -208,7 +208,7 @@ export interface TradingPosition extends RealPosition {
 }
 
 export interface IndicationConfig {
-  type: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend"
+  type: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend" | "break"
   range: number // 2-30 step 1 (for direction and move), 1-10 step 1 (for active)
   drawdown_ratio?: number // 0.1, 0.2, 0.3, 0.4, 0.5 step 0.1 (5 variations)
   price_change_ratio?: number // 0.1-1.0 for direction/move
@@ -262,7 +262,7 @@ export interface StrategyConfig {
       enabled: boolean
       blockSize: number // 2, 4, 6, 8
       adjustmentRatio: number // Volume increase ratio
-      incrementSteps?: number // 1..5 compounded Block targets; default 2
+      incrementSteps?: number // 1..2 additive Block recovery levels; default 2
     }
     dca?: {
       enabled: boolean
@@ -711,7 +711,7 @@ export interface BasePseudoPosition {
   id: string
   symbol: string
   connection_id: string
-  indication_type: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend"
+  indication_type: "direction" | "move" | "active" | "active_advanced" | "special" | "optimal" | "auto" | "signal" | "trend" | "break"
   indication_range: number
   direction: "long" | "short"
 

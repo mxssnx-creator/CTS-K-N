@@ -81,7 +81,7 @@ interface StatsResponse {
     live?: { open: number; total?: number; positions?: number }
   }
   breakdown: {
-    indications: { direction: number; move: number; active: number; activeAdvanced?: number; special?: number; optimal: number; auto: number; common?: number; signal?: number; trend?: number; total: number }
+    indications: { direction: number; move: number; active: number; activeAdvanced?: number; special?: number; optimal: number; auto: number; common?: number; signal?: number; trend?: number; break?: number; total: number }
     strategies: {
       base: number; main: number; real: number; live: number; total: number
       baseEvaluated: number; mainEvaluated: number; realEvaluated: number
@@ -345,6 +345,7 @@ export function QuickstartOverviewDialog() {
     { label: "Auto",       value: bd?.indications.auto           || 0 },
     { label: "Signal",     value: bd?.indications.signal         || 0 },
     { label: "Trend",      value: bd?.indications.trend          || 0 },
+    { label: "Break",      value: bd?.indications.break          || 0 },
   ]
   const totalIndByType = indTypes.reduce((s, r) => s + r.value, 0) || 1
   const evalMain5m  = win?.indications.last5m  || 0
@@ -838,12 +839,12 @@ export function QuickstartOverviewDialog() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(["direction", "move", "active", "activeAdvanced", "special", "optimal", "auto", "common", "signal", "trend"] as const).map((k) => {
+                    {(["direction", "move", "active", "activeAdvanced", "special", "optimal", "auto", "common", "signal", "break", "trend"] as const).map((k) => {
                       const r = stats.activeProgressing!.indications![k]
                       if (!r || (r.sets === 0 && r.trackings === 0 && r.positions === 0)) return null
                       const labelMap: Record<string, string> = {
                         direction: "Direction", move: "Move", active: "Active",
-                        activeAdvanced: "Active Adv", special: "Special", optimal: "Optimal", auto: "Auto", common: "Common", signal: "Signal", trend: "Trend",
+                        activeAdvanced: "Active Adv", special: "Special", optimal: "Optimal", auto: "Auto", common: "Common", signal: "Signal", break: "Break", trend: "Trend",
                       }
                       return (
                         <tr key={k} className="border-b border-border/20 last:border-0">

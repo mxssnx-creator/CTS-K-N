@@ -134,7 +134,7 @@ export interface DirectTradeState {
   // The Block increase ratio is independent from the base position-size
   // factor. For a base quantity B and N valid Blocks: B + (N × B × ratio).
   blockVolumeRatio: number
-  // Number of compounded Block targets (1..5); defaults to two increments.
+  // Number of additive Block recovery levels (1..2); defaults to two levels.
   blockIncrementSteps: number
   // Independent PF floor multiplier for each Block count.
   blockProfitFactorRatio: number
@@ -221,7 +221,7 @@ const DEFAULT_STATE: DirectTradeState = {
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
   takeProfitDefaultsVersion: 3,
-  blockRange: [1, 12],
+  blockRange: [1, 6],
   blockVolumeRatio: 1,
   blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
   blockProfitFactorRatio: 1.1,
@@ -539,12 +539,12 @@ function clampRecalculationInterval(value: unknown, fallback = 2 * 60 * 60 * 100
   return Math.max(5 * 60_000, Math.min(24 * 60 * 60_000, Math.round(Number.isFinite(raw) ? raw : fallback)))
 }
 
-function normaliseBlockRange(value: unknown, fallback: [number, number] = [1, 12]): [number, number] {
+function normaliseBlockRange(value: unknown, fallback: [number, number] = [1, 6]): [number, number] {
   if (!Array.isArray(value) || value.length !== 2) return fallback
   const requestedMinimum = Number(value[0])
   const requestedMaximum = Number(value[1])
-  const minimum = Math.max(0, Math.min(120, Math.floor(Number.isFinite(requestedMinimum) ? requestedMinimum : fallback[0])))
-  const maximum = Math.max(minimum, Math.min(120, Math.floor(Number.isFinite(requestedMaximum) ? requestedMaximum : fallback[1])))
+  const minimum = Math.max(0, Math.min(6, Math.floor(Number.isFinite(requestedMinimum) ? requestedMinimum : fallback[0])))
+  const maximum = Math.max(minimum, Math.min(6, Math.floor(Number.isFinite(requestedMaximum) ? requestedMaximum : fallback[1])))
   return [minimum, maximum]
 }
 

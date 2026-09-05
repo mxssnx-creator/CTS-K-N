@@ -33,9 +33,9 @@ const historyMinutes = Math.max(30, Math.floor(Number(process.env.DIRECT_TRADE_B
 const historyHours = historyMinutes / 60
 const positionCostPercent = Math.max(0.02, Math.min(1, Number(process.env.DIRECT_TRADE_BLOCK_POSITION_COST_PERCENT) || 0.1))
 const blockMinimum = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_MIN_COUNT) || 1))
-const blockMaximum = Math.max(blockMinimum, Math.min(12, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_MAX_COUNT) || 12)))
+const blockMaximum = Math.max(blockMinimum, Math.min(6, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_MAX_COUNT) || 6)))
 const blockVolumeRatio = Math.max(0.1, Math.min(10, Number(process.env.DIRECT_TRADE_BLOCK_VOLUME_RATIO) || 1))
-const blockIncrementSteps = Math.max(1, Math.min(5, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_INCREMENT_STEPS) || 2)))
+const blockIncrementSteps = Math.max(1, Math.min(2, Math.floor(Number(process.env.DIRECT_TRADE_BLOCK_INCREMENT_STEPS) || 2)))
 const blockProfitFactorRatio = Math.max(0.2, Math.min(5, Number(process.env.DIRECT_TRADE_BLOCK_PF_RATIO) || 1.1))
 const minProfitFactor = Math.max(
   0.8,
@@ -494,7 +494,7 @@ const result = {
     aggregatePFDifferenceSelectedVsBase: (withBlock.metrics.selectedBlockAggregatePF ?? 0)
       - (withoutBlock.metrics.baseAggregatePF ?? 0),
     identityMismatches,
-    note: "Per-set admission uses the PositionCost coordinate; aggregate Block PF remains the separate classic statistic calculated from summed ratio-weighted positive/negative PnL. The TP ratio range mean is diagnostic only and projected PnL/target volume use the capped compound multiplier.",
+    note: "Per-set admission uses the PositionCost coordinate; aggregate Block PF remains the separate classic statistic calculated from summed ratio-weighted positive/negative PnL. The TP ratio range mean is diagnostic only and projected PnL/target volume use the additive count × ratio × recovery-level multiplier.",
   },
   generatedAt: new Date().toISOString(),
 }

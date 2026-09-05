@@ -28,7 +28,7 @@ function isTruthy(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
 }
 
-const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "break", "trend"] as const
 const HEARTBEAT_STALE_MS = 120_000
 const PROCESSING_STALE_MS = 120_000
 const MONITOR_READ_DEADLINE_MS = 10_000
@@ -119,7 +119,7 @@ async function countIndicationsByType(client: ReturnType<typeof getRedisClient>,
       acc.total += item.count
       return acc
     },
-    { direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0, total: 0 } as Record<string, number>,
+    { direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, break: 0, trend: 0, total: 0 } as Record<string, number>,
   )
 
   // Never wildcard-scan indication result keys from a polling endpoint. The
@@ -393,7 +393,7 @@ export async function GET(request: Request) {
         const historicSymbolsKey = hasScopedPrehistoric
           ? `${scope.prehistoricKey}:symbols`
           : `prehistoric:${conn.id}:symbols`
-        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseActiveAdvanced, baseSpecial, baseOptimal, baseCommon, baseSignal, baseTrend, livePositionsCount, prehistoricSymbols, processedIntervalsRaw] =
+        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseActiveAdvanced, baseSpecial, baseOptimal, baseCommon, baseSignal, baseTrend, baseBreak, livePositionsCount, prehistoricSymbols, processedIntervalsRaw] =
           await Promise.all([
             countIndicationsByType(client, conn.id),
             countStrategiesByType(client, conn.id, symbols),
@@ -410,6 +410,7 @@ export async function GET(request: Request) {
             client.scard(`base_pseudo:${conn.id}:common`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:signal`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:trend`).catch(() => 0),
+            client.scard(`base_pseudo:${conn.id}:break`).catch(() => 0),
             client.scard(`positions:${conn.id}:live`).catch(() => 0),
             client.scard(historicSymbolsKey).catch(() => 0),
             client.get(`intervals:${conn.id}:processed_count`).catch(() => 0),
@@ -587,6 +588,7 @@ export async function GET(request: Request) {
             common: baseCommon,
             signal: baseSignal,
             trend: baseTrend,
+            break: baseBreak,
           },
           livePositions: livePositionsCount,
           signalCapacity: {
@@ -703,10 +705,11 @@ export async function GET(request: Request) {
         acc.common += item.indicationsByType.common || 0
         acc.signal += item.indicationsByType.signal || 0
         acc.trend += item.indicationsByType.trend || 0
+        acc.break += item.indicationsByType.break || 0
         acc.total += item.indicationsByType.total || 0
         return acc
       },
-      { direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0, total: 0 },
+      { direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, break: 0, trend: 0, total: 0 },
     )
 
     const aggregatedStrategyCounts = perConnection.reduce(
@@ -841,9 +844,10 @@ export async function GET(request: Request) {
         acc.common += item.basePseudoByIndication.common
         acc.signal += item.basePseudoByIndication.signal
         acc.trend += item.basePseudoByIndication.trend
+        acc.break += item.basePseudoByIndication.break
         return acc
       },
-      { direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, common: 0, signal: 0, trend: 0 },
+      { direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, common: 0, signal: 0, break: 0, trend: 0 },
     )
 
     const unifiedLogs = [...auditLogs, ...systemLogs, ...logs]

@@ -2445,7 +2445,7 @@ const VARIANT_META: {
   {
     key: "block",
     label: "Block · Adjust",
-    desc:  "Base-derived Sets use independent bounded-compound Block targets; Pos-Count Sets never spawn Blocks, while Active Real counts still include Pos-Count positions.",
+    desc:  "Base-derived Sets use independent additive Block targets with two recovery levels; Pos-Count Sets never spawn Blocks, while Active Real counts still include Pos-Count positions.",
     defaultOn: true,
   },
   {

@@ -174,10 +174,10 @@ describe("Direct-Trade historical calculation route", () => {
       minVolFactor: 0.1,
       trailingMinTakeProfitRatio: 5,
       blockEnabled: true,
-      blockEvaluatedSets: 72 * 12 * 4,
+      blockEvaluatedSets: 72 * 6 * 4,
     })
     expect(payload.summary.byBlockCount["1"]).toMatchObject({ evaluated: 288 })
-    expect(payload.summary.byBlockCount["12"]).toMatchObject({ evaluated: 288 })
+    expect(payload.summary.byBlockCount["6"]).toMatchObject({ evaluated: 288 })
     expect(payload.summary.byStrategyType).toMatchObject({
       standard: { evaluated: 72 },
       trailing_fixed: { evaluated: 0 },

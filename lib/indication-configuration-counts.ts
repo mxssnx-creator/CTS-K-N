@@ -43,6 +43,7 @@ export type IndicationConfigurationType =
   | "auto"
   | "signal"
   | "trend"
+  | "break"
   | "common"
 
 export interface IndicationConfigurationCount {
@@ -536,9 +537,9 @@ export function calculateIndicationConfigurationCounts(
       label: "Trend",
       group: "additional",
       storage: "independent_set",
-      possibleSets: setCount(trendGrid, trendCombinedSetVariants),
-      evaluationConfigurations: trendGrid + trendCombinedEvaluations,
-      formula: `${trendTimeframes.length} timeframes × ${trendDrawdowns.length} drawdowns × ${trendLast.length} last × ${trendActive.length} active`,
+      possibleSets: settings.trendEnabled === false ? 0 : settings.ctsGTrendEnabled === false ? setCount(trendGrid, trendCombinedSetVariants) : trendTimeframes.length * 2,
+      evaluationConfigurations: settings.trendEnabled === false ? 0 : settings.ctsGTrendEnabled === false ? trendGrid + trendCombinedEvaluations : trendTimeframes.length,
+      formula: settings.ctsGTrendEnabled === false ? `${trendTimeframes.length} timeframes × ${trendDrawdowns.length} drawdowns × ${trendLast.length} last × ${trendActive.length} active` : `${trendTimeframes.length} EMA 8/21 timeframes × 2 independent directions`,
       params: {
         timeframes: trendTimeframes.length,
         drawdowns: trendDrawdowns.length,
@@ -546,7 +547,14 @@ export function calculateIndicationConfigurationCounts(
         activeSituations: trendActive.length,
         combinedStepVariants: trendCombinedSetVariants,
       },
-      description: "Trend-only 1/5/15/30-minute situations plus the optional combined higher-range result.",
+      description: "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows.",
+    },
+    {
+      type: "break", label: "Break", group: "additional", storage: "independent_set",
+      possibleSets: settings.breakEnabled === false ? 0 : trendTimeframes.length * 2, evaluationConfigurations: settings.breakEnabled === false ? 0 : trendTimeframes.length,
+      formula: `${trendTimeframes.length} structure-break timeframes × 2 independent directions`,
+      params: { timeframes: trendTimeframes.length, range: Number(settings.breakRange) || 16 },
+      description: "CTS-G close beyond the prior range with independent direction and noise validation.",
     },
     {
       type: "common",

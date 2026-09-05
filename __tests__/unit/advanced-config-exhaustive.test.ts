@@ -56,9 +56,10 @@ describe("advanced compatibility configuration generator", () => {
   test("materializes every configured indication combination including endpoints", () => {
     const sets = generateIndicationConfigurationSets(compactConfig())
 
-    // Active uses four axes: 2^4 = 16. The six other compatibility types use
-    // six axes each: 6 × 2^6 = 384. No representative sampling is permitted.
-    expect(sets).toHaveLength(400)
+    // Active uses four axes: 2^4 = 16. The seven other types (including
+    // Break) use six axes each: 7 × 2^6 = 448. No representative sampling.
+    expect(sets).toHaveLength(464)
+    expect(sets.filter(set => set.indicationType === "break")).toHaveLength(64)
     expect(sets).toEqual(expect.arrayContaining([
       expect.objectContaining({
         indicationType: "direction",

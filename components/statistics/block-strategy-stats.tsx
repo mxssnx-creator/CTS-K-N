@@ -57,7 +57,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
       return
     }
 
-    const blockSizes = [2, 4, 6, 8]
+    const blockSizes = [1, 2, 3, 4, 5, 6]
     const performances: BlockPerformance[] = []
 
     // Get the last N positions for comparison
@@ -251,7 +251,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
                 <CardTitle className="text-lg">Block Size {perf.blockSize}</CardTitle>
                 <Badge variant={perf.favorable ? "default" : "secondary"}>
                   {perf.favorable ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <XCircle className="h-3 w-3 mr-1" />}
-                  {perf.favorable ? "Favorable" : "Below baseline"}
+                  {perf.withBlockStrategy.positionCount < 5 ? "Insufficient sample" : perf.favorable ? "Favorable" : "Below baseline"}
                 </Badge>
               </div>
             </CardHeader>
@@ -311,7 +311,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
         <CardHeader>
           <CardTitle>Observed Post-Loss vs Baseline Windows</CardTitle>
           <CardDescription>
-            Chronological newest-{Math.min(comparisonWindow, positions.length)} diagnostic. The same closes are regrouped at block sizes 2/4/6/8; this does not claim an adjustment was executed.
+            Chronological newest-{Math.min(comparisonWindow, positions.length)} diagnostic. The same closes are regrouped at block sizes 1–6; this does not claim an adjustment was executed.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -387,7 +387,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
               <div>
                 <div className="text-sm text-muted-foreground">Max Stack / Analysis Window</div>
                 <div className="text-lg font-bold">
-                  {Number(settings.blockMaxStack ?? 12)} / {comparisonWindow} positions
+                  {Number(settings.blockMaxStack ?? 6)} / {comparisonWindow} positions
                 </div>
               </div>
             </div>

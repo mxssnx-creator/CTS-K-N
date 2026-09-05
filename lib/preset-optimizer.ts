@@ -3,7 +3,11 @@ import {
   normalizeMainTradePfRatio,
   signedResultRToMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
-import { normalizeBlockProfitFactorRatio } from "@/lib/block-count-state"
+import {
+  BLOCK_COUNT_MAX,
+  BLOCK_INCREMENT_STEPS_MAX,
+  normalizeBlockProfitFactorRatio,
+} from "@/lib/block-count-state"
 
 export const PRESET_INDICATOR_TYPES = [
   "ma",
@@ -90,8 +94,8 @@ export const DEFAULT_PRESET_OPTIMIZER_SETTINGS: PresetOptimizerSettings = {
   blockEnabled: true,
   blockVolumeRatio: 1,
   blockProfitFactorRatio: 1.1,
-  blockIncrementSteps: 2,
-  blockMaxStack: 12,
+  blockIncrementSteps: BLOCK_INCREMENT_STEPS_MAX,
+  blockMaxStack: BLOCK_COUNT_MAX,
   blockPauseCountRatio: 1,
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
@@ -318,8 +322,8 @@ export function normalizePresetOptimizerSettings(raw: Record<string, unknown> = 
       raw.blockProfitFactorRatio,
       d.blockProfitFactorRatio,
     ),
-    blockIncrementSteps: snap(raw.blockIncrementSteps, 1, 5, 1, d.blockIncrementSteps),
-    blockMaxStack: snap(raw.blockMaxStack, 1, 12, 1, d.blockMaxStack),
+    blockIncrementSteps: snap(raw.blockIncrementSteps, 1, BLOCK_INCREMENT_STEPS_MAX, 1, d.blockIncrementSteps),
+    blockMaxStack: snap(raw.blockMaxStack, 1, BLOCK_COUNT_MAX, 1, d.blockMaxStack),
     blockPauseCountRatio: snap(raw.blockPauseCountRatio, 1, 4, 0.5, d.blockPauseCountRatio),
     blockActiveRealEnabled: booleanSetting(raw.blockActiveRealEnabled, d.blockActiveRealEnabled),
     blockActiveLiveEnabled: booleanSetting(raw.blockActiveLiveEnabled, d.blockActiveLiveEnabled),

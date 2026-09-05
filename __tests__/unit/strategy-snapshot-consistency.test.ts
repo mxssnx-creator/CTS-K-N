@@ -50,7 +50,7 @@ describe("coherent strategy snapshots and schema v107", () => {
   test("migrations are sequential through the coherent schema", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
-    expect(versions.at(-1)).toBe(107)
+    expect(versions.at(-1)).toBe(108)
     expect(versions.every((version, index) => version === index + 1)).toBe(true)
     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
     expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')

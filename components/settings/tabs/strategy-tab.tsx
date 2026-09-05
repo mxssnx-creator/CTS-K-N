@@ -104,7 +104,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   const presetBlockVolumeRatio = Number(settings.presetBlockVolumeRatio ?? settings.blockVolumeRatio ?? 1)
   const presetBlockProfitFactorRatio = Number(settings.presetBlockProfitFactorRatio ?? settings.blockProfitFactorRatio ?? 1.1)
   const presetBlockIncrementSteps = Number(settings.presetBlockIncrementSteps ?? settings.blockIncrementSteps ?? 2)
-  const presetBlockMaxStack = Number(settings.presetBlockMaxStack ?? settings.blockMaxStack ?? 12)
+  const presetBlockMaxStack = Number(settings.presetBlockMaxStack ?? settings.blockMaxStack ?? 6)
   const presetBlockPauseCountRatio = Number(settings.presetBlockPauseCountRatio ?? settings.blockPauseCountRatio ?? 1)
   const presetBlockActiveRealEnabled = settings.presetBlockActiveRealEnabled ?? settings.blockActiveRealEnabled ?? true
   const presetBlockActiveLiveEnabled = settings.presetBlockActiveLiveEnabled ?? settings.blockActiveLiveEnabled ?? true
@@ -785,7 +785,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <div>
                     <h4 className="font-semibold">Block Strategy Type · Adjust</h4>
                     <p className="text-xs text-muted-foreground">
-                      Every valid Block count is evaluated independently. Its physical target compounds from general volume for the configured 1–5 increment steps; exchange orders submit only the missing delta, while result and pause state remain count-specific.
+                      Counts 1–6 run independently. Target = Base × (1 + count × ratio × recovery step), with at most two recovery steps. Keep the increase until a positive result, then pause that Count. Orders submit only the unfilled delta.
                       Regular ladders use Base-derived Sets only; Active Real
                       counts independently include Pos-Count positions.
                     </p>
@@ -808,10 +808,10 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       onChange={(value) => updatePresetBlockSetting("presetBlockProfitFactorRatio", "blockProfitFactorRatio", value)}
                     />
                     <PresetOptimizerSlider
-                      label="Compound increment steps"
+                      label="Additive recovery steps"
                       value={presetBlockIncrementSteps}
                       min={1}
-                      max={5}
+                      max={2}
                       step={1}
                       onChange={(value) => updatePresetBlockSetting("presetBlockIncrementSteps", "blockIncrementSteps", value)}
                     />
@@ -819,7 +819,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       label="Independent Block counts"
                       value={presetBlockMaxStack}
                       min={1}
-                      max={12}
+                      max={6}
                       step={1}
                       onChange={(value) => updatePresetBlockSetting("presetBlockMaxStack", "blockMaxStack", value)}
                     />
@@ -857,7 +857,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-[11px]">
-                    {[1, 2, Math.max(3, Math.min(12, Math.floor(presetBlockMaxStack)))].map((count, index) => (
+                    {[1, 2, Math.max(3, Math.min(6, Math.floor(presetBlockMaxStack)))].map((count, index) => (
                       <div key={`${count}-${index}`} className="rounded border bg-muted/20 p-2 text-center tabular-nums">
                         Block {count}: {calculateBlockVolumeMultiplier(
                           count,

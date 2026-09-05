@@ -92,11 +92,12 @@ function buildRealPosition(input: DirectTradeCanonicalOrderInput): RealPosition 
 
   const blockVolumeRatio = Math.max(0.1, Number(state.blockVolumeRatio) || 1)
   const blockIncrementSteps = normalizeBlockIncrementSteps(state.blockIncrementSteps)
+  const blockEffectiveIncrementStep = Number(state.blockEffectiveIncrementStep || 1)
   const blockVolumeIncrementRatio = input.stage === "block"
-    ? calculateBlockVolumeIncrementRatio(blockCount, blockVolumeRatio, blockIncrementSteps)
+    ? calculateBlockVolumeIncrementRatio(blockCount, blockVolumeRatio, blockIncrementSteps, blockEffectiveIncrementStep)
     : 0
   const blockCalculatedVolumeMultiplier = input.stage === "block"
-    ? calculateBlockVolumeMultiplier(blockCount, blockVolumeRatio, blockIncrementSteps)
+    ? calculateBlockVolumeMultiplier(blockCount, blockVolumeRatio, blockIncrementSteps, blockEffectiveIncrementStep)
     : 1
   const setKey = input.stage === "block"
     ? `${parent}#block:${blockCount}`
@@ -140,6 +141,8 @@ function buildRealPosition(input: DirectTradeCanonicalOrderInput): RealPosition 
     blockBaseVolumeMultiplier: 1,
     blockVolumeRatio: input.stage === "block" ? blockVolumeRatio : undefined,
     blockIncrementSteps: input.stage === "block" ? blockIncrementSteps : undefined,
+    blockEffectiveIncrementStep: input.stage === "block" ? blockEffectiveIncrementStep : undefined,
+    blockLifecycleKey: input.stage === "block" && state.configKey ? `direct-trade:${state.configKey}:${input.positionDirection}#block:${blockCount}` : undefined,
     blockVolumeIncrementRatio: input.stage === "block" ? blockVolumeIncrementRatio : undefined,
     blockCalculatedVolumeMultiplier: input.stage === "block" ? blockCalculatedVolumeMultiplier : undefined,
     blockScope: input.stage === "block" ? "live_row" : undefined,

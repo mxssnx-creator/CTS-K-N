@@ -108,7 +108,7 @@ describe("system-wide Base identity with explicit execution ratio", () => {
     }), true)
 
     expect(normal.volume_factor).toBe(1)
-    expect(block.volume_factor).toBe(6.25)
+    expect(block.volume_factor).toBe(5.5)
     expect(block.adjustments).toEqual(["block"])
   })
 
@@ -134,7 +134,7 @@ describe("system-wide Base identity with explicit execution ratio", () => {
 
     expect(dca.volume_factor).toBeCloseTo(1 + 12 / 25, 12)
     expect(dca.adjustments).toEqual(["dca"])
-    expect(malformedCombined.volume_factor).toBe(6.25)
+    expect(malformedCombined.volume_factor).toBe(5.5)
     expect(malformedCombined.adjustments).toEqual(["block"])
   })
 
@@ -154,7 +154,7 @@ describe("system-wide Base identity with explicit execution ratio", () => {
       blockCount: 3,
       blockVolumeRatio: 1.5,
       baseMultiplier: 99,
-    })).toBe(6.25)
+    })).toBe(5.5)
     expect(resolveRealStageSizeMultiplier({
       variant: "dca",
       variantSizeMultiplier: 0.5,

@@ -1,4 +1,45 @@
 # Active Context: CTS-K-N Trading System (main project)
+## Strategy continuation checkpoint — 2026-09-05 08:55 UTC
+
+- Canonical checkout remains `/workspace/CTS-K-N`; concurrent changes there
+  are preserved. Isolated feature work is at
+  `/workspace/CTS-K-N-worktrees/strategy-protection-20260904` on
+  `codex/strategy-protection-coordination-20260904`, based on local `08e26906`
+  with all merged PR314/316 changes imported from GitHub main `bd1d506c`.
+- Implemented independent additive Block counts 1–6 / recovery levels 1–2,
+  immutable-base DCA/Block quantities, atomic idempotent per-leg outcome state,
+  pause isolation, actual-step statistics, and schema 108 settings migration.
+  Recovery retains volume but never overrides drawdown or exposure barriers.
+- CTS-G Trend/Break port is pinned to source `5ff7cc70e274e1212bcdc38af46126a8abc988cf`.
+  Realtime uses compact 24h minute history with complete UTC timeframe bars;
+  legacy/manual positions do not silently opt into the new cost-aware exit.
+  Settings invalidation and remaining Break stats/UI paths are now wired.
+- Local gates: 284 suites / 1,951 tests passed twice; TypeScript and full
+  ESLint passed; release secret scan 1,656 files / zero findings. Production
+  build passed with 349 complete traces. Lockfile and runtimes unchanged;
+  the isolated worktree has its own offline-restored pinned dependencies.
+- Native Redis acceptance passed using two independent sockets on isolated
+  127.0.0.1:16383: schema108, settings TTL, preserved position snapshots,
+  duplicate outcomes, Count1/Count6 independence and durable pause. The test
+  Redis instance was shut down; production data was not used by that test.
+- Historical public-data study: 6,048 profiles, XRP/BCH/SOL, 14d training +
+  6d holdout and last20h selection. XRP has zero qualified dynamic profiles;
+  no shared or averaged defaults promoted. Dynamic selection overlaps the
+  holdout and is not independent validation. Full metrics and inactive
+  candidate defaults are in `docs/verification/strategy-dca-20260905.md`.
+- Local checkpoints include
+  `/workspace/backups/CTS-K-N/20260905T082423Z-pre-trend-timeframe-and-stats`;
+  all have verified bundles, binary patches, untracked archives and checksums.
+  Server checkpoint `/var/backups/cts-kn/pre-strategy-native-verification-20260905`
+  is verified, including source, Redis RDB and runtime configuration.
+- Production remains `bd1d506cff2f03d4d26b2245fa5956a2a3b5ad74` (PR316),
+  all three units active with NRestarts=0 at the read-only preflight. No active
+  VST verifier was observed. X01/Mainnet and Bybit remain read-only.
+- Pending: final source checkpoint, publish feature PR/green CI/merge, managed
+  clean reinstall preserving runtime state, authenticated minimal-volume X02
+  VST reconciliation and UI screenshots on the deployed revision. Do not
+  describe these feature changes as deployed before that acceptance completes.
+
 ## Current verification — 2026-09-05
 
 - PR314 merged as `e0bfe1fd554e1972c240200d4a189e922c868d58`, exact tree

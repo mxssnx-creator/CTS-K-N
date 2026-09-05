@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic"
 
 const INDICATION_TYPES = [
   "direction", "move", "active", "active_advanced", "special",
-  "optimal", "auto", "common", "signal", "trend",
+  "optimal", "auto", "common", "signal", "break", "trend",
 ] as const
 
 type IndicationType = typeof INDICATION_TYPES[number]

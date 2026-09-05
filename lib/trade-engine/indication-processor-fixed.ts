@@ -1,3 +1,5 @@
+import { evaluateCtsGTrend, evaluateCtsGBreak } from "@/lib/cts-g-indications"
+import { compactCtsGMinuteCloses, ctsGTimeframeCloses } from "@/lib/cts-g-timeframes"
 /**
  * Indication Processor - Module-Level Caching (Fixed)
  * Processes independent indication sets for each type (Direction, Move, Active, Optimal, Auto, Trend)
@@ -144,7 +146,7 @@ import {
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
 import { logRuntimeWarning } from "@/lib/runtime-log-throttle"
-import { getHistoricCandleTail } from "./market-data-cache"
+import { getHistoricCandleTail, getCtsGMinuteHistory } from "./market-data-cache"
 import {
   calculateActiveOutbreak,
   DEFAULT_ACTIVE_OUTBREAK_RANGES,
@@ -618,6 +620,12 @@ async function getSettingsCachedModule(connectionId: string): Promise<any> {
         settings.trendEnabled !== "false" &&
         activeProfile.trend.enabled,
       trendTimeframesMinutes: normalizeTrendTimeframesMinutes(settings.trendTimeframesMinutes),
+      ctsGTrendEnabled: settings.ctsGTrendEnabled !== false && settings.ctsGTrendEnabled !== "false",
+      breakEnabled: settings.breakEnabled !== false && settings.breakEnabled !== "false" && activeProfile.break.enabled,
+      ctsGTrendMinimumSpreadRatio: Math.max(0.00001, Number(settings.ctsGTrendMinimumSpreadRatio) || 0.001),
+      ctsGMinimumConfidence: Math.max(0, Math.min(1, Number(settings.ctsGMinimumConfidence) || 0.6)),
+      breakRange: Math.max(8, Math.min(240, Math.floor(Number(settings.breakRange) || 16))),
+      breakNoisePct: Math.max(0, Number(settings.breakNoisePct ?? 0.05)),
       trendDrawdownValues: settings.trendDrawdownValues || [...DEFAULT_TREND_DRAWDOWN_FACTORS],
       trendLastSituationRatios: settings.trendLastSituationRatios || [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
       trendActiveSituationRatios: settings.trendActiveSituationRatios || [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS],
@@ -657,6 +665,8 @@ async function getSettingsCachedModule(connectionId: string): Promise<any> {
       optimalEnabled: true,
       autoEnabled: true,
       trendEnabled: true,
+      ctsGTrendEnabled: true, breakEnabled: true,
+      ctsGTrendMinimumSpreadRatio: 0.001, ctsGMinimumConfidence: 0.6, breakRange: 16, breakNoisePct: 0.05,
       trendTimeframesMinutes: [...DEFAULT_TREND_TIMEFRAMES_MINUTES],
       trendDrawdownValues: [...DEFAULT_TREND_DRAWDOWN_FACTORS],
       trendLastSituationRatios: [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
@@ -976,6 +986,7 @@ export class IndicationProcessor {
         const rollingMarketData = {
           ...currentCandle,
           candles: recentCandles,
+          ctsGAsOfMs: timestampMs(currentCandle?.timestamp ?? currentCandle?.time) ?? 0,
           prices: recentCandles.map((c) => Number(c?.close ?? c?.price ?? c?.last ?? c?.markPrice)).filter((p) => Number.isFinite(p)),
           priceOrder: "oldest-first",
         }
@@ -1853,7 +1864,7 @@ export class IndicationProcessor {
       // Trend — deliberately appended last. Emit the strongest independent
       // configuration for every enabled Trend timeframe (1/5/15/30m by default),
       // while IndicationSetsProcessor retains every passing parameter tuple.
-      for (const trendEvaluation of trendEvaluations) {
+      for (const trendEvaluation of indicationSettings.ctsGTrendEnabled === false ? trendEvaluations : []) {
         indications.push({
           type: "trend",
           symbol,
@@ -1867,6 +1878,27 @@ export class IndicationProcessor {
             combined: trendEvaluation.combined,
           },
         })
+      }
+
+      // Identical CTS-G calculations in realtime and the exact Set processor.
+      const ctsGAsOfMs = isHistorical ? Number(asOfMs) : Date.now()
+      const ctsGMinuteCandles = isHistorical
+        ? compactCtsGMinuteCloses(candles)
+        : await getCtsGMinuteHistory(symbol, candles, this.connectionId)
+      if (!isCurrent()) return []
+      for (const kind of ["break", "trend"] as const) {
+        if (kind === "trend" && (!indicationSettings.trendEnabled || indicationSettings.ctsGTrendEnabled === false)) continue
+        if (kind === "break" && !indicationSettings.breakEnabled) continue
+        for (const timeframeMinutes of normalizeTrendTimeframesMinutes(indicationSettings.trendTimeframesMinutes)) {
+          const bars = ctsGTimeframeCloses(ctsGMinuteCandles, timeframeMinutes, ctsGAsOfMs)
+          const config = { minimumSpreadRatio: indicationSettings.ctsGTrendMinimumSpreadRatio,
+            minimumConfidence: indicationSettings.ctsGMinimumConfidence, breakRange: indicationSettings.breakRange,
+            breakNoisePct: indicationSettings.breakNoisePct }
+          const signal = kind === "trend" ? evaluateCtsGTrend(bars, config) : evaluateCtsGBreak(bars, config)
+          if (signal) indications.push({ type: kind, symbol, value: currentClose, profitFactor: 1 + signal.strength,
+            confidence: signal.confidence, timestamp: now,
+            metadata: { ...signal.metadata, timeframeMinutes, direction: signal.direction, agreement: signal.agreement } })
+        }
       }
 
       // Keep the reduced calculation outputs as a controlled cold-start
@@ -1887,6 +1919,8 @@ export class IndicationProcessor {
           __indicationSnapshotMode: isHistorical ? "historical" : "realtime",
           __indicationSnapshotAsOfMs: isHistorical ? asOfMs : undefined,
           candles,
+          ctsGMinuteCandles,
+          ctsGAsOfMs,
           ...(historicalForwardCandles && { forwardCandles: historicalForwardCandles }),
           prices: pricesOldestFirst,
           priceOrder: "oldest-first",

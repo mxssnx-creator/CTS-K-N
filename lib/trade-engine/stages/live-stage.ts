@@ -37,6 +37,7 @@ import { assertMarginCallEntryAllowed, monitorConnectionMarginCall } from "@/lib
 import { LiveSlotLookupCache } from "@/lib/live-slot-lookup-cache"
 import { createHash } from "node:crypto"
 import { LiveEntryBudgetBlockCache } from "@/lib/live-entry-budget-block-cache"
+import { coordinateCtsGExit } from "@/lib/cts-g-exit"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import {
@@ -79,6 +80,7 @@ import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import {
   advanceBlockCountPausesOnPositionClose,
   buildBlockLegState,
+  getBlockCountLifecycleState,
   calculateBlockAddQuantity,
   calculateBlockRemainingAddQuantity,
   calculateBlockTargetQuantity,
@@ -959,6 +961,11 @@ export interface LivePosition {
   settledOrderIds?: string[]
   /** PositionCost percentage captured at entry for canonical PF-ratio history. */
   positionCostPct?: number
+  /** Opt-in on newly created CTS-G Sets; legacy/manual positions are unchanged. */
+  ctsGExitEnabled?: boolean
+  ctsGExitPeakPrice?: number
+  ctsGExitStopPrice?: number
+  ctsGExitLane?: "hard" | "lock" | "peak"
   /** Immutable upstream Real-stage PF snapshot used for Real↔Live comparison. */
   realProfitFactorAtEntry?: number
   timestamp?: number
@@ -1078,6 +1085,8 @@ export interface LivePosition {
     blockBaseVolumeMultiplier?: number
     blockVolumeRatio?: number
     blockIncrementSteps?: number
+  blockEffectiveIncrementStep?: number
+  blockLifecycleKey?: string
     blockVolumeIncrementRatio?: number
     blockCalculatedVolumeMultiplier?: number
     blockScope?: "long" | "short" | "overall" | "live_row"
@@ -1088,6 +1097,8 @@ export interface LivePosition {
     stopLoss?: number
     takeProfit?: number
     dcaStep?: number
+    dcaSetQuantityBefore?: number
+    dcaTargetQuantity?: number
     dcaVolumeMultiplier?: number
     dcaTriggerDistancePct?: number
     referencePrice?: number
@@ -1159,6 +1170,8 @@ export interface LivePosition {
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number
   blockIncrementSteps?: number
+  blockEffectiveIncrementStep?: number
+  blockLifecycleKey?: string
   blockProfitFactorRatio?: number
   blockDefaultMinimumProfitFactor?: number
   blockConfiguredMinimumProfitFactor?: number
@@ -2242,6 +2255,7 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     leverage: Number(hash.leverage || 1),
     version: Number(hash.version || 0),
     createdAt: Number(hash.createdAt || 0),
+    ctsGExitEnabled: hash.ctsGExitEnabled === true || hash.ctsGExitEnabled === "true",
     updatedAt: Number(hash.updatedAt || 0),
     closedAt: Number(hash.closedAt || 0) || undefined,
     // Zero is an authoritative exchange result, not an absent value. Keeping
@@ -2390,6 +2404,8 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "realizedPnL",
     "realized_pnl",
     "positionCostPct",
+    "ctsGExitPeakPrice",
+    "ctsGExitStopPrice",
     "lotSize",
     "quoteToUsdRate",
     "quoteBid",
@@ -3718,7 +3734,7 @@ function initializeIndependentBlockSeed(
   const volumeRatio = Number(source.blockVolumeRatio || 0)
   const incrementSteps = normalizeBlockIncrementSteps(source.blockIncrementSteps)
   const canonicalMultiplier = blockCount > 0 && volumeRatio > 0
-    ? calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps)
+    ? calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps, source.blockEffectiveIncrementStep)
     : 0
   const multiplier = Math.max(
     1,
@@ -3734,6 +3750,7 @@ function initializeIndependentBlockSeed(
     orderId,
     {
       baseQuantity,
+      entryPrice: Number(source.entryPrice || 0),
       targetAdditionalQuantity: addedQuantity,
       confirmedAdditionalQuantityBefore: 0,
       targetBlockQuantity: filledQuantity,
@@ -3872,7 +3889,11 @@ interface AccumulationPlan {
   blockTargetAddQuantity?: number
   blockTargetQuantity?: number
   blockIncrementSteps?: number
+  blockEffectiveIncrementStep?: number
+  blockLifecycleKey?: string
   dcaStep?: number
+  dcaSetQuantityBefore?: number
+  dcaTargetQuantity?: number
   dcaVolumeMultiplier?: number
   dcaTriggerDistancePct?: number
   dcaProfile?: DcaProfile
@@ -3959,6 +3980,7 @@ async function resolveAccumulationPlan(
     const blockIncrementSteps = normalizeBlockIncrementSteps(
       real?.blockIncrementSteps ?? existing.blockIncrementSteps,
     )
+    const blockEffectiveIncrementStep = real?.blockEffectiveIncrementStep || 1
     const recordedBlockAddQuantity = calculateConfirmedBlockAddQuantity(existing.blockLegs)
     // Every Block count is an absolute additive target derived from the
     // immutable general/Base quantity. Only confirmed Block legs consume that
@@ -3976,12 +3998,14 @@ async function resolveAccumulationPlan(
       blockCount,
       blockVolumeRatio,
       blockIncrementSteps,
+      blockEffectiveIncrementStep,
     )
     const blockTargetQuantity = calculateBlockTargetQuantity(
       blockBaseQuantity,
       blockCount,
       blockVolumeRatio,
       blockIncrementSteps,
+      blockEffectiveIncrementStep,
     )
     const addQty = calculateBlockRemainingAddQuantity(
       blockBaseQuantity,
@@ -3989,6 +4013,7 @@ async function resolveAccumulationPlan(
       blockVolumeRatio,
       blockConfirmedAddQuantity,
       blockIncrementSteps,
+      blockEffectiveIncrementStep,
     )
     return {
       addQty,
@@ -4002,6 +4027,7 @@ async function resolveAccumulationPlan(
       blockTargetAddQuantity,
       blockTargetQuantity,
       blockIncrementSteps,
+      blockEffectiveIncrementStep,
     }
   }
 
@@ -4031,7 +4057,7 @@ async function resolveAccumulationPlan(
       && (
         requestedDcaStep <= 0
         || requestedDcaStep > dcaProfile.maxSteps
-        || (existing.dcaLegs || []).some((leg) => Number(leg?.step) === requestedDcaStep)
+        || (existing.dcaLegs || []).some((leg) => Number(leg?.step) === requestedDcaStep && leg.targetSatisfied !== false)
       )
     ) return null
     const next = isDirectDca
@@ -4055,9 +4081,12 @@ async function resolveAccumulationPlan(
     // step or its configured max-position ratio. The absolute execution-
     // notional ceiling below remains the final system-wide exposure guard.
     const dcaLaneCurrentQuantity = baseQuantity + calculateConfirmedDcaAddQuantity(existing.dcaLegs)
+    const dcaSetQuantityBefore = Number(existing.dcaLegs?.find((leg) => leg.step === next.step)?.quantity || 0)
+    const dcaTargetQuantity = baseQuantity * next.volumeMultiplier
+    const remainingStepQuantity = Math.max(0, dcaTargetQuantity - dcaSetQuantityBefore)
     const addQty = calculateDcaAddQuantity(
       baseQuantity,
-      next.volumeMultiplier,
+      baseQuantity > 0 ? remainingStepQuantity / baseQuantity : 0,
       dcaLaneCurrentQuantity,
       dcaProfile.maxPositionVolumeRatio,
     )
@@ -4069,6 +4098,8 @@ async function resolveAccumulationPlan(
         ? Number(existing.maxExecutionNotionalUsd)
         : undefined,
       dcaStep: next.step,
+      dcaSetQuantityBefore,
+      dcaTargetQuantity,
       dcaVolumeMultiplier: next.volumeMultiplier,
       dcaTriggerDistancePct: next.triggerDistancePct,
       dcaProfile,
@@ -4254,6 +4285,7 @@ function markSatisfiedBlockTarget(
     previous?.orderId,
     {
       baseQuantity: plan.blockBaseQuantity,
+      entryPrice: Number(position.averageExecutionPrice || position.entryPrice || 0),
       targetAdditionalQuantity: plan.blockTargetAddQuantity,
       confirmedAdditionalQuantityBefore: plan.blockConfirmedAddQuantity,
       targetBlockQuantity: plan.blockTargetQuantity,
@@ -4403,6 +4435,9 @@ async function accumulateIntoSimulatedPosition(
   const lockId = `accumulate-sim:${process.pid}:${Date.now()}:${nanoid(8)}`
   if (!await acquirePositionMutationLock(connId, existing.id, lockId)) return existing
   try {
+    const current = await readLivePositionSnapshot(getRedisClient(), connId, existing.id)
+    if (!current || !isActiveLiveSlotStatus(current.status)) return current || existing
+    existing = current
     const storedDirection = resolveLivePositionDirection(existing)
     const requestedDirection = normalizeLiveTradeDirection(real?.direction, real?.side)
     if (!storedDirection || !requestedDirection || storedDirection !== requestedDirection) {
@@ -4504,6 +4539,7 @@ async function accumulateIntoSimulatedPosition(
       if (plan.variant === "block") {
         const leg = buildBlockLegState(real, filledQty, undefined, undefined, {
           baseQuantity: plan.blockBaseQuantity,
+          entryPrice: price,
           targetAdditionalQuantity: plan.blockTargetAddQuantity,
           confirmedAdditionalQuantityBefore: plan.blockConfirmedAddQuantity,
           targetBlockQuantity: plan.blockTargetQuantity,
@@ -4522,7 +4558,9 @@ async function accumulateIntoSimulatedPosition(
           volumeMultiplier: plan.dcaVolumeMultiplier || 1,
           triggerDistancePct: plan.dcaTriggerDistancePct || 0,
           requestedQuantity: filledQty,
-          quantity: filledQty,
+          quantity: Number(plan.dcaSetQuantityBefore || 0) + filledQty,
+          targetQuantity: plan.dcaTargetQuantity,
+          targetSatisfied: true,
           referencePrice: draft.initialEntryPrice || prevAvg,
           positionQuantityAfter: newExec,
           filledPrice: price,
@@ -4634,6 +4672,9 @@ async function accumulateIntoLivePosition(
   }
 
   try {
+    const current = await readLivePositionSnapshot(getRedisClient(), connId, existing.id)
+    if (!current || !isActiveLiveSlotStatus(current.status)) return current || existing
+    existing = current
     const storedDirection = resolveLivePositionDirection(existing)
     const requestedDirection = normalizeLiveTradeDirection(real?.direction, real?.side)
     if (!storedDirection || !requestedDirection || storedDirection !== requestedDirection) {
@@ -5269,6 +5310,8 @@ async function accumulateIntoLivePosition(
       blockIncrementSteps: normalizeBlockIncrementSteps(
         plan.blockIncrementSteps ?? real?.blockIncrementSteps,
       ),
+      blockEffectiveIncrementStep: plan.blockEffectiveIncrementStep ?? real?.blockEffectiveIncrementStep,
+      blockLifecycleKey: real?.blockLifecycleKey,
       blockVolumeIncrementRatio: Number(
         real?.blockVolumeIncrementRatio ||
         (plan.blockCount
@@ -5276,6 +5319,7 @@ async function accumulateIntoLivePosition(
               plan.blockCount,
               Number(real?.blockVolumeRatio || 1),
               plan.blockIncrementSteps,
+              plan.blockEffectiveIncrementStep,
             )
           : 1),
       ),
@@ -5284,6 +5328,7 @@ async function accumulateIntoLivePosition(
             plan.blockCount,
             Number(real?.blockVolumeRatio || 1),
             plan.blockIncrementSteps,
+            plan.blockEffectiveIncrementStep,
           )
         : Number(real?.blockCalculatedVolumeMultiplier || real?.sizeMultiplier || 1),
       blockScope: real?.blockScope,
@@ -5294,6 +5339,8 @@ async function accumulateIntoLivePosition(
       stopLoss: Number(real?.stopLoss) > 0 ? Number(real.stopLoss) : undefined,
       takeProfit: Number(real?.takeProfit) > 0 ? Number(real.takeProfit) : undefined,
       dcaStep: plan.dcaStep,
+      dcaSetQuantityBefore: plan.dcaSetQuantityBefore,
+      dcaTargetQuantity: plan.dcaTargetQuantity,
       dcaVolumeMultiplier: plan.dcaVolumeMultiplier,
       dcaTriggerDistancePct: plan.dcaTriggerDistancePct,
       referencePrice: existing.initialEntryPrice,
@@ -5475,8 +5522,11 @@ async function accumulateIntoLivePosition(
     const newExec = prevExec + filledQty
     const pending = { ...existing.pendingAccumulation }
     const requestedTolerance = Math.max(1e-12, plan.addQty * 1e-8)
-    const blockTargetSatisfied = plan.variant !== "block" ||
-      filledQty >= plan.addQty - requestedTolerance
+    const orderFillComplete = filledQty >= plan.addQty - requestedTolerance
+    const dcaSetQuantity = Number(pending.dcaSetQuantityBefore || 0) + filledQty
+    const accumulationTargetSatisfied = plan.variant === "dca"
+      ? dcaSetQuantity >= Number(plan.dcaTargetQuantity || plan.addQty) - requestedTolerance
+      : orderFillComplete
     const terminalFillStatus = [
       "filled",
       "deal",
@@ -5487,7 +5537,7 @@ async function accumulateIntoLivePosition(
       "rejected",
       "expired",
     ].includes(fillStatus)
-    const retainPartialPending = plan.variant === "block" && !blockTargetSatisfied
+    const retainPartialPending = !orderFillComplete && !terminalFillStatus
     const blockSetQuantity = Number(pending.blockSetQuantityBefore || 0) + filledQty
     const mutated = await mutatePositionWithVersionCheck(existing, ["open", "filled", "partially_filled"], draft => {
       draft.executedQuantity = newExec
@@ -5519,7 +5569,7 @@ async function accumulateIntoLivePosition(
       }
       draft.accumulatedSetKeys = real?.combinedPosCounts
         ? Array.from(new Set<string>((Array.isArray(real.accumulatedSetKeys) ? real.accumulatedSetKeys : []).map((value: unknown) => String(value)).filter(Boolean)))
-        : plan.variant === "block" && !blockTargetSatisfied
+        : !accumulationTargetSatisfied
           ? [...(draft.accumulatedSetKeys || [])]
           : [...new Set([
               ...(draft.accumulatedSetKeys || []),
@@ -5540,10 +5590,11 @@ async function accumulateIntoLivePosition(
       if (plan.variant === "block") {
         const leg = buildBlockLegState(real, blockSetQuantity, clientOrderId, String(orderId), {
           baseQuantity: plan.blockBaseQuantity,
+          entryPrice: filledPrice,
           targetAdditionalQuantity: plan.blockTargetAddQuantity,
           confirmedAdditionalQuantityBefore: plan.blockConfirmedAddQuantity,
           targetBlockQuantity: plan.blockTargetQuantity,
-          targetSatisfied: blockTargetSatisfied,
+          targetSatisfied: accumulationTargetSatisfied,
           requestedQuantity: plan.addQty,
           positionQuantityAfter: newExec,
         })
@@ -5558,7 +5609,9 @@ async function accumulateIntoLivePosition(
           volumeMultiplier: plan.dcaVolumeMultiplier || 1,
           triggerDistancePct: plan.dcaTriggerDistancePct || 0,
           requestedQuantity: plan.addQty,
-          quantity: filledQty,
+          quantity: dcaSetQuantity,
+          targetQuantity: plan.dcaTargetQuantity,
+          targetSatisfied: accumulationTargetSatisfied,
           referencePrice: draft.initialEntryPrice || prevAvg,
           positionQuantityAfter: newExec,
           clientOrderId,
@@ -5576,7 +5629,7 @@ async function accumulateIntoLivePosition(
       }
       pushStep(
         draft,
-        blockTargetSatisfied ? "accumulate" : "accumulate_partial",
+        accumulationTargetSatisfied ? "accumulate" : "accumulate_partial",
         true,
         `+${filledQty} @ ${filledPrice} (setKey=${pending.setKey || "n/a"}, ` +
           `total=${newExec}, requested=${plan.addQty}, pending=${retainPartialPending})`,
@@ -5637,13 +5690,13 @@ async function accumulateIntoLivePosition(
       filledQty * filledPrice,
     )
     await savePosition(existing)
-    if (blockTargetSatisfied && pending.combinedPosCounts) {
+    if (accumulationTargetSatisfied && pending.combinedPosCounts) {
       await recordConfirmedStrategyEntry(
         connId,
         existing,
         `${existing.id}:combined:${pending.clientOrderId}`,
       )
-    } else if (blockTargetSatisfied && pending.setKey) {
+    } else if (accumulationTargetSatisfied && pending.setKey) {
       await recordConfirmedStrategyEntry(
         connId,
         existing,
@@ -6680,20 +6733,22 @@ async function reconcileAuthoritativeExchangeQuantity(
   if (pending && exactAdded > 0) {
     applyAccumulatedSignalRisk(position, pending)
     // A venue quantity increase is authoritative proof that the durable
-    // accumulation was accepted and at least partially filled. Block orders
-    // remain pending until their entire requested delta is authoritative;
-    // partial observations update the exact Block leg without prematurely
-    // completing the independent Count Set.
+    // accumulation was accepted and at least partially filled. Every variant
+    // keeps its delivery identity until the full requested delta is confirmed;
+    // a partial DCA fill must not permit the next step to overlap this order.
     const requestedTolerance = Math.max(1e-12, Number(pending.requestedQuantity || 0) * 1e-8)
-    const blockTargetSatisfied = pending.variant !== "block" ||
-      exactAdded >= Number(pending.requestedQuantity || 0) - requestedTolerance
+    const orderFillComplete = exactAdded >= Number(pending.requestedQuantity || 0) - requestedTolerance
+    const dcaSetQuantity = Number(pending.dcaSetQuantityBefore || 0) + exactAdded
+    const accumulationTargetSatisfied = pending.variant === "dca"
+      ? dcaSetQuantity >= Number(pending.dcaTargetQuantity || pending.requestedQuantity || 0) - requestedTolerance
+      : orderFillComplete
     await recordPositionAdjustmentProgression(
       position.connectionId,
       position,
       "placed",
       pending.clientOrderId,
     )
-    if (blockTargetSatisfied) {
+    if (accumulationTargetSatisfied) {
       await recordPositionAdjustmentProgression(
         position.connectionId,
         position,
@@ -6717,6 +6772,8 @@ async function reconcileAuthoritativeExchangeQuantity(
         blockBaseVolumeMultiplier: pending.blockBaseVolumeMultiplier,
         blockVolumeRatio: pending.blockVolumeRatio,
         blockIncrementSteps: pending.blockIncrementSteps,
+        blockEffectiveIncrementStep: pending.blockEffectiveIncrementStep,
+        blockLifecycleKey: pending.blockLifecycleKey,
         blockVolumeIncrementRatio: pending.blockVolumeIncrementRatio,
         blockCalculatedVolumeMultiplier: pending.blockCalculatedVolumeMultiplier,
         blockScope: pending.blockScope,
@@ -6725,10 +6782,11 @@ async function reconcileAuthoritativeExchangeQuantity(
         blockSourceId: pending.blockSourceId,
       }, Number(pending.blockSetQuantityBefore || 0) + exactAdded, pending.clientOrderId, pending.orderId, {
         baseQuantity: pending.blockBaseQuantity,
+        entryPrice: Number(exchangeEntryPrice || position.averageExecutionPrice || position.entryPrice || 0),
         targetAdditionalQuantity: pending.blockTargetAddQuantity,
         confirmedAdditionalQuantityBefore: pending.blockConfirmedAddQuantity,
         targetBlockQuantity: pending.blockTargetQuantity,
-        targetSatisfied: blockTargetSatisfied,
+        targetSatisfied: accumulationTargetSatisfied,
         requestedQuantity: pending.requestedQuantity,
         positionQuantityAfter: exchangeQuantity,
       })
@@ -6743,7 +6801,9 @@ async function reconcileAuthoritativeExchangeQuantity(
         volumeMultiplier: pending.dcaVolumeMultiplier || 1,
         triggerDistancePct: pending.dcaTriggerDistancePct || 0,
         requestedQuantity: pending.requestedQuantity,
-        quantity: exactAdded,
+        quantity: dcaSetQuantity,
+        targetQuantity: pending.dcaTargetQuantity,
+        targetSatisfied: accumulationTargetSatisfied,
         referencePrice: pending.referencePrice || position.initialEntryPrice || position.entryPrice,
         positionQuantityAfter: exchangeQuantity,
         clientOrderId: pending.clientOrderId,
@@ -6759,9 +6819,9 @@ async function reconcileAuthoritativeExchangeQuantity(
         takeProfitPct: position.takeProfit || 0,
       })
     }
-    if (blockTargetSatisfied) {
+    if (orderFillComplete) {
       position.pendingAccumulation = undefined
-      pendingAccumulationCompleted = true
+      pendingAccumulationCompleted = accumulationTargetSatisfied
     } else {
       position.pendingAccumulation = {
         ...pending,
@@ -8128,6 +8188,11 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
     if (!Number.isFinite(desiredSl)) desiredSl = 0
   }
 
+  const ctsGStop = Number(pos.ctsGExitStopPrice || 0)
+  if (pos.ctsGExitEnabled && !pos.manualProtectionOverride && ctsGStop > 0 && desiredSl > 0) {
+    desiredSl = direction === "long" ? Math.max(desiredSl, ctsGStop) : Math.min(desiredSl, ctsGStop)
+  }
+
   const rawTpPct = pos.takeProfit || 0
   // Guard: ensure takeProfit is numeric and non-negative before percentage calc
   const tpPct = Number.isFinite(rawTpPct) && rawTpPct > 0 ? (rawTpPct / 100) : 0
@@ -8146,6 +8211,29 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
   if (!Number.isFinite(desiredTp)) desiredTp = 0
 
   return { desiredSl, desiredTp }
+}
+
+function ratchetCtsGExitStop(pos: LivePosition, markPrice: number): boolean {
+  if (pos.ctsGExitEnabled !== true || pos.manualProtectionOverride || !(pos.executedQuantity > 0)) return false
+  const direction = resolveLivePositionDirection(pos)
+  if (!direction || !Number.isFinite(markPrice) || markPrice <= 0) return false
+  const entry = Number(pos.averageExecutionPrice)
+  if (!(entry > 0)) return false
+  const previousPeak = Number(pos.ctsGExitPeakPrice || entry)
+  const peakPrice = direction === "long" ? Math.max(previousPeak, markPrice) : Math.min(previousPeak, markPrice)
+  const decision = coordinateCtsGExit({
+    direction, entryPrice: entry, markPrice, peakPrice,
+    hardStopPrice: computeDesiredProtectionPrices(pos).desiredSl,
+    ageSeconds: Math.max(0, Date.now() - Number(pos.fills?.[0]?.timestamp || pos.createdAt || Date.now())) / 1000,
+    positionCostPct: Number(pos.positionCostPct ?? 0.1),
+  })
+  const changed = peakPrice !== previousPeak || (decision.lane !== "hard" && decision.stopPrice !== pos.ctsGExitStopPrice)
+  pos.ctsGExitPeakPrice = peakPrice
+  if (decision.lane !== "hard") {
+    pos.ctsGExitStopPrice = decision.stopPrice
+    pos.ctsGExitLane = decision.lane
+  }
+  return changed
 }
 
 function normalizeProtectionTriggerPrice(
@@ -8802,6 +8890,7 @@ async function updateProtectionOrders(
     )
   }
 
+  if (ratchetCtsGExitStop(pos, getProtectionReferencePrice(pos))) result.changed = true
   const computedProtectionPrices = computeDesiredProtectionPrices(pos)
   const rawDesiredSl = Number.isFinite(Number(options.desiredPricesOverride?.desiredSl))
     ? Math.max(0, Number(options.desiredPricesOverride?.desiredSl))
@@ -11582,6 +11671,11 @@ export async function executeLivePosition(
   const connectionTrackingId = makeConnectionTrackingId(connectionId)
   let realPosition = sourceRealPosition
   if (sourceRealPosition.setVariant === "block") {
+    const lifecycle = await getBlockCountLifecycleState(client, connectionId, sourceRealPosition.symbol, String(sourceRealPosition.blockLifecycleKey || sourceRealPosition.setKey || ""))
+    const blockEffectiveIncrementStep = lifecycle?.incrementStep || sourceRealPosition.blockEffectiveIncrementStep || 1
+    if (Number(lifecycle?.remaining) > 0) {
+      throw Object.assign(new Error("This Block Count is paused after its positive result"), { statusCode: 409, mode: "block_count_paused" })
+    }
     const blockCount = parseBlockCount(sourceRealPosition.setKey) ?? Math.floor(Number(sourceRealPosition.blockCount || 0))
     const blockVolumeRatio = Number(sourceRealPosition.blockVolumeRatio || 0)
     const blockIncrementSteps = normalizeBlockIncrementSteps(sourceRealPosition.blockIncrementSteps)
@@ -11590,11 +11684,13 @@ export async function executeLivePosition(
         blockCount,
         blockVolumeRatio,
         blockIncrementSteps,
+        blockEffectiveIncrementStep,
       )
       realPosition = {
         ...sourceRealPosition,
         blockCount,
         blockIncrementSteps,
+        blockEffectiveIncrementStep,
         blockVolumeIncrementRatio: blockCalculatedVolumeMultiplier - 1,
         blockCalculatedVolumeMultiplier,
         sizeMultiplier: blockCalculatedVolumeMultiplier,
@@ -11899,6 +11995,8 @@ export async function executeLivePosition(
     setKey:         realPosition.setKey,
     parentSetKey:   realPosition.parentSetKey,
     indicationType: realPosition.indicationType,
+    ctsGExitEnabled: ["trend", "break"].includes(String(realPosition.indicationType))
+      && String(realPosition.setKey || "").includes("cts-g"),
     signalRisk:     realPosition.signalRisk,
     setVariant:     realPosition.setVariant,
     executionLane:  liveExecutionLane(realPosition),
@@ -11908,6 +12006,8 @@ export async function executeLivePosition(
     blockBaseVolumeMultiplier: realPosition.blockBaseVolumeMultiplier,
     blockVolumeRatio: realPosition.blockVolumeRatio,
     blockIncrementSteps: realPosition.blockIncrementSteps,
+    blockEffectiveIncrementStep: realPosition.blockEffectiveIncrementStep,
+    blockLifecycleKey: realPosition.blockLifecycleKey,
     blockProfitFactorRatio: realPosition.blockProfitFactorRatio,
     blockDefaultMinimumProfitFactor: realPosition.blockDefaultMinimumProfitFactor,
     blockConfiguredMinimumProfitFactor: realPosition.blockConfiguredMinimumProfitFactor,
@@ -16934,6 +17034,7 @@ async function checkAndForceCloseOnSltpCross(
   // Use the same canonical resolver as venue control-order reconciliation.
   // This keeps engine-side fallback exactly coordinated with trailing,
   // operator absolute-price overrides and DCA take-profit recalculation.
+  ratchetCtsGExitStop(pos, markPrice)
   const { desiredSl, desiredTp } = computeDesiredProtectionPrices(pos)
 
   // Nothing to evaluate if neither protection band is configured.
@@ -19471,6 +19572,8 @@ export async function recalculateAndApplySLTP(
   const LOCK_TTL = 30
   const lockToken = `recalc:${process.pid}:${Date.now()}:${nanoid(10)}`
   let lockAcquired = false
+  let mutationLockHeld = false
+  let stopMutationLeaseRefresh: (() => void) | null = null
   let stopLockLeaseRefresh: (() => void) | null = null
   // Fast bounded contention wait: most sync passes complete inside one
   // 200–300 ms cadence. Never overlap a still-running reconcile; if it remains
@@ -19494,6 +19597,11 @@ export async function recalculateAndApplySLTP(
   )
 
   try {
+    mutationLockHeld = await acquirePositionMutationLock(connectionId, livePositionId, lockToken)
+    if (!mutationLockHeld) return null
+    stopMutationLeaseRefresh = startRedisLockLeaseRefresh(
+      client, positionMutationLockKey(connectionId, livePositionId), lockToken, POSITION_MUTATION_LOCK_TTL_MS,
+    )
     // Re-read both canonical sources AFTER acquiring the lock so we see any
     // writes the previous lock-holder (reconcile / sync) just committed. The
     // JSON key is intentionally compact and cannot be used on its own for a
@@ -19620,6 +19728,13 @@ export async function recalculateAndApplySLTP(
     position.updatedAt = Date.now()
     await rearmProtectionAfterQuantityMutation(exchangeConnector, position, "manual_recalc")
 
+    // The forced-close path acquires the same position lease and rereads the
+    // just-persisted state. Release our lease before handing over to it.
+    stopMutationLeaseRefresh?.()
+    stopMutationLeaseRefresh = null
+    await releasePositionMutationLock(connectionId, livePositionId, lockToken)
+    mutationLockHeld = false
+
     // ── Immediate post-override cross check ────────────────────────────
     // If the operator just tightened SL or TP to a level the position
     // is already past, the exchange-placed reduce-only order may take
@@ -19648,6 +19763,10 @@ export async function recalculateAndApplySLTP(
     console.error(`${LOG_PREFIX} recalculateAndApplySLTP error:`, err)
     return null
   } finally {
+    stopMutationLeaseRefresh?.()
+    if (mutationLockHeld) {
+      await releasePositionMutationLock(connectionId, livePositionId, lockToken).catch(() => false)
+    }
     stopLockLeaseRefresh?.()
     // Token-checked release: an old slow call must never delete a newer
     // reconcile owner's lock after its own lease changed hands.
@@ -20086,6 +20205,7 @@ export const __liveStageTest = {
   clearMissingProtectionOrderIds,
   resolvePseudoProtectionPercents,
   isTrailingStopTightening,
+  ratchetCtsGExitStop,
   isPreFillWithoutExchangeHandle,
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)

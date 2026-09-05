@@ -51,6 +51,7 @@ BINGX_VST_VERIFY_ORIGIN	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-orch
 BINGX_VST_VERIFY_SERVICES_INACTIVE	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-orchestrated-verifier.ts
 BINGX_X02_API_KEY	test-or-operator-tool	yes	yes	7	.env.example,__tests__/unit/runtime-maintenance.test.ts,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/reconcile-bingx-x02-protection-slot.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_X02_API_SECRET	test-or-operator-tool	yes	yes	6	.env.example,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/reconcile-bingx-x02-protection-slot.ts,scripts/run-bingx-vst-live-soak.ts
+BLOCK_TEST_REDIS_URL	test-or-operator-tool	yes	no	1	scripts/verify-block-native-redis.ts
 BYBIT_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
 BYBIT_API_SECRET	test-or-operator-tool	yes	yes	1	.env.example
 CF_PAGES	application-runtime	no	no	1	lib/deployment-runtime.ts
@@ -140,11 +141,13 @@ DB_URL	application-runtime	no	yes	7	.env.example,__tests__/unit/inline-local-red
 DCA_BACKTEST_DAYS	test-or-operator-tool	no	no	3	scripts/optimize-dca-14d.ts,scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_END_MS	test-or-operator-tool	no	no	2	scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_FOLDS	test-or-operator-tool	no	no	2	scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
+DCA_BACKTEST_INPUT	test-or-operator-tool	no	no	1	scripts/optimize-dca-20d.ts
 DCA_BACKTEST_MARKDOWN	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
-DCA_BACKTEST_OUTPUT	test-or-operator-tool	no	no	2	scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
+DCA_BACKTEST_OUTPUT	test-or-operator-tool	no	no	3	scripts/optimize-dca-20d.ts,scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_SYMBOLS	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
 DCA_BACKTEST_TIMEFRAMES	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
 DCA_BACKTEST_TOP	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
+DCA_DEFAULTS_OUTPUT	test-or-operator-tool	no	no	1	scripts/optimize-dca-20d.ts
 DCA_MARKET_CACHE_DIR	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
 DCA_MAX_EQUITY_DRAWDOWN_PCT	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
 DCA_MAX_SINGLE_LOSS_PCT	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
