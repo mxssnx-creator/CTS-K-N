@@ -1455,6 +1455,7 @@ next.config.mjs
 open-next.config.ts
 ops/server-access-dashboard/README.md
 ops/server-access-dashboard/deploy/ensure-swap-18g.sh
+ops/server-access-dashboard/deploy/projects.json
 ops/server-access-dashboard/deploy/server-access-dashboard.nginx.conf
 ops/server-access-dashboard/deploy/server-access-dashboard.service
 ops/server-access-dashboard/public/dashboard.js

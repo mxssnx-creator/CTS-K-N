@@ -14,6 +14,11 @@ const HOST = process.env.HOST || "127.0.0.1";
 const REFRESH_MS = positiveInteger(process.env.DASHBOARD_REFRESH_MS, 2_000);
 const SERVICE_REFRESH_MS = positiveInteger(process.env.SERVICE_REFRESH_MS, 5_000);
 const PROJECT_REFRESH_MS = positiveInteger(process.env.PROJECT_REFRESH_MS, 5_000);
+const PROJECT_DETAIL_REFRESH_MS = positiveInteger(process.env.PROJECT_DETAIL_REFRESH_MS, 30_000);
+const SERVICE_DISCOVERY_MS = positiveInteger(process.env.SERVICE_DISCOVERY_MS, 15_000);
+const UPSTREAM_MAX_BYTES = 2 * 1024 * 1024;
+const MAX_CONNECTIONS = 32;
+const PROJECT_MANIFEST_PATH = process.env.SERVER_DASHBOARD_PROJECT_MANIFEST || "/etc/server-access-dashboard/projects.json";
 const MAX_HISTORY = 180;
 const MAX_REQUEST_EVENTS = 4_096;
 const MAX_LATENCY_SAMPLES = 1_024;
@@ -27,15 +32,44 @@ const DEFAULT_SERVICE_NAMES = [
   "cts-kn.service",
   "cts-kn-direct-trade.service",
   "cts-kn-scheduler.service",
+  "cts-g-desk.service",
+  "cts-g-pulse-http.service",
+  "cts-g-pulse@bingx-x01.service",
+  "cts-g-pulse@bingx-x02.service",
   "grok-desk.service",
+];
+
+const DEFAULT_PROJECT_DEFINITIONS = [
+  {
+    id: "cts-kn",
+    name: "CTS-K-N",
+    role: "production trading application",
+    kind: "cts-kn",
+    baseUrl: "http://127.0.0.1:3002",
+    port: 3002,
+    connectionCatalogPath: "/api/connections",
+    serviceIds: ["cts-kn.service", "cts-kn-direct-trade.service", "cts-kn-scheduler.service"],
+  },
+  {
+    id: "cts-g",
+    name: "CTS-G",
+    role: "independent project / desk",
+    kind: "cts-g",
+    baseUrl: "http://127.0.0.1:3102",
+    statsBaseUrl: "http://127.0.0.1:3015",
+    port: 3102,
+    connectionIds: ["bingx-x01", "bingx-x02"],
+    serviceIds: ["cts-g-desk.service", "cts-g-pulse-http.service", "cts-g-pulse@bingx-x01.service", "cts-g-pulse@bingx-x02.service"],
+  },
 ];
 
 const SERVICE_NAMES = String(process.env.SERVER_DASHBOARD_SERVICES || "")
   .split(",")
   .map((value) => value.trim())
+  .map(safeServiceName)
   .filter(Boolean)
   .slice(0, 32);
-if (!SERVICE_NAMES.length) SERVICE_NAMES.push(...DEFAULT_SERVICE_NAMES);
+if (!SERVICE_NAMES.length) SERVICE_NAMES.push(...DEFAULT_SERVICE_NAMES.map(safeServiceName).filter(Boolean));
 
 const REQUEST_EVENTS = [];
 const LATENCY_SAMPLES = [];
@@ -73,6 +107,9 @@ let servicesPromise = null;
 let projectsCache = [];
 let projectsCacheAt = 0;
 let projectsPromise = null;
+let discoveredServiceNames = [];
+let discoveredServiceNamesAt = 0;
+const connectionDetailCache = new Map();
 const history = [];
 
 function positiveInteger(value, fallback) {
@@ -107,6 +144,104 @@ function parseKeyValueLines(text) {
     values[line.slice(0, separator)] = line.slice(separator + 1);
   }
   return values;
+}
+
+function safeProjectId(value) {
+  const id = String(value || "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id) ? id : "";
+}
+
+function safeServiceName(value) {
+  const name = String(value || "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}$/.test(name) ? name : "";
+}
+
+function safePath(value, fallback) {
+  const path = String(value || fallback || "").trim();
+  return /^\/(?!\/)(?:[A-Za-z0-9._~!$&'()*+,;=:@%/-])+$/.test(path) && !path.includes("..")
+    ? path
+    : fallback;
+}
+
+function normalizeProjectDefinition(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const id = safeProjectId(value.id);
+  if (!id) return null;
+  let baseUrl = String(value.baseUrl || "").trim().replace(/\/$/, "");
+  try {
+    const parsed = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    if (!["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname)) return null;
+    baseUrl = parsed.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+  const serviceIds = Array.isArray(value.serviceIds)
+    ? [...new Set(value.serviceIds.map(safeServiceName).filter(Boolean))].slice(0, 24)
+    : [];
+  const kind = ["cts-kn", "cts-g", "generic"].includes(String(value.kind || ""))
+    ? String(value.kind)
+    : id === "cts-kn" ? "cts-kn" : id === "cts-g" ? "cts-g" : "generic";
+  const connectionIds = Array.isArray(value.connectionIds)
+    ? [...new Set(value.connectionIds.map((entry) => safeProjectId(entry)).filter(Boolean))].slice(0, 12)
+    : [];
+  const statsBaseUrl = String(value.statsBaseUrl || "").trim().replace(/\/$/, "");
+  let safeStatsBaseUrl = "";
+  if (statsBaseUrl) {
+    try {
+      const parsedStats = new URL(statsBaseUrl);
+      if (["http:", "https:"].includes(parsedStats.protocol) &&
+          !parsedStats.username && !parsedStats.password && !parsedStats.search && !parsedStats.hash &&
+          ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsedStats.hostname)) {
+        safeStatsBaseUrl = parsedStats.toString().replace(/\/$/, "");
+      }
+    } catch {
+      safeStatsBaseUrl = "";
+    }
+  }
+  const port = positiveInteger(value.port, 0);
+  return {
+    id,
+    name: sanitizeText(value.name, id),
+    role: sanitizeText(value.role, "installed project"),
+    kind,
+    baseUrl,
+    statsBaseUrl: safeStatsBaseUrl,
+    port: port > 0 && port <= 65535 ? port : 0,
+    serviceIds,
+    connectionIds,
+    healthPath: safePath(value.healthPath, "/api/health"),
+    engineStatusPath: safePath(value.engineStatusPath, "/api/trade-engine/status"),
+    connectionCatalogPath: safePath(value.connectionCatalogPath, "/api/connections"),
+    connectionStatusPath: safePath(value.connectionStatusPath, "/api/connections/status"),
+    connectionRuntimePath: safePath(value.connectionRuntimePath, "/api/connections/progression/{id}/stats?view=runtime"),
+    connectionPnlPath: safePath(value.connectionPnlPath, "/api/trade-engine/pnl-stats?connection_id={id}"),
+    connectionOverviewPath: safePath(value.connectionOverviewPath, "/api/connections/progression/{id}/stats?view=overview"),
+    connectionStatsPath: safePath(value.connectionStatsPath, "/stats.json?conn={id}"),
+  };
+}
+
+export function parseProjectManifest(text) {
+  try {
+    const parsed = JSON.parse(String(text || ""));
+    const rows = Array.isArray(parsed) ? parsed : parsed?.projects;
+    if (!Array.isArray(rows)) return [];
+    const seen = new Set();
+    return rows
+      .map(normalizeProjectDefinition)
+      .filter((row) => row && !seen.has(row.id) && seen.add(row.id))
+      .slice(0, 16);
+  } catch {
+    return [];
+  }
+}
+
+async function projectDefinitions() {
+  const inline = String(process.env.SERVER_DASHBOARD_PROJECTS || "").trim();
+  const configured = parseProjectManifest(inline || await readText(PROJECT_MANIFEST_PATH));
+  if (configured.length) return configured;
+  return DEFAULT_PROJECT_DEFINITIONS.map((definition) => ({ ...definition }));
 }
 
 export function parseMeminfo(text) {
@@ -544,8 +679,41 @@ async function systemdService(name) {
   }
 }
 
+async function discoverServiceNames() {
+  const now = Date.now();
+  if (discoveredServiceNamesAt + SERVICE_DISCOVERY_MS > now) return discoveredServiceNames;
+  try {
+    const { stdout } = await execFileAsync("systemctl", [
+      "list-unit-files",
+      "--type=service",
+      "--no-legend",
+      "--no-pager",
+    ], { timeout: 2_000, maxBuffer: 128 * 1024 });
+    const prefixes = String(process.env.SERVER_DASHBOARD_SERVICE_PREFIXES || "server-access-dashboard,nginx,redis-server,chisel-server,cts-,grok-")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    discoveredServiceNames = String(stdout || "")
+      .split(/\r?\n/)
+      .map((line) => safeServiceName(line.trim().split(/\s+/)[0]))
+      .filter((name) => name && prefixes.some((prefix) => name.startsWith(prefix)))
+      .slice(0, 64);
+    discoveredServiceNamesAt = now;
+  } catch {
+    discoveredServiceNames = [];
+    discoveredServiceNamesAt = now;
+  }
+  return discoveredServiceNames;
+}
+
 async function readServices() {
-  return Promise.all(SERVICE_NAMES.map(systemdService));
+  const [definitions, discovered] = await Promise.all([projectDefinitions(), discoverServiceNames()]);
+  const names = [...new Set([
+    ...SERVICE_NAMES,
+    ...definitions.flatMap((definition) => definition.serviceIds || []),
+    ...discovered,
+  ])].map(safeServiceName).filter(Boolean).slice(0, 64);
+  return Promise.all(names.map(systemdService));
 }
 
 function latestRequestCount(windowMs) {
@@ -584,11 +752,22 @@ async function fetchWithTimeout(url, timeoutMs = 1_800, bodyMode = "json") {
       headers: { accept: bodyMode === "json" ? "application/json" : "text/html" },
     });
     const latencyMs = performance.now() - started;
+    const advertisedLength = Number(response.headers.get("content-length") || 0);
+    if (advertisedLength > UPSTREAM_MAX_BYTES) {
+      return { ok: false, status: response.status, latencyMs, error: "upstream_payload_too_large" };
+    }
     if (bodyMode === "json") {
-      const data = await response.json();
+      const raw = new Uint8Array(await response.arrayBuffer());
+      if (raw.byteLength > UPSTREAM_MAX_BYTES) {
+        return { ok: false, status: response.status, latencyMs, error: "upstream_payload_too_large" };
+      }
+      const data = JSON.parse(new TextDecoder().decode(raw) || "null");
       return { ok: response.ok, status: response.status, latencyMs, data };
     }
-    await response.arrayBuffer();
+    const raw = new Uint8Array(await response.arrayBuffer());
+    if (raw.byteLength > UPSTREAM_MAX_BYTES) {
+      return { ok: false, status: response.status, latencyMs, error: "upstream_payload_too_large" };
+    }
     return { ok: response.ok, status: response.status, latencyMs, data: null };
   } catch (error) {
     return {
@@ -602,16 +781,30 @@ async function fetchWithTimeout(url, timeoutMs = 1_800, bodyMode = "json") {
   }
 }
 
-function extractIds(status) {
+export function extractIds(status) {
+  const idsFrom = (value) => {
+    if (Array.isArray(value)) {
+      return value.map((entry) => String(entry?.id || entry?.connectionId || "").trim());
+    }
+    if (value && typeof value === "object") {
+      return Object.keys(value).map((id) => String(id).trim());
+    }
+    return [];
+  };
+  if (Array.isArray(status)) {
+    return [...new Set(
+      idsFrom(status).filter(Boolean),
+    )].slice(0, MAX_CONNECTIONS);
+  }
   const candidates = [
-    ...(Array.isArray(status?.connections) ? status.connections : []),
-    ...(Array.isArray(status?.engines) ? status.engines : []),
+    ...idsFrom(status?.connections),
+    ...idsFrom(status?.engines),
+    ...idsFrom(status?.statuses),
   ];
   return [...new Set(
     candidates
-      .map((entry) => String(entry?.id || entry?.connectionId || "").trim())
       .filter(Boolean),
-  )].slice(0, 6);
+  )].slice(0, MAX_CONNECTIONS);
 }
 
 export function progressionSummary(data) {
@@ -643,6 +836,150 @@ export function progressionSummary(data) {
   };
 }
 
+function replaceTemplate(path, id) {
+  return String(path || "").replaceAll("{id}", encodeURIComponent(id));
+}
+
+function endpoint(definition, key, id = "") {
+  const path = replaceTemplate(definition[key], id);
+  return definition.baseUrl + (path.startsWith("/") ? path : "/" + path);
+}
+
+function finiteOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+export function profitFactorWindow(rows, window) {
+  const sample = (Array.isArray(rows) ? rows : [])
+    .filter((row) => finiteOrNull(row?.pnl) !== null)
+    .slice(0, Math.max(1, Math.floor(Number(window) || 1)));
+  let grossProfit = 0;
+  let grossLoss = 0;
+  for (const row of sample) {
+    const pnl = Number(row.pnl);
+    if (pnl > 0) grossProfit += pnl;
+    else if (pnl < 0) grossLoss += Math.abs(pnl);
+  }
+  return {
+    value: grossLoss > 0 ? grossProfit / grossLoss : null,
+    infinite: grossLoss === 0 && grossProfit > 0,
+    samples: sample.length,
+    available: sample.length >= Math.max(1, Math.floor(Number(window) || 1)),
+  };
+}
+
+function statusRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.statuses)) return data.statuses;
+  if (Array.isArray(data?.connections)) return data.connections;
+  return [];
+}
+
+function compactStageMetrics(overview, pnl) {
+  const stage = overview?.realtimeStageAverages?.stages || {};
+  const performance = overview?.performanceTiers || {};
+  const stageOverview = overview?.connectionStageOverview || {};
+  const realStage = stage.real || {};
+  const liveStage = stage.live || {};
+  const realOverallDdt = finiteOrNull(performance.real?.avgDrawdownMin ?? realStage.averages?.drawdownMinutes);
+  const realSetsDdt = finiteOrNull(realStage.averages?.drawdownMinutes ?? performance.real?.avgDrawdownMin);
+  const liveAverageDdt = finiteOrNull(performance.live?.avgDrawdownMin ?? liveStage.averages?.drawdownMinutes);
+  const liveStats = pnl?.stats || {};
+  const lastRows = Array.isArray(liveStats.last_25_positions) ? liveStats.last_25_positions : [];
+  const pf8 = profitFactorWindow(lastRows, 8);
+  return {
+    realValid: Math.max(0, finiteNumber(stageOverview.real?.valid, 0)),
+    realActive: Math.max(0, finiteNumber(stageOverview.real?.active, 0)),
+    baseValid: Math.max(0, finiteNumber(stageOverview.base?.valid, 0)),
+    basePfMinimum: finiteNumber(stageOverview.base?.pfMinimum, 0.8),
+    liveOpen: Math.max(0, finiteNumber(liveStats.open_positions, 0)),
+    exchangeOpen: finiteOrNull(liveStats.open_exchange_positions),
+    exchangeOpenSource: sanitizeText(liveStats.open_positions_source, "unknown"),
+    unrealizedPnl: finiteNumber(liveStats.unrealized_pnl, 0),
+    pf: {
+      last8: pf8,
+      last25: {
+        value: finiteOrNull(liveStats.profit_factor_last_25),
+        infinite: liveStats.profit_factor_last_25_infinite === true,
+        samples: Math.min(25, lastRows.length),
+        available: Math.min(25, lastRows.length) >= 25,
+      },
+      last75: {
+        value: finiteOrNull(liveStats.profit_factor_last_75),
+        infinite: liveStats.profit_factor_last_75_infinite === true,
+        samples: Math.min(75, Number(liveStats.settled_closed_positions || 0)),
+        available: Number(liveStats.settled_closed_positions || 0) >= 75,
+      },
+    },
+    averageDdt: {
+      // `real` is the current set/overall stage aggregate. Live's endpoint
+      // labels its holding-time aggregate drawdownMinutes for compatibility;
+      // retain both and never present it as a Real-stage value.
+      overallMinutes: realOverallDdt,
+      setsMinutes: realSetsDdt,
+      liveOutcomeMinutes: liveAverageDdt,
+      samples: {
+        realSets: finiteNumber(realStage.samples?.sets, 0),
+        liveOutcomes: finiteNumber(liveStage.samples?.outcomes, 0),
+      },
+    },
+    accounting: {
+      complete: liveStats.accounting_complete !== false,
+      coveragePercent: finiteNumber(liveStats.accounting_coverage_percent, 0),
+      pending: Math.max(0, finiteNumber(liveStats.accounting_pending, 0)),
+    },
+    stageCoverage: stageOverview.snapshot?.coverage || overview?.strategyRows?.snapshot?.coverage || null,
+  };
+}
+
+async function readConnectionDetails(definition, id, statusRow) {
+  const now = Date.now();
+  const cached = connectionDetailCache.get(definition.id + ":" + id);
+  const runtimeRequest = fetchWithTimeout(endpoint(definition, "connectionRuntimePath", id), 2_500);
+  const pnlRequest = fetchWithTimeout(endpoint(definition, "connectionPnlPath", id), 2_500);
+  const overviewRequest = !cached || now - cached.overviewAt >= PROJECT_DETAIL_REFRESH_MS
+    ? fetchWithTimeout(endpoint(definition, "connectionOverviewPath", id), 4_500)
+    : Promise.resolve({ ok: Boolean(cached.overview), status: 200, latencyMs: 0, data: cached.overview });
+  const [runtime, pnl, overview] = await Promise.all([runtimeRequest, pnlRequest, overviewRequest]);
+  const runtimeData = runtime.ok ? runtime.data : cached?.runtime || {};
+  const pnlData = pnl.ok ? pnl.data : cached?.pnl || {};
+  const overviewData = overview.ok ? overview.data : cached?.overview || {};
+  const detail = {
+    id,
+    name: sanitizeText(statusRow?.name, id),
+    exchange: sanitizeText(statusRow?.exchange, "unknown"),
+    assigned: statusRow?.assigned === true,
+    processingEnabled: statusRow?.processingEnabled !== false,
+    status: sanitizeText(statusRow?.status, runtimeData?.runtime?.engineRunning ? "running" : "unknown"),
+    heartbeatFresh: statusRow?.heartbeatFresh === true,
+    progress: progressionSummary(runtimeData),
+    runtime: {
+      generation: runtimeData?.generation || {},
+      realtime: runtimeData?.realtime || {},
+      settingsRecoordination: runtimeData?.settingsRecoordination || {},
+      statsRecalculation: runtimeData?.statsRecalculation || {},
+      telemetry: runtimeData?.runtime || {},
+    },
+    stats: compactStageMetrics(overviewData, pnlData),
+    upstream: {
+      runtime: runtime.ok,
+      pnl: pnl.ok,
+      overview: overview.ok,
+      errors: [runtime, pnl, overview].filter((result) => !result.ok).map((result) => result.error || "unavailable"),
+    },
+  };
+  connectionDetailCache.set(definition.id + ":" + id, {
+    checkedAt: now,
+    runtime: runtimeData,
+    pnl: pnlData,
+    overview: overviewData,
+    overviewAt: overview.ok ? now : cached?.overviewAt || 0,
+  });
+  while (connectionDetailCache.size > 128) connectionDetailCache.delete(connectionDetailCache.keys().next().value);
+  return detail;
+}
+
 function projectActivity(id, state, error = "") {
   const current = observeRuntime(PROJECT_RUNTIME, "project", id, state);
   current.lastError = error || current.lastError || "";
@@ -659,23 +996,14 @@ function projectActivity(id, state, error = "") {
 }
 
 function projectDefinition(id) {
-  if (id === "cts-g") {
-    return {
-      id,
-      name: "CTS-G",
-      role: "independent project / desk",
-      baseUrl: String(process.env.CTS_G_BASE_URL || "http://127.0.0.1:3102").replace(/\/$/, ""),
-      port: 3102,
-      serviceIds: ["grok-desk.service", "cts-g.service"],
-    };
-  }
+  const base = DEFAULT_PROJECT_DEFINITIONS.find((definition) => definition.id === id) || DEFAULT_PROJECT_DEFINITIONS[0];
+  const envBase = id === "cts-kn" ? process.env.CTS_KN_BASE_URL : process.env.CTS_G_BASE_URL;
+  const envPort = id === "cts-kn" ? process.env.CTS_KN_PORT : process.env.CTS_G_PORT;
   return {
-    id: "cts-kn",
-    name: "CTS-K-N",
-    role: "production trading application",
-    baseUrl: String(process.env.CTS_KN_BASE_URL || "http://127.0.0.1:3002").replace(/\/$/, ""),
-    port: 3002,
-    serviceIds: ["cts-kn.service", "cts-kn-direct-trade.service", "cts-kn-scheduler.service"],
+    ...base,
+    baseUrl: String(envBase || base.baseUrl).replace(/\/$/, ""),
+    port: positiveInteger(envPort, base.port),
+    serviceIds: [...base.serviceIds],
   };
 }
 
@@ -684,15 +1012,16 @@ function publicProjectDefinition(definition) {
     id: definition.id,
     name: definition.name,
     role: definition.role,
+    kind: definition.kind,
     port: definition.port,
     serviceIds: definition.serviceIds,
+    connectionIds: definition.connectionIds || [],
   };
 }
 
-async function readCtsKnProject() {
-  const definition = projectDefinition("cts-kn");
+async function readCtsKnProject(definition = projectDefinition("cts-kn")) {
   const started = performance.now();
-  const health = await fetchWithTimeout(definition.baseUrl + "/api/health", 2_200);
+  const health = await fetchWithTimeout(endpoint(definition, "healthPath"), 2_200);
   if (!health.ok) {
     const activity = projectActivity(definition.id, "down", health.error || "unhealthy");
     return {
@@ -708,21 +1037,32 @@ async function readCtsKnProject() {
       links: [{ label: "port 3002", port: 3002 }],
     };
   }
-  const engine = await fetchWithTimeout(definition.baseUrl + "/api/trade-engine/status", 2_500);
-  const ids = extractIds(engine.data);
-  const progressRows = await Promise.all(ids.map(async (id) => {
-    const result = await fetchWithTimeout(
-      definition.baseUrl + "/api/connections/progression/" + encodeURIComponent(id) + "/stats?view=runtime",
-      2_000,
-    );
-    return {
-      id,
-      summary: result.ok ? progressionSummary(result.data) : null,
-      latencyMs: result.latencyMs,
-      error: result.ok ? "" : result.error || "unavailable",
-    };
+  const [engine, catalogResult, statusResult] = await Promise.all([
+    fetchWithTimeout(endpoint(definition, "engineStatusPath"), 2_500),
+    fetchWithTimeout(endpoint(definition, "connectionCatalogPath"), 2_500),
+    fetchWithTimeout(endpoint(definition, "connectionStatusPath"), 2_500),
+  ]);
+  const catalogList = statusRows(catalogResult.ok ? catalogResult.data : null);
+  const statusList = statusRows(statusResult.ok ? statusResult.data : null);
+  const statusById = new Map(
+    [...catalogList, ...statusList]
+      .map((row) => [String(row?.id || row?.connectionId || "").trim(), row])
+      .filter(([id]) => id),
+  );
+  const ids = [...new Set([
+    ...extractIds(engine.data),
+    ...catalogList.map((row) => String(row?.id || row?.connectionId || "").trim()).filter(Boolean),
+    ...statusList.map((row) => String(row?.id || row?.connectionId || "").trim()).filter(Boolean),
+    ...(definition.connectionIds || []),
+  ])].slice(0, MAX_CONNECTIONS);
+  const connections = await Promise.all(ids.map((id) => readConnectionDetails(definition, id, statusById.get(id) || {})));
+  const progressRows = connections.map((connection) => ({
+    id: connection.id,
+    summary: connection.progress,
+    latencyMs: 0,
+    error: connection.upstream.errors.length ? connection.upstream.errors.join(", ") : "",
   }));
-  const projectStatus = health.data?.status === "healthy" ? "up" : "degraded";
+  const projectStatus = health.data?.status === "healthy" && engine.ok ? "up" : "degraded";
   const activity = projectActivity(definition.id, projectStatus, engine.ok ? "" : engine.error || "engine_unavailable");
   return {
     ...publicProjectDefinition(definition),
@@ -740,19 +1080,81 @@ async function readCtsKnProject() {
     engine: {
       running: engine.data?.running === true || engine.data?.status === "running",
       status: sanitizeText(engine.data?.status, engine.ok ? "available" : "unavailable"),
-      connections: Array.isArray(engine.data?.connections) ? engine.data.connections.length : ids.length,
+      connections: ids.length,
       ids,
     },
     progress: progressRows,
+    connections,
     activity,
-    links: [{ label: "port 3002", port: 3002 }],
+    links: [{ label: "port " + definition.port, port: definition.port }],
   };
 }
 
-async function readCtsGProject() {
-  const definition = projectDefinition("cts-g");
+async function readCtsGProject(definition = projectDefinition("cts-g")) {
   const started = performance.now();
-  const health = await fetchWithTimeout(definition.baseUrl + "/api/health", 1_800);
+  const health = await fetchWithTimeout(endpoint(definition, "healthPath"), 1_800);
+  const ids = definition.connectionIds || [];
+  const connections = definition.statsBaseUrl
+    ? await Promise.all(ids.map(async (id) => {
+      const result = await fetchWithTimeout(
+        definition.statsBaseUrl + replaceTemplate(definition.connectionStatsPath, id),
+        2_000,
+      );
+      const stats = result.ok && result.data && typeof result.data === "object" ? result.data : {};
+      const closed = Array.isArray(stats.closed) ? stats.closed : [];
+      const pf8 = profitFactorWindow(closed, 8);
+      const pf25 = profitFactorWindow(closed, 25);
+      const pf75 = profitFactorWindow(closed, 75);
+      const settings = stats.sets || {};
+      const progress = settings.progress || {};
+      return {
+        id,
+        name: id === "bingx-x01" ? "CTS-G Mainnet" : id === "bingx-x02" ? "CTS-G VST" : id,
+        exchange: stats.exchange || "BingX",
+        assigned: result.ok,
+        processingEnabled: result.ok,
+        status: result.ok && stats.running && !stats.halted ? "running" : result.ok ? "inactive" : "unavailable",
+        heartbeatFresh: result.ok,
+        progress: {
+          percent: clamp(progress.pct, 0, 100),
+          processed: finiteNumber(progress.symbolsDone, 0),
+          total: finiteNumber(progress.symbolsTotal, 0),
+          configCompleted: finiteNumber(progress.setsDone, 0),
+          configTotal: finiteNumber(progress.setsTotal, 0),
+          phase: sanitizeText(progress.phase, stats.mode || "unknown"),
+          cycles: finiteNumber(progress.cycle, 0),
+          complete: Boolean(progress.ready),
+        },
+        runtime: {
+          generation: {},
+          realtime: { realtimeCycles: finiteNumber(stats.cycle, 0) },
+          settingsRecoordination: {},
+          statsRecalculation: {},
+          telemetry: { scanMs: finiteNumber(stats.scanMs, 0), rssMb: finiteNumber(stats.rssMb, 0) },
+        },
+        stats: {
+          realValid: finiteNumber(settings.validatedCount, 0),
+          realActive: finiteNumber(settings.activeCount, 0),
+          baseValid: finiteNumber(settings.setCount, 0),
+          basePfMinimum: 0.8,
+          liveOpen: finiteNumber(stats.openCount, 0),
+          exchangeOpen: finiteOrNull(stats.exchangeOpenCount),
+          exchangeOpenSource: "cts-g-stats",
+          unrealizedPnl: finiteNumber(stats.unrealized, 0),
+          pf: { last8: pf8, last25: pf25, last75: pf75 },
+          averageDdt: {
+            overallMinutes: finiteOrNull(stats.avgDrawdownMin ?? stats.avgDrawdownTime),
+            setsMinutes: finiteOrNull(settings.avgDrawdownMin ?? settings.avgDrawdownTime),
+            liveOutcomeMinutes: null,
+            samples: { realSets: finiteNumber(settings.setCount, 0), liveOutcomes: closed.length },
+          },
+          accounting: { complete: true, coveragePercent: 100, pending: 0 },
+          stageCoverage: null,
+        },
+        upstream: { runtime: result.ok, pnl: result.ok, overview: result.ok, errors: result.ok ? [] : [result.error || "unavailable"] },
+      };
+    }))
+    : [];
   if (health.ok) {
     const activity = projectActivity(definition.id, "up");
     return {
@@ -765,10 +1167,11 @@ async function readCtsGProject() {
         status: sanitizeText(health.data?.status, "healthy"),
         uptimeS: finiteNumber(health.data?.uptimeS ?? health.data?.uptime),
       },
-      engine: { running: false, status: "not_reported", connections: 0 },
+      engine: { running: connections.some((connection) => connection.status === "running"), status: "available", connections: connections.length, ids },
       progress: [],
+      connections,
       activity,
-      links: [{ label: "port 3102", port: 3102 }],
+      links: [{ label: "port " + definition.port, port: definition.port }],
     };
   }
   const root = await fetchWithTimeout(definition.baseUrl + "/", 1_800, "html");
@@ -781,15 +1184,42 @@ async function readCtsGProject() {
     latencyMs: performance.now() - started,
     error: root.ok ? "" : root.error || health.error || "unhealthy",
     health: { status: root.ok ? "healthy" : "unreachable" },
-    engine: { running: false, status: "not_reported", connections: 0 },
+    engine: { running: connections.some((connection) => connection.status === "running"), status: "not_reported", connections: connections.length, ids },
     progress: [],
+    connections,
     activity,
-    links: [{ label: "port 3102", port: 3102 }],
+    links: [{ label: "port " + definition.port, port: definition.port }],
+  };
+}
+
+async function readGenericProject(definition) {
+  const started = performance.now();
+  const health = await fetchWithTimeout(endpoint(definition, "healthPath"), 1_800);
+  const root = health.ok ? health : await fetchWithTimeout(definition.baseUrl + "/", 1_800, "html");
+  const state = root.ok ? "up" : "down";
+  const activity = projectActivity(definition.id, state, root.ok ? "" : root.error || "unhealthy");
+  return {
+    ...publicProjectDefinition(definition),
+    status: state,
+    httpStatus: root.status,
+    latencyMs: performance.now() - started,
+    error: root.ok ? "" : root.error || "unhealthy",
+    health: { status: root.ok ? "healthy" : "unreachable" },
+    engine: { running: false, status: "not_reported", connections: 0, ids: definition.connectionIds || [] },
+    progress: [],
+    connections: [],
+    activity,
+    links: definition.port ? [{ label: "port " + definition.port, port: definition.port }] : [],
   };
 }
 
 async function readProjects() {
-  return Promise.all([readCtsKnProject(), readCtsGProject()]);
+  const definitions = await projectDefinitions();
+  return Promise.all(definitions.map((definition) => {
+    if (definition.kind === "cts-kn") return readCtsKnProject(definition);
+    if (definition.kind === "cts-g") return readCtsGProject(definition);
+    return readGenericProject(definition);
+  }));
 }
 
 async function cachedServices() {

@@ -180,6 +180,7 @@ for dashboard_source in \
   "$PROJECT_ROOT/ops/server-access-dashboard/server/access-dashboard.mjs" \
   "$PROJECT_ROOT/ops/server-access-dashboard/public/index.html" \
   "$PROJECT_ROOT/ops/server-access-dashboard/public/dashboard.js" \
+  "$PROJECT_ROOT/ops/server-access-dashboard/deploy/projects.json" \
   "$PROJECT_ROOT/ops/server-access-dashboard/deploy/server-access-dashboard.service"; do
   [[ -f "$dashboard_source" ]] || fatal "Dashboard source is missing: $dashboard_source"
 done
@@ -219,6 +220,7 @@ create_backup() {
   backup_one "$ENV_FILE"
   backup_one "$MAINTENANCE_MARKER"
   backup_one /opt/server-access
+  backup_one /etc/server-access-dashboard
   backup_one /etc/systemd/system/server-access-dashboard.service
   backup_one "/etc/systemd/system/$APP_NAME-pull-agent.service"
   backup_one "/etc/systemd/system/$APP_NAME-pull-agent.timer"
@@ -261,7 +263,7 @@ create_backup() {
 
 install_dashboard() {
   local rendered_unit
-  install -d -m 0755 /opt/server-access/server /opt/server-access/public
+  install -d -m 0755 /opt/server-access/server /opt/server-access/public /etc/server-access-dashboard
   install -m 0644 \
     "$PROJECT_ROOT/ops/server-access-dashboard/server/access-dashboard.mjs" \
     /opt/server-access/server/access-dashboard.mjs
@@ -271,6 +273,9 @@ install_dashboard() {
   install -m 0644 \
     "$PROJECT_ROOT/ops/server-access-dashboard/public/dashboard.js" \
     /opt/server-access/public/dashboard.js
+  install -m 0644 \
+    "$PROJECT_ROOT/ops/server-access-dashboard/deploy/projects.json" \
+    /etc/server-access-dashboard/projects.json
 
   rendered_unit="$(mktemp)"
   if ! sed "s/After=network-online.target cts-kn.service/After=network-online.target $APP_NAME.service/" \
