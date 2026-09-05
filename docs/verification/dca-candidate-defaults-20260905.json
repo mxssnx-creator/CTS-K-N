@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-05T08:47:36.355Z",
+  "active": false,
+  "policy": "candidate only; the latest-20h selection overlaps the 6d holdout. Every symbol must pass historical gates and an untouched forward window before production defaults can change.",
+  "symbols": [
+    "XRP-USDT",
+    "BCH-USDT",
+    "SOL-USDT"
+  ],
+  "averageBestConfig": {
+    "profile": {
+      "maxSteps": 4,
+      "stepVolumeMultipliers": [
+        0.5,
+        0.6,
+        0.7,
+        0.866667
+      ],
+      "stepDistancesPct": [
+        0.38333333333333336,
+        0.7666666666666667,
+        1.2666666666666666,
+        1.9666666666666668
+      ],
+      "takeProfitMode": "average",
+      "breakevenProfitPct": 0.20000000000000004,
+      "cooldownSeconds": 30,
+      "maxPositionVolumeRatio": 3.6666666666666665
+    },
+    "timeframeMinutes": 5,
+    "entry": "relative",
+    "takeProfitPct": 0.4000000000000001,
+    "stopLossPct": 2.4,
+    "roundTripCostPct": 0.10000000000000002,
+    "slippagePct": 0.02,
+    "maxHoldMinutes": 720,
+    "requireDcaDirectionConfirmation": false,
+    "exitOnConfirmedReversal": false,
+    "ctsGExitCoordination": true
+  },
+  "selectedGridConfig": {
+    "profile": {
+      "maxSteps": 4,
+      "stepVolumeMultipliers": [
+        0.4,
+        0.6,
+        0.8,
+        1.2
+      ],
+      "stepDistancesPct": [
+        0.4,
+        0.8,
+        1.3,
+        2
+      ],
+      "takeProfitMode": "average",
+      "breakevenProfitPct": 0.2,
+      "cooldownSeconds": 30,
+      "maxPositionVolumeRatio": 4
+    },
+    "timeframeMinutes": 5,
+    "entry": "relative",
+    "takeProfitPct": 0.4,
+    "stopLossPct": 2.35,
+    "roundTripCostPct": 0.1,
+    "slippagePct": 0.02,
+    "maxHoldMinutes": 720,
+    "requireDcaDirectionConfirmation": false,
+    "exitOnConfirmedReversal": false,
+    "ctsGExitCoordination": true
+  },
+  "quality": {
+    "perSymbol": [
+      {
+        "symbol": "XRP-USDT",
+        "viableCount": 0,
+        "rolling20h": {
+          "closedTrades": 3,
+          "netPnlPct": 0.19479815670613032,
+          "profitFactor": null,
+          "profitFactorInfinite": true,
+          "worstSymbolNetPnlPct": 0.19479815670613032,
+          "maximumSymbolDrawdownPct": 0.591596056856974,
+          "averageDrawdownMinutes": 36.666666666666664,
+          "maximumVolumeRatio": 1.25,
+          "dcaPositions": 1,
+          "worstTradePct": 0
+        },
+        "train14d": {
+          "closedTrades": 59,
+          "netPnlPct": -17.90615848713664,
+          "profitFactor": 0.4507495584351929,
+          "profitFactorInfinite": false,
+          "worstSymbolNetPnlPct": -17.90615848713664,
+          "maximumSymbolDrawdownPct": 20.968662608611858,
+          "averageDrawdownMinutes": 26.779661016949152,
+          "maximumVolumeRatio": 3,
+          "dcaPositions": 27,
+          "worstTradePct": -4.721859931500019
+        }
+      },
+      {
+        "symbol": "BCH-USDT",
+        "viableCount": 56,
+        "rolling20h": {
+          "closedTrades": 2,
+          "netPnlPct": 0.7442974066639185,
+          "profitFactor": null,
+          "profitFactorInfinite": true,
+          "worstSymbolNetPnlPct": 0.7442974066639185,
+          "maximumSymbolDrawdownPct": 1.5891477735881658,
+          "averageDrawdownMinutes": 30,
+          "maximumVolumeRatio": 1.65,
+          "dcaPositions": 1,
+          "worstTradePct": 0
+        },
+        "train14d": {
+          "closedTrades": 15,
+          "netPnlPct": 5.379252510127548,
+          "profitFactor": null,
+          "profitFactorInfinite": true,
+          "worstSymbolNetPnlPct": 5.379252510127548,
+          "maximumSymbolDrawdownPct": 3.444648323636733,
+          "averageDrawdownMinutes": 80,
+          "maximumVolumeRatio": 2.2,
+          "dcaPositions": 6,
+          "worstTradePct": 0
+        }
+      },
+      {
+        "symbol": "SOL-USDT",
+        "viableCount": 101,
+        "rolling20h": {
+          "closedTrades": 2,
+          "netPnlPct": 0.4000702607860046,
+          "profitFactor": null,
+          "profitFactorInfinite": true,
+          "worstSymbolNetPnlPct": 0.4000702607860046,
+          "maximumSymbolDrawdownPct": 0.5237921737375961,
+          "averageDrawdownMinutes": 5,
+          "maximumVolumeRatio": 2,
+          "dcaPositions": 1,
+          "worstTradePct": 0
+        },
+        "train14d": {
+          "closedTrades": 61,
+          "netPnlPct": 17.55040523235239,
+          "profitFactor": 2.391183876683099,
+          "profitFactorInfinite": false,
+          "worstSymbolNetPnlPct": 17.55040523235239,
+          "maximumSymbolDrawdownPct": 9.09210247457699,
+          "averageDrawdownMinutes": 24.34426229508197,
+          "maximumVolumeRatio": 5,
+          "dcaPositions": 35,
+          "worstTradePct": -5.5232354849999865
+        }
+      }
+    ],
+    "selectedHoldout": {
+      "closedTrades": 71,
+      "netPnlPct": -0.015145910936926299,
+      "profitFactor": 0.9991398444552735,
+      "profitFactorInfinite": false,
+      "worstSymbolNetPnlPct": -5.529885921756314,
+      "maximumSymbolDrawdownPct": 11.299418986799495,
+      "averageDrawdownMinutes": 46.76056338028169,
+      "maximumVolumeRatio": 4,
+      "dcaPositions": 26,
+      "worstTradePct": -5.86944653200004
+    },
+    "historicalCandidateGate": false,
+    "independentForwardValidationAvailable": false,
+    "gate": false
+  }
+}

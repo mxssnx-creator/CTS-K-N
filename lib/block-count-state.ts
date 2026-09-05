@@ -1,18 +1,22 @@
+import blockVolume from "./block-volume-ratio.cjs"
 export interface BlockLegState {
   setKey: string
+  lifecycleKey?: string
   blockCount: number
   scope?: "long" | "short" | "overall"
   laneKind?: "direction" | "signal_source"
   laneKey?: string
   sourceId?: string
   quantity: number
+  /** Weighted confirmed entry of this Count contribution, for independent outcomes. */
+  entryPrice?: number
   baseVolumeMultiplier: number
   volumeRatio: number
-  /** Number of independent compounded increments admitted for this lane. */
+  /** Maximum additive recovery increases admitted for this exact Count lane. */
   incrementSteps: number
-  /** Effective compounded step for this exact count, capped by incrementSteps. */
+  /** Current recovery increase (1 or 2), independent from other Counts. */
   effectiveIncrementStep: number
-  /** Compounded add-on ratio used by add quantity and Block PF. */
+  /** Additive base-relative ratio used by quantity and Block PF. */
   volumeIncrementRatio: number
   volumeMultiplier: number
   baseQuantity?: number
@@ -34,9 +38,11 @@ export interface BlockLegState {
 
 /** Canonical independent Block count range used by Direct-Trade and stages. */
 export const BLOCK_COUNT_MIN = 1
-export const BLOCK_COUNT_MAX = 12
+export const BLOCK_COUNT_MAX = 6
+/** Decode older persisted rows without dropping their ownership/protection. */
+export const LEGACY_BLOCK_COUNT_MAX = 12
 export const BLOCK_INCREMENT_STEPS_MIN = 1
-export const BLOCK_INCREMENT_STEPS_MAX = 5
+export const BLOCK_INCREMENT_STEPS_MAX = 2
 export const BLOCK_INCREMENT_STEPS_DEFAULT = 2
 export const BLOCK_PROFIT_FACTOR_RATIO_DEFAULT = 1.1
 export const BLOCK_PROFIT_FACTOR_RATIO_LEGACY_DEFAULT = 0.8
@@ -45,17 +51,8 @@ export function normalizeBlockIncrementSteps(
   raw: unknown,
   fallback = BLOCK_INCREMENT_STEPS_DEFAULT,
 ): number {
-  const parsed = Number(raw)
-  const fallbackParsed = Number(fallback)
-  const candidate = Number.isFinite(parsed)
-    ? parsed
-    : Number.isFinite(fallbackParsed)
-      ? fallbackParsed
-      : BLOCK_INCREMENT_STEPS_DEFAULT
-  return Math.max(
-    BLOCK_INCREMENT_STEPS_MIN,
-    Math.min(BLOCK_INCREMENT_STEPS_MAX, Math.floor(candidate)),
-  )
+  return blockVolume.normalizeBlockIncrementSteps(raw, fallback)
+
 }
 
 export function normalizeBlockProfitFactorRatio(
@@ -81,16 +78,17 @@ export function normalizeBlockProfitFactorRatio(
 export function calculateBlockEffectiveIncrementStep(
   blockCount: number,
   incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
+  requestedStep = 1,
 ): number {
-  if (!Number.isFinite(blockCount) || blockCount <= 0) return 0
-  return Math.min(Math.floor(blockCount), normalizeBlockIncrementSteps(incrementSteps))
+  return blockVolume.blockEffectiveIncrementStep(blockCount, incrementSteps, requestedStep)
+
 }
 
 export function parseBlockCount(setKey: unknown): number | null {
   const match = String(setKey || "").match(/#block:(?:(?:active|set):)?(\d+)(?:$|[#:_-])/i)
   if (!match) return null
   const count = Math.floor(Number(match[1]))
-  return Number.isFinite(count) && count >= BLOCK_COUNT_MIN && count <= BLOCK_COUNT_MAX ? count : null
+  return Number.isFinite(count) && count >= BLOCK_COUNT_MIN && count <= LEGACY_BLOCK_COUNT_MAX ? count : null
 }
 
 function positive(raw: unknown, fallback: number): number {
@@ -102,10 +100,10 @@ export function calculateBlockVolumeMultiplier(
   blockCount: number,
   volumeRatio: number,
   incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
+  requestedStep = 1,
 ): number {
-  if (![blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
-  const effectiveStep = calculateBlockEffectiveIncrementStep(blockCount, incrementSteps)
-  return Number(((1 + volumeRatio) ** effectiveStep).toFixed(12))
+  return blockVolume.blockVolumeMultiplier(blockCount, volumeRatio, incrementSteps, requestedStep)
+
 }
 
 /** Actual add-on ratio relative to the currently confirmed position size. */
@@ -113,9 +111,10 @@ export function calculateBlockVolumeIncrementRatio(
   blockCount: number,
   volumeRatio: number,
   incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
+  requestedStep = 1,
 ): number {
   if (![blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
-  return Number((calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps) - 1).toFixed(12))
+  return Number((calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps, requestedStep) - 1).toFixed(12))
 }
 
 /**
@@ -285,15 +284,16 @@ export function calculateBlockAddQuantity(
   blockCount: number,
   volumeRatio: number,
   incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
+  requestedStep = 1,
 ): number {
   if (![positionBaseQuantity, blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
-  return positionBaseQuantity * calculateBlockVolumeIncrementRatio(blockCount, volumeRatio, incrementSteps)
+  return positionBaseQuantity * calculateBlockVolumeIncrementRatio(blockCount, volumeRatio, incrementSteps, requestedStep)
 }
 
 /**
  * Absolute position target for one Block count.
  *
- * Example: base=1, count=3, ratio=1, steps=3 => 1 × 2³ = 8.
+ * Example: base=3, count=4, ratio=1, recovery=1 => 3 + 3 × 4 = 15.
  * Other adjustment lanes (for example DCA) remain independent and are not
  * included in this Block-specific target.
  */
@@ -302,12 +302,14 @@ export function calculateBlockTargetQuantity(
   blockCount: number,
   volumeRatio: number,
   incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
+  requestedStep = 1,
 ): number {
   const targetAdditionalQuantity = calculateBlockAddQuantity(
     positionBaseQuantity,
     blockCount,
     volumeRatio,
     incrementSteps,
+    requestedStep,
   )
   return targetAdditionalQuantity > 0
     ? positionBaseQuantity + targetAdditionalQuantity
@@ -340,12 +342,14 @@ export function calculateBlockRemainingAddQuantity(
   volumeRatio: number,
   confirmedBlockAddQuantity: number,
   incrementSteps = BLOCK_INCREMENT_STEPS_DEFAULT,
+  requestedStep = 1,
 ): number {
   const targetAdditionalQuantity = calculateBlockAddQuantity(
     positionBaseQuantity,
     blockCount,
     volumeRatio,
     incrementSteps,
+    requestedStep,
   )
   if (targetAdditionalQuantity <= 0) return 0
   const confirmed = Number(confirmedBlockAddQuantity)
@@ -365,6 +369,7 @@ export function buildBlockLegState(
   orderId?: string,
   exact?: {
     baseQuantity?: number
+    entryPrice?: number
     targetAdditionalQuantity?: number
     confirmedAdditionalQuantityBefore?: number
     targetBlockQuantity?: number
@@ -381,24 +386,26 @@ export function buildBlockLegState(
   const baseVolumeMultiplier = 1
   const volumeRatio = positive(source?.blockVolumeRatio, 1)
   const incrementSteps = normalizeBlockIncrementSteps(source?.blockIncrementSteps)
-  const effectiveIncrementStep = calculateBlockEffectiveIncrementStep(blockCount, incrementSteps)
+  const effectiveIncrementStep = calculateBlockEffectiveIncrementStep(blockCount, incrementSteps, source?.blockEffectiveIncrementStep)
   return {
     setKey: String(source?.setKey || `block:${blockCount}`),
+    ...(source?.blockLifecycleKey && { lifecycleKey: String(source.blockLifecycleKey) }),
     blockCount,
     ...(source?.blockScope && { scope: source.blockScope }),
     ...(source?.blockLaneKind && { laneKind: source.blockLaneKind }),
     ...(source?.blockLaneKey && { laneKey: String(source.blockLaneKey) }),
     ...(source?.blockSourceId && { sourceId: String(source.blockSourceId) }),
     quantity: Math.max(0, Number(quantity) || 0),
+    ...(Number(exact?.entryPrice) > 0 && { entryPrice: Number(exact?.entryPrice) }),
     baseVolumeMultiplier,
     volumeRatio,
     incrementSteps,
     effectiveIncrementStep,
     volumeIncrementRatio: positive(
       source?.blockVolumeIncrementRatio,
-      calculateBlockVolumeIncrementRatio(blockCount, volumeRatio, incrementSteps),
+      calculateBlockVolumeIncrementRatio(blockCount, volumeRatio, incrementSteps, effectiveIncrementStep),
     ),
-    volumeMultiplier: calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps),
+    volumeMultiplier: calculateBlockVolumeMultiplier(blockCount, volumeRatio, incrementSteps, effectiveIncrementStep),
     ...(Number(exact?.baseQuantity) >= 0 && { baseQuantity: Number(exact?.baseQuantity) }),
     ...(Number(exact?.targetAdditionalQuantity) >= 0 && {
       targetAdditionalQuantity: Number(exact?.targetAdditionalQuantity),
@@ -503,32 +510,33 @@ export async function getActiveBlockSetKeys(
  */
 export async function advanceBlockCountPausesOnPositionClose(redis: any, position: Record<string, any>): Promise<void> {
   const connectionId = String(position?.connectionId || position?.connection_id || "")
-  const positionId = String(position?.id || "")
-  if (!connectionId || !positionId) return
+  if (!connectionId) return
   await serialized(connectionId, async () => {
-    const processedKey = `block_count_pause_processed:${connectionId}:${positionId}`
-    if (await redis.get(processedKey).catch(() => null)) return
-
-    const existing = await redis.hgetall(pauseKey(connectionId)).catch(() => ({})) as Record<string, string>
-    for (const [field, raw] of Object.entries(existing || {})) {
-      try {
-        const state = JSON.parse(String(raw)) as PauseState
-        const remaining = Math.max(0, Math.floor(Number(state.remaining || 0)) - 1)
-        if (remaining <= 0) await redis.hdel(pauseKey(connectionId), field).catch(() => 0)
-        else await redis.hset(pauseKey(connectionId), field, JSON.stringify({ ...state, remaining, updatedAt: Date.now() })).catch(() => 0)
-      } catch { await redis.hdel(pauseKey(connectionId), field).catch(() => 0) }
-    }
-
-    const symbol = symbolKey(position?.symbol)
-    const legs = Array.isArray(position?.blockLegs) ? position.blockLegs as BlockLegState[] : []
-    for (const leg of legs) {
-      if (!leg?.setKey || !symbol) continue
-      const pauseCount = Math.max(1, Math.floor(Number(leg.pauseCount || leg.blockCount || 1)))
-      const state: PauseState = { setKey: leg.setKey, symbol, remaining: pauseCount, pauseCount, updatedAt: Date.now() }
-      await redis.hset(pauseKey(connectionId), `${symbol}|${leg.setKey}`, JSON.stringify(state)).catch(() => 0)
-    }
-    await redis.set(processedKey, String(Date.now())).catch(() => null)
-    await redis.expire(processedKey, 30 * 24 * 60 * 60).catch(() => 0)
-    await redis.persist(pauseKey(connectionId)).catch(() => 0)
+    const { updateBlockLifecycleForClose } = await import("./block-count-outcomes")
+    await updateBlockLifecycleForClose(redis, position)
   })
+}
+
+export async function getBlockCountLifecycleStates(
+  redis: any, connectionId: string, symbol: string,
+): Promise<Map<string, import("./block-count-lifecycle").BlockCountLifecycle>> {
+  const stored = await redis.hgetall(pauseKey(connectionId)) as Record<string, string>
+  const normalized = symbolKey(symbol)
+  const states = new Map<string, import("./block-count-lifecycle").BlockCountLifecycle>()
+  for (const [field, raw] of Object.entries(stored || {})) {
+    if (!field.startsWith(`${normalized}|`)) continue
+    try {
+      const state = JSON.parse(raw)
+      if (state?.setKey) states.set(state.setKey, state)
+    } catch { /* ignore legacy malformed state */ }
+  }
+  return states
+}
+
+export async function getBlockCountLifecycleState(
+  redis: any, connectionId: string, symbol: string, setKey: string,
+): Promise<import("./block-count-lifecycle").BlockCountLifecycle | undefined> {
+  const raw = await redis.hget(pauseKey(connectionId), `${symbolKey(symbol)}|${setKey}`)
+  if (!raw) return undefined
+  try { return JSON.parse(String(raw)) } catch { return undefined }
 }

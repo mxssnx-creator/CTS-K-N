@@ -622,7 +622,7 @@ export default function PresetsPage() {
                 <div>
                   <div className="text-xs font-semibold">Block Strategy Type · Adjust</div>
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    Independent Block counts keep their own result and pause state. Target volume compounds from general volume for the selected 1–5 steps; each exchange order sends only the still-missing delta.
+                    Independent Block counts keep their own result and pause state. Target volume increases additively from the immutable general volume for recovery levels 1–2; each exchange order sends only the still-missing delta.
                     Regular ladders use Base-derived Sets, not Pos-Count Sets; the separate Active Real count still includes Pos-Count positions.
                   </p>
                 </div>
@@ -634,8 +634,8 @@ export default function PresetsPage() {
               <div className={draft.blockEnabled ? "grid gap-2 md:grid-cols-2 xl:grid-cols-5" : "grid gap-2 md:grid-cols-2 xl:grid-cols-5 pointer-events-none"}>
                 <NumberField label="Volume ratio" value={draft.blockVolumeRatio} min={0.25} max={3} step={0.05} onChange={(value) => setDraft({ ...draft, blockVolumeRatio: value })} />
                 <SliderField label="ProfitFactor factor" value={draft.blockProfitFactorRatio} min={0.2} max={5} step={0.1} onChange={(value) => setDraft({ ...draft, blockProfitFactorRatio: value })} />
-                <NumberField label="Compound steps" value={draft.blockIncrementSteps} min={1} max={5} step={1} onChange={(value) => setDraft({ ...draft, blockIncrementSteps: value })} />
-                <NumberField label="Independent counts" value={draft.blockMaxStack} min={1} max={12} step={1} onChange={(value) => setDraft({ ...draft, blockMaxStack: value })} />
+                <NumberField label="Recovery levels" value={draft.blockIncrementSteps} min={1} max={2} step={1} onChange={(value) => setDraft({ ...draft, blockIncrementSteps: value })} />
+                  <NumberField label="Independent counts" value={draft.blockMaxStack} min={1} max={6} step={1} onChange={(value) => setDraft({ ...draft, blockMaxStack: value })} />
                 <NumberField label="Post-profit pause ratio" value={draft.blockPauseCountRatio} min={1} max={4} step={0.5} onChange={(value) => setDraft({ ...draft, blockPauseCountRatio: value })} />
               </div>
               <div className="flex flex-wrap gap-4">
@@ -649,7 +649,7 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-2 text-[10px] tabular-nums">
-                {[1, 2, Math.max(3, Math.min(12, Math.floor(draft.blockMaxStack)))].map((count, index) => (
+                {[1, 2, Math.max(3, Math.min(6, Math.floor(draft.blockMaxStack)))].map((count, index) => (
                   <div key={`${count}-${index}`} className="rounded border bg-muted/20 px-2 py-1.5 text-center">
                     Block {count}: {formatNumber(calculateBlockVolumeMultiplier(
                       count,

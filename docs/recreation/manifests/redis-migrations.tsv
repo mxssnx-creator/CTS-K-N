@@ -106,3 +106,4 @@ version	name	source
 105	105-forex-market-coordination-and-instaforex-defaults	lib/redis-migrations.ts
 106	106-compound-block-steps-and-neutral-pf-factor	lib/redis-migrations.ts
 107	107-base-pf-and-real-live-row-defaults	lib/redis-migrations.ts
+108	108-independent-additive-block-counts	lib/redis-migrations.ts

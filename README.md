@@ -157,7 +157,7 @@ jobs. Both share the same durable Redis state.
 - Main validates Base configurations and materializes reached Previous, Last,
   Continuous, Pause, outcome, and direction axes.
 - Real applies position-count/PF/DDT gates, hedge coordination, and independent
-  Block Count 1..12 Sets. Stage rows are exhaustive; bounded rotating work
+  Block Count 1..6 Sets. Stage rows are exhaustive; bounded rotating work
   batches control latency without becoming a row or configuration ceiling.
 - Signal is a default-enabled Common indication engine. It normalizes 35
   documented crypto one-minute OHLCV feeds plus one documented InstaForex

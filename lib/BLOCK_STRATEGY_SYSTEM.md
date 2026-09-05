@@ -40,8 +40,8 @@ post-position pause lifecycle.
 For an existing live position:
 
 ```text
-effectiveStep = min(blockCount, blockIncrementSteps)
-targetMultiplier = (1 + blockVolumeRatio)^effectiveStep
+recoveryStep = min(requestedRecoveryStep, blockIncrementSteps)
+targetMultiplier = 1 + (blockCount × blockVolumeRatio × recoveryStep)
 targetAddQty = generalBaseQty × (targetMultiplier - 1)
 targetBlockQty = generalBaseQty + targetAddQty
 confirmedBlockAddQty = sum(confirmed Block leg fills)
@@ -83,7 +83,7 @@ blockVolumeIncrement = (1 + blockVolumeRatio)^min(blockCount, blockIncrementStep
 ```
 
 `blockProfitFactorRatio` is configurable from `0.2..5.0` and defaults to
-`1.1`. `blockIncrementSteps` is configurable from `1..5` and defaults to `2`.
+`1.1`. `blockIncrementSteps` is configurable from `1..2` and defaults to `2`.
 Counts above that physical increment cap remain independent Real Rows for
 evaluation, statistics, and attribution, but cannot submit duplicate add
 orders for an already-covered target. The exact Block Set reads the same latest-closed-position window and
@@ -198,7 +198,7 @@ request is observed.
 - [x] Formula: `total = baseQty + ((baseQty × ratio) × blockCount)`.
 - [x] Sequential Count orders submit only the remaining delta to that target.
 - [x] Non-consecutive counts retain independent volume metadata.
-- [x] Count range is clamped to `1..12` (default `12`).
+- [x] Count range is clamped to `1..6` (default `6`).
 - [x] Ratio is clamped to `0.25..3.0` (default `1.0`).
 - [x] PF ratio is clamped to `0.2..5.0` (default `0.8`).
 - [x] Count 1..N each use an exact Set key, own PF/DDT window, own minimum PF,

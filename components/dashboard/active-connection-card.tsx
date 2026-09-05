@@ -512,6 +512,7 @@ export function ActiveConnectionCard({
     indicationsCommon: number
     indicationsSignal: number
     indicationsTrend: number
+    indicationsBreak: number
     indicationsTotal: number
     // Complete parameter-grid calculations for the same current snapshot.
     // Every visible indication cell renders qualified / calculated so a
@@ -526,6 +527,7 @@ export function ActiveConnectionCard({
     indicationsCalculatedCommon: number
     indicationsCalculatedSignal: number
     indicationsCalculatedTrend: number
+    indicationsCalculatedBreak: number
     indicationsCalculatedTotal: number
     // Strategy stages
     stratBase: number
@@ -1431,6 +1433,7 @@ export function ActiveConnectionCard({
           indicationsCommon:    nonNegativeMetric(activeInd.common ?? ind.common),
           indicationsSignal:    nonNegativeMetric(activeInd.signal ?? ind.signal),
           indicationsTrend:     nonNegativeMetric(activeInd.trend ?? ind.trend),
+          indicationsBreak:     nonNegativeMetric(activeInd.break ?? ind.break),
           indicationsTotal:     nonNegativeMetric(activeInd.total ?? ind.total),
           indicationsCalculatedDirection: nonNegativeMetric(calculatedInd.direction ?? activeInd.direction ?? ind.direction),
           indicationsCalculatedMove: nonNegativeMetric(calculatedInd.move ?? activeInd.move ?? ind.move),
@@ -1442,6 +1445,7 @@ export function ActiveConnectionCard({
           indicationsCalculatedCommon: nonNegativeMetric(calculatedInd.common ?? activeInd.common ?? ind.common),
           indicationsCalculatedSignal: nonNegativeMetric(calculatedInd.signal ?? activeInd.signal ?? ind.signal),
           indicationsCalculatedTrend: nonNegativeMetric(calculatedInd.trend ?? activeInd.trend ?? ind.trend),
+          indicationsCalculatedBreak: nonNegativeMetric(calculatedInd.break ?? activeInd.break ?? ind.break),
           indicationsCalculatedTotal: nonNegativeMetric(calculatedInd.total ?? activeInd.total ?? ind.total),
           // The prominent stage count must use the same logical, current
           // snapshot as the detailed row fields below. `breakdown.strategies`
@@ -2966,6 +2970,7 @@ export function ActiveConnectionCard({
                             { label: "Common", value: prehistoricStats.indicationsCommon, calculated: prehistoricStats.indicationsCalculatedCommon },
                             { label: "Signal", value: prehistoricStats.indicationsSignal, calculated: prehistoricStats.indicationsCalculatedSignal },
                             { label: "Trend", value: prehistoricStats.indicationsTrend, calculated: prehistoricStats.indicationsCalculatedTrend },
+                            { label: "Break", value: prehistoricStats.indicationsBreak, calculated: prehistoricStats.indicationsCalculatedBreak },
                           ].map(({ label, value, calculated }) => (
                             <div key={label} className="text-center">
                               <div className="text-[8px] text-muted-foreground">{label}</div>

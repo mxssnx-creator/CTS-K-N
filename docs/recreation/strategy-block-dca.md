@@ -27,7 +27,8 @@ its supported bound), not the axis maximum.
 | Field | Range/default | Effect |
 | --- | --- | --- |
 | `variantBlockEnabled` | boolean, default on | emits/clears all Block paths |
-| `blockMaxStack` | 1..12, default 12 | independent counts evaluated |
+| `blockMaxStack` | 1..6, default 6 | independent counts evaluated |
+| `blockIncrementSteps` | 1..2, default 2 | independent loss-recovery levels per count |
 | `blockVolumeRatio` | 0.25..3.0, default 1.0 | additive increment per count |
 | `blockProfitFactorRatio` | 0.2..5.0, default 0.8 | scales count-specific PF floor |
 | `blockPauseCountRatio` | bounded count multiplier | exact post-close cooldown |
@@ -44,12 +45,27 @@ the same field.
 For count `n` and the immutable confirmed general parent quantity:
 
 ```text
-volumeIncrement(n) = n × blockVolumeRatio
+volumeIncrement(n, step) = n × blockVolumeRatio × step
 targetAddQty(n) = immutableGeneralQty × volumeIncrement(n)
 targetBlockQty(n) = immutableGeneralQty + targetAddQty(n)
 requestedAddQty(n) = max(0, targetAddQty(n) - confirmedBlockAddQty)
 blockMinPF(n) = 1 + ((defaultMinPF - 1) × blockProfitFactorRatio × volumeIncrement(n))
 ```
+
+`step` starts at 1. After `n` nonpositive confirmed closes in that exact
+Count lane it advances to 2 (when enabled), then remains increased until that
+lane realizes a positive net result. A positive result resets its step to 1
+and starts only its own configured pause. Other counts, sources, symbols and
+connections do not share this recovery state. Actual leg prices and allocated
+fees determine each leg's result; partial/unsettled closes cannot advance it.
+Margin-call, exposure and drawdown limits still block new recovery exposure.
+With base quantity 3, count 4 and ratio 1 the step-1 target is 15, step 2 is 27;
+the second target is not compounded from 15. Already confirmed Block adds are
+subtracted once, while DCA uses its own immutable-base lane budget.
+
+Schema 108 upgrades installed settings to counts 1–6 / steps 1–2 while
+preserving lower custom limits, live position snapshots, control identifiers,
+Redis TTLs and persisted per-count recovery. Historical migrations are unchanged.
 
 `defaultMinPF` is the normal/default calculation's current Real-stage
 PositionCost coordinate. The neutral base `1.00` is never scaled; only the

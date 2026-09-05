@@ -97,8 +97,8 @@ export interface CoordinationSettings {
   // round(blockCount × blockPauseCountRatio).
   blockVolumeRatio: number // 0.25..3.0 per spec band (UI clamps; engine re-clamps)
   blockProfitFactorRatio: number // 0.2..5.0 × default PF × count volume increment
-  blockIncrementSteps: number // 1..5 compounded increments, default 2
-  blockMaxStack:    number // 1..12 block sizes processed independently
+  blockIncrementSteps: number // 1..2 additive recovery increases per Count
+  blockMaxStack:    number // 1..6 block sizes processed independently
   strategyBlockMaterializationBatchSize: number // 64..10000, rotating work batch
   blockPauseCountRatio: number // 1..4, step 0.5
   blockActiveRealEnabled: boolean // active real-position Block overlay, default true
@@ -234,7 +234,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockVolumeRatio: 1.0,
   blockProfitFactorRatio: 1.1,
   blockIncrementSteps: 2,
-  blockMaxStack:    12,
+  blockMaxStack:    6,
   strategyBlockMaterializationBatchSize: 1024,
   blockPauseCountRatio: 1.0,
   blockActiveRealEnabled: true,
@@ -243,7 +243,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockRowLiveVolumeRatio: 1.0,
   blockRowLiveProfitFactorRatio: 1.1,
   blockRowLiveIncrementSteps: 2,
-  blockRowLiveMaxStack: 12,
+  blockRowLiveMaxStack: 6,
   blockRowLivePauseCountRatio: 1.0,
   normalEnabled: true,
   blockOnlyEnabled: true,
@@ -932,7 +932,7 @@ export function StrategyCoordinationSection({
               <div>
                 <Label className="text-sm font-semibold">Volume Ratio</Label>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Compound ratio applied to the immutable general volume. Each
+                  Additive ratio applied to the immutable general volume. Each
                   admitted step multiplies the previous target; confirmed fills
                   are subtracted before the next exact delta is submitted.
                 </p>
@@ -963,7 +963,7 @@ export function StrategyCoordinationSection({
               </span>
             </div>
             <div className="grid grid-cols-3 gap-2 pt-1 text-[11px]">
-              {[1, 2, 3].map((n) => {
+              {[1, 2, 3, 4, 5, 6].map((n) => {
                 const multiplier = calculateBlockVolumeMultiplier(
                   n,
                   value.blockVolumeRatio,
@@ -989,20 +989,20 @@ export function StrategyCoordinationSection({
           <div className="rounded-lg border border-border/60 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <Label className="text-sm font-semibold">Compound Increment Steps</Label>
+                <Label className="text-sm font-semibold">Additive Recovery Steps</Label>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Number of sequential Block targets allowed to multiply the
-                  prior target. Range 1–5; default 2. Higher Count rows retain
-                  independent PF/stat identities after the volume cap.
+                  Maximum recovery increases per Count, 1–2 (default 2). After
+                  that Count’s non-positive result window, add one more original
+                  count × ratio portion. Hold until profit, then pause that Count.
                 </p>
               </div>
-              <Badge variant="outline" className="text-[10px] tabular-nums">1–5</Badge>
+              <Badge variant="outline" className="text-[10px] tabular-nums">1–2</Badge>
             </div>
             <div className="flex items-center gap-3 pt-1">
               <Slider
                 value={[value.blockIncrementSteps]}
                 min={1}
-                max={5}
+                max={2}
                 step={1}
                 onValueChange={([next]) => onChange({ ...value, blockIncrementSteps: next })}
                 disabled={!value.variants.block}
@@ -1130,7 +1130,7 @@ export function StrategyCoordinationSection({
                 <Slider
                   value={[value.blockRowLiveIncrementSteps]}
                   min={1}
-                  max={5}
+                  max={2}
                   step={1}
                   onValueChange={([next]) => onChange({ ...value, blockRowLiveIncrementSteps: next })}
                   disabled={!value.variants.block || !value.blockRowLiveEnabled}
@@ -1142,7 +1142,7 @@ export function StrategyCoordinationSection({
                 <Slider
                   value={[value.blockRowLiveMaxStack]}
                   min={1}
-                  max={12}
+                  max={6}
                   step={1}
                   onValueChange={([next]) => onChange({ ...value, blockRowLiveMaxStack: next })}
                   disabled={!value.variants.block || !value.blockRowLiveEnabled}
@@ -1179,18 +1179,18 @@ export function StrategyCoordinationSection({
                 <Label className="text-sm font-semibold">Max Stack</Label>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Number of independent Block sizes processed in parallel.
-                  Default 12 emits all block counts 1 through 12. Engine clamps to 1–12.
+                  Default 6 processes Counts 1–6 independently. Each Count retains its own result, increase and pause state.
                 </p>
               </div>
               <Badge variant="outline" className="text-[10px] tabular-nums">
-                1–12
+                1–6
               </Badge>
             </div>
             <div className="flex items-center gap-3 pt-1">
               <Slider
                 value={[value.blockMaxStack]}
                 min={1}
-                max={12}
+                max={6}
                 step={1}
                 onValueChange={(v) =>
                   onChange({ ...value, blockMaxStack: v[0] })

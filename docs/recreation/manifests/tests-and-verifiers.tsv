@@ -7,6 +7,7 @@ integration	__tests__/integration/live-order-service.test.ts
 integration	__tests__/integration/main-engine-live-dispatch.test.ts
 integration	__tests__/integration/preset-optimizer-store.test.ts
 integration	__tests__/integration/progression-api.test.ts
+operator-tool	__tests__/fixtures/cts-g-trend-break.json
 operator-tool	components/test-dashboard.tsx
 operator-tool	components/test-live-orders.tsx
 operator-tool	scripts/autotest-drift.mjs
@@ -24,10 +25,13 @@ operator-tool	scripts/test-progression-live.mjs
 operator-tool	scripts/test-quickstart-3symbols.js
 operator-tool	scripts/test-tp-sl-ranges.mjs
 operator-tool	scripts/validate-comprehensive.mjs
+operator-tool	scripts/verify-block-native-redis.ts
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-native-redis-coordination.ts
 operator-tool	scripts/verify-recreation-manifests.mjs
+operator-tool	scripts/verify-redis-backup.mjs
 operator-tool	scripts/verify-redis-endpoint.mjs
+operator-tool	scripts/verify-redis-list-repack.mjs
 operator-tool	scripts/verify-signal-sources.ts
 operator-tool	scripts/verify-source-syntax.mjs
 operator-tool	scripts/verify-volatile-cleanup.mjs
@@ -57,7 +61,9 @@ unit	__tests__/unit/bingx-vst-migration.test.ts
 unit	__tests__/unit/bingx-vst-read-pacer.test.ts
 unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
+unit	__tests__/unit/block-additive-lifecycle.test.ts
 unit	__tests__/unit/block-count-state.test.ts
+unit	__tests__/unit/block-settings-migration.test.ts
 unit	__tests__/unit/bounded-concurrency.test.ts
 unit	__tests__/unit/bybit-connector-contract.test.ts
 unit	__tests__/unit/canonical-pipeline-admission.test.ts
@@ -76,6 +82,10 @@ unit	__tests__/unit/connection-test-stored-credentials.test.ts
 unit	__tests__/unit/control-order-capacity.test.ts
 unit	__tests__/unit/cooperative-task-timeout.test.ts
 unit	__tests__/unit/cron-generate-indications-eligibility.test.ts
+unit	__tests__/unit/cts-g-exit.test.ts
+unit	__tests__/unit/cts-g-history-cache.test.ts
+unit	__tests__/unit/cts-g-timeframes.test.ts
+unit	__tests__/unit/cts-g-trend-break.test.ts
 unit	__tests__/unit/dashboard-event-polling.test.ts
 unit	__tests__/unit/dashboard-main-connections.test.ts
 unit	__tests__/unit/database-validator-migration-contract.test.ts
@@ -143,6 +153,7 @@ unit	__tests__/unit/indication-connection-selection.test.ts
 unit	__tests__/unit/indication-lane-identity.test.ts
 unit	__tests__/unit/indication-outcome-cost-basis.test.ts
 unit	__tests__/unit/indication-set-type-coordination.test.ts
+unit	__tests__/unit/indication-set-write-pressure.test.ts
 unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/instaforex-base-connection.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts

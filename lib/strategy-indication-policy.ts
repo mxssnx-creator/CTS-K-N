@@ -8,6 +8,7 @@ export const STRATEGY_INDICATION_TYPES = [
   "common",
   "signal",
   "trend",
+  "break",
   "auto",
 ] as const
 

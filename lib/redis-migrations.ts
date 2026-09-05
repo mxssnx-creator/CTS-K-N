@@ -13,6 +13,7 @@ import {
 } from "./database-maintenance"
 import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from "./redis-lock-utils"
 import { scanRedisKeys } from "./redis-scan"
+import { migrateAdditiveBlockSettings } from "./block-settings-migration"
 import { ALL_TRAILING_VARIANTS, DEFAULT_TRAILING_VARIANTS } from "./trailing-settings"
 import {
   DEFAULT_SYMBOL_COUNT as CANONICAL_DEFAULT_SYMBOL_COUNT,
@@ -8209,6 +8210,15 @@ const migrations: Migration[] = [
       // Operator-visible stage choices and independent Row-Live settings are
       // retained; rollback only moves the migration cursor.
       await client.set("_schema_version", "106")
+    },
+  },
+  {
+    version: 108,
+    name: "108-independent-additive-block-counts",
+    up: migrateAdditiveBlockSettings,
+    down: async (client: any) => {
+      // Retain confirmed orders, recovery state and the safer settings bounds.
+      await client.set("_schema_version", "107")
     },
   },
 ]

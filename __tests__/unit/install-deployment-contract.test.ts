@@ -869,7 +869,7 @@ describe("production installation and Kilo deployment contract", () => {
       encoding: "utf8",
     })
     expect(output).toContain('"success":true')
-    expect(output).toContain('"schemaVersion":107')
+    expect(output).toContain('"schemaVersion":108')
   })
 
   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {
@@ -1170,7 +1170,9 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("runs preflight and install through the SSH/bootstrap boundary with the canonical installer", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "cts-remote-route-e2e-"))
+    // The route's test-only escape hatch is deliberately limited to /tmp.
+    // A caller-supplied TMPDIR must not change this security-boundary fixture.
+    const root = await mkdtemp("/tmp/cts-remote-route-e2e-")
     const binDir = path.join(root, "bin")
     const installerFixture = path.join(root, "canonical-installer.sh")
     const capture = path.join(root, "installer-args.txt")

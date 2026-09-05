@@ -110,7 +110,7 @@ const DEFAULT_STATE: DirectTradeState = {
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
-  blockRange: [1, 12],
+  blockRange: [1, 6],
   blockVolumeRatio: 1,
   blockIncrementSteps: 2,
   blockProfitFactorRatio: 1.1,
@@ -393,13 +393,13 @@ export function DirectTradeSettings() {
             <div className="space-y-3 rounded-lg border p-3">
               <div><Label className="text-xs">Live entry indication types</Label><p className="text-xs text-muted-foreground">All sliders may be off. Historical calculation and validation still run for the calculated indication types below.</p></div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                {[["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]].map(([value, title]) => {
+                {[["trend", "Trend (CTS-G)"], ["break", "Break (CTS-G)"], ["trend_break", "Trend + Break"], ["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]].map(([value, title]) => {
                   const checked = state.enabledIndicationTypes.includes(value)
                   return <label key={value} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs"><span>{title}</span><Switch aria-label={`Enable ${title} Direct-Trade live entries`} checked={checked} onCheckedChange={(nextChecked) => update("enabledIndicationTypes", nextChecked ? [...state.enabledIndicationTypes, value] : state.enabledIndicationTypes.filter((entry) => entry !== value))} /></label>
                 })}
               </div>
             </div>
-            <SelectableList label="Calculated indication types" values={state.entryTactics} options={[["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]]} onChange={(value) => update("entryTactics", value)} />
+            <SelectableList label="Calculated indication types" values={state.entryTactics} options={[["trend", "Trend (CTS-G)"], ["break", "Break (CTS-G)"], ["trend_break", "Trend + Break"], ["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]]} onChange={(value) => update("entryTactics", value)} />
             <SelectableList label="Exit tactics" values={state.exitTactics} options={[["bracket", "Bracket"], ["momentum_reversal", "Momentum reversal"], ["relative", "Relative reversal"], ["time", "Time"]]} onChange={(value) => update("exitTactics", value)} />
             <div className="max-w-xs space-y-2"><Label className="text-xs">Entry timing</Label><Select value={state.entryTiming} onValueChange={(value: DirectTradeState["entryTiming"]) => update("entryTiming", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">Current causal candle</SelectItem><SelectItem value="last_confirmed">Last confirmed candle</SelectItem></SelectContent></Select></div>
           </div></section>
@@ -461,9 +461,9 @@ export function DirectTradeSettings() {
             <Range label="Inverse SL maximum / TP" value={state.inverseMaxSlRatio} min={0.25} max={1.25} step={0.25} onChange={(value) => update("inverseMaxSlRatio", value)} />
             <Range label="SL ratio step" value={state.slRatioStep} min={0.25} max={0.75} step={0.25} onChange={(value) => update("slRatioStep", value)} />
             <Range label="Block minimum" value={state.blockRange[0]} min={0} max={state.blockRange[1]} step={1} onChange={(value) => update("blockRange", [value, state.blockRange[1]])} />
-            <Range label="Block maximum" value={state.blockRange[1]} min={state.blockRange[0]} max={120} step={1} onChange={(value) => update("blockRange", [state.blockRange[0], value])} />
+            <Range label="Block maximum" value={state.blockRange[1]} min={state.blockRange[0]} max={6} step={1} onChange={(value) => update("blockRange", [state.blockRange[0], value])} />
             <Range label="Block increase ratio / valid block" value={state.blockVolumeRatio} min={0.1} max={10} step={0.1} onChange={(value) => update("blockVolumeRatio", value)} />
-            <Range label="Block compound increment steps" value={state.blockIncrementSteps} min={1} max={5} step={1} onChange={(value) => update("blockIncrementSteps", Math.round(value))} />
+            <Range label="Block additive recovery steps" value={state.blockIncrementSteps} min={1} max={2} step={1} onChange={(value) => update("blockIncrementSteps", Math.round(value))} />
             <Range label="Block minimum-PF factor" value={state.blockProfitFactorRatio} min={0.2} max={5} step={0.1} suffix="×" onChange={(value) => update("blockProfitFactorRatio", value)} />
             <div className="flex items-center justify-between rounded-md border p-3"><div><Label>Trailing protection</Label><p className="text-xs text-muted-foreground">Fixed, Auto and Combination remain independent lanes.</p></div><Switch checked={state.trailingEnabled} onCheckedChange={(value) => update("trailingEnabled", value)} /></div>
           </div></section>

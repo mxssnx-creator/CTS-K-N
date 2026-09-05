@@ -60,7 +60,7 @@ describe("independent Block count lifecycle", () => {
       setKey: "move:long#block:3",
       blockBaseVolumeMultiplier: 1,
       blockVolumeRatio: 1,
-      blockIncrementSteps: 3,
+      blockIncrementSteps: 2,
       blockCalculatedVolumeMultiplier: 8,
       axisWindows: { pause: 6 },
     }, 7.5, "client-3", "order-3", {
@@ -77,9 +77,9 @@ describe("independent Block count lifecycle", () => {
       quantity: 7.5,
       baseVolumeMultiplier: 1,
       volumeRatio: 1,
-      incrementSteps: 3,
-      effectiveIncrementStep: 3,
-      volumeMultiplier: 8,
+      incrementSteps: 2,
+      effectiveIncrementStep: 1,
+      volumeMultiplier: 4,
       baseQuantity: 2,
       targetAdditionalQuantity: 7.5,
       confirmedAdditionalQuantityBefore: 0,
@@ -96,9 +96,9 @@ describe("independent Block count lifecycle", () => {
   test("calculates every Block target independently from the immutable general volume", () => {
     expect(calculateBlockVolumeMultiplier(1, 1)).toBe(2)
     expect(calculateBlockVolumeMultiplier(3, 1)).toBe(4)
-    expect(calculateBlockVolumeMultiplier(3, 1, 3)).toBe(8)
+    expect(calculateBlockVolumeMultiplier(3, 1, 2, 2)).toBe(7)
     expect(calculateBlockAddQuantity(1, 1, 1)).toBe(1)
-    expect(calculateBlockTargetQuantity(1, 3, 1.5)).toBe(6.25)
+    expect(calculateBlockTargetQuantity(1, 3, 1.5)).toBe(5.5)
     // Passing the immutable parent quantity is deliberate: earlier Block
     // fills are subtracted from the next absolute target and never become
     // another count's base.
@@ -116,16 +116,16 @@ describe("independent Block count lifecycle", () => {
       confirmedAdd += delta
       return delta
     })
-    ;[0.014, 0.0189, 0.025515, 0.03444525].forEach((expected, index) => {
+    ;[0.014, 0.014, 0.014, 0.014].forEach((expected, index) => {
       expect(orderDeltas[index]).toBeCloseTo(expected, 12)
     })
-    expect(immutableBase + confirmedAdd).toBeCloseTo(0.13286025, 12)
+    expect(immutableBase + confirmedAdd).toBeCloseTo(0.096, 12)
     expect(calculateConfirmedBlockAddQuantity(
       orderDeltas.map((quantity) => ({ quantity })),
-    )).toBeCloseTo(0.09286025, 12)
+    )).toBeCloseTo(0.056, 12)
   })
 
-  test("compounds from the immutable origin without cumulative over-add", () => {
+  test("adds from the immutable origin without cumulative over-add", () => {
     const base = 1
     const ratio = 1
     const steps = 3
@@ -136,23 +136,23 @@ describe("independent Block count lifecycle", () => {
       return delta
     })
 
-    expect(deltas).toEqual([1, 2, 4])
-    expect(base + confirmedAdd).toBe(8)
+    expect(deltas).toEqual([1, 1, 1])
+    expect(base + confirmedAdd).toBe(4)
     expect(calculateBlockRemainingAddQuantity(base, 2, ratio, confirmedAdd, steps)).toBe(0)
-    expect(calculateBlockTargetQuantity(5, 3, 1, steps)).toBe(40)
+    expect(calculateBlockTargetQuantity(5, 3, 1, steps)).toBe(20)
   })
 
   test("calculates a separate proportional minimum PF for every Block count", () => {
     const defaultPf = 1.2
     const factor = 1.1
-    const thresholds = Array.from({ length: 10 }, (_, index) => {
+    const thresholds = Array.from({ length: 6 }, (_, index) => {
       const count = index + 1
       const volumeIncrement = calculateBlockVolumeIncrementRatio(count, 1, 5)
       return calculateBlockMinimumProfitFactor(defaultPf, factor, volumeIncrement)
     })
     expect(thresholds[0]).toBeCloseTo(1.22, 8)
-    expect(thresholds[9]).toBeCloseTo(7.82, 8)
-    expect(new Set(thresholds).size).toBe(5)
+    expect(thresholds[5]).toBeCloseTo(2.32, 8)
+    expect(new Set(thresholds).size).toBe(6)
     expect(calculateBlockMinimumProfitFactor(defaultPf, 0.01, 1)).toBeCloseTo(1.04, 8)
     expect(calculateBlockMinimumProfitFactor(defaultPf, 9, 1)).toBeCloseTo(2, 8)
   })
@@ -216,16 +216,16 @@ describe("independent Block count lifecycle", () => {
   })
 
   test.each([0.25, 0.75, 1, 1.5, 3])(
-    "applies ratio %s generically to every valid Block count 1 through 12",
+    "applies ratio %s generically to every valid Block count 1 through 6",
     (ratio) => {
       const positionBase = 2.4
       for (let blockCount = BLOCK_COUNT_MIN; blockCount <= BLOCK_COUNT_MAX; blockCount++) {
         expect(calculateBlockAddQuantity(positionBase, blockCount, ratio, 5)).toBeCloseTo(
-          positionBase * ((1 + ratio) ** Math.min(blockCount, 5) - 1),
+          positionBase * blockCount * ratio,
           8,
         )
         expect(calculateBlockVolumeIncrementRatio(blockCount, ratio, 5)).toBeCloseTo(
-          (1 + ratio) ** Math.min(blockCount, 5) - 1,
+          blockCount * ratio,
           8,
         )
       }
@@ -233,7 +233,7 @@ describe("independent Block count lifecycle", () => {
   )
 
   test.each(["long", "short"] as const)(
-    "keeps every sequential %s Count delta compounded from the immutable base",
+    "keeps every sequential %s Count delta added from the immutable base",
     (_direction) => {
       const base = 0.037
       const ratio = 0.65
@@ -241,8 +241,8 @@ describe("independent Block count lifecycle", () => {
       let confirmedAdd = 0
       for (let count = BLOCK_COUNT_MIN; count <= BLOCK_COUNT_MAX; count++) {
         const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd, steps)
-        const previousTarget = count === 1 ? 1 : (1 + ratio) ** Math.min(count - 1, steps)
-        const nextTarget = (1 + ratio) ** Math.min(count, steps)
+        const previousTarget = 1 + (count - 1) * ratio
+        const nextTarget = 1 + count * ratio
         expect(delta).toBeCloseTo(base * (nextTarget - previousTarget), 12)
         confirmedAdd += delta
         expect(base + confirmedAdd).toBeCloseTo(base * nextTarget, 12)
@@ -254,21 +254,21 @@ describe("independent Block count lifecycle", () => {
     const base = 3
     const ratio = 0.4
     let confirmedAdd = 0
-    const deltas = [5, 2, 12, 11].map((count) => {
+    const deltas = [6, 2, 5, 1].map((count) => {
       const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd, 5)
       confirmedAdd += delta
       return delta
     })
 
-    expect(deltas[0]).toBeCloseTo(calculateBlockAddQuantity(base, 5, ratio, 5), 12)
+    expect(deltas[0]).toBeCloseTo(calculateBlockAddQuantity(base, 6, ratio, 5), 12)
     expect(deltas.slice(1)).toEqual([0, 0, 0])
-    expect(base + confirmedAdd).toBeCloseTo(calculateBlockTargetQuantity(base, 12, ratio, 5), 12)
+    expect(base + confirmedAdd).toBeCloseTo(calculateBlockTargetQuantity(base, 6, ratio, 5), 12)
   })
 
   test("normalizes increment steps and migrates only the exact legacy PF sentinel", () => {
     expect(normalizeBlockIncrementSteps(0)).toBe(1)
-    expect(normalizeBlockIncrementSteps(99)).toBe(5)
-    expect(calculateBlockEffectiveIncrementStep(12, 3)).toBe(3)
+    expect(normalizeBlockIncrementSteps(99)).toBe(2)
+    expect(calculateBlockEffectiveIncrementStep(6, 2, 9)).toBe(2)
     expect(normalizeBlockProfitFactorRatio(0.8)).toBe(1.1)
     expect(normalizeBlockProfitFactorRatio(0.81)).toBe(0.81)
   })
@@ -329,7 +329,7 @@ describe("independent Block count lifecycle", () => {
     unavailable = await getUnavailableBlockSetKeys(redis, "conn-1", "BTCUSDT")
     expect(unavailable).toEqual(new Set(["move:long#block:1", "move:long#block:3"]))
 
-    const nextPnl = { id: "live:two", connectionId: "conn-1", symbol: "ETHUSDT", status: "closed", realizedPnL: -2 }
+    const nextPnl = { id: "live:two", connectionId: "conn-1", symbol: "BTCUSDT", direction: "long", setKey: "move:long", status: "closed", realizedPnL: -2 }
     await advanceBlockCountPausesOnPositionClose(redis, nextPnl)
     // Duplicate processing of the same close is idempotent.
     await advanceBlockCountPausesOnPositionClose(redis, nextPnl)
@@ -375,6 +375,7 @@ describe("independent Block count lifecycle", () => {
     const redis = new MemoryRedis()
     await advanceBlockCountPausesOnPositionClose(redis, {
       id: "block-owner",
+      direction: "long",
       connectionId: "conn-race",
       symbol: "BTCUSDT",
       status: "closed",
@@ -393,10 +394,10 @@ describe("independent Block count lifecycle", () => {
 
     await Promise.all([
       advanceBlockCountPausesOnPositionClose(redis, {
-        id: "pnl-a", connectionId: "conn-race", symbol: "ETHUSDT", realizedPnL: 1,
+        id: "pnl-a", connectionId: "conn-race", symbol: "BTCUSDT", direction: "long", setKey: "move:long", status: "closed", realizedPnL: 1,
       }),
       advanceBlockCountPausesOnPositionClose(redis, {
-        id: "pnl-b", connectionId: "conn-race", symbol: "SOLUSDT", realizedPnL: -1,
+        id: "pnl-b", connectionId: "conn-race", symbol: "BTCUSDT", direction: "long", setKey: "move:long", status: "closed", realizedPnL: -1,
       }),
     ])
 

@@ -287,11 +287,11 @@ function applyBlockAdjustment(
   // Signed Result-R uses 0 as neutral. Do not use a Main-stage
   // PositionCost PF coordinate here: values below 1 are not a PnL sign.
   if (avgSignedResultR < 0) {
-    // Absolute capped-compound target. Every Count remains an
+    // Absolute capped-additive target. Every Count remains an
     // independent Row after the physical increment cap.
-    return baseRatio * Math.pow(
-      1 + adjustmentRatio,
-      Math.min(activeBlockCount, incrementSteps)
+    return baseRatio * (
+      1 + Math.max(1, Math.floor(activeBlockCount)) * adjustmentRatio *
+        Math.min(2, Math.max(1, Math.floor(incrementSteps)))
     )
   }
   

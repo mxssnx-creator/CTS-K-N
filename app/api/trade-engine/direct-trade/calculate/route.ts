@@ -636,8 +636,8 @@ export async function POST(request: NextRequest) {
     const timeframeSets = buildTimeframeCombinations(timeframes)
     const strategyTypes = normaliseDirectTradeStrategyTypes(body.strategyTypes)
     const blockRange: [number, number] = Array.isArray(body.blockRange) && body.blockRange.length === 2
-      ? [Math.max(0, Math.floor(numberOr(body.blockRange[0], 1))), Math.max(0, Math.floor(numberOr(body.blockRange[1], 12)))]
-      : [1, 12]
+      ? [Math.max(0, Math.min(6, Math.floor(numberOr(body.blockRange[0], 1)))), Math.max(0, Math.min(6, Math.floor(numberOr(body.blockRange[1], 6))))]
+      : [1, 6]
     blockRange.sort((left, right) => left - right)
     const trailingEnabled = body.trailingEnabled !== false
     const minProfitFactor = normalizeMainTradePfRatio(

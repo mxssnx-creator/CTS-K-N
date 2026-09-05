@@ -382,7 +382,8 @@ function RealVariantStatsCard({
                       {formatNumber(row.calculated, 0)} calculated · {formatNumber(row.evaluated, 0)} evaluated · {formatNumber(row.eligible, 0)} eligible
                     </span>
                     <span>
-                      min {formatNumber(minimum, 2)} · {formatNumber(row.avgVolumeIncrement, 2)}× vol ·{" "}
+                      min {formatNumber(minimum, 2)} · +{formatNumber(row.avgVolumeIncrement, 2)}× base ·{" "}
+                      stage {formatNumber(row.effectiveIncrementStepMin, 0)}–{formatNumber(row.effectiveIncrementStepMax, 0)} ·{" "}
                       {formatNumber(row.active, 0)} active · {formatNumber(row.paused, 0)} paused
                       {asNumber(row.coldStart) > 0 ? ` · ${formatNumber(row.coldStart, 0)} cold-start` : ""}
                     </span>

@@ -1104,7 +1104,7 @@ export function DirectTradeSection() {
                 <Slider
                   value={[localBlockMax]}
                   min={1}
-                  max={12}
+                  max={6}
                   step={1}
                   disabled={!localBlock}
                   onValueChange={([v]) => {

@@ -51,6 +51,7 @@ BINGX_VST_VERIFY_ORIGIN	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-orch
 BINGX_VST_VERIFY_SERVICES_INACTIVE	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-orchestrated-verifier.ts
 BINGX_X02_API_KEY	test-or-operator-tool	yes	yes	7	.env.example,__tests__/unit/runtime-maintenance.test.ts,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/reconcile-bingx-x02-protection-slot.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_X02_API_SECRET	test-or-operator-tool	yes	yes	6	.env.example,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/inject-bingx-creds.js,scripts/reconcile-bingx-x02-protection-slot.ts,scripts/run-bingx-vst-live-soak.ts
+BLOCK_TEST_REDIS_URL	test-or-operator-tool	yes	no	1	scripts/verify-block-native-redis.ts
 BYBIT_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
 BYBIT_API_SECRET	test-or-operator-tool	yes	yes	1	.env.example
 CF_PAGES	application-runtime	no	no	1	lib/deployment-runtime.ts
@@ -140,11 +141,13 @@ DB_URL	application-runtime	no	yes	7	.env.example,__tests__/unit/inline-local-red
 DCA_BACKTEST_DAYS	test-or-operator-tool	no	no	3	scripts/optimize-dca-14d.ts,scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_END_MS	test-or-operator-tool	no	no	2	scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_FOLDS	test-or-operator-tool	no	no	2	scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
+DCA_BACKTEST_INPUT	test-or-operator-tool	no	no	1	scripts/optimize-dca-20d.ts
 DCA_BACKTEST_MARKDOWN	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
-DCA_BACKTEST_OUTPUT	test-or-operator-tool	no	no	2	scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
+DCA_BACKTEST_OUTPUT	test-or-operator-tool	no	no	3	scripts/optimize-dca-20d.ts,scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_SYMBOLS	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
 DCA_BACKTEST_TIMEFRAMES	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
 DCA_BACKTEST_TOP	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
+DCA_DEFAULTS_OUTPUT	test-or-operator-tool	no	no	1	scripts/optimize-dca-20d.ts
 DCA_MARKET_CACHE_DIR	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
 DCA_MAX_EQUITY_DRAWDOWN_PCT	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
 DCA_MAX_SINGLE_LOSS_PCT	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
@@ -408,6 +411,8 @@ REALTIME_CANDLE_WINDOW	test-or-operator-tool	no	yes	1	.env.example
 REALTIME_CANONICAL_CYCLE_BUDGET_MS	application-runtime	no	no	1	lib/trade-engine/engine-manager.ts
 REALTIME_PIPELINE_SYMBOLS_PER_TICK	application-runtime	no	yes	2	.env.example,lib/trade-engine/engine-manager.ts
 REDIS_DEBUG_ENABLED	application-runtime	no	yes	4	.env.example,__tests__/unit/requested-regressions.test.ts,app/api/debug/progression-dump/route.ts,app/api/debug/redis-state/route.ts
+REDIS_REPACK_URL	test-or-operator-tool	no	no	1	scripts/repack-redis-indication-lists.mjs
+REDIS_SERVER_BINARY	test-or-operator-tool	no	no	2	scripts/verify-redis-backup.mjs,scripts/verify-redis-list-repack.mjs
 REDIS_URL	application-runtime	yes	yes	23	.env.example,__tests__/integration/main-engine-live-dispatch.test.ts,__tests__/integration/preset-optimizer-store.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/redis-secondary-indexes.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/audit-live-position-ledgers.mjs,scripts/backup-local-redis.mjs,scripts/diagnose-stats.mjs,scripts/inspect-redis-retention.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/preview-redis-harness.mjs,scripts/rebuild-live-order-counters.mjs,scripts/redis-memory-governor.mjs,scripts/repair-live-position-ledgers.mjs,scripts/verify-redis-endpoint.mjs
 REDIS_VOLATILE_STALE_MS	application-runtime	no	no	1	lib/redis-db.ts
 REDISMS_DOWNLOAD_DIR	test-or-operator-tool	no	no	2	scripts/npm-redis-service.mjs,scripts/preview-redis-harness.mjs

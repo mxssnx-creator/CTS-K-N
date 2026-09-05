@@ -37,6 +37,10 @@ export interface DcaLegState {
   triggerDistancePct: number
   requestedQuantity: number
   quantity: number
+  /** Full configured step target, retained across partial terminal executions. */
+  targetQuantity?: number
+  /** Legacy rows without this flag describe an already completed step. */
+  targetSatisfied?: boolean
   referencePrice: number
   positionQuantityAfter?: number
   clientOrderId?: string
@@ -270,7 +274,7 @@ export function resolveNextDcaStep(args: {
   const now = args.now ?? Date.now()
   if (args.pendingStep && args.pendingStep > 0) return null
   const legs = Array.isArray(args.legs) ? args.legs : []
-  const completed = new Set(legs.filter((leg) => Number(leg.quantity) > 0).map((leg) => Math.floor(Number(leg.step))))
+  const completed = new Set(legs.filter((leg) => Number(leg.quantity) > 0 && leg.targetSatisfied !== false).map((leg) => Math.floor(Number(leg.step))))
   const lastFilledAt = legs.reduce((latest, leg) => Math.max(latest, Number(leg.filledAt || 0)), 0)
   if (lastFilledAt > 0 && now - lastFilledAt < args.profile.cooldownSeconds * 1000) return null
 
@@ -310,7 +314,8 @@ export function calculateDcaAddQuantity(
 ): number {
   if (!Number.isFinite(baseQuantity) || baseQuantity <= 0) return 0
   // Default ratio 1.0 keeps the DCA lane at identity before the shared scalar.
-  const ratio = Number.isFinite(volumeMultiplier) && volumeMultiplier > 0 ? volumeMultiplier : 1.0
+  if (!Number.isFinite(volumeMultiplier) || volumeMultiplier <= 0) return 0
+  const ratio = volumeMultiplier
   const requested = baseQuantity * ratio
   const boundedMaxRatio = finiteInRange(
     maxPositionVolumeRatio,

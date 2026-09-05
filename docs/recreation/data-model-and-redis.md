@@ -32,7 +32,7 @@ at `docs/live-order-redis-keys.md` and `docs/redis-client-keys-audit.md`.
 | `strategy_set_result_ring:{conn}:{setKey}` | list | bounded realized PnL/DDT outcomes |
 | `block_count_active:{conn}:{symbol}` | hash | active exact Block leg keys |
 | `block_count_pause:{conn}` | hash | independent count pause states |
-| `strategy_block_pf_stats:{conn}` | hash | Count1..12 and active Block PF snapshots |
+| `strategy_block_pf_stats:{conn}` | hash | Count1..6 and active Block PF snapshots |
 | `real:position:*`, `real:positions:index:*` | string/set | RealPosition snapshots and index |
 | live position/order key families | string/set/hash | authoritative local order/position/outbox state |
 | progression/engine/runtime hashes | hash | owner intent, heartbeats, epochs, counters, settings completion |

@@ -1,3 +1,4 @@
+import { evaluateCtsGTrend, evaluateCtsGBreak, coordinateCtsGEntry } from "./cts-g-indications"
 /**
  * Direct-Trade historical coordination.
  *
@@ -52,7 +53,7 @@ function normalizeDirectTradePositionCostPercent(value: unknown): number {
 }
 
 export const DIRECT_TRADE_TIMEFRAMES = ["5m", "15m", "30m"] as const
-export const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"] as const
+export const DIRECT_TRADE_ENTRY_TACTICS = ["trend", "break", "trend_break", "momentum", "mean_reversion", "breakout", "relative"] as const
 export const DIRECT_TRADE_EXIT_TACTICS = ["bracket", "momentum_reversal", "relative", "time"] as const
 // Direct-Trade protection is expressed in PositionCost multiples, not as an
 // unrelated fixed price percentage. With the default PositionCost of 0.1%,
@@ -642,6 +643,11 @@ function entrySignal(
 ): boolean {
   const effective = entryTiming === "last_confirmed" ? index - 1 : index
   if (effective < 14) return false
+  if (["trend", "break", "trend_break"].includes(tactic)) {
+    const closes = candles.slice(Math.max(0, effective - 240), effective + 1).map(c => c.close)
+    const signal = tactic === "trend" ? evaluateCtsGTrend(closes) : tactic === "break" ? evaluateCtsGBreak(closes) : coordinateCtsGEntry(closes)
+    return signal?.direction === direction
+  }
   const history = candles.slice(effective - 14, effective)
   const closes = history.map((candle) => candle.close)
   const current = candles[effective]
@@ -990,7 +996,7 @@ function simulateTrades(
     // signal adds one independent ratio-sized leg at that candle's close;
     // the parent exit remains shared, exactly as the physical exchange
     // position is shared. This prevents Block PF from being a copied Base PF
-    // while retaining immutable capped-compound target metadata.
+    // while retaining immutable capped-additive target metadata.
     const entryLegs: Array<{ price: number; weight: number }> = [
       { price: initialEntryPrice, weight: 1 },
     ]
@@ -1268,6 +1274,7 @@ function stableSetKey(input: Pick<DirectTradeSet,
     `block:${Math.max(0, Math.floor(input.blockCount))}`,
     `blockRatio:${numeric(input.blockVolumeRatio)}`,
     `blockSteps:${normalizeBlockIncrementSteps(input.blockIncrementSteps)}`,
+    "blockModel:additive-v2",
     `blockPfRatio:${numeric(input.blockProfitFactorRatio)}`,
     input.dcaProfile
       ? `dca:${input.dcaProfile.maxSteps}:${input.dcaProfile.stepVolumeMultipliers.map(numeric).join(",")}:${input.dcaProfile.stepDistancesPct.map(numeric).join(",")}:${input.dcaProfile.takeProfitMode}:${numeric(input.dcaProfile.breakevenProfitPct)}:${input.dcaProfile.cooldownSeconds}:${numeric(input.dcaProfile.maxPositionVolumeRatio)}`
@@ -1358,10 +1365,10 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
             )
             const blockEnabled = !dcaProfile && input.blockRange[1] > 0
             const blockMinimum = blockEnabled
-              ? Math.max(1, Math.min(12, Math.floor(finite(input.blockRange[0], 1))))
+              ? Math.max(1, Math.min(6, Math.floor(finite(input.blockRange[0], 1))))
               : 0
             const blockMaximum = blockEnabled
-              ? Math.max(blockMinimum, Math.min(12, Math.floor(finite(input.blockRange[1], 12))))
+              ? Math.max(blockMinimum, Math.min(6, Math.floor(finite(input.blockRange[1], 6))))
               : 0
             // Base and every requested Block count share one causal candle
             // traversal. `simulateTrades` records Base from the immutable

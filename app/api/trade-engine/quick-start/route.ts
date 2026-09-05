@@ -223,6 +223,7 @@ const QUICKSTART_ZERO_COUNTERS: Record<string, string> = {
   indications_auto_count: "0",
   indications_signal_count: "0",
   indications_trend_count: "0",
+      indications_break_count: "0",
   strategies_count: "0",
   strategies_base_total: "0",
   strategies_main_total: "0",
@@ -1693,6 +1694,7 @@ async function handlePost(request: Request) {
       autoIndications,
       signalIndications,
       trendIndications,
+      breakIndications,
       stratBase,
       stratMain,
       stratReal,
@@ -1713,6 +1715,7 @@ async function handlePost(request: Request) {
       basePseudoOptimal,
       basePseudoSignal,
       basePseudoTrend,
+      basePseudoBreak,
     ] = await Promise.all([
       getSettings(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string,unknown>)),
       client.get(`indications:${connectionId}:count`).catch(() => null),
@@ -1727,6 +1730,7 @@ async function handlePost(request: Request) {
       client.get(`indications:${connectionId}:auto:count`).catch(() => null),
       client.get(`indications:${connectionId}:signal:count`).catch(() => null),
       client.get(`indications:${connectionId}:trend:count`).catch(() => null),
+      client.get(`indications:${connectionId}:break:count`).catch(() => null),
       client.get(`strategies:${connectionId}:base:count`).catch(() => null),
       client.get(`strategies:${connectionId}:main:count`).catch(() => null),
       client.get(`strategies:${connectionId}:real:count`).catch(() => null),
@@ -1748,6 +1752,7 @@ async function handlePost(request: Request) {
       client.scard(`base_pseudo:${connectionId}:optimal`).catch(() => 0),
       client.scard(`base_pseudo:${connectionId}:signal`).catch(() => 0),
       client.scard(`base_pseudo:${connectionId}:trend`).catch(() => 0),
+      client.scard(`base_pseudo:${connectionId}:break`).catch(() => 0),
     ])
 
     const safeEngineState = (engineState ?? {}) as Record<string, unknown>
@@ -1761,6 +1766,7 @@ async function handlePost(request: Request) {
     const autoInd = toNumber(autoIndications)
     const signalInd = toNumber(signalIndications)
     const trendInd = toNumber(trendIndications)
+    const breakInd = toNumber(breakIndications)
     const cycleDuration = Number(
       safeEngineState?.last_cycle_duration ||
       safeProgressionState?.last_cycle_duration ||
@@ -1797,7 +1803,8 @@ async function handlePost(request: Request) {
         auto: autoInd,
         signal: signalInd,
         trend: trendInd,
-        total: indCount || dirInd + moveInd + actInd + actAdvInd + optInd + autoInd + signalInd + trendInd,
+        break: breakInd,
+        total: indCount || dirInd + moveInd + actInd + actAdvInd + optInd + autoInd + signalInd + trendInd + breakInd,
       },
       strategyCounts,
       strategyEvaluated,
@@ -1812,6 +1819,7 @@ async function handlePost(request: Request) {
           optimal: basePseudoOptimal,
           signal: basePseudoSignal,
           trend: basePseudoTrend,
+          break: basePseudoBreak,
         },
         main: mainPseudoPositions,
         real: realPseudoPositions,

@@ -28,7 +28,9 @@ describe("Trend indication project wiring", () => {
     expect(trendPush).toBeGreaterThan(activeBarrier)
     expect(realtime).toContain("oneMinuteClosesOldestFirst")
     expect(realtime).toContain("strongestByTimeframe")
-    expect(realtime).toContain("for (const trendEvaluation of trendEvaluations)")
+    expect(realtime).toContain('for (const kind of ["break", "trend"] as const)')
+    expect(realtime).toContain("evaluateCtsGBreak")
+    expect(realtime).toContain("evaluateCtsGTrend")
   })
 
   test("keeps each Trend window independent through Strategy and applies adaptive TP", () => {
@@ -42,7 +44,7 @@ describe("Trend indication project wiring", () => {
     expect(strategy).toContain("adaptiveTpFactors")
     expect(strategy).toContain("const adaptiveTrendTp")
     expect(strategy).toContain("adaptiveTrendTp ??")
-    expect(strategy).toContain('group.indicationType === "trend" && adaptiveTpFactors.length > 0')
+    expect(strategy).toContain('["trend", "break"].includes(group.indicationType) && adaptiveTpFactors.length > 0')
     const stateManager = source("lib/indication-state-manager.ts")
     expect(stateManager).toContain('type === "active_advanced"')
     expect(stateManager).toContain("positions_advanced:${this.connectionId}:${symbol}")
@@ -78,7 +80,7 @@ describe("Trend indication project wiring", () => {
     expect(migrations).toContain('name: "074-trend-indication-adaptive-base-ranges"')
     expect(migrations).toContain('"settings:app_settings"')
     expect(migrations).toContain('"settings:all_settings"')
-    expect(stats).toContain('"special", "optimal", "auto", "common", "signal", "trend"] as const')
+    expect(stats).toContain('"special", "optimal", "auto", "common", "signal", "trend", "break"] as const')
     expect(stats).toContain('trend:          indCounts.trend')
     expect(base).toMatch(/"active_advanced"\s*\|\s*"signal"\s*\|\s*"trend"/)
     expect(base).toContain("active_situation_ratio")

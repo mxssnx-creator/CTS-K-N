@@ -110,6 +110,8 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "defaultCoordinationMinimumSignals",
   "defaultCoordinationShortDifferenceRatio",
   "directionPostChangeOnly",
+  "ctsGTrendEnabled", "ctsGTrendMinimumSpreadRatio", "ctsGMinimumConfidence",
+  "breakEnabled", "breakRange", "breakNoisePct", "dcaTrendBreakPriority",
   "trendEnabled",
   "trendTimeframesMinutes",
   "trendDrawdownValues",

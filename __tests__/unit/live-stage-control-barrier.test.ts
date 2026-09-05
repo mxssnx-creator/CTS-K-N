@@ -59,6 +59,29 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test.each(["long", "short"])("CTS-G %s exit ratchet survives restart and shares venue/system protection", (direction) => {
+    const short = direction === "short"
+    const pos = livePosition({ direction, stopLoss: 1, takeProfit: 2, positionCostPct: 0.1,
+      ctsGExitEnabled: true, createdAt: Date.now() - 60_000 })
+    expect(__liveStageTest.ratchetCtsGExitStop(pos, short ? 99.2 : 100.8)).toBe(true)
+    expect(pos.ctsGExitLane).toBe("peak")
+    const stop = __liveStageTest.readAbsoluteProtectionPrices(pos).desiredSl
+    expect(short ? stop < 100 : stop > 100).toBe(true)
+    const rehydrated = JSON.parse(JSON.stringify(pos))
+    __liveStageTest.ratchetCtsGExitStop(rehydrated, short ? 99.9 : 100.1)
+    expect(__liveStageTest.readAbsoluteProtectionPrices(rehydrated).desiredSl).toBe(stop)
+    expect(__liveStageTest.detectSltpCross(rehydrated, short ? 99.9 : 100.1, stop)).toBe("sl_hit")
+  })
+
+  test("CTS-G does not activate for unfilled, legacy or manually controlled positions", () => {
+    for (const overrides of [{}, { ctsGExitEnabled: true, executedQuantity: 0 },
+      { ctsGExitEnabled: true, manualProtectionOverride: { stopLossPrice: 99 } }]) {
+      const pos = livePosition({ stopLoss: 1, ...overrides })
+      expect(__liveStageTest.ratchetCtsGExitStop(pos, 101)).toBe(false)
+      expect(pos.ctsGExitStopPrice).toBeUndefined()
+    }
+  })
+
   test("keeps closing and partially-closing exposure in the occupied execution slot", () => {
     expect(__liveStageTest.isActiveLiveSlotStatus("closing")).toBe(true)
     expect(__liveStageTest.isActiveLiveSlotStatus(" CLOSING_PARTIAL ")).toBe(true)
@@ -720,9 +743,9 @@ describe("executing Live-stage control barriers", () => {
       blockCount: 2,
       blockBaseQuantity: 1,
       blockConfirmedAddQuantity: 0,
-      blockTargetAddQuantity: 1.25,
-      blockTargetQuantity: 2.25,
-      addQty: 1.25,
+      blockTargetAddQuantity: 1,
+      blockTargetQuantity: 2,
+      addQty: 1,
       blockIncrementSteps: 2,
     })
   })
