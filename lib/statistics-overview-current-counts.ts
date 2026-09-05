@@ -24,7 +24,9 @@ export function projectOverviewCurrentCounts(payload: unknown) {
     activeStratBase: measured(strategies.base),
     activeStratMain: measured(strategies.main),
     activeStratReal: measured(strategies.real),
-    activeStratTotal: measured(strategies.total),
+    // Real is the final filtered pipeline output. Parent stages overlap it,
+    // and older APIs may retain a historical total when this sample is zero.
+    activeStratTotal: measured(strategies.real),
     liveWinRate: Math.min(100, measured(live.winRate)),
     liveFillRate: Math.min(100, measured(live.fillRate)),
   }

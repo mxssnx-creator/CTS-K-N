@@ -54,6 +54,7 @@ unit	__tests__/unit/bingx-rate-limit-timing.test.ts
 unit	__tests__/unit/bingx-ticker-admission.test.ts
 unit	__tests__/unit/bingx-vst-environment.test.ts
 unit	__tests__/unit/bingx-vst-migration.test.ts
+unit	__tests__/unit/bingx-vst-read-pacer.test.ts
 unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
 unit	__tests__/unit/block-count-state.test.ts
@@ -266,6 +267,7 @@ unit	__tests__/unit/startup-coordinator-cleanup.test.ts
 unit	__tests__/unit/startup-global-liveness.test.ts
 unit	__tests__/unit/startup-validation-runtime-health.test.ts
 unit	__tests__/unit/state-switch-coordination.test.ts
+unit	__tests__/unit/statistics-history-snapshot.test.ts
 unit	__tests__/unit/statistics-overview-current-counts.test.ts
 unit	__tests__/unit/statistics-rollups.test.ts
 unit	__tests__/unit/statistics-ui-correctness.test.ts

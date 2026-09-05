@@ -272,20 +272,6 @@ export default function SetsPage() {
         ))}
       </div>}
 
-      {sets.length === 0 && !loading && (
-        <Card>
-          <CardContent className="py-12 text-center">
-            <Settings className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <h3 className="text-lg font-semibold mb-2">No configuration sets yet</h3>
-            <p className="text-muted-foreground mb-4">Create your first configuration set to get started</p>
-            <Button onClick={handleCreate}>
-              <Plus className="h-4 w-4 mr-2" />
-              Create Set
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>

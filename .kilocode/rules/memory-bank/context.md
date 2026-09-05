@@ -1,4 +1,74 @@
 # Active Context: CTS-K-N Trading System (main project)
+## Current verification — 2026-09-05
+
+- PR314 merged as `e0bfe1fd554e1972c240200d4a189e922c868d58`, exact tree
+  `8cdf930a0bee4a598563ced9a4d179483c03ede2`; final PR Linux smoke
+  33931890936 and merged-main smoke 33932027529 both passed. Final harness
+  namespace follow-up: 241 tests, TypeScript, full ESLint, secret/recreation
+  checks, second production build with 349 complete traces passed.
+- Verified pre-deployment checkpoint:
+  `/var/backups/cts-kn/pre-cts-kn-stats-stream-deploy-20260905`.
+  Official installer `cts-kn-stats-stream-deploy-20260905` completed successfully.
+- The 00:07 UTC full native stats sample exposed another retained-total
+  conflict: active Base/Main/Real/Live all zero but current total 15,805.
+  The total now takes the measured final Real output, with no older connection
+  counter fallback. The browser projection also enforces that pipeline scope.
+  A regression fixture preserves this exact observed empty-basket case.
+- At 00:04 UTC all three production units were active, NRestarts=0;
+  application cgroup memory was about 1.82 GiB. Settings navigation requires
+  browser sign-in; no authentication bypass or credential extraction attempted.
+  Independent margin settings already passed authenticated API isolation tests.
+- PR314 deployment completed successfully: 1,906 tests, build, schema/shared
+  Redis, minute continuity and restart ownership passed. Installer rollback:
+  `/var/backups/cts/cts-kn/20260905T001244Z`.
+- R6 preflight passed, but the first lifecycle aborted BEFORE ENTRY on BingX
+  code 100410 for openOrders (deadline 2026-09-05T00:27:22.904Z). The report
+  `/opt/cts-kn/.agent-logs/bingx-vst-soak-2026-09-05T00-22-13-044Z.json`
+  has 32 GET observations and zero venue writes, entry IDs or owned exposure.
+  It remains failed. The wrapper held maintenance; the separate zero-write
+  proof is saved under `/var/tmp/cts-kn-native-vst-r6-20260905`, and official
+  services were restored at 00:24 UTC. No venue retry before the deadline.
+- The verifier now serializes private account/status GETs at 1,100 ms gaps
+  across its paths; public quotes and protective/cleanup writes retain their
+  connector budget. Actual request start timestamps are recorded for audit.
+  This addresses the observed pre-entry read burst on the shared X02 account.
+- Current-total follow-up passed 276 suites / 1,907 tests on repeat. The first
+  full run had one installer preflight failure from transient available-memory
+  pressure; its isolated 25-test rerun and the full rerun both passed.
+- Pending: validate/publish/deploy the current-total and pacing follow-up,
+  complete R7 VST lifecycle, UI screenshots/API agreement, sustained health,
+  and a final verified backup. Foreign account activity remains independent.
+- Final current-total/pacing gates: 277 suites / 1,909 tests, TypeScript and
+  ESLint passed. Secret scan 1,637 files / zero findings; recreation 1,629
+  project files verified. At 00:28:37 UTC the public nginx SSE connection
+  delivered its connected frame in 72 ms; all three units active, NRestarts=0.
+- Further browser checks proved automatic Main tracking refresh (193,332 to
+  196,038 without manual reload), and the Set creation dialog opened/cancelled
+  correctly. The Sets page had duplicate empty-state panels; the duplicate is
+  removed. No preset was created or activated for a cosmetic/UI check.
+- Statistics previously requested its local archive in parallel with the
+  venue-cache refresh and used PF windows from the separate 500-row page.
+  The full archive now supplies matching PF/DDT from the same merged rows;
+  the page prefers those metrics after the history request. The badge
+  explicitly describes local completeness; cached unrelated venue rows do not
+  establish exhaustive exchange-account history (observed overlay 1,000 rows).
+- Archive API regression passed: all 600 confirmed simulated closes contribute
+  to the returned rows and 4h PF=2 / net=300; an unfilled error is excluded and
+  no private connector is opened. The related 54-test group passed.
+- At 00:38 UTC the full response exposed 20/32 fresh covered symbols but a
+  zero timestamp and zero Stage rows. Exact deployed source/bundle inspection
+  isolated the cause: the volatile cache overlay still required COMPLETE
+  coverage, undoing the full route's partial-snapshot fix. Both paths now keep
+  measured fresh rows and timestamps with explicit partial coverage. The
+  two-symbol regression checks 400 Base, 800 Main, 700 Real with coverage 1/2;
+  missing/stale symbols are not invented and open rows remain independent.
+- Final combined follow-up validation: 278 suites / 1,910 tests passed,
+  TypeScript and full ESLint produced no errors; production build completed
+  with 349 verified traces. Secret scan: 1,638 files, zero findings;
+  recreation manifests: 1,630 project files verified. At 00:49 UTC all three
+  deployed services remained active with NRestarts=0. This candidate still
+  requires publication, merged-main CI and official deployment before R7.
+
 ## Active follow-up — continuous statistics, admission and VST band
 
 - PR313 merged as `4cc47c34c4a01c42c7c32d83c450f4cee0406b5f`, head

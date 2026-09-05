@@ -22,9 +22,15 @@ describe("current Overview counts", () => {
       liveExecution: { positionsCreated: 48, winRate: 62.5, fillRate: 100 },
     })).toMatchObject({
       activeIndDirection: 12, activeIndMove: 8, activeIndTotal: 20,
-      activeStratBase: 7, activeStratMain: 5, activeStratReal: 3, activeStratTotal: 15,
+      activeStratBase: 7, activeStratMain: 5, activeStratReal: 3, activeStratTotal: 3,
       stratLive: 48, liveWinRate: 62.5, liveFillRate: 100,
     })
+  })
+
+  test("keeps the observed empty Real basket at zero despite a retained API total", () => {
+    expect(projectOverviewCurrentCounts({
+      activeCounts: { strategies: { base: 0, main: 0, real: 0, live: 0, total: 15805 } },
+    })).toMatchObject({ activeStratBase: 0, activeStratMain: 0, activeStratReal: 0, activeStratTotal: 0 })
   })
 
   test("missing or invalid current observations never invent activity", () => {

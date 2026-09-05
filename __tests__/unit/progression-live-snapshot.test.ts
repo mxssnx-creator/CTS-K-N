@@ -246,7 +246,7 @@ describe("volatile progression stats overlay", () => {
     })
   })
 
-  it("withholds partial symbol rows from global stage totals", () => {
+  it("keeps fresh partial symbol rows visible with their measured coverage", () => {
     const now = 1_700_000_000_000
     const result = overlayVolatileProgressionStats({
       historic: { symbolsProcessed: 2, symbolsTotal: 2, isComplete: true },
@@ -271,6 +271,7 @@ describe("volatile progression stats overlay", () => {
       engineState: {
         active_symbols: '["BTCUSDT","ETHUSDT"]',
         status: "running",
+        last_processor_heartbeat: String(now - 1_000),
       },
       runningHint: "1",
       strategyDetails: {
@@ -300,19 +301,20 @@ describe("volatile progression stats overlay", () => {
 
     expect(result).toMatchObject({
       strategyRows: {
-        base: { total: 0, valid: 0 },
-        main: { valid: 0, overall: 0 },
-        real: { valid: 0, evaluated: 0 },
-        live: { total: 0, mirrored: 0 },
+        base: { total: 400, valid: 400 },
+        main: { valid: 400, overall: 800 },
+        real: { valid: 700, evaluated: 700 },
+        live: { total: 700, mirrored: 700 },
+        updatedAt: now - 1_000,
         snapshot: { coverage: { processed: 1, total: 2, complete: false } },
       },
       connectionStageOverview: {
-        snapshot: { coverage: { processed: 1, total: 2, complete: false } },
+        snapshot: { fresh: true, ageMs: 1_000, coverage: { processed: 1, total: 2, complete: false } },
         latestCycle: {
-          base: { total: 0, valid: 0 },
-          main: { valid: 0, overall: 0 },
-          real: { valid: 0, active: 0 },
-          live: { total: 0, mirrored: 0 },
+          base: { total: 400, valid: 400 },
+          main: { valid: 400, overall: 800 },
+          real: { valid: 700, active: 0 },
+          live: { total: 700, mirrored: 700 },
         },
       },
     })

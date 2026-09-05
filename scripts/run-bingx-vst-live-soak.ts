@@ -8,6 +8,7 @@ import { classifyVstSoakExternalProtectionOrder } from "@/lib/bingx-vst-soak-aud
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import { isLiveOrderConnectionAllowed } from "@/lib/real-trade-gates"
 import { tradingPairKey } from "@/lib/trading-pair-keys"
+import { createVstReadPacer } from "@/lib/bingx-vst-read-pacer"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
 const VST_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
@@ -72,6 +73,7 @@ type TradePath = typeof TRADE_PATHS[number]["id"]
 interface NetworkObservation {
   method: string
   pathname: string
+  startedAtMs: number
   status?: number
   durationMs: number
   blocked?: boolean
@@ -449,26 +451,30 @@ async function main(): Promise<void> {
   ]) delete process.env[key]
 
   const nativeFetch = globalThis.fetch.bind(globalThis)
+  const pacePrivateRead = createVstReadPacer()
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
     const method = String(init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase()
-    const started = Date.now()
+    let started = Date.now()
     if (url.protocol !== "https:" || url.hostname !== VST_HOST || url.origin !== VST_ORIGIN) {
       network.push({
         method,
         pathname: url.pathname,
+        startedAtMs: started,
         durationMs: Date.now() - started,
         blocked: true,
         error: `blocked origin ${url.origin}`,
       })
       throw new Error(`Prod-VST network guard blocked ${method} ${url.origin}${url.pathname}`)
     }
+    await pacePrivateRead(method, url.pathname)
+    started = Date.now()
     try {
       const response = await nativeFetch(input as any, init)
-      network.push({ method, pathname: url.pathname, status: response.status, durationMs: Date.now() - started })
+      network.push({ method, pathname: url.pathname, startedAtMs: started, status: response.status, durationMs: Date.now() - started })
       return response
     } catch (error) {
-      network.push({ method, pathname: url.pathname, durationMs: Date.now() - started, error: errorText(error) })
+      network.push({ method, pathname: url.pathname, startedAtMs: started, durationMs: Date.now() - started, error: errorText(error) })
       throw error
     }
   }) as typeof fetch

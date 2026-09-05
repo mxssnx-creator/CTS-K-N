@@ -76,6 +76,7 @@ __tests__/unit/bingx-rate-limit-timing.test.ts
 __tests__/unit/bingx-ticker-admission.test.ts
 __tests__/unit/bingx-vst-environment.test.ts
 __tests__/unit/bingx-vst-migration.test.ts
+__tests__/unit/bingx-vst-read-pacer.test.ts
 __tests__/unit/bingx-vst-runtime-routing.test.ts
 __tests__/unit/bingx-vst-soak-audit.test.ts
 __tests__/unit/block-count-state.test.ts
@@ -288,6 +289,7 @@ __tests__/unit/startup-coordinator-cleanup.test.ts
 __tests__/unit/startup-global-liveness.test.ts
 __tests__/unit/startup-validation-runtime-health.test.ts
 __tests__/unit/state-switch-coordination.test.ts
+__tests__/unit/statistics-history-snapshot.test.ts
 __tests__/unit/statistics-overview-current-counts.test.ts
 __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/statistics-ui-correctness.test.ts
@@ -1055,6 +1057,7 @@ lib/bingx-credentials-helper.ts
 lib/bingx-environment.ts
 lib/bingx-instrument-rules.ts
 lib/bingx-public-api.ts
+lib/bingx-vst-read-pacer.ts
 lib/bingx-vst-soak-audit.ts
 lib/block-count-state.ts
 lib/boolean-utils.ts
