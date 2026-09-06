@@ -1374,22 +1374,9 @@ export class IndicationSetsProcessor {
     // cache here only defeated that refresh: operator changes to Set-Compaction
     // floors/thresholds were ignored for the lifetime of the (often long-lived)
     // processor. Re-resolving each call honours the 5s refresh.
-    const cfg = await loadCompactionConfig(ckey)
-    // If the operator never set a global / per-type floor, the helper
-    // returned the hard-coded 250 default. For indication pools we want
-    // the type-specific legacy limit (which may differ from 250 if the
-    // user customised it under Settings → Indications → Sets) to win
-    // over the global default — so we bump the floor up only when the
-    // user hasn't explicitly overridden it via the new Set Compaction
-    // card. Detection is heuristic: if the resolved floor matches the
-    // hard-coded default *and* the legacy limit is larger, prefer the
-    // legacy limit.
-    const legacyLimit = this.getLimit(type)
-    const finalCfg: CompactionConfig =
-      cfg.floor === 250 && legacyLimit > 250
-        ? { floor: legacyLimit, thresholdPct: cfg.thresholdPct }
-        : cfg
-    return finalCfg
+    // A legacy limit is a fallback, never an override of an explicit global
+    // or per-type floor (including an explicitly selected 250).
+    return loadCompactionConfig(ckey, this.getLimit(type))
   }
 
   /**

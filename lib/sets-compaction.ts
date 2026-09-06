@@ -117,6 +117,7 @@ let _settingsCache:
  */
 export async function loadCompactionConfig(
   type: SetCompactionType,
+  fallbackFloor: number = DEFAULT_COMPACTION.floor,
 ): Promise<CompactionConfig> {
   // Refresh cache if expired
   if (!_settingsCache || Date.now() - _settingsCache.fetchedAt > CACHE_TTL_MS) {
@@ -134,15 +135,21 @@ export async function loadCompactionConfig(
   const overrideMap = settings.setCompactionByType
   const override = overrideMap && typeof overrideMap === "object" ? overrideMap[type] : undefined
 
-  const floor =
-    Number(override?.floor) ||
-    Number(settings.setCompactionFloor) ||
-    DEFAULT_COMPACTION.floor
-
-  const thresholdPct =
-    Number(override?.thresholdPct) ||
-    Number(settings.setCompactionThresholdPct) ||
-    DEFAULT_COMPACTION.thresholdPct
+  // Zero headroom is a valid operator choice. Only absent or malformed
+  // values fall through; truthiness would silently turn 0% into 20%.
+  const firstFinite = (...values: unknown[]): number | undefined => {
+    for (const value of values) {
+      if (typeof value !== "number" && typeof value !== "string") continue
+      if (typeof value === "string" && value.trim() === "") continue
+      const number = Number(value)
+      if (Number.isFinite(number)) return number
+    }
+    return undefined
+  }
+  const floor = firstFinite(override?.floor, settings.setCompactionFloor, fallbackFloor)
+    ?? DEFAULT_COMPACTION.floor
+  const thresholdPct = firstFinite(override?.thresholdPct, settings.setCompactionThresholdPct)
+    ?? DEFAULT_COMPACTION.thresholdPct
 
   return {
     floor: Math.max(10, Math.min(5000, Math.floor(floor))),
