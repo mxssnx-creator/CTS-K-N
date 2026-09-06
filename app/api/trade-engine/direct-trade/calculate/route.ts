@@ -7,7 +7,8 @@ import {
 } from "@/lib/direct-trade-limits"
 import { fetchTopSymbols, type SortKey } from "@/lib/top-symbols"
 import {
-  deleteDirectTradeConfigGeneration,
+  publishDirectTradeConfigStore,
+  type DirectTradeConfigStoreWriter,
   createDirectTradeConfigStoreWriter,
 } from "@/lib/direct-trade-config-store"
 import { fetchDirectTradeMinuteHistory } from "@/lib/direct-trade-market-history"
@@ -612,6 +613,20 @@ export async function POST(request: NextRequest) {
   let calculationLeaseHeld = false
   let leaseRenewalTimer: ReturnType<typeof setInterval> | undefined
   let calculationConnectionId: string | null = null
+  let stagedWriter: DirectTradeConfigStoreWriter | null = null
+  const writeOwnedProgress = async (value: unknown) => {
+    if (!calculationLease) return
+    const { client, token } = calculationLease
+    const keys = directTradeKeyspace(calculationConnectionId)
+    const raw = JSON.stringify(value)
+    if (typeof client.eval === "function") {
+      await client.eval("if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end; redis.call('SET', KEYS[2], ARGV[2]); return 1", {
+        keys: [keys.calculationLease, keys.calculationProgress], arguments: [token, raw],
+      })
+    } else if (await client.get(keys.calculationLease) === token) {
+      await client.set(keys.calculationProgress, raw)
+    }
+  }
   try {
     const body: CalculationRequest = await request.json().catch(() => ({}))
     const connectionId = normalizeDirectTradeConnectionId(body.connectionId)
@@ -722,8 +737,8 @@ export async function POST(request: NextRequest) {
         keys.calculationLease,
         calculationLease.token,
         DIRECT_TRADE_CALCULATION_LEASE_SECONDS,
-      ).then((renewed) => {
-        calculationLeaseHeld = renewed
+      ).then(async (renewed) => {
+        calculationLeaseHeld = renewed && (!stagedWriter || await stagedWriter.renew(token))
       }).catch(() => {
         calculationLeaseHeld = false
       }).finally(() => {
@@ -743,13 +758,13 @@ export async function POST(request: NextRequest) {
     // This compact progress record is the only object written during a long
     // calculation. The complete config grid is published atomically at the
     // end, so consumers never deserialize or observe a half-built list.
-    await client.set(keys.calculationProgress, JSON.stringify({
+    await writeOwnedProgress({
       status: "running",
       startedAt: calculationStartedAt,
       completedSymbols,
       totalSymbols: symbols.length,
       evaluatedSets,
-    }))
+    })
 
     const noTrailingOption: DirectTradeTrailOption = { trailing: false, trailStart: 0, trailStop: 0, mode: "none" }
     const fixedTrailOptions: DirectTradeTrailOption[] = trailingEnabled
@@ -800,6 +815,7 @@ export async function POST(request: NextRequest) {
     })
     const statisticsAccumulator = createStatisticsIndexAccumulator()
     const configStoreWriter = await createDirectTradeConfigStoreWriter(client, connectionId)
+    stagedWriter = configStoreWriter
     // Global indexes stay compact (integer references plus signal buckets),
     // while the associated rich config rows stream straight to storage.
     const executionCandidates: Array<{ index: number; score: number; signalKey: string | null }> = []
@@ -810,6 +826,7 @@ export async function POST(request: NextRequest) {
       // starvation after the evaluator itself has yielded.
       const batchSize = 256
       for (let start = 0; start < rows.length; start += batchSize) {
+        if (!calculationLeaseHeld) throw new Error("Direct-Trade calculation lease was lost")
         const batch = rows.slice(start, start + batchSize)
         const compactRows: EvaluatedDirectTradeConfig[] = []
         for (const config of batch) {
@@ -838,6 +855,7 @@ export async function POST(request: NextRequest) {
     // draining avoids retaining four symbol grids at once; public history is
     // still rate-safe and each config reaches the streaming writer immediately.
     await mapWithConcurrency(symbols, 1, async (symbol) => {
+      if (!calculationLeaseHeld) throw new Error("Direct-Trade calculation lease was lost")
       let symbolEvaluated = 0
       try {
         const minuteCandles = await fetchDirectTradeMinuteHistory(exchange, symbol, historyHours)
@@ -959,13 +977,13 @@ export async function POST(request: NextRequest) {
       } finally {
         completedSymbols++
         evaluatedSets += symbolEvaluated
-        await client.set(keys.calculationProgress, JSON.stringify({
+        await writeOwnedProgress({
           status: "running",
           startedAt: calculationStartedAt,
           completedSymbols,
           totalSymbols: symbols.length,
           evaluatedSets,
-        }))
+        })
       }
       return undefined
     })
@@ -990,39 +1008,24 @@ export async function POST(request: NextRequest) {
     // this transaction, so readers see either the prior complete generation
     // or the new complete generation – never an in-between grid.
     const preparedConfigStore = await configStoreWriter.finish()
-    const transaction = client.multi()
-    if (preparedConfigStore.manifest) {
-      transaction.set(keys.configManifest, JSON.stringify(preparedConfigStore.manifest))
-      transaction.del(keys.configs)
-    } else {
-      transaction.set(keys.configs, preparedConfigStore.legacyJson || "[]")
-      transaction.del(keys.configManifest)
-    }
-    transaction.set(keys.executionIndex, JSON.stringify(executionIndexes))
-    transaction.set(keys.executionSignalIndex, JSON.stringify(executionSignalIndex))
-    // A previous pulse describes the old generation. Do not let a worker pair
-    // it with this freshly published grid: the next pulse builds a matching
-    // causal selection before any eligible config is processed.
-    transaction.del(keys.activeSignals)
-    transaction.set(keys.calculation, JSON.stringify(summary))
-    transaction.set(keys.statisticsIndex, JSON.stringify(statsIndex))
-    transaction.expire(keys.statisticsIndex, DIRECT_STATISTICS_RETENTION_SECONDS)
-    transaction.set(keys.calculationProgress, JSON.stringify({
-      status: "ready",
-      startedAt: calculationStartedAt,
-      completedAt: summary.calculatedAt,
-      completedSymbols: symbols.length,
-      totalSymbols: symbols.length,
-      evaluatedSets: summary.evaluatedSets,
-    }))
-    await transaction.exec()
-    // Old generations are no longer reachable once the manifest transaction
-    // has committed. Await the lightweight UNLINK dispatch so serverless
-    // runtimes cannot terminate before cleanup is queued; Redis frees the
-    // multi-megabyte values asynchronously.
-    if (preparedConfigStore.previousManifest) {
-      await deleteDirectTradeConfigGeneration(client, preparedConfigStore.previousManifest, connectionId)
-    }
+    const published = await publishDirectTradeConfigStore(client, preparedConfigStore, {
+      connectionId, leaseToken: token,
+      values: {
+        [keys.executionIndex]: JSON.stringify(executionIndexes),
+        [keys.executionSignalIndex]: JSON.stringify(executionSignalIndex),
+        [keys.calculation]: JSON.stringify(summary),
+        [keys.statisticsIndex]: JSON.stringify(statsIndex),
+        [keys.calculationProgress]: JSON.stringify({
+          status: "ready", startedAt: calculationStartedAt, completedAt: summary.calculatedAt,
+          completedSymbols: symbols.length, totalSymbols: symbols.length, evaluatedSets: summary.evaluatedSets,
+        }),
+      },
+      // A previous pulse describes the old generation; the next pulse must
+      // build a causal selection from the new generation before execution.
+      deleteKeys: [keys.activeSignals],
+      expires: { [keys.statisticsIndex]: DIRECT_STATISTICS_RETENTION_SECONDS },
+    })
+    if (!published) return NextResponse.json({ error: "Direct-Trade calculation lease was lost before publishing" }, { status: 409 })
 
     // The processor receives only eligible execution candidates. The complete
     // independent result grid remains in Redis for audit/statistics, avoiding
@@ -1049,18 +1052,19 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("[Direct-Trade] Calculate error:", error)
     if (calculationLease?.client) {
-      await calculationLease.client.set(directTradeKeyspace(calculationConnectionId).calculationProgress, JSON.stringify({
+      await writeOwnedProgress({
         status: "error",
         completedSymbols: 0,
         totalSymbols: 0,
         evaluatedSets: 0,
         error: error instanceof Error ? error.message : String(error),
         failedAt: new Date().toISOString(),
-      })).catch(() => undefined)
+      }).catch(() => undefined)
     }
     return NextResponse.json({ error: "Calculation failed", details: String(error) }, { status: 500 })
   } finally {
     if (leaseRenewalTimer) clearInterval(leaseRenewalTimer)
+    await stagedWriter?.abort().catch(() => undefined)
     if (calculationLease) {
       await releaseOwnedRedisLock(
         calculationLease.client,

@@ -3,6 +3,9 @@ import {
   DIRECT_TRADE_CONFIGS_KEY,
   DIRECT_TRADE_CONFIG_CHUNK_ENCODING,
   compactDirectTradeConfigGeneration,
+  createDirectTradeConfigStoreWriter,
+  publishDirectTradeConfigStore,
+  cleanupDirectTradeOrphanChunks,
   deleteDirectTradeConfigGeneration,
   directTradeConfigChunkKey,
   getDirectTradeConfigManifest,
@@ -170,10 +173,73 @@ describe("Direct-Trade chunked configuration store", () => {
       encoding: DIRECT_TRADE_CONFIG_CHUNK_ENCODING,
       total: configs.length,
     })
-    expect(await redis.get(oldChunkKey)).toBeNull()
+    expect(await redis.ttl(oldChunkKey)).toBeGreaterThan(0)
+    expect(await redis.ttl(oldChunkKey)).toBeLessThanOrEqual(300)
     await expect(readDirectTradeConfigsAtIndexes(redis, [0, 49], connectionId)).resolves.toEqual([
       configs[0],
       configs[49],
     ])
   })
+  test("staged chunks expire, renew only for the owner and survive ambiguous publication cleanup", async () => {
+    const { getRedisClient } = await import("@/lib/redis-db")
+    const { directTradeKeyspace } = await import("@/lib/direct-trade-keyspace")
+    const redis = getRedisClient(), scope = "lifecycle", keys = directTradeKeyspace(scope)
+    const writer = await createDirectTradeConfigStoreWriter(redis, scope)
+    await writer.append(Array.from({ length: 10_001 }, (_, index) => ({ index })))
+    const prepared = await writer.finish()
+    const chunk = directTradeConfigChunkKey(prepared.manifest!.generation, 0, scope)
+    expect(await redis.ttl(chunk)).toBeGreaterThan(300)
+    await redis.set(keys.calculationLease, "owner")
+    expect(await writer.renew("stale")).toBe(false)
+    expect(await writer.renew("owner")).toBe(true)
+    expect(await publishDirectTradeConfigStore(redis, prepared, { connectionId: scope, leaseToken: "owner", values: {} })).toBe(true)
+    await writer.abort()
+    expect(await redis.ttl(chunk)).toBe(-1)
+    await expect(readDirectTradeConfigsAtIndexes(redis, [10_000], scope)).resolves.toEqual([{ index: 10_000 }])
+    const next = await prepareDirectTradeConfigStore(redis, [{ index: "next" }], scope)
+    expect(await publishDirectTradeConfigStore(redis, next, { connectionId: scope, leaseToken: "owner", values: {} })).toBe(true)
+    expect(await redis.ttl(chunk)).toBeGreaterThan(0)
+    expect(await redis.ttl(chunk)).toBeLessThanOrEqual(300)
+  })
+
+  test("stale ownership and incomplete staging cannot replace current indexes", async () => {
+    const { getRedisClient } = await import("@/lib/redis-db")
+    const { directTradeKeyspace } = await import("@/lib/direct-trade-keyspace")
+    const redis = getRedisClient(), scope = "stale", keys = directTradeKeyspace(scope)
+    await redis.set(keys.calculationLease, "new-owner")
+    await redis.set(keys.executionIndex, "previous-index")
+    const prepared = await prepareDirectTradeConfigStore(redis, Array.from({ length: 10_001 }, (_, index) => ({ index })), scope)
+    const options = { connectionId: scope, leaseToken: "stale", values: { [keys.executionIndex]: "changed" } }
+    expect(await publishDirectTradeConfigStore(redis, prepared, options)).toBe(false)
+    await redis.del(directTradeConfigChunkKey(prepared.manifest!.generation, 1, scope))
+    await expect(publishDirectTradeConfigStore(redis, prepared, { ...options, leaseToken: "new-owner" })).rejects.toThrow("incomplete")
+    expect(await redis.get(keys.executionIndex)).toBe("previous-index")
+    await expect(publishDirectTradeConfigStore(redis, prepared, { ...options, values: { "live:position:other": "bad" } })).rejects.toThrow("foreign")
+  })
+
+  test("aborting staging retains only a short grace period", async () => {
+    const { getRedisClient } = await import("@/lib/redis-db")
+    const redis = getRedisClient()
+    const writer = await createDirectTradeConfigStoreWriter(redis, "abort")
+    await writer.append(Array.from({ length: 10_001 }, (_, index) => ({ index })))
+    const prepared = await writer.finish()
+    await writer.abort()
+    expect(await redis.ttl(directTradeConfigChunkKey(prepared.manifest!.generation, 0, "abort"))).toBeLessThanOrEqual(300)
+    await expect(writer.append([{}])).rejects.toThrow("finished")
+  })
+
+  test("orphan audit protects active leases and requires atomic cleanup", async () => {
+    const { getRedisClient } = await import("@/lib/redis-db")
+    const { directTradeKeyspace } = await import("@/lib/direct-trade-keyspace")
+    const redis = getRedisClient(), keys = directTradeKeyspace("audit")
+    const old = `${(Date.now() - 86_400_000).toString(36)}-old`
+    const chunk = directTradeConfigChunkKey(old, 0, "audit")
+    await redis.set(chunk, "old")
+    expect((await cleanupDirectTradeOrphanChunks(redis, { connectionId: "audit" })).candidates).toBe(1)
+    await expect(cleanupDirectTradeOrphanChunks(redis, { connectionId: "audit", apply: true })).rejects.toThrow("atomic")
+    await redis.set(keys.calculationLease, "owner")
+    expect((await cleanupDirectTradeOrphanChunks(redis, { connectionId: "audit" })).skippedActiveLease).toBe(true)
+    expect(await redis.get(chunk)).toBe("old")
+  })
+
 })

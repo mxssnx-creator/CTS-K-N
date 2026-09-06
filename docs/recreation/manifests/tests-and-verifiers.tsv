@@ -27,6 +27,7 @@ operator-tool	scripts/test-quickstart-3symbols.js
 operator-tool	scripts/test-tp-sl-ranges.mjs
 operator-tool	scripts/validate-comprehensive.mjs
 operator-tool	scripts/verify-block-native-redis.ts
+operator-tool	scripts/verify-direct-trade-config-lifecycle.ts
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-native-redis-coordination.ts
 operator-tool	scripts/verify-recreation-manifests.mjs

@@ -1531,6 +1531,7 @@ scripts/build-next-with-trace-retry.mjs
 scripts/clean-next-dist.mjs
 scripts/clean-opennext-output.mjs
 scripts/cleanup-bingx-cts-protection-orders.ts
+scripts/cleanup-direct-trade-orphans.ts
 scripts/compact-direct-trade-configs.ts
 scripts/configure-prod-trading.sh
 scripts/connect-remote-chisel.sh
@@ -1636,6 +1637,7 @@ scripts/update.sh
 scripts/validate-comprehensive.mjs
 scripts/verify-block-native-redis.ts
 scripts/verify-deployment-contract.mjs
+scripts/verify-direct-trade-config-lifecycle.ts
 scripts/verify-migration-status.mjs
 scripts/verify-native-redis-coordination.ts
 scripts/verify-prod-preview.mjs
