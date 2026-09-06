@@ -33,6 +33,7 @@ import {
 } from "@/lib/constants"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { BINGX_PROD_VST_FALLBACK_ORIGIN, BINGX_PROD_VST_ORIGIN } from "@/lib/bingx-environment"
 import {
   DEFAULT_FOREX_LOT_SIZE,
   DEFAULT_FOREX_POSITIONS_AVERAGE,
@@ -50,6 +51,25 @@ import { tradingPairKey } from "@/lib/trading-pair-keys"
 
 /** Hard upper bound for one live/VST position relative to its PositionCost budget. */
 export const MAX_LIVE_POSITION_COST_MULTIPLIER = 5
+
+/**
+ * The only live minimum-floor allowance is the dedicated X02 BingX Prod-VST
+ * account. It is virtual funds, pinned to an approved VST origin, and the
+ * allowance never applies to Mainnet or another connection. The amount is
+ * still bounded by the account-wide PositionCost budget, so a small or empty
+ * account remains blocked rather than receiving a synthetic minimum.
+ */
+function isAuthorizedVstConnection(connection: Record<string, unknown> | null | undefined): boolean {
+  if (!connection) return false
+  const exchange = String(connection.exchange || "").trim().toLowerCase()
+  const id = String(connection.id || "").trim().toLowerCase()
+  const environment = String(connection.environment || "").trim().toLowerCase()
+  const baseUrl = String(connection.base_url ?? connection.api_base_url ?? "").trim().replace(/\/$/, "")
+  return id === "bingx-x02"
+    && exchange === "bingx"
+    && isTruthyFlag(connection.is_testnet)
+    && (environment === "prod-vst" || baseUrl === BINGX_PROD_VST_ORIGIN || baseUrl === BINGX_PROD_VST_FALLBACK_ORIGIN)
+}
 
 /**
  * Volume calculations are diagnostics, not trading state. Keep a useful
@@ -130,6 +150,11 @@ interface VolumeCalculationParams {
    * after resolving that physical aggregate target.
    */
   allowUnboundedVariantMultiplier?: boolean
+  /**
+   * Optional bounded allowance for a live minimum floor. This is resolved by
+   * the connection-aware async wrapper; pure callers remain unchanged.
+   */
+  minimumNotionalCeilingAllowanceUsd?: number
 }
 
 export interface VolumeCalculationResult {
@@ -346,6 +371,7 @@ export class VolumeCalculator {
       indicationType,
       sizeMultiplier,
       allowUnboundedVariantMultiplier = false,
+      minimumNotionalCeilingAllowanceUsd,
     } = params
 
     // Symbol inference is only a compatibility fallback for callers that
@@ -631,7 +657,13 @@ export class VolumeCalculator {
         positionCostNotionalUsd * liveEngineFactor * variantMult,
       )
       const maxExecutionNotionalUsd = (tradeMode === "main" || tradeMode === "preset")
-        ? positionCostNotionalUsd * MAX_LIVE_POSITION_COST_MULTIPLIER
+        ? (() => {
+            const ordinaryCeiling = positionCostNotionalUsd * MAX_LIVE_POSITION_COST_MULTIPLIER
+            const allowance = Number(minimumNotionalCeilingAllowanceUsd)
+            return Number.isFinite(allowance) && allowance > 0
+              ? Math.max(ordinaryCeiling, allowance)
+              : ordinaryCeiling
+          })()
         : undefined
       const calculatedVolume = currentPrice > 0 && forexConversionAvailable
         ? positionSizeUsd / (isForex ? forexNotionalPerLot : currentPrice)
@@ -1059,7 +1091,24 @@ export class VolumeCalculator {
       // ── Positions-average resolution ─────────────────────────────────
       const positionsAverage = (() => {
         const fallback = marketType === "forex" ? DEFAULT_FOREX_POSITIONS_AVERAGE : 2
-        const raw = parseFloat(String(settings.positions_average ?? settings.positionsAverage ?? settings.average_count ?? fallback))
+        // A legacy global `positions_average` is commonly present even when
+        // the connection intentionally stores only `average_count`. Resolve
+        // the connection's aliases first so the global default cannot shadow
+        // a saved per-connection sizing budget.
+        const connectionPositionsAverage = connection
+          ? (connection.positions_average
+            ?? connection.positionsAverage
+            ?? connection.average_count
+            ?? connection.averageCount)
+          : undefined
+        const raw = parseFloat(String(
+          connectionPositionsAverage
+            ?? settings.positions_average
+            ?? settings.positionsAverage
+            ?? settings.average_count
+            ?? settings.averageCount
+            ?? fallback,
+        ))
         return Number.isFinite(raw) && raw > 0 ? Math.min(600, raw) : fallback
       })()
       const lotSize = marketType === "forex"
@@ -1138,6 +1187,28 @@ export class VolumeCalculator {
           )
         : { sizingBalance: accountBalance, anchorBalance: accountBalance }
 
+      const exchangeMinNotionalUsdt = Number(
+        tradingPair?.min_notional_usdt ??
+        tradingPair?.minNotionalUsdt ??
+        tradingPair?.min_notional ??
+        tradingPair?.minNotional ??
+        0,
+      ) || 0
+      const effectiveMinimumNotional = marketType === "forex"
+        ? 0
+        : Math.max(
+            Number(exchangeMinVolume || 0) * Math.max(0, Number(currentPrice) || 0),
+            exchangeMinNotionalUsdt,
+            VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD,
+          )
+      const minimumNotionalCeilingAllowanceUsd = isAuthorizedVstConnection(connection)
+        && (resolvedMode === "main" || resolvedMode === "preset")
+        ? Math.min(
+            steppedBalance.sizingBalance * (clampedPositionCostPercent / 100),
+            effectiveMinimumNotional,
+          )
+        : undefined
+
       const result = this.calculatePositionVolume({
         positionCostPercent: clampedPositionCostPercent,
         positionsAverage,
@@ -1145,13 +1216,7 @@ export class VolumeCalculator {
         currentPrice,
         leverage: maxLeverage,
         exchangeMinVolume,
-        exchangeMinNotionalUsdt: Number(
-          tradingPair?.min_notional_usdt ??
-          tradingPair?.minNotionalUsdt ??
-          tradingPair?.min_notional ??
-          tradingPair?.minNotional ??
-          0,
-        ) || 0,
+        exchangeMinNotionalUsdt,
         quantityStep: Number(
           tradingPair?.quantity_step ??
           tradingPair?.quantityStep ??
@@ -1171,6 +1236,7 @@ export class VolumeCalculator {
         // Variant multiplier forwarded from the callsite (Block/DCA sizing).
         sizeMultiplier: options.sizeMultiplier,
         allowUnboundedVariantMultiplier: options.allowUnboundedVariantMultiplier === true,
+        minimumNotionalCeilingAllowanceUsd,
         marketType,
         lotSize,
         symbol,

@@ -4127,10 +4127,13 @@ export async function GET(
         getAppSettings().catch(() => null),
       ])
       // Build the merged settings object the same way calculateVolumeForConnection does:
-      // global app_settings + connection_settings overlay + connection record fields.
+      // global app_settings + both connection_settings mirrors + connection record fields.
+      // The canonical mirror wins over the legacy hash, while direct
+      // connection aliases are resolved explicitly below so a global
+      // `positions_average` cannot shadow a saved `average_count`.
       const vcSettings: Record<string, unknown> = { ...(vcApp as Record<string, unknown> || {}) }
       try {
-        const vcConnS = (await client.hgetall(`connection_settings:${connectionId}`).catch(() => null)) || {}
+        const vcConnS = await getCanonicalConnectionSettingsOverlay(connectionId)
         for (const [k, v] of Object.entries(vcConnS)) {
           if (v !== undefined && v !== null && v !== "") vcSettings[k] = v
         }
@@ -4138,7 +4141,7 @@ export async function GET(
       if (vcConn) {
         const CONN_FIELDS = [
           "exchangePositionCost", "exchange_position_cost", "positionCost",
-          "positions_average", "positionsAverage",
+          "positions_average", "positionsAverage", "average_count", "averageCount",
           "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
           "leveragePercentage", "useMaximalLeverage",
           "is_live_trade", "is_preset_trade",
@@ -4154,10 +4157,36 @@ export async function GET(
       }
       stageOverviewSettings = vcSettings
       const resolved = VolumeCalculator.resolveLiveEngine(vcConn, vcSettings)
+      const connectionPosCostRaw = vcConn
+        ? (vcConn.exchangePositionCost
+          ?? vcConn.exchange_position_cost
+          ?? vcConn.positionCost
+          ?? vcConn.position_cost_percent
+          ?? vcConn.positionCostPercent)
+        : undefined
       const posCostRaw = Number(
-        vcSettings.exchangePositionCost ?? vcSettings.positionCost ?? vcSettings.exchange_position_cost ?? "0.1"
+        connectionPosCostRaw
+          ?? vcSettings.exchangePositionCost
+          ?? vcSettings.positionCost
+          ?? vcSettings.exchange_position_cost
+          ?? vcSettings.position_cost_percent
+          ?? vcSettings.positionCostPercent
+          ?? "0.1",
       )
-      const posAvgRaw = Number(vcSettings.positions_average ?? vcSettings.positionsAverage ?? defaultPositionsAverage)
+      const connectionPosAvgRaw = vcConn
+        ? (vcConn.positions_average
+          ?? vcConn.positionsAverage
+          ?? vcConn.average_count
+          ?? vcConn.averageCount)
+        : undefined
+      const posAvgRaw = Number(
+        connectionPosAvgRaw
+          ?? vcSettings.positions_average
+          ?? vcSettings.positionsAverage
+          ?? vcSettings.average_count
+          ?? vcSettings.averageCount
+          ?? defaultPositionsAverage,
+      )
       volumeConfig = {
         liveVolumeFactor:   resolved.mainVolumeFactor,
         presetVolumeFactor: resolved.presetVolumeFactor,

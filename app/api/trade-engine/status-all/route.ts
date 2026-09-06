@@ -11,6 +11,11 @@ function isEnabledFlag(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
 }
 
+function nonNegativeMetric(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+}
+
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -248,18 +253,24 @@ async function buildStatusAllResponse() {
           )
           const liveOrderReadiness = evaluateRealTradeReadiness(conn, normalizeRealTradeIntent(engineType))
           const orderMetrics = {
-            attempted: Number(progression.live_orders_attempted_count || 0),
-            placed: Number(progression.live_orders_placed_count || 0),
-            filled: Number(progression.live_orders_filled_count || 0),
-            failed: Number(progression.live_orders_failed_count || 0),
-            simulated: Number(progression.live_orders_simulated_count || 0),
-            simulatedPositionsCreated: Number(progression.live_simulated_positions_created_count || 0),
-            simulatedPositionsClosed: Number(progression.live_simulated_positions_closed_count || 0),
-            simulatedVolumeUsd: Number(progression.live_simulated_volume_usd_total || 0)
-              || Number(progression.live_simulated_volume_microusd_total || 0) / 1_000_000,
-            openPositionsCreated: Number(progression.live_positions_created_count || 0),
-            openPositionsClosed: Number(progression.live_positions_closed_count || 0),
-            volumeUsd: Number(progression.live_volume_usd_total || 0),
+            attempted: nonNegativeMetric(progression.live_orders_attempted_count),
+            placed: nonNegativeMetric(progression.live_orders_placed_count),
+            filled: nonNegativeMetric(progression.live_orders_filled_count),
+            failed: nonNegativeMetric(progression.live_orders_failed_count),
+            // Guard outcomes are separate from venue failures. Keeping them
+            // distinct prevents the overview from reporting every safe
+            // minimum/exposure/pacing decision as an API error.
+            blocked: nonNegativeMetric(progression.live_orders_blocked_count),
+            deferred: nonNegativeMetric(progression.live_orders_deferred_count),
+            rejected: nonNegativeMetric(progression.live_orders_rejected_count),
+            simulated: nonNegativeMetric(progression.live_orders_simulated_count),
+            simulatedPositionsCreated: nonNegativeMetric(progression.live_simulated_positions_created_count),
+            simulatedPositionsClosed: nonNegativeMetric(progression.live_simulated_positions_closed_count),
+            simulatedVolumeUsd: nonNegativeMetric(progression.live_simulated_volume_usd_total)
+              || nonNegativeMetric(progression.live_simulated_volume_microusd_total) / 1_000_000,
+            openPositionsCreated: nonNegativeMetric(progression.live_positions_created_count),
+            openPositionsClosed: nonNegativeMetric(progression.live_positions_closed_count),
+            volumeUsd: nonNegativeMetric(progression.live_volume_usd_total),
           }
           // Read-only Next route contexts must not import the complete engine
           // graph. Process-independent Redis state remains authoritative across

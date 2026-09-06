@@ -1647,6 +1647,9 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('live_execution_mode: canonicalExecutionMode')
     expect(source).toContain('live_trade_block_code: liveOrderReadiness.blockCode || ""')
     expect(source).toContain('live_trade_blocked_reason: liveOrderReadiness.blockReason || ""')
+    expect(source).toContain('blocked: nonNegativeMetric(progression.live_orders_blocked_count)')
+    expect(source).toContain('deferred: nonNegativeMetric(progression.live_orders_deferred_count)')
+    expect(source).toContain('rejected: nonNegativeMetric(progression.live_orders_rejected_count)')
     expect(source).toContain("progressionReadKeys(scope)")
     expect(source).toContain("scopedRuntimeState")
     expect(source).toContain("scopedSettingsState")
@@ -3685,10 +3688,21 @@ describe("requested regression guardrails", () => {
     expect(volume).toContain("this AFTER all overlays")
     expect(volume.indexOf("const connSettings = await getCanonicalConnectionSettingsOverlay(connectionId)")).toBeLessThan(volume.indexOf("const positionCostRaw ="))
     expect(volume).toContain("producing default-sized live")
+    expect(volume).toContain("connectionPositionsAverage")
+    expect(volume).toContain("isAuthorizedVstConnection")
+    expect(volume).toContain("minimumNotionalCeilingAllowanceUsd")
 
     expect(strategy).toContain("getCanonicalConnectionSettingsOverlay(this.connectionId)")
     expect(strategy).toContain("const s: Record<string, unknown> = overlayNonEmpty")
     expect(strategy).not.toContain("hgetall(`connection_settings:${this.connectionId}`)")
+  })
+
+  test("stats overview keeps connection sizing aliases ahead of global defaults", () => {
+    const source = read("app/api/connections/progression/[id]/stats/route.ts")
+    expect(source).toContain("getCanonicalConnectionSettingsOverlay(connectionId)")
+    expect(source).toContain('"average_count", "averageCount"')
+    expect(source).toContain("const connectionPosAvgRaw")
+    expect(source).toContain("connectionPosAvgRaw")
   })
 
 
