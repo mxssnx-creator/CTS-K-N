@@ -307,6 +307,15 @@ async function buildStatusAllResponse() {
               ? "paused"
               : "stopped"
           const canonicalLiveTrade = isEnabledFlag(conn.is_live_trade)
+          // Redis engine hashes can outlive a worker restart and retain the
+          // legacy `execution_mode` / `live_trade_requested` values from a
+          // prior paper run.  The readiness decision above is the canonical
+          // source for the public overview, so project every live alias from
+          // that one decision instead of letting a stale hash say
+          // "simulation" while the Live switch is actually executable.
+          const canonicalExecutionMode = liveOrderReadiness.executionMode
+          const canonicalLiveRequested = liveOrderReadiness.requested
+          const canonicalLiveEnabled = liveOrderReadiness.enabled
           const rawEngineStatus = {
             ...redisStatus,
             // Persisted engine hashes can retain pre-restart aliases such as
@@ -319,7 +328,12 @@ async function buildStatusAllResponse() {
             engineRunning: isRunning,
             isEngineRunning: isRunning,
             is_live_trade: canonicalLiveTrade ? "1" : "0",
-            live_trade_enabled: canonicalLiveTrade ? "1" : "0",
+            live_trade_enabled: canonicalLiveEnabled ? "1" : "0",
+            live_trade_requested: canonicalLiveRequested ? "1" : "0",
+            execution_mode: canonicalExecutionMode,
+            live_execution_mode: canonicalExecutionMode,
+            live_trade_block_code: liveOrderReadiness.blockCode || "",
+            live_trade_blocked_reason: liveOrderReadiness.blockReason || "",
             runtime_reason: runtime.reason,
             heartbeat_fresh: runtime.heartbeatFresh,
             heartbeat_age_ms: runtime.heartbeatAgeMs,
