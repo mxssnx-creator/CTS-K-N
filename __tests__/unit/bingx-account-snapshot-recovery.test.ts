@@ -2,6 +2,9 @@ import { BingXConnector } from "@/lib/exchange-connectors/bingx-connector"
 
 const paths = ["getOpenOrders", "getOrderHistorySnapshot", "getPositions"] as const
 function connector() {
+  // The constructor starts synchronization immediately. Mock before creating
+  // the connector so these simulated snapshot tests cannot contact a venue.
+  jest.spyOn(BingXConnector.prototype as any, "syncServerTime").mockResolvedValue(undefined)
   const value = new BingXConnector({ exchange: "bingx", apiKey: "snapshot-test", apiSecret: "test-only", environment: "prod-vst", apiType: "perpetual_futures", contractType: "usdt-perpetual" } as any)
   const inner = value as any
   inner.syncServerTime = jest.fn().mockResolvedValue(undefined)

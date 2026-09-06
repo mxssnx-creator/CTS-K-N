@@ -1626,6 +1626,7 @@ scripts/test-direct-trade-position-lifecycle.mjs
 scripts/test-direct-trade-recovery-scenarios.mjs
 scripts/test-kilo-runtime.mjs
 scripts/test-minute-scheduler.mjs
+scripts/test-network-isolation.cjs
 scripts/test-pf-calculations.mjs
 scripts/test-progression-live.mjs
 scripts/test-quickstart-3symbols.js

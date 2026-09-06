@@ -20,6 +20,7 @@ operator-tool	scripts/test-direct-trade-position-lifecycle.mjs
 operator-tool	scripts/test-direct-trade-recovery-scenarios.mjs
 operator-tool	scripts/test-kilo-runtime.mjs
 operator-tool	scripts/test-minute-scheduler.mjs
+operator-tool	scripts/test-network-isolation.cjs
 operator-tool	scripts/test-pf-calculations.mjs
 operator-tool	scripts/test-progression-live.mjs
 operator-tool	scripts/test-quickstart-3symbols.js
