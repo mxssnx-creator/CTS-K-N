@@ -1352,7 +1352,7 @@ export class TradeEngineManager {
         // preserving the fast path when data is truly present.
         try {
           const cacheScope = buildProgressionScope(this.connectionId, this.currentEngineType)
-          const [doneFlag, firstPass, isComplete, pfSample, storedSelectionEpoch, storedSymbolsProcessed, storedSymbolsTotal, persistedSymbols] = await Promise.all([
+          const [doneFlag, firstPass, isComplete, pfSample, storedSelectionEpoch, storedSymbolsProcessed, storedSymbolsTotal, persistedSymbols, storedCandles, storedIntervals] = await Promise.all([
             readPrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "done"),
             readPrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "firstpass:done"),
             redisClient.hget(cacheScope.prehistoricKey, "is_complete"),
@@ -1361,6 +1361,8 @@ export class TradeEngineManager {
             redisClient.hget(cacheScope.prehistoricKey, "symbols_processed"),
             redisClient.hget(cacheScope.prehistoricKey, "symbols_total"),
             scanRedisSetMembers(redisClient, `${cacheScope.prehistoricKey}:symbols`, { count: 250 }).catch(() => []),
+            redisClient.hget(cacheScope.prehistoricKey, "candles_loaded"),
+            redisClient.hget(cacheScope.prehistoricKey, "intervals_processed"),
           ])
           const symbolsForCheck = await this.getSymbols()
           const currentSelection = await getCanonicalSymbolSelection(this.connectionId)
@@ -1383,6 +1385,7 @@ export class TradeEngineManager {
             firstPass &&
             isComplete === "1" &&
             (pfSample != null || !hasSymbols) &&
+            (!hasSymbols || (Number(storedCandles) > 0 && Number(storedIntervals) > 0)) &&
             canonicalBasketMatches &&
             (
               !currentSelection?.epoch ||

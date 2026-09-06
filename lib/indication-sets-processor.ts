@@ -1,4 +1,4 @@
-import { evaluateCtsGTrend, evaluateCtsGBreak, type CtsGIndicationSettings } from "@/lib/cts-g-indications"
+import { buildCtsGConfigurations, ctsGConfigurationKey, evaluateCtsGTrend, evaluateCtsGBreak, type CtsGIndicationSettings } from "@/lib/cts-g-indications"
 import { compactCtsGMinuteCloses, ctsGTimeframeCloses, ctsGLegacyTimeframeCloses } from "@/lib/cts-g-timeframes"
 /**
  * Independent Indication Sets Processor
@@ -957,6 +957,7 @@ export class IndicationSetsProcessor {
   private trendEnabled = true
   private ctsGTrendEnabled = true
   private breakEnabled = true
+  private ctsGMatrixSettings: Record<string, any> = {}
   private ctsGSettings: CtsGIndicationSettings = {}
   private trendTimeframesMinutes: number[] = [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
   private trendDrawdownFactors: number[] = [...DEFAULT_TREND_DRAWDOWN_FACTORS]
@@ -1248,6 +1249,7 @@ export class IndicationSetsProcessor {
           activeProfile.trend.enabled
         this.ctsGTrendEnabled = settings.ctsGTrendEnabled !== false && settings.ctsGTrendEnabled !== "false"
         this.breakEnabled = settings.breakEnabled !== false && settings.breakEnabled !== "false" && activeProfile.break.enabled
+        this.ctsGMatrixSettings = settings
         this.ctsGSettings = {
           minimumSpreadRatio: Math.max(0.00001, Number(settings.ctsGTrendMinimumSpreadRatio) || 0.001),
           minimumConfidence: Math.max(0, Math.min(1, Number(settings.ctsGMinimumConfidence) || 0.6)),
@@ -3154,21 +3156,23 @@ export class IndicationSetsProcessor {
       const bars = minutes.length
         ? ctsGTimeframeCloses(minutes, timeframeMinutes, asOfMs)
         : ctsGLegacyTimeframeCloses(prices, timeframeMinutes)
-      const requiredBars = type === "trend" ? 30 : Math.floor(this.ctsGSettings.breakRange || 16) + 2
+      for (const variant of buildCtsGConfigurations(type, this.ctsGMatrixSettings)) {
+      const requiredBars = type === "trend" ? 30 : Math.floor(variant.breakRange || 16) + 2
       if (bars.length < requiredBars) { warmingUp++; continue }
       evaluated++
-      const signal = type === "trend" ? evaluateCtsGTrend(bars, this.ctsGSettings) : evaluateCtsGBreak(bars, this.ctsGSettings)
+      const signal = type === "trend" ? evaluateCtsGTrend(bars, variant) : evaluateCtsGBreak(bars, variant)
       if (!signal) continue
       const tpRange = buildAdaptiveTrendTpRange({ pricesOldestFirst: prices,
         positionCostPct: this.trendPositionCostPct, minMultiplier: this.trendTpMinMultiplier,
         maxFactor: this.trendTpMaxFactor, step: this.trendTpStep, averageWindowMinutes: timeframeMinutes })
-      const config = { model: signal.metadata.model, timeframeMinutes, ...this.ctsGSettings,
+      const config = { model: signal.metadata.model, timeframeMinutes, ...variant,
         positionCostPct: this.trendPositionCostPct, tpFactors: tpRange.factors, tpRange }
       const key = `indication_set:${this.connectionId}:${symbol}:${type}:${signal.direction}:cts-g:tf${timeframeMinutes}`
-        + `:spread${this.ctsGSettings.minimumSpreadRatio}:confidence${this.ctsGSettings.minimumConfidence}:range${this.ctsGSettings.breakRange}:noise${this.ctsGSettings.breakNoisePct}`
+        + `:${ctsGConfigurationKey(variant)}`
       candidates.push({ setKey: key, config, indication: { direction: signal.direction, profitFactor: 0,
         signalScore: 1 + signal.strength, rawSignalStrength: signal.strength, confidence: signal.confidence,
         metadata: { ...signal.metadata, agreement: signal.agreement, adaptiveTpRange: tpRange } } })
+      }
     }
     const pending = await this.attachQualifiedCandidates(symbol, marketData, candidates)
     if (pending.length) await this.batchSaveIndications(pending, type)

@@ -304,8 +304,8 @@ async function runtimeOnlyStatsResponse(
         },
         realtime: {
           rotation: realtimeRotationProgress(progression),
-          indicationCycles: liveIndicationCycles || churnIndicationCycles,
-          strategyCycles: liveStrategyCycles || churnStrategyCycles,
+          indicationCycles: churnIndicationCycles,
+          strategyCycles: churnStrategyCycles,
           realtimeCycles,
           cycleCounters: {
             indication: churnIndicationCycles,
@@ -1451,15 +1451,9 @@ export async function GET(
     const historicProgressPercent = historicProgressState.progressPercent
 
     // ── REALTIME section ─────────────────────────────────────────────────────
-    // Primary:   live_*_cycle_count    — only ticks that produced real work
-    //                                     (indications generated / strategies evaluated).
-    //                                     This is the user-facing "live progression" metric.
-    // Secondary: *_cycle_count         — every tick incl. warmup/empty. Prehistoric processing
-    //                                     churn, surfaced under historic.processing below,
-    //                                     kept calculatively hidden from the main display.
-    //
-    // If the live counter is still zero (first few moments after start), fall back to the
-    // churn counter so the UI doesn't render a misleading 0 while the engine spins up.
+    // Primary counters include every completed processing tick, including
+    // warm-up/empty results. Productive ticks stay separately named in
+    // cycleCounters so signal scarcity cannot make a healthy loop look stuck.
     const churnIndicationCycles = pick(
       n(progHash.indication_cycle_count),
       n(realtimeHash.cycle_count),
@@ -1473,8 +1467,8 @@ export async function GET(
     const liveStrategyCycles   = n(progHash.strategy_live_cycle_count)
     const liveRealtimeCycles   = n(progHash.realtime_live_cycle_count)
 
-    const realtimeIndicationCycles = liveIndicationCycles || churnIndicationCycles
-    const realtimeStrategyCycles   = liveStrategyCycles   || churnStrategyCycles
+    const realtimeIndicationCycles = churnIndicationCycles
+    const realtimeStrategyCycles   = churnStrategyCycles
     // realtimeCycles = total realtime ticks (churn). This is now actually
     // populated because EngineManager.startRealtimeProcessor writes
     // `realtime_cycle_count` on every tick via hincrby (previously this key

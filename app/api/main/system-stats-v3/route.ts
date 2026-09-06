@@ -1,3 +1,5 @@
+import { isConnectionVisibleInServerOverview } from "@/lib/connection-state-utils"
+import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
 import { NextResponse } from "next/server"
 import { initRedis, getAllConnections, getRedisClient, getObservedRedisRequestsPerSecond } from "@/lib/redis-db"
 import { getDashboardWorkflowSnapshot } from "@/lib/dashboard-workflow"
@@ -32,7 +34,7 @@ export async function GET() {
     // Seeding is a startup-only concern; triggering it from polled endpoints causes
     // user-deleted base connections to reappear and breaks the "stable assignment"
     // contract. An empty list is a valid, respected state.
-    const connections = await getAllConnections()
+    const connections = (await getAllConnections()).filter(isConnectionVisibleInServerOverview)
     const allConnections = connections
     console.log(`[v0] [SystemStats] Analyzing ${connections.length} total connections`)
     
@@ -192,7 +194,8 @@ export async function GET() {
       const progressionHashes = await Promise.all(
         relevantIds.map(async (id) => {
           try {
-            return await client.hgetall(`progression:${id}`)
+            const hashes = await Promise.all(progressionReadKeys(buildProgressionScope(id)).map(key => client.hgetall(key)))
+            return hashes.reduce((merged, hash) => ({ ...hash, ...merged }), {})
           } catch {
             return null
           }

@@ -39,6 +39,7 @@ BINGX_VST_SOAK_EXCLUDE_SYMBOLS	test-or-operator-tool	no	no	2	__tests__/unit/runt
 BINGX_VST_SOAK_MAX_POSITION_NOTIONAL_USD	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_ORIGIN	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_PREFLIGHT_ONLY	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
+BINGX_VST_SOAK_SYMBOL_COUNT	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_VERIFY_APP_URL	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-orchestrated-verifier.ts
 BINGX_VST_VERIFY_AUTHENTICATED	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-orchestrated-verifier.ts
 BINGX_VST_VERIFY_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-orchestrated-verifier.ts

@@ -1,5 +1,7 @@
 "use client"
 
+import { isConnectionVisibleInServerOverview } from "@/lib/connection-state-utils"
+
 import { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react"
 import { useDashboardEvents, type DashboardEventPayload } from "@/lib/dashboard-events"
 
@@ -79,7 +81,7 @@ export function ExchangeProvider({ children }: { children: ReactNode }) {
                   toBoolean(c.is_dashboard_inserted) ||
                   toBoolean(c.is_assigned)
                 const isDashboardActive = toBoolean(c.is_enabled_dashboard)
-                return isInserted || isDashboardActive
+                return isConnectionVisibleInServerOverview(c) && (isInserted || isDashboardActive)
               })
 
               setActiveConnections(mainConnections)

@@ -1,5 +1,7 @@
 "use client"
 
+import { isConnectionVisibleInServerOverview } from "@/lib/connection-state-utils"
+
 import {
   CONNECTION_STATE_CHANGED_EVENT,
   PROGRESSION_STATE_INVALIDATE_EVENT,
@@ -120,7 +122,7 @@ export function DashboardActiveConnectionsManager() {
         const isEnabledDashboard =
           toBoolean(conn.is_enabled_dashboard)
 
-        if (isActiveInserted || isEnabledDashboard) {
+        if (isConnectionVisibleInServerOverview(conn) && (isActiveInserted || isEnabledDashboard)) {
           // Normalise IDs: strip the "conn-" prefix so that both the raw
           // predefined key (e.g. "bingx-x01") and its stored form
           // ("conn-bingx-x01") collapse to the same canonical token.

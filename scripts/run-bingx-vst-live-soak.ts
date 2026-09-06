@@ -9,6 +9,7 @@ import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import { isLiveOrderConnectionAllowed } from "@/lib/real-trade-gates"
 import { tradingPairKey } from "@/lib/trading-pair-keys"
 import { createVstReadPacer } from "@/lib/bingx-vst-read-pacer"
+import { resolveVstSoakPlan, parseVstSoakCandidateSymbols, vstSoakCoverageDirection } from "@/lib/bingx-vst-soak-plan"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
 const VST_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
@@ -29,7 +30,6 @@ const VST_ORIGIN = (() => {
 const VST_HOST = new URL(VST_ORIGIN).hostname
 const SOAK_CONFIRMATION = "I understand Prod-VST places authenticated orders with virtual funds"
 const EXACT_DURATION_MS = 20 * 60 * 1_000
-const EXACT_LIVE_CYCLE_COUNT = 16
 const MONITOR_INTERVAL_MS = 15_000
 // A complete VST lifecycle makes several serialized authenticated calls
 // (entry, accumulation, SL, TP, verification, cancellation and close). Keep
@@ -67,7 +67,7 @@ const GUARDED_UNITS = [
   "cts-kn-direct-trade.service",
 ] as const
 
-type SoakSymbol = typeof SYMBOL_CANDIDATES[number]
+type SoakSymbol = string
 type TradePath = typeof TRADE_PATHS[number]["id"]
 
 interface NetworkObservation {
@@ -326,6 +326,14 @@ async function main(): Promise<void> {
   // cancel-confirm-replace cycle and rejects a subsequently stale ratchet.
   // It remains Prod-VST only and shares the same isolated account cleanup.
   const verifyEngineTrailingUpdate = process.env.BINGX_VST_SOAK_ENGINE_TRAILING_UPDATE === "1"
+  const coveragePlan = resolveVstSoakPlan({
+    durationMs: requestedDuration,
+    ...(process.env.BINGX_VST_SOAK_SYMBOL_COUNT ? { symbolCount: Number(process.env.BINGX_VST_SOAK_SYMBOL_COUNT) } : {}),
+    ...(process.env.BINGX_VST_SOAK_CYCLES ? { cycles: Number(process.env.BINGX_VST_SOAK_CYCLES) } : {}),
+    trailingUpdate: verifyEngineTrailingUpdate,
+  })
+  let symbolCandidates: string[] = [...SYMBOL_CANDIDATES]
+  let candidateCatalog: unknown = null
 
   const report: any = {
     schemaVersion: 5,
@@ -339,7 +347,8 @@ async function main(): Promise<void> {
     startedAt: new Date(runStartedMs).toISOString(),
     success: false,
     cleanupComplete: false,
-    symbolCandidates: [...SYMBOL_CANDIDATES],
+    symbolCandidates: [...symbolCandidates],
+    coveragePlan,
     excludedSymbols: [] as SoakSymbol[],
     symbols: [] as SoakSymbol[],
     tradePaths: TRADE_PATHS.map((path) => ({ ...path })),
@@ -1040,7 +1049,15 @@ async function main(): Promise<void> {
       import("@/lib/live-position-statistics"),
       import("@/lib/trade-engine/stages/live-stage"),
     ])
-    const candidateSymbolSet = new Set<string>(SYMBOL_CANDIDATES)
+    if (coveragePlan.targetSymbols > SYMBOL_CANDIDATES.length) {
+      const response = await fetch(`${VST_ORIGIN}/openApi/swap/v2/quote/contracts`, { method: "GET", signal: AbortSignal.timeout(15_000) })
+      if (!response.ok) throw new Error(`VST contract catalog returned HTTP ${response.status}`)
+      candidateCatalog = await response.json()
+      symbolCandidates = parseVstSoakCandidateSymbols(candidateCatalog, SYMBOL_CANDIDATES)
+      if (symbolCandidates.length < coveragePlan.minimumSymbols) throw new Error("VST contract catalog cannot cover the requested symbol count")
+      report.symbolCandidates = [...symbolCandidates]
+    }
+    const candidateSymbolSet = new Set<string>(symbolCandidates)
     const requestedExcludedSymbols = auditModule.parseVstSoakExcludedSymbols(
       process.env.BINGX_VST_SOAK_EXCLUDE_SYMBOLS,
     )
@@ -1174,7 +1191,7 @@ async function main(): Promise<void> {
     ])
     const candidateTickers = new Map<SoakSymbol, any>()
     const candidateErrors = new Map<SoakSymbol, string>()
-    const unoccupiedCandidates = SYMBOL_CANDIDATES.filter((symbol) =>
+    const unoccupiedCandidates = symbolCandidates.filter((symbol) =>
       !occupiedSymbols.has(symbol) && !excludedSymbolSet.has(symbol))
     const liquidityRows: Array<{ symbol: SoakSymbol; bid: number; ask: number; last: number }> = []
     for (const symbol of unoccupiedCandidates) {
@@ -1183,6 +1200,12 @@ async function main(): Promise<void> {
         if (!ticker) {
           const status = connector.getLastTickerSnapshotStatus?.()
           candidateErrors.set(symbol, status?.error || "No authoritative Prod-VST ticker")
+        }
+        if (candidateCatalog && ticker) {
+          const rules = rulesModule.parseBingXInstrumentRules(candidateCatalog, symbol)
+          const price = finite(ticker.last || ticker.ask || ticker.bid)
+          const minimum = rulesModule.getMinimumBingXSmokeQuantity(rules, price)
+          if (minimum.notionalUsdt * 2 > maxPositionNotionalUsd + 1e-8) throw new Error("Minimum entry plus accumulation exceeds the virtual-position notional cap")
         }
         candidateTickers.set(symbol, ticker)
         liquidityRows.push({
@@ -1202,7 +1225,7 @@ async function main(): Promise<void> {
     )
     soakSymbols = rankedLiquidity
       .filter((row: { eligible: boolean }) => row.eligible)
-      .slice(0, SYMBOL_CANDIDATES.length)
+      .slice(0, coveragePlan.targetSymbols)
       .map((row: { symbol: string }) => row.symbol as SoakSymbol)
     report.symbols = [...soakSymbols]
     report.preflight.symbolSelection = {
@@ -1217,10 +1240,10 @@ async function main(): Promise<void> {
       })),
       baselinePreserved: true,
     }
-    if (soakSymbols.length < TRADE_PATHS.length) {
+    if (soakSymbols.length < coveragePlan.minimumSymbols) {
       throw new Error(
         `Not enough executable Prod-VST books for all trade paths ` +
-        `(${soakSymbols.length}/${TRADE_PATHS.length} minimum, maxSpread=${MAX_VST_SOAK_SPREAD_BPS}bps)`,
+        `(${soakSymbols.length}/${coveragePlan.minimumSymbols} minimum, maxSpread=${MAX_VST_SOAK_SPREAD_BPS}bps)`,
       )
     }
 
@@ -1468,13 +1491,9 @@ async function main(): Promise<void> {
     // lifecycles / 96 venue submissions, or 128 with the engine-trailing
     // replacement proof enabled). Alternate DCA and Block on every path so
     // each progression is exercised twice per path. Explicit short safety
-    // runs retain one cycle per path.
-    const plannedCycleCount = requestedDuration === EXACT_DURATION_MS
-      ? EXACT_LIVE_CYCLE_COUNT
-      : Math.max(
-          TRADE_PATHS.length,
-          Math.min(8, Math.round(finite(process.env.BINGX_VST_SOAK_CYCLES) || 6)),
-        )
+    // runs retain bounded coverage. Explicit 32-symbol coverage uses at least
+    // 32 paced lifecycles; every requested symbol must be visited.
+    const plannedCycleCount = coveragePlan.cycles
     const plannedCycleWindowMs = requestedDuration / plannedCycleCount
     if (plannedCycleWindowMs < MIN_LIVE_CYCLE_WINDOW_MS) {
       throw new Error(
@@ -1490,7 +1509,7 @@ async function main(): Promise<void> {
         : tradePath.progression === "dca" ? "block" : "dca"
       return {
         symbol: soakSymbols[index % soakSymbols.length],
-        direction: auditModule.vstSoakDirectionForCycle(index, soakSymbols.length),
+        direction: vstSoakCoverageDirection(index, soakSymbols.length),
         tradePath,
         progression,
         scheduledOffsetMs: Math.round(requestedDuration * (index / plannedCycleCount)),
