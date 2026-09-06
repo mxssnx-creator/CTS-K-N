@@ -1,0 +1,34 @@
+{
+  "projects": [
+    {
+      "id": "cts-kn",
+      "name": "CTS-K-N",
+      "role": "production trading application",
+      "kind": "cts-kn",
+      "baseUrl": "http://127.0.0.1:3002",
+      "port": 3002,
+      "connectionCatalogPath": "/api/connections",
+      "serviceIds": [
+        "cts-kn.service",
+        "cts-kn-direct-trade.service",
+        "cts-kn-scheduler.service"
+      ]
+    },
+    {
+      "id": "cts-g",
+      "name": "CTS-G",
+      "role": "independent project / desk",
+      "kind": "cts-g",
+      "baseUrl": "http://127.0.0.1:3102",
+      "statsBaseUrl": "http://127.0.0.1:3015",
+      "port": 3102,
+      "connectionIds": ["bingx-x01", "bingx-x02"],
+      "serviceIds": [
+        "cts-g-desk.service",
+        "cts-g-pulse-http.service",
+        "cts-g-pulse@bingx-x01.service",
+        "cts-g-pulse@bingx-x02.service"
+      ]
+    }
+  ]
+}

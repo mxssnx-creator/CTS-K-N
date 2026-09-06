@@ -3595,3 +3595,43 @@ credentials are present.
   discovery, X02 Prod-VST minimum-volume lifecycle, production soak and browser
   acceptance are pending. Do not claim production readiness until each passes
   against the exact deployed merge SHA and baseline cleanup is proven.
+
+## Session 2026-09-05 — server-access observability integration candidate
+
+- [x] The dynamic server-access dashboard candidate from `ae6d1cae` was
+  replayed onto GitHub `main` at `4cc47c34`; its earlier symbol-basket commit
+  was already contained in `main` and was not duplicated.
+- [x] Dashboard deployment now installs the versioned project inventory under
+  `/etc/server-access-dashboard/projects.json`, and compact connection-stage
+  performance tiers are available to overview polling without materialising
+  the exhaustive statistics payload.
+- [x] The integrated candidate passed frozen pnpm 10.28.1 online and subsequent
+  offline installation, source syntax, secret scanning, recreation manifests,
+  TypeScript, ESLint, 274 Jest suites/1,892 tests, the dashboard Node test,
+  runtime-recovery verification, Linux and Kilo preflights, and the optimized
+  Next build with 349 complete traces.
+- [ ] Publish only through a new green pull request. PR #314 is a separate VST
+  admission candidate and must remain unmerged while its Vercel deployments or
+  authenticated X02 acceptance evidence are failing.
+
+## Session 2026-09-06 — dashboard candidate rebased after main advances
+
+- [x] Workspace maintenance removed the prior canonical checkout. The surviving
+  active `codex/block-break-race-recovery-20260902-v2` tree was first preserved
+  as a verified owner-only bundle, binary patch and untracked archive, then
+  restored exactly to `/workspace/CTS-K-N`; 31 tracked and 3 untracked paths
+  remain untouched on that active branch.
+- [x] GitHub `main` advanced to `752d4e5a` through Redis, Block/DCA and Overview
+  releases. The server-access dashboard candidate was replayed onto that exact
+  base without source conflicts; only generated recreation manifests changed.
+- [x] The rebased candidate passed frozen pnpm 10.28.1 offline installation,
+  source syntax, a 1,669-file secret scan with zero findings, recreation
+  verification for 1,661 files, TypeScript, ESLint, 287 Jest suites/1,977 tests,
+  seven dashboard tests, runtime recovery, Linux and Kilo preflights, and the
+  optimized Next build on attempt 1 with 349 complete traces.
+- [x] Jest was run without any exchange credentials. An initial forced-paper
+  diagnostic predictably invalidated mock-live assertions and was discarded;
+  the credential-free canonical test semantics then passed completely.
+- [ ] PR #314 was merged externally after the earlier note above. PR #315 must
+  be updated to the new `main`-based candidate and merged only after Dev Preview
+  Smoke and both Vercel status checks are green.
