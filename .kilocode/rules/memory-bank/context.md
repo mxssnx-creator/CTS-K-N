@@ -3623,3 +3623,112 @@ credentials are present.
   discovery, X02 Prod-VST minimum-volume lifecycle, production soak and browser
   acceptance are pending. Do not claim production readiness until each passes
   against the exact deployed merge SHA and baseline cleanup is proven.
+
+## Session 2026-09-05 — server-access observability integration candidate
+
+- [x] The dynamic server-access dashboard candidate from `ae6d1cae` was
+  replayed onto GitHub `main` at `4cc47c34`; its earlier symbol-basket commit
+  was already contained in `main` and was not duplicated.
+- [x] Dashboard deployment now installs the versioned project inventory under
+  `/etc/server-access-dashboard/projects.json`, and compact connection-stage
+  performance tiers are available to overview polling without materialising
+  the exhaustive statistics payload.
+- [x] The integrated candidate passed frozen pnpm 10.28.1 online and subsequent
+  offline installation, source syntax, secret scanning, recreation manifests,
+  TypeScript, ESLint, 274 Jest suites/1,892 tests, the dashboard Node test,
+  runtime-recovery verification, Linux and Kilo preflights, and the optimized
+  Next build with 349 complete traces.
+- [ ] Publish only through a new green pull request. PR #314 is a separate VST
+  admission candidate and must remain unmerged while its Vercel deployments or
+  authenticated X02 acceptance evidence are failing.
+
+## Session 2026-09-06 — dashboard candidate rebased after main advances
+
+- [x] Workspace maintenance removed the prior canonical checkout. The surviving
+  active `codex/block-break-race-recovery-20260902-v2` tree was first preserved
+  as a verified owner-only bundle, binary patch and untracked archive, then
+  restored exactly to `/workspace/CTS-K-N`; 31 tracked and 3 untracked paths
+  remain untouched on that active branch.
+- [x] GitHub `main` advanced to `752d4e5a` through Redis, Block/DCA and Overview
+  releases. The server-access dashboard candidate was replayed onto that exact
+  base without source conflicts; only generated recreation manifests changed.
+- [x] The rebased candidate passed frozen pnpm 10.28.1 offline installation,
+  source syntax, a 1,669-file secret scan with zero findings, recreation
+  verification for 1,661 files, TypeScript, ESLint, 287 Jest suites/1,977 tests,
+  seven dashboard tests, runtime recovery, Linux and Kilo preflights, and the
+  optimized Next build on attempt 1 with 349 complete traces.
+- [x] Jest was run without any exchange credentials. An initial forced-paper
+  diagnostic predictably invalidated mock-live assertions and was discarded;
+  the credential-free canonical test semantics then passed completely.
+- [ ] PR #314 was merged externally after the earlier note above. PR #315 must
+  be updated to the new `main`-based candidate and merged only after Dev Preview
+  Smoke and both Vercel status checks are green.
+
+
+## CTS v3.7 continuation checkpoint — 2026-09-06
+
+- Canonical old dirty checkout remains preserved at `/workspace/CTS-K-N`; integration worktree `/workspace/CTS-K-N-worktrees/continuation-20260906`, branch `codex/continuation-20260906`, origin main base `752d4e5a155094978ee647ed323173edca74bf98`.
+- Audited all 34 older changed/untracked files by three-way comparison: 13 identical, 4 already integrated, 17 fully superseded by current implementations. Per-file evidence: `docs/verification/older-change-integration-20260906.json`. PR315 dashboard candidate squash integrated.
+- Fixes: count signal-free successful cycles by actual errors; stage coverage uses fresh same-symbol intersection; restore Vercel's configured `vercel-build` alias with canonical hooks; dashboard cache age no longer slides forever and CTS-G accounting completeness is explicit.
+- Verified checkpoints: `/workspace/backups/CTS-K-N/20260906T102515Z-continuation`, `/workspace/backups/CTS-K-N/20260906T105007Z-dca-sl-refinement`; full bundles, patches/untracked archives and SHA-256 verification passed.
+- Validation: full Jest 288 suites / 1,981 assertions passed with exit 0 and open-handle detection; dashboard 8/8; typecheck, lint, Linux installer preflight, Kilo 37/37 (schema108), secret scan clean. Production build succeeded with 349 valid traces; subsequent additions are historic replay/audit scripts and continuity docs, final build verification follows.
+- Public historic window: 2026-08-23 00:00 UTC to 2026-09-06 00:00 UTC exclusive. Input SHA256 `eb9fb582b1936fdceae2ac221c43a7361119a853a1d495e31de531e068b10916`. Initial DCA 72,576 profiles per symbol / 217,728 lanes; Direct Trade 90,048 sets / 151 valid, all seven types. Separate fixed-notional model outputs, not account returns or submitted orders.
+- User requested lower drawdown and final-SL ranges. Refinement uses 345,870 normalized profiles per symbol, BCH then XRP then SOL, all supported 1–4 steps and 8 requested final-SL multiples; every strict low-DD candidate gets doubled fee/slippage stress via `scripts/audit-dca-sl-candidates.ts`. Same observed 14-day window: retrospective optimization, not a fresh holdout. No production defaults promoted.
+- Artifacts currently `/workspace/scratch/0c00a9661969/{dca-14d,dca-sl-14d,direct-14d-summary.json,direct-14d-details.jsonl}`. HTML generator `build_results.py` there; final HTML/archive must be persistently saved before handoff.
+- Remote read-only baseline: managed Chisel pinned SSH, host v2202607384858486523, `/opt/cts-kn` main 752d4e5a, port3002 HTTP200. App/direct/scheduler active/NRestarts0; Redis PONG, NRestarts63 unchanged, ~6.74GiB used, host pressure remains relevant. Browser Overview/Statistics/Charts rendered without reported JS errors; Settings redirected to login and remains unverified; final merged deployment not yet installed.
+- Do not label production ready: push/green merge/remote reinstall/final remote soak still pending at this checkpoint. X01/Bybit remain read-only. No new mainnet or VST orders submitted in this continuation. Old VST soak failed baseline restoration because an external order changed; later own exposure was reconciled, not a passed original soak. CTS-G belongs to another chat and must remain untouched.
+
+
+### Published integration / complete historic results
+
+- PR320: https://github.com/mxssnx-creator/CTS-K-N/pull/320, first published commit `7d0627d488e1f86fab34e56eac3c19e1619ed9c6`, tree `48ed20abca2d2809e1be48316e0bb521487bcf28`. Git CLI push lacked username credentials; authenticated GitHub blob/tree/commit APIs published byte-identical content, verified by tree hash. Local original merge preserved on `recovery/continuation-local-20260906`.
+- Newer main PR319 (`b3d4e9f5`) was reviewed and integrated, retaining operator-basket precedence, retention fixes and Redis packing safeguards. Final production build passed. Full integrated suite: 290 suites / 1,998 tests passed.
+- Auto-review rejected the unisolated Jest polling action because constructor time synchronization could contact BingX. Verified the fixture used test-only credentials and mocked account methods, then fixed the constructor-time mock and reran the entire suite with external network connections blocked. 1,998/1,998 passed. Use `pnpm run test:all:isolated` for future local regression; isolation does not authorize any live order.
+- SL grid complete: 345,870 normalized profiles for each BCH/XRP/SOL, total 1,037,610 additional lanes. Every strict candidate was cost-stressed: BCH 108 tested/0 passed, XRP 5/0, SOL 66/4. Selected SOL id101855: ordinary 14d net3.031690 points, PF1.294969, maxDD4.688464,56 trades; doubled costs net2.245963, PF1.140562, maxDD4.262730,51 trades. Retrospective reused data; no default promoted.
+- Additional stage/SL sensitivity: 32 cases per symbol (4 step limits x8 requested multipliers), each with ordinary/doubled costs and fixed low-volume ladder. No new exchange orders were submitted.
+- Compact HTML `CTS-v3.7-Diagramme-und-Kandidaten.html` contains summary charts, all179 strict candidates and151 valid Direct sets. Full HTML `CTS-v3.7-14-Tage-Ergebnisse.html` embeds every1,255,338 DCA lane and90,048 Direct sets. Raw archive plus checksums generated in task artifacts; persistent saving and browser validation are the final artifact gates.
+
+
+- Final isolation acceptance: the first socket-only guard allowed the environment's loopback HTTP proxy, leaving two referenced BingX public-time-sync sockets and causing timeout despite passing assertions. Added HTTP-origin checks and explicit configured-proxy endpoint denial, retaining local test-listener access. Final full regression: `jest-origin-isolated.json`, 290 suites / 1,998 passed, `ORIGIN_ISOLATED_EXIT=0`. No live/order request was authorized; origin/proxy restrictions are now inherited by Node child processes through `test:all:isolated`.
+- Artifact saving completed: compact HTML (218KB), full HTML (175MB), and raw ZIP (322MB). ZIP verifies all22 member SHA256 entries. Remote browser loaded345,870/345,870 full BCH rows across3,459 pages; compact SOL66 candidates,151 Direct sets, detail dialog, desktop/mobile charts verified. Browser sessions closed. Production host subsequently on PR319 main b3d4e9f5, services active/NRestarts0; our PR320 remains pending final merge/deployment.
+
+## Session 2026-09-06 — PR319 installed; remaining memory/UI acceptance
+
+- Canonical checkout /workspace/CTS-K-N remains at 2041787ba7530f0b7c7487890c815086b80ce770 with concurrent dirty work preserved. Own clean worktree /workspace/CTS-K-N-worktrees/runtime-verification-20260906 is on codex/production-handoff-20260906 at merged main b3d4e9f596aec3a783021878f09713e9dab520b9. Do not reset the canonical checkout or the separate continuation-20260906 worktree.
+- PR319 https://github.com/mxssnx-creator/CTS-K-N/pull/319 is merged. GitHub Actions PR run 34028485549 and merged-main run 34028643144 passed; legacy external Vercel integrations still fail. Exact local/GitHub trees matched before release.
+- Changes honor explicit zero compaction headroom and explicit floor=250; bounded lossless list repack uses 8 KiB listpacks and explicit memory admission; full/runtime X02 stats prioritize the canonical operator symbol basket; Stage cards use semantic theme colors and label current Active sets.
+- Local and remote full validation passed 289 suites / 1,994 tests; TypeScript, ESLint, source syntax, recreation manifests, zero-secret scan and production build passed. Local production build has 349 complete trace files. Native isolated Redis tests cover exact 400 rows, order, TTL/persistence, repeat processing, protected keys, compression resizing and insufficient-memory skip.
+- Verified remote checkpoint /var/backups/cts-kn/20260906-runtime-memory-release (7.6 GB, verified 2026-09-06T10:39:22Z) contains source bundle/patches/untracked archive, rollback binaries, private runtime configuration and fork-free validated native AOF chain. Installer also retained /var/backups/cts/cts-kn/20260906T110425Z.
+- Managed release cts-kn-runtime-release-20260906.service completed inactive/success/ExecMainStatus=0. /var/tmp/cts-runtime-verification-20260906/deploy.log ends CTS_VERIFIED_RELEASE=b3d4e9f596aec3a783021878f09713e9dab520b9. Official bootstrap performed reinstall, verified schema/shared Redis/one-minute continuity/engine ownership/restart persistence. No runtime/dependency upgrade was requested.
+- Lossless repack completed: 127,072 scanned; 73,221 repacked; 53,851 skipped; 8,296,099 exact entries verified; changed lists 2,232,056,789 -> 1,952,388,412 bytes; savings 279,668,377 bytes; complete=true/interrupted=false. Do not attribute the larger total-DB reduction solely to lossless repack: installer retention of derived data also ran.
+- Final managed read at 2026-09-06 11:22:17 UTC: app/scheduler/Direct-Trade active, all NRestarts=0. Redis active, prior NRestarts=63 unchanged, noeviction, AOF write/rewrite status ok, not loading. Redis used_memory=4,686,861,456 (4.36 GiB), RSS=3,087,859,712; health HTTP200/45.743ms. Earlier after install used_memory=4,540,717,784, so long-term bounded growth is NOT established.
+- Post-release full statistics HTTP200/37.342ms: historic 20/20, 108,000 frames, complete=true; realtime 9 indication and 9 strategy cycles, 43,973,321 cumulative indications. Current active strategies/positions can be zero and must not be manufactured from historical evaluation counts. Browser root also showed Running, 20/20, nonzero cycles and Direct-Trade calculation progress.
+- UI acceptance is incomplete: post-release Overview dialog remained Loading despite fast local API. Browser reload timed out and reset the kernel; original browser -1bb6-46f7-824a-080a8e27d950 became unavailable (registry subsequently returned a different browser). No post-release loaded Stage screenshot or contrast acceptance was obtained. Pre-release Overview and Stage screenshots are comparison evidence only. Saved post-release screenshot documents Loading, not a pass.
+- One extra public HTTP read and an earlier old VST-wrapper read were cancelled by the network approval broker; subsequent managed Chisel read-only health/status worked. Continue only managed activation + pinned localhost SSH banner. Do not treat cancelled reads as failed app tests or use another transport.
+- NEW concrete open Redis growth source: Direct-Trade config chunks are persistent and failed/cancelled calculations have no writer abort cleanup. Read-only X02 inventory found 1,507 chunk keys across 21 generations; current manifest mtpowwft-3f1v08lt has 145 chunks/1,440,768 configs. Older noncurrent generations (some 18-38 hours, one ~193h) remain; a recent noncurrent 105-chunk generation and active calculation lease were also observed. NO orphan cleanup or source fix was performed. Protect current and in-flight generations, preserve independent connections and live orders; fix publication/lease races and crash recovery before deletion. Relevant files: lib/direct-trade-config-store.ts; app/api/trade-engine/direct-trade/calculate/route.ts; lib/redis-retention.ts; lib/data-cleanup-manager.ts. Existing v2 chunks already use gzip; do not propose compression as a missing feature.
+- Retention safety currently scans one COUNT250 page per pattern per 5-minute pass. On a large shared keyspace this may take days to complete sparse patterns; bounded yet adequate scan progress requires investigation.
+- No new exchange orders in this turn. Prior Sept5 20-minute/16-cycle VST strict soak remains FAILED because a foreign baseline order changed; independent owned-order audit 96/96 terminal and 48/48 market settlements remains separate. The verifier used isolated inline-local Redis, not production native accounting acceptance. Original report /opt/cts-kn/.agent-logs/bingx-vst-soak-2026-09-05T16-43-16-173Z.json. Do not relabel it passed.
+- Prior Block1-6/DCA/Trend work is already merged; historical 6048-profile XRP/BCH/SOL study did not qualify a common promoted default (XRP 0/BCH56/SOL101 qualified). No universal positive-results claim.
+- Local verified checkpoints: 20260906T102640Z-continuation-recovery; 20260906T104504Z-pre-publish-runtime-memory; 20260906T104542Z-precommit-runtime-memory; 20260906T104955Z-pre-merge-runtime-memory; 20260906T112136Z-pre-handoff-20260906, all under /workspace/backups/CTS-K-N. Helper /workspace/scratch/90bda174abe7/checkpoint.py. Update this handoff after the next verified fix; do not claim complete production readiness yet.
+
+## Session 2026-09-06 — PR320 DCA/SL results and config lifecycle validation
+
+- Continuation remains in `/workspace/CTS-K-N-worktrees/continuation-20260906`, branch `codex/continuation-20260906`; PR320 integrates PR315 and PR319. Canonical dirty checkout and other chats remain preserved. Published head before this final lifecycle commit: `6afecf3c25655e321eb7d3d9f965c65f52157611`, both Vercel checks and GitHub smoke passed.
+- Complete 14-day results and coordination rules are recorded in `docs/PROJECT-CONTINUATION.md`. DCA 1,255,338 evaluated configurations; Direct-Trade 90,048. Only 4 SOL refined candidates pass the stricter doubled-cost gate; retrospective data reuse, no promoted global/live default. Full HTML, compact diagram HTML and checksum-verified raw archive are persisted for the user.
+- Fixed the PR319 handoff's concrete orphan-generation leak: staging TTL/owned renewal, atomic lease-and-completeness publication, persistent current generation, 300s retirement grace, guarded abort/compaction including lost acknowledgements, owned progress writes. Added bounded, read-only-by-default orphan maintenance with atomic lease/current/TTL protection and explicit connection scope. No production orphan data has yet been deleted.
+- Final local and isolated server full regression: 290 suites / 2,002 tests, exit0. External HTTP origins/proxy sockets are blocked. Native isolated server Redis: 14 lifecycle/race checks passed. TypeScript, ESLint, recreation verification (1,672 project files), secret scan (1,680 files/0 findings) and production build (349 complete traces) passed. Portable installer fixtures no longer assume root or shared default state.
+- Source checkpoint `/workspace/backups/CTS-K-N/20260906T121040Z-pre-lifecycle-gates` verified; further precommit checkpoint follows. Remote full rollback `/var/backups/cts-kn/20260906T113109Z-pre-pr320-reinstall` verified with source/runtime/private config/native AOF chain. Remote still `b3d4e9f5`; app, Direct-Trade and scheduler active. Merge/reinstall and post-release acceptance remain pending. Do not claim long-term memory stability or a successful several-hundred-order soak.
+
+- Latest user steering: extend VST acceptance to exactly 32 symbols and verify X01. Added explicit paced coverage plan and bounded discovery from the actual VST contract catalog, with minimum-volume/notional filtering. Planned 32 cycles / 40 minutes / 256 submissions with trailing replacement enabled; execution still pending, maintenance marker and stopped CTS-K-N services remain mandatory. Full local and isolated remote regression passed 291 suites / 2,007 tests. X01 dashboard identity resolved to `bingx-8581b0cb8581`; read-only SDK connection test passed HTTP200/prod-live. Do not use the nonexistent `bingx-x01` alias or change the unassigned duplicate.
+
+## 2026-09-06: Live/overview continuation (PR320, not yet deployed)
+
+User additionally requests continuous cycles, only Base-added and Base-enabled connections in the server overview, regular bounded memory reclamation, more Trend/Break tuples, and X02 virtual exchange acceptance over 32 symbols. Preserve these requirements in subsequent chats.
+
+Implemented: primary cycle metrics now expose every processing cycle; productive cycles remain separately named. Shared Trend/Break matrix retains the original tuple and adds stricter spread/confirmation and range/noise combinations (up to 24 evaluations / 48 directional sets per type). UI/config counts and both processors share that matrix; scalar settings and a single/expanded switch remain operator-controlled. Short CTS-G caches retry historical hydration after 30 seconds, bounded to 64 symbols and 1,441 minute closes. Empty historical completion markers now require measured candles and intervals before reuse. Overview connections require both Base flags, and global cycle aggregation reads scoped progression before legacy fields. QuickStart separates latest qualified Real rows, current active sets, blocked entries and entry failures; observed zero positions remain zero. Direct-Trade owner sync performs at most 20 SCAN pages per connection every five minutes under a shared Redis cadence; old orphan deletion retains atomic generation/lease/TTL checks. New staging/current-generation TTL rules remain in PR320.
+
+Remote evidence: installed main still b3d4e9f (PR319); X02 tick count advanced from the screenshot's 2 to 7. Memory pressure reached 238 MiB available / 14.1 GiB swap in use; other project processes are untouched. X02 dispatch records show budgets below executable minima, missing venue tickers, and DCA waiting for confirmed parents. A separate GET-only authenticated VST connector test subsequently obtained valid BTC/SOL/BCH/XRP tickers (4/4). No mainnet order is authorized. Do not increase risk limits or invent fills to make Live green. Current orders/positions remain unverified by the pending 32-symbol VST soak. Historical 14-day reports remain reproducible and persisted; do not call retrospective refinements an independent holdout.
+
+Validation before final UI/memory additions: 292 suites / 2,013 isolated tests passed. Final checks, GitHub publication/merge, official reinstall and actual 32-symbol/32-cycle/40-minute virtual-minimum soak remain pending. Canonical dirty changes and the continuation worktree must never be reset to align API-generated commit history.
+
+Final verification update: 293 suites / 2,016 tests passed with external networking blocked, including real-M1 hydration, matrix/count parity and bounded memory cadence. GET-only VST live-market audit obtained 1,441 real M1 candles for each BTC/SOL/BCH/XRP; default matrix emitted Trend signals on SOL/BCH/XRP and Break on SOL/XRP. These are observed indication signals, not forward-performance qualifications or executed orders. Runtime now hydrates a missing M1 day through the same connection's connector; failed venue history attempts back off five minutes independently from the 30-second Redis retry. Backup /var/backups/cts-kn/20260906T132410Z-pr320-final verified; CTS-K-N was placed in official maintenance at approximately 13:32 UTC because Redis reached its memory ceiling, before reinstall/soak. Other project services remain untouched. Do not leave maintenance unnoticed: complete merged-green reinstall and owned-order reconciliation, then restart with service-control.sh start, or record a precise recovery blocker.

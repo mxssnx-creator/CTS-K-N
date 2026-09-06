@@ -112,3 +112,8 @@ export function isConnectionEligibleForEngine(connection: any): boolean {
 export function isOpenPosition(position: any): boolean {
   return position?.status === "open" || position?.status === "active" || isTruthyFlag(position?.is_open)
 }
+
+/** Server overview includes only connections added and enabled in Base settings. */
+export function isConnectionVisibleInServerOverview(connection: any): boolean {
+  return isConnectionInBasePanel(connection) && isConnectionBaseEnabled(connection)
+}

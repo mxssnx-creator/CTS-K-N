@@ -4,9 +4,24 @@ import {
   resolveStageRowSnapshotFreshMs,
   sumFreshStageRowField,
   summarizeFreshStageEvaluation,
+  summarizeStagePipelineCoverage,
 } from "@/lib/stage-row-snapshot"
 
 describe("stage row snapshot freshness", () => {
+  test("current 20-symbol coverage is independent of historical bootstrap progress", () => {
+    const symbols = new Set(Array.from({ length: 20 }, (_, i) => `SYMBOL${i}`))
+    const hash = Object.fromEntries([...symbols].map(symbol => [`s:${symbol}:ts`, "1000"]))
+    expect(summarizeStagePipelineCoverage([hash, hash, hash, hash], { symbols, now: 1100, maxAgeMs: 500 }))
+      .toEqual({ processed: 20, total: 20, complete: true })
+  })
+
+  test("partial stage coverage counts matching symbols, not the minimum of disjoint counts", () => {
+    const symbols = new Set(["BTCUSDT", "SOLUSDT"])
+    const base = { "s:BTCUSDT:ts": "1000", "s:SOLUSDT:ts": "1000" }
+    expect(summarizeStagePipelineCoverage([base, { "s:BTCUSDT:ts": "1000" }, { "s:SOLUSDT:ts": "1000" }, base], { symbols, now: 1100, maxAgeMs: 500 }))
+      .toEqual({ processed: 0, total: 2, complete: false })
+    expect(summarizeStagePipelineCoverage([base, base, base, { "s:BTCUSDT:ts": "100", "s:SOLUSDT:ts": "1200" }], { symbols, now: 1100, maxAgeMs: 500 }).processed).toBe(0)
+  })
   test("retains the five-minute floor for small baskets", () => {
     expect(resolveStageRowSnapshotFreshMs(0)).toBe(STAGE_ROW_SNAPSHOT_MIN_FRESH_MS)
     expect(resolveStageRowSnapshotFreshMs(1)).toBe(STAGE_ROW_SNAPSHOT_MIN_FRESH_MS)

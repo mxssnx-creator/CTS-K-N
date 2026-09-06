@@ -68,3 +68,15 @@ After completing the user's request, update the relevant memory bank files:
 
 - `.kilocode/rules/memory-bank/context.md` - Current state and recent changes
 - Other memory bank files as needed when architecture, tech stack, or project goals change
+
+## Verbindliche Fortsetzung und Integration (Nutzeranweisung 2026-09-06)
+
+- Bei jeder Fortsetzung alle älteren unveröffentlichten Änderungen, lokalen Branches, offenen PRs und neueren Änderungen inventarisieren und anhand des gemeinsamen Vorgängers vergleichen.
+- Jede ältere Änderung entweder integrieren, als bereits enthalten belegen oder ihre Überarbeitung durch eine neuere Implementierung einzeln dokumentieren. Keine ältere Arbeit stillschweigend verwerfen oder neuere Korrekturen mit älterem Code überschreiben.
+- Verifizierte Backups erstellen; danach integrieren/überarbeiten, vollständig testen, über GitHub pushen und grüne PRs mergen; erst anschließend gemergtes main remote reinstallieren und HTTP/UI, Statistiken, Koordination und Stabilität erneut prüfen.
+- Canonical Workspace, verwalteten Chisel-Zugang, persistente Konfiguration und Daten über Reinstall und Chatwechsel erhalten.
+- Historische Tests umfassen 14 vollständig abgeschlossene UTC-Tage. Konfigurationsdimensionen, vollständige ausgeführte Matrix, nicht abgedeckte Dimensionen, Datenlücken, Kosten, PF, Drawdown und Ergebnisse pro Konfiguration im HTML-Bericht ausweisen.
+- Systemweite Defaults/Mindestwerte nur nach belastbaren positiven Ergebnissen nach Kosten und unabhängiger Validierung ändern. Mehrere hundert Orders sind ein Kapazitäts-/Koordinationsziel, kein Grund, Qualitäts-, Schutz- oder Eigentumsprüfungen zu umgehen. Exchange-Abnahmetests bleiben X02 Prod-VST mit virtuellem Mindestvolumen; fremde Orders unverändert lassen.
+- Keine Produktionsreife behaupten, solange erforderliche Gates, Remote-Stabilität oder Order-/Statistikabgleich offen sind. Exakte Fortsetzung in `docs/PROJECT-CONTINUATION.md` und `.kilocode/rules/memory-bank/context.md` pflegen.
+
+- Zusätzliche Nutzerpriorität: DCA zuerst für ein Symbol (aktuell BCH), danach XRP/SOL über jeweils 14 vollständige Tage rechnen. Alle ausführbaren Stufen 1–4 und mehrere letzte SL-Abstände/Mulitplikatoren vergleichen. Geringen Drawdown vor höherem Gewinn priorisieren, positive Ergebnisse nach Kosten und Kostenstress getrennt ausweisen. Bereits betrachtete Daten nicht erneut als unabhängigen Holdout bezeichnen. Vollständige Ergebnisse mit Diagrammen als interaktives HTML liefern.

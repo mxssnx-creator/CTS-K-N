@@ -15,6 +15,34 @@ export interface CtsGIndicationSettings {
   minimumConfidence?: number
   breakRange?: number
   breakNoisePct?: number
+  confirmationBars?: number
+}
+
+/** Bounded matrix; the original tuple is retained and extra variants are stricter. */
+export function buildCtsGConfigurations(kind: "trend" | "break", settings: Record<string, any> = {}): CtsGIndicationSettings[] {
+  const finite = (value: unknown, fallback: number, low: number, high: number) => {
+    const n = value === undefined || value === null || value === "" ? fallback : Number(value)
+    return Math.max(low, Math.min(high, Number.isFinite(n) ? n : fallback))
+  }
+  const base: CtsGIndicationSettings = {
+    minimumSpreadRatio: finite(settings.ctsGTrendMinimumSpreadRatio, 0.001, 0.00001, 1),
+    minimumConfidence: finite(settings.ctsGMinimumConfidence, 0.6, 0, 1),
+    breakRange: Math.floor(finite(settings.breakRange, 16, 8, 240)),
+    breakNoisePct: finite(settings.breakNoisePct, 0.05, 0, 10),
+    confirmationBars: 3,
+  }
+  if (settings.ctsGConfigMode === "single") return [base]
+  const variants = kind === "trend"
+    ? [1, 1.5, 2].flatMap(multiplier => [3, 4].map(confirmationBars => ({ ...base,
+        minimumSpreadRatio: Number((base.minimumSpreadRatio! * multiplier).toPrecision(10)), confirmationBars })))
+    : [1, 1.5, 2].flatMap(multiplier => [1, 2].map(noise => ({ ...base,
+        breakRange: Math.min(240, Math.floor(base.breakRange! * multiplier)),
+        breakNoisePct: Math.min(10, Number((base.breakNoisePct! * noise).toPrecision(10))) })))
+  return [...new Map(variants.map(config => [JSON.stringify(config), config])).values()]
+}
+
+export function ctsGConfigurationKey(config: CtsGIndicationSettings): string {
+  return `spread${config.minimumSpreadRatio}:confidence${config.minimumConfidence}:range${config.breakRange}:noise${config.breakNoisePct}:confirm${config.confirmationBars ?? 3}`
 }
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value))
@@ -48,7 +76,7 @@ export function evaluateCtsGTrend(closes: readonly number[], settings: CtsGIndic
     if ((direction === "long" && difference > 0) || (direction === "short" && difference < 0)) consecutive++
     else break
   }
-  if (consecutive < 3) return null
+  if (consecutive < Math.max(3, Math.min(7, Math.floor(settings.confirmationBars ?? 3)))) return null
   const evaluated = directions(closes, 10, 2, 0.5)
   if (evaluated.selectedDirection && evaluated.selectedDirection !== direction) return null
   const confidence = clamp(0.52 + Math.min(0.4, Math.abs(spread) * 80) + consecutive * 0.03, 0.5, 0.99)

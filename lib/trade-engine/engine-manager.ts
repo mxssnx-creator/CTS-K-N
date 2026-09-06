@@ -1352,7 +1352,7 @@ export class TradeEngineManager {
         // preserving the fast path when data is truly present.
         try {
           const cacheScope = buildProgressionScope(this.connectionId, this.currentEngineType)
-          const [doneFlag, firstPass, isComplete, pfSample, storedSelectionEpoch, storedSymbolsProcessed, storedSymbolsTotal, persistedSymbols] = await Promise.all([
+          const [doneFlag, firstPass, isComplete, pfSample, storedSelectionEpoch, storedSymbolsProcessed, storedSymbolsTotal, persistedSymbols, storedCandles, storedIntervals] = await Promise.all([
             readPrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "done"),
             readPrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "firstpass:done"),
             redisClient.hget(cacheScope.prehistoricKey, "is_complete"),
@@ -1361,6 +1361,8 @@ export class TradeEngineManager {
             redisClient.hget(cacheScope.prehistoricKey, "symbols_processed"),
             redisClient.hget(cacheScope.prehistoricKey, "symbols_total"),
             scanRedisSetMembers(redisClient, `${cacheScope.prehistoricKey}:symbols`, { count: 250 }).catch(() => []),
+            redisClient.hget(cacheScope.prehistoricKey, "candles_loaded"),
+            redisClient.hget(cacheScope.prehistoricKey, "intervals_processed"),
           ])
           const symbolsForCheck = await this.getSymbols()
           const currentSelection = await getCanonicalSymbolSelection(this.connectionId)
@@ -1383,6 +1385,7 @@ export class TradeEngineManager {
             firstPass &&
             isComplete === "1" &&
             (pfSample != null || !hasSymbols) &&
+            (!hasSymbols || (Number(storedCandles) > 0 && Number(storedIntervals) > 0)) &&
             canonicalBasketMatches &&
             (
               !currentSelection?.epoch ||
@@ -3737,19 +3740,16 @@ export class TradeEngineManager {
           await Promise.all(writes)
         } catch { /* non-critical */ }
 
-          const processedThisCycle = totalIndications
-
         this.componentHealth.indications.lastCycleDuration = duration
         this.componentHealth.indications.cycleCount = cycleCount
         this.componentHealth.indications.successRate = cycleCount > 0 ? ((cycleCount - errorCount) / cycleCount) * 100 : 100
 
         // PROGRESSION CONTRACT: every tick counts as a completed cycle so the
         // dashboard can observe that the engine is alive and advancing.
-        // “Productive” ticks still advance successful_cycles and indication
-        // counters below; empty/clean ticks still drive completion rate.
-        const hadWork = processedThisCycle > 0
+        // Success measures error-free processing. Signal/trade production has
+        // its own counters; a quiet market must not manufacture failures.
         try {
-          await ProgressionStateManager.incrementCycle(this.connectionId, hadWork, hadWork ? processedThisCycle : 0)
+          await ProgressionStateManager.recordPipelineCycle(this.connectionId, pipelineResults)
         } catch (incError) {
           console.error(`[v0] [Engine] Cycle increment failed:`, incError instanceof Error ? incError.message : String(incError))
         }
@@ -4145,11 +4145,9 @@ export class TradeEngineManager {
         } catch { /* non-critical */ }
 
         // PROGRESSION CONTRACT: every tick counts as a completed cycle.
-        // Productive ticks still advance successful_cycles and strategy
-        // counters below; empty/clean ticks still drive completion rate.
-        const hadWork = evaluatedThisCycle > 0
+        // An empty but error-free strategy evaluation is a successful cycle.
         try {
-          await ProgressionStateManager.incrementCycle(this.connectionId, hadWork, hadWork ? evaluatedThisCycle : 0)
+          await ProgressionStateManager.incrementCycle(this.connectionId, strategyFailedSymbols.length === 0)
         } catch (incError) {
           console.error(`[v0] [Engine] Strategy cycle increment failed:`, incError instanceof Error ? incError.message : String(incError))
         }
@@ -4204,6 +4202,7 @@ export class TradeEngineManager {
           errorCount,
         })
         console.error("[v0] Strategy error:", errorMessage)
+        await ProgressionStateManager.incrementCycle(this.connectionId, false).catch(() => undefined)
       } finally {
         scheduleNext(producedStrategies)
       }

@@ -20,9 +20,26 @@ const {
   DIRECT_TRADE_DEFAULT_MAX_TOTAL_POSITIONS,
 } = require("../lib/direct-trade-position-capacity.cjs")
 
-const symbolCount = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_SYMBOLS) || 32))
+const fs = require("node:fs")
+const publicInputPath = process.env.DIRECT_TRADE_MATRIX_INPUT
+const publicInputRaw = publicInputPath ? fs.readFileSync(publicInputPath, "utf8") : null
+const publicInput = publicInputRaw ? JSON.parse(publicInputRaw) : null
+const publicSymbols = publicInput ? ["XRP-USDT", "BCH-USDT", "SOL-USDT"] : []
+const symbolCount = publicInput ? publicSymbols.length : Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_SYMBOLS) || 32))
 const startSymbolIndex = Math.max(0, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_START_SYMBOL) || 0))
-const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_HOURS) || 48))
+const historyHours = publicInput ? 14 * 24 : Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_HOURS) || 48))
+const publicStart = publicInput ? publicInput.end - historyHours * 3_600_000 : null
+if (publicInput && (!Number.isFinite(publicInput.end) || publicInput.end % 86_400_000)) throw new Error("Public replay needs a complete UTC end boundary")
+const detailPath = process.env.DIRECT_TRADE_MATRIX_DETAILS_FILE
+const detailFd = detailPath ? fs.openSync(detailPath, "w") : null
+
+function publicCandles(symbol, minutes) {
+  const rows = publicInput.market[`${symbol}:${minutes}`]?.filter(candle => candle.time >= publicStart && candle.time < publicInput.end)
+  const interval = minutes * 60_000
+  if (!rows || rows.length !== historyHours * 60 / minutes || rows[0].time !== publicStart || rows.at(-1).time + interval !== publicInput.end
+    || rows.some((candle, index) => !Object.values(candle).every(Number.isFinite) || candle.close <= 0 || (index > 0 && candle.time - rows[index - 1].time !== interval))) throw new Error(`Incomplete public history: ${symbol}:${minutes}`)
+  return rows
+}
 const minProfitFactor = Math.max(
   0.8,
   Number(process.env.DIRECT_TRADE_MATRIX_MIN_PF) || DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
@@ -176,8 +193,13 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
   // strings and obscured the runtime's actual memory behaviour.
   const symbolUniqueKeys = new Set()
   let symbolEvaluatedSets = 0
-  const minuteCandles = minuteSeries(symbolIndex)
-  const candlesByTimeframe = {
+  const symbolName = publicInput ? publicSymbols[localSymbolIndex].replace("-", "") : `LOAD${symbolIndex}USDT`
+  const minuteCandles = publicInput ? null : minuteSeries(symbolIndex)
+  const candlesByTimeframe = publicInput ? {
+    "5m": publicCandles(publicSymbols[localSymbolIndex], 5),
+    "15m": publicCandles(publicSymbols[localSymbolIndex], 15),
+    "30m": publicCandles(publicSymbols[localSymbolIndex], 30),
+  } : {
     "5m": resampleCandles(minuteCandles, 5),
     "15m": resampleCandles(minuteCandles, 15),
     "30m": resampleCandles(minuteCandles, 30),
@@ -196,7 +218,7 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
       ]
       for (const plan of plans) {
         const sets = evaluateDirectTradeSets({
-          symbol: `LOAD${symbolIndex}USDT`,
+          symbol: symbolName,
           direction,
           signalDirection: plan.signalDirection,
           strategyType: plan.strategyType,
@@ -227,6 +249,7 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
         const allTypeMetrics = byStrategyType[plan.strategyType] || (byStrategyType[plan.strategyType] = createMetrics())
         const symbolTypeMetrics = symbolMetrics[plan.strategyType] || (symbolMetrics[plan.strategyType] = createMetrics())
         for (const set of sets) {
+          if (detailFd !== null) fs.writeSync(detailFd, JSON.stringify(set) + "\n")
           // Re-evaluate only the final finite recent-PF gate against each
           // threshold. This keeps a single full matrix run sufficient to
           // calibrate the default without retaining the complete grid.
@@ -281,7 +304,7 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
     throw new Error(`Independent set integrity failed for LOAD${symbolIndex}USDT: ${symbolUniqueKeys.size}/${symbolEvaluatedSets} unique keys`)
   }
   symbolUniqueKeys.clear()
-  bySymbol.push({ symbol: `LOAD${symbolIndex}USDT`, metrics: symbolMetrics })
+  bySymbol.push({ symbol: symbolName, metrics: symbolMetrics })
   // The max-symbol debug matrix intentionally exercises a very large amount
   // of short-lived Set data. Yield an observable progress checkpoint and, when
   // explicitly enabled by the harness, collect it at a symbol boundary so the
@@ -405,6 +428,12 @@ for (const direction of Object.values(positionReport.byDirection)) {
 
 const report = {
   test: "direct-trade-matrix",
+  source: publicInput ? "BingX public complete candles" : "synthetic load path",
+  sourceSha256: publicInputRaw ? require("node:crypto").createHash("sha256").update(publicInputRaw).digest("hex") : null,
+  rangeStart: publicStart,
+  rangeEndExclusive: publicInput?.end ?? null,
+  independentHoldout: false,
+  defaultsPromoted: false,
   symbols: symbolCount,
   startSymbolIndex,
   endSymbolIndex: startSymbolIndex + symbolCount - 1,
@@ -437,6 +466,7 @@ const report = {
   heapMiB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
 }
 const serializedReport = JSON.stringify(report)
+if (detailFd !== null) fs.closeSync(detailFd)
 if (reportFile) require("node:fs").writeFileSync(reportFile, `${serializedReport}\n`, "utf8")
 console.log(summaryOnly ? JSON.stringify({
   test: report.test,

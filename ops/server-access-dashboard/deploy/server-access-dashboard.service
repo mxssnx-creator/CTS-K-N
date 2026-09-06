@@ -25,6 +25,9 @@ Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
 Environment=PORT=3004
 Environment=DASHBOARD_REFRESH_MS=2000
+Environment=SERVER_DASHBOARD_PROJECT_MANIFEST=/etc/server-access-dashboard/projects.json
+Environment=PROJECT_DETAIL_REFRESH_MS=30000
+Environment=SERVICE_DISCOVERY_MS=15000
 
 [Install]
 WantedBy=multi-user.target

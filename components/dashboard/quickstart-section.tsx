@@ -243,6 +243,10 @@ interface LiveStats {
   indTrend: number
   stratBase: number
   stratMain: number
+  qualifiedRealSets: number
+  liveDispatchBlocked: number
+  liveDispatchFailed: number
+  liveDispatchAttempted: number
   stratReal: number
   stratLive: number
   // per-stage strategy detail (count sets validated from prev + avg PF/DDT + avg pos/set)
@@ -353,6 +357,7 @@ const EMPTY_STATS: LiveStats = {
   strategiesTotal: 0, positionsOpen: 0, successRate: 0, avgCycleMs: 0, isActive: false,
   indDirection: 0, indMove: 0, indActive: 0, indActiveAdvanced: 0, indSpecial: 0, indOptimal: 0, indAuto: 0, indCommon: 0, indSignal: 0, indTrend: 0,
   stratBase: 0, stratMain: 0, stratReal: 0, stratLive: 0,
+  qualifiedRealSets: 0, liveDispatchBlocked: 0, liveDispatchFailed: 0, liveDispatchAttempted: 0,
   stageBase:  { ...EMPTY_STAGE }, stageMain: { ...EMPTY_STAGE },
   stageReal:  { ...EMPTY_STAGE }, stageLive: { ...EMPTY_STAGE },
   variantDefault:  { ...EMPTY_VARIANT }, variantTrailing: { ...EMPTY_VARIANT },
@@ -632,6 +637,10 @@ export function QuickstartSection() {
         stratBase:             stratBase,
         stratMain:             stratMain,
         stratReal:             stratReal,
+        qualifiedRealSets: Number(s.strategyRows?.real?.valid) || 0,
+        liveDispatchBlocked: Number(s.liveExecution?.dispatchOutcome?.blocked) || 0,
+        liveDispatchFailed: Number(s.liveExecution?.dispatchOutcome?.failedToOpen) || 0,
+        liveDispatchAttempted: Number(s.liveExecution?.dispatchOutcome?.attempted) || 0,
         stratLive:             s.breakdown?.strategies?.live   || 0,
         // Per-stage strategy detail (sets validated from prev + avg PF/DDT + avg pos/set)
         stageBase:             stage(s.strategyDetail?.base),
@@ -652,8 +661,7 @@ export function QuickstartSection() {
         mainCoord,
         // Live exchange execution — prefer openPositions.live.open (scan-based, authoritative)
         // over liveExecution.positionsOpen (counter formula that can drift on restart).
-        livePositionsOpen:     Number(s.openPositions?.live?.open) ||
-                               s.liveExecution?.positionsOpen    || 0,
+        livePositionsOpen:     Number(s.openPositions?.live?.open ?? s.liveExecution?.positionsOpen ?? 0),
         livePositionsCreated:  s.liveExecution?.positionsCreated || 0,
         livePositionsClosed:   s.liveExecution?.positionsClosed  || 0,
         liveOrdersPlaced:      s.liveExecution?.ordersPlaced     || 0,
@@ -1254,7 +1262,7 @@ export function QuickstartSection() {
     // closed (causing the bar to stutter back to 95%). livePositionsOpen is
     // kept as the additional live signal for connections with open positions now.
     const liveActive = stats.livePositionsOpen > 0 || stats.liveOrdersFilled > 0
-    const stratPct = stats.stratReal > 0
+    const stratPct = stats.qualifiedRealSets > 0
       ? (liveActive ? 100 : Math.min(95, 50 + Math.min(1, stats.strategyCycles / 50) * 45))
       : Math.min(50, Math.min(1, stats.strategyCycles / 20) * 50)
     return prehistoricShare + indShare + (stratPct / 100) * stratShare
@@ -1284,17 +1292,17 @@ export function QuickstartSection() {
     {
       key:    "strategies",
       label:  "Strategies",
-      done:   stats.historicComplete && stats.strategyCycles > 0 && stats.stratReal > 0,
+      done:   stats.historicComplete && stats.strategyCycles > 0 && stats.qualifiedRealSets > 0,
       active: stats.strategyCycles > 0,
     },
     {
       key:    "live",
-      label:  "Live",
+      label:  stats.liveDispatchBlocked > 0 && stats.liveOrdersFilled === 0 ? "Live blocked" : stats.liveDispatchFailed > 0 && stats.liveOrdersFilled === 0 ? "Live errors" : "Live",
       // liveOrdersFilled persists between cycles and is used as the primary
       // "live is fully active" signal; livePositionsOpen supplements it when
       // positions are currently open.
       done:   stats.liveOrdersFilled > 0 || stats.livePositionsOpen > 0,
-      active: stats.livePositionsOpen > 0 || (stats.engineRunning && stats.stratReal > 0 && stats.liveOrdersFilled === 0),
+      active: stats.livePositionsOpen > 0 || (stats.engineRunning && stats.liveDispatchAttempted > 0 && stats.liveDispatchBlocked === 0 && stats.liveDispatchFailed === 0),
     },
   ]
 
@@ -1600,9 +1608,7 @@ export function QuickstartSection() {
               // is producing indications this cycle). Fall back to the
               // cumulative total when the active hash is empty/expired so
               // the tile never shows 0 while the engine is clearly running.
-              stats.apIndications?.total?.sets ||
-              stats.indicationsTotal ||
-              0
+              stats.apIndications?.total?.sets ?? 0
             )}
             sub={
               stats.indicationsTotal > 0
@@ -1619,6 +1625,9 @@ export function QuickstartSection() {
                 : "active sets"
             }
           />
+          <MiniStat label="Qualified Real" value={fmt(stats.qualifiedRealSets)} sub="latest evaluation" />
+          <MiniStat label="Blocked entries" value={fmt(stats.liveDispatchBlocked)} />
+          <MiniStat label="Entry errors" value={fmt(stats.liveDispatchFailed)} />
           <MiniStat label="Positions"    value={fmt(stats.positionsOpen)}      />
           {/* Live positions — real exchange positions mirrored by the live engine.
               Always shown (even at 0) so users can see the counter spin up. */}

@@ -1,4 +1,4 @@
-import { evaluateCtsGTrend, evaluateCtsGBreak } from "@/lib/cts-g-indications"
+import { buildCtsGConfigurations, ctsGConfigurationKey, evaluateCtsGTrend, evaluateCtsGBreak } from "@/lib/cts-g-indications"
 import { compactCtsGMinuteCloses, ctsGTimeframeCloses } from "@/lib/cts-g-timeframes"
 /**
  * Indication Processor - Module-Level Caching (Fixed)
@@ -620,6 +620,7 @@ async function getSettingsCachedModule(connectionId: string): Promise<any> {
         settings.trendEnabled !== "false" &&
         activeProfile.trend.enabled,
       trendTimeframesMinutes: normalizeTrendTimeframesMinutes(settings.trendTimeframesMinutes),
+      ctsGConfigMode: settings.ctsGConfigMode,
       ctsGTrendEnabled: settings.ctsGTrendEnabled !== false && settings.ctsGTrendEnabled !== "false",
       breakEnabled: settings.breakEnabled !== false && settings.breakEnabled !== "false" && activeProfile.break.enabled,
       ctsGTrendMinimumSpreadRatio: Math.max(0.00001, Number(settings.ctsGTrendMinimumSpreadRatio) || 0.001),
@@ -1891,13 +1892,12 @@ export class IndicationProcessor {
         if (kind === "break" && !indicationSettings.breakEnabled) continue
         for (const timeframeMinutes of normalizeTrendTimeframesMinutes(indicationSettings.trendTimeframesMinutes)) {
           const bars = ctsGTimeframeCloses(ctsGMinuteCandles, timeframeMinutes, ctsGAsOfMs)
-          const config = { minimumSpreadRatio: indicationSettings.ctsGTrendMinimumSpreadRatio,
-            minimumConfidence: indicationSettings.ctsGMinimumConfidence, breakRange: indicationSettings.breakRange,
-            breakNoisePct: indicationSettings.breakNoisePct }
+          for (const config of buildCtsGConfigurations(kind, indicationSettings)) {
           const signal = kind === "trend" ? evaluateCtsGTrend(bars, config) : evaluateCtsGBreak(bars, config)
           if (signal) indications.push({ type: kind, symbol, value: currentClose, profitFactor: 1 + signal.strength,
             confidence: signal.confidence, timestamp: now,
-            metadata: { ...signal.metadata, timeframeMinutes, direction: signal.direction, agreement: signal.agreement } })
+            metadata: { ...signal.metadata, configurationKey: ctsGConfigurationKey(config), timeframeMinutes, direction: signal.direction, agreement: signal.agreement } })
+          }
         }
       }
 

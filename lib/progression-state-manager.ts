@@ -488,6 +488,12 @@ export class ProgressionStateManager {
   private static readonly CYCLE_COUNTERS_MAX = 100
   private static cycleCounters: Map<string, { completed: number; successful: number; failed: number }> = new Map()
 
+  /** A completed pipeline can produce no signals and still succeed. */
+  static async recordPipelineCycle(connectionId: string, results: readonly { error?: unknown }[]): Promise<void> {
+    if (results.length === 0) return
+    await this.incrementCycle(connectionId, results.every(result => !result.error))
+  }
+
   static async incrementCycle(connectionId: string, successful: boolean, profit: number = 0): Promise<void> {
     try {
       const client = getRedisClient()

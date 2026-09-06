@@ -20,12 +20,14 @@ operator-tool	scripts/test-direct-trade-position-lifecycle.mjs
 operator-tool	scripts/test-direct-trade-recovery-scenarios.mjs
 operator-tool	scripts/test-kilo-runtime.mjs
 operator-tool	scripts/test-minute-scheduler.mjs
+operator-tool	scripts/test-network-isolation.cjs
 operator-tool	scripts/test-pf-calculations.mjs
 operator-tool	scripts/test-progression-live.mjs
 operator-tool	scripts/test-quickstart-3symbols.js
 operator-tool	scripts/test-tp-sl-ranges.mjs
 operator-tool	scripts/validate-comprehensive.mjs
 operator-tool	scripts/verify-block-native-redis.ts
+operator-tool	scripts/verify-direct-trade-config-lifecycle.ts
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-native-redis-coordination.ts
 operator-tool	scripts/verify-recreation-manifests.mjs
@@ -62,6 +64,7 @@ unit	__tests__/unit/bingx-vst-migration.test.ts
 unit	__tests__/unit/bingx-vst-read-pacer.test.ts
 unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
+unit	__tests__/unit/bingx-vst-soak-plan.test.ts
 unit	__tests__/unit/block-additive-lifecycle.test.ts
 unit	__tests__/unit/block-count-state.test.ts
 unit	__tests__/unit/block-settings-migration.test.ts
@@ -83,6 +86,7 @@ unit	__tests__/unit/connection-test-stored-credentials.test.ts
 unit	__tests__/unit/control-order-capacity.test.ts
 unit	__tests__/unit/cooperative-task-timeout.test.ts
 unit	__tests__/unit/cron-generate-indications-eligibility.test.ts
+unit	__tests__/unit/cts-g-configuration-matrix.test.ts
 unit	__tests__/unit/cts-g-exit.test.ts
 unit	__tests__/unit/cts-g-history-cache.test.ts
 unit	__tests__/unit/cts-g-timeframes.test.ts
@@ -105,6 +109,7 @@ unit	__tests__/unit/direct-trade-lifecycle-connector.test.ts
 unit	__tests__/unit/direct-trade-live-connector.test.ts
 unit	__tests__/unit/direct-trade-live-readiness.test.ts
 unit	__tests__/unit/direct-trade-market-history.test.ts
+unit	__tests__/unit/direct-trade-memory-maintenance.test.ts
 unit	__tests__/unit/direct-trade-overview-stats.test.ts
 unit	__tests__/unit/direct-trade-position-capacity.test.ts
 unit	__tests__/unit/direct-trade-position-stage.test.ts
@@ -206,6 +211,7 @@ unit	__tests__/unit/orders-route-concurrency.test.ts
 unit	__tests__/unit/overview-poller.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/persistent-paths.test.ts
+unit	__tests__/unit/pipeline-cycle-outcome.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts

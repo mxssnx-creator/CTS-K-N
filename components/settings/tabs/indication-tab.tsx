@@ -851,6 +851,10 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                   <div><Label>Enable Break indication</Label><p className="text-xs text-muted-foreground">Close beyond the previous range, validated separately in each direction.</p></div>
                   <Switch checked={settings.breakEnabled !== false} onCheckedChange={(value) => handleSettingChange("breakEnabled", value)} />
                 </div>
+                <div className="flex items-center justify-between">
+                  <div><Label>Expanded Trend / Break configurations</Label><p className="text-xs text-muted-foreground">Trend: three spread thresholds × two confirmation lengths. Break: three ranges × two noise thresholds. Up to 24 evaluations per type across four timeframes; identical tuples count once.</p></div>
+                  <Switch checked={settings.ctsGConfigMode !== "single"} onCheckedChange={(value) => handleSettingChange("ctsGConfigMode", value ? "expanded" : "single")} />
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div><Label htmlFor="break-range">Break range (bars)</Label><Input id="break-range" type="number" min={8} max={240} value={settings.breakRange ?? 16} onChange={(event) => handleSettingChange("breakRange", Math.max(8, Math.min(240, Number(event.target.value) || 16)))} /></div>
                   <div><Label htmlFor="break-noise">Break noise (%)</Label><Input id="break-noise" type="number" min={0} max={10} step={0.01} value={settings.breakNoisePct ?? 0.05} onChange={(event) => handleSettingChange("breakNoisePct", Math.max(0, Math.min(10, Number(event.target.value) || 0)))} /></div>

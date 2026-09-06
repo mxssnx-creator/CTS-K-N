@@ -1,3 +1,4 @@
+import { maintainDirectTradeMemory } from "@/lib/direct-trade-memory-maintenance"
 import { timingSafeEqual } from "node:crypto"
 import { type NextRequest, NextResponse } from "next/server"
 import {
@@ -1107,6 +1108,9 @@ export async function POST(request: NextRequest) {
       write.set(keys.processorHeartbeat, now, { PX: 20_000 })
       await write.exec()
       await persistDirectTradeSnapshot("processor position sync")
+      if (scopeConnectionId) await maintainDirectTradeMemory(client, scopeConnectionId).catch(error => {
+        console.warn("[Direct-Trade] Bounded memory maintenance deferred:", error instanceof Error ? error.message : "maintenance error")
+      })
       // The owner receives the compact, normalized settings acknowledgement
       // with the write it already performs. This lets a running worker react
       // to an operator save on its next sync instead of waiting for a loop

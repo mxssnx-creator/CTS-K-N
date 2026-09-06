@@ -1,5 +1,7 @@
 "use client"
 
+import { isConnectionVisibleInServerOverview } from "@/lib/connection-state-utils"
+
 import { useState, useEffect, useMemo, useRef } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -164,7 +166,7 @@ export function SystemOverview() {
         const allConns = Array.isArray(data) ? data : (data?.connections || [])
         const toB = (v: unknown) => v === true || v === "1" || v === "true"
         const activeConns: PerConnectionInfo[] = allConns
-          .filter((c: any) => toB(c.is_active_inserted) || toB(c.is_dashboard_inserted) || toB(c.is_enabled_dashboard))
+          .filter(isConnectionVisibleInServerOverview)
           .map((c: any) => ({
             id: c.id,
             name: c.name || c.id,

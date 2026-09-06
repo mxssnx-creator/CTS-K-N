@@ -81,6 +81,7 @@ __tests__/unit/bingx-vst-migration.test.ts
 __tests__/unit/bingx-vst-read-pacer.test.ts
 __tests__/unit/bingx-vst-runtime-routing.test.ts
 __tests__/unit/bingx-vst-soak-audit.test.ts
+__tests__/unit/bingx-vst-soak-plan.test.ts
 __tests__/unit/block-additive-lifecycle.test.ts
 __tests__/unit/block-count-state.test.ts
 __tests__/unit/block-settings-migration.test.ts
@@ -102,6 +103,7 @@ __tests__/unit/connection-test-stored-credentials.test.ts
 __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
+__tests__/unit/cts-g-configuration-matrix.test.ts
 __tests__/unit/cts-g-exit.test.ts
 __tests__/unit/cts-g-history-cache.test.ts
 __tests__/unit/cts-g-timeframes.test.ts
@@ -124,6 +126,7 @@ __tests__/unit/direct-trade-lifecycle-connector.test.ts
 __tests__/unit/direct-trade-live-connector.test.ts
 __tests__/unit/direct-trade-live-readiness.test.ts
 __tests__/unit/direct-trade-market-history.test.ts
+__tests__/unit/direct-trade-memory-maintenance.test.ts
 __tests__/unit/direct-trade-overview-stats.test.ts
 __tests__/unit/direct-trade-position-capacity.test.ts
 __tests__/unit/direct-trade-position-stage.test.ts
@@ -225,6 +228,7 @@ __tests__/unit/orders-route-concurrency.test.ts
 __tests__/unit/overview-poller.test.ts
 __tests__/unit/performance-profiler.test.ts
 __tests__/unit/persistent-paths.test.ts
+__tests__/unit/pipeline-cycle-outcome.test.ts
 __tests__/unit/pnl-stats-route.test.ts
 __tests__/unit/pos-count-volume-ratio.test.ts
 __tests__/unit/pos-history-batch.test.ts
@@ -979,6 +983,7 @@ docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.checksums.sha256
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.json
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.md
 docs/PRODUCTION-OPERATIONS.md
+docs/PROJECT-CONTINUATION.md
 docs/REMOTE-CHISEL-WORKMODE.md
 docs/REMOTE-TAILSCALE-PULL-AGENT.md
 docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
@@ -1020,6 +1025,7 @@ docs/signal-source-research.md
 docs/system-modules-map.md
 docs/verification/dca-20d-20260905.json
 docs/verification/dca-candidate-defaults-20260905.json
+docs/verification/older-change-integration-20260906.json
 docs/verification/redis-memory-recovery-20260905.md
 docs/verification/runtime-memory-20260906.md
 docs/verification/strategy-dca-20260905.md
@@ -1076,6 +1082,7 @@ lib/bingx-instrument-rules.ts
 lib/bingx-public-api.ts
 lib/bingx-vst-read-pacer.ts
 lib/bingx-vst-soak-audit.ts
+lib/bingx-vst-soak-plan.ts
 lib/block-count-lifecycle.ts
 lib/block-count-outcomes.ts
 lib/block-count-state.ts
@@ -1176,6 +1183,7 @@ lib/direct-trade-lifecycle-connector.ts
 lib/direct-trade-limits.ts
 lib/direct-trade-live-readiness.ts
 lib/direct-trade-market-history.ts
+lib/direct-trade-memory-maintenance.ts
 lib/direct-trade-overview-stats.ts
 lib/direct-trade-position-capacity.cjs
 lib/direct-trade-position-stage.ts
@@ -1485,6 +1493,7 @@ next.config.mjs
 open-next.config.ts
 ops/server-access-dashboard/README.md
 ops/server-access-dashboard/deploy/ensure-swap-18g.sh
+ops/server-access-dashboard/deploy/projects.json
 ops/server-access-dashboard/deploy/server-access-dashboard.nginx.conf
 ops/server-access-dashboard/deploy/server-access-dashboard.service
 ops/server-access-dashboard/public/dashboard.js
@@ -1516,6 +1525,7 @@ scripts/add-bingx-credentials.js
 scripts/apply-production-settings.sh
 scripts/audit-bingx-account-readonly.ts
 scripts/audit-bingx-vst-soak-settlements.ts
+scripts/audit-dca-sl-candidates.ts
 scripts/audit-live-position-ledgers.mjs
 scripts/autotest-drift.mjs
 scripts/backup-local-redis.mjs
@@ -1526,6 +1536,7 @@ scripts/build-next-with-trace-retry.mjs
 scripts/clean-next-dist.mjs
 scripts/clean-opennext-output.mjs
 scripts/cleanup-bingx-cts-protection-orders.ts
+scripts/cleanup-direct-trade-orphans.ts
 scripts/compact-direct-trade-configs.ts
 scripts/configure-prod-trading.sh
 scripts/connect-remote-chisel.sh
@@ -1583,6 +1594,7 @@ scripts/remove-stray-bun-lock.mjs
 scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
 scripts/repair-redis-retention.ts
+scripts/replay-dca-complete-14d.ts
 scripts/resolve-instance-redis-url.mjs
 scripts/restart.sh
 scripts/run-bingx-vst-live-soak.ts
@@ -1620,6 +1632,7 @@ scripts/test-direct-trade-position-lifecycle.mjs
 scripts/test-direct-trade-recovery-scenarios.mjs
 scripts/test-kilo-runtime.mjs
 scripts/test-minute-scheduler.mjs
+scripts/test-network-isolation.cjs
 scripts/test-pf-calculations.mjs
 scripts/test-progression-live.mjs
 scripts/test-quickstart-3symbols.js
@@ -1629,6 +1642,7 @@ scripts/update.sh
 scripts/validate-comprehensive.mjs
 scripts/verify-block-native-redis.ts
 scripts/verify-deployment-contract.mjs
+scripts/verify-direct-trade-config-lifecycle.ts
 scripts/verify-migration-status.mjs
 scripts/verify-native-redis-coordination.ts
 scripts/verify-prod-preview.mjs
