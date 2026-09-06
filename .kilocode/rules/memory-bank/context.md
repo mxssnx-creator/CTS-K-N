@@ -3623,3 +3623,57 @@ credentials are present.
   discovery, X02 Prod-VST minimum-volume lifecycle, production soak and browser
   acceptance are pending. Do not claim production readiness until each passes
   against the exact deployed merge SHA and baseline cleanup is proven.
+
+## Session 2026-09-05 — server-access observability integration candidate
+
+- [x] The dynamic server-access dashboard candidate from `ae6d1cae` was
+  replayed onto GitHub `main` at `4cc47c34`; its earlier symbol-basket commit
+  was already contained in `main` and was not duplicated.
+- [x] Dashboard deployment now installs the versioned project inventory under
+  `/etc/server-access-dashboard/projects.json`, and compact connection-stage
+  performance tiers are available to overview polling without materialising
+  the exhaustive statistics payload.
+- [x] The integrated candidate passed frozen pnpm 10.28.1 online and subsequent
+  offline installation, source syntax, secret scanning, recreation manifests,
+  TypeScript, ESLint, 274 Jest suites/1,892 tests, the dashboard Node test,
+  runtime-recovery verification, Linux and Kilo preflights, and the optimized
+  Next build with 349 complete traces.
+- [ ] Publish only through a new green pull request. PR #314 is a separate VST
+  admission candidate and must remain unmerged while its Vercel deployments or
+  authenticated X02 acceptance evidence are failing.
+
+## Session 2026-09-06 — dashboard candidate rebased after main advances
+
+- [x] Workspace maintenance removed the prior canonical checkout. The surviving
+  active `codex/block-break-race-recovery-20260902-v2` tree was first preserved
+  as a verified owner-only bundle, binary patch and untracked archive, then
+  restored exactly to `/workspace/CTS-K-N`; 31 tracked and 3 untracked paths
+  remain untouched on that active branch.
+- [x] GitHub `main` advanced to `752d4e5a` through Redis, Block/DCA and Overview
+  releases. The server-access dashboard candidate was replayed onto that exact
+  base without source conflicts; only generated recreation manifests changed.
+- [x] The rebased candidate passed frozen pnpm 10.28.1 offline installation,
+  source syntax, a 1,669-file secret scan with zero findings, recreation
+  verification for 1,661 files, TypeScript, ESLint, 287 Jest suites/1,977 tests,
+  seven dashboard tests, runtime recovery, Linux and Kilo preflights, and the
+  optimized Next build on attempt 1 with 349 complete traces.
+- [x] Jest was run without any exchange credentials. An initial forced-paper
+  diagnostic predictably invalidated mock-live assertions and was discarded;
+  the credential-free canonical test semantics then passed completely.
+- [ ] PR #314 was merged externally after the earlier note above. PR #315 must
+  be updated to the new `main`-based candidate and merged only after Dev Preview
+  Smoke and both Vercel status checks are green.
+
+
+## CTS v3.7 continuation checkpoint — 2026-09-06
+
+- Canonical old dirty checkout remains preserved at `/workspace/CTS-K-N`; integration worktree `/workspace/CTS-K-N-worktrees/continuation-20260906`, branch `codex/continuation-20260906`, origin main base `752d4e5a155094978ee647ed323173edca74bf98`.
+- Audited all 34 older changed/untracked files by three-way comparison: 13 identical, 4 already integrated, 17 fully superseded by current implementations. Per-file evidence: `docs/verification/older-change-integration-20260906.json`. PR315 dashboard candidate squash integrated.
+- Fixes: count signal-free successful cycles by actual errors; stage coverage uses fresh same-symbol intersection; restore Vercel's configured `vercel-build` alias with canonical hooks; dashboard cache age no longer slides forever and CTS-G accounting completeness is explicit.
+- Verified checkpoints: `/workspace/backups/CTS-K-N/20260906T102515Z-continuation`, `/workspace/backups/CTS-K-N/20260906T105007Z-dca-sl-refinement`; full bundles, patches/untracked archives and SHA-256 verification passed.
+- Validation: full Jest 288 suites / 1,981 assertions passed with exit 0 and open-handle detection; dashboard 8/8; typecheck, lint, Linux installer preflight, Kilo 37/37 (schema108), secret scan clean. Production build succeeded with 349 valid traces; subsequent additions are historic replay/audit scripts and continuity docs, final build verification follows.
+- Public historic window: 2026-08-23 00:00 UTC to 2026-09-06 00:00 UTC exclusive. Input SHA256 `eb9fb582b1936fdceae2ac221c43a7361119a853a1d495e31de531e068b10916`. Initial DCA 72,576 profiles per symbol / 217,728 lanes; Direct Trade 90,048 sets / 151 valid, all seven types. Separate fixed-notional model outputs, not account returns or submitted orders.
+- User requested lower drawdown and final-SL ranges. Refinement uses 345,870 normalized profiles per symbol, BCH then XRP then SOL, all supported 1–4 steps and 8 requested final-SL multiples; every strict low-DD candidate gets doubled fee/slippage stress via `scripts/audit-dca-sl-candidates.ts`. Same observed 14-day window: retrospective optimization, not a fresh holdout. No production defaults promoted.
+- Artifacts currently `/workspace/scratch/0c00a9661969/{dca-14d,dca-sl-14d,direct-14d-summary.json,direct-14d-details.jsonl}`. HTML generator `build_results.py` there; final HTML/archive must be persistently saved before handoff.
+- Remote read-only baseline: managed Chisel pinned SSH, host v2202607384858486523, `/opt/cts-kn` main 752d4e5a, port3002 HTTP200. App/direct/scheduler active/NRestarts0; Redis PONG, NRestarts63 unchanged, ~6.74GiB used, host pressure remains relevant. Browser Overview/Statistics/Charts rendered without reported JS errors; Settings redirected to login and remains unverified; final merged deployment not yet installed.
+- Do not label production ready: push/green merge/remote reinstall/final remote soak still pending at this checkpoint. X01/Bybit remain read-only. No new mainnet or VST orders submitted in this continuation. Old VST soak failed baseline restoration because an external order changed; later own exposure was reconciled, not a passed original soak. CTS-G belongs to another chat and must remain untouched.

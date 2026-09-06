@@ -1,0 +1,176 @@
+{
+  "base": "2041787ba7530f0b7c7487890c815086b80ce770",
+  "current": "752d4e5a155094978ee647ed323173edca74bf98",
+  "files": [
+    {
+      "path": "__tests__/unit/direct-trade-route-concurrency.test.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "__tests__/unit/production-start-shutdown.test.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "__tests__/unit/quickstart-timeouts.test.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "app/api/exchange/[exchange]/top-symbols/route.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "app/api/settings/connections/[id]/settings/route.ts",
+      "status": "already integrated or superseded",
+      "decision": "already present in main"
+    },
+    {
+      "path": "app/api/settings/connections/[id]/symbols/route.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "app/api/settings/route.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "app/api/trade-engine/direct-trade/calculate/route.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "app/api/trade-engine/direct-trade/route.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "components/dashboard/direct-trade-section.tsx",
+      "status": "already integrated or superseded",
+      "decision": "already present in main"
+    },
+    {
+      "path": "components/dashboard/quickstart-section.tsx",
+      "status": "already integrated or superseded",
+      "decision": "already present in main"
+    },
+    {
+      "path": "components/settings/connection-settings-dialog.tsx",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "components/settings/direct-trade-settings.tsx",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "components/settings/strategy-coordination-section.tsx",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "components/settings/tabs/strategy-tab.tsx",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "lib/direct-trade-canonical-order.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "lib/direct-trade-limits.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "lib/quickstart-timeouts.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "lib/strategy-coordinator.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "lib/top-symbols.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "lib/trade-engine/engine-manager.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "lib/trade-engine/stages/live-stage.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "lib/trade-engine/stages/real-stage.ts",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "lib/trade-engine/state-machine.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "package.json",
+      "status": "already integrated or superseded",
+      "decision": "already present in main"
+    },
+    {
+      "path": "scripts/run-dev-preview-check.mjs",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "scripts/run-prod-preview-check.mjs",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "scripts/run-production-inline-ui-audit.mjs",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "scripts/stress-bingx-public-32.mjs",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "scripts/verify-prod-soak.mjs",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "scripts/verify-prod-ui-max.mjs",
+      "status": "conflict",
+      "decision": "retain newer implementation; complete old delta covered"
+    },
+    {
+      "path": "__tests__/unit/symbol-capacity.test.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "__tests__/unit/top-symbols-high-scale.test.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    },
+    {
+      "path": "lib/symbol-capacity.ts",
+      "status": "already identical",
+      "decision": "already present in main"
+    }
+  ]
+}

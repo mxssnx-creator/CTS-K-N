@@ -301,7 +301,11 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toMatch(/run-minute-scheduler\.mjs" --once \\\n\s+\|\| return 1/)
     expect(existsSync(path.join(process.cwd(), "vercel.json"))).toBe(false)
     const packageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"))
-    expect(packageJson.scripts["vercel-build"]).toBeUndefined()
+    // Existing Vercel integrations invoke this alias. It must execute the
+    // same validated build and lifecycle hooks, never a separate build path.
+    expect(packageJson.scripts["vercel-build"]).toBe(packageJson.scripts.build)
+    expect(packageJson.scripts["prevercel-build"]).toBe(packageJson.scripts.prebuild)
+    expect(packageJson.scripts["postvercel-build"]).toBe(packageJson.scripts.postbuild)
     expect(packageJson.scripts.build).toBe("node scripts/build-next-with-trace-retry.mjs")
     expect(packageJson.scripts["build:next"]).toContain("next/dist/bin/next build")
     expect(packageJson.scripts["build:next"]).toContain("--require=./scripts/next-fs-rm-compat.cjs")

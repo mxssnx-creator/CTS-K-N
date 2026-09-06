@@ -3,12 +3,37 @@ import assert from "node:assert/strict";
 
 import {
   clamp,
+  extractIds,
   normalizePath,
   parseCpuStat,
   parseMeminfo,
+  parseProjectManifest,
   percentile,
+  profitFactorWindow,
   progressionSummary,
+  readConnectionDetails,
 } from "./access-dashboard.mjs";
+
+test("frequent runtime polling does not postpone the overview refresh indefinitely", async (t) => {
+  let now = 1_800_000_000_000;
+  const calls = [];
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls.push(String(url));
+    return new Response(JSON.stringify({}), { status: 200 });
+  });
+  const [definition] = parseProjectManifest(JSON.stringify({ projects: [
+    { id: "cts-kn", kind: "cts-kn", baseUrl: "http://127.0.0.1:3002", port: 3002 },
+  ] }));
+  await readConnectionDetails(definition, "cache-test", {});
+  now += 10_000;
+  await readConnectionDetails(definition, "cache-test", {});
+  now += 10_000;
+  await readConnectionDetails(definition, "cache-test", {});
+  now += 11_000;
+  await readConnectionDetails(definition, "cache-test", {});
+  assert.equal(calls.filter(url => url.includes("view=overview")).length, 2);
+});
 
 test("normalizes the nginx dashboard prefix", () => {
   assert.equal(normalizePath("/__server/api/metrics"), "/api/metrics");
@@ -48,4 +73,41 @@ test("keeps percentile, bounds and progression summaries deterministic", () => {
   assert.equal(summary.total, 80);
   assert.equal(summary.phase, "replay");
   assert.equal(summary.cycles, 12);
+});
+
+test("parses only safe loopback project manifests and keeps paths bounded", () => {
+  const projects = parseProjectManifest(JSON.stringify({ projects: [
+    { id: "cts-g", baseUrl: "http://127.0.0.1:3102", port: 3102, kind: "cts-g", serviceIds: ["cts-g.service"] },
+    { id: "bad space", baseUrl: "http://127.0.0.1:9999" },
+    { id: "external", baseUrl: "https://example.com:443" },
+  ] }));
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0].id, "cts-g");
+  assert.equal(projects[0].baseUrl, "http://127.0.0.1:3102");
+  assert.equal(projects[0].serviceIds[0], "cts-g.service");
+  assert.equal(projects[0].connectionCatalogPath, "/api/connections");
+});
+
+test("computes bounded PF windows from newest settled rows", () => {
+  const result = profitFactorWindow([
+    { pnl: 3 }, { pnl: -1 }, { pnl: 2 }, { pnl: null }, { pnl: -2 },
+  ], 3);
+  assert.equal(result.samples, 3);
+  assert.equal(result.available, true);
+  assert.equal(result.value, 5);
+  assert.equal(profitFactorWindow([{ pnl: 1 }], 8).available, false);
+});
+
+test("discovers connection ids from object-keyed engine status", () => {
+  // The CTS-K-N engine status endpoint uses an object keyed by connection id,
+  // while the connection-status endpoint uses an array. Both must feed the
+  // same independent dashboard-card discovery path.
+  const ids = extractIds({
+    connections: {
+      "bingx-8581b0cb8581": { status: "running" },
+      "bingx-x02": { status: "running" },
+    },
+    statuses: [{ id: "instaforex-x01" }],
+  });
+  assert.deepEqual(ids, ["bingx-8581b0cb8581", "bingx-x02", "instaforex-x01"]);
 });

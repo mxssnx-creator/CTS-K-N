@@ -89,9 +89,11 @@ CTS_DIRECT_TRADE_WORKER_HEAP_MB	test-or-operator-tool	no	no	1	scripts/direct-tra
 CTS_ENGINE_OWNER_WORKER	application-runtime	no	no	1	lib/trade-engine.ts
 CTS_EXCHANGE_RATE_LIMIT_SHARE	test-or-operator-tool	no	yes	1	.env.example
 CTS_G_BASE_URL	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+CTS_G_PORT	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 CTS_INLINE_REDIS_PERSISTENT_VOLUME	application-runtime	no	yes	4	.env.example,lib/production-readiness.ts,lib/real-trade-gates.ts,scripts/kilo-deploy.mjs
 CTS_JOURNAL_MAX_USE	test-or-operator-tool	no	yes	1	.env.example
 CTS_KN_BASE_URL	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+CTS_KN_PORT	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 CTS_LIVE_TRADING_CONFIGURED	test-or-operator-tool	no	yes	1	.env.example
 CTS_LOG_DIR	test-or-operator-tool	no	yes	1	.env.example
 CTS_LOG_MAX_BYTES	test-or-operator-tool	no	yes	1	.env.example
@@ -138,10 +140,11 @@ DATABASE_TYPE	application-runtime	no	yes	2	.env.example,app/api/install/configur
 DB_PATH	application-runtime	no	yes	2	.env.example,lib/db-audit.ts
 DB_TOKEN	application-runtime	yes	yes	7	.env.example,__tests__/unit/inline-local-redis.test.ts,__tests__/unit/requested-regressions.test.ts,custom-worker.ts,lib/kilo-database-client.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs
 DB_URL	application-runtime	no	yes	7	.env.example,__tests__/unit/inline-local-redis.test.ts,__tests__/unit/requested-regressions.test.ts,custom-worker.ts,lib/kilo-database-client.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs
+DCA_AUDIT_SYMBOLS	test-or-operator-tool	no	no	1	scripts/audit-dca-sl-candidates.ts
 DCA_BACKTEST_DAYS	test-or-operator-tool	no	no	3	scripts/optimize-dca-14d.ts,scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_END_MS	test-or-operator-tool	no	no	2	scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_FOLDS	test-or-operator-tool	no	no	2	scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
-DCA_BACKTEST_INPUT	test-or-operator-tool	no	no	1	scripts/optimize-dca-20d.ts
+DCA_BACKTEST_INPUT	test-or-operator-tool	no	no	3	scripts/audit-dca-sl-candidates.ts,scripts/optimize-dca-20d.ts,scripts/replay-dca-complete-14d.ts
 DCA_BACKTEST_MARKDOWN	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
 DCA_BACKTEST_OUTPUT	test-or-operator-tool	no	no	3	scripts/optimize-dca-20d.ts,scripts/optimize-dca-42d.ts,scripts/optimize-dca-7d.ts
 DCA_BACKTEST_SYMBOLS	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
@@ -149,6 +152,8 @@ DCA_BACKTEST_TIMEFRAMES	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.t
 DCA_BACKTEST_TOP	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
 DCA_DEFAULTS_OUTPUT	test-or-operator-tool	no	no	1	scripts/optimize-dca-20d.ts
 DCA_MARKET_CACHE_DIR	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
+DCA_MATRIX_MODE	test-or-operator-tool	no	no	1	scripts/replay-dca-complete-14d.ts
+DCA_MATRIX_OUTPUT	test-or-operator-tool	no	no	2	scripts/audit-dca-sl-candidates.ts,scripts/replay-dca-complete-14d.ts
 DCA_MAX_EQUITY_DRAWDOWN_PCT	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
 DCA_MAX_SINGLE_LOSS_PCT	test-or-operator-tool	no	no	1	scripts/optimize-dca-7d.ts
 DCA_MAX_SYMBOL_DRAWDOWN_PCT	test-or-operator-tool	no	no	1	scripts/optimize-dca-42d.ts
@@ -211,7 +216,9 @@ DIRECT_TRADE_DEV_SYMBOLS	test-or-operator-tool	no	no	2	scripts/run-direct-trade-
 DIRECT_TRADE_LIVE_CONNECTION_IDS	application-runtime	no	yes	4	.env.example,__tests__/unit/direct-trade-live-connector.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,lib/direct-trade-live-readiness.ts
 DIRECT_TRADE_LIVE_HISTORY_HOURS	test-or-operator-tool	no	yes	2	.env.example,scripts/direct-trade-processor.mjs
 DIRECT_TRADE_LIVE_ORDER_PLACEMENT	application-runtime	no	yes	4	.env.example,__tests__/unit/direct-trade-live-connector.test.ts,__tests__/unit/direct-trade-live-readiness.test.ts,lib/direct-trade-live-readiness.ts
+DIRECT_TRADE_MATRIX_DETAILS_FILE	test-or-operator-tool	no	no	1	scripts/test-direct-trade-matrix.cjs
 DIRECT_TRADE_MATRIX_HOURS	test-or-operator-tool	no	no	1	scripts/test-direct-trade-matrix.cjs
+DIRECT_TRADE_MATRIX_INPUT	test-or-operator-tool	no	no	1	scripts/test-direct-trade-matrix.cjs
 DIRECT_TRADE_MATRIX_MAX_PER_DIRECTION	test-or-operator-tool	no	no	1	scripts/test-direct-trade-matrix.cjs
 DIRECT_TRADE_MATRIX_MAX_PER_SYMBOL	test-or-operator-tool	no	no	1	scripts/test-direct-trade-matrix.cjs
 DIRECT_TRADE_MATRIX_MAX_POSITIONS	test-or-operator-tool	no	no	1	scripts/test-direct-trade-matrix.cjs
@@ -401,6 +408,7 @@ PROD_UI_PROGRESSION_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod
 PROD_UI_RESUME_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-ui-max.mjs
 PROD_UI_SYMBOLS_JSON	test-or-operator-tool	no	no	1	scripts/verify-prod-ui-max.mjs
 PROD_URL	test-or-operator-tool	no	no	1	scripts/verify-migration-status.mjs
+PROJECT_DETAIL_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 PROJECT_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 PSEUDO_POSITION_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 PSEUDO_POSITION_WRITE_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
@@ -425,7 +433,11 @@ RUN_MS	test-or-operator-tool	no	no	1	scripts/run-engine-probe.mjs
 RUNTIME_MODE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SCHEDULER_BASE_URL	test-or-operator-tool	no	yes	1	.env.example
 SERVER_ACTION_ALLOWED_ORIGINS	application-runtime	no	no	1	next.config.mjs
+SERVER_DASHBOARD_PROJECT_MANIFEST	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+SERVER_DASHBOARD_PROJECTS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+SERVER_DASHBOARD_SERVICE_PREFIXES	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 SERVER_DASHBOARD_SERVICES	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
+SERVICE_DISCOVERY_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 SERVICE_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
 SIGNAL_FOCUSED_SOAK	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SIGNAL_OBSERVATION_INTERVAL_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs

@@ -48,7 +48,7 @@ import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
-import { resolveStageRowSnapshotFreshMs, sumFreshStageRowField, summarizeFreshStageEvaluation } from "@/lib/stage-row-snapshot"
+import { resolveStageRowSnapshotFreshMs, sumFreshStageRowField, summarizeFreshStageEvaluation, summarizeStagePipelineCoverage } from "@/lib/stage-row-snapshot"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -3474,7 +3474,7 @@ export async function GET(
         if (!(timestamp > 0) || nowMs - timestamp > ROW_SNAPSHOT_FRESH_MS) continue
         timestamps.push(timestamp)
       }
-      const total = Math.max(activeStatsSymbolFilter.size, historicSymbolsTotal, knownSymbols.size)
+      const total = activeStatsSymbolFilter.size || knownSymbols.size
       const covered = timestamps.length
       const oldestUpdatedAt = covered > 0 ? Math.min(...timestamps) : 0
       const latestUpdatedAt = covered > 0 ? Math.max(...timestamps) : 0
@@ -3635,25 +3635,10 @@ export async function GET(
       semantics: "latest-cycle-and-current-open-row-snapshot",
       snapshot: {
         engineRunning: !engineIsStopped,
-        coverage: {
-          processed: Math.min(
-            historicSymbolsProcessed,
-            baseRowCoverage.covered,
-            mainRowCoverage.covered,
-            realRowCoverage.covered,
-            liveRowCoverage.covered,
-          ),
-          total: Math.max(
-            activeStatsSymbolFilter.size,
-            historicSymbolsTotal,
-            baseRowCoverage.total,
-            mainRowCoverage.total,
-            realRowCoverage.total,
-            liveRowCoverage.total,
-          ),
-          complete: historicIsComplete && [baseRowCoverage, mainRowCoverage, realRowCoverage, liveRowCoverage]
-            .every((stage) => stage.complete),
-        },
+        coverage: summarizeStagePipelineCoverage(
+          [strategyDetailBaseHash, strategyDetailMainHash, strategyDetailRealHash, strategyDetailLiveHash],
+          { symbols: activeStatsSymbolFilter, maxAgeMs: ROW_SNAPSHOT_FRESH_MS },
+        ),
         stages: {
           base: baseRowCoverage,
           main: mainRowCoverage,
@@ -4365,6 +4350,10 @@ export async function GET(
         strategyRows,
         connectionStageOverview,
         realtimeStageAverages,
+        // Compact stage performance is safe for overview polling and avoids
+        // forcing an operations dashboard to materialise the exhaustive full
+        // strategy/configuration payload just to show PF/DDT.
+        performanceTiers,
         mainIndications,
         runtime: getRuntimeTelemetry(historicSymbolsTotal),
         settingsRecoordination,

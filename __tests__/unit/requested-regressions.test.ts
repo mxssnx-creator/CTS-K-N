@@ -1271,11 +1271,11 @@ describe("requested regression guardrails", () => {
 
     expect(pkg.scripts.prebuild).toContain("node scripts/clean-next-dist.mjs")
     expect(pkg.scripts.prebuild).not.toContain("rm -rf .next")
-    expect(pkg.scripts["prevercel-build"]).toBeUndefined()
+    expect(pkg.scripts["prevercel-build"]).toBe(pkg.scripts.prebuild)
     expect(read("eslint.config.mjs")).toContain('".next-*/**"')
     expect(pkg.scripts.postbuild).toContain("node scripts/normalize-next-env.mjs")
     expect(pkg.scripts.postbuild).toContain("node scripts/prepare-standalone-assets.mjs")
-    expect(pkg.scripts["postvercel-build"]).toBeUndefined()
+    expect(pkg.scripts["postvercel-build"]).toBe(pkg.scripts.postbuild)
     expect(read("scripts/normalize-next-env.mjs")).toContain('./.next/types/routes.d.ts')
     expect(read("scripts/normalize-next-env.mjs")).toContain(
       'next/navigation-types/compat/navigation',

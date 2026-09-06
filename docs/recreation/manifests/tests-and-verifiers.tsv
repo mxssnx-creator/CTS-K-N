@@ -206,6 +206,7 @@ unit	__tests__/unit/orders-route-concurrency.test.ts
 unit	__tests__/unit/overview-poller.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/persistent-paths.test.ts
+unit	__tests__/unit/pipeline-cycle-outcome.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts
