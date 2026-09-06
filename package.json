@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "node scripts/build-next-with-trace-retry.mjs",
-    "build:next": "NODE_OPTIONS=\"--max-old-space-size=${CTS_NODE_HEAP_MB:-5632} --max-semi-space-size=256 --expose-gc --require=./scripts/next-fs-rm-compat.cjs\" node node_modules/next/dist/bin/next build",
+    "build:next": "NODE_OPTIONS=\"${CTS_BUILD_NODE_OPTIONS:---max-old-space-size=${CTS_NODE_HEAP_MB:-5632} --max-semi-space-size=256 --expose-gc --require=./scripts/next-fs-rm-compat.cjs}\" node node_modules/next/dist/bin/next build",
     "dev": "NODE_OPTIONS='--max-old-space-size=4096 --max-semi-space-size=128 --expose-gc' node scripts/start-development.mjs",
     "dev:debug": "node scripts/dev-debug.js",
     "dev:debug:verbose": "node scripts/dev-debug.js verbose",
