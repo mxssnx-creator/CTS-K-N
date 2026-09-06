@@ -244,6 +244,7 @@ __tests__/unit/production-deploy-init-state.test.ts
 __tests__/unit/production-start-shutdown.test.ts
 __tests__/unit/progression-live-snapshot.test.ts
 __tests__/unit/progression-lock-atomicity.test.ts
+__tests__/unit/progression-operator-symbols.test.ts
 __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
@@ -282,6 +283,7 @@ __tests__/unit/security-hardening-encryption.test.ts
 __tests__/unit/security-stop-projection.test.ts
 __tests__/unit/serialized-response-swr.test.ts
 __tests__/unit/server-autoboot-script.test.ts
+__tests__/unit/sets-compaction-settings.test.ts
 __tests__/unit/settings-backup.test.ts
 __tests__/unit/settings-continuity.test.ts
 __tests__/unit/settings-hot-reload.test.ts
@@ -1019,6 +1021,7 @@ docs/system-modules-map.md
 docs/verification/dca-20d-20260905.json
 docs/verification/dca-candidate-defaults-20260905.json
 docs/verification/redis-memory-recovery-20260905.md
+docs/verification/runtime-memory-20260906.md
 docs/verification/strategy-dca-20260905.md
 drizzle.config.ts
 eslint.config.mjs

@@ -27,7 +27,7 @@ try {
   await client.pExpire(key, 300000)
   const expiry = await client.pExpireTime(key)
   await client.configSet('list-compress-depth', '1')
-  await client.configSet('list-max-listpack-size', '-1')
+  await client.configSet('list-max-listpack-size', '-2')
   const [first, second] = await Promise.all([1, 2].map(index => client.eval(repack.REPACK_INDICATION_LIST_SCRIPT, { keys: [key, `cts:maintenance:repack:${index}`], arguments: [] })))
   assert.equal(first[0], 1)
   // Redis may further normalize listpack allocation on a second RESTORE;
@@ -50,6 +50,26 @@ try {
   await client.set('cts:maintenance:repack:collision', 'preserved')
   await assert.rejects(client.eval(repack.REPACK_INDICATION_LIST_SCRIPT, { keys: [key, 'cts:maintenance:repack:collision'], arguments: [] }), /already exists/)
   assert.equal(await client.get('cts:maintenance:repack:collision'), 'preserved')
+  // Existing compressed lists must remain logically identical when their
+  // packing changes. Accept a replacement only when it saves memory.
+  const packed = 'indication_set:fixture:SOLUSDT:common:long'
+  await client.configSet('list-max-listpack-size', '-1')
+  await client.rPush(packed, rows.slice(0, 150))
+  await client.pExpire(packed, 180000)
+  const packedExpiry = await client.pExpireTime(packed)
+  await client.configSet('list-max-listpack-size', '-2')
+  const resized = await client.eval(repack.REPACK_INDICATION_LIST_SCRIPT, { keys: [packed, 'cts:maintenance:repack:resized'], arguments: [] })
+  assert.ok(resized[2] <= resized[1])
+  assert.deepEqual(await client.lRange(packed, 0, -1), rows.slice(0, 150))
+  assert.equal(await client.pExpireTime(packed), packedExpiry)
+  // An admission failure must leave the source and expiry untouched.
+  await client.configSet('maxmemory', '1')
+  const pressured = await client.eval(repack.REPACK_INDICATION_LIST_SCRIPT, { keys: [packed, 'cts:maintenance:repack:oom'], arguments: [] })
+  assert.equal(pressured[0], 0)
+  await client.configSet('maxmemory', '64mb')
+  assert.deepEqual(await client.lRange(packed, 0, -1), rows.slice(0, 150))
+  assert.equal(await client.pExpireTime(packed), packedExpiry)
+  assert.equal(await client.exists('cts:maintenance:repack:oom'), 0)
   console.log(JSON.stringify({ success: true, isolated: true, exactRows: rows.length, ttlPreserved: true, durablePreserved: true, protectedKeysUnchanged: true, repeatedRepackIdempotent: true, beforeBytes: first[1], afterBytes: first[2] }))
 } finally {
   if (client.isOpen) client.destroy()

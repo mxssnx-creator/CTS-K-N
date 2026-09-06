@@ -225,6 +225,7 @@ unit	__tests__/unit/production-deploy-init-state.test.ts
 unit	__tests__/unit/production-start-shutdown.test.ts
 unit	__tests__/unit/progression-live-snapshot.test.ts
 unit	__tests__/unit/progression-lock-atomicity.test.ts
+unit	__tests__/unit/progression-operator-symbols.test.ts
 unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
@@ -263,6 +264,7 @@ unit	__tests__/unit/security-hardening-encryption.test.ts
 unit	__tests__/unit/security-stop-projection.test.ts
 unit	__tests__/unit/serialized-response-swr.test.ts
 unit	__tests__/unit/server-autoboot-script.test.ts
+unit	__tests__/unit/sets-compaction-settings.test.ts
 unit	__tests__/unit/settings-backup.test.ts
 unit	__tests__/unit/settings-continuity.test.ts
 unit	__tests__/unit/settings-hot-reload.test.ts

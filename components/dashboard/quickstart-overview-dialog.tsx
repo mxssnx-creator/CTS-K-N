@@ -188,7 +188,10 @@ function StratSection({
       {/* header */}
       <div className="flex items-center justify-between">
         <span className={`text-xs font-semibold ${accentCls}`}>{label}</span>
-        <span className={`text-lg font-bold tabular-nums ${accentCls}`}>{fmt(count)}</span>
+        <span className="flex items-baseline gap-2">
+          <span className="text-[10px] text-muted-foreground">Active sets</span>
+          <span className={`text-lg font-bold tabular-nums ${accentCls}`}>{fmt(count)}</span>
+        </span>
       </div>
 
       {/* eval bar — only for Main and Real */}
@@ -900,8 +903,8 @@ export function QuickstartOverviewDialog() {
               evaluated={bd?.strategies.baseEvaluated || 0}
               evaluatedOf={0}
               detail={sd?.base}
-              accentCls="text-orange-600 dark:text-orange-400"
-              bgCls="bg-orange-50/50 dark:bg-orange-950/20 border-orange-200/50 dark:border-orange-800/30"
+              accentCls="text-card-foreground"
+              bgCls="bg-card text-card-foreground border-orange-500/40"
             />
 
             <StratSection
@@ -917,8 +920,8 @@ export function QuickstartOverviewDialog() {
               )}
 
               detail={sd?.main}
-              accentCls="text-yellow-600 dark:text-yellow-400"
-              bgCls="bg-yellow-50/50 dark:bg-yellow-950/20 border-yellow-200/50 dark:border-yellow-800/30"
+              accentCls="text-card-foreground"
+              bgCls="bg-card text-card-foreground border-yellow-500/40"
             />
 
             <StratSection
@@ -934,8 +937,8 @@ export function QuickstartOverviewDialog() {
               )}
 
               detail={sd?.real}
-              accentCls="text-green-600 dark:text-green-400"
-              bgCls="bg-green-50/50 dark:bg-green-950/20 border-green-200/50 dark:border-green-800/30"
+              accentCls="text-card-foreground"
+              bgCls="bg-card text-card-foreground border-green-500/40"
             />
 
             {/* Live = real exchange positions history, tracked locally in Redis.
@@ -952,8 +955,8 @@ export function QuickstartOverviewDialog() {
               evaluatedOf={firstFiniteMetric(stats?.strategyRows?.live?.total)}
 
               detail={sd?.live}
-              accentCls="text-amber-600 dark:text-amber-400"
-              bgCls="bg-amber-50/50 dark:bg-amber-950/20 border-amber-200/50 dark:border-amber-800/30"
+              accentCls="text-card-foreground"
+              bgCls="bg-card text-card-foreground border-amber-500/40"
             />
 
             <div className="rounded-md border p-2.5">

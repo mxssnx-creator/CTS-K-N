@@ -31,7 +31,7 @@ try {
     const config = await client.configGet(['appendonly', 'appendfsync'])
     assert.equal(config.appendonly, 'yes', 'Durable AOF required')
     assert.ok(['everysec', 'always'].includes(config.appendfsync))
-    await client.configSet({ 'list-compress-depth': '1', 'list-max-listpack-size': '-1' })
+    await client.configSet({ 'list-compress-depth': '1', 'list-max-listpack-size': '-2' })
     await client.configRewrite()
   }
   const run = randomUUID()

@@ -1,4 +1,32 @@
 # Active Context: CTS-K-N Trading System (main project)
+
+## Continuation — 2026-09-06 runtime/memory verification
+
+- GitHub main and production are `752d4e5a155094978ee647ed323173edca74bf98`.
+  Canonical checkout currently has older concurrent source edits at `2041787b`;
+  it is preserved. Isolated worktree is
+  `/workspace/CTS-K-N-worktrees/runtime-verification-20260906`.
+- Owner-only complete local checkpoint:
+  `/workspace/backups/CTS-K-N/20260906T102640Z-continuation-recovery`.
+  Complete remote source/configuration/rollback-binaries/validated-AOF backup:
+  `/var/backups/cts-kn/20260906-runtime-memory-release`, verified 10:39:22 UTC.
+- Current production read-only check: three CTS services active/NRestarts0,
+  Redis active/NRestarts63, AOF writes successful, health200/42ms. Redis grew
+  to about6.8GiB; long-term bounded usage is NOT accepted as complete.
+- Fixes: exact 0% and explicit250 compaction settings, bounded legacy limits,
+  safe lower-memory listpack rebuilding, readable Stage cards/Active sets label,
+  and operator-basket precedence in full/runtime stats (20 current vs32 stale).
+  Isolated real-Redis test passes exact400rows/order/TTL/persistence/protected
+  keys/repeated processing/insufficient-memory skip. Full Jest289suites/1994tests,
+  TypeScript and ESLint pass. Build/publication/deployment remain pending.
+- UI is reachable this turn. X02 screenshot/HTTP show multiple current cycles
+  and nonzero Stage row counts; active/cumulative counts must stay distinct.
+  No new venue orders were placed. The prior strict VST baseline failure remains
+  failed, with separate owned-order reconciliation; do not report it as a pass.
+- Details: `docs/verification/runtime-memory-20260906.md`. Other worktree
+  `/workspace/CTS-K-N-worktrees/continuation-20260906` has separate staged work;
+  those changes were inspected but not modified or included here.
+
 ## Latest verified production — 2026-09-05 16:12 UTC
 
 - PR317 merged/deployed/reinstalled as `3a6a136bca637b218d7709db02081ba9b1a269c0`;

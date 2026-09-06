@@ -1327,7 +1327,7 @@ configure_environment_and_redis() {
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET save "" >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET auto-aof-rewrite-percentage 0 >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET list-compress-depth 1 >/dev/null
-    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET list-max-listpack-size -1 >/dev/null
+    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET list-max-listpack-size -2 >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG REWRITE >/dev/null 2>&1 || true
     [[ "$(redis-cli -u "$redis_url" --no-auth-warning CONFIG GET appendonly | tail -n 1)" == "yes" ]] \
       || fatal "Local Redis AOF persistence could not be enabled"

@@ -45,6 +45,7 @@ import {
 } from "@/lib/live-position-read-model"
 import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { resolveStageRowSnapshotFreshMs, sumFreshStageRowField, summarizeFreshStageEvaluation } from "@/lib/stage-row-snapshot"
@@ -201,7 +202,7 @@ async function runtimeOnlyStatsResponse(
     ).trim() || "main"
     const scope = buildProgressionScope(connectionId, engineType)
     const progressionKeys = Array.from(new Set(progressionReadKeys(scope)))
-    const [progressionHashes, prehistoric, processedSymbols, engineState, realtime] = await Promise.all([
+    const [progressionHashes, prehistoric, processedSymbols, engineState, realtime, operatorSettings] = await Promise.all([
       Promise.all(progressionKeys.map((key) =>
         client.hgetall(key).catch(() => ({} as Record<string, string>)),
       )),
@@ -209,6 +210,7 @@ async function runtimeOnlyStatsResponse(
       client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
       client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
       client.hgetall(`realtime:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      getCanonicalConnectionSettingsOverlay(connectionId),
     ])
 
     // `progressionReadKeys` is ordered from highest to lowest authority.
@@ -219,7 +221,10 @@ async function runtimeOnlyStatsResponse(
       {},
     )
 
-    const canonicalSymbols = resolveCanonicalSymbols(connection, engineState, progression, prehistoric)
+    const operatorSymbols = resolveCanonicalSymbols(operatorSettings)
+    const canonicalSymbols = operatorSymbols.count > 0
+      ? operatorSymbols
+      : resolveCanonicalSymbols(connection, engineState, progression, prehistoric)
     const measuredSymbolCount = canonicalSymbols.count > 0
       ? canonicalSymbols.count
       : positiveInteger(
@@ -1204,6 +1209,7 @@ export async function GET(
       blockProfitFactorStatsHashRaw,
       globalEngineStateRaw,
       runningHintRaw,
+      operatorSettings,
     ] = await Promise.all([
       client.hgetall(scope.progressionKey).catch(() => null),
       activeProgressionKey === scope.legacyProgressionKey ? Promise.resolve(activeProgressionRaw) : client.hgetall(scope.legacyProgressionKey).catch(() => null),
@@ -1266,6 +1272,7 @@ export async function GET(
       client.hgetall(`strategy_block_pf_stats:${connectionId}`).catch(() => null),
       client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)),
       client.get(`engine_is_running:${connectionId}`).catch(() => null),
+      getCanonicalConnectionSettingsOverlay(connectionId),
     ])
 
     const scopedProgHash: Record<string, string> = scopedProgHashRaw || {}
@@ -1355,7 +1362,13 @@ export async function GET(
     // display misleading totals (e.g. "1/3") when the user selected 1
     // symbol in the Quickstart slot. Fall back to `processed || 1` only
     // when we genuinely have no other source.
-    const runtimeSymbolResolution = resolveCanonicalSymbols(connection, es, ep, activeProgression, prehistoricHash)
+    // Match the engine's durable operator-settings precedence. A nested
+    // connection snapshot can otherwise retain a former 32-symbol basket
+    // while the current owner correctly processes the selected 20 symbols.
+    const operatorSymbols = resolveCanonicalSymbols(operatorSettings)
+    const runtimeSymbolResolution = operatorSymbols.count > 0
+      ? operatorSymbols
+      : resolveCanonicalSymbols(connection, es, ep, activeProgression, prehistoricHash)
     const symbolsFromArray = runtimeSymbolResolution.count
     const quickstartSymbols = normalizeSymbolList((es as any).quickstart_symbols)
     const quickstartCount = n((es as any).quickstart_symbol_count)
@@ -1371,7 +1384,9 @@ export async function GET(
     const activeQuickstartTotal = Math.max(quickstartCount, quickstartSymbols.length)
     const engineProgressSubTotal = ep?.phase === "prehistoric_data" ? n(ep?.sub_total) : 0
     const activeSnapshotSymbolTotal = n(activeProgression.symbol_count)
-    const currentSelectedSymbols = resolveCanonicalSymbols(connection, es, ep, activeProgression).symbols
+    const currentSelectedSymbols = operatorSymbols.count > 0
+      ? operatorSymbols.symbols
+      : resolveCanonicalSymbols(connection, es, ep, activeProgression).symbols
     const activeStatsSymbolList = currentSelectedSymbols.length > 0
       ? currentSelectedSymbols
       : canonicalSelectedSymbols.length > 0
