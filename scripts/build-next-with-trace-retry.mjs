@@ -335,7 +335,12 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     args,
     {
       ...process.env,
-      NODE_OPTIONS: process.env.NODE_OPTIONS ||
+      // The installer computes CTS_NODE_HEAP_MB from the live host budget.
+      // Do not inherit a stale global NODE_OPTIONS value from a supervisor or
+      // SSH session: that can make a constrained host launch a multi-gigabyte
+      // build and abort before the services can be restored. An explicit
+      // CTS_BUILD_NODE_OPTIONS remains available for CI and local overrides.
+      NODE_OPTIONS: process.env.CTS_BUILD_NODE_OPTIONS ||
         `--max-old-space-size=${process.env.CTS_NODE_HEAP_MB || "5632"} --max-semi-space-size=256 --expose-gc`,
       COREPACK_HOME: process.env.COREPACK_HOME || join(tmpdir(), "cts-corepack-cache"),
     },
