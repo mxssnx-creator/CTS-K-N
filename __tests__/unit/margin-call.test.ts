@@ -163,6 +163,15 @@ test("coalesces concurrent observers and performs one closure", async () => {
   expect(connector.closePosition).toHaveBeenCalledTimes(1)
 })
 
+test("waits briefly for a distributed observer lease instead of failing the entry check", async () => {
+  const { connector } = account()
+  mockValues.set("margin_call_lock:a", "another-worker")
+  const release = setTimeout(() => mockValues.delete("margin_call_lock:a"), 120)
+  await expect(assertMarginCallEntryAllowed("a", connector)).resolves.toBeUndefined()
+  clearTimeout(release)
+  expect(mockRedis.set.mock.calls.length).toBeGreaterThan(1)
+})
+
 test("continues latched closure when account equity becomes unavailable", async () => {
   const { connector, state } = account()
   await assertMarginCallEntryAllowed("a", connector)

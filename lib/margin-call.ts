@@ -19,6 +19,14 @@ const sessionKey = (id: string) => `settings:margin_call_session:${id}`
 const eventsKey = (id: string) => `account_risk:margin_call:events:${id}`
 const faultKey = (id: string) => `account_risk:margin_call:fault:${id}`
 
+// A connection can be observed by several engine workers at the same time.
+// The Redis lease is deliberately exclusive, but a fail-fast observer turns
+// ordinary cross-worker overlap into a stream of live-order failures. Monitor
+// callers may wait briefly for the current owner to finish; session creation
+// keeps the default fail-fast behaviour below because it is an operator reset.
+const MARGIN_CALL_LOCK_WAIT_MS = 2_500
+const MARGIN_CALL_LOCK_RETRY_MS = 50
+
 function validId(id: string): void {
   if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) throw new Error("Invalid connection ID")
 }
@@ -57,11 +65,31 @@ async function event(id: string, type: string, state: MarginCallSession): Promis
   }
 }
 
-async function locked<T>(id: string, work: (assertOwnership: () => Promise<void>) => Promise<T>): Promise<T> {
+async function locked<T>(
+  id: string,
+  work: (assertOwnership: () => Promise<void>) => Promise<T>,
+  options: { waitMs?: number } = {},
+): Promise<T> {
   const client = getRedisClient()
   const key = `margin_call_lock:${id}`
   const token = createRedisLockToken("margin-call")
-  if (await client.set(key, token, { NX: true, EX: 120 }) !== "OK") {
+  const waitMs = Number.isFinite(Number(options.waitMs)) && Number(options.waitMs) > 0
+    ? Math.min(10_000, Math.floor(Number(options.waitMs)))
+    : 0
+  const deadline = Date.now() + waitMs
+  let acquired = false
+  do {
+    if (await client.set(key, token, { NX: true, EX: 120 }) === "OK") {
+      acquired = true
+      break
+    }
+    if (Date.now() >= deadline) break
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, Math.min(MARGIN_CALL_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())))
+      timer.unref?.()
+    })
+  } while (Date.now() <= deadline)
+  if (!acquired) {
     throw riskError("Margin-call evaluation is already running", "margin_call_busy")
   }
   let leaseValid = true
@@ -284,7 +312,7 @@ export async function monitorConnectionMarginCall(
         }
         throw riskError(message, "margin_call_snapshot_unavailable")
       }
-    })
+    }, { waitMs: MARGIN_CALL_LOCK_WAIT_MS })
   })()
   inFlight.set(id, pending)
   try { return await pending } finally { if (inFlight.get(id) === pending) inFlight.delete(id) }
