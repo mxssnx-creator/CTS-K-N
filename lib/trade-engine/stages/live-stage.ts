@@ -680,11 +680,177 @@ function setCachedPositions(connId: string, positions: any[]): void {
   })
 }
 
-function clearPositionCache(connId: string): void {
-  positionCacheByConn.delete(connId)
-}
+  function clearPositionCache(connId: string): void {
+    positionCacheByConn.delete(connId)
+  }
 
-// ── BingX code=110206: TP/SL order quota exceeded ──────────────────────────
+  const LIVE_ENTRY_HALT_DEFAULT_MS = 30_000
+  const LIVE_ENTRY_HALT_MAX_MS = 10 * 60_000
+
+  function liveEntryHaltKey(connectionId: string): string {
+    return `live:entry-halt:${connectionId}`
+  }
+
+  function retryAtFromSnapshotStatus(connector: any): number | undefined {
+    try {
+      const status = connector?.getLastPositionsSnapshotStatus?.()
+      const retryAt = Number(status?.retryAt)
+      return Number.isFinite(retryAt) && retryAt > Date.now() ? retryAt : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  async function haltLiveEntriesForSnapshotFailure(
+    connectionId: string,
+    connector: any,
+    fallbackReason: string,
+  ): Promise<void> {
+    if (!connectionId) return
+    const client = getRedisClient()
+    const retryAt = retryAtFromSnapshotStatus(connector)
+    const ttlMs = Math.min(
+      LIVE_ENTRY_HALT_MAX_MS,
+      Math.max(LIVE_ENTRY_HALT_DEFAULT_MS, (retryAt || 0) - Date.now()),
+    )
+    const reason = String(connector?.getLastPositionsSnapshotStatus?.()?.error || fallbackReason)
+    const key = liveEntryHaltKey(connectionId)
+    const value = JSON.stringify({ at: Date.now(), retryAt: retryAt || Date.now() + ttlMs, reason })
+    if (typeof client?.setex === "function") {
+      await client.setex(key, Math.ceil(ttlMs / 1000), value).catch(() => 0)
+    } else if (typeof client?.set === "function") {
+      await client.set(key, value, { EX: Math.ceil(ttlMs / 1000) }).catch(() => 0)
+    }
+  }
+
+  async function clearLiveEntryHalt(connectionId: string): Promise<void> {
+    if (!connectionId) return
+    const client = getRedisClient() as any
+    if (typeof client?.del === "function") await client.del(liveEntryHaltKey(connectionId)).catch(() => 0)
+  }
+
+  async function readLiveEntryHalt(connectionId: string): Promise<string | null> {
+    if (!connectionId) return null
+    const client = getRedisClient() as any
+    if (typeof client?.get !== "function") return null
+    const raw = await client.get(liveEntryHaltKey(connectionId)).catch(() => null)
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(String(raw))
+      return String(parsed?.reason || "authoritative venue position snapshot unavailable")
+    } catch {
+      return String(raw)
+    }
+  }
+
+  function parseExchangeData(value: unknown): Record<string, any> {
+    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, any>
+    if (typeof value !== "string") return {}
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+
+  function hasLiveExchangeHandle(position: Record<string, any>): boolean {
+    const exchangeData = parseExchangeData(position.exchangeData)
+    const handles = [
+      position.orderId,
+      position.exchangeOrderId,
+      position.clientOrderId,
+      position.exchangePositionId,
+      position.positionId,
+      position.closeOrderId,
+      exchangeData.orderId,
+      exchangeData.exchangeOrderId,
+      exchangeData.clientOrderId,
+      exchangeData.exchangePositionId,
+      exchangeData.positionId,
+    ]
+    if (handles.some((value) => String(value ?? "").trim().length > 0)) return true
+    return Array.isArray(exchangeData.clientOrderIds) && exchangeData.clientOrderIds.length > 0
+  }
+
+  function shouldPersistCanonicalLivePosition(position: Record<string, any>): boolean {
+    const status = String(position.status || "").trim().toLowerCase()
+    if (status !== "rejected" && status !== "error") return true
+    const executedQuantity = Math.max(
+      Number(position.executedQuantity || 0),
+      Number(position.totalExecutedQuantity || 0),
+      Number(position.closedQuantity || 0),
+    )
+    if (executedQuantity > 0 || hasLiveExchangeHandle(position)) return true
+    if (
+      ["placed", "pending_fill", "placed_unconfirmed"].includes(status) ||
+      position.submissionState === "unconfirmed" ||
+      position.pendingAccumulation ||
+      position.pendingReduction ||
+      position.pendingSystemAction ||
+      position.pendingQuantityMutation ||
+      position.pendingProtectionOrders
+    ) return true
+    return false
+  }
+
+  async function discardTransientLivePosition(client: any, position: LivePosition): Promise<void> {
+    const positionId = String(position.id || "")
+    if (!positionId) return
+    const posKey = `live_positions:${position.connectionId}:${positionId}`
+    const jsonKey = `live:position:${positionId}`
+    const openIndexKey = `live:positions:${position.connectionId}`
+    const closedIndexKey = `live:positions:${position.connectionId}:closed`
+    const stored = typeof client?.hgetall === "function"
+      ? await client.hgetall(posKey).catch(() => ({}))
+      : {}
+    const storedRecord = stored && typeof stored === "object" ? stored : {}
+    const storedStatus = String(storedRecord.status || "").trim().toLowerCase()
+    const storedExecutedQuantity = Math.max(
+      Number(storedRecord.executedQuantity || 0),
+      Number(storedRecord.totalExecutedQuantity || 0),
+      Number(storedRecord.closedQuantity || 0),
+    )
+    if (
+      Object.keys(storedRecord).length > 0 &&
+      (storedExecutedQuantity > 0 || hasLiveExchangeHandle(storedRecord) || !["pending", "placed", "pending_fill", "placed_unconfirmed"].includes(storedStatus))
+    ) return
+
+    const deleteKey = (key: string) => typeof client?.del === "function" ? client.del(key).catch(() => 0) : Promise.resolve(0)
+    const removeFromList = (key: string) => typeof client?.lrem === "function"
+      ? client.lrem(key, 0, positionId).catch(() => 0)
+      : Promise.resolve(0)
+    await Promise.all([
+      deleteKey(posKey),
+      deleteKey(jsonKey),
+      removeFromList(openIndexKey),
+      removeFromList(closedIndexKey),
+      updateSignalAdmissionIndexes(client, { ...position, status: "rejected" }).catch(() => 0),
+    ])
+    const direction = resolveLivePositionDirection(position)
+    if (direction) {
+      const slotKey = livePositionSlotIndexKey(
+        position.connectionId,
+        position.symbol,
+        direction,
+        liveExecutionSlot(position),
+      )
+      await evalLockLua(client, RELEASE_LOCK_LUA, slotKey, [positionId]).catch(() => 0)
+    }
+    const trackingIds = new Set<string>([
+      positionId,
+      position.orderId,
+      position.system_tracking_id,
+      position.connection_tracking_id,
+    ].map((value) => String(value || "").trim()).filter(Boolean))
+    await Promise.all(Array.from(trackingIds).map((trackingId) =>
+      client.del(`live:position:tracking:${position.connectionId}:${trackingId}`).catch(() => 0),
+    ))
+    updateSimulatedPositionStageRow({ ...position, status: "rejected" })
+  }
+
+  // ── BingX code=110206: TP/SL order quota exceeded ──────────────────────────
+
 // When the account's open SL/TP order count reaches the exchange limit, every
 // placeStopOrder call returns 110206. Without a circuit breaker the reconcile
 // loop retries every cycle (~150/min), flooding the exchange log and burning
@@ -3063,6 +3229,10 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   // saving so Redis checks the stored status/version atomically.
   const { getRedisClient } = await import("@/lib/redis-db")
   const client = getRedisClient()
+  if (!shouldPersistCanonicalLivePosition(position as unknown as Record<string, any>)) {
+    await discardTransientLivePosition(client, position)
+    return
+  }
   const keepDurable = async (key: string): Promise<void> => {
     const durableClient = client as any
     if (typeof durableClient.persist === "function") await durableClient.persist(key).catch(() => 0)
@@ -4854,9 +5024,11 @@ async function accumulateIntoLivePosition(
     // quantity unchanged.
     const authoritativeBeforeAccumulation = await fetchAuthoritativeOpenQuantity(
       connector,
-      existing.symbol,
-      storedDirection,
-    )
+    existing.symbol,
+    storedDirection,
+    connId,
+  )
+
     if (!authoritativeBeforeAccumulation.ok) {
       pushStep(
         existing,
@@ -5756,7 +5928,9 @@ async function fetchAuthoritativeOpenQuantity(
   connector: any,
   symbol: string,
   direction: "long" | "short",
-): Promise<{ ok: boolean; quantity: number; position: any | null }> {
+  connectionId?: string,
+  ): Promise<{ ok: boolean; quantity: number; position: any | null }> {
+
   if (!connector || (typeof connector.getPositions !== "function" && typeof connector.getPosition !== "function")) {
     return { ok: false, quantity: 0, position: null }
   }
@@ -5771,9 +5945,21 @@ async function fetchAuthoritativeOpenQuantity(
         ? connector.getLastPositionsSnapshotStatus()
         : null
       if (snapshotStatus && snapshotStatus.ok !== true) {
+        if (connectionId) {
+          await haltLiveEntriesForSnapshotFailure(
+            connectionId,
+            connector,
+            "authoritative venue position snapshot unavailable",
+          )
+        }
         return { ok: false, quantity: 0, position: null }
       }
-      if (!Array.isArray(snapshot)) return { ok: false, quantity: 0, position: null }
+      if (!Array.isArray(snapshot)) {
+        if (connectionId) {
+          await haltLiveEntriesForSnapshotFailure(connectionId, connector, "invalid venue position snapshot")
+        }
+        return { ok: false, quantity: 0, position: null }
+      }
       const requestedSymbol = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "")
       const rows = snapshot.filter((row: any) => {
         const rowSymbol = String(row?.symbol ?? row?.instrument ?? row?.contract ?? "")
@@ -5786,6 +5972,9 @@ async function fetchAuthoritativeOpenQuantity(
         row?.symbol ?? row?.instrument ?? row?.contract ?? "",
       ).trim())
       if (symbollessActiveRows.length > 0 && activeRows.length > 1) {
+        if (connectionId) {
+          await haltLiveEntriesForSnapshotFailure(connectionId, connector, "ambiguous venue position snapshot")
+        }
         return { ok: false, quantity: 0, position: null }
       }
       const matchingRows = activeRows.filter((row: any) => normalizeExchangePositionDirection(
@@ -5798,6 +5987,9 @@ async function fetchAuthoritativeOpenQuantity(
         row?.side,
         row?.positionAmt ?? row?.position_amount ?? row?.positionSizeSigned,
       ))) {
+        if (connectionId) {
+          await haltLiveEntriesForSnapshotFailure(connectionId, connector, "venue position direction is not authoritative")
+        }
         return { ok: false, quantity: 0, position: null }
       }
       const quantity = matchingRows.reduce((sum: number, row: any) => (
@@ -5823,12 +6015,26 @@ async function fetchAuthoritativeOpenQuantity(
     const snapshotStatus = typeof connector.getLastPositionsSnapshotStatus === "function"
       ? connector.getLastPositionsSnapshotStatus()
       : null
+    if (snapshotStatus?.ok !== true && connectionId) {
+      await haltLiveEntriesForSnapshotFailure(
+        connectionId,
+        connector,
+        "authoritative venue position snapshot unavailable",
+      )
+    }
     return {
       ok: snapshotStatus?.ok === true,
       quantity: 0,
       position: null,
     }
   } catch {
+    if (connectionId) {
+      await haltLiveEntriesForSnapshotFailure(
+        connectionId,
+        connector,
+        "authoritative venue position snapshot request failed",
+      )
+    }
     return { ok: false, quantity: 0, position: null }
   }
 }
@@ -5848,7 +6054,7 @@ async function reconcilePendingReductionAndRearm(
 
   const pending = position.pendingReduction
   if (pending) {
-    const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+    const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction, position.connectionId)
     if (authoritative.ok) {
       const tolerance = Math.max(1e-12, pending.targetQuantity * 1e-8)
       const targetReached = authoritative.quantity <= pending.targetQuantity + tolerance
@@ -6040,7 +6246,7 @@ async function reduceCombinedPosCountPosition(
 
       const status = String(observed?.status || "pending").toLowerCase()
       const reportedFilled = Number(observed?.filledQty ?? observed?.executedQty ?? observed?.cumQty ?? 0) || 0
-      const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+      const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction, position.connectionId)
       const settlement = pending.orderId
         ? await readOrderSettlement(connector, position.symbol, pending.orderId)
         : null
@@ -6214,7 +6420,7 @@ async function reduceCombinedPosCountPosition(
       filledPrice = fill.filledPrice || filledPrice
       fillStatus = fill.status
     }
-    const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+    const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction, position.connectionId)
     const pending = position.pendingReduction!
     const settlement = await readOrderSettlement(connector, position.symbol, String(orderId))
     const applied = applyReductionObservation(position, {
@@ -6585,7 +6791,7 @@ async function reconcilePendingAccumulationAndRearm(
     return
   }
 
-  const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+  const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction, position.connectionId)
   if (authoritative.ok) {
     const entryPrice = Number(
       authoritative.position?.entryPrice ??
@@ -12470,7 +12676,6 @@ export async function executeLivePosition(
           livePosition.statusReason =
             `Dedup lock held — another entry in flight for ${realPosition.symbol} ${realPosition.direction}${isBlockVariant ? " (block)" : ""}; will retry next cycle`
           pushStep(livePosition, "preflight", false, livePosition.statusReason)
-          await savePosition(livePosition)
           await incrementMetric(connectionId, "live_orders_deferred_count")
           // Normal high-frequency deferral under load — do not spam progression logs at "info".
           // The statusReason + saved position already provide visibility; only warn at low frequency.
@@ -12536,6 +12741,26 @@ export async function executeLivePosition(
         /* Do not refresh: this worker did not acquire the lock token. */
         return merged
       }
+
+      const entryHaltReason = await readLiveEntryHalt(connectionId)
+      if (entryHaltReason) {
+        livePosition.status = "rejected"
+        livePosition.statusReason =
+          `Fresh entry deferred: venue position snapshot is not authoritative (${entryHaltReason})`
+        pushStep(livePosition, "entry_snapshot_halt", false, livePosition.statusReason)
+        if (liveOrderLockToken) {
+          await releaseLock(
+            connectionId,
+            realPosition.symbol,
+            realPosition.direction + _lockDirSuffix,
+            liveOrderLockToken,
+          ).catch(() => {})
+          liveOrderLockToken = null
+        }
+        await incrementMetric(connectionId, "live_orders_deferred_count")
+        return livePosition
+      }
+
       // acquired === true: we own the slot. Continue to fresh-entry
       // path below. The historical `await acquireLock(...)` after order
       // placement is now redundant and has been removed (see Step 5).
@@ -15079,7 +15304,7 @@ export async function executeLivePosition(
       realParentSetKey: realPosition.parentSetKey,
       realSetVariant: realPosition.setVariant,
       realAxisWindows: realPosition.axisWindows,
-      // ── Entry metrics ──
+      // ── Entry metrics ��─
       leverage: realPosition.leverage,
       quantity: realPosition.quantity,
       direction: realPosition.direction,
@@ -15373,7 +15598,7 @@ async function settleControlOrdersBeforeSystemClose(
     if (order) observations.push({ id: orderId, source: "control_order", order })
   }
 
-  let authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+  let authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction, position.connectionId)
   const quantityChanged = authoritative.ok && authoritative.quantity < initialQuantity - Math.max(1e-12, initialQuantity * 1e-8)
   const filledObservation = observations
     .filter((item) => controlOrderFilledQuantity(item.order) > 0 || isFilledControlOrderStatus(controlOrderStatus(item.order)))
@@ -15499,7 +15724,7 @@ async function settleControlOrdersBeforeSystemClose(
     position.securityStopAbsenceConfirmations = 0
   }
 
-  authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+  authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction, position.connectionId)
   const decision = decideControlOrderBarrier({
     localQuantity: Number(position.executedQuantity || 0),
     authoritativeQuantity: authoritative.ok ? authoritative.quantity : null,
@@ -15768,7 +15993,7 @@ async function settleControlOrdersBeforeQuantityMutation(
   action.updatedAt = Date.now()
   position.pendingQuantityMutation = action
 
-  const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+  const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction, position.connectionId)
   if (!authoritative.ok) {
     pushStep(position, "quantity_change_wait", true, `${reason}: authoritative position snapshot unavailable`)
     return false
@@ -16274,7 +16499,7 @@ export async function closeLivePosition(
     // A partial or lagging snapshot remains `closing_partial` and is recovered
     // by the durable pendingSystemAction on the next cycle.
     if (exchangeCloseSuccess && exchangeCloseReason === "ok" && exchangeConnector) {
-      const authoritative = await fetchAuthoritativeOpenQuantity(exchangeConnector, position.symbol, resolvedDirection)
+      const authoritative = await fetchAuthoritativeOpenQuantity(exchangeConnector, position.symbol, resolvedDirection, position.connectionId)
       if (authoritative.ok) {
         const action = position.pendingSystemAction
         const executionId = `${position.id}:system-close:${action?.clientOrderId || action?.orderId || action?.token || "unknown"}`
@@ -17425,13 +17650,28 @@ export async function reconcileLivePositions(
       }
     } catch (err) {
       console.warn(`${LOG_PREFIX} getPositions failed:`, err instanceof Error ? err.message : String(err))
+      if (liveTradeOn) {
+        await haltLiveEntriesForSnapshotFailure(
+          connectionId,
+          exchangeConnector,
+          "authoritative venue position snapshot request failed",
+        )
+      }
       await orphanCloseExpiredPositions(connectionId, exchangeConnector, summary)
       return summary
     }
     if (!exchangePositionsSnapshotOk) {
       console.warn(`${LOG_PREFIX} Exchange positions snapshot was not authoritative; external-close processing deferred`)
+      if (liveTradeOn) {
+        await haltLiveEntriesForSnapshotFailure(
+          connectionId,
+          exchangeConnector,
+          "authoritative venue position snapshot unavailable",
+        )
+      }
       return summary
     }
+    if (liveTradeOn) await clearLiveEntryHalt(connectionId)
 
     // Normalise a raw exchange symbol for map-key comparison.
     // BingX (and several other venues) return "BTC-USDT" or "BTC_USDT"
@@ -20207,6 +20447,8 @@ export const __liveStageTest = {
   isTrailingStopTightening,
   ratchetCtsGExitStop,
   isPreFillWithoutExchangeHandle,
+  hasLiveExchangeHandle,
+  shouldPersistCanonicalLivePosition,
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)
   },
