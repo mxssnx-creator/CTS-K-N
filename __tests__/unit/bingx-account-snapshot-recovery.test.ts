@@ -91,6 +91,31 @@ test.each([
   expect(cooldownStatus.retryAt).toBeGreaterThan(Date.now())
 })
 
+test("position snapshots recover after the provider cooldown expires", async () => {
+  const { value, inner } = connector("snapshot-recovery")
+  let now = 1_800_000_000_000
+  jest.spyOn(Date, "now").mockImplementation(() => now)
+  let attempts = 0
+  inner.bingxRateLimitedCall = (BingXConnector.prototype as any).bingxRateLimitedCall.bind(value)
+  inner.rateLimitedFetch = jest.fn(async () => {
+    attempts += 1
+    return attempts === 1
+      ? Response.json({ code: "109429", msg: "rate limited", retryAfter: now + 1_000 })
+      : Response.json({
+          code: 0,
+          data: [{ symbol: "BTC-USDT", positionAmt: "1", positionSide: "LONG" }],
+        })
+  })
+
+  await expect(value.getPositions("BTCUSDT")).resolves.toEqual([])
+  now += 511_000
+  const recovered = await value.getPositions("BTCUSDT")
+
+  expect(inner.rateLimitedFetch).toHaveBeenCalledTimes(2)
+  expect(recovered[0]).toMatchObject({ positionAmt: "1", positionSide: "LONG" })
+  expect(value.getLastPositionsSnapshotStatus()).toMatchObject({ ok: true })
+})
+
 test("position snapshots are single-flight and account-cache isolated", async () => {
   const first = connector("snapshot-first")
   const second = connector("snapshot-second")
