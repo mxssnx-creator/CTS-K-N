@@ -606,6 +606,34 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
   })
 
+  test("fails closed during a position-snapshot halt without materializing rejection rows", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    await fakeRedis.setex(
+      `live:entry-halt:${connection.id}`,
+      60,
+      JSON.stringify({ reason: "109429: rate limited" }),
+    )
+
+    const results = await Promise.all(Array.from({ length: 24 }, (_, index) => executeLivePosition(connection.id, {
+      id: `snapshot-halted-${index}`,
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)))
+
+    expect(placeOrder).not.toHaveBeenCalled()
+    expect(results.every((result) => result.status === "rejected")).toBe(true)
+    expect(persistedActiveRows()).toHaveLength(0)
+    expect(lists.get(`live:positions:${connection.id}`) || []).toHaveLength(0)
+  })
+
   test("rejects a quote-domain settlement price before it can corrupt protection and PnL", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
     mockReadOrderSettlement.mockResolvedValue({

@@ -118,6 +118,42 @@ describe("executing Live-stage control barriers", () => {
     expect(forex.currentNotionalUsd + forex.quantity * 11_000).toBeLessThanOrEqual(2_200 + 1e-8)
   })
 
+  test.each([
+    { status: "rejected", executedQuantity: 0 },
+    { status: "error", executedQuantity: 0 },
+  ])("does not persist zero-fill $status placeholders without a venue handle", ({ status, executedQuantity }) => {
+    expect(__liveStageTest.shouldPersistCanonicalLivePosition(livePosition({
+      status,
+      executedQuantity,
+      totalExecutedQuantity: 0,
+      orderId: undefined,
+      exchangeData: undefined,
+    }))).toBe(false)
+  })
+
+  test("preserves filled, ordered, and recovery rows for reconciliation", () => {
+    expect(__liveStageTest.shouldPersistCanonicalLivePosition(livePosition({
+      status: "rejected",
+      executedQuantity: 0,
+      orderId: "venue-entry-1",
+    }))).toBe(true)
+    expect(__liveStageTest.shouldPersistCanonicalLivePosition(livePosition({
+      status: "error",
+      executedQuantity: 0,
+      exchangeData: { clientOrderId: "cts-entry-1" },
+    }))).toBe(true)
+    expect(__liveStageTest.shouldPersistCanonicalLivePosition(livePosition({
+      status: "placed_unconfirmed",
+      executedQuantity: 0,
+      orderId: undefined,
+    }))).toBe(true)
+    expect(__liveStageTest.shouldPersistCanonicalLivePosition(livePosition({
+      status: "rejected",
+      executedQuantity: 0,
+      pendingSystemAction: { token: "recovery-1" },
+    }))).toBe(true)
+  })
+
   test("keeps observing the same timed-out protection write and accepts its late acknowledgement", async () => {
     const placementPromise = new Promise((resolve) => {
       setTimeout(() => resolve({ success: true, orderId: 123456 }), 10)

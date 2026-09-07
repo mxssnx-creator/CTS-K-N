@@ -49,6 +49,18 @@ import { logRuntimeInfo } from "@/lib/runtime-log-throttle"
  * - Cross-margin trading
  * - Hedge position mode
  */
+type BingXSnapshotStatus = {
+  ok: boolean
+  at: number
+  error?: string
+  retryAt?: number
+}
+
+type BingXSnapshotResult = {
+  positions: any[]
+  status: BingXSnapshotStatus
+}
+
 export class BingXConnector extends BaseExchangeConnector {
   private static swapMarkets = new Map<string, { symbols: Set<string>; expiresAt: number }>()
   private static swapMarketsInFlight = new Map<string, Promise<Set<string>>>()
@@ -83,8 +95,11 @@ export class BingXConnector extends BaseExchangeConnector {
     return (await pending).has(symbol)
   }
 
-  private lastPositionsSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
+  private lastPositionsSnapshotStatus: BingXSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
   private lastOpenOrdersSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
+  private static readonly positionsSnapshotTtlMs = 1_000
+  private static readonly positionsSnapshotCache = new Map<string, { positions: any[]; at: number }>()
+  private static readonly positionsSnapshotInFlight = new Map<string, Promise<BingXSnapshotResult>>()
   private lastOrderHistorySnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
 
   /**
@@ -184,7 +199,7 @@ export class BingXConnector extends BaseExchangeConnector {
     })
   }
 
-  getLastPositionsSnapshotStatus(): { ok: boolean; at: number; error?: string } {
+  getLastPositionsSnapshotStatus(): BingXSnapshotStatus {
     return { ...this.lastPositionsSnapshotStatus }
   }
 
@@ -220,6 +235,28 @@ export class BingXConnector extends BaseExchangeConnector {
   private openOrdersCacheKey(symbol?: string): string {
     return `${this.accountCacheScope}:${symbol ? this.toBingXSymbol(symbol) : "__all__"}`
   }
+
+  private positionsCacheKey(symbol?: string): string {
+    return `${this.accountCacheScope}:${symbol ? this.toBingXSymbol(symbol) : "__all__"}`
+  }
+
+  private isBingXRateLimitedPayload(data: any): boolean {
+    const code = String(data?.code ?? "")
+    const message = String(data?.msg ?? data?.message ?? "")
+    return ["109429", "100410"].includes(code) || /rate.?limit|disabled period|trigger frequency/i.test(message)
+  }
+
+  private isBingXRateLimitError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error)
+    return /109429|100410|http 429|status 429|rate.?limit|disabled period|trigger frequency/i.test(message)
+  }
+
+  private currentBingXRetryAt(): number | undefined {
+    return BingXConnector.bingxRateLimitUntil > Date.now()
+      ? BingXConnector.bingxRateLimitUntil
+      : undefined
+  }
+
   // ── Native bingx-api package client ───────────────────────────────────────
   // The library path is the default for supported mainnet-swap calls. The
   // hand-signed BingX REST implementation remains the authoritative fallback.
@@ -1986,7 +2023,9 @@ export class BingXConnector extends BaseExchangeConnector {
     const isRateLimit =
       isEndpointFrequencyLimit ||
       errorMsg.includes("109429") ||
-      lowerError.includes("rate limit")
+      lowerError.includes("rate limit") ||
+      lowerError.includes("http 429") ||
+      lowerError.includes("status 429")
     if (!isRateLimit) return
 
     // 109429 covers BingX's 480 s rolling order window and needs the full
@@ -2332,81 +2371,154 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   async getPositions(symbol?: string): Promise<any[]> {
-    this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
-    try {
-      // Sync server time before any signed request
-      await this.syncServerTime()
-    } catch (e) {
-      // Non-fatal; sync errors are already logged
+    const cacheKey = this.positionsCacheKey(symbol)
+    const now = Date.now()
+    const cached = BingXConnector.positionsSnapshotCache.get(cacheKey)
+    if (
+      cached &&
+      now - cached.at < BingXConnector.positionsSnapshotTtlMs &&
+      BingXConnector.bingxRateLimitUntil <= now
+    ) {
+      this.lastPositionsSnapshotStatus = { ok: true, at: cached.at, error: "cache" }
+      return cached.positions.map((position) => ({ ...position }))
     }
 
-    const contractType = this.credentials.contractType
-    const apiType = this.credentials.apiType || "perpetual_futures"
-    
-    // Determine effective contract type
-    let effectiveContractType = contractType || "usdt-perpetual"
-    if (!contractType && apiType === "spot") {
-      effectiveContractType = "spot"
-    }
-    
-    if (effectiveContractType === "spot" || apiType === "spot") {
-      this.log("Positions not available for spot trading")
-      this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "" }
+    // A stale/empty position result is never authoritative during a provider
+    // lockout. Fail closed instead of waking another request or handing the
+    // entry pipeline an error-shaped empty account.
+    if (BingXConnector.bingxRateLimitUntil > now) {
+      this.lastPositionsSnapshotStatus = {
+        ok: false,
+        at: now,
+        error: "rate_limit_cooldown",
+        retryAt: BingXConnector.bingxRateLimitUntil,
+      }
       return []
     }
 
-    if (effectiveContractType === "usdt-perpetual" && symbol) {
-      const accountService = await this.getSdkAccountService()
-      if (accountService?.getPerpetualSwapPositions) {
-        try {
-          const sdkData = await accountService.getPerpetualSwapPositions(this.toBingXSymbol(symbol), this.sdkAccount)
-          if (!this.isBingXSuccess(sdkData?.code)) {
-            throw new Error(`${sdkData?.code ?? "unknown"}: ${sdkData?.msg || "Library positions request rejected"}`)
-          }
-          const rows = Array.isArray(sdkData?.data) ? sdkData.data : []
-          const positions = this.normalizePositions(rows)
-          this.sdkLastError = ""
-          this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "" }
-          return positions
-        } catch (sdkError) {
-          this.recordSdkFallback("getPositions", sdkError)
+    const pending = BingXConnector.positionsSnapshotInFlight.get(cacheKey)
+    if (pending) {
+      try {
+        const result = await pending
+        this.lastPositionsSnapshotStatus = { ...result.status, error: result.status.error || "shared_inflight" }
+        return result.positions.map((position) => ({ ...position }))
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        this.lastPositionsSnapshotStatus = {
+          ok: false,
+          at: Date.now(),
+          error: errorMsg,
+          retryAt: this.currentBingXRetryAt(),
         }
+        return []
       }
     }
 
-    try {
-      this.log(`Fetching positions${symbol ? ` for ${symbol}` : ""} (${effectiveContractType})`)
+    const request = this.bingxRateLimitedCall<BingXSnapshotResult>("getPositions", async () => {
+      const finish = (positions: any[], status: BingXSnapshotStatus): BingXSnapshotResult => ({
+        positions,
+        status,
+      })
 
-      // Use different endpoint based on contract type
-      let endpoint = "/openApi/swap/v2/user/positions" // USDT Perpetual
-      if (effectiveContractType === "coin-perpetual") {
-        endpoint = "/openApi/cswap/v1/user/positions" // Coin-M Perpetual
+      try {
+        // Sync server time before any signed request
+        await this.syncServerTime()
+      } catch {
+        // Non-fatal; sync errors are already logged.
       }
+
+      const contractType = this.credentials.contractType
+      const apiType = this.credentials.apiType || "perpetual_futures"
+      let effectiveContractType = contractType || "usdt-perpetual"
+      if (!contractType && apiType === "spot") effectiveContractType = "spot"
+
+      if (effectiveContractType === "spot" || apiType === "spot") {
+        this.log("Positions not available for spot trading")
+        return finish([], { ok: true, at: Date.now(), error: "" })
+      }
+
+      if (effectiveContractType === "usdt-perpetual" && symbol) {
+        const accountService = await this.getSdkAccountService()
+        if (accountService?.getPerpetualSwapPositions) {
+          try {
+            const sdkData = await accountService.getPerpetualSwapPositions(
+              this.toBingXSymbol(symbol),
+              this.sdkAccount,
+            )
+            if (!this.isBingXSuccess(sdkData?.code)) {
+              const sdkError = new Error(
+                `${sdkData?.code ?? "unknown"}: ${sdkData?.msg || "Library positions request rejected"}`,
+              )
+              if (this.isBingXRateLimitedPayload(sdkData) || this.isBingXRateLimitError(sdkError)) {
+                throw sdkError
+              }
+              throw sdkError
+            }
+            const rows = Array.isArray(sdkData?.data) ? sdkData.data : []
+            const positions = this.normalizePositions(rows)
+            this.sdkLastError = ""
+            return finish(positions, { ok: true, at: Date.now(), error: "" })
+          } catch (sdkError) {
+            if (this.isBingXRateLimitError(sdkError)) throw sdkError
+            this.recordSdkFallback("getPositions", sdkError)
+          }
+        }
+      }
+
+      this.log(`Fetching positions${symbol ? ` for ${symbol}` : ""} (${effectiveContractType})`)
+      let endpoint = "/openApi/swap/v2/user/positions"
+      if (effectiveContractType === "coin-perpetual") endpoint = "/openApi/cswap/v1/user/positions"
 
       const data = await this.readSignedAccountSnapshot(endpoint, {
         ...(symbol ? { symbol: this.toBingXSymbol(symbol) } : {}),
       })
 
       if (!this.isBingXSuccess(data.code)) {
-        this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: `${data.code}:${data.msg || "exchange_error"}` }
-        return []
+        const error = `${data.code}:${data.msg || "exchange_error"}`
+        if (this.isBingXRateLimitedPayload(data)) {
+          throw new Error(
+            `${error},can retry after time: ${data.retryAfter || Date.now() + 480_000}`,
+          )
+        }
+        return finish([], { ok: false, at: Date.now(), error })
       }
 
       const raw = Array.isArray(data.data) ? data.data : []
-      // Normalize BingX raw position fields to a consistent interface so
-      // callers (live-stage fill-fallback, closePosition) use standard names:
-      //   positionAmt  — BingX v3 perpetual (primary qty field)
-      //   entryPrice   — BingX v3 perpetual (average entry price)
-      //   positionSide — "LONG" | "SHORT" (hedge mode) or "BOTH" (one-way)
-      //   unrealizedPnl, markPrice, liquidationPrice — ancillary fields
       const positions = this.normalizePositions(raw)
-      this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "" }
-      return positions
+      return finish(positions, { ok: true, at: Date.now(), error: "" })
+    })
+
+    BingXConnector.positionsSnapshotInFlight.set(cacheKey, request)
+    try {
+      const result = await request
+      this.lastPositionsSnapshotStatus = { ...result.status }
+      if (result.status.ok === true) {
+        BingXConnector.positionsSnapshotCache.set(cacheKey, {
+          positions: result.positions.map((position) => ({ ...position })),
+          at: result.status.at,
+        })
+        while (BingXConnector.positionsSnapshotCache.size > 128) {
+          const oldest = BingXConnector.positionsSnapshotCache.keys().next().value
+          if (!oldest) break
+          BingXConnector.positionsSnapshotCache.delete(oldest)
+        }
+      }
+      return result.positions.map((position) => ({ ...position }))
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
-      this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: errorMsg }
+      const retryAt = this.currentBingXRetryAt()
+      this.lastPositionsSnapshotStatus = {
+        ok: false,
+        at: Date.now(),
+        error: errorMsg,
+        ...(retryAt ? { retryAt } : {}),
+      }
       this.logError(`✗ Failed to fetch positions: ${errorMsg}`)
       return []
+    } finally {
+      if (BingXConnector.positionsSnapshotInFlight.get(cacheKey) === request) {
+        BingXConnector.positionsSnapshotInFlight.delete(cacheKey)
+      }
     }
   }
 
