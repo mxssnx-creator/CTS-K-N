@@ -2135,7 +2135,7 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 |----------------|---------|--------|
 | `src/app/page.tsx` | Home page | ✅ Ready |
 | `src/app/layout.tsx` | Root layout | ✅ Ready |
-| `src/app/globals.css` | Global styles | ✅ Ready |
+| `src/app/globals.css` | Global styles | �� Ready |
 | `.kilocode/` | AI context & recipes | ✅ Ready |
 
 ## Current Focus
@@ -3740,4 +3740,13 @@ Final verification update: 293 suites / 2,016 tests passed with external network
 - Realtime-Remote-Audit: 32/32 Symbolrotation, 32 unique, keine failed/stalled Symbole; ein neuer Zyklus wurde abgeschlossen und Folgearbeit lief weiter. Messstand: 32 Symbole, 46.24 Mio. Indikationen, 5 Indikations-/Strategiezyklen, 15 aktuelle kanonische Live-Positionen, 5.000 retained closed; Trend 6.060 und Break 676 in der Breakdown-Anzeige.
 - Gates: 293 Jest-Suites / 2.016 Tests, TypeScript, ESLint, Produktionsbuild mit 349 vollständigen Traces, Dev-Preview-Smoke und Vercel-Deployment READY. Der begrenzte VST-Loader nutzte 1.536 MiB Node-Heap und 194 MB Peak-RAM.
 - Der authentifizierte X02-Prod-VST-Soak nutzte virtuelle Mittel und Mindestvolumen. Geplant waren 32 Symbole/32 Zyklen, 75 s Takt und 256 Submissions. 3 Zyklen wurden mit 25 Submissions und 403 Requests ausgeführt; 0 Requests geblockt. Zwei Zyklen bestanden Entry/Akkumulation/Close und Trailing-Proof. Zyklus 3 wurde sicher abgebrochen, als eine fremde COREUSDT-Position (0,1 Venue-Menge gegenüber eigener 0) auftauchte. Kein fremdes Exposure wurde mutiert; Cleanup vollständig, eigene Restmenge und eigene Control-Orders jeweils 0. Dieser Lauf ist daher als `success=false`/sicherer Abbruch zu dokumentieren, nicht als vollständiger 32-Zyklen-Pass.
-- Dauerhafte Betriebsregel: guarded live always-on ausschließlich X02 Prod-VST; keine Ausweitung auf X01/Mainnet und keine Erhöhung von Limits zur künstlichen Grünfärbung.
+  - Dauerhafte Betriebsregel: guarded live always-on ausschließlich X02 Prod-VST; keine Ausweitung auf X01/Mainnet und keine Erhöhung von Limits zur künstlichen Grünfärbung.
+
+## Session 2026-09-07 — X02 Redis rejection-storm guard
+
+- Branch `v0/x02-redis-stability` is based on `origin/main`/`d881a667ddb567b31d11dbdd9e5d6ad945e626a7`; implementation commit `8b3cbf546715131dae967dab13e973048aa7d8e5`. Current source is `/vercel/share/v0-project`. The required `/workspace/CTS-K-N` canonical checkout and `/workspace/CTS-K-N-worktrees` are unavailable in this VM; they were not recreated, reset, or silently substituted. Local/remote `v0/mxssnx-07460dcf` (`11dee924`) remains untouched. Open PR315 (`codex/backup-gate-20260905`) is separate, has failed Vercel contexts, and was not reused.
+- Root cause: BingX 109429/100410 position-snapshot failures could be exposed as repeated empty reads while each Live retry persisted a unique zero-fill rejected row. The fix routes position reads through the shared cooldown lane, adds account-scoped short cache/single-flight, preserves unhealthy snapshot status/retry hints, fails closed during cooldown, and adds a bounded connection-scoped entry halt.
+- Live persistence suppresses pre-entry zero-fill `rejected`/`error` rows without exchange handles and removes dedup-lock collision writes. Filled, exchange-owned, pending-fill, and recovery rows remain durable; Direct-Trade control/idempotency records remain unchanged.
+- Gates passed: unit `289/289` suites (`1,954` tests), integration `4/4` suites (`72` tests), full Jest `294/294` suites (`2,027` tests), TypeScript, ESLint, source syntax, production build with `349` complete traces, frozen pnpm install, secret scan (`1,686` files, `0` findings), and recreation verification (`1,678` files). Deployment-contract verification remains pending because no deployment URL is available locally; no endpoint was guessed.
+- Verified owner-only checkpoints: `/workspace/backups/CTS-K-N/20260907T180031Z-x02-rejection-storm-fix`, `/workspace/backups/CTS-K-N/20260907T181758Z-x02-rejection-storm-fix-implemented`, `/workspace/backups/CTS-K-N/20260907T182831Z-x02-rejection-storm-fix-docs`; the last predates the manifest/document edits. SHA-256 manifests and recorded `git bundle verify` passed.
+- Publication/remote gates remain open: publish through a reviewed PR, merge only with green checks, reinstall merged `main`, then use managed Chisel for read-only service/row-growth/order-statistics verification. X01/Mainnet/Bybit remain read-only; no production-readiness claim is valid until those gates and owned-order reconciliation pass.

@@ -206,6 +206,7 @@ __tests__/unit/live-trade-block-clearance.test.ts
 __tests__/unit/live-trading-analytics.test.ts
 __tests__/unit/live-trading-dashboard-contract.test.ts
 __tests__/unit/live-trading-format.test.ts
+__tests__/unit/live-volume-vst-floor.test.ts
 __tests__/unit/log-retention-contract.test.ts
 __tests__/unit/logistics-workflow.test.ts
 __tests__/unit/main-indication-settings.test.ts
