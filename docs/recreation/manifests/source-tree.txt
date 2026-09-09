@@ -344,6 +344,7 @@ __tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
 __tests__/unit/trade-engine-start-all-accounting.test.ts
 __tests__/unit/trade-engine-start-lock.test.ts
 __tests__/unit/trade-engine-status-healing-race.test.ts
+__tests__/unit/trade-engine-status-settings.test.ts
 __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
 __tests__/unit/trading-stats-route.test.ts
@@ -1469,6 +1470,7 @@ lib/trade-direction.ts
 lib/trade-engine-auto-start.ts
 lib/trade-engine-intent.ts
 lib/trade-engine-status-cache.ts
+lib/trade-engine-status-settings.ts
 lib/trade-engine-worker-heartbeat.ts
 lib/trade-engine.ts
 lib/trade-engine/advanced-config.ts

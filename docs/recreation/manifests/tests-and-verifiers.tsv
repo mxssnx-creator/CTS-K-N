@@ -328,6 +328,7 @@ unit	__tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
 unit	__tests__/unit/trade-engine-start-all-accounting.test.ts
 unit	__tests__/unit/trade-engine-start-lock.test.ts
 unit	__tests__/unit/trade-engine-status-healing-race.test.ts
+unit	__tests__/unit/trade-engine-status-settings.test.ts
 unit	__tests__/unit/trade-history-stability.test.ts
 unit	__tests__/unit/trade-protection-contract.test.ts
 unit	__tests__/unit/trading-stats-route.test.ts
