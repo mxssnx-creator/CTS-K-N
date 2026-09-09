@@ -1335,6 +1335,11 @@ export async function GET(
       + ordersBySymbolAggregation.totals.short.filled
     const perSymbolOrderFailed = ordersBySymbolAggregation.totals.long.failed
       + ordersBySymbolAggregation.totals.short.failed
+    const perSymbolCounterSource = stableString(
+      liveOrderHash.live_per_symbol_counter_source
+      || progHash.live_per_symbol_counter_source,
+    ) || "event_callback_lifetime"
+    const perSymbolCountersAuthoritative = perSymbolCounterSource === "durable_live_position_ledger"
     const liveOrderCounterIntegrity = {
       scope: liveOrderSnapshot.scope,
       global: {
@@ -1363,9 +1368,13 @@ export async function GET(
       // Per-symbol rows are retained as forensic lifetime data. A non-zero
       // delta is surfaced explicitly instead of silently presenting those
       // legacy rows as the current cycle's error count.
+      source: perSymbolCounterSource,
+      authoritative: perSymbolCountersAuthoritative,
       terminalDelta: (perSymbolOrderPlaced + perSymbolOrderFailed)
         - (globalOrderPlaced + globalOrderFailed),
-      semantics: "global_lifetime_vs_per_symbol_lifetime",
+      semantics: perSymbolCountersAuthoritative
+        ? "global_lifetime_vs_durable_per_symbol_lifetime"
+        : "global_lifetime_vs_legacy_per_symbol_lifetime",
     }
 
     const rawEs = (engineState as Record<string, any>) || {}

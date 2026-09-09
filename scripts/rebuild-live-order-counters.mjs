@@ -28,6 +28,15 @@ const parseHashValue = (value) => {
   try { return JSON.parse(value) } catch { return value }
 }
 const normalizedStatus = (position) => String(position?.status || "").toLowerCase()
+const normalizedSymbol = (position) => String(position?.symbol || "")
+  .toUpperCase()
+  .replace(/[^A-Z0-9]/g, "")
+const normalizedDirection = (position) => {
+  const value = String(position?.direction || position?.side || position?.positionSide || "").toLowerCase()
+  if (value === "long" || value === "buy" || value.endsWith("_long")) return "long"
+  if (value === "short" || value === "sell" || value.endsWith("_short")) return "short"
+  return ""
+}
 const isSimulation = (position) => normalizedStatus(position) === "simulated"
   || String(position?.executionMode || "").toLowerCase() === "simulation"
 const isReal = (position) => !isSimulation(position) && Boolean(
@@ -101,33 +110,97 @@ const controlPlacedOrderIds = new Set()
 const controlFilledOrderIds = new Set()
 const controlFailedAttempts = new Set()
 
+// The old per-symbol hash was an event counter.  A stale worker could write a
+// failed event after the global epoch had already changed, leaving the UI with
+// hundreds of thousands of apparent failures even though the durable ledger
+// contained no corresponding venue attempt.  Rebuild the current hash from
+// the same unique order identifiers used by the global ledger.  Keep a single
+// owner for every identifier so totals across symbols cannot exceed global
+// totals when a legacy row references the same order more than once.
+const perSymbolBuckets = new Map()
+const perSymbolOrderOwners = new Map()
+const perSymbolFailureOwners = new Map()
+const ensurePerSymbolBucket = (key) => {
+  let bucket = perSymbolBuckets.get(key)
+  if (!bucket) {
+    bucket = { placed: new Set(), filled: new Set(), failed: new Set() }
+    perSymbolBuckets.set(key, bucket)
+  }
+  return bucket
+}
+const addPerSymbolOrder = (key, orderId, kind) => {
+  const id = String(orderId || "").trim()
+  if (!key || !id || !["placed", "filled"].includes(kind)) return
+  const previousOwner = perSymbolOrderOwners.get(id)
+  if (previousOwner && previousOwner !== key) return
+  perSymbolOrderOwners.set(id, key)
+  ensurePerSymbolBucket(key)[kind].add(id)
+}
+const addPerSymbolFailure = (key, failureId) => {
+  const id = String(failureId || "").trim()
+  if (!key || !id) return
+  const previousOwner = perSymbolFailureOwners.get(id)
+  if (previousOwner && previousOwner !== key) return
+  perSymbolFailureOwners.set(id, key)
+  ensurePerSymbolBucket(key).failed.add(id)
+}
+
 for (const position of realPositions) {
   const control = isControlPosition(position)
   const placedIds = control ? controlPlacedOrderIds : placedOrderIds
   const filledIds = control ? controlFilledOrderIds : filledOrderIds
   const failedIds = control ? controlFailedAttempts : failedAttempts
+  const symbol = normalizedSymbol(position)
+  const direction = normalizedDirection(position)
+  const perSymbolKey = !control && symbol && direction ? `${symbol}:${direction}` : ""
   const positionId = String(position.id || "")
   const orderId = String(position.orderId || position.exchangeOrderId || position.exchangeData?.orderId || "").trim()
-  if (orderId) placedIds.add(orderId)
-  if (orderId && lifetimeQuantity(position) > 0) filledIds.add(orderId)
+  if (orderId) {
+    placedIds.add(orderId)
+    addPerSymbolOrder(perSymbolKey, orderId, "placed")
+  }
+  if (orderId && lifetimeQuantity(position) > 0) {
+    filledIds.add(orderId)
+    addPerSymbolOrder(perSymbolKey, orderId, "filled")
+  }
   for (const fill of Array.isArray(position.fills) ? position.fills : []) {
     const fillOrderId = String(fill?.orderId || "").trim()
     if (!fillOrderId || finite(fill?.quantity) <= 0) continue
     placedIds.add(fillOrderId)
     filledIds.add(fillOrderId)
+    addPerSymbolOrder(perSymbolKey, fillOrderId, "placed")
+    addPerSymbolOrder(perSymbolKey, fillOrderId, "filled")
   }
   for (const execution of Array.isArray(position.partialOrderExecutions) ? position.partialOrderExecutions : []) {
     const executionOrderId = String(execution?.orderId || execution?.clientOrderId || "").trim()
     if (!executionOrderId) continue
     const status = String(execution?.status || "").toLowerCase()
-    if (!terminalFailure.has(status)) placedIds.add(executionOrderId)
+    if (!terminalFailure.has(status)) {
+      placedIds.add(executionOrderId)
+      addPerSymbolOrder(perSymbolKey, executionOrderId, "placed")
+    }
     if (finite(execution?.appliedQuantity || execution?.cumulativeFilledQuantity) > 0 || status === "filled") {
       placedIds.add(executionOrderId)
       filledIds.add(executionOrderId)
+      addPerSymbolOrder(perSymbolKey, executionOrderId, "placed")
+      addPerSymbolOrder(perSymbolKey, executionOrderId, "filled")
     }
   }
   if (terminalFailure.has(normalizedStatus(position)) && lifetimeQuantity(position) <= 0) {
-    failedIds.add(orderId || positionId || `failed-${failedIds.size}`)
+    const failureId = orderId || positionId || `failed-${failedIds.size}`
+    failedIds.add(failureId)
+    addPerSymbolFailure(perSymbolKey, failureId)
+  }
+}
+
+const rebuiltPerSymbol = {}
+const rebuiltPerSymbolTotals = { placed: 0, filled: 0, failed: 0 }
+for (const [symbolDirection, bucket] of perSymbolBuckets.entries()) {
+  for (const kind of ["placed", "filled", "failed"]) {
+    const count = bucket[kind].size
+    if (count <= 0) continue
+    rebuiltPerSymbol[`${symbolDirection}:${kind}`] = count
+    rebuiltPerSymbolTotals[kind] += count
   }
 }
 
@@ -172,13 +245,21 @@ const rebuilt = {
 }
 const progressionKey = `progression:${connectionId}`
 const previous = await client.hGetAll(progressionKey)
+const perSymbolKey = `live_orders_by_symbol_v2:${connectionId}`
+const previousPerSymbol = await client.hGetAll(perSymbolKey)
 let backupKey = ""
+let perSymbolBackupKey = ""
 if (apply) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
   backupKey = `progression:counter_rebuild_backup:${connectionId}:${timestamp}`
+  perSymbolBackupKey = `progression:per_symbol_counter_rebuild_backup:${connectionId}:${timestamp}`
   if (Object.keys(previous).length > 0) {
     await client.hSet(backupKey, previous)
     await client.expire(backupKey, 60 * 60 * 24 * 30)
+  }
+  if (Object.keys(previousPerSymbol).length > 0) {
+    await client.hSet(perSymbolBackupKey, previousPerSymbol)
+    await client.expire(perSymbolBackupKey, 60 * 60 * 24 * 30)
   }
   await client.hSet(progressionKey, Object.fromEntries(
     Object.entries(rebuilt).map(([key, value]) => [key, String(value)]),
@@ -186,7 +267,12 @@ if (apply) {
   await client.hSet(progressionKey, {
     live_counter_source: "durable_live_position_ledger",
     live_counter_rebuilt_at: new Date().toISOString(),
+    live_per_symbol_counter_source: "durable_live_position_ledger",
+    live_per_symbol_counter_rebuilt_at: new Date().toISOString(),
+    live_per_symbol_counter_backup_key: perSymbolBackupKey || "",
   })
+  await client.del(perSymbolKey)
+  if (Object.keys(rebuiltPerSymbol).length > 0) await client.hSet(perSymbolKey, rebuiltPerSymbol)
 }
 
 console.log(JSON.stringify({
@@ -197,6 +283,20 @@ console.log(JSON.stringify({
   simulatedPositions: simulatedPositions.length,
   previous: Object.fromEntries(Object.keys(rebuilt).map((key) => [key, finite(previous[key])])),
   rebuilt,
+  previousPerSymbol: {
+    fields: Object.keys(previousPerSymbol).length,
+    placed: Object.entries(previousPerSymbol)
+      .filter(([key]) => key.endsWith(":placed"))
+      .reduce((sum, [, value]) => sum + finite(value), 0),
+    filled: Object.entries(previousPerSymbol)
+      .filter(([key]) => key.endsWith(":filled"))
+      .reduce((sum, [, value]) => sum + finite(value), 0),
+    failed: Object.entries(previousPerSymbol)
+      .filter(([key]) => key.endsWith(":failed"))
+      .reduce((sum, [, value]) => sum + finite(value), 0),
+  },
+  rebuiltPerSymbol: rebuiltPerSymbolTotals,
   backupKey,
+  perSymbolBackupKey,
 }, null, 2))
 await client.quit()
