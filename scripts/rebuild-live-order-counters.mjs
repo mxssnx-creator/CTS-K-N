@@ -37,13 +37,27 @@ const isReal = (position) => !isSimulation(position) && Boolean(
   || position?.exchangeData?.exchangeOrderId
   || String(position?.executionMode || "").toLowerCase() === "live"
 )
-const lifetimeQuantity = (position) => Math.max(
-  0,
-  finite(position?.totalExecutedQuantity),
-  finite(position?.executedQuantity),
-  finite(position?.closedQuantity),
-  finite(position?.quantity),
-)
+const isControlPosition = (position) => {
+  const variant = String(position?.setVariant || position?.variant || "").trim().toLowerCase()
+  const setKey = String(position?.setKey || "").trim().toLowerCase()
+  return variant === "block" || variant === "dca" || /(?:^|[#:_-])(?:block|dca)(?:[:#_-]|$)/.test(setKey)
+}
+const lifetimeQuantity = (position) => {
+  // `quantity` is the requested amount, not proof of a venue fill. Counting
+  // it made rejected/preflight rows look placed/filled during a rebuild and
+  // was the source of ghost positions in the overview. Prefer authoritative
+  // executed/closed quantities and durable fill rows only.
+  const fillQuantity = Array.isArray(position?.fills)
+    ? position.fills.reduce((sum, fill) => sum + Math.max(0, finite(fill?.quantity)), 0)
+    : 0
+  return Math.max(
+    0,
+    finite(position?.totalExecutedQuantity),
+    finite(position?.executedQuantity),
+    finite(position?.closedQuantity),
+    fillQuantity,
+  )
+}
 const entryPrice = (position) => Math.max(0, finite(position?.averageExecutionPrice || position?.entryPrice))
 const terminalFailure = new Set(["error", "rejected", "cancelled", "canceled"])
 const client = createClient({ url: process.env.REDIS_URL || process.env.KV_URL || "redis://127.0.0.1:6379" })
@@ -75,34 +89,45 @@ for (let index = 0; index < ids.length; index += 100) {
   positions.push(...(await Promise.all(ids.slice(index, index + 100).map(readPosition))).filter(Boolean))
 }
 const realPositions = positions.filter(isReal)
+const controlRealPositions = realPositions.filter(isControlPosition)
+const entryRealPositions = realPositions.filter((position) => !isControlPosition(position))
 const simulatedPositions = positions.filter(isSimulation)
+const controlSimulatedPositions = simulatedPositions.filter(isControlPosition)
+const entrySimulatedPositions = simulatedPositions.filter((position) => !isControlPosition(position))
 const placedOrderIds = new Set()
 const filledOrderIds = new Set()
 const failedAttempts = new Set()
+const controlPlacedOrderIds = new Set()
+const controlFilledOrderIds = new Set()
+const controlFailedAttempts = new Set()
 
 for (const position of realPositions) {
+  const control = isControlPosition(position)
+  const placedIds = control ? controlPlacedOrderIds : placedOrderIds
+  const filledIds = control ? controlFilledOrderIds : filledOrderIds
+  const failedIds = control ? controlFailedAttempts : failedAttempts
   const positionId = String(position.id || "")
   const orderId = String(position.orderId || position.exchangeOrderId || position.exchangeData?.orderId || "").trim()
-  if (orderId) placedOrderIds.add(orderId)
-  if (orderId && lifetimeQuantity(position) > 0) filledOrderIds.add(orderId)
+  if (orderId) placedIds.add(orderId)
+  if (orderId && lifetimeQuantity(position) > 0) filledIds.add(orderId)
   for (const fill of Array.isArray(position.fills) ? position.fills : []) {
     const fillOrderId = String(fill?.orderId || "").trim()
     if (!fillOrderId || finite(fill?.quantity) <= 0) continue
-    placedOrderIds.add(fillOrderId)
-    filledOrderIds.add(fillOrderId)
+    placedIds.add(fillOrderId)
+    filledIds.add(fillOrderId)
   }
   for (const execution of Array.isArray(position.partialOrderExecutions) ? position.partialOrderExecutions : []) {
     const executionOrderId = String(execution?.orderId || execution?.clientOrderId || "").trim()
     if (!executionOrderId) continue
     const status = String(execution?.status || "").toLowerCase()
-    if (!terminalFailure.has(status)) placedOrderIds.add(executionOrderId)
+    if (!terminalFailure.has(status)) placedIds.add(executionOrderId)
     if (finite(execution?.appliedQuantity || execution?.cumulativeFilledQuantity) > 0 || status === "filled") {
-      placedOrderIds.add(executionOrderId)
-      filledOrderIds.add(executionOrderId)
+      placedIds.add(executionOrderId)
+      filledIds.add(executionOrderId)
     }
   }
   if (terminalFailure.has(normalizedStatus(position)) && lifetimeQuantity(position) <= 0) {
-    failedAttempts.add(orderId || positionId || `failed-${failedAttempts.size}`)
+    failedIds.add(orderId || positionId || `failed-${failedIds.size}`)
   }
 }
 
@@ -114,23 +139,36 @@ const rebuilt = {
   live_orders_placed_count: placedOrderIds.size,
   live_orders_filled_count: filledOrderIds.size,
   live_orders_failed_count: failedAttempts.size,
-  live_positions_created_count: realPositions.filter((position) => lifetimeQuantity(position) > 0).length,
-  live_positions_closed_count: realPositions.filter((position) => normalizedStatus(position) === "closed" && lifetimeQuantity(position) > 0).length,
-  live_volume_usd_total: Number(realPositions
+  live_positions_created_count: entryRealPositions.filter((position) => lifetimeQuantity(position) > 0).length,
+  live_positions_closed_count: entryRealPositions.filter((position) => normalizedStatus(position) === "closed" && lifetimeQuantity(position) > 0).length,
+  live_volume_usd_total: Number(entryRealPositions
     .reduce((sum, position) => sum + lifetimeQuantity(position) * entryPrice(position), 0)
     .toFixed(12)),
-  live_wins_count: realPositions.filter((position) =>
+  live_wins_count: entryRealPositions.filter((position) =>
     normalizedStatus(position) === "closed"
     && position.realizedPnlComplete !== false
     && realizedPnl(position) > 0).length,
-  live_orders_simulated_count: simulatedPositions.length,
-  live_simulated_positions_created_count: simulatedPositions.filter((position) => lifetimeQuantity(position) > 0).length,
-  live_simulated_positions_closed_count: simulatedPositions.filter((position) => normalizedStatus(position) === "closed").length,
-  live_simulated_volume_usd_total: Number(simulatedPositions
+  live_orders_simulated_count: entrySimulatedPositions.length,
+  live_simulated_positions_created_count: entrySimulatedPositions.filter((position) => lifetimeQuantity(position) > 0).length,
+  live_simulated_positions_closed_count: entrySimulatedPositions.filter((position) => normalizedStatus(position) === "closed").length,
+  live_simulated_volume_usd_total: Number(entrySimulatedPositions
     .reduce((sum, position) => sum + lifetimeQuantity(position) * entryPrice(position), 0)
     .toFixed(12)),
-  live_simulated_wins_count: simulatedPositions.filter((position) =>
+  live_simulated_wins_count: entrySimulatedPositions.filter((position) =>
     normalizedStatus(position) === "closed" && realizedPnl(position) > 0).length,
+  live_control_orders_attempted_count: controlPlacedOrderIds.size + controlFailedAttempts.size,
+  live_control_orders_placed_count: controlPlacedOrderIds.size,
+  live_control_orders_filled_count: controlFilledOrderIds.size,
+  live_control_orders_failed_count: controlFailedAttempts.size,
+  live_control_positions_created_count: controlRealPositions.filter((position) => lifetimeQuantity(position) > 0).length,
+  live_control_volume_usd_total: Number(controlRealPositions
+    .reduce((sum, position) => sum + lifetimeQuantity(position) * entryPrice(position), 0)
+    .toFixed(12)),
+  live_control_orders_simulated_count: controlSimulatedPositions.length,
+  live_control_simulated_positions_created_count: controlSimulatedPositions.filter((position) => lifetimeQuantity(position) > 0).length,
+  live_control_simulated_volume_usd_total: Number(controlSimulatedPositions
+    .reduce((sum, position) => sum + lifetimeQuantity(position) * entryPrice(position), 0)
+    .toFixed(12)),
 }
 const progressionKey = `progression:${connectionId}`
 const previous = await client.hGetAll(progressionKey)

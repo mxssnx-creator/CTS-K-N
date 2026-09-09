@@ -9263,13 +9263,18 @@ export class StrategyCoordinator {
           const completedAt = Date.now()
           const durationMs = Math.max(0, completedAt - dispatchPipelineStartedAt)
           const unavailableCount = eligible.length
-          const terminalFailureCount = classification === "error" ? unavailableCount : 0
+          // No per-Set venue request was started in this branch. Preserve the
+          // pipeline-level reason, but keep the current-cycle failed-to-open
+          // denominator at zero. A connector/readiness outage is retriable and
+          // belongs to blocked/deferred diagnostics, not rejected orders.
+          const terminalFailureCount = 0
+          const unavailableBlockedCount = classification === "blocked" ? unavailableCount : 0
+          const unavailableDeferredCount = classification === "error" ? unavailableCount : 0
           const detailKey = `strategy_detail:${this.connectionId}:live`
           await getRedisClient().hset(detailKey, {
             dispatch_candidates: String(qualifying.length),
             dispatch_eligible_count: String(eligible.length),
             dispatch_selected_count: "0",
-            dispatch_deferred_count: "0",
             dispatch_suppressed_count: String(suppressed.length),
             dispatch_budget: String(eligible.length),
             dispatch_family_count: String(new Set(eligible.map(liveDispatchFamily)).size),
@@ -9283,9 +9288,10 @@ export class StrategyCoordinator {
             dispatch_placed_count: "0",
             dispatch_filled_count: "0",
             dispatch_pending_count: "0",
-            dispatch_blocked_count: classification === "blocked" ? String(unavailableCount) : "0",
+            dispatch_blocked_count: String(unavailableBlockedCount),
+            dispatch_deferred_count: String(unavailableDeferredCount),
             dispatch_rejected_count: "0",
-            dispatch_errored_count: classification === "error" ? String(unavailableCount) : "0",
+            dispatch_errored_count: "0",
             dispatch_missing_entry_count: "0",
             dispatch_no_result_count: "0",
             dispatch_other_status_count: "0",
@@ -9310,9 +9316,10 @@ export class StrategyCoordinator {
             [`s:${symbol}:dispatch_placed_count`]: "0",
             [`s:${symbol}:dispatch_filled_count`]: "0",
             [`s:${symbol}:dispatch_pending_count`]: "0",
-            [`s:${symbol}:dispatch_blocked_count`]: classification === "blocked" ? String(unavailableCount) : "0",
+            [`s:${symbol}:dispatch_blocked_count`]: String(unavailableBlockedCount),
+            [`s:${symbol}:dispatch_deferred_count`]: String(unavailableDeferredCount),
             [`s:${symbol}:dispatch_rejected_count`]: "0",
-            [`s:${symbol}:dispatch_errored_count`]: classification === "error" ? String(unavailableCount) : "0",
+            [`s:${symbol}:dispatch_errored_count`]: "0",
             [`s:${symbol}:dispatch_missing_entry_count`]: "0",
             [`s:${symbol}:dispatch_no_result_count`]: "0",
             [`s:${symbol}:dispatch_other_status_count`]: "0",
@@ -9711,10 +9718,24 @@ export class StrategyCoordinator {
                   otherStatus++
                 }
               } catch (err) {
-                errored++
+                // executeLivePosition normally returns a durable blocked or
+                // pending row. If a boundary exception still escapes, run it
+                // through the same classifier so expected lock/cooldown/
+                // protection deferrals do not become false venue errors.
+                const errorMessage = err instanceof Error ? err.message : String(err)
+                const outcome = classifyLiveDispatchResult({
+                  status: "error",
+                  statusReason: errorMessage,
+                  error: errorMessage,
+                  errorCode: (err as any)?.errorCode ?? (err as any)?.code,
+                })
+                if (outcome === "blocked") blocked++
+                else if (outcome === "deferred") deferred++
+                else if (outcome === "rejected") rejected++
+                else errored++
                 console.warn(
                   `[v0] [StrategyFlow] ${symbol} per-set live execution error:`,
-                  err instanceof Error ? err.message : String(err)
+                  errorMessage,
                 )
               }
             }

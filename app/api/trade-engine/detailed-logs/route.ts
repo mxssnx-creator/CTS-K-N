@@ -614,6 +614,13 @@ export async function GET(request: Request) {
             ordersPlaced: progressionCounter("live_orders_placed_count"),
             ordersFilled: progressionCounter("live_orders_filled_count"),
             ordersFailed: progressionCounter("live_orders_failed_count"),
+            ordersPreflightFailed: progressionCounter("live_orders_preflight_failed_count"),
+            controlOrdersAttempted: progressionCounter("live_control_orders_attempted_count"),
+            controlOrdersPlaced: progressionCounter("live_control_orders_placed_count"),
+            controlOrdersFilled: progressionCounter("live_control_orders_filled_count"),
+            controlOrdersFailed: progressionCounter("live_control_orders_failed_count"),
+            controlOrdersPreflightFailed: progressionCounter("live_control_orders_preflight_failed_count"),
+            controlVolumeUsdTotal: progressionCounter("live_control_volume_usd_total"),
             ordersRejected: progressionCounter("live_orders_rejected_count"),
             ordersSimulated: progressionCounter("live_orders_simulated_count"),
             positionsCreated: progressionCounter("live_positions_created_count"),
@@ -804,6 +811,13 @@ export async function GET(request: Request) {
         acc.ordersPlaced     += lm.ordersPlaced     || 0
         acc.ordersFilled     += lm.ordersFilled     || 0
         acc.ordersFailed     += lm.ordersFailed     || 0
+        acc.ordersPreflightFailed += lm.ordersPreflightFailed || 0
+        acc.controlOrdersAttempted += lm.controlOrdersAttempted || 0
+        acc.controlOrdersPlaced += lm.controlOrdersPlaced || 0
+        acc.controlOrdersFilled += lm.controlOrdersFilled || 0
+        acc.controlOrdersFailed += lm.controlOrdersFailed || 0
+        acc.controlOrdersPreflightFailed += lm.controlOrdersPreflightFailed || 0
+        acc.controlVolumeUsdTotal += lm.controlVolumeUsdTotal || 0
         acc.ordersRejected   += lm.ordersRejected   || 0
         acc.ordersSimulated  += lm.ordersSimulated  || 0
         acc.positionsCreated += lm.positionsCreated || 0
@@ -817,7 +831,10 @@ export async function GET(request: Request) {
         return acc
       },
       {
-        ordersPlaced: 0, ordersFilled: 0, ordersFailed: 0, ordersRejected: 0, ordersSimulated: 0,
+        ordersPlaced: 0, ordersFilled: 0, ordersFailed: 0, ordersPreflightFailed: 0,
+        controlOrdersAttempted: 0, controlOrdersPlaced: 0, controlOrdersFilled: 0,
+        controlOrdersFailed: 0, controlOrdersPreflightFailed: 0, controlVolumeUsdTotal: 0,
+        ordersRejected: 0, ordersSimulated: 0,
         positionsCreated: 0, positionsClosed: 0, wins: 0, volumeUsdTotal: 0,
         simulatedPositionsCreated: 0, simulatedPositionsClosed: 0,
         simulatedWins: 0, simulatedVolumeUsdTotal: 0,

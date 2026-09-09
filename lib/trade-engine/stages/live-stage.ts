@@ -1613,6 +1613,20 @@ function hasFillCounterRecorded(position: Pick<LivePosition, "fillCounterRecorde
   return Number(position.fillCounterRecordedAt || 0) > 0
 }
 
+function livePositionAccountingClass(
+  position: Pick<LivePosition, "setVariant" | "setKey">,
+): LiveMetricAccountingClass {
+  const variant = String(position.setVariant || "").trim().toLowerCase()
+  if (variant === "block" || variant === "dca") return "control"
+  const setKey = String(position.setKey || "").trim().toLowerCase()
+  // Older rows may have been written before setVariant was persisted. Keep
+  // those rows out of the entry denominator when their durable key still
+  // identifies a Block/DCA lane.
+  return /(?:^|[#:_-])(?:block|dca)(?:[:#_-]|$)/.test(setKey)
+    ? "control"
+    : "entry"
+}
+
 function axisKeyFromLineage(
   setKey: string,
   axisWindows?: LivePosition["axisWindows"],
@@ -1763,8 +1777,9 @@ async function recordFillCountersOnce(
   // double-count if both exchange-position fallback and getOrder() observe the
   // fill. The caller persists the position in the same save batch/tick.
   position.fillCounterRecordedAt = Date.now()
-  await incrementMetric(connectionId, "live_orders_filled_count")
-  await incrementOrdersBySymbol(connectionId, symbol, direction, "filled")
+  const accountingClass = livePositionAccountingClass(position)
+  await incrementMetric(connectionId, "live_orders_filled_count", 1, accountingClass)
+  await incrementOrdersBySymbol(connectionId, symbol, direction, "filled", accountingClass)
   return true
 }
 
@@ -3509,7 +3524,38 @@ async function batchSavePositions(positions: LivePosition[]): Promise<void> {
     console.warn(`${LOG_PREFIX} batchSavePositions failed:`, err instanceof Error ? err.message : String(err))
   }
 }
-async function incrementMetric(connectionId: string, metric: string, delta: number = 1): Promise<void> {
+type LiveMetricAccountingClass = "entry" | "control"
+
+function metricForAccountingClass(
+  metric: string,
+  accountingClass: LiveMetricAccountingClass,
+): string {
+  if (accountingClass !== "control") return metric
+  const controlMetrics: Record<string, string> = {
+    live_orders_attempted_count: "live_control_orders_attempted_count",
+    live_orders_placed_count: "live_control_orders_placed_count",
+    live_orders_filled_count: "live_control_orders_filled_count",
+    live_orders_failed_count: "live_control_orders_failed_count",
+    live_orders_preflight_failed_count: "live_control_orders_preflight_failed_count",
+    live_orders_simulated_count: "live_control_orders_simulated_count",
+    live_simulated_positions_created_count: "live_control_simulated_positions_created_count",
+    live_simulated_volume_usd_total: "live_control_simulated_volume_usd_total",
+    live_simulated_volume_microusd_total: "live_control_simulated_volume_microusd_total",
+    live_simulated_orders_accumulated_count: "live_control_orders_accumulated_count",
+    live_orders_accumulated_count: "live_control_orders_accumulated_count",
+    live_positions_created_count: "live_control_positions_created_count",
+    live_volume_usd_total: "live_control_volume_usd_total",
+    live_margin_cents_total: "live_control_margin_cents_total",
+  }
+  return controlMetrics[metric] || metric
+}
+
+async function incrementMetric(
+  connectionId: string,
+  metric: string,
+  delta: number = 1,
+  accountingClass: LiveMetricAccountingClass = "entry",
+): Promise<void> {
   try {
     // Use validated wrapper to prevent stale metric writes
     const { getCurrentEpoch } = await import("@/lib/trade-engine/progression-lock")
@@ -3518,13 +3564,23 @@ async function incrementMetric(connectionId: string, metric: string, delta: numb
     const currentEpoch = await getCurrentEpoch(connectionId)
     if (!currentEpoch) return // No active lock, skip write (stale instance)
     
+    const effectiveMetric = metricForAccountingClass(metric, accountingClass)
+
     // Placement and failure are terminal outcomes of one attempted dispatch.
     // Update the outcome and attempted counters in one validated batch so an
     // epoch hand-off cannot leave `attempted` one behind `placed + failed`.
-    if (metric === "live_orders_placed_count" || metric === "live_orders_failed_count") {
+    if (
+      effectiveMetric === "live_orders_placed_count"
+      || effectiveMetric === "live_orders_failed_count"
+      || effectiveMetric === "live_control_orders_placed_count"
+      || effectiveMetric === "live_control_orders_failed_count"
+    ) {
+      const attemptedMetric = accountingClass === "control"
+        ? "live_control_orders_attempted_count"
+        : "live_orders_attempted_count"
       await hincrbyProgressionBatch(connectionId, {
-        [metric]: delta,
-        live_orders_attempted_count: delta,
+        [effectiveMetric]: delta,
+        [attemptedMetric]: delta,
       }, {
         connectionId,
         epoch: currentEpoch,
@@ -3534,7 +3590,7 @@ async function incrementMetric(connectionId: string, metric: string, delta: numb
     }
 
     // Use the single-field validated wrapper for all non-terminal metrics.
-    await hincrbyProgression(connectionId, metric, delta, {
+    await hincrbyProgression(connectionId, effectiveMetric, delta, {
       connectionId,
       epoch: currentEpoch,
       logStaleRejects: false,
@@ -3543,7 +3599,13 @@ async function incrementMetric(connectionId: string, metric: string, delta: numb
     // metric failures should not throw the live pipeline
   }
 }
-async function incrementOrdersBySymbol(connectionId: string, symbol: string, side: string, metric: string): Promise<void> {
+async function incrementOrdersBySymbol(
+  connectionId: string,
+  symbol: string,
+  side: string,
+  metric: string,
+  accountingClass: LiveMetricAccountingClass = "entry",
+): Promise<void> {
   try {
     const { getCurrentEpoch } = await import("@/lib/trade-engine/progression-lock")
     const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
@@ -3555,6 +3617,10 @@ async function incrementOrdersBySymbol(connectionId: string, symbol: string, sid
           ? "short"
           : null
     if (!dir || !["placed", "filled", "failed"].includes(metric)) return
+    // The v2 hash is intentionally an entry-order forensic view. Control and
+    // DCA events have their own progression lane and must not make an entry
+    // symbol look like it is failing repeatedly.
+    if (accountingClass === "control") return
     const symbolKey = String(symbol || "").trim().toUpperCase()
     const currentEpoch = await getCurrentEpoch(connectionId)
     if (!currentEpoch) return // Do not leave an unowned per-symbol stale row.
@@ -3593,6 +3659,12 @@ async function recordPositionAdjustmentProgression(
     {
       countPositionCreated: false,
       countAccumulated: event === "filled" || event === "simulated",
+      // Block/DCA fills and failures mutate an existing physical slot (or a
+      // control lane), never a new entry order. Keep them out of the global
+      // entry attempted/failed counters so the overview reflects venue-entry
+      // health rather than adjustment traffic.
+      countEntryOrder: false,
+      source: "control-adjustment",
     },
   )
 }
@@ -11904,7 +11976,34 @@ export async function executeLivePosition(
   await initRedis()
   const client = getRedisClient()
   const connectionTrackingId = makeConnectionTrackingId(connectionId)
+  const entryProtectionHaltKey = `live:entry-protection-halt:${connectionId}`
   let realPosition = sourceRealPosition
+  const executionAccountingClass = (): LiveMetricAccountingClass =>
+    realPosition.setVariant === "block" || realPosition.setVariant === "dca"
+      ? "control"
+      : "entry"
+  // All counters emitted by this pipeline carry the Set lane. This keeps a
+  // failed Block/DCA control mutation out of the global new-entry denominator
+  // while preserving a complete control-order audit trail.
+  const incrementExecutionMetric = (metric: string, delta = 1): Promise<void> =>
+    incrementMetric(connectionId, metric, delta, executionAccountingClass())
+  const incrementExecutionOrdersBySymbol = (
+    symbol: string,
+    side: string,
+    metric: string,
+  ): Promise<void> =>
+    incrementOrdersBySymbol(connectionId, symbol, side, metric, executionAccountingClass())
+  const incrementExecutionPreflightFailure = (delta = 1): Promise<void> =>
+    incrementExecutionMetric("live_orders_preflight_failed_count", delta)
+  const recordExecutionPreflightFailure = (delta = 1): Promise<void> => {
+    // Keep preflight errors visible in the position timeline while exposing
+    // them as guarded/blocked outcomes to dispatch aggregation. They never
+    // represent a venue order rejection because `placeOrder` was not called.
+    livePosition.executionMode = "blocked"
+    livePosition.executionBlockCode = "live_entry_preflight_failed"
+    livePosition.executionBlockReason = livePosition.statusReason
+    return incrementExecutionPreflightFailure(delta)
+  }
   if (sourceRealPosition.setVariant === "block") {
     const lifecycle = await getBlockCountLifecycleState(client, connectionId, sourceRealPosition.symbol, String(sourceRealPosition.blockLifecycleKey || sourceRealPosition.setKey || ""))
     const blockEffectiveIncrementStep = lifecycle?.incrementStep || sourceRealPosition.blockEffectiveIncrementStep || 1
@@ -12333,8 +12432,10 @@ export async function executeLivePosition(
   let liveOrderLockToken: string | null = null
   let signalCapacityReserved = false
   let exchangeSubmissionStarted = false
+  // Hoisted so the terminal catch can distinguish a venue submission failure
+  // from an exception raised during preflight/setup.
+  let placeAttempt = 0
   const entryProtectionAdmissionLockKey = `live:entry-protection-admission:${connectionId}`
-  const entryProtectionHaltKey = `live:entry-protection-halt:${connectionId}`
   let entryProtectionAdmissionLockToken: string | null = null
   let stopEntryProtectionAdmissionLeaseRefresh: (() => void) | null = null
   const releaseEntryProtectionAdmissionLock = async (): Promise<void> => {
@@ -12430,6 +12531,9 @@ export async function executeLivePosition(
     // clientOrderId, but suppress every not-yet-started retry below.
     if (await isCurrent() || exchangeSubmissionStarted) return false
     livePosition.status = "rejected"
+    livePosition.executionMode = "blocked"
+    livePosition.executionBlockCode = "execution_generation_superseded"
+    livePosition.executionBlockReason = "Execution generation changed before submission"
     livePosition.statusReason =
       "Execution generation changed before submission; no new order was sent"
     livePosition.submissionState = undefined
@@ -12460,12 +12564,15 @@ export async function executeLivePosition(
       (isSpecialPosition && !specialPositionPlan)
     ) {
       livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = "invalid_live_position_input"
+      livePosition.executionBlockReason = "symbol, direction, or Special-position contract is invalid"
       livePosition.statusReason = isSpecialPosition && !specialPositionPlan
         ? "Invalid Special position plan: direction/caps/protection contract rejected"
         : `Invalid inputs: symbol=${realPosition.symbol}, direction=${realPosition.direction}`
       pushStep(livePosition, "preflight", false, livePosition.statusReason)
       await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_rejected_count")
+      await incrementExecutionMetric( "live_orders_rejected_count")
       await logProgressionEvent(connectionId, "live_trading", "error", "Live order rejected — invalid inputs", {
         symbol: realPosition.symbol,
         direction: realPosition.direction,
@@ -12505,7 +12612,7 @@ export async function executeLivePosition(
       pushStep(livePosition, "live_readiness", false, livePosition.statusReason)
       await savePosition(livePosition)
       await Promise.all([
-        incrementMetric(connectionId, "live_orders_blocked_count"),
+        incrementExecutionMetric( "live_orders_blocked_count"),
         logProgressionEvent(
           connectionId,
           "live_trading",
@@ -12551,7 +12658,7 @@ export async function executeLivePosition(
         livePosition.statusReason = `Set deactivated: last ${disabled.window} settled live positions net ${disabled.netPnl}`
         livePosition.executionBlockReason = livePosition.statusReason
         pushStep(livePosition, "live_config_performance", false, livePosition.statusReason)
-        await incrementMetric(connectionId, "live_orders_blocked_count")
+        await incrementExecutionMetric( "live_orders_blocked_count")
         return livePosition
       }
     }
@@ -12628,6 +12735,23 @@ export async function executeLivePosition(
           executionIntent === "direct" ? shouldContinue : undefined,
         )
       }
+    }
+
+    // The connection-wide protection halt is a hard no-entry boundary. Run it
+    // after Block/DCA recovery has had a chance to reconcile an in-flight
+    // control order; the halt protects fresh exposure and must never prevent a
+    // control mutation from recovering an already-owned slot.
+    if (isLiveTradeEnabled && await client.get(entryProtectionHaltKey).catch(() => null)) {
+      livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = "entry_protection_halted"
+      livePosition.executionBlockReason = "A prior entry could not prove complete venue protection"
+      livePosition.statusReason =
+        "Exchange order blocked before preflight: entry protection halt requires reconciliation"
+      pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await incrementExecutionMetric("live_orders_blocked_count")
+      return livePosition
     }
 
     pushStep(livePosition, "preflight", true, `execution_mode=${liveReadiness.executionMode}`)
@@ -12719,7 +12843,7 @@ export async function executeLivePosition(
           livePosition.statusReason =
             `Dedup lock held — another entry in flight for ${realPosition.symbol} ${realPosition.direction}${isBlockVariant ? " (block)" : ""}; will retry next cycle`
           pushStep(livePosition, "preflight", false, livePosition.statusReason)
-          await incrementMetric(connectionId, "live_orders_deferred_count")
+          await incrementExecutionMetric( "live_orders_deferred_count")
           // Normal high-frequency deferral under load — do not spam progression logs at "info".
           // The statusReason + saved position already provide visibility; only warn at low frequency.
           if (Math.random() < 0.05) {
@@ -12800,7 +12924,7 @@ export async function executeLivePosition(
           ).catch(() => {})
           liveOrderLockToken = null
         }
-        await incrementMetric(connectionId, "live_orders_deferred_count")
+        await incrementExecutionMetric( "live_orders_deferred_count")
         return livePosition
       }
 
@@ -12862,7 +12986,7 @@ export async function executeLivePosition(
         await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken)
         liveOrderLockToken = null
       }
-      await incrementMetric(connectionId, "live_orders_blocked_count")
+      await incrementExecutionMetric( "live_orders_blocked_count")
       return livePosition
     }
 
@@ -13056,9 +13180,13 @@ export async function executeLivePosition(
         if (marketType === "forex" && simVolResult?.conversionAvailable === false) {
           simQty = 0
           livePosition.status = "rejected"
+          livePosition.executionMode = "blocked"
+          livePosition.executionBlockCode = "simulation_preflight_failed"
+          livePosition.executionBlockReason = simVolResult.adjustmentReason || "USD conversion unavailable"
           livePosition.statusReason = simVolResult.adjustmentReason || "Forex USD conversion rate unavailable; simulation refused"
           pushStep(livePosition, "volume_calc", false, livePosition.statusReason)
           await savePosition(livePosition)
+          await incrementExecutionMetric("live_orders_blocked_count")
           return livePosition
         }
       } catch {
@@ -13066,11 +13194,17 @@ export async function executeLivePosition(
       }
       if (!(simQty > 0)) {
         livePosition.status = "rejected"
+        livePosition.executionMode = "blocked"
+        livePosition.executionBlockCode = "simulation_preflight_failed"
+        livePosition.executionBlockReason = marketType === "forex"
+          ? "No executable lot size or USD conversion"
+          : "No executable quantity"
         livePosition.statusReason = marketType === "forex"
           ? "Forex simulation refused: no executable lot size or USD conversion"
           : "Simulation refused: no executable quantity"
         pushStep(livePosition, "volume_calc", false, livePosition.statusReason)
         await savePosition(livePosition)
+        await incrementExecutionMetric("live_orders_blocked_count")
         return livePosition
       }
       if (marketType === "forex") {
@@ -13149,9 +13283,9 @@ export async function executeLivePosition(
       // counters remain exchange-only so UI/PF/PnL never present pseudo fills
       // as venue executions.
       await Promise.all([
-        incrementMetric(connectionId, "live_orders_simulated_count"),
-        incrementMetric(connectionId, "live_simulated_positions_created_count"),
-        incrementMetric(connectionId, "live_simulated_volume_microusd_total", Math.round(livePosition.volumeUsd * 1e6)),
+        incrementExecutionMetric( "live_orders_simulated_count"),
+        incrementExecutionMetric( "live_simulated_positions_created_count"),
+        incrementExecutionMetric( "live_simulated_volume_microusd_total", Math.round(livePosition.volumeUsd * 1e6)),
         logProgressionEvent(
           connectionId,
           "live_trading",
@@ -13169,8 +13303,7 @@ export async function executeLivePosition(
       livePosition.statusReason = "Exchange connector not available or missing placeOrder"
       pushStep(livePosition, "connector_check", false, livePosition.statusReason)
       await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_failed_count")
-      await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
+      await recordExecutionPreflightFailure()
       await logProgressionEvent(connectionId, "live_trading", "error", "Live order failed — no connector", {
         symbol: realPosition.symbol,
       })
@@ -13201,8 +13334,7 @@ export async function executeLivePosition(
       livePosition.statusReason = `No authoritative exchange ticker available for ${realPosition.symbol}`
       pushStep(livePosition, "price_fetch", false, livePosition.statusReason)
       await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_failed_count")
-      await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
+      await recordExecutionPreflightFailure()
       await logProgressionEvent(connectionId, "live_trading", "error", "Live order failed — no authoritative venue ticker", {
         symbol: realPosition.symbol,
       })
@@ -13256,8 +13388,7 @@ export async function executeLivePosition(
           pushStep(livePosition, "forex_conversion", false, livePosition.statusReason)
           await savePosition(livePosition)
           await Promise.all([
-            incrementMetric(connectionId, "live_orders_failed_count"),
-            incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+            recordExecutionPreflightFailure(),
             logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
               symbol: realPosition.symbol,
               direction: realPosition.direction,
@@ -13352,8 +13483,7 @@ export async function executeLivePosition(
       pushStep(livePosition, "instrument_rules", false, livePosition.statusReason)
       await savePosition(livePosition)
       await Promise.all([
-        incrementMetric(connectionId, "live_orders_failed_count"),
-        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+        recordExecutionPreflightFailure(),
         logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
           symbol: realPosition.symbol,
           direction: realPosition.direction,
@@ -13426,8 +13556,9 @@ export async function executeLivePosition(
       pushStep(livePosition, "volume_calc", false, livePosition.statusReason)
       await savePosition(livePosition)
       await Promise.all([
-        incrementMetric(connectionId, budgetBelowMinimum ? "live_orders_blocked_count" : "live_orders_failed_count"),
-        ...(budgetBelowMinimum ? [] : [incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")]),
+        budgetBelowMinimum
+          ? incrementExecutionMetric("live_orders_blocked_count")
+          : recordExecutionPreflightFailure(),
         logProgressionEvent(connectionId, "live_trading", budgetBelowMinimum ? "warning" : "error", livePosition.statusReason, {
           symbol: realPosition.symbol,
           direction: realPosition.direction,
@@ -13455,8 +13586,7 @@ export async function executeLivePosition(
       pushStep(livePosition, "balance_preflight", false, livePosition.statusReason)
       await savePosition(livePosition)
       await Promise.all([
-        incrementMetric(connectionId, "live_orders_failed_count"),
-        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+        recordExecutionPreflightFailure(),
         logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
           symbol: realPosition.symbol,
           direction: realPosition.direction,
@@ -13503,6 +13633,7 @@ export async function executeLivePosition(
           "Direct-Trade minimum-volume request does not fit inside the canonical PositionCost ceiling"
         pushStep(livePosition, "direct_quantity_cap", false, livePosition.statusReason)
         await savePosition(livePosition)
+        await recordExecutionPreflightFailure()
         if (liveOrderLockToken) {
           await releaseLock(
             connectionId,
@@ -13533,6 +13664,7 @@ export async function executeLivePosition(
         livePosition.statusReason = `Live entry refused: executable quantity exceeds the ${maxExecutionNotionalUsd > 0 ? maxExecutionNotionalUsd.toFixed(2) : "configured"} USD exposure ceiling`
         pushStep(livePosition, "volume_cap", false, livePosition.statusReason)
         await savePosition(livePosition)
+        await recordExecutionPreflightFailure()
         if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
         return livePosition
       }
@@ -13721,7 +13853,7 @@ export async function executeLivePosition(
         : `Exchange order blocked before placement (${freshReadiness.blockCode || "unknown"}): ${freshReadiness.blockReason}`
       pushStep(livePosition, "entry", false, livePosition.statusReason)
       await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_blocked_count")
+      await incrementExecutionMetric( "live_orders_blocked_count")
       await logProgressionEvent(
         connectionId,
         "live_trading",
@@ -13750,7 +13882,7 @@ export async function executeLivePosition(
         "Exchange order blocked before placement: entry protection halt requires reconciliation"
       pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
       await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_blocked_count")
+      await incrementExecutionMetric( "live_orders_blocked_count")
       return livePosition
     }
 
@@ -13763,7 +13895,7 @@ export async function executeLivePosition(
         "Exchange order deferred: connection-wide protection admission is busy"
       pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
       await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_deferred_count")
+      await incrementExecutionMetric( "live_orders_deferred_count")
       return livePosition
     }
 
@@ -13804,7 +13936,7 @@ export async function executeLivePosition(
         `Exchange order blocked after admission lock: ${livePosition.executionBlockReason}`
       pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
       await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_blocked_count")
+      await incrementExecutionMetric( "live_orders_blocked_count")
       return livePosition
     }
 
@@ -13859,7 +13991,7 @@ export async function executeLivePosition(
       pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
       await savePosition(livePosition)
       await Promise.all([
-        incrementMetric(connectionId, "live_orders_blocked_count"),
+        incrementExecutionMetric( "live_orders_blocked_count"),
         logProgressionEvent(
           connectionId,
           "live_trading",
@@ -13935,7 +14067,7 @@ export async function executeLivePosition(
           livePosition.statusReason = livePosition.executionBlockReason
           pushStep(livePosition, "live_exposure_admission", false, livePosition.statusReason)
           await savePosition(livePosition)
-          await incrementMetric(connectionId, "live_orders_blocked_count")
+          await incrementExecutionMetric( "live_orders_blocked_count")
           return livePosition
         }
         liveSubmissionNotionalCeiling = venueExposure.maxNotionalUsd
@@ -13969,7 +14101,7 @@ export async function executeLivePosition(
         livePosition.statusReason = livePosition.executionBlockReason
         pushStep(livePosition, "live_exposure_admission", false, livePosition.statusReason)
         await savePosition(livePosition)
-        await incrementMetric(connectionId, "live_orders_blocked_count")
+        await incrementExecutionMetric( "live_orders_blocked_count")
         return livePosition
       }
     }
@@ -14052,8 +14184,7 @@ export async function executeLivePosition(
       pushStep(livePosition, "set_leverage", false, livePosition.statusReason)
       await savePosition(livePosition)
       await Promise.all([
-        incrementMetric(connectionId, "live_orders_failed_count"),
-        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed"),
+        recordExecutionPreflightFailure(),
         logProgressionEvent(connectionId, "live_trading", "error", livePosition.statusReason, {
           symbol: realPosition.symbol,
           direction: realPosition.direction,
@@ -14092,7 +14223,6 @@ export async function executeLivePosition(
     // emit PRE/POST per ATTEMPT so the log shows each round-trip. The
     // attempt counter is captured by closure so leverage-reduced and
     // min-size-corrected retries below get distinct labels.
-    let placeAttempt = 0
     let lastSubmittedEntryQuantity = computedVolume
     const submitEntryQuantity = async (requestedQuantity: number, label: string): Promise<any> => {
       if (!await isCurrent()) {
@@ -14354,8 +14484,8 @@ export async function executeLivePosition(
       livePosition.statusReason = `Exchange circuit breaker active for ${realPosition.symbol} — retrying in <5min`
       pushStep(livePosition, "place_order", false, livePosition.statusReason)
       await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_failed_count")
-      await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
+      await incrementExecutionMetric( "live_orders_failed_count")
+      await incrementExecutionOrdersBySymbol( realPosition.symbol, realPosition.direction, "failed")
       await logProgressionEvent(connectionId, "live_trading", "warning", livePosition.statusReason, {
         symbol: realPosition.symbol,
         error: orderResult?.error,
@@ -14516,8 +14646,8 @@ export async function executeLivePosition(
           livePosition.submissionState = "confirmed"
           pushStep(livePosition, "place_order", false, livePosition.statusReason)
           await savePosition(livePosition)
-          await incrementMetric(connectionId, "live_orders_failed_count")
-          await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
+          await incrementExecutionMetric( "live_orders_failed_count")
+          await incrementExecutionOrdersBySymbol( realPosition.symbol, realPosition.direction, "failed")
           if (liveOrderLockToken) {
             await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => false)
           }
@@ -14530,7 +14660,7 @@ export async function executeLivePosition(
             `entry_submission_unconfirmed: ${String(reason)}; tracking by clientOrderId until authoritative recovery`
           pushStep(livePosition, "entry_submission_unconfirmed", false, livePosition.statusReason)
           await savePosition(livePosition)
-          await incrementMetric(connectionId, "live_orders_deferred_count")
+          await incrementExecutionMetric( "live_orders_deferred_count")
         }
         await logProgressionEvent(
           connectionId,
@@ -14564,8 +14694,8 @@ export async function executeLivePosition(
     livePosition.status = "placed"
     livePosition.submissionState = "confirmed"
     pushStep(livePosition, "place_order", true, `orderId=${livePosition.orderId}`)
-    await incrementMetric(connectionId, "live_orders_placed_count")
-    await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")
+    await incrementExecutionMetric( "live_orders_placed_count")
+    await incrementExecutionOrdersBySymbol( realPosition.symbol, realPosition.direction, "placed")
     // Successful placement — reset the margin error consecutive-failure counter
     // so the backoff resets to the shortest cooldown on the next failure.
     marginErrorCooldownByConnection.delete(connectionId)
@@ -15314,8 +15444,8 @@ export async function executeLivePosition(
     // sync block above).
     const hasRealFill = (livePosition.executedQuantity || 0) > 0
     if (hasRealFill) {
-      await incrementMetric(connectionId, "live_positions_created_count")
-      await incrementMetric(connectionId, "live_volume_usd_total", Math.round(livePosition.volumeUsd))
+      await incrementExecutionMetric( "live_positions_created_count")
+      await incrementExecutionMetric( "live_volume_usd_total", Math.round(livePosition.volumeUsd))
       // Used-balance (margin) cumulative counter — track in CENTS so
       // small margins (e.g. $5 notional / 125x leverage = $0.04)
       // survive integer rounding. Reader divides by 100 to display USD.
@@ -15326,7 +15456,7 @@ export async function executeLivePosition(
       const lev = Math.max(1, Number(livePosition.leverage) || 1)
       const newMargin = (livePosition.volumeUsd || 0) / lev
       if (Number.isFinite(newMargin) && newMargin > 0) {
-        await incrementMetric(connectionId, "live_margin_cents_total", Math.round(newMargin * 100))
+        await incrementExecutionMetric( "live_margin_cents_total", Math.round(newMargin * 100))
       }
     }
     // ── CRITICAL FIX: Include full real position context in progression ──
@@ -15358,12 +15488,41 @@ export async function executeLivePosition(
     const errMsg = err instanceof Error ? err.message : String(err)
     const errStack = err instanceof Error ? err.stack : undefined
     console.error(`${LOG_PREFIX} Unhandled error:`, errMsg, errStack || "")
-    livePosition.status = "error"
-    livePosition.statusReason = errMsg
+    // Once a venue request may have left the process, the local row is an
+    // unresolved delivery, never a confirmed failed entry. Keep it pending so
+    // reconciliation can recover an exchange order/position by client id and
+    // halt additional entries until the protection contract is re-established.
+    // Only errors raised before any submission belong in the diagnostic
+    // preflight bucket.
+    const venueRequestStarted = exchangeSubmissionStarted || placeAttempt > 0
+    const acceptedOrderKnown = Boolean(
+      livePosition.orderId
+      || livePosition.submissionState === "confirmed"
+      || livePosition.submissionState === "unconfirmed",
+    )
+    if (venueRequestStarted || acceptedOrderKnown) {
+      livePosition.status = livePosition.executedQuantity > 0 ? "open" : "placed_unconfirmed"
+      livePosition.submissionState = livePosition.submissionState === "confirmed"
+        ? "confirmed"
+        : "unconfirmed"
+      livePosition.executionBlockCode = "live_post_submit_reconciliation"
+      livePosition.executionBlockReason = "Venue submission requires authoritative recovery"
+      livePosition.statusReason =
+        `entry_submission_unconfirmed: ${errMsg}; tracking by clientOrderId until authoritative recovery`
+      pushStep(livePosition, "entry_submission_unconfirmed", false, livePosition.statusReason)
+      await client.setex(
+        entryProtectionHaltKey,
+        24 * 60 * 60,
+        JSON.stringify({ at: Date.now(), reason: "entry_pipeline_error_after_submission" }),
+      ).catch(() => {})
+      await incrementExecutionMetric("live_orders_deferred_count")
+    } else {
+      livePosition.status = "error"
+      livePosition.statusReason = errMsg
+      await recordExecutionPreflightFailure()
+    }
     pushStep(livePosition, "unhandled_error", false, errMsg)
     await savePosition(livePosition)
-    await incrementMetric(connectionId, "live_orders_failed_count")
-    await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
     await logProgressionEvent(
       connectionId,
       "live_trading",

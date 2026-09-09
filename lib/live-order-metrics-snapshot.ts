@@ -1,6 +1,6 @@
 type ProgressionHash = Record<string, string> | null | undefined
 
-const ORDER_FIELD = /^(?:live_orders_|live_positions_|live_simulated_|live_volume_)/
+const ORDER_FIELD = /^(?:live_orders_|live_control_orders_|live_positions_|live_simulated_|live_control_|live_volume_)/
 
 /**
  * recordLiveOrderProgression always writes the connection-wide ledger.
