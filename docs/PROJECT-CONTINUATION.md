@@ -1,5 +1,26 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+<!-- CTS_LATEST_START -->
+## Maßgeblicher Fortsetzungsstand — 2026-09-09, QuickStart-Live-Anzeige und Remote-Monitoring
+
+Dieser Block hat Vorrang vor älteren Pending-/Revisionsangaben darunter. Canonical /workspace/CTS-K-N bleibt mit den gesicherten 34 älteren Änderungen auf 2041787b erhalten. Die aktuelle Integration liegt im verknüpften Worktree /workspace/CTS-K-N-worktrees/vst25-live-results-20260908 auf Branch codex/fractional-close-grid-20260909; keine fremden Änderungen resetten. Jede ältere Datei ist in docs/LEGACY-INTEGRATION-20260909.md zugeordnet.
+
+PR332–334 sind grün gemergt; der zuletzt offiziell installierte Serverstand ist ab1133226744e93864f4ad51f26152cd920a259e mit 350 Build-Traces. Der aktuelle lokale Stand ergänzt die begrenzten Connector-Logs und korrigiert die QuickStart-Live-Anzeige: der Schalter zeigt dauerhaft den angeforderten Operator-Intent, während die verbindungsspezifische engine-states-Admission separat executionMode, effective, blockCode und blockReason liest. Historische liveDispatchBlocked/liveDispatchFailed-Zähler können dadurch keinen gesunden aktuellen Zustand mehr als blockiert markieren. Ein sichtbarer Hinweis erklärt einen bestehenden Entry-Protection-Halt.
+
+Der QuickStart-Testdialog enthält jetzt einen eigenen Schritt Live Entry Admission. Er liest genau dieselbe Connection-Readiness, zeigt requested/effective/mode/block als Zusammenfassung und markiert einen absichtlichen Schutzstopp als Warnung. Der allgemeine Infrastruktur-Health-Check kann diese Warnung nicht mehr als vollständigen Live-Erfolg verdecken; der Gesamtbericht wird bei Warnungen PARTIAL. Die bestehenden Wartungs-/Regressionserwartungen wurden auf diese Semantik aktualisiert.
+
+Lokale isolierte Vollprüfung nach diesen Änderungen: 304 Suiten / 2124 Tests / Exit0 in 48,57 s; TypeScript, ESLint und git diff --check bestanden. Die letzte isolierte Serverkopie vor diesem UI-/Dialog-Patch bestand 303 Suiten / 2121 Tests / Exit0 in 80,734 s. Tests liefen mit leerer Umgebung und scripts/test-network-isolation.cjs; keine unisolierten Tests mit Exchange-/Redis-Zugangsdaten.
+
+Das abgeschlossene lesende Remote-Monitoring für BingX X02 lief 11 Stichproben im 60-Sekunden-Abstand von 03:48:31 bis 03:58:41 UTC. Alle sechs APIs waren in jeder Stichprobe HTTP200; cts-kn, cts-kn-direct-trade und cts-kn-scheduler blieben active mit NRestarts0; Redis war erreichbar. Live blieb requested=true und enabled=true, aber executionMode=blocked mit blockCode=entry_protection_halt. Eigene offene Orders blieben 0. Die Exchange-Gesamtpositionssicht wechselte zwischen 0 und 1; ausgeschlossene/nicht zuordenbare Zähler wurden getrennt gemessen, daher ist dies kein Beleg für eine neue CTS-eigene Entry-Ausführung. Es wurde keine Schutzsperre gelöscht und kein neuer Orderlauf gestartet.
+
+Der eigenständige Diagrammbericht liegt in docs/reports/20260909-memory-live-validation/report.html, data.json und remote-monitor-10m.json; generate.py regeneriert ihn offline. Er enthält die Speicher-/AOF-Diagramme, die Trend/Break-Coverage, die tatsächlichen VST-Abrechnungen und das 10-Minuten-Redis-/Positionsdiagramm. Drei VST25-Versuche bleiben nicht vollständig bestanden; die zwei vollständig abgerechneten letzten Zyklen ergeben netto -0,018365 virtuelle USDT. Es gibt keinen unabhängigen neuen 14-Tage-Holdout für die erweiterte Trend/Break-Matrix, keinen Browser-Abnahmepass (der Statistik-Endpunkt war vom Browser-Werkzeug blockiert) und keinen Nachweis dauerhafter positiver Profitabilität. Keine Produktionsreife oder garantierte Gewinne behaupten, solange diese Gates offen sind.
+
+Die zuvor abgeschlossene Übergrößen-/AOF-/Redis-Bereinigung bleibt gültig: nur verifizierte ungenutzte historische Caches und nie ausgeführte X02-Fehlversuche wurden entfernt; aktive Daten, Zugangsdaten und Backups blieben erhalten. Die automatische Freigabeprüfung lehnte ein vollständiges Projektarchiv ab; dieses Archiv wird nicht erneut übertragen. Für Remote-Prüfungen wurden nur bereits geprüfte, eng begrenzte Dateien beziehungsweise der offizielle gemergte Installationsweg verwendet.
+
+Vor dem nächsten Push/Merge/Reinstall einen neuen owner-only Checkpoint erstellen. Danach ausschließlich den grünen GitHub-main-Commit über den offiziellen Installer ausrollen, remote erneut API-/Service-/Redis-read-only prüfen und den exakten Merge-/Rollback-/Reinstall-Beleg hier ergänzen. X01/Mainnet/Bybit und fremde Positionen/Orders bleiben lesend beziehungsweise unangetastet.
+<!-- CTS_LATEST_END -->
+
+
 ## Verbindliche Fortsetzung und Integration (Nutzeranweisung 2026-09-06)
 
 - Bei jeder Fortsetzung alle älteren unveröffentlichten Änderungen, lokalen Branches, offenen PRs und neueren Änderungen inventarisieren und anhand des gemeinsamen Vorgängers vergleichen.

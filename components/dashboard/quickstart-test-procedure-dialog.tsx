@@ -62,6 +62,7 @@ interface TestReport {
   completedAt?: Date
   totalSteps: number
   passedSteps: number
+  warningSteps: number
   failedSteps: number
   overallStatus: "pending" | "running" | "success" | "partial" | "failed"
 }
@@ -118,6 +119,13 @@ const TEST_STEPS: TestStep[] = [
     name: "Engine Verification",
     description: "Verify engine state, connections, and processing status",
     endpoint: "/api/engine/verify",
+    status: "pending",
+  },
+  {
+    id: "live_readiness",
+    name: "Live Entry Admission",
+    description: "Read the selected connection's current Live intent and entry gate",
+    endpoint: "/api/connections/:id/engine-states",
     status: "pending",
   },
   {
@@ -179,7 +187,19 @@ function extractCycleSummary(stepId: string, data: any): string | null {
     const running = data.running || data.isRunning || data.success
     return running ? "Engine confirmed running" : "Engine not running"
   }
+  if (stepId === "live_readiness") {
+    const mode = data.live || data.modes?.mainTrade
+    if (!mode) return "Live admission unavailable"
+    const requested = mode.requested ?? mode.flag
+    const effective = mode.effective ?? (mode.executionMode === "live")
+    const block = mode.blockReason || mode.blockCode || "none"
+    return `Requested: ${requested ? "ON" : "OFF"} | Effective: ${effective ? "ON" : "OFF"} | Mode: ${mode.executionMode || "unknown"} | Block: ${block}`
+  }
   return null
+}
+
+function toBooleanFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === "1" || value === "true"
 }
 
 export function QuickstartTestProcedureDialog() {
@@ -266,6 +286,60 @@ export function QuickstartTestProcedureDialog() {
     })
 
     try {
+      // Generic health/readiness endpoints describe infrastructure. Live
+      // entry admission is connection-scoped and may be blocked by an
+      // intentional protection halt; read it explicitly so the procedure
+      // cannot report a misleading all-clear while entries are paused.
+      if (step.id === "live_readiness") {
+        const connectionId = selectedConnection?.id
+        if (!connectionId) {
+          return {
+            ...step,
+            status: "warning",
+            duration: Date.now() - startTime,
+            error: "No connection selected; Live entry admission was not evaluated.",
+          }
+        }
+        const res = await fetch(`/api/connections/${encodeURIComponent(connectionId)}/engine-states`, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(15000),
+        })
+        const data = await res.json().catch(() => ({}))
+        const mode = data?.live || data?.modes?.mainTrade
+        const duration = Date.now() - startTime
+        const responseOk = res.ok
+        if (!responseOk || data.success === false || !mode || typeof mode !== "object") {
+          return {
+            ...step,
+            status: "error",
+            result: data,
+            duration,
+            error: data.error || `HTTP ${res.status}`,
+          }
+        }
+        const requested = toBooleanFlag(mode.requested ?? mode.flag)
+        const effective = toBooleanFlag(mode.effective) || mode.executionMode === "live"
+        if (mode.executionMode === "blocked" || (requested && !effective)) {
+          return {
+            ...step,
+            status: "warning",
+            result: data,
+            duration,
+            error: mode.blockReason || mode.blockCode || "Live entries are currently blocked",
+          }
+        }
+        if (mode.executionMode !== "live") {
+          return {
+            ...step,
+            status: "warning",
+            result: data,
+            duration,
+            error: requested ? "Live intent is requested but not effective" : "Live intent is currently OFF",
+          }
+        }
+        return { ...step, status: "success", result: data, duration }
+      }
+
       const method = step.method || "GET"
       const isPost = method === "POST"
       const res = await fetch(step.endpoint, {
@@ -298,7 +372,7 @@ export function QuickstartTestProcedureDialog() {
         error: err instanceof Error ? err.message : String(err),
       }
     }
-  }, [])
+  }, [selectedConnection?.id])
 
   const runFullTest = useCallback(async () => {
     setIsRunning(true)
@@ -307,6 +381,7 @@ export function QuickstartTestProcedureDialog() {
       startedAt: new Date(),
       totalSteps: TEST_STEPS.length,
       passedSteps: 0,
+      warningSteps: 0,
       failedSteps: 0,
       overallStatus: "running",
     })
@@ -343,6 +418,7 @@ export function QuickstartTestProcedureDialog() {
           ? {
               ...prev,
               passedSteps: prev.passedSteps + (result.status === "success" ? 1 : 0),
+              warningSteps: prev.warningSteps + (result.status === "warning" ? 1 : 0),
               failedSteps: prev.failedSteps + (result.status === "error" ? 1 : 0),
             }
           : prev,
@@ -355,7 +431,7 @@ export function QuickstartTestProcedureDialog() {
             ...prev,
             completedAt: new Date(),
             overallStatus:
-              prev.failedSteps > 0
+              prev.failedSteps > 0 || prev.warningSteps > 0
                 ? prev.passedSteps > 0
                   ? "partial"
                   : "failed"
@@ -366,7 +442,7 @@ export function QuickstartTestProcedureDialog() {
 
     setIsRunning(false)
     setCurrentStepIndex(-1)
-  }, [runStep])
+  }, [runStep, selectedConnection?.id])
 
   const getStatusIcon = (status: TestStep["status"]) => {
     switch (status) {
@@ -459,7 +535,7 @@ export function QuickstartTestProcedureDialog() {
                 {report.overallStatus.toUpperCase()}
               </Badge>
               <Badge variant="outline">
-                Passed: {report.passedSteps} / Failed: {report.failedSteps} / Total: {TEST_STEPS.length}
+                Passed: {report.passedSteps} / Warnings: {report.warningSteps} / Failed: {report.failedSteps} / Total: {TEST_STEPS.length}
               </Badge>
               {report.completedAt && (
                 <Badge variant="outline">
@@ -530,7 +606,7 @@ export function QuickstartTestProcedureDialog() {
           {/* Actions */}
           <div className="flex justify-between items-center">
             <p className="text-xs text-muted-foreground">
-              Validates full system health including live engine cycle counts
+              Validates infrastructure, engine cycles, and connection-scoped Live admission
             </p>
 
             <div className="flex gap-2">

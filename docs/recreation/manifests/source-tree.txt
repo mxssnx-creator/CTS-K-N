@@ -102,6 +102,7 @@ __tests__/unit/connection-stage-overview.test.ts
 __tests__/unit/connection-symbol-aliases.test.ts
 __tests__/unit/connection-symbols.test.ts
 __tests__/unit/connection-test-stored-credentials.test.ts
+__tests__/unit/connector-log-retention.test.ts
 __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
@@ -266,6 +267,7 @@ __tests__/unit/pseudo-position-semantics.test.ts
 __tests__/unit/pull-agent-install-script.test.ts
 __tests__/unit/quickstart-bootstrap-state.test.ts
 __tests__/unit/quickstart-change-detection.test.ts
+__tests__/unit/quickstart-live-readiness.test.ts
 __tests__/unit/quickstart-ordering.test.ts
 __tests__/unit/quickstart-timeouts.test.ts
 __tests__/unit/rate-limiter-queue.test.ts
@@ -1034,6 +1036,11 @@ docs/reports/20260826T233006Z-x02-vst-one-hour/report.md
 docs/reports/20260826T233006Z-x02-vst-one-hour/runtime-series.csv
 docs/reports/20260826T233006Z-x02-vst-one-hour/step-results.csv
 docs/reports/20260826T233006Z-x02-vst-one-hour/summary.json
+docs/reports/20260909-memory-live-validation/README.md
+docs/reports/20260909-memory-live-validation/data.json
+docs/reports/20260909-memory-live-validation/generate.py
+docs/reports/20260909-memory-live-validation/remote-monitor-10m.json
+docs/reports/20260909-memory-live-validation/report.html
 docs/signal-source-research.md
 docs/system-modules-map.md
 docs/verification/dca-20d-20260905.json

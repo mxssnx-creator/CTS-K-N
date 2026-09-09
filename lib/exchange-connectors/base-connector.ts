@@ -270,10 +270,20 @@ export abstract class BaseExchangeConnector {
     }
   }
 
+  protected appendLog(message: string): string {
+    const raw = String(message)
+    const bounded = raw.length > 2_000 ? `${raw.slice(0, 1_999)}…` : raw
+    // Detach sliced messages so a small retained line cannot keep the full
+    // response string alive. Connector instances can live for many days.
+    const line = JSON.parse(JSON.stringify(bounded)) as string
+    this.logs.push(line)
+    if (this.logs.length > 200) this.logs.splice(0, this.logs.length - 200)
+    return line
+  }
+
   protected log(message: string): void {
     const timestamp = new Date().toISOString()
-    const logMessage = `[${timestamp}] ${message}`
-    this.logs.push(logMessage)
+    const logMessage = this.appendLog(`[${timestamp}] ${message}`)
     if (process.env.NODE_ENV !== "test" && !process.env.JEST_WORKER_ID) {
       console.log(`[v0] ${logMessage}`)
     }
@@ -335,8 +345,7 @@ export abstract class BaseExchangeConnector {
 
   protected logError(message: string): void {
     const timestamp = new Date().toISOString()
-    const logMessage = `[${timestamp}] ERROR: ${message}`
-    this.logs.push(logMessage)
+    const logMessage = this.appendLog(`[${timestamp}] ERROR: ${message}`)
     console.error(`[v0] ${logMessage}`)
   }
 

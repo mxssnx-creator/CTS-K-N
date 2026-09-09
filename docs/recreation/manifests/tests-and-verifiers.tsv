@@ -86,6 +86,7 @@ unit	__tests__/unit/connection-stage-overview.test.ts
 unit	__tests__/unit/connection-symbol-aliases.test.ts
 unit	__tests__/unit/connection-symbols.test.ts
 unit	__tests__/unit/connection-test-stored-credentials.test.ts
+unit	__tests__/unit/connector-log-retention.test.ts
 unit	__tests__/unit/control-order-capacity.test.ts
 unit	__tests__/unit/cooperative-task-timeout.test.ts
 unit	__tests__/unit/cron-generate-indications-eligibility.test.ts
@@ -250,6 +251,7 @@ unit	__tests__/unit/pseudo-position-semantics.test.ts
 unit	__tests__/unit/pull-agent-install-script.test.ts
 unit	__tests__/unit/quickstart-bootstrap-state.test.ts
 unit	__tests__/unit/quickstart-change-detection.test.ts
+unit	__tests__/unit/quickstart-live-readiness.test.ts
 unit	__tests__/unit/quickstart-ordering.test.ts
 unit	__tests__/unit/quickstart-timeouts.test.ts
 unit	__tests__/unit/rate-limiter-queue.test.ts

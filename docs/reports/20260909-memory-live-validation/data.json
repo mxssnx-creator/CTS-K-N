@@ -1,0 +1,4330 @@
+{
+  "generatedAt": "2026-09-09T03:36:29.037160+00:00",
+  "release": "ab1133226744e93864f4ad51f26152cd920a259e",
+  "memory": {
+    "before": {
+      "at": "2026-09-09T01:28:23.694Z",
+      "label": "before-retirement",
+      "keys": 536432,
+      "used_memory": "3992661648",
+      "used_memory_rss": "4057042944",
+      "maxmemory": "4898947072",
+      "mem_fragmentation_ratio": "1.02",
+      "lazyfree_pending_objects": "0",
+      "rdb_last_bgsave_status": "ok",
+      "aof_rewrite_in_progress": "0",
+      "aof_last_bgrewrite_status": "ok",
+      "aof_current_size": "10628174437",
+      "aof_base_size": "1680289834",
+      "filledRecordsChecked": 3,
+      "filledRecordDigest": "78f329405c6c875f644b5d84e0b8fa900c2fc272b7d3c28375384d95afe1d644"
+    },
+    "after": {
+      "at": "2026-09-09T01:31:56.408Z",
+      "label": "after-purge",
+      "keys": 52624,
+      "used_memory": "773217360",
+      "used_memory_rss": "1366818816",
+      "maxmemory": "4227858432",
+      "mem_fragmentation_ratio": "1.77",
+      "lazyfree_pending_objects": "0",
+      "rdb_last_bgsave_status": "ok",
+      "aof_rewrite_in_progress": "0",
+      "aof_last_bgrewrite_status": "ok",
+      "aof_current_size": "10744230124",
+      "aof_base_size": "1680289834",
+      "filledRecordsChecked": 3,
+      "filledRecordDigest": "78f329405c6c875f644b5d84e0b8fa900c2fc272b7d3c28375384d95afe1d644"
+    }
+  },
+  "aof": {
+    "success": true,
+    "before": {
+      "at": "2026-09-09T01:34:41.038Z",
+      "aof_current_size": "10892367760",
+      "aof_base_size": "1680289834",
+      "aof_rewrite_in_progress": "0",
+      "aof_last_bgrewrite_status": "ok",
+      "aof_last_write_status": "ok",
+      "rdb_last_bgsave_status": "ok",
+      "used_memory": 775579336,
+      "used_memory_rss": 1346048000,
+      "keys": 51152
+    },
+    "after": {
+      "at": "2026-09-09T01:35:02.131Z",
+      "aof_current_size": "467857440",
+      "aof_base_size": "467857440",
+      "aof_rewrite_in_progress": "0",
+      "aof_last_bgrewrite_status": "ok",
+      "aof_last_write_status": "ok",
+      "rdb_last_bgsave_status": "ok",
+      "used_memory": 775560720,
+      "used_memory_rss": 1341775872,
+      "keys": 51152
+    },
+    "availableMemoryBefore": 9291395072,
+    "elapsedMs": 21023,
+    "bytesReclaimed": 10424510320,
+    "logicalDataDeletion": false
+  },
+  "cacheCleanup": {
+    "files": 30,
+    "bytes": 5330003422
+  },
+  "retirement": {
+    "apply": true,
+    "connectionId": "bingx-x02",
+    "scanned": 354954,
+    "eligible": 328885,
+    "retired": 241870,
+    "preservedAtWrite": 87015,
+    "complete": true
+  },
+  "tests": {
+    "localSuites": 304,
+    "localTests": 2124,
+    "localExit": 0,
+    "localSeconds": 48.57,
+    "remoteSuites": 303,
+    "remoteTests": 2121,
+    "remoteExit": 0,
+    "remoteSeconds": 80.734,
+    "buildTraces": 350
+  },
+  "runtime": {
+    "label": "post-cooldown-final",
+    "at": "2026-09-09T03:21:18.522Z",
+    "release": "ab1133226744e93864f4ad51f26152cd920a259e",
+    "observations": [
+      {
+        "name": "health",
+        "status": 200,
+        "latencyMs": 36.3,
+        "bytes": 212,
+        "result": {
+          "status": "healthy",
+          "checks": {
+            "redis": "up",
+            "connections": "loaded",
+            "connectionsCount": 13
+          },
+          "uptime": 964.96709029,
+          "responseTime": 6
+        }
+      },
+      {
+        "name": "status",
+        "status": 200,
+        "latencyMs": 10.2,
+        "bytes": 10377,
+        "result": {
+          "summary": {
+            "total": 1,
+            "running": 1,
+            "stopped": 0
+          },
+          "engines": [
+            {
+              "connectionId": "bingx-x02",
+              "engineType": "main",
+              "isEngineRunning": true,
+              "isEnabled": true,
+              "isActive": true,
+              "isLiveTrading": true,
+              "liveOrderReadiness": {
+                "intent": "main",
+                "requested": true,
+                "enabled": true,
+                "credentialsValid": true,
+                "durableCoordinationReady": true,
+                "canPlaceRealOrders": false,
+                "executionMode": "blocked",
+                "blockCode": "entry_protection_halt",
+                "blockReason": "Entry protection reconciliation is required before new orders."
+              },
+              "orderMetrics": {
+                "available": true,
+                "scope": "connection_lifetime",
+                "attempted": 300695,
+                "placed": 5,
+                "filled": 6,
+                "failed": 300691,
+                "blocked": 325920,
+                "deferred": 1912533,
+                "rejected": 0,
+                "simulated": 0,
+                "simulatedPositionsCreated": 0,
+                "simulatedPositionsClosed": 0,
+                "simulatedVolumeUsd": 0,
+                "openPositionsCreated": 0,
+                "openPositionsClosed": 108,
+                "volumeUsd": 0
+              },
+              "engine": {
+                "status": "running",
+                "live_execution_mode": "blocked",
+                "live_trade_block_code": "entry_protection_halt",
+                "runtime_reason": "fresh-heartbeat",
+                "heartbeat_fresh": true,
+                "heartbeat_age_ms": 131,
+                "symbols": [
+                  "BTCUSDT",
+                  "SOLUSDT",
+                  "BCHUSDT",
+                  "XRPUSDT",
+                  "ETHUSDT",
+                  "WLDUSDT",
+                  "AAVEUSDT",
+                  "BNBUSDT",
+                  "DOGEUSDT",
+                  "INJUSDT",
+                  "UNIUSDT",
+                  "LTCUSDT",
+                  "AVAXUSDT",
+                  "NEARUSDT",
+                  "SUIUSDT",
+                  "ADAUSDT",
+                  "JUPUSDT",
+                  "DOTUSDT",
+                  "ARBUSDT",
+                  "LINKUSDT",
+                  "APTUSDT",
+                  "XLMUSDT",
+                  "ATOMUSDT",
+                  "ETCUSDT",
+                  "TIAUSDT"
+                ],
+                "active_symbols": [
+                  "BTCUSDT",
+                  "SOLUSDT",
+                  "BCHUSDT",
+                  "XRPUSDT",
+                  "ETHUSDT",
+                  "WLDUSDT",
+                  "AAVEUSDT",
+                  "BNBUSDT",
+                  "DOGEUSDT",
+                  "INJUSDT",
+                  "UNIUSDT",
+                  "LTCUSDT",
+                  "AVAXUSDT",
+                  "NEARUSDT",
+                  "SUIUSDT",
+                  "ADAUSDT",
+                  "JUPUSDT",
+                  "DOTUSDT",
+                  "ARBUSDT",
+                  "LINKUSDT",
+                  "APTUSDT",
+                  "XLMUSDT",
+                  "ATOMUSDT",
+                  "ETCUSDT",
+                  "TIAUSDT"
+                ],
+                "symbol_count": 25
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "logs",
+        "status": 200,
+        "latencyMs": 16.3,
+        "bytes": 34857,
+        "result": {
+          "success": true,
+          "logsCount": 100,
+          "logsLimit": 100,
+          "structuredLogsCount": 0,
+          "progressionState": {
+            "cyclesCompleted": 454,
+            "successfulCycles": 454,
+            "failedCycles": 0,
+            "totalTrades": 0,
+            "successfulTrades": 0,
+            "totalProfit": 0,
+            "cycleSuccessRate": 100,
+            "tradeSuccessRate": 0,
+            "prehistoricCyclesCompleted": 0,
+            "prehistoricPhaseActive": false,
+            "realtimeCycleCount": 0,
+            "cycleTimeMs": 0,
+            "intervalsProcessed": 0,
+            "indicationsCount": 7616,
+            "strategiesCount": 908,
+            "strategyEvaluatedBase": 4062,
+            "strategyEvaluatedMain": 8100,
+            "strategyEvaluatedReal": 7425,
+            "indicationEvaluatedDirection": 0,
+            "indicationEvaluatedMove": 0,
+            "indicationEvaluatedActive": 0,
+            "indicationEvaluatedActiveAdvanced": 0,
+            "indicationEvaluatedOptimal": 0,
+            "indicationEvaluatedSignal": 0,
+            "indicationEvaluatedTrend": 0,
+            "prehistoricSymbolsProcessed": 0,
+            "prehistoricCandlesProcessed": 0,
+            "prehistoricSymbolsProcessedCount": 0,
+            "prehistoricDataSize": null,
+            "prehistoricDataSizeAvailable": false,
+            "setsBaseCount": 0,
+            "setsMainCount": 0,
+            "setsRealCount": 0,
+            "setsTotalCount": 0,
+            "redisDbEntries": 168051,
+            "redisDbSizeMb": 812.82
+          },
+          "logLevels": {
+            "info": 100
+          }
+        }
+      },
+      {
+        "name": "settings",
+        "status": 200,
+        "latencyMs": 11.9,
+        "bytes": 27818,
+        "result": {
+          "settings": {
+            "symbols": [
+              "BTCUSDT",
+              "SOLUSDT",
+              "BCHUSDT",
+              "XRPUSDT",
+              "ETHUSDT",
+              "WLDUSDT",
+              "AAVEUSDT",
+              "BNBUSDT",
+              "DOGEUSDT",
+              "INJUSDT",
+              "UNIUSDT",
+              "LTCUSDT",
+              "AVAXUSDT",
+              "NEARUSDT",
+              "SUIUSDT",
+              "ADAUSDT",
+              "JUPUSDT",
+              "DOTUSDT",
+              "ARBUSDT",
+              "LINKUSDT",
+              "APTUSDT",
+              "XLMUSDT",
+              "ATOMUSDT",
+              "ETCUSDT",
+              "TIAUSDT"
+            ],
+            "positionCost": "0.1",
+            "mainVolumeFactor": "1",
+            "presetVolumeFactor": "1",
+            "is_live_trade": true,
+            "live_trade_enabled": true
+          },
+          "topLevelFields": [
+            "connection",
+            "settings",
+            "statistics"
+          ]
+        }
+      },
+      {
+        "name": "live",
+        "status": 200,
+        "latencyMs": 635.2,
+        "bytes": 1574,
+        "result": {
+          "updatedAt": 1788924077836,
+          "totals": {
+            "openPositions": 0,
+            "longPositions": 0,
+            "shortPositions": 0,
+            "invalidDirectionPositions": 0,
+            "unrealizedPnl": 0,
+            "totalBalance": 109159.8267,
+            "availableBalance": 109159.8267,
+            "equity": 109159.8267,
+            "marginUsd": 0,
+            "volumeUsd": 0,
+            "accountDataAvailable": true,
+            "positionsDataAvailable": true,
+            "ordersDataAvailable": true,
+            "openOrders": 0,
+            "excludedUntrackedPositions": 18,
+            "excludedUntrackedOrders": 156,
+            "directionIntegrity": true
+          },
+          "summary": {},
+          "connectionCounts": [
+            {
+              "openPositions": 0,
+              "longPositions": 0,
+              "shortPositions": 0,
+              "invalidDirectionPositions": 0,
+              "unrealizedPnl": 0,
+              "positionsDataAvailable": true,
+              "excludedUntrackedPositions": 18,
+              "excludedUntrackedOrders": 156,
+              "openOrders": 0,
+              "ordersDataAvailable": true,
+              "marginUsd": 0,
+              "volumeUsd": 0,
+              "connectionId": "bingx-x02"
+            }
+          ],
+          "topLevelFields": [
+            "connections",
+            "totals",
+            "accountPerformance15h",
+            "updatedAt"
+          ]
+        }
+      }
+    ],
+    "redis": {
+      "used_memory": 852335552,
+      "used_memory_rss": 1369923584,
+      "maxmemory": 4227858432,
+      "mem_fragmentation_ratio": 1.61,
+      "lazyfree_pending_objects": 0,
+      "keys": 168083,
+      "entryProtectionHalt": 1,
+      "activeLifecycleIndex": 6
+    },
+    "services": [
+      {
+        "NRestarts": "0",
+        "MemoryCurrent": "2247372800",
+        "Id": "cts-kn.service",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      {
+        "NRestarts": "0",
+        "MemoryCurrent": "84578304",
+        "Id": "cts-kn-direct-trade.service",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      {
+        "NRestarts": "0",
+        "MemoryCurrent": "28233728",
+        "Id": "cts-kn-scheduler.service",
+        "ActiveState": "active",
+        "SubState": "running"
+      }
+    ]
+  },
+  "firstSoak": {
+    "release": "fdd33ed14b135a5c7808463e3ae5bb336af1ccb4",
+    "exitCode": 1,
+    "success": false,
+    "cleanupComplete": true,
+    "virtualFunds": true,
+    "preflightOnly": false,
+    "authenticatedDemoOrders": true,
+    "startedAt": "2026-09-09T01:35:02.752Z",
+    "finishedAt": "2026-09-09T01:36:56.340Z",
+    "actualElapsedMs": 113588,
+    "coveragePlan": {
+      "targetSymbols": 25,
+      "minimumSymbols": 25,
+      "cycles": 25,
+      "cycleWindowMs": 96000,
+      "plannedVenueSubmissions": 200
+    },
+    "symbols": [
+      "BTCUSDT",
+      "XLMUSDT",
+      "JSTUSDT",
+      "CVXUSDT",
+      "IOTXUSDT",
+      "LUNCUSDT",
+      "CTSIUSDT",
+      "BICOUSDT",
+      "FILUSDT",
+      "COREUSDT",
+      "ETHUSDT",
+      "TRXUSDT",
+      "BNBUSDT",
+      "SUNUSDT",
+      "LINKUSDT",
+      "XRPUSDT",
+      "BCHUSDT",
+      "UNIUSDT",
+      "SUIUSDT",
+      "AVAXUSDT",
+      "DOGEUSDT",
+      "TURBOUSDT",
+      "HBARUSDT",
+      "SOLUSDT",
+      "TRBUSDT"
+    ],
+    "coverageMatrix": {
+      "indications": {
+        "expectedTypes": [
+          "direction",
+          "move",
+          "active",
+          "active_advanced",
+          "special",
+          "optimal",
+          "auto",
+          "signal",
+          "trend",
+          "common"
+        ],
+        "observedTypes": [
+          "direction",
+          "move",
+          "active",
+          "active_advanced",
+          "special",
+          "optimal",
+          "auto",
+          "signal",
+          "trend",
+          "break",
+          "common"
+        ],
+        "missingTypes": [],
+        "totalPossibleSets": 40114,
+        "totalEvaluationConfigurations": 13788,
+        "byType": [
+          {
+            "type": "direction",
+            "label": "Direction",
+            "group": "default",
+            "storage": "independent_set",
+            "possibleSets": 942,
+            "evaluationConfigurations": 469,
+            "formula": "26 ranges × 3 drawdowns × 2 last × 3 factors",
+            "params": {
+              "ranges": 26,
+              "drawdowns": 3,
+              "lastParts": 2,
+              "factors": 3,
+              "relativeStepVariants": 3
+            },
+            "description": "Post-reversal direction grid plus independent same-market-direction relative ranges."
+          },
+          {
+            "type": "move",
+            "label": "Move",
+            "group": "default",
+            "storage": "independent_set",
+            "possibleSets": 942,
+            "evaluationConfigurations": 469,
+            "formula": "26 ranges × 3 drawdowns × 2 last × 3 factors",
+            "params": {
+              "ranges": 26,
+              "drawdowns": 3,
+              "lastParts": 2,
+              "factors": 3,
+              "relativeStepVariants": 3
+            },
+            "description": "Independent movement grid; higher sample ranges remain additional to the base calculation."
+          },
+          {
+            "type": "active",
+            "label": "Active",
+            "group": "default",
+            "storage": "independent_set",
+            "possibleSets": 9774,
+            "evaluationConfigurations": 4869,
+            "formula": "3 outbreak ranges × 5 thresholds × 3 drawdowns × 2 previous-activity ratios × 2 last × 3 factors × 3 SL × 3 TP exits",
+            "params": {
+              "outbreakRanges": 3,
+              "thresholds": 5,
+              "drawdowns": 3,
+              "activeTimes": 2,
+              "lastParts": 2,
+              "factors": 3,
+              "stopLossProfiles": 3,
+              "marketExitSituations": 3,
+              "protectionProfiles": 9,
+              "relativeStepVariants": 3
+            },
+            "description": "Causal outbreak grid versus previous market activity; every SL × TP market-exit profile owns an independent Long/Short Set."
+          },
+          {
+            "type": "active_advanced",
+            "label": "Active Advanced",
+            "group": "default",
+            "storage": "independent_set",
+            "possibleSets": 36,
+            "evaluationConfigurations": 18,
+            "formula": "6 activity ratios × 3 factors",
+            "params": {
+              "activityRatios": 6,
+              "factors": 3
+            },
+            "description": "Independent continuation/activity situations."
+          },
+          {
+            "type": "special",
+            "label": "Special",
+            "group": "additional",
+            "storage": "independent_set",
+            "possibleSets": 520,
+            "evaluationConfigurations": 130,
+            "formula": "26 exact ranges × 5 timeframe/mode lanes × 2 independent exits × 2 direction lanes",
+            "params": {
+              "ranges": 26,
+              "enabledTimeframes": 4,
+              "individualModes": 4,
+              "combinedModes": 1,
+              "timeframeModes": 5,
+              "exitVariants": 2,
+              "maxPositionsPerDirection": 5,
+              "maxVolumeRatio": 3,
+              "maximumHoldingSeconds": 900
+            },
+            "description": "Independent Long/Short active-market lanes across exact 15s/1m/15m/30m and combined calculations; fixed and adaptive-trailing exits retain separate Sets."
+          },
+          {
+            "type": "optimal",
+            "label": "Optimal",
+            "group": "additional",
+            "storage": "independent_set",
+            "possibleSets": 156,
+            "evaluationConfigurations": 78,
+            "formula": "26 ranges × 3 factors",
+            "params": {
+              "ranges": 26,
+              "factors": 3
+            },
+            "description": "Independent consecutive-step situations."
+          },
+          {
+            "type": "auto",
+            "label": "Auto",
+            "group": "additional",
+            "storage": "runtime",
+            "possibleSets": 0,
+            "evaluationConfigurations": 1,
+            "formula": "4 common timeframes → one coordinated Auto result",
+            "params": {
+              "timeframes": 4,
+              "minimumSignals": 3
+            },
+            "description": "Runtime aggregate of Common indicator votes and higher-range coordination."
+          },
+          {
+            "type": "signal",
+            "label": "Signal",
+            "group": "common",
+            "storage": "independent_set",
+            "possibleSets": 12312,
+            "evaluationConfigurations": 38,
+            "formula": "38 enabled source/consensus inputs × 162 TP/SL/trailing configs × 2 directions",
+            "params": {
+              "enabledSources": 36,
+              "enabledCryptoSources": 35,
+              "enabledForexSources": 1,
+              "selectedSourcesPerCycle": 36,
+              "selectedCryptoSourcesPerCycle": 35,
+              "selectedForexSourcesPerCycle": 1,
+              "directSourceInputs": 36,
+              "consensusInputs": 2,
+              "cryptoConsensusInputs": 1,
+              "forexConsensusInputs": 1,
+              "possibleSourceInputs": 38,
+              "registrySources": 36,
+              "tradeConfigurations": 162,
+              "exactConfigPerformanceLookback": 12,
+              "sourcePerformanceLookback": 12,
+              "symbolDirectionPerformanceLookback": 10
+            },
+            "description": "Independent source × symbol × direction × TP/SL/trailing Sets; exact configs use the newest 12 closes for admission, while source and source/symbol/direction windows remain aggregate diagnostics."
+          },
+          {
+            "type": "trend",
+            "label": "Trend",
+            "group": "additional",
+            "storage": "independent_set",
+            "possibleSets": 144,
+            "evaluationConfigurations": 72,
+            "formula": "4 timeframes × 18 EMA spread/confirmation tuples × 2 directions",
+            "params": {
+              "timeframes": 4,
+              "drawdowns": 3,
+              "lastSituations": 2,
+              "activeSituations": 2,
+              "combinedStepVariants": 3
+            },
+            "description": "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows."
+          },
+          {
+            "type": "break",
+            "label": "Break",
+            "group": "additional",
+            "storage": "independent_set",
+            "possibleSets": 96,
+            "evaluationConfigurations": 48,
+            "formula": "4 timeframes × 12 range/noise tuples × 2 directions",
+            "params": {
+              "timeframes": 4,
+              "range": 16
+            },
+            "description": "CTS-G close beyond the prior range with independent direction and noise validation."
+          },
+          {
+            "type": "common",
+            "label": "Common",
+            "group": "common",
+            "storage": "independent_set",
+            "possibleSets": 15192,
+            "evaluationConfigurations": 7596,
+            "formula": "1899 complete indicator parameter tuples × 4 timeframes",
+            "params": {
+              "enabledIndicators": 17,
+              "availableIndicators": 17,
+              "timeframes": "1/5/15/30",
+              "parameterVariants": 1899
+            },
+            "description": "Official technical indicators with every valid configured parameter tuple and independent Long/Short Sets."
+          }
+        ]
+      },
+      "directTrade": {
+        "totalIndications": 38000,
+        "configurationsBothDirections": 12160000
+      },
+      "mainTrade": {
+        "generatedStrategies": 4800,
+        "strategyCounts": {
+          "base:unadjusted": 400,
+          "main:unadjusted": 400,
+          "real:unadjusted": 800,
+          "base:block": 800,
+          "main:block": 800,
+          "base:dca": 800,
+          "main:dca": 800
+        }
+      },
+      "presetTrade": {
+        "indicationTypes": [
+          "direction",
+          "move",
+          "active",
+          "trend",
+          "optimal",
+          "auto",
+          "ma",
+          "sma",
+          "ema",
+          "macd",
+          "rsi",
+          "bollinger",
+          "stochastic",
+          "adx",
+          "atr",
+          "psar",
+          "cci",
+          "adl",
+          "fibonacci",
+          "roc",
+          "williamsR",
+          "obv",
+          "vwap",
+          "signal"
+        ],
+        "strategyTypes": [
+          "base",
+          "main",
+          "real",
+          "live"
+        ],
+        "ranges": 29
+      },
+      "signalTrade": {
+        "sourceIds": [
+          "bingx-swap",
+          "binance-usdm",
+          "bybit-linear",
+          "okx-swap",
+          "kucoin-futures",
+          "gateio-usdt",
+          "bitget-usdt",
+          "mexc-contract",
+          "htx-linear",
+          "coinex-futures",
+          "phemex-perp",
+          "bitmart-futures",
+          "bitmex-perp",
+          "poloniex",
+          "ascendex",
+          "bitfinex",
+          "kraken-futures",
+          "deribit",
+          "crypto-com",
+          "dydx",
+          "hyperliquid",
+          "woo-x",
+          "lbank",
+          "xt",
+          "deepcoin",
+          "backpack",
+          "coinbase-exchange",
+          "kraken-spot",
+          "bitstamp",
+          "gemini",
+          "upbit",
+          "bithumb",
+          "bitkub",
+          "cryptocompare",
+          "blofin",
+          "instaforex-charts"
+        ],
+        "configurations": 162,
+        "standardConfigurations": 27,
+        "trailingConfigurations": 135
+      },
+      "controlOrderCapacity": {
+        "limit": 200,
+        "exactIntentBatching": {
+          "sourceIntentCount": 4,
+          "combinedOrderCount": 3,
+          "avoidedOrderCount": 1
+        },
+        "boundaries": {
+          "198": {
+            "venueBatches": 2,
+            "systemBatches": 1,
+            "capacity": {
+              "limit": 200,
+              "observedOpen": 198,
+              "reserved": 2,
+              "available": 0,
+              "exhausted": true
+            }
+          },
+          "199": {
+            "venueBatches": 1,
+            "systemBatches": 2,
+            "capacity": {
+              "limit": 200,
+              "observedOpen": 199,
+              "reserved": 1,
+              "available": 0,
+              "exhausted": true
+            }
+          },
+          "200": {
+            "venueBatches": 0,
+            "systemBatches": 3,
+            "capacity": {
+              "limit": 200,
+              "observedOpen": 200,
+              "reserved": 0,
+              "available": 0,
+              "exhausted": true
+            }
+          }
+        }
+      },
+      "executionTracking": {
+        "sources": {
+          "direct-trade": {
+            "positions": 1,
+            "filled": 1,
+            "open": 1,
+            "closed": 0,
+            "accountingPending": 0,
+            "partialExecutions": 0,
+            "lifetimeQuantity": 0.01,
+            "openQuantity": 0.01,
+            "closedQuantity": 0,
+            "lifetimeVolumeUsd": 1,
+            "openVolumeUsd": 1,
+            "realizedPnl": 0,
+            "unrealizedPnl": 0,
+            "fees": 0
+          },
+          "main-trade": {
+            "positions": 1,
+            "filled": 1,
+            "open": 1,
+            "closed": 0,
+            "accountingPending": 0,
+            "partialExecutions": 0,
+            "lifetimeQuantity": 0.01,
+            "openQuantity": 0.01,
+            "closedQuantity": 0,
+            "lifetimeVolumeUsd": 1.01,
+            "openVolumeUsd": 1.01,
+            "realizedPnl": 0,
+            "unrealizedPnl": 0,
+            "fees": 0
+          },
+          "preset-trade": {
+            "positions": 1,
+            "filled": 1,
+            "open": 1,
+            "closed": 0,
+            "accountingPending": 0,
+            "partialExecutions": 0,
+            "lifetimeQuantity": 0.01,
+            "openQuantity": 0.01,
+            "closedQuantity": 0,
+            "lifetimeVolumeUsd": 1.02,
+            "openVolumeUsd": 1.02,
+            "realizedPnl": 0,
+            "unrealizedPnl": 0,
+            "fees": 0
+          },
+          "signal-trade": {
+            "positions": 1,
+            "filled": 1,
+            "open": 1,
+            "closed": 0,
+            "accountingPending": 0,
+            "partialExecutions": 0,
+            "lifetimeQuantity": 0.01,
+            "openQuantity": 0.01,
+            "closedQuantity": 0,
+            "lifetimeVolumeUsd": 1.03,
+            "openVolumeUsd": 1.03,
+            "realizedPnl": 0,
+            "unrealizedPnl": 0,
+            "fees": 0
+          }
+        },
+        "relationIntegrity": {
+          "success": true,
+          "checkedPositions": 4,
+          "mismatchCount": 0,
+          "mismatches": []
+        },
+        "protection": {
+          "exchangeControl": 4,
+          "hybridControlSystem": 0,
+          "systemClose": 0,
+          "systemCloseFallback": 0,
+          "missingVenueLegsHandledBySystem": 0,
+          "venueLegsQuantityCovered": 8,
+          "venueLegsQuantityUnknown": 0,
+          "venueLegsQuantityDrifted": 0,
+          "securityStopsRequired": 4,
+          "securityStopsArmed": 4,
+          "securityStopsMissing": 0
+        }
+      }
+    },
+    "cycles": [
+      {
+        "index": 1,
+        "symbol": "BTCUSDT",
+        "direction": "long",
+        "tradePath": "direct-trade",
+        "flatAfter": false,
+        "entryFilled": true,
+        "accumulationFilled": true,
+        "closeFilled": true,
+        "trailingProofPassed": false
+      }
+    ],
+    "requests": 232,
+    "orderSubmissions": 8,
+    "blockedRequests": 0,
+    "errorCount": 1,
+    "errors": [
+      "BTCUSDT/long: venue quantity 0.0002 exceeds owned quantity 0; refusing to mutate shared exposure"
+    ],
+    "cleanupOwnedResiduals": {
+      "exposureQuantity": 0,
+      "controlOrders": 0
+    },
+    "baselinePositions": 0,
+    "baselineOpenOrders": 0,
+    "accounting": {}
+  },
+  "latestSoak": {
+    "release": "ab1133226744e93864f4ad51f26152cd920a259e",
+    "exitCode": 1,
+    "success": false,
+    "cleanupComplete": false,
+    "virtualFunds": true,
+    "preflightOnly": false,
+    "authenticatedDemoOrders": true,
+    "startedAt": "2026-09-09T03:01:06.528Z",
+    "finishedAt": "2026-09-09T03:05:12.650Z",
+    "actualElapsedMs": 246122,
+    "coveragePlan": {
+      "targetSymbols": 25,
+      "minimumSymbols": 25,
+      "cycles": 25,
+      "cycleWindowMs": 96000,
+      "plannedVenueSubmissions": 200
+    },
+    "symbols": [
+      "BTCUSDT",
+      "JSTUSDT",
+      "CTSIUSDT",
+      "LUNCUSDT",
+      "BICOUSDT",
+      "CVXUSDT",
+      "IOTXUSDT",
+      "XLMUSDT",
+      "FILUSDT",
+      "COREUSDT",
+      "ZECUSDT",
+      "SOLUSDT",
+      "EGLDUSDT",
+      "ETHUSDT",
+      "BNBUSDT",
+      "ATOMUSDT",
+      "TRXUSDT",
+      "SUNUSDT",
+      "TURBOUSDT",
+      "LINKUSDT",
+      "AVAXUSDT",
+      "DOTUSDT",
+      "BCHUSDT",
+      "XRPUSDT",
+      "UNIUSDT"
+    ],
+    "coverageMatrix": {
+      "indications": {
+        "expectedTypes": [
+          "direction",
+          "move",
+          "active",
+          "active_advanced",
+          "special",
+          "optimal",
+          "auto",
+          "signal",
+          "trend",
+          "common"
+        ],
+        "observedTypes": [
+          "direction",
+          "move",
+          "active",
+          "active_advanced",
+          "special",
+          "optimal",
+          "auto",
+          "signal",
+          "trend",
+          "break",
+          "common"
+        ],
+        "missingTypes": [],
+        "totalPossibleSets": 40114,
+        "totalEvaluationConfigurations": 13788,
+        "byType": [
+          {
+            "type": "direction",
+            "label": "Direction",
+            "group": "default",
+            "storage": "independent_set",
+            "possibleSets": 942,
+            "evaluationConfigurations": 469,
+            "formula": "26 ranges × 3 drawdowns × 2 last × 3 factors",
+            "params": {
+              "ranges": 26,
+              "drawdowns": 3,
+              "lastParts": 2,
+              "factors": 3,
+              "relativeStepVariants": 3
+            },
+            "description": "Post-reversal direction grid plus independent same-market-direction relative ranges."
+          },
+          {
+            "type": "move",
+            "label": "Move",
+            "group": "default",
+            "storage": "independent_set",
+            "possibleSets": 942,
+            "evaluationConfigurations": 469,
+            "formula": "26 ranges × 3 drawdowns × 2 last × 3 factors",
+            "params": {
+              "ranges": 26,
+              "drawdowns": 3,
+              "lastParts": 2,
+              "factors": 3,
+              "relativeStepVariants": 3
+            },
+            "description": "Independent movement grid; higher sample ranges remain additional to the base calculation."
+          },
+          {
+            "type": "active",
+            "label": "Active",
+            "group": "default",
+            "storage": "independent_set",
+            "possibleSets": 9774,
+            "evaluationConfigurations": 4869,
+            "formula": "3 outbreak ranges × 5 thresholds × 3 drawdowns × 2 previous-activity ratios × 2 last × 3 factors × 3 SL × 3 TP exits",
+            "params": {
+              "outbreakRanges": 3,
+              "thresholds": 5,
+              "drawdowns": 3,
+              "activeTimes": 2,
+              "lastParts": 2,
+              "factors": 3,
+              "stopLossProfiles": 3,
+              "marketExitSituations": 3,
+              "protectionProfiles": 9,
+              "relativeStepVariants": 3
+            },
+            "description": "Causal outbreak grid versus previous market activity; every SL × TP market-exit profile owns an independent Long/Short Set."
+          },
+          {
+            "type": "active_advanced",
+            "label": "Active Advanced",
+            "group": "default",
+            "storage": "independent_set",
+            "possibleSets": 36,
+            "evaluationConfigurations": 18,
+            "formula": "6 activity ratios × 3 factors",
+            "params": {
+              "activityRatios": 6,
+              "factors": 3
+            },
+            "description": "Independent continuation/activity situations."
+          },
+          {
+            "type": "special",
+            "label": "Special",
+            "group": "additional",
+            "storage": "independent_set",
+            "possibleSets": 520,
+            "evaluationConfigurations": 130,
+            "formula": "26 exact ranges × 5 timeframe/mode lanes × 2 independent exits × 2 direction lanes",
+            "params": {
+              "ranges": 26,
+              "enabledTimeframes": 4,
+              "individualModes": 4,
+              "combinedModes": 1,
+              "timeframeModes": 5,
+              "exitVariants": 2,
+              "maxPositionsPerDirection": 5,
+              "maxVolumeRatio": 3,
+              "maximumHoldingSeconds": 900
+            },
+            "description": "Independent Long/Short active-market lanes across exact 15s/1m/15m/30m and combined calculations; fixed and adaptive-trailing exits retain separate Sets."
+          },
+          {
+            "type": "optimal",
+            "label": "Optimal",
+            "group": "additional",
+            "storage": "independent_set",
+            "possibleSets": 156,
+            "evaluationConfigurations": 78,
+            "formula": "26 ranges × 3 factors",
+            "params": {
+              "ranges": 26,
+              "factors": 3
+            },
+            "description": "Independent consecutive-step situations."
+          },
+          {
+            "type": "auto",
+            "label": "Auto",
+            "group": "additional",
+            "storage": "runtime",
+            "possibleSets": 0,
+            "evaluationConfigurations": 1,
+            "formula": "4 common timeframes → one coordinated Auto result",
+            "params": {
+              "timeframes": 4,
+              "minimumSignals": 3
+            },
+            "description": "Runtime aggregate of Common indicator votes and higher-range coordination."
+          },
+          {
+            "type": "signal",
+            "label": "Signal",
+            "group": "common",
+            "storage": "independent_set",
+            "possibleSets": 12312,
+            "evaluationConfigurations": 38,
+            "formula": "38 enabled source/consensus inputs × 162 TP/SL/trailing configs × 2 directions",
+            "params": {
+              "enabledSources": 36,
+              "enabledCryptoSources": 35,
+              "enabledForexSources": 1,
+              "selectedSourcesPerCycle": 36,
+              "selectedCryptoSourcesPerCycle": 35,
+              "selectedForexSourcesPerCycle": 1,
+              "directSourceInputs": 36,
+              "consensusInputs": 2,
+              "cryptoConsensusInputs": 1,
+              "forexConsensusInputs": 1,
+              "possibleSourceInputs": 38,
+              "registrySources": 36,
+              "tradeConfigurations": 162,
+              "exactConfigPerformanceLookback": 12,
+              "sourcePerformanceLookback": 12,
+              "symbolDirectionPerformanceLookback": 10
+            },
+            "description": "Independent source × symbol × direction × TP/SL/trailing Sets; exact configs use the newest 12 closes for admission, while source and source/symbol/direction windows remain aggregate diagnostics."
+          },
+          {
+            "type": "trend",
+            "label": "Trend",
+            "group": "additional",
+            "storage": "independent_set",
+            "possibleSets": 144,
+            "evaluationConfigurations": 72,
+            "formula": "4 timeframes × 18 EMA spread/confirmation tuples × 2 directions",
+            "params": {
+              "timeframes": 4,
+              "drawdowns": 3,
+              "lastSituations": 2,
+              "activeSituations": 2,
+              "combinedStepVariants": 3
+            },
+            "description": "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows."
+          },
+          {
+            "type": "break",
+            "label": "Break",
+            "group": "additional",
+            "storage": "independent_set",
+            "possibleSets": 96,
+            "evaluationConfigurations": 48,
+            "formula": "4 timeframes × 12 range/noise tuples × 2 directions",
+            "params": {
+              "timeframes": 4,
+              "range": 16
+            },
+            "description": "CTS-G close beyond the prior range with independent direction and noise validation."
+          },
+          {
+            "type": "common",
+            "label": "Common",
+            "group": "common",
+            "storage": "independent_set",
+            "possibleSets": 15192,
+            "evaluationConfigurations": 7596,
+            "formula": "1899 complete indicator parameter tuples × 4 timeframes",
+            "params": {
+              "enabledIndicators": 17,
+              "availableIndicators": 17,
+              "timeframes": "1/5/15/30",
+              "parameterVariants": 1899
+            },
+            "description": "Official technical indicators with every valid configured parameter tuple and independent Long/Short Sets."
+          }
+        ]
+      },
+      "directTrade": {
+        "totalIndications": 38000,
+        "configurationsBothDirections": 12160000
+      },
+      "mainTrade": {
+        "generatedStrategies": 4800,
+        "strategyCounts": {
+          "base:unadjusted": 400,
+          "main:unadjusted": 400,
+          "real:unadjusted": 800,
+          "base:block": 800,
+          "main:block": 800,
+          "base:dca": 800,
+          "main:dca": 800
+        }
+      },
+      "presetTrade": {
+        "indicationTypes": [
+          "direction",
+          "move",
+          "active",
+          "trend",
+          "optimal",
+          "auto",
+          "ma",
+          "sma",
+          "ema",
+          "macd",
+          "rsi",
+          "bollinger",
+          "stochastic",
+          "adx",
+          "atr",
+          "psar",
+          "cci",
+          "adl",
+          "fibonacci",
+          "roc",
+          "williamsR",
+          "obv",
+          "vwap",
+          "signal"
+        ],
+        "strategyTypes": [
+          "base",
+          "main",
+          "real",
+          "live"
+        ],
+        "ranges": 29
+      },
+      "signalTrade": {
+        "sourceIds": [
+          "bingx-swap",
+          "binance-usdm",
+          "bybit-linear",
+          "okx-swap",
+          "kucoin-futures",
+          "gateio-usdt",
+          "bitget-usdt",
+          "mexc-contract",
+          "htx-linear",
+          "coinex-futures",
+          "phemex-perp",
+          "bitmart-futures",
+          "bitmex-perp",
+          "poloniex",
+          "ascendex",
+          "bitfinex",
+          "kraken-futures",
+          "deribit",
+          "crypto-com",
+          "dydx",
+          "hyperliquid",
+          "woo-x",
+          "lbank",
+          "xt",
+          "deepcoin",
+          "backpack",
+          "coinbase-exchange",
+          "kraken-spot",
+          "bitstamp",
+          "gemini",
+          "upbit",
+          "bithumb",
+          "bitkub",
+          "cryptocompare",
+          "blofin",
+          "instaforex-charts"
+        ],
+        "configurations": 162,
+        "standardConfigurations": 27,
+        "trailingConfigurations": 135
+      },
+      "controlOrderCapacity": {
+        "limit": 200,
+        "exactIntentBatching": {
+          "sourceIntentCount": 4,
+          "combinedOrderCount": 3,
+          "avoidedOrderCount": 1
+        },
+        "boundaries": {
+          "198": {
+            "venueBatches": 2,
+            "systemBatches": 1,
+            "capacity": {
+              "limit": 200,
+              "observedOpen": 198,
+              "reserved": 2,
+              "available": 0,
+              "exhausted": true
+            }
+          },
+          "199": {
+            "venueBatches": 1,
+            "systemBatches": 2,
+            "capacity": {
+              "limit": 200,
+              "observedOpen": 199,
+              "reserved": 1,
+              "available": 0,
+              "exhausted": true
+            }
+          },
+          "200": {
+            "venueBatches": 0,
+            "systemBatches": 3,
+            "capacity": {
+              "limit": 200,
+              "observedOpen": 200,
+              "reserved": 0,
+              "available": 0,
+              "exhausted": true
+            }
+          }
+        }
+      },
+      "executionTracking": {
+        "sources": {
+          "direct-trade": {
+            "positions": 1,
+            "filled": 1,
+            "open": 1,
+            "closed": 0,
+            "accountingPending": 0,
+            "partialExecutions": 0,
+            "lifetimeQuantity": 0.01,
+            "openQuantity": 0.01,
+            "closedQuantity": 0,
+            "lifetimeVolumeUsd": 1,
+            "openVolumeUsd": 1,
+            "realizedPnl": 0,
+            "unrealizedPnl": 0,
+            "fees": 0
+          },
+          "main-trade": {
+            "positions": 1,
+            "filled": 1,
+            "open": 1,
+            "closed": 0,
+            "accountingPending": 0,
+            "partialExecutions": 0,
+            "lifetimeQuantity": 0.01,
+            "openQuantity": 0.01,
+            "closedQuantity": 0,
+            "lifetimeVolumeUsd": 1.01,
+            "openVolumeUsd": 1.01,
+            "realizedPnl": 0,
+            "unrealizedPnl": 0,
+            "fees": 0
+          },
+          "preset-trade": {
+            "positions": 1,
+            "filled": 1,
+            "open": 1,
+            "closed": 0,
+            "accountingPending": 0,
+            "partialExecutions": 0,
+            "lifetimeQuantity": 0.01,
+            "openQuantity": 0.01,
+            "closedQuantity": 0,
+            "lifetimeVolumeUsd": 1.02,
+            "openVolumeUsd": 1.02,
+            "realizedPnl": 0,
+            "unrealizedPnl": 0,
+            "fees": 0
+          },
+          "signal-trade": {
+            "positions": 1,
+            "filled": 1,
+            "open": 1,
+            "closed": 0,
+            "accountingPending": 0,
+            "partialExecutions": 0,
+            "lifetimeQuantity": 0.01,
+            "openQuantity": 0.01,
+            "closedQuantity": 0,
+            "lifetimeVolumeUsd": 1.03,
+            "openVolumeUsd": 1.03,
+            "realizedPnl": 0,
+            "unrealizedPnl": 0,
+            "fees": 0
+          }
+        },
+        "relationIntegrity": {
+          "success": true,
+          "checkedPositions": 4,
+          "mismatchCount": 0,
+          "mismatches": []
+        },
+        "protection": {
+          "exchangeControl": 4,
+          "hybridControlSystem": 0,
+          "systemClose": 0,
+          "systemCloseFallback": 0,
+          "missingVenueLegsHandledBySystem": 0,
+          "venueLegsQuantityCovered": 8,
+          "venueLegsQuantityUnknown": 0,
+          "venueLegsQuantityDrifted": 0,
+          "securityStopsRequired": 4,
+          "securityStopsArmed": 4,
+          "securityStopsMissing": 0
+        }
+      }
+    },
+    "cycles": [
+      {
+        "index": 1,
+        "symbol": "BTCUSDT",
+        "direction": "long",
+        "tradePath": "direct-trade",
+        "flatAfter": true,
+        "entryFilled": true,
+        "accumulationFilled": true,
+        "closeFilled": true,
+        "trailingProofPassed": true
+      },
+      {
+        "index": 2,
+        "symbol": "JSTUSDT",
+        "direction": "short",
+        "tradePath": "main-trade",
+        "flatAfter": true,
+        "entryFilled": true,
+        "accumulationFilled": true,
+        "closeFilled": true,
+        "trailingProofPassed": true
+      },
+      {
+        "index": 3,
+        "symbol": "CTSIUSDT",
+        "direction": "long",
+        "tradePath": "preset-trade",
+        "flatAfter": false,
+        "entryFilled": false,
+        "accumulationFilled": false,
+        "closeFilled": false,
+        "trailingProofPassed": null
+      }
+    ],
+    "requests": 326,
+    "orderSubmissions": 17,
+    "blockedRequests": 0,
+    "errorCount": 1,
+    "errors": [
+      "ctsvstptentryc15989562: BingX API error (code=109429): over 20 error code:109420 requests within 480000 ms for this api, please verify and fix it ,can retry after time: 1788923558370"
+    ],
+    "cleanupErrors": [
+      "final cleanup snapshot: positions snapshot failed: rate_limit_cooldown"
+    ],
+    "account": {},
+    "venueHistory": {},
+    "baselinePositions": 11,
+    "baselineOpenOrders": 90,
+    "accounting": {
+      "success": true,
+      "source": "exact_per_order_exchange_fill_settlement",
+      "separateReaudit": true,
+      "scope": "only the two completed r3 cycles; the 25-symbol acceptance remains failed",
+      "theoreticalPriceFallbackUsed": false,
+      "expectedMarketOrders": 6,
+      "settledMarketOrders": 6,
+      "totals": {
+        "grossRealizedPnl": 0.0014999999999999998,
+        "tradingFee": 0.019865,
+        "netRealizedPnl": -0.018365000000000003
+      },
+      "cycles": [
+        {
+          "cycle": 1,
+          "symbol": "BTCUSDT",
+          "tradePath": "direct-trade",
+          "settledOrders": 3,
+          "ownedRemainingQuantity": 0,
+          "grossRealizedPnl": 0.0003,
+          "tradingFee": 0.015658,
+          "netRealizedPnl": -0.015358
+        },
+        {
+          "cycle": 2,
+          "symbol": "JSTUSDT",
+          "tradePath": "main-trade",
+          "settledOrders": 3,
+          "ownedRemainingQuantity": 0,
+          "grossRealizedPnl": 0.0012,
+          "tradingFee": 0.004207,
+          "netRealizedPnl": -0.003007
+        }
+      ]
+    }
+  },
+  "matrix": [
+    {
+      "kind": "trend",
+      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm4",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm3",
+      "minimumSpreadRatio": 0.0015,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm4",
+      "minimumSpreadRatio": 0.0015,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm3",
+      "minimumSpreadRatio": 0.002,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm4",
+      "minimumSpreadRatio": 0.002,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3:ema5-13",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 5,
+      "slowPeriod": 13,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm4:ema5-13",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 5,
+      "slowPeriod": 13,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm3:ema5-13",
+      "minimumSpreadRatio": 0.0015,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 5,
+      "slowPeriod": 13,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm4:ema5-13",
+      "minimumSpreadRatio": 0.0015,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 5,
+      "slowPeriod": 13,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm3:ema5-13",
+      "minimumSpreadRatio": 0.002,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 5,
+      "slowPeriod": 13,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm4:ema5-13",
+      "minimumSpreadRatio": 0.002,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 5,
+      "slowPeriod": 13,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3:ema13-34",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 13,
+      "slowPeriod": 34,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm4:ema13-34",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 13,
+      "slowPeriod": 34,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm3:ema13-34",
+      "minimumSpreadRatio": 0.0015,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 13,
+      "slowPeriod": 34,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm4:ema13-34",
+      "minimumSpreadRatio": 0.0015,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 13,
+      "slowPeriod": 34,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm3:ema13-34",
+      "minimumSpreadRatio": 0.002,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 13,
+      "slowPeriod": 34,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "trend",
+      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm4:ema13-34",
+      "minimumSpreadRatio": 0.002,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 4,
+      "fastPeriod": 13,
+      "slowPeriod": 34,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range16:noise0.1:confirm3",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.1,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range24:noise0.05:confirm3",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 24,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range24:noise0.1:confirm3",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 24,
+      "breakNoisePct": 0.1,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range32:noise0.05:confirm3",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 32,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range32:noise0.1:confirm3",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 32,
+      "breakNoisePct": 0.1,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 1
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3:breakConfirm2",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 2
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range16:noise0.1:confirm3:breakConfirm2",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 16,
+      "breakNoisePct": 0.1,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 2
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range24:noise0.05:confirm3:breakConfirm2",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 24,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 2
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range24:noise0.1:confirm3:breakConfirm2",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 24,
+      "breakNoisePct": 0.1,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 2
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range32:noise0.05:confirm3:breakConfirm2",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 32,
+      "breakNoisePct": 0.05,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 2
+    },
+    {
+      "kind": "break",
+      "key": "spread0.001:confidence0.6:range32:noise0.1:confirm3:breakConfirm2",
+      "minimumSpreadRatio": 0.001,
+      "minimumConfidence": 0.6,
+      "breakRange": 32,
+      "breakNoisePct": 0.1,
+      "confirmationBars": 3,
+      "fastPeriod": 8,
+      "slowPeriod": 21,
+      "breakConfirmationBars": 2
+    }
+  ],
+  "extra": {
+    "release": "ab1133226744e93864f4ad51f26152cd920a259e",
+    "soak": {
+      "release": "ab1133226744e93864f4ad51f26152cd920a259e",
+      "exitCode": 1,
+      "success": false,
+      "cleanupComplete": false,
+      "virtualFunds": true,
+      "preflightOnly": false,
+      "authenticatedDemoOrders": true,
+      "startedAt": "2026-09-09T03:01:06.528Z",
+      "finishedAt": "2026-09-09T03:05:12.650Z",
+      "actualElapsedMs": 246122,
+      "coveragePlan": {
+        "targetSymbols": 25,
+        "minimumSymbols": 25,
+        "cycles": 25,
+        "cycleWindowMs": 96000,
+        "plannedVenueSubmissions": 200
+      },
+      "symbols": [
+        "BTCUSDT",
+        "JSTUSDT",
+        "CTSIUSDT",
+        "LUNCUSDT",
+        "BICOUSDT",
+        "CVXUSDT",
+        "IOTXUSDT",
+        "XLMUSDT",
+        "FILUSDT",
+        "COREUSDT",
+        "ZECUSDT",
+        "SOLUSDT",
+        "EGLDUSDT",
+        "ETHUSDT",
+        "BNBUSDT",
+        "ATOMUSDT",
+        "TRXUSDT",
+        "SUNUSDT",
+        "TURBOUSDT",
+        "LINKUSDT",
+        "AVAXUSDT",
+        "DOTUSDT",
+        "BCHUSDT",
+        "XRPUSDT",
+        "UNIUSDT"
+      ],
+      "coverageMatrix": {
+        "indications": {
+          "expectedTypes": [
+            "direction",
+            "move",
+            "active",
+            "active_advanced",
+            "special",
+            "optimal",
+            "auto",
+            "signal",
+            "trend",
+            "common"
+          ],
+          "observedTypes": [
+            "direction",
+            "move",
+            "active",
+            "active_advanced",
+            "special",
+            "optimal",
+            "auto",
+            "signal",
+            "trend",
+            "break",
+            "common"
+          ],
+          "missingTypes": [],
+          "totalPossibleSets": 40114,
+          "totalEvaluationConfigurations": 13788,
+          "byType": [
+            {
+              "type": "direction",
+              "label": "Direction",
+              "group": "default",
+              "storage": "independent_set",
+              "possibleSets": 942,
+              "evaluationConfigurations": 469,
+              "formula": "26 ranges × 3 drawdowns × 2 last × 3 factors",
+              "params": {
+                "ranges": 26,
+                "drawdowns": 3,
+                "lastParts": 2,
+                "factors": 3,
+                "relativeStepVariants": 3
+              },
+              "description": "Post-reversal direction grid plus independent same-market-direction relative ranges."
+            },
+            {
+              "type": "move",
+              "label": "Move",
+              "group": "default",
+              "storage": "independent_set",
+              "possibleSets": 942,
+              "evaluationConfigurations": 469,
+              "formula": "26 ranges × 3 drawdowns × 2 last × 3 factors",
+              "params": {
+                "ranges": 26,
+                "drawdowns": 3,
+                "lastParts": 2,
+                "factors": 3,
+                "relativeStepVariants": 3
+              },
+              "description": "Independent movement grid; higher sample ranges remain additional to the base calculation."
+            },
+            {
+              "type": "active",
+              "label": "Active",
+              "group": "default",
+              "storage": "independent_set",
+              "possibleSets": 9774,
+              "evaluationConfigurations": 4869,
+              "formula": "3 outbreak ranges × 5 thresholds × 3 drawdowns × 2 previous-activity ratios × 2 last × 3 factors × 3 SL × 3 TP exits",
+              "params": {
+                "outbreakRanges": 3,
+                "thresholds": 5,
+                "drawdowns": 3,
+                "activeTimes": 2,
+                "lastParts": 2,
+                "factors": 3,
+                "stopLossProfiles": 3,
+                "marketExitSituations": 3,
+                "protectionProfiles": 9,
+                "relativeStepVariants": 3
+              },
+              "description": "Causal outbreak grid versus previous market activity; every SL × TP market-exit profile owns an independent Long/Short Set."
+            },
+            {
+              "type": "active_advanced",
+              "label": "Active Advanced",
+              "group": "default",
+              "storage": "independent_set",
+              "possibleSets": 36,
+              "evaluationConfigurations": 18,
+              "formula": "6 activity ratios × 3 factors",
+              "params": {
+                "activityRatios": 6,
+                "factors": 3
+              },
+              "description": "Independent continuation/activity situations."
+            },
+            {
+              "type": "special",
+              "label": "Special",
+              "group": "additional",
+              "storage": "independent_set",
+              "possibleSets": 520,
+              "evaluationConfigurations": 130,
+              "formula": "26 exact ranges × 5 timeframe/mode lanes × 2 independent exits × 2 direction lanes",
+              "params": {
+                "ranges": 26,
+                "enabledTimeframes": 4,
+                "individualModes": 4,
+                "combinedModes": 1,
+                "timeframeModes": 5,
+                "exitVariants": 2,
+                "maxPositionsPerDirection": 5,
+                "maxVolumeRatio": 3,
+                "maximumHoldingSeconds": 900
+              },
+              "description": "Independent Long/Short active-market lanes across exact 15s/1m/15m/30m and combined calculations; fixed and adaptive-trailing exits retain separate Sets."
+            },
+            {
+              "type": "optimal",
+              "label": "Optimal",
+              "group": "additional",
+              "storage": "independent_set",
+              "possibleSets": 156,
+              "evaluationConfigurations": 78,
+              "formula": "26 ranges × 3 factors",
+              "params": {
+                "ranges": 26,
+                "factors": 3
+              },
+              "description": "Independent consecutive-step situations."
+            },
+            {
+              "type": "auto",
+              "label": "Auto",
+              "group": "additional",
+              "storage": "runtime",
+              "possibleSets": 0,
+              "evaluationConfigurations": 1,
+              "formula": "4 common timeframes → one coordinated Auto result",
+              "params": {
+                "timeframes": 4,
+                "minimumSignals": 3
+              },
+              "description": "Runtime aggregate of Common indicator votes and higher-range coordination."
+            },
+            {
+              "type": "signal",
+              "label": "Signal",
+              "group": "common",
+              "storage": "independent_set",
+              "possibleSets": 12312,
+              "evaluationConfigurations": 38,
+              "formula": "38 enabled source/consensus inputs × 162 TP/SL/trailing configs × 2 directions",
+              "params": {
+                "enabledSources": 36,
+                "enabledCryptoSources": 35,
+                "enabledForexSources": 1,
+                "selectedSourcesPerCycle": 36,
+                "selectedCryptoSourcesPerCycle": 35,
+                "selectedForexSourcesPerCycle": 1,
+                "directSourceInputs": 36,
+                "consensusInputs": 2,
+                "cryptoConsensusInputs": 1,
+                "forexConsensusInputs": 1,
+                "possibleSourceInputs": 38,
+                "registrySources": 36,
+                "tradeConfigurations": 162,
+                "exactConfigPerformanceLookback": 12,
+                "sourcePerformanceLookback": 12,
+                "symbolDirectionPerformanceLookback": 10
+              },
+              "description": "Independent source × symbol × direction × TP/SL/trailing Sets; exact configs use the newest 12 closes for admission, while source and source/symbol/direction windows remain aggregate diagnostics."
+            },
+            {
+              "type": "trend",
+              "label": "Trend",
+              "group": "additional",
+              "storage": "independent_set",
+              "possibleSets": 144,
+              "evaluationConfigurations": 72,
+              "formula": "4 timeframes × 18 EMA spread/confirmation tuples × 2 directions",
+              "params": {
+                "timeframes": 4,
+                "drawdowns": 3,
+                "lastSituations": 2,
+                "activeSituations": 2,
+                "combinedStepVariants": 3
+              },
+              "description": "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows."
+            },
+            {
+              "type": "break",
+              "label": "Break",
+              "group": "additional",
+              "storage": "independent_set",
+              "possibleSets": 96,
+              "evaluationConfigurations": 48,
+              "formula": "4 timeframes × 12 range/noise tuples × 2 directions",
+              "params": {
+                "timeframes": 4,
+                "range": 16
+              },
+              "description": "CTS-G close beyond the prior range with independent direction and noise validation."
+            },
+            {
+              "type": "common",
+              "label": "Common",
+              "group": "common",
+              "storage": "independent_set",
+              "possibleSets": 15192,
+              "evaluationConfigurations": 7596,
+              "formula": "1899 complete indicator parameter tuples × 4 timeframes",
+              "params": {
+                "enabledIndicators": 17,
+                "availableIndicators": 17,
+                "timeframes": "1/5/15/30",
+                "parameterVariants": 1899
+              },
+              "description": "Official technical indicators with every valid configured parameter tuple and independent Long/Short Sets."
+            }
+          ]
+        },
+        "directTrade": {
+          "totalIndications": 38000,
+          "configurationsBothDirections": 12160000
+        },
+        "mainTrade": {
+          "generatedStrategies": 4800,
+          "strategyCounts": {
+            "base:unadjusted": 400,
+            "main:unadjusted": 400,
+            "real:unadjusted": 800,
+            "base:block": 800,
+            "main:block": 800,
+            "base:dca": 800,
+            "main:dca": 800
+          }
+        },
+        "presetTrade": {
+          "indicationTypes": [
+            "direction",
+            "move",
+            "active",
+            "trend",
+            "optimal",
+            "auto",
+            "ma",
+            "sma",
+            "ema",
+            "macd",
+            "rsi",
+            "bollinger",
+            "stochastic",
+            "adx",
+            "atr",
+            "psar",
+            "cci",
+            "adl",
+            "fibonacci",
+            "roc",
+            "williamsR",
+            "obv",
+            "vwap",
+            "signal"
+          ],
+          "strategyTypes": [
+            "base",
+            "main",
+            "real",
+            "live"
+          ],
+          "ranges": 29
+        },
+        "signalTrade": {
+          "sourceIds": [
+            "bingx-swap",
+            "binance-usdm",
+            "bybit-linear",
+            "okx-swap",
+            "kucoin-futures",
+            "gateio-usdt",
+            "bitget-usdt",
+            "mexc-contract",
+            "htx-linear",
+            "coinex-futures",
+            "phemex-perp",
+            "bitmart-futures",
+            "bitmex-perp",
+            "poloniex",
+            "ascendex",
+            "bitfinex",
+            "kraken-futures",
+            "deribit",
+            "crypto-com",
+            "dydx",
+            "hyperliquid",
+            "woo-x",
+            "lbank",
+            "xt",
+            "deepcoin",
+            "backpack",
+            "coinbase-exchange",
+            "kraken-spot",
+            "bitstamp",
+            "gemini",
+            "upbit",
+            "bithumb",
+            "bitkub",
+            "cryptocompare",
+            "blofin",
+            "instaforex-charts"
+          ],
+          "configurations": 162,
+          "standardConfigurations": 27,
+          "trailingConfigurations": 135
+        },
+        "controlOrderCapacity": {
+          "limit": 200,
+          "exactIntentBatching": {
+            "sourceIntentCount": 4,
+            "combinedOrderCount": 3,
+            "avoidedOrderCount": 1
+          },
+          "boundaries": {
+            "198": {
+              "venueBatches": 2,
+              "systemBatches": 1,
+              "capacity": {
+                "limit": 200,
+                "observedOpen": 198,
+                "reserved": 2,
+                "available": 0,
+                "exhausted": true
+              }
+            },
+            "199": {
+              "venueBatches": 1,
+              "systemBatches": 2,
+              "capacity": {
+                "limit": 200,
+                "observedOpen": 199,
+                "reserved": 1,
+                "available": 0,
+                "exhausted": true
+              }
+            },
+            "200": {
+              "venueBatches": 0,
+              "systemBatches": 3,
+              "capacity": {
+                "limit": 200,
+                "observedOpen": 200,
+                "reserved": 0,
+                "available": 0,
+                "exhausted": true
+              }
+            }
+          }
+        },
+        "executionTracking": {
+          "sources": {
+            "direct-trade": {
+              "positions": 1,
+              "filled": 1,
+              "open": 1,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0.01,
+              "openQuantity": 0.01,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 1,
+              "openVolumeUsd": 1,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "main-trade": {
+              "positions": 1,
+              "filled": 1,
+              "open": 1,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0.01,
+              "openQuantity": 0.01,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 1.01,
+              "openVolumeUsd": 1.01,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "preset-trade": {
+              "positions": 1,
+              "filled": 1,
+              "open": 1,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0.01,
+              "openQuantity": 0.01,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 1.02,
+              "openVolumeUsd": 1.02,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "signal-trade": {
+              "positions": 1,
+              "filled": 1,
+              "open": 1,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0.01,
+              "openQuantity": 0.01,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 1.03,
+              "openVolumeUsd": 1.03,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            }
+          },
+          "relationIntegrity": {
+            "success": true,
+            "checkedPositions": 4,
+            "mismatchCount": 0,
+            "mismatches": []
+          },
+          "protection": {
+            "exchangeControl": 4,
+            "hybridControlSystem": 0,
+            "systemClose": 0,
+            "systemCloseFallback": 0,
+            "missingVenueLegsHandledBySystem": 0,
+            "venueLegsQuantityCovered": 8,
+            "venueLegsQuantityUnknown": 0,
+            "venueLegsQuantityDrifted": 0,
+            "securityStopsRequired": 4,
+            "securityStopsArmed": 4,
+            "securityStopsMissing": 0
+          }
+        }
+      },
+      "cycles": [
+        {
+          "index": 1,
+          "symbol": "BTCUSDT",
+          "direction": "long",
+          "tradePath": "direct-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 2,
+          "symbol": "JSTUSDT",
+          "direction": "short",
+          "tradePath": "main-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 3,
+          "symbol": "CTSIUSDT",
+          "direction": "long",
+          "tradePath": "preset-trade",
+          "flatAfter": false,
+          "entryFilled": false,
+          "accumulationFilled": false,
+          "closeFilled": false,
+          "trailingProofPassed": null
+        }
+      ],
+      "requests": 326,
+      "orderSubmissions": 17,
+      "blockedRequests": 0,
+      "errorCount": 1,
+      "errors": [
+        "ctsvstptentryc15989562: BingX API error (code=109429): over 20 error code:109420 requests within 480000 ms for this api, please verify and fix it ,can retry after time: 1788923558370"
+      ],
+      "cleanupErrors": [
+        "final cleanup snapshot: positions snapshot failed: rate_limit_cooldown"
+      ],
+      "account": {},
+      "venueHistory": {},
+      "baselinePositions": 11,
+      "baselineOpenOrders": 90,
+      "accounting": {
+        "success": true,
+        "source": "exact_per_order_exchange_fill_settlement",
+        "separateReaudit": true,
+        "scope": "only the two completed r3 cycles; the 25-symbol acceptance remains failed",
+        "theoreticalPriceFallbackUsed": false,
+        "expectedMarketOrders": 6,
+        "settledMarketOrders": 6,
+        "totals": {
+          "grossRealizedPnl": 0.0014999999999999998,
+          "tradingFee": 0.019865,
+          "netRealizedPnl": -0.018365000000000003
+        },
+        "cycles": [
+          {
+            "cycle": 1,
+            "symbol": "BTCUSDT",
+            "tradePath": "direct-trade",
+            "settledOrders": 3,
+            "ownedRemainingQuantity": 0,
+            "grossRealizedPnl": 0.0003,
+            "tradingFee": 0.015658,
+            "netRealizedPnl": -0.015358
+          },
+          {
+            "cycle": 2,
+            "symbol": "JSTUSDT",
+            "tradePath": "main-trade",
+            "settledOrders": 3,
+            "ownedRemainingQuantity": 0,
+            "grossRealizedPnl": 0.0012,
+            "tradingFee": 0.004207,
+            "netRealizedPnl": -0.003007
+          }
+        ]
+      }
+    },
+    "runtime": {
+      "label": "post-cooldown-final",
+      "at": "2026-09-09T03:21:18.522Z",
+      "release": "ab1133226744e93864f4ad51f26152cd920a259e",
+      "observations": [
+        {
+          "name": "health",
+          "status": 200,
+          "latencyMs": 36.3,
+          "bytes": 212,
+          "result": {
+            "status": "healthy",
+            "checks": {
+              "redis": "up",
+              "connections": "loaded",
+              "connectionsCount": 13
+            },
+            "uptime": 964.96709029,
+            "responseTime": 6
+          }
+        },
+        {
+          "name": "status",
+          "status": 200,
+          "latencyMs": 10.2,
+          "bytes": 10377,
+          "result": {
+            "summary": {
+              "total": 1,
+              "running": 1,
+              "stopped": 0
+            },
+            "engines": [
+              {
+                "connectionId": "bingx-x02",
+                "engineType": "main",
+                "isEngineRunning": true,
+                "isEnabled": true,
+                "isActive": true,
+                "isLiveTrading": true,
+                "liveOrderReadiness": {
+                  "intent": "main",
+                  "requested": true,
+                  "enabled": true,
+                  "credentialsValid": true,
+                  "durableCoordinationReady": true,
+                  "canPlaceRealOrders": false,
+                  "executionMode": "blocked",
+                  "blockCode": "entry_protection_halt",
+                  "blockReason": "Entry protection reconciliation is required before new orders."
+                },
+                "orderMetrics": {
+                  "available": true,
+                  "scope": "connection_lifetime",
+                  "attempted": 300695,
+                  "placed": 5,
+                  "filled": 6,
+                  "failed": 300691,
+                  "blocked": 325920,
+                  "deferred": 1912533,
+                  "rejected": 0,
+                  "simulated": 0,
+                  "simulatedPositionsCreated": 0,
+                  "simulatedPositionsClosed": 0,
+                  "simulatedVolumeUsd": 0,
+                  "openPositionsCreated": 0,
+                  "openPositionsClosed": 108,
+                  "volumeUsd": 0
+                },
+                "engine": {
+                  "status": "running",
+                  "live_execution_mode": "blocked",
+                  "live_trade_block_code": "entry_protection_halt",
+                  "runtime_reason": "fresh-heartbeat",
+                  "heartbeat_fresh": true,
+                  "heartbeat_age_ms": 131,
+                  "symbols": [
+                    "BTCUSDT",
+                    "SOLUSDT",
+                    "BCHUSDT",
+                    "XRPUSDT",
+                    "ETHUSDT",
+                    "WLDUSDT",
+                    "AAVEUSDT",
+                    "BNBUSDT",
+                    "DOGEUSDT",
+                    "INJUSDT",
+                    "UNIUSDT",
+                    "LTCUSDT",
+                    "AVAXUSDT",
+                    "NEARUSDT",
+                    "SUIUSDT",
+                    "ADAUSDT",
+                    "JUPUSDT",
+                    "DOTUSDT",
+                    "ARBUSDT",
+                    "LINKUSDT",
+                    "APTUSDT",
+                    "XLMUSDT",
+                    "ATOMUSDT",
+                    "ETCUSDT",
+                    "TIAUSDT"
+                  ],
+                  "active_symbols": [
+                    "BTCUSDT",
+                    "SOLUSDT",
+                    "BCHUSDT",
+                    "XRPUSDT",
+                    "ETHUSDT",
+                    "WLDUSDT",
+                    "AAVEUSDT",
+                    "BNBUSDT",
+                    "DOGEUSDT",
+                    "INJUSDT",
+                    "UNIUSDT",
+                    "LTCUSDT",
+                    "AVAXUSDT",
+                    "NEARUSDT",
+                    "SUIUSDT",
+                    "ADAUSDT",
+                    "JUPUSDT",
+                    "DOTUSDT",
+                    "ARBUSDT",
+                    "LINKUSDT",
+                    "APTUSDT",
+                    "XLMUSDT",
+                    "ATOMUSDT",
+                    "ETCUSDT",
+                    "TIAUSDT"
+                  ],
+                  "symbol_count": 25
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "logs",
+          "status": 200,
+          "latencyMs": 16.3,
+          "bytes": 34857,
+          "result": {
+            "success": true,
+            "logsCount": 100,
+            "logsLimit": 100,
+            "structuredLogsCount": 0,
+            "progressionState": {
+              "cyclesCompleted": 454,
+              "successfulCycles": 454,
+              "failedCycles": 0,
+              "totalTrades": 0,
+              "successfulTrades": 0,
+              "totalProfit": 0,
+              "cycleSuccessRate": 100,
+              "tradeSuccessRate": 0,
+              "prehistoricCyclesCompleted": 0,
+              "prehistoricPhaseActive": false,
+              "realtimeCycleCount": 0,
+              "cycleTimeMs": 0,
+              "intervalsProcessed": 0,
+              "indicationsCount": 7616,
+              "strategiesCount": 908,
+              "strategyEvaluatedBase": 4062,
+              "strategyEvaluatedMain": 8100,
+              "strategyEvaluatedReal": 7425,
+              "indicationEvaluatedDirection": 0,
+              "indicationEvaluatedMove": 0,
+              "indicationEvaluatedActive": 0,
+              "indicationEvaluatedActiveAdvanced": 0,
+              "indicationEvaluatedOptimal": 0,
+              "indicationEvaluatedSignal": 0,
+              "indicationEvaluatedTrend": 0,
+              "prehistoricSymbolsProcessed": 0,
+              "prehistoricCandlesProcessed": 0,
+              "prehistoricSymbolsProcessedCount": 0,
+              "prehistoricDataSize": null,
+              "prehistoricDataSizeAvailable": false,
+              "setsBaseCount": 0,
+              "setsMainCount": 0,
+              "setsRealCount": 0,
+              "setsTotalCount": 0,
+              "redisDbEntries": 168051,
+              "redisDbSizeMb": 812.82
+            },
+            "logLevels": {
+              "info": 100
+            }
+          }
+        },
+        {
+          "name": "settings",
+          "status": 200,
+          "latencyMs": 11.9,
+          "bytes": 27818,
+          "result": {
+            "settings": {
+              "symbols": [
+                "BTCUSDT",
+                "SOLUSDT",
+                "BCHUSDT",
+                "XRPUSDT",
+                "ETHUSDT",
+                "WLDUSDT",
+                "AAVEUSDT",
+                "BNBUSDT",
+                "DOGEUSDT",
+                "INJUSDT",
+                "UNIUSDT",
+                "LTCUSDT",
+                "AVAXUSDT",
+                "NEARUSDT",
+                "SUIUSDT",
+                "ADAUSDT",
+                "JUPUSDT",
+                "DOTUSDT",
+                "ARBUSDT",
+                "LINKUSDT",
+                "APTUSDT",
+                "XLMUSDT",
+                "ATOMUSDT",
+                "ETCUSDT",
+                "TIAUSDT"
+              ],
+              "positionCost": "0.1",
+              "mainVolumeFactor": "1",
+              "presetVolumeFactor": "1",
+              "is_live_trade": true,
+              "live_trade_enabled": true
+            },
+            "topLevelFields": [
+              "connection",
+              "settings",
+              "statistics"
+            ]
+          }
+        },
+        {
+          "name": "live",
+          "status": 200,
+          "latencyMs": 635.2,
+          "bytes": 1574,
+          "result": {
+            "updatedAt": 1788924077836,
+            "totals": {
+              "openPositions": 0,
+              "longPositions": 0,
+              "shortPositions": 0,
+              "invalidDirectionPositions": 0,
+              "unrealizedPnl": 0,
+              "totalBalance": 109159.8267,
+              "availableBalance": 109159.8267,
+              "equity": 109159.8267,
+              "marginUsd": 0,
+              "volumeUsd": 0,
+              "accountDataAvailable": true,
+              "positionsDataAvailable": true,
+              "ordersDataAvailable": true,
+              "openOrders": 0,
+              "excludedUntrackedPositions": 18,
+              "excludedUntrackedOrders": 156,
+              "directionIntegrity": true
+            },
+            "summary": {},
+            "connectionCounts": [
+              {
+                "openPositions": 0,
+                "longPositions": 0,
+                "shortPositions": 0,
+                "invalidDirectionPositions": 0,
+                "unrealizedPnl": 0,
+                "positionsDataAvailable": true,
+                "excludedUntrackedPositions": 18,
+                "excludedUntrackedOrders": 156,
+                "openOrders": 0,
+                "ordersDataAvailable": true,
+                "marginUsd": 0,
+                "volumeUsd": 0,
+                "connectionId": "bingx-x02"
+              }
+            ],
+            "topLevelFields": [
+              "connections",
+              "totals",
+              "accountPerformance15h",
+              "updatedAt"
+            ]
+          }
+        }
+      ],
+      "redis": {
+        "used_memory": 852335552,
+        "used_memory_rss": 1369923584,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.61,
+        "lazyfree_pending_objects": 0,
+        "keys": 168083,
+        "entryProtectionHalt": 1,
+        "activeLifecycleIndex": 6
+      },
+      "services": [
+        {
+          "NRestarts": "0",
+          "MemoryCurrent": "2247372800",
+          "Id": "cts-kn.service",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "MemoryCurrent": "84578304",
+          "Id": "cts-kn-direct-trade.service",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "MemoryCurrent": "28233728",
+          "Id": "cts-kn-scheduler.service",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    "tests": {
+      "localSuites": 304,
+      "localTests": 2124,
+      "localExit": 0,
+      "localSeconds": 48.57,
+      "remoteSuites": 303,
+      "remoteTests": 2121,
+      "remoteExit": 0,
+      "remoteSeconds": 80.734,
+      "buildTraces": 350
+    },
+    "pendingRelease": null,
+    "pfVerified": "Base/Main/Real/Live-PF jeweils 1,30 in beiden verbindungsspezifischen Settings-Hashes; kanonischer Overlay im Main-/Stage-Koordinator bestätigt. Diese PositionCost-Kennzahl ist kein realisierter Gross-Profit/Loss-Faktor.",
+    "r2Diagnosis": {
+      "completedCycles": 9,
+      "attemptedCycles": 10,
+      "orderPostCount": 81,
+      "filRequestedCloseQuantity": 4.8,
+      "filSubmittedCloseQuantity": 4.7,
+      "ownedRemainderClosed": 0.1,
+      "finalOwnedExposureQuantity": 0,
+      "finalOwnedControlOrders": 0,
+      "baselineGatePassed": false,
+      "reason": "foreign baseline changed",
+      "externalChange": {
+        "symbol": "CPUSDT",
+        "direction": "short",
+        "additionalQuantity": 119.7,
+        "additionalOrders": 2,
+        "missingBaselineOrders": 0
+      }
+    },
+    "logRetention": {
+      "at": "2026-09-09T02:24:58Z",
+      "timerActive": true,
+      "serviceResult": "success",
+      "journalMiB": 248.2
+    },
+    "browserAcceptance": "blocked endpoint; not worked around",
+    "testedSource": "9188563d1d12412d74bff8dbb9135fcd4f702c5c",
+    "mergedPullRequests": [
+      332,
+      333,
+      334
+    ],
+    "limitations": [
+      "No new independent 14-day Trend/Break profitability study",
+      "Blocked browser statistics endpoint not bypassed",
+      "VST25 r2 failed; own cleanup confirmed, foreign baseline changed",
+      "r3 post-cooldown own-order reconciliation passed; full 25-symbol test did not pass"
+    ],
+    "normalRuntimeSeries": [
+      {
+        "at": "2026-09-09T02:42:20.786Z",
+        "redis": {
+          "used_memory": 841999176,
+          "used_memory_rss": 1368064000,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.62,
+          "lazyfree_pending_objects": 0,
+          "keys": 165107,
+          "entryProtectionHalt": 1,
+          "activeLifecycleIndex": 5
+        },
+        "services": [
+          {
+            "NRestarts": "0",
+            "MemoryCurrent": "2162757632",
+            "Id": "cts-kn.service",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          {
+            "NRestarts": "0",
+            "MemoryCurrent": "79319040",
+            "Id": "cts-kn-direct-trade.service",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          {
+            "NRestarts": "0",
+            "MemoryCurrent": "27881472",
+            "Id": "cts-kn-scheduler.service",
+            "ActiveState": "active",
+            "SubState": "running"
+          }
+        ],
+        "cycles": 439,
+        "httpStatuses": {
+          "health": 200,
+          "status": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        }
+      },
+      {
+        "at": "2026-09-09T02:53:47.565Z",
+        "redis": {
+          "used_memory": 856571128,
+          "used_memory_rss": 1366028288,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.59,
+          "lazyfree_pending_objects": 0,
+          "keys": 201997,
+          "entryProtectionHalt": 1,
+          "activeLifecycleIndex": 6
+        },
+        "services": [
+          {
+            "NRestarts": "0",
+            "MemoryCurrent": "2093731840",
+            "Id": "cts-kn.service",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          {
+            "NRestarts": "0",
+            "MemoryCurrent": "86917120",
+            "Id": "cts-kn-direct-trade.service",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          {
+            "NRestarts": "0",
+            "MemoryCurrent": "28688384",
+            "Id": "cts-kn-scheduler.service",
+            "ActiveState": "active",
+            "SubState": "running"
+          }
+        ],
+        "cycles": 445,
+        "httpStatuses": {
+          "health": 200,
+          "status": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        }
+      }
+    ],
+    "r3Unit": "cts-kn-pr334-vst25-soak-r3",
+    "r3State": "failed",
+    "reinstall": {
+      "release": "ab1133226744e93864f4ad51f26152cd920a259e",
+      "success": true,
+      "buildTraces": 350,
+      "serviceStatesAfterInstall": [
+        "active",
+        "active",
+        "active"
+      ],
+      "rollback": "/var/backups/cts/cts-kn/20260909T025427Z"
+    },
+    "r2Soak": {
+      "release": "f1bb1be97de3dd525db1afe156074937c8fa5bce",
+      "exitCode": 1,
+      "success": false,
+      "cleanupComplete": false,
+      "virtualFunds": true,
+      "preflightOnly": false,
+      "authenticatedDemoOrders": true,
+      "startedAt": "2026-09-09T02:11:56.067Z",
+      "finishedAt": "2026-09-09T02:28:24.829Z",
+      "actualElapsedMs": 988762,
+      "coveragePlan": {
+        "targetSymbols": 25,
+        "minimumSymbols": 25,
+        "cycles": 25,
+        "cycleWindowMs": 96000,
+        "plannedVenueSubmissions": 200
+      },
+      "symbols": [
+        "BTCUSDT",
+        "XLMUSDT",
+        "JSTUSDT",
+        "IOTXUSDT",
+        "LUNCUSDT",
+        "CTSIUSDT",
+        "CVXUSDT",
+        "BICOUSDT",
+        "SOLUSDT",
+        "FILUSDT",
+        "COREUSDT",
+        "ALGOUSDT",
+        "ETHUSDT",
+        "EGLDUSDT",
+        "ZECUSDT",
+        "ATOMUSDT",
+        "TRXUSDT",
+        "SUNUSDT",
+        "XRPUSDT",
+        "BCHUSDT",
+        "TURBOUSDT",
+        "DOGEUSDT",
+        "BNBUSDT",
+        "SUIUSDT",
+        "HBARUSDT"
+      ],
+      "coverageMatrix": {
+        "indications": {
+          "expectedTypes": [
+            "direction",
+            "move",
+            "active",
+            "active_advanced",
+            "special",
+            "optimal",
+            "auto",
+            "signal",
+            "trend",
+            "common"
+          ],
+          "observedTypes": [
+            "direction",
+            "move",
+            "active",
+            "active_advanced",
+            "special",
+            "optimal",
+            "auto",
+            "signal",
+            "trend",
+            "break",
+            "common"
+          ],
+          "missingTypes": [],
+          "totalPossibleSets": 40114,
+          "totalEvaluationConfigurations": 13788,
+          "byType": [
+            {
+              "type": "direction",
+              "label": "Direction",
+              "group": "default",
+              "storage": "independent_set",
+              "possibleSets": 942,
+              "evaluationConfigurations": 469,
+              "formula": "26 ranges × 3 drawdowns × 2 last × 3 factors",
+              "params": {
+                "ranges": 26,
+                "drawdowns": 3,
+                "lastParts": 2,
+                "factors": 3,
+                "relativeStepVariants": 3
+              },
+              "description": "Post-reversal direction grid plus independent same-market-direction relative ranges."
+            },
+            {
+              "type": "move",
+              "label": "Move",
+              "group": "default",
+              "storage": "independent_set",
+              "possibleSets": 942,
+              "evaluationConfigurations": 469,
+              "formula": "26 ranges × 3 drawdowns × 2 last × 3 factors",
+              "params": {
+                "ranges": 26,
+                "drawdowns": 3,
+                "lastParts": 2,
+                "factors": 3,
+                "relativeStepVariants": 3
+              },
+              "description": "Independent movement grid; higher sample ranges remain additional to the base calculation."
+            },
+            {
+              "type": "active",
+              "label": "Active",
+              "group": "default",
+              "storage": "independent_set",
+              "possibleSets": 9774,
+              "evaluationConfigurations": 4869,
+              "formula": "3 outbreak ranges × 5 thresholds × 3 drawdowns × 2 previous-activity ratios × 2 last × 3 factors × 3 SL × 3 TP exits",
+              "params": {
+                "outbreakRanges": 3,
+                "thresholds": 5,
+                "drawdowns": 3,
+                "activeTimes": 2,
+                "lastParts": 2,
+                "factors": 3,
+                "stopLossProfiles": 3,
+                "marketExitSituations": 3,
+                "protectionProfiles": 9,
+                "relativeStepVariants": 3
+              },
+              "description": "Causal outbreak grid versus previous market activity; every SL × TP market-exit profile owns an independent Long/Short Set."
+            },
+            {
+              "type": "active_advanced",
+              "label": "Active Advanced",
+              "group": "default",
+              "storage": "independent_set",
+              "possibleSets": 36,
+              "evaluationConfigurations": 18,
+              "formula": "6 activity ratios × 3 factors",
+              "params": {
+                "activityRatios": 6,
+                "factors": 3
+              },
+              "description": "Independent continuation/activity situations."
+            },
+            {
+              "type": "special",
+              "label": "Special",
+              "group": "additional",
+              "storage": "independent_set",
+              "possibleSets": 520,
+              "evaluationConfigurations": 130,
+              "formula": "26 exact ranges × 5 timeframe/mode lanes × 2 independent exits × 2 direction lanes",
+              "params": {
+                "ranges": 26,
+                "enabledTimeframes": 4,
+                "individualModes": 4,
+                "combinedModes": 1,
+                "timeframeModes": 5,
+                "exitVariants": 2,
+                "maxPositionsPerDirection": 5,
+                "maxVolumeRatio": 3,
+                "maximumHoldingSeconds": 900
+              },
+              "description": "Independent Long/Short active-market lanes across exact 15s/1m/15m/30m and combined calculations; fixed and adaptive-trailing exits retain separate Sets."
+            },
+            {
+              "type": "optimal",
+              "label": "Optimal",
+              "group": "additional",
+              "storage": "independent_set",
+              "possibleSets": 156,
+              "evaluationConfigurations": 78,
+              "formula": "26 ranges × 3 factors",
+              "params": {
+                "ranges": 26,
+                "factors": 3
+              },
+              "description": "Independent consecutive-step situations."
+            },
+            {
+              "type": "auto",
+              "label": "Auto",
+              "group": "additional",
+              "storage": "runtime",
+              "possibleSets": 0,
+              "evaluationConfigurations": 1,
+              "formula": "4 common timeframes → one coordinated Auto result",
+              "params": {
+                "timeframes": 4,
+                "minimumSignals": 3
+              },
+              "description": "Runtime aggregate of Common indicator votes and higher-range coordination."
+            },
+            {
+              "type": "signal",
+              "label": "Signal",
+              "group": "common",
+              "storage": "independent_set",
+              "possibleSets": 12312,
+              "evaluationConfigurations": 38,
+              "formula": "38 enabled source/consensus inputs × 162 TP/SL/trailing configs × 2 directions",
+              "params": {
+                "enabledSources": 36,
+                "enabledCryptoSources": 35,
+                "enabledForexSources": 1,
+                "selectedSourcesPerCycle": 36,
+                "selectedCryptoSourcesPerCycle": 35,
+                "selectedForexSourcesPerCycle": 1,
+                "directSourceInputs": 36,
+                "consensusInputs": 2,
+                "cryptoConsensusInputs": 1,
+                "forexConsensusInputs": 1,
+                "possibleSourceInputs": 38,
+                "registrySources": 36,
+                "tradeConfigurations": 162,
+                "exactConfigPerformanceLookback": 12,
+                "sourcePerformanceLookback": 12,
+                "symbolDirectionPerformanceLookback": 10
+              },
+              "description": "Independent source × symbol × direction × TP/SL/trailing Sets; exact configs use the newest 12 closes for admission, while source and source/symbol/direction windows remain aggregate diagnostics."
+            },
+            {
+              "type": "trend",
+              "label": "Trend",
+              "group": "additional",
+              "storage": "independent_set",
+              "possibleSets": 144,
+              "evaluationConfigurations": 72,
+              "formula": "4 timeframes × 18 EMA spread/confirmation tuples × 2 directions",
+              "params": {
+                "timeframes": 4,
+                "drawdowns": 3,
+                "lastSituations": 2,
+                "activeSituations": 2,
+                "combinedStepVariants": 3
+              },
+              "description": "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows."
+            },
+            {
+              "type": "break",
+              "label": "Break",
+              "group": "additional",
+              "storage": "independent_set",
+              "possibleSets": 96,
+              "evaluationConfigurations": 48,
+              "formula": "4 timeframes × 12 range/noise tuples × 2 directions",
+              "params": {
+                "timeframes": 4,
+                "range": 16
+              },
+              "description": "CTS-G close beyond the prior range with independent direction and noise validation."
+            },
+            {
+              "type": "common",
+              "label": "Common",
+              "group": "common",
+              "storage": "independent_set",
+              "possibleSets": 15192,
+              "evaluationConfigurations": 7596,
+              "formula": "1899 complete indicator parameter tuples × 4 timeframes",
+              "params": {
+                "enabledIndicators": 17,
+                "availableIndicators": 17,
+                "timeframes": "1/5/15/30",
+                "parameterVariants": 1899
+              },
+              "description": "Official technical indicators with every valid configured parameter tuple and independent Long/Short Sets."
+            }
+          ]
+        },
+        "directTrade": {
+          "totalIndications": 38000,
+          "configurationsBothDirections": 12160000
+        },
+        "mainTrade": {
+          "generatedStrategies": 4800,
+          "strategyCounts": {
+            "base:unadjusted": 400,
+            "main:unadjusted": 400,
+            "real:unadjusted": 800,
+            "base:block": 800,
+            "main:block": 800,
+            "base:dca": 800,
+            "main:dca": 800
+          }
+        },
+        "presetTrade": {
+          "indicationTypes": [
+            "direction",
+            "move",
+            "active",
+            "trend",
+            "optimal",
+            "auto",
+            "ma",
+            "sma",
+            "ema",
+            "macd",
+            "rsi",
+            "bollinger",
+            "stochastic",
+            "adx",
+            "atr",
+            "psar",
+            "cci",
+            "adl",
+            "fibonacci",
+            "roc",
+            "williamsR",
+            "obv",
+            "vwap",
+            "signal"
+          ],
+          "strategyTypes": [
+            "base",
+            "main",
+            "real",
+            "live"
+          ],
+          "ranges": 29
+        },
+        "signalTrade": {
+          "sourceIds": [
+            "bingx-swap",
+            "binance-usdm",
+            "bybit-linear",
+            "okx-swap",
+            "kucoin-futures",
+            "gateio-usdt",
+            "bitget-usdt",
+            "mexc-contract",
+            "htx-linear",
+            "coinex-futures",
+            "phemex-perp",
+            "bitmart-futures",
+            "bitmex-perp",
+            "poloniex",
+            "ascendex",
+            "bitfinex",
+            "kraken-futures",
+            "deribit",
+            "crypto-com",
+            "dydx",
+            "hyperliquid",
+            "woo-x",
+            "lbank",
+            "xt",
+            "deepcoin",
+            "backpack",
+            "coinbase-exchange",
+            "kraken-spot",
+            "bitstamp",
+            "gemini",
+            "upbit",
+            "bithumb",
+            "bitkub",
+            "cryptocompare",
+            "blofin",
+            "instaforex-charts"
+          ],
+          "configurations": 162,
+          "standardConfigurations": 27,
+          "trailingConfigurations": 135
+        },
+        "controlOrderCapacity": {
+          "limit": 200,
+          "exactIntentBatching": {
+            "sourceIntentCount": 4,
+            "combinedOrderCount": 3,
+            "avoidedOrderCount": 1
+          },
+          "boundaries": {
+            "198": {
+              "venueBatches": 2,
+              "systemBatches": 1,
+              "capacity": {
+                "limit": 200,
+                "observedOpen": 198,
+                "reserved": 2,
+                "available": 0,
+                "exhausted": true
+              }
+            },
+            "199": {
+              "venueBatches": 1,
+              "systemBatches": 2,
+              "capacity": {
+                "limit": 200,
+                "observedOpen": 199,
+                "reserved": 1,
+                "available": 0,
+                "exhausted": true
+              }
+            },
+            "200": {
+              "venueBatches": 0,
+              "systemBatches": 3,
+              "capacity": {
+                "limit": 200,
+                "observedOpen": 200,
+                "reserved": 0,
+                "available": 0,
+                "exhausted": true
+              }
+            }
+          }
+        },
+        "executionTracking": {
+          "sources": {
+            "direct-trade": {
+              "positions": 1,
+              "filled": 1,
+              "open": 1,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0.01,
+              "openQuantity": 0.01,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 1,
+              "openVolumeUsd": 1,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "main-trade": {
+              "positions": 1,
+              "filled": 1,
+              "open": 1,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0.01,
+              "openQuantity": 0.01,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 1.01,
+              "openVolumeUsd": 1.01,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "preset-trade": {
+              "positions": 1,
+              "filled": 1,
+              "open": 1,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0.01,
+              "openQuantity": 0.01,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 1.02,
+              "openVolumeUsd": 1.02,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "signal-trade": {
+              "positions": 1,
+              "filled": 1,
+              "open": 1,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0.01,
+              "openQuantity": 0.01,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 1.03,
+              "openVolumeUsd": 1.03,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            }
+          },
+          "relationIntegrity": {
+            "success": true,
+            "checkedPositions": 4,
+            "mismatchCount": 0,
+            "mismatches": []
+          },
+          "protection": {
+            "exchangeControl": 4,
+            "hybridControlSystem": 0,
+            "systemClose": 0,
+            "systemCloseFallback": 0,
+            "missingVenueLegsHandledBySystem": 0,
+            "venueLegsQuantityCovered": 8,
+            "venueLegsQuantityUnknown": 0,
+            "venueLegsQuantityDrifted": 0,
+            "securityStopsRequired": 4,
+            "securityStopsArmed": 4,
+            "securityStopsMissing": 0
+          }
+        }
+      },
+      "cycles": [
+        {
+          "index": 1,
+          "symbol": "BTCUSDT",
+          "direction": "long",
+          "tradePath": "direct-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 2,
+          "symbol": "XLMUSDT",
+          "direction": "short",
+          "tradePath": "main-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 3,
+          "symbol": "JSTUSDT",
+          "direction": "long",
+          "tradePath": "preset-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 4,
+          "symbol": "IOTXUSDT",
+          "direction": "short",
+          "tradePath": "signal-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 5,
+          "symbol": "LUNCUSDT",
+          "direction": "long",
+          "tradePath": "direct-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 6,
+          "symbol": "CTSIUSDT",
+          "direction": "short",
+          "tradePath": "main-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 7,
+          "symbol": "CVXUSDT",
+          "direction": "long",
+          "tradePath": "preset-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 8,
+          "symbol": "BICOUSDT",
+          "direction": "short",
+          "tradePath": "signal-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 9,
+          "symbol": "SOLUSDT",
+          "direction": "short",
+          "tradePath": "direct-trade",
+          "flatAfter": true,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": true
+        },
+        {
+          "index": 10,
+          "symbol": "FILUSDT",
+          "direction": "long",
+          "tradePath": "main-trade",
+          "flatAfter": false,
+          "entryFilled": true,
+          "accumulationFilled": true,
+          "closeFilled": true,
+          "trailingProofPassed": false
+        }
+      ],
+      "requests": 929,
+      "orderSubmissions": 81,
+      "blockedRequests": 0,
+      "errorCount": 1,
+      "errors": [
+        "FILUSDT/long: venue quantity 0.1 exceeds owned quantity 0; refusing to mutate shared exposure"
+      ],
+      "cleanupOwnedResiduals": {
+        "exposureQuantity": 0,
+        "controlOrders": 0
+      },
+      "baselinePositions": 1,
+      "baselineOpenOrders": 12,
+      "accounting": {}
+    },
+    "r3Failure": {
+      "reason": "venue_rate_limit_109429",
+      "providerReportedUnderlyingCode": "109420",
+      "providerRetryAt": "2026-09-09T03:12:38.370Z",
+      "connectorMinimumRetryAt": "2026-09-09T03:13:44Z",
+      "completedCycles": 2,
+      "submittedOrderPosts": 17,
+      "finalSnapshotAvailable": false,
+      "originOfUnderlyingErrors": "not determined from the harness log",
+      "recordedOuterError": "109429 only"
+    },
+    "postCooldownReconciliation": {
+      "at": "2026-09-09T03:17:18.813Z",
+      "success": true,
+      "exchangeMutations": 0,
+      "sourceRelease": "ab1133226744e93864f4ad51f26152cd920a259e",
+      "doesNotConvertSoakToPass": true,
+      "rejectedEntryAbsent": true,
+      "cycles": [
+        {
+          "cycle": 1,
+          "symbol": "BTCUSDT",
+          "tradePath": "direct-trade",
+          "settledOrders": 3,
+          "ownedRemainingQuantity": 0,
+          "grossRealizedPnl": 0.0003,
+          "tradingFee": 0.015658,
+          "netRealizedPnl": -0.015358
+        },
+        {
+          "cycle": 2,
+          "symbol": "JSTUSDT",
+          "tradePath": "main-trade",
+          "settledOrders": 3,
+          "ownedRemainingQuantity": 0,
+          "grossRealizedPnl": 0.0012,
+          "tradingFee": 0.004207,
+          "netRealizedPnl": -0.003007
+        }
+      ],
+      "snapshots": [
+        {
+          "at": "2026-09-09T03:17:22.389Z",
+          "positionSnapshotAt": 1788923841869,
+          "orderSnapshotAt": 1788923842389,
+          "venuePositions": 17,
+          "venueOpenOrders": 120,
+          "ownedOpenOrders": 0
+        },
+        {
+          "at": "2026-09-09T03:17:27.769Z",
+          "positionSnapshotAt": 1788923847574,
+          "orderSnapshotAt": 1788923847769,
+          "venuePositions": 17,
+          "venueOpenOrders": 122,
+          "ownedOpenOrders": 0
+        }
+      ],
+      "ownedRemainingQuantity": 0,
+      "ownedOpenOrders": 0,
+      "settledMarketOrders": 6,
+      "totals": {
+        "grossRealizedPnl": 0.0014999999999999998,
+        "tradingFee": 0.019865,
+        "netRealizedPnl": -0.018365000000000003
+      }
+    },
+    "connectorLogRetention": {
+      "maximumRecords": 200,
+      "maximumCharactersPerLine": 2000,
+      "largeStringDetached": true,
+      "localRegressionPassed": true,
+      "remoteRegressionPending": false,
+      "remoteRegressionPassed": true
+    },
+    "coverageScope": "Configuration and coordination fixtures; actual venue lifecycle coverage is only the recorded completed cycles.",
+    "nativeSettings": {
+      "at": "2026-09-09T03:32:24.106Z",
+      "connectionId": "bingx-x02",
+      "liveRequested": true,
+      "symbolCount": 25,
+      "stagePf": {
+        "base": 1.3,
+        "main": 1.3,
+        "real": 1.3,
+        "live": 1.3
+      },
+      "positionCostPct": 0.1,
+      "mainVolumeFactor": 1,
+      "presetVolumeFactor": 1,
+      "lossWindow": 12,
+      "autoDeactivateEnabled": true,
+      "trendMultipleEnabled": true,
+      "breakMultipleEnabled": true,
+      "deactivatedConfigs": 0,
+      "configOutcomeRows": 0
+    },
+    "attemptsSummary": [
+      {
+        "attempt": 1,
+        "release": "fdd33ed1",
+        "postAttempts": 8,
+        "fullAcceptancePassed": false,
+        "reason": "stale post-close position cache"
+      },
+      {
+        "attempt": 2,
+        "release": "f1bb1be9",
+        "postAttempts": 81,
+        "fullAcceptancePassed": false,
+        "reason": "fractional close grid and changed foreign baseline"
+      },
+      {
+        "attempt": 3,
+        "release": "ab113322",
+        "postAttempts": 17,
+        "fullAcceptancePassed": false,
+        "reason": "venue 109429 account error quota"
+      }
+    ],
+    "totalPostAttemptsAllRuns": 106,
+    "logCorrectionSource": {
+      "baseRelease": "ab1133226744e93864f4ad51f26152cd920a259e",
+      "blobs": {
+        "lib/exchange-connectors/base-connector.ts": "2b1e2edc1983a57c0c7035158e5dcd76ae8910dc",
+        "lib/exchange-connectors/bingx-connector.ts": "d5e8f0bc743f155682d4a691dd848be2d14a67cb",
+        "__tests__/unit/connector-log-retention.test.ts": "531530bb2c6698b8d66d034493242d0896d9793d"
+      },
+      "remoteValidation": "server-local Git archive plus reviewed three-file patch; no ambient credentials; external networking blocked"
+    },
+    "quickstartLiveReadinessUi": {
+      "currentSourceTestPassed": true,
+      "procedureAdmissionStepAdded": true,
+      "procedureWarningsCounted": true,
+      "historicalDispatchCountersExcludedFromLabel": true
+    },
+    "remoteMonitor": {
+      "sampleCount": 11,
+      "intervalSeconds": 60,
+      "allHttp200": true,
+      "allServicesActive": true,
+      "readinessStable": true,
+      "artifact": "remote-monitor-10m.json"
+    }
+  },
+  "remoteMonitor": {
+    "connectionId": "bingx-x02",
+    "intervalSeconds": 60,
+    "sampleCount": 11,
+    "startedAt": "2026-09-09T03:48:31.722706+00:00",
+    "finishedAt": "2026-09-09T03:58:41.081477+00:00",
+    "allHttp200": true,
+    "allServicesActive": true,
+    "readinessStable": true,
+    "samples": [
+      {
+        "sample": 0,
+        "at": "2026-09-09T03:48:31.722706+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 0,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 13,
+          "excludedOrders": 110
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 879636384,
+          "used_memory_rss": 1370808320,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 234124,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 1,
+        "at": "2026-09-09T03:49:32.781237+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 0,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 13,
+          "excludedOrders": 109
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 879580560,
+          "used_memory_rss": 1373446144,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 233583,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 2,
+        "at": "2026-09-09T03:50:34.099381+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 0,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 16,
+          "excludedOrders": 119
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 881812272,
+          "used_memory_rss": 1371537408,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 235001,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 3,
+        "at": "2026-09-09T03:51:35.011685+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 0,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 18,
+          "excludedOrders": 133
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 884504688,
+          "used_memory_rss": 1375350784,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 234104,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 4,
+        "at": "2026-09-09T03:52:35.753526+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 1,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 19,
+          "excludedOrders": 149
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 885944224,
+          "used_memory_rss": 1374142464,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.55,
+          "dbsize": 232954,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 5,
+        "at": "2026-09-09T03:53:37.126381+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 1,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 22,
+          "excludedOrders": 167
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 886181680,
+          "used_memory_rss": 1373282304,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.55,
+          "dbsize": 233684,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 6,
+        "at": "2026-09-09T03:54:37.839314+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 1,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 22,
+          "excludedOrders": 187
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 884931544,
+          "used_memory_rss": 1382486016,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 231337,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 7,
+        "at": "2026-09-09T03:55:38.586890+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 1,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 22,
+          "excludedOrders": 193
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 884110600,
+          "used_memory_rss": 1375854592,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 229279,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 8,
+        "at": "2026-09-09T03:56:39.263459+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 1,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 21,
+          "excludedOrders": 183
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 880972192,
+          "used_memory_rss": 1376006144,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 228224,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 9,
+        "at": "2026-09-09T03:57:40.286535+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 1,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 21,
+          "excludedOrders": 183
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 881787520,
+          "used_memory_rss": 1374498816,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 226407,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      },
+      {
+        "sample": 10,
+        "at": "2026-09-09T03:58:41.081477+00:00",
+        "http": {
+          "health": 200,
+          "status": 200,
+          "states": 200,
+          "logs": 200,
+          "settings": 200,
+          "live": 200
+        },
+        "engine": {
+          "running": true,
+          "cycles": null
+        },
+        "liveReadiness": {
+          "requested": true,
+          "enabled": true,
+          "canPlace": false,
+          "executionMode": "blocked",
+          "blockCode": "entry_protection_halt"
+        },
+        "orders": {
+          "open": 0,
+          "positions": 1,
+          "positionsAvailable": true,
+          "ordersAvailable": true,
+          "excludedPositions": 21,
+          "excludedOrders": 185
+        },
+        "logsReturned": 100,
+        "redis": {
+          "used_memory": 880753456,
+          "used_memory_rss": 1378320384,
+          "maxmemory": 4227858432,
+          "mem_fragmentation_ratio": 1.56,
+          "dbsize": 224798,
+          "available": true
+        },
+        "services": {
+          "cts-kn": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-direct-trade": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          },
+          "cts-kn-scheduler": {
+            "NRestarts": 0,
+            "ActiveState": "active"
+          }
+        }
+      }
+    ],
+    "notes": [
+      "Read-only monitoring through allowed local server APIs and native Redis/systemd probes.",
+      "openPositions changed from 0 to 1 while the X02 entry gate remained blocked; this is not evidence of a CTS-owned entry and excluded/untracked counters are retained.",
+      "No endpoint or service restart failure observed."
+    ]
+  }
+}

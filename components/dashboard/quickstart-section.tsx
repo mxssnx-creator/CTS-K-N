@@ -54,6 +54,22 @@ interface LogEntry {
   timestamp: Date
 }
 
+/**
+ * Current, connection-scoped live-entry admission.  This is deliberately
+ * separate from the cumulative dispatch counters below: an old blocked
+ * attempt must never make a currently healthy Live stage look blocked, while
+ * a persisted protection halt must remain visible even when the generic
+ * QuickStart health procedure passes.
+ */
+interface LiveReadinessSummary {
+  requested: boolean
+  enabled: boolean
+  effective: boolean
+  executionMode: "live" | "blocked" | "simulation" | null
+  blockCode: string | null
+  blockReason: string
+}
+
 interface StageDetail {
   createdSets: number
   avgPosPerSet: number
@@ -459,6 +475,7 @@ export function QuickstartSection() {
   // SSR-safe default; restored from localStorage in the mount effect below.
   const [symbolCount, setSymbolCount] = useState<number>(DEFAULT_SYMBOL_COUNT)
   const [liveTradeActive, setLiveTradeActive] = useState<boolean>(false)
+  const [liveReadiness, setLiveReadiness] = useState<LiveReadinessSummary | null>(null)
   const [liveTradeLoading, setLiveTradeLoading] = useState<boolean>(false)
   // Connection the quickstart actually bound to on last start (or the
   // component default) — used as the target for the Live toggle.
@@ -1076,15 +1093,41 @@ export function QuickstartSection() {
   // credentials exist and starts the independent live-trade engine.
   const refreshLiveTradeStatus = useCallback(async () => {
     const id = activeConnectionId || connectionId
-    if (!id) return
+    if (!id) {
+      setLiveReadiness(null)
+      return
+    }
     try {
-      const res = await fetch(`/api/settings/connections?t=${Date.now()}`, { cache: "no-store" })
-      if (!res.ok) return
-      const data = await res.json()
-      const conns: any[] = Array.isArray(data) ? data : (data?.connections || [])
-      const conn = conns.find(c => c.id === id)
-      if (conn) {
-        setLiveTradeActive(liveTradeUiFlag(conn))
+      // Read the persisted operator intent and the current runtime admission
+      // decision together.  The former controls the switch; the latter is the
+      // only source allowed to label the pipeline "blocked".  Dispatch
+      // counters are historical diagnostics and are intentionally excluded.
+      const [connectionResponse, stateResponse] = await Promise.all([
+        fetch(`/api/settings/connections?t=${Date.now()}`, { cache: "no-store" }),
+        fetch(`/api/connections/${encodeURIComponent(id)}/engine-states`, { cache: "no-store" }),
+      ])
+      if (connectionResponse.ok) {
+        const data = await connectionResponse.json()
+        const conns: any[] = Array.isArray(data) ? data : (data?.connections || [])
+        const conn = conns.find(c => c.id === id)
+        if (conn) setLiveTradeActive(liveTradeUiFlag(conn))
+      }
+      if (stateResponse.ok) {
+        const data = await stateResponse.json()
+        const mode = data?.live || data?.modes?.mainTrade
+        if (mode && typeof mode === "object") {
+          const executionMode = mode.executionMode === "live" || mode.executionMode === "blocked" || mode.executionMode === "simulation"
+            ? mode.executionMode
+            : null
+          setLiveReadiness({
+            requested: toBooleanFlag(mode.flag) || toBooleanFlag(mode.requested),
+            enabled: toBooleanFlag(mode.flag),
+            effective: toBooleanFlag(mode.effective) || executionMode === "live",
+            executionMode,
+            blockCode: mode.blockCode ? String(mode.blockCode) : null,
+            blockReason: mode.blockReason ? String(mode.blockReason) : "",
+          })
+        }
       }
     } catch { /* non-critical */ }
   }, [activeConnectionId, connectionId])
@@ -1116,7 +1159,22 @@ export function QuickstartSection() {
       }
       const requestedState = typeof body?.live_trade_requested === "boolean" ? body.live_trade_requested : nextState
       const effectiveState = typeof body?.is_live_trade === "boolean" ? body.is_live_trade : requestedState
-      setLiveTradeActive(effectiveState)
+      // Keep the switch on for a requested-but-guarded Live mode.  The
+      // operator intent is durable and must not appear to turn itself off
+      // merely because the current entry gate (for example a protection
+      // reconciliation halt) is blocking new entries.
+      setLiveTradeActive(requestedState)
+      const responseMode = body?.live_execution_mode === "live" || body?.live_execution_mode === "blocked" || body?.live_execution_mode === "simulation"
+        ? body.live_execution_mode
+        : null
+      setLiveReadiness({
+        requested: requestedState,
+        enabled: effectiveState,
+        effective: effectiveState || responseMode === "live",
+        executionMode: responseMode,
+        blockCode: body?.live_trade_block_code ? String(body.live_trade_block_code) : null,
+        blockReason: body?.live_trade_blocked_reason ? String(body.live_trade_blocked_reason) : "",
+      })
       addLog(
         requestedState
           ? (effectiveState
@@ -1149,6 +1207,18 @@ export function QuickstartSection() {
   useEffect(() => {
     refreshLiveTradeStatus()
   }, [refreshLiveTradeStatus])
+
+  // Re-read the connection-scoped admission decision while QuickStart is
+  // visible. Protection reconciliation and provider cooldowns can change
+  // independently of a settings mutation; a five-second poll keeps the
+  // badge/reason aligned with the same engine-states endpoint used by the
+  // connection card without turning the cumulative dispatch counters into
+  // a false "Live blocked" signal.
+  useEffect(() => {
+    if (!connectionId && !activeConnectionId) return
+    const interval = setInterval(() => { void refreshLiveTradeStatus() }, 5_000)
+    return () => clearInterval(interval)
+  }, [connectionId, activeConnectionId, refreshLiveTradeStatus])
 
   // ── External `quickstart:refresh` listener ─────────────────────────────
   // The `QuickstartConnectionControls` strip (mounted at the top of the
@@ -1338,12 +1408,24 @@ export function QuickstartSection() {
     },
     {
       key:    "live",
-      label:  stats.liveDispatchBlocked > 0 && stats.liveOrdersFilled === 0 ? "Live blocked" : stats.liveDispatchFailed > 0 && stats.liveOrdersFilled === 0 ? "Live errors" : "Live",
+      // `liveDispatchBlocked` / `liveDispatchFailed` are bounded diagnostic
+      // counters for the latest dispatch snapshot. They are not admission
+      // state and can describe an earlier protection halt. Use the current
+      // connection-scoped readiness decision for the label so a healthy
+      // procedure cannot be contradicted by stale counters (and a real halt
+      // remains explicit with its reason in the tooltip below).
+      label:  liveReadiness?.executionMode === "blocked"
+        ? "Live blocked"
+        : liveReadiness?.executionMode === "live" && stats.liveDispatchFailed > 0 && stats.liveOrdersFilled === 0
+          ? "Live errors"
+          : "Live",
       // liveOrdersFilled persists between cycles and is used as the primary
       // "live is fully active" signal; livePositionsOpen supplements it when
       // positions are currently open.
       done:   stats.liveOrdersFilled > 0 || stats.livePositionsOpen > 0,
-      active: stats.livePositionsOpen > 0 || (stats.engineRunning && stats.liveDispatchAttempted > 0 && stats.liveDispatchBlocked === 0 && stats.liveDispatchFailed === 0),
+      active: liveReadiness?.executionMode === "blocked"
+        ? false
+        : stats.livePositionsOpen > 0 || (stats.engineRunning && stats.liveDispatchAttempted > 0 && stats.liveDispatchBlocked === 0 && stats.liveDispatchFailed === 0),
     },
   ]
 
@@ -1594,6 +1676,9 @@ export function QuickstartSection() {
             {pipelineStages.map(({ key, label, done, active, pct }) => (
               <div
                 key={key}
+                title={key === "live" && liveReadiness?.executionMode === "blocked"
+                  ? liveReadiness.blockReason || "Live exchange order placement is currently blocked"
+                  : undefined}
                 className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full border text-[10px] transition-colors ${
                   done
                     ? "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400"
@@ -1628,6 +1713,15 @@ export function QuickstartSection() {
               )}
             </div>
           </div>
+
+          {liveTradeActive && liveReadiness?.executionMode === "blocked" && (
+            <div
+              role="status"
+              className="text-[10px] text-red-700 dark:text-red-300 bg-red-500/10 border border-red-500/20 rounded px-2 py-1"
+            >
+              Live angefordert; neue Entries pausiert: {liveReadiness.blockReason || "aktueller Entry-Schutz"}
+            </div>
+          )}
         </div>
 
         {/* ── live processing row (always visible, AFTER historical) ─────
