@@ -5183,7 +5183,60 @@ export async function setSettings(key: string, value: any): Promise<void> {
   await initRedis()
   const client = getClient()
   const data = flattenForHmset(value)
-  await client.hset(`settings:${key}`, data)
+  const writes: Promise<unknown>[] = [client.hset(`settings:${key}`, data)]
+
+  // Engine state has two live namespaces during rolling deploys:
+  // `settings:trade_engine_state:{id}` is the compatibility mirror used by
+  // startup/heartbeat writers, while the scoped Main hash is read by the
+  // progression/status routes.  Writing only the legacy hash leaves lifecycle
+  // fields (especially prehistoric gates) stranded in an older scoped session;
+  // that made the UI report "queued/gated" even while the same worker was
+  // running with a complete historic hand-off.  Mirror the unscoped Main
+  // state at the persistence boundary so every lifecycle update reaches both
+  // readers.  Direct scoped writes remain untouched and engine-type-specific.
+  const match = /^trade_engine_state:(.+)$/.exec(String(key))
+  if (match && match[1] && !match[1].includes(":")) {
+    const safeConnectionId = match[1].replace(/[^A-Za-z0-9._-]/g, "_") || match[1]
+    const scopedKey = `settings:trade_engine_state:${safeConnectionId}:main`
+    writes.push(client.hset(scopedKey, data))
+
+    // A running lifecycle checkpoint supersedes pause metadata left by an
+    // older global pause.  Remove it from all compatibility mirrors once a
+    // real processor contract (not merely a heartbeat) is published; leaving
+    // those fields behind makes read-only status pages show a contradictory
+    // "running + paused" state after a clean reinstall.
+    const lifecycleFields = [
+      "engine_ready",
+      "entry_processors_gated",
+      "prehistoric_bootstrap_status",
+      "prehistoric_data_loaded",
+      "all_phases_started",
+      "indications_started",
+      "strategies_started",
+      "realtime_started",
+      "live_trading_started",
+    ]
+    const publishesRunningContract =
+      String(data.status || "").toLowerCase() === "running" &&
+      lifecycleFields.some((field) => Object.prototype.hasOwnProperty.call(data, field))
+    if (publishesRunningContract) {
+      const stalePauseFields = [
+        "pause_requested",
+        "pause_reason",
+        "pause_requested_at",
+        "paused_at",
+        "paused_by",
+      ]
+      writes.push(client.hdel(`settings:${key}`, ...stalePauseFields))
+      writes.push(client.hdel(scopedKey, ...stalePauseFields))
+      // The raw hash is a legacy read surface outside the `settings:` helper;
+      // clear only this same connection's stale pause marker as part of the
+      // scoped lifecycle transition.
+      writes.push(client.hdel(`trade_engine_state:${safeConnectionId}`, ...stalePauseFields))
+    }
+  }
+
+  await Promise.all(writes)
 }
 
 export async function persistNow(): Promise<boolean> {
