@@ -19,6 +19,15 @@ const INDICATIONS = ["direction", "move", "active", "active_advanced", "special"
 const STRATEGIES = ["base", "main", "real", "live", "dca", "block"]
 const PAGES = ["/", "/active-exchange", "/indications", "/sets", "/strategies", "/main", "/main/realtime", "/live-trading", "/statistics", "/statistics/direct-trade", "/statistics/indications/common", "/statistics/indications/main", "/statistics/indications/signal", "/monitoring", "/monitoring-advanced", "/settings", "/settings/connections"]
 const MAX_CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.BINGX_VST_VERIFY_CONCURRENCY || 4)))
+const MAX_SOAK_SYMBOLS_PER_BATCH = 1_000
+const requestedSoakBatchSize = Number(process.env.BINGX_VST_VERIFY_BATCH_SIZE || MAX_SOAK_SYMBOLS_PER_BATCH)
+const SOAK_SYMBOLS_PER_BATCH = Math.max(
+  1,
+  Math.min(
+    MAX_SOAK_SYMBOLS_PER_BATCH,
+    Number.isFinite(requestedSoakBatchSize) ? Math.floor(requestedSoakBatchSize) : MAX_SOAK_SYMBOLS_PER_BATCH,
+  ),
+)
 const report: any = { schemaVersion: 1, runId: randomUUID(), startedAt: new Date().toISOString(), success: false, phases: {}, violations: [] }
 
 const fail = (condition: unknown, message: string) => { if (!condition) throw new Error(message) }
@@ -48,18 +57,45 @@ async function computation(symbols: string[]) {
   // Reuse the production soak's full pipeline and its memory, Redis, event,
   // generation, progression, relationship and coordinator assertions. Passing
   // the discovered inventory explicitly prevents its fallback basket from
-  // becoming an accidental authority.
+  // becoming an accidental authority. The production soak intentionally caps
+  // one run at 1,000 symbols to keep its memory/key-budget assertions bounded;
+  // process a larger authoritative exchange inventory in sequential batches
+  // so every discovered symbol is still covered without concurrent ownership
+  // of the same connection/Redis scope.
   let maxLagMs = 0, tick = Date.now(), running = true
   const timer = setInterval(() => { const now = Date.now(); maxLagMs = Math.max(maxLagMs, now - tick - 25); tick = now }, 25)
+  const batches: string[][] = []
+  for (let offset = 0; offset < symbols.length; offset += SOAK_SYMBOLS_PER_BATCH) {
+    batches.push(symbols.slice(offset, offset + SOAK_SYMBOLS_PER_BATCH))
+  }
+  const batchResults: Array<{ batch: number; symbols: number }> = []
   try {
-    const env = { ...process.env, BASE_URL: APP, SOAK_CONNECTION_ID: "bingx-x02", SOAK_SYMBOLS: symbols.join(","), SYMBOL_COUNT: String(symbols.length), START_SIMULATED_ENGINE: "1", FORCE_SIMULATED: "1", FORCE_LIVE: "0", ALLOW_LIVE_ORDER_PLACEMENT: "0", SOAK_MAX_CONCURRENCY: String(MAX_CONCURRENCY) }
-    const code = await new Promise<number>((resolve, reject) => { const child = spawn(process.execPath, ["scripts/verify-prod-soak.mjs"], { cwd: process.cwd(), env, stdio: "inherit" }); child.once("error", reject); child.once("exit", value => resolve(value ?? 1)) })
-    fail(code === 0, `Exhaustive simulated production soak failed (${code})`)
+    for (const [index, batch] of batches.entries()) {
+      const env = {
+        ...process.env,
+        BASE_URL: APP,
+        SOAK_CONNECTION_ID: "bingx-x02",
+        SOAK_SYMBOLS: batch.join(","),
+        SYMBOL_COUNT: String(batch.length),
+        START_SIMULATED_ENGINE: "1",
+        FORCE_SIMULATED: "1",
+        FORCE_LIVE: "0",
+        ALLOW_LIVE_ORDER_PLACEMENT: "0",
+        SOAK_MAX_CONCURRENCY: String(MAX_CONCURRENCY),
+      }
+      const code = await new Promise<number>((resolve, reject) => {
+        const child = spawn(process.execPath, ["scripts/verify-prod-soak.mjs"], { cwd: process.cwd(), env, stdio: "inherit" })
+        child.once("error", reject)
+        child.once("exit", value => resolve(value ?? 1))
+      })
+      fail(code === 0, `Exhaustive simulated production soak failed for batch ${index + 1}/${batches.length} (${code})`)
+      batchResults.push({ batch: index + 1, symbols: batch.length })
+    }
     running = false; clearInterval(timer)
     const stats: any = await json(`${APP}/api/connections/progression/bingx-x02/stats?t=${Date.now()}`)
     finiteTree(stats)
     fail(maxLagMs <= Number(process.env.BINGX_VST_VERIFY_MAX_EVENT_LOOP_LAG_MS || 1_000), `Event-loop lag unbounded: ${maxLagMs}ms`)
-    return { exchangeSubmissionDisabled: true, exactSymbolCount: symbols.length, normalizedUniqueSymbols: symbols, requiredIndicationLanes: INDICATIONS, requiredStrategyLanes: STRATEGIES, boundedConcurrency: MAX_CONCURRENCY, maxEventLoopLagMs: maxLagMs, productionSoakPassed: true }
+    return { exchangeSubmissionDisabled: true, exactSymbolCount: symbols.length, normalizedUniqueSymbols: symbols, batchCount: batches.length, batchResults, maxSoakSymbolsPerBatch: MAX_SOAK_SYMBOLS_PER_BATCH, requiredIndicationLanes: INDICATIONS, requiredStrategyLanes: STRATEGIES, boundedConcurrency: MAX_CONCURRENCY, maxEventLoopLagMs: maxLagMs, productionSoakPassed: true }
   } finally { if (running) clearInterval(timer) }
 }
 
@@ -106,4 +142,3 @@ async function main() {
   finally { report.finishedAt = new Date().toISOString(); await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 }); console.log(`[orchestrated-verifier] ${report.success ? "PASS" : "FAIL"} artifact=${path}`) }
 }
 void main()
-

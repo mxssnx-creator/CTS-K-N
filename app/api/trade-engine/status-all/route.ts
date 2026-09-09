@@ -8,6 +8,7 @@ import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-sc
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import { selectLiveOrderMetricsSnapshot } from "@/lib/live-order-metrics-snapshot"
 import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
+import { canonicalStageSettingsOverlay } from "@/lib/trade-engine-status-settings"
 
 function isEnabledFlag(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
@@ -312,6 +313,8 @@ async function buildStatusAllResponse() {
             runningHint,
             progressionHashes,
             liveDetailHash,
+            legacyConnectionSettings,
+            canonicalConnectionSettings,
           ] = await Promise.all([
             withTimeout(
               client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
@@ -343,6 +346,16 @@ async function buildStatusAllResponse() {
             ),
             withTimeout(
               client.hgetall(`strategy_detail:${conn.id}:live`).catch(() => ({} as Record<string, string>)),
+              750,
+              {} as Record<string, string>,
+            ),
+            withTimeout(
+              client.hgetall(`connection_settings:${conn.id}`).catch(() => ({} as Record<string, string>)),
+              750,
+              {} as Record<string, string>,
+            ),
+            withTimeout(
+              client.hgetall(`settings:connection_settings:${conn.id}`).catch(() => ({} as Record<string, string>)),
               750,
               {} as Record<string, string>,
             ),
@@ -418,6 +431,14 @@ async function buildStatusAllResponse() {
             ...settingsState,
             ...scopedRuntimeState,
             ...scopedSettingsState,
+            // Runtime hashes intentionally survive restarts and can retain a
+            // previous PF grid. The canonical settings mirrors are the
+            // operator's durable source; overlay only validated stage fields
+            // so the overview cannot display stale thresholds.
+            ...canonicalStageSettingsOverlay({
+              ...legacyConnectionSettings,
+              ...canonicalConnectionSettings,
+            }),
           }
           const runtime = resolveDistributedEngineRuntime({
             runningHint,
