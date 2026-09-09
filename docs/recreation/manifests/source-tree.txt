@@ -53,6 +53,7 @@ SUCCESS-COORDINATION-GUIDE.md
 SYSTEM_SUMMARY.md
 TEMPLATE_LAYOUT_FIXES.md
 TEST-SUITE-SESSION-37.md
+__tests__/diagnostic-cleanup.ts
 __tests__/e2e/progression-flow.test.ts
 __tests__/fixtures/cts-g-trend-break.json
 __tests__/integration/live-order-service.test.ts

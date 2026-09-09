@@ -7,6 +7,7 @@ integration	__tests__/integration/live-order-service.test.ts
 integration	__tests__/integration/main-engine-live-dispatch.test.ts
 integration	__tests__/integration/preset-optimizer-store.test.ts
 integration	__tests__/integration/progression-api.test.ts
+operator-tool	__tests__/diagnostic-cleanup.ts
 operator-tool	__tests__/fixtures/cts-g-trend-break.json
 operator-tool	components/test-dashboard.tsx
 operator-tool	components/test-live-orders.tsx
