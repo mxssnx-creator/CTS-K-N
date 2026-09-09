@@ -18,6 +18,98 @@ function nonNegativeMetric(value: unknown): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
 }
 
+type CurrentDispatchOutcome = {
+  attempted: number
+  placed: number
+  filled: number
+  pending: number
+  blocked: number
+  deferred: number
+  rejected: number
+  errored: number
+  missingEntry: number
+  noResult: number
+  otherStatus: number
+  failedToOpen: number
+  durationMsTotal: number
+  durationMsMax: number
+  avgAttemptMs: number
+  symbols: number
+  updatedAt: number
+}
+
+const EMPTY_CURRENT_DISPATCH_OUTCOME: CurrentDispatchOutcome = {
+  attempted: 0,
+  placed: 0,
+  filled: 0,
+  pending: 0,
+  blocked: 0,
+  deferred: 0,
+  rejected: 0,
+  errored: 0,
+  missingEntry: 0,
+  noResult: 0,
+  otherStatus: 0,
+  failedToOpen: 0,
+  durationMsTotal: 0,
+  durationMsMax: 0,
+  avgAttemptMs: 0,
+  symbols: 0,
+  updatedAt: 0,
+}
+
+/**
+ * Read the latest per-symbol dispatch snapshot without treating the
+ * connection-lifetime order ledger as a current-cycle error counter. The
+ * coordinator stamps every symbol row with `s:{symbol}:ts`; rows older than
+ * two minutes are excluded so a restarted engine cannot resurrect stale
+ * failures in the server overview.
+ */
+function aggregateCurrentDispatchOutcome(
+  hash: Record<string, string> | null | undefined,
+  nowMs = Date.now(),
+): CurrentDispatchOutcome {
+  const result: CurrentDispatchOutcome = { ...EMPTY_CURRENT_DISPATCH_OUTCOME }
+  if (!hash || typeof hash !== "object") return result
+  const freshnessMs = 120_000
+  const suffixes: Array<[string, keyof CurrentDispatchOutcome]> = [
+    ["dispatch_attempted_count", "attempted"],
+    ["dispatch_placed_count", "placed"],
+    ["dispatch_filled_count", "filled"],
+    ["dispatch_pending_count", "pending"],
+    ["dispatch_blocked_count", "blocked"],
+    ["dispatch_deferred_count", "deferred"],
+    ["dispatch_rejected_count", "rejected"],
+    ["dispatch_errored_count", "errored"],
+    ["dispatch_missing_entry_count", "missingEntry"],
+    ["dispatch_no_result_count", "noResult"],
+    ["dispatch_other_status_count", "otherStatus"],
+    ["dispatch_failed_to_open_count", "failedToOpen"],
+    ["dispatch_duration_ms", "durationMsTotal"],
+  ]
+  const seenSymbols = new Set<string>()
+  let maxDuration = 0
+  for (const [field, raw] of Object.entries(hash)) {
+    if (!field.startsWith("s:") || !field.endsWith(":ts")) continue
+    const symbol = field.slice(2, -3)
+    const updatedAt = Number(raw) || 0
+    if (!symbol || !updatedAt || nowMs - updatedAt < 0 || nowMs - updatedAt > freshnessMs) continue
+    seenSymbols.add(symbol)
+    result.updatedAt = Math.max(result.updatedAt, updatedAt)
+    for (const [suffix, target] of suffixes) {
+      const value = nonNegativeMetric(hash[`s:${symbol}:${suffix}`])
+      result[target] += value
+      if (suffix === "dispatch_duration_ms") maxDuration = Math.max(maxDuration, value)
+    }
+  }
+  result.symbols = seenSymbols.size
+  result.durationMsMax = maxDuration
+  result.avgAttemptMs = result.attempted > 0
+    ? Math.round((result.durationMsTotal / result.attempted) * 100) / 100
+    : 0
+  return result
+}
+
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -219,6 +311,7 @@ async function buildStatusAllResponse() {
             scopedSettingsState,
             runningHint,
             progressionHashes,
+            liveDetailHash,
           ] = await Promise.all([
             withTimeout(
               client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
@@ -248,7 +341,13 @@ async function buildStatusAllResponse() {
                 {} as Record<string, string>,
               )),
             ),
+            withTimeout(
+              client.hgetall(`strategy_detail:${conn.id}:live`).catch(() => ({} as Record<string, string>)),
+              750,
+              {} as Record<string, string>,
+            ),
           ])
+          const liveDispatch = aggregateCurrentDispatchOutcome(liveDetailHash)
           const orderSnapshot = selectLiveOrderMetricsSnapshot(
             progressionHashes[progressionKeys.indexOf(scope.legacyProgressionKey)],
             progressionHashes[progressionKeys.indexOf(scope.progressionKey)],
@@ -276,6 +375,25 @@ async function buildStatusAllResponse() {
             openPositionsCreated: nonNegativeMetric(progression.live_positions_created_count),
             openPositionsClosed: nonNegativeMetric(progression.live_positions_closed_count),
             volumeUsd: nonNegativeMetric(progression.live_volume_usd_total),
+            // Current-cycle coordinator outcomes are deliberately separate
+            // from the connection-lifetime venue ledger above. In particular,
+            // a large historical `failed` value must not make a healthy
+            // entry-protection halt look like a burst of new API errors.
+            currentDispatch: liveDispatch,
+            currentErrors: liveDispatch.failedToOpen,
+            currentDeferred: liveDispatch.deferred,
+            currentBlocked: liveDispatch.blocked,
+            lifetimeErrors: nonNegativeMetric(progression.live_orders_failed_count),
+            lifetimeRejects: nonNegativeMetric(progression.live_orders_rejected_count),
+            counterIntegrity: {
+              globalTerminal: nonNegativeMetric(progression.live_orders_placed_count)
+                + nonNegativeMetric(progression.live_orders_failed_count),
+              globalAttempted: nonNegativeMetric(progression.live_orders_attempted_count),
+              globalConsistent: nonNegativeMetric(progression.live_orders_attempted_count)
+                === nonNegativeMetric(progression.live_orders_placed_count)
+                  + nonNegativeMetric(progression.live_orders_failed_count),
+              currentDispatchTerminal: liveDispatch.placed + liveDispatch.failedToOpen,
+            },
           }
           // Read-only Next route contexts must not import the complete engine
           // graph. Process-independent Redis state remains authoritative across

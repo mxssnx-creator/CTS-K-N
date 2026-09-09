@@ -1093,6 +1093,31 @@ describe("live-order-service integration accounting", () => {
     })
   })
 
+  test("epoch-guarded per-symbol writes reject stale live-stage callbacks", async () => {
+    const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
+    kvStore.set("engine_lock:conn-epoch", "owner-token:123")
+
+    await expect(recordPerSymbolOrderCounter(
+      "conn-epoch",
+      "BTCUSDT",
+      "long",
+      "failed",
+      { epoch: 999, requireEpoch: true },
+    )).resolves.toBe(false)
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-epoch")).toBeUndefined()
+
+    await expect(recordPerSymbolOrderCounter(
+      "conn-epoch",
+      "BTCUSDT",
+      "long",
+      "failed",
+      { epoch: 123, requireEpoch: true },
+    )).resolves.toBe(true)
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-epoch")).toEqual({
+      "BTCUSDT:long:failed": "1",
+    })
+  })
+
   test("keeps unequal long and short order counts independently", async () => {
     const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
 
