@@ -154,6 +154,12 @@ describe("requested regression guardrails", () => {
     expect(orderBlock).not.toContain('incrementOrdersBySymbol(connectionId, pos.symbol')
   })
 
+  test("live-stage reconciliation initializes legacy progression safely", () => {
+    const source = read("lib/trade-engine/stages/live-stage.ts")
+    expect(source).toContain('pushStep(\n            pos,\n            "close"')
+    expect(source).not.toContain("pos.progression!.push")
+  })
+
   test("live order statistics keep long and short buckets independent", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")

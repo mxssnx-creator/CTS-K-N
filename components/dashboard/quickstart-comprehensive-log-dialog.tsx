@@ -655,7 +655,7 @@ export function QuickstartComprehensiveLogDialog() {
                           <span className="px-2 py-0.5 rounded bg-yellow-100 text-yellow-800">Rejected: {stats.liveExecution.ordersRejected}</span>
                         )}
                         {stats.liveExecution.ordersFailed > 0 && (
-                          <span className="px-2 py-0.5 rounded bg-red-100 text-red-800">Failed: {stats.liveExecution.ordersFailed}</span>
+                          <span className="px-2 py-0.5 rounded bg-red-100 text-red-800">Lifetime errors: {stats.liveExecution.ordersFailed}</span>
                         )}
                         {stats.liveExecution.ordersSimulated > 0 && (
                           <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800">Simulated: {stats.liveExecution.ordersSimulated}</span>

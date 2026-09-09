@@ -1538,7 +1538,7 @@ export function ActiveConnectionCard({
           liveDispatchPending:   data?.liveExecution?.dispatchOutcome?.pending || 0,
           liveDispatchBlocked:   data?.liveExecution?.dispatchOutcome?.blocked || 0,
           liveDispatchAttempted: data?.liveExecution?.dispatchOutcome?.attempted || 0,
-          liveDispatchDeferred:  data?.liveExecution?.dispatchDeferredCount || 0,
+          liveDispatchDeferred:  data?.liveExecution?.dispatchOutcome?.deferred || data?.liveExecution?.dispatchDeferredCount || 0,
           liveDispatchDurationMs: data?.liveExecution?.dispatchOutcome?.durationMsMax || 0,
           liveDispatchAvgAttemptMs: data?.liveExecution?.dispatchOutcome?.avgAttemptMs || 0,
           liveOpenOrders:        data?.liveExecution?.openOrders || 0,
@@ -1931,9 +1931,8 @@ export function ActiveConnectionCard({
     const symbolsTotal = progression?.prehistoricProgress?.symbolsTotal ?? 0
     const ordersPlaced = prehistoricStats?.liveOrdersPlaced ?? 0
     const ordersFilled = prehistoricStats?.liveOrdersFilled ?? 0
-    const ordersFailed =
-      (prehistoricStats?.liveOrdersFailed ?? 0) +
-      (prehistoricStats?.liveOrdersRejected ?? 0)
+    const lifetimeErrors = prehistoricStats?.liveOrdersFailed ?? 0
+    const lifetimeRejects = prehistoricStats?.liveOrdersRejected ?? 0
     const failedToOpen = prehistoricStats?.liveFailedToOpen ?? 0
     const livePnl =
       finiteMetric(prehistoricStats?.liveAggUnrealizedPnl) +
@@ -2087,20 +2086,29 @@ export function ActiveConnectionCard({
       },
     )
 
-    if (ordersFailed > 0) {
+    if (lifetimeErrors > 0) {
       tiles.push({
-        label: "Failed total",
-        value: ordersFailed,
-        title: `Recorded failed/rejected exchange attempts in ${prehistoricStats?.liveOrderCountersScope || "unavailable"}. Includes historical failures; not the latest cycle.`,
+        label: "Lifetime errors",
+        value: lifetimeErrors,
+        title: `Historical exchange errors in ${prehistoricStats?.liveOrderCountersScope || "unavailable"}; this is not the latest dispatch cycle.`,
         tone: "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if (lifetimeRejects > 0) {
+      tiles.push({
+        label: "Lifetime rejects",
+        value: lifetimeRejects,
+        title: `Historical venue rejects in ${prehistoricStats?.liveOrderCountersScope || "unavailable"}; current coordination deferrals are shown separately.`,
+        tone: "text-amber-600 dark:text-amber-400",
       })
     }
 
     if (failedToOpen > 0) {
       tiles.push({
-        label: "Failed open",
+        label: "Current errors",
         value: failedToOpen,
-        title: "Qualified Sets that failed to open in the latest complete per-symbol dispatch snapshot (rejected, error, missing entry or no result).",
+        title: "Terminal errors in the latest complete per-symbol dispatch snapshot (venue reject, error, missing entry or no result). Expected deferrals are excluded.",
         tone: "text-red-600 dark:text-red-400",
       })
     }
@@ -3582,14 +3590,14 @@ export function ActiveConnectionCard({
                           )}
                           {prehistoricStats.liveOrdersRejected > 0 && (
                             <span className="text-muted-foreground">
-                              rejected <span className="text-amber-600 dark:text-amber-400 font-semibold tabular-nums">
+                              lifetime rejects <span className="text-amber-600 dark:text-amber-400 font-semibold tabular-nums">
                                 {prehistoricStats.liveOrdersRejected}
                               </span>
                             </span>
                           )}
                           {prehistoricStats.liveOrdersFailed > 0 && (
                             <span className="text-muted-foreground">
-                              failed <span className="text-red-500 font-semibold tabular-nums">
+                              lifetime errors <span className="text-red-500 font-semibold tabular-nums">
                                 {prehistoricStats.liveOrdersFailed}
                               </span>
                             </span>

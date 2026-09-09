@@ -18275,12 +18275,12 @@ export async function reconcileLivePositions(
           pos.aggregateProtectionQuantity = 0
           if (exitPrice > 0) pos.closePrice = Math.round(exitPrice * 1e8) / 1e8
           pos.closeReason = pos.closeReason || "exchange_reconciliation"
-          pos.progression!.push({
-            step: "close",
-            timestamp: Date.now(),
-            success: true,
-            details: `Reconciled @ ${exitPrice > 0 ? exitPrice.toFixed(8) : "unresolved"} PnL=${realizedPnl.toFixed(4)} accounting=${pos.realizedPnlSource}/${pos.realizedPnlComplete ? "complete" : "incomplete"}`,
-          })
+          pushStep(
+            pos,
+            "close",
+            true,
+            `Reconciled @ ${exitPrice > 0 ? exitPrice.toFixed(8) : "unresolved"} PnL=${realizedPnl.toFixed(4)} accounting=${pos.realizedPnlSource}/${pos.realizedPnlComplete ? "complete" : "incomplete"}`,
+          )
           pos.updatedAt = Date.now()
 
           const movedMarker    = `live:positions:${connectionId}:moved:${pos.id}`

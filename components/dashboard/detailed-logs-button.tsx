@@ -618,7 +618,7 @@ export function DetailedLogsButton() {
                         icon={ShieldAlert}
                         label="Order handling"
                         value={`${summary?.liveExecution?.ordersFilled || 0}/${summary?.liveExecution?.ordersPlaced || 0}`}
-                        detail={`${summary?.liveExecution?.ordersFailed || 0} failed · ${summary?.liveExecution?.ordersRejected || 0} rejected`}
+                        detail={`${summary?.liveExecution?.ordersFailed || 0} lifetime errors · ${summary?.liveExecution?.ordersRejected || 0} lifetime rejects`}
                       />
                     </div>
 

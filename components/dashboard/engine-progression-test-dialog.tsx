@@ -1130,8 +1130,10 @@ function ResultsPanel({
                      delta={deltas ? `Δ${deltas.liveOrdersPlaced}` : undefined} />
           <ResultRow label="Orders Filled"    value={fmtNum(le.ordersFilled)}
                      delta={deltas ? `Δ${deltas.liveOrdersFilled}` : undefined} />
-          <ResultRow label="Orders Failed"    value={fmtNum(le.ordersFailed + le.ordersRejected)}
-                     tone={(le.ordersFailed + le.ordersRejected) === 0 ? "ok" : "warn"} />
+          <ResultRow label="Lifetime Errors"  value={fmtNum(le.ordersFailed)}
+                     tone={le.ordersFailed === 0 ? "ok" : "warn"} />
+          <ResultRow label="Lifetime Rejects" value={fmtNum(le.ordersRejected)}
+                     tone={le.ordersRejected === 0 ? "ok" : "warn"} />
           <ResultRow label="Fill Rate"        value={fmtPct(le.fillRate)}
                      tone={le.fillRate >= 70 ? "ok" : le.fillRate >= 40 ? "warn" : "bad"} />
           <ResultRow label="Positions Created" value={fmtNum(le.positionsCreated)} />

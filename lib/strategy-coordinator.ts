@@ -144,6 +144,7 @@ import {
 } from "@/lib/strategy-execution-policy"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
+import { classifyLiveDispatchResult } from "@/lib/live-dispatch-outcome"
 
 /**
  * Runtime stage snapshots must not duplicate the canonical, verbose Set key
@@ -9415,6 +9416,7 @@ export class StrategyCoordinator {
             let otherStatus = 0
             let pending = 0
             let blocked = 0
+            let deferred = 0
             const dispatchStartedAt = Date.now()
             const physicallyExecutedSets: StrategySet[] = []
 
@@ -9688,46 +9690,23 @@ export class StrategyCoordinator {
                 // on the same accounting path as an exchange fill so the
                 // paper position, active Set snapshot, and progression stats
                 // cannot disagree (ordersSimulated > 0 while Live Active=0).
-                if (
-                  liveResult.status === "open" ||
-                  liveResult.status === "filled" ||
-                  liveResult.status === "partially_filled" ||
-                  liveResult.status === "simulated"
-                ) {
+                const outcome = classifyLiveDispatchResult(liveResult as any)
+                if (outcome === "filled") {
                   filled++
                   placed++
                   if (liveResult.status === "partially_filled") pending++
                   physicallyExecutedSets.push(set)
-                } else if (
-                  liveResult.status === "placed" ||
-                  liveResult.status === "pending" ||
-                  liveResult.status === "pending_fill" ||
-                  liveResult.status === "placed_unconfirmed"
-                ) {
+                } else if (outcome === "pending") {
                   placed++
                   pending++
-                } else if (liveResult.status === "rejected") {
-                  // A readiness block is not an exchange rejection. In
-                  // particular, Forex REST is intentionally read-only and
-                  // must be reported as blocked instead of "failed to open".
-                  const resultRecord = liveResult as any
-                  const resultIsBlocked =
-                    resultRecord.executionMode === "blocked" ||
-                    Boolean(resultRecord.executionBlockCode) ||
-                    /\b(order )?blocked\b/i.test(String(resultRecord.statusReason || ""))
-                  if (resultIsBlocked) blocked++
-                  else rejected++
-                } else if (liveResult.status === "error") {
-                  // 101204 (Insufficient margin) and other recoverable margin/rejection
-                  // errors are counted as "rejected" not "errored" for accurate stats.
-                  // Only truly exceptional errors (circuit breaker, API down, etc.) count as errored.
-                  if ((liveResult as any).executionMode === "blocked" || (liveResult as any).executionBlockCode) {
-                    blocked++
-                  } else if ((liveResult as any).errorCode === "101204" || (liveResult as any).code === "101204") {
-                    rejected++
-                  } else {
-                    errored++
-                  }
+                } else if (outcome === "blocked") {
+                  blocked++
+                } else if (outcome === "deferred") {
+                  deferred++
+                } else if (outcome === "rejected") {
+                  rejected++
+                } else if (outcome === "errored") {
+                  errored++
                 } else {
                   otherStatus++
                 }
@@ -9750,6 +9729,7 @@ export class StrategyCoordinator {
                 dispatch_filled_count: String(filled),
                 dispatch_pending_count: String(pending),
                 dispatch_blocked_count: String(blocked),
+                dispatch_deferred_count: String(deferred),
                 dispatch_rejected_count: String(rejected),
                 dispatch_errored_count: String(errored),
                 dispatch_missing_entry_count: String(missingEntry),
@@ -9763,6 +9743,7 @@ export class StrategyCoordinator {
                 [`s:${symbol}:dispatch_filled_count`]: String(filled),
                 [`s:${symbol}:dispatch_pending_count`]: String(pending),
                 [`s:${symbol}:dispatch_blocked_count`]: String(blocked),
+                [`s:${symbol}:dispatch_deferred_count`]: String(deferred),
                 [`s:${symbol}:dispatch_rejected_count`]: String(rejected),
                 [`s:${symbol}:dispatch_errored_count`]: String(errored),
                 [`s:${symbol}:dispatch_missing_entry_count`]: String(missingEntry),
