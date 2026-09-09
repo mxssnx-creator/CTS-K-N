@@ -474,6 +474,12 @@ export function QuickstartSection() {
   // Pulled from /api/exchange/live-summary. Polled every 10s whenever the
   // expanded panel is open so the footer feels live without hammering Redis.
   const [liveSummary, setLiveSummary] = useState<ExchangeLiveSummary | null>(null)
+  const [liveSummaryError, setLiveSummaryError] = useState<string | null>(null)
+  const liveSummaryRequestRef = useRef<{
+    connectionId: string
+    controller: AbortController
+    pending: Promise<void>
+  } | null>(null)
 
   const logsEndRef = useRef<HTMLDivElement>(null)
   // `useRef<T>()` with no argument is rejected by stricter `@types/react`
@@ -847,6 +853,15 @@ export function QuickstartSection() {
       .then((d: IndicationConfigCounts | null) => { if (d) setConfigCounts(d) })
       .catch(() => { /* non-critical */ }), [])
 
+  useEffect(() => {
+    setLiveSummary(null)
+    setLiveSummaryError(null)
+    return () => {
+      liveSummaryRequestRef.current?.controller.abort()
+      liveSummaryRequestRef.current = null
+    }
+  }, [connectionId])
+
   const fetchLiveSummary = useCallback(() => {
     // A dashboard selection is a data boundary: never retain or aggregate a
     // previous connection's live balances/positions while the selector is
@@ -855,11 +870,37 @@ export function QuickstartSection() {
       setLiveSummary(null)
       return Promise.resolve()
     }
-
-    return fetch(`/api/exchange/live-summary?connectionId=${encodeURIComponent(connectionId)}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: ExchangeLiveSummary | null) => { if (d) setLiveSummary(d) })
-      .catch(() => { /* non-critical */ })
+    const existing = liveSummaryRequestRef.current
+    if (existing?.connectionId === connectionId) return existing.pending
+    existing?.controller.abort()
+    const request = { connectionId, controller: new AbortController(), pending: Promise.resolve() }
+    liveSummaryRequestRef.current = request
+    request.pending = (async () => {
+      const timeout = setTimeout(() => request.controller.abort(), 20_000)
+      try {
+        const response = await fetch(`/api/exchange/live-summary?connectionId=${encodeURIComponent(connectionId)}`, {
+          cache: "no-store", signal: request.controller.signal,
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const data: ExchangeLiveSummary = await response.json()
+        if (!Array.isArray(data.connections) || !data.totals ||
+            data.connections.some((entry) => entry.connectionId !== connectionId)) {
+          throw new Error("Invalid connection snapshot")
+        }
+        if (liveSummaryRequestRef.current === request) {
+          setLiveSummary(data)
+          setLiveSummaryError(null)
+        }
+      } catch {
+        if (liveSummaryRequestRef.current === request) {
+          setLiveSummaryError("Exchange snapshot unavailable. Any values below are the last successful snapshot.")
+        }
+      } finally {
+        clearTimeout(timeout)
+        if (liveSummaryRequestRef.current === request) liveSummaryRequestRef.current = null
+      }
+    })()
+    return request.pending
   }, [connectionId])
 
   useEffect(() => {
@@ -2484,10 +2525,15 @@ export function QuickstartSection() {
                 <span className="text-[10px] text-muted-foreground">
                   {liveSummary
                     ? `${liveSummary.connections.length} conn${liveSummary.connections.length === 1 ? "" : "s"}`
-                    : "loading…"}
+                    : liveSummaryError ? "unavailable" : "loading…"}
                 </span>
               </div>
 
+              {liveSummaryError && (
+                <p role="status" className="text-[11px] text-amber-700 dark:text-amber-400">
+                  {liveSummaryError}{liveSummary ? ` Last update: ${new Date(liveSummary.updatedAt).toLocaleTimeString()}.` : ""}
+                </p>
+              )}
               {/* Totals row — top-level roll-up across connections */}
               <div className="flex flex-wrap gap-1.5">
                 <MiniStat

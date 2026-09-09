@@ -53,6 +53,7 @@ SUCCESS-COORDINATION-GUIDE.md
 SYSTEM_SUMMARY.md
 TEMPLATE_LAYOUT_FIXES.md
 TEST-SUITE-SESSION-37.md
+__tests__/diagnostic-cleanup.ts
 __tests__/e2e/progression-flow.test.ts
 __tests__/fixtures/cts-g-trend-break.json
 __tests__/integration/live-order-service.test.ts
@@ -180,10 +181,13 @@ __tests__/unit/indication-set-write-pressure.test.ts
 __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
+__tests__/unit/live-config-performance.test.ts
 __tests__/unit/live-entry-budget-block-cache.test.ts
 __tests__/unit/live-entry-protection-admission.test.ts
+__tests__/unit/live-entry-readiness.test.ts
 __tests__/unit/live-execution-summary.test.ts
 __tests__/unit/live-order-coordination.test.ts
+__tests__/unit/live-order-metrics-snapshot.test.ts
 __tests__/unit/live-order-preflight.test.ts
 __tests__/unit/live-pnl-calculation.test.ts
 __tests__/unit/live-pos-count-target.test.ts
@@ -207,6 +211,7 @@ __tests__/unit/live-trading-analytics.test.ts
 __tests__/unit/live-trading-dashboard-contract.test.ts
 __tests__/unit/live-trading-format.test.ts
 __tests__/unit/live-volume-vst-floor.test.ts
+__tests__/unit/log-payload.test.ts
 __tests__/unit/log-retention-contract.test.ts
 __tests__/unit/logistics-workflow.test.ts
 __tests__/unit/main-indication-settings.test.ts
@@ -330,6 +335,7 @@ __tests__/unit/strategy-volume-coordination.test.ts
 __tests__/unit/symbol-capacity.test.ts
 __tests__/unit/symbol-selection-ownership.test.ts
 __tests__/unit/system-inject-credentials.test.ts
+__tests__/unit/system-log-overload.test.ts
 __tests__/unit/system-monitoring-route.test.ts
 __tests__/unit/system-order-ownership.test.ts
 __tests__/unit/technical-indicators.test.ts
@@ -345,6 +351,7 @@ __tests__/unit/trading-stats-route.test.ts
 __tests__/unit/trailing-dca-strategy.test.ts
 __tests__/unit/trend-indication.test.ts
 __tests__/unit/trend-wiring.test.ts
+__tests__/unit/unsubmitted-live-retention.test.ts
 __tests__/unit/volume-calculator-variants.test.ts
 __tests__/unit/volume-identity-systemwide.test.ts
 __tests__/unit/x02-slot-protection-operator.test.ts
@@ -579,6 +586,7 @@ app/api/settings/route.ts
 app/api/settings/set-limits/route.ts
 app/api/settings/system/route.ts
 app/api/startup/initialize/route.ts
+app/api/statistics/deactivated-configs/route.ts
 app/api/statistics/indications/route.ts
 app/api/strategies/overview/route.ts
 app/api/strategies/route.ts
@@ -915,6 +923,7 @@ components/site-logger-provider.tsx
 components/statistics/adjust-strategy-stats.tsx
 components/statistics/analytics-filters.tsx
 components/statistics/block-strategy-stats.tsx
+components/statistics/deactivated-live-configs.tsx
 components/statistics/direct-trade-statistics.tsx
 components/statistics/indication-analytics-dashboard.tsx
 components/statistics/preset-trade-stats.tsx
@@ -983,6 +992,7 @@ docs/DEV-32-SYMBOL-POSTFIX-SOAK-2026-08-20.md
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.checksums.sha256
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.json
 docs/DEV-SYSTEMWIDE-LIVE-AUDIT-2026-08-21.md
+docs/LEGACY-INTEGRATION-20260909.md
 docs/PRODUCTION-OPERATIONS.md
 docs/PROJECT-CONTINUATION.md
 docs/REMOTE-CHISEL-WORKMODE.md
@@ -1259,12 +1269,16 @@ lib/integration-test-suite.ts
 lib/interval-progression-manager.ts
 lib/kilo-database-client.ts
 lib/leverage-policy.ts
+lib/live-config-loss-policy.ts
+lib/live-config-performance.ts
 lib/live-entry-budget-block-cache.ts
 lib/live-entry-protection-admission.ts
+lib/live-entry-readiness.ts
 lib/live-execution-summary.ts
 lib/live-order-coordination.ts
 lib/live-order-counter-keys.ts
 lib/live-order-logger.ts
+lib/live-order-metrics-snapshot.ts
 lib/live-order-safety.ts
 lib/live-order-service.ts
 lib/live-order-smoke.ts
@@ -1284,6 +1298,7 @@ lib/live-trading-analytics.ts
 lib/load-test-framework.ts
 lib/load-testing.ts
 lib/local-redis.ts
+lib/log-payload.ts
 lib/logger.ts
 lib/logistics-workflow.ts
 lib/main-indication-settings.ts
@@ -1479,6 +1494,7 @@ lib/trend-indication.ts
 lib/types-auto-optimal.ts
 lib/types-preset-coordination.ts
 lib/types.ts
+lib/unsubmitted-live-retention.cjs
 lib/use-connection-settings.ts
 lib/use-websocket.ts
 lib/user-connections-config.ts
@@ -1598,6 +1614,7 @@ scripts/repair-redis-retention.ts
 scripts/replay-dca-complete-14d.ts
 scripts/resolve-instance-redis-url.mjs
 scripts/restart.sh
+scripts/retire-unsubmitted-live-records.mjs
 scripts/run-bingx-vst-live-soak.ts
 scripts/run-bingx-vst-orchestrated-verifier.ts
 scripts/run-dev-preview-check.mjs
@@ -1644,6 +1661,7 @@ scripts/validate-comprehensive.mjs
 scripts/verify-block-native-redis.ts
 scripts/verify-deployment-contract.mjs
 scripts/verify-direct-trade-config-lifecycle.ts
+scripts/verify-live-config-loss.mjs
 scripts/verify-migration-status.mjs
 scripts/verify-native-redis-coordination.ts
 scripts/verify-prod-preview.mjs

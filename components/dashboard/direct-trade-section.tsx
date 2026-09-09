@@ -1363,7 +1363,7 @@ export function DirectTradeSection() {
 
               <div className="space-y-1">
                 <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Permanent Deactivation (N Pos)</span>
+                  <span className="text-muted-foreground">Paper Deactivation (N Pos)</span>
                   <span className="font-mono font-medium">{localDeactivatePosCount}</span>
                 </div>
                 <Slider
@@ -1376,7 +1376,7 @@ export function DirectTradeSection() {
                     saveConfig({ deactivatePosCount: v })
                   }}
                 />
-                <p className="text-[10px] text-muted-foreground/70 leading-tight">A negative average over this exact config's latest window stays disabled after restart. Default: 16.</p>
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Paper-only window. Live uses Settings → Strategies → Deactivate losing live Sets / configs (default 12).</p>
               </div>
 
               {/* Trailing Switch */}

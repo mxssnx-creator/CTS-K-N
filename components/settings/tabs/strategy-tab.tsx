@@ -15,6 +15,7 @@ import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
 import { PRESET_INDICATOR_TYPES } from "@/lib/preset-optimizer"
 import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
 import { parseStoredBoolean } from "@/lib/trailing-settings"
+import { liveConfigLossPolicy } from "@/lib/live-config-loss-policy"
 import {
   MAIN_TRADE_BASE_PF_RATIO_MIN,
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
@@ -112,6 +113,24 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
 
   return (
     <TabsContent value="strategy" className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Deactivate losing live Sets / configs</CardTitle>
+          <CardDescription>Applies to Main, Preset, Signal and Direct. Uses confirmed, fully settled exchange positions and their net result after trading fees.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="live-config-loss-enabled">Deactivate after a negative last-N result</Label>
+            <Switch id="live-config-loss-enabled" checked={liveConfigLossPolicy(settings).enabled}
+              onCheckedChange={(enabled) => handleSettingChange("liveConfigAutoDeactivateEnabled", enabled)} />
+          </div>
+          <Label htmlFor="live-config-loss-window">Closed live positions: {liveConfigLossPolicy(settings).window} (default 12)</Label>
+          <Slider id="live-config-loss-window" aria-label="Live Set loss window" min={5} max={25} step={1}
+            value={[liveConfigLossPolicy(settings).window]}
+            onValueChange={([window]) => handleSettingChange("liveConfigLossWindow", window)} />
+          <p className="text-xs text-muted-foreground">Waits for the full window. A negative sum blocks new entries and additions for the exact Set. Existing protection and closing continue. Deactivated Sets remain listed in Statistics; changing the window does not clear their deactivation.</p>
+        </CardContent>
+      </Card>
       <Tabs value={strategySubTab} onValueChange={setStrategySubTab}>
           <TabsList>
             <TabsTrigger value="main">Main</TabsTrigger>

@@ -39,7 +39,7 @@ interface SystemDetailData {
     configuredWithoutWorkerHeartbeat: number;
     uptime: number;
     lastCycleMs: number;
-    avgCycleMs: number;
+    avgCycleMs: number | null;
     totalCycles: number;
     successRate: number;
   };
@@ -59,13 +59,13 @@ interface SystemDetailData {
   data: {
     prehistoric: {
       symbolsLoaded: number;
-      dataKeys: number;
+      dataKeys: number | null;
       candlesProcessed: number;
       lastUpdate: string | null;
     };
     realtime: {
       activeStreams: number;
-      symbolsStreaming: number;
+      symbolsStreaming: number | null;
       intervalsProcessed: number;
       lastUpdate: string | null;
     };
@@ -231,9 +231,7 @@ export function SystemDetailPanel() {
             systemStatus?.engineRuntime?.configuredWithoutWorkerHeartbeat ?? 0,
           uptime: engineStatus?.uptime ?? 0,
           lastCycleMs: progressionState?.cycleTimeMs ?? 0,
-          avgCycleMs: progressionState?.redisDbSizeMb
-            ? Math.round(progressionState.redisDbSizeMb * 100)
-            : 0,
+          avgCycleMs: progressionState?.averageCycleTimeMs ?? null,
           totalCycles: progressionState?.cyclesCompleted ?? 0,
           successRate: progressionState?.cycleSuccessRate ?? 0,
         },
@@ -248,16 +246,14 @@ export function SystemDetailPanel() {
           prehistoric: {
             symbolsLoaded:
               progressionState?.prehistoricSymbolsProcessedCount ?? 0,
-            dataKeys: progressionState?.prehistoricDataSize ?? 0,
+            dataKeys: progressionState?.prehistoricDataSize ?? null,
             candlesProcessed:
               progressionState?.prehistoricCandlesProcessed ?? 0,
             lastUpdate: null,
           },
           realtime: {
             activeStreams: progressionState?.realtimeRunningConnections ?? 0,
-            symbolsStreaming: progressionState?.intervalsProcessed
-              ? Math.ceil(progressionState.intervalsProcessed / 10)
-              : 0,
+            symbolsStreaming: progressionState?.symbolsStreaming ?? null,
             intervalsProcessed: progressionState?.intervalsProcessed ?? 0,
             lastUpdate: null,
           },
@@ -639,7 +635,7 @@ export function SystemDetailPanel() {
                         />
                         <StatTile
                           label="Data Keys"
-                          value={systemData?.data.prehistoric.dataKeys ?? 0}
+                          value={systemData?.data.prehistoric.dataKeys ?? "—"}
                           color="amber"
                         />
                       </div>

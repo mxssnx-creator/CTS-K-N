@@ -120,6 +120,16 @@ export function resolveConfirmedPositionQuantity(
   const closed = firstPositiveNumeric(position.closedQuantity)
   const total = firstPositiveNumeric(position.totalExecutedQuantity)
   const reconstructedLifetime = (current ?? 0) + (closed ?? 0)
+  // Explicit zero execution is evidence, not a missing legacy field. A
+  // requested `quantity` must not resurrect an old unfilled row merely
+  // because its stale status says open/closed.
+  const hasExecutionLedger = [
+    position.executedQuantity, position.totalExecutedQuantity, position.closedQuantity,
+    exchange.quantity, exchange.positionAmt, exchange.contracts, exchange.size,
+  ].some((value) => firstFiniteNumeric(value) !== undefined)
+  const legacyQuantity = !hasExecutionLedger && EXECUTION_PROVING_STATUSES.has(status)
+    ? position.quantity
+    : undefined
 
   if (lifetime) {
     return firstPositiveNumeric(
@@ -128,7 +138,7 @@ export function resolveConfirmedPositionQuantity(
       fillQuantity,
       closed,
       current,
-      EXECUTION_PROVING_STATUSES.has(status) ? position.quantity : undefined,
+      legacyQuantity,
     )
   }
 
@@ -142,7 +152,7 @@ export function resolveConfirmedPositionQuantity(
     current,
     reconstructedOpen,
     fillQuantity > 0 ? Math.max(0, fillQuantity - (closed ?? 0)) : undefined,
-    EXECUTION_PROVING_STATUSES.has(status) ? position.quantity : undefined,
+    legacyQuantity,
   )
 }
 

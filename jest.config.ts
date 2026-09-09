@@ -4,6 +4,7 @@ const config: Config = {
   preset: "ts-jest",
   testEnvironment: "node",
   globalSetup: "<rootDir>/jest.global-setup.js",
+  setupFilesAfterEnv: ["<rootDir>/__tests__/diagnostic-cleanup.ts"],
   roots: ["<rootDir>/__tests__"],
   testMatch: ["**/*.test.ts", "**/*.test.tsx"],
   transform: {

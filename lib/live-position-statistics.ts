@@ -115,16 +115,16 @@ function emptyLane(): LivePositionStatisticsLane {
 
 function positionMeasures(position: Record<string, any>): LivePositionStatisticsLane {
   const status = String(position.status || "").trim().toLowerCase()
-  const isClosed = status === "closed"
-  const isOpen = isLiveOpenStatus(status) && !isClosed
-  const accountingPending = isClosed && isRealizedPnlAccountingPending(position)
   const executed = Math.max(0, resolveConfirmedPositionQuantity(position) ?? 0)
   const closedQuantity = Math.max(0, finite(position.closedQuantity))
   const totalExecuted = Math.max(
     0,
     resolveConfirmedPositionQuantity(position, true) ?? 0,
-    isClosed ? executed : executed + closedQuantity,
+    status === "closed" ? executed : executed + closedQuantity,
   )
+  const isClosed = status === "closed" && totalExecuted > 0
+  const isOpen = isLiveOpenStatus(status) && executed > 0 && !isClosed
+  const accountingPending = isClosed && isRealizedPnlAccountingPending(position)
   const entryPrice = Math.max(0, finite(position.averageExecutionPrice ?? position.entryPrice))
   const lifetimeVolumeUsd = totalExecuted > 0
     ? resolvePositionLifetimeVolumeUsd(position)
@@ -148,7 +148,7 @@ function positionMeasures(position: Record<string, any>): LivePositionStatistics
     closedQuantity: isClosed ? totalExecuted : closedQuantity,
     lifetimeVolumeUsd,
     openVolumeUsd,
-    realizedPnl: accountingPending ? 0 : resolveRealizedPnl(position) ?? 0,
+    realizedPnl: totalExecuted <= 0 || accountingPending ? 0 : resolveRealizedPnl(position) ?? 0,
     unrealizedPnl: isOpen && executed > 0
       ? resolveUnrealizedPnl(position) ?? 0
       : 0,
@@ -418,6 +418,9 @@ export function calculateLivePositionStatistics(
     addBucket(bySource, strategySource(position), measures)
     addBucket(byVariant, strategyVariant(position), measures)
     addBucket(byIndicationType, String(position.indicationType || "unknown"), measures)
+    // Pending/rejected intents stay in the record count. They have no
+    // executed Set membership, position outcome, or protection coverage yet.
+    if (measures.filled === 0) return
     mismatches.push(...positionRelationMismatches(position, index))
     const rowLabel = String(position.id || `index-${index}`)
     for (const [kind, value] of [
@@ -574,7 +577,7 @@ export function calculateLivePositionStatistics(
     protection,
     relationIntegrity: {
       success: mismatches.length === 0,
-      checkedPositions: positions.length,
+      checkedPositions: aggregate.filled,
       mismatchCount: mismatches.length,
       mismatches,
     },

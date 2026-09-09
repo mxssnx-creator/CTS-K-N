@@ -501,12 +501,12 @@ export function DirectTradeSettings() {
             </div>
           </section>
 
-          <section className="space-y-4"><div><h3 className="font-semibold">Closed-position evaluation</h3><p className="text-xs text-muted-foreground">Recent PF is evaluated only from closed positions. The stricter default is calibrated with the 90-hour matrix before release.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+          <section className="space-y-4"><div><h3 className="font-semibold">Closed-position evaluation</h3><p className="text-xs text-muted-foreground">Recent PF uses closed positions. Live Set deactivation uses the shared live-result setting above (default 12); the paper window below is independent.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             <Range label="Full-history PF minimum" value={state.minProfitFactor} min={0.8} max={10} step={0.1} onChange={(value) => update("minProfitFactor", value)} />
             <Range label="Recent closed-position PF minimum" value={state.minRecentProfitFactor} min={0.8} max={50} step={0.1} onChange={(value) => update("minRecentProfitFactor", value)} />
             <Range label="Recent evaluation positions" value={state.recentEvaluationPositions} min={3} max={50} step={1} suffix=" closed" onChange={(value) => update("recentEvaluationPositions", value)} />
             <Range label="Keep-enabled position window" value={state.keepEnabledPosCount} min={3} max={100} step={1} suffix=" closed" onChange={(value) => update("keepEnabledPosCount", value)} />
-            <Range label="Permanent-deactivation window" value={state.deactivatePosCount} min={3} max={100} step={1} suffix=" closed" onChange={(value) => update("deactivatePosCount", value)} />
+            <Range label="Paper-only permanent-deactivation window" value={state.deactivatePosCount} min={3} max={100} step={1} suffix=" closed" onChange={(value) => update("deactivatePosCount", value)} />
             <Range label="Maximum DDT" value={state.maxDrawdownTimeMin} min={1} max={120} step={1} suffix=" min" onChange={(value) => update("maxDrawdownTimeMin", value)} />
             <Range label="Overall rolling PF/DDT window" value={state.prevPosWindow} min={5} max={200} step={1} suffix=" closed" onChange={(value) => update("prevPosWindow", value)} />
             <Range label="Minimum positions before overall eval" value={state.prevPosMinCount} min={1} max={100} step={1} suffix=" closed" onChange={(value) => update("prevPosMinCount", value)} />

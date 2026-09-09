@@ -1,3 +1,4 @@
+import { compactLogValue } from "@/lib/log-payload"
 /**
  * Structured Logging System
  * 
@@ -107,8 +108,8 @@ export class StructuredLogger {
       correlationId: getCorrelationId(),
       level,
       category: this.category,
-      message,
-      context,
+      message: message.slice(0, 2_000),
+      context: context ? compactLogValue(context) : undefined,
       source: this.source,
       metrics
     }
@@ -116,8 +117,8 @@ export class StructuredLogger {
     if (error) {
       log.error = {
         name: error.name,
-        message: error.message,
-        stack: error.stack,
+        message: error.message.slice(0, 2_000),
+        stack: error.stack?.slice(0, 4_000),
         code: (error as any).code
       }
     }

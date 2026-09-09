@@ -7,6 +7,7 @@ integration	__tests__/integration/live-order-service.test.ts
 integration	__tests__/integration/main-engine-live-dispatch.test.ts
 integration	__tests__/integration/preset-optimizer-store.test.ts
 integration	__tests__/integration/progression-api.test.ts
+operator-tool	__tests__/diagnostic-cleanup.ts
 operator-tool	__tests__/fixtures/cts-g-trend-break.json
 operator-tool	components/test-dashboard.tsx
 operator-tool	components/test-live-orders.tsx
@@ -28,6 +29,7 @@ operator-tool	scripts/test-tp-sl-ranges.mjs
 operator-tool	scripts/validate-comprehensive.mjs
 operator-tool	scripts/verify-block-native-redis.ts
 operator-tool	scripts/verify-direct-trade-config-lifecycle.ts
+operator-tool	scripts/verify-live-config-loss.mjs
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-native-redis-coordination.ts
 operator-tool	scripts/verify-recreation-manifests.mjs
@@ -163,10 +165,13 @@ unit	__tests__/unit/indication-set-write-pressure.test.ts
 unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/instaforex-base-connection.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
+unit	__tests__/unit/live-config-performance.test.ts
 unit	__tests__/unit/live-entry-budget-block-cache.test.ts
 unit	__tests__/unit/live-entry-protection-admission.test.ts
+unit	__tests__/unit/live-entry-readiness.test.ts
 unit	__tests__/unit/live-execution-summary.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
+unit	__tests__/unit/live-order-metrics-snapshot.test.ts
 unit	__tests__/unit/live-order-preflight.test.ts
 unit	__tests__/unit/live-pnl-calculation.test.ts
 unit	__tests__/unit/live-pos-count-target.test.ts
@@ -190,6 +195,7 @@ unit	__tests__/unit/live-trading-analytics.test.ts
 unit	__tests__/unit/live-trading-dashboard-contract.test.ts
 unit	__tests__/unit/live-trading-format.test.ts
 unit	__tests__/unit/live-volume-vst-floor.test.ts
+unit	__tests__/unit/log-payload.test.ts
 unit	__tests__/unit/log-retention-contract.test.ts
 unit	__tests__/unit/logistics-workflow.test.ts
 unit	__tests__/unit/main-indication-settings.test.ts
@@ -313,6 +319,7 @@ unit	__tests__/unit/strategy-volume-coordination.test.ts
 unit	__tests__/unit/symbol-capacity.test.ts
 unit	__tests__/unit/symbol-selection-ownership.test.ts
 unit	__tests__/unit/system-inject-credentials.test.ts
+unit	__tests__/unit/system-log-overload.test.ts
 unit	__tests__/unit/system-monitoring-route.test.ts
 unit	__tests__/unit/system-order-ownership.test.ts
 unit	__tests__/unit/technical-indicators.test.ts
@@ -328,6 +335,7 @@ unit	__tests__/unit/trading-stats-route.test.ts
 unit	__tests__/unit/trailing-dca-strategy.test.ts
 unit	__tests__/unit/trend-indication.test.ts
 unit	__tests__/unit/trend-wiring.test.ts
+unit	__tests__/unit/unsubmitted-live-retention.test.ts
 unit	__tests__/unit/volume-calculator-variants.test.ts
 unit	__tests__/unit/volume-identity-systemwide.test.ts
 unit	__tests__/unit/x02-slot-protection-operator.test.ts

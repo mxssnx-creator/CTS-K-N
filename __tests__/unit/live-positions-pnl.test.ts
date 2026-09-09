@@ -43,6 +43,22 @@ describe("live positions PnL enrichment", () => {
     mockKeys.mockResolvedValue([])
   })
 
+  test("keeps unfilled live intents available for diagnostics without counting positions or outcomes", async () => {
+    mockGetLivePositions.mockResolvedValue([
+      { id: "pending-unfilled", status: "pending", executionMode: "live", quantity: 7, executedQuantity: 0, setKey: "unexecuted-set" },
+      { id: "stale-open", status: "open", executionMode: "live", quantity: 7, executedQuantity: 0, remainingQuantity: 0 },
+    ])
+    mockGetClosedLivePositions.mockResolvedValue([
+      { id: "closed-unfilled", status: "closed", executionMode: "live", executedQuantity: 0, totalExecutedQuantity: 0, realizedPnl: 100, realizedPnlComplete: true },
+    ])
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=unfilled-regression"))
+    const body = await response.json()
+    expect(body.positions).toHaveLength(3)
+    expect(body.counts).toMatchObject({ open: 0, executed: 0, pending: 1, closed: 0, settledClosed: 0 })
+    expect(body.stats.all).toMatchObject({ total: 0, lifecycleRecords: 3, unfilledRecords: 3, wins: 0, totalRealizedPnL: 0 })
+    expect(body.stats.complete).toMatchObject({ open: 0, closed: 0, realizedPnl: 0, relationIntegrity: { checkedPositions: 0, mismatchCount: 0 } })
+  })
+
   test("preserves exchange unrealizedPnl zero instead of recalculating from mark price", async () => {
     mockGetLivePositions.mockResolvedValue([
       {
@@ -221,6 +237,7 @@ describe("live positions PnL enrichment", () => {
         id: "transition",
         status: "closing",
         executionMode: "live",
+        executedQuantity: 1,
         symbol: "BTCUSDT",
         createdAt: "2026-08-26T10:00:00.000Z",
         unrealizedPnL: 50,
@@ -229,6 +246,7 @@ describe("live positions PnL enrichment", () => {
         id: "older-open",
         status: "open",
         executionMode: "live",
+        executedQuantity: 1,
         symbol: "ETHUSDT",
         createdAt: "2026-08-26T09:00:00.000Z",
         unrealizedPnL: 1,
@@ -239,6 +257,7 @@ describe("live positions PnL enrichment", () => {
         id: "transition",
         status: "closed",
         executionMode: "live",
+        executedQuantity: 1,
         symbol: "BTCUSDT",
         createdAt: "2026-08-26T10:00:00.000Z",
         closedAt: "2026-08-26T11:00:00.000Z",
@@ -248,6 +267,7 @@ describe("live positions PnL enrichment", () => {
         id: "newer-closed",
         status: "closed",
         executionMode: "live",
+        executedQuantity: 1,
         symbol: "SOLUSDT",
         createdAt: "2026-08-26T12:00:00.000Z",
         closedAt: "2026-08-26T12:30:00.000Z",

@@ -844,7 +844,7 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <div><Label>CTS-G Trend model</Label><p className="text-xs text-muted-foreground">EMA 8/21, three confirmed bars and independent direction evidence. Disable to use the situation model below.</p></div>
+                  <div><Label>CTS-G Trend model</Label><p className="text-xs text-muted-foreground">EMA relationships, confirmed bars and independent direction evidence. Disable to use the situation model below.</p></div>
                   <Switch checked={settings.ctsGTrendEnabled !== false} onCheckedChange={(value) => handleSettingChange("ctsGTrendEnabled", value)} />
                 </div>
                 <div className="flex items-center justify-between">
@@ -852,8 +852,16 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                   <Switch checked={settings.breakEnabled !== false} onCheckedChange={(value) => handleSettingChange("breakEnabled", value)} />
                 </div>
                 <div className="flex items-center justify-between">
-                  <div><Label>Expanded Trend / Break configurations</Label><p className="text-xs text-muted-foreground">Trend: three spread thresholds × two confirmation lengths. Break: three ranges × two noise thresholds. Up to 24 evaluations per type across four timeframes; identical tuples count once.</p></div>
+                  <div><Label>Expanded Trend / Break configurations</Label><p className="text-xs text-muted-foreground">Trend: up to three EMA pairs × three spread thresholds × two confirmation lengths. Break: three ranges × two noise thresholds × two confirmation lengths. Up to 18 Trend and 12 Break candidates per timeframe; identical tuples count once. Historical qualification selects candidates; this is not a guaranteed profitable default.</p></div>
                   <Switch checked={settings.ctsGConfigMode !== "single"} onCheckedChange={(value) => handleSettingChange("ctsGConfigMode", value ? "expanded" : "single")} />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <Label>Compare EMA 8/21, 5/13 and 13/34</Label>
+                  <Switch checked={settings.ctsGTrendMultiplePeriods !== false && settings.ctsGTrendMultiplePeriods !== "false"} onCheckedChange={value => handleSettingChange("ctsGTrendMultiplePeriods", value)} />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <Label>Compare one- and two-bar Break confirmations</Label>
+                  <Switch checked={settings.ctsGBreakMultipleConfirmations !== false && settings.ctsGBreakMultipleConfirmations !== "false"} onCheckedChange={value => handleSettingChange("ctsGBreakMultipleConfirmations", value)} />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div><Label htmlFor="break-range">Break range (bars)</Label><Input id="break-range" type="number" min={8} max={240} value={settings.breakRange ?? 16} onChange={(event) => handleSettingChange("breakRange", Math.max(8, Math.min(240, Number(event.target.value) || 16)))} /></div>

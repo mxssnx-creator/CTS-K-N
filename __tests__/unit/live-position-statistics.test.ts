@@ -485,7 +485,7 @@ describe("complete live position/order/statistics relations", () => {
     expect(stats).toMatchObject({
       positions: 2,
       filled: 0,
-      open: 1,
+      open: 0,
       lifetimeQuantity: 0,
       openQuantity: 0,
       closedQuantity: 0,

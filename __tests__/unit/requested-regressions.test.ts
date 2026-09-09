@@ -5,6 +5,13 @@ const repo = path.resolve(__dirname, "../..")
 const read = (file: string) => fs.readFileSync(path.join(repo, file), "utf8")
 
 describe("requested regression guardrails", () => {
+  afterEach(() => {
+    // Route fixtures enqueue diagnostics with partial Redis mocks. Dispose
+    // their global timer/buffers before resetting those mocks or the VM.
+    const state = (globalThis as any).__v0_progression
+    if (state?.flushTimer) clearInterval(state.flushTimer)
+    if (state) { state.flushTimer = null; state.flushTimerStarted = false; state.logBuffer?.clear(); state.coalesced?.clear() }
+  })
   test("shared page header cannot collapse and hide the mobile sidebar trigger", () => {
     const header = read("components/page-header.tsx")
     const css = read("app/globals.css")
@@ -2846,8 +2853,8 @@ describe("requested regression guardrails", () => {
     expect(liveOrderService).toContain('if (event !== "simulated") await recordPerSymbolOrderCounter')
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
     expect(statsRoute).toContain("Real exchange and paper execution must stay deliberately separate")
-    expect(statsRoute).toContain("simulatedPositionsCreated: n(progHash.live_simulated_positions_created_count)")
-    expect(statsRoute).toContain("simulatedPositionsClosed:  n(progHash.live_simulated_positions_closed_count)")
+    expect(statsRoute).toContain("simulatedPositionsCreated: n(liveOrderHash.live_simulated_positions_created_count)")
+    expect(statsRoute).toContain("simulatedPositionsClosed:  n(liveOrderHash.live_simulated_positions_closed_count)")
     expect(statsRoute).toContain("simulatedPositionsOpen: Math.max(")
     expect(statsRoute).toContain("simulatedVolumeUsdTotal")
     expect(statsRoute).toContain("simulatedWinRate")
@@ -3628,7 +3635,7 @@ describe("requested regression guardrails", () => {
   test("hot-path progression logs do not force immediate stdout and Redis flushes", () => {
     const source = read("lib/engine-progression-logs.ts")
 
-    expect(source).toContain("options: { flush?: boolean } = {}")
+    expect(source).toContain("options: { flush?: boolean; limit?: number } = {}")
     expect(source).toContain("if (options.flush !== false)")
     expect(source).toContain("function isImmediateFlushPhase")
     expect(source).toContain('phase.startsWith("quickstart")')

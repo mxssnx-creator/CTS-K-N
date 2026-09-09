@@ -572,6 +572,8 @@ export function ActiveConnectionCard({
     liveAvgPnl: number
     liveAvgPosSizeUsd: number
     // Live exchange execution metrics
+    liveOrderCountersAvailable: boolean
+    liveOrderCountersScope: string
     liveOrdersPlaced: number
     liveOrdersFilled: number
     liveOrdersFailed: number
@@ -1526,6 +1528,8 @@ export function ActiveConnectionCard({
           liveAvgPosSizeUsd: sd.live?.avgPosPerSet || 0,
           // Live exchange execution — sourced from the /stats endpoint
           // (fetched response is bound to `data`, not `json`).
+          liveOrderCountersAvailable: data?.liveExecution?.orderCountersAvailable === true,
+          liveOrderCountersScope: data?.liveExecution?.orderCountersScope || "unavailable",
           liveOrdersPlaced:      data?.liveExecution?.ordersPlaced     || 0,
           liveOrdersFilled:      data?.liveExecution?.ordersFilled     || 0,
           liveOrdersFailed:      data?.liveExecution?.ordersFailed     || 0,
@@ -2057,8 +2061,10 @@ export function ActiveConnectionCard({
       },
       {
         label: "Orders",
-        value: ordersFilled > 0 ? `${ordersPlaced}/${ordersFilled}` : ordersPlaced,
-        title: "Live exchange orders placed / filled.",
+        value: prehistoricStats?.liveOrderCountersAvailable
+          ? ordersFilled > 0 ? `${ordersPlaced}/${ordersFilled}` : ordersPlaced
+          : "n/a",
+        title: `Live exchange orders placed / filled. Scope: ${prehistoricStats?.liveOrderCountersScope || "unavailable"}; open orders and current dispatch are separate.`,
         tone: ordersPlaced > 0 ? "text-amber-700 dark:text-amber-400" : undefined,
       },
       {
@@ -2083,9 +2089,9 @@ export function ActiveConnectionCard({
 
     if (ordersFailed > 0) {
       tiles.push({
-        label: "Failed",
+        label: "Failed total",
         value: ordersFailed,
-        title: "Live exchange orders failed or rejected.",
+        title: `Recorded failed/rejected exchange attempts in ${prehistoricStats?.liveOrderCountersScope || "unavailable"}. Includes historical failures; not the latest cycle.`,
         tone: "text-red-600 dark:text-red-400",
       })
     }
@@ -3563,8 +3569,8 @@ export function ActiveConnectionCard({
                             to global totals only when the array is empty. */}
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px]">
                           <span className="text-muted-foreground">
-                            Orders <span className="text-foreground font-semibold tabular-nums">
-                              {prehistoricStats.liveOrdersPlaced}
+                            Orders total <span className="text-foreground font-semibold tabular-nums">
+                              {prehistoricStats.liveOrderCountersAvailable ? prehistoricStats.liveOrdersPlaced : "n/a"}
                             </span>
                           </span>
                           {prehistoricStats.liveOrdersFilled > 0 && (

@@ -54,6 +54,7 @@ import {
   specialSettingsFromAppSettings,
 } from "@/lib/special-strategy"
 import { defaultStrategyIndicationVariantSettings } from "@/lib/strategy-indication-policy"
+import { liveConfigLossPolicy, normalizeLiveConfigLossWindow } from "@/lib/live-config-loss-policy"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -157,6 +158,12 @@ function flattenSpecialSettings(settings: object): Record<string, unknown> {
 
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
   const normalized: Record<string, any> = { ...settings }
+  if (normalized.liveConfigLossWindow !== undefined) {
+    normalized.liveConfigLossWindow = normalizeLiveConfigLossWindow(normalized.liveConfigLossWindow)
+  }
+  if (normalized.liveConfigAutoDeactivateEnabled !== undefined) {
+    normalized.liveConfigAutoDeactivateEnabled = liveConfigLossPolicy(normalized).enabled
+  }
   // The operator-required base basket is immutable across old/new setting
   // aliases. Dynamic and connection-local symbols may extend it elsewhere,
   // but settings writes can never remove or reorder these four symbols.
@@ -223,6 +230,8 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
 
 function getDefaultSettings(): Record<string, any> {
   return {
+    liveConfigAutoDeactivateEnabled: true,
+    liveConfigLossWindow: 12,
     ...flattenSpecialSettings(DEFAULT_SPECIAL_STRATEGY_SETTINGS),
     ...defaultStrategyIndicationVariantSettings(),
     mainEngineIntervalMs: 700,
@@ -395,6 +404,8 @@ function getDefaultSettings(): Record<string, any> {
     exchangePositionCost: POSITION_COST_PERCENT_DEFAULT,
     trendEnabled: true,
     ctsGTrendEnabled: true,
+    ctsGTrendMultiplePeriods: true,
+    ctsGBreakMultipleConfirmations: true,
     ctsGTrendMinimumSpreadRatio: 0.001,
     ctsGMinimumConfidence: 0.6,
     breakEnabled: true,

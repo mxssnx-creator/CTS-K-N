@@ -1,3 +1,4 @@
+import { compactLogValue } from "@/lib/log-payload"
 /**
  * Comprehensive Engine Logger
  * Expandable log system with symbol-specific and overall tracking
@@ -42,6 +43,9 @@ export class EngineLogger {
   async log(entry: Omit<EngineLogEntry, 'id' | 'timestamp' | 'connectionId'>): Promise<void> {
     const logEntry: EngineLogEntry = {
       ...entry,
+      message: entry.message.slice(0, 2_000),
+      data: entry.data ? compactLogValue(entry.data) : undefined,
+      expandableData: entry.expandableData ? compactLogValue(entry.expandableData) : undefined,
       id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       timestamp: new Date().toISOString(),
       connectionId: this.connectionId,
@@ -245,6 +249,7 @@ export class EngineLogger {
       const key = `engine_logs:${this.connectionId}`
       await client.lpush(key, JSON.stringify(entry))
       await client.ltrim(key, 0, 999) // Keep last 1000 logs
+      await client.expire(key, 86_400)
     } catch (error) {
       console.error('[EngineLogger] Failed to store log:', error)
     }

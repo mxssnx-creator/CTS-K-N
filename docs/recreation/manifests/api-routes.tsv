@@ -216,6 +216,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/settings/set-limits	GET,POST	settings	force-dynamic		none-detected	app/api/settings/set-limits/route.ts
 /api/settings/system	GET,PATCH	settings	force-dynamic		none-detected	app/api/settings/system/route.ts
 /api/startup/initialize	POST	startup	force-dynamic		none-detected	app/api/startup/initialize/route.ts
+/api/statistics/deactivated-configs	GET	statistics	force-dynamic		none-detected	app/api/statistics/deactivated-configs/route.ts
 /api/statistics/indications	GET,PATCH	statistics	force-dynamic		none-detected	app/api/statistics/indications/route.ts
 /api/strategies	GET,POST	strategies	force-dynamic		none-detected	app/api/strategies/route.ts
 /api/strategies/overview	GET	strategies	force-dynamic		none-detected	app/api/strategies/overview/route.ts

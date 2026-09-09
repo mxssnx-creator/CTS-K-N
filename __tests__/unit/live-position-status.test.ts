@@ -59,7 +59,7 @@ describe("live position status grouping", () => {
 
     expect(route).toContain('from "@/lib/live-position-status"')
     expect(route).toContain("isLiveOpenStatus(p.status)")
-    expect(route).toContain("open: countLiveOpenPositions(all)")
+    expect(route).toContain("open: countLiveOpenPositions(all.filter((p) => (resolveConfirmedPositionQuantity(p) ?? 0) > 0))")
     expect(route).not.toContain('p.status === "open").length')
 
     expect(logistics).toContain('from "@/lib/live-position-status"')

@@ -1,4 +1,5 @@
 import type { RedisClientLike } from "@/lib/redis-db"
+const { isRetirableUnsubmittedFailure, retireUnsubmittedRedisRecord } = require("@/lib/unsubmitted-live-retention.cjs")
 import {
   buildLivePositionCompatibilitySnapshot,
   LIVE_POSITION_MIRROR_VERSION,
@@ -473,6 +474,11 @@ async function repairLiveJson(
   let parsed: unknown
   try { parsed = JSON.parse(raw) } catch { return }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+  if (apply && typeof client.eval === "function" && isRetirableUnsubmittedFailure(parsed)) {
+    const retired = await retireUnsubmittedRedisRecord(client, key, "string", raw)
+    report.terminalRowsBounded += Number(retired) || 0
+    if (Number(retired) > 0) return
+  }
 
   // A hash-backed position can be compacted safely: the hash is the complete
   // ledger, while the string key is only a compatibility/recovery projection.
@@ -571,6 +577,14 @@ async function repairLiveHash(
     return
   }
   if (classification !== "terminal") return
+  if (apply && ["rejected", "error"].includes(String(status)) && typeof client.eval === "function") {
+    const row = await client.hgetall(key)
+    if (isRetirableUnsubmittedFailure(row)) {
+      const retired = await retireUnsubmittedRedisRecord(client, key, "hash", row)
+      report.terminalRowsBounded += Number(retired) || 0
+      if (Number(retired) > 0) return
+    }
+  }
   const seconds = liveRetentionSecondsForStatus(status)
   if (!seconds || !apply) return
   const before = await client.ttl(key)

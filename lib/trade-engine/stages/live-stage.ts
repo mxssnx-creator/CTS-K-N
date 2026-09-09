@@ -113,6 +113,7 @@ import {
   type RealStrategyVariant,
 } from "@/lib/strategy-real-stats"
 import { getLivePositionSetLineageKeys } from "@/lib/live-position-lineage"
+import { findDeactivatedLiveConfig, recordLiveConfigOutcome } from "@/lib/live-config-performance"
 import { buildLivePositionCompatibilitySnapshot } from "@/lib/live-position-mirror"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import {
@@ -3406,6 +3407,9 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
             }
           : undefined,
       )
+      // Only settled exchange outcomes feed the permanent per-Set loss gate.
+      // Accounting corrections/replayed closes are idempotent in the ledger.
+      await recordLiveConfigOutcome(position)
     } else {
       await upsertRedisListHead(client, openIndexKey, position.id)
       if (slotIndexKey) {
@@ -4796,6 +4800,16 @@ async function accumulateIntoLivePosition(
   allowNewExchangeMutation = true,
   shouldContinue?: () => boolean | Promise<boolean>,
 ): Promise<LivePosition> {
+  if (allowNewExchangeMutation) {
+    const disabled = await findDeactivatedLiveConfig(connId,
+      { ...real, executionIntent: existing.executionIntent || "main" }, await getAppSettings())
+    if (disabled) {
+      // Recover an already submitted adjustment and its protection below,
+      // but never send a new add-on for a deactivated Set.
+      allowNewExchangeMutation = false
+      pushStep(existing, "live_config_performance", false, `Set deactivated: last ${disabled.window} settled positions net ${disabled.netPnl}`)
+    }
+  }
   if (allowNewExchangeMutation) await assertMarginCallEntryAllowed(connId, connector)
   // Block and DCA are adjustment-only variants: they add an independently
   // calculated leg to an authoritative parent instead of opening competing
@@ -12511,6 +12525,20 @@ export async function executeLivePosition(
       if (reconciled) return reconciled
       // null means this is the first non-flat target; continue through the
       // normal fresh-entry path, which creates and protects the physical order.
+    }
+
+    if (isLiveTradeEnabled) {
+      const disabled = await findDeactivatedLiveConfig(connectionId, livePosition, initialAppSettings)
+      if (disabled) {
+        livePosition.status = "rejected"
+        livePosition.executionMode = "blocked"
+        livePosition.executionBlockCode = "negative_live_config_window"
+        livePosition.statusReason = `Set deactivated: last ${disabled.window} settled live positions net ${disabled.netPnl}`
+        livePosition.executionBlockReason = livePosition.statusReason
+        pushStep(livePosition, "live_config_performance", false, livePosition.statusReason)
+        await incrementMetric(connectionId, "live_orders_blocked_count")
+        return livePosition
+      }
     }
 
     // isBlockVariant and _lockDirSuffix are hoisted to function scope (before

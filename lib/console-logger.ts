@@ -2,7 +2,8 @@
  * Console Logger - Intercepts console.log, console.warn, console.error
  * and captures them to Redis for the logs viewer
  */
-import { getRedisClient } from "./redis-db"
+import { SystemLogger } from "./system-logger"
+import { serializeLogValue } from "./log-payload"
 
 let initialized = false
 
@@ -35,19 +36,7 @@ export function initializeConsoleLogger() {
 
 async function captureLog(level: "info" | "warn" | "error", args: any[]) {
   try {
-    const message = args
-      .map((arg) => {
-        if (typeof arg === "string") return arg
-        if (typeof arg === "object") {
-          try {
-            return JSON.stringify(arg)
-          } catch {
-            return String(arg)
-          }
-        }
-        return String(arg)
-      })
-      .join(" ")
+    const message = args.slice(0, 12).map(arg => typeof arg === "string" ? arg.slice(0, 2_000) : serializeLogValue(arg)).join(" ").slice(0, 2_000)
 
     // Extract category from message (e.g., "[v0] [Category] ...")
     let category = "app"
@@ -61,27 +50,7 @@ async function captureLog(level: "info" | "warn" | "error", args: any[]) {
       return
     }
 
-    const client = getRedisClient()
-    const logId = `log:${Date.now()}:${Math.random().toString(36).substr(2, 9)}`
-
-    const logEntry = {
-      id: logId,
-      timestamp: new Date().toISOString(),
-      level,
-      category,
-      message: message.substring(0, 1000), // Limit message length
-      metadata: "",
-    }
-
-    // Store in Redis with bounded lists (not unbounded sets) to prevent endless growth
-    await client.hset(logId, logEntry)
-    await client.lpush("logs:all:list", logId)
-    await client.ltrim("logs:all:list", 0, 999) // Keep max 1000 system-wide
-    await client.expire("logs:all:list", 604800) // Keep the bounded index rolling for 7 days
-    await client.lpush(`logs:${category}:list`, logId)
-    await client.ltrim(`logs:${category}:list`, 0, 999) // Keep max 1000 per category
-    await client.expire(`logs:${category}:list`, 604800) // Keep category indexes rolling for 7 days
-    await client.expire(logId, 604800) // 7 days TTL
+    await SystemLogger.logToDatabase({ timestamp: new Date().toISOString(), level, category, message })
   } catch (error) {
     // Silently fail to avoid infinite loops
   }

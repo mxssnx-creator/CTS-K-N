@@ -78,7 +78,7 @@ describe("bounded runtime log contract", () => {
     expect(bootstrap).not.toContain('cp -a --reflink=auto -- "$legacy_root" "$backup/legacy-instance-state"')
     expect(bootstrap).toContain("prune_verified_backups")
     expect(systemLogger).toContain('pipeline.ltrim("logs:all:list", 0, 999)')
-    expect(consoleLogger).toContain('client.ltrim("logs:all:list", 0, 999)')
+    expect(consoleLogger).toContain("SystemLogger.logToDatabase")
     expect(structuredLogger).toContain("MAX_STRUCTURED_LOGS = 1000")
     expect(auditLogger).toContain("logs.slice(-999)")
     expect(engineLogger).toContain("ltrim(logKey, 0, 999)")
