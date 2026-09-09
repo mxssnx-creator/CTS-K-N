@@ -51,6 +51,7 @@ import { SystemLogger } from "@/lib/system-logger"
 import type { RealPosition } from "./real-stage"
 import { getEngineTimings } from "@/lib/engine-timings"
 import { withTimeout } from "@/lib/async-safety"
+import { readFreshPositionSnapshot } from "@/lib/fresh-position-snapshot"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import {
   newLiveOrderTrace,
@@ -11046,7 +11047,7 @@ async function readAuthoritativeProtectionPositions(connector: any): Promise<Rec
     throw new Error("Exact-slot reconciliation requires a venue position snapshot")
   }
   const positions = await withTimeout(
-    connector.getPositions() as Promise<any>,
+    readFreshPositionSnapshot(connector, undefined, EXCHANGE_TIMEOUT_GET_POSITIONS_MS),
     EXCHANGE_TIMEOUT_GET_POSITIONS_MS,
     "getPositions(exact-protection-slot)",
   )
