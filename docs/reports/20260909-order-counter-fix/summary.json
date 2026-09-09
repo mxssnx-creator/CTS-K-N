@@ -1,0 +1,681 @@
+{
+  "generatedAt": "2026-09-09T07:19:49+00:00",
+  "release": {
+    "pullRequest": 337,
+    "pullRequestUrl": "https://github.com/mxssnx-creator/CTS-K-N/pull/337",
+    "head": "6fe2f8a7ec092fd170fb40f9dc4aa925b246745f",
+    "mergedMain": "49d0f0fe6e6ce2f5f701ae086f8e8fb66ce0b275"
+  },
+  "remote": {
+    "installDir": "/opt/cts-kn",
+    "publicUrl": "http://152.53.114.112:3002",
+    "backup": "/var/backups/cts/cts-kn/20260909T064332Z",
+    "counterRebuildBackupKey": "progression:counter_rebuild_backup:bingx-x02:2026-09-09T06-58-20-279Z",
+    "installedHead": "49d0f0fe6e6ce2f5f701ae086f8e8fb66ce0b275",
+    "connectionId": "bingx-x02",
+    "symbols": 25,
+    "minimumProfitFactor": 1.3
+  },
+  "counterRebuild": {
+    "scanned": 149,
+    "realPositions": 135,
+    "simulatedPositions": 0,
+    "previous": {
+      "attempted": 349649,
+      "placed": 5,
+      "filled": 6,
+      "failed": 349645,
+      "positionsCreated": 0,
+      "positionsClosed": 149,
+      "volumeUsd": 0
+    },
+    "rebuilt": {
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "positionsCreated": 5,
+      "positionsClosed": 5,
+      "volumeUsd": 42.17197
+    }
+  },
+  "monitor": {
+    "samples": 11,
+    "intervalSeconds": 61.2,
+    "allHttp200": true,
+    "allServicesActive": true,
+    "allServiceRestartsZero": true,
+    "lifetimeStable": true,
+    "lifetimeValues": {
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0
+    },
+    "maxCurrentErrors": 0,
+    "maxCurrentErrored": 0,
+    "maxCurrentFailedToOpen": 0,
+    "maxOwnOpenOrders": 0,
+    "maxOwnOpenPositions": 0,
+    "redisUsedMinBytes": 885522176,
+    "redisUsedMaxBytes": 1017924080,
+    "redisMaxBytes": 4227858432,
+    "redisPeakBytes": 21445694856,
+    "redisKeysMin": 74244,
+    "redisKeysMax": 147744,
+    "allReadinessBlockedByProtection": true,
+    "allCurrentDispatchTerminalZero": true
+  },
+  "samples": [
+    {
+      "index": 0,
+      "timestamp": "2026-09-09T07:00:29+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 10992,
+      "currentBlocked": 16,
+      "currentDeferred": 8636,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 8,
+      "statsCurrentDeferred": 38659,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 885522176,
+      "redisRss": 968757248,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 74244,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "timestamp": "2026-09-09T07:01:30+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 28704,
+      "currentBlocked": 42,
+      "currentDeferred": 27478,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 20,
+      "statsCurrentDeferred": 39735,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 894219096,
+      "redisRss": 970174464,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 100530,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "timestamp": "2026-09-09T07:02:31+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 34999,
+      "currentBlocked": 38,
+      "currentDeferred": 32615,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 44,
+      "statsCurrentDeferred": 42495,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 903010424,
+      "redisRss": 970403840,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 125050,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "timestamp": "2026-09-09T07:03:32+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 43857,
+      "currentBlocked": 28,
+      "currentDeferred": 41625,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 56,
+      "statsCurrentDeferred": 43153,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 907096000,
+      "redisRss": 969482240,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 139284,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "timestamp": "2026-09-09T07:04:34+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 32576,
+      "currentBlocked": 18,
+      "currentDeferred": 30492,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 28,
+      "statsCurrentDeferred": 41625,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 924278904,
+      "redisRss": 983592960,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 140281,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "timestamp": "2026-09-09T07:05:35+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 2068,
+      "currentBlocked": 2,
+      "currentDeferred": 0,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 26,
+      "statsCurrentDeferred": 42123,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 948052304,
+      "redisRss": 1006268416,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 140736,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "timestamp": "2026-09-09T07:06:36+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 3732,
+      "currentBlocked": 0,
+      "currentDeferred": 1444,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 26,
+      "statsCurrentDeferred": 42123,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 960088712,
+      "redisRss": 1020010496,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 141014,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "timestamp": "2026-09-09T07:07:37+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 7424,
+      "currentBlocked": 6,
+      "currentDeferred": 5384,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 1640,
+      "statsCurrentDeferred": 40553,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 974461040,
+      "redisRss": 1028907008,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 141953,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "timestamp": "2026-09-09T07:08:38+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 2666,
+      "currentBlocked": 3,
+      "currentDeferred": 2011,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 1644,
+      "statsCurrentDeferred": 40599,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 990905168,
+      "redisRss": 1045577728,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 143448,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "timestamp": "2026-09-09T07:09:39+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 5714,
+      "currentBlocked": 8,
+      "currentDeferred": 3298,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 1643,
+      "statsCurrentDeferred": 41958,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 1005447728,
+      "redisRss": 1060532224,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 144718,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "timestamp": "2026-09-09T07:10:41+00:00",
+      "http": {
+        "status": 200,
+        "stats": 200,
+        "live": 200,
+        "health": 200
+      },
+      "attempted": 4,
+      "placed": 4,
+      "filled": 4,
+      "failed": 0,
+      "currentAttempted": 6464,
+      "currentBlocked": 6,
+      "currentDeferred": 4506,
+      "currentErrored": 0,
+      "currentFailedToOpen": 0,
+      "statsCurrentBlocked": 1643,
+      "statsCurrentDeferred": 38226,
+      "canPlaceRealOrders": false,
+      "executionMode": "blocked",
+      "blockCode": "entry_protection_halt",
+      "openPositions": 0,
+      "openOrders": 0,
+      "excludedPositions": 5,
+      "excludedOrders": 155,
+      "redisUsed": 1017924080,
+      "redisRss": 1072472064,
+      "redisPeak": 21445694856,
+      "redisMax": 4227858432,
+      "redisKeys": 147744,
+      "servicesActive": [
+        "active",
+        "active",
+        "active"
+      ],
+      "serviceRows": [
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        {
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "SubState": "running"
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Global lifetime counters were rebuilt only from the durable X02 live-position ledger; no exchange order or foreign position was changed.",
+    "Live intent and switch are enabled, but new entries remain safely blocked by entry_protection_halt until an exact fresh ownership/protection audit can prove the account safe.",
+    "Per-symbol historical forensic fields remain separately exposed; they are not used as current error counts."
+  ]
+}
