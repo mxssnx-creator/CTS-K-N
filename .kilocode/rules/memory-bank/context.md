@@ -3876,3 +3876,11 @@ Aktuelle Korrektur in `lib/order-quantity.ts`: Dezimalwerte auf Basis ihrer kano
 ### Order-counter integrity correction — 2026-09-09
 
 Terminale Live-Platzierungs-/Fehlerbuchungen erhöhen `attempted` und das jeweilige Ergebnis nun über `hincrbyProgressionBatch` unter einer gemeinsamen Epoch-Prüfung. Live-Stage per-symbolische Buchungen prüfen die aktuelle Engine-Epoch, damit stale Worker keine `live_orders_by_symbol_v2`-Fehlerwerte mehr aufblasen. Stats und Server-Overview trennen das historische Lifetime-Ledger von frischen `currentDispatch`-/`orders*Current`-Werten und liefern `counterIntegrity`/`orderCounterIntegrity` samt Delta. Neue Regressionstests für Batch-Paarung, stale Epoch und Overview-Felder sind grün; vollständige Tests, Build, GitHub-Checks, Reinstall und Remote-Monitoring folgen. Der bestehende `entry_protection_halt` bleibt unangetastet.
+
+### Order-Counter-Reparatur — 2026-09-09
+
+PR #337 `fix: keep live order failure counters coherent` ist nach erfolgreichem Smoke als Merge `49d0f0fe6e6ce2f5f701ae086f8e8fb66ce0b275` in `main`; der offizielle Reinstall auf `/opt/cts-kn` lief mit `--enable-live`, native Redis, Schema 108, 350 Traces und 305/2131 serverseitig grünen Tests. Verifiziertes Serverbackup: `/var/backups/cts/cts-kn/20260909T064332Z`.
+
+X02-Live-Ledger-Rebuild (Wartungsmarker, Dienste aus, keine Exchange-Mutation) hat aus 149 Ledgerzeilen `attempted=4`, `placed=4`, `filled=4`, `failed=0`, `positionsCreated=5`, `positionsClosed=5`, `volumeUsd=42.17197` hergestellt; vorher standen dort 349649/5/6/349645. Backup-Key: `progression:counter_rebuild_backup:bingx-x02:2026-09-09T06-58-20-279Z`. 10-Minuten-Read-only-Monitoring: 11 Samples, Ø61,2s, alle APIs HTTP200, drei Dienste active/NRestarts0, Lifetime stabil, aktuelle `failedToOpen`/`errored` 0, eigene Orders/Positionen 0, Redis 0,826→0,948 GiB bei 3,937 GiB MaxMemory. HTML/JSON: `docs/reports/20260909-order-counter-fix/report.html` und `summary.json`.
+
+Live intent/enabled bleibt true; `canPlaceRealOrders=false` bleibt wegen des bestehenden `entry_protection_halt` fail-closed. Fremde Venue-Bestände sind ausgeschlossen und unangetastet. Per-symbolische alte Fehlerwerte sind als Forensik getrennt zu behandeln; aktuelle UI-/Stats-Fehlerfelder kommen aus dem korrigierten globalen Ledger und frischen DispatchOutcome-Zeilen.

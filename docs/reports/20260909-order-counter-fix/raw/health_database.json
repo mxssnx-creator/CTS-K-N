@@ -1,0 +1,1 @@
+{"status":"healthy","database":{"type":"redis","connected":true,"responseTime":"0ms","keyCount":74199,"ping":"PONG"},"timestamp":"2026-09-09T06:58:56.078Z"}
