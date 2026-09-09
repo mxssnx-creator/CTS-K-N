@@ -300,4 +300,39 @@ describe("live positions PnL enrichment", () => {
       totalUnrealizedPnL: 1,
     })
   })
+
+  test("projects the runtime entry-protection halt into the live read model", async () => {
+    const previousRedisUrl = process.env.REDIS_URL
+    process.env.REDIS_URL = "redis://unit-test-shared-redis"
+    mockGetConnection.mockResolvedValue({
+      id: "bingx-x02",
+      exchange: "bingx",
+      is_testnet: "1",
+      api_key: "unit-test-api-key-12345",
+      api_secret: "unit-test-api-secret-12345",
+      is_live_trade: "1",
+      live_trade_requested: "1",
+    })
+    mockGet.mockImplementation(async (key: string) => (
+      key === "live:entry-protection-halt:bingx-x02" ? "halt" : null
+    ))
+
+    try {
+      const response = await GET(new Request(
+        "http://localhost/api/trading/live-positions?connection_id=bingx-x02",
+      ))
+      const body = await response.json()
+
+      expect(body.dataIntegrity).toMatchObject({
+        liveTradeEnabled: false,
+        liveTradeRequested: true,
+        liveTradeBlockCode: "entry_protection_halt",
+        liveExecutionMode: "blocked",
+        liveTradeBlockedReason: "Entry protection reconciliation is required before new orders.",
+      })
+    } finally {
+      if (previousRedisUrl === undefined) delete process.env.REDIS_URL
+      else process.env.REDIS_URL = previousRedisUrl
+    }
+  })
 })
