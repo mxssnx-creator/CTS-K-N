@@ -1280,6 +1280,10 @@ export async function GET(
     const legacyProgHash: Record<string, string> = legacyProgHashRaw || {}
     const liveOrderSnapshot = selectLiveOrderMetricsSnapshot(legacyProgHashRaw, scopedProgHashRaw)
     const liveOrderHash = liveOrderSnapshot.values
+    const globalOrderAttempted = n(liveOrderHash.live_orders_attempted_count)
+    const globalOrderPlaced = n(liveOrderHash.live_orders_placed_count)
+    const globalOrderFilled = n(liveOrderHash.live_orders_filled_count)
+    const globalOrderFailed = n(liveOrderHash.live_orders_failed_count)
     const progHash: Record<string, string> =
       activeProgressionKey === scope.progressionKey
         ? (Object.keys(activeProgressionRaw).length > 0 ? activeProgressionRaw : scopedProgHash)
@@ -1320,6 +1324,35 @@ export async function GET(
     const strategyDetailLiveHash: Record<string, string> = (strategyDetailLiveHashRaw as Record<string, string>) || {}
     const blockProfitFactorStatsHash: Record<string, string> = (blockProfitFactorStatsHashRaw as Record<string, string>) || {}
     const ordersBySymbolAggregation = aggregateOrdersBySymbol(ordersBySymbolHash)
+    const perSymbolOrderPlaced = ordersBySymbolAggregation.totals.long.placed
+      + ordersBySymbolAggregation.totals.short.placed
+    const perSymbolOrderFilled = ordersBySymbolAggregation.totals.long.filled
+      + ordersBySymbolAggregation.totals.short.filled
+    const perSymbolOrderFailed = ordersBySymbolAggregation.totals.long.failed
+      + ordersBySymbolAggregation.totals.short.failed
+    const liveOrderCounterIntegrity = {
+      scope: liveOrderSnapshot.scope,
+      global: {
+        attempted: globalOrderAttempted,
+        placed: globalOrderPlaced,
+        filled: globalOrderFilled,
+        failed: globalOrderFailed,
+        terminal: globalOrderPlaced + globalOrderFailed,
+        attemptedMatchesTerminal: globalOrderAttempted === globalOrderPlaced + globalOrderFailed,
+      },
+      perSymbol: {
+        placed: perSymbolOrderPlaced,
+        filled: perSymbolOrderFilled,
+        failed: perSymbolOrderFailed,
+        terminal: perSymbolOrderPlaced + perSymbolOrderFailed,
+      },
+      // Per-symbol rows are retained as forensic lifetime data. A non-zero
+      // delta is surfaced explicitly instead of silently presenting those
+      // legacy rows as the current cycle's error count.
+      terminalDelta: (perSymbolOrderPlaced + perSymbolOrderFailed)
+        - (globalOrderPlaced + globalOrderFailed),
+      semantics: "global_lifetime_vs_per_symbol_lifetime",
+    }
 
     const rawEs = (engineState as Record<string, any>) || {}
     const rawEp = (engineProgression as Record<string, any>) || {}
@@ -5224,6 +5257,13 @@ export async function GET(
           durationMsMax: 0,
           avgAttemptMs: 0,
         },
+        // Current-cycle dispatch outcome aliases for overview consumers.
+        // `ordersFailed` above remains the connection-lifetime venue ledger;
+        // these fields describe only the fresh coordinator snapshot.
+        ordersFailedCurrent: Number((stratDetail.live?.dispatchOutcome as any)?.failedToOpen) || 0,
+        ordersErroredCurrent: Number((stratDetail.live?.dispatchOutcome as any)?.errored) || 0,
+        ordersDeferredCurrent: Number((stratDetail.live?.dispatchOutcome as any)?.deferred) || 0,
+        ordersBlockedCurrent: Number((stratDetail.live?.dispatchOutcome as any)?.blocked) || 0,
         dispatchSelectedCount: stratDetail.live?.dispatchSelectedCount || 0,
         dispatchDeferredCount: stratDetail.live?.dispatchDeferredCount || 0,
         dispatchSuppressedCount: stratDetail.live?.dispatchSuppressedCount || 0,
@@ -5322,6 +5362,7 @@ export async function GET(
         // no orders have been placed yet.
         ordersByDirection: ordersBySymbolAggregation.totals,
         ordersBySymbol: ordersBySymbolAggregation.rows,
+        orderCounterIntegrity: liveOrderCounterIntegrity,
       },
 
       // Prehistoric processing metadata — range, timeframe, interval progress

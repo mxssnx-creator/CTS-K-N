@@ -47,6 +47,7 @@ import {
   isDirectTradeVstConnection,
   isDirectTradeVstEntryAuthorized,
 } from "@/lib/direct-trade-live-readiness"
+import { getCurrentEpoch } from "@/lib/trade-engine/progression-lock"
 
 export const LIVE_ORDER_REDIS_KEYS = {
   orderIntent: "settings:orders (via getSettings/setSettings('orders'))",
@@ -2033,11 +2034,34 @@ export function validateLiveOrderQuantity(input: { quantity: number; price?: num
   if (price < 0) throw new Error("Price cannot be negative")
 }
 
-export async function recordPerSymbolOrderCounter(connectionId: string, symbol: string, direction: LiveOrderDirection, metric: "placed" | "filled" | "failed"): Promise<void> {
+export interface PerSymbolOrderCounterOptions {
+  /** Epoch captured by the owning live-stage dispatch. */
+  epoch?: number
+  /** Require the captured epoch to still own the connection before writing. */
+  requireEpoch?: boolean
+}
+
+export async function recordPerSymbolOrderCounter(
+  connectionId: string,
+  symbol: string,
+  direction: LiveOrderDirection,
+  metric: "placed" | "filled" | "failed",
+  options: PerSymbolOrderCounterOptions = {},
+): Promise<boolean> {
   const client = getRedisClient() as any
+  if (options.requireEpoch) {
+    const expectedEpoch = Number(options.epoch)
+    if (!Number.isFinite(expectedEpoch) || expectedEpoch <= 0) return false
+    // Live-stage counters are owned by the same progression epoch as the
+    // global ledger. Reject callbacks from an old worker before they can
+    // inflate the per-symbol failure rows after a restart/handoff.
+    const currentEpoch = await getCurrentEpoch(connectionId)
+    if (currentEpoch === null || currentEpoch !== expectedEpoch) return false
+  }
   const symbolKey = normalizeOrderSymbol(symbol)
   const directionKey = normalizeDirection(direction)
   await client.hincrby(liveOrdersBySymbolKey(connectionId), `${symbolKey}:${directionKey}:${metric}`, 1)
+  return true
 }
 
 export function normalizeLiveOrderSourceLane(source: unknown): LiveOrderSourceLane {

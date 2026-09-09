@@ -3513,30 +3513,39 @@ async function incrementMetric(connectionId: string, metric: string, delta: numb
   try {
     // Use validated wrapper to prevent stale metric writes
     const { getCurrentEpoch } = await import("@/lib/trade-engine/progression-lock")
-    const { hincrbyProgression } = await import("@/lib/trade-engine/progression-writes")
+    const { hincrbyProgression, hincrbyProgressionBatch } = await import("@/lib/trade-engine/progression-writes")
     
     const currentEpoch = await getCurrentEpoch(connectionId)
     if (!currentEpoch) return // No active lock, skip write (stale instance)
     
-    // Use validated wrapper for epoch-safe increments
+    // Placement and failure are terminal outcomes of one attempted dispatch.
+    // Update the outcome and attempted counters in one validated batch so an
+    // epoch hand-off cannot leave `attempted` one behind `placed + failed`.
+    if (metric === "live_orders_placed_count" || metric === "live_orders_failed_count") {
+      await hincrbyProgressionBatch(connectionId, {
+        [metric]: delta,
+        live_orders_attempted_count: delta,
+      }, {
+        connectionId,
+        epoch: currentEpoch,
+        logStaleRejects: false,
+      })
+      return
+    }
+
+    // Use the single-field validated wrapper for all non-terminal metrics.
     await hincrbyProgression(connectionId, metric, delta, {
       connectionId,
       epoch: currentEpoch,
       logStaleRejects: false,
     })
-    if (metric === "live_orders_placed_count" || metric === "live_orders_failed_count") {
-      await hincrbyProgression(connectionId, "live_orders_attempted_count", delta, {
-        connectionId,
-        epoch: currentEpoch,
-        logStaleRejects: false,
-      })
-    }
   } catch (err) {
     // metric failures should not throw the live pipeline
   }
 }
 async function incrementOrdersBySymbol(connectionId: string, symbol: string, side: string, metric: string): Promise<void> {
   try {
+    const { getCurrentEpoch } = await import("@/lib/trade-engine/progression-lock")
     const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
     const sideKey = String(side || "").trim().toLowerCase()
     const dir =
@@ -3547,7 +3556,12 @@ async function incrementOrdersBySymbol(connectionId: string, symbol: string, sid
           : null
     if (!dir || !["placed", "filled", "failed"].includes(metric)) return
     const symbolKey = String(symbol || "").trim().toUpperCase()
-    await recordPerSymbolOrderCounter(connectionId, symbolKey, dir, metric as any)
+    const currentEpoch = await getCurrentEpoch(connectionId)
+    if (!currentEpoch) return // Do not leave an unowned per-symbol stale row.
+    await recordPerSymbolOrderCounter(connectionId, symbolKey, dir, metric as any, {
+      epoch: currentEpoch,
+      requireEpoch: true,
+    })
   } catch {
     /* best-effort */
   }

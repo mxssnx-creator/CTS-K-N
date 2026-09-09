@@ -1663,6 +1663,11 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('blocked: nonNegativeMetric(progression.live_orders_blocked_count)')
     expect(source).toContain('deferred: nonNegativeMetric(progression.live_orders_deferred_count)')
     expect(source).toContain('rejected: nonNegativeMetric(progression.live_orders_rejected_count)')
+    expect(source).toContain('currentDispatch: liveDispatch')
+    expect(source).toContain('currentErrors: liveDispatch.failedToOpen')
+    expect(source).toContain('lifetimeErrors: nonNegativeMetric(progression.live_orders_failed_count)')
+    expect(source).toContain('strategy_detail:${conn.id}:live')
+    expect(source).toContain('aggregateCurrentDispatchOutcome')
     expect(source).toContain("progressionReadKeys(scope)")
     expect(source).toContain("scopedRuntimeState")
     expect(source).toContain("scopedSettingsState")
@@ -3585,6 +3590,19 @@ describe("requested regression guardrails", () => {
     }
 
     expect(source).toMatch(/async function incrementOrdersBySymbol[\s\S]*?catch \{[\s\S]*?best-effort/)
+  })
+
+  test("terminal live order counters increment outcome and attempted atomically", () => {
+    const source = read("lib/trade-engine/stages/live-stage.ts")
+    const terminalBlock = source.slice(
+      source.indexOf("async function incrementMetric"),
+      source.indexOf("async function incrementOrdersBySymbol"),
+    )
+    expect(terminalBlock).toContain("hincrbyProgressionBatch")
+    expect(terminalBlock).toContain("[metric]: delta")
+    expect(terminalBlock).toContain("live_orders_attempted_count: delta")
+    expect(terminalBlock).toContain('metric === "live_orders_placed_count" || metric === "live_orders_failed_count"')
+    expect(terminalBlock).toContain("currentEpoch")
   })
 
   test("dashboard stats surface active advanced indications and logical Real evaluated counts", () => {
