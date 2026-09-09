@@ -507,6 +507,12 @@ async function buildStatusAllResponse() {
             runtime_reason: runtime.reason,
             heartbeat_fresh: runtime.heartbeatFresh,
             heartbeat_age_ms: runtime.heartbeatAgeMs,
+            // A fresh running heartbeat is authoritative over stale stop
+            // markers retained by a compatibility hash from an earlier
+            // worker.  Keep the fields for stopped snapshots, but never let
+            // the overview show "running" and an old stoppedAt together.
+            stopped_at: isRunning ? "" : String(redisStatus.stopped_at ?? ""),
+            operator_stopped_at: isRunning ? "" : String(redisStatus.operator_stopped_at ?? ""),
             ...(effectiveSymbols.length > 0
               ? {
                   symbols: effectiveSymbols,

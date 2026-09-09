@@ -14,6 +14,7 @@ import {
   resolveOverviewActiveSymbols,
   type FunctionalOverviewStageSnapshot,
 } from "@/lib/functional-overview-stage-snapshot"
+import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -74,8 +75,13 @@ export async function GET() {
       8,
       async (connection: any) => {
         const connectionId = String(connection.id || "")
+        const engineType = String(
+          connection.engine_type || connection.engineType || "main",
+        ).trim() || "main"
+        const progressionScope = buildProgressionScope(connectionId, engineType)
+        const progressionKeys = Array.from(new Set(progressionReadKeys(progressionScope)))
         const [
-          progression,
+          progressionHashes,
           base,
           main,
           real,
@@ -83,9 +89,13 @@ export async function GET() {
           pseudoOpen,
           liveOpen,
           liveClosed,
-          prehistoricSymbols,
+          scopedPrehistoricSymbols,
+          scopedPrehistoricExists,
+          legacyPrehistoricSymbols,
         ] = await Promise.all([
-          client.hgetall(`progression:${connectionId}`).catch(() => ({})),
+          Promise.all(progressionKeys.map((key) =>
+            client.hgetall(key).catch(() => ({})),
+          )),
           client.hgetall(`strategy_detail:${connectionId}:base`).catch(() => ({})),
           client.hgetall(`strategy_detail:${connectionId}:main`).catch(() => ({})),
           client.hgetall(`strategy_detail:${connectionId}:real`).catch(() => ({})),
@@ -93,8 +103,25 @@ export async function GET() {
           client.scard(`pseudo_positions:${connectionId}`).catch(() => 0),
           client.llen(`live:positions:${connectionId}`).catch(() => 0),
           client.llen(`live:positions:${connectionId}:closed`).catch(() => 0),
+          client.scard(`${progressionScope.prehistoricKey}:symbols`).catch(() => 0),
+          client.exists(`${progressionScope.prehistoricKey}:symbols`).catch(() => 0),
           client.scard(`prehistoric:${connectionId}:symbols`).catch(() => 0),
         ])
+        // `progressionReadKeys` is ordered by runtime authority. Merge
+        // field-by-field so a rolling deployment can retain fresh counters
+        // from the compatibility hash without replacing scoped fields that
+        // are already current.
+        const progression = progressionHashes.reduce<Record<string, string>>(
+          (merged, hash) => ({ ...(hash || {}), ...merged }),
+          {},
+        )
+        // A scoped set is the authoritative Historic basket whenever it
+        // exists. Only fall back to the legacy set on installations that have
+        // not created the scoped namespace yet; this avoids resurrecting an
+        // old basket after a current-generation reset.
+        const prehistoricSymbols = finite(scopedPrehistoricExists) > 0
+          ? finite(scopedPrehistoricSymbols)
+          : finite(legacyPrehistoricSymbols)
         const activeSymbols = resolveOverviewActiveSymbols(
           connection as Record<string, unknown>,
           progression as Record<string, unknown>,
