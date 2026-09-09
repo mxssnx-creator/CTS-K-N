@@ -26,6 +26,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getConnection, getRedisClient } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 import { buildProgressionScope } from "@/lib/progression-scope"
@@ -89,15 +90,33 @@ async function buildEngineStatesResponse(connectionId: string): Promise<Response
     // live-trade endpoint preserves `live_trade_requested=1` while keeping
     // `is_live_trade=0`; if this endpoint reports only the effective flag, the
     // slider flips itself back off on the next poll and looks unstable.
-    const liveReadiness = evaluateRealTradeReadiness(connection as Record<string, any>)
+    // The persisted connection flags describe operator intent. The live-entry
+    // guard is a separate, connection-scoped runtime decision and must be
+    // projected here as well as in status-all; otherwise the dashboard can
+    // show `live` while the order path is correctly fail-closed.
+    const [liveReadiness, presetReadiness, signalReadiness] = await Promise.all([
+      readLiveEntryReadiness(
+        client,
+        connectionId,
+        evaluateRealTradeReadiness(connection as Record<string, any>),
+      ),
+      readLiveEntryReadiness(
+        client,
+        connectionId,
+        evaluateRealTradeReadiness(connection as Record<string, any>, "preset"),
+      ),
+      readLiveEntryReadiness(
+        client,
+        connectionId,
+        evaluateRealTradeReadiness(connection as Record<string, any>, "signal"),
+      ),
+    ])
     const liveEffective = liveReadiness.canPlaceRealOrders
     const liveRequested = liveReadiness.requested
     const flagLive    = liveRequested || liveEffective
-    const presetReadiness = evaluateRealTradeReadiness(connection as Record<string, any>, "preset")
     const presetEffective = presetReadiness.canPlaceRealOrders
     const presetRequested = presetReadiness.requested
     const flagPreset  = presetRequested || presetEffective
-    const signalReadiness = evaluateRealTradeReadiness(connection as Record<string, any>, "signal")
     const signalEffective = signalReadiness.canPlaceRealOrders
     const signalRequested = signalReadiness.requested
     const flagSignal = signalRequested || signalEffective

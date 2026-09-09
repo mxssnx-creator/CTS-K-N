@@ -2595,6 +2595,20 @@ describe("requested regression guardrails", () => {
     )
   })
 
+  test("read-only status surfaces share runtime entry admission and scoped Historic coverage", () => {
+    const engineStates = read("app/api/connections/[id]/engine-states/route.ts")
+    const overview = read("app/api/trade-engine/functional-overview/route.ts")
+
+    expect(engineStates).toContain("readLiveEntryReadiness(")
+    expect(engineStates).toContain("const [liveReadiness, presetReadiness, signalReadiness]")
+    expect(overview).toContain("buildProgressionScope")
+    expect(overview).toContain("progressionReadKeys(progressionScope)")
+    expect(overview).toContain("scopedPrehistoricExists")
+    expect(overview).toContain("const prehistoricSymbols = finite(scopedPrehistoricExists)")
+    expect(read("app/api/trade-engine/status-all/route.ts")).toContain('stopped_at: isRunning ? ""')
+    expect(read("app/api/trade-engine/status-all/route.ts")).toContain('operator_stopped_at: isRunning ? ""')
+  })
+
   test("new custom preset types expose the Normal family and no Only selector", () => {
     const dialog = read("components/presets/preset-type-dialog.tsx")
     const createRoute = read("app/api/preset-types/route.ts")

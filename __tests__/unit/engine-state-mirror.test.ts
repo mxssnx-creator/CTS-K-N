@@ -16,6 +16,8 @@ describe("engine state settings mirror", () => {
       pause_requested: "1",
       pause_reason: "global_coordinator",
       paused_by: "global_coordinator",
+      stopped_at: "2026-09-09T14:00:00.000Z",
+      operator_stopped_at: "2026-09-09T14:00:00.000Z",
     })
     await setSettings("trade_engine_state:bingx-x02", {
       status: "running",
@@ -35,7 +37,11 @@ describe("engine state settings mirror", () => {
       updated_at: "2026-09-09T15:30:00.000Z",
     })
     await expect(getRedisClient().hgetall("trade_engine_state:bingx-x02")).resolves.not.toHaveProperty("pause_requested")
+    await expect(getRedisClient().hgetall("trade_engine_state:bingx-x02")).resolves.not.toHaveProperty("stopped_at")
+    await expect(getRedisClient().hgetall("trade_engine_state:bingx-x02")).resolves.not.toHaveProperty("operator_stopped_at")
     await expect(getRedisClient().hgetall("settings:trade_engine_state:bingx-x02:main")).resolves.not.toHaveProperty("pause_reason")
+    await expect(getRedisClient().hgetall("settings:trade_engine_state:bingx-x02:main")).resolves.not.toHaveProperty("stopped_at")
+    await expect(getRedisClient().hgetall("settings:trade_engine_state:bingx-x02:main")).resolves.not.toHaveProperty("operator_stopped_at")
   })
 
   test("does not mirror unrelated settings or engine-type-specific keys", async () => {

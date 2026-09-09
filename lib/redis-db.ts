@@ -5226,6 +5226,11 @@ export async function setSettings(key: string, value: any): Promise<void> {
         "pause_requested_at",
         "paused_at",
         "paused_by",
+        // A running contract supersedes stop markers from a previous
+        // process.  Leaving these fields behind makes overview/status
+        // readers report a stale stoppedAt alongside a fresh heartbeat.
+        "stopped_at",
+        "operator_stopped_at",
       ]
       writes.push(client.hdel(`settings:${key}`, ...stalePauseFields))
       writes.push(client.hdel(scopedKey, ...stalePauseFields))
