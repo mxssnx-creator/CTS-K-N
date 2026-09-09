@@ -2097,7 +2097,7 @@ describe("requested regression guardrails", () => {
   })
 
 
-  test("QuickStart live button uses effective live state and live-trade enable makes engine eligible", () => {
+  test("QuickStart live button preserves requested intent while exposing effective admission", () => {
     const quickstart = read("components/dashboard/quickstart-section.tsx")
     const liveRoute = read("app/api/settings/connections/[id]/live-trade/route.ts")
     const helper = read("lib/system-resource-metrics.ts")
@@ -2109,7 +2109,8 @@ describe("requested regression guardrails", () => {
     expect(quickstartHelper).toContain("toBooleanFlag(conn?.live_trade_requested)")
     expect(quickstartHelper).toContain("toBooleanFlag(conn?.is_live_trade)")
     expect(quickstartHelper).toContain("toBooleanFlag(conn?.live_trade_enabled)")
-    expect(quickstart).toContain("setLiveTradeActive(effectiveState)")
+    expect(quickstart).toContain("setLiveTradeActive(requestedState)")
+    expect(quickstart).toContain("setLiveReadiness")
 
     const liveEnableBlock = liveRoute.slice(
       liveRoute.indexOf("If Live is turned on while the main engine is not already running"),

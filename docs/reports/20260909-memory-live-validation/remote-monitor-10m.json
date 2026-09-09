@@ -1,0 +1,611 @@
+{
+  "connectionId": "bingx-x02",
+  "intervalSeconds": 60,
+  "sampleCount": 11,
+  "startedAt": "2026-09-09T03:48:31.722706+00:00",
+  "finishedAt": "2026-09-09T03:58:41.081477+00:00",
+  "allHttp200": true,
+  "allServicesActive": true,
+  "readinessStable": true,
+  "samples": [
+    {
+      "sample": 0,
+      "at": "2026-09-09T03:48:31.722706+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 0,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 13,
+        "excludedOrders": 110
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 879636384,
+        "used_memory_rss": 1370808320,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 234124,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "at": "2026-09-09T03:49:32.781237+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 0,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 13,
+        "excludedOrders": 109
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 879580560,
+        "used_memory_rss": 1373446144,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 233583,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "at": "2026-09-09T03:50:34.099381+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 0,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 16,
+        "excludedOrders": 119
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 881812272,
+        "used_memory_rss": 1371537408,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 235001,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 3,
+      "at": "2026-09-09T03:51:35.011685+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 0,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 18,
+        "excludedOrders": 133
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 884504688,
+        "used_memory_rss": 1375350784,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 234104,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 4,
+      "at": "2026-09-09T03:52:35.753526+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 1,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 19,
+        "excludedOrders": 149
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 885944224,
+        "used_memory_rss": 1374142464,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.55,
+        "dbsize": 232954,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 5,
+      "at": "2026-09-09T03:53:37.126381+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 1,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 22,
+        "excludedOrders": 167
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 886181680,
+        "used_memory_rss": 1373282304,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.55,
+        "dbsize": 233684,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 6,
+      "at": "2026-09-09T03:54:37.839314+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 1,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 22,
+        "excludedOrders": 187
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 884931544,
+        "used_memory_rss": 1382486016,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 231337,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 7,
+      "at": "2026-09-09T03:55:38.586890+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 1,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 22,
+        "excludedOrders": 193
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 884110600,
+        "used_memory_rss": 1375854592,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 229279,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 8,
+      "at": "2026-09-09T03:56:39.263459+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 1,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 21,
+        "excludedOrders": 183
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 880972192,
+        "used_memory_rss": 1376006144,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 228224,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 9,
+      "at": "2026-09-09T03:57:40.286535+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 1,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 21,
+        "excludedOrders": 183
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 881787520,
+        "used_memory_rss": 1374498816,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 226407,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    },
+    {
+      "sample": 10,
+      "at": "2026-09-09T03:58:41.081477+00:00",
+      "http": {
+        "health": 200,
+        "status": 200,
+        "states": 200,
+        "logs": 200,
+        "settings": 200,
+        "live": 200
+      },
+      "engine": {
+        "running": true,
+        "cycles": null
+      },
+      "liveReadiness": {
+        "requested": true,
+        "enabled": true,
+        "canPlace": false,
+        "executionMode": "blocked",
+        "blockCode": "entry_protection_halt"
+      },
+      "orders": {
+        "open": 0,
+        "positions": 1,
+        "positionsAvailable": true,
+        "ordersAvailable": true,
+        "excludedPositions": 21,
+        "excludedOrders": 185
+      },
+      "logsReturned": 100,
+      "redis": {
+        "used_memory": 880753456,
+        "used_memory_rss": 1378320384,
+        "maxmemory": 4227858432,
+        "mem_fragmentation_ratio": 1.56,
+        "dbsize": 224798,
+        "available": true
+      },
+      "services": {
+        "cts-kn": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-direct-trade": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        },
+        "cts-kn-scheduler": {
+          "NRestarts": 0,
+          "ActiveState": "active"
+        }
+      }
+    }
+  ],
+  "notes": [
+    "Read-only monitoring through allowed local server APIs and native Redis/systemd probes.",
+    "openPositions changed from 0 to 1 while the X02 entry gate remained blocked; this is not evidence of a CTS-owned entry and excluded/untracked counters are retained.",
+    "No endpoint or service restart failure observed."
+  ]
+}

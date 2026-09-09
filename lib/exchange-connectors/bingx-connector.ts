@@ -872,7 +872,7 @@ export class BingXConnector extends BaseExchangeConnector {
   async testConnection(): Promise<ExchangeConnectorResult> {
     // Header lines go only to UI logs, not server console.
     const env = this.credentials.isTestnet ? "testnet" : "mainnet"
-    this.logs.push(`Starting BingX connection test (${env}: ${this.getBaseUrl()})`)
+    this.appendLog(`Starting BingX connection test (${env}: ${this.getBaseUrl()})`)
 
     try {
       return await this.getBalance()
@@ -918,7 +918,7 @@ export class BingXConnector extends BaseExchangeConnector {
           const accountEquity = settlement?.equity == null || settlement.equity === ""
             ? Number.NaN : Number(settlement.equity)
           this.sdkLastError = ""
-          this.logs.push(`[${new Date().toISOString()}] ✓ Account balance via bingx-api: ${usdtBalance.toFixed(4)} USDT`)
+          this.appendLog(`[${new Date().toISOString()}] ✓ Account balance via bingx-api: ${usdtBalance.toFixed(4)} USDT`)
           return {
             success: true,
             balance: usdtBalance,
@@ -1142,9 +1142,9 @@ export class BingXConnector extends BaseExchangeConnector {
       // not to the server console — they fire on every dashboard connection-test
       // poll (~1/s) and would flood the server log otherwise.
       const ts = new Date().toISOString()
-      this.logs.push(`[${ts}] ✓ Account balance: ${usdtBalance.toFixed(4)} ${settlementAsset}`)
-      this.logs.push(`[${ts}] ✓ Total assets: ${balances.length}`)
-      this.logs.push(`[${ts}] ✓ BTC price: $${btcPrice.toFixed(2)}`)
+      this.appendLog(`[${ts}] ✓ Account balance: ${usdtBalance.toFixed(4)} ${settlementAsset}`)
+      this.appendLog(`[${ts}] ✓ Total assets: ${balances.length}`)
+      this.appendLog(`[${ts}] ✓ BTC price: $${btcPrice.toFixed(2)}`)
 
       return {
         success: true,
