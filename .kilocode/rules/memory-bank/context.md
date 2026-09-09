@@ -1,5 +1,31 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Backup gate — 2026-09-09
+
+- GitHub `main` and the isolated validation worktree are identical at
+  `1aaba49f6e3dc61345f02d36ebc71c9167787a4b`, tree
+  `b2f1e5260b7f81aebc63d276c8757b315a110e5c`.
+- Complete owner-only source checkpoints were verified at
+  `/workspace/backups/CTS-K-N/backup-gate-active-2026-09-08T235800Z` and
+  `/workspace/backups/CTS-K-N/backup-gate-main-2026-09-09T000500Z`.
+- The canonical recovery branch remains preserved at `2041787b` with 31 tracked
+  and 3 untracked changes. Its old compound Block commit and conflicting hunks
+  are superseded by current additive Block-v2 behavior in main; applying them
+  would regress counts 1–6 / recovery levels 1–2 back to stale 1–12 / 1–5
+  semantics. Conflict-free hunks are already present in main, so none of that
+  recovery work is published from this gate.
+- Current-main gate: frozen offline pnpm install; source syntax; security scan
+  (1,686 files, zero findings); recreation verification (1,678 files);
+  TypeScript; ESLint; runtime recovery; Kilo 37/37; Linux install preflight;
+  294/294 Jest suites and 2,028/2,028 tests; and the production build with 349
+  complete traces all pass.
+- GitHub reports both Vercel contexts green on current main. PR #315 is stale,
+  32 commits behind main, still carries its earlier failed Vercel contexts, and
+  conflicts with newer dashboard/statistics work. Its dashboard assets are
+  already in main and the server/runtime pieces were subsequently improved.
+  Do not merge PR #315; close it as superseded after the replacement gate PR
+  is green and merged.
+
 ## Continuation — 2026-09-06 runtime/memory verification
 
 - GitHub main and production are `752d4e5a155094978ee647ed323173edca74bf98`.
