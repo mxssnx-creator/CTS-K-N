@@ -45,8 +45,8 @@ const VERIFIED_BALANCE_MAX_AGE_MS = 5 * 60 * 1000
  * reflect the full live-trading state even before a user toggles
  * dashboard visibility.
  *
- * This endpoint NEVER 500s — on any error it returns zero totals so the
- * dashboard footer just shows "0 conns" rather than an error badge.
+ * Unavailable reads return an explicit error. A Redis or exchange outage
+ * must never masquerade as a successful, empty account snapshot.
  */
 export async function GET(request: Request) {
   try {
@@ -354,8 +354,9 @@ export async function GET(request: Request) {
     })
   } catch (error) {
     console.error("[v0] /api/exchange/live-summary error:", error)
-    // Soft-fail — we never want the footer to break the dashboard.
-    return NextResponse.json(emptyResponse(), { status: 200 })
+    return NextResponse.json({
+      ...emptyResponse(), success: false, error: "live_summary_unavailable",
+    }, { status: 503, headers: { "Cache-Control": "no-store" } })
   }
 }
 
@@ -365,6 +366,7 @@ function toNum(v: any): number {
 }
 
 function optionalNum(value: unknown): number | null {
+  if (value === undefined || value === null || (typeof value === "string" && !value.trim())) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }

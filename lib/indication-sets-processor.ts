@@ -1252,9 +1252,9 @@ export class IndicationSetsProcessor {
         this.ctsGMatrixSettings = settings
         this.ctsGSettings = {
           minimumSpreadRatio: Math.max(0.00001, Number(settings.ctsGTrendMinimumSpreadRatio) || 0.001),
-          minimumConfidence: Math.max(0, Math.min(1, Number(settings.ctsGMinimumConfidence) || 0.6)),
+          minimumConfidence: Math.max(0, Math.min(1, Number(settings.ctsGMinimumConfidence ?? 0.6))),
           breakRange: Math.max(8, Math.min(240, Number(settings.breakRange) || 16)),
-          breakNoisePct: Math.max(0, Number(settings.breakNoisePct) || 0.05),
+          breakNoisePct: Math.max(0, Number(settings.breakNoisePct ?? 0.05)),
         }
         this.trendTimeframesMinutes = this.parseTrendTimeframes(
           settings.trendTimeframesMinutes,
@@ -3157,7 +3157,9 @@ export class IndicationSetsProcessor {
         ? ctsGTimeframeCloses(minutes, timeframeMinutes, asOfMs)
         : ctsGLegacyTimeframeCloses(prices, timeframeMinutes)
       for (const variant of buildCtsGConfigurations(type, this.ctsGMatrixSettings)) {
-      const requiredBars = type === "trend" ? 30 : Math.floor(variant.breakRange || 16) + 2
+      const requiredBars = type === "trend"
+        ? Math.max(30, (variant.slowPeriod ?? 21) + 9)
+        : Math.floor(variant.breakRange || 16) + (variant.breakConfirmationBars ?? 1) + 1
       if (bars.length < requiredBars) { warmingUp++; continue }
       evaluated++
       const signal = type === "trend" ? evaluateCtsGTrend(bars, variant) : evaluateCtsGBreak(bars, variant)

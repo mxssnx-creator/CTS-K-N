@@ -1,3 +1,4 @@
+import { compactLogValue } from "@/lib/log-payload"
 /**
  * Engine Progress Logging System
  * Provides detailed, structured logging for all engine processing phases and cycles
@@ -160,7 +161,7 @@ class StructuredLogger {
 
   private addToBuffer(log: EngineProgressLog) {
     if (this.destroyed) return
-    this.logBuffer.push(log)
+    this.logBuffer.push({ ...log, details: compactLogValue(log.details) })
     if (this.logBuffer.length > this.maxBufferSize) {
       this.logBuffer.splice(0, this.logBuffer.length - this.maxBufferSize)
     }

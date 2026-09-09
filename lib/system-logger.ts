@@ -1,3 +1,5 @@
+import { boundedLogLimit, compactLogValue, serializeLogValue } from "@/lib/log-payload"
+import { logRuntimeError } from "@/lib/runtime-log-throttle"
 import { getRedisClient } from "./redis-db"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
 
@@ -23,13 +25,7 @@ const LOG_FLUSH_BATCH_SIZE = 50
 
 function serializeLogMetadata(metadata?: Record<string, any>): string {
   if (!metadata) return ""
-  try {
-    return JSON.stringify(metadata).slice(0, 4000)
-  } catch (error) {
-    return JSON.stringify({
-      serializationError: error instanceof Error ? error.message : String(error),
-    })
-  }
+  return serializeLogValue(metadata)
 }
 
 function scheduleLogFlush(): void {
@@ -58,7 +54,7 @@ export class SystemLogger {
     if (logQueue.length >= MAX_PENDING_LOGS) {
       logQueue.splice(0, logQueue.length - MAX_PENDING_LOGS + 1)
     }
-    logQueue.push(entry)
+    logQueue.push({ ...entry, message: entry.message.slice(0, 2_000), category: entry.category.slice(0, 80), metadata: entry.metadata ? JSON.parse(serializeLogValue(entry.metadata)) : undefined })
     scheduleLogFlush()
   }
 
@@ -87,6 +83,9 @@ export class SystemLogger {
         pipeline.expire(logKey, 604800)
       }
 
+      // Capture discarded payloads before trimming their only global index.
+      const overflowResultIndex = batch.length * 4
+      pipeline.lrange("logs:all:list", 1000, 1999)
       pipeline.ltrim("logs:all:list", 0, 999)
       pipeline.expire("logs:all:list", 604800)
       for (const category of new Set(batch.map((entry) => entry.category))) {
@@ -94,14 +93,25 @@ export class SystemLogger {
         pipeline.expire(`logs:${category}:list`, 604800)
       }
       const results = await pipeline.exec()
-      if (results.some((result: any) => result instanceof Error || (Array.isArray(result) && result[0]))) {
+      if (results.some((result: any) => result instanceof Error || (Array.isArray(result) && result[0] instanceof Error))) {
         throw new Error("System log pipeline returned an error")
+      }
+      const overflowResult = results[overflowResultIndex]
+      const overflow = Array.isArray(overflowResult) && overflowResult.length === 2 && Array.isArray(overflowResult[1])
+        ? overflowResult[1] : overflowResult
+      const discarded = Array.isArray(overflow) ? overflow.filter((id: unknown) => typeof id === "string" && /^log:\d+:/.test(id)) : []
+      // IDs are unique and never reinserted. Their TTL is the fallback if this
+      // optional diagnostic cleanup fails; lifecycle ledgers are not touched.
+      if (discarded.length) {
+        const cleanup = client.pipeline()
+        for (const id of discarded) cleanup.del(id)
+        await cleanup.exec()
       }
     } catch (error) {
       // Drop this batch when logging storage is stuck. Logs are diagnostic only;
       // retry loops here previously caused high memory/CPU and made trading
       // actions appear frozen behind logging.
-      console.error("[SystemLogger] Failed to flush queued logs:", error)
+      logRuntimeError("system-log-storage", 30_000, "[SystemLogger] Diagnostic batch dropped after storage failure", compactLogValue(error))
     }
   }
 
@@ -203,6 +213,7 @@ export class SystemLogger {
     try {
       const client = getRedisClient()
       // Read from bounded lists (new format) with fallback to legacy sets
+      limit = boundedLogLimit(limit, 100, 1000)
       const listKey = category ? `logs:${category}:list` : "logs:all:list"
       let logIds = await client.lrange(listKey, 0, limit - 1).catch(() => [] as string[])
       

@@ -379,6 +379,7 @@ const recordingConnector = {
 }
 
 jest.mock("@/lib/redis-db", () => ({
+  withSharedPersistenceLease: async (_scope: string, work: () => Promise<unknown>) => work(),
   initRedis: jest.fn(async () => undefined),
   getRedisBackend: jest.fn(() => "redis-network"),
   persistNow: jest.fn(async () => true),
@@ -604,6 +605,29 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(firstEntryRequestAt - dispatchStartedAt).toBeLessThan(300)
     expect(Math.max(...protectionRequestTimes) - dispatchStartedAt).toBeLessThan(1_000)
     expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
+  })
+
+  test("blocks a negative settled live Set before any entry while other exact configurations remain eligible", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const { recordLiveConfigOutcome } = await import("@/lib/live-config-performance")
+    for (let index = 0; index < 12; index++) {
+      await recordLiveConfigOutcome({
+        id: `settled-loss-${index}`, connectionId: connection.id, symbol: "BTCUSDT", direction: "long",
+        setKey: "trend:verified#ema8-21", executionIntent: "main", executionMode: "live", status: "closed",
+        orderId: `historical-venue-${index}`, executedQuantity: 0.01, remainingQuantity: 0,
+        realizedPnlComplete: true, realizedPnlSource: "exchange_settlement", realizedPnL: -0.1, closedAt: Date.now() + index,
+      })
+    }
+    const candidate = { id: "loss-gated-entry", connectionId: connection.id, symbol: "BTCUSDT", direction: "long",
+      quantity: 0, entryPrice: 100, leverage: 2, stopLoss: 1, takeProfit: 2, status: "pending", timestamp: Date.now(),
+      setKey: "trend:verified#ema8-21" }
+    const result = await executeLivePosition(connection.id, candidate as any, recordingConnector)
+    expect(result.executionBlockCode).toBe("negative_live_config_window")
+    expect(placeOrder).not.toHaveBeenCalled()
+    expect(persistedActiveRows()).toHaveLength(0)
+    const other = await executeLivePosition(connection.id, { ...candidate, id: "other-set", setKey: "trend:verified#ema13-34" } as any, recordingConnector)
+    expect(other.status).toBe("open")
+    expect(placeOrder).toHaveBeenCalled()
   })
 
   test("fails closed during a position-snapshot halt without materializing rejection rows", async () => {

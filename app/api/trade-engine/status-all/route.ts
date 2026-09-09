@@ -6,6 +6,8 @@ import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
+import { selectLiveOrderMetricsSnapshot } from "@/lib/live-order-metrics-snapshot"
+import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 
 function isEnabledFlag(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
@@ -247,12 +249,15 @@ async function buildStatusAllResponse() {
               )),
             ),
           ])
-          const progression = progressionHashes.reduce<Record<string, string>>(
-            (merged, hash) => ({ ...(hash || {}), ...merged }),
-            {},
+          const orderSnapshot = selectLiveOrderMetricsSnapshot(
+            progressionHashes[progressionKeys.indexOf(scope.legacyProgressionKey)],
+            progressionHashes[progressionKeys.indexOf(scope.progressionKey)],
           )
-          const liveOrderReadiness = evaluateRealTradeReadiness(conn, normalizeRealTradeIntent(engineType))
+          const progression = orderSnapshot.values
+          const liveOrderReadiness = await readLiveEntryReadiness(client, conn.id, evaluateRealTradeReadiness(conn, normalizeRealTradeIntent(engineType)))
           const orderMetrics = {
+            available: orderSnapshot.available,
+            scope: orderSnapshot.scope,
             attempted: nonNegativeMetric(progression.live_orders_attempted_count),
             placed: nonNegativeMetric(progression.live_orders_placed_count),
             filled: nonNegativeMetric(progression.live_orders_filled_count),

@@ -20,6 +20,9 @@ export type RealTradeBlockCode =
   | "placement_disabled"
   | "execution_unavailable"
   | "shared_redis_required"
+  | "entry_protection_halt"
+  | "account_snapshot_halt"
+  | "runtime_admission_unavailable"
 
 export interface RealTradeReadiness {
   intent: "main" | "preset" | "signal"

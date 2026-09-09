@@ -4,6 +4,8 @@
  */
 
 import { getRedisClient } from "@/lib/redis-db"
+import { boundedLogLimit, compactLogValue, serializeLogValue } from "@/lib/log-payload"
+import { logRuntimeError } from "@/lib/runtime-log-throttle"
 
 export interface ProgressionLogEntry {
   timestamp: string
@@ -33,6 +35,8 @@ type ProgressionGlobals = {
   }>
   flushTimer?: NodeJS.Timeout | null
   flushTimerStarted?: boolean
+  flushes?: Map<string, Promise<void>>
+  flushAllPromise?: Promise<void>
 }
 const g = globalThis as unknown as { __v0_progression?: ProgressionGlobals }
 if (!g.__v0_progression) g.__v0_progression = {}
@@ -41,6 +45,7 @@ const PG = g.__v0_progression
 const logBuffer: Map<string, string[]> =
   PG.logBuffer ?? (PG.logBuffer = new Map<string, string[]>())
 const coalesced = PG.coalesced ?? (PG.coalesced = new Map())
+const flushes = PG.flushes ?? (PG.flushes = new Map())
 const BUFFER_FLUSH_SIZE = 25 // Flush every 25 logs to reduce Redis write pressure
 const BUFFER_FLUSH_INTERVAL = 3000 // Or every 3 seconds
 const MAX_BUFFER_PER_KEY = 250
@@ -157,7 +162,7 @@ export async function logProgressionEvent(
       : details
     
     // Format: "timestamp|level|phase|message|details_json"
-    const logEntry = `${timestamp}|${level}|${phase}|${message}|${JSON.stringify(effectiveDetails || {})}`
+    const logEntry = `${timestamp}|${level}|${phase.slice(0, 120).replace(/\|/g, "/")}|${message.slice(0, 2_000).replace(/\|/g, "/")}|${serializeLogValue(effectiveDetails || {})}`
     
     // Add to buffer instead of writing immediately
     if (!logBuffer.has(logKey)) {
@@ -199,64 +204,61 @@ export async function logProgressionEvent(
 
     // Console log for important events (info for important phases, always for errors/warnings)
     if (level === "error" || level === "warning" || isImportant) {
-      console.log(`[v0] [${level.toUpperCase()}] [${phase}] ${message}`, effectiveDetails ? JSON.stringify(effectiveDetails).slice(0, 200) : "")
+      console.log(`[v0] [${level.toUpperCase()}] [${phase.slice(0, 120)}] ${message.slice(0, 2_000)}`, effectiveDetails ? serializeLogValue(effectiveDetails).slice(0, 200) : "")
     }
   } catch (error) {
     // Silent fail - logging should never block main operations
-    console.error("[v0] [LogError] Failed to log:", error)
+    logRuntimeError("progression-log-encode", 30_000, "[LogError] Failed to encode diagnostic event", compactLogValue(error))
   }
 }
 
 /**
  * Flush log buffer for a specific key
  */
-async function flushLogBuffer(logKey: string): Promise<void> {
+function flushLogBuffer(logKey: string): Promise<void> {
+  const existing = flushes.get(logKey)
+  if (existing) return existing
   const buffer = logBuffer.get(logKey)
-  if (!buffer || buffer.length === 0) return
-  
-  // Copy and clear buffer immediately to prevent duplicate writes
-  const toFlush = [...buffer]
-  logBuffer.set(logKey, [])
-  
+  if (!buffer?.length || flushes.size >= 4) return Promise.resolve()
+  const toFlush = buffer.splice(0, MAX_BUFFER_PER_KEY)
+  // A caller timing out does not cancel Redis. Keep ownership until the actual
+  // write settles; never replay an ambiguously committed diagnostic batch.
+  const pending = (async () => {
+    try {
+      const client = getRedisClient()
+      await client.lpush(logKey, ...toFlush) // newest first
+      await client.ltrim(logKey, 0, MAX_LOGS_PER_CONNECTION - 1)
+      await client.expire(logKey, LOG_RETENTION_HOURS * 60 * 60)
+    } catch (error) {
+      logRuntimeError("progression-log-write", 30_000, "[EngineLog] Diagnostic batch dropped after Redis failure", compactLogValue(error))
+    }
+  })().finally(() => {
+    if (flushes.get(logKey) === pending) flushes.delete(logKey)
+  })
+  flushes.set(logKey, pending)
+  return pending
+}
+
+async function waitForDiagnosticFlush(pending: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const client = getRedisClient()
-    
-    // ── Progression logs should appear in chronological order ──────────
-    // We use lpush to prepend to a Redis list (lpush prepends to the
-    // head; lrange returns from head to tail). Without reversing the
-    // entries, the FIRST entry in toFlush becomes the HEAD (index 0),
-    // so lrange(0, MAX) returns them in chronological order as written.
-    //
-    // Previously we did `lpush(...toFlush.reverse())` which reversed
-    // the order, making lrange read them backwards. The reader at line
-    // 158 does NOT reverse, so logs appeared in reverse chronological
-    // order. Removing the .reverse() here fixes the bug — logs now
-    // display oldest first.
-    await Promise.race([
-      (async () => {
-        await client.lpush(logKey, ...toFlush)
-        await client.ltrim(logKey, 0, MAX_LOGS_PER_CONNECTION - 1)
-        // The list is bounded by count, but it must also age out when a
-        // connection is retired. Refreshing this rolling TTL keeps abandoned
-        // connection namespaces from becoming permanent Redis keys.
-        await client.expire(logKey, LOG_RETENTION_HOURS * 60 * 60)
-      })(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("progression log flush timeout")), LOG_FLUSH_TIMEOUT_MS)),
-    ])
-  } catch (error) {
-    // Put entries back if flush failed
-    const currentBuffer = logBuffer.get(logKey) || []
-    const merged = [...toFlush.slice(-100), ...currentBuffer]
-    logBuffer.set(logKey, merged.slice(-MAX_BUFFER_PER_KEY))
-  }
+    await Promise.race([pending, new Promise<void>(resolve => { timer = setTimeout(resolve, LOG_FLUSH_TIMEOUT_MS) })])
+  } finally { if (timer) clearTimeout(timer) }
 }
 
 /**
  * Flush all log buffers
  */
-export async function flushAllLogBuffers(): Promise<void> {
+export function flushAllLogBuffers(): Promise<void> {
+  if (PG.flushAllPromise) return PG.flushAllPromise
   const keys = Array.from(logBuffer.keys())
-  await Promise.all(keys.map(key => flushLogBuffer(key).catch(() => {})))
+  const pending = (async () => {
+    for (let offset = 0; offset < keys.length; offset += 4) {
+      await Promise.all(keys.slice(offset, offset + 4).map(key => flushLogBuffer(key)))
+    }
+  })().finally(() => { if (PG.flushAllPromise === pending) PG.flushAllPromise = undefined })
+  PG.flushAllPromise = pending
+  return pending
 }
 
 /**
@@ -264,7 +266,7 @@ export async function flushAllLogBuffers(): Promise<void> {
  */
 export async function forceFlushLogs(connectionId: string): Promise<void> {
   const logKey = `engine_logs:${connectionId}`
-  await flushLogBuffer(logKey)
+  await waitForDiagnosticFlush(flushLogBuffer(logKey))
 }
 
 /**
@@ -273,28 +275,32 @@ export async function forceFlushLogs(connectionId: string): Promise<void> {
  */
 export async function getProgressionLogs(
   connectionId: string,
-  options: { flush?: boolean } = {},
+  options: { flush?: boolean; limit?: number } = {},
 ): Promise<ProgressionLogEntry[]> {
   try {
     // Force flush all pending logs first to ensure we get the latest entries
     // for log-detail views. Progress/status routes can pass flush:false after
-    // doing their own bounded connection-local flush, avoiding a global flush
-    // fan-out on every card poll.
+    // doing their own bounded connection-local flush. Other connections are
+    // never flushed by this read.
     if (options.flush !== false) {
-      await flushAllLogBuffers()
+      await forceFlushLogs(connectionId)
     }
     
     const client = getRedisClient()
     const logKey = `engine_logs:${connectionId}`
 
     // Use lrange for efficient list retrieval
-    const logs = await client.lrange(logKey, 0, MAX_LOGS_PER_CONNECTION - 1)
+    const logs = await client.lrange(logKey, 0, boundedLogLimit(options.limit) - 1)
     if (!logs || logs.length === 0) return []
 
     // Parse each log entry from "timestamp|level|phase|message|details_json"
     return logs
       .map((entry) => {
         try {
+          if (entry.startsWith("{")) {
+            const row = JSON.parse(entry)
+            return { timestamp: row.timestamp, level: row.level || "info", phase: row.phase || row.category || "engine", message: String(row.message || row.action || ""), details: compactLogValue(row.details || row.data || {}), connectionId } as ProgressionLogEntry
+          }
           const parts = entry.split("|")
           if (parts.length < 4) return null
           
@@ -302,7 +308,7 @@ export async function getProgressionLogs(
           const detailsJson = detailsParts.join("|") // Rejoin in case details contained |
           let details: Record<string, any> = {}
           try {
-            details = JSON.parse(detailsJson || "{}")
+            details = compactLogValue(JSON.parse(detailsJson || "{}"))
           } catch {
             details = {}
           }
@@ -311,7 +317,7 @@ export async function getProgressionLogs(
             timestamp,
             level: (level as any) || "info",
             phase,
-            message,
+            message: message.slice(0, 2_000),
             details,
             connectionId,
           } as ProgressionLogEntry

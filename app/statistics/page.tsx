@@ -66,6 +66,7 @@ import { useExchange } from "@/lib/exchange-context"
 import { PageHeader } from "@/components/page-header"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
 import { StatisticsSectionNav } from "@/components/statistics/statistics-section-nav"
+import { DeactivatedLiveConfigs } from "@/components/statistics/deactivated-live-configs"
 import {
   statisticsHistoryTupleToTradingPosition,
   toStatisticsHistoryTuple,
@@ -1076,6 +1077,7 @@ export default function StatisticsPage() {
   return (
     <div className="min-w-0 space-y-4 p-3 sm:p-4">
       <StatisticsSectionNav />
+      <DeactivatedLiveConfigs key={selectedConnectionId} connectionId={selectedConnectionId} />
       {!hasRealConnections && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
           <div className="flex items-start gap-2">

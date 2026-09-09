@@ -16,6 +16,9 @@ export interface CtsGIndicationSettings {
   breakRange?: number
   breakNoisePct?: number
   confirmationBars?: number
+  fastPeriod?: number
+  slowPeriod?: number
+  breakConfirmationBars?: number
 }
 
 /** Bounded matrix; the original tuple is retained and extra variants are stricter. */
@@ -30,19 +33,28 @@ export function buildCtsGConfigurations(kind: "trend" | "break", settings: Recor
     breakRange: Math.floor(finite(settings.breakRange, 16, 8, 240)),
     breakNoisePct: finite(settings.breakNoisePct, 0.05, 0, 10),
     confirmationBars: 3,
+    fastPeriod: 8,
+    slowPeriod: 21,
+    breakConfirmationBars: 1,
   }
   if (settings.ctsGConfigMode === "single") return [base]
+  const periods = settings.ctsGTrendMultiplePeriods === false || settings.ctsGTrendMultiplePeriods === "false"
+    ? [[8, 21]] : [[8, 21], [5, 13], [13, 34]]
+  const breakConfirmations = settings.ctsGBreakMultipleConfirmations === false || settings.ctsGBreakMultipleConfirmations === "false" ? [1] : [1, 2]
   const variants = kind === "trend"
-    ? [1, 1.5, 2].flatMap(multiplier => [3, 4].map(confirmationBars => ({ ...base,
-        minimumSpreadRatio: Number((base.minimumSpreadRatio! * multiplier).toPrecision(10)), confirmationBars })))
-    : [1, 1.5, 2].flatMap(multiplier => [1, 2].map(noise => ({ ...base,
+    ? periods.flatMap(([fastPeriod, slowPeriod]) => [1, 1.5, 2].flatMap(multiplier => [3, 4].map(confirmationBars => ({ ...base,
+        fastPeriod, slowPeriod, minimumSpreadRatio: Math.min(1, Number((base.minimumSpreadRatio! * multiplier).toPrecision(10))), confirmationBars }))))
+    : breakConfirmations.flatMap(breakConfirmationBars => [1, 1.5, 2].flatMap(multiplier => [1, 2].map(noise => ({ ...base,
+        breakConfirmationBars,
         breakRange: Math.min(240, Math.floor(base.breakRange! * multiplier)),
-        breakNoisePct: Math.min(10, Number((base.breakNoisePct! * noise).toPrecision(10))) })))
+        breakNoisePct: Math.min(10, Number((base.breakNoisePct! * noise).toPrecision(10))) }))))
   return [...new Map(variants.map(config => [JSON.stringify(config), config])).values()]
 }
 
 export function ctsGConfigurationKey(config: CtsGIndicationSettings): string {
-  return `spread${config.minimumSpreadRatio}:confidence${config.minimumConfidence}:range${config.breakRange}:noise${config.breakNoisePct}:confirm${config.confirmationBars ?? 3}`
+  const periods = (config.fastPeriod ?? 8) === 8 && (config.slowPeriod ?? 21) === 21 ? "" : `:ema${config.fastPeriod}-${config.slowPeriod}`
+  const breakConfirmation = (config.breakConfirmationBars ?? 1) === 1 ? "" : `:breakConfirm${config.breakConfirmationBars}`
+  return `spread${config.minimumSpreadRatio}:confidence${config.minimumConfidence}:range${config.breakRange}:noise${config.breakNoisePct}:confirm${config.confirmationBars ?? 3}${periods}${breakConfirmation}`
 }
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value))
@@ -63,9 +75,12 @@ function directions(closes: readonly number[], count: number, evidence: number, 
 }
 
 export function evaluateCtsGTrend(closes: readonly number[], settings: CtsGIndicationSettings = {}): CtsGIndication | null {
-  if (closes.length < 30 || !validPrices(closes)) return null
-  const fast = emaSeries(closes, 8)
-  const slow = emaSeries(closes, 21)
+  const fastPeriod = Math.floor(Number(settings.fastPeriod ?? 8))
+  const slowPeriod = Math.floor(Number(settings.slowPeriod ?? 21))
+  if (!Number.isFinite(fastPeriod) || !Number.isFinite(slowPeriod) || fastPeriod < 2 || slowPeriod > 120 || fastPeriod >= slowPeriod) return null
+  if (closes.length < Math.max(30, slowPeriod + 9) || !validPrices(closes)) return null
+  const fast = emaSeries(closes, fastPeriod)
+  const slow = emaSeries(closes, slowPeriod)
   const last = closes[closes.length - 1]
   const spread = (fast[fast.length - 1] - slow[slow.length - 1]) / last
   if (Math.abs(spread) < (settings.minimumSpreadRatio ?? 0.001)) return null
@@ -85,19 +100,21 @@ export function evaluateCtsGTrend(closes: readonly number[], settings: CtsGIndic
     kind: "trend", direction, confidence,
     strength: clamp(Math.abs(spread) * 40 + consecutive * 0.04, 0, 1),
     agreement: evaluated[direction].agreement || consecutive / 8,
-    metadata: { model: "cts-g-ema8-21", consecutive, spreadRatio: spread },
+    metadata: { model: `cts-g-ema${fastPeriod}-${slowPeriod}`, fastPeriod, slowPeriod, consecutive, spreadRatio: spread },
   }
 }
 
 export function evaluateCtsGBreak(closes: readonly number[], settings: CtsGIndicationSettings = {}): CtsGIndication | null {
   const range = Math.max(8, Math.min(240, Math.floor(settings.breakRange || 16)))
-  if (closes.length < range + 2 || !validPrices(closes)) return null
-  const prior = closes.slice(-(range + 1), -1)
+  const confirmationBars = Math.max(1, Math.min(3, Math.floor(Number(settings.breakConfirmationBars) || 1)))
+  if (closes.length < range + confirmationBars + 1 || !validPrices(closes)) return null
+  const prior = closes.slice(-(range + confirmationBars), -confirmationBars)
   const last = closes[closes.length - 1]
   const high = Math.max(...prior)
   const low = Math.min(...prior)
   if (last <= high && last >= low) return null
   const direction = last > high ? "long" : "short"
+  if (!closes.slice(-confirmationBars).every(price => direction === "long" ? price > high : price < low)) return null
   const reference = direction === "long" ? high : low
   const breakoutPct = Math.abs((last - reference) / reference * 100)
   const noisePct = Math.max(0, settings.breakNoisePct ?? 0.05)
@@ -110,7 +127,7 @@ export function evaluateCtsGBreak(closes: readonly number[], settings: CtsGIndic
   return {
     kind: "break", direction, confidence, agreement,
     strength: clamp(breakoutPct / Math.max(0.15, noisePct), 0, 1),
-    metadata: { model: "cts-g-structure-break", range, breakoutPct },
+    metadata: { model: "cts-g-structure-break", range, confirmationBars, breakoutPct },
   }
 }
 

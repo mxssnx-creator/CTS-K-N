@@ -56,7 +56,7 @@ export const MAX_LIVE_POSITION_COST_MULTIPLIER = 5
  * The only live minimum-floor allowance is the dedicated X02 BingX Prod-VST
  * account. It is virtual funds, pinned to an approved VST origin, and the
  * allowance never applies to Mainnet or another connection. The amount is
- * still bounded by the account-wide PositionCost budget, so a small or empty
+ * still bounded by balance × PositionCost, so a small or empty
  * account remains blocked rather than receiving a synthetic minimum.
  */
 function isAuthorizedVstConnection(connection: Record<string, unknown> | null | undefined): boolean {
@@ -68,7 +68,8 @@ function isAuthorizedVstConnection(connection: Record<string, unknown> | null | 
   return id === "bingx-x02"
     && exchange === "bingx"
     && isTruthyFlag(connection.is_testnet)
-    && (environment === "prod-vst" || baseUrl === BINGX_PROD_VST_ORIGIN || baseUrl === BINGX_PROD_VST_FALLBACK_ORIGIN)
+    && environment === "prod-vst"
+    && (baseUrl === BINGX_PROD_VST_ORIGIN || baseUrl === BINGX_PROD_VST_FALLBACK_ORIGIN)
 }
 
 /**
@@ -1201,11 +1202,23 @@ export class VolumeCalculator {
             exchangeMinNotionalUsdt,
             VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD,
           )
+      const pairQuantityRules = normalizeExchangeQuantityRules({
+        minQuantity: exchangeMinVolume,
+        minNotionalUsdt: exchangeMinNotionalUsdt,
+        quantityStep: tradingPair?.quantity_step ?? tradingPair?.quantityStep ?? tradingPair?.step_size,
+        quantityPrecision: tradingPair?.quantity_precision ?? tradingPair?.quantityPrecision,
+      })
+      // The budget must cover the actual quantity grid, not merely $5. For
+      // example BTC's 0.0001 step at $79,000 requires $7.90 even with a $5 floor.
+      const executableMinimumNotional = currentPrice > 0 && effectiveMinimumNotional > 0
+        ? resolveExecutableQuantity(effectiveMinimumNotional / currentPrice, currentPrice, pairQuantityRules,
+            { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD }).quantity * currentPrice
+        : 0
       const minimumNotionalCeilingAllowanceUsd = isAuthorizedVstConnection(connection)
         && (resolvedMode === "main" || resolvedMode === "preset")
         ? Math.min(
             steppedBalance.sizingBalance * (clampedPositionCostPercent / 100),
-            effectiveMinimumNotional,
+            executableMinimumNotional,
           )
         : undefined
 
@@ -1217,17 +1230,8 @@ export class VolumeCalculator {
         leverage: maxLeverage,
         exchangeMinVolume,
         exchangeMinNotionalUsdt,
-        quantityStep: Number(
-          tradingPair?.quantity_step ??
-          tradingPair?.quantityStep ??
-          tradingPair?.step_size ??
-          0,
-        ) || undefined,
-        quantityPrecision: Number(
-          tradingPair?.quantity_precision ??
-          tradingPair?.quantityPrecision ??
-          0,
-        ) || undefined,
+        quantityStep: pairQuantityRules.quantityStep,
+        quantityPrecision: pairQuantityRules.quantityPrecision,
         tradeMode: resolvedMode,
         mainVolumeFactor,
         presetVolumeFactor,

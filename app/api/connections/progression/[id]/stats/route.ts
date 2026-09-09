@@ -38,6 +38,7 @@ import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { selectLiveOrderMetricsSnapshot } from "@/lib/live-order-metrics-snapshot"
 import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import {
   getOpenLivePositionReadModels,
@@ -1277,6 +1278,8 @@ export async function GET(
 
     const scopedProgHash: Record<string, string> = scopedProgHashRaw || {}
     const legacyProgHash: Record<string, string> = legacyProgHashRaw || {}
+    const liveOrderSnapshot = selectLiveOrderMetricsSnapshot(legacyProgHashRaw, scopedProgHashRaw)
+    const liveOrderHash = liveOrderSnapshot.values
     const progHash: Record<string, string> =
       activeProgressionKey === scope.progressionKey
         ? (Object.keys(activeProgressionRaw).length > 0 ? activeProgressionRaw : scopedProgHash)
@@ -5182,11 +5185,14 @@ export async function GET(
         // The simulated lifecycle persists its own counters, so a disabled
         // live-trade connection can be verified without presenting synthetic
         // fills as venue orders, positions, volume, or win rate.
-        ordersPlaced:     n(progHash.live_orders_placed_count),
-        ordersFilled:     n(progHash.live_orders_filled_count),
-        ordersFailed:     n(progHash.live_orders_failed_count),
-        ordersRejected:   n(progHash.live_orders_rejected_count),
-        ordersSimulated:  n(progHash.live_orders_simulated_count),
+        orderCountersAvailable: liveOrderSnapshot.available,
+        orderCountersScope: liveOrderSnapshot.scope,
+        ordersAttempted:  n(liveOrderHash.live_orders_attempted_count),
+        ordersPlaced:     n(liveOrderHash.live_orders_placed_count),
+        ordersFilled:     n(liveOrderHash.live_orders_filled_count),
+        ordersFailed:     n(liveOrderHash.live_orders_failed_count),
+        ordersRejected:   n(liveOrderHash.live_orders_rejected_count),
+        ordersSimulated:  n(liveOrderHash.live_orders_simulated_count),
         openOrders: liveExecutionSummary?.openOrders ?? 0,
         openOrderSymbols: liveExecutionSummary?.openOrderSymbols ?? 0,
         entryOrders: liveExecutionSummary?.entryOrders ?? 0,
@@ -5226,40 +5232,40 @@ export async function GET(
         // the user wants surfaced at Real → Live: it's how many
         // upstream Set signals were absorbed without spawning new
         // exchange orders, keeping the live exposure consolidated.
-        ordersAccumulated: n(progHash.live_orders_accumulated_count),
+        ordersAccumulated: n(liveOrderHash.live_orders_accumulated_count),
         // Positions
-        positionsCreated: liveExecutionSummary?.totalPositions ?? n(progHash.live_positions_created_count),
-        positionsClosed:  liveExecutionSummary?.closedPositions ?? n(progHash.live_positions_closed_count),
-        simulatedPositionsCreated: n(progHash.live_simulated_positions_created_count),
-        simulatedPositionsClosed:  n(progHash.live_simulated_positions_closed_count),
+        positionsCreated: liveExecutionSummary?.totalPositions ?? n(liveOrderHash.live_positions_created_count),
+        positionsClosed:  liveExecutionSummary?.closedPositions ?? n(liveOrderHash.live_positions_closed_count),
+        simulatedPositionsCreated: n(liveOrderHash.live_simulated_positions_created_count),
+        simulatedPositionsClosed:  n(liveOrderHash.live_simulated_positions_closed_count),
         simulatedPositionsOpen: Math.max(
           0,
-          n(progHash.live_simulated_positions_created_count) -
-          n(progHash.live_simulated_positions_closed_count),
+          n(liveOrderHash.live_simulated_positions_created_count) -
+          n(liveOrderHash.live_simulated_positions_closed_count),
         ),
-        simulatedWins: n(progHash.live_simulated_wins_count),
+        simulatedWins: n(liveOrderHash.live_simulated_wins_count),
         simulatedVolumeUsdTotal: (() => {
-          const dollars = n(progHash.live_simulated_volume_usd_total)
+          const dollars = n(liveOrderHash.live_simulated_volume_usd_total)
           return dollars > 0
             ? dollars
-            : n(progHash.live_simulated_volume_microusd_total) / 1_000_000
+            : n(liveOrderHash.live_simulated_volume_microusd_total) / 1_000_000
         })(),
         positionsOpen: liveExecutionSummary?.openPositions ?? (() => {
           // Prefer key-scan (liveOpenScanned) — authoritative; survives server
           // restarts where InlineLocalRedis counters reset to 0.
           const execCounterOpen = Math.max(
             0,
-            n(progHash.live_positions_created_count) - n(progHash.live_positions_closed_count),
+            n(liveOrderHash.live_positions_created_count) - n(liveOrderHash.live_positions_closed_count),
           )
           const execPending = Math.max(
             0,
-            n(progHash.live_orders_placed_count) - n(progHash.live_orders_filled_count),
+            n(liveOrderHash.live_orders_placed_count) - n(liveOrderHash.live_orders_filled_count),
           )
           return liveOpenScanned > 0
             ? liveOpenScanned + execPending
             : Math.max(0, execCounterOpen + execPending)
         })(),
-        wins: liveExecutionSummary?.wins ?? n(progHash.live_wins_count),
+        wins: liveExecutionSummary?.wins ?? n(liveOrderHash.live_wins_count),
         losses: liveExecutionSummary?.losses ?? 0,
         breakEven: liveExecutionSummary?.breakEven ?? 0,
         settledClosedPositions: liveExecutionSummary?.settledClosedPositions ?? 0,
@@ -5273,7 +5279,7 @@ export async function GET(
         coverage: liveExecutionSummary?.coverage ?? null,
         complete: liveExecutionSummary?.complete ?? false,
         // Volume — leveraged notional (cumulative qty × price across all fills)
-        volumeUsdTotal: liveExecutionSummary?.lifetimeVolumeUsd ?? n(progHash.live_volume_usd_total),
+        volumeUsdTotal: liveExecutionSummary?.lifetimeVolumeUsd ?? n(liveOrderHash.live_volume_usd_total),
         // Used-balance margin (cumulative notional/leverage). This is
         // the canonical "USDT" figure the dashboard should display:
         // the actual capital committed, not the leveraged exposure.
@@ -5288,26 +5294,26 @@ export async function GET(
         //   3. Current open-portfolio margin aggregate, for connections
         //      that started before either counter existed.
         marginUsdTotal:   (() => {
-          const cents = n(progHash.live_margin_cents_total)
+          const cents = n(liveOrderHash.live_margin_cents_total)
           if (cents > 0) return Math.round(cents) / 100
-          const dollars = n(progHash.live_margin_usd_total)
+          const dollars = n(liveOrderHash.live_margin_usd_total)
           if (dollars > 0) return dollars
           return Math.round(liveAggTotalMarginUsd * 100) / 100
         })(),
         // Derived
         fillRate: (() => {
-          const placed = n(progHash.live_orders_placed_count)
-          const filled = n(progHash.live_orders_filled_count)
+          const placed = n(liveOrderHash.live_orders_placed_count)
+          const filled = n(liveOrderHash.live_orders_filled_count)
           return ratioPercent(filled, placed)
         })(),
         winRate: liveExecutionSummary?.winRate ?? (() => {
-          const closed = n(progHash.live_positions_closed_count)
-          const wins   = n(progHash.live_wins_count)
+          const closed = n(liveOrderHash.live_positions_closed_count)
+          const wins   = n(liveOrderHash.live_wins_count)
           return ratioPercent(wins, closed)
         })(),
         simulatedWinRate: (() => {
-          const closed = n(progHash.live_simulated_positions_closed_count)
-          const wins = n(progHash.live_simulated_wins_count)
+          const closed = n(liveOrderHash.live_simulated_positions_closed_count)
+          const wins = n(liveOrderHash.live_simulated_wins_count)
           return ratioPercent(wins, closed)
         })(),
         // Per-symbol rows plus global directional totals; rows are empty when

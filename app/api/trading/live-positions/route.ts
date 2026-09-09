@@ -11,6 +11,7 @@ import { calculateLivePositionStatistics } from "@/lib/live-position-statistics"
 import {
   derivePositionRoi,
   resolveSettledRealizedPnl,
+  resolveConfirmedPositionQuantity,
   resolveUnrealizedPnl,
   roundPositionPnl,
 } from "@/lib/live-position-pnl"
@@ -300,13 +301,14 @@ function enrichPnl(pos: any) {
   return pos
 }
 
-function computeStats(positions: any[]) {
+function computeStats(records: any[]) {
+  const positions = records.filter((p) => (resolveConfirmedPositionQuantity(p, true) ?? 0) > 0)
   const closed = positions.filter((p) => String(p.status || "").trim().toLowerCase() === "closed")
   const settledClosed = closed
     .map((position) => ({ position, pnl: resolveSettledRealizedPnl(position) }))
     .filter((entry): entry is { position: any; pnl: number } => entry.pnl !== undefined)
   const accountingPending = closed.length - settledClosed.length
-  const open = positions.filter((p) => isLiveOpenStatus(p.status))
+  const open = positions.filter((p) => isLiveOpenStatus(p.status) && (resolveConfirmedPositionQuantity(p) ?? 0) > 0)
   const totalRealizedPnL = settledClosed.reduce((sum, entry) => sum + entry.pnl, 0)
   const totalUnrealizedPnL = open.reduce((sum, p) => sum + (resolveUnrealizedPnl(p) ?? 0), 0)
   const wins = settledClosed.filter((entry) => entry.pnl > 0).length
@@ -314,6 +316,8 @@ function computeStats(positions: any[]) {
   const breakEven = settledClosed.filter((entry) => entry.pnl === 0).length
   const winRate = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 10000) / 100 : 0
   return {
+    lifecycleRecords: records.length,
+    unfilledRecords: records.length - positions.length,
     total: positions.length,
     open: open.length,
     closed: closed.length,
@@ -453,7 +457,7 @@ async function buildLivePositionsResponse(request: Request) {
         real: realPositions.length,
         simulated: simulatedPositions.length,
         unknown: unknownPositions.length,
-        open: countLiveOpenPositions(all),
+        open: countLiveOpenPositions(all.filter((p) => (resolveConfirmedPositionQuantity(p) ?? 0) > 0)),
         executed: completeStatistics.filled,
         pending: all.filter((p) => String(p.status || "").trim().toLowerCase() === "pending").length,
         placed: all.filter((p) => ["placed", "pending_fill", "placed_unconfirmed"].includes(String(p.status || "").trim().toLowerCase())).length,

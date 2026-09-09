@@ -83,4 +83,20 @@ describe("exchange live summary route", () => {
       directionIntegrity: true,
     })
   })
+
+  test("does not turn a failed Redis read into a successful empty account", async () => {
+    mockGetAllConnections.mockRejectedValueOnce(new Error("Redis unavailable"))
+    const response = await GET(new Request("http://localhost/api/exchange/live-summary?connectionId=bingx-x02"))
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({
+      success: false, error: "live_summary_unavailable",
+      totals: { positionsDataAvailable: false, ordersDataAvailable: false, accountDataAvailable: false },
+    })
+  })
+
+  test.each([null, undefined, ""])("does not certify a missing balance as zero (%s)", async (balance) => {
+    mockGetSettings.mockResolvedValue({ balance, timestamp: Date.now() })
+    const response = await GET(new Request("http://localhost/api/exchange/live-summary?connectionId=bingx-x02"))
+    expect((await response.json()).totals.accountDataAvailable).toBe(false)
+  })
 })

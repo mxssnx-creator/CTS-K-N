@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -40,7 +40,7 @@ interface ProgressionState {
   prehistoricCyclesCompleted?: number
   prehistoricSymbolsProcessedCount?: number
   prehistoricCandlesProcessed?: number
-  prehistoricDataSize?: number
+  prehistoricDataSize?: number | null
   indicationEvaluatedDirection?: number
   indicationEvaluatedMove?: number
   indicationEvaluatedActive?: number
@@ -66,24 +66,40 @@ export function QuickstartLogsPanel({ connectionId, className = "" }: Quickstart
   const [progressionState, setProgressionState] = useState<ProgressionState | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const fetchLogs = async () => {
-    if (!connectionId) return
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const requestRef = useRef<{ id: string; controller: AbortController } | null>(null)
+  const fetchLogs = useCallback(async () => {
+    if (!connectionId || requestRef.current?.id === connectionId) return
+    requestRef.current?.controller.abort()
+    const current = { id: connectionId, controller: new AbortController() }
+    requestRef.current = current
+    const timer = setTimeout(() => current.controller.abort(), 20_000)
     setLoading(true)
     try {
-      const res = await fetch(`/api/connections/progression/${connectionId}/logs`)
+      const res = await fetch(`/api/connections/progression/${encodeURIComponent(connectionId)}/logs`, { signal: current.controller.signal, cache: "no-store" })
+      if (!res.ok) throw new Error(`Logs unavailable (HTTP ${res.status})`)
       const data = await res.json()
-      setLogs(Array.isArray(data.logs) ? data.logs : [])
+      if (requestRef.current !== current) return
+      if (!data.success || !Array.isArray(data.logs)) throw new Error("Logs response is incomplete")
+      setLogs(data.logs)
       setProgressionState(data.progressionState || null)
+      setLoadError(null)
     } catch (error) {
-      console.error("Failed to fetch logs:", error)
+      if (requestRef.current === current) setLoadError(current.controller.signal.aborted ? "Log request timed out. Refresh to retry." : error instanceof Error ? error.message : "Logs unavailable")
     } finally {
-      setLoading(false)
+      clearTimeout(timer)
+      if (requestRef.current === current) { requestRef.current = null; setLoading(false) }
     }
-  }
+  }, [connectionId])
 
   useEffect(() => {
+    setLogs([])
+    setProgressionState(null)
+    setLoadError(null)
+    setLoading(false)
     void fetchLogs()
-  }, [connectionId])
+    return () => { requestRef.current?.controller.abort(); requestRef.current = null }
+  }, [fetchLogs])
 
   const groupedLogs = useMemo(() => {
     const groups: Record<string, ProgressionLogEntry[]> = {
@@ -156,12 +172,13 @@ export function QuickstartLogsPanel({ connectionId, className = "" }: Quickstart
       </CardHeader>
 
       <CardContent className="space-y-3">
+        {loadError && <p role="alert" className="text-xs text-amber-700">{loadError} {logs.length > 0 ? "Showing the last successful snapshot." : ""}</p>}
         {progressionState && (
           <>
             <div className="grid grid-cols-2 gap-2 md:grid-cols-4 text-xs">
               <Badge variant="outline">Cycles: {progressionState.cyclesCompleted || 0}</Badge>
               <Badge variant="outline">Success: {(progressionState.cycleSuccessRate || 0).toFixed(1)}%</Badge>
-              <Badge variant="outline">Prehistoric keys: {progressionState.prehistoricDataSize || 0}</Badge>
+              <Badge variant="outline">Candles: {progressionState.prehistoricCandlesProcessed ?? "—"}</Badge>
               <Badge variant="outline">DB MB: {(progressionState.redisDbSizeMb || 0).toFixed(2)}</Badge>
             </div>
 

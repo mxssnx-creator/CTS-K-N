@@ -816,7 +816,7 @@ async function refreshActiveSignals() {
 function evaluateConfigPerformance(key) {
   const history = configPerformance.get(key) || []
   const previous = configStatus.get(key)
-  if (previous?.permanentlyDeactivated) {
+  if (!state.liveMode && previous?.permanentlyDeactivated) {
     return {
       enabled: false,
       permanentlyDeactivated: true,
@@ -828,7 +828,9 @@ function evaluateConfigPerformance(key) {
     }
   }
   const deactivationWindow = Math.max(3, Number(state.deactivatePosCount) || 16)
-  if (history.length >= deactivationWindow) {
+  // Live permanent deactivation is shared across engines at the canonical
+  // exchange boundary and uses the global liveConfigLossWindow setting.
+  if (!state.liveMode && history.length >= deactivationWindow) {
     const deactivationSample = history.slice(-deactivationWindow)
     const avgPnl = deactivationSample.reduce((sum, position) => sum + position.pnl, 0) / deactivationSample.length
     if (avgPnl < 0) {

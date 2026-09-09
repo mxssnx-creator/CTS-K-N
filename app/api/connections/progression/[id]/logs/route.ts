@@ -3,7 +3,8 @@ import { getProgressionLogs, clearProgressionLogs } from "@/lib/engine-progressi
 import { initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
-import { countRedisKeys } from "@/lib/redis-scan"
+import { compactLogValue } from "@/lib/log-payload"
+import { serveSerializedResponseSWR, invalidateSerializedResponseSWR } from "@/lib/serialized-response-swr"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -19,15 +20,7 @@ function sanitizeNonNegative(value: unknown): number {
   return Math.max(0, toNumber(value))
 }
 
-async function countKeys(client: any, patterns: string[]): Promise<number> {
-  let total = 0
-  for (const pattern of patterns) {
-    total += await countRedisKeys(client, pattern).catch(() => 0)
-  }
-  return total
-}
-
-export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function buildLogsResponse(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
     const connectionId = id
@@ -41,7 +34,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     // Get progression logs for this connection
-    const logs = await getProgressionLogs(connectionId)
+    const logs = await getProgressionLogs(connectionId, { flush: false, limit: 100 })
     
     // Get progression state (cycles, trades, etc.)
     const progressionState = await ProgressionStateManager.getProgressionState(connectionId, engineType)
@@ -54,9 +47,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const client = getRedisClient()
     let structuredLogs: any[] = []
     try {
-      const rawLogs = await client.lrange(`engine:logs:${connectionId}`, 0, 100)
+      const rawLogs = await client.lrange(`engine:logs:${connectionId}`, 0, 99)
       structuredLogs = rawLogs.map((log: string) => {
-        try { return JSON.parse(log) } catch { return null }
+        try { return compactLogValue(JSON.parse(log)) } catch { return null }
       }).filter(Boolean)
     } catch {
       structuredLogs = []
@@ -81,16 +74,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       auto:      toNumber(progHashForLogs["indications_auto_count"]),
       signal:    toNumber(progHashForLogs["indications_signal_count"]),
       trend:     toNumber(progHashForLogs["indications_trend_count"]),
+      break:     toNumber(progHashForLogs["indications_break_count"]),
+      common:    toNumber(progHashForLogs["indications_common_count"]),
+      special:   toNumber(progHashForLogs["indications_special_count"]),
     }
-    const indicationsByTypeTotal =
-      indicationsByType.direction +
-      indicationsByType.move +
-      indicationsByType.active +
-      indicationsByType.active_advanced +
-      indicationsByType.optimal +
-      indicationsByType.auto +
-      indicationsByType.signal +
-      indicationsByType.trend
+    const indicationsByTypeTotal = Object.values(indicationsByType).reduce((sum, count) => sum + count, 0)
 
     const mergedLogs = logs.length > 0
       ? logs
@@ -108,7 +96,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const [
       prehistoricSymbolsSet,
-      prehistoricDataKeys,
       baseSetCount,
       mainSetCount,
       realSetCount,
@@ -123,7 +110,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       redisMemoryInfo,
     ] = await Promise.all([
       client.scard(`prehistoric:${connectionId}:symbols`).catch(() => 0),
-      countKeys(client, [`prehistoric:${connectionId}:*`, `market_data:${connectionId}:*`]),
       // Base stage count from progression hash — sets promoted by Base stage
       toNumber((progHashForSetCounts as Record<string, string>).strategies_base_total || "0"),
       // Main stage count from progression hash — sets fanned out by Main stage
@@ -152,6 +138,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       success: true,
       connectionId,
       logsCount: mergedLogs.length,
+      logsLimit: 100,
       logs: mergedLogs,
       structuredLogs,
       structuredLogsCount: structuredLogs.length,
@@ -191,7 +178,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         prehistoricSymbolsProcessed: sanitizeNonNegative(engineState?.config_set_symbols_processed),
         prehistoricCandlesProcessed: sanitizeNonNegative(engineState?.config_set_candles_processed),
         prehistoricSymbolsProcessedCount: sanitizeNonNegative(prehistoricSymbolsSet || engineState?.config_set_symbols_processed),
-        prehistoricDataSize: sanitizeNonNegative(prehistoricDataKeys),
+        // Log polling must never scan the entire production keyspace.
+        prehistoricDataSize: null,
+        prehistoricDataSizeAvailable: false,
         setsBaseCount: sanitizeNonNegative(baseSetCount),
         setsMainCount: sanitizeNonNegative(mainSetCount),
         setsRealCount: sanitizeNonNegative(realSetCount),
@@ -216,7 +205,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         updatedAt: engineProgression.updated_at,
       } : null,
       timestamp: new Date().toISOString(),
-    })
+    }, { headers: { "Cache-Control": "no-store" } })
   } catch (error) {
     console.error("[v0] Error fetching progression logs:", error)
     return NextResponse.json(
@@ -224,6 +213,18 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       { status: 500 }
     )
   }
+}
+
+export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const { id } = await context.params
+  const scope = buildProgressionScope(id, request.nextUrl.searchParams.get("engineType") || "main")
+  return serveSerializedResponseSWR({
+    namespace: "progression-logs",
+    key: scope.progressionKey,
+    freshMs: 5_000,
+    maxStaleMs: 15_000,
+    producer: () => buildLogsResponse(request, context),
+  })
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -241,6 +242,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     // Clear progression logs
     await clearProgressionLogs(connectionId)
+    invalidateSerializedResponseSWR("progression-logs")
     
     // Also clear structured logs
     const client = getRedisClient()
