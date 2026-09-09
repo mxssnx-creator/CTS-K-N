@@ -263,6 +263,7 @@ interface LiveStats {
   liveDispatchBlocked: number
   liveDispatchFailed: number
   liveDispatchAttempted: number
+  liveDispatchDeferred: number
   stratReal: number
   stratLive: number
   // per-stage strategy detail (count sets validated from prev + avg PF/DDT + avg pos/set)
@@ -373,7 +374,7 @@ const EMPTY_STATS: LiveStats = {
   strategiesTotal: 0, positionsOpen: 0, successRate: 0, avgCycleMs: 0, isActive: false,
   indDirection: 0, indMove: 0, indActive: 0, indActiveAdvanced: 0, indSpecial: 0, indOptimal: 0, indAuto: 0, indCommon: 0, indSignal: 0, indTrend: 0,
   stratBase: 0, stratMain: 0, stratReal: 0, stratLive: 0,
-  qualifiedRealSets: 0, liveDispatchBlocked: 0, liveDispatchFailed: 0, liveDispatchAttempted: 0,
+  qualifiedRealSets: 0, liveDispatchBlocked: 0, liveDispatchFailed: 0, liveDispatchAttempted: 0, liveDispatchDeferred: 0,
   stageBase:  { ...EMPTY_STAGE }, stageMain: { ...EMPTY_STAGE },
   stageReal:  { ...EMPTY_STAGE }, stageLive: { ...EMPTY_STAGE },
   variantDefault:  { ...EMPTY_VARIANT }, variantTrailing: { ...EMPTY_VARIANT },
@@ -664,6 +665,9 @@ export function QuickstartSection() {
         liveDispatchBlocked: Number(s.liveExecution?.dispatchOutcome?.blocked) || 0,
         liveDispatchFailed: Number(s.liveExecution?.dispatchOutcome?.failedToOpen) || 0,
         liveDispatchAttempted: Number(s.liveExecution?.dispatchOutcome?.attempted) || 0,
+        liveDispatchDeferred:
+          Number(s.liveExecution?.dispatchOutcome?.deferred) ||
+          Number(s.liveExecution?.dispatchDeferredCount) || 0,
         stratLive:             s.breakdown?.strategies?.live   || 0,
         // Per-stage strategy detail (sets validated from prev + avg PF/DDT + avg pos/set)
         stageBase:             stage(s.strategyDetail?.base),
@@ -1762,7 +1766,8 @@ export function QuickstartSection() {
           />
           <MiniStat label="Qualified Real" value={fmt(stats.qualifiedRealSets)} sub="latest evaluation" />
           <MiniStat label="Blocked entries" value={fmt(stats.liveDispatchBlocked)} />
-          <MiniStat label="Entry errors" value={fmt(stats.liveDispatchFailed)} />
+          <MiniStat label="Deferred entries" value={fmt(stats.liveDispatchDeferred)} />
+          <MiniStat label="Current errors" value={fmt(stats.liveDispatchFailed)} />
           <MiniStat label="Positions"    value={fmt(stats.positionsOpen)}      />
           {/* Live positions — real exchange positions mirrored by the live engine.
               Always shown (even at 0) so users can see the counter spin up. */}

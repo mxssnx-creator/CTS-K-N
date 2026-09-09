@@ -427,12 +427,12 @@ export function DetailedLoggingDialog() {
                         <div className="grid grid-cols-3 gap-1 text-[10px]">
                           {summary.liveExecution.ordersRejected > 0 && (
                             <div className="bg-yellow-50 border border-yellow-200 rounded p-1 text-center">
-                              Rejected: <span className="font-semibold text-yellow-700">{summary.liveExecution.ordersRejected}</span>
+                              Lifetime rejects: <span className="font-semibold text-yellow-700">{summary.liveExecution.ordersRejected}</span>
                             </div>
                           )}
                           {summary.liveExecution.ordersFailed > 0 && (
                             <div className="bg-red-50 border border-red-200 rounded p-1 text-center">
-                              Failed: <span className="font-semibold text-red-700">{summary.liveExecution.ordersFailed}</span>
+                              Lifetime errors: <span className="font-semibold text-red-700">{summary.liveExecution.ordersFailed}</span>
                             </div>
                           )}
                           {summary.liveExecution.ordersSimulated > 0 && (

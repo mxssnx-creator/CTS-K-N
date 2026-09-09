@@ -942,7 +942,9 @@ export function StatisticsOverviewV2() {
           liveDispatchPending: Number(liveExec.dispatchOutcome?.pending) || 0,
           liveDispatchBlocked: Number(liveExec.dispatchOutcome?.blocked) || 0,
           liveDispatchAttempted: Number(liveExec.dispatchOutcome?.attempted) || 0,
-          liveDispatchDeferred: Number(liveExec.dispatchDeferredCount) || 0,
+          liveDispatchDeferred:
+            Number(liveExec.dispatchOutcome?.deferred) ||
+            Number(liveExec.dispatchDeferredCount) || 0,
           liveDispatchDurationMs: Number(liveExec.dispatchOutcome?.durationMsMax) || 0,
           liveDispatchAvgAttemptMs: Number(liveExec.dispatchOutcome?.avgAttemptMs) || 0,
           // Exchange-wide aggregates (scan-derived on the server).
@@ -1691,9 +1693,9 @@ export function StatisticsOverviewV2() {
               className="flex flex-col gap-0.5"
               title={`${stats.liveDispatchAttempted} latest dispatch attempts; ${stats.liveDispatchPending} pending fills; ${stats.liveDispatchBlocked} blocked without an exchange request; ${stats.liveDispatchDeferred} deferred candidates; ${stats.liveDispatchAvgAttemptMs.toFixed(1)}ms average per attempt.`}
             >
-              <span className="text-muted-foreground">Failed / pending / blocked</span>
+              <span className="text-muted-foreground">Errors / pending / blocked / deferred</span>
               <span className={`font-semibold tabular-nums ${stats.liveFailedToOpen > 0 ? "text-red-600" : stats.liveDispatchBlocked > 0 ? "text-orange-600" : stats.liveDispatchPending > 0 ? "text-amber-600" : "text-emerald-600"}`}>
-                {fmt(stats.liveFailedToOpen)} / {fmt(stats.liveDispatchPending)} / {fmt(stats.liveDispatchBlocked)}
+                {fmt(stats.liveFailedToOpen)} / {fmt(stats.liveDispatchPending)} / {fmt(stats.liveDispatchBlocked)} / {fmt(stats.liveDispatchDeferred)}
               </span>
             </div>
           </div>

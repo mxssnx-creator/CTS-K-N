@@ -4,7 +4,7 @@
   "sourceTreeBeforeHandoffCommit": "794eab44f57c2286bf3cfa54c66bcba4dcadd17a",
   "sourceRevisionTimestamp": "2026-09-09T04:51:51+02:00",
   "workingTreeChangesIncluded": true,
-  "workingTreeStatusEntryCount": 18,
+  "workingTreeStatusEntryCount": 29,
   "nodeRequirement": ">=20.16",
   "packageManager": "pnpm@10.28.1",
   "framework": {
@@ -13,13 +13,13 @@
     "typescript": "^5.8.3"
   },
   "counts": {
-    "projectFilesExcludingGeneratedManifests": 1706,
+    "projectFilesExcludingGeneratedManifests": 1708,
     "apiRoutes": 297,
     "apiMethods": 383,
     "uiPages": 48,
     "environmentVariables": 504,
     "redisMigrations": 108,
-    "testsAndVerifiers": 344
+    "testsAndVerifiers": 345
   },
   "apiGroups": {
     "additional": {

@@ -169,6 +169,7 @@ unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/instaforex-base-connection.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
 unit	__tests__/unit/live-config-performance.test.ts
+unit	__tests__/unit/live-dispatch-outcome.test.ts
 unit	__tests__/unit/live-entry-budget-block-cache.test.ts
 unit	__tests__/unit/live-entry-protection-admission.test.ts
 unit	__tests__/unit/live-entry-readiness.test.ts

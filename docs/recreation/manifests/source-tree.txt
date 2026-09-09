@@ -185,6 +185,7 @@ __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/live-config-performance.test.ts
+__tests__/unit/live-dispatch-outcome.test.ts
 __tests__/unit/live-entry-budget-block-cache.test.ts
 __tests__/unit/live-entry-protection-admission.test.ts
 __tests__/unit/live-entry-readiness.test.ts
@@ -1281,6 +1282,7 @@ lib/kilo-database-client.ts
 lib/leverage-policy.ts
 lib/live-config-loss-policy.ts
 lib/live-config-performance.ts
+lib/live-dispatch-outcome.ts
 lib/live-entry-budget-block-cache.ts
 lib/live-entry-protection-admission.ts
 lib/live-entry-readiness.ts
