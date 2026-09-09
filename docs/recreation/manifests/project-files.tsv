@@ -260,8 +260,7 @@ d72e4cdf4a80c598709ea2490e8a440f73c20631a27179781f1a3d107a787691	3146	__tests__/
 7d705be780ffc8bc61f655421b252dbae9cd66bd2a582ffdd4ac4edeba46f42d	10798	__tests__/unit/progression-stability.test.ts
 cc8107e2f06f4f22b6ed1297217d5e4bfa6f91a469f7dd7ef3accad14d78e84f	5133	__tests__/unit/protection-slot-order-audit.test.ts
 cf10fa47a691d70a0b9a71e84b58d440e9ad42aa950fcbdbd87db9cd02040a94	2760	__tests__/unit/pseudo-position-close-idempotency.test.ts
-a75b02d110666a23b47bbce76a8c83d2d32cf8deaa904859f7a083f7256010f2	1914	__tests__/unit/pseudo-position-tail: error writing 'standard output': Broken pipe
-semantics.test.ts
+a75b02d110666a23b47bbce76a8c83d2d32cf8deaa904859f7a083f7256010f2	1914	__tests__/unit/pseudo-position-semantics.test.ts
 733bab338cb7a9477693f9abf41e5bc84fb5f91b035f558ce004b48168fd08d0	1029	__tests__/unit/pull-agent-install-script.test.ts
 368d69e024022440d806e27d7a04e5ddc1faa7e1db17388360f32cdca1f6b892	2832	__tests__/unit/quickstart-bootstrap-state.test.ts
 4372fcb4e354f638f70bdad3c16a588ed6a5036236d0edeac478d004cfd8e3e8	3516	__tests__/unit/quickstart-change-detection.test.ts
@@ -531,9 +530,7 @@ c5f867e80c0f53e3153d20433bf6ac5dd79810c6aee48e6f5f232bd376fcede7	1639	app/api/pr
 30e54f0347ae466de4560545a38b66995618e1b128cb1f002b0ceb80698f2fef	4826	app/api/presets/[id]/route.ts
 9ca64367df4d449448e902395607b154cd03f036c0b1aeb5c75ecd0116a88b5f	652	app/api/presets/[id]/strategies/route.ts
 686bf190536f57abd75ed7ec4d10269d7996c473a3f1f82e572580dd2214c754	2739	app/api/presets/[id]/symbol-performance/route.ts
-d5e4f39d42b7d423298b870b9cedd01d047a820850736b0543b84249175db4f3	3715	app/api/presets/[id]/testtail: error writing 'standard output': Broken pipe
-tail: error writing 'standard output': Broken pipe
-/route.ts
+d5e4f39d42b7d423298b870b9cedd01d047a820850736b0543b84249175db4f3	3715	app/api/presets/[id]/test/route.ts
 a8839cafb8532d4879f384cc3cf37769c3be1d4f3fd8c4904c6fcc9ade76e944	4191	app/api/presets/activate/route.ts
 f7a25120924250b82355f9ff6361085c8b86223fa43eff740dad92c09fc48522	9656	app/api/presets/init-predefined/route.ts
 42adb7592289a8c875ffa1ec23535f6b7b1adfc51c6662218ba02cf5e6bde0a7	8220	app/api/presets/route.ts
@@ -1078,8 +1075,7 @@ f1b089238ef97b2eff8f0d11744c2969c01cb545ad10d49afe94c915c65c0f23	2083	hooks/use-
 26ce48acdb92ce438b21f3457016428653b2da76c065b68dcd2e95865897e8b9	9175	lib/BLOCK_STRATEGY_SYSTEM.md
 468e8d86c4ee254635940a4f83d0706d477aaf1d9d4e3681b38a481f5c5b60c7	7934	lib/active-connections.ts
 fa5f6de94762959e542e90a6e723c7638db134ad96fe4892edd4a628520d9cf1	4693	lib/active-indication-profile.ts
-d1b4c0d2ef85d40d6ab42002a1fbd974804f859df433cf46aaactail: error writing 'standard output': Broken pipe
-6e06af1da6b4	14520	lib/active-outbreak-indication.ts
+d1b4c0d2ef85d40d6ab42002a1fbd974804f859df433cf46aaac6e06af1da6b4	14520	lib/active-outbreak-indication.ts
 55e7e5b30f9a6fd012646172c4dc1e454aeed80fdf4a796aff6d6c488796ee0b	8549	lib/additional/chat-history.ts
 6a62c5313f7f8c1c03d1506c6f614a604a2f620df3fc50cff14524ebb9e5f61e	12376	lib/adjust-strategy-statistics.ts
 a1ad61dfacf88d4c7bd18c5fcb2dcc6c8e4a989130440d22a5af7760caf7e178	3663	lib/admin-auth.ts
@@ -1163,8 +1159,7 @@ be1546adc68952d33cef21f3749505654f2874a45757ee92edb7b0fb016121fe	3531	lib/connec
 1e3d0d65fbe4491fe549e09108c514cafc3d3954efd4e08d360b89db2bd77a42	1674	lib/console-logger.ts
 a094d2a5ad546e27b651cc26f1bc5a86c6da891b4526b7411dd5535e70ecfa9b	8535	lib/constants.ts
 3d6dd52856918263d56e4c554ba19dae1ab1e7de574b0024535846ed1f9eb284	522	lib/constants/index.ts
-2dea5562c4ed8497c01bc5f16c1c1ad14c92021a272ffb74bd8170f8733b24e8	17282	lib/constants/tail: error writing 'standard output': Broken pipe
-types.ts
+2dea5562c4ed8497c01bc5f16c1c1ad14c92021a272ffb74bd8170f8733b24e8	17282	lib/constants/types.ts
 ae63362803a83f2f156f3882e4b4f52d16faca50f9c5af2f55a9457bfe73f506	7030	lib/control-order-capacity.ts
 0bab5a130539e17e414a155d2c9acecb7b2bb070151154126f3c385b15722f7a	3033	lib/cooperative-task-timeout.ts
 a026a32845bb7d98f11bdba433676bedd5444cef835462d806850aef4af81ffc	6987	lib/core/dynamic-operations.ts

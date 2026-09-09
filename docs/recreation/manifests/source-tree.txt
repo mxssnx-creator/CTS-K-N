@@ -722,8 +722,7 @@ app/settings/page.tsx
 app/simple/layout.tsx
 app/simple/page.tsx
 app/statistics/direct-trade/page.tsx
-app/statistictail: error writing 'standard output': Broken pipe
-s/indications/common/page.tsx
+app/statistics/indications/common/page.tsx
 app/statistics/indications/layout.tsx
 app/statistics/indications/main/page.tsx
 app/statistics/indications/signal/page.tsx

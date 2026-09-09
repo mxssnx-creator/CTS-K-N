@@ -248,7 +248,6 @@ DIRECT_TRADE_RECOVERY_RESTART_PORT	test-or-operator-tool	no	no	1	scripts/run-dir
 DIRECT_TRADE_SCALE_HOURS	test-or-operator-tool	no	no	1	scripts/benchmark-direct-trade-symbol-coordination.cjs
 DIRECT_TRADE_SCALE_REPORT_FILE	test-or-operator-tool	no	no	1	scripts/benchmark-direct-trade-symbol-coordination.cjs
 DIRECT_TRADE_SCALE_SPECS	test-or-operator-tool	no	no	1	scripts/benchmark-direct-trade-symbol-coordination.cjs
-tail: error writing 'standard output': Broken pipe
 DIRECT_TRADE_SCALE_START_SYMBOL	test-or-operator-tool	no	no	1	scripts/benchmark-direct-trade-symbol-coordination.cjs
 DIRECT_TRADE_SCALE_WORKER_HEAP_MB	test-or-operator-tool	no	no	1	scripts/benchmark-direct-trade-symbol-coordination.cjs
 DIRECT_TRADE_SHARED_APP_HEAP_MB	test-or-operator-tool	no	no	1	scripts/run-direct-trade-shared-isolation.mjs

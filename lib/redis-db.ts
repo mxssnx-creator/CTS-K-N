@@ -684,8 +684,7 @@ export class InlineLocalRedis implements RedisClientLike {
     handle: { writeFile(data: string, options?: any): Promise<void> },
     snapshotVersion: number,
   ): Promise<void> {
-    tail: error writing 'standard output': Broken pipe
-// Keep the buffered string deliberately small. A dense runtime can have
+    // Keep the buffered string deliberately small. A dense runtime can have
     // tens of thousands of JSON rows; accumulating a 1 MiB rope before the
     // next async write made the minute checkpoint monopolise the Node turn.
     const maxChunkBytes = 64 * 1024
@@ -1392,8 +1391,7 @@ export class InlineLocalRedis implements RedisClientLike {
     // trade-engine coordinator; if ANY engine is active, skip the reload.
     const globalCtx = globalThis as any
     const coordinator = globalCtx.__tradeEngineCoordinator
-  tail: error writing 'standard output': Broken pipe
-  const coordinatorHasEngines =
+    const coordinatorHasEngines =
       coordinator &&
       typeof coordinator.getActiveEngineCount === "function" &&
       Number(coordinator.getActiveEngineCount()) > 0
@@ -2014,8 +2012,7 @@ export class InlineLocalRedis implements RedisClientLike {
       ? Math.max(1, Math.floor(limit))
       : Number.MAX_SAFE_INTEGER
     let iterator: Iterator<[string, number]>
-    if (bounded === Numtail: error writing 'standard output': Broken pipe
-ber.MAX_SAFE_INTEGER) {
+    if (bounded === Number.MAX_SAFE_INTEGER) {
       iterator = ttlMap.entries()
       this.ttlCleanupIterator = null
       this.ttlCleanupRemaining = 0
@@ -2708,8 +2705,6 @@ ber.MAX_SAFE_INTEGER) {
     // step, a hot-reload or cold-start resurrects the deleted runtime data.
     await this.saveToDisk()
     return { deleted, protected: protectedCount, buckets }
-tail: error writing 'standard output': Broken pipe
-tail: error writing 'standard output': Broken pipe
   }
 
   /**
@@ -4039,8 +4034,7 @@ export async function ensureCoreRedis(): Promise<void> {
           globalForRedis.__redis_load_promise.finally(() => {
             globalForRedis.__redis_load_promise = undefined
           })
-    tail: error writing 'standard output': Broken pipe
-    }
+        }
         await globalForRedis.__redis_load_promise
       }
     }
@@ -4720,9 +4714,7 @@ async function readIndexedHashes(client: RedisClientLike, indexKey: string, keyP
   return records
 }
 
-async function updatePositionIndexes(client: RedisClientLike, id: string, position: Record<string, any>): Promise<voitail: error writing 'standard output': Broken pipe
-tail: error writing 'standard output': Broken pipe
-d> {
+async function updatePositionIndexes(client: RedisClientLike, id: string, position: Record<string, any>): Promise<void> {
   const key = `position:${id}`
   const previous = await client.hgetall(key).catch(() => ({} as Record<string, string>))
   const previousConnectionId = getRecordConnectionId(previous)
@@ -6277,8 +6269,7 @@ export async function createConnection(data: any): Promise<any> {
   // trying to express before it was accidentally left outside the
   // function body (which broke the build with "Return statement is
   // not allowed here" at the module top level).
-  contail: error writing 'standard output': Broken pipe
-st existingConnection = await client.hgetall(`connection:${id}`)
+  const existingConnection = await client.hgetall(`connection:${id}`)
   if (existingConnection && Object.keys(existingConnection).length > 0) {
     console.log(`[v0] [Redis] Connection already exists with id ${id}, updating instead of creating duplicate`)
     const merged = {
