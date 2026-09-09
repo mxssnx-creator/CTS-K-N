@@ -47,10 +47,9 @@ function integer(value: unknown, fallback: number): number {
 }
 
 function precisionForStep(step: number, fallback: number): number {
-  if (!(step > 0)) return fallback
-  const text = step.toFixed(18).replace(/0+$/, "")
-  const decimal = text.indexOf(".")
-  return decimal >= 0 ? Math.min(18, text.length - decimal - 1) : fallback
+  if (!(step > 0) || !Number.isFinite(step)) return fallback
+  const [coefficient, exponent = "0"] = String(step).split("e")
+  return Math.max(0, Math.min(18, (coefficient.split(".")[1]?.length || 0) - Number(exponent)))
 }
 
 export function normalizeExchangeQuantityRules(
@@ -83,24 +82,44 @@ export function normalizeExchangeQuantityRules(
   }
 }
 
-function roundToPrecision(value: number, precision: number): number {
-  return Number(value.toFixed(Math.max(0, Math.min(18, precision))))
+function decimalParts(value: number): { coefficient: bigint; exponent: number } {
+  const [mantissa, exponent = "0"] = String(value).split("e")
+  const decimals = mantissa.split(".")[1]?.length || 0
+  return { coefficient: BigInt(mantissa.replace(".", "")), exponent: Number(exponent) - decimals }
+}
+
+function roundQuantityToStep(quantity: number, step: number, up: boolean): number {
+  if (!Number.isFinite(quantity) || quantity <= 0) return 0
+  if (!(step > 0) || !Number.isFinite(step)) return quantity
+  // Decimal venue quantities must not lose a complete lot to binary division:
+  // 4.8 / 0.1 is 47.99999999999999. A fixed EPSILON does not repair this at
+  // larger magnitudes, and can round genuinely sub-step closes up at tiny ones.
+  // Divide the input decimals exactly, then convert the final grid point once.
+  const q = decimalParts(quantity)
+  const s = decimalParts(step)
+  const exponent = q.exponent - s.exponent
+  const numerator = q.coefficient * (exponent > 0 ? BigInt(`1${"0".repeat(exponent)}`) : BigInt(1))
+  const denominator = s.coefficient * (exponent < 0 ? BigInt(`1${"0".repeat(-exponent)}`) : BigInt(1))
+  let units = numerator / denominator
+  if (up && numerator % denominator !== BigInt(0)) {
+    // Multiplying DCA ratios can leave one floating-point ULP above an exact
+    // entry grid point. Do not add a whole new lot for that representation
+    // error. Closes use strict decimal floor and never receive this tolerance.
+    const lower = Number(`${units * s.coefficient}e${s.exponent}`)
+    if (!(lower > 0 && quantity - lower <= Number.EPSILON * Math.max(quantity, lower))) {
+      units += BigInt(1)
+    }
+  }
+  const result = Number(`${units * s.coefficient}e${s.exponent}`)
+  return Number.isFinite(result) ? result : 0
 }
 
 export function roundQuantityUp(quantity: number, rules: Pick<NormalizedQuantityRules, "quantityStep" | "quantityPrecision">): number {
-  if (!Number.isFinite(quantity) || quantity <= 0) return 0
-  const step = Number(rules.quantityStep)
-  if (!(step > 0)) return quantity
-  const units = Math.ceil((quantity - Number.EPSILON) / step)
-  return roundToPrecision(units * step, rules.quantityPrecision)
+  return roundQuantityToStep(quantity, Number(rules.quantityStep), true)
 }
 
 export function roundQuantityDown(quantity: number, rules: Pick<NormalizedQuantityRules, "quantityStep" | "quantityPrecision">): number {
-  if (!Number.isFinite(quantity) || quantity <= 0) return 0
-  const step = Number(rules.quantityStep)
-  if (!(step > 0)) return quantity
-  const units = Math.floor((quantity + Number.EPSILON) / step)
-  return roundToPrecision(units * step, rules.quantityPrecision)
+  return roundQuantityToStep(quantity, Number(rules.quantityStep), false)
 }
 
 export function resolveExecutableQuantity(
